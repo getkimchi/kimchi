@@ -1,8 +1,10 @@
 import { mkdtempSync, writeFileSync } from "node:fs"
+import { createServer, type Server } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { WorkspaceCredentials } from "../cloud/types.js"
+import { HARNESS_CLIENT_TYPE } from "../constants.js"
 import { WorkerClient } from "./client.js"
 import { createSession, deleteSession, getSession, listSessions } from "./sessions.js"
 import type { CreateSessionRequest } from "./types.js"
@@ -54,7 +56,7 @@ describe("listSessions", () => {
 		expect(result.map((s) => s.name).sort()).toEqual(["alpha", "beta"])
 		const alpha = result.find((s) => s.name === "alpha")
 		expect(alpha).toMatchObject({ name: "alpha", agentMode: "PTY", alive: true })
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/session`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/session?clientType=${HARNESS_CLIENT_TYPE}`)
 	})
 
 	it("returns an empty array when the worker has no sessions", async () => {
@@ -174,6 +176,69 @@ describe("createSession", () => {
 			name: "WorkerError",
 			status: 409,
 		})
+	})
+})
+
+describe("createSession large-repo regression", () => {
+	// Real HTTP server: a per-call timeoutMs must outlast the worker's response
+	// time even when it exceeds the WorkerClient default. Regression for large
+	// repos where the 30s default aborted mid-flight while the
+	// session was created server-side.
+
+	let server: Server
+	let baseUrl: string
+	let serverDelayMs: number
+
+	beforeEach(async () => {
+		serverDelayMs = 0
+		server = createServer((req, res) => {
+			if (req.method === "POST" && req.url?.startsWith("/session/")) {
+				req.on("data", () => {})
+				req.on("end", () => {
+					setTimeout(() => {
+						res.writeHead(201, { "Content-Type": "application/json" })
+						res.end(JSON.stringify(sessionFixture({ agentMode: "PTY" })))
+					}, serverDelayMs)
+				})
+				return
+			}
+			res.writeHead(404)
+			res.end()
+		})
+		await new Promise<void>((resolve) => {
+			server.listen(0, "127.0.0.1", () => {
+				const addr = server.address()
+				const port = typeof addr === "object" && addr ? addr.port : 0
+				baseUrl = `http://127.0.0.1:${port}`
+				resolve()
+			})
+		})
+	})
+
+	afterEach(async () => {
+		await new Promise<void>((resolve) => server.close(() => resolve()))
+	})
+
+	it("succeeds when the per-call timeout outlasts the worker response", async () => {
+		// Server responds at 200ms — longer than the 50ms client default.
+		serverDelayMs = 200
+		const creds = { ...CREDS, wsUrl: baseUrl.replace("http://", "ws://") }
+		const client = new WorkerClient(creds, { timeoutMs: 50 })
+
+		const result = await createSession(client, "large-repo", { agentMode: "PTY" }, { timeoutMs: 1000 })
+
+		expect(result.name).toBe("large-repo")
+		expect(result.agentMode).toBe("PTY")
+	})
+
+	it("aborts when no per-call timeout overrides the client default", async () => {
+		// Without a per-call timeoutMs the client default (50ms) aborts a 200ms
+		// response — reproducing the original "The operation was aborted" bug.
+		serverDelayMs = 200
+		const creds = { ...CREDS, wsUrl: baseUrl.replace("http://", "ws://") }
+		const client = new WorkerClient(creds, { timeoutMs: 50 })
+
+		await expect(createSession(client, "large-repo", { agentMode: "PTY" })).rejects.toThrow(/aborted/i)
 	})
 })
 

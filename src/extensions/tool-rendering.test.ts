@@ -1,7 +1,7 @@
-import { type Theme, ToolExecutionComponent, UserMessageComponent, initTheme } from "@earendil-works/pi-coding-agent"
+import { initTheme, type Theme, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it } from "vitest"
-import {
+import toolRenderingExtension, {
 	formatToolTimer,
 	getToolElapsedMs,
 	isMcpToolName,
@@ -11,6 +11,7 @@ import {
 	splitLeadingOsc133Markers,
 	summarizeMcpToolInvocationArgs,
 	summarizeOpenAiToolCall,
+	type ToolRenderContext,
 	toolHeader,
 } from "./tool-rendering.js"
 
@@ -59,6 +60,21 @@ describe("user message render patch", () => {
 		)
 
 		expect(summary).toBe("Which improvement areas should this ferment include?")
+	})
+
+	it("renders Skill tool with skill name when skill arg is provided", () => {
+		const summary = summarizeOpenAiToolCall("Skill", { skill: "writing-plans" }, plainTheme, (path) => path)
+		expect(summary).toBe("writing-plans")
+	})
+
+	it("renders Skill tool with name arg as primary", () => {
+		const summary = summarizeOpenAiToolCall("Skill", { name: "test-skill" }, plainTheme, (path) => path)
+		expect(summary).toBe("test-skill")
+	})
+
+	it("renders Skill tool with fallback when no name or skill arg", () => {
+		const summary = summarizeOpenAiToolCall("Skill", {}, plainTheme, (path) => path)
+		expect(summary).toBe("run skill")
 	})
 })
 
@@ -128,16 +144,42 @@ describe("execution timestamp tracking", () => {
 	})
 })
 
+describe("hidden tool block rendering", () => {
+	beforeAll(() => {
+		toolRenderingExtension({
+			registerCommand: () => {},
+			registerTool: () => {},
+			on: () => {},
+		} as never)
+	})
+
+	it("hides legacy write_todos tool results", () => {
+		const component = new ToolExecutionComponent(
+			"write_todos",
+			"tc-legacy",
+			{ todos: [{ content: "legacy", status: "pending" }] },
+			{},
+			undefined,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+
+		expect(component.render(80)).toEqual([])
+	})
+})
+
 describe("elapsed time helpers", () => {
 	it("returns 0 when no timestamps exist", () => {
-		expect(getToolElapsedMs({ state: {} })).toBe(0)
-		expect(getToolElapsedMs({})).toBe(0)
+		expect(getToolElapsedMs({ state: {} } as ToolRenderContext)).toBe(0)
+		expect(getToolElapsedMs({} as ToolRenderContext)).toBe(0)
+		// @ts-expect-error
 		expect(getToolElapsedMs(null)).toBe(0)
 	})
 
 	it("returns elapsed time for a running tool (no end timestamp)", () => {
 		const startedAt = Date.now() - 5000
-		const elapsed = getToolElapsedMs({ state: { _executionStartedAt: startedAt } })
+		const elapsed = getToolElapsedMs({ state: { _executionStartedAt: startedAt } } as ToolRenderContext)
 		expect(elapsed).toBeGreaterThanOrEqual(5000)
 		expect(elapsed).toBeLessThan(6000)
 	})
@@ -145,7 +187,9 @@ describe("elapsed time helpers", () => {
 	it("returns exact elapsed time for a completed tool", () => {
 		const startedAt = 1000
 		const endedAt = 3500
-		const elapsed = getToolElapsedMs({ state: { _executionStartedAt: startedAt, _executionEndedAt: endedAt } })
+		const elapsed = getToolElapsedMs({
+			state: { _executionStartedAt: startedAt, _executionEndedAt: endedAt },
+		} as ToolRenderContext)
 		expect(elapsed).toBe(2500)
 	})
 
@@ -345,5 +389,17 @@ describe("mcpCallLabelAndSummary", () => {
 			true,
 		)
 		expect(result.summary).toContain(longVal)
+	})
+})
+
+describe("set_phase tool summary", () => {
+	it("summarizes set_phase calls with the phase value", () => {
+		const summary = summarizeOpenAiToolCall("set_phase", { phase: "plan" }, plainTheme, (path) => path)
+		expect(summary).toBe("plan")
+	})
+
+	it("summarizes set_phase calls with unknown phase fallback", () => {
+		const summary = summarizeOpenAiToolCall("set_phase", {}, plainTheme, (path) => path)
+		expect(summary).toBe("set phase")
 	})
 })

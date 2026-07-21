@@ -1,19 +1,20 @@
+/** biome-ignore-all lint/suspicious/noExplicitAny: any is used primarily for patching Pi */
+
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { readFile as readFileAsync } from "node:fs/promises"
 import { extname, relative, resolve } from "node:path"
-import { formatDuration } from "../extensions/format.js"
-
+import type { AssistantMessage, ImageContent, TextContent } from "@earendil-works/pi-ai"
 import type {
+	AgentToolResult,
 	BashToolDetails,
 	ExtensionAPI,
 	GrepToolDetails,
 	ReadToolDetails,
 	Theme,
+	ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent"
 import {
 	AssistantMessageComponent,
-	ToolExecutionComponent,
-	UserMessageComponent,
 	createBashTool,
 	createEditTool,
 	createFindTool,
@@ -21,22 +22,28 @@ import {
 	createLsTool,
 	createReadTool,
 	createWriteTool,
+	ToolExecutionComponent,
+	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent"
 import {
+	type Component,
 	Container,
-	Text,
 	deleteAllKittyImages,
 	getCapabilities,
 	getImageDimensions,
+	type ImageDimensions,
 	imageFallback,
+	Text,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui"
-
 import * as Diff from "diff"
-import { getBashCommandForDisplay } from "./rtk-rewrite.js"
 import type { BundledLanguage, BundledTheme } from "shiki"
+import type { TSchema } from "typebox"
+import { formatDuration } from "../extensions/format.js"
+import { getBashCommandForDisplay } from "./rtk-rewrite.js"
+import { TODO_TOOL_NAMES } from "./todos/tool.js"
 
 const RESET = "\x1b[0m"
 const TRANSPARENT_BG = "\x1b[49m"
@@ -53,12 +60,70 @@ const TOOL_RENDER_CACHE = Symbol.for("pi-claude-style-tools:tool-render-cache")
 const TOOL_CACHE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-cache-invalidation")
 const TOOL_IMAGE_EXPAND_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-read-image-expansion")
 const USER_MESSAGE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-user-message-render")
-const HIDDEN_TOOL_BLOCK_NAMES = new Set(["write_todos"])
+const HIDDEN_TOOL_BLOCK_NAMES = new Set(["write_todos", ...TODO_TOOL_NAMES])
 const WRAP_MARK = "\uE000"
 const KITTY_IMAGE_PREFIX = "\x1b_G"
 const ITERM2_IMAGE_PREFIX = "\x1b]1337;File="
 
 let toolBackgroundMode: "default" | "transparent" | "outlines" = "outlines"
+
+interface ThemeWithPrivate extends Omit<Theme, "bgColors" | "fgColors"> {
+	bgColors: Theme["bgColors"]
+	fgColors: Theme["fgColors"]
+}
+
+/** Context passed to tool renderers. This type is not exported from Pi. */
+export interface ToolRenderContext<TState = any, TArgs = any> {
+	/** Current tool call arguments. Shared across call/result renders for the same tool call. */
+	args: TArgs
+	/** Unique id for this tool execution. Stable across call/result renders for the same tool call. */
+	toolCallId: string
+	/** Invalidate just this tool execution component for redraw. */
+	invalidate: () => void
+	/** Previously returned component for this render slot, if any. */
+	lastComponent: Component | undefined
+	/** Shared renderer state for this tool row. Initialized by tool-execution.ts. */
+	state: TState
+	/** Working directory for this tool execution. */
+	cwd: string
+	/** Whether the tool execution has started. */
+	executionStarted: boolean
+	/** Whether the tool call arguments are complete. */
+	argsComplete: boolean
+	/** Whether the tool result is partial/streaming. */
+	isPartial: boolean
+	/** Whether the result view is expanded. */
+	expanded: boolean
+	/** Whether inline images are currently shown in the TUI. */
+	showImages: boolean
+	/** Whether the current result is an error. */
+	isError: boolean
+}
+
+interface AgentEditResult extends AgentToolResult<unknown> {
+	details: {
+		_type: "editInfo"
+		summary: string
+		editLine: number
+		hunks: number
+		added: number
+		removed: number
+		firstChangedLine?: number
+	}
+}
+
+interface AgentMultiEditToolResult extends AgentToolResult<unknown> {
+	details: {
+		_type: "multiEditInfo"
+		summary: string
+		editCount: number
+		diffLineCount: number
+		hunks: number
+		totalAdded: number
+		totalRemoved: number
+		firstChangedLine?: number
+	}
+}
 
 interface SettingsFile {
 	toolBackground?: "default" | "transparent" | "outlines" | "border"
@@ -151,7 +216,7 @@ function writeSettingsKey(key: string, value: unknown): void {
 	}
 	try {
 		mkdirSync(dir, { recursive: true })
-		writeFileSync(path, JSON.stringify(settings, null, 2) + "\n")
+		writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`)
 	} catch {
 		/* best effort */
 	}
@@ -170,16 +235,16 @@ function syncToolBackgroundMode(): void {
 	toolBackgroundMode = raw ?? "outlines"
 }
 
-function setThemeBg(theme: unknown, key: string, value: string): void {
-	const themeAny = theme as any
-	if (themeAny.bgColors instanceof Map) {
-		themeAny.bgColors.set(key, value)
-	} else if (themeAny.bgColors && typeof themeAny.bgColors === "object") {
-		themeAny.bgColors[key] = value
+function setThemeBg(theme: Theme, key: string, value: string): void {
+	const _theme = theme as unknown as ThemeWithPrivate
+	if (_theme.bgColors instanceof Map) {
+		_theme.bgColors.set(key, value)
+	} else if (_theme.bgColors && typeof _theme.bgColors === "object") {
+		_theme.bgColors[key] = value
 	}
 }
 
-function applyToolBackgroundMode(theme: unknown): void {
+function applyToolBackgroundMode(theme: Theme): void {
 	syncToolBackgroundMode()
 	if (toolBackgroundMode === "default") return
 
@@ -242,8 +307,8 @@ function patchGlobalToolBorders(): void {
 
 	const originalRender = proto.render
 	proto.render = function patchedContainerRender(width: number): string[] {
+		if (isToolExecutionLike(this) && HIDDEN_TOOL_BLOCK_NAMES.has(this.toolName.toLowerCase())) return []
 		if (isToolExecutionLike(this)) {
-			if (HIDDEN_TOOL_BLOCK_NAMES.has(this.toolName.toLowerCase())) return []
 			const cached = (this as any)[TOOL_RENDER_CACHE]
 			if (cached?.width === width && cached?.mode === toolBackgroundMode) {
 				return cached.lines
@@ -308,12 +373,18 @@ function clearToolRenderCache(value: unknown): void {
 }
 
 function unrefTimer(timer: ReturnType<typeof setTimeout> | null | undefined): void {
-	;(timer as any)?.unref?.()
+	timer?.unref?.()
+}
+
+const WORKED_DURATION_KEY = "_piClaudeStyleWorkedDurationMs"
+const WORKED_START_KEY = "_piClaudeStyleWorkedStartMs"
+
+interface PatchedAssistantMessage extends AssistantMessage {
+	[WORKED_DURATION_KEY]: number | undefined
+	[WORKED_START_KEY]: number | undefined
 }
 
 const TOOL_EXECUTION_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-execution")
-const WORKED_DURATION_KEY = "_piClaudeStyleWorkedDurationMs"
-const WORKED_START_KEY = "_piClaudeStyleWorkedStartMs"
 const ASSISTANT_MESSAGE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-assistant-message-render")
 // OSC 133 zone markers applied by AssistantMessageComponent.render() — must be
 // reattached to the last line after we append the duration widget.
@@ -358,7 +429,7 @@ function formatWorkedDuration(ms: number): string {
  * framework's `getRenderContext` method aliases them via
  * `state: this.rendererState`.
  */
-export function getToolElapsedMs(ctx: any): number {
+export function getToolElapsedMs(ctx: ToolRenderContext): number {
 	const startedAt = ctx?.state?._executionStartedAt
 	if (!startedAt) return 0
 	const endedAt = ctx?.state?._executionEndedAt
@@ -385,7 +456,7 @@ function patchAssistantMessageRender(): void {
 	proto.render = function patchedAssistantMessageRender(width: number) {
 		const lines: string[] = originalRender.call(this, width)
 		if (!Array.isArray(lines) || lines.length === 0) return lines
-		const message = (this as any).lastMessage
+		const message = (this as any).lastMessage as PatchedAssistantMessage
 		const durationMs = message?.[WORKED_DURATION_KEY]
 		if (typeof durationMs !== "number" || durationMs <= 0) return lines
 		// The original render() appends OSC 133 zone markers to the last line
@@ -432,7 +503,7 @@ export function patchUserMessageRender(): void {
 			box.paddingX = 0
 			box.invalidateCache?.()
 		}
-		const theme = _themePaletteCacheTheme as any
+		const theme = _themePaletteCacheTheme
 		const glyph = typeof theme?.fg === "function" ? theme.fg("accent", "❯") : "❯"
 		const prefix = ` ${glyph} `
 		const prefixW = visibleWidth(prefix)
@@ -479,11 +550,7 @@ export function patchToolRenderCacheInvalidation(): void {
 			if (method === "markExecutionStarted" && !this.rendererState._executionStartedAt) {
 				this.rendererState._executionStartedAt = Date.now()
 			}
-			if (
-				method === "updateResult" &&
-				!this.rendererState._executionEndedAt &&
-				args[1] !== true
-			) {
+			if (method === "updateResult" && !this.rendererState._executionEndedAt && args[1] !== true) {
 				this.rendererState._executionEndedAt = Date.now()
 			}
 			const result = original.apply(this, args)
@@ -562,11 +629,11 @@ function patchToolExecutionRenderers(): void {
 	proto.getCallRenderer = function patchedGetCallRenderer() {
 		const toolName = typeof this?.toolName === "string" ? this.toolName : ""
 		if (toolName === "apply_patch") {
-			return (args: any, theme: Theme, ctx: any) =>
+			return (args: unknown, theme: Theme, ctx: ToolRenderContext) =>
 				renderApplyPatchCall(args, theme, ctx, (path: string) => shortPath(ctx.cwd ?? process.cwd(), path))
 		}
 		if (shouldUseGenericToolRenderer(toolName)) {
-			return (args: any, theme: Theme, ctx: any) => renderGenericToolCall(toolName, args, theme, ctx)
+			return (args: unknown, theme: Theme, ctx: ToolRenderContext) => renderGenericToolCall(toolName, args, theme, ctx)
 		}
 		return typeof originalGetCallRenderer === "function" ? originalGetCallRenderer.call(this) : undefined
 	}
@@ -574,12 +641,20 @@ function patchToolExecutionRenderers(): void {
 	proto.getResultRenderer = function patchedGetResultRenderer() {
 		const toolName = typeof this?.toolName === "string" ? this.toolName : ""
 		if (toolName === "apply_patch") {
-			return (result: any, options: any, theme: Theme, ctx: any) =>
-				renderApplyPatchResult({ content: result.content, details: result.details }, options.isPartial, theme, ctx)
+			return (
+				result: AgentToolResult<unknown>,
+				options: ToolRenderResultOptions,
+				theme: Theme,
+				ctx: ToolRenderContext,
+			) => renderApplyPatchResult({ content: result.content, details: result.details }, options.isPartial, theme, ctx)
 		}
 		if (shouldUseGenericToolRenderer(toolName)) {
-			return (result: any, options: any, theme: Theme, ctx: any) =>
-				renderGenericToolResult(toolName, result, options, theme, ctx)
+			return (
+				result: AgentToolResult<unknown>,
+				options: ToolRenderResultOptions,
+				theme: Theme,
+				ctx: ToolRenderContext,
+			) => renderGenericToolResult(toolName, result, options, theme, ctx)
 		}
 		return typeof originalGetResultRenderer === "function" ? originalGetResultRenderer.call(this) : undefined
 	}
@@ -608,15 +683,19 @@ export function toolHeader(tool: string, summary: string, theme: Theme, prefix =
 	return result
 }
 
-
-function shouldRevealCallArgs(ctx: any): boolean {
+function shouldRevealCallArgs(ctx: ToolRenderContext): boolean {
 	if (ctx?.argsComplete === true || ctx?.executionStarted === true) return true
 	const args = ctx?.args
 	if (!args || typeof args !== "object") return false
 	return Object.keys(args).some((key) => args[key] !== undefined && args[key] !== null && args[key] !== "")
 }
 
-function stableCallSummary(ctx: any, key: string, build: () => string, reveal = shouldRevealCallArgs(ctx)): string {
+function stableCallSummary(
+	ctx: ToolRenderContext,
+	key: string,
+	build: () => string,
+	reveal = shouldRevealCallArgs(ctx),
+): string {
 	const state = ctx?.state
 	const cached = state?.[key]
 	const completeKey = `${key}Complete`
@@ -632,8 +711,8 @@ function stableCallSummary(ctx: any, key: string, build: () => string, reveal = 
 	return summary
 }
 
-function hasOwnArg(args: any, key: string): boolean {
-	return !!args && Object.prototype.hasOwnProperty.call(args, key)
+function hasOwnArg(args: object, key: string): boolean {
+	return !!args && Object.hasOwn(args, key)
 }
 
 function fileExistsForTool(cwd: string, filePath: string): boolean {
@@ -648,7 +727,7 @@ function fileExistsForTool(cwd: string, filePath: string): boolean {
 const WRITE_EXISTED_BEFORE = new Map<string, boolean>()
 
 function getWriteWasNewFile(
-	ctx: any,
+	ctx: ToolRenderContext,
 	cwd: string,
 	filePath: string,
 	reveal = shouldRevealCallArgs(ctx),
@@ -661,7 +740,7 @@ function getWriteWasNewFile(
 	return wasNew
 }
 
-function toolStatusDot(ctx: any, theme: Theme): string {
+function toolStatusDot(ctx: ToolRenderContext, theme: Theme): string {
 	if (!ctx.isPartial && !ctx.isError) return `${theme.fg("success", "●")} `
 	if (!ctx.isPartial && ctx.isError) return `${theme.fg("error", "●")} `
 	return `${blinkDot(ctx, theme)} `
@@ -681,7 +760,7 @@ function branchLead(text: string, continued = false): string {
 }
 
 function withBranch(content: string, _theme: Theme, _isError = false, continued = false): string {
-	if (!content || !content.trim()) return ""
+	if (!content?.trim()) return ""
 	const lines = content.split("\n")
 	const first = lines[0] ?? ""
 	if (lines.length === 1) return branchLead(first, continued)
@@ -690,7 +769,7 @@ function withBranch(content: string, _theme: Theme, _isError = false, continued 
 }
 
 function withFinalBranchBlock(content: string): string {
-	if (!content || !content.trim()) return ""
+	if (!content?.trim()) return ""
 	const lines = content.split("\n")
 	const first = lines[0] ?? ""
 	if (lines.length === 1) return branchLead(first, false)
@@ -728,7 +807,7 @@ function getBlinkIntervalMs(): number {
 	return BLINK_INTERVAL_MS
 }
 
-function getBlinkKey(ctx: any): any {
+function getBlinkKey(ctx: ToolRenderContext): any {
 	return ctx?.state ?? ctx
 }
 
@@ -781,7 +860,7 @@ function _stopGlobalBlinkTimerIfEmpty(): void {
 	}
 }
 
-function setupBlinkTimer(ctx: any): void {
+function setupBlinkTimer(ctx: ToolRenderContext): void {
 	const key = getBlinkKey(ctx)
 	if (!key) return
 	const invalidate = typeof ctx?.invalidate === "function" ? () => ctx.invalidate() : () => {}
@@ -798,7 +877,7 @@ function setupBlinkTimer(ctx: any): void {
 	_scheduleGlobalBlinkTimer()
 }
 
-function clearBlinkTimer(ctx: any): void {
+function clearBlinkTimer(ctx: ToolRenderContext): void {
 	const key = getBlinkKey(ctx)
 	if (!key) return
 	_blinkContexts.delete(key)
@@ -808,7 +887,7 @@ function clearBlinkTimer(ctx: any): void {
 	_scheduleGlobalBlinkTimer()
 }
 
-function blinkDot(ctx: any, theme: Theme): string {
+function blinkDot(ctx: ToolRenderContext, theme: Theme): string {
 	setupBlinkTimer(ctx)
 	const key = getBlinkKey(ctx)
 	if (key?._blinkActive !== true) return theme.fg("muted", "○")
@@ -958,7 +1037,7 @@ class ToolText extends Text {
 	}
 }
 
-function makeText(last: unknown, text: string): Text {
+function makeText(last: Component | undefined, text: string): Text {
 	const component = last instanceof ToolText ? last : new ToolText()
 	component.setText(text)
 	return component
@@ -1167,30 +1246,30 @@ function hexToFgAnsi(hex: string): string {
 
 type Rgb = { r: number; g: number; b: number }
 
-function safeFgAnsi(theme: any, key: string): string | null {
+function safeFgAnsi(theme: Theme, key: string): string | null {
 	try {
-		const ansi = theme?.getFgAnsi?.(key)
+		const ansi = theme?.getFgAnsi?.(key as Parameters<Theme["getFgAnsi"]>[0])
 		return typeof ansi === "string" && ansi.length > 0 ? ansi : null
 	} catch {
 		return null
 	}
 }
 
-function safeBgAnsi(theme: any, key: string): string | null {
+function safeBgAnsi(theme: Theme, key: string): string | null {
 	try {
-		const ansi = theme?.getBgAnsi?.(key)
+		const ansi = theme?.getBgAnsi?.(key as Parameters<Theme["getBgAnsi"]>[0])
 		return typeof ansi === "string" && ansi.length > 0 ? ansi : null
 	} catch {
 		return null
 	}
 }
 
-function themeFgRgb(theme: any, key: string): Rgb | null {
+function themeFgRgb(theme: Theme, key: string): Rgb | null {
 	const ansi = safeFgAnsi(theme, key)
 	return ansi ? parseAnsiRgb(ansi) : null
 }
 
-function themeBgRgb(theme: any, key: string): Rgb | null {
+function themeBgRgb(theme: Theme, key: string): Rgb | null {
 	const ansi = safeBgAnsi(theme, key)
 	return ansi ? parseAnsiRgb(ansi) : null
 }
@@ -1198,7 +1277,7 @@ function themeBgRgb(theme: any, key: string): Rgb | null {
 // Cache theme identity so we only recompute on theme change. The Theme
 // object is reused across renders within a single session unless the user
 // switches themes via the picker.
-let _themePaletteCacheTheme: unknown = null
+let _themePaletteCacheTheme: Theme | null = null
 
 function themeAdaptiveEnabled(): boolean {
 	const settings = readSettings()
@@ -1206,7 +1285,8 @@ function themeAdaptiveEnabled(): boolean {
 }
 
 let DIFF_THEME: BundledTheme = (process.env.DIFF_THEME as BundledTheme | undefined) ?? "github-dark"
-let codeToAnsiLoader: Promise<any> | null = null
+let codeToAnsiLoader: Promise<(code: string, lang: BundledLanguage, theme: BundledTheme) => Promise<string>> | null =
+	null
 
 const SPLIT_MIN_WIDTH = 150
 const SPLIT_MIN_CODE_WIDTH = 60
@@ -1283,7 +1363,7 @@ function rgbToBgAnsi(c: { r: number; g: number; b: number }): string {
 	return `\x1b[48;2;${Math.round(c.r)};${Math.round(c.g)};${Math.round(c.b)}m`
 }
 
-function autoDeriveBgFromTheme(theme: any): void {
+function autoDeriveBgFromTheme(theme: Theme | undefined): void {
 	// Diff palette derivation.
 	//
 	// `toolDiffAdded` / `toolDiffRemoved` from the active pi theme give us the
@@ -1348,7 +1428,7 @@ function resetThemePalette(): void {
 	DEFAULT_DIFF_COLORS = { fgAdd: FG_ADD, fgDel: FG_DEL, fgCtx: FG_DIM }
 }
 
-function applyThemePaletteIfNeeded(theme: any): void {
+function applyThemePaletteIfNeeded(theme: Theme | undefined): void {
 	if (!theme) return
 	if (!themeAdaptiveEnabled()) return
 	if (_themePaletteCacheTheme === theme) return // already applied for this theme instance
@@ -1466,7 +1546,7 @@ function applyDiffPalette(): void {
 	autoDerivePending = !hasExplicitBgConfig
 }
 
-function resolveDiffColors(theme?: any): DiffColors {
+function resolveDiffColors(theme: Theme | undefined): DiffColors {
 	applyThemePaletteIfNeeded(theme)
 	if (autoDerivePending && theme?.getFgAnsi) {
 		autoDeriveBgFromTheme(theme)
@@ -1500,7 +1580,7 @@ function tabs(text: string): string {
 function termW(): number {
 	const raw =
 		process.stdout.columns ||
-		(process.stderr as any).columns ||
+		process.stderr.columns ||
 		Number.parseInt(process.env.COLUMNS ?? "", 10) ||
 		DEFAULT_TERM_WIDTH
 	return Math.max(40, Math.min(raw - 4, MAX_TERM_WIDTH))
@@ -1834,7 +1914,7 @@ function parseDiff(oldContent: string, newContent: string, ctxLines = 3): Parsed
 	return { lines, added, removed, chars: oldContent.length + newContent.length }
 }
 
-function getCachedParsedDiff(ctx: any, key: string, oldContent: string, newContent: string): ParsedDiff {
+function getCachedParsedDiff(ctx: ToolRenderContext, key: string, oldContent: string, newContent: string): ParsedDiff {
 	if (ctx.state?._parsedDiffKey === key && ctx.state._parsedDiff) {
 		return ctx.state._parsedDiff as ParsedDiff
 	}
@@ -2181,10 +2261,16 @@ async function renderSplit(
 	return out.join("\n")
 }
 
-function getEditOperations(input: any): Array<{ oldText: string; newText: string }> {
+function getEditOperations(input: {
+	oldText?: string
+	old_text?: string
+	newText?: string
+	new_text?: string
+	edits: { oldText: string; old_text?: string; newText: string; new_text?: string }[]
+}): Array<{ oldText: string; newText: string }> {
 	if (Array.isArray(input?.edits)) {
 		return input.edits
-			.map((edit: any) => ({
+			.map((edit) => ({
 				oldText:
 					typeof edit?.oldText === "string" ? edit.oldText : typeof edit?.old_text === "string" ? edit.old_text : "",
 				newText:
@@ -2214,7 +2300,7 @@ function summarizeEditOperations(operations: Array<{ oldText: string; newText: s
 type EditOperationSummary = ReturnType<typeof summarizeEditOperations>
 
 function getCachedEditOperationSummary(
-	ctx: any,
+	ctx: ToolRenderContext,
 	key: string,
 	operations: Array<{ oldText: string; newText: string }>,
 ): EditOperationSummary {
@@ -2365,7 +2451,7 @@ async function computeLocalizedEditDiffs(
 }
 
 function renderEditPreviewBody(
-	ctx: any,
+	ctx: ToolRenderContext,
 	key: string,
 	theme: Theme,
 	language: BundledLanguage | undefined,
@@ -2454,7 +2540,7 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 		// active pi theme. Cheap when the theme hasn't changed (identity check).
 		if (theme) applyThemePaletteIfNeeded(theme)
 		const message = event?.message
-		if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return
+		if (message?.role !== "assistant" || !Array.isArray(message.content)) return
 		for (const block of message.content) {
 			if (block && block.type === "thinking" && typeof block.thinking === "string") {
 				block.thinking = prefixThinkingLine(block.thinking, theme)
@@ -2476,25 +2562,25 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 		}
 		currentAssistantMessageStartMs = undefined
 	})
-	pi.on("message_start", async (event: any) => {
+	pi.on("message_start", async (event) => {
 		const message = event?.message
 		if (message?.role === "user" && currentAgentWorkStartMs === undefined) {
 			currentAgentWorkStartMs = Date.now()
 		}
 		if (message?.role === "assistant") {
 			currentAssistantMessageStartMs = Date.now()
-			;(message as any)[WORKED_START_KEY] = currentAssistantMessageStartMs
+			;(message as PatchedAssistantMessage)[WORKED_START_KEY] = currentAssistantMessageStartMs
 		}
 	})
 	pi.on("message_update", async (event, ctx) => patchMessage(event, ctx.ui?.theme))
 	pi.on("message_end", async (event, ctx) => {
-		const message = (event as any)?.message
+		const message = event?.message
 		if (message?.role === "assistant") {
 			const started =
 				typeof currentAgentWorkStartMs === "number"
 					? currentAgentWorkStartMs
-					: typeof (message as any)[WORKED_START_KEY] === "number"
-						? (message as any)[WORKED_START_KEY]
+					: typeof (message as PatchedAssistantMessage)[WORKED_START_KEY] === "number"
+						? (message as PatchedAssistantMessage)[WORKED_START_KEY]
 						: currentAssistantMessageStartMs
 			const isFinalAssistantMessage = message.stopReason !== "toolUse"
 			if (started !== undefined && isFinalAssistantMessage) {
@@ -2503,7 +2589,7 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 				// AssistantMessageComponent.render() reads it and appends the widget
 				// line outside of the message content blocks — never injected into
 				// the text that gets sent to the model.
-				;(message as any)[WORKED_DURATION_KEY] = durationMs
+				;(message as PatchedAssistantMessage)[WORKED_DURATION_KEY] = durationMs
 				// Persist the duration as a sidecar entry in the JSONL session file
 				// (type: "custom", does not participate in LLM context).
 				pi.appendEntry("turn_duration", { durationMs })
@@ -2517,14 +2603,14 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 		currentAssistantMessageStartMs = undefined
 	})
 	pi.on("context", async (event) => {
-		if (!Array.isArray((event as any).messages)) return
-		for (const msg of (event as any).messages) {
-			if (!msg || msg.role !== "assistant" || !Array.isArray(msg.content)) continue
+		if (!Array.isArray(event.messages)) return
+		for (const msg of event.messages) {
+			if (msg?.role !== "assistant" || !Array.isArray(msg.content)) continue
 			for (const block of msg.content) {
 				if (block && block.type === "thinking" && typeof block.thinking === "string") {
 					block.thinking = stripThinkingPresentationArtifacts(block.thinking)
 				}
-					// Legacy sessions written before this change may have the duration
+				// Legacy sessions written before this change may have the duration
 				// text injected directly into content blocks. Strip it so it doesn't
 				// appear twice alongside the widget.
 				if (block && block.type === "text" && typeof block.text === "string") {
@@ -2532,7 +2618,10 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 					if (block.text.includes(marker)) {
 						block.text = block.text
 							.split(/\r?\n/)
-							.filter((l: string) => !(l.includes(marker) && /^✻ Worked for [^\r\n]+$/.test(l.replace(/\x1b\[[0-9;]*m/g, "").trim())))
+							.filter(
+								(l: string) =>
+									!(l.includes(marker) && /^✻ Worked for [^\r\n]+$/.test(l.replace(/\x1b\[[0-9;]*m/g, "").trim())),
+							)
 							.join("\n")
 							.replace(/\n{3,}/g, "\n\n")
 					}
@@ -2546,7 +2635,7 @@ function getMode<T extends string>(value: unknown, allowed: readonly T[], fallba
 	return typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : fallback
 }
 
-const CORE_TOOL_OVERRIDES = new Set(["read", "bash", "grep", "find", "ls", "write", "edit"])
+const CORE_TOOL_OVERRIDES = new Set(["read", "bash", "grep", "find", "ls", "write", "edit", "set_phase"])
 
 const OPENAI_STYLE_TOOL_NAMES = new Set([
 	"apply_patch",
@@ -2615,7 +2704,7 @@ function genericToolLabel(name: string): string {
 	return isMcpToolName(name) ? "MCP" : humanizeToolName(name)
 }
 
-function renderGenericToolCall(name: string, args: any, theme: Theme, ctx: any): Text {
+function renderGenericToolCall(name: string, args: unknown, theme: Theme, ctx: ToolRenderContext): Text {
 	ctx.state._openAiPatchFiles = []
 	const sp = (path: string) => shortPath(ctx.cwd ?? process.cwd(), path)
 	if (isMcpToolName(name)) {
@@ -2639,10 +2728,19 @@ function renderGenericToolCall(name: string, args: any, theme: Theme, ctx: any):
 	}
 	const summary = stableCallSummary(ctx, "_callSummary", () => summarizeGenericToolCall(name, args, theme, sp))
 	const timer = formatToolTimer(getToolElapsedMs(ctx))
-	return makeText(ctx.lastComponent, toolHeader(genericToolLabel(name), summary, theme, toolStatusDot(ctx, theme), timer))
+	return makeText(
+		ctx.lastComponent,
+		toolHeader(genericToolLabel(name), summary, theme, toolStatusDot(ctx, theme), timer),
+	)
 }
 
-function renderGenericToolResult(name: string, result: any, options: any, theme: Theme, ctx: any): Text {
+function renderGenericToolResult(
+	name: string,
+	result: AgentToolResult<unknown>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	ctx: ToolRenderContext,
+): Text {
 	if (isMcpToolName(name)) {
 		return renderMcpToolResult(result, !!options?.expanded, !!options?.isPartial, theme, ctx)
 	}
@@ -2656,25 +2754,25 @@ function renderGenericToolResult(name: string, result: any, options: any, theme:
 	)
 }
 
-function getTextContent(result: any): string {
+function getTextContent(result: AgentToolResult<unknown>): string {
 	if (!Array.isArray(result?.content)) return ""
 	return result.content
-		.filter((block: any) => block?.type === "text" && typeof block.text === "string")
-		.map((block: any) => block.text)
+		.filter((block): block is TextContent => block?.type === "text" && typeof block.text === "string")
+		.map((block) => block.text)
 		.join("\n")
 }
 
-function getStringArg(args: any, ...keys: string[]): string {
+function getStringArg(args: unknown, ...keys: string[]): string {
 	for (const key of keys) {
-		const value = args?.[key]
+		const value = (args as Record<string, unknown> | undefined)?.[key]
 		if (typeof value === "string" && value.trim()) return value.trim()
 	}
 	return ""
 }
 
-function getStringArrayArg(args: any, ...keys: string[]): string[] {
+function getStringArrayArg(args: unknown, ...keys: string[]): string[] {
 	for (const key of keys) {
-		const value = args?.[key]
+		const value = (args as Record<string, unknown> | undefined)?.[key]
 		if (!Array.isArray(value)) continue
 		const items = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
 		if (items.length > 0) return items
@@ -3001,7 +3099,7 @@ function formatApplyPatchLine(change: ApplyPatchChangePreview, theme: Theme): st
 function getCachedApplyPatchPreview(
 	patchText: string,
 	sp: (path: string) => string,
-	ctx: any,
+	ctx: ToolRenderContext,
 ): ApplyPatchPreview | null {
 	if (!patchText) return null
 	const key = `apply-meta:${ctx.cwd ?? process.cwd()}:${hashText(patchText)}`
@@ -3021,14 +3119,18 @@ function getCachedApplyPatchPreview(
 	}
 }
 
-function getApplyPatchResultMeta(args: any, ctx: any, sp: (path: string) => string): ApplyPatchResultMeta | null {
+function getApplyPatchResultMeta(
+	args: unknown,
+	ctx: ToolRenderContext,
+	sp: (path: string) => string,
+): ApplyPatchResultMeta | null {
 	const patchText = getStringArg(args ?? ctx?.args, "patchText", "patch_text")
 	if (!patchText) return null
 	const preview = getCachedApplyPatchPreview(patchText, sp, ctx)
 	return preview && ctx.state?._applyPatchMeta ? (ctx.state._applyPatchMeta as ApplyPatchResultMeta) : null
 }
 
-function renderApplyPatchCall(args: any, theme: Theme, ctx: any, sp: (path: string) => string): Text {
+function renderApplyPatchCall(args: unknown, theme: Theme, ctx: ToolRenderContext, sp: (path: string) => string): Text {
 	const patchText = getStringArg(args, "patchText", "patch_text")
 	const summary = stableCallSummary(ctx, "_callSummary", () => summarizeOpenAiToolCall("apply_patch", args, theme, sp))
 	const timer = formatToolTimer(getToolElapsedMs(ctx))
@@ -3107,7 +3209,12 @@ function renderApplyPatchCall(args: any, theme: Theme, ctx: any, sp: (path: stri
 	return makeText(ctx.lastComponent, body ? `${hdr}\n${body}` : hdr)
 }
 
-function renderApplyPatchResult(result: any, isPartial: boolean, theme: Theme, ctx: any): Text {
+function renderApplyPatchResult(
+	result: AgentToolResult<unknown>,
+	isPartial: boolean,
+	theme: Theme,
+	ctx: ToolRenderContext,
+): Text {
 	if (isPartial) {
 		setupBlinkTimer(ctx)
 		return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Applying Patch..."), theme))
@@ -3172,7 +3279,7 @@ const MCP_ARGS_SUFFIX_MAX = 120
  * whole suffix is capped at MCP_ARGS_SUFFIX_MAX chars so the header stays on
  * one line. When `expanded` is true all values are shown in full.
  */
-export function summarizeMcpToolInvocationArgs(args: any, expanded = false): string {
+export function summarizeMcpToolInvocationArgs(args: unknown, expanded = false): string {
 	const rawArgs = getStringArg(args, "args")
 	if (!rawArgs) return ""
 	try {
@@ -3218,7 +3325,7 @@ export function summarizeMcpToolInvocationArgs(args: any, expanded = false): str
 	return ""
 }
 
-function summarizeMcpToolCall(args: any, theme: Theme, expanded = false): string {
+function summarizeMcpToolCall(args: unknown, theme: Theme, expanded = false): string {
 	const tool = getStringArg(args, "tool")
 	if (tool) {
 		const argsSummary = summarizeMcpToolInvocationArgs(args, expanded)
@@ -3238,7 +3345,7 @@ function summarizeMcpToolCall(args: any, theme: Theme, expanded = false): string
  * - Connect: label = "Tool connect"
  */
 export function mcpCallLabelAndSummary(
-	args: any,
+	args: unknown,
 	theme: Theme,
 	expanded = false,
 ): { label: string; summary: string } {
@@ -3255,26 +3362,44 @@ export function mcpCallLabelAndSummary(
 		return { label: "Tool connect", summary: theme.fg("muted", `(server=${getStringArg(args, "connect")})`) }
 	}
 	if (getStringArg(args, "describe")) {
-		return { label: "Tool describe", summary: theme.fg("muted", `(tool=${summarizeText(getStringArg(args, "describe"), 60)})`) }
+		return {
+			label: "Tool describe",
+			summary: theme.fg("muted", `(tool=${summarizeText(getStringArg(args, "describe"), 60)})`),
+		}
 	}
 	if (getStringArg(args, "search")) {
-		return { label: "Tool search", summary: theme.fg("muted", `(query=${summarizeText(getStringArg(args, "search"), 60)})`) }
+		return {
+			label: "Tool search",
+			summary: theme.fg("muted", `(query=${summarizeText(getStringArg(args, "search"), 60)})`),
+		}
 	}
 	if (getStringArg(args, "server")) {
-		return { label: "Tool search", summary: theme.fg("muted", `(server=${summarizeText(getStringArg(args, "server"), 60)})`) }
+		return {
+			label: "Tool search",
+			summary: theme.fg("muted", `(server=${summarizeText(getStringArg(args, "server"), 60)})`),
+		}
 	}
 	if (getStringArg(args, "action")) {
-		return { label: "Tool action", summary: theme.fg("muted", `(action=${summarizeText(getStringArg(args, "action"), 60)})`) }
+		return {
+			label: "Tool action",
+			summary: theme.fg("muted", `(action=${summarizeText(getStringArg(args, "action"), 60)})`),
+		}
 	}
 	return { label: "MCP", summary: theme.fg("muted", "(status)") }
 }
 
-function summarizeGenericToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string): string {
+function summarizeGenericToolCall(name: string, args: unknown, theme: Theme, sp: (path: string) => string): string {
 	if (isMcpToolName(name)) return summarizeMcpToolCall(args, theme)
 	return summarizeOpenAiToolCall(name, args, theme, sp)
 }
 
-function renderMcpToolResult(result: any, expanded: boolean, isPartial: boolean, theme: Theme, ctx: any): Text {
+function renderMcpToolResult(
+	result: AgentToolResult<unknown>,
+	expanded: boolean,
+	isPartial: boolean,
+	theme: Theme,
+	ctx: ToolRenderContext,
+): Text {
 	if (isPartial) {
 		setupBlinkTimer(ctx)
 		return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "MCP running..."), theme))
@@ -3308,7 +3433,12 @@ function renderMcpToolResult(result: any, expanded: boolean, isPartial: boolean,
 	return makeText(ctx.lastComponent, withBranch(`${statusText}\n${preview}`, theme))
 }
 
-export function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string): string {
+export function summarizeOpenAiToolCall(
+	name: string,
+	args: unknown,
+	theme: Theme,
+	sp: (path: string) => string,
+): string {
 	switch (name) {
 		case "apply_patch": {
 			const patchText = getStringArg(args, "patchText", "patch_text")
@@ -3342,7 +3472,9 @@ export function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, s
 		case "question":
 			return summarizeText(getStringArg(args, "question") || "ask user", 72)
 		case "questionnaire": {
-			const qs = Array.isArray(args?.questions) ? (args.questions as Array<Record<string, unknown>>) : []
+			const qs = Array.isArray((args as Record<string, unknown>)?.questions)
+				? ((args as Record<string, unknown>).questions as Array<Record<string, unknown>>)
+				: []
 			if (qs.length === 0) return theme.fg("muted", "questionnaire")
 			let firstText = ""
 			for (const key of ["question", "prompt", "text"]) {
@@ -3373,11 +3505,15 @@ export function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, s
 		case "alpha_read_code":
 			return getStringArg(args, "githubUrl", "github_url") || theme.fg("muted", "repository")
 		case "Skill":
-			return getStringArg(args, "name") || theme.fg("muted", "run skill")
+			// SkillToolSchema accepts both 'skill' (primary) and 'name' (alias for Claude Code compat).
+			// The adapter passes 'skill'; direct tool calls may pass either. Check both before falling back.
+			return getStringArg(args, "skill") || getStringArg(args, "name") || theme.fg("muted", "run skill")
 		case "EnterPlanMode":
 			return theme.fg("muted", "enable read-only planning")
 		case "ExitPlanMode":
 			return theme.fg("muted", "present plan")
+		case "set_phase":
+			return getStringArg(args, "phase") || theme.fg("muted", "set phase")
 		case "Agent":
 			return summarizeText(getStringArg(args, "description", "prompt") || "launch agent", 72)
 		case "get_subagent_result":
@@ -3470,7 +3606,7 @@ function formatOpenAiSuccessLine(name: string, line: string, theme: Theme): stri
 	return theme.fg("muted", trimmed)
 }
 
-function renderTaskListResult(lines: string[], expanded: boolean, theme: Theme, ctx: any): Text {
+function renderTaskListResult(lines: string[], expanded: boolean, theme: Theme, ctx: ToolRenderContext): Text {
 	const tasks = lines.map(parseTaskListLine).filter((task): task is ParsedTaskListLine => task !== null)
 	if (tasks.length === 0) {
 		const text =
@@ -3509,17 +3645,18 @@ function renderTaskListResult(lines: string[], expanded: boolean, theme: Theme, 
 	return makeText(ctx.lastComponent, withBranch(`${summary}\n${preview.join("\n")}`, theme))
 }
 
-function getFirstImageBlock(result: any): { data: string; mimeType: string } | undefined {
+function getFirstImageBlock(result: AgentToolResult<unknown>): ImageContent | undefined {
 	if (!Array.isArray(result?.content)) return undefined
 	return result.content.find(
-		(block: any) => block?.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string",
+		(block): block is ImageContent =>
+			block?.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string",
 	)
 }
 
-function getReadImageFallback(result: any, ctx: any): string {
+function getReadImageFallback(result: AgentToolResult<unknown>, ctx: ToolRenderContext): string {
 	const image = getFirstImageBlock(result)
 	if (!image) return ""
-	let dimensions
+	let dimensions: ImageDimensions | undefined
 	try {
 		dimensions = getImageDimensions(image.data, image.mimeType) ?? undefined
 	} catch {
@@ -3530,7 +3667,12 @@ function getReadImageFallback(result: any, ctx: any): string {
 	return imageFallback(image.mimeType, dimensions, filename)
 }
 
-function renderReadImageResult(result: any, expanded: boolean, theme: Theme, ctx: any): Text {
+function renderReadImageResult(
+	result: AgentToolResult<unknown>,
+	expanded: boolean,
+	theme: Theme,
+	ctx: ToolRenderContext,
+): Text {
 	const image = getFirstImageBlock(result)
 	const mimeType = image?.mimeType ?? "image"
 	const summary = `${theme.fg("success", "Image loaded")} ${theme.fg("muted", `[${mimeType}]`)}`
@@ -3552,11 +3694,11 @@ function renderReadImageResult(result: any, expanded: boolean, theme: Theme, ctx
 
 function renderOpenAiToolResult(
 	name: string,
-	result: any,
+	result: AgentToolResult<unknown>,
 	expanded: boolean,
 	isPartial: boolean,
 	theme: Theme,
-	ctx: any,
+	ctx: ToolRenderContext,
 ): Text {
 	if (isPartial) {
 		setupBlinkTimer(ctx)
@@ -3687,7 +3829,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (!raw || raw === "status") {
 				if (!ctx.hasUI) return
-				const theme = ctx.ui.theme as any
+				const theme = ctx.ui.theme
 				const themeName = theme?.name ?? "unknown"
 				const state = current ? "on" : "off"
 				if (raw === "status" && current) {
@@ -3805,7 +3947,7 @@ export default function (pi: ExtensionAPI) {
 				.split(/\s+/)
 				.filter((p) => p.length > 0)
 			const sub = (parts[0] ?? "").toLowerCase()
-			const theme = ctx.hasUI ? (ctx.ui.theme as any) : null
+			const theme = ctx.hasUI ? ctx.ui.theme : null
 			const settings = readSettings()
 			const currentVerb = settings.spinnerVerbColor || "borderAccent"
 			const currentStatus = settings.spinnerStatusColor || "muted"
@@ -3909,7 +4051,7 @@ export default function (pi: ExtensionAPI) {
 			clearBlinkTimer(ctx)
 			if (getFirstImageBlock(result)) return renderReadImageResult(result, expanded, theme, ctx)
 			const details = result.details as ReadToolDetails | undefined
-			const content = result.content.find((block: any) => block?.type === "text")
+			const content = result.content.find((block) => block?.type === "text")
 			if (content?.type !== "text")
 				return makeText(ctx.lastComponent, withBranch(theme.fg("error", "No text content"), theme))
 			const lines = content.text.split("\n")
@@ -3943,8 +4085,24 @@ export default function (pi: ExtensionAPI) {
 			return bashTool.execute(toolCallId, params, signal, onUpdate)
 		},
 		renderCall(args, theme, ctx) {
-			const summary = summarizeText(getBashCommandForDisplay(args.command) ?? args.command, 72)
+			const command = getBashCommandForDisplay(args.command) ?? args.command
 			const timer = formatToolTimer(getToolElapsedMs(ctx))
+			if (ctx.expanded && command) {
+				// Expanded: show the tool name + timer on line 1, then the full
+				// command (with real newlines) as a continued branch block below.
+				const hdr = toolHeader("Bash", "", theme, toolStatusDot(ctx, theme), timer)
+				const cmdBlock = withBranch(
+					command
+						.split("\n")
+						.map((l) => theme.fg("accent", l))
+						.join("\n"),
+					theme,
+					false,
+					true,
+				)
+				return makeText(ctx.lastComponent, `${hdr}\n${cmdBlock}`)
+			}
+			const summary = summarizeText(command, 72)
 			return makeText(ctx.lastComponent, toolHeader("Bash", summary, theme, toolStatusDot(ctx, theme), timer))
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
@@ -3974,7 +4132,7 @@ export default function (pi: ExtensionAPI) {
 			const collapsed = bashCollapsedLimit()
 			text += `\n${buildPreviewText(
 				nonEmpty.map((line) => theme.fg("dim", line)),
-				false,
+				expanded,
 				theme,
 				collapsed,
 			)}`
@@ -3993,7 +4151,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderCall(args, theme, ctx) {
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
-				let value = `\"${summarizeText(args.pattern, 40)}\"`
+				let value = `"${summarizeText(args.pattern, 40)}"`
 				if (args.path) value += ` in ${args.path}`
 				return value
 			})
@@ -4036,7 +4194,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderCall(args, theme, ctx) {
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
-				let value = `\"${summarizeText(args.pattern, 40)}\"`
+				let value = `"${summarizeText(args.pattern, 40)}"`
 				if (args.path) value += ` in ${args.path}`
 				return value
 			})
@@ -4131,7 +4289,7 @@ export default function (pi: ExtensionAPI) {
 		description: writeTool.description,
 		parameters: writeTool.parameters,
 		async execute(toolCallId, params, signal, onUpdate, _ctx) {
-			const fp = params.path ?? (params as any).file_path ?? ""
+			const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
 			const fullPath = fp ? resolve(cwd, fp) : ""
 			const existedBefore = !!fullPath && fileExistsForTool(cwd, fp)
 			WRITE_EXISTED_BEFORE.set(toolCallId, existedBefore)
@@ -4145,21 +4303,21 @@ export default function (pi: ExtensionAPI) {
 			const content = params.content ?? ""
 			if (old !== null && old !== content) {
 				const diff = parseDiff(old, content)
-				;(result as any).details = {
+				result.details = {
 					_type: "diff",
 					summary: summarizeDiff(diff.added, diff.removed),
 					diff,
 					language: lang(fp),
 				}
 			} else if (old === null) {
-				;(result as any).details = { _type: "new", lines: lineCount(content), filePath: fp }
+				result.details = { _type: "new", lines: lineCount(content), filePath: fp }
 			} else if (old === content) {
-				;(result as any).details = { _type: "noChange" }
+				result.details = { _type: "noChange" }
 			}
 			return result
 		},
 		renderCall(args, theme, ctx) {
-			const fp = args?.path ?? (args as any)?.file_path ?? ""
+			const fp = args?.path ?? (args as { file_path?: string })?.file_path ?? ""
 			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "content"))
 			const wasNew = getWriteWasNewFile(ctx, cwd, fp, revealSummary)
 			const label = wasNew === true ? "Create" : "Write"
@@ -4188,8 +4346,8 @@ export default function (pi: ExtensionAPI) {
 			if (ctx.isError) {
 				const e =
 					result.content
-						?.filter((c: any) => c.type === "text")
-						.map((c: any) => c.text || "")
+						?.filter((c) => c.type === "text")
+						.map((c) => c.text || "")
 						.join("\n") ?? "Error"
 				return makeText(ctx.lastComponent, withBranch(theme.fg("error", e), theme))
 			}
@@ -4262,19 +4420,19 @@ export default function (pi: ExtensionAPI) {
 		description: editTool.description,
 		parameters: editTool.parameters,
 		async execute(toolCallId, params, signal, onUpdate, _ctx) {
-			const fp = params.path ?? (params as any).file_path ?? ""
+			const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
 			const operations = getEditOperations(params)
 			const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, cwd) : null
 			const result = await editTool.execute(toolCallId, params, signal, onUpdate)
 			if (operations.length === 0) return result
 			const { diffs, summary, totalLines, totalHunks } = summarizeEditOperations(operations)
-			const baseDetails = ((result as any).details ?? {}) as Record<string, unknown>
+			const baseDetails = (result as AgentEditResult | AgentMultiEditToolResult).details ?? {}
 			if (operations.length === 1) {
 				const localized = localizedDiffs?.[0]
 				const editLine =
 					localized?.line ?? (typeof baseDetails.firstChangedLine === "number" ? baseDetails.firstChangedLine : 0)
 				const diff = localized?.diff ?? diffs[0]
-				;(result as any).details = {
+				;(result as AgentEditResult).details = {
 					...baseDetails,
 					_type: "editInfo",
 					summary,
@@ -4285,7 +4443,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				return result
 			}
-			;(result as any).details = {
+			;(result as AgentMultiEditToolResult).details = {
 				...baseDetails,
 				_type: "multiEditInfo",
 				summary,
@@ -4298,7 +4456,7 @@ export default function (pi: ExtensionAPI) {
 			return result
 		},
 		renderCall(args, theme, ctx) {
-			const fp = args?.path ?? (args as any)?.file_path ?? ""
+			const fp = args?.path ?? (args as { file_path?: string })?.file_path ?? ""
 			const operations = getEditOperations(args)
 			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "edits"))
 			const summary = stableCallSummary(
@@ -4355,19 +4513,20 @@ export default function (pi: ExtensionAPI) {
 			if (ctx.isError) {
 				const e =
 					result.content
-						?.filter((c: any) => c.type === "text")
-						.map((c: any) => c.text || "")
+						?.filter((c) => c.type === "text")
+						.map((c) => c.text || "")
 						.join("\n") ?? "Error"
 				return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("error", e), theme)))
 			}
-			if ((result as any).details?._type === "editInfo") {
-				const { editLine, hunks, added, removed } = (result as any).details
+			if ((result as AgentEditResult).details?._type === "editInfo") {
+				const { editLine, hunks, added, removed } = (result as AgentEditResult).details
 				const loc = formatLineMeta(editLine ?? 0, theme)
 				const summary = diffSummaryWithMeta(added ?? 0, removed ?? 0, hunks ?? 0, "")
 				return makeText(ctx.lastComponent, indentBranchBlock(withBranch(`${summary}${loc}`, theme)))
 			}
-			if ((result as any).details?._type === "multiEditInfo") {
-				const { editCount, diffLineCount, hunks, totalAdded, totalRemoved } = (result as any).details
+			if ((result as AgentMultiEditToolResult).details?._type === "multiEditInfo") {
+				const { editCount, diffLineCount, hunks, totalAdded, totalRemoved } = (result as AgentMultiEditToolResult)
+					.details
 				const summary = diffSummaryWithMeta(totalAdded ?? 0, totalRemoved ?? 0, hunks ?? 0, "")
 				return makeText(
 					ctx.lastComponent,
@@ -4387,7 +4546,7 @@ export default function (pi: ExtensionAPI) {
 	const registerOpenAiToolOverrides = (): void => {
 		let allTools: unknown[] = []
 		try {
-			allTools = typeof (pi as any).getAllTools === "function" ? (pi as any).getAllTools() : []
+			allTools = typeof pi.getAllTools === "function" ? pi.getAllTools() : []
 		} catch {
 			allTools = []
 		}
@@ -4396,28 +4555,31 @@ export default function (pi: ExtensionAPI) {
 			const record = tool as Record<string, unknown>
 			const name = typeof record.name === "string" ? record.name : ""
 			if (!name || wrappedOpenAiTools.has(name)) continue
-			const execute = typeof record.execute === "function" ? (record.execute as any) : null
+			const execute = typeof record.execute === "function" ? record.execute : null
 			if (!execute) continue
 			const rawLabel = typeof record.label === "string" ? record.label.trim() : ""
 			const label = rawLabel && rawLabel !== name && !rawLabel.includes("_") ? rawLabel : humanizeToolName(name)
 			const description = typeof record.description === "string" ? record.description : label
-			;(pi as any).registerTool({
+			pi.registerTool({
 				name,
 				label,
 				description,
-				parameters: record.parameters,
-				prepareArguments: typeof record.prepareArguments === "function" ? record.prepareArguments : undefined,
-				async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
+				parameters: record.parameters as TSchema,
+				prepareArguments:
+					typeof record.prepareArguments === "function"
+						? (record.prepareArguments as (args: unknown) => unknown)
+						: undefined,
+				async execute(toolCallId, params, signal, onUpdate, ctx) {
 					return await Promise.resolve(execute(toolCallId, params, signal, onUpdate, ctx))
 				},
-				renderCall(args: any, theme: Theme, ctx: any) {
+				renderCall(args, theme, ctx) {
 					if (name === "apply_patch") return renderApplyPatchCall(args, theme, ctx, sp)
 					ctx.state._openAiPatchFiles = []
 					const summary = stableCallSummary(ctx, "_callSummary", () => summarizeOpenAiToolCall(name, args, theme, sp))
 					const timer = formatToolTimer(getToolElapsedMs(ctx))
 					return makeText(ctx.lastComponent, toolHeader(label, summary, theme, toolStatusDot(ctx, theme), timer))
 				},
-				renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
+				renderResult(result, { expanded, isPartial }, theme, ctx) {
 					if (name === "apply_patch") return renderApplyPatchResult(result, isPartial, theme, ctx)
 					return renderOpenAiToolResult(name, result, expanded, isPartial, theme, ctx)
 				},
@@ -4430,7 +4592,7 @@ export default function (pi: ExtensionAPI) {
 	const registerMcpToolOverrides = (): void => {
 		let allTools: unknown[] = []
 		try {
-			allTools = typeof (pi as any).getAllTools === "function" ? (pi as any).getAllTools() : []
+			allTools = typeof pi.getAllTools === "function" ? pi.getAllTools() : []
 		} catch {
 			allTools = []
 		}
@@ -4439,23 +4601,26 @@ export default function (pi: ExtensionAPI) {
 			const record = tool as Record<string, unknown>
 			const name = typeof record.name === "string" ? record.name : ""
 			if (!name || wrappedMcpTools.has(name)) continue
-			const execute = typeof record.execute === "function" ? (record.execute as any) : null
+			const execute = typeof record.execute === "function" ? record.execute : null
 			if (!execute) continue
 			const label = typeof record.label === "string" ? record.label : name === "mcp" ? "MCP" : `MCP ${name}`
 			const description = typeof record.description === "string" ? record.description : "MCP tool"
-			;(pi as any).registerTool({
+			pi.registerTool({
 				name,
 				label,
 				description,
-				parameters: record.parameters,
-				prepareArguments: typeof record.prepareArguments === "function" ? record.prepareArguments : undefined,
-				async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
+				parameters: record.parameters as TSchema,
+				prepareArguments:
+					typeof record.prepareArguments === "function"
+						? (record.prepareArguments as (args: unknown) => unknown)
+						: undefined,
+				async execute(toolCallId, params, signal, onUpdate, ctx) {
 					return await Promise.resolve(execute(toolCallId, params, signal, onUpdate, ctx))
 				},
-				renderCall(args: any, theme: Theme, ctx: any) {
+				renderCall(args, theme, ctx) {
 					return renderGenericToolCall(name, args, theme, ctx)
 				},
-				renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
+				renderResult(result, { expanded, isPartial }, theme, ctx) {
 					return renderMcpToolResult(result, expanded, isPartial, theme, ctx)
 				},
 			})

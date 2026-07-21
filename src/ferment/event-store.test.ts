@@ -3,9 +3,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { commandToEvents } from "./event-mapper.js"
-import { type FermentEvent, FermentEventStore, applyFermentEvent, stateHash } from "./event-store.js"
+import { applyFermentEvent, type FermentEvent, FermentEventStore, stateHash } from "./event-store.js"
 import { applyCommand } from "./state-machine.js"
-import { FermentStorage, clearFermentCache } from "./store.js"
+import { clearFermentCache, FermentStorage } from "./store.js"
 import type { Phase } from "./types.js"
 
 function createTempDir() {
@@ -412,6 +412,71 @@ describe("FermentEventStore", () => {
 			const fromSnapshot = parentStorage.get(f.id)
 			expect(folded?.status).toBe(fromSnapshot?.status)
 			expect(folded?.grade?.grade).toBe(fromSnapshot?.grade?.grade)
+		})
+
+		it("round-trips JudgeGrade.recommendations through complete_ferment", () => {
+			const f = eventStore.create("Recs round-trip")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "g",
+				successCriteria: ["c"],
+				constraints: [],
+				phases: [{ name: "P1", goal: "G1", steps: [] }],
+			})
+			const planned = eventStore.get(f.id)
+			if (!planned) throw new Error("ferment missing")
+			const phaseId = planned.phases[0].id
+			exec(eventStore, f.id, { type: "activate_phase", phaseId })
+			exec(eventStore, f.id, { type: "complete_phase", phaseId, summary: "done" })
+			const recs = [
+				"Add edge-case test for empty input — untested path could NPE.",
+				"Wire retry into the production call site — currently only tested in isolation.",
+			]
+			exec(eventStore, f.id, {
+				type: "complete_ferment",
+				grade: {
+					grade: "B",
+					rationale: "Goal met but coverage is thin.",
+					gradedAt: new Date().toISOString(),
+					recommendations: recs,
+				},
+			})
+
+			const folded = eventStore.get(f.id)
+			const fromSnapshot = parentStorage.get(f.id)
+			expect(folded?.grade?.recommendations).toEqual(recs)
+			expect(fromSnapshot?.grade?.recommendations).toEqual(recs)
+		})
+
+		it("round-trips JudgeGrade.recommendations through set_phase_grade", () => {
+			const f = eventStore.create("Phase recs round-trip")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "g",
+				successCriteria: ["c"],
+				constraints: [],
+				phases: [{ name: "P1", goal: "G1", steps: [] }],
+			})
+			const planned = eventStore.get(f.id)
+			if (!planned) throw new Error("ferment missing")
+			const phaseId = planned.phases[0].id
+			exec(eventStore, f.id, { type: "activate_phase", phaseId })
+			const recs = ["Fix the N+1 query in listUsers.", "Add cancellation to the fetch loop."]
+			exec(eventStore, f.id, {
+				type: "set_phase_grade",
+				phaseId,
+				grade: {
+					grade: "C",
+					rationale: "Operational gaps.",
+					gradedAt: new Date().toISOString(),
+					recommendations: recs,
+				},
+			})
+
+			const folded = eventStore.get(f.id)
+			const fromSnapshot = parentStorage.get(f.id)
+			expect(folded?.phases[0].grade?.recommendations).toEqual(recs)
+			expect(fromSnapshot?.phases[0].grade?.recommendations).toEqual(recs)
 		})
 
 		// Property-style: for every command in a representative sequence, after

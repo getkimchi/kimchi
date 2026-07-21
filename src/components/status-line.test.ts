@@ -1,0 +1,894 @@
+import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
+import { visibleWidth } from "@earendil-works/pi-tui"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { StatusLineElementId } from "../config/status-line-config.js"
+import * as AGENTS from "../extensions/agents/index.js"
+import { setBillingStatusForTest } from "../extensions/billing/status.js"
+import * as FERMENT from "../extensions/ferment/index.js"
+import * as MULTI_MODEL from "../extensions/multi-model.js"
+import * as TAGS from "../extensions/tags.js"
+import {
+	buildContextCompact,
+	buildModelAbbrev,
+	buildPhaseCompact,
+	buildScriptPayload,
+	SHORTCUT_TAIL,
+	StatusLine,
+} from "./status-line.js"
+
+// ── Mock status-line-config.ts ───────────────────────────────────────────────
+// Controls which elements appear as pinned in each test.
+let pinnedElements: StatusLineElementId[] = []
+vi.mock("../config/status-line-config.js", () => ({
+	readStatusLineConfig: () => ({ pinned: pinnedElements }),
+}))
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape stripping in test assertions
+const ANSI_ESCAPE = /\x1b\[[\d;]*m/g
+const stripAnsi = (s: string): string => s.replace(ANSI_ESCAPE, "")
+
+/** A theme that wraps text in identifiable markers but reports zero visible
+ *  width for those markers — mimicking how real ANSI behaves with visibleWidth. */
+function createMockTheme(): Theme {
+	// Real-shaped SGR ANSI escapes (terminated with `m`) so that visibleWidth in
+	// production code and stripAnsi in test assertions agree on what's visible.
+	const COLOR_CODE: Record<string, string> = {
+		dim: "\x1b[2m",
+		accent: "\x1b[36m",
+		warning: "\x1b[33m",
+		error: "\x1b[31m",
+		success: "\x1b[32m",
+	}
+	const RESET = "\x1b[0m"
+	const fg = vi.fn((color: string, s: string) => `${COLOR_CODE[color] ?? "\x1b[39m"}${s}${RESET}`)
+	return {
+		fg,
+		bg: vi.fn(),
+		getFgAnsi: vi.fn(() => "\x1b[36m"),
+		getBgAnsi: vi.fn(),
+		fgColors: {},
+		bgColors: {},
+		mode: "light",
+		preproc: vi.fn(),
+		extensions: {},
+	} as unknown as Theme
+}
+
+interface MockContextOpts {
+	percent?: number
+	modelId?: string
+	/** Assistant messages to include in the session, for usage-segment tests. */
+	assistantMessages?: Array<{ input: number; output: number }>
+}
+
+function createMockContext(opts?: MockContextOpts): ExtensionContext {
+	const percent = opts?.percent ?? 0
+	const modelId = opts?.modelId ?? "claude-opus-4-6"
+	const entries = (opts?.assistantMessages ?? []).map((u) => ({
+		type: "message" as const,
+		message: { role: "assistant", usage: { input: u.input, output: u.output } },
+	}))
+	return {
+		model: { id: modelId, name: modelId },
+		cwd: "/test",
+		getContextUsage: vi.fn(() => ({ tokens: 0, percent, contextWindow: 100000 })),
+		sessionManager: {
+			getEntries: vi.fn(() => entries),
+			getBranch: vi.fn(() => []),
+			getSessionId: vi.fn(() => "test-session"),
+			getSessionName: vi.fn(() => "test"),
+			getSessionFile: vi.fn(() => "/test/session.md"),
+		},
+	} as unknown as ExtensionContext
+}
+
+function createMockStatusLineData(opts?: {
+	permissionsMode?: string
+	permissionsWarning?: string
+	updateAvailable?: string
+}): ReadonlyFooterDataProvider {
+	const statuses = new Map<string, string>()
+	if (opts?.permissionsMode) statuses.set("permissions-mode", opts.permissionsMode)
+	if (opts?.permissionsWarning) statuses.set("permissions-warning", opts.permissionsWarning)
+	if (opts?.updateAvailable) statuses.set("update-available", opts.updateAvailable)
+	return {
+		getExtensionStatuses: vi.fn(() => statuses),
+	} as unknown as ReadonlyFooterDataProvider
+}
+
+describe("buildScriptPayload", () => {
+	afterEach(() => setBillingStatusForTest(undefined))
+
+	it("passes credits and budget to custom status-line scripts", () => {
+		setBillingStatusForTest({
+			serverless: true,
+			remainingCredits: 5,
+			budget: {
+				period: { startTime: "2026-07-01T00:00:00Z", endTime: "2026-08-01T00:00:00Z" },
+				budgets: [
+					{
+						scope: "USER",
+						scopeId: "owner",
+						budgetLimitUsd: "2000.000000",
+						totalSpendUsd: "274.594050",
+						providerBudgets: [],
+					},
+				],
+			},
+			updatedAt: "2026-07-07T00:00:00.000Z",
+		})
+
+		const payload = buildScriptPayload(createMockContext(), "idle", 0, 0, 0)
+
+		expect(payload.credits).toBe("$5.00")
+		expect(payload.budget).toBe("13.73% ($274.59/$2k)")
+	})
+})
+
+/** Save the current platform and stub it to `value`. Returns a cleanup fn. */
+function stubPlatform(value: NodeJS.Platform): () => void {
+	const original = process.platform
+	Object.defineProperty(process, "platform", { value })
+	return () => Object.defineProperty(process, "platform", { value: original })
+}
+
+/** CompactionContext stub using plain markers — used to unit-test the builder
+ *  functions in isolation, with predictable visible output. The builders only
+ *  rely on dim/accent for ANSI wrapping, so identity functions are safe here
+ *  as long as we assert on raw text rather than computed widths against ANSI. */
+const compactCtx = {
+	dim: (s: string) => s,
+	accent: (s: string) => s,
+	semantic: (name: string, s: string) => `[${name}:${s}]`,
+	showCommandHint: true,
+}
+
+describe("compact-form builders", () => {
+	describe("buildContextCompact", () => {
+		it("returns `N% ctx` with no bar", () => {
+			const seg = buildContextCompact(compactCtx, 13)
+			expect(seg.id).toBe("context")
+			expect(seg.text).toBe("13% ctx")
+			expect(seg.width).toBe(7)
+			expect(seg.raw).toEqual({ kind: "context", percent: 13, pctColor: undefined })
+			expect(seg.text).not.toContain("█")
+			expect(seg.text).not.toContain("░")
+		})
+
+		it("rounds non-integer percentages", () => {
+			const seg = buildContextCompact(compactCtx, 13.7)
+			expect(seg.text).toBe("14% ctx")
+		})
+
+		it("handles 0%", () => {
+			const seg = buildContextCompact(compactCtx, 0)
+			expect(seg.text).toBe("0% ctx")
+		})
+
+		it("preserves warning color at 75%", () => {
+			const seen: Array<[string, string]> = []
+			const ctx = {
+				...compactCtx,
+				semantic: (name: string, s: string) => {
+					seen.push([name, s])
+					return `[${name}:${s}]`
+				},
+			}
+			const seg = buildContextCompact(ctx, 75, "warning")
+			expect(seg.text).toBe("[warning:75%] ctx")
+			expect(seen).toEqual([["warning", "75%"]])
+			expect(seg.raw).toEqual({ kind: "context", percent: 75, pctColor: "warning" })
+		})
+
+		it("preserves error color at 95%", () => {
+			const seen: Array<[string, string]> = []
+			const ctx = {
+				...compactCtx,
+				semantic: (name: string, s: string) => {
+					seen.push([name, s])
+					return `[${name}:${s}]`
+				},
+			}
+			const seg = buildContextCompact(ctx, 95, "error")
+			expect(seg.text).toBe("[error:95%] ctx")
+			expect(seen).toEqual([["error", "95%"]])
+			expect(seg.raw).toEqual({ kind: "context", percent: 95, pctColor: "error" })
+		})
+
+		it("falls back to accent when no semantic color", () => {
+			const seenAccent: string[] = []
+			const seenSemantic: Array<[string, string]> = []
+			const ctx = {
+				...compactCtx,
+				accent: (s: string) => {
+					seenAccent.push(s)
+					return `[accent:${s}]`
+				},
+				semantic: (name: string, s: string) => {
+					seenSemantic.push([name, s])
+					return `[${name}:${s}]`
+				},
+			}
+			const seg = buildContextCompact(ctx, 50)
+			expect(seg.text).toBe("[accent:50%] ctx")
+			expect(seenAccent).toEqual(["50%"])
+			expect(seenSemantic).toEqual([])
+			expect(seg.raw).toEqual({ kind: "context", percent: 50, pctColor: undefined })
+		})
+	})
+
+	describe("buildModelAbbrev", () => {
+		it("abbreviates multi-model label", () => {
+			const seg = buildModelAbbrev(compactCtx, true, "kimi-k2.6")
+			expect(seg.id).toBe("model")
+			expect(seg.text).toBe("m-m (kimi-k2.6) → ctrl+p")
+			expect(seg.raw).toEqual({ kind: "model", multiModel: true, modelId: "kimi-k2.6" })
+		})
+
+		it("keeps model id when not multi-model", () => {
+			const seg = buildModelAbbrev(compactCtx, false, "claude-opus-4-7")
+			expect(seg.text).toBe("claude-opus-4-7 → ctrl+p")
+			expect(seg.raw).toEqual({ kind: "model", multiModel: false, modelId: "claude-opus-4-7" })
+		})
+	})
+
+	describe("buildPhaseCompact", () => {
+		it("returns just the phase value, no `phase:` prefix", () => {
+			const seg = buildPhaseCompact(compactCtx, "explore")
+			expect(seg.id).toBe("phase")
+			expect(seg.text).toBe("explore")
+			expect(seg.width).toBe(7)
+			expect(seg.raw).toEqual({ kind: "phase", phase: "explore" })
+		})
+	})
+})
+
+describe("SHORTCUT_TAIL regex", () => {
+	// Real ANSI from the production code paths.
+	//   permissions: this.theme.fg("dim", "→ shift+tab")
+	//   multi-model: this.dim(`→ ${shortcut}`)
+	// Both end up as `<ANSI-open>→ <key><ANSI-close>` preceded by a space.
+
+	it("matches the permissions-extension trailing shortcut", () => {
+		const text = "● default \x1b[38;5;242m→ shift+tab\x1b[39m"
+		expect(SHORTCUT_TAIL.test(text)).toBe(true)
+		expect(text.replace(SHORTCUT_TAIL, "")).toBe("● default")
+	})
+
+	it("matches the model segment trailing shortcut", () => {
+		const text = "multi-model (kimi-k2.6) \x1b[38;5;242m→ ctrl+p\x1b[39m"
+		expect(SHORTCUT_TAIL.test(text)).toBe(true)
+		expect(text.replace(SHORTCUT_TAIL, "")).toBe("multi-model (kimi-k2.6)")
+	})
+
+	it("matches the ferment trailing shortcut", () => {
+		const text = "Ferment: my-ferment · Running · Stop: Phase Boundary \x1b[38;5;242m→ F6\x1b[39m"
+		expect(SHORTCUT_TAIL.test(text)).toBe(true)
+		expect(text.replace(SHORTCUT_TAIL, "")).toBe("Ferment: my-ferment · Running · Stop: Phase Boundary")
+	})
+
+	it("does NOT match text that has no trailing arrow", () => {
+		const text = "claude-opus-4-6"
+		expect(SHORTCUT_TAIL.test(text)).toBe(false)
+	})
+
+	it("does NOT match an arrow in the middle of text", () => {
+		const text = "foo \x1b[38;5;242m→ bar\x1b[39m baz"
+		expect(SHORTCUT_TAIL.test(text)).toBe(false)
+	})
+})
+
+describe("StatusLine behavioural acceptance at representative widths", () => {
+	let theme: Theme
+	let statusLineData: ReadonlyFooterDataProvider
+	let restorePlatform: () => void
+
+	beforeEach(() => {
+		theme = createMockTheme()
+		// Mirror production format: the permissions extension calls
+		// `theme.fg("dim", "→ shift+tab")` and appends. We hand-build the same
+		// shape so the SHORTCUT_TAIL regex can find it.
+		const permissionsMode = "● default \x1b[2m→ shift+tab\x1b[0m"
+		statusLineData = createMockStatusLineData({ permissionsMode })
+		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
+		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
+		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
+		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
+		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
+		// Stub platform-dependent shortcut so tests are stable across CI.
+		restorePlatform = stubPlatform("darwin")
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+		setBillingStatusForTest(undefined)
+		restorePlatform()
+	})
+
+	/** Render at the given width and return the status line both raw (with ANSI)
+	 *  and visible (ANSI-stripped). Use `visible` for content assertions and
+	 *  `visibleWidth(raw)` for width assertions. */
+	function renderAt(width: number, ctxOpts?: MockContextOpts): { raw: string; visible: string } {
+		const sl = new StatusLine(createMockContext(ctxOpts), theme, statusLineData)
+		const lines = sl.render(width)
+		const raw = lines[lines.length - 1]
+		return { raw, visible: stripAnsi(raw) }
+	}
+
+	it("width 160: no pinned elements — hint is padded to far right", () => {
+		const { raw, visible } = renderAt(160)
+		expect(visible).toContain("● default → shift+tab")
+		expect(visible).toContain("multi-model (claude-opus-4-6) → ctrl+p")
+		expect(visible).toContain("/ for commands")
+		expect(visibleWidth(raw)).toBe(160)
+		expect(visible.endsWith("/ for commands")).toBe(true)
+	})
+
+	it("width 160: pinned elements present, hint still at far right", () => {
+		withPinned(["context", "phase"], () => {
+			const { raw, visible } = renderAt(160, { percent: 50 })
+			expect(visible).toContain("50% ctx")
+			expect(visible).toContain("phase:explore")
+			expect(visible).toContain("/ for commands")
+			expect(visibleWidth(raw)).toBe(160)
+			expect(visible.endsWith("/ for commands")).toBe(true)
+		})
+	})
+
+	it("width 100: hint dropped at narrow width when no pinned elements", () => {
+		// model + permissions + hint ≈ 77 visible chars; fits at 100 so hint shows.
+		// Use a really narrow width to reliably force hint to drop.
+		const { raw, visible } = renderAt(70)
+		expect(visibleWidth(raw)).toBeLessThanOrEqual(70)
+		expect(visible).toContain("default")
+	})
+
+	it("width 60: shortcuts stripped from unpinned, pinned content survives at far right", () => {
+		withPinned(["context", "phase"], () => {
+			const { raw, visible } = renderAt(60, { percent: 50 })
+			expect(visibleWidth(raw)).toBeLessThanOrEqual(60)
+			expect(visible).not.toContain("ctrl+p")
+			expect(visible).toContain("explore")
+		})
+	})
+
+	it("width 20: line is hard-truncated to fit, leftmost content survives", () => {
+		const { raw, visible } = renderAt(20)
+		// Critical invariant: never overflow.
+		expect(visibleWidth(raw)).toBeLessThanOrEqual(20)
+		expect(visible.length).toBeGreaterThan(0)
+		// Truncation cuts the tail, so the start of the line — beginning with
+		// the permissions bullet — must survive. We check it appears somewhere
+		// near the front, rather than asserting `startsWith` in case
+		// `truncateToWidth` adds an ellipsis or other leading marker.
+		expect(visible).toContain("●")
+	})
+
+	it("never overflows width across a range of terminal sizes", () => {
+		for (const w of [200, 160, 137, 121, 112, 104, 100, 75, 60, 50, 40, 30, 20, 10]) {
+			const { raw } = renderAt(w)
+			expect(visibleWidth(raw), `width=${w}`).toBeLessThanOrEqual(w)
+		}
+	})
+
+	it("never overflows when phase contains wide (CJK) characters", () => {
+		// CJK characters are single code units but take TWO visible columns.
+		// This is the case `visibleWidth` catches and `.length` would miss.
+		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("探索中" as ReturnType<typeof TAGS.getCurrentPhase>)
+		for (const w of [200, 100, 60, 40, 20]) {
+			const { raw } = renderAt(w)
+			expect(visibleWidth(raw), `width=${w}`).toBeLessThanOrEqual(w)
+		}
+	})
+
+	it("with an active ferment, shows ferment when pinned", () => {
+		const ferment = {
+			id: "f-1",
+			name: "my-ferment",
+			status: "running",
+			mode: "yolo",
+			phases: [],
+			activePhaseId: undefined,
+		} as unknown as ReturnType<typeof FERMENT.getActiveFerment>
+		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(ferment)
+		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
+		vi.spyOn(FERMENT, "getFermentContinuationPolicy").mockReturnValue("manual")
+
+		withPinned(["ferment"], () => {
+			// Ferment shows on the right (pinned) when active.
+			const wide = renderAt(200)
+			expect(wide.visible).toContain("Ferment: my-ferment")
+
+			// Status line never overflows even at narrow width.
+			const narrow = renderAt(70)
+			expect(visibleWidth(narrow.raw)).toBeLessThanOrEqual(70)
+		})
+	})
+})
+
+describe("StatusLine segment coverage", () => {
+	let theme: Theme
+	let restorePlatform: () => void
+
+	beforeEach(() => {
+		theme = createMockTheme()
+		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
+		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
+		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
+		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
+		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
+		restorePlatform = stubPlatform("darwin")
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+		setBillingStatusForTest(undefined)
+		restorePlatform()
+	})
+
+	function renderVisible(sl: StatusLine, width: number): string {
+		const lines = sl.render(width)
+		return stripAnsi(lines[lines.length - 1])
+	}
+
+	it("usage segment appears when pinned and there are assistant messages with token usage", () => {
+		withPinned(["usage"], () => {
+			const ctx = createMockContext({
+				assistantMessages: [
+					{ input: 1200, output: 340 },
+					{ input: 800, output: 200 },
+				],
+			})
+			const sl = new StatusLine(ctx, theme, createMockStatusLineData())
+			const visible = renderVisible(sl, 200)
+			// Both up- and down-arrow indicators present with formatted counts.
+			expect(visible).toContain("↑")
+			expect(visible).toContain("↓")
+		})
+	})
+
+	it("usage segment is hidden when there is no token activity", () => {
+		const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+		const visible = renderVisible(sl, 200)
+		expect(visible).not.toContain("↑")
+		expect(visible).not.toContain("↓")
+	})
+
+	it("agents segment shows count when pinned and active agents present", () => {
+		withPinned(["agents"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(3)
+			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+			const visible = renderVisible(sl, 200)
+			expect(visible).toContain("3 agents")
+		})
+	})
+
+	it("agents segment uses singular form for count=1", () => {
+		withPinned(["agents"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(1)
+			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+			const visible = renderVisible(sl, 200)
+			expect(visible).toContain("1 agent")
+			expect(visible).not.toContain("1 agents")
+		})
+	})
+
+	it("agents segment is hidden when count is zero", () => {
+		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
+		const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+		const visible = renderVisible(sl, 200)
+		expect(visible).not.toContain("agent")
+	})
+
+	it("tags segment shows non-team, non-phase tags when pinned", () => {
+		withPinned(["tags"], () => {
+			vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod", "region:eu", "team:platform", "phase:explore"])
+			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+			const visible = renderVisible(sl, 200)
+			expect(visible).toContain("tags:")
+			expect(visible).toContain("env:prod")
+			expect(visible).toContain("region:eu")
+			// `team` has its own segment; `phase` has its own segment.
+			// Neither should appear inside the `tags:` section.
+			const tagsIdx = visible.indexOf("tags:")
+			const afterTags = visible.slice(tagsIdx)
+			const sectionEnd = afterTags.indexOf(" · ", "tags:".length)
+			const tagsSection = sectionEnd === -1 ? afterTags : afterTags.slice(0, sectionEnd)
+			expect(tagsSection).not.toContain("team:")
+			expect(tagsSection).not.toContain("phase:")
+		})
+	})
+
+	it("tags segment is always hidden when unpinned", () => {
+		vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod", "team:platform"])
+		const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+		const visible = renderVisible(sl, 200)
+		expect(visible).not.toContain("tags:")
+	})
+
+	it("team segment shows team value when pinned", () => {
+		withPinned(["team"], () => {
+			vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["team:platform"])
+			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+			const visible = renderVisible(sl, 200)
+			expect(visible).toContain("team:")
+			expect(visible).toContain("platform")
+		})
+	})
+
+	it("team segment is hidden when no team tag present", () => {
+		vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod"])
+		const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+		const visible = renderVisible(sl, 200)
+		expect(visible).not.toContain("team:")
+	})
+
+	it("credits and budget can be pinned independently", () => {
+		setBillingStatusForTest({
+			serverless: true,
+			plan: "coder",
+			isPaidTier: true,
+			remainingCredits: 5,
+			creditStatus: "low",
+			budget: {
+				period: { startTime: "2026-07-01T00:00:00Z", endTime: "2026-08-01T00:00:00Z" },
+				budgets: [
+					{
+						scope: "USER",
+						scopeId: "owner",
+						budgetLimitUsd: "2000.000000",
+						totalSpendUsd: "274.594050",
+						providerBudgets: [],
+					},
+				],
+			},
+			updatedAt: "2026-07-07T00:00:00.000Z",
+		})
+
+		withPinned(["credits"], () => {
+			const statusLine = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+			const visible = renderVisible(statusLine, 200)
+
+			expect(visible).toContain("Credits: $5.00")
+			expect(visible).not.toContain("Budget:")
+		})
+
+		withPinned(["budget"], () => {
+			const statusLine = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+			const visible = renderVisible(statusLine, 200)
+			const compact = renderVisible(statusLine, 42)
+
+			expect(visible).not.toContain("Credits:")
+			expect(visible).toContain("Budget: 13.73% ($274.59/$2k)")
+			expect(compact).toContain("Budget: 13.73%")
+			expect(compact).not.toContain("$274.59/$2k")
+		})
+	})
+
+	it("credits segment is hidden when unpinned", () => {
+		setBillingStatusForTest({
+			serverless: true,
+			plan: "coder",
+			isPaidTier: true,
+			remainingCredits: 5,
+			creditStatus: "low",
+			updatedAt: "2026-07-07T00:00:00.000Z",
+		})
+		const statusLine = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+		const visible = renderVisible(statusLine, 200)
+
+		expect(visible).not.toContain("Credits: $5.00")
+	})
+
+	it("passes the active session id to phase and tag lookups", () => {
+		withPinned(["phase", "tags"], () => {
+			const getCurrentPhaseSpy = vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
+			const getActiveTagsSpy = vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod"])
+			const ctx = createMockContext()
+			const sl = new StatusLine(ctx, theme, createMockStatusLineData())
+			renderVisible(sl, 200)
+			expect(getCurrentPhaseSpy).toHaveBeenCalledWith("test-session")
+			expect(getActiveTagsSpy).toHaveBeenCalledWith(ctx.sessionManager)
+		})
+	})
+})
+
+describe("StatusLine info line", () => {
+	let theme: Theme
+
+	beforeEach(() => {
+		theme = createMockTheme()
+		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
+		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
+		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
+		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
+		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	it("renders an info line above the status line when permissions-warning is set", () => {
+		const data = createMockStatusLineData({ permissionsWarning: "Warning: check permissions" })
+		const sl = new StatusLine(createMockContext(), theme, data)
+		const lines = sl.render(160)
+
+		expect(lines.length).toBe(2)
+		expect(stripAnsi(lines[0])).toContain("Warning")
+	})
+
+	it("renders an info line above the status line when update-available is set", () => {
+		const data = createMockStatusLineData({ updateAvailable: "Update available: v1.2.0" })
+		const sl = new StatusLine(createMockContext(), theme, data)
+		const lines = sl.render(160)
+
+		expect(lines.length).toBe(2)
+		expect(stripAnsi(lines[0])).toContain("Update")
+	})
+
+	it("right-aligns update segment when both warning and update are present", () => {
+		const data = createMockStatusLineData({
+			permissionsWarning: "Warning: check permissions",
+			updateAvailable: "Update available: v1.2.0",
+		})
+		const sl = new StatusLine(createMockContext(), theme, data)
+		const lines = sl.render(160)
+
+		expect(lines.length).toBe(2)
+		const infoLine = stripAnsi(lines[0])
+		expect(infoLine).toContain("Warning")
+		expect(infoLine).toContain("Update available")
+		// Warning is left-aligned, update is right-aligned with spaces between.
+		const warningIdx = infoLine.indexOf("Warning")
+		const updateIdx = infoLine.indexOf("Update available")
+		expect(warningIdx).toBeLessThan(updateIdx)
+		// The update segment ends at (or near) the right edge of the width.
+		expect(visibleWidth(lines[0])).toBeLessThanOrEqual(160)
+		expect(infoLine.trimEnd().endsWith("Update available: v1.2.0")).toBe(true)
+	})
+
+	it("drops the update segment when there is no room for it after the warning", () => {
+		// Warning consumes nearly all of width=30, leaving < update.width + 2 columns.
+		const data = createMockStatusLineData({
+			permissionsWarning: "Warning: long permissions message text here",
+			updateAvailable: "Update available: v1.2.0",
+		})
+		const sl = new StatusLine(createMockContext(), theme, data)
+		const lines = sl.render(30)
+
+		expect(lines.length).toBe(2)
+		const infoLine = stripAnsi(lines[0])
+		// The update segment must not appear; the warning may be truncated.
+		expect(infoLine).not.toContain("Update available")
+		expect(visibleWidth(lines[0])).toBeLessThanOrEqual(30)
+	})
+})
+
+describe("StatusLine regression tests", () => {
+	let theme: Theme
+	let restorePlatform: () => void
+
+	beforeEach(() => {
+		theme = createMockTheme()
+		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
+		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
+		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
+		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
+		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
+		restorePlatform = stubPlatform("darwin")
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+		restorePlatform()
+	})
+
+	it("never produces an orphan ` ·  · ` double separator at any width", () => {
+		// Compaction never removes whole segments, so we should never see two
+		// adjacent separators. Truncation cuts the tail, not the middle.
+		vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["team:platform", "env:prod"])
+		const data = createMockStatusLineData({ permissionsMode: "● default" })
+		const sl = new StatusLine(createMockContext(), theme, data)
+
+		for (const w of [40, 50, 60, 75, 100]) {
+			const lines = sl.render(w)
+			const visible = stripAnsi(lines[lines.length - 1])
+			expect(visible, `width=${w}: orphan separator in "${visible}"`).not.toMatch(/·\s*·/)
+		}
+	})
+})
+
+// ── Status line pinning tests ───────────────────────────────────────────────
+
+function withPinned(ids: StatusLineElementId[], fn: () => void): void {
+	pinnedElements = ids
+	try {
+		fn()
+	} finally {
+		pinnedElements = []
+	}
+}
+
+describe("status line pinning", () => {
+	let theme: Theme
+	let restorePlatform: () => void
+
+	beforeEach(() => {
+		theme = createMockTheme()
+		pinnedElements = []
+		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(false)
+		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
+		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
+		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
+		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
+		restorePlatform = stubPlatform("darwin")
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+		restorePlatform()
+		pinnedElements = []
+	})
+
+	function makeStatusLine(opts?: MockContextOpts): StatusLine {
+		return new StatusLine(createMockContext(opts), theme, createMockStatusLineData())
+	}
+
+	it("pinned usage shows '↑0 ↓0' when no tokens are present", () => {
+		withPinned(["usage"], () => {
+			const sl = makeStatusLine()
+			const visible = stripAnsi(sl.render(200)[0])
+			expect(visible).toContain("↑0")
+			expect(visible).toContain("↓0")
+		})
+	})
+
+	it("unpinned usage is hidden when no tokens (no '↑0' in output)", () => {
+		withPinned([], () => {
+			const sl = makeStatusLine()
+			const visible = stripAnsi(sl.render(200)[0])
+			expect(visible).not.toContain("↑0")
+			expect(visible).not.toContain("↓0")
+		})
+	})
+
+	it("pinned agents shows '0 agents' when count is zero", () => {
+		withPinned(["agents"], () => {
+			const sl = makeStatusLine()
+			const visible = stripAnsi(sl.render(200)[0])
+			expect(visible).toContain("0 agents")
+		})
+	})
+
+	it("unpinned agents is hidden when count is zero", () => {
+		withPinned([], () => {
+			const sl = makeStatusLine()
+			const visible = stripAnsi(sl.render(200)[0])
+			expect(visible).not.toContain("0 agents")
+		})
+	})
+
+	it("pinned context shows full bar form (with █) at width=20", () => {
+		withPinned(["context"], () => {
+			const sl = makeStatusLine({ percent: 50 })
+			const visible = stripAnsi(sl.render(20)[0])
+			// Full form includes the bar characters; compact form is just "N% ctx"
+			expect(visible).toContain("█")
+			expect(visible).toContain("░")
+		})
+	})
+
+	it("pinned team shows 'team: —' when no team tag is present", () => {
+		withPinned(["team"], () => {
+			vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod"]) // no team: tag
+			const sl = makeStatusLine()
+			const visible = stripAnsi(sl.render(200)[0])
+			expect(visible).toContain("team:")
+			expect(visible).toContain("—")
+		})
+	})
+
+	it("pinned tags shows 'tags: —' when no tags are present", () => {
+		withPinned(["tags"], () => {
+			vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+			const sl = makeStatusLine()
+			const visible = stripAnsi(sl.render(200)[0])
+			expect(visible).toContain("tags:")
+			expect(visible).toContain("—")
+		})
+	})
+
+	it("pinned-first ordering: permissions pinned, agents not → unpinned agents appear left of pinned permissions", () => {
+		withPinned(["permissions"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2) // agents now visible
+			vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
+			vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
+			const permissionsMode = "● default \x1b[2m→ shift+tab\x1b[0m"
+			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData({ permissionsMode }))
+			const visible = stripAnsi(sl.render(200)[0])
+			const permIdx = visible.indexOf("default")
+			const agentsIdx = visible.indexOf("agents")
+			expect(agentsIdx).toBeLessThan(permIdx)
+		})
+	})
+
+	it("pinned and unpinned segments are separated by ' · '", () => {
+		withPinned(["permissions"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2)
+			vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(false)
+			vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
+			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData({ permissionsMode: "● default" }))
+			const visible = stripAnsi(sl.render(200)[0])
+			// Should contain exactly one · between pinned (permissions) and unpinned (agents, model, etc.)
+			const separators = visible.match(/ · /g) ?? []
+			expect(separators.length).toBeGreaterThanOrEqual(1)
+		})
+	})
+
+	it("unpinned context is always hidden regardless of pct", () => {
+		withPinned([], () => {
+			// Hidden at 0%
+			expect(stripAnsi(makeStatusLine({ percent: 0 }).render(200)[0])).not.toContain("ctx")
+			// Hidden even at 75%
+			expect(stripAnsi(makeStatusLine({ percent: 75 }).render(200)[0])).not.toContain("ctx")
+		})
+	})
+
+	it("pinned context shows placeholder bar at 0%", () => {
+		withPinned(["context"], () => {
+			const sl = makeStatusLine({ percent: 0 })
+			const visible = stripAnsi(sl.render(200)[0])
+			expect(visible).toContain("0%")
+			expect(visible).toContain("ctx")
+			expect(visible).not.toContain("█")
+		})
+	})
+
+	it("unpinned phase is always hidden regardless of active phase value", () => {
+		withPinned([], () => {
+			// Hidden when no phase
+			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue(undefined)
+			expect(stripAnsi(makeStatusLine().render(200)[0])).not.toContain("phase:")
+			// Hidden even when there is an active phase
+			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("build")
+			expect(stripAnsi(makeStatusLine().render(200)[0])).not.toContain("phase:")
+		})
+	})
+
+	it("pinned phase shows placeholder when no active phase", () => {
+		withPinned(["phase"], () => {
+			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue(undefined)
+			const sl = makeStatusLine()
+			const visible = stripAnsi(sl.render(200)[0])
+			expect(visible).toContain("phase:")
+			expect(visible).toContain("—")
+		})
+	})
+
+	it("/ for commands hint shows at far right even when elements are pinned", () => {
+		withPinned(["phase"], () => {
+			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue(undefined)
+			const sl = makeStatusLine()
+			const raw = sl.render(200)[0]
+			const visible = stripAnsi(raw)
+			expect(visible).toContain("/ for commands")
+			expect(visible.endsWith("/ for commands")).toBe(true)
+		})
+	})
+
+	it("status line never overflows terminal width with pinned + unpinned segments", () => {
+		withPinned(["phase", "usage"], () => {
+			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("build")
+			for (const w of [200, 160, 120, 100, 80, 60, 40, 20]) {
+				const raw = makeStatusLine({ percent: 50 }).render(w)[0]
+				expect(visibleWidth(raw), `width=${w}`).toBeLessThanOrEqual(w)
+			}
+		})
+	})
+})

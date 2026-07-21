@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
-import { SessionContext, _resetSharedAccumulators } from "../session-context.js"
+import { _resetSharedAccumulators, SessionContext } from "../session-context.js"
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./messages.js"
+
 const BASE_TS = new Date("2026-06-02T10:00:00.000Z").getTime()
 
 vi.mock("../../../startup-context.js", () => ({
@@ -267,6 +268,34 @@ describe("handleMessageEnd", () => {
 		await handleMessageEnd(ctx, { message: { role: "user" } })
 
 		expect(emitSpy).not.toHaveBeenCalled()
+	})
+
+	it("emits transport_error when stopReason is error and message matches a transport pattern", async () => {
+		const ctx = makeCtx()
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		await handleMessageEnd(ctx, {
+			message: {
+				role: "assistant",
+				model: "kimi-k2.6",
+				provider: "kimchi-dev",
+				stopReason: "error",
+				errorMessage:
+					"The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+				timestamp: BASE_TS,
+				responseId: "chatcmpl-transport-test",
+			},
+		})
+
+		expect(emitSpy).toHaveBeenCalledWith(
+			"error",
+			expect.objectContaining({
+				model: "kimi-k2.6",
+				error_type: "transport_error",
+				error_message: expect.stringContaining("socket connection was closed unexpectedly"),
+			}),
+		)
 	})
 })
 

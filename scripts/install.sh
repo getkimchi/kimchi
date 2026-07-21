@@ -3,7 +3,7 @@
 # Install the kimchi coding-harness CLI from the latest GitHub release.
 #
 # Usage:
-#   curl -fsSL https://github.com/castai/kimchi/releases/latest/download/install.sh | bash
+#   curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
 #
 # Optional env:
 #   KIMCHI_INSTALL_DIR  Override install dir. Defaults to /usr/local/bin if
@@ -20,7 +20,7 @@ BLUE='\033[0;34m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
-REPO="${KIMCHI_REPO_OVERRIDE:-castai/kimchi}"
+REPO="${KIMCHI_REPO_OVERRIDE:-getkimchi/kimchi}"
 VERSION="${KIMCHI_VERSION:-latest}"
 
 echo -e "${BLUE}Installing Kimchi from ${REPO}${VERSION:+ (${VERSION})}…${NC}"
@@ -157,5 +157,4 @@ if [ "$NEEDS_PATH_SETUP" = "yes" ] || { [ "$NEEDS_PATH_SETUP" = "maybe" ] && ! c
 fi
 
 echo ""
-echo -e "${BLUE}Next:${NC} run ${GREEN}kimchi setup${NC} to configure your API key and migrate your skills and MCPs,"
-echo -e "      or just ${GREEN}kimchi${NC} to launch the coding harness."
+echo -e "${BLUE}Next:${NC} run ${GREEN}kimchi${NC} and follow the first-time wizard to configure your API key and migrate your skills and MCPs"

@@ -30,7 +30,6 @@ beforeEach(() => {
 
 afterEach(() => {
 	if (originalTemplateDir === undefined) {
-		// biome-ignore lint/performance/noDelete: process.env requires delete operator to truly unset
 		delete process.env.KIMCHI_OAUTH_TEMPLATE_DIR
 	} else {
 		process.env.KIMCHI_OAUTH_TEMPLATE_DIR = originalTemplateDir

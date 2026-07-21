@@ -2,31 +2,42 @@
  * kimchi sub-agents.
  *
  * Tools:
- *   Agent             — LLM-callable: spawn a sub-agent
- *   get_subagent_result  — LLM-callable: check background agent status/result
- *   steer_subagent       — LLM-callable: send a steering message to a running agent
+ *   Agent             - LLM-callable: spawn a sub-agent
+ *   resume_subagent   - LLM-callable: continue an existing sub-agent session
+ *   get_subagent_result  - LLM-callable: check background agent status/result
+ *   steer_subagent       - LLM-callable: send a steering message to a running agent
  *
  * Commands:
- *   /agents                 — Interactive agent management menu
+ *   /agents                 - Interactive agent management menu
  */
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import {
+	defineTool,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
-	defineTool,
+	type ExtensionUIContext,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
-import { Text } from "@earendil-works/pi-tui"
+import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
+import {
+	type DEFAULT_MODEL_ROLES,
+	getAllowedMultiModelRefs,
+	getModelRoles,
+	normalizeRoleModels,
+} from "../orchestration/model-roles.js"
+import { isRawInputCaptureActive } from "../shared-input.js"
+import { isStaleCtxError } from "../stale-ctx.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
-import { AgentManager } from "./manager/agent-manager.js"
+import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
 import {
 	getAgentConversation,
 	getDefaultMaxTurns,
@@ -45,7 +56,8 @@ import {
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
-import { type LifetimeUsage, addUsage, getLifetimeTotal, getSessionContextPercent } from "./manager/usage.js"
+import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./manager/usage.js"
+import { NudgeScheduler } from "./nudge-scheduler.js"
 import {
 	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
@@ -61,7 +73,9 @@ import {
 	AGENT_GENERAL_PURPOSE,
 	type AgentAbortReason,
 	type AgentConfig,
+	type AgentOutcome,
 	type AgentRecord,
+	type AgentTaskRef,
 	type AgentVisibility,
 	type JoinMode,
 	type NotificationDetails,
@@ -69,23 +83,76 @@ import {
 } from "./personas/types.js"
 import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invocation-config.js"
 import { type ModelRegistry, resolveModel } from "./resolution/model-resolver.js"
-import { type SubagentsSettings, applyAndEmitLoaded, saveAndEmitChanged } from "./settings.js"
+import { registerResumeSubagentTool } from "./resume-tool.js"
+import { applyAndEmitLoaded, type SubagentsSettings, saveAndEmitChanged } from "./settings.js"
 import {
 	type AgentActivity,
 	type AgentDetails,
 	AgentWidget,
-	SPINNER,
-	type Theme,
-	type UICtx,
 	describeActivity,
 	formatDuration,
 	formatMs,
 	formatTokens,
 	formatTurns,
 	getDisplayName,
+	SPINNER,
+	type Theme,
+	type UICtx,
 } from "./ui/agent-widget.js"
 
 // ---- Shared helpers ----
+
+/**
+ * Maps an agent persona type to its model-roles key.
+ * Returns null for types that don't have a configured role.
+ */
+export function agentTypeToRoleKey(subagentType: string): keyof typeof DEFAULT_MODEL_ROLES | null {
+	const map: Record<string, keyof typeof DEFAULT_MODEL_ROLES> = {
+		Builder: "builder",
+		Reviewer: "reviewer",
+		Explore: "explorer",
+		Plan: "planner",
+		Researcher: "researcher",
+		Fixer: "builder", // Fixer uses the builder model pool
+		"General-Purpose": "builder", // GP defaults to builder model pool
+	}
+	return map[subagentType] ?? null
+}
+
+/**
+ * When multi-model is enabled and the caller did not specify a model,
+ * resolve the default model ref string from the role config based on
+ * the agent type. Returns the first model ref (e.g. "kimchi-dev/minimax-m3")
+ * or undefined if no role mapping exists.
+ */
+export function resolveRoleModelRef(subagentType: string): string | undefined {
+	const roleKey = agentTypeToRoleKey(subagentType)
+	if (!roleKey) return undefined
+	const roles = getModelRoles()
+	const assignment = roles[roleKey]
+	if (!assignment) return undefined
+	const modelRefs = normalizeRoleModels(assignment)
+	return modelRefs[0]
+}
+
+// Give aborted sub-agents a bounded chance to reach runner finally blocks.
+// If they do not settle, manager.dispose() still runs hard-fallback cleanup.
+const SUBAGENT_SHUTDOWN_WAIT_MS = 5_000
+
+export const AGENT_TOOL_GUIDELINES = `Guidelines:
+- Follow the **Orchestration** section for workflow, delegation, model selection, budgets, Explore-agent prompt shaping, and artifact handoff.
+- If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
+- For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
+- Keep each Agent call focused on a single outcome. Split large tasks into smaller, independent Agent calls.
+- Agent types: Explore (read-only fact-finding), Plan (spec writing), Researcher (cited web/docs research), Builder (implementation), Reviewer (findings report), Fixer (apply review fixes), General-Purpose (fallback when none of the specialized personas fit).
+- Provide clear, detailed prompts so the agent can work autonomously.
+- Agent results are returned as text — summarize them for the user.
+- Use resume_subagent to continue a previous agent's work; get_subagent_result for background status; steer_subagent for mid-run steering.
+- Use thinking to request an extended thinking level on Agent calls per the Orchestration **Thinking levels** table.
+- Use token_budget, max_duration, and inherit_context per the Orchestration section.`
+
+export const AGENT_MODEL_PARAMETER_DESCRIPTION =
+	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Partial model IDs such as "kimi" or "nemotron" are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only the models configured in the multi-model roles may be used.'
 
 function textResult<T = AgentDetails>(msg: string, details?: T) {
 	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }
@@ -105,6 +172,12 @@ interface GetSubagentResultDetails {
 	durationMs?: number
 	error?: string
 	bodyText: string
+	agentOutcome?: AgentOutcome
+}
+
+function formatAgentOutcomeBlock(outcome: AgentOutcome | undefined): string {
+	if (!outcome) return ""
+	return `\n\nagent_outcome:\n${JSON.stringify(outcome, null, 2)}`
 }
 
 function formatAgentBodyForDisplay(raw: string): string {
@@ -254,21 +327,6 @@ function getAbortLabel(reason?: AgentAbortReason): string {
 	}
 }
 
-function getAbortNote(reason?: AgentAbortReason): string {
-	switch (reason) {
-		case "max_turns":
-			return " (aborted — max turns exceeded, output may be incomplete)"
-		case "token_budget":
-			return " (aborted — token budget exceeded, output may be incomplete)"
-		case "inactivity":
-			return " (aborted — agent became unresponsive, output may be incomplete)"
-		case "max_duration":
-			return " (aborted — wall-clock duration limit exceeded, output may be incomplete)"
-		default:
-			return " (aborted, output may be incomplete)"
-	}
-}
-
 function getStatusLabel(status: string, error?: string, abortReason?: AgentAbortReason): string {
 	switch (status) {
 		case "error":
@@ -285,27 +343,38 @@ function getStatusLabel(status: string, error?: string, abortReason?: AgentAbort
 }
 
 function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
-	switch (status) {
-		case "aborted":
-			return getAbortNote(abortReason)
-		case "steered":
-			return " (wrapped up — reached turn limit)"
-		case "stopped":
-			return " (stopped by user)"
-		default:
-			return ""
-	}
+	if (status === "error")
+		return "\nThe agent encountered an error. Review the error message and partial results before deciding how to proceed."
+	if (status === "stopped") return "\nThe agent was manually stopped by the user."
+	if (status === "aborted" && abortReason === "token_budget")
+		return "\nThe agent ran out of its token budget. See agent_outcome.recovery_guidance for next steps."
+	if (status === "aborted" && abortReason === "inactivity")
+		return "\nThe agent stopped producing output and was terminated. See agent_outcome.recovery_guidance for next steps."
+	if (status === "aborted" && abortReason === "max_duration")
+		return "\nThe agent exceeded its maximum allowed duration. See agent_outcome.recovery_guidance for next steps."
+	if (status === "aborted" && abortReason === "max_turns")
+		return "\nThe agent exhausted its turn budget. See agent_outcome.recovery_guidance for next steps."
+	return ""
 }
 
-function getStatusInstruction(status: string, abortReason?: AgentAbortReason): string {
+function getStatusInstruction(status: string, multiModelEnabled: boolean, abortReason?: AgentAbortReason): string {
 	if (status === "aborted" && abortReason === "token_budget") {
-		return "\nThe agent ran out of its token budget. Do NOT retry the same task with a higher budget. If the work is incomplete, you may spawn a NEW follow-up Agent scoped to only the remaining unfinished work — keep the same or lower budget."
+		return "\nThe agent ran out of its token budget. Inspect the worker report before acting. Use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do not blindly retry the same prompt."
 	}
 	if (status === "aborted" && abortReason === "inactivity") {
-		return "\nThe agent stopped producing output and was terminated. Review any partial results. If the work is incomplete, you may spawn a follow-up Agent to continue from where this one left off."
+		return "\nThe agent stopped producing output and was terminated. Inspect the worker report before acting; this may indicate a stall. Resume only with a steering prompt that continues the same thread while avoiding the stalled operation, or spawn a narrower replacement Agent if remaining_steps have a clean task boundary."
 	}
 	if (status === "aborted" && abortReason === "max_duration") {
-		return "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Review any partial results. If the work is incomplete, you may spawn a follow-up Agent scoped to only the remaining unfinished work. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
+		const relaxed = !multiModelEnabled
+		return relaxed
+			? "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary."
+			: "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
+	}
+	if (status === "aborted" && abortReason === "max_turns") {
+		const relaxed = !multiModelEnabled
+		return relaxed
+			? "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked."
+			: "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
 	}
 	return ""
 }
@@ -328,11 +397,17 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 			: record.result
 		: "No output."
 
+	const note =
+		record.status === "stopped"
+			? "The user stopped this agent manually (Ctrl+X). Do not retry or reason about the stop — continue with other work or return control to the user."
+			: null
+
 	return [
 		"<task-notification>",
 		`<task-id>${record.id}</task-id>`,
 		record.toolCallId ? `<tool-use-id>${escapeXml(record.toolCallId)}</tool-use-id>` : null,
 		record.outputFile ? `<output-file>${escapeXml(record.outputFile)}</output-file>` : null,
+		note ? `<note>${escapeXml(note)}</note>` : null,
 		`<status>${escapeXml(status)}</status>`,
 		`<summary>Agent "${escapeXml(record.description)}" ${record.status}</summary>`,
 		`<result>${escapeXml(resultPreview)}</result>`,
@@ -345,18 +420,7 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 
 function buildDetails(
 	base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags" | "visibility">,
-	record: {
-		toolUses: number
-		startedAt: number
-		completedAt?: number
-		status: string
-		abortReason?: AgentAbortReason
-		error?: string
-		id?: string
-		sessionFile?: string
-		session?: unknown
-		lifetimeUsage: LifetimeUsage
-	},
+	record: AgentRecord,
 	activity?: AgentActivity,
 	overrides?: Partial<AgentDetails>,
 ): AgentDetails {
@@ -378,6 +442,7 @@ function buildDetails(
 		sessionFile: record.sessionFile,
 		error: record.error,
 		abortReason: record.abortReason,
+		agentOutcome: record.latestOutcome,
 		...overrides,
 	}
 }
@@ -403,13 +468,14 @@ function buildNotificationDetails(
 		error: record.error,
 		resultPreview: record.result
 			? record.result.length > resultMaxLen
-				? `${record.result.slice(0, resultMaxLen)}…`
+				? `${record.result.slice(0, resultMaxLen)}...`
 				: record.result
 			: "No output.",
 	}
 }
 
 let activeManager: AgentManager | undefined
+let activeWidget: { ensureTimer: () => void; update: () => void; markFinished: (id: string) => void } | undefined
 let budgetRetryBlock: BudgetRetryBlock | undefined
 const budgetRetryCandidates = new Map<string, BudgetRetryCandidate>()
 
@@ -429,6 +495,119 @@ export function getActiveAgentModelIds(): string[] {
 		.filter((a) => a.status === "running" || a.status === "queued")
 		.map((a) => a.modelId)
 		.filter((id): id is string => id != null)
+}
+
+/**
+ * Returns a read-only snapshot of the agent record for task validation.
+ * The returned object is a shallow copy — nested objects (session, lifetimeUsage,
+ * etc.) are shared references. Callers MUST NOT mutate nested properties;
+ * doing so would corrupt the live agent's state in the manager.
+ */
+export function getAgentRecordForTaskValidation(id: string): Readonly<AgentRecord> | undefined {
+	const record = activeManager?.getRecord(id)
+	if (!record || record.visibility === "system") return undefined
+	return { ...record, latestOutcome: record.latestOutcome ?? buildAgentOutcome(record) }
+}
+
+/**
+ * Run an async function while showing a transient entry in the agent overlay.
+ * The description appears in the agents widget ("N running" footer + overlay)
+ * for the duration of the call — the same visual feedback as a real subagent.
+ *
+ * Falls back to calling fn() directly when no agent system is active
+ * (e.g. unit tests, non-TUI contexts).
+ */
+export async function runWithOverlay<T>(description: string, fn: () => Promise<T>): Promise<T> {
+	if (!activeManager) return fn()
+	const id = activeManager.registerTransient(description)
+	activeWidget?.ensureTimer()
+	activeWidget?.update()
+	try {
+		return await fn()
+	} finally {
+		activeManager.completeTransient(id)
+		activeWidget?.markFinished(id)
+		activeWidget?.update()
+	}
+}
+
+/** Spawn a Grader subagent (read-only + bash, bounded turns) and wait for its
+ *  result. Returns the agent's final text response and status. Used by the
+ *  ferment grader to independently verify agent claims with tool access.
+ *
+ *  Returns undefined when the agent system is not active (e.g. unit tests,
+ *  non-TUI contexts) so callers can fall back to a single-shot LLM call. */
+export async function spawnGraderAgent(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	prompt: string,
+): Promise<{ text: string; status: string } | undefined> {
+	if (!activeManager) return undefined
+	const AGENT_GRADER_TYPE = "Grader"
+
+	// Prepare a persisted session file so the grader's transcript is saved
+	// alongside the parent session for post-mortem analysis.
+	let sessionFile: string | undefined
+	let sessionDir: string | undefined
+	try {
+		const parentSessionDir = ctx.sessionManager.getSessionDir()
+		const parentSessionFile = ctx.sessionManager.getSessionFile()
+		if (parentSessionDir && parentSessionFile) {
+			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, ctx.cwd)
+			sessionFile = prepared?.sessionFile
+			sessionDir = parentSessionDir
+		}
+	} catch {
+		// Session file creation is best-effort — the grader can still run
+		// without a persisted session, it just won't have a transcript file.
+	}
+
+	// Allow the grader to be cancelled when the parent session shuts down.
+	const abortController = new AbortController()
+
+	const record = await activeManager.spawnAndWait(pi, ctx, AGENT_GRADER_TYPE, prompt, {
+		description: "Ferment grader",
+		visibility: "system",
+		sessionFile,
+		sessionDir,
+		signal: abortController.signal,
+	})
+	// Collect all assistant text from the session — the grade JSON may appear
+	// in an earlier turn, not just the final response.
+	let fullText = record.result ?? ""
+	if (record.session) {
+		// Collect all assistant text — the grade JSON may appear in an earlier
+		// turn, not just the final response.
+		const assistantText = (record.session?.messages ?? [])
+			.filter((msg) => msg.role === "assistant")
+			.flatMap((msg) => msg.content)
+			.filter((part): part is { type: "text"; text: string } => part.type === "text")
+			.map((part) => part.text)
+			.join("\n\n")
+		fullText = assistantText || fullText
+	}
+	return { text: fullText, status: record.status }
+}
+
+function readAgentTaskRef(params: Record<string, unknown>): AgentTaskRef | undefined {
+	const ref = params.task_ref as Partial<AgentTaskRef> | undefined
+	if (
+		ref?.kind === "ferment_step" &&
+		typeof ref.ferment_id === "string" &&
+		typeof ref.phase_id === "string" &&
+		typeof ref.step_id === "string"
+	) {
+		return {
+			kind: "ferment_step",
+			ferment_id: ref.ferment_id,
+			phase_id: ref.phase_id,
+			step_id: ref.step_id,
+			...(ref.budget_tier === "narrow" || ref.budget_tier === "standard" || ref.budget_tier === "complex"
+				? { budget_tier: ref.budget_tier }
+				: {}),
+		}
+	}
+	return undefined
 }
 
 export default function (pi: ExtensionAPI) {
@@ -493,26 +672,15 @@ export default function (pi: ExtensionAPI) {
 	const agentActivity = new Map<string, AgentActivity>()
 
 	// ---- Cancellable pending notifications ----
-	const pendingNudges = new Map<string, ReturnType<typeof setTimeout>>()
 	const NUDGE_HOLD_MS = 200
+	const nudgeScheduler = new NudgeScheduler(NUDGE_HOLD_MS)
 
 	function scheduleNudge(key: string, send: () => void, delay = NUDGE_HOLD_MS) {
-		cancelNudge(key)
-		pendingNudges.set(
-			key,
-			setTimeout(() => {
-				pendingNudges.delete(key)
-				send()
-			}, delay),
-		)
+		nudgeScheduler.schedule(key, send, delay)
 	}
 
 	function cancelNudge(key: string) {
-		const timer = pendingNudges.get(key)
-		if (timer != null) {
-			clearTimeout(timer)
-			pendingNudges.delete(key)
-		}
+		nudgeScheduler.cancel(key)
 	}
 
 	function emitIndividualNudge(record: AgentRecord) {
@@ -520,17 +688,22 @@ export default function (pi: ExtensionAPI) {
 		if (record.resultConsumed) return
 
 		const notification = formatTaskNotification(record, 500)
-		const footer = record.outputFile ? `\nFull transcript available at: ${record.outputFile}` : ""
+		const transcriptNote = record.outputFile ? `\nFull transcript available at: ${record.outputFile}` : ""
 
-		pi.sendMessage<NotificationDetails>(
-			{
-				customType: "subagent-notification",
-				content: notification + footer,
-				display: true,
-				details: buildNotificationDetails(record, 500, agentActivity.get(record.id)),
-			},
-			{ deliverAs: "followUp", triggerTurn: true },
-		)
+		try {
+			pi.sendMessage<NotificationDetails>(
+				{
+					customType: "subagent-notification",
+					content: notification + transcriptNote,
+					display: true,
+					details: buildNotificationDetails(record, 500, agentActivity.get(record.id)),
+				},
+				{ deliverAs: "followUp", triggerTurn: true },
+			)
+		} catch (err) {
+			if (isStaleCtxError(err)) return
+			throw err
+		}
 	}
 
 	function sendIndividualNudge(record: AgentRecord) {
@@ -557,7 +730,7 @@ export default function (pi: ExtensionAPI) {
 
 			const notifications = unconsumed.map((r) => formatTaskNotification(r, 300)).join("\n\n")
 			const label = partial
-				? `${unconsumed.length} agent(s) finished (partial — others still running)`
+				? `${unconsumed.length} agent(s) finished (partial - others still running)`
 				: `${unconsumed.length} agent(s) finished`
 
 			const [first, ...rest] = unconsumed
@@ -566,15 +739,20 @@ export default function (pi: ExtensionAPI) {
 				details.others = rest.map((r) => buildNotificationDetails(r, 300, agentActivity.get(r.id)))
 			}
 
-			pi.sendMessage<NotificationDetails>(
-				{
-					customType: "subagent-notification",
-					content: `Background agent group completed: ${label}\n\n${notifications}\n\nUse get_subagent_result for full output.`,
-					display: true,
-					details,
-				},
-				{ deliverAs: "followUp", triggerTurn: true },
-			)
+			try {
+				pi.sendMessage<NotificationDetails>(
+					{
+						customType: "subagent-notification",
+						content: `Background agent group completed: ${label}\n\n${notifications}\n\nUse get_subagent_result for full output.`,
+						display: true,
+						details,
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				)
+			} catch (err) {
+				if (isStaleCtxError(err)) return
+				throw err
+			}
 		})
 		widget.update()
 	}, 30_000)
@@ -597,6 +775,27 @@ export default function (pi: ExtensionAPI) {
 			durationMs,
 			tokens,
 		}
+	}
+
+	function appendSubagentRecord(record: AgentRecord): void {
+		pi.appendEntry("subagents:record", {
+			id: record.id,
+			type: record.type,
+			description: record.description,
+			visibility: record.visibility,
+			status: record.status,
+			abortReason: record.abortReason,
+			result: record.result,
+			error: record.error,
+			startedAt: record.startedAt,
+			completedAt: record.completedAt,
+			// Persist file paths so export post-processing can read the
+			// full transcript and attach it to the export. Stripped from
+			// the export output after reading.
+			outputFile: record.outputFile,
+			sessionFile: record.sessionFile,
+			systemPrompt: record.systemPrompt,
+		})
 	}
 
 	let currentBatchAgents: { id: string; joinMode: JoinMode }[] = []
@@ -645,18 +844,7 @@ export default function (pi: ExtensionAPI) {
 				pi.events.emit("subagents:completed", eventData)
 			}
 
-			pi.appendEntry("subagents:record", {
-				id: record.id,
-				type: record.type,
-				description: record.description,
-				visibility: record.visibility,
-				status: record.status,
-				abortReason: record.abortReason,
-				result: record.result,
-				error: record.error,
-				startedAt: record.startedAt,
-				completedAt: record.completedAt,
-			})
+			appendSubagentRecord(record)
 
 			if (record.resultConsumed) {
 				agentActivity.delete(record.id)
@@ -723,16 +911,31 @@ export default function (pi: ExtensionAPI) {
 
 	pi.events.emit("subagents:ready", {})
 
-	pi.on("session_shutdown", async () => {
-		manager.abortAll()
-		budgetRetryCandidates.clear()
-		for (const timer of pendingNudges.values()) clearTimeout(timer)
-		pendingNudges.clear()
-		manager.dispose()
-	})
+	let unsubCtrlB: (() => void) | undefined
+	let unsubKill: (() => void) | undefined
+	let currentUi: ExtensionUIContext | undefined
 
 	const widget = new AgentWidget(manager, agentActivity)
+	activeWidget = widget
 	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
+
+	pi.on("session_shutdown", async () => {
+		unsubCtrlB?.()
+		unsubCtrlB = undefined
+		unsubKill?.()
+		unsubKill = undefined
+		currentUi = undefined
+		manager.abortAll()
+		budgetRetryCandidates.clear()
+		if (batchFinalizeTimer) {
+			clearTimeout(batchFinalizeTimer)
+			batchFinalizeTimer = undefined
+		}
+		nudgeScheduler.beginShutdown()
+		await waitForSubagentShutdown(manager)
+		widget.dispose()
+		manager.dispose()
+	})
 
 	let defaultJoinMode: JoinMode = "smart"
 	function getDefaultJoinMode(): JoinMode {
@@ -745,6 +948,47 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_execution_start", async (_event, ctx) => {
 		widget.setUICtx(ctx.ui as UICtx)
 		widget.onTurnStart()
+
+		if (ctx.hasUI) {
+			const newUi = ctx.ui as ExtensionUIContext
+			// Re-subscribe if the UI context changed (e.g. after a session switch).
+			// The terminal-input handler must use the live UI reference, not a
+			// stale closure captured from the first invocation.
+			if (newUi !== currentUi) {
+				unsubCtrlB?.()
+				unsubKill?.()
+				currentUi = newUi
+				unsubCtrlB = newUi.onTerminalInput((data) => {
+					if (isRawInputCaptureActive()) return undefined
+					if (!matchesKey(data, Key.ctrl("b")) || isKeyRelease(data)) return undefined
+
+					const foreground = manager.listAgents().filter((a) => a.status === "running" && !a.isBackground)
+					if (foreground.length === 0) return undefined
+
+					let detached = 0
+					for (const a of foreground) {
+						if (manager.detachToBackground(a.id)) detached++
+					}
+					if (detached === 0) return undefined
+					currentUi?.notify(`${detached} agent${detached > 1 ? "s" : ""} sent to background`, "info")
+					return { consume: true }
+				})
+
+				// Ctrl+X: kill the most recently spawned running background agent.
+				unsubKill = newUi.onTerminalInput((data) => {
+					if (isRawInputCaptureActive()) return undefined
+					if (!matchesKey(data, Key.ctrl("x")) || isKeyRelease(data)) return undefined
+
+					const bgRunning = manager.listAgents().filter((a) => a.status === "running" && a.isBackground)
+					if (bgRunning.length === 0) return undefined
+
+					const target = bgRunning[0]
+					manager.abort(target.id)
+					currentUi?.notify(`Stopped ${getDisplayName(target.type)} agent`, "info")
+					return { consume: true }
+				})
+			}
+		}
 	})
 
 	const buildTypeListText = () => {
@@ -773,7 +1017,8 @@ export default function (pi: ExtensionAPI) {
 			...defaultDescs,
 			...(customDescs.length > 0 ? ["", "Custom agents:", ...customDescs] : []),
 			"",
-			`Custom agents can be defined in .kimchi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global) — they are picked up automatically. Project-level agents override global ones. Creating a .md file with the same name as a default agent overrides it.`,
+			`Custom agents can be defined in .kimchi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global) - they are picked up automatically. Project-level agents override global ones. Creating a .md file with the same name as a default agent overrides it.`,
+			`Global user instructions (applied to every session) can be placed in the global ${getAgentDir()}/AGENTS.md. Project-level AGENTS.md or CLAUDE.md files in the working directory tree are combined with it.`,
 		].join("\n")
 	}
 
@@ -808,28 +1053,7 @@ The Agent tool launches specialized agents that autonomously handle complex task
 Available agent types:
 ${typeListText}
 
-Guidelines:
-- If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
-- For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
-- Use Explore for codebase searches and code understanding.
-- Use Plan for architecture and implementation planning.
-- Use Researcher for web/docs research with cited sources.
-- Use General-Purpose for complex tasks that need file editing.
-- Provide clear, detailed prompts so the agent can work autonomously.
-- Agent results are returned as text — summarize them for the user.
-- Use run_in_background for work you don't need immediately. You will be notified when it completes.
-- Use resume with an agent ID to continue a previous agent's work.
-- Use steer_subagent to send mid-run messages to a running background agent.
-- Use thinking to request an extended thinking level when the selected agent profile does not fix one.
-- Use token_budget to cap the agent's cumulative output token usage when the task scope is small or bounded. Only output tokens (tokens generated by the agent) count toward the budget; input tokens do not.
-- Treat token_budget as a hard caller constraint. If an agent aborts because of token_budget, do not retry with a higher budget unless the user explicitly asks.
-- Use max_duration for long-running agents that might hang or run indefinitely (e.g., build tasks with many test iterations, background tasks with unpredictable completion times). Timeouts protect against stalled work without relying on token budgets. Short-lived agents (single queries, simple edits) typically do not need a duration limit.
-- Use inherit_context if the agent needs the parent conversation history.
-
-Model selection — YOU choose based on task complexity:
-- Refer to the **Your Team** section in your system prompt for all available models with their tiers, roles, and descriptions.
-- YOU MUST always pass \`model\` with a concrete model ID from **Your Team**. Match the model's tier and description to the task complexity.
-- Use standard-tier models for well-scoped tasks (CRUD, straightforward tests, mechanical fixes). Use heavy-tier models for complex concurrency, algorithms, or architectural reasoning. Use light-tier models for simple exploration or verification.`,
+${AGENT_TOOL_GUIDELINES}`,
 			parameters: Type.Object({
 				prompt: Type.String({
 					description: "The task for the agent to perform.",
@@ -842,14 +1066,13 @@ Model selection — YOU choose based on task complexity:
 				}),
 				model: Type.Optional(
 					Type.String({
-						description:
-							'Model to use for this agent. Pick from the models listed in Your Team based on task complexity. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7") or fuzzy name ("kimi", "minimax", "nemotron"). In orchestration mode you MUST always specify this.',
+						description: AGENT_MODEL_PARAMETER_DESCRIPTION,
 					}),
 				),
 				thinking: Type.Optional(
 					Type.String({
 						description:
-							"Requested thinking level: off, minimal, low, medium, high, xhigh. Agent profiles with fixed thinking keep their profile value.",
+							"Requested thinking level: off, minimal, low, medium, high, xhigh. Orchestrator-provided values override agent profile defaults. Omit only when Orchestration does not require an explicit level.",
 					}),
 				),
 				max_turns: Type.Optional(
@@ -878,19 +1101,25 @@ Model selection — YOU choose based on task complexity:
 							"Set to true to run in background. Returns agent ID immediately. You will be notified on completion.",
 					}),
 				),
-				resume: Type.Optional(
-					Type.String({
-						description: "Optional agent ID to resume from. Continues from previous context.",
-					}),
-				),
 				isolated: Type.Optional(
 					Type.Boolean({
-						description: "If true, agent gets no extension/MCP tools — only built-in tools.",
+						description: "If true, agent gets no extension/MCP tools - only built-in tools.",
 					}),
 				),
 				inherit_context: Type.Optional(
 					Type.Boolean({
 						description: "If true, fork parent conversation into the agent. Default: false (fresh context).",
+					}),
+				),
+				task_ref: Type.Optional(
+					Type.Object({
+						kind: Type.Literal("ferment_step"),
+						ferment_id: Type.String(),
+						phase_id: Type.String(),
+						step_id: Type.String(),
+						budget_tier: Type.Optional(
+							Type.Union([Type.Literal("narrow"), Type.Literal("standard"), Type.Literal("complex")]),
+						),
 					}),
 				),
 			}),
@@ -937,12 +1166,12 @@ Model selection — YOU choose based on task complexity:
 					const frame = SPINNER[details.spinnerFrame ?? 0]
 					const s = stats(details)
 					let line = theme.fg("accent", frame) + (s ? ` ${s}` : "")
-					line += `\n${theme.fg("dim", `  ⎿  ${details.activity ?? "thinking…"}`)}`
+					line += `\n${theme.fg("dim", `  ⎿  ${details.activity ?? "thinking..."}`)}  ${theme.fg("muted", "(ctrl+b to run in background)")}`
 					return new Text(line, 0, 0)
 				}
 
 				if (details.status === "background") {
-					return new Text(theme.fg("dim", `  ⎿  Running in background (ID: ${details.agentId})`), 0, 0)
+					return new Text(theme.fg("dim", `  ⎿  Background agent running (ID: ${details.agentId})`), 0, 0)
 				}
 
 				if (details.status === "completed" || details.status === "steered") {
@@ -1019,6 +1248,39 @@ Model selection — YOU choose based on task complexity:
 					}
 				}
 
+				// When multi-model is enabled and the caller did NOT specify a model,
+				// resolve the default model from the role config based on the agent
+				// type. This ensures Builder calls use the configured builder model,
+				// not the orchestrator's own model.
+				if (getMultiModelEnabled(ctx.sessionManager) && !resolvedConfig.modelFromParams) {
+					const roleModelRef = resolveRoleModelRef(subagentType)
+					if (roleModelRef) {
+						const resolved = resolveModel(roleModelRef, ctx.modelRegistry as ModelRegistry)
+						if (typeof resolved !== "string") {
+							// resolveModel returns `unknown | string` — the cast is required because
+							// ModelRegistry.find() returns unknown. Same pattern as line 1243.
+							model = resolved as typeof ctx.model
+						}
+					}
+				}
+
+				// Multi-model guard: when multi-model mode is active and the caller supplied
+				// an explicit model, the resolved model must belong to the configured
+				// multi-model role pool. This runs before budget-retry and task_ref checks
+				// so invalid models are rejected immediately.
+				if (getMultiModelEnabled(ctx.sessionManager) && resolvedConfig.modelFromParams) {
+					const fullRef = `${(model as { provider?: string }).provider}/${(model as { id?: string }).id}`
+					const allowed = new Set(getAllowedMultiModelRefs())
+					if (!allowed.has(fullRef)) {
+						const allowedList = Array.from(allowed)
+							.map((ref) => `  - ${ref}`)
+							.join("\n")
+						return textResult(
+							`Model "${fullRef}" is not allowed in multi-model mode.\n\nAllowed models:\n${allowedList}\n\nOmit the model parameter to use the current session model, or specify one of the allowed models.`,
+						)
+					}
+				}
+
 				const explicitTokenBudget =
 					(params as { token_budget?: number; tokenBudget?: number }).token_budget ??
 					(params as { token_budget?: number; tokenBudget?: number }).tokenBudget
@@ -1040,7 +1302,18 @@ Model selection — YOU choose based on task complexity:
 				const thinking = resolvedConfig.thinking
 				const inheritContext = resolvedConfig.inheritContext
 				const isolated = resolvedConfig.isolated
-				// The `visibility` field is intentionally NOT exposed in this tool's public schema —
+				const taskRef = readAgentTaskRef(params)
+				if (taskRef && (params.max_turns == null || params.max_duration == null || params.token_budget == null)) {
+					return textResult(
+						"Ferment-linked Agent calls require explicit max_turns, max_duration, and token_budget from the shared worker budget policy.",
+					)
+				}
+				if (taskRef && isolated) {
+					return textResult(
+						"Agent task_ref cannot be used with isolated: true. Ferment-linked workers must have extension tools enabled so they can call submit_agent_report.",
+					)
+				}
+				// The `visibility` field is intentionally NOT exposed in this tool's public schema -
 				// LLMs and personas cannot create hidden agents. Internal kimchi callers (e.g. permission
 				// classifiers, future MCP adapters) spawn hidden agents directly via `AgentManager.spawn(..., { visibility: "system" })`,
 				// which bypasses the tool layer entirely. Hardcoding "user" here ensures any defiant
@@ -1085,24 +1358,6 @@ Model selection — YOU choose based on task complexity:
 					tags: agentTags.length > 0 ? agentTags : undefined,
 				}
 
-				if (params.resume) {
-					const existing = manager.getRecord(params.resume as string)
-					if (!existing) {
-						return textResult(`Agent not found: "${params.resume}". It may have been cleaned up.`)
-					}
-					if (!existing.session) {
-						return textResult(`Agent "${params.resume}" has no active session to resume.`)
-					}
-					const record = await manager.resume(params.resume as string, params.prompt as string, signal)
-					if (!record) {
-						return textResult(`Failed to resume agent "${params.resume}".`)
-					}
-					return textResult(
-						record.result?.trim() || record.error?.trim() || "No output.",
-						buildDetails({ ...detailBase, visibility: existing.visibility }, record),
-					)
-				}
-
 				if (runInBackground) {
 					const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(effectiveMaxTurns)
 					let childSessionFile: string | undefined
@@ -1140,6 +1395,7 @@ Model selection — YOU choose based on task complexity:
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
 							maxTurns: effectiveMaxTurns,
 							tokenBudget: resolvedConfig.tokenBudget,
+							taskRef,
 							maxDuration: resolvedConfig.maxDuration,
 							isolated,
 							inheritContext,
@@ -1199,8 +1455,10 @@ Model selection — YOU choose based on task complexity:
 				let spinnerFrame = 0
 				const startedAt = Date.now()
 				let fgId: string | undefined
+				let fgDetached = false
 
 				const streamUpdate = () => {
+					if (fgDetached) return
 					const details: AgentDetails = {
 						...detailBase,
 						toolUses: fgState.toolUses,
@@ -1228,6 +1486,15 @@ Model selection — YOU choose based on task complexity:
 							fgId = a.id
 							agentActivity.set(a.id, fgState)
 							widget.ensureTimer()
+							const rec = manager.getRecord(a.id)
+							if (rec?.outputFile) {
+								rec.outputCleanup = streamToOutputFile(
+									session as Parameters<typeof streamToOutputFile>[0],
+									rec.outputFile,
+									a.id,
+									ctx.cwd,
+								)
+							}
 							break
 						}
 					}
@@ -1240,8 +1507,8 @@ Model selection — YOU choose based on task complexity:
 
 				streamUpdate()
 
-				let record: AgentRecord
 				let childSessionFile: string | undefined
+				let fgOutputFile: string | undefined
 				const parentSessionDir = ctx.sessionManager.getSessionDir()
 				try {
 					childSessionFile = prepareAgentSessionFile(
@@ -1249,22 +1516,37 @@ Model selection — YOU choose based on task complexity:
 						ctx.sessionManager.getSessionFile(),
 						ctx.cwd,
 					)?.sessionFile
+					fgOutputFile = createOutputFilePath(
+						ctx.cwd,
+						"placeholder",
+						ctx.sessionManager.getSessionId(),
+						parentSessionDir,
+					)
 				} catch (err) {
 					clearInterval(spinnerInterval)
 					const detail = err instanceof Error ? err.message : String(err)
 					return textResult(`Failed to pre-write Agent session file under ${parentSessionDir}: ${detail}`)
 				}
+
+				let detachResolve: (() => void) | undefined
+				const detachPromise = new Promise<"detached">((resolve) => {
+					detachResolve = () => resolve("detached")
+				})
+
+				let spawnedId: string
 				try {
-					record = await manager.spawnAndWait(pi, ctx, subagentType, effectivePrompt, {
+					spawnedId = manager.spawn(pi, ctx, subagentType, effectivePrompt, {
 						description: params.description as string,
 						visibility,
-						model: model as Parameters<typeof manager.spawnAndWait>[4]["model"],
+						model: model as Parameters<typeof manager.spawn>[4]["model"],
 						maxTurns: effectiveMaxTurns,
 						tokenBudget: resolvedConfig.tokenBudget,
+						taskRef,
 						maxDuration: resolvedConfig.maxDuration,
 						isolated,
 						inheritContext,
 						thinkingLevel: thinking,
+						isBackground: false,
 						sessionFile: childSessionFile,
 						sessionDir: parentSessionDir,
 						signal,
@@ -1275,6 +1557,86 @@ Model selection — YOU choose based on task complexity:
 					return textResult(err instanceof Error ? err.message : String(err))
 				}
 
+				// biome-ignore lint/style/noNonNullAssertion: spawn() just inserted this id into the agents map
+				const record = manager.getRecord(spawnedId)!
+				fgId = spawnedId
+				record.detachResolver = detachResolve
+				if (fgOutputFile) {
+					record.outputFile = fgOutputFile.replace("placeholder", spawnedId)
+					record.toolCallId = toolCallId
+					writeInitialEntry(record.outputFile, spawnedId, params.prompt as string, ctx.cwd)
+				}
+
+				// biome-ignore lint/style/noNonNullAssertion: promise is always set after spawn() calls startAgent()
+				const raceResult = await Promise.race([record.promise!.then(() => "completed" as const), detachPromise])
+
+				if (raceResult === "detached") {
+					fgDetached = true
+					clearInterval(spinnerInterval)
+
+					const outputFile = createOutputFilePath(
+						ctx.cwd,
+						spawnedId,
+						ctx.sessionManager.getSessionId(),
+						parentSessionDir,
+					)
+					record.outputFile = outputFile
+					writeInitialEntry(outputFile, spawnedId, params.prompt as string, ctx.cwd)
+					if (record.session) {
+						// Tear down the foreground streaming subscription before
+						// re-subscribing against the same session for background output.
+						record.outputCleanup?.()
+						record.outputCleanup = streamToOutputFile(
+							record.session as Parameters<typeof streamToOutputFile>[0],
+							outputFile,
+							spawnedId,
+							ctx.cwd,
+						)
+					}
+
+					const joinMode = resolveJoinMode(getDefaultJoinMode(), true)
+					if (record && joinMode) {
+						record.joinMode = joinMode
+					}
+					if (explicitTokenBudget != null) {
+						budgetRetryCandidates.set(spawnedId, {
+							budget: explicitTokenBudget,
+							subagentType,
+							description: params.description as string,
+							prompt: params.prompt as string,
+						})
+					}
+					if (joinMode != null && joinMode !== "async") {
+						currentBatchAgents.push({ id: spawnedId, joinMode })
+						if (batchFinalizeTimer) clearTimeout(batchFinalizeTimer)
+						batchFinalizeTimer = setTimeout(finalizeBatch, 100)
+					}
+
+					widget.ensureTimer()
+					widget.update()
+
+					pi.events.emit("subagents:backgrounded", {
+						id: spawnedId,
+						type: subagentType,
+						description: params.description,
+						visibility,
+					})
+
+					return textResult(
+						`Agent sent to background by the user (Ctrl+B).\nAgent ID: ${spawnedId}\nType: ${displayName}\nDescription: ${params.description}\n${outputFile ? `Output file: ${outputFile}\n` : ""}\nThe agent continues running in the background. You will be notified when it completes.\nDo NOT call get_subagent_result now — that would block and defeat the purpose of backgrounding. Continue with other independent work, or stop your turn and return control to the user. The completion notification will contain the results.`,
+						{
+							...detailBase,
+							toolUses: fgState.toolUses,
+							tokens: formatLifetimeTokens(fgState),
+							durationMs: Date.now() - startedAt,
+							status: "background" as const,
+							agentId: spawnedId,
+						},
+					)
+				}
+
+				// Normal completion path
+				record.detachResolver = undefined
 				clearInterval(spinnerInterval)
 
 				if (fgId) {
@@ -1287,7 +1649,7 @@ Model selection — YOU choose based on task complexity:
 				const details = buildDetails(detailBase, record, fgState, { tokens: tokenText })
 
 				const fallbackNote = fellBack
-					? `Note: Unknown agent type "${rawType}" — using ${AGENT_GENERAL_PURPOSE}.\n\n`
+					? `Note: Unknown agent type "${rawType}" - using ${AGENT_GENERAL_PURPOSE}.\n\n`
 					: ""
 
 				if (record.status === "error") {
@@ -1309,13 +1671,29 @@ Model selection — YOU choose based on task complexity:
 				const statsParts = [`${record.toolUses} tool uses`]
 				if (tokenText) statsParts.push(tokenText)
 				const outcome = record.status === "aborted" ? "aborted" : record.status === "stopped" ? "stopped" : "completed"
+				record.latestOutcome ??= buildAgentOutcome(record)
+				// Persist a subagents:record entry for foreground agents so exports
+				// can enrich them with full transcripts the same way background
+				// agents are handled.
+				appendSubagentRecord(record)
+
+				const timeTaken = formatMs(durationMs)
+				const note = getStatusNote(record.status, record.abortReason)
+				const instruction = getStatusInstruction(
+					record.status,
+					getMultiModelEnabled(ctx.sessionManager),
+					record.abortReason,
+				)
+				const outcomeBlock = formatAgentOutcomeBlock(record.latestOutcome)
 				return textResult(
-					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, record.abortReason)}\n\n${record.result?.trim() || "No output."}`,
+					`${fallbackNote}Agent ${outcome} in ${timeTaken} (${statsParts.join(", ")})${note}.${instruction}\n\n${record.result?.trim() || "No output."}${outcomeBlock}`,
 					details,
 				)
 			},
 		}),
 	)
+
+	registerResumeSubagentTool(pi, manager)
 
 	// ---- get_subagent_result tool ----
 
@@ -1385,7 +1763,7 @@ Model selection — YOU choose based on task complexity:
 						line += `\n${theme.fg("dim", `  ${l}`)}`
 					}
 					if (lines.length > maxLines) {
-						line += `\n${theme.fg("muted", `  … (${lines.length - maxLines} more lines — use verbose: true for full output)`)}`
+						line += `\n${theme.fg("muted", `  ... (${lines.length - maxLines} more lines - use verbose: true for full output)`)}`
 					}
 				} else if (!expanded) {
 					const summary = summaryForStatus(details.status, details.error, details.abortReason)
@@ -1433,6 +1811,12 @@ Model selection — YOU choose based on task complexity:
 					bodyForDisplay = record.result?.trim() || "No output."
 					output += bodyForDisplay
 				}
+				record.latestOutcome ??= buildAgentOutcome(record)
+				if (record.latestOutcome && record.status !== "running" && record.status !== "queued") {
+					const outcomeBlock = formatAgentOutcomeBlock(record.latestOutcome)
+					output += outcomeBlock
+					bodyForDisplay += outcomeBlock
+				}
 
 				if (record.status !== "running" && record.status !== "queued") {
 					record.resultConsumed = true
@@ -1464,6 +1848,7 @@ Model selection — YOU choose based on task complexity:
 					durationMs,
 					error: record.error,
 					bodyText: formatAgentBodyForDisplay(bodyForDisplay),
+					agentOutcome: record.latestOutcome,
 				}
 
 				return textResult(output, details)
@@ -1549,7 +1934,7 @@ Model selection — YOU choose based on task complexity:
 		const cfg = getAgentConfig(type)
 		if (!cfg?.models?.length) return "inherit"
 		if (registry) {
-			// Probe the first entry — if even that doesn't resolve, the agent
+			// Probe the first entry - if even that doesn't resolve, the agent
 			// will inherit the parent's model anyway.
 			const resolvedM = resolveModel(cfg.models[0], registry)
 			if (typeof resolvedM === "string") return "inherit"
@@ -1570,7 +1955,7 @@ Model selection — YOU choose based on task complexity:
 		if (agents.length > 0) {
 			const running = agents.filter((a) => a.status === "running" || a.status === "queued").length
 			const done = agents.filter((a) => a.status === "completed" || a.status === "steered").length
-			options.push(`Running agents (${agents.length}) — ${running} running, ${done} done`)
+			options.push(`Running agents (${agents.length}) - ${running} running, ${done} done`)
 		}
 
 		if (allNames.length > 0) {
@@ -1644,7 +2029,7 @@ Model selection — YOU choose based on task complexity:
 		if (hasDisabled) legendParts.push("✕ = disabled")
 		const legend = legendParts.length ? `\n${legendParts.join("  ")}` : ""
 
-		const options = entries.map(({ prefix, desc }) => `${prefix.padEnd(maxPrefix)} — ${desc}`)
+		const options = entries.map(({ prefix, desc }) => `${prefix.padEnd(maxPrefix)} - ${desc}`)
 		if (legend) options.push(legend)
 
 		const choice = await ctx.ui.select("Agent types", options)
@@ -1670,7 +2055,8 @@ Model selection — YOU choose based on task complexity:
 		const options = agents.map((a) => {
 			const dn = getDisplayName(a.type)
 			const dur = formatDuration(a.startedAt, a.completedAt)
-			return `${dn} (${a.description}) · ${a.toolUses} tools · ${a.status} · ${dur}`
+			const bgLabel = a.isBackground && a.status === "running" ? " [background]" : ""
+			return `${dn} (${a.description}) · ${a.toolUses} tools · ${a.status}${bgLabel} · ${dur}`
 		})
 
 		const choice = await ctx.ui.select("Running agents", options)
@@ -1686,7 +2072,11 @@ Model selection — YOU choose based on task complexity:
 
 	async function viewAgentConversation(ctx: ExtensionCommandContext, record: AgentRecord) {
 		if (!record.session) {
-			ctx.ui.notify(`Agent is ${record.status === "queued" ? "queued" : "expired"} — no session available.`, "info")
+			ctx.ui.notify(`Agent is ${record.status === "queued" ? "queued" : "expired"} - no session available.`, "info")
+			return
+		}
+
+		if (ctx.mode !== "tui") {
 			return
 		}
 
@@ -1923,7 +2313,7 @@ isolated: <true for no extension/MCP tools, only built-in tools. Default: false>
 memory: <"user" (global), "project" (per-project), or "local" (gitignored per-project) for persistent memory. Omit for none>
 ---
 
-<system prompt body — instructions for the agent>
+<system prompt body - instructions for the agent>
 \`\`\`
 
 Write the file using the write tool. Only write the file, nothing else.`
@@ -2118,9 +2508,9 @@ ${systemPrompt}
 			}
 		} else if (choice.startsWith("Join mode")) {
 			const val = await ctx.ui.select("Default join mode for background agents", [
-				"smart — auto-group 2+ agents in same turn (default)",
-				"async — always notify individually",
-				"group — always group background agents",
+				"smart - auto-group 2+ agents in same turn (default)",
+				"async - always notify individually",
+				"group - always group background agents",
 			])
 			if (val) {
 				const mode = val.split(" ")[0] as JoinMode
@@ -2143,4 +2533,19 @@ ${systemPrompt}
 			await showAgentsMenu(ctx)
 		},
 	})
+}
+
+async function waitForSubagentShutdown(manager: AgentManager): Promise<void> {
+	let timeout: ReturnType<typeof setTimeout> | undefined
+	try {
+		await Promise.race([
+			manager.waitForAll(),
+			new Promise<void>((resolve) => {
+				timeout = setTimeout(resolve, SUBAGENT_SHUTDOWN_WAIT_MS)
+				timeout.unref?.()
+			}),
+		])
+	} finally {
+		if (timeout) clearTimeout(timeout)
+	}
 }

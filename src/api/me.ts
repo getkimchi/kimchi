@@ -1,3 +1,5 @@
+import { fetchWithRetry } from "../utils/http.js"
+
 export interface MeResponse {
 	id: string
 	username?: string
@@ -29,14 +31,17 @@ export async function getMe(apiKey: string, options?: GetMeOptions): Promise<MeR
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
 	const url = `${endpoint}/v1/me`
-	const resp = await fetchImpl(url, {
-		method: "GET",
-		headers: {
-			Authorization: `Bearer ${apiKey}`,
-			Accept: "application/json",
+	const resp = await fetchWithRetry(
+		url,
+		{
+			method: "GET",
+			headers: {
+				Authorization: `Bearer ${apiKey}`,
+				Accept: "application/json",
+			},
 		},
-		signal: options?.signal,
-	})
+		{ signal: options?.signal, fetchImpl },
+	)
 
 	if (!resp.ok) {
 		throw new Error(`GET ${url} failed with HTTP ${resp.status}`)

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { getToolUiResourceUri } from "@modelcontextprotocol/ext-apps/app-bridge"
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
 import { logger } from "./logger.js"
 import { resourceNameToToolName } from "./resource-tools.js"
 import type { McpResource, McpTool, ServerEntry, ToolMetadata } from "./types.js"
@@ -13,6 +14,7 @@ const CACHE_VERSION = 1
 const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 let _cachePath: string | undefined
 function getCachePath(): string {
+	// biome-ignore lint/suspicious/noAssignInExpressions: result is cached
 	return (_cachePath ??= join(getAgentDir(), "mcp-cache.json"))
 }
 
@@ -22,6 +24,7 @@ export interface CachedTool {
 	inputSchema?: unknown
 	uiResourceUri?: string
 	uiStreamMode?: "eager" | "stream-first"
+	annotations?: ToolAnnotations // Read-only/destructive hints from the MCP protocol
 }
 
 export interface CachedResource {
@@ -252,6 +255,7 @@ export function reconstructToolMetadata(
 			inputSchema: tool.inputSchema,
 			uiResourceUri: tool.uiResourceUri,
 			uiStreamMode: tool.uiStreamMode,
+			annotations: tool.annotations,
 		})
 
 		if (toolMetadata) {
@@ -264,16 +268,10 @@ export function reconstructToolMetadata(
 			if (!resource?.name || !resource?.uri) continue
 
 			const baseName = `get_${resourceNameToToolName(resource.name)}`
-			const resourceMetadata = buildToolMetadata(
-				baseName,
-				serverName,
-				prefix,
-				definition.excludeTools,
-				{
-					description: resource.description ?? `Read resource: ${resource.uri}`,
-					resourceUri: resource.uri,
-				},
-			)
+			const resourceMetadata = buildToolMetadata(baseName, serverName, prefix, definition.excludeTools, {
+				description: resource.description ?? `Read resource: ${resource.uri}`,
+				resourceUri: resource.uri,
+			})
 
 			if (resourceMetadata) {
 				metadata.push(resourceMetadata)
@@ -293,6 +291,7 @@ export function serializeTools(tools: McpTool[]): CachedTool[] {
 			inputSchema: t.inputSchema,
 			uiResourceUri: tryGetToolUiResourceUri(t),
 			uiStreamMode: extractToolUiStreamMode(t._meta),
+			annotations: t.annotations,
 		}))
 }
 

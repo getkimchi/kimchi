@@ -9,21 +9,41 @@
  * judge connection. Encapsulating in a class would add ceremony without value.
  */
 
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import {
-	type PersistedRuntimeState,
 	deleteRuntimeState,
 	emptyState,
 	loadRuntimeState,
+	type PersistedRuntimeState,
 	saveRuntimeState,
 } from "./runtime-state-store.js"
 
 // ─── Active ferment ───────────────────────────────────────────────────────────
 
 let activeFerment: Ferment | undefined
+
+/** True only for the genuinely-final statuses (`complete`, `abandoned`).
+ *  A missing ferment is NOT terminal — it is simply absent — so `undefined`
+ *  returns false. Use {@link isInactiveOrPaused} for the broader bail-out
+ *  predicate that also treats a missing or paused ferment as inactive. */
+export function isTerminal(ferment: Ferment | undefined): boolean {
+	return !!ferment && (ferment.status === "complete" || ferment.status === "abandoned")
+}
+
+/** The "bail out / clear guard" predicate: missing, terminal, or paused.
+ *  Used by the lifecycle-obligation guard, stop-nudge, scheduler, and error-
+ *  recovery paths to decide whether a ferment can no longer make progress
+ *  this turn. Keeps the five hand-written `!f || f.status === ...` sites
+ *  from drifting as statuses evolve. */
+export function isInactiveOrPaused(ferment: Ferment | undefined): boolean {
+	return !ferment || isTerminal(ferment) || ferment.status === "paused"
+}
 
 export function getActive(): Ferment | undefined {
 	return activeFerment
@@ -64,14 +84,137 @@ function shouldElevatePermissions(f: Ferment | undefined): boolean {
 }
 
 export function setActive(f: Ferment | undefined): void {
+	// If the active ferment is changing, manage lockfiles: write a lock for the
+	// new active ferment, remove the lock for the old one. Best-effort — errors
+	// are swallowed so they never block a state transition.
+	if (activeFerment?.id && activeFerment.id !== f?.id) {
+		removeFermentLock(activeFerment.id)
+	}
 	activeFerment = f
 	const elevatePermissions = shouldElevatePermissions(f)
 	if (elevatePermissions && f) {
 		process.env.KIMCHI_ACTIVE_FERMENT = f.id
+		writeFermentLock(f.id)
 	} else {
 		clearActiveFermentId()
+		if (f?.id) removeFermentLock(f.id)
 	}
 	notifyFermentActive(elevatePermissions)
+}
+
+// ─── PID-based lockfiles ───────────────────────────────────────────────────────
+//
+// When a ferment is active in a session, a lockfile is written to a global
+// directory. This allows `recoverStuckFerments()` in events.ts to distinguish
+// between a genuinely crashed session (lockfile PID is dead or missing — safe
+// to pause and recover) and a ferment actively running in another live kimchi
+// session (lockfile PID is alive — do NOT pause).
+//
+// The lock directory is configurable via KIMCHI_FERMENT_LOCK_DIR for test
+// isolation. By default it lives under ~/.config/kimchi/harness/ferment-locks/.
+
+interface FermentLockInfo {
+	pid: number
+	startedAt: string
+	fermentId: string
+}
+
+const SAFE_FERMENT_ID = /^[A-Za-z0-9._-]+$/
+
+function getFermentLockDir(): string {
+	const override = process.env.KIMCHI_FERMENT_LOCK_DIR?.trim()
+	if (override) return override
+	return join(homedir(), ".config", "kimchi", "harness", "ferment-locks")
+}
+
+export function getFermentLockPath(fermentId: string): string {
+	if (!fermentId || !SAFE_FERMENT_ID.test(fermentId) || fermentId === "." || fermentId === "..") {
+		throw new Error(`Invalid fermentId for lockfile: ${JSON.stringify(fermentId)}`)
+	}
+	return join(getFermentLockDir(), `${fermentId}.lock`)
+}
+
+/** Write a best-effort PID lockfile for the given ferment. Swallows all errors
+ *  so it never blocks a state transition. */
+export function writeFermentLock(fermentId: string): void {
+	try {
+		const lockDir = getFermentLockDir()
+		mkdirSync(lockDir, { recursive: true })
+		const lockInfo: FermentLockInfo = {
+			pid: process.pid,
+			startedAt: new Date().toISOString(),
+			fermentId,
+		}
+		writeFileSync(getFermentLockPath(fermentId), JSON.stringify(lockInfo, null, 2), {
+			encoding: "utf8",
+			flag: "w",
+		})
+	} catch (err) {
+		// Lockfile write failure is non-fatal — recovery will treat missing
+		// locks as "not locked" and pause, which is the safe default. Log so
+		// operators can detect when the cross-session protection is absent.
+		console.error(`[ferment] failed to write lockfile for ${fermentId}:`, err)
+	}
+}
+
+/** Remove the lockfile for the given ferment. Best-effort, swallows errors. */
+export function removeFermentLock(fermentId: string): void {
+	try {
+		rmSync(getFermentLockPath(fermentId), { force: true })
+	} catch (err) {
+		// Non-fatal, but log so operators can detect lingering lockfiles.
+		console.error(`[ferment] failed to remove lockfile for ${fermentId}:`, err)
+	}
+}
+
+/** Default staleness ceiling for the PID-reuse guard (7 days). Generous enough
+ *  that legitimate long-running sessions are unaffected; a ferment left active
+ *  for longer than this is treated as abandoned and may be paused by recovery. */
+const DEFAULT_LOCK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+function getLockMaxAgeMs(): number {
+	const raw = process.env.KIMCHI_FERMENT_LOCK_MAX_AGE_MS?.trim()
+	if (!raw) return DEFAULT_LOCK_MAX_AGE_MS
+	const n = Number(raw)
+	return Number.isFinite(n) && n > 0 ? n : DEFAULT_LOCK_MAX_AGE_MS
+}
+
+/** Check whether a ferment's lockfile points to a live (running) process.
+ *
+ *  Returns true if the lockfile exists, its `startedAt` is within the staleness
+ *  window (see `KIMCHI_FERMENT_LOCK_MAX_AGE_MS`, default 7 days), and its PID is
+ *  alive. Returns false if the lockfile is missing, unreadable, stale, has an
+ *  invalid `startedAt`, or the PID is dead.
+ *
+ *  NOTE: `process.kill(pid, 0)` only proves that *some* process with that PID
+ *  exists — it does NOT prove it is the original kimchi session. PIDs are
+ *  recycled by the OS, so a crashed session whose PID is later reused by an
+ *  unrelated process will be falsely reported as alive by the kernel check.
+ *  The `startedAt` staleness guard above mitigates this by treating locks older
+ *  than the configured max age as abandoned, but it cannot fully eliminate
+ *  PID-reuse risk within that window. Operators relying on cross-session
+ *  isolation should keep session lifetimes well below the max age. */
+export function isFermentLockedByLiveProcess(fermentId: string): boolean {
+	try {
+		const lockPath = getFermentLockPath(fermentId)
+		if (!existsSync(lockPath)) return false
+		const raw = readFileSync(lockPath, "utf8")
+		const lockInfo = JSON.parse(raw) as FermentLockInfo
+		if (!lockInfo?.pid) return false
+		// Staleness guard: if the lock predates the max session age, treat it
+		// as stale even if the PID happens to be alive (PID-reuse mitigation).
+		const startedAt = Date.parse(lockInfo.startedAt ?? "")
+		if (!Number.isFinite(startedAt)) return false
+		const now = Date.now()
+		if (startedAt > now) return false // future timestamp → corrupt/stale
+		if (now - startedAt > getLockMaxAgeMs()) return false
+		// process.kill(pid, 0) throws if the process doesn't exist (or we lack
+		// permission to signal it). A successful no-op return means it's alive.
+		process.kill(lockInfo.pid, 0)
+		return true
+	} catch {
+		return false
+	}
 }
 
 // ─── Runtime continuation policy ──────────────────────────────────────────────
@@ -88,12 +231,71 @@ export function setContinuationPolicy(policy: ContinuationPolicy): void {
 	continuationPolicy = policy
 }
 
+/**
+ * Determine the continuation policy for a newly-created ferment.
+ *
+ * A previous ferment may have switched the policy to "automated" (e.g. the
+ * user selected "Start execution in auto mode" in the plan review dialog).
+ * That choice applies to the current workflow and must not become the default
+ * for the next ferment created in the same session.
+ *
+ * Policy rule:
+ *   explicit one-shot flag OR no UI → "automated"
+ *   otherwise                        → "manual"
+ *
+ * This mirrors the `session_start` handler's logic
+ * (`ctx?.hasUI ? "manual" : "automated"`) extended with the one-shot flag.
+ *
+ * Call this ONLY at ferment creation sites — never during resume, switch,
+ * re-proposal, or plan-review confirmation, where resetting the session policy
+ * would override the user's current choice.
+ *
+ * The caller is responsible for applying the result via
+ * `runtime.setContinuationPolicy(...)` so that the policy is written through
+ * the same runtime abstraction that reads it.
+ */
+export function continuationPolicyForNewFerment(hasUI: boolean, isOneShot: boolean): ContinuationPolicy {
+	return isOneShot || !hasUI ? "automated" : "manual"
+}
+
 export function isAutomatedContinuationEnabled(): boolean {
 	return continuationPolicy === "automated"
 }
 
 export function setAutomatedContinuationEnabled(v: boolean): void {
 	continuationPolicy = v ? "automated" : "manual"
+}
+
+// ─── Lifecycle obligation guard retry state ──────────────────────────────────
+// Session-local recovery budget. This is deliberately not persisted: it tracks
+// agent-loop stalls, not Ferment domain progress. Successful persisted lifecycle
+// transitions clear the entry through FermentRuntime's coordination hook.
+
+export interface LifecycleGuardRetryState {
+	/** Current obligation key for this Ferment. */
+	key: string
+	/** Number of retries scheduled so far for this key (1 after the first stop). */
+	count: number
+	/** Whether exhaustion has already been reported for this key. */
+	reported: boolean
+}
+
+const lifecycleGuardRetryStates = new Map<string, LifecycleGuardRetryState>()
+
+export function getLifecycleGuardRetryState(fermentId: string): LifecycleGuardRetryState | undefined {
+	return lifecycleGuardRetryStates.get(fermentId)
+}
+
+export function setLifecycleGuardRetryState(fermentId: string, state: LifecycleGuardRetryState): void {
+	lifecycleGuardRetryStates.set(fermentId, state)
+}
+
+export function clearLifecycleGuardRetryState(fermentId: string): void {
+	lifecycleGuardRetryStates.delete(fermentId)
+}
+
+export function clearAllLifecycleGuardRetryStates(): void {
+	lifecycleGuardRetryStates.clear()
 }
 
 // ─── Last human input timestamp (used by the /ferment progress dialog title) ─
@@ -106,19 +308,6 @@ export function getLastHumanInputAt(): Date | undefined {
 
 export function markHumanInput(): void {
 	lastHumanInputAt = new Date()
-}
-
-// ─── Model-switch suppression ─────────────────────────────────────────────────
-// Used by model_select handler to prevent infinite recursion when reverting.
-
-let restoringModel = false
-
-export function isRestoringModel(): boolean {
-	return restoringModel
-}
-
-export function setRestoringModel(v: boolean): void {
-	restoringModel = v
 }
 
 // ─── Judge model handles (captured opportunistically from ctx) ────────────────
@@ -239,6 +428,86 @@ export function consumeScopingGate(fermentId: string): void {
 export function clearAllScopingGates(): void {
 	scopingInteractive.clear()
 	scopingConfirmed.clear()
+}
+
+// ─── Pending compaction requests (transient) ─────────────────────────────────
+// Recorded on successful complete_ferment_step / complete_ferment_phase so the
+// agent_end hook can auto-compact the session context. Cleared when the
+// compaction fires. Not persisted — single-session handoff only.
+
+export interface PendingCompaction {
+	kind: "step" | "phase"
+	fermentId: string
+	phaseId: string
+	stepId?: string
+	completedAt: string
+}
+
+const pendingCompactions = new Map<string, PendingCompaction>()
+/** Ferment IDs whose compaction is currently in-flight. Kept in state so it
+ *  resets with clearFermentState and doesn't leak across test runtimes. */
+const compactionInFlight = new Set<string>()
+
+export function setPendingCompaction(fermentId: string, pending: PendingCompaction): void {
+	pendingCompactions.set(fermentId, pending)
+}
+
+export function getPendingCompaction(fermentId: string): PendingCompaction | undefined {
+	return pendingCompactions.get(fermentId)
+}
+
+export function clearPendingCompaction(fermentId: string): void {
+	pendingCompactions.delete(fermentId)
+}
+
+/** Drain pending compactions that are NOT currently in-flight.
+ *  Items for in-flight ferments are left in the map so the next
+ *  turn_end / agent_end can retry them once the current compaction finishes. */
+export function drainPendingCompactions(): PendingCompaction[] {
+	const ready: PendingCompaction[] = []
+	for (const [fermentId, pending] of pendingCompactions) {
+		if (!compactionInFlight.has(fermentId)) {
+			ready.push(pending)
+			pendingCompactions.delete(fermentId)
+		}
+	}
+	return ready
+}
+
+export function markCompactionInFlight(fermentId: string): void {
+	compactionInFlight.add(fermentId)
+}
+
+export function clearCompactionInFlight(fermentId: string): void {
+	compactionInFlight.delete(fermentId)
+}
+
+export function isCompactionInFlight(fermentId: string): boolean {
+	return compactionInFlight.has(fermentId)
+}
+
+export function clearAllPendingCompactions(): void {
+	pendingCompactions.clear()
+	compactionInFlight.clear()
+}
+
+// ─── Mid-turn oneshot overrun warnings (per session) ─────────────────────────
+// Tracks which one-shot ferments have already emitted a mid-turn context-overrun
+// breadcrumb so we don't spam on every turn_end above threshold. Kept in state
+// (not a module-level Set in auto-compaction.ts) so it is scoped to the runtime
+// instance and resets with session_start.
+const midTurnOneshotWarnings = new Set<string>()
+
+export function markMidTurnOneshotWarning(fermentId: string): void {
+	midTurnOneshotWarnings.add(fermentId)
+}
+
+export function hasMidTurnOneshotWarning(fermentId: string): boolean {
+	return midTurnOneshotWarnings.has(fermentId)
+}
+
+export function clearMidTurnOneshotWarnings(): void {
+	midTurnOneshotWarnings.clear()
 }
 
 // ─── Block-retry counter (per phase) ─────────────────────────────────────────
@@ -434,13 +703,18 @@ function persistFerment(fermentId: string): void {
 // Tracks consecutive turns during draft scoping where the model only called
 // read-like tools (read, grep, ls, find, bash, web_search, web_fetch, set_phase)
 // without calling any scoping-progression tool (ask_user,
-// confirm_ferment_completion_criteria, propose_ferment_scoping, Agent).
+// confirm_ferment_completion_criteria, propose_ferment_scoping, scope_ferment, Agent).
 // After MAX_SCOPING_EXPLORE_TURNS, the turn_end handler injects a nudge
 // telling the model to stop exploring and advance to the next scoping step.
+//
+// Threshold is intentionally generous: thorough exploration is part of a good
+// plan. Bench data shows ~3 productive exploration turns are normal before the
+// model can write a well-grounded scope. We only want to catch the long-tail
+// case where the model is genuinely stuck.
 
 const scopingExploreTurns = new Map<string, number>()
 
-export const MAX_SCOPING_EXPLORE_TURNS = 4
+export const MAX_SCOPING_EXPLORE_TURNS = 8
 
 export function bumpScopingExploreTurns(fermentId: string): number {
 	const next = (scopingExploreTurns.get(fermentId) ?? 0) + 1
@@ -463,6 +737,7 @@ export function clearFermentState(fermentId: string): void {
 	scopingInteractive.delete(fermentId)
 	scopingConfirmed.delete(fermentId)
 	scopingExploreTurns.delete(fermentId)
+	clearLifecycleGuardRetryState(fermentId)
 	const prefix = `${fermentId}:`
 	stepStartCounts.clearByPrefix(prefix)
 	blockRetryCounts.clearByPrefix(prefix)
@@ -477,6 +752,12 @@ export function clearFermentState(fermentId: string): void {
 		if (key.startsWith(prefix)) stepStartRefs.delete(key)
 	}
 	hydratedFerments.delete(fermentId)
+	// Per-ferment compaction state: a pending request left in the map for a
+	// completed/abandoned/deleted ferment will never be drained, and an
+	// in-flight marker that outlives the ferment blocks future compactions
+	// for the same id (key collisions are vanishingly unlikely but cheap to avoid).
+	pendingCompactions.delete(fermentId)
+	compactionInFlight.delete(fermentId)
 	deleteRuntimeState(fermentId, runtimeStatePersistRoot)
 }
 

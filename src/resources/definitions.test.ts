@@ -20,7 +20,6 @@ describe("resource definitions", () => {
 	afterEach(() => {
 		process.chdir(oldCwd)
 		if (oldHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.HOME
 		} else {
 			process.env.HOME = oldHome
@@ -69,6 +68,20 @@ describe("resource definitions", () => {
 			defaultEnabled: false,
 			restartRequired: true,
 		})
+	})
+
+	it("registers bash-tool-guard as a toggleable extension", () => {
+		const resources = getResourceDefinitions()
+		const resource = resources.find((r) => r.id === "extensions.bash-tool-guard")
+		expect(resource).toMatchObject({
+			kind: "extensions",
+			label: "Bash-tool guard",
+			defaultEnabled: true,
+		})
+		// Toggling is dynamic — the tool_call handler consults
+		// isResourceEnabled on every bash call, so no restart is
+		// required when the user flips the /resources toggle.
+		expect(resource?.restartRequired).toBeFalsy()
 	})
 })
 

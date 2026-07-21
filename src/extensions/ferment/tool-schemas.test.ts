@@ -7,11 +7,46 @@ import { Value } from "typebox/value"
 import { describe, expect, it } from "vitest"
 import {
 	AskUserParams,
+	CompleteFermentParams,
+	CompletePhaseParams,
 	CompleteStepParams,
 	ConfirmCompletionCriteriaParams,
 	ProposeScopingParams,
 	ScopeParams,
 } from "./tool-schemas.js"
+
+const verdict = (id: string, value: string) => ({ id, verdict: value, rationale: "ok", evidence: "n/a" })
+
+describe("gate verdict schemas", () => {
+	it("accepts verification classification aliases only for step S2", () => {
+		expect(
+			Value.Check(CompleteStepParams, {
+				ferment_id: "f-1",
+				phase_id: "phase-1",
+				step_id: "step-1",
+				worker_agent_id: "agent-1",
+				gates: [verdict("S1", "pass"), verdict("S2", "test"), verdict("S3", "pass")],
+			}),
+		).toBe(true)
+	})
+
+	it("rejects verification classification aliases for phase and ferment gates", () => {
+		expect(
+			Value.Check(CompletePhaseParams, {
+				ferment_id: "f-1",
+				phase_id: "phase-1",
+				summary: "done",
+				gates: [verdict("F1", "test"), verdict("F2", "pass"), verdict("F3", "pass")],
+			}),
+		).toBe(false)
+		expect(
+			Value.Check(CompleteFermentParams, {
+				ferment_id: "f-1",
+				gates: [verdict("C1", "smoke"), verdict("C2", "pass"), verdict("C3", "pass")],
+			}),
+		).toBe(false)
+	})
+})
 
 // Minimal valid payload fixtures
 const passingGates = () => [
@@ -118,6 +153,18 @@ describe("ProposeScopingParams schema", () => {
 	it("accepts payload without questions (questions is optional)", () => {
 		const payload = {
 			ferment_id: "f-123",
+			title: "Test Ferment",
+			goal: "Do something",
+			success_criteria: ["Tests pass"],
+			phases: minimalPhases(),
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
+	})
+
+	it("accepts payload without ferment_id (ferment_id is optional)", () => {
+		const payload = {
 			title: "Test Ferment",
 			goal: "Do something",
 			success_criteria: ["Tests pass"],
@@ -431,10 +478,43 @@ describe("CompleteStepParams schema", () => {
 			ferment_id: "f-123",
 			phase_id: "phase-1",
 			step_id: "step-1",
+			worker_agent_id: "agent-123",
 			summary: "done",
 			gates: [
 				{ id: "S1", verdict: "pass", rationale: "ok", evidence: "n/a" },
 				{ id: "S2", verdict: "smoke", rationale: "ran a smoke check", evidence: "browser run" },
+				{ id: "S3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+			],
+		}
+
+		expect(Value.Check(CompleteStepParams, payload)).toBe(true)
+	})
+
+	it("requires worker_agent_id because completion validates the linked worker report", () => {
+		const payload = {
+			ferment_id: "f-123",
+			phase_id: "phase-1",
+			step_id: "step-1",
+			summary: "done",
+			gates: [
+				{ id: "S1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "S2", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "S3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+			],
+		}
+
+		expect(Value.Check(CompleteStepParams, payload)).toBe(true)
+	})
+
+	it("accepts payload without worker_agent_id (orchestrator executed directly)", () => {
+		const payload = {
+			ferment_id: "f-123",
+			phase_id: "phase-1",
+			step_id: "step-1",
+			summary: "done directly",
+			gates: [
+				{ id: "S1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "S2", verdict: "pass", rationale: "ok", evidence: "n/a" },
 				{ id: "S3", verdict: "pass", rationale: "ok", evidence: "n/a" },
 			],
 		}
@@ -446,36 +526,12 @@ describe("CompleteStepParams schema", () => {
 describe("AskUserParams schema", () => {
 	const base = (questions: unknown) => ({ ferment_id: "f-1", questions })
 
-	it("accepts confirm response_type for the top-level shorthand", () => {
-		const payload = {
-			ferment_id: "f-1",
-			question:
-				"I'll consider this done when the script continuously prints CPU temperature and exits cleanly. Sound right?",
-			response_type: "confirm",
-		}
-		expect(Value.Check(AskUserParams, payload)).toBe(true)
-	})
-
 	it("accepts the single/multi/text/confirm question vocabulary", () => {
 		const payload = base([
 			{ id: "approach", type: "single", prompt: "Which?", options: [{ id: "a", label: "A" }] },
 			{ id: "areas", type: "multi", prompt: "Which areas?", options: [{ id: "x", label: "X" }] },
 			{ id: "note", type: "text", prompt: "Anything else?" },
 			{ id: "ship", type: "confirm", prompt: "Ship behind a flag?" },
-		])
-		expect(Value.Check(AskUserParams, payload)).toBe(true)
-	})
-
-	it("accepts a custom otherLabel for allowOther questions", () => {
-		const payload = base([
-			{
-				id: "changes",
-				type: "single",
-				prompt: "Any additions or changes?",
-				options: [{ id: "no", label: "No" }],
-				allowOther: true,
-				otherLabel: "Yes (Type in your answer)",
-			},
 		])
 		expect(Value.Check(AskUserParams, payload)).toBe(true)
 	})
@@ -497,6 +553,32 @@ describe("AskUserParams schema", () => {
 	it("rejects an invented question type", () => {
 		const payload = base([{ id: "ship", type: "confirmation", prompt: "Ship?" }])
 		expect(Value.Check(AskUserParams, payload)).toBe(false)
+	})
+
+	it("requires questions (rejects when questions is missing)", () => {
+		const payload = { ferment_id: "f-1" }
+		expect(Value.Check(AskUserParams, payload)).toBe(false)
+	})
+
+	it("rejects an empty questions array (minItems: 1)", () => {
+		const payload = { ferment_id: "f-1", questions: [] }
+		expect(Value.Check(AskUserParams, payload)).toBe(false)
+	})
+
+	it("accepts params without ferment_id (ferment_id is optional)", () => {
+		const payload = {
+			questions: [{ id: "ok", type: "confirm", prompt: "Proceed?" }],
+		}
+		expect(Value.Check(AskUserParams, payload)).toBe(true)
+	})
+
+	it("AskUserQuestionSchema does not expose otherLabel or placeholder", () => {
+		const questionsProperty = (
+			AskUserParams as unknown as { properties: { questions: { items: { properties: Record<string, unknown> } } } }
+		).properties.questions
+		const questionProperties = questionsProperty.items.properties
+		expect(questionProperties).not.toHaveProperty("otherLabel")
+		expect(questionProperties).not.toHaveProperty("placeholder")
 	})
 })
 

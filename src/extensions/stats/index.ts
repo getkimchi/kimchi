@@ -11,7 +11,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { loadConfig } from "../../config.js"
 import { CastAiStatsApi, getTimeRange } from "./api.js"
 import { formatError, formatHelp } from "./display.js"
-import { type SortBy, formatAnalyticsVisual, formatProductivityVisual } from "./visual.js"
+import { formatAnalyticsVisual, formatProductivityVisual, type SortBy } from "./visual.js"
 
 function createApiClient(): CastAiStatsApi {
 	const apiKey = loadConfig().apiKey || process.env.CASTAI_API_KEY
@@ -77,7 +77,7 @@ async function handleStatsCommand(args: string, ctx: ExtensionCommandContext): P
 		// Fetch analytics data
 		try {
 			const analytics = await api.generateAnalytics(startTime, endTime)
-			const hasTokenData = analytics.inputTokens?.items?.length || analytics.outputTokens?.items?.length
+			const hasTokenData = analytics.tokens?.items?.length
 			const hasCostData = analytics.cost?.items?.length
 			const hasApiCalls = analytics.apiCalls?.items?.length
 

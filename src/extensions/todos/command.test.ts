@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { __test_applyTodoAction, __test_parseTodoArgs, registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
-import { __resetTodoStore, applyWriteTodos, getTodosForScope } from "./store.js"
+import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "./store.js"
+
+const TEST_SESSION_ID = "test-session"
 
 describe("/todos command helpers", () => {
 	beforeEach(() => {
@@ -15,38 +17,50 @@ describe("/todos command helpers", () => {
 		expect(__test_parseTodoArgs("start 1")).toEqual({ action: "start", text: "", index: 0 })
 		expect(__test_parseTodoArgs("block 3")).toEqual({ action: "block", text: "", index: 2 })
 		expect(__test_parseTodoArgs("remove 4")).toEqual({ action: "delete", text: "", index: 3 })
+		expect(__test_parseTodoArgs("expand all")).toEqual({ action: "expand_all", text: "", index: null })
+		expect(__test_parseTodoArgs("show all")).toEqual({ action: "expand_all", text: "", index: null })
+		expect(__test_parseTodoArgs("all")).toEqual({ action: "expand_all", text: "", index: null })
 	})
 
 	it("adds and updates todos through store writes", () => {
-		expect(__test_applyTodoAction({ action: "add", text: " first task ", index: null })).toEqual({
+		const addResult = __test_applyTodoAction(
+			{ action: "add", text: " first task ", index: null },
+			{ sessionId: TEST_SESSION_ID },
+		)
+		expect(addResult).toEqual({
 			message: "Added todo: first task",
 			level: "info",
 		})
-		expect(getTodosForScope()).toEqual([{ id: 1, content: "first task", status: "pending" }])
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toEqual([
+			{ id: 1, content: "first task", status: "pending" },
+		])
 
-		__test_applyTodoAction({ action: "start", text: "", index: 0 })
-		expect(getTodosForScope()[0]).toMatchObject({ status: "in_progress" })
+		__test_applyTodoAction({ action: "start", text: "", index: 0 }, { sessionId: TEST_SESSION_ID })
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]).toMatchObject({ status: "in_progress" })
 
-		__test_applyTodoAction({ action: "block", text: "", index: 0 })
-		expect(getTodosForScope()[0]).toMatchObject({ status: "blocked" })
+		__test_applyTodoAction({ action: "block", text: "", index: 0 }, { sessionId: TEST_SESSION_ID })
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]).toMatchObject({ status: "blocked" })
 
-		__test_applyTodoAction({ action: "done", text: "", index: 0 })
-		expect(getTodosForScope()[0]).toMatchObject({ status: "completed" })
+		__test_applyTodoAction({ action: "done", text: "", index: 0 }, { sessionId: TEST_SESSION_ID })
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]).toMatchObject({ status: "completed" })
 	})
 
 	it("removes and clears todos", () => {
-		applyWriteTodos({
-			todos: [
-				{ content: "one", status: "pending" },
-				{ content: "two", status: "pending" },
-			],
-		})
+		applyWriteTodos(
+			{
+				todos: [
+					{ content: "one", status: "pending" },
+					{ content: "two", status: "pending" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
 
-		__test_applyTodoAction({ action: "delete", text: "", index: 0 })
-		expect(getTodosForScope().map((todo) => todo.content)).toEqual(["two"])
+		__test_applyTodoAction({ action: "delete", text: "", index: 0 }, { sessionId: TEST_SESSION_ID })
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID).map((todo) => todo.content)).toEqual(["two"])
 
-		__test_applyTodoAction({ action: "clear", text: "", index: null })
-		expect(getTodosForScope()).toEqual([])
+		__test_applyTodoAction({ action: "clear", text: "", index: null }, { sessionId: TEST_SESSION_ID })
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toEqual([])
 	})
 
 	it("persists slash-command edits as custom session entries", async () => {
@@ -61,7 +75,10 @@ describe("/todos command helpers", () => {
 		} as never)
 
 		try {
-			await registered.get("todos")?.handler("add persisted task", { hasUI: false } as never)
+			await registered.get("todos")?.handler("add persisted task", {
+				hasUI: false,
+				sessionManager: { getSessionId: () => TEST_SESSION_ID, getBranch: () => [] },
+			} as never)
 		} finally {
 			log.mockRestore()
 		}
@@ -75,5 +92,26 @@ describe("/todos command helpers", () => {
 				todos: [{ id: 1, content: "persisted task", status: "pending" }],
 			}),
 		)
+	})
+
+	it("registers the /todos command", () => {
+		const registered = new Map<string, { getArgumentCompletions: (prefix: string) => Array<{ value: string }> }>()
+		registerTodosCommand({
+			registerCommand: (
+				name: string,
+				config: { getArgumentCompletions: (prefix: string) => Array<{ value: string }> },
+			) => {
+				registered.set(name, config)
+			},
+		} as never)
+
+		expect(registered.has("todos")).toBe(true)
+		expect(registered.has("todo")).toBe(false)
+		expect(
+			registered
+				.get("todos")
+				?.getArgumentCompletions("show")
+				.map((entry) => entry.value),
+		).toEqual(["show all"])
 	})
 })

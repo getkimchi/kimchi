@@ -10,10 +10,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Container, Spacer, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { formatCount } from "../format.js"
-import { type SpinnerState, clearSpinner, spinnerFrame, tickSpinner } from "../spinner.js"
+import { clearSpinner, type SpinnerState, spinnerFrame, tickSpinner } from "../spinner.js"
 import { shutdownBrowserPool } from "./browser-pool.js"
 import { cacheClear } from "./cache.js"
-import { type WebFetchDetails, executeWebFetch } from "./execute-handler.js"
+import { executeWebFetch, type WebFetchDetails } from "./execute-handler.js"
 
 type WebFetchState = SpinnerState
 
@@ -35,7 +35,7 @@ export default function webFetchExtension(pi: ExtensionAPI): void {
 		name: "web_fetch",
 		label: "Web Fetch",
 		description:
-			"Fetch a web page by URL and return its content. " +
+			"Fetch a web page by URL and return its content. Companion to web_search: use it to read the primary source after a search hit, especially official docs, changelogs, migration guides, GitHub READMEs, or RFCs. " +
 			"Use this to read documentation, API references, or any web page. " +
 			"Returns markdown by default, but can also return plain text or raw HTML.",
 		parameters: Type.Object({

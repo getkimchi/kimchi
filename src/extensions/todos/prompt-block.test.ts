@@ -1,6 +1,94 @@
-import { beforeEach, describe, expect, it } from "vitest"
-import { __test_renderTodoPromptBlock } from "./prompt-block.js"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import type { Ferment, Phase } from "../../ferment/types.js"
+import { createContext } from "../__mocks__/context.js"
+import { FERMENT_EVENTS } from "../ferment/domain-events.js"
+import { setActive } from "../ferment/state.js"
+import { bumpStallCounter, registerFermentTodoSync } from "../ferment/todo-sync.js"
+import {
+	__test_renderTodoPromptBlock,
+	__test_renderTodoStateMarkdown,
+	appendTodoPromptBlockIfMissing,
+	renderTodoStateBlock,
+} from "./prompt-block.js"
 import { __resetTodoStore, applyWriteTodos } from "./store.js"
+
+const TEST_SESSION_ID = "test-session"
+
+// ─── Cross-session stall-counter helpers ────────────────────────────────────
+
+function createFakePI(): {
+	pi: ExtensionAPI
+	emit: (channel: string, payload: unknown) => void
+} {
+	const listeners = new Map<string, Array<(payload: unknown) => void>>()
+
+	const events = {
+		on: (channel: string, handler: (payload: unknown) => void) => {
+			if (!listeners.has(channel)) {
+				listeners.set(channel, [])
+			}
+			const list = listeners.get(channel)
+			if (list) {
+				list.push(handler)
+			}
+			return () => {
+				const list = listeners.get(channel)
+				if (list) {
+					const idx = list.indexOf(handler)
+					if (idx !== -1) list.splice(idx, 1)
+				}
+			}
+		},
+		emit: (channel: string, payload: unknown) => {
+			const list = listeners.get(channel)
+			if (list) {
+				for (const fn of list) {
+					fn(payload)
+				}
+			}
+		},
+	}
+
+	const pi = {
+		events,
+	} as unknown as ExtensionAPI
+
+	return { pi, emit: events.emit }
+}
+
+function createTestFerment(phaseId: string, stepCount: number): Ferment {
+	const steps = Array.from({ length: stepCount }, (_, i) => ({
+		id: `step-${i + 1}`,
+		index: i + 1,
+		description: `Step ${i + 1}`,
+		status: "pending" as const,
+	}))
+
+	const phase: Phase = {
+		id: phaseId,
+		index: 1,
+		name: "Test Phase",
+		goal: "Test phase goal",
+		status: "active",
+		steps,
+	}
+
+	return {
+		id: "ferment-prompt-block-test",
+		name: "Test Ferment",
+		status: "running",
+		worktree: { path: "/tmp" },
+		scoping: {},
+		phases: [phase],
+		decisions: [],
+		memories: [],
+		createdAt: new Date().toISOString(),
+		updatedAt: new Date().toISOString(),
+	}
+}
+
+// ─── Test suites ────────────────────────────────────────────────────────────
 
 describe("todo prompt block", () => {
 	beforeEach(() => {
@@ -10,20 +98,269 @@ describe("todo prompt block", () => {
 	it("renders guidance without a current list", () => {
 		const block = __test_renderTodoPromptBlock()
 		expect(block).toContain("## Todos")
-		expect(block).toContain("Do not use write_todos for a single straightforward or purely conversational task.")
+		expect(block).toContain("For any non-trivial task, maintain a todo list.")
+		expect(block).toContain("code changes, debugging, reviews, investigations")
+		expect(block).toContain("Skip todos only for a single straightforward answer")
+		expect(block).toContain("different from leaving TODO comments/placeholders in code")
+		expect(block).toContain("Use create_todos for the initial list before starting multi-step work")
+		expect(block).toContain("add_todo for one missing item")
+		expect(block).toContain("mark_todo for one status change")
+		expect(block).toContain("clear_todos only when the work is done or obsolete")
+		expect(block).toContain("before your final response")
 		expect(block).not.toContain("Current global todos:")
 	})
 
-	it("appends current global todos", () => {
-		applyWriteTodos({
-			todos: [
-				{ content: "alpha", status: "in_progress" },
-				{ content: "bravo", status: "pending" },
-			],
+	it("keeps guidance stable when todos exist", () => {
+		applyWriteTodos(
+			{
+				todos: [
+					{ content: "alpha", status: "in_progress" },
+					{ content: "bravo", status: "pending" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+
+		expect(__test_renderTodoPromptBlock()).not.toContain("Current global todos:")
+		expect(__test_renderTodoPromptBlock()).not.toContain("alpha")
+		expect(__test_renderTodoPromptBlock()).not.toContain("bravo")
+	})
+
+	it("appends guidance when the assembled system prompt missed the todo block", () => {
+		const prompt = appendTodoPromptBlockIfMissing("## Tools\n- read")
+
+		expect(prompt).toContain("## Tools")
+		expect(prompt).toContain("## Todos")
+		expect(appendTodoPromptBlockIfMissing(prompt ?? "")).toBeUndefined()
+	})
+})
+
+describe("todo state prompt block (headless)", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+	})
+
+	it("returns undefined when the store is empty", () => {
+		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toBeUndefined()
+	})
+
+	it("returns undefined when only the global scope is empty", () => {
+		applyWriteTodos({ scope: { kind: "global" }, todos: [] }, TEST_SESSION_ID)
+		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toBeUndefined()
+	})
+
+	it("renders global todos with the correct status glyphs", () => {
+		applyWriteTodos(
+			{
+				scope: { kind: "global" },
+				todos: [
+					{ content: "pending one", status: "pending" },
+					{ content: "working one", status: "in_progress" },
+					{ content: "blocked one", status: "blocked" },
+					{ content: "done one", status: "completed" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+
+		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		expect(md).toBeDefined()
+		expect(md).toContain("## Current Todos")
+		expect(md).toContain("**Global**")
+		expect(md).toContain("- [ ] pending one")
+		expect(md).toContain("- [~] working one")
+		expect(md).toContain("- [!] blocked one")
+		expect(md).toContain("- [x] done one")
+	})
+
+	it("renders a ferment phase with header and indented steps", () => {
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment", phaseId: "phase-1" },
+				todos: [
+					{ content: "[Phase 1] Test Phase", status: "in_progress", activeForm: "Test Phase" },
+					{ content: "↳ Step 1", status: "completed" },
+					{ content: "↳ Step 2", status: "in_progress" },
+					{ content: "↳ Step 3", status: "pending" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+
+		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		expect(md).toContain("**[Phase 1] Test Phase**")
+		expect(md).toContain("- [x] ↳ Step 1")
+		expect(md).toContain("- [~] ↳ Step 2")
+		expect(md).toContain("- [ ] ↳ Step 3")
+	})
+
+	it("renders ferment-step scopes with a header line per step", () => {
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-2" },
+				todos: [{ content: "agent-written plan bullet", status: "in_progress" }],
+			},
+			TEST_SESSION_ID,
+		)
+
+		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		expect(md).toContain("**Step phase-1/step-2**")
+		expect(md).toContain("- [~] agent-written plan bullet")
+	})
+
+	it("groups global + multiple ferment phases together", () => {
+		applyWriteTodos(
+			{
+				scope: { kind: "global" },
+				todos: [{ content: "global thing", status: "pending" }],
+			},
+			TEST_SESSION_ID,
+		)
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment", phaseId: "phase-1" },
+				todos: [
+					{ content: "[Phase 1] First", status: "in_progress", activeForm: "First" },
+					{ content: "↳ step", status: "pending" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment", phaseId: "phase-2" },
+				todos: [
+					{ content: "[Phase 2] Second", status: "in_progress", activeForm: "Second" },
+					{ content: "↳ other step", status: "completed" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+
+		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		// Sections in order: Global, Phase 1, Phase 2
+		const globalIdx = md?.indexOf("**Global**") ?? -1
+		const phase1Idx = md?.indexOf("**[Phase 1] First**") ?? -1
+		const phase2Idx = md?.indexOf("**[Phase 2] Second**") ?? -1
+		expect(globalIdx).toBeGreaterThanOrEqual(0)
+		expect(phase1Idx).toBeGreaterThan(globalIdx)
+		expect(phase2Idx).toBeGreaterThan(phase1Idx)
+	})
+
+	it("reflects subsequent writes (renders fresh state each call)", () => {
+		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toBeUndefined()
+
+		applyWriteTodos(
+			{
+				scope: { kind: "global" },
+				todos: [{ content: "first", status: "pending" }],
+			},
+			TEST_SESSION_ID,
+		)
+		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toContain("- [ ] first")
+
+		applyWriteTodos(
+			{
+				scope: { kind: "global" },
+				todos: [{ content: "first", status: "completed" }],
+			},
+			TEST_SESSION_ID,
+		)
+		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toContain("- [x] first")
+	})
+})
+
+describe("todo state block gating", () => {
+	it("returns undefined when the session has a UI", () => {
+		const ctx = createContext({ hasUI: true })
+		expect(renderTodoStateBlock(ctx)).toBeUndefined()
+	})
+
+	it("renders markdown when the session is headless", () => {
+		applyWriteTodos(
+			{
+				scope: { kind: "global" },
+				todos: [{ content: "headline", status: "pending" }],
+			},
+			TEST_SESSION_ID,
+		)
+		const ctx = createContext({ hasUI: false, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+		expect(renderTodoStateBlock(ctx)).toContain("- [ ] headline")
+	})
+})
+
+describe("ferment-conditional todo guidance", () => {
+	function makeFerment(): Ferment {
+		return {
+			id: "f-guidance-test",
+			name: "Guidance Test",
+			status: "running",
+			worktree: { path: "/tmp" },
+			scoping: {},
+			phases: [],
+			decisions: [],
+			memories: [],
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString(),
+		}
+	}
+
+	afterEach(() => {
+		setActive(undefined)
+	})
+
+	it("renderTodoPromptBlock includes ferment guidance when ferment is active", () => {
+		setActive(makeFerment())
+		const block = __test_renderTodoPromptBlock()
+		expect(block).toContain("When working inside a ferment step")
+		expect(block).toContain("break the step into concrete sub-tasks")
+	})
+
+	it("renderTodoPromptBlock does NOT include ferment guidance when no ferment is active", () => {
+		setActive(undefined)
+		const block = __test_renderTodoPromptBlock()
+		expect(block).not.toContain("When working inside a ferment step")
+	})
+})
+
+describe("cross-session stall counter isolation", () => {
+	afterEach(() => {
+		setActive(undefined)
+	})
+
+	it("only warns about stalls for the session whose step is running", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 1)
+		setActive(ferment)
+
+		const unsubA = registerFermentTodoSync(pi, "session-a")
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+		emit(FERMENT_EVENTS.STEP_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			stepId: "step-1",
+			stepIndex: 1,
 		})
 
-		expect(__test_renderTodoPromptBlock()).toContain(
-			"Current global todos:\n- #1 [in_progress] alpha\n- #2 [pending] bravo",
-		)
+		// Bump session A's stall counter enough times to trigger the warning.
+		for (let i = 0; i < 5; i++) {
+			bumpStallCounter("session-a")
+		}
+
+		// Session A should see the stall warning.
+		const mdA = __test_renderTodoStateMarkdown("session-a")
+		expect(mdA).toContain("Step todos have not been updated for 5 turns")
+
+		// Session B has no running step and no stall counter; no warning.
+		const mdB = __test_renderTodoStateMarkdown("session-b")
+		expect(mdB).toBeUndefined()
+
+		unsubA()
 	})
 })

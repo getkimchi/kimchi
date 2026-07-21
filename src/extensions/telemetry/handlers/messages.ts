@@ -1,6 +1,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { getAvailableModels } from "../../../startup-context.js"
 import type { SessionContext } from "../session-context.js"
+import { handleTransportError } from "./transport-errors.js"
 
 /** Maps OAuth provider IDs to canonical names accepted by the telemetry backend. */
 const PROVIDER_TELEMETRY_MAP: Record<string, string> = {
@@ -36,7 +37,9 @@ export async function handleMessageEnd(
 		const model = assistant.model ?? "unknown"
 		if (model !== "unknown") ctx.currentModel = model
 		const availableModels = getAvailableModels()
-		const meta = availableModels.find((m: { slug: string; provider?: string }) => m.slug === model)
+		const meta = availableModels.find(
+			(m: { slug: string; provider?: string; limits?: { context_window?: number } }) => m.slug === model,
+		)
 		const rawProvider = String(assistant.provider ?? "unknown")
 		const resolvedProvider = meta?.provider ? meta.provider : rawProvider === "kimchi-dev" ? "ai-enabler" : rawProvider
 		const provider = PROVIDER_TELEMETRY_MAP[resolvedProvider] ?? resolvedProvider
@@ -63,6 +66,9 @@ export async function handleMessageEnd(
 			duration_ms: durationMs,
 		})
 
+		// Detect and emit transport errors (socket closed, connection reset, etc.)
+		handleTransportError(ctx, { message: assistant })
+
 		// Accumulate tokens/cost for cumulative metrics
 		if (!ctx.cumulative.tokensByModel[model]) {
 			ctx.cumulative.tokensByModel[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
@@ -79,7 +85,11 @@ export async function handleMessageEnd(
 }
 
 export function handleBeforeAgentStart(ctx: SessionContext, event: { prompt: string }): void {
-	ctx.emit("user_message", { model: ctx.currentModel, message_length: event.prompt.length })
+	ctx.emit("user_message", {
+		model: ctx.currentModel,
+		message_length: event.prompt.length,
+		turn_index: ctx.turnIndex,
+	})
 }
 
 export function handleAgentEnd(
@@ -93,6 +103,11 @@ export function handleAgentEnd(
 		const text = Array.isArray(last.content)
 			? ((last.content[0] as { text?: string } | undefined)?.text ?? "unknown error")
 			: "unknown error"
-		ctx.emit("error", { model: ctx.currentModel, error_type: "agent_error", error_message: text.slice(0, 300) })
+		ctx.emit("error", {
+			model: ctx.currentModel,
+			error_type: "agent_error",
+			error_message: text.slice(0, 300),
+			turn_index: ctx.turnIndex,
+		})
 	}
 }

@@ -13,12 +13,16 @@ export type CommandHookEventName =
 	| "PostCompact"
 	| "UserPromptSubmit"
 	| "Stop"
+	| "StopFail"
 	| "TaskCompleted"
 	| "TurnStart"
 	| "MessageStart"
 	| "MessageEnd"
 	| "ModelSelect"
 	| "UserBash"
+	| "SubagentStart"
+	| "SubagentStop"
+	| "Notification"
 	| "SessionEnd"
 
 /** Every hook event the command-hook adapter machinery can drive. */
@@ -32,12 +36,16 @@ export const FULL_COMMAND_HOOK_EVENTS: readonly CommandHookEventName[] = [
 	"PostCompact",
 	"UserPromptSubmit",
 	"Stop",
+	"StopFail",
 	"TaskCompleted",
 	"TurnStart",
 	"MessageStart",
 	"MessageEnd",
 	"ModelSelect",
 	"UserBash",
+	"SubagentStart",
+	"SubagentStop",
+	"Notification",
 	"SessionEnd",
 ]
 

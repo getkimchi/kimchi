@@ -36,14 +36,21 @@ export function resolveUserPath(filePath: string, cwd: string): string {
 	return isAbsolute(expanded) ? expanded : resolve(cwd, expanded)
 }
 
-// Files only — a directory at the path is NOT a hit. This is the one intentional divergence from pi's resolveReadPath (which uses F_OK and thus accepts directories).
-// Verified against pi-coding-agent@0.67.68: passing a directory in @attachments reaches detectSupportedImageMimeTypeFromFile, whose read() throws EISDIR. Rejecting dirs up front turns that into a clean pre-spawn "file not found" error.
-function isFile(p: string): boolean {
+type ExistingPathKind = "file" | "directory" | "other"
+
+function existingPathKind(p: string): ExistingPathKind | null {
 	try {
-		return statSync(p).isFile()
+		const stats = statSync(p)
+		if (stats.isFile()) return "file"
+		if (stats.isDirectory()) return "directory"
+		return "other"
 	} catch {
-		return false
+		return null
 	}
+}
+
+export function isExistingDirectory(filePath: string, cwd: string): boolean {
+	return existingPathKind(resolveUserPath(filePath, cwd)) === "directory"
 }
 
 // Ordered set of transforms tried against the resolved absolute path. Each row is: "if the literal string didn't match, maybe it was typed one of these ways instead". Order matters: cheaper + more common substitutions first.
@@ -65,7 +72,7 @@ const VARIANTS: ReadonlyArray<(p: string) => string> = [
 export function findExistingFile(
 	filePath: string,
 	cwd: string,
-	exists: (abs: string) => boolean = isFile,
+	exists: (abs: string) => boolean = (abs) => existingPathKind(abs) === "file",
 ): string | null {
 	const base = resolveUserPath(filePath, cwd)
 	for (const variant of VARIANTS) {
@@ -73,4 +80,33 @@ export function findExistingFile(
 		if (exists(candidate)) return candidate
 	}
 	return null
+}
+
+export interface NormalizedAtFileArgs {
+	args: string[]
+	directoryArgs: string[]
+}
+
+export function normalizeAtFileArgs(
+	args: string[],
+	cwd: string,
+	isAtFileArg: (arg: string, index: number, args: string[]) => boolean = (arg) => arg.startsWith("@") && arg !== "@",
+): NormalizedAtFileArgs {
+	const directoryArgs: string[] = []
+	const normalized = args.map((arg, index) => {
+		if (!isAtFileArg(arg, index, args)) return arg
+		const filePath = arg.slice(1)
+		const base = resolveUserPath(filePath, cwd)
+		for (const variant of VARIANTS) {
+			const candidate = variant(base)
+			const kind = existingPathKind(candidate)
+			if (kind === "file") return `@${candidate}`
+			if (kind === "directory") {
+				directoryArgs.push(candidate)
+				return arg
+			}
+		}
+		return arg
+	})
+	return { args: normalized, directoryArgs }
 }

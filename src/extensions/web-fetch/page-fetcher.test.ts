@@ -1,4 +1,20 @@
-import { type MockInstance, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest"
+
+vi.mock("../../utils/http.js", () => ({
+	fetchWithRetry: (
+		url: string,
+		init?: RequestInit,
+		options?: { timeoutMs?: number; signal?: AbortSignal; fetchImpl?: typeof fetch },
+	) => {
+		const ctrl = new AbortController()
+		if (options?.timeoutMs) {
+			setTimeout(() => ctrl.abort(), options.timeoutMs)
+		}
+		const signals = [ctrl.signal, options?.signal, init?.signal].filter(Boolean) as AbortSignal[]
+		const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]
+		return globalThis.fetch(url, { ...init, signal })
+	},
+}))
 
 // Mock browser-pool to control Playwright availability.
 vi.mock("./browser-pool.js", () => ({

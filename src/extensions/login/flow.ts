@@ -12,15 +12,16 @@ import { type Component, Container, type TUI } from "@earendil-works/pi-tui"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { loadConfig, writeApiKey } from "../../config.js"
 import {
+	isTransientModelsError,
 	ModelsFetchError,
 	type PiModelConfig,
-	isTransientModelsError,
 	syncProviderModels,
 	updateModelsConfig,
 } from "../../models.js"
+import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
 export const KIMCHI_PROVIDER_ID = "kimchi-dev"
-export const KIMCHI_DEFAULT_MODEL_ID = "kimi-k2.6"
+export const KIMCHI_DEFAULT_MODEL_ID = "minimax-m3"
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
 export const SUBSCRIPTION_LABEL = "Use a subscription"
@@ -262,6 +263,7 @@ async function configureKimchiToken(
 	}
 	if (providerModels.length > 0) {
 		options.persistConfig?.()
+		void refreshBillingStatusFromConfig()
 		const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
 		await host.setModel?.(selectedModel)
 		host.addFeedback?.(formatKimchiLoginSuccessMessage(selectedModel.id))
@@ -443,7 +445,7 @@ export function getSubscriptionProviderOptions(
 		.sort((a, b) => a.name.localeCompare(b.name))
 }
 
-class SwappableAuthComponent extends Container {
+export class SwappableAuthComponent extends Container {
 	private current: unknown
 	private _focused = false
 
@@ -469,8 +471,8 @@ class SwappableAuthComponent extends Container {
 	}
 
 	handleInput(data: string): void {
-		const inputHandler = (this.current as { handleInput?: (data: string) => void } | undefined)?.handleInput
-		inputHandler?.(data)
+		const child = this.current as { handleInput?: (data: string) => void } | undefined
+		child?.handleInput?.(data)
 	}
 
 	private setChildFocused(focused: boolean): void {

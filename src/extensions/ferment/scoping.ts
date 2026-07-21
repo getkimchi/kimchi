@@ -17,24 +17,25 @@
  * unchanged — the LLM handles scoping conversationally.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { SuccessCriteria } from "../../ferment/success-criteria.js"
 import type { Ferment } from "../../ferment/types.js"
 import { SCOPING_DISCOVERY_GUIDANCE } from "./constants.js"
 import { promptEditor } from "./prompt-ui.js"
-import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
-import type { FermentUiContext } from "./ui.js"
+import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
+import { safeSendMessage } from "./safe-send.js"
 
 const STATUS_KEY = "ferment-scoping"
 
-function setCookingStatus(ctx: FermentUiContext, message: string | undefined): void {
+function setCookingStatus(ctx: ExtensionContext, message: string | undefined): void {
 	ctx.ui.setStatus?.(STATUS_KEY, message)
 }
 
 function sendScopingBreadcrumb(pi: ExtensionAPI, text: string): void {
-	void pi.sendMessage(
+	safeSendMessage(
+		pi,
 		{
 			customType: "ferment_breadcrumb",
 			content: [{ type: "text", text }],
@@ -112,7 +113,8 @@ export interface FermentRequestMessageDetails {
 }
 
 export function sendFermentRequestMessage(pi: ExtensionAPI, intent: string): void {
-	void pi.sendMessage<FermentRequestMessageDetails>(
+	safeSendMessage(
+		pi,
 		{
 			customType: FERMENT_REQUEST_MESSAGE_TYPE,
 			content: [{ type: "text", text: `User entered ferment request: ${intent}` }],
@@ -135,14 +137,15 @@ function buildScopePrompt(runtime: FermentRuntime, fermentId: string): string {
 export async function runScopingFlow(
 	f: Ferment,
 	pi: ExtensionAPI,
-	ctx: FermentUiContext,
+	ctx: ExtensionContext,
 	runtime: FermentRuntime = defaultFermentRuntime,
 	preIntent?: string,
 ): Promise<void> {
-	if (!ctx.ui.editor && !ctx.ui.input) {
+	if (!ctx.hasUI) {
 		// Headless fallback: let the LLM handle scoping conversationally
 		const prompt = buildScopePrompt(runtime, f.id)
-		void pi.sendMessage(
+		safeSendMessage(
+			pi,
 			{
 				customType: "ferment_created_nudge",
 				content: [{ type: "text", text: prompt }],
@@ -172,7 +175,8 @@ export async function runScopingFlow(
 	setCookingStatus(ctx, "Fermenting · drafting scope…")
 	sendScopingBreadcrumb(pi, "Scoping · drafting…")
 
-	void pi.sendMessage(
+	safeSendMessage(
+		pi,
 		{
 			customType: "ferment_created_nudge",
 			content: [
@@ -188,24 +192,6 @@ Context:
 - The host has already created this draft ferment. Do NOT call create_ferment.
 
 ${SCOPING_DISCOVERY_GUIDANCE}
-
-Important constraints:
-- You MUST work through the steps (Orient → Interview → Criteria → Explore → Plan) in order.
-- In Step 1 (Orient), only do lightweight reads: file listing, README, config, short snippets.
-- The interview in Step 2 is iterative — reflect after each round of answers before asking more.
-- Confirm completion criteria with confirm_ferment_completion_criteria before moving to exploration.
-- Use ask_user for Step 2 user interactions. In Step 3, use confirm_ferment_completion_criteria instead of ask_user.
-
-Question policy (for propose_ferment_scoping.questions, used in Step 5 only):
-- After Steps 1-4, any remaining decision-blocking questions go in propose_ferment_scoping.questions.
-- The host renders them as TUI dropdowns.
-- If no question remains decision-blocking, emit questions: [] and record defaults in assumptions.
-- Do not ask preference-survey questions when there is a safe, reversible default.
-
-Planning policy:
-- Default to one phase for simple tasks.
-- Add phases only for real vertical slices/tracer bullets, materially different complexity/risk tiers, independent parallel workstreams, or distinct code localities.
-- Do not split phases just for setup, directory creation, CRUD vs polish, or to make the plan look organized.
 
 Output contract:
 Call propose_ferment_scoping with ferment_id "${f.id}" and a complete payload: title, goal, success_criteria, constraints, assumptions, 1-7 phases, questions, and gates. title is required; set it to a concise 3-5 word Ferment name.

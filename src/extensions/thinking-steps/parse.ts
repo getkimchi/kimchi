@@ -63,26 +63,11 @@ function ensureCompleteVisibleSummary(summary: string): string {
 	return cleaned ? `${cleaned}.` : `${withoutEllipsis.replace(/[.!?;:,]+$/g, "").trimEnd()}.`
 }
 
-function firstMeaningfulLine(text: string): string {
-	const lines = normalizeNewlines(text)
-		.split("\n")
-		.map((line) => line.trim())
-		.filter(Boolean)
-	return lines[0] ?? ""
-}
-
-function firstSentence(text: string): string {
-	const normalized = collapseWhitespace(text)
-	if (!normalized) return ""
-	const match = normalized.match(/^(.{1,120}?)(?:[.!?](?:\s|$)|$)/)
-	return match?.[1]?.trim() ?? normalized
-}
-
 function splitListChunk(chunk: string): string[] {
 	const lines = normalizeNewlines(chunk).split("\n")
 	let contentStartIndex = 0
 	while (contentStartIndex < lines.length) {
-		const trimmed = lines[contentStartIndex]!.trim()
+		const trimmed = lines[contentStartIndex].trim()
 		if (!trimmed || isStandaloneHeadingChunk(trimmed)) {
 			contentStartIndex += 1
 			continue
@@ -131,7 +116,7 @@ function isStandaloneHeadingChunk(chunk: string): boolean {
 		.filter(Boolean)
 	if (lines.length !== 1) return false
 
-	const line = lines[0]!
+	const line = lines[0]
 	if (LIST_ITEM_RE.test(line)) return false
 	if (HEADING_RE.test(line)) return true
 	if (!/^(\*\*|__)(.+?)\1$/.test(line)) return false
@@ -143,23 +128,23 @@ function isStandaloneHeadingChunk(chunk: string): boolean {
 function mergeHeadingParagraphChunks(chunks: string[]): string[] {
 	const merged: string[] = []
 	for (let index = 0; index < chunks.length; index += 1) {
-		const chunk = chunks[index]!
+		const chunk = chunks[index]
 		const nextChunk = chunks[index + 1]
 		if (isStandaloneHeadingChunk(chunk)) {
 			const introChunks: string[] = []
 			let nextIndex = index + 1
 			while (
 				nextIndex < chunks.length &&
-				!isStandaloneHeadingChunk(chunks[nextIndex]!) &&
-				!isListParagraphChunk(chunks[nextIndex]!)
+				!isStandaloneHeadingChunk(chunks[nextIndex]) &&
+				!isListParagraphChunk(chunks[nextIndex])
 			) {
-				introChunks.push(chunks[nextIndex]!)
+				introChunks.push(chunks[nextIndex])
 				nextIndex += 1
 			}
 
 			const followingListChunks: string[] = []
-			while (nextIndex < chunks.length && isListParagraphChunk(chunks[nextIndex]!)) {
-				followingListChunks.push(chunks[nextIndex]!)
+			while (nextIndex < chunks.length && isListParagraphChunk(chunks[nextIndex])) {
+				followingListChunks.push(chunks[nextIndex])
 				nextIndex += 1
 			}
 
@@ -241,19 +226,19 @@ export function splitThinkingIntoStepTexts(text: string): string[] {
 	const mergedChunks = mergeHeadingParagraphChunks(paragraphChunks)
 	const steps: string[] = []
 	for (let index = 0; index < mergedChunks.length; index += 1) {
-		const chunk = mergedChunks[index]!
+		const chunk = mergedChunks[index]
 		const previousStep = steps[steps.length - 1]
 		if (previousStep && isListParagraphChunk(previousStep) && !isListParagraphChunk(chunk)) {
 			const continuationChunks = [chunk]
 			let continuationIndex = index + 1
-			while (continuationIndex < mergedChunks.length && !isListParagraphChunk(mergedChunks[continuationIndex]!)) {
-				continuationChunks.push(mergedChunks[continuationIndex]!)
+			while (continuationIndex < mergedChunks.length && !isListParagraphChunk(mergedChunks[continuationIndex])) {
+				continuationChunks.push(mergedChunks[continuationIndex])
 				continuationIndex += 1
 			}
 
 			if (
 				continuationChunks.every(isListContinuationChunk) &&
-				(continuationIndex === mergedChunks.length || isListParagraphChunk(mergedChunks[continuationIndex]!))
+				(continuationIndex === mergedChunks.length || isListParagraphChunk(mergedChunks[continuationIndex]))
 			) {
 				steps[steps.length - 1] = `${previousStep}\n\n${continuationChunks.join("\n\n")}`
 				index = continuationIndex - 1
@@ -269,7 +254,7 @@ export function splitThinkingIntoStepTexts(text: string): string[] {
 const SUMMARY_MAX_CHARS = 84
 const MMR_LAMBDA = 0.7
 const PURE_TIMESTAMP_RE = /^(?:\[)?\d{1,2}:\d{2}(?::\d{2})?(?:\])?$|^\d{4}-\d{2}-\d{2}t\d{2}:\d{2}:\d{2}/i
-const SEPARATOR_RE = /^[\s`~!@#$%^&*()_+=\-\[\]{}\|;:'",.<>/?·]+$/
+const SEPARATOR_RE = /^[\s`~!@#$%^&*()_+=\-[\]{}|;:'",.<>/?·]+$/
 const SPINNER_STATUS_RE =
 	/^(?:thinking|loading|working|running|processing|waiting|done|complete|completed|idle)(?:[ .…:-]+)?$/i
 const PATH_TOKEN_RE = /\b(?:[a-z0-9_-]+[/.])+[a-z0-9_-]+\b/gi
@@ -278,7 +263,6 @@ const ARTIFACT_RE =
 	/(?:\b[a-z0-9_-]+\.(?:ts|tsx|js|jsx|json|md|txt|yml|yaml|lock)\b|\b[a-z_][a-z0-9_]*\([^)]*\)|`[^`]+`|\b(?:npm|node|git|pi|larra|mcp|tsx|tsc)\b|\b(?:ts\d{3,5}|err_[a-z0-9_]+)\b)/i
 const FAILURE_CUE_RE =
 	/\b(failed|failure|error|errors|blocked|abort(?:ed)?|cannot|unable|did not complete|not completed|reverted|rollback|locked)\b/i
-const SUCCESS_CUE_RE = /\b(pass(?:ed)?|succeed(?:ed)?)\b/i
 const DECISION_CUE_RE =
 	/\b(decided|decision|chose|switched|replaced|confirmed|fixed|resolved|discovered|found|preserve|keeping|keep)\b/i
 const PLAN_CHANGE_CUE_RE =
@@ -552,7 +536,9 @@ function extractCandidates(value: string): SummaryCandidate[] {
 		if (cleanLines.length === 0) return
 
 		const structuredLines = cleanLines.filter((line) => LIST_ITEM_RE.test(line) || HEADING_RE.test(line))
-		structuredLines.forEach((line) => pushCandidate(line, HEADING_RE.test(line) ? "heading" : "bullet"))
+		structuredLines.forEach((line) => {
+			pushCandidate(line, HEADING_RE.test(line) ? "heading" : "bullet")
+		})
 
 		const prose = cleanLines.filter((line) => !LIST_ITEM_RE.test(line) && !HEADING_RE.test(line)).join(" ")
 		if (!prose) return
@@ -562,9 +548,9 @@ function extractCandidates(value: string): SummaryCandidate[] {
 				/[;:]|\s+\b(?:but|so|and then)\b/i.test(sentence) ||
 				CLAUSE_BOUNDARY_COMMA_RE.test(sentence)
 			const clauseCandidates = shouldSplitClauses ? splitClauses(sentence) : [sentence]
-			clauseCandidates.forEach((candidate) =>
-				pushCandidate(candidate, clauseCandidates.length > 1 ? "clause" : "sentence"),
-			)
+			clauseCandidates.forEach((candidate) => {
+				pushCandidate(candidate, clauseCandidates.length > 1 ? "clause" : "sentence")
+			})
 		}
 	})
 
@@ -610,7 +596,7 @@ function limitSummaryCandidates(candidates: SummaryCandidate[]): SummaryCandidat
 
 	return [...selected]
 		.sort((left, right) => left - right)
-		.map((index) => candidates[index]!)
+		.map((index) => candidates[index])
 		.filter(Boolean)
 }
 
@@ -767,6 +753,7 @@ function summarizeThinkingTextBaseline(text: string, fallback = "Reasoning is hi
 			return rightScore - leftScore || left.index - right.index
 		})
 
+		// biome-ignore lint/style/noNonNullAssertion: always available (`while remaining.length > 0`)
 		const next = remaining.shift()!
 		const ordered = [...selected, next].sort((left, right) => left.index - right.index)
 		if (
@@ -784,7 +771,7 @@ function summarizeThinkingTextBaseline(text: string, fallback = "Reasoning is hi
 	const orderedSelection = (
 		selected.length > 0
 			? selected
-			: [fallbackPool.sort((left, right) => right.score - left.score || left.index - right.index)[0]!]
+			: [fallbackPool.sort((left, right) => right.score - left.score || left.index - right.index)[0]]
 	).sort((left, right) => left.index - right.index)
 	return truncateText(
 		formatSummarySentence(
@@ -916,7 +903,7 @@ function renderSummaryEvent(event: ThinkingSummaryEvent): string {
 		const normalized = normalizeSummaryEventText(event.text)
 		const planningMatch = normalized.match(/^(?:i\s+(?:should|will|want\s+to|plan\s+to))\s+(.+)$/i)
 		const cleaned = planningMatch
-			? `Planning to ${planningMatch[1]!.replace(/[.!?;:,]+$/g, "")}.`
+			? `Planning to ${planningMatch[1].replace(/[.!?;:,]+$/g, "")}.`
 			: `${capitalize(stripLeadingSummaryPhrase(normalized).replace(/[.!?;:,]+$/g, ""))}.`
 		return truncateText(cleaned, SUMMARY_MAX_CHARS)
 	}
@@ -947,9 +934,9 @@ function renderSummaryEvent(event: ThinkingSummaryEvent): string {
 			if (compact.length <= SUMMARY_MAX_CHARS) return compact
 		}
 		if (paths.length === 1) {
-			const path = paths[0]!
+			const path = paths[0]
 			const withSymbol =
-				symbols[0] && !path.includes(symbols[0]!) ? `Inspect ${path} and ${symbols[0]}.` : `Inspect ${path}.`
+				symbols[0] && !path.includes(symbols[0]) ? `Inspect ${path} and ${symbols[0]}.` : `Inspect ${path}.`
 			if (withSymbol.length <= SUMMARY_MAX_CHARS) return withSymbol
 			return truncateText(`Inspect ${path}.`, SUMMARY_MAX_CHARS)
 		}
@@ -1023,7 +1010,7 @@ function summarizeThinkingTextChallenger(
 	const hasExplicitFailure = Boolean(latestFailure)
 	const hasExplicitSuccess = Boolean(latestSuccess)
 
-	const topEvent = [...events].sort((left, right) => right.priority - left.priority || right.order - left.order)[0]!
+	const topEvent = [...events].sort((left, right) => right.priority - left.priority || right.order - left.order)[0]
 
 	return {
 		summary: renderSummaryEvent(topEvent) || fallback,
@@ -1317,10 +1304,79 @@ export function iconForThinkingRole(role: ThinkingSemanticRole): string {
 	}
 }
 
+type StepDerivation = {
+	summaryDetails: ReturnType<typeof summarizeThinkingTextDetailed>
+	role: ThinkingSemanticRole
+}
+
+// Completed steps repeat across stream updates. Cache them, but not the growing
+// final step, whose changing snapshots would accumulate. The character budget
+// holds realistic 1000+ step messages; the high entry cap only bounds overhead
+// from pathological numbers of tiny steps.
+const stepDerivationCache = new Map<string, StepDerivation>()
+const STEP_DERIVATION_CACHE_MAX_CHARS = 4 * 1024 * 1024
+const STEP_DERIVATION_CACHE_MAX_ENTRIES = 8192
+let stepDerivationCacheChars = 0
+
+// Bound candidate extraction while retaining both early outcome cues and the
+// latest activity from long steps.
+const STEP_SUMMARY_MAX_CHARS = 16384
+const STEP_SUMMARY_SEPARATOR = "\n\n"
+const STEP_SUMMARY_HEAD_CHARS = Math.floor((STEP_SUMMARY_MAX_CHARS - STEP_SUMMARY_SEPARATOR.length) / 2)
+
+function boundedStepSummarySource(stepText: string): string {
+	if (stepText.length <= STEP_SUMMARY_MAX_CHARS) return stepText
+	const tailChars = STEP_SUMMARY_MAX_CHARS - STEP_SUMMARY_HEAD_CHARS - STEP_SUMMARY_SEPARATOR.length
+	const head = stepText.slice(0, STEP_SUMMARY_HEAD_CHARS).replace(/[\uD800-\uDBFF]$/, "")
+	const tail = stepText.slice(-tailChars).replace(/^[\uDC00-\uDFFF]/, "")
+	return `${head}${STEP_SUMMARY_SEPARATOR}${tail}`
+}
+
+function deriveStep(stepText: string, isFinalStep: boolean): StepDerivation {
+	const summarySource = boundedStepSummarySource(stepText)
+	const cached = !isFinalStep && stepDerivationCache.get(summarySource)
+	if (cached) return cached
+	const summaryDetails = summarizeThinkingTextDetailed(summarySource)
+	const role = inferThinkingRole(`${summaryDetails.summary}\n${summarySource}`)
+	const derivation: StepDerivation = { summaryDetails, role }
+	if (isFinalStep) return derivation
+	while (
+		stepDerivationCache.size >= STEP_DERIVATION_CACHE_MAX_ENTRIES ||
+		stepDerivationCacheChars + summarySource.length > STEP_DERIVATION_CACHE_MAX_CHARS
+	) {
+		const oldest = stepDerivationCache.keys().next().value
+		if (oldest === undefined) break
+		stepDerivationCache.delete(oldest)
+		stepDerivationCacheChars -= oldest.length
+	}
+	stepDerivationCache.set(summarySource, derivation)
+	stepDerivationCacheChars += summarySource.length
+	return derivation
+}
+
+export const clearStepDerivationCacheForTesting = () => {
+	stepDerivationCache.clear()
+	stepDerivationCacheChars = 0
+}
+
+export const getStepDerivationCacheSizeForTesting = () => stepDerivationCache.size
+
+const isRedactedPlaceholderBlock = (block: ThinkingSourceBlock): boolean =>
+	block.redacted === true && !block.text.trim()
+
 export function deriveThinkingSteps(blocks: ThinkingSourceBlock[]): DerivedThinkingStep[] {
 	const steps: DerivedThinkingStep[] = []
+	// The still-growing step is the last one derived from text, which is not
+	// necessarily in the last block: trailing redacted placeholders don't count.
+	let lastTextBlockIndex = -1
+	for (let index = blocks.length - 1; index >= 0; index -= 1) {
+		if (!isRedactedPlaceholderBlock(blocks[index])) {
+			lastTextBlockIndex = index
+			break
+		}
+	}
 	blocks.forEach((block, blockIndex) => {
-		if (block.redacted && !block.text.trim()) {
+		if (isRedactedPlaceholderBlock(block)) {
 			const summary = "Reasoning is hidden by the provider."
 			steps.push({
 				id: `${block.contentIndex}-0`,
@@ -1343,8 +1399,8 @@ export function deriveThinkingSteps(blocks: ThinkingSourceBlock[]): DerivedThink
 
 		const stepTexts = splitThinkingIntoStepTexts(block.text)
 		stepTexts.forEach((stepText, stepIndex) => {
-			const summaryDetails = summarizeThinkingTextDetailed(stepText)
-			const role = inferThinkingRole(`${summaryDetails.summary}\n${stepText}`)
+			const isFinalStep = blockIndex === lastTextBlockIndex && stepIndex === stepTexts.length - 1
+			const { summaryDetails, role } = deriveStep(stepText, isFinalStep)
 			steps.push({
 				id: `${block.contentIndex}-${stepIndex}`,
 				contentIndex: block.contentIndex,

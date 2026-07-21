@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
-import { SessionContext, _resetSharedAccumulators } from "./session-context.js"
+import { _resetSharedAccumulators, SessionContext } from "./session-context.js"
 import { emitSurveyAnswered, emitSurveyDismissed, emitSurveyShown } from "./survey.js"
 import type { LogRecord } from "./transport.js"
 

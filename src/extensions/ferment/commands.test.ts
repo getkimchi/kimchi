@@ -5,15 +5,19 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
+import { createContext } from "../__mocks__/context.js"
 import {
 	FermentCommandController,
 	getFermentArgumentCompletions,
 	registerFermentCommands,
+	startFermentForIntent,
 	startInteractiveFerment,
 } from "./commands.js"
-import { maybeInjectReactiveContinuationNudge } from "./nudge.js"
+import { clearAllLifecycleGuards, maybeInjectLifecycleObligationGuard } from "./lifecycle-obligation-guard.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
+import type { ContinuationPolicy } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -29,14 +33,14 @@ const tipWidgetLocationMock = vi.hoisted(() => ({
 	set: vi.fn(),
 }))
 
-const requestSharedFooterRenderMock = vi.hoisted(() => vi.fn())
+const requestSharedStatusLineRenderMock = vi.hoisted(() => vi.fn())
 
 vi.mock("../tips/index.js", () => ({
 	setTipWidgetLocation: tipWidgetLocationMock.set,
 }))
 
-vi.mock("../shared-footer.js", () => ({
-	requestSharedFooterRender: requestSharedFooterRenderMock,
+vi.mock("../shared-status-line.js", () => ({
+	requestSharedStatusLineRender: requestSharedStatusLineRenderMock,
 }))
 
 const writeFileSyncMock = vi.mocked(writeFileSync)
@@ -46,13 +50,14 @@ beforeEach(() => {
 	tipWidgetLocationMock.restore.mockReset()
 	tipWidgetLocationMock.set.mockReset()
 	tipWidgetLocationMock.set.mockReturnValue(tipWidgetLocationMock.restore)
-	requestSharedFooterRenderMock.mockReset()
+	requestSharedStatusLineRenderMock.mockReset()
 })
 
 afterEach(() => {
 	writeFileSyncMock.mockReset()
 	writeFileSyncMock.mockImplementation(actualFs.writeFileSync)
 	clearAllPendingPlanReviews()
+	clearAllLifecycleGuards()
 })
 
 interface RegisteredCommand {
@@ -91,6 +96,7 @@ function createHarness() {
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
+		getFlag: vi.fn(() => undefined),
 		getActiveTools: vi.fn(() => activeTools),
 		getAllTools: vi.fn(() => allTools),
 		setActiveTools: vi.fn((names: string[]) => {
@@ -99,8 +105,7 @@ function createHarness() {
 		events: { emit: vi.fn(), on: vi.fn(() => () => {}) },
 	} as unknown as ExtensionAPI
 	const ctx = {
-		hasUI: false,
-		ui: { notify: vi.fn() },
+		...createContext({ hasUI: false }),
 		abort: vi.fn(),
 		waitForIdle: vi.fn().mockResolvedValue(undefined),
 	} as unknown as ExtensionCommandContext
@@ -177,15 +182,12 @@ describe("FermentCommandController", () => {
 	it("accepts an inline new title without opening an editor in UI mode", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
-		const ui = {
-			notify: vi.fn(),
-			editor: vi.fn().mockResolvedValueOnce("unexpected editor text"),
-			input: vi.fn().mockResolvedValueOnce("unexpected input text"),
-		}
-		const ctx = {
-			hasUI: true,
-			ui,
-		} as unknown as ExtensionCommandContext
+		const ctx = createContext({
+			ui: {
+				editor: vi.fn().mockResolvedValueOnce("unexpected editor text"),
+				input: vi.fn().mockResolvedValueOnce("unexpected input text"),
+			},
+		}) as ExtensionCommandContext
 
 		const result = await controller.execute(
 			{ type: "new", title: "Inline Title" },
@@ -194,8 +196,8 @@ describe("FermentCommandController", () => {
 
 		const created = h.storage.list().find((f) => f.description === "Inline Title")
 		expect(result).toEqual({ handled: true })
-		expect(ui.editor).not.toHaveBeenCalled()
-		expect(ui.input).not.toHaveBeenCalled()
+		expect(ctx.ui.editor).not.toHaveBeenCalled()
+		expect(ctx.ui.input).not.toHaveBeenCalled()
 		expect(created).toBeDefined()
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -209,15 +211,12 @@ describe("FermentCommandController", () => {
 	it("prompts bare new commands with the multi-line editor in UI mode", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
-		const ui = {
-			notify: vi.fn(),
-			editor: vi.fn().mockResolvedValueOnce("make reports better\ninclude tests"),
-			input: vi.fn().mockResolvedValueOnce("single-line fallback"),
-		}
-		const ctx = {
-			hasUI: true,
-			ui,
-		} as unknown as ExtensionCommandContext
+		const ctx = createContext({
+			ui: {
+				editor: vi.fn().mockResolvedValueOnce("make reports better\ninclude tests"),
+				input: vi.fn().mockResolvedValueOnce("single-line fallback"),
+			},
+		}) as ExtensionCommandContext
 
 		const result = await controller.execute(
 			{ type: "new", title: "" },
@@ -226,11 +225,11 @@ describe("FermentCommandController", () => {
 
 		const created = h.storage.list().find((f) => f.description === "make reports better\ninclude tests")
 		expect(result).toEqual({ handled: true })
-		expect(ui.editor).toHaveBeenCalledWith(
+		expect(ctx.ui.editor).toHaveBeenCalledWith(
 			"🍺  What would you like to ferment?\ne.g. 'Rewrite login flow' or 'Add OAuth support'",
 			"",
 		)
-		expect(ui.input).not.toHaveBeenCalled()
+		expect(ctx.ui.input).not.toHaveBeenCalled()
 		expect(created).toBeDefined()
 		expect(h.runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ id: created?.id }))
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
@@ -253,26 +252,23 @@ describe("FermentCommandController", () => {
 	it("echoes the interactive request before starting the hidden scoping turn", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
-		const ui = {
-			notify: vi.fn(),
-			editor: vi.fn().mockResolvedValueOnce("make the todo app glassy\nwith tests"),
-			input: vi.fn().mockResolvedValueOnce("single-line fallback"),
-			select: vi.fn(),
-		}
-		const ctx = {
-			hasUI: true,
-			ui,
-		} as unknown as ExtensionCommandContext
+
+		const ctx = createContext({
+			ui: {
+				editor: vi.fn().mockResolvedValueOnce("make the todo app glassy\nwith tests"),
+				input: vi.fn().mockResolvedValueOnce("single-line fallback"),
+			},
+		}) as ExtensionCommandContext
 
 		const result = await controller.execute({ type: "interactive" }, { raw: "", pi: h.pi, ctx, runtime: h.runtime })
 
 		expect(result).toEqual({ handled: true })
-		expect(ui.editor).toHaveBeenCalledWith(
+		expect(ctx.ui.editor).toHaveBeenCalledWith(
 			"🍺  What would you like to ferment?\ne.g. 'Rewrite login flow' or 'Add OAuth support'",
 			"",
 		)
-		expect(ui.input).not.toHaveBeenCalled()
-		expect(ui.select).not.toHaveBeenCalled()
+		expect(ctx.ui.input).not.toHaveBeenCalled()
+		expect(ctx.ui.select).not.toHaveBeenCalled()
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_request",
@@ -292,21 +288,18 @@ describe("FermentCommandController", () => {
 
 	it("exposes the interactive request flow as a reusable helper", async () => {
 		const h = createHarness()
-		const ui = {
-			notify: vi.fn(),
-			input: vi.fn().mockResolvedValueOnce("make settings searchable"),
-			select: vi.fn(),
-		}
-		const ctx = {
-			hasUI: true,
-			ui,
-		} as unknown as ExtensionCommandContext
+		const ctx = createContext({
+			ui: {
+				input: vi.fn().mockResolvedValueOnce("make settings searchable"),
+				editor: vi.fn().mockResolvedValueOnce("make settings searchable"),
+			},
+		}) as ExtensionCommandContext
 
 		await startInteractiveFerment({ pi: h.pi, ctx, runtime: h.runtime })
 
 		expect(tipWidgetLocationMock.set).toHaveBeenCalledWith("hidden")
 		expect(tipWidgetLocationMock.restore).toHaveBeenCalled()
-		expect(ui.select).not.toHaveBeenCalled()
+		expect(ctx.ui.select).not.toHaveBeenCalled()
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_request",
@@ -363,7 +356,7 @@ describe("FermentCommandController", () => {
 		expect(h.storage.list()).toHaveLength(0)
 		expect(h.runtime.setActive).not.toHaveBeenCalled()
 		expect(h.pi.setActiveTools).not.toHaveBeenCalled()
-		expect(requestSharedFooterRenderMock).not.toHaveBeenCalled()
+		expect(requestSharedStatusLineRenderMock).not.toHaveBeenCalled()
 		expect(h.ctx.abort).not.toHaveBeenCalled()
 		expect(h.runtime.getContinuationPolicy()).toBe("manual")
 	})
@@ -381,9 +374,19 @@ describe("FermentCommandController", () => {
 		expect(h.storage.get(ferment.id)?.status).toBe("draft")
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "propose_ferment_scoping"])
+		// Idle profile restores the user's full base toolset (all registered tools
+		// minus ferment-only). Harness registers [read, bash, propose_ferment_scoping,
+		// start_ferment_step]; the two ferment-only tools are filtered out.
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
 		expect(h.runtime.getContinuationPolicy()).toBe("manual")
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining('Exited Ferment mode for "Draft Exit"'))
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				content: [expect.objectContaining({ text: 'Command /ferment exit requested for "Draft Exit" [draft].' })],
+			}),
+			{ triggerTurn: false },
+		)
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_ack",
@@ -392,7 +395,7 @@ describe("FermentCommandController", () => {
 			}),
 			{ triggerTurn: false },
 		)
-		expect(requestSharedFooterRenderMock).toHaveBeenCalledTimes(1)
+		expect(requestSharedStatusLineRenderMock).toHaveBeenCalledTimes(2)
 		expect(h.ctx.abort).toHaveBeenCalledTimes(1)
 	})
 
@@ -411,7 +414,7 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ status: "paused" }))
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "propose_ferment_scoping"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 	})
 
@@ -429,7 +432,38 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ status: "paused" }))
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "propose_ferment_scoping"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+	})
+
+	it("/ferment exit reconciles stale paused active cache with running storage", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+		const running = createRunningFerment(h, "Stale Exit")
+		h.runtime.setActive({ ...running, status: "paused" })
+
+		const result = await controller.execute({ type: "exit" }, { raw: "exit", pi: h.pi, ctx: h.ctx, runtime: h.runtime })
+
+		expect(result).toEqual({ handled: true })
+		expect(h.storage.get(running.id)?.status).toBe("paused")
+		expect(h.runtime.getActive()).toBeUndefined()
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				content: [expect.objectContaining({ text: 'Command /ferment exit requested for "Stale Exit" [running].' })],
+			}),
+			{ triggerTurn: false },
+		)
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_ack",
+				content: [
+					expect.objectContaining({
+						text: 'Exited Ferment mode for "Stale Exit". It is paused and can be selected later from /ferment list or /ferment switch.',
+					}),
+				],
+			}),
+			{ triggerTurn: false },
+		)
 	})
 
 	it("/ferment exit leaves paused ferments paused while clearing active mode", async () => {
@@ -446,7 +480,7 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledTimes(1)
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "propose_ferment_scoping"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
 	})
 
 	it("/ferment exit detaches terminal ferments without mutating lifecycle", async () => {
@@ -463,7 +497,7 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledTimes(1)
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "propose_ferment_scoping"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(
 			'Exited Ferment mode for "Complete Exit". It remains complete and is still available from /ferment list.',
 		)
@@ -509,16 +543,16 @@ describe("FermentCommandController", () => {
 		const ferment = createPlannedFerment(h, "No Nudge After Exit")
 		h.runtime.setContinuationPolicy("automated")
 		h.runtime.setActive(ferment)
-		maybeInjectReactiveContinuationNudge(h.pi, h.runtime)
+		maybeInjectLifecycleObligationGuard(h.pi, h.runtime)
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
-			expect.objectContaining({ deliverAs: "followUp" }),
+			expect.objectContaining({ deliverAs: "steer" }),
 		)
 
 		const result = await controller.execute({ type: "exit" }, { raw: "exit", pi: h.pi, ctx: h.ctx, runtime: h.runtime })
 		vi.mocked(h.pi.sendMessage).mockClear()
 
-		maybeInjectReactiveContinuationNudge(h.pi, h.runtime)
+		maybeInjectLifecycleObligationGuard(h.pi, h.runtime)
 
 		expect(result).toEqual({ handled: true })
 		expect(h.runtime.getActive()).toBeUndefined()
@@ -528,11 +562,11 @@ describe("FermentCommandController", () => {
 		if (!resumed.ok) throw new Error(resumed.error.message)
 		vi.mocked(h.pi.sendMessage).mockClear()
 
-		maybeInjectReactiveContinuationNudge(h.pi, h.runtime)
+		maybeInjectLifecycleObligationGuard(h.pi, h.runtime)
 
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
-			expect.objectContaining({ deliverAs: "followUp" }),
+			expect.objectContaining({ deliverAs: "steer" }),
 		)
 	})
 
@@ -547,25 +581,6 @@ describe("FermentCommandController", () => {
 
 		expect(result).toEqual({ handled: true })
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith('Usage: /ferment one-shot "description of what to build"')
-		expect(h.storage.list()).toHaveLength(0)
-		expect(h.pi.sendMessage).not.toHaveBeenCalled()
-	})
-
-	it("keeps UI one-shot without prompt handlers on the usage path", async () => {
-		const h = createHarness()
-		const controller = new FermentCommandController()
-		const ctx = {
-			hasUI: true,
-			ui: { notify: vi.fn() },
-		} as unknown as ExtensionCommandContext
-
-		const result = await controller.execute(
-			{ type: "one-shot", intent: "" },
-			{ raw: "one-shot", pi: h.pi, ctx, runtime: h.runtime },
-		)
-
-		expect(result).toEqual({ handled: true })
-		expect(ctx.ui.notify).toHaveBeenCalledWith('Usage: /ferment one-shot "description of what to build"')
 		expect(h.storage.list()).toHaveLength(0)
 		expect(h.pi.sendMessage).not.toHaveBeenCalled()
 	})
@@ -595,15 +610,12 @@ describe("FermentCommandController", () => {
 		const controller = new FermentCommandController()
 		const active = h.storage.create("Revise Goal")
 		h.runtime.setActive(active)
-		const ui = {
-			notify: vi.fn(),
-			editor: vi.fn().mockResolvedValueOnce("new goal\nwith detail"),
-			input: vi.fn().mockResolvedValueOnce("single-line fallback"),
-		}
-		const ctx = {
-			hasUI: true,
-			ui,
-		} as unknown as ExtensionCommandContext
+		const ctx = createContext({
+			ui: {
+				editor: vi.fn().mockResolvedValueOnce("new goal\nwith detail"),
+				input: vi.fn().mockResolvedValueOnce("single-line fallback"),
+			},
+		}) as ExtensionCommandContext
 
 		const result = await controller.execute(
 			{ type: "revise", field: "goal" },
@@ -611,10 +623,10 @@ describe("FermentCommandController", () => {
 		)
 
 		expect(result).toEqual({ handled: true })
-		expect(ui.editor).toHaveBeenCalledWith("Revise goal:", "")
-		expect(ui.input).not.toHaveBeenCalled()
+		expect(ctx.ui.editor).toHaveBeenCalledWith("Revise goal:", "")
+		expect(ctx.ui.input).not.toHaveBeenCalled()
 		expect(h.storage.get(active.id)?.goal).toBe("new goal\nwith detail")
-		expect(ui.notify).toHaveBeenCalledWith('Goal updated: "new goal\nwith detail"')
+		expect(ctx.ui.notify).toHaveBeenCalledWith('Goal updated: "new goal\nwith detail"')
 	})
 
 	it("reports export write failures without throwing", async () => {
@@ -633,6 +645,98 @@ describe("FermentCommandController", () => {
 
 		expect(result).toEqual({ handled: true })
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith("Export failed: permission denied")
+	})
+})
+
+describe("continuation policy reset on new ferment creation", () => {
+	it("/ferment one-shot resets policy to automated", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("manual")
+		const controller = new FermentCommandController()
+
+		await controller.execute(
+			{ type: "one-shot", intent: "fix the failing smoke test" },
+			{ raw: 'one-shot "fix the failing smoke test"', pi: h.pi, ctx: h.ctx, runtime: h.runtime },
+		)
+
+		expect(h.runtime.getContinuationPolicy()).toBe("automated")
+	})
+
+	it("startFermentForIntent resets policy to manual for interactive UI", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("automated")
+		const interactiveCtx = createContext({
+			...h.ctx,
+			hasUI: true,
+			ui: { ...h.ctx.ui, confirm: vi.fn().mockResolvedValue(true) },
+		}) as unknown as ExtensionCommandContext
+
+		await startFermentForIntent({ pi: h.pi, ctx: interactiveCtx, runtime: h.runtime, rawIntent: "Add OAuth support" })
+
+		expect(h.runtime.getContinuationPolicy()).toBe("manual")
+	})
+
+	it("startFermentForIntent resets policy to automated for headless (no UI)", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("manual")
+
+		await startFermentForIntent({ pi: h.pi, ctx: h.ctx, runtime: h.runtime, rawIntent: "Add OAuth support" })
+
+		expect(h.runtime.getContinuationPolicy()).toBe("automated")
+	})
+
+	it("policy reset writes through the runtime, not global state", async () => {
+		const baseH = createHarness()
+		// Simulate an isolated runtime whose policy methods use local state
+		// instead of the module-level global.
+		let isolatedPolicy: ContinuationPolicy = "automated"
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-isolated-policy-")))
+		const isolatedRuntime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			getContinuationPolicy: () => isolatedPolicy,
+			setContinuationPolicy: (p: ContinuationPolicy) => {
+				isolatedPolicy = p
+			},
+		}
+		const interactiveCtx = createContext({
+			...baseH.ctx,
+			hasUI: true,
+			ui: { ...baseH.ctx.ui, confirm: vi.fn().mockResolvedValue(true) },
+		}) as unknown as ExtensionCommandContext
+
+		await startFermentForIntent({
+			pi: baseH.pi,
+			ctx: interactiveCtx,
+			runtime: isolatedRuntime,
+			rawIntent: "Add OAuth support",
+		})
+
+		expect(isolatedRuntime.getContinuationPolicy()).toBe("manual")
+	})
+
+	it("/ferment new resets policy to manual for interactive UI", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("automated")
+		const commands = new Map<string, RegisteredCommand>()
+		const pi = {
+			...h.pi,
+			registerCommand: (name: string, command: RegisteredCommand) => {
+				commands.set(name, command)
+			},
+		} as unknown as ExtensionAPI
+		registerFermentCommands(pi, h.runtime)
+		const interactiveCtx = createContext({
+			...h.ctx,
+			hasUI: true,
+			ui: { ...h.ctx.ui, confirm: vi.fn().mockResolvedValue(true) },
+		}) as unknown as ExtensionCommandContext
+
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		await fermentCommand.handler('new "Next ferment"', interactiveCtx)
+
+		expect(h.runtime.getContinuationPolicy()).toBe("manual")
 	})
 })
 
@@ -939,7 +1043,13 @@ describe("registerFermentCommands", () => {
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 		expect(active.status).toBe("paused")
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("run /ferment resume"))
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		// paused ferment with no phase activated => profileForFerment returns "planning"
+		// => planning-ferment tools via the shared catalog (read, grep, find, ls,
+		// web_fetch, web_search, set_phase, propose_ferment_scoping, scope_ferment,
+		// update_ferment_scope_field, confirm_ferment_completion_criteria,
+		// list_ferments, ask_user, activate_ferment_phase).
+		const planningTools = getToolsForProfile("planning-ferment").map((t) => t.name)
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(expect.arrayContaining(planningTools))
 		expect(h.pi.sendMessage).not.toHaveBeenCalled()
 	})
 
@@ -1058,7 +1168,7 @@ describe("registerFermentCommands", () => {
 			.fn()
 			.mockImplementationOnce((_title: string, options: string[]) => options[0])
 			.mockImplementationOnce((_title: string, options: string[]) => options[0])
-		const ctx = { ...h.ctx, hasUI: true, ui: { ...h.ctx.ui, select } } as ExtensionCommandContext
+		const ctx = createContext({ ...h.ctx, hasUI: true, ui: { ...h.ctx.ui, select } }) as ExtensionCommandContext
 
 		const commands = new Map<string, RegisteredCommand>()
 		const pi = {
@@ -1076,7 +1186,7 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [expect.objectContaining({ text: expect.stringContaining("Call start_ferment_step") })],
+				content: [expect.objectContaining({ text: expect.stringContaining("start_ferment_step") })],
 				details: expect.objectContaining({ action: "wake_up", expectedAction: "start_step" }),
 			}),
 			{ triggerTurn: true },
@@ -1119,7 +1229,7 @@ describe("registerFermentCommands", () => {
 			.fn()
 			.mockImplementationOnce((_title: string, options: string[]) => options[0])
 			.mockImplementationOnce((_title: string, options: string[]) => options[0])
-		const ctx = { ...h.ctx, hasUI: true, ui: { ...h.ctx.ui, select } } as ExtensionCommandContext
+		const ctx = createContext({ ...h.ctx, hasUI: true, ui: { ...h.ctx.ui, select } }) as ExtensionCommandContext
 
 		const commands = new Map<string, RegisteredCommand>()
 		const pi = {
@@ -1137,7 +1247,7 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [expect.objectContaining({ text: expect.stringContaining("Call activate_ferment_phase") })],
+				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
 				details: expect.objectContaining({ action: "wake_up", expectedAction: "activate_phase" }),
 			}),
 			{ triggerTurn: true },
@@ -1197,7 +1307,37 @@ describe("registerFermentCommands", () => {
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 		expect(active.status).toBe("paused")
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Paused"))
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				content: [
+					expect.objectContaining({ text: 'Command /ferment pause requested for "Running Ferment" [running].' }),
+				],
+			}),
+			{ triggerTurn: false },
+		)
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				details: expect.objectContaining({ variant: "ack" }),
+				content: [expect.objectContaining({ text: 'Paused "Running Ferment". Type /ferment resume to resume.' })],
+			}),
+			{ triggerTurn: false },
+		)
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(
+			expect.arrayContaining([
+				"read",
+				"bash",
+				"Agent",
+				"edit",
+				"write",
+				"start_ferment_step",
+				"activate_ferment_phase",
+				"complete_ferment_step",
+				"verify_ferment_step",
+				"complete_ferment",
+			]),
+		)
 		expect(h.ctx.abort).toHaveBeenCalled()
 	})
 
@@ -1237,6 +1377,71 @@ describe("registerFermentCommands", () => {
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("already paused"))
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/ferment resume"))
 		expect(h.ctx.abort).not.toHaveBeenCalled()
+	})
+
+	it("/ferment pause reconciles stale paused active cache with running storage", async () => {
+		const h = createHarness()
+		const running = createRunningFerment(h, "Stale Active Pause")
+		h.runtime.setActive({ ...running, status: "paused" })
+
+		const commands = new Map<string, RegisteredCommand>()
+		const pi = {
+			...h.pi,
+			registerCommand: (name: string, command: RegisteredCommand) => {
+				commands.set(name, command)
+			},
+		} as unknown as ExtensionAPI
+		registerFermentCommands(pi, h.runtime)
+
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		await fermentCommand.handler("pause", h.ctx)
+
+		expect(h.storage.get(running.id)?.status).toBe("paused")
+		expect(h.runtime.getActive()?.status).toBe("paused")
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith('Paused "Stale Active Pause". Type /ferment resume to resume.')
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				content: [
+					expect.objectContaining({ text: 'Command /ferment pause requested for "Stale Active Pause" [running].' }),
+				],
+			}),
+			{ triggerTurn: false },
+		)
+	})
+
+	it("/ferment resume reconciles stale paused active cache with running storage", async () => {
+		const h = createHarness()
+		const running = createRunningFerment(h, "Stale Active Resume")
+		h.runtime.setActive({ ...running, status: "paused" })
+
+		const commands = new Map<string, RegisteredCommand>()
+		const pi = {
+			...h.pi,
+			registerCommand: (name: string, command: RegisteredCommand) => {
+				commands.set(name, command)
+			},
+		} as unknown as ExtensionAPI
+		registerFermentCommands(pi, h.runtime)
+
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		await fermentCommand.handler("resume", h.ctx)
+
+		expect(h.ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("Failed to resume"))
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith('"Stale Active Resume" is running; continuing from current state.')
+		expect(h.runtime.getActive()?.status).toBe("running")
+		expect(h.storage.get(running.id)?.status).toBe("running")
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				content: [
+					expect.objectContaining({ text: 'Command /ferment resume requested for "Stale Active Resume" [running].' }),
+				],
+			}),
+			{ triggerTurn: false },
+		)
 	})
 
 	it("implements pause → /ferment auto → /ferment resume with policy separated from lifecycle", async () => {
@@ -1302,16 +1507,13 @@ describe("registerFermentCommands", () => {
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 		expect(active.status).toBe("running")
 		expect(active.phases[0].status).toBe("active")
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith([
-			"read",
-			"bash",
-			"propose_ferment_scoping",
-			"start_ferment_step",
-		])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(
+			expect.arrayContaining(["read", "bash", "start_ferment_step", "activate_ferment_phase", "complete_ferment_step"]),
+		)
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [expect.objectContaining({ text: expect.stringContaining("Call start_ferment_step") })],
+				content: [expect.objectContaining({ text: expect.stringContaining("start_ferment_step") })],
 				details: expect.objectContaining({ action: "wake_up", expectedAction: "start_step" }),
 			}),
 			{ triggerTurn: true },
@@ -1361,8 +1563,29 @@ describe("registerFermentCommands", () => {
 		expect(active.phases[0].status).toBe("active")
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				content: [
+					expect.objectContaining({ text: 'Command /ferment resume requested for "Manual Resume Ferment" [paused].' }),
+				],
+			}),
+			{ triggerTurn: false },
+		)
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				details: expect.objectContaining({ variant: "ack" }),
+				content: [
+					expect.objectContaining({
+						text: 'Resumed "Manual Resume Ferment". Continuation policy: manual.',
+					}),
+				],
+			}),
+			{ triggerTurn: false },
+		)
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [expect.objectContaining({ text: expect.stringContaining("Call start_ferment_step") })],
+				content: [expect.objectContaining({ text: expect.stringContaining("start_ferment_step") })],
 				details: expect.objectContaining({ action: "wake_up", expectedAction: "start_step" }),
 			}),
 			{ triggerTurn: true },
@@ -1464,7 +1687,7 @@ describe("registerFermentCommands", () => {
 		})
 		h.runtime.setContinuationPolicy("manual")
 		const select = vi.fn(async () => "Continue to next phase")
-		const ctx = { ...h.ctx, hasUI: true, ui: { ...h.ctx.ui, select } } as ExtensionCommandContext
+		const ctx = createContext({ ...h.ctx, hasUI: true, ui: { ...h.ctx.ui, select } }) as ExtensionCommandContext
 
 		const commands = new Map<string, RegisteredCommand>()
 		const pi = {
@@ -1489,7 +1712,7 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [expect.objectContaining({ text: expect.stringContaining("Call activate_ferment_phase") })],
+				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
 				details: expect.objectContaining({ action: "wake_up", expectedAction: "activate_phase" }),
 			}),
 			{ triggerTurn: true },

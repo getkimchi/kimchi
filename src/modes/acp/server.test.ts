@@ -6,34 +6,41 @@ import type {
 	ListSessionsRequest,
 	RequestPermissionRequest,
 	SessionNotification,
+	TextContent,
 } from "@agentclientprotocol/sdk"
+import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type {
 	AgentSession,
 	AgentSessionEvent,
 	AgentSessionEventListener,
+	AuthStorage,
+	ExtensionContext,
+	ExtensionUIContext,
+	ModelRegistry,
 	SessionInfo as PiSessionInfo,
+	SessionManager,
+	Theme,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
-import { _resetState as _resetHideThinking, _setHideThinking } from "../../extensions/hide-thinking.js"
-import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
+import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
+import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
+import { PERMISSION_MODES, PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import { getSessionPermissionFlagController } from "../../extensions/permissions/mode-controller-registry.js"
-import { ALL_PERMISSION_MODES } from "../../extensions/permissions/types.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
 	type AcpSessionFactory,
 	type AcpSessionLister,
 	type AcpSessionLoader,
-	KimchiAcpAgent,
 	assertSessionHasModel,
 	buildSessionModelState,
 	describeToolCall,
 	initializeHeadlessTheme,
 	isHiddenToolCall,
-	shouldEmitThinking,
+	KimchiAcpAgent,
 	stripAnsi,
 	toAcpSessionInfo,
 	userMessageText,
@@ -66,20 +73,42 @@ class FakeAgentSession {
 						},
 					]
 				: [],
+		find: (provider: string, id: string) =>
+			this.modelRegistry.getAvailable().find((m) => m.provider === provider && m.id === id),
 	}
 	promptImpl: (text: string, opts?: { images?: unknown[] }) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
 	bindExtensionsImpl: (_bindings: unknown) => Promise<void> = async () => {}
 	lastPromptImages?: unknown[]
+	promptCalls: Array<{ prompt: string; opts?: { images?: unknown[] } }> = []
 	// Branch entries returned to the replay walker. Tests fill this with the
 	// shape buildSessionContext consumers expect (type:"message" + role).
 	branch: unknown[] = []
 	sessionManager = {
 		getBranch: () => this.branch,
+		getSessionId: () => this.sessionId,
+		getEntries: () => this.branch,
+	}
+	// Captures whatever setUIContext the agent installs so tests can assert
+	// on it. The real AgentSession exposes this via its extensionRunner
+	// getter; the fake keeps it on the session root for simpler test wiring.
+	setUIContextCalls: unknown[] = []
+	extensionRunner = {
+		setUIContext: (ui: unknown) => {
+			this.setUIContextCalls.push(ui)
+		},
+		emit: async (_event: unknown) => {
+			// Real runner exposes emit for session lifecycle events; the fake
+			// just resolves so disposeSessionRecord's session_shutdown hook
+			// doesn't throw.
+		},
 	}
 
 	constructor(sessionId: string) {
 		this.sessionId = sessionId
+		// Tests assume deterministic single-model state by default. The global
+		// multi-model default may differ between local and CI, so pin it here.
+		setMultiModelEnabled(sessionId, false)
 	}
 
 	subscribe(listener: AgentSessionEventListener): () => void {
@@ -95,6 +124,7 @@ class FakeAgentSession {
 
 	async prompt(text: string, opts?: { images?: unknown[] }): Promise<void> {
 		this.lastPromptImages = opts?.images
+		this.promptCalls.push({ prompt: text, opts })
 		await this.promptImpl(text, opts)
 	}
 
@@ -149,6 +179,12 @@ const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 function agentEnd(): AgentSessionEvent {
 	return { type: "agent_end", messages: [], willRetry: false }
+}
+
+// Drop the incidental `available_commands_update` re-broadcast on session
+// resume so replay tests can assert on transcript shape alone.
+function replayOnly(updates: SessionNotification[]): SessionNotification[] {
+	return updates.filter((u) => u.update.sessionUpdate !== "available_commands_update")
 }
 
 describe("KimchiAcpAgent turn lifecycle", () => {
@@ -243,57 +279,17 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 	})
 
-	// The fragile scenario the previous setImmediate heuristic could trip on:
-	// session.prompt() resolves BEFORE the subscriber receives agent_end (e.g.
-	// a slow extension agent_end handler awaits real I/O). The fix trusts
-	// pi-agent-core's agent_end contract and waits until the event actually
-	// arrives at our listener.
-	it("resolves end_turn even when agent_end is delivered after session.prompt resolves", async () => {
-		let agentEndDeliveredAt = 0
-		let outerResolvedAt = 0
-		fake.promptImpl = async () => {
-			// Mirror pi-mono: agent_start is the first event of a real run.
-			fake.emit({ type: "agent_start" })
-			// agent.prompt awaits the LLM call; simulate with a short delay.
-			await delay(5)
-			// session.prompt is about to resolve; schedule agent_end AFTER that,
-			// simulating a slow downstream handler on the agent_end path.
-			setTimeout(() => {
-				agentEndDeliveredAt = Date.now()
-				fake.emit(agentEnd())
-			}, 40)
-			// Return now — agent_end has NOT reached our subscriber yet.
-		}
-
-		const start = Date.now()
-		const result = await agent.prompt({
-			sessionId,
-			prompt: [{ type: "text", text: "hi" }],
-		})
-		outerResolvedAt = Date.now()
-
-		expect(result.stopReason).toBe("end_turn")
-		// The outer prompt must wait for agent_end, not race ahead of it.
-		expect(agentEndDeliveredAt).toBeGreaterThan(0)
-		expect(outerResolvedAt).toBeGreaterThanOrEqual(agentEndDeliveredAt)
-		expect(outerResolvedAt - start).toBeGreaterThanOrEqual(40)
-	})
-
-	// CANARY: documents the load-bearing assumption in prompt() that SOME turn
-	// event (agent_start or later) is delivered before session.prompt() resolves.
-	// pi-mono's agent.prompt awaits the LLM call, draining the microtask queue
-	// and ensuring _processAgentEvent ran for at least agent_start. If pi-mono
-	// ever delays ALL turn events until after session.prompt() resolves, real
-	// turns would hit the !turnActive branch and synthesize end_turn prematurely —
-	// late agent_end / tool events would be silently dropped. This test locks in
-	// the current behavior; a future pi-mono update that breaks the contract
-	// should fail this test, at which point swap the detector for something more
-	// robust (e.g. peek at isStreaming on the session).
-	it("CANARY: synthesizes end_turn when no turn events arrive before session.prompt resolves", async () => {
+	// session.prompt() is the source of truth for "turn is done". When events
+	// arrive AFTER session.prompt resolves (e.g. a slow downstream handler
+	// awaited something), the turn was already finalized on session.prompt
+	// resolve — late events must be dropped. agent_end no longer drives
+	// finalization, so it cannot be used as a barrier. If this ever regresses
+	// to "wait for late agent_end", we'd be vulnerable to the chained
+	// agent.continue() bug again.
+	it("drops late turn events that arrive after session.prompt resolves", async () => {
 		let lateEventsFired = false
 		fake.promptImpl = async () => {
 			await delay(5)
-			// Schedule agent_start + agent_end AFTER session.prompt resolves.
 			setTimeout(() => {
 				fake.emit({ type: "agent_start" })
 				fake.emit(agentEnd())
@@ -305,42 +301,11 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			sessionId,
 			prompt: [{ type: "text", text: "hi" }],
 		})
-		// Current behavior: end_turn synthesized immediately after session.prompt
-		// resolves — before late events arrive. If this changes to "cancelled" or
-		// "end_turn from late agent_end", the short-circuit detector was updated.
 		expect(result.stopReason).toBe("end_turn")
 		expect(lateEventsFired).toBe(false)
 
-		// Let late events fire and confirm they are dropped (turn already cleared).
 		await delay(40)
 		expect(lateEventsFired).toBe(true)
-	})
-
-	// Defensive widening: if the first event we observe from pi-mono is
-	// tool_execution_start (hypothetical future ordering where agent_start
-	// isn't synchronous with agent.prompt), turnActive still flips and the
-	// prompt() resolver waits for agent_end instead of synthesizing end_turn
-	// prematurely. This pins down the widening in TurnContext.turnActive.
-	it("treats tool_execution_start as a turn-active signal (no premature short-circuit)", async () => {
-		fake.promptImpl = async () => {
-			// No agent_start. Emit only tool_execution_start + agent_end.
-			fake.emit({
-				type: "tool_execution_start",
-				toolCallId: "tc-early",
-				toolName: "bash",
-				args: { command: "noop" },
-			})
-			await delay(5)
-			setTimeout(() => fake.emit(agentEnd()), 30)
-		}
-		const result = await agent.prompt({
-			sessionId,
-			prompt: [{ type: "text", text: "x" }],
-		})
-		// end_turn must come from agent_end (post-delay), not from the
-		// !turnActive short-circuit branch firing immediately after
-		// session.prompt() resolves.
-		expect(result.stopReason).toBe("end_turn")
 	})
 
 	// Extension-command / input-handler / no-op path: session.prompt returns
@@ -357,6 +322,141 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 
 		expect(result.stopReason).toBe("end_turn")
+	})
+
+	// Regression: pi-mono's _runAgentPrompt chains multiple agent.prompt /
+	// agent.continue calls when retries, queued follow-up messages, or
+	// compaction are pending. Each chained call emits its own agent_start +
+	// agent_end pair. Previously the ACP handler finalized on the FIRST
+	// agent_end, sending end_turn mid-stream — the client then tried to send
+	// a new prompt and hit pi-mono's "Agent is already processing" throw
+	// because session.prompt was still running the chained continues.
+	// Now: end_turn is sent exactly once, only after session.prompt()
+	// resolves (i.e. after ALL chained calls complete).
+	it("sends exactly one end_turn after chained agent.continue() cycles complete", async () => {
+		const { conn: recordingConn, updates } = makeRecordingConn()
+		const localAgent = new KimchiAcpAgent(recordingConn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const localSessionId = res.sessionId
+
+		fake.promptImpl = async () => {
+			// Cycle 1 — first agent.prompt call.
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta: "first",
+					contentIndex: 0,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+			await delay(5)
+			// Cycle 2 — agent.continue() (e.g. follow-up message queued,
+			// retry needed, or compaction). The user-visible bug is that the
+			// FIRST agent_end used to trigger end_turn here, dropping cycle 2.
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta: "second",
+					contentIndex: 0,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const result = await localAgent.prompt({
+			sessionId: localSessionId,
+			prompt: [{ type: "text", text: "go" }],
+		})
+
+		// Single end_turn, with stopReason "end_turn".
+		expect(result.stopReason).toBe("end_turn")
+
+		// Both cycles' chunks reach the client. Under the OLD behavior,
+		// the first agent_end would have cleared entry.turn and dropped
+		// every cycle-2 event — so this assertion is the bug-reproducer.
+		const chunks = updates.flatMap((u) =>
+			u.update.sessionUpdate === "agent_message_chunk" ? [(u.update.content as TextContent).text] : [],
+		)
+		expect(chunks).toEqual(["first", "second"])
+	})
+
+	// Cancel arrives between chained agent.continue() cycles. Cycle 1 completes
+	// normally (agent_start → message_update → agent_end), then the client calls
+	// cancel() before cycle 2 starts. session.prompt() resolves (abort may or may
+	// not prevent the next continue), and the .then() handler sees cancelled=true.
+	// The first cycle's chunks must still reach the client; the result must be
+	// "cancelled", not "end_turn".
+	it("resolves cancelled when cancel arrives between chained agent.continue() cycles", async () => {
+		const { conn: recordingConn, updates } = makeRecordingConn()
+		const localAgent = new KimchiAcpAgent(recordingConn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const localSessionId = res.sessionId
+
+		let cancelSeen = false
+		fake.promptImpl = async () => {
+			// Cycle 1 — completes normally.
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta: "before-cancel",
+					contentIndex: 0,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+
+			// Simulate the async boundary between chained calls where
+			// _handlePostAgentRun decides whether to continue. The client's
+			// cancel() lands here.
+			while (!cancelSeen) await delay(5)
+
+			// Cycle 2 — would have run, but abort arrived. In real pi-mono the
+			// next agent.continue() may not even start; simulate the benign case
+			// where it does start but produces nothing meaningful before abort
+			// tears it down.
+			fake.emit({ type: "agent_start" })
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
+		}
+
+		const promptP = localAgent.prompt({
+			sessionId: localSessionId,
+			prompt: [{ type: "text", text: "go" }],
+		})
+		// Let cycle 1 complete and the promptImpl pause at the while-loop.
+		await delay(20)
+		await localAgent.cancel({ sessionId: localSessionId })
+
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+		expect(fake.aborted).toBe(true)
+
+		// Cycle 1's chunk must have been delivered before cancellation.
+		const chunks = updates.flatMap((u) =>
+			u.update.sessionUpdate === "agent_message_chunk" ? [(u.update.content as TextContent).text] : [],
+		)
+		expect(chunks).toContain("before-cancel")
 	})
 
 	// Client cancels mid-turn: cancelled=true is set on the turn context, then
@@ -426,6 +526,36 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 		await expect(agent.prompt({ sessionId, prompt: [{ type: "text", text: "x" }] })).rejects.toThrow(
 			/no model configured/,
+		)
+	})
+
+	// Chained continues: cycle 1 succeeds but cycle 2's agent.continue() throws
+	// a non-abort error (e.g. context overflow during compaction retry). The
+	// .catch() handler must propagate the error since cancelled is false — the
+	// client sees a JSON-RPC error, not a silent end_turn that hides the failure.
+	it("rejects the outer prompt when a chained agent.continue() throws a non-abort error", async () => {
+		fake.promptImpl = async () => {
+			// Cycle 1 — completes normally.
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta: "partial",
+					contentIndex: 0,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+			await delay(5)
+			// Cycle 2 — blows up.
+			fake.emit({ type: "agent_start" })
+			throw new Error("context window overflow during compaction")
+		}
+
+		await expect(agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })).rejects.toThrow(
+			/context window overflow during compaction/,
 		)
 	})
 
@@ -984,6 +1114,138 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	})
 })
 
+// ACP ContentChunk contract (src/modes/acp/server.ts onSessionEvent):
+// "All chunks belonging to the same message share the same messageId.
+// A change in messageId indicates a new message has started." pi-mono
+// streams one text_delta / thinking_delta event per chunk, but every delta
+// within a content block shares its contentIndex — so the server can collapse
+// them onto a single messageId without coordinating across events. The block
+// below exercises both branches directly so a regression that drops the field
+// or breaks its stability surfaces as a test failure rather than a quiet
+// client-side bug.
+describe("KimchiAcpAgent messageId on streaming chunks", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+
+	beforeEach(async () => {
+		fake = new FakeAgentSession("session-msgid")
+		const rec = makeRecordingConn()
+		updates = rec.updates
+		agent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	function emitTextDeltas(contentIndex: number, deltas: string[]): void {
+		for (const delta of deltas) {
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta,
+					contentIndex,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+		}
+	}
+
+	function emitThinkingDeltas(contentIndex: number, deltas: string[]): void {
+		for (const delta of deltas) {
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "thinking_delta",
+					delta,
+					contentIndex,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+		}
+	}
+
+	function messageIdsFor(update: string): Array<string | null | undefined> {
+		return updates
+			.filter((u) => u.update.sessionUpdate === update)
+			.map((u) => (u.update as { messageId?: string | null }).messageId)
+	}
+
+	it("keeps messageId stable across deltas within a block and flips it when contentIndex advances", async () => {
+		// Two text blocks back-to-back. The first three deltas share index 0
+		// (one messageId); the next three share index 1 (a different one).
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitTextDeltas(0, ["a", "b", "c"])
+			emitTextDeltas(1, ["d", "e", "f"])
+			fake.emit(agentEnd())
+		}
+		const result = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "two blocks" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		expect(messageIdsFor("agent_message_chunk")).toEqual([
+			"kimchi_msg_0",
+			"kimchi_msg_0",
+			"kimchi_msg_0",
+			"kimchi_msg_1",
+			"kimchi_msg_1",
+			"kimchi_msg_1",
+		])
+	})
+
+	it("emits messageId on agent_thought_chunk the same way (same contentIndex → same id)", async () => {
+		// Smoke test for the thought branch: the formula is identical to the
+		// text branch, so a regression that drops the field on either side
+		// surfaces in at least one of the two tests.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitThinkingDeltas(0, ["hmm", " ", "ok"])
+			fake.emit(agentEnd())
+		}
+		const result = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "think" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		expect(messageIdsFor("agent_thought_chunk")).toEqual(["kimchi_msg_0", "kimchi_msg_0", "kimchi_msg_0"])
+	})
+
+	it("advances the counter across turns so two turns both starting at contentIndex=0 get distinct ids", async () => {
+		// Regression guard for the ACP "change in messageId indicates a new
+		// message" contract. pi-mono resets contentIndex to 0 on each new
+		// assistant message; without a session-wide counter, turn 2's first
+		// block would re-use turn 1's first block's messageId and a client
+		// would merge two separate replies into one bubble.
+		fake.promptImpl = async () => {
+			// Turn 1: one text block at index 0.
+			fake.emit({ type: "agent_start" })
+			emitTextDeltas(0, ["hello"])
+			fake.emit(agentEnd())
+			// Turn 2 (chained continue): another text block at index 0 again.
+			// contentIndex resets per assistant message, but the session-wide
+			// counter must keep advancing.
+			fake.emit({ type: "agent_start" })
+			emitTextDeltas(0, ["world"])
+			fake.emit(agentEnd())
+		}
+		const result = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "two turns" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		expect(messageIdsFor("agent_message_chunk")).toEqual(["kimchi_msg_0", "kimchi_msg_1"])
+	})
+})
+
 // Streaming tools (bash in particular) emit tool_execution_update with a
 // partialResult payload for every output chunk. The ACP server translates each
 // of these into a tool_call_update with status="in_progress" and content carrying
@@ -1065,6 +1327,103 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		// Terminal completed update still fires after the partials.
 		const terminal = toolCallUpdates.find((u) => (u.update as { status?: string }).status === "completed")
 		expect(terminal).toBeDefined()
+	})
+
+	// web_fetch (and MCP image tools whose blocks survive transformMcpContent)
+	// can return image blocks in a tool result. toolResultContent must forward
+	// them as ACP image content; before this they were dropped and the client
+	// saw a completed tool call with empty content.
+	it("forwards an image block on tool_execution_end as ACP image content", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-img", toolName: "web_fetch", args: { url: "x" } })
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-img",
+				toolName: "web_fetch",
+				result: { content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const completed = updates.find(
+			(u) => u.update.sessionUpdate === "tool_call_update" && (u.update as { status?: string }).status === "completed",
+		)
+		expect(completed).toBeDefined()
+		const content = (completed?.update as { content: unknown[] }).content
+		expect(content).toEqual([{ type: "content", content: { type: "image", data: "aGVsbG8=", mimeType: "image/png" } }])
+	})
+
+	// The image path also runs on the streaming branch: an image-only partial
+	// must produce an in_progress update rather than being swallowed as empty.
+	it("forwards image blocks from a streaming partialResult", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-img2", toolName: "web_fetch", args: { url: "x" } })
+			fake.emit({
+				type: "tool_execution_update",
+				toolCallId: "tc-img2",
+				toolName: "web_fetch",
+				args: { url: "x" },
+				partialResult: { content: [{ type: "image", data: "Zm9v", mimeType: "image/jpeg" }] },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-img2",
+				toolName: "web_fetch",
+				result: { content: [{ type: "image", data: "Zm9v", mimeType: "image/jpeg" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const partial = updates.find(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" && (u.update as { status?: string }).status === "in_progress",
+		)
+		expect(partial).toBeDefined()
+		const content = (partial?.update as { content: unknown[] }).content
+		expect(content).toEqual([{ type: "content", content: { type: "image", data: "Zm9v", mimeType: "image/jpeg" } }])
+	})
+
+	// A result mixing text and image blocks forwards every block, in order.
+	it("forwards text and image blocks together, preserving order", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-mix", toolName: "web_fetch", args: { url: "x" } })
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-mix",
+				toolName: "web_fetch",
+				result: {
+					content: [
+						{ type: "text", text: "before" },
+						{ type: "image", data: "YmFy", mimeType: "image/png" },
+					],
+				},
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const completed = updates.find(
+			(u) => u.update.sessionUpdate === "tool_call_update" && (u.update as { status?: string }).status === "completed",
+		)
+		const content = (completed?.update as { content: unknown[] }).content
+		expect(content).toEqual([
+			{ type: "content", content: { type: "text", text: "before" } },
+			{ type: "content", content: { type: "image", data: "YmFy", mimeType: "image/png" } },
+		])
 	})
 
 	// Guard on server.ts:213-214: an empty partialResult must NOT produce a
@@ -1276,38 +1635,50 @@ describe("initializeHeadlessTheme", () => {
 	})
 })
 
-describe("buildSessionModelState", () => {
-	it("returns null when model is missing", () => {
-		const fake = new FakeAgentSession("s1")
-		fake.model = undefined
-		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
-		expect(result).toBeNull()
-	})
+function modelConfigOption(
+	currentValue: string,
+	options: { value: string; name: string }[],
+): {
+	id: "model"
+	name: string
+	type: "select"
+	category: string
+	description: string
+	currentValue: string
+	options: { value: string; name: string }[]
+} {
+	return {
+		id: "model",
+		name: "Model",
+		type: "select",
+		category: "model",
+		description: "",
+		currentValue,
+		options,
+	}
+}
 
-	it("returns currentModelId and availableModels when model is present", () => {
-		const fake = new FakeAgentSession("s1")
-		fake.model = { provider: "openai", id: "gpt-4" }
-		fake.modelRegistry = {
-			getAvailable: () => [
-				{ provider: "openai", id: "gpt-4", name: "GPT-4" },
-				{ provider: "anthropic", id: "claude-3", name: "Claude 3" },
-			],
-		}
-		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
+describe("buildSessionModelState", () => {
+	it("returns currentModelId and availableModels from the model config option", () => {
+		const configOptions = [
+			modelConfigOption("openai/gpt-4", [
+				{ value: "anthropic/claude-3", name: "Claude 3" },
+				{ value: "openai/gpt-4", name: "GPT-4" },
+			]),
+		]
+		const result = buildSessionModelState(configOptions as unknown as Parameters<typeof buildSessionModelState>[0])
 		expect(result).toEqual({
 			currentModelId: "openai/gpt-4",
 			availableModels: [
-				{ modelId: "openai/gpt-4", name: "GPT-4" },
 				{ modelId: "anthropic/claude-3", name: "Claude 3" },
+				{ modelId: "openai/gpt-4", name: "GPT-4" },
 			],
 		})
 	})
 
-	it("returns empty availableModels when registry has no models", () => {
-		const fake = new FakeAgentSession("s1")
-		fake.model = { provider: "openai", id: "gpt-4" }
-		fake.modelRegistry = { getAvailable: () => [] }
-		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
+	it("returns empty availableModels when the model config option has no entries", () => {
+		const configOptions = [modelConfigOption("openai/gpt-4", [])]
+		const result = buildSessionModelState(configOptions as unknown as Parameters<typeof buildSessionModelState>[0])
 		expect(result).toEqual({
 			currentModelId: "openai/gpt-4",
 			availableModels: [],
@@ -1317,9 +1688,12 @@ describe("buildSessionModelState", () => {
 
 describe("newSession model state", () => {
 	it("returns model state in the response when a model is available", async () => {
-		const fake = new FakeAgentSession("session-model")
+		const sessionId = "session-model"
+		setProcessOrchestratorRef(sessionId, "kimchi-dev/kimi-k2.7")
+		const fake = new FakeAgentSession(sessionId)
 		fake.model = { provider: "openai", id: "gpt-4" }
 		fake.modelRegistry = {
+			...fake.modelRegistry,
 			getAvailable: () => [
 				{ provider: "openai", id: "gpt-4", name: "GPT-4" },
 				{ provider: "anthropic", id: "claude-3", name: "Claude 3" },
@@ -1335,14 +1709,18 @@ describe("newSession model state", () => {
 		expect(res.sessionId).toBe("session-model")
 		expect(res.models).toBeDefined()
 		expect(res.models?.currentModelId).toBe("openai/gpt-4")
-		expect(res.models?.availableModels).toHaveLength(2)
+		expect(res.models?.availableModels).toHaveLength(3)
 		expect(res.models?.availableModels[0]).toEqual({
-			modelId: "openai/gpt-4",
-			name: "GPT-4",
+			modelId: "multi-model",
+			name: "Multi-model (kimi-k2.7)",
 		})
 		expect(res.models?.availableModels[1]).toEqual({
 			modelId: "anthropic/claude-3",
 			name: "Claude 3",
+		})
+		expect(res.models?.availableModels[2]).toEqual({
+			modelId: "openai/gpt-4",
+			name: "GPT-4",
 		})
 	})
 
@@ -1371,10 +1749,63 @@ describe("newSession model state", () => {
 		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
 		expect(res.configOptions).toBeDefined()
-		expect(res.configOptions).toHaveLength(1)
+		expect(res.configOptions).toHaveLength(2)
 		expect(res.configOptions?.[0].id).toBe("permissions-mode")
 		expect(res.configOptions?.[0].type).toBe("select")
 		expect(res.configOptions?.[0].currentValue).toBeDefined()
+		expect(res.configOptions?.[1].id).toBe("model")
+		expect(res.configOptions?.[1].type).toBe("select")
+	})
+})
+
+describe("newSession available commands", () => {
+	it("sends available_commands_update with /bug command on session init", async () => {
+		const fake = new FakeAgentSession("session-commands")
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// Find the available_commands_update notification
+		const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+		expect(update).toBeDefined()
+		expect(update?.sessionId).toBe("session-commands")
+
+		const updatePayload = update?.update as { availableCommands: Array<Record<string, unknown>> }
+		expect(updatePayload.availableCommands).toHaveLength(1)
+
+		const cmd = updatePayload.availableCommands[0]
+		expect(cmd).toMatchObject({
+			name: "bug",
+			description: expect.any(String),
+			input: { hint: expect.any(String) },
+		})
+	})
+})
+
+describe("loadSession available commands", () => {
+	it("sends available_commands_update alongside the transcript replay", async () => {
+		const fake = new FakeAgentSession("session-load-test")
+		fake.branch = [userTextEntry("previous message", "u1", null)]
+		const loader: AcpSessionLoader = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: loader,
+		})
+
+		await agent.loadSession({ sessionId: "session-load-test", cwd: "/tmp", mcpServers: [] })
+
+		// loadSessionFresh re-broadcasts the command palette on resume.
+		const cmdUpdate = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+		expect(cmdUpdate).toBeDefined()
+		expect(updates.find((u) => u.update.sessionUpdate === "user_message_chunk")).toBeDefined()
 	})
 })
 
@@ -1383,6 +1814,7 @@ describe("unstable_setSessionModel", () => {
 		const fake = new FakeAgentSession("switch-session")
 		fake.model = { provider: "provider-a", id: "model-a" }
 		fake.modelRegistry = {
+			...fake.modelRegistry,
 			getAvailable: () => [
 				{ provider: "provider-a", id: "model-a", name: "Model A" },
 				{ provider: "provider-b", id: "model-b", name: "Model B" },
@@ -1408,6 +1840,7 @@ describe("unstable_setSessionModel", () => {
 		const fake = new FakeAgentSession("switch-session")
 		fake.model = { provider: "provider-a", id: "model-a" }
 		fake.modelRegistry = {
+			...fake.modelRegistry,
 			getAvailable: () => [{ provider: "provider-a", id: "model-a", name: "Model A" }],
 		}
 		const factory: AcpSessionFactory = async () => asSession(fake)
@@ -1429,6 +1862,7 @@ describe("unstable_setSessionModel", () => {
 		const fake = new FakeAgentSession("switch-session")
 		fake.model = { provider: "provider-a", id: "model-a" }
 		fake.modelRegistry = {
+			...fake.modelRegistry,
 			getAvailable: () => [
 				{ provider: "provider-a", id: "model-a", name: "Model A" },
 				{ provider: "provider-b", id: "model-b", name: "Model B" },
@@ -1489,9 +1923,10 @@ describe("setSessionConfigOption", () => {
 			value: "plan",
 		})
 
-		expect(res.configOptions).toHaveLength(1)
+		expect(res.configOptions).toHaveLength(2)
 		expect(res.configOptions[0].id).toBe("permissions-mode")
 		expect(res.configOptions[0].currentValue).toBe("plan")
+		expect(res.configOptions[1].id).toBe("model")
 	})
 
 	it("sets all valid permission modes", async () => {
@@ -1505,14 +1940,15 @@ describe("setSessionConfigOption", () => {
 
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
-		for (const mode of ALL_PERMISSION_MODES) {
+		for (const mode of PERMISSION_MODES) {
 			const res = await agent.setSessionConfigOption({
 				sessionId: "test-session-modes",
 				configId: "permissions-mode",
 				value: mode,
 			})
-			expect(res.configOptions).toHaveLength(1)
+			expect(res.configOptions).toHaveLength(2)
 			expect(res.configOptions[0].currentValue).toBe(mode)
+			expect(res.configOptions[1].id).toBe("model")
 		}
 	})
 
@@ -1599,7 +2035,275 @@ describe("setSessionConfigOption", () => {
 		// biome-ignore lint/suspicious/noExplicitAny: union type requires assertion
 		const selectOption = res.configOptions[0] as any
 		expect(selectOption.options).toHaveLength(4)
-		expect(selectOption.options.map((o: { value: string }) => o.value)).toEqual(ALL_PERMISSION_MODES)
+		expect(selectOption.options.map((o: { value: string }) => o.value)).toEqual(PERMISSION_MODES)
+	})
+
+	describe("model config option", () => {
+		it("switches to a valid single model", async () => {
+			const fake = new FakeAgentSession("test-session-model-single")
+			fake.model = { provider: "provider-a", id: "model-a" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "provider-a", id: "model-a", name: "Model A" },
+					{ provider: "provider-b", id: "model-b", name: "Model B" },
+				],
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const res = await agent.setSessionConfigOption({
+				sessionId: "test-session-model-single",
+				configId: "model",
+				value: "provider-b/model-b",
+			})
+
+			expect(fake.model).toMatchObject({ provider: "provider-b", id: "model-b" })
+			const modelOption = res.configOptions?.find((o) => o.id === "model")
+			expect(modelOption?.currentValue).toBe("provider-b/model-b")
+		})
+
+		it("restores previous multi-model state when switching to a single model fails", async () => {
+			const sessionId = "test-session-model-restore"
+			const fake = new FakeAgentSession(sessionId)
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "provider-a", id: "model-a", name: "Model A" },
+					{ provider: "provider-b", id: "model-b", name: "Model B" },
+				],
+			}
+			fake.setModel = async () => {
+				throw new Error("auth failed")
+			}
+			// Start in multi-model mode so we can verify the flag is restored on failure.
+			setMultiModelEnabled(sessionId, true)
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId,
+					configId: "model",
+					value: "provider-b/model-b",
+				}),
+			).rejects.toThrow(/model provider-b\/model-b is not available: auth required/)
+
+			expect(getMultiModelEnabled(fake.sessionManager as Pick<SessionManager, "getEntries" | "getSessionId">)).toBe(
+				true,
+			)
+		})
+
+		it("switches to multi-model when orchestrator is available", async () => {
+			const sessionId = "test-session-model-multi"
+			const fake = new FakeAgentSession(sessionId)
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "provider-a", id: "model-a", name: "Model A" },
+					{ provider: "orchestrator-provider", id: "orchestrator-model", name: "Orchestrator Model" },
+				],
+			}
+			// Wire the orchestrator model explicitly instead of relying on the global default role.
+			setProcessOrchestratorRef(sessionId, "orchestrator-provider/orchestrator-model")
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const res = await agent.setSessionConfigOption({
+				sessionId,
+				configId: "model",
+				value: "multi-model",
+			})
+
+			expect(fake.model).toMatchObject({ provider: "orchestrator-provider", id: "orchestrator-model" })
+			const modelOption = res.configOptions?.find((o) => o.id === "model")
+			expect(modelOption?.currentValue).toBe("multi-model")
+		})
+
+		it("restores previous multi-model state when switching to multi-model fails", async () => {
+			const sessionId = "test-session-model-multi-restore"
+			const fake = new FakeAgentSession(sessionId)
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "provider-a", id: "model-a", name: "Model A" },
+					{ provider: "orchestrator-provider", id: "orchestrator-model", name: "Orchestrator Model" },
+				],
+			}
+			fake.setModel = async () => {
+				throw new Error("auth failed")
+			}
+			// Wire the orchestrator model explicitly instead of relying on the global default role.
+			setProcessOrchestratorRef(sessionId, "orchestrator-provider/orchestrator-model")
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId,
+					configId: "model",
+					value: "multi-model",
+				}),
+			).rejects.toThrow(/orchestrator model orchestrator-provider\/orchestrator-model is not available: auth required/)
+
+			expect(getMultiModelEnabled(fake.sessionManager as Pick<SessionManager, "getEntries" | "getSessionId">)).toBe(
+				false,
+			)
+		})
+
+		it("rejects multi-model when orchestrator is not available", async () => {
+			const fake = new FakeAgentSession("test-session-model-multi-missing")
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [{ provider: "provider-a", id: "model-a", name: "Model A" }],
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId: "test-session-model-multi-missing",
+					configId: "model",
+					value: "multi-model",
+				}),
+			).rejects.toThrow(/multi-model orchestrator .* is not available/)
+		})
+
+		it("rejects invalid model format", async () => {
+			const fake = new FakeAgentSession("test-session-model-format")
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId: "test-session-model-format",
+					configId: "model",
+					value: "not-a-valid-ref",
+				}),
+			).rejects.toThrow(/invalid model format/)
+		})
+
+		it("rejects unknown single model", async () => {
+			const fake = new FakeAgentSession("test-session-model-unknown")
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [{ provider: "provider-a", id: "model-a", name: "Model A" }],
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId: "test-session-model-unknown",
+					configId: "model",
+					value: "provider-b/model-b",
+				}),
+			).rejects.toThrow(/model not found/)
+		})
+
+		it("returns updated configOptions when model changes", async () => {
+			const fake = new FakeAgentSession("test-session-model-return")
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "provider-a", id: "model-a", name: "Model A" },
+					{ provider: "provider-b", id: "model-b", name: "Model B" },
+				],
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const res = await agent.setSessionConfigOption({
+				sessionId: "test-session-model-return",
+				configId: "model",
+				value: "provider-b/model-b",
+			})
+
+			const modelOption = res.configOptions?.find((o) => o.id === "model")
+			expect(modelOption?.currentValue).toBe("provider-b/model-b")
+		})
+
+		it("rejects model change when a prompt is in progress", async () => {
+			const fake = new FakeAgentSession("test-session-model-busy")
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "provider-a", id: "model-a", name: "Model A" },
+					{ provider: "provider-b", id: "model-b", name: "Model B" },
+				],
+			}
+			let releasePrompt!: () => void
+			const promptReleased = new Promise<void>((resolve) => {
+				releasePrompt = resolve
+			})
+			fake.promptImpl = async () => {
+				fake.emit({ type: "agent_start" })
+				await promptReleased
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const promptP = agent.prompt({
+				sessionId: "test-session-model-busy",
+				prompt: [{ type: "text", text: "x" }],
+			})
+			await delay(10)
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId: "test-session-model-busy",
+					configId: "model",
+					value: "provider-b/model-b",
+				}),
+			).rejects.toThrow(/prompt is already in progress/)
+
+			// Release the prompt so the test runner doesn't wait on it.
+			releasePrompt()
+			await promptP
+		})
 	})
 
 	it("emits config_option_update when permission mode changes", async () => {
@@ -1860,19 +2564,30 @@ describe("ACP mode controller integration with permissions extension", () => {
 		}
 	}
 
-	function createMockContext(sessionId: string, cwd: string): unknown {
+	function createMockContext(sessionId: string, cwd: string): ExtensionContext {
 		return {
-			sessionManager: { getSessionId: () => sessionId },
+			sessionManager: { getSessionId: vi.fn().mockReturnValue(sessionId) } as unknown as SessionManager,
 			cwd,
-			hasUI: false,
+			mode: "rpc",
+			hasUI: true,
 			ui: {
-				notify: () => {},
-				setStatus: () => {},
-				showPermissionSelector: () => Promise.resolve({ decision: "allow", remember: false }),
-				theme: { semanticColors: { fg: { red: "", yellow: "", green: "" } } },
-			},
-			modelRegistry: { authStorage: { getCredentials: () => ({}) } },
-		}
+				notify: vi.fn(),
+				setStatus: vi.fn(),
+				onTerminalInput: vi.fn(),
+				theme: { fg: vi.fn(), bg: vi.fn(), getFgAnsi: vi.fn() } as unknown as Theme,
+			} as unknown as ExtensionUIContext,
+			modelRegistry: {
+				authStorage: {} as AuthStorage,
+				getApiKeyAndHeaders: vi.fn().mockReturnValue({ ok: true, apiKey: "test" }),
+				getAvailable: vi.fn().mockReturnValue([
+					{
+						id: "kimi",
+						name: "kimi",
+					},
+				]),
+				find: vi.fn().mockReturnValue({ id: "kimi", name: "kimi" }),
+			} as unknown as ModelRegistry,
+		} as unknown as ExtensionContext
 	}
 
 	afterEach(() => {
@@ -2819,8 +3534,11 @@ describe("KimchiAcpAgent loadSession", () => {
 			currentModelId: "test/test-model",
 		})
 		expect(loaderCalls.count).toBe(0)
-		expect(updates).toHaveLength(1)
-		expect(updates[0].update).toMatchObject({
+
+		const replayUpdates = replayOnly(updates)
+		// loadSession replay sends user_message_chunk
+		expect(replayUpdates).toHaveLength(1)
+		expect(replayUpdates[0].update).toMatchObject({
 			sessionUpdate: "user_message_chunk",
 			content: { type: "text", text: "already here" },
 		})
@@ -2865,8 +3583,9 @@ describe("KimchiAcpAgent loadSession", () => {
 			})
 
 			expect(res.configOptions).toBeDefined()
-			expect(res.configOptions).toHaveLength(1)
+			expect(res.configOptions).toHaveLength(2)
 			expect(res.configOptions?.[0].id).toBe("permissions-mode")
+			expect(res.configOptions?.[1].id).toBe("model")
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true })
 		}
@@ -2965,6 +3684,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		// "live" while loadSession rejects — blocking re-load with invalidRequest.
 		const fake = new FakeAgentSession("replay-boom")
 		fake.sessionManager = {
+			...fake.sessionManager,
 			getBranch: () => {
 				throw new Error("branch read failed")
 			},
@@ -2979,7 +3699,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		).rejects.toThrow(/branch read failed/)
 		expect(fake.disposed).toBe(true)
 		// Re-load must not see the failed session as already-live.
-		fake.sessionManager = { getBranch: () => [] }
+		fake.sessionManager = { ...fake.sessionManager, getBranch: () => [] }
 		fake.disposed = false
 		await expect(
 			agent.loadSession({
@@ -2994,6 +3714,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		const fake = new FakeAgentSession("loaded-1")
 		fake.model = { provider: "test", id: "test-model", name: "Test Model" }
 		fake.modelRegistry = {
+			...fake.modelRegistry,
 			getAvailable: () => [{ provider: "test", id: "test-model", name: "Test Model" }],
 		}
 		fake.branch = [
@@ -3027,7 +3748,9 @@ describe("KimchiAcpAgent loadSession", () => {
 			mcpServers: [],
 		})
 		// Snapshot updates seen at this point (ie. before any further awaits).
-		updatesAtResolve.push(...updates)
+		// Drop the incidental available_commands_update so we can assert on
+		// transcript shape without coupling to the command palette.
+		updatesAtResolve.push(...replayOnly(updates))
 
 		expect(updatesAtResolve).toHaveLength(4)
 		expect(updatesAtResolve[0].update).toMatchObject({
@@ -3048,7 +3771,10 @@ describe("KimchiAcpAgent loadSession", () => {
 		})
 		expect(res.models).toMatchObject({
 			currentModelId: "test/test-model",
-			availableModels: [{ modelId: "test/test-model", name: "Test Model" }],
+			availableModels: [
+				{ modelId: "multi-model", name: expect.stringMatching(/^Multi-model \(/) },
+				{ modelId: "test/test-model", name: "Test Model" },
+			],
 		})
 	})
 
@@ -3104,19 +3830,19 @@ describe("KimchiAcpAgent loadSession", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		})
-		expect(updates.map((u) => u.update.sessionUpdate)).toEqual([
+		const replay = replayOnly(updates)
+		expect(replay.map((u) => u.update.sessionUpdate)).toEqual([
 			"user_message_chunk",
 			"agent_message_chunk",
 			"agent_thought_chunk",
 			"agent_message_chunk",
 		])
-		expect((updates[1].update as { content: { text: string } }).content.text).toBe("first second")
-		expect((updates[3].update as { content: { text: string } }).content.text).toBe("third")
+		expect((replay[1].update as { content: { text: string } }).content.text).toBe("first second")
+		expect((replay[3].update as { content: { text: string } }).content.text).toBe("third")
 	})
 
 	it("routes ANSI-dimmed replay text to thought chunks and strips remaining ANSI", async () => {
-		// hide-thinking-aware models (DeepSeek, QwQ) plus hideThinkingBlock=false
-		// persist text with ANSI dim escapes around inner <think> content. The
+		// hide-thinking-aware models (DeepSeek, QwQ) persist text with ANSI dim escapes around inner <think> content. The
 		// live TUI renders them as reasoning; ACP's text content type is
 		// plaintext, so replay must preserve that semantic split explicitly.
 		const dimmed = "before \x1b[2minner\x1b[22m after"
@@ -3147,31 +3873,6 @@ describe("KimchiAcpAgent loadSession", () => {
 			.map((u) => (u.update as { content: { text: string } }).content.text)
 		expect(messageTexts).toEqual(["before ", " after"])
 		expect(thoughtTexts).toEqual(["inner", "raw thought"])
-	})
-
-	it("drops ANSI-dimmed replay thinking when hideThinkingBlock is enabled", async () => {
-		_setHideThinking(true)
-		try {
-			const fake = new FakeAgentSession("loaded-ansi-hidden")
-			fake.branch = [
-				userTextEntry("go", "u1", null),
-				assistantBlocksEntry([{ type: "text", text: "before \x1b[2minner\x1b[22m after" }], "a1", "u1"),
-			]
-			const { conn, updates } = makeRecordingConn()
-			const agent = makeAgent(async () => asSession(fake), { conn })
-			await agent.loadSession({
-				sessionId: "loaded-ansi-hidden",
-				cwd: "/tmp",
-				mcpServers: [],
-			})
-			const messageTexts = updates
-				.filter((u) => u.update.sessionUpdate === "agent_message_chunk")
-				.map((u) => (u.update as { content: { text: string } }).content.text)
-			expect(updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBeUndefined()
-			expect(messageTexts).toEqual(["before  after"])
-		} finally {
-			_resetHideThinking()
-		}
 	})
 
 	it("treats a concurrent session/cancel during replay as a no-op (no turn active)", async () => {
@@ -3375,10 +4076,11 @@ describe("KimchiAcpAgent loadSession", () => {
 				cwd: "/tmp",
 				mcpServers: [],
 			})
-			const seq = updates.map((u) => u.update.sessionUpdate)
+			const seq = replayOnly(updates).map((u) => u.update.sessionUpdate)
 			expect(seq).toEqual(["user_message_chunk", "tool_call", "tool_call_update"])
 
-			const toolCall = updates[1].update as Record<string, unknown>
+			const replay = replayOnly(updates)
+			const toolCall = replay[1].update as Record<string, unknown>
 			expect(toolCall).toMatchObject({
 				sessionUpdate: "tool_call",
 				toolCallId: "tc-1",
@@ -3388,7 +4090,7 @@ describe("KimchiAcpAgent loadSession", () => {
 				locations: c.expect.locations,
 				rawInput: c.args,
 			})
-			const update = updates[2].update as Record<string, unknown>
+			const update = replay[2].update as Record<string, unknown>
 			expect(update).toMatchObject({
 				sessionUpdate: "tool_call_update",
 				toolCallId: "tc-1",
@@ -3424,8 +4126,9 @@ describe("KimchiAcpAgent loadSession", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		})
-		const toolCall = updates[1].update as { status?: string }
-		const update = updates[2].update as {
+		const replay = replayOnly(updates)
+		const toolCall = replay[1].update as { status?: string }
+		const update = replay[2].update as {
 			status?: string
 			content: Array<{ content: { text: string } }>
 		}
@@ -3461,9 +4164,14 @@ describe("KimchiAcpAgent loadSession", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		})
-		expect(updates.map((u) => u.update.sessionUpdate)).toEqual(["user_message_chunk", "tool_call", "tool_call_update"])
-		const toolCall = updates[1].update as { status?: string }
-		const update = updates[2].update as { status?: string; content: unknown[] }
+		expect(replayOnly(updates).map((u) => u.update.sessionUpdate)).toEqual([
+			"user_message_chunk",
+			"tool_call",
+			"tool_call_update",
+		])
+		const replay = replayOnly(updates)
+		const toolCall = replay[1].update as { status?: string }
+		const update = replay[2].update as { status?: string; content: unknown[] }
 		expect(toolCall.status).toBe("failed")
 		expect(update.status).toBe("failed")
 		expect(update.content).toEqual([])
@@ -3492,31 +4200,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(content.text.includes("\x1b[")).toBe(false)
 	})
 
-	it("skips thinking blocks when hideThinkingBlock is enabled (shared with hide-thinking extension)", async () => {
-		// Same redaction rule the live TUI uses — verified by sharing
-		// filterThinkingForDisplay across both code paths so a setting flip
-		// doesn't drift between live and replay.
-		_setHideThinking(true)
-		try {
-			const fake = new FakeAgentSession("loaded-thinking-hidden")
-			fake.branch = [
-				userTextEntry("go", "u1", null),
-				assistantBlocksEntry([{ type: "thinking", thinking: "considering options" }], "a1", "u1"),
-			]
-			const { conn, updates } = makeRecordingConn()
-			const agent = makeAgent(async () => asSession(fake), { conn })
-			await agent.loadSession({
-				sessionId: "loaded-thinking-hidden",
-				cwd: "/tmp",
-				mcpServers: [],
-			})
-			expect(updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBeUndefined()
-		} finally {
-			_resetHideThinking()
-		}
-	})
-
-	it("skips redacted thinking blocks even when hideThinkingBlock is off", async () => {
+	it("skips redacted thinking blocks", async () => {
 		// Redacted thinking has only an opaque encrypted payload (in
 		// thinkingSignature) for multi-turn provider continuity — no plaintext
 		// to surface to the user.
@@ -3592,7 +4276,10 @@ describe("KimchiAcpAgent loadSession", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		})
-		expect(updates).toHaveLength(0)
+
+		// The only update expected here is a no-op surface commands update
+		expect(updates).toHaveLength(1)
+		expect(updates[0].update.sessionUpdate).toEqual("available_commands_update")
 	})
 
 	it("replays a mixed transcript end-to-end (text, thinking, tool, skipped entries, follow-up text)", async () => {
@@ -3650,6 +4337,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			"tool_call",
 			"tool_call_update",
 			"agent_message_chunk",
+			"available_commands_update",
 		])
 	})
 
@@ -3737,7 +4425,7 @@ describe("KimchiAcpAgent loadSession", () => {
 // BEFORE bindAcpExtensions is called. This ensures that when upstream
 // bindExtensions() emits session_start, the permissions extension already
 // has access to the shared controller and doesn't create a duplicate one.
-describe("permission flag controller registration ordering", () => {
+describe("KimchiAcpAgent permission flag controller registration ordering", () => {
 	it("registers permission flag controller before bindAcpExtensions in newSession", async () => {
 		const ordering: string[] = []
 		const fake = new FakeAgentSession("session-ordering-test")
@@ -3894,34 +4582,54 @@ describe("permission flag controller registration ordering", () => {
 	})
 })
 
-describe("shouldEmitThinking", () => {
-	it("returns true by default (hideThinkingBlock unset)", () => {
-		_resetHideThinking()
-		expect(shouldEmitThinking("anything")).toBe(true)
+describe("KimchiAcpAgent session event handlers", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+
+	beforeEach(async () => {
+		fake = new FakeAgentSession("session-title")
+		const { conn, updates: recorded } = makeRecordingConn()
+		updates = recorded
+		agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		sessionId = res.sessionId
+		updates.length = 0 // clear the available_commands_update from newSession
 	})
-	it("returns false when hideThinkingBlock is enabled", () => {
-		_setHideThinking(true)
-		try {
-			expect(shouldEmitThinking("anything")).toBe(false)
-		} finally {
-			_resetHideThinking()
-		}
-	})
-	it("does not break when the persisted thinking text contains a literal </think>", () => {
-		// Regression: a previous version probed filterThinkingForDisplay with a
-		// synthetic <think>${thinking}</think> wrapper. Models self-quoting
-		// "</think>" closed the wrapper early and the inner text leaked, making
-		// the predicate non-deterministic. Reading the setting directly avoids
-		// the round-trip entirely.
-		_resetHideThinking()
-		const haunted = "I'll stop now. </think> trailing"
-		expect(shouldEmitThinking(haunted)).toBe(true)
-		_setHideThinking(true)
-		try {
-			expect(shouldEmitThinking(haunted)).toBe(false)
-		} finally {
-			_resetHideThinking()
-		}
+
+	describe("session_info_changed event", () => {
+		it("emits session_info_update when session_info_changed fires with a name", () => {
+			fake.emit({ type: "session_info_changed", name: "Fix the login bug" })
+
+			const titleUpdates = updates.filter((u) => u.update.sessionUpdate === "session_info_update")
+			expect(titleUpdates).toHaveLength(1)
+			expect(titleUpdates[0]).toMatchObject({
+				sessionId,
+				update: { sessionUpdate: "session_info_update", title: "Fix the login bug" },
+			})
+		})
+
+		it("does not emit session_info_update when name is undefined", () => {
+			fake.emit({ type: "session_info_changed", name: undefined })
+
+			const titleUpdates = updates.filter((u) => u.update.sessionUpdate === "session_info_update")
+			expect(titleUpdates).toHaveLength(0)
+		})
+
+		it("emits the latest name when session_info_changed fires multiple times", () => {
+			fake.emit({ type: "session_info_changed", name: "Draft title" })
+			fake.emit({ type: "session_info_changed", name: "Final title" })
+
+			const titleUpdates = updates.filter((u) => u.update.sessionUpdate === "session_info_update")
+			expect(titleUpdates).toHaveLength(2)
+			expect((titleUpdates[0].update as { title?: string }).title).toBe("Draft title")
+			expect((titleUpdates[1].update as { title?: string }).title).toBe("Final title")
+		})
 	})
 })
 

@@ -10,7 +10,7 @@
  */
 
 import { execSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { v7 as uuidv7 } from "uuid"
@@ -27,7 +27,6 @@ import type {
 	Memory,
 	MemoryCategory,
 	Phase,
-	Scoping,
 	Step,
 	StepResult,
 } from "./types.js"
@@ -159,7 +158,7 @@ function upgradeV3toV4(raw: FermentV3): Ferment {
 	}
 
 	// Merge plannedBatches + batchRefs into phases[]
-	const phases: Phase[] = raw.plannedBatches.map((pb, idx) => {
+	const phases: Phase[] = raw.plannedBatches.map((pb, _idx) => {
 		// Find matching batchRef if any
 		const ref = raw.batchRefs.find((br) => br.plannedBatchId === pb.id)
 		// Map statuses
@@ -670,12 +669,6 @@ export class FermentStorage {
 		}
 		this.write(updated)
 		return updated
-	}
-
-	// ─── Step Lifecycle ─────────────────────────────────────────────────────────
-
-	private findPhase(f: Ferment, phaseId: string): Phase | undefined {
-		return f.phases.find((p) => p.id === phaseId)
 	}
 
 	startStep(id: string, phaseId: string, stepId: string): Ferment | undefined {

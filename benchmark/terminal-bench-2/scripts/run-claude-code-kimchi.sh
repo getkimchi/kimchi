@@ -16,13 +16,21 @@ DATASET="terminal-bench/terminal-bench-2"
 BENCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$BENCH_DIR"
 
+# The retry config sets exponential backoff (10s→20s→40s→80s→120s) for
+# transient Cloudflare 524 / API errors. The CLI --max-retries flag overrides
+# only the retry count; the backoff curve and include_exceptions always come
+# from the config file because harbor exposes no CLI flags for
+# wait_multiplier/min_wait/max_wait, and passing --retry-include here would
+# clobber include_exceptions from the YAML.
+RETRY_CONFIG="${RETRY_CONFIG:-$BENCH_DIR/config/retry.yaml}"
+
 HARBOR_ARGS=(
     --agent-import-path kimchi_agent:ClaudeCodeKimchi
     --env docker
     --model "${MODEL:-kimchi-dev/kimi-k2.5}"
     --ae "KIMCHI_API_KEY=$KIMCHI_API_KEY"
-    --max-retries "${CLAUDE_CODE_API_MAX_RETRIES:-2}"
-    --retry-include RetryableApiError
+    --config "$RETRY_CONFIG"
+    --max-retries "${CLAUDE_CODE_API_MAX_RETRIES:-5}"
     -d "$DATASET"
 )
 

@@ -1,0 +1,638 @@
+# Patch: kimchi-dev runtime extensions for pi-coding-agent
+#
+# NOTE for upgraders: `pnpm patch-commit` regenerates this file and STRIPS this
+# header — re-add it (and re-run `pnpm install` to refresh the lockfile hash)
+# after every regeneration. Patches port textually but can break semantically:
+# verify that every symbol referenced by added lines still exists in the new
+# upstream version (e.g. 0.79.10 removed the `setTheme` import from
+# interactive-mode.js, which previewTheme used to call).
+#
+# Changes included:
+#   1. dist/cli/args.js         — expose KIMCHI_API_KEY in --help env-var block
+#   2. dist/core/extensions/runner.js — add emitBeforeProviderHeaders(headers) method,
+#                                       mirroring emitBeforeProviderRequest pattern
+#   3. dist/core/sdk.js         — call emitBeforeProviderHeaders in streamFn after
+#                                 static header assembly, so extensions can inject
+#                                 per-request dynamic headers (X-Session-Id, X-Turn-Index)
+#   4. dist/core/agent-session.js — set agent.prepareNextTurn to refresh context.tools
+#                                   from state.tools after each tool batch, enabling
+#                                   mid-run setActiveTools() calls to take effect on
+#                                   the next model response within the same agent run.
+#   5. dist/modes/interactive/  — miscellaneous upstream UI fixes bundled in this patch
+#   6. dist/modes/interactive/interactive-mode.js — add previewTheme(name) and
+#      dist/core/extensions/types.d.ts              showError(message) to createExtensionUIContext,
+#                                                   and their type declarations to ExtensionUIContext.
+#
+#                                 previewTheme applies a theme live by delegating to
+#                                 InteractiveThemeController.preview() (the same path as
+#                                 the internal onThemePreview callback used by /settings),
+#                                 WITHOUT the settingsManager.setTheme() persistence that
+#                                 the public ui.setTheme() includes.
+#
+#                                 Why a patch is required: the public ExtensionUIContext conflates
+#                                 "change the rendered theme" and "persist to settingsManager" — the
+#                                 public ui.setTheme() always does both. Theme preview already exists
+#                                 inside InteractiveMode (used by /settings via the private
+#                                 themeController.preview()); the patch simply promotes it to the
+#                                 extension API surface. There is no public-API-only workaround: the
+#                                 only alternative is ui.setTheme() on each arrow-key press, which
+#                                 writes to disk every keystroke and leaves a dirty settings state
+#                                 if the user cancels.
+#
+#                                 showError delegates to the inherited SessionMode.showError so
+#                                 extensions can surface error overlays (not toasts).
+#   7. dist/modes/interactive/components/model-selector.js — accept sessionId constructor
+#      dist/modes/interactive/interactive-mode.js            parameter and key all reads/writes
+#                                                            to process.__kimchiMultiModelEnabled
+#                                                            and process.__kimchiOrchestratorRef
+#                                                            through Map<sessionId, value> instead
+#                                                            of plain globals, so multi-model state
+#                                                            is per-session.
+#   8. dist/core/tools/bash.js — destroy child stdio streams 500ms after a timeout kill
+#      so the tool call returns even when setsid'd grandchildren (e.g. bubblewrap used
+#      by opam install on Linux) escape the process group SIGKILL and keep the stdout
+#      pipe open, which would otherwise cause waitForChildProcess to hang indefinitely.
+#
+# Tracking: open an upstream PR against pi-mono to ship before_provider_headers as
+# a first-class extension hook in ExtensionRunner and ExtensionAPI. Also track a
+# separate PR to add previewTheme + showError to ExtensionUIContext.
+# Issue: TODO — file against https://github.com/earendil-works/pi-mono once the
+# API design is confirmed stable.
+#
+# Removal criteria:
+#   - Items 1-3 (before_provider_headers): upstream pi-mono ships BeforeProviderHeadersEvent
+#     and ExtensionAPI.on("before_provider_headers", ...) as a first-class hook, and
+#     the fixed version is pinned in package.json.
+#   - Item 4 (prepareNextTurn): upstream pi-mono wires agent.prepareNextTurn in
+#     AgentSession._installAgentToolHooks() so context.tools refreshes after each tool
+#     batch without a patch.
+#   - Item 5: individual fixes land upstream and the patched version is updated.
+#   - Item 6 (previewTheme + showError): upstream pi-coding-agent ships previewTheme
+#     and showError on ExtensionUIContext and the fixed version is pinned in package.json.
+#   - Item 7: Kimchi-specific multi-model settings.
+#   - Item 8 (bash timeout stream destroy): upstream pi-coding-agent's
+#     createLocalBashOperations destroys child stdio after a timeout kill (or
+#     waitForChildProcess gains a max-wait that forces resolution), and the
+#     fixed version is pinned in package.json.
+#
+diff --git a/dist/cli/args.js b/dist/cli/args.js
+index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..ad705421fb9087efd8ad2cfbfe8709d198245751 100644
+--- a/dist/cli/args.js
++++ b/dist/cli/args.js
+@@ -321,6 +321,7 @@ ${chalk.bold("Examples:")}
+   ${APP_NAME} --export session.jsonl output.html
+ 
+ ${chalk.bold("Environment Variables:")}
++  KIMCHI_API_KEY                   - Kimchi API key (auto-login when not already configured)
+   ANTHROPIC_API_KEY                - Anthropic Claude API key
+   ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
+   ANT_LING_API_KEY                 - Ant Ling API key
+diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
+index 3b2c24d1b52869e351ea488f0c535c34eaedf127..7302cc4df1e25be2e38489afb7c8ea8364695542 100644
+--- a/dist/core/agent-session.js
++++ b/dist/core/agent-session.js
+@@ -203,6 +203,20 @@ export class AgentSession {
+                 throw new Error(`Extension failed, blocking execution: ${String(err)}`);
+             }
+         };
++        // Refresh context.tools from state.tools after every tool batch so that
++        // mid-run setActiveTools() calls (e.g. the planning→implementation profile
++        // transition fired by activate_ferment_phase) are visible to the next model
++        // response within the same agent run. Without this, createContextSnapshot()
++        // snaps tools once at prompt/continue time and the loop never updates them.
++        this.agent.prepareNextTurn = async (_signal) => {
++            return {
++                context: {
++                    systemPrompt: this.agent.state.systemPrompt,
++                    messages: this.agent.state.messages.slice(),
++                    tools: this.agent.state.tools.slice(),
++                },
++            };
++        };
+         this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
+             const runner = this._extensionRunner;
+             if (!runner.hasHandlers("tool_result")) {
+@@ -1270,8 +1284,9 @@ export class AgentSession {
+      * Manually compact the session context.
+      * Aborts current agent operation first.
+      * @param customInstructions Optional instructions for the compaction summary
++     * @param force If true, compact even when the session is below the normal size threshold
+      */
+-    async compact(customInstructions) {
++    async compact(customInstructions, force = false) {
+         this._disconnectFromAgent();
+         await this.abort();
+         this._compactionAbortController = new AbortController();
+@@ -1283,14 +1298,21 @@ export class AgentSession {
+             const { apiKey, headers, env } = await this._getCompactionRequestAuth(this.model);
+             const pathEntries = this.sessionManager.getBranch();
+             const settings = this.settingsManager.getCompactionSettings();
+-            const preparation = prepareCompaction(pathEntries, settings);
++            let preparation = prepareCompaction(pathEntries, settings);
+             if (!preparation) {
+                 // Check why we can't compact
+                 const lastEntry = pathEntries[pathEntries.length - 1];
+                 if (lastEntry?.type === "compaction") {
+                     throw new Error("Already compacted");
+                 }
+-                throw new Error("Nothing to compact (session too small)");
++                if (!force) {
++                    throw new Error("Nothing to compact (session too small)");
++                }
++                // force=true: retry with keepRecentTokens=0 so even small sessions compact.
++                preparation = prepareCompaction(pathEntries, { ...settings, keepRecentTokens: 0 });
++                if (!preparation) {
++                    throw new Error("Nothing to compact (no valid cut point)");
++                }
+             }
+             let extensionCompaction;
+             let fromExtension = false;
+@@ -1809,7 +1831,7 @@ export class AgentSession {
+             compact: (options) => {
+                 void (async () => {
+                     try {
+-                        const result = await this.compact(options?.customInstructions);
++                        const result = await this.compact(options?.customInstructions, options?.force ?? false);
+                         options?.onComplete?.(result);
+                     }
+                     catch (error) {
+diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
+index 45d68a44d4fb1738509aae509ad7314150d87d74..305c751da224e124de5ddd6ada06deb70a9365d4 100644
+--- a/dist/core/extensions/runner.js
++++ b/dist/core/extensions/runner.js
+@@ -743,6 +743,30 @@ export class ExtensionRunner {
+         }
+         return currentPayload;
+     }
++    async emitBeforeProviderHeaders(headers) {
++        const ctx = this.createContext();
++        let current = headers;
++        for (const ext of this.extensions) {
++            const handlers = ext.handlers.get("before_provider_headers");
++            if (!handlers || handlers.length === 0)
++                continue;
++            for (const handler of handlers) {
++                try {
++                    const result = await handler({ type: "before_provider_headers", headers: current }, ctx);
++                    if (result !== undefined)
++                        current = result;
++                } catch (err) {
++                    this.emitError({
++                        extensionPath: ext.path,
++                        event: "before_provider_headers",
++                        error: err instanceof Error ? err.message : String(err),
++                        stack: err instanceof Error ? err.stack : undefined,
++                    });
++                }
++            }
++        }
++        return current;
++    }
+     async emitBeforeAgentStart(prompt, images, systemPrompt, systemPromptOptions) {
+         let currentSystemPrompt = systemPrompt;
+         const ctx = Object.defineProperties({}, Object.getOwnPropertyDescriptors(this.createContext()));
+diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
+index 32c62bef1e9797d2512557e3504d1aa52112ab7f..94cd217e715f5a471dba51717a9287c0b79514b2 100644
+--- a/dist/core/extensions/types.d.ts
++++ b/dist/core/extensions/types.d.ts
+@@ -188,6 +188,16 @@ export interface ExtensionUIContext {
+     getToolsExpanded(): boolean;
+     /** Set tool output expansion state. */
+     setToolsExpanded(expanded: boolean): void;
++    /**
++     * Apply a theme live without persisting to settingsManager.
++     * Exposed by the kimchi-dev patch; matches the internal onThemePreview callback used by /settings.
++     */
++    previewTheme(name: string): { success: boolean; error?: string };
++    /**
++     * Show an error overlay (same surface as /settings failures).
++     * Exposed by the kimchi-dev patch; delegates to SessionMode.showError.
++     */
++    showError(errorMessage: string): void;
+ }
+ export interface ContextUsage {
+     /** Estimated context tokens, or null if unknown (e.g. right after compaction, before next LLM response). */
+@@ -198,6 +208,9 @@ export interface ContextUsage {
+ }
+ export interface CompactOptions {
+     customInstructions?: string;
++    /** When true, compact even if the session is below the normal size threshold.
++     *  Uses keepRecentTokens=0 so all history is eligible to be summarised. */
++    force?: boolean;
+     onComplete?: (result: CompactionResult) => void;
+     onError?: (error: Error) => void;
+ }
+diff --git a/dist/core/model-registry.js b/dist/core/model-registry.js
+index dff21eeeacc779bd1ee0ac30966384679967c30f..3925f317922d6cfaae208fe9491f7dec91c77a44 100644
+--- a/dist/core/model-registry.js
++++ b/dist/core/model-registry.js
+@@ -308,7 +308,8 @@ export class ModelRegistry {
+     }
+     /** Load built-in models and apply provider/model overrides */
+     loadBuiltInModels(overrides, modelOverrides) {
+-        return getProviders().flatMap((provider) => {
++        const allowed = process.env.KIMCHI_DISABLE_BUILTIN_PROVIDERS ? new Set(["kimchi-dev"]) : null;
++        return getProviders().filter((p) => !allowed || allowed.has(p)).flatMap((provider) => {
+             const models = getModels(provider);
+             const providerOverride = overrides.get(provider);
+             const perModelOverrides = modelOverrides.get(provider);
+diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
+index 2bbfd7fa7c4234cf34afe47de4988f35566b2f4e..6ef3eb0560587cdbc8708297fd9ebcbdaf1124e7 100644
+--- a/dist/core/model-resolver.js
++++ b/dist/core/model-resolver.js
+@@ -37,6 +37,7 @@ export const defaultModelPerProvider = {
+     opencode: "kimi-k2.6",
+     "opencode-go": "kimi-k2.6",
+     "kimi-coding": "kimi-for-coding",
++    "kimchi-dev": "minimax-m3",
+     "cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
+     "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
+     xiaomi: "mimo-v2.5-pro",
+diff --git a/dist/core/sdk.js b/dist/core/sdk.js
+index e386db6d62622a8c77c7d7e9844e63020d8af39a..f2f9e0161b47f7111df88f429c36feb74f9fbf76 100644
+--- a/dist/core/sdk.js
++++ b/dist/core/sdk.js
+@@ -186,6 +186,12 @@ export async function createAgentSession(options = {}) {
+             const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
+             const timeoutMs = options?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
+             const websocketConnectTimeoutMs = options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
++            let headers = mergeProviderAttributionHeaders(model, settingsManager, options?.sessionId, auth.headers, options?.headers);
++            // Let extensions inject per-request dynamic headers (e.g. X-Session-Id, X-Turn-Index)
++            const runner = extensionRunnerRef.current;
++            if (runner?.hasHandlers("before_provider_headers")) {
++                headers = await runner.emitBeforeProviderHeaders(headers ?? {});
++            }
+             return streamSimple(model, context, {
+                 ...options,
+                 apiKey: auth.apiKey,
+@@ -194,7 +200,7 @@ export async function createAgentSession(options = {}) {
+                 websocketConnectTimeoutMs,
+                 maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
+                 maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
+-                headers: mergeProviderAttributionHeaders(model, settingsManager, options?.sessionId, auth.headers, options?.headers),
++                headers,
+             });
+         },
+         onPayload: async (payload, _model) => {
+diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
+index 98b69bb9ccf6464dfaec7b2271cf78677cb73ce9..659fe9c52d0acac4080abfc6d3b92d865d141a4c 100644
+--- a/dist/core/tools/bash.js
++++ b/dist/core/tools/bash.js
+@@ -62,6 +62,16 @@ export function createLocalBashOperations(options) {
+                         timedOut = true;
+                         if (child.pid)
+                             killProcessTree(child.pid);
++                        // Destroy stdio streams after a short grace so the tool
++                        // call returns even when setsid'd grandchildren (e.g.
++                        // bubblewrap used by opam install on Linux) escape the
++                        // process-group SIGKILL, inherit the pipe, and keep
++                        // writing — which would re-arm waitForChildProcess's
++                        // grace timer indefinitely.
++                        setTimeout(() => {
++                            child.stdout?.destroy();
++                            child.stderr?.destroy();
++                        }, 500);
+                     }, timeout * 1000);
+                 }
+                 // Stream stdout and stderr.
+diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
+index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5d97aa84c 100644
+--- a/dist/core/tools/edit.js
++++ b/dist/core/tools/edit.js
+@@ -55,7 +55,7 @@ function validateEditInput(input) {
+     return { path: input.path, edits: input.edits };
+ }
+ function createEditCallRenderComponent() {
+-    return Object.assign(new Box(1, 1, (text) => text), {
++    return Object.assign(new Box(1, 1), {
+         preview: undefined,
+         previewArgsKey: undefined,
+         previewPending: false,
+@@ -120,14 +120,14 @@ function formatEditResult(args, preview, result, theme, isError) {
+ function getEditHeaderBg(preview, settledError, theme) {
+     if (preview) {
+         if ("error" in preview) {
+-            return (text) => theme.bg("toolErrorBg", text);
++            return (text) => theme.fg("error", text);
+         }
+-        return (text) => theme.bg("toolSuccessBg", text);
++        return (text) => theme.fg("success", text);
+     }
+     if (settledError) {
+-        return (text) => theme.bg("toolErrorBg", text);
++        return (text) => theme.fg("error", text);
+     }
+-    return (text) => theme.bg("toolPendingBg", text);
++    return (text) => theme.fg("accent", text);
+ }
+ function buildEditCallComponent(component, args, theme, cwd) {
+     component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
+diff --git a/dist/modes/interactive/components/branch-summary-message.js b/dist/modes/interactive/components/branch-summary-message.js
+index e23ca6db02a29814112dd4945bd868604eb6676f..d0f6fd7aeb79c6a20655805152a30970f1b4cc2a 100644
+--- a/dist/modes/interactive/components/branch-summary-message.js
++++ b/dist/modes/interactive/components/branch-summary-message.js
+@@ -10,7 +10,7 @@ export class BranchSummaryMessageComponent extends Box {
+     message;
+     markdownTheme;
+     constructor(message, markdownTheme = getMarkdownTheme()) {
+-        super(1, 1, (t) => theme.bg("customMessageBg", t));
++        super(1, 1, (t) => theme.fg("accent", t));
+         this.message = message;
+         this.markdownTheme = markdownTheme;
+         this.updateDisplay();
+diff --git a/dist/modes/interactive/components/compaction-summary-message.js b/dist/modes/interactive/components/compaction-summary-message.js
+index 48c22718e1dff7cf4faa4cc09b8a917301b0d892..93b59defc4ecc9caf7faf907230260a1a3f7c477 100644
+--- a/dist/modes/interactive/components/compaction-summary-message.js
++++ b/dist/modes/interactive/components/compaction-summary-message.js
+@@ -10,7 +10,7 @@ export class CompactionSummaryMessageComponent extends Box {
+     message;
+     markdownTheme;
+     constructor(message, markdownTheme = getMarkdownTheme()) {
+-        super(1, 1, (t) => theme.bg("customMessageBg", t));
++        super(1, 1, (t) => theme.fg("accent", t));
+         this.message = message;
+         this.markdownTheme = markdownTheme;
+         this.updateDisplay();
+diff --git a/dist/modes/interactive/components/custom-message.js b/dist/modes/interactive/components/custom-message.js
+index 2d54902da1800044206eb1f00ca07501a7310145..44daf4982a5ab6f671f5bce373a94a310a52fc73 100644
+--- a/dist/modes/interactive/components/custom-message.js
++++ b/dist/modes/interactive/components/custom-message.js
+@@ -18,7 +18,7 @@ export class CustomMessageComponent extends Container {
+         this.markdownTheme = markdownTheme;
+         this.addChild(new Spacer(1));
+         // Create box with purple background (used for default rendering)
+-        this.box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
++        this.box = new Box(1, 1, (t) => theme.fg("accent", t));
+         this.rebuild();
+     }
+     setExpanded(expanded) {
+diff --git a/dist/modes/interactive/components/extension-selector.js b/dist/modes/interactive/components/extension-selector.js
+index 8220e06bc1e2b136c4b84c4af3cd29fd21b98a9f..b213a26c7ac002776850a59d7cafce4ce1379683 100644
+--- a/dist/modes/interactive/components/extension-selector.js
++++ b/dist/modes/interactive/components/extension-selector.js
+@@ -2,7 +2,7 @@
+  * Generic selector component for extensions.
+  * Displays a list of string options with keyboard navigation.
+  */
+-import { Container, getKeybindings, Spacer, Text } from "@earendil-works/pi-tui";
++import { Container, getKeybindings, matchesKey, Spacer, Text } from "@earendil-works/pi-tui";
+ import { theme } from "../theme/theme.js";
+ import { CountdownTimer } from "./countdown-timer.js";
+ import { DynamicBorder } from "./dynamic-border.js";
+@@ -75,6 +75,16 @@ export class ExtensionSelectorComponent extends Container {
+         else if (kb.matches(keyData, "tui.select.cancel")) {
+             this.onCancelCallback();
+         }
++        else {
++            for (let n = 1; n <= 9; n++) {
++                if (matchesKey(keyData, String(n))) {
++                    const selected = this.options[n - 1];
++                    if (selected)
++                        this.onSelectCallback(selected);
++                    break;
++                }
++            }
++        }
+     }
+     dispose() {
+         this.countdown?.dispose();
+diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
+index 8f8c5019a46285adc43b6116aaed0c0758efd2db..03db595639c8a66d25778dae1ecde841d1edfdfb 100644
+--- a/dist/modes/interactive/components/model-selector.js
++++ b/dist/modes/interactive/components/model-selector.js
+@@ -31,13 +31,15 @@ export class ModelSelectorComponent extends Container {
+     onCancelCallback;
+     errorMessage;
+     tui;
++    sessionId;
+     scopedModels;
+     scope = "all";
+     scopeText;
+     scopeHintText;
+-    constructor(tui, currentModel, settingsManager, modelRegistry, scopedModels, onSelect, onCancel, initialSearchInput) {
++    constructor(tui, currentModel, settingsManager, modelRegistry, scopedModels, onSelect, onCancel, initialSearchInput, sessionId) {
+         super();
+         this.tui = tui;
++        this.sessionId = sessionId;
+         this.currentModel = currentModel;
+         this.settingsManager = settingsManager;
+         this.modelRegistry = modelRegistry;
+@@ -118,6 +120,14 @@ export class ModelSelectorComponent extends Container {
+             return;
+         }
+         this.allModels = this.sortModels(models);
++        const orchRef = process.__kimchiOrchestratorRef instanceof Map ? process.__kimchiOrchestratorRef.get(this.sessionId) : undefined;
++        if (orchRef) {
++            const orchId = orchRef.split('/').pop();
++            const orchEntry = this.allModels.find(m => m.id === orchId);
++            if (orchEntry) {
++                this.allModels.unshift({ provider: 'orchestration', id: 'multi-model', model: orchEntry.model, _isMultiModel: true });
++            }
++        }
+         this.scopedModels = this.scopedModels.map((scoped) => {
+             const refreshed = this.modelRegistry.find(scoped.model.provider, scoped.model.id);
+             return refreshed ? { ...scoped, model: refreshed } : scoped;
+@@ -127,6 +137,13 @@ export class ModelSelectorComponent extends Container {
+             id: scoped.model.id,
+             model: scoped.model,
+         }));
++        if (orchRef) {
++            const orchIdScoped = orchRef.split('/').pop();
++            const orchScopedEntry = this.scopedModelItems.find(m => m.id === orchIdScoped);
++            if (orchScopedEntry) {
++                this.scopedModelItems.unshift({ provider: 'orchestration', id: 'multi-model', model: orchScopedEntry.model, _isMultiModel: true });
++            }
++        }
+         this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
+         this.filteredModels = this.activeModels;
+         const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
+@@ -185,17 +202,21 @@ export class ModelSelectorComponent extends Container {
+             if (!item)
+                 continue;
+             const isSelected = i === this.selectedIndex;
+-            const isCurrent = modelsAreEqual(this.currentModel, item.model);
++            const isMultiModelEnabled = process.__kimchiMultiModelEnabled instanceof Map ? !!process.__kimchiMultiModelEnabled.get(this.sessionId) : false;
++            const isCurrent = item._isMultiModel
++                ? isMultiModelEnabled
++                : !isMultiModelEnabled && modelsAreEqual(this.currentModel, item.model);
++            const displayId = item._isMultiModel ? 'multi-model' : item.id;
+             let line = "";
+             if (isSelected) {
+                 const prefix = theme.fg("accent", "→ ");
+-                const modelText = `${item.id}`;
++                const modelText = `${displayId}`;
+                 const providerBadge = theme.fg("muted", `[${item.provider}]`);
+                 const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
+                 line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${checkmark}`;
+             }
+             else {
+-                const modelText = `  ${item.id}`;
++                const modelText = `  ${displayId}`;
+                 const providerBadge = theme.fg("muted", `[${item.provider}]`);
+                 const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
+                 line = `${modelText} ${providerBadge}${checkmark}`;
+@@ -268,6 +289,11 @@ export class ModelSelectorComponent extends Container {
+         }
+     }
+     handleSelect(model) {
++        const selectedItem = this.filteredModels[this.selectedIndex];
++        if (!(process.__kimchiMultiModelEnabled instanceof Map)) {
++            process.__kimchiMultiModelEnabled = new Map();
++        }
++        process.__kimchiMultiModelEnabled.set(this.sessionId, !!selectedItem?._isMultiModel);
+         // Save as new default
+         this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+         this.onSelectCallback(model);
+diff --git a/dist/modes/interactive/components/skill-invocation-message.js b/dist/modes/interactive/components/skill-invocation-message.js
+index 561f3d2540db0a8d934bc2bbecb097aaa7c88458..da4601b0aa0ea1145505300ba77485cfc5c48bb0 100644
+--- a/dist/modes/interactive/components/skill-invocation-message.js
++++ b/dist/modes/interactive/components/skill-invocation-message.js
+@@ -11,7 +11,7 @@ export class SkillInvocationMessageComponent extends Box {
+     skillBlock;
+     markdownTheme;
+     constructor(skillBlock, markdownTheme = getMarkdownTheme()) {
+-        super(1, 1, (t) => theme.bg("customMessageBg", t));
++        super(1, 1, (t) => theme.fg("accent", t));
+         this.skillBlock = skillBlock;
+         this.markdownTheme = markdownTheme;
+         this.updateDisplay();
+diff --git a/dist/modes/interactive/components/tool-execution.js b/dist/modes/interactive/components/tool-execution.js
+index 3f93cc6c5665f603d29b3d6ac3dabfa560d6bb32..a0b9d9a89b5f2e6384d4b909a949794e20587ae4 100644
+--- a/dist/modes/interactive/components/tool-execution.js
++++ b/dist/modes/interactive/components/tool-execution.js
+@@ -43,8 +43,8 @@ export class ToolExecutionComponent extends Container {
+         // Always create all shell variants. contentBox is used for default renderer-based composition.
+         // selfRenderContainer is used when the tool renders its own framing.
+         // contentText is reserved for generic fallback rendering when no tool definition exists.
+-        this.contentBox = new Box(1, 1, (text) => theme.bg("toolPendingBg", text));
+-        this.contentText = new Text("", 1, 1, (text) => theme.bg("toolPendingBg", text));
++        this.contentBox = new Box(1, 1, (text) => theme.fg("accent", text));
++        this.contentText = new Text("", 1, 1, (text) => theme.fg("accent", text));
+         this.selfRenderContainer = new Container();
+         if (this.hasRendererDefinition()) {
+             this.addChild(this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox);
+@@ -204,10 +204,10 @@ export class ToolExecutionComponent extends Container {
+     }
+     updateDisplay() {
+         const bgFn = this.isPartial
+-            ? (text) => theme.bg("toolPendingBg", text)
++            ? (text) => theme.fg("accent", text)
+             : this.result?.isError
+-                ? (text) => theme.bg("toolErrorBg", text)
+-                : (text) => theme.bg("toolSuccessBg", text);
++                ? (text) => theme.fg("error", text)
++                : (text) => theme.fg("success", text);
+         let hasContent = false;
+         this.hideComponent = false;
+         if (this.hasRendererDefinition()) {
+diff --git a/dist/modes/interactive/components/user-message.js b/dist/modes/interactive/components/user-message.js
+index 0e85e9006835b754e38a7af725b4f1ca18eb3a61..94ea3d983a2abe039a7729d452f60c32457a6638 100644
+--- a/dist/modes/interactive/components/user-message.js
++++ b/dist/modes/interactive/components/user-message.js
+@@ -10,7 +10,7 @@ export class UserMessageComponent extends Container {
+     contentBox;
+     constructor(text, markdownTheme = getMarkdownTheme()) {
+         super();
+-        this.contentBox = new Box(1, 1, (content) => theme.bg("userMessageBg", content));
++        this.contentBox = new Box(1, 1, (content) => theme.fg("accent", content));
+         this.contentBox.addChild(new Markdown(text, 0, 0, markdownTheme, {
+             color: (content) => theme.fg("userMessageText", content),
+         }, { preserveOrderedListMarkers: true }));
+diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
+index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce5c914869 100644
+--- a/dist/modes/interactive/interactive-mode.js
++++ b/dist/modes/interactive/interactive-mode.js
+@@ -1592,6 +1592,7 @@ export class InteractiveMode {
+             confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
+             input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
+             notify: (message, type) => this.showExtensionNotify(message, type),
++            showError: (errorMessage) => this.showError(errorMessage),
+             onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
+             setStatus: (key, text) => this.setExtensionStatus(key, text),
+             setWorkingMessage: (message) => {
+@@ -1608,7 +1609,7 @@ export class InteractiveMode {
+             setHeader: (factory) => this.setExtensionHeader(factory),
+             setTitle: (title) => this.ui.terminal.setTitle(title),
+             custom: (factory, options) => this.showExtensionCustom(factory, options),
+-            pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
++            pasteToEditor: (text) => this.ui.handleInput(`\x1b[200~${text}\x1b[201~`),
+             setEditorText: (text) => this.editor.setText(text),
+             getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
+             editor: (title, prefill) => this.showExtensionEditor(title, prefill),
+@@ -1637,6 +1638,16 @@ export class InteractiveMode {
+             },
+             getToolsExpanded: () => this.toolOutputExpanded,
+             setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
++            previewTheme: (themeName) => {
++                // Delegates to the same controller path as the internal
++                // onThemePreview callback used by /settings; preview() applies
++                // the theme live without persisting or touching auto-sync.
++                if (!getThemeByName(themeName)) {
++                    return { success: false, error: `Unknown theme: ${themeName}` };
++                }
++                this.themeController.preview(themeName);
++                return { success: true };
++            },
+         };
+     }
+     /**
+@@ -3425,6 +3436,33 @@ export class InteractiveMode {
+             this.showModelSelector();
+             return;
+         }
++        // Handle "multi-model" as a virtual model selection
++        if (searchTerm === 'multi-model') {
++            const sessionId = this.sessionManager.getSessionId();
++            const orchRef = process.__kimchiOrchestratorRef instanceof Map ? process.__kimchiOrchestratorRef.get(sessionId) : undefined;
++            const orchParts = orchRef ? orchRef.split('/') : [];
++            const orchProvider = orchParts.length >= 2 ? orchParts.slice(0, -1).join('/') : undefined;
++            const orchModelId = orchParts.length >= 2 ? orchParts[orchParts.length - 1] : undefined;
++            const orchestratorModel = orchProvider && orchModelId ? this.session.modelRegistry.find(orchProvider, orchModelId) : undefined;
++            if (orchestratorModel) {
++                if (!(process.__kimchiMultiModelEnabled instanceof Map)) {
++                    process.__kimchiMultiModelEnabled = new Map();
++                }
++                process.__kimchiMultiModelEnabled.set(sessionId, true);
++                try {
++                    await this.session.setModel(orchestratorModel);
++                    this.footer.invalidate();
++                    this.updateEditorBorderColor();
++                    this.showStatus('Model: multi-model');
++                } catch (error) {
++                    process.__kimchiMultiModelEnabled.set(sessionId, false);
++                    this.showError(error instanceof Error ? error.message : String(error));
++                }
++            } else {
++                this.showError('Multi-model orchestrator is not available.');
++            }
++            return;
++        }
+         const model = await this.findExactModelMatch(searchTerm);
+         if (model) {
+             try {
+@@ -3539,6 +3577,7 @@ export class InteractiveMode {
+     }
+     showModelSelector(initialSearchInput) {
+         this.showSelector((done) => {
++            const sessionId = this.sessionManager.getSessionId();
+             const selector = new ModelSelectorComponent(this.ui, this.session.model, this.settingsManager, this.session.modelRegistry, this.session.scopedModels, async (model) => {
+                 try {
+                     await this.session.setModel(model);
+@@ -3556,7 +3595,7 @@ export class InteractiveMode {
+             }, () => {
+                 done();
+                 this.ui.requestRender();
+-            }, initialSearchInput);
++            }, initialSearchInput, sessionId);
+             return { component: selector, focus: selector };
+         });
+     }
+@@ -4255,7 +4294,7 @@ export class InteractiveMode {
+         const outputPath = this.getPathCommandArgument(text, "/export");
+         try {
+             if (outputPath?.endsWith(".jsonl")) {
+-                const filePath = this.session.exportToJsonl(outputPath);
++                const filePath = await this.session.exportToJsonl(outputPath);
+                 this.showStatus(`Session exported to: ${filePath}`);
+             }
+             else {

@@ -1,9 +1,13 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { determineNextAction, getScopingProgress } from "../../ferment/engine.js"
+import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
+import { clearLifecycleGuard } from "./lifecycle-obligation-guard.js"
 import { appendRefEntry } from "./nudge.js"
-import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { loadPendingProposal } from "./pending-proposal-store.js"
+import { triggerPendingPlanReview } from "./plan-review-trigger.js"
+import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
+import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { setActiveFermentAndApplyProfile } from "./tool-scope.js"
@@ -31,7 +35,8 @@ export function loadFermentSilently(
 
 	const wtCheck = checkWorktree(existing)
 	if (wtCheck.severity !== "ok" && wtCheck.message) {
-		void pi.sendMessage(
+		safeSendMessage(
+			pi,
 			{
 				customType: "ferment_worktree_warning",
 				content: [{ type: "text", text: wtCheck.message }],
@@ -63,6 +68,7 @@ export function resumeFerment(
 		setActiveFermentAndApplyProfile(pi, runtime, undefined)
 		return
 	}
+	clearLifecycleGuard(existing.id)
 
 	if (existing.status === "complete" || existing.status === "abandoned") {
 		setActiveFermentAndApplyProfile(pi, runtime, undefined)
@@ -81,7 +87,8 @@ export function resumeFerment(
 
 	const wtCheck = checkWorktree(existing)
 	if (wtCheck.severity !== "ok" && wtCheck.message) {
-		void pi.sendMessage(
+		safeSendMessage(
+			pi,
 			{
 				customType: "ferment_worktree_warning",
 				content: [{ type: "text", text: wtCheck.message }],
@@ -99,17 +106,64 @@ export function resumeFerment(
 		runtime.markScopingInteractive(existing.id)
 	}
 
+	// Hydrate a persisted pending proposal: if the previous session deferred
+	// plan review (questions=[] path) and ended before the user reviewed it,
+	// re-arm the plan review dialog instead of nudging the LLM to re-scope.
+	if (existing.status === "draft") {
+		const persisted = loadPendingProposal(existing.id)
+		if (persisted) {
+			runtime.setPendingScope(existing.id, {
+				title: persisted.title,
+				goal: persisted.goal,
+				successCriteria: persisted.successCriteria,
+				constraints: persisted.constraints,
+				assumptions: persisted.assumptions,
+				phases: persisted.phases,
+				proposeIterations: persisted.proposeIterations,
+			})
+			runtime.setPendingPlanReview({
+				fermentId: existing.id,
+				planMarkdown: persisted.planMarkdown,
+			})
+			const breadcrumb = `Resumed ferment: "${existing.name}" [${existing.status}] · plan review re-armed from saved proposal`
+			safeSendMessage(
+				pi,
+				{
+					customType: "ferment_breadcrumb",
+					content: [{ type: "text", text: breadcrumb }],
+					display: true,
+					details: { text: breadcrumb, variant: "step" },
+				},
+				{ triggerTurn: false },
+			)
+			// Re-arming the review in memory is not enough: the plan-review dialog
+			// is rendered by `runPendingPlanReview`, which the `agent_end` handler
+			// normally triggers via planReviewTimer. On a session restart no agent
+			// turn fires naturally, so invoke the registered trigger directly —
+			// this presents the saved proposal for review WITHOUT spinning up an
+			// LLM turn (no scoping nudge, no re-propose risk).
+			//
+			// Early return is intentional: for a draft with a persisted proposal,
+			// `determineNextAction` would return { kind: "scope" } (no phases yet)
+			// which triggers a scoping nudge we explicitly want to suppress.
+			// `scheduleFermentWakeUp` would schedule a wake-up that also nudges
+			// the LLM — both are undesirable while a plan review is pending.
+			triggerPendingPlanReview(ctx)
+			return
+		}
+	}
+
 	const action = determineNextAction(existing)
 	const baseMsg = action ? formatActionNudgeLine(action) : ""
-	const scopeProgress = getScopingProgress(existing)
-	const breadcrumb = `Resumed ferment: "${existing.name}" [${existing.status}] ${runtime.getContinuationPolicy()} policy · scoping ${scopeProgress.answered}/${scopeProgress.total}`
+	const breadcrumb = `Resumed ferment: "${existing.name}" [${existing.status}] ${runtime.getContinuationPolicy()} policy`
 
 	const imperative =
 		existing.status === "running"
 			? `RESUMING ferment "${existing.name}" — the previous session was interrupted. Pick up the work immediately. Do NOT explain or summarize — execute the next action below.\n\n${baseMsg}`
 			: baseMsg
 
-	void pi.sendMessage(
+	safeSendMessage(
+		pi,
 		{
 			customType: "ferment_breadcrumb",
 			content: [{ type: "text", text: breadcrumb }],
@@ -118,15 +172,40 @@ export function resumeFerment(
 		},
 		{ triggerTurn: false },
 	)
-	void pi.sendMessage(
-		{
-			customType: "ferment_resume_nudge",
-			content: [{ type: "text", text: imperative }],
-			display: false,
-			details: undefined,
-		},
-		{ triggerTurn: true },
-	)
 
-	scheduleFermentWakeUp(pi, runtime, { ...opts, fermentId: existing.id, tag: "Resume wake-up" })
+	if (existing.status !== "paused") {
+		safeSendMessage(
+			pi,
+			{
+				customType: "ferment_resume_nudge",
+				content: [{ type: "text", text: imperative }],
+				display: false,
+				details: undefined,
+			},
+			{ triggerTurn: true },
+		)
+	} else {
+		safeSendMessage(
+			pi,
+			{
+				customType: "ferment_paused_notice",
+				content: [
+					{
+						type: "text",
+						text: `Ferment "${existing.name}" is currently ${existing.status}. Ask the user to run /ferment resume to continue.`,
+					},
+				],
+				display: true,
+				details: undefined,
+			},
+			{ triggerTurn: false },
+		)
+		return
+	}
+
+	// `resumeFerment` already sent a `ferment_resume_nudge` with triggerTurn for
+	// this ferment. Passing `skipNudge` prevents `scheduleFermentWakeUp` from
+	// queuing a duplicate `ferment_continuation_nudge` for the same scope action
+	// (only affects draft ferments where determineNextAction returns { kind: "scope" }).
+	scheduleFermentWakeUp(pi, runtime, { ...opts, fermentId: existing.id, tag: "Resume wake-up", skipNudge: true })
 }

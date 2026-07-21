@@ -1,10 +1,9 @@
 import {
 	DefaultPackageManager,
-	SettingsManager,
 	getAgentDir,
 	parseArgs as parsePiArgs,
+	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
-import { ensureSuperpowersInstalled } from "../extensions/superpowers/installer.js"
 import { isHomebrewInstall } from "../update/paths.js"
 import { applyUpdate, checkForUpdate } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
@@ -13,14 +12,16 @@ interface UpdateFlags {
 	force: boolean
 	dryRun: boolean
 	canary: boolean
+	version?: string
 	target: "all" | "self" | "packages"
 	packageSource?: string
 }
 
 const UPDATE_USAGE = [
-	"Usage: kimchi update [source|self|pi] [--self] [--extensions] [--extension <source>] [--canary] [--force] [--dry-run]",
+	"Usage: kimchi update [source|self|pi|version] [--self] [--extensions] [--extension <source>] [--canary] [--force] [--dry-run]",
 	"",
 	"  source        Update one installed Pi package, e.g. context-mode or npm:context-mode",
+	"  version       Install a specific Kimchi release, e.g. v1.2.3 or v1.2.3-rc.1 (downgrades allowed)",
 	"  self, pi      Update Kimchi itself only",
 	"  --self        Update Kimchi itself only",
 	"  --extensions  Update installed Pi packages only",
@@ -44,7 +45,16 @@ const UPDATE_FLAGS = new Set([
 
 const UPDATE_BOOLEAN_FLAGS = ["force", "dry-run", "canary", "self", "extensions"] as const
 
+/** Positionals that look like a release version, e.g. "v1.2.3", "1.2.3", "v1.2.3-rc.1". */
+const VERSION_POSITIONAL_RE = /^v?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/
+
 function parseFlags(args: string[]): UpdateFlags | string {
+	// Versions are positional (`kimchi update v1.2.3`); catch the flag
+	// spelling people will guess first and point them at the right form.
+	if (args.some((arg) => arg === "--version" || arg.startsWith("--version="))) {
+		return "unknown flag: --version (pass the version directly: kimchi update v1.2.3)"
+	}
+
 	const unsupported = findUnsupportedUpdateFlag(args)
 	if (unsupported) return `unknown flag: ${unsupported}`
 
@@ -79,11 +89,21 @@ function parseFlags(args: string[]): UpdateFlags | string {
 	if (packageSource?.startsWith("-")) return "missing value for --extension"
 
 	if (messages.length > 1) return `unexpected argument: ${messages[1]}`
-	const positional = messages[0]
+	let positional: string | undefined = messages[0]
+	let version: string | undefined
 
 	if (packageSource && positional) return "--extension cannot be combined with a positional source"
 	if (packageSource && (self || extensions)) return "--extension cannot be combined with --self or --extensions"
 	const positionalIsSelf = positional === "self" || positional === "pi"
+
+	// A version-like positional (`kimchi update v1.2.3`) targets Kimchi
+	// itself; anything else stays a package source, so package names keep
+	// working unchanged.
+	if (positional && !positionalIsSelf && VERSION_POSITIONAL_RE.test(positional)) {
+		version = normalizeVersionTag(positional)
+		positional = undefined
+	}
+
 	if (positionalIsSelf) self = true
 	else if (positional) {
 		if (self || extensions) return "positional update targets cannot be combined with --self or --extensions"
@@ -91,13 +111,25 @@ function parseFlags(args: string[]): UpdateFlags | string {
 	}
 
 	const packageTarget = Boolean(packageSource || extensions)
+	if (version && packageTarget) return "a version can only be used when updating Kimchi itself"
 	if ((flags.canary || flags.dryRun) && packageTarget) {
 		return "--canary and --dry-run can only be used when updating Kimchi itself"
 	}
+	if (version && flags.canary) return "a version cannot be combined with --canary"
 
 	const target: UpdateFlags["target"] =
-		flags.canary || flags.dryRun || (self && !extensions) ? "self" : packageTarget && !self ? "packages" : "all"
-	return { ...flags, target, packageSource }
+		flags.canary || flags.dryRun || version || (self && !extensions)
+			? "self"
+			: packageTarget && !self
+				? "packages"
+				: "all"
+	return { ...flags, target, packageSource, version }
+}
+
+/** Release tags always carry a leading "v"; accept "1.2.3" as shorthand for "v1.2.3". */
+function normalizeVersionTag(version: string | undefined): string | undefined {
+	if (!version) return version
+	return /^\d/.test(version) ? `v${version}` : version
 }
 
 function findUnsupportedUpdateFlag(args: string[]): string | undefined {
@@ -200,21 +232,25 @@ function packageSourceAliases(source: string): Set<string> {
 	return aliases
 }
 
-async function updateSelf(flags: Pick<UpdateFlags, "canary" | "dryRun" | "force">): Promise<number> {
+async function updateSelf(flags: Pick<UpdateFlags, "canary" | "dryRun" | "force" | "version">): Promise<number> {
 	// Homebrew manages its own package lifecycle. Self-patching a Homebrew
 	// binary would bypass its shim layer, break the Cellar layout, and risk
 	// losing the installation on the next `brew cleanup`. Direct the user to
 	// the correct upgrade path instead.
 	if (isHomebrewInstall()) {
-		if (flags.canary) {
-			console.log("kimchi is managed by Homebrew. Canary builds are not published to Homebrew.")
+		if (flags.canary || flags.version) {
+			const what = flags.version
+				? "Specific release versions cannot be installed through Homebrew."
+				: "Canary builds are not published to Homebrew."
+			const rerun = flags.version ? `kimchi update ${flags.version}` : "kimchi update --canary"
+			console.log(`kimchi is managed by Homebrew. ${what}`)
 			console.log("")
-			console.log("To use canary, uninstall the Homebrew package and reinstall directly:")
+			console.log("Uninstall the Homebrew package and reinstall directly:")
 			console.log("")
 			console.log("  brew uninstall kimchi")
 			console.log("  curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash")
 			console.log("")
-			console.log("Then re-run: kimchi update --canary")
+			console.log(`Then re-run: ${rerun}`)
 			return 0
 		}
 		console.log("kimchi is managed by Homebrew. Use Homebrew to update:")
@@ -228,18 +264,22 @@ async function updateSelf(flags: Pick<UpdateFlags, "canary" | "dryRun" | "force"
 	const current = getVersion()
 	let check: Awaited<ReturnType<typeof checkForUpdate>>
 	try {
-		check = await checkForUpdate({ currentVersion: current, skipCache: true, canary: flags.canary })
+		check = await checkForUpdate({ currentVersion: current, skipCache: true, canary: flags.canary, tag: flags.version })
 	} catch (err) {
 		console.error(`kimchi update: failed to check for updates: ${(err as Error).message}`)
 		return 1
 	}
 
+	// An explicitly requested version may be a downgrade or a reinstall, so
+	// "update available" phrasing would be misleading — say what will happen.
 	if (!check.hasUpdate) {
-		console.log(`kimchi: already up to date (${current})`)
+		if (flags.version) console.log(`kimchi: already on ${check.latestVersion}`)
+		else console.log(`kimchi: already up to date (${current})`)
 		return 0
 	}
 	if (flags.dryRun) {
-		console.log(`kimchi update available: ${current} → ${check.latestVersion}`)
+		if (flags.version) console.log(`kimchi: would install ${check.latestVersion} (currently ${current})`)
+		else console.log(`kimchi update available: ${current} → ${check.latestVersion}`)
 		if (check.releaseUrl) console.log(`  ${check.releaseUrl}`)
 		return 0
 	}
@@ -249,7 +289,10 @@ async function updateSelf(flags: Pick<UpdateFlags, "canary" | "dryRun" | "force"
 		// on bare Enter. We deliberately don't pull in @clack/prompts here
 		// because the harness's normal flow may be non-interactive (CI
 		// pipelines run `kimchi update --force`).
-		const ok = await confirm(`Kimchi update available: ${current} → ${check.latestVersion}\nUpdate? [Y/n]: `)
+		const prompt = flags.version
+			? `Install ${check.latestVersion} (currently ${current})? [Y/n]: `
+			: `Kimchi update available: ${current} → ${check.latestVersion}\nUpdate? [Y/n]: `
+		const ok = await confirm(prompt)
 		if (!ok) {
 			console.log("Update skipped.")
 			return 0
@@ -266,12 +309,6 @@ async function updateSelf(flags: Pick<UpdateFlags, "canary" | "dryRun" | "force"
 			"Please copy the error message above and create a bug report at https://github.com/getkimchi/kimchi/issues",
 		)
 		return 1
-	}
-
-	try {
-		await ensureSuperpowersInstalled()
-	} catch {
-		// Non-fatal — skills can be refreshed by re-running kimchi update
 	}
 
 	if (process.platform === "win32") {

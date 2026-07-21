@@ -1,16 +1,34 @@
 {
-	"$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
-	"organizeImports": {
-		"enabled": true
+	"$schema": "https://biomejs.dev/schemas/2.5.3/schema.json",
+	"files": {
+		"includes": [
+			"**",
+			"!dist/",
+			"!node_modules/",
+			"!src/core/export-html/",
+			"!src/extensions/mcp-adapter/app-bridge.bundle.js"
+		]
+	},
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"useIgnoreFile": true
 	},
 	"linter": {
-		"enabled": true,
 		"rules": {
-			"recommended": true
+			"preset": "recommended",
+			"complexity": {
+				"noBannedTypes": "off"
+			},
+			"performance": {
+				"noDelete": "warn"
+			},
+			"suspicious": {
+				"noFocusedTests": "off"
+			}
 		}
 	},
 	"formatter": {
-		"enabled": true,
 		"indentStyle": "tab",
 		"lineWidth": 120
 	},
@@ -22,33 +40,28 @@
 	},
 	"overrides": [
 		{
-			"include": ["src/extensions/thinking-steps/**"],
+			"includes": ["src/**/*.test.ts"],
 			"linter": {
 				"rules": {
+					"correctness": {
+						"noUnsafeOptionalChaining": "off"
+					},
 					"suspicious": {
-						"noControlCharactersInRegex": "off"
-					},
-					"style": {
-						"noNonNullAssertion": "off"
-					},
-					"complexity": {
-						"noForEach": "off"
+						"noFocusedTests": "on",
+						"noTemplateCurlyInString": "off"
 					}
 				}
 			}
 		},
 		{
-			"include": ["src/extensions/pi-compat.test.ts"],
+			"includes": ["src/extensions/tool-rendering.ts"],
 			"linter": {
 				"rules": {
 					"suspicious": {
-						"noExplicitAny": "off"
+						"noControlCharactersInRegex": "off"
 					}
 				}
 			}
 		}
-	],
-	"files": {
-		"ignore": ["dist/", "node_modules/", "src/core/export-html/", "src/extensions/mcp-adapter/", "src/extensions/tool-rendering.ts"]
-	}
+	]
 }

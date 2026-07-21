@@ -2,9 +2,9 @@ import { execSync } from "node:child_process"
 import { mkdtempSync, rmdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
-import type { FermentUi } from "./ui.js"
 
 function makeGitRepo(): string {
 	const dir = mkdtempSync(join(tmpdir(), "git-init-test-"))
@@ -27,11 +27,11 @@ function cleanup(dir: string): void {
 	}
 }
 
-function makeMockUi(confirmResult = false): FermentUi {
+function makeMockUi(confirmResult = false): ExtensionUIContext {
 	return {
 		notify: (_message: string) => {},
 		confirm: async () => confirmResult,
-	}
+	} as unknown as ExtensionUIContext
 }
 
 describe("ensureGitRepo", () => {

@@ -1,12 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
-import { SUPERPOWERS_SKILL_PATH } from "./extensions/superpowers/config.js"
+import type { RetrySettings } from "@earendil-works/pi-coding-agent"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
 const AGENT_CONFIG_DIR = resolve(homedir(), ".config", "kimchi", "harness")
-const CAST_AI_LLM_ENDPOINT = "https://llm.cast.ai/openai/v1"
+const KIMCHI_LLM_ENDPOINT = "https://llm.kimchi.dev/openai/v1"
 const DEFAULT_TELEMETRY_LOGS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
 const DEFAULT_TELEMETRY_METRICS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest"
 
@@ -14,35 +14,11 @@ export const ALWAYS_SHOWN_SKILL_PATHS = [join(".config", "kimchi", "harness", "s
 
 export const OPTIONAL_SKILL_PATHS = [join(".pi", "agent", "skills"), join(".claude", "skills")]
 
-/**
- * Relative-to-home skill paths for auto-installed vendor packages.
- * Resolved to absolute by expandSkillPaths() at runtime.
- */
-export const VENDOR_SKILL_PATHS = [SUPERPOWERS_SKILL_PATH]
-
-/**
- * Returns vendor skill paths that aren't already covered by the user's harness
- * skills directory. Prevents duplicate skills when a user manually installed
- * superpowers before we started vendoring it.
- *
- * The sentinel is a representative skill from each vendor package — if the user
- * already has it in their harness skills dir, skip that vendor path entirely.
- */
-export function getActiveVendorSkillPaths(): string[] {
-	const home = homedir()
-	const harnessSkillsDir = join(home, ".config", "kimchi", "harness", "skills")
-	const superPowersSentinel = join(harnessSkillsDir, "using-superpowers", "SKILL.md")
-	if (existsSync(superPowersSentinel)) return []
-	// Only inject the vendor path if the dir actually exists on disk
-	if (!existsSync(join(home, SUPERPOWERS_SKILL_PATH))) return []
-	return VENDOR_SKILL_PATHS
-}
-
 export const envConfig = {
 	KIMCHI_WEB_APP_URL: process.env.KIMCHI_WEB_APP_URL ?? "https://app.kimchi.dev",
 }
 
-export const DEFAULT_SKILL_PATHS = [...ALWAYS_SHOWN_SKILL_PATHS, ...OPTIONAL_SKILL_PATHS, ...VENDOR_SKILL_PATHS]
+export const DEFAULT_SKILL_PATHS = [...ALWAYS_SHOWN_SKILL_PATHS, ...OPTIONAL_SKILL_PATHS]
 
 export function buildSkillPathOptions(discoveredDirs: string[]): string[] {
 	const home = homedir()
@@ -66,13 +42,6 @@ export function buildSkillPathOptions(discoveredDirs: string[]): string[] {
 	}
 
 	for (const p of OPTIONAL_SKILL_PATHS) {
-		if (!seen.has(p) && existsSync(join(home, p))) {
-			seen.add(p)
-			result.push(p)
-		}
-	}
-
-	for (const p of VENDOR_SKILL_PATHS) {
 		if (!seen.has(p) && existsSync(join(home, p))) {
 			seen.add(p)
 			result.push(p)
@@ -119,6 +88,67 @@ export interface PreferencesConfig {
 	hideTips?: boolean
 }
 
+export const RETRY_DEFAULTS = {
+	enabled: true,
+	maxRetries: 3,
+	baseDelayMs: 2000,
+	provider: {
+		timeoutMs: 600_000,
+		maxRetries: 0,
+		maxRetryDelayMs: 60_000,
+	},
+} satisfies RetrySettings
+
+/** What older kimchi versions wrote into pi's settings.json on every startup. */
+const LEGACY_KIMCHI_MAX_RETRIES = 10
+
+/**
+ * Returns the `retry` block to write into pi's settings.json, or undefined if
+ * the existing block should be left alone. A missing block gets the defaults.
+ * Older kimchi versions synced `retry: { maxRetries }` (never a `provider`
+ * block) into settings.json on every startup, so a provider-less block is
+ * kimchi-owned legacy state: upgrade it to the current defaults, but keep any
+ * valid user-tuned values. Only an exact `retry: { maxRetries: 10 }` block is
+ * known to be kimchi-written rather than user intent.
+ */
+export function upgradeLegacyRetrySettings(retry: unknown): RetrySettings | undefined {
+	if (retry === undefined) return RETRY_DEFAULTS
+	if (!retry || typeof retry !== "object" || Array.isArray(retry) || "provider" in retry) return undefined
+	const legacy = retry as Record<string, unknown>
+	const upgraded: RetrySettings = { ...RETRY_DEFAULTS }
+	if (typeof legacy.enabled === "boolean") upgraded.enabled = legacy.enabled
+	if (typeof legacy.baseDelayMs === "number" && Number.isFinite(legacy.baseDelayMs)) {
+		upgraded.baseDelayMs = legacy.baseDelayMs
+	}
+	const maxRetries = legacy.maxRetries
+	const isExactKimchiLegacyBlock =
+		Object.keys(legacy).length === 1 && typeof maxRetries === "number" && maxRetries === LEGACY_KIMCHI_MAX_RETRIES
+	if (typeof maxRetries === "number" && Number.isFinite(maxRetries) && !isExactKimchiLegacyBlock) {
+		upgraded.maxRetries = maxRetries
+	}
+	return upgraded
+}
+
+/** Seed hideThinkingBlock when absent so Kimchi and upstream pi agree on the default. */
+export function ensureHideThinkingBlockDefault(settings: Record<string, unknown>): boolean {
+	if ("hideThinkingBlock" in settings) return false
+	settings.hideThinkingBlock = true
+	return true
+}
+
+/**
+ * Seed quietStartup when absent so settings.json files predating this default
+ * (or otherwise missing the key) don't fall back to pi's verbose startup
+ * listing (the `[Extensions]`/`[Themes]` resource dump).
+ */
+export function ensureQuietStartupDefault(settings: Record<string, unknown>): boolean {
+	if ("quietStartup" in settings) return false
+	settings.quietStartup = true
+	return true
+}
+
+export const THIRD_PARTY_MAX_RETRIES = 4
+
 export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {
 	strategy: "bm25",
 	bm25K1: 1.2,
@@ -141,6 +171,7 @@ export interface KimchiConfig {
 	migrationState?: MigrationState
 	onboarding: OnboardingConfig
 	deviceId: string
+	redaction?: { enabled?: boolean }
 }
 
 /**
@@ -148,6 +179,8 @@ export interface KimchiConfig {
  * Returns undefined if the file doesn't exist or the field is missing.
  */
 export function readApiKeyFromConfigFile(configPath: string = KIMCHI_CONFIG_PATH): string | undefined {
+	const permWarning = checkConfigFilePermissions(configPath)
+	if (permWarning) console.warn(permWarning)
 	try {
 		const raw = readFileSync(configPath, "utf-8")
 		const parsed = JSON.parse(raw)
@@ -174,6 +207,7 @@ function readConfigExtras(configPath: string): {
 	onboarding?: OnboardingConfig
 	preferences?: PreferencesConfig
 	deviceId?: string
+	redaction?: { enabled?: boolean }
 } {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
@@ -239,6 +273,13 @@ function readConfigExtras(configPath: string): {
 			(typeof parsed.device_id === "string" && parsed.device_id.length > 0 && parsed.device_id) ||
 			undefined
 
+		// Read redaction config
+		let redaction: { enabled?: boolean } | undefined
+		const rd = parsed.redaction
+		if (rd && typeof rd === "object" && typeof rd.enabled === "boolean") {
+			redaction = { enabled: rd.enabled }
+		}
+
 		return {
 			apiKey,
 			llmEndpoint,
@@ -250,10 +291,31 @@ function readConfigExtras(configPath: string): {
 			onboarding,
 			deviceId,
 			preferences,
+			redaction,
 		}
 	} catch {
 		return {}
 	}
+}
+
+/**
+ * Check if the config file has group/world-readable permission bits.
+ * Returns a warning string if the file is too permissive (mode allows
+ * group or world access), or undefined if the file doesn't exist or is
+ * owner-only (0600 or stricter). Used by loadConfig and
+ * readApiKeyFromConfigFile to warn users when their API key is exposed.
+ */
+export function checkConfigFilePermissions(configPath: string): string | undefined {
+	try {
+		const stat = statSync(configPath)
+		if ((stat.mode & 0o077) !== 0) {
+			const mode = (stat.mode & 0o777).toString(8)
+			return `Warning: ${configPath} is group/world-readable (mode ${mode}). Run \`chmod 600 ${configPath}\` to restrict access to your API key.`
+		}
+	} catch {
+		// File doesn't exist or is inaccessible — not a perm warning
+	}
+	return undefined
 }
 
 function readConfigObject(configPath: string): Record<string, unknown> | undefined {
@@ -382,13 +444,17 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 export function loadConfig(options?: { configPath?: string; cwd?: string }): KimchiConfig {
 	// Read global config
 	const globalConfigPath = options?.configPath ?? KIMCHI_CONFIG_PATH
+	const globalPermWarning = checkConfigFilePermissions(globalConfigPath)
+	if (globalPermWarning) console.warn(globalPermWarning)
 	const globalExtras = readConfigExtras(globalConfigPath)
 
 	// Read project-level config
 	const projectPath = resolve(options?.cwd ?? process.cwd(), ".kimchi", "config.json")
+	const projectPermWarning = checkConfigFilePermissions(projectPath)
+	if (projectPermWarning) console.warn(projectPermWarning)
 	const projectExtras = readConfigExtras(projectPath)
 
-	// Merge: project wins for scalars; shallow merge for mcpSearch
+	// Merge: project wins for scalars; shallow merge for mcpSearch.
 	const extras = {
 		apiKey: projectExtras.apiKey ?? globalExtras.apiKey,
 		llmEndpoint: projectExtras.llmEndpoint ?? globalExtras.llmEndpoint,
@@ -399,12 +465,13 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		migrationState: projectExtras.migrationState ?? globalExtras.migrationState,
 		onboarding: globalExtras.onboarding,
 		deviceId: projectExtras.deviceId ?? globalExtras.deviceId,
+		redaction: projectExtras.redaction ?? globalExtras.redaction,
 	}
 
 	return {
 		apiKey: extras.apiKey ?? "",
 		agentConfigDir: AGENT_CONFIG_DIR,
-		llmEndpoint: extras.llmEndpoint ?? CAST_AI_LLM_ENDPOINT,
+		llmEndpoint: extras.llmEndpoint ?? KIMCHI_LLM_ENDPOINT,
 		customLlmEndpoint: extras.llmEndpoint,
 		maxToolResultChars: extras.maxToolResultChars ?? 10_000,
 		mcpSearchLimit: extras.mcpSearchLimit ?? 5,
@@ -413,6 +480,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		migrationState: extras.migrationState,
 		onboarding: extras.onboarding ?? {},
 		deviceId: extras.deviceId ?? "",
+		redaction: extras.redaction,
 	}
 }
 
@@ -425,6 +493,10 @@ function writeConfigObject(configPath: string, raw: Record<string, unknown>): vo
 	const tmp = `${configPath}.${process.pid}.tmp`
 	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
 	renameSync(tmp, configPath)
+	// Restrict to owner-only (0600) — config.json holds the Cast AI API key and
+	// git tokens in plaintext. The atomic rename may inherit the tmp file's
+	// default umask perms, so chmod explicitly after the rename lands.
+	chmodSync(configPath, 0o600)
 }
 
 function updateConfigFile(

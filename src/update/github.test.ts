@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { GitHubClient, type Repo, assetName } from "./github.js"
+import { assetName, GitHubClient, type Repo } from "./github.js"
 
 const REPO: Repo = { owner: "castai", name: "kimchi-dev", binary: "kimchi" }
 
@@ -56,6 +56,43 @@ describe("GitHubClient.latestRelease", () => {
 		}) as unknown as typeof fetch
 		const client = new GitHubClient({ fetch: fetchImpl })
 		await expect(client.latestRelease(REPO)).rejects.toThrow(/tag_name/)
+	})
+})
+
+describe("GitHubClient.releaseByTag", () => {
+	it("parses tag_name + html_url out of the API response", async () => {
+		const fetchImpl = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({
+				tag_name: "v0.0.80-rc.1",
+				html_url: "https://github.com/x/y/releases/tag/v0.0.80-rc.1",
+			}),
+		}) as unknown as typeof fetch
+		const client = new GitHubClient({ fetch: fetchImpl })
+		const got = await client.releaseByTag(REPO, "v0.0.80-rc.1")
+		expect(got.tagName).toBe("v0.0.80-rc.1")
+		expect(got.htmlUrl).toBe("https://github.com/x/y/releases/tag/v0.0.80-rc.1")
+		expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+			expect.stringContaining("/releases/tags/v0.0.80-rc.1"),
+			expect.anything(),
+		)
+	})
+
+	it("throws when the tag is not found (404)", async () => {
+		const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 404 }) as unknown as typeof fetch
+		const client = new GitHubClient({ fetch: fetchImpl })
+		await expect(client.releaseByTag(REPO, "v0.0.80-rc.1")).rejects.toThrow(/404/)
+	})
+
+	it("throws when the response is missing tag_name", async () => {
+		const fetchImpl = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({ html_url: "..." }),
+		}) as unknown as typeof fetch
+		const client = new GitHubClient({ fetch: fetchImpl })
+		await expect(client.releaseByTag(REPO, "v0.0.80-rc.1")).rejects.toThrow(/tag_name/)
 	})
 })
 

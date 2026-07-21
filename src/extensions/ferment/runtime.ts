@@ -4,10 +4,10 @@ import type { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import {
-	type PendingPlanReview,
 	clearAllPendingPlanReviews,
 	clearPendingPlanReview,
 	getPendingPlanReview,
+	type PendingPlanReview,
 	setPendingPlanReview,
 } from "./plan-review.js"
 import type { AttachPendingProposalPartial, PendingScope } from "./scoping.js"
@@ -18,40 +18,52 @@ import {
 	getPendingScope,
 	setPendingScope,
 } from "./scoping.js"
+import type { ContinuationPolicy, PendingCompaction } from "./state.js"
 import {
 	bumpBlockRetry,
 	bumpStepCompleteAttempt,
 	bumpStepStart,
 	captureJudgeContext,
+	clearAllPendingCompactions,
 	clearAllScopingGates,
 	clearAllStepStarts,
 	clearBlockRetry,
+	clearCompactionInFlight,
+	clearLifecycleGuardRetryState,
+	clearMidTurnOneshotWarnings,
+	clearPendingCompaction,
 	clearFermentState as clearStateForFerment,
 	clearStepCompleteAttempt,
 	clearStepStart,
 	consumeScopingGate,
+	drainPendingCompactions,
 	getActive,
 	getActiveId,
 	getBlockRetry,
 	getContinuationPolicy,
 	getLastHumanInputAt,
+	getPendingCompaction,
 	getPhaseStartRef,
 	getStepStartRef,
 	getStorage,
+	hasMidTurnOneshotWarning,
 	isAutomatedContinuationEnabled,
+	isCompactionInFlight,
 	isScopingConfirmed,
 	isScopingInteractive,
+	markCompactionInFlight,
 	markHumanInput,
+	markMidTurnOneshotWarning,
 	markScopingConfirmed,
 	markScopingInteractive,
 	recordBlockHashAndCheckRepeat,
 	setActive,
 	setAutomatedContinuationEnabled,
 	setContinuationPolicy,
+	setPendingCompaction,
 	setPhaseStartRef,
 	setStepStartRef,
 } from "./state.js"
-import type { ContinuationPolicy } from "./state.js"
 
 export interface FermentRuntime {
 	/** pi.events bus — set by the ferment extension factory so all mutations
@@ -66,6 +78,9 @@ export interface FermentRuntime {
 	setContinuationPolicy(policy: ContinuationPolicy): void
 	isAutomatedContinuationEnabled(): boolean
 	setAutomatedContinuationEnabled(enabled: boolean): void
+	/** Coordinate session-local recovery state after a state-machine command
+	 *  has been successfully persisted. */
+	onLifecycleTransitionApplied(fermentId: string): void
 	now(): Date
 	nowIso(): string
 	markHumanInput(): void
@@ -101,6 +116,18 @@ export interface FermentRuntime {
 	bumpStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): number
 	clearStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): void
 	clearFermentState(fermentId: string): void
+	setPendingCompaction(fermentId: string, pending: PendingCompaction): void
+	getPendingCompaction(fermentId: string): PendingCompaction | undefined
+	clearPendingCompaction(fermentId: string): void
+	/** Drain ready (non-in-flight) pending compactions, leaving in-flight ones for the next tick. */
+	drainPendingCompactions(): PendingCompaction[]
+	markCompactionInFlight(fermentId: string): void
+	clearCompactionInFlight(fermentId: string): void
+	isCompactionInFlight(fermentId: string): boolean
+	clearAllPendingCompactions(): void
+	markMidTurnOneshotWarning(fermentId: string): void
+	hasMidTurnOneshotWarning(fermentId: string): boolean
+	clearMidTurnOneshotWarnings(): void
 }
 
 function getCurrentPendingPlanReview(): PendingPlanReview | undefined {
@@ -125,6 +152,7 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		setContinuationPolicy,
 		isAutomatedContinuationEnabled,
 		setAutomatedContinuationEnabled,
+		onLifecycleTransitionApplied: clearLifecycleGuardRetryState,
 		now: () => new Date(),
 		nowIso: () => new Date().toISOString(),
 		markHumanInput: () => {
@@ -166,6 +194,17 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		bumpStepCompleteAttempt,
 		clearStepCompleteAttempt,
 		clearFermentState,
+		getPendingCompaction,
+		setPendingCompaction,
+		clearPendingCompaction,
+		drainPendingCompactions,
+		markCompactionInFlight,
+		clearCompactionInFlight,
+		isCompactionInFlight,
+		clearAllPendingCompactions,
+		markMidTurnOneshotWarning,
+		hasMidTurnOneshotWarning,
+		clearMidTurnOneshotWarnings,
 	}
 	return runtime
 }

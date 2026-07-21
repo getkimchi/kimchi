@@ -1,5 +1,5 @@
-import { complete } from "@earendil-works/pi-ai"
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai"
+import { complete } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import {
 	getImageDataHash,

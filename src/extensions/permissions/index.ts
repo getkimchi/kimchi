@@ -2,32 +2,54 @@ import { resolve } from "node:path"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
+import { FermentEventStore } from "../../ferment/event-store.js"
+import { resolveFermentsDir } from "../../ferment/store.js"
+import { isExistingDirectory } from "../../fs-paths.js"
 import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
+import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
+import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
+import {
+	contentHasToolCall,
+	extractTextFromContent,
+	hasPlanCompletionSignal,
+	isNudgeSuppressed,
+	PLAN_MODE_STOP_NUDGE,
+	shouldNudge,
+} from "../../shared/planning/planning-stop-nudge.js"
+import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
+import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { createFerment } from "../ferment/create.js"
+import { emitFermentCreated } from "../ferment/domain-events-emitter.js"
+import { appendRefEntry } from "../ferment/nudge.js"
+import { defaultFermentRuntime } from "../ferment/runtime.js"
 import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
-import { FERMENT_TOOLS, isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
+import { createApplyAndPersist } from "../ferment/tool-helpers.js"
+import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
+import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
-import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
+import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
-import { resolveClassifierModels } from "./classifier-model.js"
+import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
-import { PERMISSIONS_ENV_KEY } from "./constants.js"
-import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
-import { getPermissionMode, getSessionPermissionsEnvKey, setPermissionMode } from "./mode-controller.js"
+import { BUILTIN_DENY, DEFAULT_CONFIG, PERMISSION_MODES_WITH_META as MODES, PERMISSIONS_ENV_KEY } from "./constants.js"
 import { resolveMode } from "./mode.js"
+import { getPermissionMode, getSessionPermissionsEnvKey, setPermissionMode } from "./mode-controller.js"
+import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { saveApprovedPlan } from "./plan-persistence.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
+import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import {
-	type CompoundSubcommand,
 	buildPermissionChoices,
+	type CompoundSubcommand,
 	promptForCompoundApproval,
 	terminalPrompter,
 	withWorkingHidden,
 } from "./prompts.js"
-import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import { evaluateRules, parseRules, stringifyRule } from "./rules.js"
 import { SessionMemory } from "./session-memory.js"
 import {
@@ -37,13 +59,7 @@ import {
 	isReadOnlyTool,
 	splitCompoundCommand,
 } from "./taxonomy.js"
-import {
-	BUILTIN_DENY,
-	DEFAULT_CONFIG,
-	type PermissionMode,
-	type PermissionModeRuntimeSource,
-	type Rule,
-} from "./types.js"
+import type { PermissionMode, PermissionModeRuntimeSource, Rule } from "./types.js"
 
 /**
  * Check whether a file path is within .kimchi/plans/ relative to cwd.
@@ -67,8 +83,6 @@ export function isWithinKimchiPlans(filePath: string, cwd: string): boolean {
  */
 const DANGEROUS_BYPASS_FLAG = "dangerously-skip-permissions"
 
-type RuntimeModeSource = "user" | "ferment"
-
 // Safe default so any event that fires before session_start (and therefore
 // before doLoadConfig) doesn't crash reading `loaded.config.*`.
 const EMPTY_LOADED_CONFIG: LoadedConfig = {
@@ -86,9 +100,10 @@ const PLAN_MODE_TOOLS = [
 	"ls",
 	"web_search",
 	"web_fetch",
+	"mcp",
 	"questionnaire",
 	"bash",
-	"write_todos",
+	...TODO_TOOL_NAMES,
 ]
 const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 
@@ -99,18 +114,7 @@ const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 //
 // Names are lowercased because the tool_call handler lowercases event.toolName
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
-const BUILTIN_ALLOW_TOOL_NAMES = ["set_phase", "agent", "get_subagent_result", "steer_subagent", "write_todos"]
-
-const MODES: Array<{
-	mode: PermissionMode
-	label: string
-	color: "success" | "warning" | "error"
-}> = [
-	{ mode: "default", label: "default", color: "success" },
-	{ mode: "plan", label: "plan", color: "warning" },
-	{ mode: "auto", label: "auto", color: "warning" },
-	{ mode: "yolo", label: "yolo", color: "error" },
-]
+const BUILTIN_ALLOW_TOOL_NAMES = ["set_phase", "agent", "get_subagent_result", "steer_subagent", ...TODO_TOOL_NAMES]
 
 let _isLaunchedWithYolo: () => boolean = () => process.env[PERMISSIONS_ENV_KEY] === "yolo"
 
@@ -118,25 +122,26 @@ export function isLaunchedWithYolo(): boolean {
 	return _isLaunchedWithYolo()
 }
 
-let _displayPermissionMode: PermissionMode
-
-/** Returns current permission mode to be displayed in the TUI. */
-export function getDisplayPermissionMode(): string {
-	return _displayPermissionMode
-}
-
 export { notifyFermentActive }
 
 function canPrompt(ctx: ExtensionContext): boolean {
 	if (isAgentWorker()) return false
+
+	const acpPrompter = getAcpPrompter(ctx.sessionManager.getSessionId())
+	if (ctx.mode === "rpc" && acpPrompter) return true
+
 	if (ctx.hasUI) return true
-	return getAcpPrompter(ctx.sessionManager.getSessionId()) !== undefined
+	return false
 }
 
 function resolvePrompter(ctx: ExtensionContext): ToolPermissionPrompter | undefined {
 	if (isAgentWorker()) return undefined
+
+	const acpPrompter = getAcpPrompter(ctx.sessionManager.getSessionId())
+	if (ctx.mode === "rpc" && acpPrompter) return acpPrompter
+
 	if (ctx.hasUI) return terminalPrompter(ctx)
-	return getAcpPrompter(ctx.sessionManager.getSessionId())
+	return undefined
 }
 
 export default function permissionsExtension(pi: ExtensionAPI): void {
@@ -252,7 +257,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		source: PermissionModeRuntimeSource,
 		skipNotify?: boolean,
 	): void {
-		_displayPermissionMode = mode
 		setPermissionMode(ctx.sessionManager.getSessionId(), mode, source, skipNotify)
 	}
 
@@ -261,15 +265,24 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	function isPlanModeTool(name: string): boolean {
-		if (name === FERMENT_TOOLS.REQUEST_WORKFLOW) return cliMode !== "plan"
 		return PLAN_MODE_TOOL_SET.has(name) || isReadOnlyTool(name)
 	}
 
 	function applyPlanModeTools(): void {
 		if (planModeApplied) return
 		try {
+			// Track which tools plan mode is removing so `restoreToolsFromPlanMode`
+			// can re-enable them. Without this snapshot, restore would be a no-op
+			// because `ToolProfileManager.apply` (via `pi.setActiveTools`) does
+			// not preserve the prior active-tool set.
 			planModeHiddenTools = pi.getActiveTools().filter((name) => !isPlanModeTool(name))
+			// Register the disable vote with the cooperative visibility layer so
+			// `restoreToolsFromPlanMode`'s `planToolVisibility.enable(...)` call
+			// matches the matching disable vote (and so the snapshot below does
+			// not re-surface these tools when `getDisabledToolNames` is read by
+			// other extensions' `setActiveTools` calls).
 			planToolVisibility.disable(planModeHiddenTools)
+			ToolProfileManager.apply("planning-adhoc", "adhoc", pi)
 			planModeApplied = true
 		} catch {
 			// Tool visibility may be unavailable; tool_call handler still enforces the policy.
@@ -291,16 +304,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (!ctx.hasUI) return
 		const { mode } = getRuntimePermissionMode()
 		const active = MODES.find((m) => m.mode === mode) ?? MODES[0]
-		// Filled dot + active label hardcode kimchi palette so the cue stays legible
-		// under kimchi-minimal; unfilled dots + hint use the "text" token to match
-		// editor input/cwd chrome.
-		const text = (s: string): string => ctx.ui.theme.fg("text", s)
-		const dots = MODES.map((m) =>
-			m.mode === mode ? `${resolvedSemanticFg(ctx.ui.theme, m.color)}●${RST_FG}` : text("○"),
-		).join(" ")
-		const name = `${resolvedSemanticFg(ctx.ui.theme, active.color)}${active.label}${RST_FG}`
-		const hint = text("→ shift+tab")
-		ctx.ui.setStatus("permissions-mode", `${dots} ${name} ${hint}`)
+		const name = `${resolvedSemanticFg(ctx.ui.theme, active.color)}${active.tuiLabel}${RST_FG}`
+		const hint = ctx.ui.theme.fg("dim", "→ shift+tab")
+		ctx.ui.setStatus("permissions-mode", `${name} ${hint}`)
 	}
 
 	function maybeShowYoloWarning(ctx: ExtensionContext) {
@@ -393,47 +399,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		)
 	}
 
-	function executeFermentPlan(planText: string): void {
-		// Extract a title from the plan text: first non-empty line after a Goal heading,
-		// or failing that the first heading text.
-		const lines = planText.split(/\r?\n/)
-		const goalIdx = lines.findIndex((l) => /^#+\s*Goal\b/i.test(l))
-		let title = ""
-		if (goalIdx >= 0) {
-			for (let i = goalIdx + 1; i < lines.length; i++) {
-				const trimmed = lines[i].trim()
-				if (trimmed.length > 0 && !/^#/.test(trimmed)) {
-					title = trimmed.slice(0, 80).trim()
-					break
-				}
-			}
-		}
-		if (!title) {
-			title =
-				lines[0]
-					?.replace(/^#+\s*/, "")
-					.trim()
-					.slice(0, 80) ?? "Plan"
-		}
-		pi.sendMessage(
-			{
-				customType: "plan-execute",
-				content: `The user approved the plan and wants to run it as a ferment workflow. You MUST call \`request_ferment_workflow\` now — do not describe it, do not ask for confirmation, just call it immediately.
-
-Use these exact values:
-- title: "${title}"
-- intent: the full plan text below (copy it verbatim as the intent)
-
-The plan text:
-\`\`\`
-${planText}
-\`\`\``,
-				display: false,
-			},
-			{ triggerTurn: true },
-		)
-	}
-
 	pi.on("session_start", async (_event, ctx) => {
 		currentCtx = ctx
 		const { errors } = doLoadConfig(ctx)
@@ -505,12 +470,42 @@ ${planText}
 	})
 
 	const blocks = createSystemPromptBlocks(pi, "permissions")
-	blocks.register({
+	// Register the plan-mode prompt supplement via the shared registry so that
+	// future readers (`compose('adhoc')` from the renderer) can find it without
+	// having to walk every extension's blocks handle. The blocks handle is kept
+	// alive (it still owns the `pi` binding for session-shutdown cleanup); the
+	// registry entry below is the canonical lookup path.
+	const planModeSupplementBlock: SystemPromptBlock = {
 		id: "plan-mode-supplement",
 		render: () => {
 			if (getRuntimePermissionMode().mode !== "plan") return undefined
 			return planModeSupplement.trim()
 		},
+	}
+	PromptSupplementRegistry.register("plan-mode-supplement", planModeSupplementBlock, {
+		modes: ["adhoc"],
+	})
+	blocks.register(planModeSupplementBlock)
+
+	// ─── Entry triggers (planning mode routing) ───────────────────────────
+	// The actual mode-mutating logic lives in the inline handlers below; the
+	// registry entries make the routing table explicit and discoverable.
+	EntryTriggerRegistry.register("--plan-flag", (event) => {
+		if (event.kind !== "cli-flag") return { kind: "noop" }
+		if (event.name !== "--plan") return { kind: "noop" }
+		return { kind: "enter-mode", mode: "adhoc", reason: "CLI --plan flag" }
+	})
+	EntryTriggerRegistry.register("shift-tab-cycle", (event) => {
+		if (event.kind !== "key-press") return { kind: "noop" }
+		if (event.key !== "shift+tab") return { kind: "noop" }
+		// Cycling semantics: caller picks next mode from runtime state.
+		return { kind: "switch-mode", mode: "adhoc", reason: "shift+tab cycle (caller picks next)" }
+	})
+	EntryTriggerRegistry.register("questionnaire-auto-promote", (event) => {
+		if (event.kind !== "tool-call") return { kind: "noop" }
+		if (event.toolName !== "questionnaire") return { kind: "noop" }
+		if (event.mode !== "idle") return { kind: "noop" }
+		return { kind: "enter-mode", mode: "adhoc", reason: "questionnaire tool call in default mode" }
 	})
 
 	// When the agent produces <!-- PLAN_COMPLETE --> in plan mode, show the approval menu.
@@ -528,12 +523,16 @@ ${planText}
 
 		if (!text.includes("<!-- PLAN_COMPLETE -->") && !text.includes("<done>")) return
 
+		// Oneshot sessions bypass the dropdown entirely — the bench path auto-pilots
+		// the rest of the lifecycle through scope_ferment and friends, no user prompt needed.
+		if (pi.getFlag?.("ferment-oneshot") === true) return
+
 		const EXECUTE = "Execute the plan"
-		const FERMENT = "Convert to ferment workflow"
 		const DECLINE = "Rework the plan"
+		const START_AS_FERMENT = "Start as ferment"
 
 		const choice = await withWorkingHidden(ctx, () =>
-			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, FERMENT, DECLINE]),
+			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, DECLINE, START_AS_FERMENT]),
 		)
 
 		if (choice === EXECUTE) {
@@ -545,18 +544,204 @@ ${planText}
 			}
 			changeMode(ctx, "plan", "auto", "user")
 			executePlan(planPath, text)
-		} else if (choice === FERMENT) {
-			// Switch to default mode so ferment tools become available, then ask
-			// the agent to call request_ferment_workflow with the plan as intent.
-			changeMode(ctx, "plan", "default", "user")
-			executeFermentPlan(text)
+		} else if (choice === START_AS_FERMENT) {
+			// ── Tool-swap contract ────────────────────────────────────────────────
+			// This is a SNAPSHOT SWAP that takes effect at the next turn boundary —
+			// there is no explicit handoff message and no model-visible notification.
+			// `ToolProfileManager.apply("implementation-ferment", "ferment", pi)`
+			// calls `pi.setActiveTools(...)` with the catalog-derived set for that
+			// profile (see `src/shared/planning/tool-catalog.ts`). The model sees the
+			// swap on its next invocation; nothing is queued or deferred.
+			//
+			// Tools REMOVED (adhoc / planning-only, no longer visible):
+			//   - questionnaire          (adhoc-only; superseded by ask_user)
+			//
+			// Note: todo lifecycle tools (create_todos, update_todos, add_todo,
+			// mark_todo, clear_todos) are shared core — they remain visible in
+			// all modes including ferment.
+			//
+			// Tools ADDED (ferment-mode, newly visible):
+			//   - ask_user               (interactive routing — TUI in interactive mode,
+			//                              judge model in oneshot via ferment/ask-user.ts)
+			//   - confirm_ferment_completion_criteria (interactive routing, planning)
+			//   - set_phase              (planning — phase tracker)
+			//   - propose_ferment_scoping / scope_ferment / update_ferment_scope_field
+			//                            (planning — scoping surface)
+			//   - list_ferments          (always-both discovery)
+			//   - activate_ferment_phase (planning → implementation transition)
+			//   - refine/complete/skip/fail/start/complete/verify/skip/fail_ferment_step
+			//                            (implementation — step lifecycle)
+			//   - add_ferment_decision / add_ferment_memory
+			//                            (implementation — knowledge capture)
+			//   - complete_ferment       (implementation — termination)
+			//   - edit / write / Agent / get_subagent_result (implementation write set)
+			//
+			// Tools UNCHANGED (shared core, visible in both modes):
+			//   - read, grep, find, ls, web_fetch, web_search
+			//   - bash (read-only gate still applies — same per-call enforcement)
+			try {
+				// Parse the plan against the shared planning process structure first.
+				// Goal / Constraints / Chunks become structured ferment fields;
+				// Verification Strategy / Decision Log / Risks are metadata and must
+				// not become implementation steps. (PR #683 review nit 3473746281.)
+				const parsed = parseSharedPlan(text)
+				// Create a storage instance scoped to ctx.cwd so the ferment artifact
+				// lands in the project's .kimchi/ferments/ directory, not process.cwd().
+				// defaultFermentRuntime.getStorage() always uses process.cwd(); in
+				// production these are the same, but tests (and future multi-root setups)
+				// need the explicit scoping.
+				const fermentDir = resolveFermentsDir(ctx.cwd)
+				const storage = new FermentEventStore(fermentDir)
+				const runtime = { ...defaultFermentRuntime, getStorage: () => storage }
+
+				// If the plan doesn't follow the shared structure (no `## Chunks`
+				// section), fall back to draft-only: persist the ferment but do NOT
+				// activate a phase or swap to implementation tools. Lossy section
+				// splitting would produce steps named "Goal", "Constraints", "Risks",
+				// etc., which silently misrepresent the plan. The user can resume
+				// the draft via /ferment list when they want to implement it.
+				if (parsed.chunks.length === 0) {
+					const draftName = parsed.goal.split("\n")[0] || "Plan from --plan mode"
+					const draft = createFerment(runtime, {
+						name: draftName,
+						goal: parsed.goal || text.trim(),
+						hasUI: ctx.hasUI,
+						isOneShot: pi.getFlag("ferment-oneshot") === true,
+					})
+					defaultFermentRuntime.setActive(draft)
+					if (pi.events) emitFermentCreated(pi.events, draft)
+					appendRefEntry(pi, draft.id)
+					changeMode(ctx, "plan", "auto", "user")
+					ctx.ui?.notify?.(
+						`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment list to resume and scope it interactively.`,
+					)
+					return
+				}
+
+				// Create the ferment through the normal storage API so it gets a
+				// proper ID, is visible to runtime.getActive(), the scheduler, and
+				// the compaction / resume paths.
+				const fermentName = parsed.goal.split("\n")[0].slice(0, 80) || "Plan from --plan mode"
+				const draft = createFerment(runtime, {
+					name: fermentName,
+					goal: parsed.goal,
+					hasUI: ctx.hasUI,
+					isOneShot: pi.getFlag("ferment-oneshot") === true,
+				})
+				// Scope it using the structured fields from the shared plan.
+				const applyAndPersist = createApplyAndPersist(runtime)
+				const scoped = applyAndPersist(draft.id, {
+					type: "scope",
+					goal: parsed.goal,
+					successCriteria: parsed.successCriteria,
+					constraints: parsed.constraints,
+					phases: [
+						{
+							name: fermentName,
+							goal: parsed.goal,
+							// Each chunk becomes one implementation step. Title and body
+							// are joined so the engineer sees the full chunk context.
+							steps: parsed.chunks.map((chunk) => ({
+								description: chunk.body ? `${chunk.title}\n${chunk.body}` : chunk.title,
+							})),
+						},
+					],
+				})
+				if (!scoped.ok) throw new Error(scoped.error.message)
+				// Activate the first phase so the ferment enters implementation mode.
+				const activated = applyAndPersist(draft.id, {
+					type: "activate_phase",
+					phaseId: scoped.ferment.phases[0]?.id ?? "phase-1",
+				})
+				if (!activated.ok) throw new Error(activated.error.message)
+				// Register the ferment as active in the runtime, emit the creation
+				// event, and append a session ref so resumed sessions can find it.
+				defaultFermentRuntime.setActive(activated.ferment)
+				setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)
+				// pi.events may be undefined in headless / test contexts; guard before emitting.
+				if (pi.events) emitFermentCreated(pi.events, activated.ferment)
+				appendRefEntry(pi, activated.ferment.id)
+				changeMode(ctx, "plan", "auto", "user")
+			} catch (err) {
+				// Fail closed: if the runtime path failed (storage write error, FSM
+				// rejection, etc.), the session must NOT end up with implementation
+				// tools visible but no active ferment, no session ref, no creation
+				// event, and no initialized runtime/scheduler state. That was the
+				// silent-invalid-state bug from PR #683 review (comment 3473746278).
+				// Stay in plan mode, clear any half-set runtime state, and surface
+				// the failure so the user knows promotion did not succeed.
+				defaultFermentRuntime.setActive(undefined)
+				const message = err instanceof Error ? err.message : String(err)
+				ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
+			}
 		}
 		// Decline or escape: stay in plan mode.
+	})
+
+	// Plan-mode stop nudge: fires when the model made tool calls this turn but
+	// ended with stopReason "stop" without writing PLAN_COMPLETE.
+	// Logic lives in src/shared/planning/planning-stop-nudge.ts.
+	const planStopNudgeCounts = new Map<string, number>()
+
+	pi.on("turn_end", (event, ctx) => {
+		if (getRuntimePermissionMode().mode !== "plan") {
+			planStopNudgeCounts.clear()
+			return
+		}
+
+		const message = event.message
+		if (message.role !== "assistant") return
+
+		const stopReason = (message as { stopReason?: string }).stopReason
+		// Reset counter on non-stop turns (model still progressing).
+		if (stopReason !== "stop") {
+			planStopNudgeCounts.clear()
+			return
+		}
+
+		const content = message.content as unknown[]
+		const text = extractTextFromContent(content)
+
+		if (
+			!shouldNudge({
+				hasToolCall: contentHasToolCall(content),
+				stopReason,
+				completionSignalPresent: hasPlanCompletionSignal(text),
+			})
+		)
+			return
+
+		const sessionId = ctx.sessionManager.getSessionId()
+		const count = (planStopNudgeCounts.get(sessionId) ?? 0) + 1
+		planStopNudgeCounts.set(sessionId, count)
+
+		if (isNudgeSuppressed(count)) return
+
+		void pi.sendMessage(
+			{
+				customType: "plan_stop_nudge",
+				content: [{ type: "text", text: PLAN_MODE_STOP_NUDGE }],
+				display: false,
+				details: undefined,
+			},
+			{ triggerTurn: true },
+		)
 	})
 
 	pi.on("tool_call", async (event, ctx) => {
 		const toolName = event.toolName.toLowerCase()
 		const input = event.input as Record<string, unknown>
+
+		if (toolName === "read") {
+			const filePath =
+				typeof input.path === "string" ? input.path : typeof input.file_path === "string" ? input.file_path : ""
+			if (filePath && isExistingDirectory(filePath, ctx.cwd)) {
+				return {
+					block: true,
+					reason: "Path is a directory; read only accepts files. List or search the directory instead.",
+				}
+			}
+		}
 
 		// Plan persona path-scope enforcement: when KIMCHI_AGENT_PERSONA=plan (case-insensitive),
 		// write and edit are only allowed for .kimchi/plans/* paths.
@@ -658,12 +843,7 @@ ${planText}
 			// through the classifier; prompts without a frontend fail closed.
 			const promptAvailable = canPrompt(ctx)
 			if (mode === "auto" || !promptAvailable) {
-				const classifierModels = resolveClassifierModels(ctx.modelRegistry)
-				if (!classifierModels) return { block: true, reason: "no model available for classifier" }
-
 				const verdict = await classifyToolCall(
-					classifierModels.primary,
-					classifierModels.fallback,
 					ctx.modelRegistry,
 					{ toolName, input, cwd: ctx.cwd },
 					{ timeoutMs: loaded.config.classifierTimeoutMs },
@@ -685,6 +865,7 @@ ${planText}
 				}
 				const result = await handleConfirm(event, {
 					ctx,
+					pi,
 					subtitle: `Classifier: ${verdict.reason}`,
 					session,
 					activeAborts: activeAbortControllers,
@@ -702,6 +883,7 @@ ${planText}
 					if (subcommands && subcommands.length > 0) {
 						const result = await handleCompoundConfirm(event, {
 							ctx,
+							pi,
 							session,
 							activeAborts: activeAbortControllers,
 							subcommands,
@@ -714,6 +896,7 @@ ${planText}
 			}
 			const result = await handleConfirm(event, {
 				ctx,
+				pi,
 				session,
 				activeAborts: activeAbortControllers,
 				allRules,
@@ -752,6 +935,7 @@ interface ConfirmOptions {
 	subtitle?: string
 	activeAborts: Set<AbortController>
 	allRules?: () => Rule[]
+	pi?: ExtensionAPI
 }
 
 async function handleConfirm(
@@ -765,7 +949,15 @@ async function handleConfirm(
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
 
-		const input = event.input as Record<string, unknown>
+		if (opts.pi?.events?.emit) {
+			opts.pi.events.emit("notification", {
+				notification_type: "permission_prompt",
+				tool_name: event.toolName,
+				tool_use_id: event.toolCallId,
+			})
+		}
+
+		const input = event.input
 		const outcome = await prompter.request({
 			toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
 			toolName: event.toolName,
@@ -793,11 +985,20 @@ export async function handleCompoundConfirm(
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
 
-		if (!opts.ctx.hasUI) {
-			// ACP v1 presents compound commands as one permission card. It does
-			// not offer TUI's per-subcommand picker, so remembered rules are scoped
-			// to the compound call's suggested scope rather than each segment.
-			const input = event.input as Record<string, unknown>
+		if (opts.pi?.events?.emit) {
+			opts.pi.events.emit("notification", {
+				notification_type: "permission_prompt",
+				tool_name: event.toolName,
+				tool_use_id: event.toolCallId,
+			})
+		}
+
+		if (opts.ctx.mode !== "tui") {
+			// Non-TUI transports (chiefly ACP) present compound commands as one
+			// permission card. They do not offer TUI's per-subcommand picker, so
+			// remembered rules are scoped to the compound call's suggested scope
+			// rather than each segment.
+			const input = event.input
 			const outcome = await prompter.request({
 				toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
 				toolName: event.toolName,

@@ -1,18 +1,21 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory, WidgetPlacement } from "@earendil-works/pi-coding-agent"
 import { readHideTips, writeHideTips } from "../../config.js"
+import { AUTO_UPDATE_TIP } from "../auto-update/tips.js"
+import { subscribeBillingStatus } from "../billing/status.js"
+import { createBillingTipProvider } from "../billing/tips.js"
 import { FERMENT_TIPS } from "../ferment/tips.js"
-import { GENERAL_TIPS, createGeneralTipProvider } from "./general-tips.js"
+import { createGeneralTipProvider, GENERAL_TIPS } from "./general-tips.js"
 import { TipPresenter } from "./presenter.js"
-import { type TipRegistry, globalTipRegistry } from "./registry.js"
+import { globalTipRegistry, type TipRegistry } from "./registry.js"
 import { TipRow } from "./tip-row.js"
 import { createTipsPanel } from "./tips-panel.js"
-import type { TipCandidate, TipProvider } from "./types.js"
+import { type TipCandidate, type TipProvider, tipPriority } from "./types.js"
 
 export const TIPS_WIDGET_KEY = "kimchi-tips"
 type VisibleTipWidgetLocation = Extract<WidgetPlacement, "aboveEditor">
 export type TipWidgetLocation = VisibleTipWidgetLocation | "hidden"
 
-const DEFAULT_TIP_WIDGET_LOCATION: TipWidgetLocation = "aboveEditor"
+const DEFAULT_TIP_WIDGET_LOCATION: VisibleTipWidgetLocation = "aboveEditor"
 let tipWidgetLocation: TipWidgetLocation = DEFAULT_TIP_WIDGET_LOCATION
 let onLocationChange: (() => void) | undefined
 let onRemountRequest: (() => void) | undefined
@@ -31,6 +34,18 @@ export function setTipWidgetLocation(location: TipWidgetLocation): () => void {
 
 function tipWidgetOptions(location: VisibleTipWidgetLocation): { placement: VisibleTipWidgetLocation } {
 	return { placement: location }
+}
+
+function getEffectiveTipWidgetLocation(tip: TipCandidate | undefined): VisibleTipWidgetLocation | undefined {
+	if (!tip) return undefined
+	return tipWidgetLocation === "hidden" ? DEFAULT_TIP_WIDGET_LOCATION : tipWidgetLocation
+}
+
+function getHiddenAlertTip(registry: TipRegistry): TipCandidate | undefined {
+	return registry
+		.getEligibleTips("contextual")
+		.filter((tip) => tip.tone === "warning" || tip.tone === "error")
+		.sort((a, b) => tipPriority(b) - tipPriority(a))[0]
 }
 
 function updateTipWidgetLocation(location: TipWidgetLocation): void {
@@ -53,14 +68,18 @@ export function remountTipWidget(): void {
 export interface TipsExtensionOptions {
 	registry?: TipRegistry
 	generalProvider?: TipProvider
+	billingProvider?: TipProvider
 }
 
 export default function tipsExtension(options: TipsExtensionOptions = {}): ExtensionFactory {
 	return (pi: ExtensionAPI) => {
 		const registry = options.registry ?? globalTipRegistry
 		const generalProvider = options.generalProvider ?? createGeneralTipProvider()
+		const billingProvider = options.billingProvider ?? createBillingTipProvider()
 		const presenter = new TipPresenter(registry)
 		let unregisterGeneral: (() => void) | undefined
+		let unregisterBilling: (() => void) | undefined
+		let unregisterBillingStatus: (() => void) | undefined
 		let unregisterLocationChange: (() => void) | undefined
 		let activeCtx: ExtensionContext | undefined
 		let activeTui: { requestRender?(): void } | undefined
@@ -81,17 +100,22 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 			activeCtx = undefined
 		}
 
+		const getCurrentVisibleTip = (): TipCandidate | undefined => {
+			return tipWidgetLocation === "hidden" ? getHiddenAlertTip(registry) : presenter.getCurrentTip()
+		}
+
 		const mountWidget = (ctx: ExtensionContext) => {
-			const location = tipWidgetLocation
-			if (location === "hidden") return
+			const currentTip = getCurrentVisibleTip()
+			const location = getEffectiveTipWidgetLocation(currentTip)
+			if (!location) return
 			if (widgetMounted) return
-			if (!presenter.getCurrentTip()) return
+			if (!currentTip) return
 
 			ctx.ui.setWidget(
 				TIPS_WIDGET_KEY,
 				(tui, theme) => {
 					activeTui = tui
-					return new TipRow(() => presenter.getCurrentTip(), theme)
+					return new TipRow(getCurrentVisibleTip, theme)
 				},
 				tipWidgetOptions(location),
 			)
@@ -102,14 +126,13 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 		const updateWidget = (ctx: ExtensionContext) => {
 			if (!ctx.hasUI) return
 			activeCtx = ctx
-			if (tipWidgetLocation === "hidden") {
+			const currentTip = getCurrentVisibleTip()
+			const location = getEffectiveTipWidgetLocation(currentTip)
+			if (!location || !currentTip) {
 				unmountWidget(ctx)
 				return
 			}
-			if (!presenter.getCurrentTip()) {
-				unmountWidget(ctx)
-				return
-			}
+			if (widgetMounted && mountedLocation !== location) unmountWidget(ctx)
 			mountWidget(ctx)
 			activeTui?.requestRender?.()
 		}
@@ -117,10 +140,16 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 		pi.on("session_start", (_event, ctx) => {
 			clearWidget()
 			presenter.clear()
+			unregisterBilling?.()
 			unregisterGeneral?.()
 			unregisterLocationChange?.()
+			unregisterBillingStatus?.()
+			unregisterBilling = registry.registerProvider(billingProvider)
 			unregisterGeneral = registry.registerProvider(generalProvider)
 			unregisterLocationChange = onTipWidgetLocationChange(() => {
+				if (activeCtx) updateWidget(activeCtx)
+			})
+			unregisterBillingStatus = subscribeBillingStatus(() => {
 				if (activeCtx) updateWidget(activeCtx)
 			})
 			onRemountRequest = () => {
@@ -146,8 +175,12 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 		pi.on("session_shutdown", () => {
 			clearWidget()
 			presenter.clear()
+			unregisterBilling?.()
+			unregisterBilling = undefined
 			unregisterGeneral?.()
 			unregisterGeneral = undefined
+			unregisterBillingStatus?.()
+			unregisterBillingStatus = undefined
 			unregisterLocationChange?.()
 			unregisterLocationChange = undefined
 			onRemountRequest = undefined
@@ -218,6 +251,12 @@ function collectAllTips(registry: TipRegistry): TipCandidate[] {
 		seen.add(tip.id)
 		all.push({ ...tip, source: "kimchi.ferment" })
 	}
+
+	// Static auto-update tip — always shown in the catalog regardless of
+	// whether auto-update is currently enabled. The dynamic provider
+	// (createAutoUpdateTipProvider) gates visibility in the tips widget.
+	seen.add(AUTO_UPDATE_TIP.id)
+	all.push({ ...AUTO_UPDATE_TIP, source: "kimchi.auto-update" })
 
 	// Any additional tips from third-party providers not already included
 	for (const candidate of registry.getEligibleTips()) {

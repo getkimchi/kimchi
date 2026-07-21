@@ -1,11 +1,25 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment, FermentStatus } from "../../ferment/types.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { registerAgents } from "../agents/personas/agent-types.js"
 import { setPermissionMode } from "../permissions/mode-controller.js"
+
+// Mock getMultiModelEnabled so tests can control delegationMode (strict vs relaxed)
+// without depending on real config state. Default to true (multi-model / strict)
+// so existing assertions for strict-mode content continue to pass. Individual
+// tests can override via `setMultiModelEnabled(false)`.
+const getMultiModelEnabledMock = vi.fn(() => true)
+vi.mock("../multi-model.js", (importOriginal) => {
+	return importOriginal<typeof import("../multi-model.js")>().then((mod) => ({
+		...mod,
+		getMultiModelEnabled: () => getMultiModelEnabledMock(),
+	}))
+})
+
+import { createContext } from "../__mocks__/context.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
 
 const TEST_SESSION_ID = "test-session"
@@ -13,7 +27,7 @@ const TEST_SESSION_ID = "test-session"
 function makeMockCtx(): ExtensionContext {
 	// Set up permission mode for the test session
 	setPermissionMode(TEST_SESSION_ID, "default", "user")
-	return { sessionManager: { getSessionId: () => TEST_SESSION_ID } } as unknown as ExtensionContext
+	return createContext({ sessionManager: { getSessionId: () => TEST_SESSION_ID } })
 }
 
 function makePi(oneshot: boolean): ExtensionAPI {
@@ -81,7 +95,11 @@ function makeNoActiveFermentRuntime(): FermentRuntime {
 	}
 }
 
-const STATE_MACHINE_HEADER = "**State machine:**"
+// Step 5 of the unify-ferment-tool-modes ferment rewrote the State machine
+// header to describe the lifecycle-driven toolset transition (planning phase →
+// implementation phase). Match the new prefix (em-dash, no closing `**`) so
+// all rule-survival tests still recognise the planner supplement.
+const STATE_MACHINE_HEADER = "**State machine —"
 const KNOWLEDGE_HEADER = "**Knowledge capture:**"
 const FILE_RULE = "NEVER write, edit, or read files yourself"
 const CREATE_GUARD = "There is no `create_ferment` tool"
@@ -89,6 +107,12 @@ const PAUSED_HEADER = "## Ferment Paused"
 const PAUSED_RULE = "Do NOT call any ferment tools"
 
 describe("buildFermentPromptBlock", () => {
+	beforeEach(() => {
+		// Default to multi-model (strict) so existing assertions pass.
+		// Individual tests override with getMultiModelEnabledMock(false).
+		getMultiModelEnabledMock.mockReturnValue(true)
+	})
+
 	afterEach(() => {
 		registerAgents(new Map())
 	})
@@ -115,15 +139,9 @@ describe("buildFermentPromptBlock", () => {
 			})
 		}
 
-		it("returns idle hint when no ferment is active", () => {
+		it("does not inject the idle hint when no ferment is active", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeNoActiveFermentRuntime())
-			expect(out).toContain("Ferment Workflow")
-			expect(out).toContain("The tool asks the user for explicit host confirmation")
-			expect(out).toContain("In yolo permissions mode, the host auto-approves")
-			expect(out).not.toContain("questionnaire")
-			expect(out).not.toContain("ferment_start_approval")
-			expect(out).toContain("`intent` containing the full original user request")
-			expect(out).toContain("Never block")
+			expect(out).toBeUndefined()
 		})
 	})
 
@@ -251,6 +269,21 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain('After `propose_ferment_scoping` returns "Plan saved"')
 		})
 
+		it("tells planner the host takes over completely after 'Plan ready for review'", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
+			expect(out).toContain('After `propose_ferment_scoping` returns "Plan ready for review"')
+			expect(out).toContain("the host takes over completely")
+			expect(out).toContain("automatically unlocks the implementation toolset")
+			expect(out).toContain("End your turn")
+		})
+
+		it("prohibits discussing tool availability or session capabilities with the user", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
+			expect(out).toContain("Never discuss your current tool availability")
+			expect(out).toContain("Do not suggest the user take action to unlock tools")
+			expect(out).toContain("Do not discuss your session capabilities")
+		})
+
 		it("guides orient-interview discovery before proposing scoping", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).toContain("follow the shared discovery guidance in the Upfront Contract")
@@ -265,19 +298,15 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("STEP 4")
 			expect(out).toContain("DEEP EXPLORATION")
 			expect(out).toContain("MAX 2 TURNS")
-			expect(out).toContain("targeted search to find the")
+			expect(out).toContain("Prefer targeted search over reading entire files line by line")
 			expect(out).toContain("Skip this step for greenfield tasks")
 			expect(out).toContain("record why in assumptions")
-			expect(out).toContain("Use Explore subagents for broader or parallel discovery")
+			expect(out).toContain("spawn Explore subagents instead of reading files yourself")
 			expect(out).toContain('subagent_type: "Explore"')
 			expect(out).toContain("token_budget: 120000")
 			expect(out).toContain("run_in_background: true")
-			expect(out).toContain("do not retry the same broad task")
-			expect(out).toContain("spawn a narrower replacement only if that missing fact is plan-blocking")
-			expect(out).toContain("continue with direct targeted reads")
-			expect(out).toContain('otherwise become an "explore", "find the existing pattern"')
-			expect(out).toContain("The plan you propose should reflect the discovered files")
-			expect(out).toContain("all P1/P2/P3 gates")
+			expect(out).toContain("Skip entirely if you have enough context from Steps 1-3")
+			expect(out).toContain("P1/P2/P3")
 		})
 
 		it("uses manual phase-boundary instructions under manual continuation policy", () => {
@@ -286,6 +315,20 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("ask the user before activating the next phase")
 			expect(out).toContain("do not call `activate_ferment_phase` until they say continue")
 			expect(out).not.toContain("do not ask the user to confirm phase advancement")
+		})
+
+		it("omits turn discipline section under manual continuation policy", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }, "manual")) ?? ""
+			expect(out).not.toContain("Turn discipline (automated ferment)")
+			expect(out).not.toContain("Every turn MUST end with a ferment lifecycle tool call")
+		})
+
+		it("includes turn discipline section under automated continuation policy", () => {
+			const out =
+				buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }, "automated")) ?? ""
+			expect(out).toContain("Turn discipline (automated ferment)")
+			expect(out).toContain("may take a brief thinking or assessment turn")
+			expect(out).not.toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
 		})
 
 		it("uses automated cross-phase instructions under automated continuation policy", () => {
@@ -320,15 +363,32 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).not.toContain("kimi-k2.5")
 			expect(out).not.toContain("worker_model")
 		})
+		// Regression: the scope_ferment rule must differ between interactive and one-shot.
+		it("tells interactive planners to avoid scope_ferment and use propose_ferment_scoping", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" })) ?? ""
+			expect(out).toContain("Do NOT call `scope_ferment` directly in the interactive flow")
+			expect(out).toContain("only `propose_ferment_scoping`")
+		})
 
-		it("keeps phase tagging out of the pre-ferment classification path", () => {
-			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeNoActiveFermentRuntime()) ?? ""
-			expect(out).toContain("Do not call `set_phase`")
-			expect(out).toContain("*until* you have classified the request")
-			expect(out).toContain("called `request_ferment_workflow`")
-			expect(out).toContain("open-ended analysis of an existing app")
-			expect(out).toContain("request the ferment workflow before analysis, file reads, or phase tagging")
-			expect(out).toContain("the host handles confirmation and queues scoping")
+		it("tells one-shot planners to use scope_ferment directly and avoid propose_ferment_scoping", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+			expect(out).toContain("Call `scope_ferment` directly")
+			expect(out).toContain("do NOT use `propose_ferment_scoping`")
+			expect(out).not.toContain("Do NOT call `scope_ferment` directly in the interactive flow")
+		})
+
+		it("one-shot planner supplement still names the P1/P2/P3 gate requirement", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+			expect(out).toContain("P1/P2/P3")
+			expect(out).toMatch(/schema\s+hard-?rejects/i)
+		})
+
+		it("one-shot rule applies for status=draft, planned, and running", () => {
+			for (const status of ["draft", "planned", "running"] as const) {
+				const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status })) ?? ""
+				expect(out, `status=${status}`).toContain("Call `scope_ferment` directly")
+				expect(out, `status=${status}`).not.toContain("Do NOT call `scope_ferment` directly in the interactive flow")
+			}
 		})
 	})
 
@@ -371,6 +431,118 @@ describe("buildFermentPromptBlock", () => {
 				expect(normalText, `ferment-oneshot=false missing: ${sub}`).toContain(sub)
 				expect(oneshotText, `ferment-oneshot=true missing: ${sub}`).toContain(sub)
 			}
+		})
+	})
+
+	// Step 5 of the unify-ferment-tool-modes ferment rewrote the State machine
+	// bullets in buildFermentPromptBlock to describe the planning → implementation
+	// toolset transition explicitly. Verify the supplement carries both phases
+	// and the activation trigger, and no longer carries the "does not narrow"
+	// wording from the pre-unified model.
+	it("planner supplement describes the planning → implementation lifecycle transition", () => {
+		const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" })) ?? ""
+
+		// The supplement must describe BOTH phases of the toolset.
+		expect(out).toContain("Planning phase")
+		expect(out).toContain("Implementation phase")
+		// It must reference the activation trigger.
+		expect(out).toContain("activate_ferment_phase")
+		// It must NOT contain the old "does not narrow" text.
+		expect(out).not.toContain("does not narrow")
+	})
+
+	it("combines bounded worker limits with report-aware exhaustion recovery", () => {
+		const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }, "automated")) ?? ""
+
+		expect(out).toContain("max_turns")
+		expect(out).toContain("max_duration")
+		expect(out).toContain("budget_tier")
+		expect(out).toContain("narrow | standard | complex")
+		expect(out).toContain("exact task_ref")
+		expect(out).toContain("submit_agent_report")
+		expect(out).toContain("complete_ferment_step automatically runs the scoped verification command")
+		expect(out).toContain("Do not rerun it with bash")
+		expect(out).toContain("do not mark the step complete")
+		expect(out).toContain("narrower linked replacement")
+		expect(out).not.toContain("call complete_ferment_step with whatever it produced")
+	})
+
+	// Unify Planning Pipeline Prompts — verify shared process steps live in ferment
+	// planner supplement AND that ferment-specific sections absent from plan mode are present.
+	describe("shared process steps — parity with plan-mode-supplement", () => {
+		it("ferment planner supplement contains all five shared step headers", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
+			// These must match what plan-mode-supplement also renders (both source from SHARED_PLANNING_PROCESS)
+			expect(out).toContain("STEP 1")
+			expect(out).toContain("ORIENT")
+			expect(out).toContain("STEP 2")
+			expect(out).toContain("INTERVIEW")
+			expect(out).toContain("STEP 3")
+			expect(out).toContain("COMPLETION CRITERIA")
+			expect(out).toContain("STEP 4")
+			expect(out).toContain("DEEP EXPLORATION")
+			expect(out).toContain("STEP 5")
+		})
+
+		it("ferment planner supplement contains shared process core behaviour", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
+			expect(out).toContain("iterative rounds")
+			expect(out).toContain("REFLECT before continuing")
+			expect(out).toContain("MAX 2 TURNS")
+			expect(out).toContain("Prefer targeted search over reading entire files line by line")
+		})
+
+		it("ferment planner supplement contains ferment-specific sections absent from plan mode", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
+			// Ferment lifecycle tools — not present in plan-mode-supplement
+			expect(out).toContain("propose_ferment_scoping")
+			expect(out).toContain("ask_user")
+			expect(out).toContain("confirm_ferment_completion_criteria")
+			// P-gates — ferment-only validation gates
+			expect(out).toContain("P1")
+			expect(out).toContain("P2")
+			expect(out).toContain("P3")
+			expect(out).toContain("exactly P1, P2, and P3")
+			// Phase/step mechanics — ferment lifecycle concepts not in plan mode
+			expect(out).toContain("activate_ferment_phase")
+			expect(out).toContain("scope_ferment")
+		})
+
+		it("ferment planner supplement does NOT contain plan-mode-only markers", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
+			// Plan-mode completion markers must not bleed into ferment supplement
+			expect(out).not.toContain("PLAN_COMPLETE")
+			// Plan-mode read-only constraint
+			expect(out).not.toContain("read-only access to this codebase")
+			// Plan-mode questionnaire tool must not appear in ferment supplement
+			expect(out).not.toContain("questionnaire tool")
+		})
+	})
+
+	describe("single-model (relaxed) delegation mode", () => {
+		beforeEach(() => {
+			getMultiModelEnabledMock.mockReturnValue(false)
+		})
+
+		it("does NOT mandate delegation — allows direct execution", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+			expect(out).not.toContain("NEVER implement a step inline")
+			expect(out).not.toContain("NEVER write, edit, or read files yourself")
+			expect(out).toContain("may execute steps directly")
+		})
+
+		it("contains delegation guidance for when to delegate vs work directly", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+			expect(out).toContain("Prefer direct execution for narrow fixes")
+			expect(out).toContain("Prefer delegation for parallel work")
+			expect(out).toContain("If a subagent aborts on a step")
+		})
+
+		it("relaxes turn discipline — allows thinking turns", () => {
+			const out =
+				buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" }, "automated")) ?? ""
+			expect(out).toContain("may take a brief thinking or assessment turn")
+			expect(out).not.toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
 		})
 	})
 })

@@ -1,9 +1,9 @@
-import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { fg } from "../../ansi.js"
 import type { CachedTool, MetadataCache, ServerCacheEntry } from "./metadata-cache.js"
 import { resourceNameToToolName } from "./resource-tools.js"
-import { isToolExcluded } from "./types.js"
 import type { McpConfig, McpPanelCallbacks, McpPanelResult, ServerProvenance } from "./types.js"
+import { isToolExcluded } from "./types.js"
 
 interface PanelTheme {
 	border: string
@@ -30,7 +30,6 @@ const DEFAULT_THEME: PanelTheme = {
 	confirm: "32",
 	cancel: "31",
 }
-
 
 const RAINBOW_COLORS = [
 	"38;2;178;129;214",
@@ -124,10 +123,7 @@ export function computeVisibleWindow(
 		fixedOverheadRows: 16,
 	},
 ): { maxVis: number; startIdx: number; endIdx: number } {
-	const maxVis = Math.max(
-		limits.minVisible,
-		Math.min(limits.maxVisible, terminalRows - limits.fixedOverheadRows),
-	)
+	const maxVis = Math.max(limits.minVisible, Math.min(limits.maxVisible, terminalRows - limits.fixedOverheadRows))
 	const startIdx = Math.max(0, Math.min(cursorIndex - Math.floor(maxVis / 2), total - maxVis))
 	const endIdx = Math.min(startIdx + maxVis, total)
 	return { maxVis, startIdx, endIdx }
@@ -145,6 +141,8 @@ class McpPanel {
 	private discardSelected = 1
 	private importNotice: string | null = null
 	private authNotice: string | null = null
+	private saveNotice: string | null = null
+	private focusDescription: { serverName: string; toolName: string; text: string } | null = null
 	private inactivityTimeout: ReturnType<typeof setTimeout> | null = null
 	private visibleItems: VisibleItem[] = []
 	private tui: { requestRender(force?: boolean): void; terminal: { rows: number } }
@@ -311,6 +309,7 @@ class McpPanel {
 		this.resetInactivityTimeout()
 		this.importNotice = null
 		this.authNotice = null
+		this.saveNotice = null
 
 		if (this.confirmingDiscard) {
 			this.handleDiscardInput(data)
@@ -325,14 +324,26 @@ class McpPanel {
 		}
 
 		if (matchesKey(data, "ctrl+s")) {
-			this.cleanup()
-			this.done(this.buildResult())
+			const result = this.buildResult()
+			if (result.changes.size > 0) {
+				this.callbacks.onSave(result.changes)
+				// Commit saved values as the new baseline so dirty/unsaved clears.
+				this.servers.forEach((s) => {
+					s.tools.forEach((t) => {
+						t.wasDirect = t.isDirect
+					})
+				})
+				this.updateDirty()
+				this.saveNotice = "Saved ✓ — restart pi to apply"
+			}
+			this.tui.requestRender()
 			return
 		}
 
 		// Modal description search mode
 		if (this.descSearchActive) {
 			if (matchesKey(data, "escape") || matchesKey(data, "return")) {
+				this.focusDescription = null
 				this.descSearchActive = false
 				this.descQuery = ""
 				this.rebuildVisibleItems()
@@ -340,6 +351,7 @@ class McpPanel {
 				return
 			}
 			if (matchesKey(data, "backspace")) {
+				this.focusDescription = null
 				if (this.descQuery.length > 0) {
 					this.descQuery = this.descQuery.slice(0, -1)
 					this.rebuildVisibleItems()
@@ -348,20 +360,24 @@ class McpPanel {
 				return
 			}
 			if (matchesKey(data, "up")) {
+				this.focusDescription = null
 				this.moveCursor(-1)
 				return
 			}
 			if (matchesKey(data, "down")) {
+				this.focusDescription = null
 				this.moveCursor(1)
 				return
 			}
 			if (matchesKey(data, "space")) {
+				this.focusDescription = null
 				// Toggle even while in desc search
 				const item = this.visibleItems[this.cursorIndex]
 				if (item) this.toggleItem(item)
 				return
 			}
 			if (data.length === 1 && data.charCodeAt(0) >= 32) {
+				this.focusDescription = null
 				this.descQuery += data
 				this.rebuildVisibleItems()
 				this.cursorIndex = Math.min(this.cursorIndex, Math.max(0, this.visibleItems.length - 1))
@@ -371,6 +387,11 @@ class McpPanel {
 		}
 
 		if (matchesKey(data, "escape")) {
+			if (this.focusDescription) {
+				this.focusDescription = null
+				this.tui.requestRender()
+				return
+			}
 			if (this.nameQuery) {
 				this.nameQuery = ""
 				this.rebuildVisibleItems()
@@ -388,10 +409,12 @@ class McpPanel {
 		}
 
 		if (matchesKey(data, "up")) {
+			this.focusDescription = null
 			this.moveCursor(-1)
 			return
 		}
 		if (matchesKey(data, "down")) {
+			this.focusDescription = null
 			this.moveCursor(1)
 			return
 		}
@@ -399,6 +422,7 @@ class McpPanel {
 		if (matchesKey(data, "space")) {
 			const item = this.visibleItems[this.cursorIndex]
 			if (item) this.toggleItem(item)
+			this.focusDescription = null
 			return
 		}
 
@@ -416,16 +440,19 @@ class McpPanel {
 				this.cursorIndex = Math.min(this.cursorIndex, Math.max(0, this.visibleItems.length - 1))
 			} else if (item.toolIndex !== undefined) {
 				const tool = server.tools[item.toolIndex]
-				tool.isDirect = !tool.isDirect
-				if (tool.isDirect && server.source === "import") {
-					this.importNotice = `Imported from ${server.importKind ?? "external"} — will copy to user config on save`
+				const fd = this.focusDescription
+				if (fd && fd.serverName === server.name && fd.toolName === tool.name) {
+					this.focusDescription = null
+				} else {
+					this.focusDescription = { serverName: server.name, toolName: tool.name, text: tool.description ?? "" }
 				}
-				this.updateDirty()
 			}
+			this.tui.requestRender()
 			return
 		}
 
 		if (matchesKey(data, "ctrl+r")) {
+			this.focusDescription = null
 			const item = this.visibleItems[this.cursorIndex]
 			if (!item) return
 			const server = this.servers[item.serverIndex]
@@ -454,6 +481,7 @@ class McpPanel {
 		}
 
 		if (data === "?") {
+			this.focusDescription = null
 			this.descSearchActive = true
 			this.descQuery = ""
 			this.rebuildVisibleItems()
@@ -463,6 +491,7 @@ class McpPanel {
 
 		// Backspace removes from name query
 		if (matchesKey(data, "backspace")) {
+			this.focusDescription = null
 			if (this.nameQuery.length > 0) {
 				this.nameQuery = this.nameQuery.slice(0, -1)
 				this.rebuildVisibleItems()
@@ -473,6 +502,7 @@ class McpPanel {
 
 		// All other printable chars → always-on name search
 		if (data.length === 1 && data.charCodeAt(0) >= 32) {
+			this.focusDescription = null
 			this.nameQuery += data
 			this.rebuildVisibleItems()
 			this.cursorIndex = Math.min(this.cursorIndex, Math.max(0, this.visibleItems.length - 1))
@@ -587,15 +617,15 @@ class McpPanel {
 		const inverse = (s: string) => `\x1b[7m${s}\x1b[27m`
 
 		const row = (content: string) =>
-			fg(t.border, "│") + truncateToWidth(" " + content, innerW, "…", true) + fg(t.border, "│")
+			fg(t.border, "│") + truncateToWidth(` ${content}`, innerW, "…", true) + fg(t.border, "│")
 		const emptyRow = () => fg(t.border, "│") + " ".repeat(innerW) + fg(t.border, "│")
-		const divider = () => fg(t.border, "├" + "─".repeat(innerW) + "┤")
+		const divider = () => fg(t.border, `├${"─".repeat(innerW)}┤`)
 
 		const titleText = " MCP Servers "
 		const borderLen = innerW - visibleWidth(titleText)
 		const leftB = Math.floor(borderLen / 2)
 		const rightB = borderLen - leftB
-		lines.push(fg(t.border, "╭" + "─".repeat(leftB)) + fg(t.title, titleText) + fg(t.border, "─".repeat(rightB) + "╮"))
+		lines.push(fg(t.border, `╭${"─".repeat(leftB)}`) + fg(t.title, titleText) + fg(t.border, `${"─".repeat(rightB)}╮`))
 
 		lines.push(emptyRow())
 
@@ -618,16 +648,11 @@ class McpPanel {
 			lines.push(emptyRow())
 		} else {
 			const total = this.visibleItems.length
-			const { maxVis, startIdx, endIdx } = computeVisibleWindow(
-				this.tui.terminal.rows,
-				this.cursorIndex,
-				total,
-				{
-					maxVisible: McpPanel.MAX_VISIBLE,
-					minVisible: McpPanel.MIN_VISIBLE,
-					fixedOverheadRows: McpPanel.FIXED_OVERHEAD_ROWS,
-				},
-			)
+			const { maxVis, startIdx, endIdx } = computeVisibleWindow(this.tui.terminal.rows, this.cursorIndex, total, {
+				maxVisible: McpPanel.MAX_VISIBLE,
+				minVisible: McpPanel.MIN_VISIBLE,
+				fixedOverheadRows: McpPanel.FIXED_OVERHEAD_ROWS,
+			})
 
 			lines.push(emptyRow())
 
@@ -659,6 +684,19 @@ class McpPanel {
 				lines.push(row(fg(t.needsAuth, italic(this.authNotice))))
 				lines.push(emptyRow())
 			}
+			if (this.saveNotice) {
+				lines.push(row(fg(t.direct, italic(this.saveNotice))))
+				lines.push(emptyRow())
+			}
+			if (this.focusDescription) {
+				const label = fg(t.description, `▼ ${this.focusDescription.serverName} — ${this.focusDescription.toolName}`)
+				lines.push(row(label))
+				const wrapped = wrapTextWithAnsi(this.focusDescription.text, innerW - 6)
+				for (const wl of wrapped) {
+					lines.push(row(fg(t.description, `     ${wl}`)))
+				}
+				lines.push(emptyRow())
+			}
 		}
 
 		lines.push(divider())
@@ -682,14 +720,14 @@ class McpPanel {
 
 		lines.push(emptyRow())
 		const hints = [
-			italic("↑↓") + " navigate",
-			italic("space") + " toggle",
-			italic("⏎") + " expand",
-			italic("ctrl+r") + " reconnect",
-			italic("?") + " desc search",
-			italic("ctrl+s") + " save",
-			italic("esc") + " clear/close",
-			italic("ctrl+c") + " quit",
+			`${italic("↑↓")} navigate`,
+			`${italic("space")} toggle`,
+			`${italic("⏎")} expand`,
+			`${italic("ctrl+r")} reconnect`,
+			`${italic("?")} desc search`,
+			`${italic("ctrl+s")} save`,
+			`${italic("esc")} clear/close`,
+			`${italic("ctrl+c")} quit`,
 		]
 		const gap = "  "
 		const gapW = 2
@@ -710,7 +748,7 @@ class McpPanel {
 		}
 		if (curLine) lines.push(row(fg(t.hint, curLine)))
 
-		lines.push(fg(t.border, "╰" + "─".repeat(innerW) + "╯"))
+		lines.push(fg(t.border, `╰${"─".repeat(innerW)}╯`))
 
 		return lines
 	}
@@ -766,9 +804,7 @@ class McpPanel {
 		// any whitespace/control sequence to a single space before truncating.
 		const flatDesc = tool.description ? tool.description.replace(/\s+/g, " ").trim() : ""
 		const descStr =
-			maxDescLen > 5 && flatDesc
-				? fg(t.description, "— " + truncateToWidth(flatDesc, maxDescLen, "…"))
-				: ""
+			maxDescLen > 5 && flatDesc ? fg(t.description, `— ${truncateToWidth(flatDesc, maxDescLen, "…")}`) : ""
 
 		return `  ${cursor} ${toggleIcon} ${nameStr} ${descStr}`
 	}

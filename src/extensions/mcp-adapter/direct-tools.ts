@@ -11,7 +11,7 @@ import { formatSchema } from "./tool-metadata.js"
 import { transformMcpContent } from "./tool-registrar.js"
 import type { DirectToolSpec, McpConfig, McpContent } from "./types.js"
 import { formatToolName, isToolExcluded } from "./types.js"
-import { type UiSessionRuntime, maybeStartUiSession } from "./ui-session.js"
+import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.js"
 
 const BUILTIN_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "mcp"])
 
@@ -68,7 +68,7 @@ export function resolveDirectTools(
 				const [server, tool] = item.split("/", 2)
 				if (server && tool) {
 					if (!envTools.has(server)) envTools.set(server, new Set())
-					envTools.get(server)!.add(tool)
+					envTools.get(server)?.add(tool)
 				} else if (server) {
 					envServers.add(server)
 				}
@@ -90,6 +90,7 @@ export function resolveDirectTools(
 			if (envServers.has(serverName)) {
 				toolFilter = true
 			} else if (envTools.has(serverName)) {
+				// biome-ignore lint/style/noNonNullAssertion: asserted above
 				toolFilter = [...envTools.get(serverName)!]
 			}
 		} else {
@@ -299,7 +300,7 @@ export function createDirectToolExecutor(
 		}
 
 		const connection = state.manager.getConnection(spec.serverName)
-		if (!connection || connection.status !== "connected") {
+		if (connection?.status !== "connected") {
 			return {
 				content: [{ type: "text" as const, text: `MCP server "${spec.serverName}" not connected` }],
 				details: { error: "not_connected", server: spec.serverName },
@@ -342,6 +343,7 @@ export function createDirectToolExecutor(
 						serverName: spec.serverName,
 						toolName: spec.originalName,
 						toolArgs: mergedArgs,
+						// biome-ignore lint/style/noNonNullAssertion: asserted above
 						uiResourceUri: spec.uiResourceUri!,
 						streamMode: spec.uiStreamMode,
 					})

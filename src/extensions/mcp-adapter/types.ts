@@ -3,6 +3,7 @@ import type { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js
 // types.ts - Core type definitions
 import type { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import type { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
 import type { UiStreamMode } from "./ui-stream-types.js"
 
 // Transport type (stdio + HTTP)
@@ -17,6 +18,7 @@ export interface McpTool {
 	title?: string
 	description?: string
 	inputSchema?: unknown // JSON Schema
+	annotations?: ToolAnnotations // Read-only/destructive hints from the MCP protocol
 	_meta?: Record<string, unknown>
 }
 
@@ -102,32 +104,32 @@ export type UiDisplayMode = "inline" | "fullscreen" | "pip"
 // Re-export stream types from the shared lightweight module.
 // This allows the example package to import stream schemas without pulling the full types.ts dependency graph.
 export {
+	getUiStreamHostContext,
+	getVisualizationStreamEnvelope,
+	SERVER_STREAM_RESULT_PATCH_METHOD,
+	type ServerStreamResultPatchNotification,
+	serverStreamResultPatchNotificationSchema,
 	UI_STREAM_HOST_CONTEXT_KEY,
 	UI_STREAM_REQUEST_META_KEY,
 	UI_STREAM_RESULT_PATCH_METHOD,
-	SERVER_STREAM_RESULT_PATCH_METHOD,
 	UI_STREAM_STRUCTURED_CONTENT_KEY,
-	uiStreamModeSchema,
-	visualizationStreamPhaseSchema,
-	visualizationStreamFrameTypeSchema,
-	visualizationStreamStatusSchema,
-	uiStreamHostContextSchema,
-	visualizationStreamEnvelopeSchema,
-	uiStreamCallToolResultSchema,
-	uiStreamResultPatchNotificationSchema,
-	serverStreamResultPatchNotificationSchema,
-	getUiStreamHostContext,
-	getVisualizationStreamEnvelope,
-	type UiStreamMode,
-	type VisualizationStreamPhase,
-	type VisualizationStreamFrameType,
-	type VisualizationStreamStatus,
-	type UiStreamHostContext,
-	type VisualizationStreamEnvelope,
 	type UiStreamCallToolResult,
+	type UiStreamHostContext,
+	type UiStreamMode,
 	type UiStreamResultPatchNotification,
-	type ServerStreamResultPatchNotification,
 	type UiStreamSummary,
+	uiStreamCallToolResultSchema,
+	uiStreamHostContextSchema,
+	uiStreamModeSchema,
+	uiStreamResultPatchNotificationSchema,
+	type VisualizationStreamEnvelope,
+	type VisualizationStreamFrameType,
+	type VisualizationStreamPhase,
+	type VisualizationStreamStatus,
+	visualizationStreamEnvelopeSchema,
+	visualizationStreamFrameTypeSchema,
+	visualizationStreamPhaseSchema,
+	visualizationStreamStatusSchema,
 } from "./ui-stream-types.js"
 
 export interface UiMessageParams {
@@ -331,6 +333,7 @@ export interface ToolMetadata {
 	uiResourceUri?: string // For app-enabled tools: the UI resource URI
 	inputSchema?: unknown // JSON Schema for parameters (stored for describe/errors)
 	uiStreamMode?: UiStreamMode
+	annotations?: ToolAnnotations // Read-only/destructive hints from the MCP protocol
 }
 
 export interface DirectToolSpec {
@@ -342,6 +345,7 @@ export interface DirectToolSpec {
 	resourceUri?: string
 	uiResourceUri?: string
 	uiStreamMode?: UiStreamMode
+	annotations?: ToolAnnotations // Read-only/destructive hints from the MCP protocol
 	/** Cached schema for auto-fill and retry decisions */
 	metadata?: ToolMetadata
 }
@@ -356,6 +360,11 @@ export interface McpPanelCallbacks {
 	reconnect: (serverName: string) => Promise<boolean>
 	getConnectionStatus: (serverName: string) => "connected" | "idle" | "failed" | "needs-auth"
 	refreshCacheAfterReconnect: (serverName: string) => import("./metadata-cache.js").ServerCacheEntry | null
+	/**
+	 * Persists the given changes to disk and shows a notification.
+	 * The panel stays open after this is called.
+	 */
+	onSave: (changes: Map<string, true | string[] | false>) => void
 }
 
 export interface McpPanelResult {

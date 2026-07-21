@@ -5,36 +5,33 @@ import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
-import { Key, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import type { Component, TUI } from "@earendil-works/pi-tui"
+import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
-import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
 import { LogoHeader } from "../components/logo.js"
+import { buildScriptPayload, readStatusLineCommand, StatusLine, StatusLineScript } from "../components/status-line.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
-import { getGitBranch, refreshGitBranch } from "../utils.js"
+import { refreshGitBranch } from "../utils.js"
+import { getBillingStatusLine, getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
+import { formatBudgetStatusLine, formatCreditsStatusLine } from "./billing/status-line-format.js"
 import { isBareExitAlias } from "./exit-utils.js"
-import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
+import { formatFermentStatusLineDisplay } from "./ferment/status-line.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
-import { splitModelRef } from "./orchestration/model-roles.js"
-import {
-	getMultiModelEnabled,
-	getOrchestratorModelId,
-	getOrchestratorModelRef,
-	setMultiModelEnabled,
-} from "./prompt-construction/prompt-enrichment.js"
-import {
-	isSessionModeOnboardingFooterSuppressed,
-	registerSharedFooterRenderer,
-	setSessionModeOnboardingFooterSuppressed,
-} from "./shared-footer.js"
+import { getMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
+import { getOrchestratorModelId, getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
 import { isRawInputCaptureActive } from "./shared-input.js"
+import {
+	isSessionModeOnboardingStatusLineSuppressed,
+	registerSharedStatusLineRenderer,
+	setSessionModeOnboardingStatusLineSuppressed,
+} from "./shared-status-line.js"
 import { createWorkingAnimator } from "./spinner.js"
 import { createBranchPoller } from "./ui-branch-poll.js"
 
-export { requestSharedFooterRender, setSessionModeOnboardingFooterSuppressed } from "./shared-footer.js"
+export { requestSharedStatusLineRender, setSessionModeOnboardingStatusLineSuppressed } from "./shared-status-line.js"
 
 function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
 	return a.provider === b.provider && a.id === b.id
@@ -123,7 +120,7 @@ const branchPoller = createBranchPoller({
 
 type DisposableComponent = Component & { dispose?(): void }
 
-class SuppressibleFooter implements Component {
+class SuppressibleStatusLine implements Component {
 	private readonly requestRender: () => void
 	private readonly unregisterRequestRender: () => void
 
@@ -132,7 +129,7 @@ class SuppressibleFooter implements Component {
 		tui: TUI,
 	) {
 		this.requestRender = () => tui.requestRender()
-		this.unregisterRequestRender = registerSharedFooterRenderer(this.requestRender)
+		this.unregisterRequestRender = registerSharedStatusLineRenderer(this.requestRender)
 	}
 
 	dispose(): void {
@@ -145,7 +142,7 @@ class SuppressibleFooter implements Component {
 	}
 
 	render(width: number): string[] {
-		return isSessionModeOnboardingFooterSuppressed() ? [] : this.inner.render(width)
+		return isSessionModeOnboardingStatusLineSuppressed() ? [] : this.inner.render(width)
 	}
 }
 
@@ -172,7 +169,13 @@ export function setSessionIndicator(text: string | null): void {
 	currentEditor?.setSessionIndicator(text)
 }
 
-function runScript(scriptPath: string, payload: object, tui: TUI, footer: ScriptFooter, onDone: () => void): void {
+function runScript(
+	scriptPath: string,
+	payload: object,
+	tui: TUI,
+	scriptStatusLine: StatusLineScript,
+	onDone: () => void,
+): void {
 	const child = spawn(scriptPath, [], {
 		env: process.env,
 		timeout: 1000,
@@ -193,7 +196,7 @@ function runScript(scriptPath: string, payload: object, tui: TUI, footer: Script
 	const settle = (lines: string[] | null) => {
 		if (settled) return
 		settled = true
-		if (lines) footer.setLines(lines)
+		if (lines) scriptStatusLine.setLines(lines)
 		tui.requestRender()
 		onDone()
 	}
@@ -213,11 +216,36 @@ function runScript(scriptPath: string, payload: object, tui: TUI, footer: Script
 	})
 }
 
+/**
+ * Hide the cooking animation while an interactive prompt (ui.custom,
+ * ui.select, ui.input, ui.confirm) has keyboard focus, then restore it.
+ *
+ * Only needed for prompts shown *during a turn* (tool execute(),
+ * permission prompts, ferment step recovery). Command handlers run when the
+ * agent is idle and don't need this.
+ *
+ * Uses try/finally so the indicator is restored even if the prompt throws
+ * or the user cancels.
+ */
+export async function withWorkingHidden<T>(
+	ctx: Pick<ExtensionContext, "ui"> | { ui?: { setWorkingVisible?: (visible: boolean) => void } },
+	fn: () => Promise<T>,
+): Promise<T> {
+	ctx.ui?.setWorkingVisible?.(false)
+	try {
+		return await fn()
+	} finally {
+		ctx.ui?.setWorkingVisible?.(true)
+	}
+}
+
 export default function uiExtension(pi: ExtensionAPI) {
 	let unsubModelCycleInput: (() => void) | null = null
-	let scriptFooter: ScriptFooter | null = null
+	let scriptStatusLine: StatusLineScript | null = null
 	let scriptTui: TUI | null = null
 	let uiTui: TUI | null = null
+	let headerTui: TUI | null = null
+	let unregisterBillingStatus: (() => void) | undefined
 	let scriptCmd: string | null = null
 	let scriptPending = false
 	let scriptGeneration = 0
@@ -226,13 +254,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let turnStartMs = 0
 	let linesAdded = 0
 	let linesRemoved = 0
-	let thinkingStatus: "thinking" | number | null = null
-	let thinkingStartMs = 0
 	let workedForTimer: ReturnType<typeof setTimeout> | undefined
 	let piToolsExpanded = false
 
 	const refresh = (status: "idle" | "generating") => {
-		if (!currentCtx?.hasUI || !scriptFooter || !scriptTui || !scriptCmd) return
+		if (!currentCtx?.hasUI || !scriptStatusLine || !scriptTui || !scriptCmd) return
 		if (scriptPending) return
 		scriptPending = true
 		const gen = scriptGeneration
@@ -240,18 +266,19 @@ export default function uiExtension(pi: ExtensionAPI) {
 			scriptCmd,
 			buildScriptPayload(currentCtx, status, sessionStartMs, linesAdded, linesRemoved),
 			scriptTui,
-			scriptFooter,
+			scriptStatusLine,
 			() => {
 				if (scriptGeneration === gen) scriptPending = false
 			},
 		)
 	}
 
-	pi.on("session_start", (event, ctx) => {
-		setSessionModeOnboardingFooterSuppressed(false)
+	pi.on("session_start", (_event, ctx) => {
+		const sessionId = ctx.sessionManager.getSessionId()
+
+		setSessionModeOnboardingStatusLineSuppressed(false)
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
-		toolsInFlight = 0
 		resetState()
 		currentCtx = ctx
 		sessionStartMs = Date.now()
@@ -259,39 +286,56 @@ export default function uiExtension(pi: ExtensionAPI) {
 		linesRemoved = 0
 		scriptGeneration++
 		scriptPending = false
+		unregisterBillingStatus?.()
+		unregisterBillingStatus = subscribeBillingStatus(() => {
+			headerTui?.requestRender()
+			uiTui?.requestRender()
+		})
 
 		ctx.ui.setHeader((tui, theme) => {
+			headerTui = tui
 			branchPoller.start(() => tui.requestRender())
-			const logo = new LogoHeader(theme, { getBranch: () => branchPoller.getBranch() })
+			const logo = new LogoHeader(theme, {
+				getBranch: () => branchPoller.getBranch(),
+				getRightColumnNotice: getCommunityTierHeaderNotice,
+			})
 			const header: DisposableComponent = {
 				render: (w) => logo.render(w),
 				invalidate: () => logo.invalidate(),
-				dispose: () => branchPoller.stop(),
+				dispose: () => {
+					if (headerTui === tui) headerTui = null
+					branchPoller.stop()
+				},
 			}
 			return header
 		})
-		ctx.ui.setFooter((tui, theme, footerData) => {
+		ctx.ui.setFooter((tui, theme, statusLineData) => {
 			uiTui = tui
 			const cmd = readStatusLineCommand()
 			if (!cmd) {
 				scriptCmd = null
-				return new SuppressibleFooter(new StatsFooter(ctx, theme, footerData), tui)
+				return new SuppressibleStatusLine(new StatusLine(ctx, theme, statusLineData), tui)
 			}
 			scriptCmd = cmd
 			const getControlsLine = (): string | null => {
 				const parts: string[] = []
-				const ferment = formatFermentFooterDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
+				const ferment = formatFermentStatusLineDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
 					dim: (s) => theme.fg("dim", s),
 					accent: (s) => `${resolvedAccentFg(theme)}${s}${RST_FG}`,
 				})
 				if (ferment) parts.push(ferment.text)
-				const perm = footerData.getExtensionStatuses().get("permissions-mode")
+				const perm = statusLineData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
-				const modelId = getMultiModelEnabled() ? `multi-model (${getOrchestratorModelId()})` : (ctx.model?.id ?? "n/a")
+				const billing = getBillingStatusLine()
+				if (billing?.amount) parts.push(formatCreditsStatusLine(billing.amount, theme))
+				if (billing?.budget) parts.push(formatBudgetStatusLine(billing.budget, theme))
+				const modelId = getMultiModelEnabled(ctx.sessionManager)
+					? `multi-model (${getOrchestratorModelId(sessionId)})`
+					: (ctx.model?.id ?? "n/a")
 				parts.push(`${resolvedAccentFg(theme)}${modelId}${RST_FG} ${theme.fg("dim", "→ ctrl+p")}`)
 				return parts.join(` ${theme.fg("dim", "·")} `)
 			}
-			scriptFooter = new ScriptFooter(getControlsLine)
+			scriptStatusLine = new StatusLineScript(getControlsLine)
 			scriptTui = tui
 			scriptPending = true
 			const gen = scriptGeneration
@@ -299,12 +343,12 @@ export default function uiExtension(pi: ExtensionAPI) {
 				cmd,
 				buildScriptPayload(ctx, "idle", sessionStartMs, linesAdded, linesRemoved),
 				tui,
-				scriptFooter,
+				scriptStatusLine,
 				() => {
 					if (scriptGeneration === gen) scriptPending = false
 				},
 			)
-			return new SuppressibleFooter(scriptFooter, tui)
+			return new SuppressibleStatusLine(scriptStatusLine, tui)
 		})
 
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
@@ -356,7 +400,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 							? allAvailable.filter((m) => enabledIds.has(`${m.provider}/${m.id}`))
 							: allAvailable
 						const current = ctx.model
-						const orchRef = getOrchestratorModelRef()
+						const orchRef = getOrchestratorModelRef(sessionId)
 						const orchParsed = splitModelRef(orchRef)
 						const orchestratorModel = orchParsed
 							? ctx.modelRegistry.find(orchParsed.provider, orchParsed.modelId)
@@ -365,7 +409,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 						// Cycle order: model[0] → ... → model[last] → multi-model → model[0]
 						// kimi-k2.6 appears as a regular model AND multi-model appears
 						// as a separate virtual entry right after the last real model.
-						if (getMultiModelEnabled()) {
+						if (getMultiModelEnabled(ctx.sessionManager)) {
 							// Currently on the virtual multi-model entry — wrap to first real model.
 							// Check ALL models (including the orchestrator itself) because we are
 							// leaving the virtual entry, not a real model — the orchestrator in
@@ -383,10 +427,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 									break
 								}
 								if (firstReal) {
-									setMultiModelEnabled(false)
+									setMultiModelEnabled(sessionId, false)
 									if (current && modelsAreEqual(firstReal, current)) {
 										// Model object is the same (orchestrator → orchestrator) so setModel
-										// won't emit model_select and the footer won't re-render.
+										// won't emit model_select and the status line won't re-render.
 										// Force a re-render via a no-op status update.
 										ctx.ui.setStatus("__model_cycle", undefined)
 									} else {
@@ -417,10 +461,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 							if (wouldWrap && orchestratorModel) {
 								// Reached end of real models — enter multi-model.
-								setMultiModelEnabled(true)
+								setMultiModelEnabled(sessionId, true)
 								if (modelsAreEqual(orchestratorModel, current)) {
 									// Already on the orchestrator — setModel won't emit model_select
-									// so the footer won't re-render.  Force it.
+									// so the status line won't re-render.  Force it.
 									ctx.ui.setStatus("__model_cycle", undefined)
 								} else {
 									pi.setModel(orchestratorModel).catch((err) => {
@@ -462,20 +506,30 @@ export default function uiExtension(pi: ExtensionAPI) {
 		if (isBareExitAlias(event.text)) {
 			ctx.shutdown()
 		}
-
-		// User typed something — clear any pending-user-input state so the spinner
-		// does not stay suppressed on the next assistant message that follows.
-		userInputPending = Math.max(0, userInputPending - 1)
 	})
 
 	let stopWorkingAnimation: (() => void) | undefined
-	let toolsInFlight = 0
-	/** Tracks whether a tool-executed block is awaiting user input at the TUI.
-	 *  Incremented when toolsInFlight hits 0 and the UI may be blocking (e.g. questionnaire).
-	 *  Decremented when the user actually types a response (input event).
-	 *  message_start checks this to avoid restarting the spinner while the user is being prompted.
-	 */
-	let userInputPending = 0
+
+	// ── Indicator lifecycle ──────────────────────────────────────────────────
+	//
+	// The cooking animation is ON whenever the assistant is mid-turn. It starts
+	// at turn_start and stops at message_end / turn_end / agent_end.
+	// tool_execution_end is a no-op — the indicator keeps running through the
+	// tool-result gap because the turn is still active.
+	//
+	// Interactive prompts (ui.custom, ui.select, ui.input, ui.confirm) are the
+	// one exception: while they have keyboard focus the spinner must be hidden
+	// so it doesn't show behind the form. Each tool that shows an interactive
+	// prompt during a turn wraps the call in `withWorkingHidden(ctx, fn)`
+	// (exported below) — it calls setWorkingVisible(false), runs the prompt, then
+	// restores setWorkingVisible(true) in a finally block. Currently:
+	//   - questionnaire       (questionnaire.ts)
+	//   - ask_user / confirm  (ferment/prompt-ui.ts)
+	//   - permission prompts   (permissions/prompts.ts)
+	//   - step recovery        (ferment/tools/steps.ts)
+	//   - phase boundary       (ferment/tools/phases.ts)
+	// Command handlers (/agents, /theme, /mcp, etc.) do NOT need this — they run
+	// when the agent is idle, so the indicator is already off.
 
 	const startIndicator = (ctx: ExtensionContext) => {
 		ctx.ui.setWorkingVisible(true)
@@ -483,78 +537,56 @@ export default function uiExtension(pi: ExtensionAPI) {
 		stopWorkingAnimation = createWorkingAnimator((char, message) => {
 			const accent = resolvedAccentFg(ctx.ui.theme)
 			ctx.ui.setWorkingIndicator({ frames: [`${accent}${char}${RST_FG}`] })
-			let suffix = ""
-			if (thinkingStatus === "thinking") {
-				suffix = ` ${ctx.ui.theme.fg("dim", "(thinking…)")}`
-			} else if (typeof thinkingStatus === "number") {
-				const secs = Math.max(1, Math.round(thinkingStatus / 1000))
-				suffix = ` ${ctx.ui.theme.fg("dim", `(thought for ${secs}s)`)}`
-			}
-			ctx.ui.setWorkingMessage(`${accent}${message}${RST_FG}${suffix}`)
+			ctx.ui.setWorkingMessage(`${accent}${message}${RST_FG}`)
 		})
+	}
+
+	const stopIndicator = (ctx: ExtensionContext) => {
+		stopWorkingAnimation?.()
+		stopWorkingAnimation = undefined
+		ctx.ui.setWorkingVisible(false)
 	}
 
 	pi.on("turn_start", (_, ctx) => {
 		clearTimeout(workedForTimer)
 		workedForTimer = undefined
 		currentCtx = ctx
-		toolsInFlight = 0
-		userInputPending = 0
 		turnStartMs = Date.now()
-		thinkingStatus = null
-		thinkingStartMs = 0
 		refresh("generating")
 		startIndicator(ctx)
 	})
-	pi.on("message_update", (event) => {
+	pi.on("message_update", (event, ctx) => {
 		const evt = event.assistantMessageEvent as { type: string }
-		if (evt.type === "thinking_start") {
-			thinkingStartMs = Date.now()
-			thinkingStatus = "thinking"
-		} else if (evt.type === "thinking_end") {
-			if (thinkingStatus === "thinking") {
-				const duration = Date.now() - thinkingStartMs
-				thinkingStatus = duration > 100 ? duration : null
-			}
+		if (evt.type === "thinking_start" && ctx) {
+			// Re-arm: a permission prompt or tool result may have stopped the
+			// spinner. Reasoning is in flight — keep the cooking animation visible.
+			startIndicator(ctx)
 		}
 	})
 	pi.on("message_start", (event, ctx) => {
 		if (event.message.role !== "assistant") return
-		// Only stop the tool animation when assistant text arrives if no tools are
-		// still running AND we are not awaiting user input at the TUI. Parallel tool
-		// calls (Kimi K2.5+, deepseek) may have their results arrive while the
-		// assistant message is still streaming; keeping the indicator alive until all
-		// tools finish avoids a premature flash-and-clear. userInputPending is set
-		// by tool_execution_end when the last in-flight tool finishes and the UI may
-		// be blocking on a prompt (e.g. questionnaire, ask_user).
-		if (toolsInFlight === 0) {
-			if (userInputPending > 0) {
-				// Still waiting for user input — suppress spinner restart; decrement so
-				// it re-arms for the next message_start if no user input arrives (e.g.
-				// turn ends without a response).
-				userInputPending--
-				return
-			}
-			stopWorkingAnimation?.()
-			stopWorkingAnimation = undefined
-			ctx.ui.setWorkingVisible(false)
-		}
-	})
-	pi.on("tool_execution_start", (_, ctx) => {
-		toolsInFlight++
+		// Re-arm the spinner. The upstream TUI only creates its loader once
+		// session.isStreaming is true (which becomes true around message_start),
+		// so the setWorkingVisible(true) call at turn_start was a rendering
+		// no-op. This call triggers loader creation, making the cooking animation
+		// visible during the message_start → first-content-event gap.
+		// message_end stops it again once the assistant finishes.
 		startIndicator(ctx)
 	})
-	pi.on("tool_execution_end", (_, ctx) => {
-		toolsInFlight = Math.max(0, toolsInFlight - 1)
-		if (toolsInFlight === 0) {
-			// Last tool finished — the UI may now be blocking waiting for user input
-			// (e.g. a questionnaire prompt). Mark it so message_start does not restart
-			// the spinner on the assistant text that follows before the user responds.
-			userInputPending++
-			stopWorkingAnimation?.()
-			stopWorkingAnimation = undefined
-			ctx.ui.setWorkingVisible(false)
-		}
+	pi.on("message_end", (event, ctx) => {
+		if (event.message.role !== "assistant") return
+		// Assistant finished its message. Stop the spinner so the response can
+		// render cleanly. turn_end will follow up with the "Worked for Xs" display.
+		stopIndicator(ctx)
+	})
+	pi.on("tool_execution_start", (_, ctx) => {
+		// Re-arm: a permission prompt may have stopped the spinner during the
+		// tool's argument-collection phase. The turn is still in flight.
+		startIndicator(ctx)
+	})
+	pi.on("tool_execution_end", () => {
+		// The turn is still active — keep the indicator running. It stops at the
+		// next message_end (assistant text follows) or turn_end (model stops).
 	})
 	pi.on("turn_end", (_, ctx) => {
 		currentCtx = ctx
@@ -573,10 +605,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	pi.on("agent_end", (_, ctx) => {
 		clearTimeout(workedForTimer)
 		workedForTimer = undefined
-		toolsInFlight = 0
-		stopWorkingAnimation?.()
-		stopWorkingAnimation = undefined
-		ctx.ui.setWorkingVisible(false)
+		stopIndicator(ctx)
 	})
 	pi.on("model_select", (_, ctx) => {
 		currentCtx = ctx
@@ -584,7 +613,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 		uiTui?.requestRender()
 	})
 	pi.on("session_shutdown", () => {
-		setSessionModeOnboardingFooterSuppressed(false)
+		setSessionModeOnboardingStatusLineSuppressed(false)
+		unregisterBillingStatus?.()
+		unregisterBillingStatus = undefined
+		headerTui = null
 	})
 
 	pi.on("tool_result", (event) => {

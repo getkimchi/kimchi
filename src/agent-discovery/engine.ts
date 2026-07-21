@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
 import type { ServerEntry } from "../extensions/mcp-adapter/types.js"
 import type { AgentDefinition, AgentDiscovery } from "./index.js"
 

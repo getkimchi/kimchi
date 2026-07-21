@@ -6,13 +6,13 @@ const stubPath = fileURLToPath(new URL("./src/__mocks__/earendil-clipboard-image
 export default defineConfig({
 	test: {
 		env: {
-			// initTheme() reads theme JSON files from the package dir. In test
-			// environments the app is never installed, so we point PI_PACKAGE_DIR
-			// at the pi-coding-agent package inside node_modules so theme files
-			// are always found.
-			PI_PACKAGE_DIR: fileURLToPath(
-				new URL("./node_modules/@earendil-works/pi-coding-agent", import.meta.url),
-			),
+			// Pin locale so toLocaleString() produces consistent comma-separated
+			// numbers across developer machines and CI regardless of system locale.
+			LANG: "en_US.UTF-8",
+			// Clear any external PI_PACKAGE_DIR override so upstream theme file
+			// resolution uses its own package detection inside tests rather than
+			// following a stale install prefix.
+			PI_PACKAGE_DIR: "",
 		},
 		alias: {
 			// The deep-import path used in clipboard-read.ts is not in the package's

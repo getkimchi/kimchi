@@ -1,8 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import {
-	FERMENT_TOOLS,
 	FERMENT_TOOL_NAMES,
+	FERMENT_TOOLS,
 	isClassifiedFermentToolName,
 	isFermentToolName,
 	isUserFacingFermentToolName,
@@ -18,6 +18,10 @@ function collectRegisteredToolNames(): string[] {
 		registerTool: (tool: { name: string }) => {
 			names.push(tool.name)
 		},
+		on: () => {},
+		getActiveTools: () => [],
+		setActiveTools: () => {},
+		getFlag: () => undefined,
 	} as unknown as ExtensionAPI
 
 	registerLifecycleTools(pi)

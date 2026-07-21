@@ -102,6 +102,21 @@ describe("TipPresenter", () => {
 		expect(presenter.onTurnEnd()?.id).toBe("a1")
 	})
 
+	it("presents higher-priority tips before lower-priority tips in the same scope", () => {
+		const registry = new TipRegistry()
+		registry.registerProvider({
+			source: "low",
+			getTips: () => [{ id: "low", scope: "contextual", message: "low", priority: 1 }],
+		})
+		registry.registerProvider({
+			source: "high",
+			getTips: () => [{ id: "high", scope: "contextual", message: "high", priority: 100 }],
+		})
+		const presenter = new TipPresenter(registry)
+
+		expect(presenter.getCurrentTip()?.id).toBe("high")
+	})
+
 	it("moves to the next eligible provider after unregistering the current provider", () => {
 		const registry = new TipRegistry()
 		const unregisterAlpha = registry.registerProvider(provider("alpha", [{ id: "a1" }]))

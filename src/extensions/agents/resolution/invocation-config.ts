@@ -23,7 +23,8 @@ interface AgentInvocationParams {
  *
  * Other fields:
  * - tokenBudget: caller override first, then persona default.
- * - thinking, maxTurns, isolation, inheritContext, runInBackground: persona
+ * - thinking: caller override first, then persona default (orchestrator selects per delegation).
+ * - maxTurns, isolation, inheritContext, runInBackground: persona
  *   policy first, then caller value.
  */
 export function resolveAgentInvocationConfig(
@@ -52,7 +53,7 @@ export function resolveAgentInvocationConfig(
 	return {
 		modelInput,
 		modelFromParams,
-		thinking: (agentConfig?.thinking ?? params.thinking) as ThinkingLevel | undefined,
+		thinking: (params.thinking ?? agentConfig?.thinking) as ThinkingLevel | undefined,
 		maxTurns: agentConfig?.maxTurns ?? params.max_turns,
 		tokenBudget: params.token_budget ?? params.tokenBudget ?? agentConfig?.tokenBudget,
 		maxDuration: params.max_duration ?? agentConfig?.maxDuration,

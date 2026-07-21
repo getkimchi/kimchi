@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { WorkspacesPanel, createWorkspacesPanel } from "./workspaces-panel.js"
+import { createWorkspacesPanel, WorkspacesPanel } from "./workspaces-panel.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
 
 const NOW = new Date("2026-05-17T12:00:00Z")
@@ -226,7 +226,7 @@ describe("WorkspacesPanel", () => {
 	})
 
 	describe("allowRename", () => {
-		it("shows 'r: rename' in the hint footer when allowRename=true", () => {
+		it("shows 'r: rename' in the hint row when allowRename=true", () => {
 			const { panel } = makePanel(testRows, { allowRename: true })
 			const text = panel.render(120).map(stripAnsi).join("\n")
 			expect(text).toContain("r: rename")

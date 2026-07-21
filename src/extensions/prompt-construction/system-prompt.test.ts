@@ -2,10 +2,17 @@ import type { Skill } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../models.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../orchestration/model-registry/index.js"
-import { type EnvironmentInfo, buildSystemPrompt } from "./system-prompt.js"
+import { DEFAULT_MODEL_ROLES } from "../orchestration/model-roles.js"
+import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
+import { buildSystemPrompt, type EnvironmentInfo, formatEnvironmentSection } from "./system-prompt.js"
 
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
+	rawPlatform: "linux",
+	cpuArchitecture: "x64",
+	shell: "/bin/bash",
+	osRelease: "6.1.0-test",
+	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
 	username: "testuser",
 	homeDir: "/home/testuser",
 	cwd: "/home/testuser/projects/myapp",
@@ -31,6 +38,43 @@ function fakeMetadata(slug: string): ModelMetadata {
 const ALL_KNOWN_METADATA = ALL_KNOWN_IDS.map(fakeMetadata)
 
 const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+describe("formatEnvironmentSection", () => {
+	it("prints stable environment context lines", () => {
+		expect(formatEnvironmentSection(testEnv)).toBe(
+			[
+				"## Environment",
+				"",
+				"- OS: Linux",
+				"- OS release: 6.1.0-test",
+				"- OS version: #1 SMP PREEMPT_DYNAMIC Test",
+				"- Raw platform: linux",
+				"- CPU architecture: x64",
+				"- Shell: /bin/bash",
+				"- Shell family: posix",
+				"- Command guidance: Use commands compatible with the shell family. Do not use PowerShell/cmd syntax in POSIX shells, and do not use POSIX-only syntax in PowerShell/cmd unless the shell is Git Bash or WSL. If shell/platform conflict or are unclear, check with a read-only command before running write/destructive commands.",
+				"- Username: testuser",
+				'- Home directory: "/home/testuser"',
+				'- Working directory: "/home/testuser/projects/myapp"',
+				'- Documents directory: "/home/testuser/projects/myapp/.kimchi/docs"',
+				"- Current date: 2026-01-01",
+				"- Git repository: no",
+			].join("\n"),
+		)
+	})
+
+	it("classifies shell families from platform and shell", () => {
+		expect(formatEnvironmentSection({ ...testEnv, rawPlatform: "darwin", shell: "/bin/zsh" })).toContain(
+			"- Shell family: posix",
+		)
+		expect(formatEnvironmentSection({ ...testEnv, rawPlatform: "win32", shell: "pwsh.exe" })).toContain(
+			"- Shell family: powershell",
+		)
+		expect(
+			formatEnvironmentSection({ ...testEnv, rawPlatform: "win32", shell: "C:\\Program Files\\Git\\bin\\bash.exe" }),
+		).toContain("- Shell family: posix-on-windows")
+	})
+})
 
 function createSkill(overrides: Partial<Skill> & { name: string; description: string }): Skill {
 	return {
@@ -63,9 +107,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("## Available Tools")
 			expect(result).toContain("## Documents")
 			expect(result).toContain("## Guidelines")
-			expect(result).toContain("Orchestrate the work")
-			expect(result).toContain("Sharing context between agents")
-			expect(result).toContain("Orchestrate the work")
+			expect(result).toContain("## Orchestration")
 			expect(result).toContain("Token budgets")
 			expect(result).toContain("token_budget")
 		})
@@ -112,6 +154,24 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("Always run tests before committing.")
 		})
 
+		it("places global context files before project context files", () => {
+			const contextFiles = [
+				{ path: "/home/testuser/.config/kimchi/harness/AGENTS.md", content: "Global rule" },
+				{ path: "/repo/AGENTS.md", content: "Project rule" },
+			]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				contextFiles,
+				mode: "orchestrator",
+			})
+			const globalPos = result.indexOf("Global rule")
+			const projectPos = result.indexOf("Project rule")
+			expect(globalPos).toBeGreaterThan(-1)
+			expect(projectPos).toBeGreaterThan(-1)
+			expect(globalPos).toBeLessThan(projectPos)
+		})
+
 		it("injects skills", () => {
 			const skills = [createSkill({ name: "deploy", description: "Deploy the app to production" })]
 			const result = buildSystemPrompt({
@@ -147,6 +207,11 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			expect(result).toContain(`OS: ${testEnv.os}`)
+			expect(result).toContain(`OS release: ${testEnv.osRelease}`)
+			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
+			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
+			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
+			expect(result).toContain(`Shell: ${testEnv.shell}`)
 			expect(result).toContain(`Username: ${testEnv.username}`)
 			expect(result).toContain(`Home directory: "${testEnv.homeDir}"`)
 			expect(result).toContain(`Working directory: "${testEnv.cwd}"`)
@@ -195,41 +260,126 @@ describe("buildSystemPrompt", () => {
 			expect(envPos).toBeLessThan(contextPos)
 		})
 
-		it("includes phase guidelines when phase is provided", () => {
+		it("omits worker build phase guidelines for orchestrator", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
+				currentModelId: "kimi-k2.7",
 				currentPhase: "build",
 				registry,
+				roles: DEFAULT_MODEL_ROLES,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("## Phase Guidelines (build)")
+			expect(result).not.toContain("## Phase Guidelines (build)")
 		})
 
-		it("includes orchestration guidelines when model is provided", () => {
+		it("omits explore phase guidelines when orchestrator lacks explorer role", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
+				currentModelId: "kimi-k2.7",
+				currentPhase: "explore",
+				registry,
+				roles: DEFAULT_MODEL_ROLES,
+				mode: "orchestrator",
+			})
+			expect(result).not.toContain("## Phase Guidelines (explore)")
+		})
+
+		it("includes plan phase guidelines when orchestrator owns planner role", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "kimi-k2.7",
+				currentPhase: "plan",
+				registry,
+				roles: DEFAULT_MODEL_ROLES,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("## Phase Guidelines (plan)")
+		})
+
+		it("uses orchestrator-specific core guidelines", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				roles: DEFAULT_MODEL_ROLES,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("Follow **Orchestration** for what to do yourself vs delegate")
+			expect(result).not.toContain("Provide complete, functional code")
+		})
+
+		it("suppresses conflicting superpowers skills in orchestrator mode", () => {
+			const skills = [
+				createSkill({ name: "brainstorming", description: "Brainstorm" }),
+				createSkill({ name: "subagent-driven-development", description: "Alternate delegation workflow" }),
+			]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				roles: DEFAULT_MODEL_ROLES,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("brainstorming")
+			expect(result).not.toContain("subagent-driven-development")
+		})
+
+		it("documents the canonical names of suppressed orchestrator-conflicting skills", () => {
+			expect([...ORCHESTRATOR_SUPPRESSED_SKILL_NAMES].sort()).toEqual([
+				"dispatching-parallel-agents",
+				"executing-plans",
+				"finishing-a-development-branch",
+				"receiving-code-review",
+				"requesting-code-review",
+				"subagent-driven-development",
+				"systematic-debugging",
+				"test-driven-development",
+				"verification-before-completion",
+				"writing-plans",
+			])
+		})
+
+		it("includes thinking levels in orchestrator mode", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
 				registry,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("### Orchestration Guidelines")
+			expect(result).toContain("### Thinking levels")
+			expect(result).toContain("| Build chunk | Builder |")
+		})
+
+		it("includes model-specific orchestration notes when model is provided", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				registry,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("### Model-specific notes")
 			expect(result).toContain("MiniMax M2 family")
 		})
 
-		it("includes both phase guidelines and orchestration guidelines in orchestrator mode", () => {
+		it("includes plan phase guidelines alongside model-specific orchestration notes", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
-				currentPhase: "build",
+				currentModelId: "minimax-m3",
+				currentPhase: "plan",
 				registry,
+				roles: {
+					...DEFAULT_MODEL_ROLES,
+					orchestrator: "kimchi-dev/minimax-m3",
+					planner: "kimchi-dev/minimax-m3",
+				},
 				mode: "orchestrator",
 			})
-			expect(result).toContain("## Phase Guidelines (build)")
-			expect(result).toContain("### Orchestration Guidelines")
+			expect(result).toContain("## Phase Guidelines (plan)")
+			expect(result).toContain("### Model-specific notes")
 		})
 	})
 
@@ -273,7 +423,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "subagent",
 			})
-			expect(result).not.toContain("Orchestrate the work")
+			expect(result).not.toContain("## Orchestration")
 			expect(result).not.toContain("Model selection for delegation")
 		})
 
@@ -281,7 +431,7 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
+				currentModelId: "minimax-m3",
 				currentPhase: "build",
 				registry,
 				mode: "subagent",
@@ -333,6 +483,11 @@ describe("buildSystemPrompt", () => {
 				mode: "subagent",
 			})
 			expect(result).toContain(`OS: ${testEnv.os}`)
+			expect(result).toContain(`OS release: ${testEnv.osRelease}`)
+			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
+			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
+			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
+			expect(result).toContain(`Shell: ${testEnv.shell}`)
 			expect(result).toContain(`Username: ${testEnv.username}`)
 			expect(result).toContain(`Home directory: "${testEnv.homeDir}"`)
 			expect(result).toContain(`Working directory: "${testEnv.cwd}"`)
@@ -366,7 +521,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "single",
 			})
-			expect(result).not.toContain("Orchestrate the work")
+			expect(result).not.toContain("## Orchestration")
 			expect(result).not.toContain("Model selection for delegation")
 			expect(result).not.toContain("Token budgets")
 			expect(result).not.toContain("Sharing context between agents")
@@ -402,13 +557,81 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
+				currentModelId: "minimax-m3",
 				currentPhase: "build",
 				registry,
 				mode: "single",
 			})
 			expect(result).toContain("## Phase Guidelines (build)")
 			expect(result).toContain("Outline-then-diff")
+		})
+
+		it("includes default research nudges for a non-OSS model in research phase", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "claude-opus-4-6-20250514",
+				currentPhase: "research",
+				registry,
+				mode: "single",
+			})
+			expect(result).toContain("## Phase Guidelines (research)")
+			expect(result).toContain("version you are assuming")
+			expect(result).toContain("version/API assumption")
+			expect(result).toContain("do not bluff")
+			expect(result).toContain("Do not rely on training memory")
+			expect(result).not.toContain("AT MOST one")
+		})
+
+		it("includes default and family research nudges for an OSS model in research phase", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				currentPhase: "research",
+				registry,
+				mode: "single",
+			})
+			expect(result).toContain("## Phase Guidelines (research)")
+			expect(result).toContain("MiniMax family")
+			expect(result).toContain("hallucinating APIs")
+			expect(result).toContain("version you are assuming")
+		})
+
+		it("includes build-phase research nudge for an OSS model in build phase", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				currentPhase: "build",
+				registry,
+				mode: "single",
+			})
+			expect(result).toContain("## Phase Guidelines (build)")
+			expect(result).toContain("uncertain about a library API")
+			expect(result).toContain("assume your knowledge may be stale")
+		})
+
+		it("makes subagent spawning opt-in and defaults to the current model", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				mode: "single",
+			})
+			// New behavior: default is to handle work directly, do not spawn subagents.
+			expect(result).toContain("Handle tasks directly yourself.")
+			expect(result).toContain("Do not spawn subagents")
+			expect(result).toContain("only do so when the user explicitly asks for delegation")
+			// When a subagent IS spawned, default to the parent's model and only
+			// use a different model if the user explicitly instructs it.
+			expect(result).toContain("pass your own model ID")
+			expect(result).toContain("by default")
+			expect(result).toContain("only use a different model if the user explicitly instructs")
+			// Old autonomous-delegate phrasing must be gone.
+			expect(result).not.toContain("clearly beneficial")
+			expect(result).not.toContain("MUST always pass")
+			expect(result).not.toContain("never delegate to a different model")
 		})
 	})
 })

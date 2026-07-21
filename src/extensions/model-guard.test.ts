@@ -1,17 +1,26 @@
 import type { ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import type { Ferment } from "../ferment/types.js"
+import { getCompactionEnabled } from "../settings-watcher.js"
+import { COMPACTION_RESERVE_TOKENS } from "./compaction-thresholds.js"
+import { clearActiveFermentId, setActive as setActiveFerment } from "./ferment/state.js"
 import modelGuardExtension, {
+	__resetImagesDetectedForTest,
 	estimateTokens,
 	hasImages,
-	__resetImagesDetectedForTest,
 	markImagesAsStripped,
+	resolveContextTokens,
 	sessionHasImages,
 	stripImages,
 	truncateMessages,
-	resolveContextTokens,
 } from "./model-guard.js"
+
+// Mock the settings-watcher so the /settings Auto-compact toggle can be
+// controlled per test without touching the real settings files.
+vi.mock("../settings-watcher.js", () => ({
+	getCompactionEnabled: vi.fn(() => true),
+}))
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -335,11 +344,11 @@ describe("truncateMessages", () => {
 
 	it("drops oldest messages when over budget", () => {
 		// Each user message with 2000 chars = 500 tokens; 10 x 500 = 5000 < 9500 → no truncation
-		const msgs: ContextEvent["messages"] = Array.from({ length: 10 }, (_, i) => makeUser("x".repeat(2000)))
+		const msgs: ContextEvent["messages"] = Array.from({ length: 10 }, (_, _i) => makeUser("x".repeat(2000)))
 		expect(truncateMessages(msgs, DEFAULT_WINDOW)).toBe(msgs)
 
 		// 30 x 500 = 15,000 tokens > 9,500 → truncation
-		const long: ContextEvent["messages"] = Array.from({ length: 30 }, (_, i) => makeUser("x".repeat(2000)))
+		const long: ContextEvent["messages"] = Array.from({ length: 30 }, (_, _i) => makeUser("x".repeat(2000)))
 		const result = truncateMessages(long, DEFAULT_WINDOW)
 		expect(result).not.toBe(long)
 		expect(result.length).toBeLessThan(30)
@@ -576,8 +585,11 @@ function makeTurnEndEvent(totalTokens: number, stopReason: string) {
 
 describe("turn_end compaction guard", () => {
 	const CONTEXT_WINDOW = 262_144
-	const RESERVE = 16_384
-	const THRESHOLD = CONTEXT_WINDOW - RESERVE // 245,760
+	const THRESHOLD = CONTEXT_WINDOW - COMPACTION_RESERVE_TOKENS // 245,760
+
+	beforeEach(() => {
+		vi.mocked(getCompactionEnabled).mockReturnValue(true)
+	})
 
 	it("does not compact when totalTokens is below the compaction threshold", async () => {
 		const { pi, trigger } = makeMockPI()
@@ -591,7 +603,32 @@ describe("turn_end compaction guard", () => {
 		expect(compact).not.toHaveBeenCalled()
 	})
 
-	it("calls compact with notification callbacks when totalTokens exceeds the compaction threshold mid-turn", async () => {
+	it("calls compact when totalTokens exceeds the compaction threshold mid-turn", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const compact = vi.fn()
+		const ctx = makeMockCtx({
+			model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+			compact,
+		})
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+		expect(compact).toHaveBeenCalledOnce()
+
+		// ctx.compact() must not receive onComplete — the success notification is
+		// delivered via the session_compact event with a fresh ctx, not from a
+		// stale closure.
+		const options = compact.mock.calls[0][0]
+		expect(options.onComplete).toBeUndefined()
+		expect(typeof options.onError).toBe("function")
+	})
+
+	it("notifies via session_compact event with fresh ctx after successful compaction", async () => {
+		// Regression for stale-ctx crash: ctx.compact() replaces the session
+		// internally, so the captured ctx in turn_end is stale by the time the
+		// success callback would fire. The notification is delivered from the
+		// session_compact event handler instead, which receives a fresh ctx.
+		// See: benchmark terminal-bench-2-1 run 2026-07-17 — circuit-fibsqrt
+		// and path-tracing-reverse crashed with "This extension ctx is stale".
 		const { pi, trigger } = makeMockPI()
 		modelGuardExtension(pi)
 		const compact = vi.fn()
@@ -604,19 +641,137 @@ describe("turn_end compaction guard", () => {
 		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
 		expect(compact).toHaveBeenCalledOnce()
 
-		// Verify the options shape includes onComplete/onError callbacks
-		const options = compact.mock.calls[0][0]
-		expect(typeof options.onComplete).toBe("function")
-		expect(typeof options.onError).toBe("function")
+		// The stale ctx from turn_end must not be used for notification.
+		expect(notify).not.toHaveBeenCalled()
 
-		// Simulate a successful compaction callback
-		options.onComplete({ tokensBefore: THRESHOLD + 1 })
+		// Simulate upstream firing session_compact with a fresh ctx.
+		const freshCtx = makeMockCtx({
+			ui: { notify } as unknown as ExtensionContext["ui"],
+		})
+		await trigger(
+			"session_compact",
+			{
+				type: "session_compact",
+				compactionEntry: { tokensBefore: THRESHOLD + 1 },
+				fromExtension: true,
+				reason: "manual",
+				willRetry: false,
+			},
+			freshCtx,
+		)
+
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Context compacted"), "info")
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining((THRESHOLD + 1).toLocaleString()), "info")
+	})
 
-		// Simulate a failed compaction callback
-		notify.mockClear()
-		options.onError(new Error("summariser failed"))
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining("summariser failed"), "error")
+	it("does not notify from session_compact when compaction was not triggered by this guard", async () => {
+		// Only the turn_end guard's compaction should trigger the notification —
+		// a compaction from /compact or threshold should not produce the
+		// mid-turn guard's message.
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const notify = vi.fn()
+		const ctx = makeMockCtx({
+			ui: { notify } as unknown as ExtensionContext["ui"],
+		})
+		await trigger(
+			"session_compact",
+			{
+				type: "session_compact",
+				compactionEntry: { tokensBefore: 100_000 },
+				fromExtension: false,
+				reason: "threshold",
+				willRetry: false,
+			},
+			ctx,
+		)
+		expect(notify).not.toHaveBeenCalled()
+	})
+
+	it("does not notify from session_compact when flag is set but fromExtension is false", async () => {
+		// fromExtension guard: even if the flag is set (e.g. a concurrent
+		// threshold compaction fires between our ctx.compact() and the event),
+		// we must not consume the flag for a non-extension compaction.
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const compact = vi.fn()
+		const notify = vi.fn()
+		const ctx = makeMockCtx({
+			model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+			compact,
+			ui: { notify } as unknown as ExtensionContext["ui"],
+		})
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+		expect(compact).toHaveBeenCalledOnce()
+
+		// A threshold compaction fires before our extension-triggered one
+		await trigger(
+			"session_compact",
+			{
+				type: "session_compact",
+				compactionEntry: { tokensBefore: 100_000 },
+				fromExtension: false,
+				reason: "threshold",
+				willRetry: false,
+			},
+			ctx,
+		)
+		expect(notify).not.toHaveBeenCalled()
+
+		// Now our extension-triggered compaction fires
+		await trigger(
+			"session_compact",
+			{
+				type: "session_compact",
+				compactionEntry: { tokensBefore: THRESHOLD + 1 },
+				fromExtension: true,
+				reason: "manual",
+				willRetry: false,
+			},
+			ctx,
+		)
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Context compacted"), "info")
+	})
+
+	it("warns and clears flag when onError fires (compaction failure)", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			const { pi, trigger } = makeMockPI()
+			modelGuardExtension(pi)
+			const compact = vi.fn()
+			const ctx = makeMockCtx({
+				model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+				compact,
+			})
+			await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+			const options = compact.mock.calls[0][0]
+
+			options.onError(new Error("summariser failed"))
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("mid-turn compaction failed"),
+				expect.stringContaining("summariser failed"),
+			)
+
+			// Flag must be cleared so session_compact doesn't fire a stale notification
+			const notify = vi.fn()
+			const freshCtx = makeMockCtx({
+				ui: { notify } as unknown as ExtensionContext["ui"],
+			})
+			await trigger(
+				"session_compact",
+				{
+					type: "session_compact",
+					compactionEntry: { tokensBefore: 100 },
+					fromExtension: true,
+					reason: "manual",
+					willRetry: false,
+				},
+				freshCtx,
+			)
+			expect(notify).not.toHaveBeenCalled()
+		} finally {
+			warn.mockRestore()
+		}
 	})
 
 	it("does not compact when stopReason is not toolUse (turn already ending)", async () => {
@@ -652,6 +807,58 @@ describe("turn_end compaction guard", () => {
 		})
 		await trigger("turn_end", makeTurnEndEvent(THRESHOLD, "toolUse"), ctx)
 		expect(compact).not.toHaveBeenCalled()
+	})
+
+	it("still compacts (and warns) when the project-trust accessor throws unexpectedly", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			const { pi, trigger } = makeMockPI()
+			modelGuardExtension(pi)
+			const compact = vi.fn()
+			const ctx = makeMockCtx({
+				model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+				compact,
+			})
+			ctx.isProjectTrusted = vi.fn(() => {
+				throw new Error("trust state unavailable")
+			})
+			await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+			// Trust falls back to the reader's last-synced value; the guard still runs.
+			expect(compact).toHaveBeenCalledOnce()
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining("failed to read project trust"), expect.any(Error))
+		} finally {
+			warn.mockRestore()
+		}
+	})
+
+	it("does NOT compact when the /settings Auto-compact toggle is disabled", async () => {
+		vi.mocked(getCompactionEnabled).mockReturnValue(false)
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const compact = vi.fn()
+		const ctx = makeMockCtx({
+			model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+			compact,
+		})
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+		expect(compact).not.toHaveBeenCalled()
+	})
+
+	it("defers to the ferment extension when a ferment is active", async () => {
+		setActiveFerment({ id: "f1", status: "running", phases: [] } as unknown as Ferment)
+		try {
+			const { pi, trigger } = makeMockPI()
+			modelGuardExtension(pi)
+			const compact = vi.fn()
+			const ctx = makeMockCtx({
+				model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+				compact,
+			})
+			await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+			expect(compact).not.toHaveBeenCalled()
+		} finally {
+			clearActiveFermentId()
+		}
 	})
 })
 

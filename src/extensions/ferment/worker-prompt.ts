@@ -11,6 +11,7 @@
  */
 
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
+import { getTodosForScope } from "../todos/store.js"
 
 const PRIOR_STEP_SUMMARY_MAX_CHARS = 240
 const MAX_DECISIONS = 5
@@ -21,7 +22,13 @@ export interface WorkerContextOpts {
 	includeMemories?: boolean
 }
 
-export function buildWorkerContext(ferment: Ferment, phase: Phase, step: Step, opts: WorkerContextOpts = {}): string {
+export function buildWorkerContext(
+	ferment: Ferment,
+	phase: Phase,
+	step: Step,
+	sessionId: string,
+	opts: WorkerContextOpts = {},
+): string {
 	const lines: string[] = []
 	lines.push("## Worker Context")
 	lines.push(`Ferment: ${ferment.name}`)
@@ -33,7 +40,7 @@ export function buildWorkerContext(ferment: Ferment, phase: Phase, step: Step, o
 	lines.push("")
 	lines.push(`Ferment docs directory: .kimchi/ferments/${ferment.id}/docs/`)
 	lines.push(
-		"Write transient audit notes, investigation reports, implementation notes, and verification reports there. Do NOT create ad-hoc project-root scratch folders like .ui-audit/ unless the user explicitly requested a product artifact in the app itself.",
+		"Use this directory only when the worker's role explicitly requires a durable artifact, such as implementation notes or verification reports. Explore/read-only workers must return decision-ready findings directly to the orchestrator and write no reports, docs, notes, or scratch files. Do NOT create ad-hoc project-root scratch folders like .ui-audit/ unless the user explicitly requested a product artifact in the app itself.",
 	)
 	if (ferment.scoping.goal?.answer) {
 		lines.push("")
@@ -67,6 +74,17 @@ export function buildWorkerContext(ferment: Ferment, phase: Phase, step: Step, o
 	if (includeMemories && ferment.memories.length > 0) {
 		const recent = ferment.memories.slice(-MAX_MEMORIES)
 		lines.push(`Memories: ${recent.map((m) => `[${m.category}] ${m.content}`).join("; ")}`)
+	}
+
+	// Include the orchestrator's step-level implementation plan so the worker
+	// knows what sub-tasks were planned and can track progress against them.
+	const stepTodos = getTodosForScope({ kind: "ferment-step", phaseId: phase.id, stepId: step.id }, sessionId)
+	if (stepTodos.length > 0) {
+		const planItems = stepTodos.map((t) => {
+			const glyph = t.status === "completed" ? "\u2713" : t.status === "in_progress" ? "\u25b6" : "\u25cb"
+			return `${glyph} ${t.content}`
+		})
+		lines.push(`Plan: ${planItems.join("; ")}`)
 	}
 
 	return lines.join("\n")

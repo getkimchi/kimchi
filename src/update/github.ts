@@ -2,6 +2,8 @@ import { createWriteStream } from "node:fs"
 import { Readable } from "node:stream"
 import { pipeline } from "node:stream/promises"
 import type { ReadableStream as WebReadable } from "node:stream/web"
+import { THIRD_PARTY_MAX_RETRIES } from "../config.js"
+import { fetchWithRetry } from "../utils/http.js"
 
 const DEFAULT_API_BASE = "https://api.github.com"
 const DEFAULT_DOWNLOAD_BASE = "https://github.com"
@@ -9,7 +11,7 @@ const DEFAULT_DOWNLOAD_BASE = "https://github.com"
 export interface Repo {
 	owner: string
 	name: string
-	/** Binary name inside the tar.gz (also the prefix of the asset filename). */
+	/** Binary name inside the release archive (also the prefix of the asset filename). */
 	binary: string
 }
 
@@ -79,9 +81,35 @@ export class GitHubClient {
 	/** GET /repos/{owner}/{name}/releases/latest. Returns tag + URL. */
 	async latestRelease(repo: Repo): Promise<ReleaseInfo> {
 		const url = `${this.apiBase}/repos/${repo.owner}/${repo.name}/releases/latest`
-		const res = await this.fetchImpl(url, {
-			headers: { Accept: "application/vnd.github+json" },
-		})
+		const res = await fetchWithRetry(
+			url,
+			{ headers: { Accept: "application/vnd.github+json" } },
+			{ fetchImpl: this.fetchImpl, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
+		)
+		if (!res.ok) {
+			throw new Error(`github API returned ${res.status}`)
+		}
+		const json = (await res.json()) as { tag_name?: unknown; html_url?: unknown }
+		if (typeof json.tag_name !== "string" || json.tag_name.length === 0) {
+			throw new Error("github API response missing tag_name")
+		}
+		return {
+			tagName: json.tag_name,
+			htmlUrl: typeof json.html_url === "string" ? json.html_url : "",
+		}
+	}
+
+	/** GET /repos/{owner}/{name}/releases/tags/{tag}. Returns tag + URL. */
+	async releaseByTag(repo: Repo, tag: string): Promise<ReleaseInfo> {
+		const url = `${this.apiBase}/repos/${repo.owner}/${repo.name}/releases/tags/${tag}`
+		const res = await fetchWithRetry(
+			url,
+			{ headers: { Accept: "application/vnd.github+json" } },
+			{ fetchImpl: this.fetchImpl, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
+		)
+		if (res.status === 404) {
+			throw new Error(`release ${tag} not found (404)`)
+		}
 		if (!res.ok) {
 			throw new Error(`github API returned ${res.status}`)
 		}
@@ -98,9 +126,11 @@ export class GitHubClient {
 	/** GET /repos/{owner}/{name}/releases/tags/canary. */
 	async canaryRelease(repo: Repo): Promise<CanaryReleaseInfo> {
 		const url = `${this.apiBase}/repos/${repo.owner}/${repo.name}/releases/tags/canary`
-		const res = await this.fetchImpl(url, {
-			headers: { Accept: "application/vnd.github+json" },
-		})
+		const res = await fetchWithRetry(
+			url,
+			{ headers: { Accept: "application/vnd.github+json" } },
+			{ fetchImpl: this.fetchImpl, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
+		)
 		if (!res.ok) {
 			throw new Error(`github API returned ${res.status}`)
 		}
@@ -131,7 +161,10 @@ export class GitHubClient {
 	 */
 	async fetchChecksum(repo: Repo, tag: string): Promise<Uint8Array> {
 		const url = `${this.downloadBase}/${repo.owner}/${repo.name}/releases/download/${tag}/checksums.txt`
-		const res = await this.fetchImpl(url)
+		const res = await fetchWithRetry(url, undefined, {
+			fetchImpl: this.fetchImpl,
+			retry: { maxRetries: THIRD_PARTY_MAX_RETRIES },
+		})
 		if (!res.ok) {
 			throw new Error(`checksums.txt download returned ${res.status}`)
 		}
@@ -149,7 +182,11 @@ export class GitHubClient {
 	/** Download the platform asset to `dest`. Streams body to disk. */
 	async downloadArchive(repo: Repo, tag: string, dest: string): Promise<void> {
 		const url = `${this.downloadBase}/${repo.owner}/${repo.name}/releases/download/${tag}/${assetName(repo)}`
-		const res = await this.fetchImpl(url)
+		const res = await fetchWithRetry(url, undefined, {
+			fetchImpl: this.fetchImpl,
+			timeoutMs: 60_000,
+			retry: { maxRetries: THIRD_PARTY_MAX_RETRIES },
+		})
 		if (!res.ok || !res.body) {
 			throw new Error(`release download returned ${res.status}`)
 		}

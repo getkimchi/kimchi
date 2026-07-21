@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { CUBE, GRAY, estimateTerminalBackground, hexToBgAnsi, rgbTo256, tintBackground } from "./terminal-bg-probe.js"
+import { CUBE, estimateTerminalBackground, GRAY, hexToBgAnsi, rgbTo256, tintBackground } from "./terminal-bg-probe.js"
 
 describe("tintBackground", () => {
 	const dark = { r: 0x1a, g: 0x18, b: 0x18 }
@@ -51,14 +51,6 @@ describe("tintBackground", () => {
 		const success = tintBackground(dark, 12, 0, "truecolor")
 		expect(pending).not.toBe(success)
 	})
-
-	function hexToComponents(hex: string): [number, number, number] {
-		return [
-			Number.parseInt(hex.slice(1, 3), 16),
-			Number.parseInt(hex.slice(3, 5), 16),
-			Number.parseInt(hex.slice(5, 7), 16),
-		]
-	}
 })
 
 describe("rgbTo256", () => {

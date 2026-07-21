@@ -3,18 +3,22 @@ import { dirname } from "node:path"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_API = "https://llm.kimchi.dev"
-const FETCH_TIMEOUT_MS = 5000
+const FETCH_TIMEOUT_MS = 20000
 
 function normalizeKimchiEndpoint(endpoint?: string): string {
 	const trimmed = endpoint?.trim()
-	return (trimmed && trimmed.length > 0 ? trimmed : KIMCHI_API).replace(/\/+$/, "")
+	if (!trimmed) return KIMCHI_API
+	// A scheme-less value like "example.com" produces an invalid request URL that the HTTP
+	// layer silently drops (falling back to the gateway), so default it to https://.
+	const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+	return withScheme.replace(/\/+$/, "")
 }
 
 function modelsMetadataApi(endpoint?: string): string {
 	return `${normalizeKimchiEndpoint(endpoint)}/v1/models/metadata?include_in_cli=true`
 }
 
-function chatCompletionsApi(endpoint?: string): string {
+export function chatCompletionsApi(endpoint?: string): string {
 	return `${normalizeKimchiEndpoint(endpoint)}/openai/v1`
 }
 
@@ -59,13 +63,12 @@ export interface FetchModelsOptions {
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
-/** Delay before the next retry, honoring a `Retry-After` header when present. */
-function retryDelayMs(response: Response, attempt: number): number {
-	const header = response.headers?.get?.("retry-after")
-	if (header) {
-		const seconds = Number(header)
+// Delay before the next retry, honoring a `Retry-After` header when present.
+function retryDelayMs(retryAfterHeader: string | null, attempt: number): number {
+	if (retryAfterHeader) {
+		const seconds = Number(retryAfterHeader)
 		if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, MAX_RETRY_DELAY_MS)
-		const dateMs = Date.parse(header)
+		const dateMs = Date.parse(retryAfterHeader)
 		if (!Number.isNaN(dateMs)) return Math.min(Math.max(dateMs - Date.now(), 0), MAX_RETRY_DELAY_MS)
 	}
 	return Math.min(BASE_RETRY_DELAY_MS * 2 ** (attempt - 1), MAX_RETRY_DELAY_MS)
@@ -109,11 +112,13 @@ async function fetchAvailableModels(apiKey: string, options: FetchModelsOptions 
 				signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 			})
 		} catch (err) {
-			// Network/timeout failures are transient; surface them so the caller can
-			// offer a retry rather than discarding the user's saved API key.
-			throw new ModelsFetchError(`Failed to fetch models: ${err instanceof Error ? err.message : String(err)}`, {
-				transient: true,
-			})
+			if (attempt === MAX_FETCH_ATTEMPTS) {
+				throw new ModelsFetchError(`Failed to fetch models: ${err instanceof Error ? err.message : String(err)}`, {
+					transient: true,
+				})
+			}
+			await sleep(retryDelayMs(null, attempt))
+			continue
 		}
 
 		if (response.ok) {
@@ -133,7 +138,7 @@ async function fetchAvailableModels(apiKey: string, options: FetchModelsOptions 
 			transient,
 		})
 		if (!transient || attempt === MAX_FETCH_ATTEMPTS) throw lastError
-		await sleep(retryDelayMs(response, attempt))
+		await sleep(retryDelayMs(response.headers?.get?.("retry-after"), attempt))
 	}
 
 	// Unreachable: the loop returns on success or throws on the final attempt.
@@ -160,8 +165,15 @@ export interface PiModelConfig {
 function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// TODO: our LiteLLM gateway does not support `thinking.type.enabled` for Anthropic >Opus 4.6 models
 	// Therefore, we disable it for now. Revisit, once we upgrade our LiteLLM version.
+	// Band-aid: the models metadata API returns the same Claude slug under both
+	// "anthropic" and "azure_ai" providers. Pi's mergeCustomModels silently picks
+	// the last entry by (providerName, id) — if the azure_ai entry wins, the compat
+	// block is lost and cache_control markers are never injected. All Claude models
+	// support Anthropic-style prompt caching regardless of the upstream provider, so
+	// match on slug prefix rather than provider. Remove once the API stops returning
+	// duplicate slugs or pi deduplicates by (provider, id).
 	const compat =
-		m.provider === "anthropic"
+		m.provider === "anthropic" || m.slug.startsWith("claude-")
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic" } as const)
 			: undefined
 	return {

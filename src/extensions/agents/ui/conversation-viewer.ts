@@ -5,8 +5,8 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import {
 	type Component,
-	type TUI,
 	matchesKey,
+	type TUI,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
@@ -20,6 +20,7 @@ import { extractText } from "../prompt/context.js"
 function expandTabs(s: string): string {
 	return s.replace(/\t/g, "        ")
 }
+
 import { getLifetimeTotal, getSessionContextPercent } from "../manager/usage.js"
 import type { Theme } from "./agent-widget.js"
 import {
@@ -152,10 +153,10 @@ export class ConversationViewer implements Component {
 			contentLines.length <= viewportHeight
 				? "100%"
 				: `${Math.round(((visibleStart + viewportHeight) / contentLines.length) * 100)}%`
-		const footerLeft = th.fg("dim", `${contentLines.length} lines · ${scrollPct}`)
-		const footerRight = th.fg("dim", "↑↓ scroll · PgUp/PgDn · Esc close")
-		const footerGap = Math.max(1, innerW - visibleWidth(footerLeft) - visibleWidth(footerRight))
-		lines.push(row(footerLeft + " ".repeat(footerGap) + footerRight))
+		const hintLeft = th.fg("dim", `${contentLines.length} lines · ${scrollPct}`)
+		const hintRight = th.fg("dim", "↑↓ scroll · PgUp/PgDn · Esc close")
+		const hintGap = Math.max(1, innerW - visibleWidth(hintLeft) - visibleWidth(hintRight))
+		lines.push(row(hintLeft + " ".repeat(hintGap) + hintRight))
 		lines.push(hrBot)
 
 		// statusIcon used for rendering — mark as intentionally referenced

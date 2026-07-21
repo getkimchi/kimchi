@@ -3,13 +3,69 @@
  */
 
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
-import type { ModelRole, ModelTier } from "../../orchestration/model-registry/types.js"
+import type { ModelTier } from "../../orchestration/model-registry/types.js"
+import type { ModelRole } from "../../orchestration/model-roles.js"
 import type { LifetimeUsage } from "../manager/usage.js"
+import type { FermentWorkerBudgetTier } from "../worker-budget-policy.js"
 
 /** Thinking/reasoning level for models that support it. */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
 
 export type AgentAbortReason = "max_turns" | "token_budget" | "inactivity" | "max_duration"
+export type AgentOutcomeKind = "completed" | "budget_exhausted" | "failed" | "stopped"
+
+export interface AgentTaskRef {
+	kind: "ferment_step"
+	ferment_id: string
+	phase_id: string
+	step_id: string
+	budget_tier?: FermentWorkerBudgetTier
+}
+
+export interface AgentResumeAttempt {
+	attempt_id: number
+	purpose: "continuation" | "finalize_report"
+	startedAt: number
+	completedAt?: number
+	maxTurns?: number
+	tokenBudget?: number
+	outcome?: AgentOutcomeKind
+	reason?: AgentAbortReason | "error"
+}
+
+export interface AgentReport {
+	/** Host-assigned execution attempt. Workers cannot choose this value. */
+	attempt_id: number
+	status: "completed" | "partial" | "blocked"
+	summary: string
+	steps_completed: string[]
+	remaining_steps: string[]
+	files_touched?: string[]
+	verification?: string[]
+	blockers?: string[]
+	notes?: string
+	submitted_at: number
+}
+
+export interface AgentOutcome {
+	agent_id: string
+	/** Raw runtime status kept for UI/backward debugging; use outcome for orchestration decisions. */
+	status: AgentRecord["status"]
+	/** Stable classified result for model/orchestrator recovery decisions. */
+	outcome: AgentOutcomeKind
+	reason?: AgentAbortReason | "error"
+	resumable: boolean
+	turns_used?: number
+	max_turns?: number
+	token_usage: LifetimeUsage
+	/** Total agent lifetime in milliseconds (completedAt - startedAt), NOT per-resume duration. Per-attempt timing is tracked in AgentResumeAttempt. */
+	duration_ms: number
+	report?: AgentReport
+	summary?: string
+	recovery_guidance?: string
+	task_ref?: AgentTaskRef
+	resume_attempts: number
+}
 
 /** Agent type: any string name (built-in defaults or user-defined). */
 export type SubagentType = string
@@ -25,6 +81,7 @@ export const AGENT_RESEARCHER = "Researcher"
 export const AGENT_BUILDER = "Builder"
 export const AGENT_REVIEWER = "Reviewer"
 export const AGENT_FIXER = "Fixer"
+export const AGENT_GRADER = "Grader"
 
 /** Names of the embedded default agents (in canonical display order). */
 export const DEFAULT_AGENT_NAMES = [
@@ -35,6 +92,7 @@ export const DEFAULT_AGENT_NAMES = [
 	AGENT_BUILDER,
 	AGENT_REVIEWER,
 	AGENT_FIXER,
+	AGENT_GRADER,
 ] as const
 
 /** Memory scope for persistent agent memory. */
@@ -80,6 +138,8 @@ export interface AgentConfig {
 	isolated?: boolean
 	/** Whether to inject project context files (CLAUDE.md, AGENTS.md) into the system prompt. Default: false. */
 	includeContextFiles?: boolean
+	/** Whether to inject shared core guidelines (CORE_GUIDELINES, FACTUAL_ACCURACY, DOCUMENTS_SECTION) into the system prompt in replace mode. Default: false. */
+	includeCoreGuidelines?: boolean
 	/** Persistent memory scope — agents with memory get a persistent directory and MEMORY.md */
 	memory?: MemoryScope
 	/** Isolation mode — "worktree" runs the agent in a temporary git worktree */
@@ -109,6 +169,13 @@ export interface AgentRecord {
 	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error"
 	modelId?: string
 	abortReason?: AgentAbortReason
+	taskRef?: AgentTaskRef
+	currentAttemptId: number
+	agentReport?: AgentReport
+	latestOutcome?: AgentOutcome
+	resumeAttempts?: AgentResumeAttempt[]
+	lastTurnCount?: number
+	maxTurns?: number
 	result?: string
 	error?: string
 	toolUses: number
@@ -127,10 +194,18 @@ export interface AgentRecord {
 	toolCallId?: string
 	/** Path to the streaming output transcript file. */
 	outputFile?: string
+	/** The system prompt used for this agent run. */
+	systemPrompt?: string
 	/** Persisted session file for this agent run, when the parent session is persisted. */
 	sessionFile?: string
 	/** Cleanup function for the output file stream subscription. */
 	outputCleanup?: () => void
+	/** Whether this agent is (or has been converted to) a background agent. */
+	isBackground?: boolean
+	/** Resolver to call when this foreground agent is detached to background via Ctrl+B. */
+	detachResolver?: () => void
+	/** Removes the parent abort signal listener so the agent survives after detach. */
+	detachFromParent?: () => void
 	/**
 	 * Lifetime usage breakdown, accumulated via `message_end` events. Survives
 	 * compaction. Total = input + output + cacheWrite (cacheRead deliberately

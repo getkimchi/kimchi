@@ -4,7 +4,7 @@ import { join } from "node:path"
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { INITIAL_SURVEY, InitialSurveyComponent, _resetSurveyStateForTests, showInitialSurvey } from "./survey.js"
+import { _resetSurveyStateForTests, INITIAL_SURVEY, InitialSurveyComponent, showInitialSurvey } from "./survey.js"
 
 const tipWidgetLocationMock = vi.hoisted(() => ({
 	restore: vi.fn(),
@@ -98,6 +98,7 @@ describe("initial survey UI", () => {
 		})
 		const ctx = {
 			hasUI: true,
+			mode: "tui",
 			ui: {
 				custom,
 				notify: vi.fn(),
@@ -136,6 +137,7 @@ describe("initial survey UI", () => {
 		try {
 			const ctx = {
 				hasUI: true,
+				mode: "tui",
 				ui: {
 					custom: vi.fn(async () => {
 						throw new Error("boom")

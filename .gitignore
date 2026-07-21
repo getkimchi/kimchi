@@ -22,9 +22,17 @@ Thumbs.db
 # Environment
 .env
 .env.local
+AGENTS.local.md
 
 # Test coverage
 coverage/
+
+# TUI E2E generated artifacts
+.tui-test/
+tui-traces/
+**/tui-traces/
+*.tui-e2e.txt
+*.tui-e2e.log
 
 # Kimchi docs directory
 .kimchi/
@@ -43,6 +51,12 @@ kimchi-session-*.html
 
 .memory
 bin
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
 
 # LLM tools
 .codegraph/

@@ -28,6 +28,7 @@ import {
 	type Decision,
 	type Ferment,
 	type FermentStatus,
+	inSameParallelCohort,
 	type JudgeGrade,
 	type Memory,
 	type MemoryCategory,
@@ -36,7 +37,6 @@ import {
 	type Step,
 	type StepResult,
 	type StepStatus,
-	inSameParallelCohort,
 } from "./types.js"
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -466,7 +466,7 @@ function handleActivatePhase(
 ): TransitionResult {
 	const found = requirePhase(ferment, cmd.phaseId)
 	if (isTransitionError(found)) return fail(found)
-	const { phase, index } = found
+	const { phase } = found
 
 	const guard = requirePhaseStatus(phase, ["planned", "failed"])
 	if (guard) return fail(guard)
@@ -875,10 +875,28 @@ function handleResume(
 	const guard = requireFermentStatus(ferment, ["paused"])
 	if (guard) return fail(guard)
 	const activePhase = ferment.phases.find((p) => p.status === "active")
+
+	// Defensive sweep: reset any steps still marked "running" back to "pending".
+	// `handlePause` already does this, so normally there's nothing to reset. But
+	// if pause was bypassed or failed (storage write failure during shutdown,
+	// data corruption), an orphaned "running" step would cause
+	// `determineNextAction` to suggest `complete_step` for a step whose
+	// subagent is long dead. Only build a new phases array when at least one
+	// step actually needs resetting — otherwise the ferment passes through
+	// untouched so persistence/events treat it as a true no-op on step state.
+	const hasOrphanedRunning = ferment.phases.some((p) => p.steps.some((s) => s.status === "running"))
+	const phases = hasOrphanedRunning
+		? ferment.phases.map((p) => ({
+				...p,
+				steps: p.steps.map((s) => (s.status === "running" ? { ...s, status: "pending" as const } : s)),
+			}))
+		: ferment.phases
+
 	return ok(
 		touch(ferment, ctx, {
 			status: activePhase ? "running" : "planned",
 			activePhaseId: activePhase?.id,
+			phases,
 		}),
 	)
 }

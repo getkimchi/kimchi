@@ -6,24 +6,34 @@
  * policy at phase boundaries.
  */
 
-import { type ExtensionAPI, getMarkdownTheme } from "@earendil-works/pi-coding-agent"
+import { type ExtensionAPI, type ExtensionContext, getMarkdownTheme } from "@earendil-works/pi-coding-agent"
 import { Markdown } from "@earendil-works/pi-tui"
 import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
-import type { Ferment, Phase } from "../../../ferment/types.js"
-import { askUser } from "../ask-user.js"
-import { gradeColor, pr_bold } from "../colors.js"
+import type { Ferment, Grade, Phase } from "../../../ferment/types.js"
+import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
+import { getMultiModelEnabled } from "../../multi-model.js"
+import { withWorkingHidden } from "../../ui.js"
+import { askUserForm } from "../ask-user.js"
+import { gradeColor } from "../colors.js"
 import { decideContinuation } from "../continuation.js"
 import { formatDecisionsAndMemories } from "../format.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { flaggedVerdicts, renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
-import type { JudgeFlag } from "../judge.js"
+import {
+	type GraderSpawner,
+	type JudgeFlag,
+	type JudgePhaseGradeResult,
+	type JudgePhaseInput,
+	judgePhaseGradeViaSubagent,
+} from "../judge.js"
 import { onPhaseCompleted } from "../nudge.js"
-import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
+import { captureGitHead, gatherPhaseEvidence, type PhaseEvidence } from "../phase-evidence.js"
 import { type ProjectCheckResult, runProjectChecks, summarizeProjectChecks } from "../project-tests.js"
 import { hashFlags, writeEscalationArtifact, writeReviewEvidence } from "../review-evidence.js"
-import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
+import { safeSendMessage } from "../safe-send.js"
 import { MAX_BLOCK_RETRIES } from "../state.js"
 import {
 	createApplyAndPersist,
@@ -36,10 +46,11 @@ import {
 } from "../tool-helpers.js"
 import { FERMENT_TOOLS } from "../tool-names.js"
 import { ActivateParams, CompletePhaseParams, FailPhaseParams, RefineParams, SkipPhaseParams } from "../tool-schemas.js"
-import type { FermentUi, FermentUiContext } from "../ui.js"
+import { applyFermentToolProfile, profileForFerment } from "../tool-scope.js"
 
 function sendPhaseAck(pi: ExtensionAPI, text: string): void {
-	void pi.sendMessage(
+	safeSendMessage(
+		pi,
 		{
 			customType: "ferment_ack",
 			content: [{ type: "text", text }],
@@ -60,8 +71,6 @@ function countFilesChanged(evidence: PhaseEvidence | undefined): number {
 type CompletePhaseArgs = Static<typeof CompletePhaseParams>
 type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
 
-type PhaseUiContext = Omit<Partial<FermentUiContext>, "ui"> & { ui?: Partial<FermentUi> }
-
 export interface PhaseHandlerServices {
 	captureGitHead(): string | undefined
 	gatherEvidence(ref: string): PhaseEvidence | undefined
@@ -70,18 +79,30 @@ export interface PhaseHandlerServices {
 	 *  unit tests; the default delegates to `runProjectChecks` against the
 	 *  ferment's worktree path. */
 	runProjectChecks(cwd: string): ProjectCheckResult
+	/** Per-phase LLM grader. Invoked after F-gates + project checks pass.
+	 *  A/B advance with recommendations persisted; C/D/F refuse advancement
+	 *  and route through the existing block-retry / escalation loop.
+	 *  Judge-unavailable outcomes (no_registry/no_model/no_auth/api_error/
+	 *  unparseable/invalid_grade) are advisory and do NOT refuse advancement. */
+	judgePhaseGrade(input: JudgePhaseInput, spawner?: GraderSpawner): Promise<JudgePhaseGradeResult>
+	/** Optional spawner for the grader subagent. When provided, the grader
+	 *  runs as a bounded subagent with read-only + bash tools so it can
+	 *  independently verify the agent's claims. When undefined, the grader
+	 *  falls back to a single-shot LLM call. */
+	graderSpawner?: GraderSpawner
 	onPhaseCompleted(runtime: FermentRuntime): void
 }
 
 export interface PhaseExecutionContext {
 	pi: ExtensionAPI
-	ctx?: PhaseUiContext
+	ctx?: ExtensionContext
 }
 
 export const defaultPhaseHandlerServices: PhaseHandlerServices = {
 	captureGitHead,
 	gatherEvidence: gatherPhaseEvidence,
 	runProjectChecks: (cwd) => runProjectChecks(cwd),
+	judgePhaseGrade: (input, spawner) => judgePhaseGradeViaSubagent(input, spawner),
 	onPhaseCompleted,
 }
 
@@ -131,7 +152,7 @@ function formatManualPhaseBoundaryWait(
 	projectChecksLine: string,
 	warnSection: string,
 	reason?: string,
-	summaryLine = `**Phase "${completedPhase.name}"** done.`,
+	_summaryLine = `**Phase "${completedPhase.name}"** done.`,
 ): string {
 	const reasonLine = reason ? `\n\n${reason}` : ""
 	return (
@@ -188,11 +209,11 @@ function pauseForManualPhaseBoundary(
 
 function formatManualPhaseBoundaryContinue(
 	ferment: Ferment,
+	multiModelEnabled: boolean,
 	completedPhase: Phase,
 	nextPhase: Phase,
 	projectChecksLine: string,
 	warnSection: string,
-	summaryLine = `**Phase "${completedPhase.name}"** done.`,
 ): string {
 	return withNextActionHint(
 		[
@@ -202,6 +223,7 @@ function formatManualPhaseBoundaryContinue(
 			"User chose to continue to the next phase.",
 		].join("\n"),
 		ferment,
+		multiModelEnabled,
 	)
 }
 
@@ -211,7 +233,7 @@ async function maybeCompleteManualPhaseBoundary(
 	completedPhase: Phase,
 	projectChecksLine: string,
 	warnSection: string,
-	ctx?: PhaseUiContext,
+	ctx: ExtensionContext,
 	copy?: Parameters<typeof pauseForManualPhaseBoundary>[6],
 ): Promise<ToolResult | undefined> {
 	const decision = decideContinuation(ferment, runtime.getContinuationPolicy())
@@ -220,19 +242,23 @@ async function maybeCompleteManualPhaseBoundary(
 	if (!nextPhase) return undefined
 	const summaryLine = copy?.summaryLine ?? `Phase "${completedPhase.name}" done.`
 	if (ctx?.ui?.select) {
-		const choice = await ctx.ui.select(`${summaryLine}\nContinue "${ferment.name}" to "${nextPhase.name}"?`, [
-			"Continue to next phase",
-			"Pause here",
-		])
+		const choice = await withWorkingHidden(
+			ctx,
+			() =>
+				ctx.ui?.select?.(`${summaryLine}\nContinue "${ferment.name}" to "${nextPhase.name}"?`, [
+					"Continue to next phase",
+					"Pause here",
+				]) ?? Promise.resolve(undefined),
+		)
 		if (choice === "Continue to next phase") {
 			return toolOk(
 				formatManualPhaseBoundaryContinue(
 					ferment,
+					getMultiModelEnabled(ctx?.sessionManager ?? null),
 					completedPhase,
 					nextPhase,
 					projectChecksLine,
 					warnSection,
-					summaryLine,
 				),
 			)
 		}
@@ -255,9 +281,11 @@ export async function completePhase(
 	const phase = resolvePhase(f, params.phase_id)
 	if (!phase) return toolErr("Phase not found.")
 
+	const multiModelEnabled = getMultiModelEnabled(ctx?.sessionManager ?? null)
+
 	// FSM validation: complete_ferment_phase requires all phases to be terminal
 	const fsmError = validateFsmTransition(f, "COMPLETE_PHASE", { phaseId: phase.id })
-	if (fsmError) return toolErrWithNextAction(fsmError, f)
+	if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
 
 	// Step 2a: validate gate coverage + per-verdict shape. Phase-scope is the
 	// one tool that does NOT short-circuit on a flag — flags feed the
@@ -314,6 +342,7 @@ export async function completePhase(
 		outcome: { flags: mergedFlags, grade: derivedGrade, rationale },
 		diffAvailable: evidence?.available ?? false,
 		diffFilesChanged: evidence?.filesChanged,
+		evidence: params.evidence,
 		projectChecks,
 		gateVerdicts: params.gates,
 	})
@@ -363,20 +392,30 @@ export async function completePhase(
 				"Block flags:",
 				...blockFlags.map((fl) => `  - ${fl.problem}`),
 			].join("\n")
-			const escalationResponse = await askUser(
+			const escalationResponse = await askUserForm(
 				reviewTitle,
+				undefined,
 				[
-					{ id: "override", label: "Override and proceed (mark phase done)" },
-					{ id: "pause", label: "Pause ferment for manual fix" },
-					{ id: "abandon", label: "Abandon ferment" },
+					{
+						id: "escalation",
+						type: "single",
+						prompt: reviewTitle,
+						options: [
+							{ id: "override", label: "Override and proceed (mark phase done)" },
+							{ id: "pause", label: "Pause ferment for manual fix" },
+							{ id: "abandon", label: "Abandon ferment" },
+						],
+					},
 				],
-				{ ferment: f, pi, ctx, runtime },
+				{ ferment: f, pi, ctx: ctx ?? ({} as ExtensionContext), runtime },
 			)
 
-			if (!escalationResponse.failed && escalationResponse.choice === "override") {
+			const escalationChoice = escalationResponse.failed ? undefined : escalationResponse.answers?.[0]?.value
+
+			if (!escalationResponse.failed && escalationChoice === "override") {
 				runtime.clearBlockRetry(params.ferment_id, phase.id)
 				// fall through to "advance phase" path below
-			} else if (!escalationResponse.failed && escalationResponse.choice === "abandon") {
+			} else if (!escalationResponse.failed && escalationChoice === "abandon") {
 				const abandonOutcome = applyAndPersist(params.ferment_id, {
 					type: "abandon",
 					reason: "user abandoned after block retries exhausted",
@@ -409,41 +448,114 @@ export async function completePhase(
 		}
 	}
 
-	// Step 4: no block flags. Transition phase to completed.
-	// Capture block retry count before clearing — the counter is reset on the
-	// line below and won't be readable afterwards.
+	// Step 4: no block flags from gates or project checks. Run the per-phase
+	// LLM grader (council-of-specialists prompt) to assign a final letter
+	// grade + recommendations. C/D/F refuses advancement and routes through
+	// the same MAX_BLOCK_RETRIES / escalation loop as block flags above.
+	// A/B advance with recommendations persisted on the phase grade.
+	// Judge-unavailable outcomes are advisory — they do NOT refuse advancement.
+	const judgeInput: JudgePhaseInput = {
+		fermentName: f.name,
+		phaseName: phase.name,
+		phaseGoal: phase.goal,
+		phaseSummary: params.summary ?? "",
+		stepSummaries: stepSummariesText,
+		gateVerdicts: (params.gates ?? []).map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
+		projectChecksSummary: projectChecks.discovered ? projectCheckSummary : undefined,
+		phaseDiff: evidence
+			? { available: evidence.available, filesChanged: evidence.filesChanged, diffSnippet: evidence.diffSnippet }
+			: { available: false },
+		evidence: params.evidence,
+	}
+	const phaseJudgeResult = await runWithOverlay(`Grading phase "${phase.name}"…`, () =>
+		services.judgePhaseGrade(judgeInput, services.graderSpawner),
+	)
+
+	// Resolve the final grade + recommendations.
+	// First attempt requires A; after rework B is also acceptable.
+	const priorRetries = runtime.getBlockRetry(params.ferment_id, phase.id)
+	const minimumAcceptableGrade = priorRetries === 0 ? "A" : "B"
+	let finalGrade: Grade = derivedGrade as Grade
+	let finalRationale = rationale
+	let finalRecommendations: string[] = []
+	let judgeRefused = false
+	let judgeRecsText = ""
+	if (phaseJudgeResult.ok) {
+		finalGrade = phaseJudgeResult.grade
+		finalRationale = phaseJudgeResult.rationale
+		finalRecommendations = phaseJudgeResult.recommendations
+		const gradeOrder: Record<Grade, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 }
+		if (gradeOrder[phaseJudgeResult.grade] < gradeOrder[minimumAcceptableGrade]) {
+			judgeRefused = true
+			judgeRecsText = phaseJudgeResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
+		}
+	} else {
+		// Judge unavailable — advisory only, do NOT refuse advancement.
+		finalRationale = `${rationale} (Phase LLM judge unavailable: ${phaseJudgeResult.reason}${phaseJudgeResult.detail ? `: ${phaseJudgeResult.detail}` : ""})`
+	}
+
+	if (judgeRefused) {
+		// C/D/F from the LLM grader — give the agent a bounded number of retries
+		// to fix the recommendations, then accept the grade and advance.
+		const retry = runtime.bumpBlockRetry(params.ferment_id, phase.id)
+		const warnLines =
+			warnFlags.length > 0
+				? `\n\nAdvisory warnings (do not block):\n${warnFlags.map((fl) => `  ⚠ ${fl.problem}\n     redirect: ${fl.redirect}`).join("\n")}`
+				: ""
+		const projectChecksNote = projectChecks.discovered ? `\n${projectCheckSummary}` : ""
+
+		if (retry > MAX_BLOCK_RETRIES) {
+			// Budget exhausted — accept the grade and advance with recommendations persisted.
+			// The agent had its retries; we don't block continuation indefinitely.
+			runtime.clearBlockRetry(params.ferment_id, phase.id)
+			// Fall through to the advance path below with the judge's grade + recs.
+		} else {
+			return toolErr(
+				`**Phase "${phase.name}"** cannot complete — LLM grader assigned grade ${phaseJudgeResult.ok ? phaseJudgeResult.grade : "?"}, minimum required is ${minimumAcceptableGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).${projectChecksNote}\n\nRecommendations:\n${judgeRecsText}${warnLines}\n\nAddress the recommendations above and call complete_ferment_phase again with an updated summary.`,
+			)
+		}
+	}
+
+	// Step 5: advance phase to completed with the final grade + recommendations.
 	const blockRetriesForTelemetry = reviewAttemptForLog - 1
 	const completeOutcome = applyAndPersist(params.ferment_id, {
 		type: "complete_phase",
 		phaseId: phase.id,
 		summary: params.summary,
 		grade: {
-			grade: derivedGrade as import("../../../ferment/types.js").Grade,
-			rationale,
+			grade: finalGrade,
+			rationale: finalRationale,
 			gradedAt: runtime.nowIso(),
+			...(finalRecommendations.length > 0 ? { recommendations: finalRecommendations } : {}),
 		},
 		blockRetries: blockRetriesForTelemetry,
 	})
-	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f)
+	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f, multiModelEnabled)
 
-	// Step 3a: clear the block-retry counter — phase advanced cleanly.
+	// Clear the block-retry counter — phase advanced cleanly.
 	runtime.clearBlockRetry(params.ferment_id, phase.id)
 
-	// Step 4: no per-phase grading. The journey-grade judge at
-	// complete_ferment is the only place a letter grade is assigned, and it
-	// reads the on-disk review-evidence sidecar (which already captures
-	// derivedGrade + the raw F-gate verdicts written above) as input. So we
-	// skip set_phase_grade entirely on the new path.
+	// Step 6: phase completed. The LLM grader assigned the final grade and
+	// recommendations (persisted above via the complete_phase command). The
+	// journey-grade judge at complete_ferment assigns the final ferment.grade.
 
 	services.onPhaseCompleted(runtime)
 	const fresh = completeOutcome.ferment
 
+	// Record pending phase-compaction request for agent_end to drain.
+	runtime.setPendingCompaction(params.ferment_id, {
+		kind: "phase",
+		fermentId: params.ferment_id,
+		phaseId: phase.id,
+		completedAt: runtime.nowIso(),
+	})
+
 	// Visual ack mirrors the step ✓ breadcrumb in steps.ts. The grade letter is
-	// the deterministic derivedGrade (A/B/F) from gate verdicts + project
-	// checks (post-#230 no LLM judge per phase), colorized via gradeColor for
-	// terminal output.
+	// the final grade from the LLM grader (or the deterministic derivedGrade
+	// when the judge was unavailable), colorized via gradeColor for terminal
+	// output.
 	const filesCount = countFilesChanged(evidence)
-	const summaryLines = [`Phase ${phase.index} ✓  Grade ${gradeColor(derivedGrade)} — ${rationale}`]
+	const summaryLines = [`Phase ${phase.index} ✓  Grade ${gradeColor(finalGrade)} — ${finalRationale}`]
 	if (filesCount > 0) summaryLines.push(`${filesCount} file${filesCount === 1 ? "" : "s"} touched`)
 	sendPhaseAck(pi, summaryLines.join("\n"))
 	const warnSection =
@@ -458,7 +570,7 @@ export async function completePhase(
 		phase,
 		projectChecksLine,
 		warnSection,
-		ctx,
+		ctx ?? ({} as ExtensionContext),
 	)
 	if (manualBoundary) return manualBoundary
 
@@ -476,6 +588,7 @@ export async function completePhase(
 						: ""
 				}`,
 				fresh,
+				multiModelEnabled,
 			),
 		)
 	}
@@ -484,6 +597,7 @@ export async function completePhase(
 		withNextActionHint(
 			`**Phase "${phase.name}"** done.${projectChecksLine}${warnSection}\n**Next:** "${nextPhase.name}".`,
 			fresh,
+			multiModelEnabled,
 		),
 	)
 }
@@ -499,11 +613,13 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 		label: "Activate Phase",
 		description: "Start a planned phase.",
 		parameters: ActivateParams,
-		async execute(_, params) {
+		async execute(_, params, _abort, _onUpdate, ctx) {
 			// Resolution is a host concern (fuzzy lookup) — find the phase first,
 			// then dispatch to the right state-machine command.
 			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
+
+			const multiModelEnabled = getMultiModelEnabled(ctx?.sessionManager ?? null)
 
 			let target = params.phase_id ? f.phases.find((p) => p.id === params.phase_id) : undefined
 			if (!target && params.phase_id) {
@@ -511,11 +627,11 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				target = f.phases.find((p) => p.name.toLowerCase().includes(name))
 			}
 			if (!target) target = f.phases.find((p) => p.status === "failed") ?? findFirstPlannedPhase(f)
-			if (!target) return toolErrWithNextAction("No planned or failed phases to activate.", f)
+			if (!target) return toolErrWithNextAction("No planned or failed phases to activate.", f, multiModelEnabled)
 
 			// FSM validation: ensure phase activation is allowed
 			const fsmError = validateFsmTransition(f, "ACTIVATE_PHASE", { phaseId: target.id })
-			if (fsmError) return toolErrWithNextAction(fsmError, f)
+			if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
 
 			// Detect parallel group — activate all siblings at once
 			if (target.groupIndex !== undefined) {
@@ -523,7 +639,18 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 					type: "activate_phase_group",
 					groupIndex: target.groupIndex,
 				})
-				if (!outcome.ok) return failedToolResult(outcome.error, f)
+				if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
+
+				// Hook: re-apply the profile based on the updated lifecycle state.
+				// pi-mono snapshots the active tool list at the start of each agent run,
+				// so this shapes the NEXT turn's toolset, not the current turn's.
+				// Wrapped in try/catch: phase activation is already committed to storage;
+				// a setActiveTools failure must not cause a retry of activate_ferment_phase.
+				try {
+					applyFermentToolProfile(pi, profileForFerment(outcome.ferment))
+				} catch (err) {
+					console.error("[ferment] applyFermentToolProfile failed after phase group activation", err)
+				}
 
 				// Capture git HEAD per phase so the grader can diff each one independently.
 				const headRef = phaseServices.captureGitHead()
@@ -552,12 +679,24 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 					withNextActionHint(
 						`Parallel group ${target.groupIndex} activated (${groupPhases.length} phases running concurrently).\nferment_id: ${fresh.id}\nparallel_group: ${target.groupIndex}\nphase_ids: ${groupPhases.map((p) => p.id).join(", ")}\n\n${phaseLines}\n\nRun all parallel phases concurrently: call refine_ferment_phase + start_ferment_step for each phase simultaneously.${dmSection}`,
 						fresh,
+						multiModelEnabled,
 					),
 				)
 			}
 
 			const outcome = applyAndPersist(params.ferment_id, { type: "activate_phase", phaseId: target.id })
-			if (!outcome.ok) return failedToolResult(outcome.error, f)
+			if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
+
+			// Hook: re-apply the profile based on the updated lifecycle state.
+			// pi-mono snapshots the active tool list at the start of each agent run,
+			// so this shapes the NEXT turn's toolset, not the current turn's.
+			// Wrapped in try/catch: phase activation is already committed to storage;
+			// a setActiveTools failure must not cause a retry of activate_ferment_phase.
+			try {
+				applyFermentToolProfile(pi, profileForFerment(outcome.ferment))
+			} catch (err) {
+				console.error("[ferment] applyFermentToolProfile failed after phase activation", err)
+			}
 
 			// Capture git HEAD so the phase grader can diff against it later.
 			const headRef = phaseServices.captureGitHead()
@@ -575,6 +714,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				withNextActionHint(
 					`Phase "${target.name}" activated.\nferment_id: ${fresh.id}\nphase_id: ${target.id}${stepList}${dmSection}`,
 					fresh,
+					multiModelEnabled,
 				),
 			)
 		},
@@ -586,7 +726,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 		description:
 			"Add steps to an active phase. Overwrites existing. Use the phase_id returned by activate_ferment_phase.",
 		parameters: RefineParams,
-		async execute(_, params) {
+		async execute(_, params, _abort, _onUpdate, ctx) {
 			// Phase resolution: exact id → name substring → active phase fallback.
 			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
@@ -607,9 +747,11 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				)
 			}
 
+			const multiModelEnabled = getMultiModelEnabled(ctx?.sessionManager ?? null)
+
 			// FSM validation: refine_ferment_phase is only valid in PHASE_ACTIVE state
 			const fsmError = validateFsmTransition(f, "REFINE_PHASE", { phaseId: phase.id })
-			if (fsmError) return toolErrWithNextAction(fsmError, f)
+			if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "refine_phase",
@@ -619,9 +761,9 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			if (!outcome.ok) {
 				// Rewrite phase-not-active for the LLM-friendly form expected today.
 				if (outcome.error.code === "PHASE_NOT_IN_STATUS") {
-					return toolErrWithNextAction(`Phase must be active. Current: ${outcome.error.actual}`, f)
+					return toolErrWithNextAction(`Phase must be active. Current: ${outcome.error.actual}`, f, multiModelEnabled)
 				}
-				return failedToolResult(outcome.error, f)
+				return failedToolResult(outcome.error, f, multiModelEnabled)
 			}
 
 			const refined = outcome.ferment.phases.find((p) => p.id === phase.id)
@@ -630,6 +772,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				withNextActionHint(
 					`"${phase.name}" refined with ${refined?.steps.length ?? 0} step(s).\nferment_id: ${outcome.ferment.id}\nphase_id: ${phase.id}\n${stepList}`,
 					outcome.ferment,
+					multiModelEnabled,
 				),
 			)
 		},
@@ -648,7 +791,15 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
 		async execute(_, params, _signal, _onUpdate, ctx) {
-			return completePhase(runtime, params, { pi, ctx }, phaseServices)
+			const services = {
+				...phaseServices,
+				graderSpawner: async (prompt: string) => {
+					const result = await spawnGraderAgent(pi, ctx, prompt)
+					if (!result) return { text: "", status: "unavailable" }
+					return result
+				},
+			}
+			return completePhase(runtime, params, { pi, ctx }, services)
 		},
 	})
 
@@ -664,23 +815,25 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 
+			const multiModelEnabled = getMultiModelEnabled(ctx?.sessionManager ?? null)
+
 			// FSM validation: phase must be active to skip
 			const fsmError = validateFsmTransition(f, "SKIP_PHASE", { phaseId: phase.id })
-			if (fsmError) return toolErrWithNextAction(fsmError, f)
+			if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "skip_phase",
 				phaseId: phase.id,
 				reason: params.reason,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error, f)
+			if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
 
 			const manualBoundary = await maybeCompleteManualPhaseBoundary(runtime, outcome.ferment, phase, "", "", ctx, {
 				summaryLine: `Phase "${phase.name}" skipped.`,
 			})
 			if (manualBoundary) return manualBoundary
 
-			return toolOk(withNextActionHint("Phase skipped.", outcome.ferment))
+			return toolOk(withNextActionHint("Phase skipped.", outcome.ferment, multiModelEnabled))
 		},
 	})
 
@@ -689,26 +842,29 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 		label: "Fail Phase",
 		description: "Mark a phase as failed with a reason.",
 		parameters: FailPhaseParams,
-		async execute(_, params) {
+		async execute(_, params, _signal, _onUpdate, ctx) {
 			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 
+			const multiModelEnabled = getMultiModelEnabled(ctx?.sessionManager ?? null)
+
 			// FSM validation: phase must be active to fail
 			const fsmError = validateFsmTransition(f, "FAIL_PHASE", { phaseId: phase.id })
-			if (fsmError) return toolErrWithNextAction(fsmError, f)
+			if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "fail_phase",
 				phaseId: phase.id,
 				reason: params.reason,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error, f)
+			if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
 			return toolOk(
 				withNextActionHint(
 					`Phase marked as failed: ${params.reason}. Use activate_ferment_phase to retry, skip_ferment_phase to bypass, or ask the user to run /ferment abandon if the ferment should stop.`,
 					outcome.ferment,
+					multiModelEnabled,
 				),
 			)
 		},

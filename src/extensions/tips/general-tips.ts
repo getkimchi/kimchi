@@ -34,17 +34,17 @@ export const GENERAL_TIPS = [
 	{
 		id: "add-tags",
 		scope: "general",
-		message: "Tag requests with `/tags add key:value`, e.g. `project:myapp` `team:backend`.",
-	},
-	{
-		id: "auto-tags",
-		scope: "general",
-		message: 'Set default tags: `export KIMCHI_TAGS="team:backend,project:api"`.',
+		message: "Tag requests in Analytics: `/tags add key:value` (e.g. project:myapp).",
 	},
 	{
 		id: "continue-session",
 		scope: "general",
 		message: "Resume the latest session with `kimchi --continue`.",
+	},
+	{
+		id: "named-branch",
+		scope: "general",
+		message: "Name a branch with `/branch <name>`; resume it with `-r <id>`.",
 	},
 	{
 		id: "verbose-output",

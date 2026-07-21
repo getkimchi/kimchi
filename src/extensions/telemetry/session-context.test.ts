@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
-import { SessionContext, _resetSharedAccumulators } from "./session-context.js"
+import * as osMetadata from "../../utils/os-metadata.js"
+import { _resetSharedAccumulators, SessionContext } from "./session-context.js"
 
 vi.mock("../../api/me.js", () => ({
 	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
@@ -62,6 +63,87 @@ describe("SessionContext", () => {
 		expect(attrMap.ferment_id).toBe("")
 		expect(attrMap.custom).toBe("value")
 		expect(attrMap.count).toBe("42")
+	})
+
+	it("emit includes all four OS metadata keys", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue(undefined)
+
+		const ctx = new SessionContext(makeConfig(), "cli")
+		ctx.emit("test.event", { custom: "value" })
+		ctx.flushLogBuffer()
+
+		await Promise.allSettled([...ctx.inFlight])
+
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrs = body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes
+		const attrMap = Object.fromEntries(
+			attrs.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
+		)
+
+		// All four OS metadata keys should be present
+		expect(attrMap["telemetry.os"]).toBe(process.platform)
+		const expectedArch = process.arch === "x64" ? "amd64" : process.arch
+		expect(attrMap["telemetry.arch"]).toBe(expectedArch)
+		expect(attrMap["telemetry.host_os"]).toBe(process.platform) // non-WSL in test env
+		expect(attrMap["telemetry.is_wsl"]).toBe("false") // toAttrs converts boolean to string
+	})
+
+	// Parametrized WSL counterpart to the non-WSL test above. SessionContext
+	// caches osMetadata in its constructor, so the spy MUST be in place before
+	// `new SessionContext(...)` is called. toAttrs converts booleans to strings,
+	// so is_wsl arrives as the string "true".
+	it("emit reports host_os=win32 and is_wsl=true under WSL", async () => {
+		vi.spyOn(osMetadata, "getOsMetadata").mockReturnValue({
+			"telemetry.os": "linux",
+			"telemetry.arch": "amd64",
+			"telemetry.host_os": "win32",
+			"telemetry.is_wsl": true,
+		})
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue(undefined)
+
+		const ctx = new SessionContext(makeConfig(), "cli")
+		ctx.emit("test.event", { custom: "value" })
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrs = body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes
+		const attrMap = Object.fromEntries(
+			attrs.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
+		)
+
+		expect(attrMap["telemetry.os"]).toBe("linux")
+		expect(attrMap["telemetry.host_os"]).toBe("win32")
+		expect(attrMap["telemetry.is_wsl"]).toBe("true") // toAttrs converts boolean to string
+		expect(attrMap["telemetry.arch"]).toBe("amd64")
+	})
+
+	it("emitWithIds includes all four OS metadata keys", async () => {
+		const ctx = new SessionContext(makeConfig(), "cli")
+		ctx.emitWithIds("ferment.started", { ferment_id: "f-123" }, { phase: "plan" })
+		ctx.flushLogBuffer()
+
+		await Promise.allSettled([...ctx.inFlight])
+
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrs = body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes
+		const attrMap = Object.fromEntries(
+			attrs.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
+		)
+
+		expect(attrMap["telemetry.os"]).toBe(process.platform)
+		const expectedArch = process.arch === "x64" ? "amd64" : process.arch
+		expect(attrMap["telemetry.arch"]).toBe(expectedArch)
+		expect(attrMap["telemetry.host_os"]).toBe(process.platform)
+		expect(attrMap["telemetry.is_wsl"]).toBe("false")
 	})
 
 	it("first emit seeds lastSessionType without firing session.type_changed", async () => {
@@ -369,5 +451,37 @@ describe("SessionContext", () => {
 		const ctx = new SessionContext(makeConfig({ apiKey: "" }), "cli")
 		await ctx.userEmailReady
 		expect(ctx.userEmail).toBeUndefined()
+	})
+
+	it("emit includes user.account_uuid from userId after getMe resolves", async () => {
+		const { getMe } = await import("../../api/me.js")
+		vi.mocked(getMe).mockResolvedValue({ id: "user-uuid-123" })
+
+		const ctx = new SessionContext(makeConfig({ apiKey: "key" }), "cli")
+		await ctx.userEmailReady
+
+		ctx.emit("test.event", { foo: "bar" })
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]: unknown[]) =>
+			String(url).includes("/logs"),
+		)
+		const body = JSON.parse((call?.[1] as { body: string }).body)
+		const attrMap = Object.fromEntries(
+			body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.map(
+				(a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue],
+			),
+		)
+		expect(attrMap["user.account_uuid"]).toBe("user-uuid-123")
+	})
+
+	it("compactionCount resets to 0 on ctx.reset()", () => {
+		const ctx = new SessionContext(makeConfig(), "cli")
+		ctx.compactionCount = 3
+
+		ctx.reset("cli")
+
+		expect(ctx.compactionCount).toBe(0)
 	})
 })

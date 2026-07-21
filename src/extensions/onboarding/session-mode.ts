@@ -1,18 +1,19 @@
 import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 
 type EditorFactory = ReturnType<ExtensionContext["ui"]["getEditorComponent"]>
+
 import { getCliModeArg, isPreDispatchValueFlag } from "../../cli-args.js"
 import { readHideSessionModeDialog, readSessionModeWizardSeenAt, writeSessionModeWizardSeenAt } from "../../config.js"
 
 import { setTipWidgetLocation } from "../tips/index.js"
-import { setSessionModeOnboardingFooterSuppressed } from "../ui.js"
+import { setSessionModeOnboardingStatusLineSuppressed } from "../ui.js"
 import { NoOpPickerEditor } from "./picker-editor.js"
 import {
+	initialSessionModePickerState,
+	keyToSessionModePickerEvent,
 	SessionModePickerComponent,
 	type SessionModePickerResult,
 	type SessionModePickerState,
-	initialSessionModePickerState,
-	keyToSessionModePickerEvent,
 } from "./session-mode-picker.js"
 
 // Stateless editor — share a single instance across factory invocations so
@@ -189,7 +190,7 @@ function showSessionModeWizard(
 		ctx.ui.setWidget(SESSION_MODE_WIDGET_KEY, undefined, SESSION_MODE_WIDGET_OPTIONS)
 		restoreTips?.()
 		restoreTips = undefined
-		setSessionModeOnboardingFooterSuppressed(false)
+		setSessionModeOnboardingStatusLineSuppressed(false)
 		if (editorSwapped) {
 			ctx.ui.setEditorComponent(prevEditorFactory)
 			editorSwapped = false
@@ -223,7 +224,7 @@ function showSessionModeWizard(
 	}
 
 	restoreTips = setTipWidgetLocation("hidden")
-	setSessionModeOnboardingFooterSuppressed(true)
+	setSessionModeOnboardingStatusLineSuppressed(true)
 	// Mount an invisible shim so we can capture the tui reference (needed for
 	// hasOverlay polling) without contributing any visual footprint. The shim
 	// is replaced by the real picker inside activate().

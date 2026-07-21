@@ -1,15 +1,20 @@
+import os from "node:os"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
+import { isInSandboxCluster } from "../../utils/sandbox.js"
 import { TeleportRefusal } from "./commands/errors.js"
-import { runSessions } from "./commands/sessions.js"
+import { runRemoteSessions } from "./commands/remote-sessions.js"
 import { runSshConfig } from "./commands/ssh-config.js"
 import { runSync } from "./commands/sync.js"
 import { runTeleport } from "./commands/teleport.js"
 import { runTerminal } from "./commands/terminal.js"
-import { runWorkspaces } from "./commands/workspaces.js"
 import type { TeleportContext } from "./types.js"
 
 type CommandFn = (args: string, ctx: TeleportContext) => Promise<void>
+
+function isWindows(): boolean {
+	return os.type() === "Windows_NT"
+}
 
 function makeHandler(run: CommandFn) {
 	return async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
@@ -33,7 +38,9 @@ function makeHandler(run: CommandFn) {
 }
 
 export default function teleportExtension(pi: ExtensionAPI): void {
-	if (process.env.KIMCHI_EXPERIMENTAL_TELEPORT === undefined || process.env.KIMCHI_EXPERIMENTAL_TELEPORT === "") {
+	// Teleport spawns/connects into sandbox workspaces from a local machine; it has
+	// no meaning inside a sandbox worker, so disable it there.
+	if (isInSandboxCluster() || isWindows()) {
 		return
 	}
 	pi.registerCommand("teleport", {
@@ -48,13 +55,9 @@ export default function teleportExtension(pi: ExtensionAPI): void {
 		description: "Sync files between local and sandbox workspace",
 		handler: makeHandler(runSync),
 	})
-	pi.registerCommand("sessions", {
-		description: "List kimchi sessions across all workspaces",
-		handler: makeHandler(runSessions),
-	})
-	pi.registerCommand("workspaces", {
-		description: "List and manage kimchi workspaces",
-		handler: makeHandler(runWorkspaces),
+	pi.registerCommand("remote-sessions", {
+		description: "Browse workspaces and their kimchi sessions",
+		handler: makeHandler(runRemoteSessions),
 	})
 	pi.registerCommand("ssh-config", {
 		description: "Refresh ~/.config/kimchi/ssh_config from your workspaces",

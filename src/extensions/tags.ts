@@ -4,46 +4,40 @@
  * Manages LLM request tags for usage tracking and cost attribution.
  * Features:
  * - Slash commands: /tags, /tags add <key:value>, /tags remove <key:value>, /tags clear
- * - Footer display of active tags with color coding
+ * - Status line display of active tags with color coding
  * - Integration with before_provider_request hook
  *
  * Tags are stored per-session and persisted via session entries.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { resolve } from "node:path"
+import type { Api, Model } from "@earendil-works/pi-ai"
 import type {
+	CustomEntry,
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
+	SessionManager,
 	Theme,
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent"
-import { Container, Text } from "@earendil-works/pi-tui"
+import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
+import { readJson } from "../config/json.js"
+import { readConfigSetting } from "../config/settings.js"
+import type { ThinkingLevel } from "./agents/personas/types.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const FOOTER_STATUS_KEY = "active-tags"
+const STATUS_LINE_TAGS_KEY = "active-tags"
 const TAGS_CONFIG_FILE = resolve(homedir(), ".config", "kimchi", "tags.json")
-const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
-
-function readHarnessSetting<T>(key: string, fallback: T): T {
-	try {
-		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
-		const parsed = JSON.parse(raw)
-		if (key in parsed) return parsed[key] as T
-	} catch {
-		// settings.json absent or unreadable — use fallback
-	}
-	return fallback
-}
+const TAGS_SESSION_ENTRY_TYPE = "kimchi_active_tags"
 
 export function readHidePhaseChanges(): boolean {
-	return readHarnessSetting<boolean>("hidePhaseChanges", false)
+	return readConfigSetting("hidePhaseChanges", (value) => typeof value === "boolean", false)
 }
 
 const TAG_COLORS: ThemeColor[] = ["accent", "mdLink", "success", "warning"]
@@ -54,7 +48,9 @@ type Phase = (typeof VALID_PHASES)[number]
 
 const PHASE_TAGGING_PROMPT = `## Phase Tagging for Analytics
 
-The session starts in \`explore\` phase by default. Call \`set_phase\` when the work type changes — pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\`. Only one phase is active at a time; the most recent call wins. Subagents set their phase automatically from their persona, so this tool is for tagging the main thread's work.`
+The session starts in \`explore\` phase by default. Call \`set_phase\` when the work type changes — pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\`. Only one phase is active at a time; the most recent call wins. Subagents set their phase automatically from their persona, so this tool is for tagging the main thread's work.
+
+When the orchestrator decides to perform a phase itself (not delegate), include the matching \`thinking\` parameter from the Orchestration **Thinking levels** table. Leave \`thinking\` unset when only tagging coordination work or when delegating the phase to an Agent.`
 
 export function isValidPhase(phase: string): phase is Phase {
 	return VALID_PHASES.includes(phase as Phase)
@@ -82,30 +78,51 @@ interface TagsConfig {
 	tags?: string[]
 }
 
-export class TagManager {
-	private tags: Set<string> = new Set()
-	private staticTags: Set<string> = new Set()
-	private persistedTags: Set<string> = new Set() // Tags persisted in config file (non-static)
-	private currentPhase: Phase | undefined = undefined
-	private readonly configFile: string
+export type TagAppendEntry = (customType: string, data?: unknown) => void
 
-	constructor(configFile: string = TAGS_CONFIG_FILE) {
-		this.configFile = configFile
+export class TagManager {
+	private readonly sessionManager: Pick<SessionManager, "getEntries" | "getSessionId">
+	private readonly appendEntry: TagAppendEntry
+	private readonly configFile = TAGS_CONFIG_FILE
+
+	private tags: Set<string> = new Set()
+	private defaultTags: Set<string> = new Set()
+	private hasSessionTags = false
+
+	constructor(sessionManager: Pick<SessionManager, "getEntries" | "getSessionId">, appendEntry: TagAppendEntry) {
+		this.sessionManager = sessionManager
+		this.appendEntry = appendEntry
 		this.loadTags()
 	}
 
 	private loadTags(): void {
-		// Load from config file
+		this.loadDefaultTags()
+
+		const sessionTags = this.loadSessionTags()
+		if (sessionTags !== undefined) {
+			this.tags.clear()
+			for (const tag of sessionTags) {
+				if (isValidTag(tag)) {
+					this.tags.add(tag)
+				}
+			}
+			this.hasSessionTags = true
+			return
+		}
+
+		for (const tag of this.defaultTags) {
+			this.tags.add(tag)
+		}
+	}
+
+	private loadDefaultTags(): void {
+		// Load from config file (defaults for new sessions)
 		try {
-			if (existsSync(this.configFile)) {
-				const content = readFileSync(this.configFile, "utf-8")
-				const config = JSON.parse(content) as TagsConfig
-				if (Array.isArray(config.tags)) {
-					for (const tag of config.tags) {
-						if (isValidTag(tag)) {
-							this.persistedTags.add(tag)
-							this.tags.add(tag)
-						}
+			const config = readJson(this.configFile) as TagsConfig
+			if (Array.isArray(config.tags)) {
+				for (const tag of config.tags) {
+					if (isValidTag(tag)) {
+						this.defaultTags.add(tag)
 					}
 				}
 			}
@@ -113,46 +130,29 @@ export class TagManager {
 			// Config file doesn't exist or is invalid, ignore
 		}
 
-		// Load from environment variable (takes precedence for static tags)
+		// Load from environment variable (defaults for new sessions)
 		const envTags = process.env.KIMCHI_TAGS
 		if (envTags) {
-			// Environment tags become static and override config file tags
 			for (const tag of envTags.split(",")) {
 				const trimmed = tag.trim()
 				if (isValidTag(trimmed)) {
-					this.staticTags.add(trimmed)
-					// Remove from persisted if it was there (env takes precedence)
-					this.persistedTags.delete(trimmed)
+					this.defaultTags.add(trimmed)
 				}
-			}
-
-			// Rebuild tags: env tags (static) + persisted tags (non-static)
-			this.tags.clear()
-			for (const tag of this.staticTags) {
-				this.tags.add(tag)
-			}
-			for (const tag of this.persistedTags) {
-				this.tags.add(tag)
 			}
 		}
 	}
 
-	private saveTags(): void {
-		try {
-			// Only persist non-static tags
-			const tagsToPersist = Array.from(this.persistedTags).sort()
-			const config: TagsConfig = { tags: tagsToPersist }
+	private loadSessionTags(): string[] | undefined {
+		const entry = this.sessionManager
+			.getEntries()
+			.findLast(
+				(item): item is CustomEntry<string[]> => item.type === "custom" && item.customType === TAGS_SESSION_ENTRY_TYPE,
+			)
+		return entry?.data
+	}
 
-			// Ensure directory exists
-			const configDir = dirname(this.configFile)
-			if (!existsSync(configDir)) {
-				mkdirSync(configDir, { recursive: true })
-			}
-
-			writeFileSync(this.configFile, JSON.stringify(config, null, 2))
-		} catch {
-			// Silent fail - don't break the app if we can't write config
-		}
+	private persistTags(): void {
+		this.appendEntry(TAGS_SESSION_ENTRY_TYPE, Array.from(this.tags).sort())
 	}
 
 	getAllTags(): string[] {
@@ -160,11 +160,13 @@ export class TagManager {
 	}
 
 	getUserTags(): string[] {
-		return Array.from(this.tags).filter((tag) => !this.staticTags.has(tag))
+		return this.hasSessionTags
+			? Array.from(this.tags)
+			: Array.from(this.tags).filter((tag) => !this.defaultTags.has(tag))
 	}
 
 	getStaticTags(): string[] {
-		return Array.from(this.staticTags)
+		return Array.from(this.defaultTags)
 	}
 
 	add(tag: string): { success: boolean; error?: string } {
@@ -175,66 +177,49 @@ export class TagManager {
 			}
 		}
 
-		if (this.staticTags.has(tag)) {
-			return { success: false, error: `Tag "${tag}" is a static tag and cannot be modified.` }
-		}
-
 		if (this.tags.has(tag)) {
 			return { success: false, error: `Tag "${tag}" already exists.` }
 		}
 
 		if (this.tags.size >= 10) {
-			return { success: false, error: "Maximum 10 tags allowed (including static tags)." }
+			return { success: false, error: "Maximum 10 tags allowed (including default tags)." }
 		}
 
 		this.tags.add(tag)
-		this.persistedTags.add(tag)
-		this.saveTags()
+		this.hasSessionTags = true
+		this.persistTags()
 		return { success: true }
 	}
 
 	remove(tag: string): { success: boolean; error?: string } {
-		if (this.staticTags.has(tag)) {
-			return { success: false, error: `Tag "${tag}" is a static tag and cannot be removed.` }
-		}
-
 		if (!this.tags.has(tag)) {
 			return { success: false, error: `Tag "${tag}" not found.` }
 		}
 
 		this.tags.delete(tag)
-		this.persistedTags.delete(tag)
-		this.saveTags()
+		this.hasSessionTags = true
+		this.persistTags()
 		return { success: true }
 	}
 
 	clear(): { removed: number } {
-		const userTags = this.getUserTags()
-		for (const tag of userTags) {
-			this.tags.delete(tag)
-			this.persistedTags.delete(tag)
-		}
-		this.saveTags()
-		return { removed: userTags.length }
+		const removed = this.tags.size
+		this.tags.clear()
+		this.hasSessionTags = true
+		this.persistTags()
+		return { removed }
 	}
+
 	isStatic(tag: string): boolean {
-		return this.staticTags.has(tag)
+		return this.defaultTags.has(tag)
 	}
 
-	setPhase(phase: Phase | undefined): void {
-		this.currentPhase = phase
-	}
-
-	getPhase(): Phase | undefined {
-		return this.currentPhase
-	}
-
-	getPhaseTag(): string | undefined {
-		return this.currentPhase ? `phase:${this.currentPhase}` : undefined
+	getPhaseTag(phase: Phase | undefined): string | undefined {
+		return phase ? `phase:${phase}` : undefined
 	}
 }
 
-// ─── Footer formatting ────────────────────────────────────────────────────────
+// ─── Status line formatting ──────────────────────────────────────────────────
 
 function getColorForKey(key: string): ThemeColor {
 	// Deterministic color based on key name
@@ -242,7 +227,7 @@ function getColorForKey(key: string): ThemeColor {
 	return TAG_COLORS[hash % TAG_COLORS.length]
 }
 
-function formatTagsForFooter(tags: string[], theme: Theme, phase: Phase | undefined): string {
+function formatTagsForStatusLine(tags: string[], theme: Theme, phase: Phase | undefined): string {
 	// Group tags by key for display
 	const grouped = new Map<string, string[]>()
 	for (const tag of tags) {
@@ -289,13 +274,13 @@ function formatTagsForFooter(tags: string[], theme: Theme, phase: Phase | undefi
 	return statusParts.join("  ")
 }
 
-function updateFooterStatus(tagManager: TagManager, ctx: ExtensionContext): void {
+function updateStatusLineTags(tagManager: TagManager, ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 
 	const allTags = tagManager.getAllTags()
-	const currentPhase = tagManager.getPhase()
-	const statusText = formatTagsForFooter(allTags, ctx.ui.theme, currentPhase)
-	ctx.ui.setStatus(FOOTER_STATUS_KEY, statusText)
+	const currentPhase = getCurrentPhase(ctx.sessionManager.getSessionId())
+	const statusText = formatTagsForStatusLine(allTags, ctx.ui.theme, currentPhase)
+	ctx.ui.setStatus(STATUS_LINE_TAGS_KEY, statusText)
 }
 
 // ─── Command handlers ─────────────────────────────────────────────────────────
@@ -307,10 +292,11 @@ function subcommandArgs(args: string, subcommand: string): string {
 
 async function handlePhaseCommand(args: string, ctx: ExtensionCommandContext, tagManager: TagManager): Promise<void> {
 	const trimmed = args.trim().toLowerCase()
+	const sessionId = ctx.sessionManager.getSessionId()
 
 	// No arg → show current phase + offer interactive selector when there's a UI.
 	if (!trimmed) {
-		const current = tagManager.getPhase()
+		const current = getCurrentPhase(sessionId)
 		const currentLabel = current ? `current phase: ${current}` : "no phase set"
 
 		if (!ctx.hasUI) {
@@ -322,24 +308,24 @@ async function handlePhaseCommand(args: string, ctx: ExtensionCommandContext, ta
 		if (!choice) return
 
 		if (choice === "none (clear)") {
-			tagManager.setPhase(undefined)
-			updateFooterStatus(tagManager, ctx)
+			setCurrentPhase(sessionId, undefined)
+			updateStatusLineTags(tagManager, ctx)
 			ctx.ui.notify("Phase cleared", "info")
 			return
 		}
 
 		const next = choice as Phase
-		tagManager.setPhase(next)
-		updateFooterStatus(tagManager, ctx)
+		setCurrentPhase(sessionId, next)
+		updateStatusLineTags(tagManager, ctx)
 		ctx.ui.notify(`Phase changed to: ${next}`, "info")
 		return
 	}
 
 	// Explicit clear.
 	if (trimmed === "none" || trimmed === "clear" || trimmed === "off") {
-		tagManager.setPhase(undefined)
+		setCurrentPhase(sessionId, undefined)
 		if (ctx.hasUI) {
-			updateFooterStatus(tagManager, ctx)
+			updateStatusLineTags(tagManager, ctx)
 			ctx.ui.notify("Phase cleared", "info")
 		} else {
 			console.log("Phase cleared")
@@ -355,9 +341,9 @@ async function handlePhaseCommand(args: string, ctx: ExtensionCommandContext, ta
 		return
 	}
 
-	tagManager.setPhase(trimmed)
+	setCurrentPhase(sessionId, trimmed)
 	if (ctx.hasUI) {
-		updateFooterStatus(tagManager, ctx)
+		updateStatusLineTags(tagManager, ctx)
 		ctx.ui.notify(`Phase changed to: ${trimmed}`, "info")
 	} else {
 		console.log(`Phase changed to: ${trimmed}`)
@@ -382,8 +368,8 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 		lines.push("Active tags:")
 
 		for (const tag of allTags.sort()) {
-			const isStatic = staticTags.includes(tag)
-			const marker = isStatic ? "[static]" : "[user]"
+			const isDefault = staticTags.includes(tag)
+			const marker = isDefault ? "[default]" : "[user]"
 			const colorTag = ctx.ui.theme.fg("accent", tag)
 			const colorMarker = ctx.ui.theme.fg("dim", marker)
 			lines.push(`  ${colorMarker} ${colorTag}`)
@@ -420,7 +406,7 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 		const failed = results.filter((r) => !r.success)
 
 		if (succeeded.length > 0) {
-			updateFooterStatus(tagManager, ctx)
+			updateStatusLineTags(tagManager, ctx)
 		}
 
 		const lines: string[] = []
@@ -459,7 +445,7 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 		const failed = results.filter((r) => !r.success)
 
 		if (succeeded.length > 0) {
-			updateFooterStatus(tagManager, ctx)
+			updateStatusLineTags(tagManager, ctx)
 		}
 
 		const lines: string[] = []
@@ -482,7 +468,7 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 
 	if (trimmed === "clear") {
 		const result = tagManager.clear()
-		updateFooterStatus(tagManager, ctx)
+		updateStatusLineTags(tagManager, ctx)
 		ctx.ui.notify(`Cleared ${result.removed} user-defined tag(s).`, "info")
 		return
 	}
@@ -496,8 +482,8 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 		"  /tags remove tag ...       Remove one or more user-defined tags",
 		"  /tags clear                Remove all user-defined tags",
 		"",
-		"Static tags (from config/env) cannot be modified.",
-		`Current static tags: ${tagManager.getStaticTags().length > 0 ? tagManager.getStaticTags().join(", ") : "none"}`,
+		"Default tags from config/env are applied to new sessions; session changes override them.",
+		`Current default tags: ${tagManager.getStaticTags().length > 0 ? tagManager.getStaticTags().join(", ") : "none"}`,
 	]
 	ctx.ui.notify(helpLines.join("\n"), "info")
 }
@@ -509,39 +495,60 @@ const SetPhaseParams = Type.Object({
 		description: "The phase to set. Valid phases: explore, plan, build, review, research",
 		enum: ["explore", "plan", "build", "review", "research"],
 	}),
+	thinking: Type.Optional(
+		Type.String({
+			description:
+				"Optional thinking level to use when the orchestrator performs this phase itself (not delegating). Set per the Orchestration Thinking levels table.",
+			enum: ["off", "minimal", "low", "medium", "high", "xhigh"],
+		}),
+	),
 })
 
 // ─── Extension entry point ─────────────────────────────────────────────────────
 
-let tagManagerInstance: TagManager | undefined
+const phaseMap = new Map<string, Phase | undefined>()
 
-export function getCurrentPhase(): Phase | undefined {
-	return tagManagerInstance?.getPhase()
+export function getCurrentPhase(sessionId: string): Phase | undefined {
+	return phaseMap.get(sessionId)
 }
 
-export function setCurrentPhase(phase: string | undefined): void {
-	if (!tagManagerInstance) return
-	if (phase === undefined) {
-		tagManagerInstance.setPhase(undefined)
-		return
+export function setCurrentPhase(sessionId: string, phase: string | undefined): void {
+	if (phase !== undefined && !isValidPhase(phase)) return
+	phaseMap.set(sessionId, phase)
+}
+
+const tagManagerMap = new Map<string, TagManager>()
+
+function getTagManager(
+	sessionManager: Pick<SessionManager, "getEntries" | "getSessionId">,
+	appendEntry: TagAppendEntry,
+): TagManager {
+	const sessionId = sessionManager.getSessionId()
+	let tagManager = tagManagerMap.get(sessionId)
+	if (!tagManager) {
+		tagManager = new TagManager(sessionManager, appendEntry)
+		tagManagerMap.set(sessionId, tagManager)
 	}
-	if (!isValidPhase(phase)) return
-	tagManagerInstance.setPhase(phase)
+	return tagManager
 }
 
-export function getActiveTags(): string[] {
-	return tagManagerInstance?.getAllTags() ?? []
+export function getActiveTags(sessionManager: Pick<SessionManager, "getEntries" | "getSessionId">): string[] {
+	// Read-only lookup: do not cache this instance, otherwise a later
+	// command/tool context that needs to mutate tags would get a no-op
+	// appendEntry from the cached instance.
+	return new TagManager(sessionManager, () => {}).getAllTags()
 }
 
 export default function tagsExtension(pi: ExtensionAPI) {
-	const tagManager = new TagManager()
-	tagManagerInstance = tagManager
+	function getExtensionTagManager(ctx: ExtensionContext): TagManager {
+		return getTagManager(ctx.sessionManager, pi.appendEntry)
+	}
 
 	// Register the /tags command
 	pi.registerCommand("tags", {
 		description: "Manage LLM request tags for usage tracking",
 		handler: async (args, ctx) => {
-			handleTagsCommand(args, ctx, tagManager)
+			handleTagsCommand(args, ctx, getExtensionTagManager(ctx))
 		},
 	})
 
@@ -557,7 +564,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 			}))
 		},
 		handler: async (args, ctx) => {
-			await handlePhaseCommand(args, ctx, tagManager)
+			await handlePhaseCommand(args, ctx, getExtensionTagManager(ctx))
 		},
 	})
 
@@ -566,21 +573,27 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		name: "set_phase",
 		label: "Set Phase",
 		description:
-			"Set the current work phase for usage tracking and analytics. The session starts in explore. Call when transitioning between phases (e.g., exploration to planning, or planning to building). The phase is included as a tag in subsequent LLM requests.",
+			"Set the current work phase for usage tracking and analytics. The session starts in explore. Call when transitioning between phases (e.g., exploration to planning, or planning to building). The phase is included as a tag in subsequent LLM requests. When the orchestrator decides to perform a phase itself rather than delegating, pass `thinking` to match the Orchestration Thinking levels table.",
 		parameters: SetPhaseParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const phase = params.phase as Phase
+			const thinking = params.thinking as ThinkingLevel | undefined
+			const tagManager = getExtensionTagManager(ctx)
+			const sessionId = ctx.sessionManager.getSessionId()
 
-			tagManager.setPhase(phase)
+			setCurrentPhase(sessionId, phase)
+			if (thinking) {
+				pi.setThinkingLevel(thinking)
+			}
 
 			if (ctx.hasUI) {
-				updateFooterStatus(tagManager, ctx)
+				updateStatusLineTags(tagManager, ctx)
 			}
 
 			return {
 				content: [{ type: "text", text: `Phase changed to: ${phase}` }],
-				details: { phase, model: ctx.model?.id },
+				details: { phase, thinking, model: ctx.model?.id },
 			}
 		},
 
@@ -592,13 +605,14 @@ export default function tagsExtension(pi: ExtensionAPI) {
 			if (readHidePhaseChanges()) {
 				return new Text("", 0, 0)
 			}
-			const details = result.details as { phase: string; model?: string } | undefined
+			const details = result.details as { phase: string; thinking?: ThinkingLevel; model?: string } | undefined
 			const phase = details?.phase ?? "unknown"
 			const model = details?.model
+			const thinkingSuffix = details?.thinking ? theme.fg("dim", ` · thinking ${details.thinking}`) : ""
 			const dash = theme.fg("dim", "- ")
 			const label = theme.bold(theme.fg("toolTitle", `Phase changed: ${phase}`))
 			const modelSuffix = model ? theme.fg("dim", ` [${model}]`) : ""
-			return new Text(dash + label + modelSuffix, 0, 0)
+			return new Text(dash + label + modelSuffix + thinkingSuffix, 0, 0)
 		},
 	})
 
@@ -607,10 +621,13 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		render: () => PHASE_TAGGING_PROMPT,
 	})
 
-	// Initialize footer status and default phase on session start
+	// Initialize status line tags status and default phase on session start
 	pi.on("session_start", async (_event, ctx) => {
-		tagManager.setPhase("explore")
-		updateFooterStatus(tagManager, ctx)
+		const tagManager = getExtensionTagManager(ctx)
+		const sessionId = ctx.sessionManager.getSessionId()
+
+		setCurrentPhase(sessionId, "explore")
+		updateStatusLineTags(tagManager, ctx)
 	})
 
 	// Inject tags into every LLM request
@@ -618,7 +635,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		// Tags are a Cast AI-specific API field; skip for other providers.
 		// If a request from a torn-down session reaches us after `/new` (etc.),
 		// any ctx getter throws via assertActive — bail silently in that case.
-		let model: { provider?: string; id?: string } | undefined
+		let model: Model<Api> | undefined
 		try {
 			model = ctx.model ?? undefined
 		} catch (err) {
@@ -630,6 +647,8 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		const payload = event.payload as Record<string, unknown> | null
 		if (!payload || typeof payload !== "object") return
 
+		const sessionId = ctx.sessionManager.getSessionId()
+		const tagManager = getExtensionTagManager(ctx)
 		const allTags = tagManager.getAllTags()
 
 		// Build reserved tags first (model + phase) so they are never dropped by the cap
@@ -637,7 +656,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		if (model?.id) {
 			reservedTags.push(`model:${model.id}`)
 		}
-		const phaseTag = tagManager.getPhaseTag()
+		const phaseTag = tagManager.getPhaseTag(getCurrentPhase(sessionId))
 		if (phaseTag) {
 			reservedTags.push(phaseTag)
 		}

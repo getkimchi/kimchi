@@ -2,29 +2,42 @@ import type { ExtensionAPI, TurnStartEvent } from "@earendil-works/pi-coding-age
 import type { TelemetryConfig } from "../../config.js"
 import { onBeforeProviderHeaders } from "../../types/before-provider-headers.js"
 import {
+	BASH_TOOL_GUARD_EVENTS,
+	type BashToolGuardAllowedByUserRequestPayload,
+	type BashToolGuardBlockPayload,
+	type BashToolGuardWarnPayload,
+} from "../bash-tool-guard-events.js"
+import {
 	FERMENT_EVENTS,
 	type FermentAbandonedPayload,
 	type FermentCompletedPayload,
 	type FermentPhaseCompletedPayload,
 	type FermentPhaseStartedPayload,
+	type FermentStalledPayload,
 	type FermentStartedPayload,
 	type FermentSteeringPayload,
 	type FermentStepCompletedPayload,
 	type FermentStepFailedPayload,
 	type FermentStepStartedPayload,
 } from "../ferment/domain-events.js"
+import {
+	LOOP_GUARD_EVENTS,
+	type LoopGuardSubagentAbortPayload,
+	type LoopGuardWarnPayload,
+} from "../loop-guard-events.js"
 
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./handlers/messages.js"
 import { emitSessionStartEvent, handleSessionInitialized, handleSessionShutdown } from "./handlers/session.js"
 import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/tools.js"
 import { SessionContext } from "./session-context.js"
+import { startSettingsChangeWatcher } from "./settings-change-emitter.js"
 import {
-	type SurveyAnsweredTelemetry,
-	type SurveyDismissedTelemetry,
-	type SurveyShownTelemetry,
 	emitSurveyAnswered,
 	emitSurveyDismissed,
 	emitSurveyShown,
+	type SurveyAnsweredTelemetry,
+	type SurveyDismissedTelemetry,
+	type SurveyShownTelemetry,
 } from "./survey.js"
 
 // ---------------------------------------------------------------------------
@@ -71,6 +84,18 @@ const stepStartTimes = new Map<string, number>()
 /** User steering interaction count during a ferment, keyed by fermentId. */
 const fermentSteeringCounts = new Map<string, number>()
 
+/**
+ * Steering count snapshot at phase activation, keyed by "${fermentId}:${phaseId}".
+ * Used to compute per-phase steering delta.
+ */
+const phaseSteeringSnapshots = new Map<string, number>()
+
+/**
+ * Steering count snapshot at step start, keyed by "${fermentId}:${phaseId}:${stepId}".
+ * Used to compute per-step steering delta.
+ */
+const stepSteeringSnapshots = new Map<string, number>()
+
 /** @internal — exposed for testing only */
 export function _resetFermentTrackingState(): void {
 	phaseTokenSnapshots.clear()
@@ -79,6 +104,13 @@ export function _resetFermentTrackingState(): void {
 	phaseStartTimes.clear()
 	stepStartTimes.clear()
 	fermentSteeringCounts.clear()
+	phaseSteeringSnapshots.clear()
+	stepSteeringSnapshots.clear()
+}
+
+/** @internal — exposed for testing only */
+export function _getBashGuardCounts(): { warn: number; block: number; allowedByUserRequest: number } {
+	return { ...bashGuardCounts }
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +228,12 @@ function cleanupFermentState(fermentId: string): void {
 	for (const key of stepStartTimes.keys()) {
 		if (key.startsWith(`${fermentId}:`)) stepStartTimes.delete(key)
 	}
+	for (const key of phaseSteeringSnapshots.keys()) {
+		if (key.startsWith(`${fermentId}:`)) phaseSteeringSnapshots.delete(key)
+	}
+	for (const key of stepSteeringSnapshots.keys()) {
+		if (key.startsWith(`${fermentId}:`)) stepSteeringSnapshots.delete(key)
+	}
 }
 
 function onFermentStarted(raw: unknown): void {
@@ -252,6 +290,8 @@ function onFermentCompleted(raw: unknown): void {
 
 function onFermentAbandoned(raw: unknown): void {
 	const payload = raw as FermentAbandonedPayload
+	// Read steering count BEFORE cleanup — cleanupFermentState deletes it.
+	const steeringCount = fermentSteeringCounts.get(payload.fermentId) ?? 0
 	// Clean up unconditionally — steering counts accumulate regardless of enabled state.
 	cleanupFermentState(payload.fermentId)
 	if (!isEnabled()) return
@@ -260,9 +300,36 @@ function onFermentAbandoned(raw: unknown): void {
 	const attrs: Record<string, string | number | boolean> = {
 		ferment_name: payload.name,
 		model: ctx.currentModel,
+		lifecycle_stage: payload.lifecycleStage,
+		scoping_complete: payload.scopingComplete,
+		completed_phases: payload.completedPhases,
+		total_phases: payload.totalPhases,
+		phase_completion_ratio: payload.phaseCompletionRatio,
+		step_failure_count: payload.stepFailureCount,
+		duration_ms: payload.durationMs,
+		steering_count: steeringCount,
 	}
 	if (payload.reason) attrs.reason = payload.reason
+	if (payload.lastActivePhaseIndex !== undefined) attrs.last_active_phase_index = payload.lastActivePhaseIndex
 	ctx.emitWithIds("ferment.abandoned", { ferment_id: payload.fermentId }, attrs)
+}
+
+function onFermentStalled(raw: unknown): void {
+	const payload = raw as FermentStalledPayload
+	// No per-ferment Maps to clean up for stalled — ferment remains accessible.
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const attrs: Record<string, string | number | boolean> = {
+		ferment_name: payload.name,
+		model: ctx.currentModel,
+		lifecycle_stage: payload.lifecycleStage,
+		idle_duration_ms: payload.idleDurationMs,
+		completed_phases: payload.completedPhases,
+		total_phases: payload.totalPhases,
+		phase_completion_ratio: payload.phaseCompletionRatio,
+	}
+	ctx.emitWithIds("ferment.stalled", { ferment_id: payload.fermentId }, attrs)
 }
 
 function onPhaseStarted(raw: unknown): void {
@@ -272,6 +339,7 @@ function onPhaseStarted(raw: unknown): void {
 	const payload = raw as FermentPhaseStartedPayload
 	const phaseKey = `${payload.fermentId}:${payload.phaseId}`
 	phaseStartTimes.set(phaseKey, Date.now())
+	phaseSteeringSnapshots.set(phaseKey, fermentSteeringCounts.get(payload.fermentId) ?? 0)
 	snapshotPhaseTokens(payload.fermentId, payload.phaseId)
 	ctx.emitWithIds(
 		"ferment.phase.started",
@@ -288,6 +356,9 @@ function onPhaseCompleted(raw: unknown): void {
 	const phaseKey = `${payload.fermentId}:${payload.phaseId}`
 	const phaseStartMs = phaseStartTimes.get(phaseKey) ?? 0
 	phaseStartTimes.delete(phaseKey)
+	const steeringAtStart = phaseSteeringSnapshots.get(phaseKey) ?? 0
+	phaseSteeringSnapshots.delete(phaseKey)
+	const steeringCount = (fermentSteeringCounts.get(payload.fermentId) ?? 0) - steeringAtStart
 	const { deltaInput, deltaOutput } = consumePhaseTokenDelta(payload.fermentId, payload.phaseId)
 	// Accumulate into the ferment-level running total.
 	const ft = fermentTokenTotals.get(payload.fermentId)
@@ -302,6 +373,7 @@ function onPhaseCompleted(raw: unknown): void {
 		delta_input_tokens: deltaInput,
 		delta_output_tokens: deltaOutput,
 		block_retries: payload.blockRetries,
+		steering_count: steeringCount,
 		model: ctx.currentModel,
 	}
 	if (payload.grade) attrs.grade = payload.grade
@@ -315,6 +387,7 @@ function onStepStarted(raw: unknown): void {
 	const payload = raw as FermentStepStartedPayload
 	const key = `${payload.fermentId}:${payload.phaseId}:${payload.stepId}`
 	stepStartTimes.set(key, Date.now())
+	stepSteeringSnapshots.set(key, fermentSteeringCounts.get(payload.fermentId) ?? 0)
 	ctx.emitWithIds(
 		"ferment.step.started",
 		{ ferment_id: payload.fermentId, phase_id: payload.phaseId, step_id: payload.stepId },
@@ -330,10 +403,14 @@ function onStepCompleted(raw: unknown): void {
 	const key = `${payload.fermentId}:${payload.phaseId}:${payload.stepId}`
 	const startMs = stepStartTimes.get(key) ?? Date.now()
 	stepStartTimes.delete(key)
+	const steeringAtStart = stepSteeringSnapshots.get(key) ?? 0
+	stepSteeringSnapshots.delete(key)
+	const steeringCount = (fermentSteeringCounts.get(payload.fermentId) ?? 0) - steeringAtStart
 	const attrs: Record<string, string | number | boolean> = {
 		step_index: payload.stepIndex,
 		duration_ms: Date.now() - startMs,
 		success: payload.success,
+		steering_count: steeringCount,
 		model: ctx.currentModel,
 	}
 	if (payload.grade) attrs.grade = payload.grade
@@ -372,6 +449,97 @@ function onFermentSteering(raw: unknown): void {
 }
 
 // ---------------------------------------------------------------------------
+// Bash-tool-guard domain event handlers
+// ---------------------------------------------------------------------------
+
+/** Module-level accumulators for bash-tool-guard counters. Per-session. */
+const bashGuardCounts = {
+	warn: 0,
+	block: 0,
+	allowedByUserRequest: 0,
+}
+
+function resetBashGuardCounts(): void {
+	bashGuardCounts.warn = 0
+	bashGuardCounts.block = 0
+	bashGuardCounts.allowedByUserRequest = 0
+}
+
+function onBashGuardWarn(raw: unknown): void {
+	bashGuardCounts.warn++
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const payload = raw as BashToolGuardWarnPayload
+	// Only structured fields land in OTLP. Raw command text is
+	// intentionally NOT emitted to avoid leaking user data or secrets
+	// that may appear inside heredocs, echo payloads, or sed/awk
+	// replacement strings. Aggregation is done by category + tool.
+	ctx.emit("bash_tool_guard.warn", {
+		model: ctx.currentModel,
+		category: payload.category,
+		tool: payload.tool,
+		count: payload.count,
+	})
+}
+
+function onBashGuardBlock(raw: unknown): void {
+	bashGuardCounts.block++
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const payload = raw as BashToolGuardBlockPayload
+	ctx.emit("bash_tool_guard.block", {
+		model: ctx.currentModel,
+		category: payload.category,
+		tool: payload.tool,
+		count: payload.count,
+	})
+}
+
+function onBashGuardAllowedByUserRequest(raw: unknown): void {
+	bashGuardCounts.allowedByUserRequest++
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const payload = raw as BashToolGuardAllowedByUserRequestPayload
+	ctx.emit("bash_tool_guard.allowed_by_user_request", {
+		model: ctx.currentModel,
+		category: payload.category,
+		tool: payload.tool,
+	})
+}
+
+function onLoopGuardWarn(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const payload = raw as LoopGuardWarnPayload
+	// Only structured fields land in OTLP. Raw tool args, command text, and
+	// the human-readable reason string are intentionally NOT emitted to
+	// avoid leaking user data. Mirrors the bash-tool-guard stance.
+	ctx.emit("loop_guard.warn", {
+		model: ctx.currentModel,
+		detector: payload.detector,
+		count: payload.count,
+		is_subagent: payload.is_subagent,
+	})
+}
+
+function onLoopGuardSubagentAbort(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const payload = raw as LoopGuardSubagentAbortPayload
+	ctx.emit("loop_guard.subagent_abort", {
+		model: ctx.currentModel,
+		detector: payload.detector ?? "unknown",
+		count: payload.count,
+		is_subagent: payload.is_subagent,
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Extension factory
 // ---------------------------------------------------------------------------
 
@@ -383,12 +551,19 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		const ctx = new SessionContext(config, "cli")
 		_ctx = ctx
 
+		// Watch the settings file for changes and emit telemetry on modification.
+		// Bound to ctx.emit so changes flow through the same OTLP pipeline. The
+		// returned stop fn is invoked on session_shutdown to close the fs.watch
+		// handle and clear the debounce timer (prevents handle leak / hang).
+		const stopSettingsWatcher = startSettingsChangeWatcher((event, properties) => ctx.emit(event, properties))
+
 		// Subscribe to ferment domain events published via pi.events.
 		// This keeps telemetry decoupled from ferment internals — ferment
 		// publishes facts; telemetry translates them into OTLP records.
 		pi.events.on(FERMENT_EVENTS.STARTED, onFermentStarted)
 		pi.events.on(FERMENT_EVENTS.COMPLETED, onFermentCompleted)
 		pi.events.on(FERMENT_EVENTS.ABANDONED, onFermentAbandoned)
+		pi.events.on(FERMENT_EVENTS.STALLED, onFermentStalled)
 		pi.events.on(FERMENT_EVENTS.PHASE_STARTED, onPhaseStarted)
 		pi.events.on(FERMENT_EVENTS.PHASE_COMPLETED, onPhaseCompleted)
 		pi.events.on(FERMENT_EVENTS.STEP_STARTED, onStepStarted)
@@ -396,11 +571,26 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(FERMENT_EVENTS.STEP_FAILED, onStepFailed)
 		pi.events.on(FERMENT_EVENTS.STEERING, onFermentSteering)
 
+		// Subscribe to bash-tool-guard domain events. The guard publishes
+		// facts; telemetry translates them into OTLP records for analytics.
+		pi.events.on(BASH_TOOL_GUARD_EVENTS.WARN, onBashGuardWarn)
+		pi.events.on(BASH_TOOL_GUARD_EVENTS.BLOCK, onBashGuardBlock)
+		pi.events.on(BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST, onBashGuardAllowedByUserRequest)
+
+		// Subscribe to loop-guard domain events. The guard publishes facts;
+		// telemetry translates them into OTLP records for analytics.
+		pi.events.on(LOOP_GUARD_EVENTS.WARN, onLoopGuardWarn)
+		pi.events.on(LOOP_GUARD_EVENTS.SUBAGENT_ABORT, onLoopGuardSubagentAbort)
+
 		pi.on("session_start", async (_event, extCtx) => {
+			resetBashGuardCounts()
 			const modelId = (extCtx as { model?: { id?: string } } | undefined)?.model?.id
 			handleSessionInitialized(ctx, modelId)
 		})
-		pi.on("session_shutdown", async (event) => handleSessionShutdown(ctx, event as { reason?: string }))
+		pi.on("session_shutdown", async (event) => {
+			stopSettingsWatcher()
+			await handleSessionShutdown(ctx, event as { reason?: string })
+		})
 		pi.on("message_start", async (event) =>
 			handleMessageStart(ctx, event as { message: { role: string; responseId?: string; timestamp?: number } }),
 		)
@@ -410,6 +600,14 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.on("model_select", async (event) => {
 			const e = event as { model?: { id?: string } }
 			ctx.currentModel = e.model?.id ?? "unknown"
+		})
+		pi.on("session_compact", async () => {
+			ctx.compactionCount++
+			ctx.emit("session.compacted", {
+				model: ctx.currentModel,
+				compaction_count: ctx.compactionCount,
+				turn_index: ctx.turnIndex,
+			})
 		})
 		pi.on("tool_execution_start", async (event) =>
 			handleToolExecutionStart(ctx, event as { toolCallId: string; toolName: string; args: unknown }),

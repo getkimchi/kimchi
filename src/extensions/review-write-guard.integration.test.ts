@@ -3,9 +3,10 @@
  * Tests the event handler registration (session_start, tool_call, tool_result)
  * using a mock ExtensionAPI.
  */
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
-import { STEER_MESSAGE_TYPE } from "./review-write-guard.js"
-import reviewWriteGuardExtension from "./review-write-guard.js"
+import { createContext } from "./__mocks__/context.js"
+import reviewWriteGuardExtension, { STEER_MESSAGE_TYPE } from "./review-write-guard.js"
 
 let mockPhase: string | undefined = "review"
 
@@ -16,8 +17,11 @@ vi.mock("./tags.js", () => ({
 type BlockResult = { block: true; reason: string }
 
 interface MockExtensionAPI {
-	handlers: Record<string, Array<(event: { toolName?: string; result?: unknown }) => unknown>>
-	on: (event: string, handler: (event: { toolName?: string; result?: unknown }) => unknown) => void
+	handlers: Record<string, Array<(event: { toolName?: string; result?: unknown }, ctx: ExtensionContext) => unknown>>
+	on: (
+		event: string,
+		handler: (event: { toolName?: string; result?: unknown }, ctx: ExtensionContext) => unknown,
+	) => void
 	sendMessage: ReturnType<typeof vi.fn>
 	_blockResult?: BlockResult
 }
@@ -34,10 +38,15 @@ function createMockPI(): MockExtensionAPI {
 	}
 }
 
-function emit(pi: MockExtensionAPI, event: string, payload: { toolName?: string; result?: unknown } = {}) {
+function emit(
+	pi: MockExtensionAPI,
+	event: string,
+	payload: { toolName?: string; result?: unknown } = {},
+	ctx = createContext(),
+) {
 	const handlers = pi.handlers[event] ?? []
 	for (const h of handlers) {
-		const result = h(payload) as BlockResult | undefined
+		const result = h(payload, ctx) as BlockResult | undefined
 		if (result?.block) {
 			pi._blockResult = result
 		}
@@ -163,5 +172,33 @@ describe("reviewWriteGuardExtension wiring", () => {
 			}),
 			{ deliverAs: "steer" },
 		)
+	})
+
+	it("keeps build-phase state isolated between sessions", () => {
+		const pi = createMockPI()
+		reviewWriteGuardExtension(pi as unknown as PI, { buildPhaseThreshold: 2 })
+		mockPhase = "build"
+
+		// Session A hits the steer threshold.
+		emit(
+			pi,
+			"tool_result",
+			{ toolName: "Agent" },
+			createContext({ sessionManager: { getSessionId: () => "session-a" } }),
+		)
+		emit(pi, "tool_call", { toolName: "edit" }, createContext({ sessionManager: { getSessionId: () => "session-a" } }))
+		emit(pi, "tool_call", { toolName: "edit" }, createContext({ sessionManager: { getSessionId: () => "session-a" } }))
+
+		// Session B records its own subagent return and makes only one edit.
+		emit(
+			pi,
+			"tool_result",
+			{ toolName: "Agent" },
+			createContext({ sessionManager: { getSessionId: () => "session-b" } }),
+		)
+		emit(pi, "tool_call", { toolName: "edit" }, createContext({ sessionManager: { getSessionId: () => "session-b" } }))
+
+		// Only session A should have triggered a steer.
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 	})
 })

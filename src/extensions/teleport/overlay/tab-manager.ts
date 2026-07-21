@@ -5,7 +5,7 @@ import { deleteSession } from "../../../sandbox/worker/sessions.js"
 import type { Session } from "../../../sandbox/worker/types.js"
 import { TerminalComponent } from "../pty/terminal-component.js"
 import { WebSocketTransport } from "../pty/websocket-transport.js"
-import { type XtermCore, createXtermCore } from "../pty/xterm-core.js"
+import { createXtermCore, type XtermCore } from "../pty/xterm-core.js"
 
 export type TabConnectionPhase = "disconnected" | "connecting" | "open" | "reconnecting" | "fatal"
 

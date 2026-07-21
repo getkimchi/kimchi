@@ -8,16 +8,16 @@
  *   4. Format result text — host concern
  */
 
-import { type ExtensionAPI, getMarkdownTheme } from "@earendil-works/pi-coding-agent"
+import { type ExtensionAPI, type ExtensionContext, getMarkdownTheme } from "@earendil-works/pi-coding-agent"
 import { Markdown } from "@earendil-works/pi-tui"
-import { type Static, Type } from "typebox"
+import type { Static } from "typebox"
 import type { Command, ScopePhaseInput } from "../../../ferment/state-machine.js"
 import {
-	type SuccessCriteria,
 	normalizeSuccessCriteriaInput,
 	renderSuccessCriteria,
+	type SuccessCriteria,
 } from "../../../ferment/success-criteria.js"
-import { normalizeFermentTitle } from "../../../ferment/title.js"
+import { deriveDraftFermentTitle, normalizeFermentTitle } from "../../../ferment/title.js"
 import {
 	DEFAULT_SCOPING_QUESTION_TYPE,
 	type Grade,
@@ -25,29 +25,30 @@ import {
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
-import { isLaunchedWithYolo } from "../../permissions/index.js"
-import { YES_NO_OPTIONS } from "../../questionnaire-reducer.js"
-import {
-	type AskUserQuestion,
-	askUser,
-	askUserForm,
-	normalizeAskUserQuestions,
-	toScopingQuestionType,
-} from "../ask-user.js"
+import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
+import { getMultiModelEnabled } from "../../multi-model.js"
+import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
+import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
+import { askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
-import { startFermentForIntent } from "../commands.js"
+import { createFerment } from "../create.js"
+import { emitFermentCreated } from "../domain-events-emitter.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
-import { judgeJourneyGrade } from "../judge.js"
-import { resetReactiveContinuationNudgeCount } from "../nudge.js"
+import { ensureGitRepo } from "../git-init.js"
+import { type GraderSpawner, judgeJourneyGradeViaSubagent } from "../judge.js"
+import { clearLifecycleGuard } from "../lifecycle-obligation-guard.js"
+import { appendRefEntry } from "../nudge.js"
+import { PENDING_PROPOSAL_SCHEMA_VERSION, savePendingProposal } from "../pending-proposal-store.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
-import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
+import { promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
-import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
-import { confirmPendingScope } from "../scoping-confirmation.js"
+import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
+import { safeSendMessage } from "../safe-send.js"
 import type { PendingScope } from "../scoping.js"
-import { hasActiveFerment } from "../state.js"
+import { confirmPendingScope } from "../scoping-confirmation.js"
+import { MAX_BLOCK_RETRIES } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -66,7 +67,7 @@ import {
 	ScopeParams,
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
-import type { FermentUiContext } from "../ui.js"
+import { setActiveFermentAndApplyProfile } from "../tool-scope.js"
 
 type ScopeArgs = Static<typeof ScopeParams>
 type ProposeScopingArgs = Static<typeof ProposeScopingParams>
@@ -98,7 +99,7 @@ const TITLE_REQUIRED_ERROR =
 	'Field "title" must be a non-empty concise 3-5 word title. Retry with the full payload including title.'
 
 export interface LifecycleExecutionContext {
-	pi: ExtensionAPI
+	ctx: ExtensionContext
 }
 
 function clearScopingStatus(ctx: unknown): void {
@@ -193,7 +194,7 @@ function renderBullets(label: string, items: string[]): string {
 	return [renderedLabel, ...lines].join("\n")
 }
 
-function renderStep(index: number, description: string): string {
+function renderStep(_index: number, description: string): string {
 	const lines = wrapText(description, 84)
 	if (lines.length === 0) return "- —"
 	return lines.map((line, lineIndex) => (lineIndex === 0 ? `- ${line}` : `  ${line}`)).join("\n")
@@ -474,6 +475,50 @@ export function buildFreeformScopingFeedbackMessage(fermentId: string, userText:
 	].join("\n")
 }
 
+type ResolveProposeTargetResult =
+	| { ok: true; fermentId: string; created: boolean }
+	| { ok: false; error: ReturnType<typeof toolErr> }
+
+async function resolveProposeFermentTarget(
+	runtime: FermentRuntime,
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	rawId: string | undefined,
+	title: string,
+	goal: string,
+): Promise<ResolveProposeTargetResult> {
+	const storage = runtime.getStorage()
+	if (rawId) {
+		const existing = storage.get(rawId)
+		if (existing) return { ok: true, fermentId: existing.id, created: false }
+		if (runtime.getActive()) {
+			return { ok: false, error: toolErr(`Ferment "${rawId}" not found.`) }
+		}
+		// Unknown id with no active ferment: fall through and create a new draft.
+	}
+
+	const active = runtime.getActive()
+	if (active) return { ok: true, fermentId: active.id, created: false }
+
+	// Bootstrap a new draft ferment from the proposal, mirroring /ferment new.
+	await ensureGitRepo({ ui: ctx.ui })
+	const shortName = deriveDraftFermentTitle(title)
+	const f = createFerment(runtime, {
+		name: shortName,
+		goal,
+		hasUI: ctx.hasUI,
+		isOneShot: pi.getFlag("ferment-oneshot") === true,
+	})
+	setActiveFermentAndApplyProfile(pi, runtime, f)
+	if (pi.events) {
+		emitFermentCreated(pi.events, f)
+	}
+	appendRefEntry(pi, f.id)
+	runtime.markScopingInteractive(f.id)
+	runtime.setPendingScope(f.id, { goal: "", successCriteria: [], constraints: [] })
+	return { ok: true, fermentId: f.id, created: true }
+}
+
 function formatCompletionCriteriaForReview(criteria: readonly string[]): string {
 	return [`I'll consider this done when:`, ...criteria.map((criterion, index) => `${index + 1}. ${criterion}`)].join(
 		"\n",
@@ -484,7 +529,7 @@ async function confirmCompletionCriteria(
 	runtime: FermentRuntime,
 	pi: ExtensionAPI,
 	params: ConfirmCompletionCriteriaArgs,
-	ctx: unknown,
+	ctx: ExtensionContext,
 ): Promise<ToolResult> {
 	const ferment = runtime.getStorage().get(params.ferment_id)
 	if (!ferment) return toolErr("Ferment not found.")
@@ -495,7 +540,7 @@ async function confirmCompletionCriteria(
 	const askContext = {
 		ferment,
 		pi,
-		ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
+		ctx,
 		runtime,
 	}
 
@@ -509,7 +554,6 @@ async function confirmCompletionCriteria(
 				prompt: "Do these completion criteria look right?",
 				options: [{ id: "yes", label: "Yes, looks good" }],
 				allowOther: true,
-				otherLabel: "No (input what is wrong)",
 			},
 		],
 		askContext,
@@ -561,7 +605,7 @@ async function confirmCompletionCriteria(
 export async function scopeFerment(
 	runtime: FermentRuntime,
 	params: ScopeArgs,
-	{ pi }: LifecycleExecutionContext,
+	{ ctx }: LifecycleExecutionContext,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const title = normalizeFermentTitle(params.title)
@@ -602,9 +646,11 @@ export async function scopeFerment(
 	}
 	runtime.consumeScopingGate(params.ferment_id)
 
+	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+
 	// FSM validation: ensure the scope transition is allowed before applying it.
 	const fsmError = validateFsmTransition(fGate, "SCOPE_FERMENT")
-	if (fsmError) return toolErrWithNextAction(fsmError, fGate)
+	if (fsmError) return toolErrWithNextAction(fsmError, fGate, multiModelEnabled)
 
 	const cmd: Command = {
 		type: "scope",
@@ -624,10 +670,11 @@ export async function scopeFerment(
 				withNextActionHint(
 					`Ferment is already ${outcome.error.actual}. Use update_ferment_scope_field to revise individual fields.`,
 					fGate,
+					multiModelEnabled,
 				),
 			)
 		}
-		return failedToolResult(outcome.error, fGate)
+		return failedToolResult(outcome.error, fGate, multiModelEnabled)
 	}
 	// Discard any stale pending-scope buffer — its phases were either applied
 	// here or are no longer relevant (the ferment is now planned).
@@ -642,18 +689,23 @@ export async function scopeFerment(
 		withNextActionHint(
 			`**Ferment "${fresh.name}"** scoped and ready.\n\n- **ferment_id:** ${fresh.id}\n- **Goal:** ${params.goal}\n\n**Phases:**\n${phaseList}`,
 			fresh,
+			multiModelEnabled,
 		),
 	)
 }
 
-export async function completeFerment(runtime: FermentRuntime, params: CompleteFermentArgs): Promise<ToolResult> {
+export async function completeFerment(
+	runtime: FermentRuntime,
+	params: CompleteFermentArgs,
+	{ ctx, spawner }: LifecycleExecutionContext & { spawner?: GraderSpawner },
+): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 
 	const fSnapshot = runtime.getStorage().get(params.ferment_id)
 	if (!fSnapshot) return toolErr("Ferment not found.")
 	if (fSnapshot.status === "complete") {
 		runtime.clearFermentState(params.ferment_id)
-		resetReactiveContinuationNudgeCount(params.ferment_id)
+		clearLifecycleGuard(params.ferment_id)
 		runtime.setActive(undefined)
 		return toolOk(
 			`Ferment "${fSnapshot.name}" is already complete. No further lifecycle action is available. Do not act on this ferment again without clear user consent.`,
@@ -661,7 +713,7 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 	}
 	if (fSnapshot.status === "abandoned") {
 		runtime.clearFermentState(params.ferment_id)
-		resetReactiveContinuationNudgeCount(params.ferment_id)
+		clearLifecycleGuard(params.ferment_id)
 		runtime.setActive(undefined)
 		return toolErr(`Ferment "${fSnapshot.name}" is abandoned and cannot be completed.`)
 	}
@@ -687,44 +739,81 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 	const ferment = fSnapshot
 	const phaseReviews = readLatestPhaseReviews(ferment.id)
 	const totalDiff = ferment.worktree.commit ? gatherPhaseEvidence(ferment.worktree.commit) : undefined
-	const journeyResult = await judgeJourneyGrade({
-		fermentName: ferment.name,
-		goal: ferment.goal ?? "",
-		successCriteria: renderSuccessCriteria(ferment.successCriteria, ""),
-		finalSummary: params.final_summary ?? "",
-		phases: ferment.phases.map((p) => {
-			const review = phaseReviews.get(p.id)
-			return {
-				name: p.name,
-				goal: p.goal,
-				status: p.status,
-				gateVerdicts: review?.gateVerdicts?.map((v) => ({
-					id: v.id,
-					verdict: v.verdict,
-					rationale: v.rationale,
-				})),
-			}
-		}),
-		fermentGates: gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
-		totalDiff: totalDiff
-			? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
-			: { available: false },
-	})
+	const journeyResult = await runWithOverlay(`Grading ferment "${ferment.name}"…`, () =>
+		judgeJourneyGradeViaSubagent(
+			{
+				fermentName: ferment.name,
+				goal: ferment.goal ?? "",
+				successCriteria: renderSuccessCriteria(ferment.successCriteria, ""),
+				finalSummary: params.final_summary ?? "",
+				phases: ferment.phases.map((p) => {
+					const review = phaseReviews.get(p.id)
+					return {
+						name: p.name,
+						goal: p.goal,
+						status: p.status,
+						gateVerdicts: review?.gateVerdicts?.map((v) => ({
+							id: v.id,
+							verdict: v.verdict,
+							rationale: v.rationale,
+						})),
+					}
+				}),
+				fermentGates: gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
+				totalDiff: totalDiff
+					? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
+					: { available: false },
+				evidence: params.evidence,
+			},
+			spawner,
+		),
+	)
 
-	// Resolve the grade. The final judge is advisory; completion gates have
-	// already decided whether shipping is allowed, so judge outages must not
-	// block the user.
-	let resolvedGrade: { grade: Grade; rationale: string } | undefined
+	// Resolve the grade. C-gates already decided ship/refuse. The judge now
+	// ENFORCES quality: a C/D/F grade refuses ship and routes through the same
+	// block-retry / escalation loop used at the phase level. A/B ships with
+	// recommendations persisted. Judge-unavailable outcomes remain advisory
+	// (do NOT refuse ship) — judge outages must not block the user.
+	const FERMENT_GRADE_KEY = "__ferment__"
+	// First attempt requires A; after rework B is also acceptable.
+	const priorFermentRetries = runtime.getBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
+	const minimumAcceptableFermentGrade = priorFermentRetries === 0 ? "A" : "B"
+	const fermentGradeOrder: Record<Grade, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 }
+	let resolvedGrade: { grade: Grade; rationale: string; recommendations?: string[] } | undefined
 	let gradeRationale: string
 	if (journeyResult.ok) {
-		resolvedGrade = { grade: journeyResult.grade, rationale: journeyResult.rationale }
+		resolvedGrade = {
+			grade: journeyResult.grade,
+			rationale: journeyResult.rationale,
+			recommendations: journeyResult.recommendations,
+		}
 		gradeRationale = journeyResult.rationale
+
+		// Below minimum grade — give the agent a bounded number of retries to fix
+		// the recommendations, then accept the grade and ship.
+		if (fermentGradeOrder[journeyResult.grade] < fermentGradeOrder[minimumAcceptableFermentGrade]) {
+			const recsText = journeyResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
+			const retry = runtime.bumpBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
+
+			if (retry > MAX_BLOCK_RETRIES) {
+				// Budget exhausted — accept the grade and ship with recommendations persisted.
+				// The agent had its retries; we don't block continuation indefinitely.
+				runtime.clearBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
+				// Fall through to the ship path below with the judge's grade + recs.
+			} else {
+				return toolErr(
+					`**Ferment "${ferment.name}"** cannot complete — final LLM grader assigned grade ${journeyResult.grade}, minimum required is ${minimumAcceptableFermentGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}\n\nAddress the recommendations above and call complete_ferment again with an updated summary.`,
+				)
+			}
+		}
 	} else {
 		const failureDetail = `${journeyResult.reason}${journeyResult.detail ? `: ${journeyResult.detail}` : ""}`
 		gradeRationale = `Judge unreachable (${failureDetail}); completion proceeded without a graded review.`
 	}
 
-	// Persist completion and grade together when the advisory judge returns one.
+	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+
+	// Persist completion and grade together.
 	const completeOutcome = applyAndPersist(params.ferment_id, {
 		type: "complete_ferment",
 		finalSummary: params.final_summary,
@@ -733,14 +822,20 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 					grade: resolvedGrade.grade,
 					rationale: resolvedGrade.rationale,
 					gradedAt: runtime.nowIso(),
+					...(resolvedGrade.recommendations && resolvedGrade.recommendations.length > 0
+						? { recommendations: resolvedGrade.recommendations }
+						: {}),
 				}
 			: undefined,
 	})
-	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, ferment)
+	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, ferment, multiModelEnabled)
+
+	// Clear the ferment-level block-retry counter — ship succeeded.
+	runtime.clearBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
 
 	// Cleanup in-memory state.
 	runtime.clearFermentState(params.ferment_id)
-	resetReactiveContinuationNudgeCount(params.ferment_id)
+	clearLifecycleGuard(params.ferment_id)
 	runtime.setActive(undefined)
 
 	const fresh = completeOutcome.ferment
@@ -755,83 +850,13 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 	)
 }
 
-function canAutoApproveFermentStart(): boolean {
-	return isLaunchedWithYolo() && !hasActiveFerment()
-}
-
-async function confirmFermentStart(ctx: unknown, title: string, intent: string): Promise<boolean | undefined> {
-	const hostCtx = ctx as
-		| {
-				hasUI?: boolean
-				ui?: { confirm?: (title: string, message?: string) => Promise<boolean> }
-		  }
-		| undefined
-	if (!hostCtx?.hasUI || !hostCtx.ui?.confirm) return undefined
-	return hostCtx.ui.confirm("Start Ferment Workflow", `Start a Ferment workflow for "${title}"?\n\n${intent}`)
-}
-
 export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
 
 	pi.registerTool({
-		name: FERMENT_TOOLS.REQUEST_WORKFLOW,
-		label: "Start Ferment Workflow",
-		description:
-			"Request the ferment workflow (interactive scoping -> planner) for substantive multi-step work. Provide a concise 3-5 word title and the full original user intent. The host asks the user for explicit confirmation before creating the draft; in yolo permissions mode, the host auto-approves. Refuses if another ferment is already running.",
-		parameters: Type.Object({
-			title: Type.String({
-				description: "Concise 3-5 word title for the new ferment (e.g. 'Rewrite login flow').",
-			}),
-			intent: Type.String({
-				description:
-					"Full original user request, preserving all constraints, scope details, and wording that the scoping turn needs.",
-			}),
-		}),
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const title = typeof params.title === "string" ? params.title.trim() : ""
-			if (!title) return toolErr('Field "title" must be a non-empty string.')
-			const intent = typeof params.intent === "string" ? params.intent.trim() : ""
-			if (!intent) return toolErr('Field "intent" must be the full non-empty user request.')
-			if (hasActiveFerment()) {
-				return toolErr(
-					"request_ferment_workflow refused — another ferment appears to be active. Continue that ferment or ask the user before starting a separate workflow.",
-				)
-			}
-			if (!canAutoApproveFermentStart()) {
-				const approved = await confirmFermentStart(ctx, title, intent)
-				if (approved === undefined) {
-					return toolErr(
-						"request_ferment_workflow refused — interactive host approval is required before starting a ferment, but no confirmation UI is available. Ask the user directly whether they want a ferment workflow, then retry when interactive UI is available.",
-					)
-				}
-				if (!approved) {
-					return toolErr(
-						"request_ferment_workflow cancelled — the user declined starting a ferment. Continue inline or ask only decision-blocking clarification.",
-					)
-				}
-			}
-			const result = await startFermentForIntent({
-				pi,
-				ctx: ctx as unknown as FermentUiContext,
-				runtime,
-				rawIntent: intent,
-				title,
-			})
-			if (!result) {
-				return toolErr(
-					"Could not start ferment workflow. Another ferment may already be running, or the host UI refused. Tell the user to check /ferment list and try again.",
-				)
-			}
-			return toolOk(
-				`Ferment "${result.name}" created. Follow the scoping nudge instructions the host injects on this turn.`,
-			)
-		},
-	})
-
-	pi.registerTool({
 		name: FERMENT_TOOLS.PROPOSE_SCOPING,
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: title, goal, success_criteria (array of acceptance criteria), constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one multi question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: title, goal, success_criteria (array of acceptance criteria), constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. ferment_id is optional; omit it when no ferment is active and the host will create a new draft ferment from this proposal. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one multi question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
@@ -845,6 +870,8 @@ ${renderGateGuidance("scope_ferment")}`,
 			const normalized = normalizeProposeScopingParams(rawParams)
 			if (!normalized.ok) return normalized.error
 			const params = normalized.params
+
+			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 
 			// 1. Validate P-gates (same as scopeFerment).
 			const gateError = validateGatesOrErr(params.gates, {
@@ -860,9 +887,22 @@ ${renderGateGuidance("scope_ferment")}`,
 			const questionValidationError = validateScopingQuestions(questions)
 			if (questionValidationError) return toolErr(questionValidationError)
 
-			// 3. Replace pending buffer wholesale.
-			const ferment = runtime.getStorage().get(params.ferment_id)
-			if (!ferment) return toolErr(`Ferment "${params.ferment_id}" not found.`)
+			// 3. Resolve the target ferment. If no id is given and no active ferment
+			// exists, bootstrap a new draft from the proposal.
+			const resolveResult = await resolveProposeFermentTarget(
+				runtime,
+				pi,
+				ctx,
+				params.ferment_id,
+				params.title,
+				params.goal,
+			)
+			if (!resolveResult.ok) return resolveResult.error
+			const { fermentId } = resolveResult
+
+			// 4. Replace pending buffer wholesale.
+			const ferment = runtime.getStorage().get(fermentId)
+			if (!ferment) return toolErr(`Ferment "${fermentId}" not found.`)
 			if (ferment.status !== "draft") {
 				const nextAction =
 					ferment.status === "planned" ? "call activate_ferment_phase" : "continue the current ferment action"
@@ -870,16 +910,17 @@ ${renderGateGuidance("scope_ferment")}`,
 					withNextActionHint(
 						`Ferment "${ferment.name}" is already ${ferment.status}; ignore this duplicate propose_ferment_scoping call and ${nextAction}.`,
 						ferment,
+						multiModelEnabled,
 					),
 				)
 			}
 
-			const pending = runtime.getPendingScope(params.ferment_id)
+			const pending = runtime.getPendingScope(fermentId)
 			if (!pending) {
 				// Seed an empty buffer so attachPendingProposal can replace it.
-				runtime.setPendingScope(params.ferment_id, { goal: "", successCriteria: [], constraints: [] })
+				runtime.setPendingScope(fermentId, { goal: "", successCriteria: [], constraints: [] })
 			}
-			const pendingAfterSeed: PendingScope = runtime.getPendingScope(params.ferment_id) ?? {
+			const pendingAfterSeed: PendingScope = runtime.getPendingScope(fermentId) ?? {
 				goal: "",
 				successCriteria: [],
 				constraints: [],
@@ -894,7 +935,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				)
 			}
 
-			runtime.attachPendingProposal(params.ferment_id, {
+			runtime.attachPendingProposal(fermentId, {
 				title: params.title,
 				goal: params.goal,
 				successCriteria: params.success_criteria,
@@ -909,20 +950,15 @@ ${renderGateGuidance("scope_ferment")}`,
 			const formatPlanEntry = (suffix?: string): string => (suffix ? `${planEntry}\n\n${suffix}` : planEntry)
 			const planToolOk = (message: string, options: { includePlan?: boolean; suffix?: string } = {}) =>
 				toolOk(options.includePlan ? `${formatPlanEntry(options.suffix)}\n\n${message}` : message)
-			const promptUi = getPromptUi(ctx)
 
 			// 5. Headless path.
-			if (!promptUi?.select && !promptUi?.custom) {
+			if (!ctx.hasUI) {
 				if (questions.length === 0) {
-					const scopeOutcome = confirmPendingScope(
-						runtime,
-						params.ferment_id,
-						params.phases,
-						"propose_ferment_scoping",
-						pi,
-					)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
-					return planToolOk(withNextActionHint("Plan saved.", scopeOutcome.outcome.ferment), { includePlan: true })
+					const scopeOutcome = confirmPendingScope(runtime, fermentId, params.phases, "propose_ferment_scoping", pi)
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment, multiModelEnabled)
+					return planToolOk(withNextActionHint("Plan saved.", scopeOutcome.outcome.ferment, multiModelEnabled), {
+						includePlan: true,
+					})
 				}
 				const recSummary = questions
 					.map((q) => {
@@ -940,28 +976,38 @@ ${renderGateGuidance("scope_ferment")}`,
 			// agent turn ends, so terminal scrollback is not fighting active-turn
 			// progress writes.
 			if (questions.length === 0) {
-				if (!promptUi?.custom) {
+				if (ctx.mode !== "tui") {
 					// Some hosts expose select/input without custom components; keep them on the pre-review confirmation path.
-					const scopeOutcome = confirmPendingScope(
-						runtime,
-						params.ferment_id,
-						params.phases,
-						"propose_ferment_scoping",
-						pi,
-					)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
+					const scopeOutcome = confirmPendingScope(runtime, fermentId, params.phases, "propose_ferment_scoping", pi)
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment, multiModelEnabled)
 					return planToolOk(
 						withNextActionHint(
 							`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
 							scopeOutcome.outcome.ferment,
+							multiModelEnabled,
 						),
 						{ includePlan: true },
 					)
 				}
 
 				runtime.setPendingPlanReview({
-					fermentId: params.ferment_id,
+					fermentId,
 					planMarkdown: planEntry,
+				})
+				// Persist the pending proposal to disk so a session restart can
+				// re-arm this review instead of nudging the LLM to re-scope.
+				savePendingProposal(fermentId, {
+					schemaVersion: PENDING_PROPOSAL_SCHEMA_VERSION,
+					fermentId,
+					title: params.title,
+					goal: params.goal,
+					successCriteria: params.success_criteria ?? [],
+					constraints: params.constraints ?? [],
+					assumptions: params.assumptions ?? "",
+					phases: params.phases,
+					planMarkdown: planEntry,
+					proposeIterations: nextIterations,
+					savedAt: new Date().toISOString(),
 				})
 				return planToolOk("Plan ready for review. The review dialog will open when this turn finishes.")
 			}
@@ -969,7 +1015,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			// 7. Tabbed question form + review loop.
 			const runQuestions = async (): Promise<ScopingAnswer[] | "cancelled" | { kind: "dismiss"; qn: number }> => {
 				if (
-					!getPromptUi(ctx)?.custom &&
+					ctx.mode !== "tui" &&
 					questions.every((q) => {
 						const type = getScopingQuestionType(q)
 						return type === "single" || type === "confirm"
@@ -1077,9 +1123,10 @@ ${renderGateGuidance("scope_ferment")}`,
 				const answers = answersResult
 
 				const answersEntry = buildAnswersEntry(questions, answers)
-				if (getPromptUi(ctx)?.custom) {
+				if (ctx.mode === "tui") {
 					const content = buildScopingIterationMessage(questions, answers)
-					void pi.sendMessage(
+					safeSendMessage(
+						pi,
 						{ content, customType: "ferment_scoping_iteration", display: false },
 						{ triggerTurn: true },
 					)
@@ -1105,8 +1152,9 @@ ${renderGateGuidance("scope_ferment")}`,
 					if (!userText) {
 						return planToolOk(`${answersEntry}\n\nNo changes made. Waiting for your next instruction.`)
 					}
-					const sayMoreContent = buildFreeformScopingFeedbackMessage(params.ferment_id, userText)
-					void pi.sendMessage(
+					const sayMoreContent = buildFreeformScopingFeedbackMessage(fermentId, userText)
+					safeSendMessage(
+						pi,
 						{ content: sayMoreContent, customType: "ferment_scoping_iteration", display: false },
 						{ triggerTurn: true },
 					)
@@ -1114,7 +1162,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				}
 
 				const content = buildScopingIterationMessage(questions, answers)
-				void pi.sendMessage({ content, customType: "ferment_scoping_iteration", display: false }, { triggerTurn: true })
+				safeSendMessage(pi, { content, customType: "ferment_scoping_iteration", display: false }, { triggerTurn: true })
 				return planToolOk(`${answersEntry}\n\nAnswers recorded. Updating the plan with your choices...`)
 			}
 		},
@@ -1159,8 +1207,8 @@ ${renderGateGuidance("scope_ferment")}`,
 			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
-		async execute(_, params) {
-			return scopeFerment(runtime, params, { pi })
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			return scopeFerment(runtime, params, { ctx })
 		},
 	})
 
@@ -1170,7 +1218,7 @@ ${renderGateGuidance("scope_ferment")}`,
 		description:
 			"Revise a single scoping field (goal, criteria, constraints, assumptions) on an already-planned ferment.",
 		parameters: UpdateScopeFieldParams,
-		async execute(_, params) {
+		async execute(_, params, _signal, _onUpdate, ctx) {
 			if (
 				params.field !== "goal" &&
 				params.field !== "criteria" &&
@@ -1179,14 +1227,19 @@ ${renderGateGuidance("scope_ferment")}`,
 			) {
 				return toolErr(`Unknown field: ${params.field}. Use goal, criteria, constraints, or assumptions.`)
 			}
+			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "update_scope_field",
 				field: params.field,
 				value: params.value,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error)
+			if (!outcome.ok) return failedToolResult(outcome.error, undefined, multiModelEnabled)
 			return toolOk(
-				withNextActionHint(`Field "${params.field}" updated for "${outcome.ferment.name}".`, outcome.ferment),
+				withNextActionHint(
+					`Field "${params.field}" updated for "${outcome.ferment.name}".`,
+					outcome.ferment,
+					multiModelEnabled,
+				),
 			)
 		},
 	})
@@ -1203,9 +1256,30 @@ ${renderGateGuidance("complete_ferment")}`,
 			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
-		async execute(_, params) {
-			return completeFerment(runtime, params)
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			const spawner = async (prompt: string) => {
+				const result = await spawnGraderAgent(pi, ctx, prompt)
+				if (!result) return { text: "", status: "unavailable" }
+				return result
+			}
+			return completeFerment(runtime, params, { ctx, spawner })
 		},
+	})
+
+	// confirm_ferment_completion_criteria and ask_user both render interactive
+	// TUI forms via ctx.ui.custom(). Hide them from the system prompt when no
+	// UI is attached and the ferment-oneshot judge fallback is not engaged,
+	// so the LLM does not call a tool that cannot succeed.
+	const interactiveVisibility = createToolVisibility(pi)
+	pi.on("session_start", (_event, ctx) => {
+		const judgeFallback = pi.getFlag?.("ferment-oneshot") === true
+		const hideInteractiveTools = !ctx.hasUI && !judgeFallback
+		const interactiveTools = [FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA, FERMENT_TOOLS.ASK_USER]
+		if (hideInteractiveTools) {
+			interactiveVisibility.disable(interactiveTools)
+		} else {
+			interactiveVisibility.enable(interactiveTools)
+		}
 	})
 
 	pi.registerTool({
@@ -1215,7 +1289,7 @@ ${renderGateGuidance("complete_ferment")}`,
 
 The host renders one question:
   - "Yes, looks good"
-  - "No (input what is wrong)" with inline free-form text input for the explanation
+  - "Type your own answer" with inline free-form text input for the explanation
 
 Proceed to exploration only when Confirmed is yes and Changes is empty.
 If the user answers No, the follow-up captures textual changes and control returns here for revision.`,
@@ -1234,16 +1308,14 @@ Behavior depends on session mode:
   - Interactive (with TUI): the user answers in a structured TUI. Returns { choice | choices | text | answers, answered_by: "user" }.
   - One-shot (no human attached): the configured judge model stands in for the user. Returns { choice | choices | text | answers, answered_by: "judge", rationale }.
 
-Hard contract: in one-shot mode, if the judge is unreachable (no API key, timeout, unparseable response) the ferment is ABANDONED — there is no fallback. False-pass is the worst outcome.
+Fail-soft contract: in one-shot mode, if the judge is unreachable (no API key, timeout, unparseable response) after 3 retry attempts, the tool falls back to conservative default answers so the ferment can proceed rather than stall. Confirm defaults to "yes"; single/multi default to the first listed option; text defaults to a placeholder string. The rationale field notes when defaults were used.
 
 The agent should:
   1. Frame the question concretely. The user/judge sees only the question plus options/context in this call.
   2. Prefer questions[] for the full TUI: single, multi, text, confirm. allowOther is only for single/multi custom free-text options.
-  3. Use response_type="single" | "multi" | "text" | "confirm" only as a compatibility shorthand for one question.
-  4. Treat response_type="confirm" as strict Yes/No only. Use response_type="text" for one free-form question, or questions[] when multiple controls are needed.
-  5. For single/multi, provide stable snake-case option ids and short labels (confirm defaults to Yes/No).
-  6. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
-  7. Act on the returned \`answers\`, \`choice\`, \`choices\`, or \`text\` field.
+  3. For single/multi, provide stable snake-case option ids and short labels (confirm defaults to Yes/No).
+  4. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
+  5. Act on the returned \`answers\`, \`choice\`, \`choices\`, or \`text\` field.
 
 TUI controls for questions[]:
   - Tab / Shift+Tab moves between questions
@@ -1255,48 +1327,29 @@ TUI controls for questions[]:
 Returns structured answer fields on success, or a tool error if no audience can be reached.`,
 		parameters: AskUserParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
-			const applyAndPersist = createApplyAndPersist(runtime)
-			const ferment = runtime.getStorage().get(params.ferment_id)
+			const fermentId = params.ferment_id ?? runtime.getActiveId()
+			if (!fermentId) {
+				return toolErr("No active ferment. Provide ferment_id or activate a ferment first.")
+			}
+			if (!params.questions || params.questions.length === 0) {
+				return toolErr("ask_user requires a non-empty questions[] array.")
+			}
+			const ferment = runtime.getStorage().get(fermentId)
 			if (!ferment) return toolErr("Ferment not found.")
 
 			const askContext = {
 				ferment,
 				pi,
-				ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
+				ctx,
 				runtime,
 			}
-			let normalizedQuestions: AskUserQuestion[] | undefined
-			if (params.questions && params.questions.length > 0) {
-				const normalizeResult = normalizeAskUserQuestions(params.questions)
-				if (!normalizeResult.ok) return toolErr(normalizeResult.error)
-				normalizedQuestions = normalizeResult.questions
-			}
-			const response = normalizedQuestions
-				? await askUserForm(params.title ?? params.question, params.description, normalizedQuestions, askContext)
-				: params.question
-					? await askUser(params.question, params.options ?? [], askContext, params.response_type ?? "single")
-					: undefined
+			const normalizeResult = normalizeAskUserQuestions(params.questions)
+			if (!normalizeResult.ok) return toolErr(normalizeResult.error)
+			const normalizedQuestions = normalizeResult.questions
 
-			if (!response) {
-				return toolErr("ask_user requires either question or questions[].")
-			}
+			const response = await askUserForm(params.title, params.description, normalizedQuestions, askContext)
 
 			if (response.failed) {
-				// One-shot hard-fail: when the judge is the only legitimate audience
-				// and it can't be reached, the ferment must abandon. Per the design
-				// contract, false-pass is unacceptable in unattended runs.
-				const isJudgeFailure = response.reason === "judge_unavailable" || response.reason === "judge_unparseable"
-				const isOneShot = pi.getFlag?.("ferment-oneshot") === true
-				if (isJudgeFailure && isOneShot) {
-					const abandonOutcome = applyAndPersist(params.ferment_id, {
-						type: "abandon",
-						reason: `ask_user: ${response.detail}`,
-					})
-					if (abandonOutcome.ok) runtime.setActive(abandonOutcome.ferment)
-					return toolErr(
-						`ask_user failed in one-shot mode — ferment abandoned. ${response.detail}\n\nThe ferment cannot continue without user input or a reachable judge. Restart with a valid API key, or run in interactive mode.`,
-					)
-				}
 				return toolErr(`ask_user could not route the question (${response.reason}): ${response.detail}`)
 			}
 

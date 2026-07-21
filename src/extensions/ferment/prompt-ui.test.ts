@@ -1,7 +1,8 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { createPromptFormComponent, promptEditor, promptInput, promptSelect } from "./prompt-ui.js"
+import { createContext } from "../__mocks__/context.js"
+import { createPromptFormComponent, promptEditor, promptForm, promptInput, promptSelect } from "./prompt-ui.js"
 
 const tipWidgetLocationMock = vi.hoisted(() => ({
 	restore: vi.fn(),
@@ -21,79 +22,96 @@ beforeEach(() => {
 describe("ferment prompt UI", () => {
 	it("hides tips while an input prompt replaces the editor", async () => {
 		let resolveInput: (value: string | undefined) => void = () => {}
-		const ui = {
-			input: vi.fn(
-				() =>
-					new Promise<string | undefined>((resolve) => {
-						resolveInput = resolve
-					}),
-			),
-			setWorkingVisible: vi.fn(),
-		}
+		const ctx = createContext({
+			ui: {
+				input: vi.fn(
+					() =>
+						new Promise<string | undefined>((resolve) => {
+							resolveInput = resolve
+						}),
+				),
+			},
+		})
 
-		const pending = promptInput({ ui }, "What do you want to do?", "Describe it")
+		const pending = promptInput(ctx, "What do you want to do?", "Describe it")
 
 		expect(tipWidgetLocationMock.set).toHaveBeenCalledWith("hidden")
 		expect(tipWidgetLocationMock.restore).not.toHaveBeenCalled()
-		expect(ui.setWorkingVisible).toHaveBeenCalledWith(false)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(false)
 
 		resolveInput("build it")
 
 		await expect(pending).resolves.toBe("build it")
-		expect(ui.setWorkingVisible).toHaveBeenLastCalledWith(true)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenLastCalledWith(true)
 		expect(tipWidgetLocationMock.restore).toHaveBeenCalledTimes(1)
 	})
 
 	it("prefers the multi-line editor for editor prompts", async () => {
-		const ui = {
-			editor: vi.fn(async () => "line one\nline two"),
-			input: vi.fn(async () => "single line"),
-			setWorkingVisible: vi.fn(),
-		}
+		const ctx = createContext({
+			ui: {
+				editor: vi.fn(async () => "line one\nline two"),
+				input: vi.fn(async () => "single line"),
+			},
+		})
 
-		await expect(promptEditor({ ui }, "What would you like to ferment?", { placeholder: "Describe it" })).resolves.toBe(
+		await expect(promptEditor(ctx, "What would you like to ferment?", { placeholder: "Describe it" })).resolves.toBe(
 			"line one\nline two",
 		)
 
-		expect(ui.editor).toHaveBeenCalledWith("What would you like to ferment?\nDescribe it", "")
-		expect(ui.input).not.toHaveBeenCalled()
+		expect(ctx.ui.editor).toHaveBeenCalledWith("What would you like to ferment?\nDescribe it", "")
+		expect(ctx.ui.input).not.toHaveBeenCalled()
 		expect(tipWidgetLocationMock.set).toHaveBeenCalledWith("hidden")
-		expect(ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)
-		expect(ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
 		expect(tipWidgetLocationMock.restore).toHaveBeenCalledTimes(1)
 	})
 
 	it("passes existing content as editor prefill for edit prompts", async () => {
-		const ui = {
-			editor: vi.fn(async () => "updated\ncontent"),
-			input: vi.fn(async () => "single line"),
-			setWorkingVisible: vi.fn(),
-		}
+		const ctx = createContext({
+			ui: {
+				editor: vi.fn(async () => "updated\ncontent"),
+				input: vi.fn(async () => "single line"),
+			},
+		})
 
-		await expect(promptEditor({ ui }, "Revise goal:", { prefill: "old\ncontent" })).resolves.toBe("updated\ncontent")
+		await expect(promptEditor(ctx, "Revise goal:", { prefill: "old\ncontent" })).resolves.toBe("updated\ncontent")
 
-		expect(ui.editor).toHaveBeenCalledWith("Revise goal:", "old\ncontent")
-		expect(ui.input).not.toHaveBeenCalled()
+		expect(ctx.ui.editor).toHaveBeenCalledWith("Revise goal:", "old\ncontent")
+		expect(ctx.ui.input).not.toHaveBeenCalled()
 		expect(tipWidgetLocationMock.set).toHaveBeenCalledWith("hidden")
-		expect(ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)
-		expect(ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
 		expect(tipWidgetLocationMock.restore).toHaveBeenCalledTimes(1)
 	})
 
 	it("hides tips while a selection prompt replaces the editor", async () => {
-		const ui = {
-			select: vi.fn(async () => "Start execution  ✓"),
-			setWorkingVisible: vi.fn(),
-		}
+		const ctx = createContext({
+			ui: {
+				select: vi.fn(async () => "Start execution  ✓"),
+			},
+		})
 
-		await expect(promptSelect({ ui }, "Proceed with this plan?", ["Start execution  ✓"])).resolves.toBe(
+		await expect(promptSelect(ctx, "Proceed with this plan?", ["Start execution  ✓"])).resolves.toBe(
 			"Start execution  ✓",
 		)
 
 		expect(tipWidgetLocationMock.set).toHaveBeenCalledWith("hidden")
-		expect(ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)
-		expect(ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
 		expect(tipWidgetLocationMock.restore).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("promptForm fallback customLabel", () => {
+	it("uses 'Type your own answer' as the allowOther label in fallback mode", async () => {
+		const select = vi.fn(async () => "Option A")
+		const ctx = createContext({ ui: { select } })
+		await promptForm(ctx, {
+			questions: [
+				{ id: "q1", type: "single", prompt: "Pick one?", options: [{ id: "a", label: "Option A" }], allowOther: true },
+			],
+		})
+		expect(select).toHaveBeenCalledWith("Pick one?", ["Option A", "Type your own answer"])
 	})
 })
 
@@ -151,7 +169,7 @@ function singleQuestion(
 }
 
 function renderLines(
-	prompt: string,
+	_prompt: string,
 	width: number,
 	questionOverrides: Parameters<typeof singleQuestion>[0] = {},
 ): string[] {

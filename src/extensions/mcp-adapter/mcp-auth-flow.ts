@@ -10,13 +10,13 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import open from "open"
 import {
-	type StoredTokens,
 	clearAllCredentials,
 	clearOAuthState,
 	getAuthForUrl,
 	getOAuthState,
 	hasStoredTokens,
 	isTokenExpired,
+	type StoredTokens,
 	updateOAuthState,
 } from "./mcp-auth.js"
 import {

@@ -1,17 +1,11 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { withWorkingHidden } from "../ui.js"
 import type { PermissionChoice, ToolPermissionPrompter } from "./prompter.js"
 import { numberedChoices, stripChoiceNumber } from "./select-utils.js"
 import { suggestScope } from "./session-memory.js"
 import type { Rule } from "./types.js"
 
-export async function withWorkingHidden<T>(ctx: ExtensionContext, fn: () => Promise<T>): Promise<T> {
-	ctx.ui.setWorkingVisible?.(false)
-	try {
-		return await fn()
-	} finally {
-		ctx.ui.setWorkingVisible?.(true)
-	}
-}
+export { withWorkingHidden }
 
 export type ApprovalOutcome =
 	| { kind: "allow-once" }
@@ -170,12 +164,11 @@ export async function promptForCompoundApproval(opts: {
 
 	if (selected === compoundChoices[0]) return { kind: "allow-all-once" }
 	if (selected === compoundChoices[1]) {
-		const rules: Rule[] = commands.map((cmd) => ({
-			toolName: opts.toolName,
-			content: `${cmd.command.split(" ")[0]} *`,
-			behavior: "allow",
-			source: "session",
-		}))
+		const rules = commands.flatMap<Rule>((cmd) => {
+			const scope = suggestScope(opts.toolName, { command: cmd.command })
+			const content = scope.wildcardContent
+			return content ? [{ toolName: scope.toolName, content, behavior: "allow", source: "session" }] : []
+		})
 		return { kind: "allow-all-remember", rules }
 	}
 	if (selected === compoundChoices[2]) return { kind: "pick-per-subcommand" }

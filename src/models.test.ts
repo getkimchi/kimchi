@@ -3,9 +3,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
-	ModelsFetchError,
 	injectExperimentalProvider,
 	isTransientModelsError,
+	ModelsFetchError,
 	readExperimentalModels,
 	updateModelsConfig,
 } from "./models.js"
@@ -273,9 +273,42 @@ describe("updateModelsConfig", () => {
 		expect(written.providers.openai.models).toHaveLength(1)
 	})
 
-	it("throws on fetch failure when no cached config exists", async () => {
-		vi.mocked(fetch).mockRejectedValueOnce(new Error("network error"))
-		await expect(updateModelsConfig(modelsJsonPath, "test-key")).rejects.toThrow("network error")
+	it("throws after exhausting retries on network errors when no cache exists", async () => {
+		vi.mocked(fetch).mockRejectedValue(new Error("network error"))
+		const error = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} }).catch((e) => e)
+
+		expect(error).toBeInstanceOf(ModelsFetchError)
+		expect(isTransientModelsError(error)).toBe(true)
+		expect((error as Error).message).toContain("network error")
+		expect(fetch).toHaveBeenCalledTimes(3)
+	})
+
+	it("retries a network error and succeeds on a later attempt", async () => {
+		vi.mocked(fetch)
+			.mockRejectedValueOnce(new Error("ECONNREFUSED"))
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ models: [KIMI] }),
+			} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} })
+
+		expect(fetch).toHaveBeenCalledTimes(2)
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
+	})
+
+	it("retries a timeout error and succeeds on a later attempt", async () => {
+		vi.mocked(fetch)
+			.mockRejectedValueOnce(new Error("The operation timed out."))
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ models: [KIMI] }),
+			} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} })
+
+		expect(fetch).toHaveBeenCalledTimes(2)
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
 	})
 
 	it("throws on non-ok response when no cached config exists", async () => {
@@ -382,6 +415,40 @@ describe("updateModelsConfig", () => {
 		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5", "claude-sonnet-4-6", "gpt-4"])
 	})
 
+	it("falls back to cached metadata after exhausting network retries", async () => {
+		const OPENAI_MODEL = {
+			id: "gpt-4",
+			name: "GPT-4",
+			reasoning: false,
+			input: ["text"],
+			contextWindow: 8192,
+			maxTokens: 4096,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			provider: "openai",
+		}
+
+		// Seed cache with a successful fetch
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI, SONNET_46] }),
+		} as Response)
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		config.providers.openai = { models: [OPENAI_MODEL] }
+		writeFileSync(modelsJsonPath, JSON.stringify(config))
+		vi.mocked(fetch).mockClear()
+
+		// All retry attempts fail — proves fallback works after retry exhaustion
+		vi.mocked(fetch).mockRejectedValue(new Error("network down"))
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} })
+
+		// Cache + custom provider are returned
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5", "claude-sonnet-4-6", "gpt-4"])
+		// Confirms retry exhaustion actually happened (3 attempts, no success)
+		expect(fetch).toHaveBeenCalledTimes(3)
+	})
+
 	it("falls back to cached metadata when API returns empty list", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
@@ -409,6 +476,48 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
+	})
+
+	it("does not persist an endpoint override into models.json when the refresh fails (no global pollution)", async () => {
+		// Seed the cache via a successful gateway fetch → baseUrl = gateway on disk.
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		const original = readFileSync(modelsJsonPath, "utf-8")
+
+		// A project-local override whose metadata endpoint is unreachable → fall back to cache.
+		vi.mocked(fetch).mockRejectedValue(new Error("network down"))
+		await updateModelsConfig(modelsJsonPath, "test-key", {
+			endpoint: "https://project-override.example",
+			sleep: async () => {},
+		})
+
+		// models.json is a GLOBAL file; a project-local llmEndpoint must never be written into it.
+		// The override is applied in-memory by the login extension, so the file stays byte-for-byte
+		// and keeps pointing at the gateway. Guards the disk-write regression from #814.
+		const after = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(after.providers["kimchi-dev"].baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
+	})
+
+	it("prefixes a scheme-less endpoint with https:// for the metadata URL and kimchi-dev baseUrl", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key", { endpoint: "example.com" })
+
+		// A bare "example.com" would otherwise be an invalid request URL that the HTTP layer
+		// silently drops, falling back to the gateway (the original #814 bug).
+		expect(fetch).toHaveBeenCalledWith(
+			"https://example.com/v1/models/metadata?include_in_cli=true",
+			expect.objectContaining({ headers: { Authorization: "Bearer test-key" } }),
+		)
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].baseUrl).toBe("https://example.com/openai/v1")
 	})
 
 	it("creates nested directories if they do not exist", async () => {

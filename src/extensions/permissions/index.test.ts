@@ -1,12 +1,21 @@
-import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolInfo } from "@earendil-works/pi-coding-agent"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	ExtensionUIContext,
+	ToolCallEvent,
+	ToolInfo,
+} from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
-import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
+import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
-import { TODO_TOOL_NAME } from "../todos/tool.js"
+import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
 import permissionsExtension, {
@@ -15,24 +24,37 @@ import permissionsExtension, {
 	isLaunchedWithYolo,
 	notifyFermentActive,
 } from "./index.js"
-import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { getPermissionMode } from "./mode-controller.js"
+import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { SessionMemory } from "./session-memory.js"
 import type { Rule } from "./types.js"
 
-vi.mock("node:fs", () => ({
-	existsSync: vi.fn(() => true),
-	mkdirSync: vi.fn(),
-	readFileSync: vi.fn(),
-	writeFileSync: vi.fn(),
-}))
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>()
+	return {
+		...actual,
+		existsSync: vi.fn(actual.existsSync),
+		mkdirSync: vi.fn(actual.mkdirSync),
+		readFileSync: vi.fn(actual.readFileSync),
+		writeFileSync: vi.fn(actual.writeFileSync),
+	}
+})
 
-vi.mock("./classifier.js", () => ({
-	classifyToolCall: vi.fn(async () => ({ verdict: "safe", reason: "mock safe" })),
-}))
+vi.mock("./classifier.js", async () => {
+	const actual = await vi.importActual<typeof import("./classifier.js")>("./classifier.js")
+	return {
+		...actual,
+		classifyToolCall: vi.fn(async () => ({ verdict: "safe", reason: "mock safe" })),
+	}
+})
 
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
+	rawPlatform: "linux",
+	cpuArchitecture: "x64",
+	shell: "/bin/bash",
+	osRelease: "6.1.0-test",
+	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
 	username: "testuser",
 	homeDir: "/home/testuser",
 	cwd: "/test",
@@ -48,11 +70,12 @@ const TEST_SESSION_ID = "test-session"
 function createMockContext(
 	selectResults: (string | undefined)[] = [],
 	sessionId = TEST_SESSION_ID,
-	opts?: { abortOnFirstSelect?: boolean },
+	opts?: { uiContext?: Partial<ExtensionUIContext>; abortOnFirstSelect?: boolean },
 ): ExtensionContext {
 	let selectCallIndex = 0
 	return {
 		hasUI: true,
+		mode: "tui",
 		cwd: "/test",
 		sessionManager: { getSessionId: () => sessionId },
 		ui: {
@@ -73,20 +96,25 @@ function createMockContext(
 				getFgAnsi: vi.fn(() => ""),
 			},
 			onTerminalInput: vi.fn(() => () => {}),
+			...opts?.uiContext,
 		},
 	} as unknown as ExtensionContext
 }
 
 function createClassifierContext(): ExtensionContext {
-	const model = { provider: "test-provider", id: "test-model" }
+	// Expose the deterministic classifier models so resolveClassifierModels
+	// finds both primary (deepseek-v4-flash) and fallback (minimax-m3).
+	const primaryModel = { provider: "test-provider", id: "deepseek-v4-flash" }
+	const fallbackModel = { provider: "test-provider", id: "minimax-m3" }
+	const model = primaryModel
 	return {
 		...createMockContext([]),
 		hasUI: false,
 		cwd: "/test",
 		model,
 		modelRegistry: {
-			getAvailable: vi.fn(() => [model]),
-			find: vi.fn(() => model),
+			getAvailable: vi.fn(() => [primaryModel, fallbackModel]),
+			find: vi.fn(() => primaryModel),
 		},
 	} as unknown as ExtensionContext
 }
@@ -135,6 +163,7 @@ function createPermissionsHarness(
 			activeTools = names.filter((name) => known.has(name))
 		}),
 		sendMessage: vi.fn(),
+		events: { emit: vi.fn() },
 	} as unknown as ExtensionAPI
 
 	permissionsExtension(pi)
@@ -303,15 +332,15 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
 	})
 
-	it("hides and blocks request_ferment_workflow under explicit --plan", async () => {
-		const harness = createPermissionsHarness(["read", "bash", FERMENT_TOOLS.REQUEST_WORKFLOW], { plan: true })
+	it("hides and blocks propose_ferment_scoping under explicit --plan", async () => {
+		const harness = createPermissionsHarness(["read", "bash", FERMENT_TOOLS.PROPOSE_SCOPING], { plan: true })
 
 		await harness.fire("session_start", {}, createMockContext([]))
 
 		expect(harness.activeTools().sort()).toEqual(["bash", "read"])
 		const result = await harness.fire(
 			"tool_call",
-			{ toolName: FERMENT_TOOLS.REQUEST_WORKFLOW, input: { title: "Audit", intent: "Find improvements" } },
+			{ toolName: FERMENT_TOOLS.PROPOSE_SCOPING, input: { prompt: "plan it" } },
 			createMockContext([]),
 		)
 
@@ -319,36 +348,49 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(JSON.stringify(result)).toContain("Plan mode")
 	})
 
-	it("keeps write_todos visible and allowed under explicit --plan", async () => {
-		const harness = createPermissionsHarness(["read", "bash", TODO_TOOL_NAME], { plan: true })
+	it("keeps todo tools visible and allowed under explicit --plan", async () => {
+		const harness = createPermissionsHarness(["read", "bash", ...TODO_TOOL_NAMES], { plan: true })
 
 		await harness.fire("session_start", {}, createMockContext([]))
 
-		expect(harness.activeTools().sort()).toEqual(["bash", "read", TODO_TOOL_NAME])
+		expect(harness.activeTools().sort()).toEqual(["bash", "read", ...TODO_TOOL_NAMES].sort())
+		for (const toolName of TODO_TOOL_NAMES) {
+			await expect(
+				harness.fire(
+					"tool_call",
+					{ toolName, input: { todos: [{ content: "Plan task", status: "pending" }] } },
+					createMockContext([]),
+				),
+			).resolves.toBeUndefined()
+		}
+	})
+
+	it("allows the mcp gateway tool under explicit --plan", async () => {
+		const harness = createPermissionsHarness(["read", "mcp"], { plan: true })
+
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// mcp must be in the active set (cataloged as shared core)
+		expect(harness.activeTools().sort()).toEqual(["mcp", "read"])
+		// And the tool_call gate must not block it
 		await expect(
-			harness.fire(
-				"tool_call",
-				{ toolName: TODO_TOOL_NAME, input: { todos: [{ content: "Plan task", status: "pending" }] } },
-				createMockContext([]),
-			),
+			harness.fire("tool_call", { toolName: "mcp", input: { search: "jira" } }, createMockContext([])),
 		).resolves.toBeUndefined()
 	})
 
-	it("allows request_ferment_workflow after runtime plan-mode questionnaire", async () => {
-		const harness = createPermissionsHarness(["read", "questionnaire", "bash", FERMENT_TOOLS.REQUEST_WORKFLOW])
-		await harness.fire("session_start", {}, createMockContext([]))
+	it("blocks read calls targeting directories before upstream read", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "kimchi-read-dir-"))
+		try {
+			const harness = createPermissionsHarness(["read"])
+			const result = await harness.fire("tool_call", { toolName: "read", input: { path: tmp } }, createMockContext([]))
 
-		expect(
-			await harness.fire("tool_call", { toolName: "questionnaire", input: { questions: [] } }, createMockContext([])),
-		).toBeUndefined()
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
-
-		const result = await harness.fire(
-			"tool_call",
-			{ toolName: FERMENT_TOOLS.REQUEST_WORKFLOW, input: { title: "Audit", intent: "Find improvements" } },
-			createMockContext([]),
-		)
-		expect(result).toBeUndefined()
+			expect(result).toEqual({
+				block: true,
+				reason: "Path is a directory; read only accepts files. List or search the directory instead.",
+			})
+		} finally {
+			rmSync(tmp, { recursive: true, force: true })
+		}
 	})
 
 	it("leaving plan mode does not restore tools hidden by another extension", async () => {
@@ -553,27 +595,302 @@ describe("plan mode assumption detection", () => {
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 
-	it("converts plan to ferment when user chooses ferment menu", async () => {
-		const harness = createPermissionsHarness(["read", "bash", FERMENT_TOOLS.REQUEST_WORKFLOW], { plan: true })
+	it("review menu offers Execute / Rework / Start as ferment", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 
 		const planText =
 			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.\n\n## Verification\nRun tests.\n\n<!-- PLAN_COMPLETE -->"
-		const ctx = createMockContext(["Convert to ferment workflow"])
+		const ctx = createMockContext(["Rework the plan"])
 		await fireTurnEnd(harness, planText, ctx)
 
-		expect(ctx.ui.select).toHaveBeenCalled()
-		expect(harness.pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				customType: "plan-execute",
-				content: expect.stringContaining("request_ferment_workflow"),
-				display: false,
-			}),
-			{ triggerTurn: true },
-		)
+		expect(ctx.ui.select).toHaveBeenCalledWith("Plan complete. How would you like to proceed?", [
+			"Execute the plan",
+			"Rework the plan",
+			"Start as ferment",
+		])
+		expect(harness.pi.sendMessage).not.toHaveBeenCalled()
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
+	})
 
-		// Mode should have switched from plan to default (ferment tools unlocked)
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "default", source: "user" })
+	it("oneshot sessions skip the plan-complete dropdown entirely", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		// Simulate a oneshot session: pi.getFlag returns true for ferment-oneshot.
+		;(harness.pi as { getFlag?: (n: string) => unknown }).getFlag = (n: string) =>
+			n === "ferment-oneshot" ? true : undefined
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const planText =
+			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.\n\n<!-- PLAN_COMPLETE -->"
+		const ctx = createMockContext([])
+		await fireTurnEnd(harness, planText, ctx)
+
+		// The dropdown must NOT have been shown — oneshot sessions bypass it.
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+	})
+
+	// Shared-plan fixture following the planning-process structure (Goal /
+	// Constraints / Chunks / Verification Strategy / Risks). The Start-as-ferment
+	// branch parses this with parseSharedPlan and uses the structured fields:
+	// each `### Chunk` becomes one implementation step; Verification Strategy /
+	// Decision Log / Risks are metadata and must NOT become steps.
+	// (PR #683 review comment 3473746281.)
+	const SHARED_PLAN_TEXT =
+		"# Plan\n\n" +
+		"## Goal\nAdd caching layer.\n\n" +
+		"## Constraints\n- No new dependencies\n- Preserve existing API\n\n" +
+		"## Chunks\n\n" +
+		"### Chunk 1: Add cache primitive\n- **Files Changed**: src/api/cache.ts\n- **Accept When**: cache.get/set round-trip works\n\n" +
+		"### Chunk 2: Wire cache into client\n- **Files Changed**: src/api/client.ts\n- **Accept When**: repeat GET hits the cache\n\n" +
+		"## Verification Strategy\nRun pnpm test src/api after each chunk.\n\n" +
+		"## Risks\nCache staleness: short default TTL.\n\n" +
+		"<!-- PLAN_COMPLETE -->"
+
+	it("Start as ferment persists a ferment artifact under .kimchi/ferments", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// Use a temp cwd so we don't pollute the repo.
+		const tmpDir = mkdtempSync(join(tmpdir(), "ferment-promo-"))
+		try {
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+
+			const fermentsDir = join(tmpDir, ".kimchi", "ferments")
+			expect(existsSync(fermentsDir)).toBe(true)
+			const files = readdirSync(fermentsDir).filter((f) => f.endsWith(".json"))
+			expect(files).toHaveLength(1)
+
+			const artifact = JSON.parse(readFileSync(join(fermentsDir, files[0]), "utf-8"))
+			// Status is 'running' because 'Start as ferment' activates the first phase
+			// via the full runtime path when the plan has a structured Chunks section.
+			expect(artifact.status).toMatch(/^(planned|running|active)$/)
+			expect(artifact.id).toBeTruthy()
+			expect(artifact.phases).toHaveLength(1)
+			// One step per `### Chunk` — Verification Strategy / Risks must NOT
+			// become implementation steps.
+			expect(artifact.phases[0].steps).toHaveLength(2)
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
+			defaultFermentRuntime.setActive(undefined)
+		}
+	})
+
+	it("Start as ferment applies the implementation-ferment tool profile", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// The START_AS_FERMENT branch persists a ferment artifact under <cwd>/.kimchi/ferments
+		// before applying the tool profile. Use a real temp dir for cwd so the writes succeed —
+		// the default mock cwd ("/test") does not exist on the test runner.
+		const tmpDir = mkdtempSync(join(tmpdir(), "prof-"))
+		try {
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+
+			// Find the implementation-ferment apply call by selecting the largest
+			// setActiveTools call — the planning-adhoc profile produces a 12-tool set
+			// while the implementation-ferment profile produces a 31-tool set, so the
+			// implementation-ferment apply is unambiguously the maximum.
+			expect(harness.pi.setActiveTools).toHaveBeenCalled()
+			const calls = vi.mocked(harness.pi.setActiveTools).mock.calls
+			const implementationFermentCall = calls.reduce<{ size: number; arr: string[] | undefined }>(
+				(best, c) => {
+					const arr = c[0] as string[] | undefined
+					const size = arr?.length ?? 0
+					return size > best.size ? { size, arr } : best
+				},
+				{ size: 0, arr: undefined },
+			)
+			expect(implementationFermentCall.arr).toBeDefined()
+			const toolSet = implementationFermentCall.arr as string[]
+			// The implementation-ferment profile includes ferment write tools (`edit`, `write`).
+			expect(toolSet).toContain("edit")
+			expect(toolSet).toContain("write")
+			// And it must NOT include the adhoc-only tool `questionnaire`.
+			expect(toolSet).not.toContain("questionnaire")
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
+			defaultFermentRuntime.setActive(undefined)
+		}
+	})
+
+	it("Start as ferment swaps tool names per the tool-name-mapping doc", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// Same tmp-dir setup as the artifact test — the default mock cwd ("/test")
+		// does not exist on the test runner.
+		const tmpDir = mkdtempSync(join(tmpdir(), "swap-"))
+		try {
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+
+			const calls = vi.mocked(harness.pi.setActiveTools).mock.calls
+			const implementationFermentCall = calls.reduce<{ size: number; arr: string[] | undefined }>(
+				(best, c) => {
+					const arr = c[0] as string[] | undefined
+					const size = arr?.length ?? 0
+					return size > best.size ? { size, arr } : best
+				},
+				{ size: 0, arr: undefined },
+			)
+			expect(implementationFermentCall.arr).toBeDefined()
+			const toolSet = implementationFermentCall.arr as string[]
+
+			// Adhoc-only tools must NOT be present (per the tool-swap contract at
+			// permissions/index.ts:524-562).
+			expect(toolSet).not.toContain("questionnaire")
+			// Todo lifecycle tools are shared core — they ARE present in ferment
+			// mode (used for step-level sub-task tracking during implementation).
+			expect(toolSet).toContain("update_todos")
+			expect(toolSet).toContain("add_todo")
+			// Shared core tools MUST remain visible.
+			expect(toolSet).toContain("read")
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	// Regression: the previous 'Start as ferment' implementation wrote a partial
+	// JSON file directly and applied the tool profile, but never called
+	// runtime.setActive(), runtime.getStorage().create(), or emitted the creation
+	// event. This left the ferment runtime with no active ferment even though
+	// implementation tools were visible.
+	it("Start as ferment sets the ferment active in the runtime so getActive() returns it", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const tmpDir = mkdtempSync(join(tmpdir(), "runtime-active-"))
+		try {
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+
+			// After 'Start as ferment', the ferment runtime must know the active ferment.
+			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
+			const active = defaultFermentRuntime.getActive()
+			expect(active).not.toBeUndefined()
+			expect(active?.goal).toBeTruthy()
+			expect(active?.status).toBeDefined()
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+			// Reset runtime active state so other tests are not polluted.
+			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
+			defaultFermentRuntime.setActive(undefined)
+		}
+	})
+
+	it("Start as ferment appends a ferment_reference entry so resumed sessions find the ferment", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const tmpDir = mkdtempSync(join(tmpdir(), "ref-entry-"))
+		try {
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+
+			// appendRefEntry calls pi.sendMessage with customType 'ferment_reference'.
+			// safeSendMessage passes (message, options) — options may be undefined.
+			expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "ferment_reference" }),
+				undefined,
+			)
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
+			defaultFermentRuntime.setActive(undefined)
+		}
+	})
+
+	// Regression: previously the catch block applied implementation-ferment tools
+	// and exited plan mode even when storage/runtime creation failed. That left
+	// the session with implementation tools visible but no active ferment, no
+	// session ref, no creation event, and no initialized runtime state. The fix
+	// is fail-closed: stay in plan mode, do NOT apply implementation tools.
+	it("Start as ferment fails closed when runtime creation throws — stays in plan mode, no implementation tools", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const planText = SHARED_PLAN_TEXT
+		// Use a cwd that cannot be written to so resolveFermentsDir + storage.create
+		// throw and the catch block fires.
+		const ctx = createMockContext(["Start as ferment"])
+		ctx.cwd = "/dev/null/nonexistent-path-that-cannot-be-created"
+
+		await fireTurnEnd(harness, planText, ctx)
+
+		// 1) No setActiveTools call should include implementation-ferment-only tools
+		//    like edit/write/Agent (the implementation profile signature).
+		const calls = vi.mocked(harness.pi.setActiveTools).mock.calls
+		for (const [arr] of calls) {
+			const toolSet = arr as string[]
+			expect(toolSet).not.toContain("edit")
+			expect(toolSet).not.toContain("write")
+			expect(toolSet).not.toContain("Agent")
+		}
+
+		// 2) Mode must remain plan — the user is still in a plan-mode session
+		//    with a failed promotion. They can retry or rework.
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
+
+		// 3) Runtime active state must NOT be set to a half-initialized ferment.
+		const { defaultFermentRuntime } = await import("../ferment/runtime.js")
+		expect(defaultFermentRuntime.getActive()).toBeUndefined()
+
+		// Reset runtime state in case prior tests in this describe block left it set.
+		defaultFermentRuntime.setActive(undefined)
+	})
+
+	// Regression (PR #683 comment 3473746281): when the plan lacks a `## Chunks`
+	// section, "Start as ferment" must NOT activate the implementation profile or
+	// produce a lossy ferment from raw section splitting. It should persist a draft
+	// ferment via the normal runtime path, notify the user, and leave implementation
+	// tools off.
+	it("Start as ferment falls back to draft-only when the plan has no ## Chunks section", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const PLAN_WITHOUT_CHUNKS =
+			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Constraints\n- No new dependencies\n\n<!-- PLAN_COMPLETE -->"
+		const tmpDir = mkdtempSync(join(tmpdir(), "draft-only-"))
+		try {
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await fireTurnEnd(harness, PLAN_WITHOUT_CHUNKS, ctx)
+
+			// 1) The artifact is persisted as a draft (no phase activated).
+			const fermentsDir = join(tmpDir, ".kimchi", "ferments")
+			expect(existsSync(fermentsDir)).toBe(true)
+			const files = readdirSync(fermentsDir).filter((f) => f.endsWith(".json"))
+			expect(files).toHaveLength(1)
+			const artifact = JSON.parse(readFileSync(join(fermentsDir, files[0]), "utf-8"))
+			expect(artifact.status).toBe("draft")
+			expect(artifact.phases ?? []).toHaveLength(0)
+
+			// 2) No implementation-ferment tools became visible — the user must NOT
+			//    be put into implementation mode for a plan we couldn't scope.
+			const calls = vi.mocked(harness.pi.setActiveTools).mock.calls
+			for (const [arr] of calls) {
+				const toolSet = arr as string[]
+				expect(toolSet).not.toContain("edit")
+				expect(toolSet).not.toContain("write")
+				expect(toolSet).not.toContain("Agent")
+			}
+
+			// 3) The user was notified so they know what happened.
+			expect(ctx.ui?.notify).toHaveBeenCalledWith(expect.stringContaining("draft ferment"))
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
+			defaultFermentRuntime.setActive(undefined)
+		}
 	})
 })
 
@@ -673,7 +990,7 @@ describe("permissions ferment tool classification", () => {
 
 		expect(result).toBeUndefined()
 		expect(classifyToolCall).toHaveBeenCalledTimes(1)
-		expect(vi.mocked(classifyToolCall).mock.calls[0]?.[3]).toMatchObject({
+		expect(vi.mocked(classifyToolCall).mock.calls[0]?.[1]).toMatchObject({
 			toolName: "unknown_tool",
 			input: { value: 1 },
 			cwd: "/test",
@@ -694,6 +1011,137 @@ describe("permissions ferment tool classification", () => {
 	})
 })
 
+describe("permissions notification emission", () => {
+	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+	})
+
+	it("emits permission_prompt notification before showing dialog", async () => {
+		const harness = createPermissionsHarness(["write"])
+		const ctx = createMockContext([undefined]) // user denies
+		await harness.fire("session_start", {}, ctx)
+
+		const event = {
+			toolName: "write",
+			toolCallId: "tc-write-1",
+			input: { path: "foo.txt", content: "bar" },
+		}
+		await harness.fire("tool_call", event, ctx)
+
+		expect((harness.pi as unknown as { events: { emit: ReturnType<typeof vi.fn> } }).events.emit).toHaveBeenCalledWith(
+			"notification",
+			{
+				notification_type: "permission_prompt",
+				tool_name: "write",
+				tool_use_id: "tc-write-1",
+			},
+		)
+	})
+})
+
+describe("permissions TUI allow-remember", () => {
+	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+	})
+
+	// Build a UI context whose select() always picks the "don't ask again"
+	// (allow-remember) choice, and records how many times it was invoked.
+	function rememberingContext(): ExtensionContext {
+		const select = vi.fn(async (_title: string, choices: string[]) => {
+			return choices.find((c) => c.includes("don't ask again")) ?? choices[0]
+		})
+		return {
+			hasUI: true,
+			cwd: "/test",
+			sessionManager: { getSessionId: () => TEST_SESSION_ID },
+			ui: {
+				select,
+				input: vi.fn(async () => ""),
+				notify: vi.fn(),
+				setStatus: vi.fn(),
+				setWorkingVisible: vi.fn(),
+				theme: { fg: vi.fn((_, s) => s), getFgAnsi: vi.fn(() => "") },
+				onTerminalInput: vi.fn(() => () => {}),
+			},
+		} as unknown as ExtensionContext
+	}
+
+	it("does not re-prompt for an identical command after 'don't ask again'", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = rememberingContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const event = { toolName: "bash", input: { command: "go test ./..." } }
+
+		const first = await harness.fire("tool_call", event, ctx)
+		expect(first).toBeUndefined() // approved
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+
+		const second = await harness.fire("tool_call", event, ctx)
+		expect(second).toBeUndefined() // remembered — no prompt
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not re-prompt for an env-prefixed + rtk-wrapped command", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = rememberingContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const event = {
+			toolName: "bash",
+			input: { command: "GOWORK=off rtk go test -race -timeout 30s -count=1 ./controllers/discovery/... 2>&1" },
+		}
+
+		await harness.fire("tool_call", event, ctx)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+
+		await harness.fire("tool_call", event, ctx)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not re-prompt for a command with shell-quoted arguments", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = rememberingContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const event = { toolName: "bash", input: { command: 'touch "file with spaces.txt"' } }
+
+		await harness.fire("tool_call", event, ctx)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+
+		await harness.fire("tool_call", event, ctx)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not re-prompt for a re-run with a non-inert env prefix (was the bug)", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = rememberingContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const event = { toolName: "bash", input: { command: "LD_PRELOAD=/tmp/x.so go test ./..." } }
+		await harness.fire("tool_call", event, ctx)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+		await harness.fire("tool_call", event, ctx)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1) // remembered — no second prompt
+	})
+
+	it("re-prompts when an env var is added to a bare-approved command", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = rememberingContext()
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.fire("tool_call", { toolName: "bash", input: { command: "go test ./..." } }, ctx)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+		// Adding LD_PRELOAD must NOT be covered by the bare `go test` approval.
+		await harness.fire(
+			"tool_call",
+			{ toolName: "bash", input: { command: "LD_PRELOAD=/tmp/evil.so go test ./..." } },
+			ctx,
+		)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(2) // prompted again
+	})
+})
+
 describe("permissions ACP prompter", () => {
 	beforeEach(() => {
 		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
@@ -707,7 +1155,11 @@ describe("permissions ACP prompter", () => {
 		vi.unstubAllEnvs()
 	})
 
-	it("uses a registered ACP prompter in headless default mode", async () => {
+	it("uses a registered ACP prompter in headless rpc mode", async () => {
+		// The ACP prompter is only reachable when mode === "rpc"; this test
+		// covers the headless variant (hasUI === false). See also the
+		// "uses the ACP prompter in rpc mode when hasUI is false (headless rpc)"
+		// selection-logic test for the canPrompt/resolvePrompter decision.
 		const requests: Array<{ toolCallId: string; choices: string[] }> = []
 		registerAcpPrompter(TEST_SESSION_ID, {
 			request: async (req) => {
@@ -719,7 +1171,7 @@ describe("permissions ACP prompter", () => {
 			},
 		})
 		const harness = createPermissionsHarness(["bash"])
-		const ctx = createClassifierContext()
+		const ctx = { ...createClassifierContext(), mode: "rpc" } as unknown as ExtensionContext
 		await harness.fire("session_start", {}, ctx)
 
 		const result = await harness.fire(
@@ -747,7 +1199,8 @@ describe("permissions ACP prompter", () => {
 			},
 		})
 		const harness = createPermissionsHarness(["bash"])
-		const ctx = createClassifierContext()
+		// ACP prompter is only reachable in rpc mode.
+		const ctx = { ...createClassifierContext(), mode: "rpc" } as unknown as ExtensionContext
 		await harness.fire("session_start", {}, ctx)
 
 		for (const toolCallId of ["tc-once-1", "tc-once-2"]) {
@@ -768,12 +1221,13 @@ describe("permissions ACP prompter", () => {
 			request: async (req) => {
 				requests.push(req.toolCallId)
 				const remember = req.choices.find((choice) => choice.kind === "allow-remember")
-				if (!remember || remember.kind !== "allow-remember") throw new Error("missing remember choice")
+				if (remember?.kind !== "allow-remember") throw new Error("missing remember choice")
 				return { kind: "allow-remember", rule: remember.rule }
 			},
 		})
 		const harness = createPermissionsHarness(["bash"])
-		const ctx = createClassifierContext()
+		// ACP prompter is only reachable in rpc mode.
+		const ctx = { ...createClassifierContext(), mode: "rpc" } as unknown as ExtensionContext
 		await harness.fire("session_start", {}, ctx)
 
 		for (const toolCallId of ["tc-remember-1", "tc-remember-2"]) {
@@ -816,6 +1270,100 @@ describe("permissions ACP prompter", () => {
 		expect(result).toEqual({ block: true, reason: "Classifier: needs a human (no UI to confirm)" })
 		expect(requests).toEqual([])
 		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it("uses the ACP prompter in rpc mode even when hasUI is true (acp wins over terminal)", async () => {
+		// In rpc mode the ACP prompter (if present) is the source of truth for
+		// permissions, even when hasUI is true. The terminal prompter (ui.select)
+		// must NOT be called.
+		const requests: string[] = []
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async (req) => {
+				requests.push(req.toolCallId)
+				return { kind: "allow-once" }
+			},
+		})
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = {
+			...createMockContext([]),
+			mode: "rpc",
+			hasUI: true,
+		} as unknown as ExtensionContext
+		const selectSpy = ctx.ui.select as unknown as ReturnType<typeof vi.fn>
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			{ type: "tool_call", toolCallId: "tc-rpc-ui", toolName: "bash", input: { command: "touch rpc.txt" } },
+			ctx,
+		)
+
+		expect(result).toBeUndefined()
+		expect(requests).toEqual(["tc-rpc-ui"])
+		expect(selectSpy).not.toHaveBeenCalled()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("uses the ACP prompter in rpc mode when hasUI is false (headless rpc)", async () => {
+		// Headless rpc still gets the ACP prompter if one is registered; this is
+		// the same combination the existing "headless default mode" test covers,
+		// but here it is explicitly driven by mode === "rpc" rather than just
+		// mode === undefined + hasUI === false.
+		const requests: string[] = []
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async (req) => {
+				requests.push(req.toolCallId)
+				return { kind: "allow-once" }
+			},
+		})
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = {
+			...createClassifierContext(),
+			mode: "rpc",
+		} as unknown as ExtensionContext
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			{
+				type: "tool_call",
+				toolCallId: "tc-rpc-headless",
+				toolName: "bash",
+				input: { command: "touch headless-rpc.txt" },
+			},
+			ctx,
+		)
+
+		expect(result).toBeUndefined()
+		expect(requests).toEqual(["tc-rpc-headless"])
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("uses the terminal prompter in rpc mode when hasUI is true but no ACP prompter is registered", async () => {
+		// With no ACP prompter registered, resolvePrompter falls through to
+		// terminalPrompter(ctx) because hasUI is true — not the classifier.
+		// The classifier is reserved for mode === "auto" or non-promptable
+		// contexts, not for "rpc + ui + no acp". The mocked ui.select
+		// returns undefined (empty selectResults), which terminalPrompter
+		// surfaces as a denial.
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = {
+			...createClassifierContext(),
+			mode: "rpc",
+			hasUI: true,
+		} as unknown as ExtensionContext
+		const selectSpy = ctx.ui.select as unknown as ReturnType<typeof vi.fn>
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			{ type: "tool_call", toolCallId: "tc-rpc-no-acp", toolName: "bash", input: { command: "touch no-acp.txt" } },
+			ctx,
+		)
+
+		expect(selectSpy, "terminal prompter invoked via ctx.ui.select").toHaveBeenCalledTimes(1)
+		expect(classifyToolCall, "classifier not invoked when hasUI is true").not.toHaveBeenCalled()
+		expect(result).toEqual({ block: true, reason: "Declined by user" })
 	})
 })
 
@@ -1170,19 +1718,7 @@ describe("handleCompoundConfirm", () => {
 			return yesRememberLabel // Second subcommand - remember it
 		})
 
-		const ctx = {
-			hasUI: true,
-			cwd: "/test",
-			ui: {
-				select: mockSelect,
-				input: vi.fn(async () => ""),
-				notify: vi.fn(),
-				setStatus: vi.fn(),
-				setWorkingVisible: vi.fn(),
-				theme: { fg: vi.fn((_, s) => s), getFgAnsi: vi.fn(() => "") },
-				onTerminalInput: vi.fn(() => () => {}),
-			},
-		} as unknown as ExtensionContext
+		const ctx = createMockContext([], TEST_SESSION_ID, { uiContext: { select: mockSelect } })
 
 		const event = createMockEvent()
 

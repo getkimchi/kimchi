@@ -1,5 +1,5 @@
-import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http"
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import * as browserPool from "./browser-pool.js"
 import { cacheClear, cacheSize } from "./cache.js"
 import { convertContent } from "./content-converter.js"
@@ -13,6 +13,20 @@ vi.mock("./url-validator.js", () => ({
 		} catch {
 			return { valid: false, error: `Invalid URL: "${raw}"` }
 		}
+	},
+}))
+
+// Remove retry behaviour so 500s throw immediately and timeout tests aren't
+// affected by retry delays. Timeout behaviour is preserved via AbortController.
+vi.mock("../../utils/http.js", () => ({
+	fetchWithRetry: (url: string, init?: RequestInit, options?: Record<string, unknown>) => {
+		const fetchFn = (options?.fetchImpl as typeof fetch) ?? globalThis.fetch
+		const signal = options?.signal as AbortSignal | undefined
+		const timeoutMs = (options?.timeoutMs as number) ?? 30_000
+		const ctrl = new AbortController()
+		const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+		const composedSignal = signal ? AbortSignal.any([ctrl.signal, signal]) : ctrl.signal
+		return fetchFn(url, { ...init, signal: composedSignal }).finally(() => clearTimeout(timer))
 	},
 }))
 

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
-import { SessionContext, _resetSharedAccumulators } from "../session-context.js"
-import { handleToolExecutionEnd, handleToolExecutionStart } from "./tools.js"
+import { _resetSharedAccumulators, SessionContext } from "../session-context.js"
+import { handleToolExecutionEnd, handleToolExecutionStart, resultSizeChars } from "./tools.js"
 
 vi.mock("../../../api/me.js", () => ({
 	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
@@ -287,6 +287,115 @@ describe("handlers/tools", () => {
 
 			handleToolExecutionEnd(ctx, { toolCallId: "b1", isError: false })
 			expect(ctx.toolStartTimes.has("b1")).toBe(false)
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// resultSizeChars
+	// -----------------------------------------------------------------------
+
+	describe("resultSizeChars", () => {
+		it("returns 0 for null result", () => {
+			expect(resultSizeChars(null)).toBe(0)
+		})
+
+		it("returns 0 for result with empty content array", () => {
+			expect(resultSizeChars({ content: [] })).toBe(0)
+		})
+
+		it("sums text lengths from all content blocks", () => {
+			expect(resultSizeChars({ content: [{ text: "hello" }, { text: " world" }] })).toBe(11)
+		})
+
+		it("ignores content blocks without text property", () => {
+			expect(resultSizeChars({ content: [{ text: "hi" }, { other: "field" }] })).toBe(2)
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// tool result size attrs
+	// -----------------------------------------------------------------------
+
+	describe("tool result size attrs", () => {
+		it("emits file_size_chars and read_is_truncated=false when no limit is set", async () => {
+			const ctx = new SessionContext(makeConfig(), "cli")
+			ctx.currentModel = "claude-3-5-sonnet"
+			const toolCallId = "tc-read-size"
+
+			// No limit arg — full file returned, not truncated
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "read", args: { path: "/src/app.ts" } })
+			handleToolExecutionEnd(ctx, {
+				toolCallId,
+				isError: false,
+				result: { content: [{ text: "file contents here" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const fileRead = events.find((e) => e.eventName === "file_read")
+			expect(fileRead?.attrs.file_size_chars).toBe(String("file contents here".length))
+			expect(fileRead?.attrs.read_is_truncated).toBe("false")
+		})
+
+		it("emits read_is_truncated=true when a limit arg is set", async () => {
+			const ctx = new SessionContext(makeConfig(), "cli")
+			ctx.currentModel = "claude-3-5-sonnet"
+			const toolCallId = "tc-read-limited"
+
+			// limit arg present — caller capped the lines, result may be truncated
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "read", args: { path: "/src/app.ts", limit: 50 } })
+			handleToolExecutionEnd(ctx, {
+				toolCallId,
+				isError: false,
+				result: { content: [{ text: "file contents here" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const fileRead = events.find((e) => e.eventName === "file_read")
+			expect(fileRead?.attrs.read_is_truncated).toBe("true")
+		})
+
+		it("emits bash_output_size_chars on command_executed", async () => {
+			const ctx = new SessionContext(makeConfig(), "cli")
+			const toolCallId = "tc-bash-size"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "ls" } })
+			handleToolExecutionEnd(ctx, {
+				toolCallId,
+				isError: false,
+				result: { content: [{ text: "file1.txt\nfile2.txt\n" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const cmdExec = events.find((e) => e.eventName === "command_executed")
+			expect(cmdExec?.attrs.bash_output_size_chars).toBe(String("file1.txt\nfile2.txt\n".length))
+		})
+
+		it("emits tool_result_size_chars on tool_result", async () => {
+			const ctx = new SessionContext(makeConfig(), "cli")
+			const toolCallId = "tc-read-size-tr"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "read", args: { path: "/src/app.ts" } })
+			handleToolExecutionEnd(ctx, {
+				toolCallId,
+				isError: false,
+				result: { content: [{ text: "hello world" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const toolResult = events.find((e) => e.eventName === "tool_result")
+			expect(toolResult?.attrs.tool_result_size_chars).toBe(String("hello world".length))
 		})
 	})
 

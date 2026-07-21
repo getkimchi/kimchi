@@ -1,7 +1,7 @@
 {
 	"name": "@kimchi-dev/cli",
 	"version": "0.0.0",
-	"description": "kimchi \u2014 a coding agent CLI powered by Cast AI",
+	"description": "kimchi — a coding agent CLI powered by Cast AI",
 	"type": "module",
 	"license": "Apache-2.0",
 	"bin": {
@@ -10,20 +10,27 @@
 	"scripts": {
 		"clean": "rm -rf dist",
 		"build": "tsc --noEmit && node scripts/copy-resources.js --dev",
+		"build:proxy-helper": "node scripts/build-proxy-helper.js",
 		"build:binary": "node scripts/build-binary.js",
 		"install:local": "node scripts/install-local.js",
 		"build:binary-linux-arm64": "node scripts/build-binary.js --target linux-arm64",
 		"build:binary-linux-x64": "node scripts/build-binary.js --target linux-x64",
+		"build:binary-windows-x64": "node scripts/build-binary.js --target windows-x64",
 		"dev": "make -C tools/proxy-helper/ copy-for-dev && bun run --preload ./src/set-package-dir.ts src/entry.ts",
 		"dev:overlay": "scripts/dev-overlay.sh",
 		"dev:setup": "bun run --preload ./src/set-package-dir.ts src/entry.ts setup",
-		"lint": "biome check src/ scripts/",
-		"lint:fix": "biome check --write src/ scripts/",
+		"lint": "biome check src/ scripts/ tests/",
+		"lint:fix": "biome check --write src/ scripts/ tests/",
 		"typecheck": "tsc --noEmit",
 		"check": "pnpm run lint && pnpm run typecheck",
 		"test": "vitest run --dir src",
 		"test:smoke": "vitest run --config tests/smoke/vitest.config.ts",
-		"postinstall": "node scripts/patch-pi-ai-oauth.js",
+		"test:e2e:tui": "pnpm run build:binary && node scripts/run-tui-e2e.js",
+		"test:e2e:tui:debug": "pnpm run build:binary && node scripts/run-tui-e2e.js --debug",
+		"test:e2e:tui:trace": "pnpm run build:binary && node scripts/run-tui-e2e.js --trace",
+		"test:e2e:tui:trace:replay": "node scripts/run-tui-e2e.js replay",
+		"test:e2e:acp": "pnpm run build:binary && vitest run --config tests/e2e/acp/vitest.config.ts",
+		"postinstall": "node scripts/patch-pi-ai-oauth.js && node scripts/copy-resources.js --dev",
 		"prepare": "husky",
 		"verify": "pnpm run check && pnpm run build:binary && pnpm run test && pnpm run test:smoke"
 	},
@@ -32,10 +39,11 @@
 		"configDir": ".config/kimchi/harness"
 	},
 	"dependencies": {
-		"@agentclientprotocol/sdk": "^0.19.2",
+		"@agentclientprotocol/sdk": "0.19.2",
+		"@bulkhead-ai/core": "^0.7.0",
 		"@clack/prompts": "^1.3.0",
-		"@earendil-works/pi-coding-agent": "^0.78.0",
-		"@earendil-works/pi-tui": "^0.78.0",
+		"@earendil-works/pi-coding-agent": "0.79.10",
+		"@earendil-works/pi-tui": "0.79.10",
 		"@modelcontextprotocol/ext-apps": "^1.7.1",
 		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@shikijs/cli": "^4.0.2",
@@ -47,7 +55,7 @@
 		"micromatch": "^4.0.8",
 		"open": "^10.2.0",
 		"proper-lockfile": "^4.1.2",
-		"shell-quote": "^1.8.3",
+		"shell-quote": "1.8.4",
 		"shiki": "^4.0.2",
 		"ssh2": "^1.17.0",
 		"tar": "^7.5.15",
@@ -72,8 +80,9 @@
 		"@mariozechner/clipboard-win32-x64-msvc": "0.3.6"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^1.9.4",
-		"@earendil-works/pi-ai": "^0.78.0",
+		"@biomejs/biome": "^2.5.3",
+		"@earendil-works/pi-ai": "0.79.10",
+		"@microsoft/tui-test": "0.0.4",
 		"@mixmark-io/domino": "^2.2.0",
 		"@types/micromatch": "^4.0.10",
 		"@types/node": "^22.19.18",
@@ -83,7 +92,7 @@
 		"@types/ws": "^8.18.1",
 		"husky": "^9.1.7",
 		"node-pty": "^1.1.0",
-		"playwright": "^1.59.1",
+		"playwright": "1.59.1",
 		"supports-color": "^10.2.2",
 		"tsx": "^4.21.0",
 		"turndown": "^7.2.4",
@@ -108,10 +117,25 @@
 			"nan"
 		],
 		"patchedDependencies": {
-			"@earendil-works/pi-tui": "patches/@earendil-works__pi-tui.patch",
 			"playwright-core@1.59.1": "patches/playwright-core@1.59.1.patch",
-			"@earendil-works/pi-coding-agent": "patches/@earendil-works__pi-coding-agent.patch",
-			"@earendil-works/pi-ai@0.78.0": "patches/@earendil-works__pi-ai@0.78.0.patch"
+			"@earendil-works/pi-tui@0.79.10": "patches/@earendil-works__pi-tui@0.79.10.patch",
+			"@earendil-works/pi-ai@0.79.10": "patches/@earendil-works__pi-ai@0.79.10.patch",
+			"@earendil-works/pi-coding-agent@0.79.10": "patches/@earendil-works__pi-coding-agent@0.79.10.patch"
+		},
+		"supportedArchitectures": {
+			"os": [
+				"current",
+				"linux"
+			],
+			"cpu": [
+				"current",
+				"x64"
+			],
+			"libc": [
+				"current",
+				"glibc",
+				"musl"
+			]
 		}
 	}
 }

@@ -66,8 +66,12 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 | `file_written` | `write` tool succeeds | `model`, `language`, `file_hash`, `lines_added`, `duration_ms` |
 | `file_edited` | `edit` / `multiedit` / `patch` succeed | `model`, `language`, `file_hash`, `lines_added`, `lines_deleted`, `duration_ms` |
 | `command_executed` | `bash` tool runs | `model`, `command_type`, `exit_code`, `duration_ms` |
-| `error` | Agent or tool error | `model`, `error_type` (`agent_error` / `tool_failure`), `error_message` *(truncated to 300 chars)* |
+| `error` | Agent, tool, or transport error | `model`, `error_type` (`agent_error` / `tool_failure` / `transport_error`), `error_message` *(truncated to 300 chars)* |
 | `subagent.spawned` | Sub-agent created | `model`, `agent_type`, `reason` |
+| `loop_guard.warn` | Loop-guard issues a steer | `model`, `detector`, `count`, `is_subagent` |
+| `loop_guard.subagent_abort` | Subagent terminated after a loop-guard steer | `model`, `detector`, `count`, `is_subagent` |
+
+> **Privacy:** Loop-guard events carry only structured fields — `detector` (which loop detector fired), `count` (per-session warn count), and `is_subagent`. Raw tool args, command text, and the human-readable reason string are intentionally **not** emitted, to avoid leaking user data or secrets.
 
 ## Cumulative Metrics (OTLP Sum)
 

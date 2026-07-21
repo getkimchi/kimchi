@@ -1,7 +1,6 @@
-import { existsSync, readFileSync, unlinkSync } from "node:fs"
-import { mkdirSync, rmSync } from "node:fs"
+import { existsSync, readFileSync, rmSync } from "node:fs"
 import { resolve } from "node:path"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { saveApprovedPlan } from "./plan-persistence.js"
 

@@ -30,6 +30,8 @@
 // WSL_INTEROP) because WSLg may set $DISPLAY to ":0" even when no graphical
 // session is running, giving a false positive to the simple display check.
 
+import { createLinuxClipboard } from "./clipboard-linux-subprocess.js"
+
 export type NativeClipboard = {
 	hasImage(): boolean
 	getImageBinary(): Promise<number[]>
@@ -111,6 +113,15 @@ export function getNativeClipboard(): { clipboard: NativeClipboard | null; error
 			: "Clipboard image support is not available: no display server detected (WSL/headless Linux — set KIMCHI_CLIPBOARD_FORCE=1 to override)"
 		cached = null
 		return { clipboard: null, error: loadError }
+	}
+
+	// On Linux use subprocess-based clipboard access (xclip/wl-paste) instead of
+	// the native .node addon. The addon calls ClipboardContext::new() on every
+	// method call which opens a new X11 connection; background threads in the Rust
+	// library keep those connections alive and exhaust X11's 255-client limit.
+	if (process.platform === "linux") {
+		cached = createLinuxClipboard()
+		return { clipboard: cached, error: loadError }
 	}
 
 	try {

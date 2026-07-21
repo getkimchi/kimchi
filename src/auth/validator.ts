@@ -1,3 +1,5 @@
+import { fetchWithRetry } from "../utils/http.js"
+
 export interface ValidateResult {
 	valid: boolean
 	error?: string
@@ -40,18 +42,19 @@ export async function validateApiKey(apiKey: string, options: ValidatorOptions =
 	const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS
 	const fetchImpl = options.fetch ?? globalThis.fetch
 
-	const controller = new AbortController()
-	const timer = setTimeout(() => controller.abort(), timeoutMs)
 	let resp: Response
 	try {
-		resp = await fetchImpl(endpoint, {
-			method: "GET",
-			headers: {
-				Authorization: `Bearer ${apiKey}`,
-				Accept: "application/json",
+		resp = await fetchWithRetry(
+			endpoint,
+			{
+				method: "GET",
+				headers: {
+					Authorization: `Bearer ${apiKey}`,
+					Accept: "application/json",
+				},
 			},
-			signal: controller.signal,
-		})
+			{ timeoutMs, fetchImpl, retry: { maxRetries: 1 } },
+		)
 	} catch {
 		return {
 			valid: false,
@@ -62,8 +65,6 @@ export async function validateApiKey(apiKey: string, options: ValidatorOptions =
 				"Try again in a few moments",
 			],
 		}
-	} finally {
-		clearTimeout(timer)
 	}
 
 	if (resp.status === 200) {

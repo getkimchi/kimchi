@@ -1,4 +1,4 @@
-import { Key, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
+import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui"
 
 export type ChordAction =
 	| { kind: "next-tab" }

@@ -19,8 +19,8 @@ import { getResourceOverride } from "../../resources/store.js"
 import {
 	type CommandHookAdapterDefinition,
 	type CommandHookSource,
-	FULL_COMMAND_HOOK_EVENTS,
 	discoverCommandHookResources,
+	FULL_COMMAND_HOOK_EVENTS,
 } from "../hook-adapters/discovery.js"
 
 export const PLUGIN_PACKAGE_HOOK_ADAPTER_DEFINITION: CommandHookAdapterDefinition = {
