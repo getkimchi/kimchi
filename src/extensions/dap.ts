@@ -20,8 +20,6 @@ import { getOrCreateClient, shutdownAll } from "./dap/client.js"
 import { clearAllSessions, createSession, getSession } from "./dap/session.js"
 import { createLayer1Tools, createLayer2Tools, type LaunchSessionOptions } from "./dap/tools.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
-import { createToolVisibility } from "./prompt-construction/tool-visibility.js"
-import { getCurrentPhase } from "./tags.js"
 
 const DAP_SYSTEM_PROMPT = `## Debugger (DAP)
 
@@ -59,39 +57,12 @@ The debugger shows you what *actually happened*, not what you *think should happ
 
 The adapter is auto-detected from the program file extension (.ts/.js→js-debug, .go→dlv, .py→debugpy, .rs/.c→lldb-dap). For Go package directories, the adapter is detected from the presence of \`.go\` files in the directory.`
 
-// All DAP tool names (Layer 1 + Layer 2). Used to toggle visibility based on
-// the current orchestrator phase — DAP tools are hidden during explore/plan
-// (read-only/discovery phases) and shown during build/review.
-const DAP_TOOL_NAMES = [
-	"debug_launch",
-	"debug_set_breakpoint",
-	"debug_continue",
-	"debug_locals",
-	"debug_eval",
-	"debug_backtrace",
-	"debug_terminate",
-	"step_in",
-	"step_over",
-	"step_out",
-	"debug_state_at",
-	"debug_last_error",
-	"debug_trace_calls",
-	"debug_watch_change",
-] as const
-
-const DAP_VISIBLE_PHASES: ReadonlySet<string> = new Set(["build", "review"])
-
 export default function (pi: ExtensionAPI) {
 	let cwd = ""
 	let activeAdapters = detectAdapters("")
 	let missingAdapters = detectMissingAdapters("")
 	let warned = false
 	let ui: ExtensionUIContext | undefined
-	// Phase-based tool visibility: DAP tools are hidden during explore/plan
-	// (discovery phases where a debugger is unhelpful) and shown during
-	// build/review. Polled per tool_call so transitions are picked up promptly.
-	const visibility = createToolVisibility(pi)
-	let lastPhase: string | undefined
 
 	createSystemPromptBlocks(pi, "dap").register({
 		id: "dap-tools",
@@ -135,23 +106,6 @@ export default function (pi: ExtensionAPI) {
 			ui = undefined
 		}
 		warned = false
-	})
-
-	// ── Phase-based tool visibility: poll getCurrentPhase per tool_call ──────────
-	// Mirrors the review-write-guard pattern. When the phase transitions into
-	// explore/plan, disable DAP tools; when it transitions into build/review,
-	// re-enable them. Idempotent via the lastPhase cache.
-	pi.on("tool_call", (_event, ctx) => {
-		const sessionId = ctx.sessionManager.getSessionId()
-		const phase = getCurrentPhase(sessionId)
-		if (phase === lastPhase) return
-		lastPhase = phase
-		const shouldShow = phase === undefined || DAP_VISIBLE_PHASES.has(phase)
-		if (shouldShow) {
-			visibility.enable(DAP_TOOL_NAMES)
-		} else {
-			visibility.disable(DAP_TOOL_NAMES)
-		}
 	})
 
 	// ── Degraded-state warning: notify once on the first agent turn ─────────────
