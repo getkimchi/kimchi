@@ -27,6 +27,7 @@ export type LoopGuardDetector =
 	| "fuzzy_ngram"
 	| "edit_run"
 	| "edit_run_total"
+	| "repeated_edit"
 	| "bash_repetition"
 
 export interface LoopGuardWarnPayload {

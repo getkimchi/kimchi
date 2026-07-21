@@ -40,6 +40,16 @@ const EXACT_2GRAM_THRESHOLD = 5 // 6× repeat of a 2-gram with identical output
 const EXACT_3GRAM_THRESHOLD = 3 // 4× repeat of a 3-gram with identical output
 const EDIT_RUN_THRESHOLD = 8 // same file edited 8× AND same bash prefix 8× in window
 const EDIT_RUN_TOTAL_THRESHOLD = 12 // same file 12× AND same bash prefix 12× over the whole task
+// Relaxed edit-run signal: same file edited N× without requiring the bash
+// prefix to match. Catches loops where the agent varies its test/build
+// commands (different make targets, different flags) but keeps patching the
+// same file — a clear non-convergence signal the strict edit-run detector
+// misses. Threshold matches EDIT_RUN_THRESHOLD for consistency; no observed
+// passing task edits any single file more than once, so 8 provides ample
+// headroom. Window variant additionally requires N+ bash calls in window
+// (any prefix) to confirm it's an edit→run cycle, not just sequential edits.
+const REPEATED_EDIT_THRESHOLD = 8 // same file edited 8× in window with 8+ bash calls (any prefix)
+const REPEATED_EDIT_TOTAL_THRESHOLD = 8 // same file edited 8× across the whole task (bash-independent)
 const BASH_REPEAT_THRESHOLD = 12 // bash-only: same prefix 12× in window (no edit required)
 const BASH_REPEAT_TOTAL_THRESHOLD = 15 // bash-only: same prefix 15× across the task
 const BASH_PREFIX_LENGTH = 50 // normalize bash commands by this prefix
@@ -104,6 +114,12 @@ function buildSteerPrefix(warnCount: number): string {
  *      command prefix is run repeatedly within the window (non-contiguous).
  *      Catches the edit\u2192build\u2192run\u2192see-error\u2192edit cycle that detectors 1\u20133
  *      miss because the edit args change every iteration.
+ *   5. Repeated edit cycle — a single file is edited N\u00d7 WITHOUT requiring
+ *      the bash command prefix to match. A relaxed variant of (4) that
+ *      catches loops where the agent varies its test/build commands
+ *      (different make targets, different flags) but keeps patching the
+ *      same file — a non-convergence signal the strict edit-run detector
+ *      misses because no single bash prefix reaches threshold.
  */
 export class LoopGuard {
 	private history: ToolHistoryRecord[] = []
@@ -318,6 +334,7 @@ export class LoopGuard {
 			this.detectFuzzyNgram() ??
 			this.detectEditRunCycle() ??
 			this.detectEditRunCycleTotal() ??
+			this.detectRepeatedEditCycle() ??
 			this.detectBashRepetition()
 		)
 	}
@@ -427,6 +444,83 @@ export class LoopGuard {
 			firedKeys: [topEdit[0], topBash[0]],
 			detector: "edit_run_total",
 		}
+	}
+
+	/**
+	 * Relaxed edit-run detector: fires when a single file is edited many
+	 * times WITHOUT requiring the bash command prefix to match. This is a
+	 * targeted relaxation of detectEditRunCycle / detectEditRunCycleTotal —
+	 * it uses the same editCounts / editCountsTotal maps but drops the
+	 * AND-with-bash-prefix condition that causes the strict detectors to
+	 * miss loops where the agent varies its test/build commands (different
+	 * make targets, different flags, different test invocations) while
+	 * churning on the same file.
+	 *
+	 * Window variant: same file edited N× with N+ bash calls (any prefix) in
+	 * the window. The bash-call count confirms it's an edit→run cycle, not
+	 * just sequential edits without verification.
+	 *
+	 * Task-total variant: same file edited N× across the whole task.
+	 * Catches spread-out loops where edits are interleaved with many
+	 * reads/greps and the window never accumulates 8 edits at once.
+	 */
+	private detectRepeatedEditCycle():
+		| { reason: string; firedKeys: string[]; detector: LoopGuardDetector }
+		| undefined {
+		// Window check: same file edited N× with N+ bash calls (any prefix).
+		// The bash-call count confirms it's an edit→run cycle, not just
+		// sequential edits without verification. Unlike detectEditRunCycle,
+		// the bash prefix need NOT match — the repeated edit to the same
+		// file is the signal.
+		const topEdit = mapMax(this.editCounts)
+		if (topEdit && topEdit[1] >= REPEATED_EDIT_THRESHOLD) {
+			const bashInWindow = this.history.filter((r) => r.toolName === "bash").length
+			if (bashInWindow >= REPEATED_EDIT_THRESHOLD) {
+				const editPreview =
+					topEdit[0].length > REASON_ARG_PREVIEW ? `${topEdit[0].slice(0, REASON_ARG_PREVIEW)}…` : topEdit[0]
+				return {
+					reason: `repeated edit cycle: ${editPreview} edited ${topEdit[1]}× with ${bashInWindow} bash calls in last ${this.history.length} calls (test commands vary but the same file keeps being patched without converging)`,
+					// Include the fired file so the post-warn reset deletes its
+					// task-total key too — otherwise the task-total variant
+					// would fire on the very next record (its threshold is
+					// also 8, and editCountsTotal is not cleared by the
+					// window reset).
+					firedKeys: [topEdit[0]],
+					detector: "repeated_edit",
+				}
+			}
+		}
+		// Task-total check: same file edited N× across the whole task, AND
+		// there have been N+ bash calls across the whole task (any prefix).
+		// Catches spread-out loops where edits are interleaved with many
+		// reads/greps and the 30-record window never accumulates 8 edits
+		// at once. The total-bash requirement confirms it's an edit→run
+		// cycle (not just sequential edits without verification) and lets
+		// the stricter detectEditRunCycle / detectEditRunCycleTotal fire
+		// first when they can — those need the SAME bash prefix, so when
+		// bash prefixes vary and the strict detectors miss, this relaxed
+		// variant catches the loop on total bash activity instead.
+		//
+		// totalBash sums bashCountsTotal (raw) values: every bash call
+		// increments exactly one prefix's count, so the sum equals the
+		// total number of bash calls across the task regardless of prefix.
+		const topEditTotal = mapMax(this.editCountsTotal)
+		if (topEditTotal && topEditTotal[1] >= REPEATED_EDIT_TOTAL_THRESHOLD) {
+			let totalBash = 0
+			for (const v of this.bashCountsTotal.values()) totalBash += v
+			if (totalBash >= REPEATED_EDIT_TOTAL_THRESHOLD) {
+				const editPreview =
+					topEditTotal[0].length > REASON_ARG_PREVIEW
+						? `${topEditTotal[0].slice(0, REASON_ARG_PREVIEW)}…`
+						: topEditTotal[0]
+				return {
+					reason: `repeated edit cycle (task-total): ${editPreview} edited ${topEditTotal[1]}× across the task with ${totalBash} bash calls without converging`,
+					firedKeys: [topEditTotal[0]],
+					detector: "repeated_edit",
+				}
+			}
+		}
+		return undefined
 	}
 
 	/**
