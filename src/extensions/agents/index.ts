@@ -1304,7 +1304,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				if (
 					activeBudgetRetryBlock &&
 					shouldBlockBudgetRetry(activeBudgetRetryBlock, {
-						tokenBudget: effectiveTokenBudget ?? resolvedConfig.tokenBudget,
+						tokenBudget: effectiveTokenBudget,
 						subagentType,
 						description: params.description as string,
 						prompt: params.prompt as string,
@@ -1363,9 +1363,9 @@ ${AGENT_TOOL_GUIDELINES}`,
 				const agentTags: string[] = []
 				if (thinking) agentTags.push(`thinking: ${thinking}`)
 				if (resolvedConfig.tokenBudget != null)
-					agentTags.push(`budget: ${formatTokens(effectiveTokenBudget ?? resolvedConfig.tokenBudget)}`)
+					agentTags.push(`budget: ${formatTokens(effectiveTokenBudget!)}`)
 				if (isolated) agentTags.push("isolated")
-				const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? getDefaultMaxTurns())
+				const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns)
 				const detailBase = {
 					displayName,
 					description: params.description as string,
@@ -1411,7 +1411,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 							visibility,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
 							maxTurns: effectiveMaxTurns,
-							tokenBudget: resolvedConfig.tokenBudget,
+							tokenBudget: effectiveTokenBudget,
 							taskRef,
 							maxDuration: resolvedConfig.maxDuration,
 							isolated,
@@ -1557,7 +1557,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 						visibility,
 						model: model as Parameters<typeof manager.spawn>[4]["model"],
 						maxTurns: effectiveMaxTurns,
-						tokenBudget: resolvedConfig.tokenBudget,
+						tokenBudget: effectiveTokenBudget,
 						taskRef,
 						maxDuration: resolvedConfig.maxDuration,
 						isolated,
