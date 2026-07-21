@@ -38,7 +38,6 @@ import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
 import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
-import { AGENT_WORKER_BUDGETS } from "./worker-budget-policy.js"
 import {
 	getAgentConversation,
 	getDefaultMaxTurns,
@@ -86,6 +85,7 @@ import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invo
 import { type ModelRegistry, resolveModel } from "./resolution/model-resolver.js"
 import { registerResumeSubagentTool } from "./resume-tool.js"
 import { applyAndEmitLoaded, type SubagentsSettings, saveAndEmitChanged } from "./settings.js"
+import { AGENT_WORKER_BUDGETS } from "./worker-budget-policy.js"
 import {
 	type AgentActivity,
 	type AgentDetails,
@@ -1362,8 +1362,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 						: undefined
 				const agentTags: string[] = []
 				if (thinking) agentTags.push(`thinking: ${thinking}`)
-				if (resolvedConfig.tokenBudget != null)
-					agentTags.push(`budget: ${formatTokens(effectiveTokenBudget!)}`)
+				if (resolvedConfig.tokenBudget != null) agentTags.push(`budget: ${formatTokens(effectiveTokenBudget!)}`)
 				if (isolated) agentTags.push("isolated")
 				const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns)
 				const detailBase = {

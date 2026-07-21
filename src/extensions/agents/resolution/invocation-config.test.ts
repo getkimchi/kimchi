@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { resolveAgentInvocationConfig } from "./invocation-config.js"
 import { AGENT_WORKER_BUDGETS } from "../worker-budget-policy.js"
+import { resolveAgentInvocationConfig } from "./invocation-config.js"
 
 const agent = {
 	name: "test",
