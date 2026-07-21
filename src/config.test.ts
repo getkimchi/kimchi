@@ -852,11 +852,11 @@ describe("upgradeLegacyRetrySettings", () => {
 		expect(upgradeLegacyRetrySettings(oldDefault)).toEqual(RETRY_DEFAULTS)
 	})
 
-	it("upgrades the iteration-1/2/3 default block (maxRetries 3, timeoutMs 120_000) to maxRetries 1", () => {
+	it("upgrades the iteration-1/2/3 default block (maxRetries 3, timeoutMs 120_000) to maxRetries 2", () => {
 		// The kimchi default from iteration 0001 through 0003: timeoutMs was
 		// already reduced to 120_000, but maxRetries was still 3, so a failing
 		// gateway still triggered a ~11-minute retry storm per failed turn.
-		// This exact block must upgrade maxRetries to the current default (1).
+		// This exact block must upgrade maxRetries to the current default (2).
 		const iter1Default = {
 			enabled: true,
 			maxRetries: 3,
@@ -868,6 +868,26 @@ describe("upgradeLegacyRetrySettings", () => {
 			},
 		}
 		expect(upgradeLegacyRetrySettings(iter1Default)).toEqual(RETRY_DEFAULTS)
+	})
+
+	it("upgrades the iteration-4/5/6/7 default block (maxRetries 1, timeoutMs 120_000) to maxRetries 2", () => {
+		// The kimchi default from iteration 0004 through 0007: maxRetries was
+		// reduced from 3 to 1, making the harness unable to recover from 2+
+		// consecutive transport failures within a single turn. This caused
+		// feal-differential-cryptanalysis to regress from pass (iters 1-3) to
+		// timeout (iters 4-7). This exact block must upgrade maxRetries to the
+		// current default (2).
+		const iter4Default = {
+			enabled: true,
+			maxRetries: 1,
+			baseDelayMs: 2000,
+			provider: {
+				timeoutMs: 120_000,
+				maxRetries: 0,
+				maxRetryDelayMs: 60_000,
+			},
+		}
+		expect(upgradeLegacyRetrySettings(iter4Default)).toEqual(RETRY_DEFAULTS)
 	})
 
 	it("leaves a user-tuned maxRetries alone even if provider matches the iteration-1/2/3 default", () => {

@@ -90,7 +90,7 @@ export interface PreferencesConfig {
 
 export const RETRY_DEFAULTS = {
 	enabled: true,
-	maxRetries: 1,
+	maxRetries: 2,
 	baseDelayMs: 2000,
 	provider: {
 		timeoutMs: 120_000,
@@ -147,6 +147,27 @@ const LEGACY_KIMCHI_RETRY_DEFAULTS_ITER1 = {
 } satisfies RetrySettings
 
 /**
+ * The kimchi default retry block from iteration 0004 through 0007:
+ * `maxRetries` was reduced from 3 to 1, making the harness unable to recover
+ * from 2+ consecutive transport failures within a single turn. This caused
+ * `feal-differential-cryptanalysis` to regress from pass (iters 1-3) to
+ * timeout (iters 4-7). `upgradeLegacyProviderTimeout` detects and upgrades
+ * this exact shape too. Frozen at these values rather than derived from
+ * `RETRY_DEFAULTS`, so a future change to another default does not silently
+ * stop detecting old settings.json files written by iterations 4–7.
+ */
+const LEGACY_KIMCHI_RETRY_DEFAULTS_ITER4 = {
+	enabled: true,
+	maxRetries: 1,
+	baseDelayMs: 2000,
+	provider: {
+		timeoutMs: 120_000,
+		maxRetries: 0,
+		maxRetryDelayMs: 60_000,
+	},
+} satisfies RetrySettings
+
+/**
  * Returns the `retry` block to write into pi's settings.json, or undefined if
  * the existing block should be left alone. A missing block gets the defaults.
  *
@@ -159,12 +180,14 @@ const LEGACY_KIMCHI_RETRY_DEFAULTS_ITER1 = {
  * A block that already carries a `provider` section is normally left alone —
  * the user (or a prior kimchi run) tuned it. The exceptions are exact matches
  * of `LEGACY_KIMCHI_RETRY_DEFAULTS` (the pre-iteration-0001 default, with
- * `provider.timeoutMs: 600_000`) or `LEGACY_KIMCHI_RETRY_DEFAULTS_ITER1`
+ * `provider.timeoutMs: 600_000`), `LEGACY_KIMCHI_RETRY_DEFAULTS_ITER1`
  * (the iteration-0001-through-0003 default, with `maxRetries: 3` and
+ * `provider.timeoutMs: 120_000`), or `LEGACY_KIMCHI_RETRY_DEFAULTS_ITER4`
+ * (the iteration-0004-through-0007 default, with `maxRetries: 1` and
  * `provider.timeoutMs: 120_000`): those blocks are kimchi-written legacy
  * state too, so we upgrade them to the current defaults (which carry
- * `maxRetries: 1` and `provider.timeoutMs: 120_000`). User-tuned values that
- * differ from either old default are preserved.
+ * `maxRetries: 2` and `provider.timeoutMs: 120_000`). User-tuned values that
+ * differ from any of the old defaults are preserved.
  */
 export function upgradeLegacyRetrySettings(retry: unknown): RetrySettings | undefined {
 	if (retry === undefined) return RETRY_DEFAULTS
@@ -228,17 +251,20 @@ function isExactLegacyRetryBlock(
 /**
  * If `legacy` is an exact match for one of the frozen legacy kimchi default
  * retry blocks — `LEGACY_KIMCHI_RETRY_DEFAULTS` (pre-iteration-0001, with
- * `provider.timeoutMs: 600_000`) or `LEGACY_KIMCHI_RETRY_DEFAULTS_ITER1`
+ * `provider.timeoutMs: 600_000`), `LEGACY_KIMCHI_RETRY_DEFAULTS_ITER1`
  * (iteration-0001-through-0003, with `maxRetries: 3` and
+ * `provider.timeoutMs: 120_000`), or `LEGACY_KIMCHI_RETRY_DEFAULTS_ITER4`
+ * (iteration-0004-through-0007, with `maxRetries: 1` and
  * `provider.timeoutMs: 120_000`) — upgrade it to the current `RETRY_DEFAULTS`
- * (which carries `maxRetries: 1` and `provider.timeoutMs: 120_000`) and
+ * (which carries `maxRetries: 2` and `provider.timeoutMs: 120_000`) and
  * return the result. Otherwise return undefined to leave the user-tuned block
  * untouched.
  */
 function upgradeLegacyProviderTimeout(legacy: Record<string, unknown>): RetrySettings | undefined {
 	if (
 		!isExactLegacyRetryBlock(legacy, LEGACY_KIMCHI_RETRY_DEFAULTS) &&
-		!isExactLegacyRetryBlock(legacy, LEGACY_KIMCHI_RETRY_DEFAULTS_ITER1)
+		!isExactLegacyRetryBlock(legacy, LEGACY_KIMCHI_RETRY_DEFAULTS_ITER1) &&
+		!isExactLegacyRetryBlock(legacy, LEGACY_KIMCHI_RETRY_DEFAULTS_ITER4)
 	) {
 		return undefined
 	}
