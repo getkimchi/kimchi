@@ -13,8 +13,36 @@ const namesOf = (entries: ToolEntry[]): string[] => entries.map((t) => t.name)
 
 const TODO_TOOL_NAMES = ["create_todos", "update_todos", "add_todo", "mark_todo", "clear_todos"]
 
+const DAP_TOOL_NAMES = [
+	"debug_launch",
+	"debug_set_breakpoint",
+	"debug_continue",
+	"debug_locals",
+	"debug_eval",
+	"debug_backtrace",
+	"debug_terminate",
+	"step_in",
+	"step_over",
+	"step_out",
+	"debug_state_at",
+	"debug_last_error",
+	"debug_trace_calls",
+	"debug_watch_change",
+]
+
 const TOOL_NAMES = {
-	sharedCore: ["read", "grep", "find", "ls", "skill", "web_fetch", "web_search", "mcp", ...TODO_TOOL_NAMES],
+	sharedCore: [
+		"read",
+		"grep",
+		"find",
+		"ls",
+		"skill",
+		"web_fetch",
+		"web_search",
+		"mcp",
+		...DAP_TOOL_NAMES,
+		...TODO_TOOL_NAMES,
+	],
 	adhocOnly: ["questionnaire"],
 	fermentPlanningTools: [
 		"set_phase",
@@ -44,7 +72,7 @@ const TOOL_NAMES = {
 
 describe("SHARED_CORE_TOOLS", () => {
 	it("contains the read-only discovery tools, the skill loader, the mcp gateway, plus 5 todo lifecycle tools", () => {
-		expect(SHARED_CORE_TOOLS).toHaveLength(13)
+		expect(SHARED_CORE_TOOLS).toHaveLength(27)
 		for (const name of TOOL_NAMES.sharedCore) {
 			expect(SHARED_CORE_TOOLS).toContainEqual(expect.objectContaining({ name }))
 		}
@@ -156,7 +184,7 @@ describe("getToolsForProfile", () => {
 	describe("idle", () => {
 		it("returns only shared core tools", () => {
 			const result = getToolsForProfile("idle")
-			expect(result).toHaveLength(13)
+			expect(result).toHaveLength(27)
 			expect(namesOf(result)).toEqual(TOOL_NAMES.sharedCore)
 		})
 
