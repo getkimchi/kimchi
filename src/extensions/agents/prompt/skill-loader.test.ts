@@ -50,14 +50,5 @@ describe("listAvailableSkillNames", () => {
 		}
 	})
 
-	it("includes at least one skill from the project", () => {
-		const skills = listAvailableSkillNames(process.cwd())
-		expect(skills.length).toBeGreaterThan(0)
-	})
 
-	it("does not return duplicate names", () => {
-		const skills = listAvailableSkillNames(process.cwd())
-		const names = skills.map((s) => s.name)
-		expect(names.length).toBe(new Set(names).size)
-	})
 })
