@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process"
 import type { ChildProcess } from "node:child_process"
+import { spawn } from "node:child_process"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { createPrStatusWatcher, getPrStatusLine, setPrStatusForTest, type PrInfo } from "./pr-status.js"
+import { createPrStatusWatcher, getPrStatusLine, type PrInfo, setPrStatusForTest } from "./pr-status.js"
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }))
 
@@ -12,14 +12,22 @@ function fakeChild(): ChildProcess & { emitStdout(data: string): void; emitClose
 	const child = {
 		stdout: {
 			on: (event: string, cb: (data: Buffer) => void) => {
-				if (!events.has(event)) events.set(event, new Set())
-				events.get(event)!.add(cb as (...args: unknown[]) => void)
+				let set = events.get(event)
+				if (!set) {
+					set = new Set()
+					events.set(event, set)
+				}
+				set.add(cb as (...args: unknown[]) => void)
 			},
 		},
 		stderr: { on: vi.fn() },
 		on: (event: string, cb: (...args: unknown[]) => void) => {
-			if (!events.has(event)) events.set(event, new Set())
-			events.get(event)!.add(cb)
+			let set = events.get(event)
+			if (!set) {
+				set = new Set()
+				events.set(event, set)
+			}
+			set.add(cb)
 		},
 		emitStdout: (data: string) => {
 			for (const cb of events.get("data") ?? []) (cb as (data: Buffer) => void)(Buffer.from(data))

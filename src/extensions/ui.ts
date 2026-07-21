@@ -22,6 +22,7 @@ import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
 import { getOrchestratorModelId, getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
+import { createPrStatusWatcher } from "./pr-status.js"
 import { isRawInputCaptureActive } from "./shared-input.js"
 import {
 	isSessionModeOnboardingStatusLineSuppressed,
@@ -30,7 +31,6 @@ import {
 } from "./shared-status-line.js"
 import { createWorkingAnimator } from "./spinner.js"
 import { createBranchPoller } from "./ui-branch-poll.js"
-import { createPrStatusWatcher } from "./pr-status.js"
 
 export { requestSharedStatusLineRender, setSessionModeOnboardingStatusLineSuppressed } from "./shared-status-line.js"
 

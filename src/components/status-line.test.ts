@@ -5,8 +5,8 @@ import type { StatusLineElementId } from "../config/status-line-config.js"
 import * as AGENTS from "../extensions/agents/index.js"
 import { setBillingStatusForTest } from "../extensions/billing/status.js"
 import * as FERMENT from "../extensions/ferment/index.js"
-import { setPrStatusForTest } from "../extensions/pr-status.js"
 import * as MULTI_MODEL from "../extensions/multi-model.js"
+import { setPrStatusForTest } from "../extensions/pr-status.js"
 import * as TAGS from "../extensions/tags.js"
 import {
 	buildContextCompact,
