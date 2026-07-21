@@ -770,10 +770,7 @@ describe("Edit-run cycle detector — task-total backstop", () => {
 	}
 
 	it("does not fire at 11 rounds (below both thresholds)", () => {
-		// Backstop disabled (stuckMaxSteers: 0) to isolate the task-total
-		// signature detector. The feed pushes 88 varied records, which the
-		// backstop would otherwise catch — that is its job, not under test here.
-		const guard = new LoopGuard({ stuckMaxSteers: 0 })
+		const guard = new LoopGuard()
 		feedSparseEditRun(guard, 11, 11, 3)
 		expect(guard.isWarned()).toBe(false)
 		expect(guard.isTriggered()).toBe(false)
@@ -800,9 +797,8 @@ describe("Edit-run cycle detector — task-total backstop", () => {
 	})
 
 	it("task-total does not fire if one of edit/bash is below threshold", () => {
-		// Backstop disabled to isolate the task-total signature detector.
-		const guard = new LoopGuard({ stuckMaxSteers: 0 })
 		// 12 edits but only 5 bash runs — not a loop.
+		const guard = new LoopGuard()
 		feedSparseEditRun(guard, 12, 5, 3)
 		expect(guard.isWarned()).toBe(false)
 	})
@@ -1038,10 +1034,13 @@ describe("Bash-only loop detector", () => {
 	})
 })
 
-describe("Stuck-session backstop detector", () => {
-	// Produces a record with a unique combination of toolName / args /
-	// fingerprint per index so NO signature detector can match. The
-	// backstop fires purely on aggregate tool-call count.
+describe("Long productive session does not fire signature-independent backstop", () => {
+	// Regression guard for the reverted stuck_session backstop (iteration
+	// 0003). That detector fired purely on a raw tool-call count (≥40) with
+	// no signal of non-convergence, which misfired on legitimately long
+	// productive tasks and flipped would-be passes to fails. After the
+	// revert, a session of many varied tool calls must stay "ok" — only
+	// signature detectors (repeated tool-call signatures) can fire.
 	function variedRec(i: number): ToolHistoryRecord {
 		const tools = ["bash", "read", "grep", "edit", "write"]
 		return {
@@ -1052,88 +1051,20 @@ describe("Stuck-session backstop detector", () => {
 		}
 	}
 
-	it("does not fire below the 40-call threshold (39 varied records)", () => {
+	it("does not fire on 120 varied records (no signature repeats)", () => {
 		const guard = new LoopGuard()
 		const states: Array<ReturnType<LoopGuard["record"]>> = []
-		for (let i = 0; i < 39; i++) states.push(guard.record(variedRec(i)))
+		for (let i = 0; i < 120; i++) states.push(guard.record(variedRec(i)))
 		expect(states.every((s) => s.state === "ok")).toBe(true)
 		expect(guard.isWarned()).toBe(false)
 	})
 
-	it("fires on the 40th varied record with detector='stuck_session'", () => {
-		const guard = new LoopGuard()
-		for (let i = 0; i < 39; i++) guard.record(variedRec(i))
-		const result = guard.record(variedRec(39))
-		expect(result.state).toBe("warn")
-		expect(result.detector).toBe("stuck_session")
-		expect(result.reason).toContain("40 tool calls")
-	})
-
-	it("does not re-fire within STUCK_RE_FIRE_INTERVAL (19 calls) after a warn", () => {
+	it("signature detector still fires on a real loop within a long session", () => {
+		// 40 varied records (past the old backstop threshold), then a real
+		// consecutive-identical loop must fire the signature detector.
 		const guard = new LoopGuard()
 		for (let i = 0; i < 40; i++) guard.record(variedRec(i))
-		expect(guard.isWarned()).toBe(true)
-		// After the warn, toolCallsSinceLastWarn resets. 19 more varied calls
-		// stay below the 20-call re-fire interval.
-		const states: Array<ReturnType<LoopGuard["record"]>> = []
-		for (let i = 40; i < 59; i++) states.push(guard.record(variedRec(i)))
-		expect(states.every((s) => s.state === "ok")).toBe(true)
-	})
-
-	it("re-fires on the 20th call after a backstop warn", () => {
-		const guard = new LoopGuard()
-		for (let i = 0; i < 40; i++) guard.record(variedRec(i)) // first fire
-		const states: Array<ReturnType<LoopGuard["record"]>> = []
-		for (let i = 40; i < 59; i++) states.push(guard.record(variedRec(i))) // 19 — no fire
-		expect(states.every((s) => s.state === "ok")).toBe(true)
-		const twentieth = guard.record(variedRec(59)) // 20th — re-fire
-		expect(twentieth.state).toBe("warn")
-		expect(twentieth.detector).toBe("stuck_session")
-	})
-
-	it("caps backstop steers at STUCK_MAX_STEERS (5); further varied records do not re-fire backstop", () => {
-		const guard = new LoopGuard()
-		let backstopFires = 0
-		// Fire the backstop 5 times: call 40, then every 20 calls after.
-		// 40, 60, 80, 100, 120 → 5 fires.
-		for (let i = 0; i < 120; i++) {
-			const r = guard.record(variedRec(i))
-			if (r.detector === "stuck_session") backstopFires++
-		}
-		expect(backstopFires).toBe(5)
-		// Beyond the cap, the backstop never fires again even with continued churning.
-		const after: Array<ReturnType<LoopGuard["record"]>> = []
-		for (let i = 120; i < 200; i++) after.push(guard.record(variedRec(i)))
-		expect(after.every((s) => s.detector !== "stuck_session")).toBe(true)
-	})
-
-	it("reset() zeroes toolCallCount, toolCallsSinceLastWarn, and stuckWarnCount", () => {
-		const guard = new LoopGuard()
-		// Fire the backstop once.
-		for (let i = 0; i < 40; i++) guard.record(variedRec(i))
-		expect(guard.isWarned()).toBe(true)
-		guard.reset()
 		expect(guard.isWarned()).toBe(false)
-		// After reset, 39 varied records must NOT fire (toolCallCount was zeroed).
-		const states: Array<ReturnType<LoopGuard["record"]>> = []
-		for (let i = 0; i < 39; i++) states.push(guard.record(variedRec(i)))
-		expect(states.every((s) => s.state === "ok")).toBe(true)
-		// And the 40th fires again (stuckWarnCount was zeroed, cap not reached).
-		const result = guard.record(variedRec(39))
-		expect(result.state).toBe("warn")
-		expect(result.detector).toBe("stuck_session")
-	})
-
-	it("does not shadow signature detectors: consecutive_identical fires even past the 40-call threshold", () => {
-		// Feed 40 varied records so toolCallCount crosses the backstop
-		// threshold; the backstop fires at call 40 (resetting the
-		// re-fire counter). Then feed 3 identical bash results —
-		// consecutive_identical (higher priority in the detect chain)
-		// must fire, not the backstop.
-		const guard = new LoopGuard()
-		for (let i = 0; i < 40; i++) guard.record(variedRec(i))
-		expect(guard.isWarned()).toBe(true)
-		// 3 identical bash records → consecutive_identical fires on the 3rd.
 		const identical = rec({ isError: true, outputFingerprint: FP_A })
 		guard.record(identical)
 		guard.record(identical)
