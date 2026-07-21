@@ -23,10 +23,10 @@ import { createSystemPromptBlocks } from "./prompt-construction/index.js"
 
 const DAP_SYSTEM_PROMPT = `## Debugger (DAP)
 
-DAP tools give you a live debugger — your first tool for understanding runtime behavior, not a last resort. **Before you trace values by hand or write a repro script, check if the debugger can answer your question directly.** A breakpoint + \`debug_eval\` shows you the actual value in seconds and ~500 tokens; reasoning through code or building a repro takes minutes, ~50,000 tokens, and can still be wrong. The debugger is both faster and cheaper.
+DAP tools give you a live debugger — your first tool for understanding runtime behavior, not a last resort. **Do NOT trace variable values through code by hand.** If you need to know what a variable's value is at runtime, set a breakpoint and look at it. A breakpoint + \`debug_eval\` shows you the actual value in seconds and ~500 tokens; reasoning through code takes minutes, ~50,000 tokens, and can still be wrong. The debugger is both faster and cheaper.
 
 **Use the debugger instead of:**
-- Tracing variable values through code by hand ("if generation is 1 here, then after the loop it becomes...") → \`debug_state_at({file, line, evaluated: ["var"]})\` shows the actual value at that line
+- Tracing variable values through code by hand ("if generation is 1 here, then after the loop it becomes...") → **STOP.** Use \`debug_state_at({file, line, evaluated: ["var"]})\` to see the actual value. Do not spend thinking tokens on tracing runtime values — the debugger answers in one call.
 - Writing a throwaway repro script to test a hypothesis → \`debug_state_at\` or \`debug_watch_change\` will show you the value directly, no script needed
 - Adding \`console.log\` / \`fmt.Println\` / \`print()\` to see a value → \`debug_state_at\` with \`evaluated\` gives you the exact value at a breakpoint, with no code to clean up
 - Guessing why a program panics or throws → \`debug_last_error\` captures the exception, locals at the throw site, and the backtrace in one call
