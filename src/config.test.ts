@@ -852,6 +852,52 @@ describe("upgradeLegacyRetrySettings", () => {
 		expect(upgradeLegacyRetrySettings(oldDefault)).toEqual(RETRY_DEFAULTS)
 	})
 
+	it("upgrades the iteration-1/2/3 default block (maxRetries 3, timeoutMs 120_000) to maxRetries 1", () => {
+		// The kimchi default from iteration 0001 through 0003: timeoutMs was
+		// already reduced to 120_000, but maxRetries was still 3, so a failing
+		// gateway still triggered a ~11-minute retry storm per failed turn.
+		// This exact block must upgrade maxRetries to the current default (1).
+		const iter1Default = {
+			enabled: true,
+			maxRetries: 3,
+			baseDelayMs: 2000,
+			provider: {
+				timeoutMs: 120_000,
+				maxRetries: 0,
+				maxRetryDelayMs: 60_000,
+			},
+		}
+		expect(upgradeLegacyRetrySettings(iter1Default)).toEqual(RETRY_DEFAULTS)
+	})
+
+	it("leaves a user-tuned maxRetries alone even if provider matches the iteration-1/2/3 default", () => {
+		const userTunedRetries = {
+			enabled: true,
+			maxRetries: 5,
+			baseDelayMs: 2000,
+			provider: {
+				timeoutMs: 120_000,
+				maxRetries: 0,
+				maxRetryDelayMs: 60_000,
+			},
+		}
+		expect(upgradeLegacyRetrySettings(userTunedRetries)).toBeUndefined()
+	})
+
+	it("leaves a user-tuned provider timeout alone even if other keys match the iteration-1/2/3 default", () => {
+		const userTunedTimeout = {
+			enabled: true,
+			maxRetries: 3,
+			baseDelayMs: 2000,
+			provider: {
+				timeoutMs: 300_000,
+				maxRetries: 0,
+				maxRetryDelayMs: 60_000,
+			},
+		}
+		expect(upgradeLegacyRetrySettings(userTunedTimeout)).toBeUndefined()
+	})
+
 	it("leaves a user-tuned provider timeout alone even if other keys match the old default", () => {
 		const userTunedTimeout = {
 			enabled: true,

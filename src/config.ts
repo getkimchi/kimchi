@@ -90,7 +90,7 @@ export interface PreferencesConfig {
 
 export const RETRY_DEFAULTS = {
 	enabled: true,
-	maxRetries: 3,
+	maxRetries: 1,
 	baseDelayMs: 2000,
 	provider: {
 		timeoutMs: 120_000,
@@ -124,6 +124,29 @@ const LEGACY_KIMCHI_RETRY_DEFAULTS = {
 } satisfies RetrySettings
 
 /**
+ * The kimchi default retry block from iteration 0001 through 0003:
+ * `provider.timeoutMs` was already reduced to 120_000, but `maxRetries`
+ * remained 3, so a failing gateway still triggered a ~11-minute retry storm
+ * per failed turn (4 attempts × 120 s + 3 backoffs ≈ 666 s). Reducing
+ * `maxRetries` to 1 cuts that to ~5 minutes per failed turn.
+ * `upgradeLegacyProviderTimeout` detects and upgrades this exact shape too,
+ * mirroring the `LEGACY_KIMCHI_RETRY_DEFAULTS` (`timeoutMs: 600_000`)
+ * detection. Frozen at these values rather than derived from
+ * `RETRY_DEFAULTS`, so a future change to another default does not silently
+ * stop detecting old settings.json files written by iterations 1–3.
+ */
+const LEGACY_KIMCHI_RETRY_DEFAULTS_ITER1 = {
+	enabled: true,
+	maxRetries: 3,
+	baseDelayMs: 2000,
+	provider: {
+		timeoutMs: 120_000,
+		maxRetries: 0,
+		maxRetryDelayMs: 60_000,
+	},
+} satisfies RetrySettings
+
+/**
  * Returns the `retry` block to write into pi's settings.json, or undefined if
  * the existing block should be left alone. A missing block gets the defaults.
  *
@@ -134,11 +157,14 @@ const LEGACY_KIMCHI_RETRY_DEFAULTS = {
  * known to be kimchi-written rather than user intent.
  *
  * A block that already carries a `provider` section is normally left alone —
- * the user (or a prior kimchi run) tuned it. The one exception is an exact
- * match of `LEGACY_KIMCHI_RETRY_DEFAULTS` (the previous kimchi default,
- * with `provider.timeoutMs: 600_000`): that block is kimchi-written legacy
- * state too, so we upgrade just the `timeoutMs` to the current default.
- * User-tuned values that differ from the old default are preserved.
+ * the user (or a prior kimchi run) tuned it. The exceptions are exact matches
+ * of `LEGACY_KIMCHI_RETRY_DEFAULTS` (the pre-iteration-0001 default, with
+ * `provider.timeoutMs: 600_000`) or `LEGACY_KIMCHI_RETRY_DEFAULTS_ITER1`
+ * (the iteration-0001-through-0003 default, with `maxRetries: 3` and
+ * `provider.timeoutMs: 120_000`): those blocks are kimchi-written legacy
+ * state too, so we upgrade them to the current defaults (which carry
+ * `maxRetries: 1` and `provider.timeoutMs: 120_000`). User-tuned values that
+ * differ from either old default are preserved.
  */
 export function upgradeLegacyRetrySettings(retry: unknown): RetrySettings | undefined {
 	if (retry === undefined) return RETRY_DEFAULTS
@@ -164,39 +190,59 @@ export function upgradeLegacyRetrySettings(retry: unknown): RetrySettings | unde
 }
 
 /**
- * If `legacy` is the exact previous kimchi default retry block
- * (`LEGACY_KIMCHI_RETRY_DEFAULTS`, the shape written by older kimchi versions
- * that seeded `provider.timeoutMs: 600_000`), upgrade just the `timeoutMs` to
- * the current default and return the result. Otherwise return undefined to
- * leave the user-tuned block untouched.
+ * Returns true if `legacy` is an exact match for the frozen legacy default
+ * `frozen`: the same set of top-level keys (`enabled`, `maxRetries`,
+ * `baseDelayMs`, `provider`) with equal values, and the same set of provider
+ * keys (`timeoutMs`, `maxRetries`, `maxRetryDelayMs`) with equal values. Any
+ * divergence — a user-tuned value, an extra key, a partial provider block —
+ * returns false so the caller leaves the block untouched. Compares against
+ * the frozen constant (not the current `RETRY_DEFAULTS`) so a future change
+ * to a non-matching default does not silently stop detecting old
+ * settings.json files.
  */
-function upgradeLegacyProviderTimeout(legacy: Record<string, unknown>): RetrySettings | undefined {
-	const provider = legacy.provider
-	if (!provider || typeof provider !== "object" || Array.isArray(provider)) return undefined
-
-	const p = provider as Record<string, unknown>
-	// Only upgrade the exact old default block. Compare each field against the
-	// frozen LEGACY_KIMCHI_RETRY_DEFAULTS (not the current RETRY_DEFAULTS) so
-	// that a future change to a non-timeoutMs default does not silently stop
-	// detecting old settings.json files. Any divergence (user-tuned value,
-	// extra key, etc.) returns undefined and leaves the block untouched.
+function isExactLegacyRetryBlock(
+	legacy: Record<string, unknown>,
+	frozen: typeof LEGACY_KIMCHI_RETRY_DEFAULTS,
+): boolean {
 	const expectedTopKeys = new Set(["enabled", "maxRetries", "baseDelayMs", "provider"])
 	const actualTopKeys = new Set(Object.keys(legacy))
-	if (actualTopKeys.size !== expectedTopKeys.size) return undefined
-	for (const k of actualTopKeys) if (!expectedTopKeys.has(k)) return undefined
-	if (legacy.enabled !== LEGACY_KIMCHI_RETRY_DEFAULTS.enabled) return undefined
-	if (legacy.maxRetries !== LEGACY_KIMCHI_RETRY_DEFAULTS.maxRetries) return undefined
-	if (legacy.baseDelayMs !== LEGACY_KIMCHI_RETRY_DEFAULTS.baseDelayMs) return undefined
+	if (actualTopKeys.size !== expectedTopKeys.size) return false
+	for (const k of actualTopKeys) if (!expectedTopKeys.has(k)) return false
+	if (legacy.enabled !== frozen.enabled) return false
+	if (legacy.maxRetries !== frozen.maxRetries) return false
+	if (legacy.baseDelayMs !== frozen.baseDelayMs) return false
 
+	const provider = legacy.provider
+	if (!provider || typeof provider !== "object" || Array.isArray(provider)) return false
+	const p = provider as Record<string, unknown>
 	const expectedProviderKeys = new Set(["timeoutMs", "maxRetries", "maxRetryDelayMs"])
 	const actualProviderKeys = new Set(Object.keys(p))
-	if (actualProviderKeys.size !== expectedProviderKeys.size) return undefined
-	for (const k of actualProviderKeys) if (!expectedProviderKeys.has(k)) return undefined
-	if (p.maxRetries !== LEGACY_KIMCHI_RETRY_DEFAULTS.provider.maxRetries) return undefined
-	if (p.maxRetryDelayMs !== LEGACY_KIMCHI_RETRY_DEFAULTS.provider.maxRetryDelayMs) return undefined
-	if (p.timeoutMs !== LEGACY_KIMCHI_RETRY_DEFAULTS.provider.timeoutMs) return undefined
+	if (actualProviderKeys.size !== expectedProviderKeys.size) return false
+	for (const k of actualProviderKeys) if (!expectedProviderKeys.has(k)) return false
+	if (p.maxRetries !== frozen.provider.maxRetries) return false
+	if (p.maxRetryDelayMs !== frozen.provider.maxRetryDelayMs) return false
+	if (p.timeoutMs !== frozen.provider.timeoutMs) return false
+	return true
+}
 
-	// Exact match of the old default: upgrade only the timeout. Clone the
+/**
+ * If `legacy` is an exact match for one of the frozen legacy kimchi default
+ * retry blocks — `LEGACY_KIMCHI_RETRY_DEFAULTS` (pre-iteration-0001, with
+ * `provider.timeoutMs: 600_000`) or `LEGACY_KIMCHI_RETRY_DEFAULTS_ITER1`
+ * (iteration-0001-through-0003, with `maxRetries: 3` and
+ * `provider.timeoutMs: 120_000`) — upgrade it to the current `RETRY_DEFAULTS`
+ * (which carries `maxRetries: 1` and `provider.timeoutMs: 120_000`) and
+ * return the result. Otherwise return undefined to leave the user-tuned block
+ * untouched.
+ */
+function upgradeLegacyProviderTimeout(legacy: Record<string, unknown>): RetrySettings | undefined {
+	if (
+		!isExactLegacyRetryBlock(legacy, LEGACY_KIMCHI_RETRY_DEFAULTS) &&
+		!isExactLegacyRetryBlock(legacy, LEGACY_KIMCHI_RETRY_DEFAULTS_ITER1)
+	) {
+		return undefined
+	}
+	// Exact match of an old default: upgrade to the current defaults. Clone the
 	// nested provider object too so a caller mutating the returned block can't
 	// corrupt the module-level RETRY_DEFAULTS constant.
 	return { ...RETRY_DEFAULTS, provider: { ...RETRY_DEFAULTS.provider } }
