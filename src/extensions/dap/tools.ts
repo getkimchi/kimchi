@@ -115,6 +115,10 @@ const ERROR_HINTS: ReadonlyArray<{ match: RegExp; hint: string }> = [
 		hint: "The adapter could not evaluate the expression. Verify the expression is valid for the debuggee language and that the session is stopped at a breakpoint (evaluation requires a paused frame).",
 	},
 	{
+		match: /DAP evaluate failed/i,
+		hint: "The adapter rejected the expression. For Go/dlv: method calls (e.g. cache.lru.Len()) and field access on unexported fields (lowercase names like 'lru', 'items') may fail. Try: (1) evaluate just the variable name (e.g. 'cache') to see its struct fields, (2) use debug_locals to see variable values directly, (3) simplify the expression.",
+	},
+	{
 		match: /DAP setBreakpoints failed/i,
 		hint: "The adapter could not set the breakpoint. Verify the file path is absolute (or cwd-relative) and the line number is within the file. Some adapters reject breakpoints on non-executable lines (comments, blank lines).",
 	},
@@ -362,6 +366,16 @@ export function createLayer1Tools(deps: DapToolDeps): ToolDefinition[] {
 						for (const v of vars) {
 							const type = v.type ? ` (${v.type})` : ""
 							lines.push(`${v.name} = ${v.value}${type}`)
+							// Expand one level of nested variables (struct fields, slice
+							// elements) so the agent can inspect object fields without
+							// needing debug_eval (which fails on unexported fields in Go).
+							if (v.variablesReference > 0) {
+								const children = await session.getVariables(v.variablesReference)
+								for (const child of children) {
+									const childType = child.type ? ` (${child.type})` : ""
+									lines.push(`  ${v.name}.${child.name} = ${child.value}${childType}`)
+								}
+							}
 						}
 					}
 					if (lines.length === 0) return textResult("No local variables at this frame.")
