@@ -85,7 +85,6 @@ import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invo
 import { type ModelRegistry, resolveModel } from "./resolution/model-resolver.js"
 import { registerResumeSubagentTool } from "./resume-tool.js"
 import { applyAndEmitLoaded, type SubagentsSettings, saveAndEmitChanged } from "./settings.js"
-import { AGENT_WORKER_BUDGETS } from "./worker-budget-policy.js"
 import {
 	type AgentActivity,
 	type AgentDetails,
@@ -100,6 +99,7 @@ import {
 	type Theme,
 	type UICtx,
 } from "./ui/agent-widget.js"
+import { AGENT_WORKER_BUDGETS } from "./worker-budget-policy.js"
 
 // ---- Shared helpers ----
 

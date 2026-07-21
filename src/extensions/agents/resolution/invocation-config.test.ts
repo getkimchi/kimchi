@@ -46,22 +46,16 @@ describe("resolveAgentInvocationConfig — tokenBudget precedence", () => {
 	})
 
 	it("params.token_budget wins over agentConfig.tokenBudget", () => {
-		const result = resolveAgentInvocationConfig(
-			{ ...agent, tokenBudget: 80_000 },
-			{
-				token_budget: 50_000,
-			} as Parameters<typeof resolveAgentInvocationConfig>[1] & { token_budget?: number },
-		)
+		const result = resolveAgentInvocationConfig({ ...agent, tokenBudget: 80_000 }, {
+			token_budget: 50_000,
+		} as Parameters<typeof resolveAgentInvocationConfig>[1] & { token_budget?: number })
 		expect(result.tokenBudget).toBe(50_000)
 	})
 
 	it("accepts tokenBudget as a compatibility alias", () => {
-		const result = resolveAgentInvocationConfig(
-			{ ...agent, tokenBudget: 80_000 },
-			{
-				tokenBudget: 50_000,
-			} as Parameters<typeof resolveAgentInvocationConfig>[1] & { tokenBudget?: number },
-		)
+		const result = resolveAgentInvocationConfig({ ...agent, tokenBudget: 80_000 }, {
+			tokenBudget: 50_000,
+		} as Parameters<typeof resolveAgentInvocationConfig>[1] & { tokenBudget?: number })
 		expect(result.tokenBudget).toBe(50_000)
 	})
 
