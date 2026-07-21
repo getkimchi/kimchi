@@ -104,6 +104,23 @@ const PLAN_MODE_TOOLS = [
 	"questionnaire",
 	"bash",
 	...TODO_TOOL_NAMES,
+	// DAP debugger tools — debugging is a read-only activity from the
+	// codebase perspective. The debugger inspects runtime state but does
+	// not modify source files, so it should be available in plan mode.
+	"debug_launch",
+	"debug_set_breakpoint",
+	"debug_continue",
+	"debug_locals",
+	"debug_eval",
+	"debug_backtrace",
+	"debug_terminate",
+	"step_in",
+	"step_over",
+	"step_out",
+	"debug_state_at",
+	"debug_last_error",
+	"debug_trace_calls",
+	"debug_watch_change",
 ]
 const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 
