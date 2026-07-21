@@ -98,8 +98,8 @@ describe("applyCouncilPreset", () => {
 		})
 		expect(applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, "normal")).toEqual({
 			...DEFAULT_COUNCIL_CONFIG,
-			reviewerModels: DEFAULT_COUNCIL_CONFIG.reviewerModels.slice(1, 3),
-			reviewerRoles: ["critic", "checker"],
+			reviewerModels: DEFAULT_COUNCIL_CONFIG.reviewerModels.slice(0, 2),
+			reviewerRoles: ["independent", "critic"],
 			maxParallelReviewers: 2,
 			overallTimeoutMs: 720_000,
 			stageTimeoutMs: 180_000,
@@ -154,8 +154,8 @@ describe("applyCouncilPreset", () => {
 		}
 
 		expect(applyCouncilPreset(twoModels, "normal")).toMatchObject({
-			reviewerModels: ["kimchi-dev/critic", "kimchi-dev/independent"],
-			reviewerRoles: ["critic", "checker"],
+			reviewerModels: ["kimchi-dev/independent", "kimchi-dev/critic"],
+			reviewerRoles: ["independent", "critic"],
 		})
 		expect(applyCouncilPreset(twoModels, "deep")).toMatchObject({
 			reviewerModels: ["kimchi-dev/independent", "kimchi-dev/critic", "kimchi-dev/independent"],

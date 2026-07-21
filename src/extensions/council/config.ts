@@ -16,7 +16,7 @@ const PRESET_LIMITS = {
 		revisionPolicy: "on-issues",
 	},
 	normal: {
-		reviewerRoles: ["critic", "checker"],
+		reviewerRoles: ["independent", "critic"],
 		overallTimeoutMs: 720_000,
 		stageTimeoutMs: 180_000,
 		leadMaxTokens: 16_384,

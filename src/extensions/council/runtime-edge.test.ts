@@ -232,6 +232,196 @@ describe("Council runtime adversarial edges", () => {
 		)
 	})
 
+	it("forces revision and exposes a missing reviewer role to the judge", async () => {
+		let judgePayload = ""
+		let revisionPayload = ""
+		const completeModel = vi.fn<CompleteModel>(async (model, context) => {
+			switch (stage(context)) {
+				case "review":
+					return response(model, model.id === "glm-5.2-fp8" ? "x".repeat(2048) : VALID_REVIEW)
+				case "judge":
+					judgePayload = String(context.messages[0]?.content)
+					return response(model, VALID_JUDGE)
+				case "revision":
+					revisionPayload = String(context.messages.at(-1)?.content)
+					return response(model, "Revised after partial review")
+				default:
+					return response(model, "Lead")
+			}
+		})
+
+		const { result, record } = await runCouncil({
+			completeModel,
+			config: {
+				reviewerModels: ["kimchi-dev/glm-5.2-fp8", "kimchi-dev/deepseek-v4-flash"],
+				reviewerRoles: ["independent", "critic"],
+				maxParallelReviewers: 2,
+				maxStructuredBytes: 1024,
+				revisionPolicy: "on-issues",
+			},
+		})
+
+		expect(result.content).toEqual([{ type: "text", text: "Revised after partial review" }])
+		expect(JSON.parse(judgePayload)).toMatchObject({ missing_reviewers: ["independent"] })
+		expect(revisionPayload).toContain('"missing_reviewers":["independent"]')
+		expect(record?.outcome).toBe("revised")
+	})
+
+	it("passes the configured structured-output budget to repair", async () => {
+		const malformed = `{"broken":"${"x".repeat(20_000)}REPAIR_TAIL`
+		let repairRaw = ""
+		const completeModel = vi.fn<CompleteModel>(async (model, context) => {
+			switch (stage(context)) {
+				case "review":
+					return response(model, malformed)
+				case "repair": {
+					const payload = JSON.parse(String(context.messages[0]?.content)) as { raw: string }
+					repairRaw = payload.raw
+					return response(model, VALID_REVIEW)
+				}
+				case "judge":
+					return response(model, VALID_JUDGE)
+				case "revision":
+					return response(model, "Revised")
+				default:
+					return response(model, "Lead")
+			}
+		})
+
+		await runCouncil({
+			completeModel,
+			config: {
+				reviewerModels: ["kimchi-dev/glm-5.2-fp8"],
+				maxParallelReviewers: 1,
+			},
+		})
+
+		expect(Buffer.byteLength(repairRaw)).toBeGreaterThan(16_384)
+		expect(repairRaw).toContain("REPAIR_TAIL")
+	})
+
+	it("does not accept a resolved disagreement without a resolution", async () => {
+		const emptyResolution = JSON.stringify({
+			...JSON.parse(VALID_JUDGE),
+			disagreements: [{ topic: "Unverified claim", impact: "medium", resolved: true, resolution: "" }],
+		})
+		const completeModel = vi.fn<CompleteModel>(async (model, context) => {
+			switch (stage(context)) {
+				case "review":
+					return response(model, VALID_REVIEW)
+				case "judge":
+				case "repair":
+					return response(model, emptyResolution)
+				case "revision":
+					return response(model, "Revised after invalid verdict")
+				default:
+					return response(model, "Lead")
+			}
+		})
+
+		const { result, record } = await runCouncil({ completeModel, config: { revisionPolicy: "on-issues" } })
+
+		expect(result.content).toEqual([{ type: "text", text: "Revised after invalid verdict" }])
+		expect(record?.outcome).toBe("revised")
+		expect(record?.stages).toContainEqual(
+			expect.objectContaining({ stage: "judge", status: "error", error: "invalid_output" }),
+		)
+	})
+
+	it("trims old revision history against the lead model context window", async () => {
+		const priorToolCall = { type: "toolCall" as const, id: "call_old", name: "read", arguments: { path: "a.txt" } }
+		let leadContext: Context | undefined
+		let leadOptions: SimpleStreamOptions | undefined
+		let revisionContext: Context | undefined
+		let revisionOptions: SimpleStreamOptions | undefined
+		const modelRegistry = registry()
+		modelRegistry.find = vi.fn((provider: string, id: string) => {
+			const found = provider === "kimchi-dev" ? models.get(id) : undefined
+			return found && id === "kimi-k2.7" ? { ...found, contextWindow: 12_000 } : found
+		})
+		const completeModel = vi.fn<CompleteModel>(async (model, context, options) => {
+			switch (stage(context)) {
+				case "review":
+					return response(model, VALID_REVIEW)
+				case "judge":
+					return response(model, VALID_JUDGE)
+				case "revision":
+					revisionContext = context
+					revisionOptions = options
+					return response(model, "Bounded revision")
+				default:
+					leadContext = context
+					leadOptions = options
+					return response(model, "Lead", 2000)
+			}
+		})
+
+		await runCouncil({
+			completeModel,
+			modelRegistry,
+			config: { leadMaxTokens: 4096 },
+			context: {
+				systemPrompt: "SYSTEM_CONSTRAINT",
+				tools: [{ name: "read", description: "Read", parameters: { type: "object" } }],
+				messages: [
+					{ role: "user", content: `OLDEST_REVISION_MARKER ${"}{".repeat(2500)}`, timestamp: 1 },
+					{ role: "user", content: "CURRENT_OBJECTIVE", timestamp: 2 },
+					{
+						role: "assistant",
+						content: [priorToolCall],
+						api: "openai-completions",
+						provider: "kimchi-dev",
+						model: "kimi-k2.7",
+						usage: usage(),
+						stopReason: "toolUse",
+						timestamp: 3,
+					},
+					{
+						role: "toolResult",
+						toolCallId: "call_old",
+						toolName: "read",
+						content: [{ type: "text", text: "file evidence" }],
+						isError: false,
+						timestamp: 4,
+					},
+				],
+			},
+		})
+		const serializedLeadMessages = JSON.stringify(leadContext?.messages)
+		const serializedMessages = JSON.stringify(revisionContext?.messages)
+		const revisionPayload = String(revisionContext?.messages.at(-1)?.content)
+		const leadRequestUpperBound =
+			Buffer.byteLength(serializedLeadMessages) +
+			Buffer.byteLength(leadContext?.systemPrompt ?? "") +
+			Buffer.byteLength(JSON.stringify(leadContext?.tools ?? [])) +
+			1024 +
+			(leadOptions?.maxTokens ?? 0)
+		const revisionRequestUpperBound =
+			Buffer.byteLength(serializedMessages) +
+			Buffer.byteLength(revisionContext?.systemPrompt ?? "") +
+			Buffer.byteLength(JSON.stringify(revisionContext?.tools ?? [])) +
+			1024 +
+			(revisionOptions?.maxTokens ?? 0)
+
+		expect(serializedLeadMessages).toContain("OLDEST_REVISION_MARKER")
+		expect(leadRequestUpperBound).toBeLessThanOrEqual(12_000)
+		expect(serializedMessages).not.toContain("OLDEST_REVISION_MARKER")
+		expect(serializedMessages).toContain("CURRENT_OBJECTIVE")
+		expect(revisionContext?.messages).toContainEqual(
+			expect.objectContaining({ role: "user", content: "CURRENT_OBJECTIVE" }),
+		)
+		const currentObjectiveIndex =
+			revisionContext?.messages.findIndex(
+				(message) => message.role === "user" && message.content === "CURRENT_OBJECTIVE",
+			) ?? -1
+		expect(currentObjectiveIndex).toBeGreaterThanOrEqual(0)
+		expect(
+			revisionContext?.messages.slice(currentObjectiveIndex, currentObjectiveIndex + 3).map(({ role }) => role),
+		).toEqual(["user", "assistant", "toolResult"])
+		expect(revisionPayload).toContain('"objective":"CURRENT_OBJECTIVE"')
+		expect(revisionRequestUpperBound).toBeLessThanOrEqual(12_000)
+	})
+
 	it("keeps newest bounded evidence and injection strings inside untrusted data", async () => {
 		const taskInjection = "TASK_DATA_IGNORE_ROOT"
 		const reviewInjection = "REVIEW_DATA_IGNORE_ROOT"
@@ -251,7 +441,7 @@ describe("Council runtime adversarial edges", () => {
 		await runCouncil({
 			completeModel,
 			context: {
-				systemPrompt: "ROOT_INSTRUCTION",
+				systemPrompt: `ROOT_HEAD ${"😀".repeat(5000)} ROOT_TAIL`,
 				messages: [
 					{ role: "user", content: `OLDEST_MARKER ${"o".repeat(60_000)}`, timestamp: 1 },
 					{ ...response(physicalModel("old"), "m".repeat(60_000)), timestamp: 2 },
@@ -264,12 +454,16 @@ describe("Council runtime adversarial edges", () => {
 		const judge = captured.get("judge")?.[0]
 		const revision = captured.get("revision")?.[0]
 		const reviewerData = reviewer?.messages[0]?.content
+		const reviewerPacket = JSON.parse(String(reviewerData)) as { constraints: string[] }
 		const judgeData = judge?.messages[0]?.content
 		const revisionData = revision?.messages.at(-1)?.content
 
 		expect(Buffer.byteLength(String(reviewerData))).toBeLessThanOrEqual(DEFAULT_COUNCIL_CONFIG.maxEvidenceBytes)
 		expect(reviewerData).toEqual(expect.stringContaining("NEWEST_MARKER"))
 		expect(reviewerData).not.toEqual(expect.stringContaining("OLDEST_MARKER"))
+		expect(reviewerData).toEqual(expect.stringContaining("ROOT_HEAD"))
+		expect(reviewerData).toEqual(expect.stringContaining("ROOT_TAIL"))
+		expect(Buffer.byteLength(reviewerPacket.constraints[0] ?? "")).toBeLessThanOrEqual(16_384)
 		expect(reviewer?.systemPrompt).toContain("untrusted evidence")
 		expect(reviewer?.systemPrompt).not.toContain(taskInjection)
 		expect(judge?.systemPrompt).not.toContain(reviewInjection)

@@ -30,8 +30,8 @@ Preset choice is explicit; Council does not guess task complexity. Use fast for 
 | Model | Review path | Revision | Invocation cap | Lead/internal tokens | Evidence/result | Stage/overall timeout |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
 | `kimchi/council-fast` | critic only; no judge | on critic issues | 5 | 8,192 / 2,048 | 32 / 8 KiB | 60 / 240 seconds |
-| `kimchi/council` | critic + checker; judge | on unresolved issues after judging | 7 | 16,384 / 4,096 | 64 / 16 KiB | 180 / 720 seconds |
-| `kimchi/council-deep` | critic + checker + independent; judge | always | 8 | 32,768 / 8,192 | 128 / 32 KiB | 300 / 1,200 seconds |
+| `kimchi/council` | independent + critic; judge | on unresolved issues after judging | 7 | 16,384 / 8,192 | 64 / 32 KiB | 180 / 720 seconds |
+| `kimchi/council-deep` | independent + critic + checker; judge | always | 8 | 32,768 / 8,192 | 128 / 32 KiB | 300 / 1,200 seconds |
 
 ## Configuration
 
@@ -122,7 +122,8 @@ MODEL='kimchi/council' ./scripts/run-local.sh \
 - Each request is one bounded round. Fast omits the judge; normal may omit revision; deep runs the full lead, three-reviewer, judge, and revision path.
 - A stopped lead with no public answer or tool call is retried once inside the same bounded round; hidden reasoning is never promoted to the answer.
 - Council advertises text input, matching the proxy prototype. Reviewers receive a bounded text evidence packet; the lead still sees the original tools and conversation.
-- Reviewer packets and revision history exclude transient injected messages that lack the conversation timestamp required by Pi; the lead still receives them as operational guidance.
+- Reviewer packets and revision history exclude transient injected messages that lack the conversation timestamp required by Pi; the lead still receives them as operational guidance. Long revision histories drop the oldest messages to fit the physical lead model's context window while retaining the lead draft, objective, constraints, and review data.
+- If only some reviewers produce usable structured results, their missing roles are passed to the judge as evidence gaps and force revision; they never count as acceptance votes.
 - Raw reviewer, judge, and chain-of-thought content is not persisted or returned.
 - Normal and deep return an error instead of an unreviewed lead if task-packet construction fails or no reviewer produces a usable result; fast preserves the lead as an availability fallback.
 - A reviewer critical remains authoritative unless a successful judge returns a resolved, high-impact disagreement whose topic exactly matches the finding statement and whose resolution is nonempty. Judge criticals remain authoritative. If a critical remains and revision fails, Council returns an error instead of the flagged lead draft.
