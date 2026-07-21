@@ -43,7 +43,7 @@ import {
 } from "../personas/types.js"
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { buildAgentPrompt, formatTokenBudget, type PromptExtras } from "../prompt/prompts.js"
-import { preloadSkills } from "../prompt/skill-loader.js"
+import { listAvailableSkillNames, preloadSkills } from "../prompt/skill-loader.js"
 import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type LifetimeUsage } from "./usage.js"
@@ -359,14 +359,33 @@ async function runAgentInner(
 			agentConfig?.includeContextFiles && !options.isolated ? loadProjectContextFiles(effectiveCwd) : undefined,
 	}
 
+	let toolNames = getToolNamesForType(type)
+
 	if (Array.isArray(skills)) {
 		const loaded = preloadSkills(skills, effectiveCwd)
 		if (loaded.length > 0) {
 			extras.skillBlocks = loaded
 		}
-	}
+	} else if (skills === true) {
+		// skills === true (the default for Builder, Fixer, Explore, Plan, GP):
+		// inject a compact skill name+description list and add the Skill tool
+		// so sub-agents can discover and load skills on demand.
+		const availableSkills = listAvailableSkillNames(effectiveCwd)
+		if (availableSkills.length > 0) {
+			const skillLines = availableSkills
+				.map((s) => `- **${s.name}**: ${s.description}`)
+				.join("\n")
+			extras.skillListBlock = `## Available Skills
 
-	let toolNames = getToolNamesForType(type)
+Use the Skill tool to load a skill's full instructions when its description matches your task.
+
+${skillLines}`
+			// Add the Skill tool to the available tools
+			if (!toolNames.includes("Skill")) {
+				toolNames = [...toolNames, "Skill"]
+			}
+		}
+	}
 
 	if (agentConfig?.memory) {
 		const existingNames = new Set(toolNames)

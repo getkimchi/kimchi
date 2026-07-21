@@ -18,6 +18,8 @@ export interface PromptExtras {
 	memoryBlock?: string
 	/** Preloaded skill contents to inject. */
 	skillBlocks?: { name: string; content: string }[]
+	/** Compact skill name+description list for when skills === true. */
+	skillListBlock?: string
 	/** Model-specific phase guidelines resolved from the model registry. */
 	guidelinesBlock?: string
 	/** Turn and token budget limits for agent self-regulation. */
@@ -61,6 +63,9 @@ Platform: ${env.platform}`
 		for (const skill of extras.skillBlocks) {
 			extraSections.push(`\n# Preloaded Skill: ${skill.name}\n${skill.content}`)
 		}
+	}
+	if (extras?.skillListBlock) {
+		extraSections.push(extras.skillListBlock)
 	}
 	const contextBlock = buildContextBlock(extras?.contextFiles)
 	if (contextBlock) extraSections.push(contextBlock)
