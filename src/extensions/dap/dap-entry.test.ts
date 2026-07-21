@@ -308,88 +308,22 @@ describe("DAP extension entry point", () => {
 		})
 	})
 
-	describe("phase-based visibility integration", () => {
-		it("DAP tools are visible when no ferment is active (phase undefined)", async () => {
+	describe("always-available visibility", () => {
+		it("DAP tools are always visible regardless of phase", async () => {
 			adapterState.active = [JS_DEBUG]
 			const ctx = createCtx()
 			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
 
-			phaseState.current = undefined
-			await mock.handlers.tool_call?.({ toolName: "bash" }, ctx)
-
-			const tools = [...mock.activeTools]
-			expect(tools).toContain("debug_launch")
-			expect(tools).toContain("debug_state_at")
-		})
-
-		it("DAP tools are hidden during explore phase", async () => {
-			adapterState.active = [JS_DEBUG]
-			const ctx = createCtx()
-			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
-
-			phaseState.current = "explore"
-			await mock.handlers.tool_call?.({ toolName: "bash" }, ctx)
-
-			const tools = [...mock.activeTools]
-			expect(tools).not.toContain("debug_launch")
-			expect(tools).not.toContain("debug_state_at")
-			expect(tools).toContain("bash") // non-DAP tools unaffected
-		})
-
-		it("DAP tools are hidden during plan phase", async () => {
-			adapterState.active = [JS_DEBUG]
-			const ctx = createCtx()
-			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
-
-			phaseState.current = "plan"
-			await mock.handlers.tool_call?.({ toolName: "bash" }, ctx)
-
-			const tools = [...mock.activeTools]
-			expect(tools).not.toContain("debug_launch")
-			expect(tools).not.toContain("debug_watch_change")
-		})
-
-		it("DAP tools are visible during build phase", async () => {
-			adapterState.active = [JS_DEBUG]
-			const ctx = createCtx()
-			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
-
-			phaseState.current = "build"
-			await mock.handlers.tool_call?.({ toolName: "bash" }, ctx)
-
-			const tools = [...mock.activeTools]
-			expect(tools).toContain("debug_launch")
-			expect(tools).toContain("debug_state_at")
-			expect(tools).toContain("debug_trace_calls")
-		})
-
-		it("DAP tools are visible during review phase", async () => {
-			adapterState.active = [JS_DEBUG]
-			const ctx = createCtx()
-			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
-
-			phaseState.current = "review"
-			await mock.handlers.tool_call?.({ toolName: "bash" }, ctx)
-
-			const tools = [...mock.activeTools]
-			expect(tools).toContain("debug_launch")
-			expect(tools).toContain("debug_last_error")
-		})
-
-		it("transitions from explore → build re-enable DAP tools", async () => {
-			adapterState.active = [JS_DEBUG]
-			const ctx = createCtx()
-			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
-
-			// explore: tools hidden
-			phaseState.current = "explore"
-			await mock.handlers.tool_call?.({ toolName: "bash" }, ctx)
-			expect([...mock.activeTools]).not.toContain("debug_launch")
-
-			// build: tools re-enabled
-			phaseState.current = "build"
-			await mock.handlers.tool_call?.({ toolName: "bash" }, ctx)
-			expect([...mock.activeTools]).toContain("debug_launch")
+			// Tools should be registered and visible in ALL phases — DAP tools
+			// are never filtered by phase or mode.
+			for (const phase of [undefined, "explore", "plan", "build", "review"]) {
+				phaseState.current = phase
+				await mock.handlers.tool_call?.({ toolName: "bash" }, ctx)
+				const tools = [...mock.activeTools]
+				expect(tools).toContain("debug_launch")
+				expect(tools).toContain("debug_state_at")
+				expect(tools).toContain("debug_last_error")
+			}
 		})
 	})
 })
