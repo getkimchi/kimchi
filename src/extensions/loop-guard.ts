@@ -46,6 +46,30 @@ const BASH_PREFIX_LENGTH = 50 // normalize bash commands by this prefix
 const FINGERPRINT_TAIL_LINES = 20
 const REASON_ARG_PREVIEW = 80
 
+// Total-tool-call budget steer. Unlike the pattern-specific thresholds
+// above, this detector fires once per session when the agent has made
+// many tool calls WITHOUT any pattern detector firing — the signature of
+// varied-approach thrashing (different OCR params, different scripts,
+// different fetch strategies) that the repetition-based detectors
+// structurally cannot catch. Advisory only: does not set `warned`, does
+// not reset the pattern-detection window.
+const DEFAULT_TOTAL_TOOL_CALL_BUDGET_THRESHOLD = 50
+const TOTAL_TOOL_CALL_BUDGET_THRESHOLD_ENV = "KIMCHI_LOOP_GUARD_BUDGET_THRESHOLD"
+
+/**
+ * Resolve the total-tool-call budget threshold from the environment.
+ * Accepts a positive integer (custom threshold), `0` (explicitly
+ * disabled), and falls back to the default when unset or invalid.
+ * Parameterized over `env` so tests can pass a controlled env without
+ * mutating the global `process.env`.
+ */
+function resolveTotalToolCallBudgetThreshold(env: NodeJS.ProcessEnv = process.env): number {
+	const parsed = Number.parseInt(env[TOTAL_TOOL_CALL_BUDGET_THRESHOLD_ENV] ?? "", 10)
+	if (Number.isFinite(parsed) && parsed > 0) return parsed
+	if (parsed === 0) return 0 // explicitly disabled
+	return DEFAULT_TOTAL_TOOL_CALL_BUDGET_THRESHOLD
+}
+
 const STEERING_MESSAGE =
 	"Loop guard: you are repeating the same edit-and-run cycle without making progress. " +
 	"STOP and change your approach. Before your next tool call: " +
@@ -53,6 +77,25 @@ const STEERING_MESSAGE =
 	"(2) List at least two alternative approaches you have NOT tried. " +
 	"(3) Pick the most promising one and try THAT instead. " +
 	"Do not repeat the same file edits or the same commands — the loop guard will keep firing if you do."
+
+/**
+ * Advisory budget steer: fires once per session when total tool calls
+ * cross the budget threshold without any pattern detector firing. The
+ * `%d` placeholder is replaced with the current total at delivery time.
+ *
+ * Deliberately advisory — does NOT say "STOP and change your approach"
+ * (that's the pattern-based STEERING_MESSAGE). Instead it prompts the
+ * agent to reassess, review its best result, and finalize if it is not
+ * making steady progress. This distinguishes cumulative-effort thrashing
+ * (where the model should wrap up) from legitimate hard-but-progressing
+ * work (where the model should continue).
+ */
+const BUDGET_STEER_MESSAGE =
+	"Budget steer: you have made %d tool calls on this task without completing it. " +
+	"If you are still experimenting with different approaches, STOP and reassess. " +
+	"Review your best result so far, verify it against the task requirements, and finalize your output. " +
+	"A partial solution submitted now is better than running out of time. " +
+	"If you are making steady, verifiable progress, continue — but be aware of your remaining time budget."
 
 /**
  * Detects when an agent is stuck repeating itself across tool calls. Four
@@ -92,6 +135,13 @@ export class LoopGuard {
 	private bashCountsNormTotal = new Map<string, number>()
 	private warned = false
 	private triggered = false
+	/** Cumulative count of tool calls across the whole session. Never
+	 *  decremented on window eviction — used by the total-tool-call
+	 *  budget detector. Cleared on session_start / user input via `reset()`. */
+	private totalToolCalls = 0
+	/** One-shot fuse for the total-tool-call budget steer. Once the
+	 *  budget steer fires, it never fires again in the same session. */
+	private budgetSteerDelivered = false
 
 	reset(): void {
 		this.history = []
@@ -103,6 +153,8 @@ export class LoopGuard {
 		this.bashCountsNormTotal.clear()
 		this.warned = false
 		this.triggered = false
+		this.totalToolCalls = 0
+		this.budgetSteerDelivered = false
 	}
 
 	isTriggered(): boolean {
@@ -119,6 +171,10 @@ export class LoopGuard {
 	}
 
 	record(rec: ToolHistoryRecord): LoopGuardResult {
+		// Cumulative total-tool-call counter — never decremented on window
+		// eviction. Drives the advisory budget steer that fires once when
+		// the agent has made many calls without any pattern firing.
+		this.totalToolCalls++
 		// Increment semantic counters for the new record before pushing.
 		const editTarget = extractEditTarget(rec)
 		if (editTarget) {
@@ -153,6 +209,23 @@ export class LoopGuard {
 
 		const detected = this.detect()
 		if (detected === undefined) {
+			// No pattern detector fired on this call. Check the cumulative
+			// total-tool-call budget: if the agent has made many calls
+			// without any pattern firing — the signature of varied-approach
+			// thrashing — fire an advisory steer once per session. This is
+			// advisory only: it does NOT set `warned` (so `blockIfLoop`
+			// stays disabled, since there is no specific pattern to block)
+			// and does NOT reset the pattern-detection window (so subsequent
+			// pattern state is preserved).
+			const budgetThreshold = resolveTotalToolCallBudgetThreshold()
+			if (budgetThreshold > 0 && this.totalToolCalls >= budgetThreshold && !this.budgetSteerDelivered) {
+				this.budgetSteerDelivered = true
+				return {
+					state: "warn",
+					reason: BUDGET_STEER_MESSAGE.replace("%d", String(this.totalToolCalls)),
+					detector: "total_tool_calls",
+				}
+			}
 			return { state: "ok" }
 		}
 
