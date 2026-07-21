@@ -85,6 +85,7 @@ describe("updateModelsConfig", () => {
 				maxTokens: 262144,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				provider: "ai-enabler",
+				headers: { "X-Provider-Type": "ai-enabler" },
 			},
 		])
 	})
@@ -118,6 +119,26 @@ describe("updateModelsConfig", () => {
 			cacheControlFormat: "anthropic",
 			supportsUsageInStreaming: true,
 		})
+	})
+
+	it("sets X-Provider-Type header on each model", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [SONNET_46, KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		// ai-enabler model
+		const kimiModel = config.providers["kimchi-dev"].models.find((m: { id: string }) => m.id === "kimi-k2.5")
+		expect(kimiModel.headers).toEqual({ "X-Provider-Type": "ai-enabler" })
+
+		// anthropic model
+		const claudeModel = config.providers["kimchi-dev/anthropic"].models.find(
+			(m: { id: string }) => m.id === "claude-sonnet-4-6",
+		)
+		expect(claudeModel.headers).toEqual({ "X-Provider-Type": "anthropic" })
 	})
 
 	it("omits compat for non-anthropic models", async () => {

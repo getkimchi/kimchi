@@ -160,6 +160,8 @@ export interface PiModelConfig {
 	api?: string
 	/** Model-level base URL: upstream custom-provider parseModels falls through to this field. */
 	baseUrl?: string
+	/** Model-level headers merged into outgoing requests by pi's storeModelHeaders. */
+	headers?: Record<string, string>
 }
 
 function metadataToModel(m: ModelMetadata): PiModelConfig {
@@ -183,6 +185,8 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		// Store upstream provider for telemetry round-trip via models.json
 		provider: m.provider,
+		// Force the gateway to route to the correct upstream provider type
+		headers: { "X-Provider-Type": m.provider },
 		...(compat && { compat }),
 	}
 }
