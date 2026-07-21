@@ -372,9 +372,7 @@ async function runAgentInner(
 		// so sub-agents can discover and load skills on demand.
 		const availableSkills = listAvailableSkillNames(effectiveCwd)
 		if (availableSkills.length > 0) {
-			const skillLines = availableSkills
-				.map((s) => `- **${s.name}**: ${s.description}`)
-				.join("\n")
+			const skillLines = availableSkills.map((s) => `- **${s.name}**: ${s.description}`).join("\n")
 			extras.skillListBlock = `## Available Skills
 
 Use the Skill tool to load a skill's full instructions when its description matches your task.

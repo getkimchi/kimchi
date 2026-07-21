@@ -60,5 +60,4 @@ describe("listAvailableSkillNames", () => {
 		const names = skills.map((s) => s.name)
 		expect(names.length).toBe(new Set(names).size)
 	})
-
 })
