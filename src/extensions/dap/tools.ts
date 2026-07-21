@@ -401,7 +401,7 @@ export function createLayer1Tools(deps: DapToolDeps): ToolDefinition[] {
 			name: "debug_eval",
 			label: "DAP: Evaluate Expression",
 			description:
-				"Evaluate an expression in the context of a frame (or the global context). Returns the stringified result. Use this to inspect variable values at a breakpoint — e.g. debug_eval(session_id, 'entry.generation') shows the actual runtime value instead of tracing it through code by hand.",
+				"Evaluate an expression in the context of a frame (or the global context). Returns the stringified result. Use this to inspect variable values at a breakpoint — e.g. debug_eval(session_id, 'entry.generation') shows the actual runtime value instead of tracing it through code by hand. Supported expressions vary by adapter: for Go/dlv, field access works (e.g. 'cache.capacity', 'cache.items', 'cache.lru') and built-in functions work (e.g. 'len(cache.items)') but method calls on unexported fields fail (e.g. 'cache.lru.Len()'). If an expression fails, try evaluating just the variable name to see its fields, then use debug_locals to inspect them directly.",
 			promptSnippet: "Get the actual runtime value of an expression at a breakpoint",
 			parameters: EvalSchema,
 			async execute(_toolCallId, params: Static<typeof EvalSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
@@ -531,7 +531,7 @@ export function createLayer2Tools(deps: DapToolDeps): ToolDefinition[] {
 			name: "debug_state_at",
 			label: "DAP: Capture State at Line",
 			description:
-				"Get the actual runtime value of variables at a specific line — faster than writing a repro or reasoning through code. Sets a breakpoint at file:line, runs to it, and returns locals, backtrace, evaluated expressions, and stdout/stderr. Use the `evaluated` parameter to inspect specific expressions (e.g. ['entry.generation', 'uint32(x) & mask']). Auto-launches and terminates a session if no session_id is given.",
+				"Get the actual runtime value of variables at a specific line — faster than writing a repro or reasoning through code. Sets a breakpoint at file:line, runs to it, and returns locals (with one level of nested struct fields), backtrace, evaluated expressions, and stdout/stderr. Use the `evaluated` parameter to inspect specific expressions. For Go/dlv: field access works (e.g. 'cache.capacity', 'cache.items', 'cache.lru') and built-in functions work (e.g. 'len(cache.items)'), but method calls on unexported fields fail (e.g. 'cache.lru.Len()'). If evaluation fails, just pass the variable name and inspect its fields in the locals output. Auto-launches and terminates a session if no session_id is given.",
 			promptSnippet: "Get actual runtime values at a breakpoint (replaces repro scripts)",
 			parameters: StateAtSchema,
 			async execute(_toolCallId, params: Static<typeof StateAtSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
