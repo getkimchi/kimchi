@@ -145,10 +145,7 @@ export function resolveRoleModelRef(subagentType: string): string | undefined {
  *
  * Returns undefined when no budget was set (pass-through).
  */
-export function clampTokenBudget(
-	rawBudget: number | undefined,
-	multiModelEnabled: boolean,
-): number | undefined {
+export function clampTokenBudget(rawBudget: number | undefined, multiModelEnabled: boolean): number | undefined {
 	if (rawBudget == null) return undefined
 	if (multiModelEnabled && rawBudget < AGENT_WORKER_BUDGETS.default.tokenBudget) {
 		return AGENT_WORKER_BUDGETS.default.tokenBudget
@@ -1377,7 +1374,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 						: undefined
 				const agentTags: string[] = []
 				if (thinking) agentTags.push(`thinking: ${thinking}`)
-				if (resolvedConfig.tokenBudget != null) agentTags.push(`budget: ${formatTokens(effectiveTokenBudget!)}`)
+				if (resolvedConfig.tokenBudget != null && effectiveTokenBudget != null)
+					agentTags.push(`budget: ${formatTokens(effectiveTokenBudget)}`)
 				if (isolated) agentTags.push("isolated")
 				const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns)
 				const detailBase = {
