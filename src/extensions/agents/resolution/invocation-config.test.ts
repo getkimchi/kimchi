@@ -77,18 +77,12 @@ describe("resolveAgentInvocationConfig — persona policy precedence", () => {
 	})
 
 	it("agentConfig.thinking used when params has no thinking", () => {
-		const result = resolveAgentInvocationConfig(
-			{ ...agent, thinking: "medium" as const },
-			{},
-		)
+		const result = resolveAgentInvocationConfig({ ...agent, thinking: "medium" as const }, {})
 		expect(result.thinking).toBe("medium")
 	})
 
 	it("params.thinking wins over agentConfig.thinking", () => {
-		const result = resolveAgentInvocationConfig(
-			{ ...agent, thinking: "medium" as const },
-			{ thinking: "high" },
-		)
+		const result = resolveAgentInvocationConfig({ ...agent, thinking: "medium" as const }, { thinking: "high" })
 		expect(result.thinking).toBe("high")
 	})
 })

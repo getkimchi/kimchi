@@ -1,5 +1,5 @@
-import { AGENT_WORKER_BUDGETS } from "../worker-budget-policy.js"
 import type { AgentConfig, IsolationMode, JoinMode, ThinkingLevel } from "../personas/types.js"
+import { AGENT_WORKER_BUDGETS } from "../worker-budget-policy.js"
 
 interface AgentInvocationParams {
 	model?: string
