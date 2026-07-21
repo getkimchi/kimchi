@@ -28,7 +28,12 @@ import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
-import { getAllowedMultiModelRefs, getModelRoles, normalizeRoleModels } from "../orchestration/model-roles.js"
+import {
+	getAllowedMultiModelRefs,
+	getModelRoles,
+	normalizeRoleModels,
+	type DEFAULT_MODEL_ROLES,
+} from "../orchestration/model-roles.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
@@ -129,8 +134,6 @@ export function resolveRoleModelRef(subagentType: string): string | undefined {
 	const modelRefs = normalizeRoleModels(assignment)
 	return modelRefs[0]
 }
-
-import type { DEFAULT_MODEL_ROLES } from "../orchestration/model-roles.js"
 
 // Give aborted sub-agents a bounded chance to reach runner finally blocks.
 // If they do not settle, manager.dispose() still runs hard-fallback cleanup.
