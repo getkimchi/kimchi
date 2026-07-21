@@ -145,7 +145,20 @@ async function collectLocals(session: DapSession, frameId?: number): Promise<Var
 	for (const scope of scopes) {
 		if (scope.variablesReference === 0) continue
 		const vars = await session.getVariables(scope.variablesReference)
-		variables.push(...vars)
+		for (const v of vars) {
+			variables.push(v)
+			// Expand one level of nested variables so the agent can see struct
+			// fields without debug_eval (which fails on unexported fields in Go).
+			if (v.variablesReference > 0) {
+				const children = await session.getVariables(v.variablesReference)
+				for (const child of children) {
+					variables.push({
+						...child,
+						name: `${v.name}.${child.name}`,
+					})
+				}
+			}
+		}
 	}
 	return variables
 }
