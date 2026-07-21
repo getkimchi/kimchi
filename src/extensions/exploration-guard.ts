@@ -176,14 +176,26 @@ export class ExplorationGuard {
 		// A turn with at least one tool call resets the no-tool counter.
 		this.consecutiveNoToolTurns = 0
 
-		// A turn is read-only only if it contains at least one read tool and none
-		// of them are write tools. Turns with write tools or with only neutral
-		// tools reset the streak.
-		if (this.currentTurnHasWriteTool || !this.currentTurnHasReadTool) {
+		// A write turn resets the streak — the agent made progress.
+		if (this.currentTurnHasWriteTool) {
 			this.consecutiveReadOnlyTurns = 0
 			return
 		}
 
+		// A non-read, non-write turn (bash-only, neutral-tool-only, or mixed
+		// neutral+bash) is NEUTRAL: it neither resets nor increments the streak.
+		// This preserves the streak across execution/inspection bash turns (ls,
+		// cat, objdump, grep via bash) that previously defeated the counter by
+		// resetting it to zero. bash is still not a read tool (so it does not
+		// increment the streak and cannot trigger a steer on its own) and still
+		// not a write tool (so it does not reset the streak). Returning early
+		// here also keeps the threshold checks below from re-firing a steer on
+		// a neutral turn when the streak already happens to sit at a threshold.
+		if (!this.currentTurnHasReadTool) {
+			return
+		}
+
+		// A read turn increments the streak — the agent is exploring.
 		this.consecutiveReadOnlyTurns++
 
 		if (this.consecutiveReadOnlyTurns === this.hypothesisThreshold) {

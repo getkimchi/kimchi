@@ -107,11 +107,15 @@ describe("Read-only turn counting", () => {
 		expect(guard.getConsecutiveNoToolTurns()).toBe(1)
 	})
 
-	it("resets streak on a neutral tool turn", () => {
+	it("preserves streak across a neutral-tool turn (neutral)", () => {
+		// Behavior change: a neutral-tool-only turn (e.g. set_phase) used to
+		// reset the read-only streak to 0. It is now neutral — it neither
+		// resets nor increments the streak, so exploration interleaved with
+		// phase/model changes is no longer hidden from the detector.
 		const guard = createGuard()
 		for (let i = 0; i < 3; i++) simulateReadTurn(guard)
 		simulateNeutralTurn(guard)
-		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(3)
 	})
 
 	it("counts a mixed neutral+read turn as read-only", () => {
@@ -529,7 +533,11 @@ describe("bash tool classification", () => {
 		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
 	})
 
-	it("bash resets a read-only streak", () => {
+	it("bash preserves a read-only streak (neutral)", () => {
+		// Behavior change: a bash-only turn used to reset the read-only streak
+		// to 0. It is now neutral — it neither resets nor increments the streak,
+		// so interleaving bash inspection commands (ls, cat, objdump, grep via
+		// bash) between read/grep/find calls no longer defeats the detector.
 		const guard = createGuard()
 		for (let i = 0; i < 3; i++) {
 			guard.turnStart()
@@ -540,6 +548,65 @@ describe("bash tool classification", () => {
 		guard.turnStart()
 		guard.recordToolCall("bash")
 		guard.turnEnd(() => {})
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(3)
+	})
+
+	it("preserves streak across a bash-only turn (neutral)", () => {
+		// 3 read turns (streak 3) → bash-only turn (neutral, streak stays 3) →
+		// 5 more read turns (streak 4, 5 reminder, 6, 7, 8 mandatory steer).
+		// Confirms the bash turn did not break the streak: the mandatory steer
+		// still fires at streak 8.
+		const guard = createGuard()
+		const steers: string[] = []
+		const readTurn = () => {
+			guard.turnStart()
+			guard.recordToolCall("read")
+			guard.turnEnd((text) => steers.push(text))
+		}
+
+		for (let i = 0; i < 3; i++) readTurn()
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(3)
+
+		guard.turnStart()
+		guard.recordToolCall("bash")
+		guard.turnEnd((text) => steers.push(text))
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(3)
+		expect(steers).toHaveLength(0) // bash-only turn fires no steer
+
+		for (let i = 0; i < 5; i++) readTurn()
+		expect(steers).toHaveLength(2)
+		expect(steers[0]).toContain("5 consecutive read-only turns")
+		expect(steers[1]).toContain("8 consecutive read-only turns")
+		expect(steers[1]).toContain("concrete action")
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0) // reset after mandatory steer
+	})
+
+	it("bash-only turn between read turns does not prevent mandatory steer from firing", () => {
+		// 4 read turns (streak 4) → 1 bash turn (neutral, streak stays 4) →
+		// 4 read turns (streak 5 reminder, 6, 7, 8 mandatory steer). The bash
+		// turn in the middle does not reset the streak, so the mandatory steer
+		// still fires when the cumulative read-only count reaches 8.
+		const guard = createGuard()
+		const steers: string[] = []
+		const readTurn = () => {
+			guard.turnStart()
+			guard.recordToolCall("read")
+			guard.turnEnd((text) => steers.push(text))
+		}
+
+		for (let i = 0; i < 4; i++) readTurn()
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(4)
+
+		guard.turnStart()
+		guard.recordToolCall("bash")
+		guard.turnEnd((text) => steers.push(text))
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(4)
+		expect(steers).toHaveLength(0)
+
+		for (let i = 0; i < 4; i++) readTurn()
+		expect(steers).toHaveLength(2)
+		expect(steers[0]).toContain("5 consecutive read-only turns")
+		expect(steers[1]).toContain("8 consecutive read-only turns")
 		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
 	})
 
