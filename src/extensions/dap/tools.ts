@@ -123,6 +123,14 @@ const ERROR_HINTS: ReadonlyArray<{ match: RegExp; hint: string }> = [
 		hint: "The adapter could not set the breakpoint. Verify the file path is absolute (or cwd-relative) and the line number is within the file. Some adapters reject breakpoints on non-executable lines (comments, blank lines).",
 	},
 	{
+		match: /Debuggee terminated before reaching a stop/i,
+		hint: "The program ran to completion without hitting a breakpoint. Verify the breakpoint line is on executable code that the program actually reaches. Use debug_set_breakpoint BEFORE debug_continue. Tip: Use debug_state_at instead — it sets the breakpoint before launching, avoiding this race.",
+	},
+	{
+		match: /Breakpoint unverified/i,
+		hint: "The adapter could not set the breakpoint at that line. This usually means the line is not executable (comments, blank lines) or the program has already exited. Verify the file path is absolute and the line number has executable code.",
+	},
+	{
 		match: /DAP launch failed/i,
 		hint: "The adapter could not launch the program. Verify the program path is correct, the file exists, and the adapter matches the language (e.g. dlv for .go, js-debug for .ts/.js). Check the adapter's installHint.",
 	},
@@ -279,7 +287,7 @@ export function createLayer1Tools(deps: DapToolDeps): ToolDefinition[] {
 			name: "debug_launch",
 			label: "DAP: Launch Debug Session",
 			description:
-				"Launch a debug session for a program. Returns a session id to use with other debug_* tools. Auto-detects the adapter from the file extension (.ts/.js→js-debug, .py→debugpy, .go→dlv, .rs/.c→lldb-dap). For Go package directories, pass the directory path and set adapter='dlv'. Tip: For one-off state inspection, prefer debug_state_at instead — it handles launch+breakpoint+inspect+terminate in one call.",
+				"Launch a debug session for a program. Returns a session id to use with other debug_* tools. The program does NOT start running until you call debug_continue — so you can set breakpoints with debug_set_breakpoint after launching. Workflow: (1) debug_launch, (2) debug_set_breakpoint, (3) debug_continue → stops at breakpoint, (4) debug_locals/debug_eval, (5) debug_terminate. Auto-detects the adapter from the file extension (.ts/.js→js-debug, .py→debugpy, .go→dlv, .rs/.c→lldb-dap). For Go package directories, pass the directory path and set adapter='dlv'. Tip: For one-off state inspection, prefer debug_state_at instead — it handles launch+breakpoint+inspect+terminate in one call.",
 			promptSnippet: "Launch a debug session for a program and get a sessionId",
 			parameters: DebugLaunchSchema,
 			async execute(_toolCallId, params: Static<typeof DebugLaunchSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
@@ -303,7 +311,8 @@ export function createLayer1Tools(deps: DapToolDeps): ToolDefinition[] {
 		{
 			name: "debug_set_breakpoint",
 			label: "DAP: Set Breakpoint",
-			description: "Set a breakpoint at a line in a file. Returns the verified status.",
+			description:
+				"Set a breakpoint at a line in a file. Call this AFTER debug_launch and BEFORE debug_continue. Returns the verified status — if unverified, the line may not be executable code.",
 			promptSnippet: "Set a breakpoint at a file:line",
 			parameters: SetBreakpointSchema,
 			async execute(
@@ -331,7 +340,7 @@ export function createLayer1Tools(deps: DapToolDeps): ToolDefinition[] {
 			name: "debug_continue",
 			label: "DAP: Continue",
 			description:
-				"Resume execution and wait for the next stop (breakpoint, exception, or pause). Returns the stop reason and location.",
+				"Resume execution and wait for the next stop (breakpoint, exception, or pause). Returns the stop reason and location. Set breakpoints with debug_set_breakpoint BEFORE calling this — otherwise the program may run to completion without stopping. If the program terminates, the error will say 'Debuggee terminated'.",
 			promptSnippet: "Continue execution until the next stop",
 			parameters: SessionIdSchema,
 			async execute(_toolCallId, params: Static<typeof SessionIdSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
