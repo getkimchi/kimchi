@@ -58,17 +58,24 @@ vi.mock("./session.js", () => ({
 }))
 
 // Capture the createSystemPromptBlocks registration so we can invoke render().
-const promptBlockState = vi.hoisted(() => ({
-	render: undefined as undefined | (() => string | undefined),
+const promptBlocks = vi.hoisted(() => ({
+	blocks: [] as Array<{ id: string; render: () => string | undefined }>,
 }))
 
 vi.mock("../prompt-construction/index.js", () => ({
 	createSystemPromptBlocks: () => ({
 		register: (block: { id: string; render: () => string | undefined }) => {
-			promptBlockState.render = block.render
+			promptBlocks.blocks.push(block)
 		},
 	}),
 }))
+
+// Helper: render all blocks and concatenate non-undefined results
+function renderAllPromptBlocks(): string | undefined {
+	const parts = promptBlocks.blocks.map((b) => b.render()).filter((s): s is string => s !== undefined)
+	if (parts.length === 0) return undefined
+	return parts.join("\n\n")
+}
 
 // Mock getCurrentPhase so we can control the phase per test for visibility checks.
 const phaseState = vi.hoisted(() => ({
@@ -187,6 +194,7 @@ describe("DAP extension entry point", () => {
 		clientState.clearAllCalled = false
 		clientState.registeredTools = []
 		phaseState.current = undefined
+		promptBlocks.blocks = []
 		dapExtension(mock.pi)
 	})
 
@@ -293,8 +301,8 @@ describe("DAP extension entry point", () => {
 			const ctx = createCtx()
 			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
 
-			expect(promptBlockState.render).toBeDefined()
-			const output = promptBlockState.render?.()
+			expect(renderAllPromptBlocks()).toBeDefined()
+			const output = renderAllPromptBlocks()
 			expect(output).toBeDefined()
 			expect(output).toContain("## Debugger (DAP)")
 			expect(output).toContain("debug_launch")
@@ -304,7 +312,7 @@ describe("DAP extension entry point", () => {
 			const ctx = createCtx()
 			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
 
-			expect(promptBlockState.render?.()).toBeUndefined()
+			expect(renderAllPromptBlocks()).toBeUndefined()
 		})
 	})
 
