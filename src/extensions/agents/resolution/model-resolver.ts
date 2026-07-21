@@ -4,17 +4,8 @@
  * Model spec format is always `<provider>/<model>` — explicit per provider.
  */
 
-export interface ModelEntry {
-	id: string
-	name: string
-	provider: string
-}
-
-export interface ModelRegistry {
-	find(provider: string, modelId: string): unknown
-	getAll(): unknown[]
-	getAvailable?(): unknown[]
-}
+import type { Api, Model } from "@earendil-works/pi-ai"
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 
 /**
  * Resolve a model string to a Model instance.
@@ -23,9 +14,9 @@ export interface ModelRegistry {
  *
  * Model spec must be in `<provider>/<model>` format for exact matching.
  */
-export function resolveModel(input: string, registry: ModelRegistry): unknown | string {
+export function resolveModel(input: string, registry: ModelRegistry): Model<Api> | string {
 	// Available models (those with auth configured)
-	const all = (registry.getAvailable?.() ?? registry.getAll()) as ModelEntry[]
+	const all = registry.getAvailable?.() ?? registry.getAll()
 	const availableSet = new Set(all.map((m) => `${m.provider}/${m.id}`.toLowerCase()))
 
 	// 1. Exact match: "provider/modelId" — only if available (has auth)
@@ -42,7 +33,7 @@ export function resolveModel(input: string, registry: ModelRegistry): unknown | 
 	// 2. Fuzzy match against available models
 	const query = input.toLowerCase()
 
-	let bestMatch: ModelEntry | undefined
+	let bestMatch: Model<Api> | undefined
 	let bestScore = 0
 
 	for (const m of all) {
