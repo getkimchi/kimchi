@@ -9,7 +9,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-blue?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.com/invite/getkimchi)
-[![X/Twitter](https://img.shields.io/badge/X%2FTwitter-@kimchi__dev-black?style=flat-square&logo=x)](https://x.com/kimchi_dev)
+[![X/Twitter](https://img.shields.io/badge/X%2FTwitter-@getkimchi-black?style=flat-square&logo=x)](https://x.com/getkimchi)
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-kimchi--dev-0A66C2?style=flat-square&logo=linkedin)](https://www.linkedin.com/company/kimchi-dev/)
 
 **A multi-model coding agent CLI for your terminal.**
@@ -48,7 +48,7 @@ kimchi         # launch the coding agent
 Run `kimchi --help` for all subcommands and flags.
 
 > [!TIP]
-> On first run, kimchi can migrate your MCP servers and skills from Claude Code or OpenCode. You'll see a one-shot prompt if anything is migratable.
+> On first run, kimchi can migrate your MCP servers and skills from Claude Code, OpenCode, or Cursor. You'll see a one-shot prompt if anything is migratable.
 
 ---
 
@@ -62,7 +62,7 @@ Run `kimchi --help` for all subcommands and flags.
 | **Tagging** | Tag every LLM request for cost attribution and usage tracking. |
 | **Remote teleport** | Session-multiplex across remote sandboxes without restarting kimchi. |
 | **Token optimization (RTK)** | Optional output compression (60–90% reduction) for bash tool calls. |
-| **Agent migration** | One-shot import of MCP servers and skills from Claude Code / OpenCode. |
+| **Agent migration** | One-shot import of MCP servers and skills from Claude Code, OpenCode, or Cursor. |
 | **IDE mode (ACP)** | JSON-RPC over stdio for editor integration. |
 
 ---
@@ -75,11 +75,11 @@ Kimchi does not run everything on one model. Each task is classified and routed 
 |------|---------|---------|
 | **Orchestrator** | `kimi-k2.6` | Main loop, task classification, delegation |
 | **Planner** | `kimi-k2.6` | Architecture, specs, interface design |
-| **Builder** | `minimax-m2.7` | Code implementation |
+| **Builder** | `kimi-k2.6`, `minimax-m2.7` | Code implementation — heavier model for complex tasks |
 | **Reviewer** | `kimi-k2.6` / `minimax-m2.7` | Code review, verification |
 | **Explorer** | `kimi-k2.6` / `nemotron-3-super-fp4` | Codebase exploration, research |
 
-Switch models interactively with `ctrl+p` or `/model`. Toggle between single-model and multi-model mode on the fly.
+Switch models interactively with `ctrl+p` or `/model`. Toggle multi-model mode on the fly with `/multi-model`.
 
 Configure role assignments in `~/.config/kimchi/harness/settings.json`:
 
