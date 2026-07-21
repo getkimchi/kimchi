@@ -38,6 +38,7 @@ import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
 import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
+import { AGENT_WORKER_BUDGETS } from "./worker-budget-policy.js"
 import {
 	getAgentConversation,
 	getDefaultMaxTurns,
@@ -1285,10 +1286,25 @@ ${AGENT_TOOL_GUIDELINES}`,
 					(params as { token_budget?: number; tokenBudget?: number }).token_budget ??
 					(params as { token_budget?: number; tokenBudget?: number }).tokenBudget
 				const activeBudgetRetryBlock = budgetRetryBlock
+
+				// Enforce minimum token budget when multi-model is active. The
+				// orchestrator often passes tiny budgets (2000-8000) that are too
+				// small for any real implementation work — a single file write can
+				// exceed 2000 output tokens. Clamp to the minimum from the budget
+				// table so Builders have enough room to complete their work.
+				const MIN_TOKEN_BUDGET = AGENT_WORKER_BUDGETS.default.tokenBudget
+				const effectiveTokenBudget = (() => {
+					const raw = resolvedConfig.tokenBudget
+					if (raw == null) return undefined
+					if (getMultiModelEnabled(ctx.sessionManager) && raw < MIN_TOKEN_BUDGET) {
+						return MIN_TOKEN_BUDGET
+					}
+					return raw
+				})()
 				if (
 					activeBudgetRetryBlock &&
 					shouldBlockBudgetRetry(activeBudgetRetryBlock, {
-						tokenBudget: resolvedConfig.tokenBudget,
+						tokenBudget: effectiveTokenBudget ?? resolvedConfig.tokenBudget,
 						subagentType,
 						description: params.description as string,
 						prompt: params.prompt as string,
@@ -1346,7 +1362,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 						: undefined
 				const agentTags: string[] = []
 				if (thinking) agentTags.push(`thinking: ${thinking}`)
-				if (resolvedConfig.tokenBudget != null) agentTags.push(`budget: ${formatTokens(resolvedConfig.tokenBudget)}`)
+				if (resolvedConfig.tokenBudget != null)
+					agentTags.push(`budget: ${formatTokens(effectiveTokenBudget ?? resolvedConfig.tokenBudget)}`)
 				if (isolated) agentTags.push("isolated")
 				const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? getDefaultMaxTurns())
 				const detailBase = {

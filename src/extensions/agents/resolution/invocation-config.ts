@@ -1,3 +1,4 @@
+import { AGENT_WORKER_BUDGETS } from "../worker-budget-policy.js"
 import type { AgentConfig, IsolationMode, JoinMode, ThinkingLevel } from "../personas/types.js"
 
 interface AgentInvocationParams {
@@ -54,7 +55,7 @@ export function resolveAgentInvocationConfig(
 		modelInput,
 		modelFromParams,
 		thinking: (params.thinking ?? agentConfig?.thinking) as ThinkingLevel | undefined,
-		maxTurns: agentConfig?.maxTurns ?? params.max_turns,
+		maxTurns: agentConfig?.maxTurns ?? params.max_turns ?? AGENT_WORKER_BUDGETS.default.maxTurns,
 		tokenBudget: params.token_budget ?? params.tokenBudget ?? agentConfig?.tokenBudget,
 		maxDuration: params.max_duration ?? agentConfig?.maxDuration,
 		inheritContext: agentConfig?.inheritContext ?? params.inherit_context ?? false,
