@@ -54,8 +54,56 @@ import bashDefaultTimeoutExtension, {
 	BASH_DEFAULT_TIMEOUT_RESOURCE_ID,
 	createSubagentBashClampExtension,
 	DEFAULT_BASH_TIMEOUT_SECONDS,
+	MAX_BASH_TIMEOUT_ENV,
+	MAX_BASH_TIMEOUT_SECONDS,
 	resolveBashTimeout,
+	resolveMaxBashTimeoutSeconds,
 } from "./bash-default-timeout.js"
+
+describe("resolveMaxBashTimeoutSeconds", () => {
+	beforeEach(() => {
+		delete process.env[MAX_BASH_TIMEOUT_ENV]
+	})
+
+	afterEach(() => {
+		delete process.env[MAX_BASH_TIMEOUT_ENV]
+	})
+
+	it("returns the default cap when the env var is unset", () => {
+		expect(resolveMaxBashTimeoutSeconds()).toBe(MAX_BASH_TIMEOUT_SECONDS)
+	})
+
+	it("returns the env var value when set to a valid positive integer", () => {
+		process.env[MAX_BASH_TIMEOUT_ENV] = "300"
+		expect(resolveMaxBashTimeoutSeconds()).toBe(300)
+	})
+
+	it("falls back to the default for a non-numeric value", () => {
+		process.env[MAX_BASH_TIMEOUT_ENV] = "not-a-number"
+		expect(resolveMaxBashTimeoutSeconds()).toBe(MAX_BASH_TIMEOUT_SECONDS)
+	})
+
+	it("falls back to the default for zero or negative values", () => {
+		process.env[MAX_BASH_TIMEOUT_ENV] = "0"
+		expect(resolveMaxBashTimeoutSeconds()).toBe(MAX_BASH_TIMEOUT_SECONDS)
+		process.env[MAX_BASH_TIMEOUT_ENV] = "-5"
+		expect(resolveMaxBashTimeoutSeconds()).toBe(MAX_BASH_TIMEOUT_SECONDS)
+	})
+
+	it("falls back to the default for an empty string", () => {
+		process.env[MAX_BASH_TIMEOUT_ENV] = ""
+		expect(resolveMaxBashTimeoutSeconds()).toBe(MAX_BASH_TIMEOUT_SECONDS)
+	})
+
+	it("re-reads the env var on every call", () => {
+		process.env[MAX_BASH_TIMEOUT_ENV] = "100"
+		expect(resolveMaxBashTimeoutSeconds()).toBe(100)
+		process.env[MAX_BASH_TIMEOUT_ENV] = "450"
+		expect(resolveMaxBashTimeoutSeconds()).toBe(450)
+		delete process.env[MAX_BASH_TIMEOUT_ENV]
+		expect(resolveMaxBashTimeoutSeconds()).toBe(MAX_BASH_TIMEOUT_SECONDS)
+	})
+})
 
 describe("resolveBashTimeout", () => {
 	it("returns the default when input is undefined", () => {
@@ -77,11 +125,12 @@ describe("resolveBashTimeout", () => {
 		expect(resolveBashTimeout({ timeout: 600 })).toBe(600)
 	})
 
-	it("preserves timeout=0 (upstream: no timeout)", () => {
-		// Upstream bash treats `timeout <= 0` as "no timeout". Honouring
-		// that contract is the whole point of "preserve explicit values" —
-		// a user who sets 0 is asking for an unbounded run, and we must
-		// not silently clamp it to the default.
+	it("preserves timeout=0 (upstream: no timeout) in the raw resolver", () => {
+		// Upstream bash treats `timeout <= 0` as "no timeout". The helper
+		// returns the raw value (0) so callers can distinguish "explicit 0"
+		// from "not set" (which gets the default). The `tool_call` handlers
+		// then treat 0 as unbounded and clamp it to the cap — see the
+		// extension tests below.
 		expect(resolveBashTimeout({ timeout: 0 })).toBe(0)
 	})
 
@@ -121,7 +170,7 @@ describe("bashDefaultTimeoutExtension", () => {
 		expect(event.input.timeout).toBe(DEFAULT_BASH_TIMEOUT_SECONDS)
 	})
 
-	it("preserves an explicit positive timeout", () => {
+	it("preserves an explicit positive timeout at or below the cap", () => {
 		const pi = createMockPI()
 		bashDefaultTimeoutExtension(pi as unknown as PI)
 		const event: BashEvent = {
@@ -132,7 +181,42 @@ describe("bashDefaultTimeoutExtension", () => {
 		expect(event.input.timeout).toBe(600)
 	})
 
-	it("preserves an explicit timeout of 0 (no timeout upstream)", () => {
+	it("clamps an explicit timeout above the cap down to MAX_BASH_TIMEOUT_SECONDS", () => {
+		// The LLM routinely requests `timeout=1800`/`3600` on trials whose
+		// budget is shorter than that. The cap must bring the request down to
+		// `MAX_BASH_TIMEOUT_SECONDS` so a single bash call cannot consume the
+		// entire trial budget.
+		const pi = createMockPI()
+		bashDefaultTimeoutExtension(pi as unknown as PI)
+		const event: BashEvent = {
+			toolName: "bash",
+			input: { command: "opam install coq.8.16.1", timeout: 3600 },
+		}
+		fireToolCall(pi, event)
+		expect(event.input.timeout).toBe(MAX_BASH_TIMEOUT_SECONDS)
+	})
+
+	it("clamps an explicit timeout of 1,800,000s (500h) down to the cap", () => {
+		// Reproduces the `feal-linear-cryptanalysis__jvEooGt` baseline trace
+		// where the agent set `timeout=1800000`.
+		const pi = createMockPI()
+		bashDefaultTimeoutExtension(pi as unknown as PI)
+		const event: BashEvent = {
+			toolName: "bash",
+			input: { command: "./run.sh", timeout: 1_800_000 },
+		}
+		fireToolCall(pi, event)
+		expect(event.input.timeout).toBe(MAX_BASH_TIMEOUT_SECONDS)
+	})
+
+	it("clamps an explicit timeout of 0 (unbounded) to the cap", () => {
+		// Upstream treats `timeout <= 0` as "no timeout" (unbounded). An
+		// unbounded bash call can consume the entire trial budget — the
+		// exact failure mode the cap prevents — so `0` is treated as
+		// `Infinity` and clamped to `MAX_BASH_TIMEOUT_SECONDS`, not
+		// preserved. This also ensures `bash-timeout-guidance` can fire
+		// (a finite timeout produces a "Command timed out" error that
+		// triggers the steer; an unbounded call produces no such error).
 		const pi = createMockPI()
 		bashDefaultTimeoutExtension(pi as unknown as PI)
 		const event: BashEvent = {
@@ -140,7 +224,20 @@ describe("bashDefaultTimeoutExtension", () => {
 			input: { command: "long-poll", timeout: 0 },
 		}
 		fireToolCall(pi, event)
-		expect(event.input.timeout).toBe(0)
+		expect(event.input.timeout).toBe(MAX_BASH_TIMEOUT_SECONDS)
+	})
+
+	it("clamps an explicit negative timeout to the cap", () => {
+		// Negative values are also "no timeout" upstream; same rationale
+		// as the `timeout=0` case above.
+		const pi = createMockPI()
+		bashDefaultTimeoutExtension(pi as unknown as PI)
+		const event: BashEvent = {
+			toolName: "bash",
+			input: { command: "long-poll", timeout: -5 },
+		}
+		fireToolCall(pi, event)
+		expect(event.input.timeout).toBe(MAX_BASH_TIMEOUT_SECONDS)
 	})
 
 	it("ignores non-bash tool calls", () => {
@@ -178,6 +275,69 @@ describe("bashDefaultTimeoutExtension", () => {
 		fireToolCall(pi, event)
 		expect(input.timeout).toBe(DEFAULT_BASH_TIMEOUT_SECONDS)
 		expect(event.input).toBe(input)
+	})
+})
+
+describe("bashDefaultTimeoutExtension — env-var cap override", () => {
+	afterEach(() => {
+		delete process.env[MAX_BASH_TIMEOUT_ENV]
+	})
+
+	it("clamps explicit timeouts to the env-var override when lower than the default cap", () => {
+		// Raising the cap is the only effect of the env var that the main
+		// extension exposes; the default itself (`DEFAULT_BASH_TIMEOUT_SECONDS`)
+		// is unaffected. Here we set a lower cap (300s) so an explicit 600s is
+		// clamped down to 300s.
+		process.env[MAX_BASH_TIMEOUT_ENV] = "300"
+		const pi = createMockPI()
+		bashDefaultTimeoutExtension(pi as unknown as PI)
+		const event: BashEvent = {
+			toolName: "bash",
+			input: { command: "slow-build", timeout: 600 },
+		}
+		fireToolCall(pi, event)
+		expect(event.input.timeout).toBe(300)
+	})
+
+	it("does not raise timeouts below the env-var cap", () => {
+		// Cap is 300s, explicit timeout is 5s. The cap is a maximum only; it
+		// must not lift a shorter explicit value up to the cap.
+		process.env[MAX_BASH_TIMEOUT_ENV] = "300"
+		const pi = createMockPI()
+		bashDefaultTimeoutExtension(pi as unknown as PI)
+		const event: BashEvent = {
+			toolName: "bash",
+			input: { command: "quick", timeout: 5 },
+		}
+		fireToolCall(pi, event)
+		expect(event.input.timeout).toBe(5)
+	})
+
+	it("raises the cap when the env var is larger than the default", () => {
+		// Default cap is 600s; env var raises it to 1200s. An explicit 900s
+		// (which would be clamped to 600 with the default cap) is now kept
+		// verbatim because 900 < 1200.
+		process.env[MAX_BASH_TIMEOUT_ENV] = "1200"
+		const pi = createMockPI()
+		bashDefaultTimeoutExtension(pi as unknown as PI)
+		const event: BashEvent = {
+			toolName: "bash",
+			input: { command: "make", timeout: 900 },
+		}
+		fireToolCall(pi, event)
+		expect(event.input.timeout).toBe(900)
+	})
+
+	it("ignores an invalid env var and falls back to the default cap", () => {
+		process.env[MAX_BASH_TIMEOUT_ENV] = "garbage"
+		const pi = createMockPI()
+		bashDefaultTimeoutExtension(pi as unknown as PI)
+		const event: BashEvent = {
+			toolName: "bash",
+			input: { command: "x", timeout: 3600 },
+		}
+		fireToolCall(pi, event)
+		expect(event.input.timeout).toBe(MAX_BASH_TIMEOUT_SECONDS)
 	})
 })
 
@@ -252,8 +412,11 @@ describe("createSubagentBashClampExtension", () => {
 		expect(event.input.timeout).toBe(15)
 	})
 
-	it("preserves an explicit timeout of 0 (no timeout upstream)", () => {
-		// Math.min(0, remaining) === 0, so the no-timeout contract survives.
+	it("clamps an explicit timeout of 0 (unbounded) to the smaller of the cap and remaining budget", () => {
+		// Upstream treats `timeout <= 0` as "no timeout" (unbounded). The
+		// clamp treats `0` as `Infinity` and clamps to
+		// `Math.min(remaining, cap)`. Here remaining=60s, cap=600s, so 60s
+		// wins — the subagent's own budget is the tighter bound.
 		vi.setSystemTime(0)
 		const pi = createMockPI()
 		createSubagentBashClampExtension(60, 0)(pi as unknown as PI)
@@ -262,7 +425,36 @@ describe("createSubagentBashClampExtension", () => {
 			input: { command: "long-poll", timeout: 0 },
 		}
 		fireToolCall(pi, event)
-		expect(event.input.timeout).toBe(0)
+		expect(event.input.timeout).toBe(60)
+	})
+
+	it("clamps an explicit negative timeout to the smaller of the cap and remaining budget", () => {
+		// Same as the `timeout=0` case but with a negative value.
+		vi.setSystemTime(0)
+		const pi = createMockPI()
+		createSubagentBashClampExtension(60, 0)(pi as unknown as PI)
+		const event: BashEvent = {
+			toolName: "bash",
+			input: { command: "long-poll", timeout: -5 },
+		}
+		fireToolCall(pi, event)
+		expect(event.input.timeout).toBe(60)
+	})
+
+	it("clamps an explicit timeout of 0 to the cap when the remaining budget is larger", () => {
+		// Subagent has a 3600s budget and is fresh (t=0): the remaining-budget
+		// clamp would NOT fire. The hard cap (600s) must win instead, proving
+		// `timeout=0` (unbounded) is clamped even when the subagent has plenty
+		// of budget — mirrors the main-agent guardrail.
+		vi.setSystemTime(0)
+		const pi = createMockPI()
+		createSubagentBashClampExtension(3600, 0)(pi as unknown as PI)
+		const event: BashEvent = {
+			toolName: "bash",
+			input: { command: "make world", timeout: 0 },
+		}
+		fireToolCall(pi, event)
+		expect(event.input.timeout).toBe(MAX_BASH_TIMEOUT_SECONDS)
 	})
 
 	it("floors at 1s when the budget is exhausted", () => {
@@ -317,6 +509,22 @@ describe("createSubagentBashClampExtension", () => {
 		}
 		fireToolCall(pi, event)
 		expect(event.input.timeout).toBeUndefined()
+	})
+
+	it("clamps explicit timeouts above MAX_BASH_TIMEOUT_SECONDS even with plenty of budget", () => {
+		// Subagent has a 3600s budget and is fresh (t=0): the remaining-budget
+		// clamp would NOT fire on an explicit 2400s. The hard cap must still
+		// bring it down so a subagent cannot inherit the main agent's
+		// budget-blowing failure mode.
+		vi.setSystemTime(0)
+		const pi = createMockPI()
+		createSubagentBashClampExtension(3600, 0)(pi as unknown as PI)
+		const event: BashEvent = {
+			toolName: "bash",
+			input: { command: "make world", timeout: 2400 },
+		}
+		fireToolCall(pi, event)
+		expect(event.input.timeout).toBe(MAX_BASH_TIMEOUT_SECONDS)
 	})
 })
 
