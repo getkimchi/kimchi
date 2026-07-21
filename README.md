@@ -209,10 +209,12 @@ src/
     orchestration/      -- Task classification & delegation
     ferment/            -- Ferment lifecycle tools & UI
     mcp-adapter/        -- MCP server integration
-  modes/
-    interactive/        -- TUI harness
-    acp/                -- JSON-RPC over stdio (IDE)
     teleport/           -- Remote session multiplexing
+    lsp/                -- Language Server Protocol
+    permissions/        -- Tool auth flows
+  modes/
+    acp/                -- JSON-RPC over stdio (IDE)
+  components/           -- Interactive TUI harness
   agent-discovery/      -- Migration from other coding agents
   ferment/              -- Ferment state machine & event store
 ```
