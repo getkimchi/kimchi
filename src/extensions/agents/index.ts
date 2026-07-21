@@ -104,6 +104,7 @@ import { AGENT_WORKER_BUDGETS } from "./worker-budget-policy.js"
 // ---- Shared helpers ----
 
 /**
+/**
  * Maps an agent persona type to its model-roles key.
  * Returns null for types that don't have a configured role.
  */
@@ -134,6 +135,25 @@ export function resolveRoleModelRef(subagentType: string): string | undefined {
 	if (!assignment) return undefined
 	const modelRefs = normalizeRoleModels(assignment)
 	return modelRefs[0]
+}
+
+/**
+ * Clamp token budget to the minimum when multi-model is active.
+ * The orchestrator often passes tiny budgets (2000-8000) that are too
+ * small for any real implementation work — a single file write can
+ * exceed 2000 output tokens. Clamps up to AGENT_WORKER_BUDGETS.default.tokenBudget.
+ *
+ * Returns undefined when no budget was set (pass-through).
+ */
+export function clampTokenBudget(
+	rawBudget: number | undefined,
+	multiModelEnabled: boolean,
+): number | undefined {
+	if (rawBudget == null) return undefined
+	if (multiModelEnabled && rawBudget < AGENT_WORKER_BUDGETS.default.tokenBudget) {
+		return AGENT_WORKER_BUDGETS.default.tokenBudget
+	}
+	return rawBudget
 }
 
 // Give aborted sub-agents a bounded chance to reach runner finally blocks.
@@ -1292,15 +1312,10 @@ ${AGENT_TOOL_GUIDELINES}`,
 				// small for any real implementation work — a single file write can
 				// exceed 2000 output tokens. Clamp to the minimum from the budget
 				// table so Builders have enough room to complete their work.
-				const MIN_TOKEN_BUDGET = AGENT_WORKER_BUDGETS.default.tokenBudget
-				const effectiveTokenBudget = (() => {
-					const raw = resolvedConfig.tokenBudget
-					if (raw == null) return undefined
-					if (getMultiModelEnabled(ctx.sessionManager) && raw < MIN_TOKEN_BUDGET) {
-						return MIN_TOKEN_BUDGET
-					}
-					return raw
-				})()
+				const effectiveTokenBudget = clampTokenBudget(
+					resolvedConfig.tokenBudget,
+					getMultiModelEnabled(ctx.sessionManager),
+				)
 				if (
 					activeBudgetRetryBlock &&
 					shouldBlockBudgetRetry(activeBudgetRetryBlock, {
