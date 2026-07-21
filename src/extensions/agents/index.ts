@@ -29,10 +29,10 @@ import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
 import {
+	type DEFAULT_MODEL_ROLES,
 	getAllowedMultiModelRefs,
 	getModelRoles,
 	normalizeRoleModels,
-	type DEFAULT_MODEL_ROLES,
 } from "../orchestration/model-roles.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
