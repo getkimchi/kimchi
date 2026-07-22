@@ -22,6 +22,7 @@ import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
 import { getOrchestratorModelId, getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
+import { createPrStatusWatcher } from "./pr-status.js"
 import { isRawInputCaptureActive } from "./shared-input.js"
 import {
 	isSessionModeOnboardingStatusLineSuppressed,
@@ -246,6 +247,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let uiTui: TUI | null = null
 	let headerTui: TUI | null = null
 	let unregisterBillingStatus: (() => void) | undefined
+	let prWatcher: ReturnType<typeof createPrStatusWatcher> | undefined
 	let scriptCmd: string | null = null
 	let scriptPending = false
 	let scriptGeneration = 0
@@ -292,9 +294,19 @@ export default function uiExtension(pi: ExtensionAPI) {
 			uiTui?.requestRender()
 		})
 
+		prWatcher?.stop()
+		prWatcher = createPrStatusWatcher({
+			getCwd: () => ctx.cwd,
+		})
+		prWatcher.start(() => uiTui?.requestRender())
+
 		ctx.ui.setHeader((tui, theme) => {
 			headerTui = tui
-			branchPoller.start(() => tui.requestRender())
+			branchPoller.start(() => {
+				tui.requestRender()
+				uiTui?.requestRender()
+				prWatcher?.refresh()
+			})
 			const logo = new LogoHeader(theme, {
 				getBranch: () => branchPoller.getBranch(),
 				getRightColumnNotice: getCommunityTierHeaderNotice,
@@ -311,6 +323,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 		})
 		ctx.ui.setFooter((tui, theme, statusLineData) => {
 			uiTui = tui
+			prWatcher?.start(() => {
+				uiTui?.requestRender()
+				refresh("idle")
+			})
 			const cmd = readStatusLineCommand()
 			if (!cmd) {
 				scriptCmd = null
@@ -500,6 +516,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 		stopWorkingAnimation = undefined
 		currentCtx = null
 		branchPoller.stop()
+		prWatcher?.stop()
+		prWatcher = undefined
 	})
 
 	pi.on("input", (event, ctx) => {

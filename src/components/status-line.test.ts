@@ -6,6 +6,7 @@ import * as AGENTS from "../extensions/agents/index.js"
 import { setBillingStatusForTest } from "../extensions/billing/status.js"
 import * as FERMENT from "../extensions/ferment/index.js"
 import * as MULTI_MODEL from "../extensions/multi-model.js"
+import { setPrStatusForTest } from "../extensions/pr-status.js"
 import * as TAGS from "../extensions/tags.js"
 import {
 	buildContextCompact,
@@ -97,7 +98,16 @@ function createMockStatusLineData(opts?: {
 }
 
 describe("buildScriptPayload", () => {
-	afterEach(() => setBillingStatusForTest(undefined))
+	afterEach(() => {
+		setBillingStatusForTest(undefined)
+		setPrStatusForTest(undefined)
+	})
+
+	it("passes PR number and URL to custom status-line scripts", () => {
+		setPrStatusForTest({ number: 42, url: "https://github.com/owner/repo/pull/42" })
+		const payload = buildScriptPayload(createMockContext(), "idle", 0, 0, 0)
+		expect(payload.pr).toEqual({ number: 42, url: "https://github.com/owner/repo/pull/42" })
+	})
 
 	it("passes credits and budget to custom status-line scripts", () => {
 		setBillingStatusForTest({
@@ -425,6 +435,7 @@ describe("StatusLine segment coverage", () => {
 	afterEach(() => {
 		vi.restoreAllMocks()
 		setBillingStatusForTest(undefined)
+		setPrStatusForTest(undefined)
 		restorePlatform()
 	})
 
@@ -591,6 +602,33 @@ describe("StatusLine segment coverage", () => {
 			renderVisible(sl, 200)
 			expect(getCurrentPhaseSpy).toHaveBeenCalledWith("test-session")
 			expect(getActiveTagsSpy).toHaveBeenCalledWith(ctx.sessionManager)
+		})
+	})
+
+	it("pr segment shows PR number when pinned and PR info is available", () => {
+		withPinned(["pr"], () => {
+			setPrStatusForTest({ number: 42, url: "https://github.com/owner/repo/pull/42" })
+			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+			const visible = renderVisible(sl, 200)
+			expect(visible).toContain("PR:")
+			expect(visible).toContain("#42")
+		})
+	})
+
+	it("pr segment is hidden when unpinned and no PR info is available", () => {
+		setPrStatusForTest(undefined)
+		const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+		const visible = renderVisible(sl, 200)
+		expect(visible).not.toContain("PR:")
+	})
+
+	it("pr segment shows placeholder when pinned but no PR info is available", () => {
+		withPinned(["pr"], () => {
+			setPrStatusForTest(undefined)
+			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+			const visible = renderVisible(sl, 200)
+			expect(visible).toContain("PR:")
+			expect(visible).toContain("—")
 		})
 	})
 })

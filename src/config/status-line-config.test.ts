@@ -46,8 +46,8 @@ afterEach(() => {
 // ── STATUS_LINE_ELEMENTS metadata ────────────────────────────────────────────
 
 describe("STATUS_LINE_ELEMENTS", () => {
-	it("has 11 entries", () => {
-		expect(STATUS_LINE_ELEMENTS).toHaveLength(11)
+	it("has 12 entries", () => {
+		expect(STATUS_LINE_ELEMENTS).toHaveLength(12)
 	})
 
 	it("every entry has id, label, description", () => {
@@ -72,6 +72,7 @@ describe("STATUS_LINE_ELEMENTS", () => {
 			"team",
 			"credits",
 			"budget",
+			"pr",
 		].sort()
 		expect(ids).toEqual(expected)
 	})

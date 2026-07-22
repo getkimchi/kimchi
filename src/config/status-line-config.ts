@@ -14,6 +14,7 @@ export type StatusLineElementId =
 	| "team"
 	| "credits"
 	| "budget"
+	| "pr"
 
 export type StatusLineConfig = { pinned: StatusLineElementId[] }
 
@@ -85,6 +86,11 @@ export const STATUS_LINE_ELEMENTS: Array<{
 		id: "budget",
 		label: "Budget",
 		description: "Budget usage and limit",
+	},
+	{
+		id: "pr",
+		label: "Pull request",
+		description: "PR number and link for the current branch",
 	},
 ]
 
