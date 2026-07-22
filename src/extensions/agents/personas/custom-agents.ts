@@ -14,6 +14,21 @@ import { getInstalledPackageResourceDirs } from "../package-resources.js"
 import { BUILTIN_TOOL_NAMES } from "./agent-types.js"
 import type { AgentConfig, MemoryScope, ThinkingLevel } from "./types.js"
 
+/** Thinking levels that are valid in the current harness. */
+const VALID_THINKING_LEVELS = new Set<ThinkingLevel>(["off", "low", "medium", "high", "xhigh"])
+
+/**
+ * Coerce a raw thinking string (from YAML frontmatter or runtime params)
+ * into a valid ThinkingLevel. The `minimal` level was removed and is silently
+ * mapped to `low` for backward compatibility with existing agent profiles.
+ */
+export function coerceThinkingLevel(raw: string | undefined): ThinkingLevel | undefined {
+	if (!raw) return undefined
+	if (raw === "minimal") return "low"
+	if (VALID_THINKING_LEVELS.has(raw as ThinkingLevel)) return raw as ThinkingLevel
+	return undefined
+}
+
 /**
  * Scan for custom agent .md files from multiple locations.
  */
@@ -62,7 +77,7 @@ function loadFromDir(dir: string, agentsMap: Map<string, AgentConfig>, source: "
 			extensions: inheritField(fm.extensions ?? fm.inherit_extensions),
 			skills: inheritField(fm.skills ?? fm.inherit_skills),
 			models: modelToArray(fm),
-			thinking: str(fm.thinking) as ThinkingLevel | undefined,
+			thinking: coerceThinkingLevel(str(fm.thinking)) as ThinkingLevel | undefined,
 			maxTurns: nonNegativeInt(fm.max_turns),
 			tokenBudget: positiveInt(fm.token_budget),
 			maxDuration: positiveInt(fm.max_duration),

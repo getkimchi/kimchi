@@ -1070,10 +1070,19 @@ ${AGENT_TOOL_GUIDELINES}`,
 					}),
 				),
 				thinking: Type.Optional(
-					Type.String({
-						description:
-							"Requested thinking level: off, low, medium, high, xhigh. Orchestrator-provided values override agent profile defaults. Omit only when Orchestration does not require an explicit level.",
-					}),
+					Type.Union(
+						[
+							Type.Literal("off"),
+							Type.Literal("low"),
+							Type.Literal("medium"),
+							Type.Literal("high"),
+							Type.Literal("xhigh"),
+						],
+						{
+							description:
+								"Requested thinking level: off, low, medium, high, xhigh. Orchestrator-provided values override agent profile defaults. Omit only when Orchestration does not require an explicit level.",
+						},
+					),
 				),
 				max_turns: Type.Optional(
 					Type.Number({

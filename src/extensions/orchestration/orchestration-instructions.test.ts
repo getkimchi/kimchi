@@ -41,13 +41,14 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("## Orchestration")
 	})
 
-	it("does not contain the removed 'minimal' thinking level", () => {
+	it("does not contain the removed 'minimal' thinking level and lists the valid levels", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).not.toContain("minimal")
+		expect(result).toContain("off, low, medium, high, xhigh")
 	})
 
 	it("shows role assignments with Your team subsection", () => {
