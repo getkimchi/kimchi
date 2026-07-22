@@ -1,4 +1,6 @@
-import type { SessionContext } from "../session-context.js"
+import type { AssistantMessage } from "@earendil-works/pi-ai"
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { TelemetryContext } from "../session-context.js"
 
 const TRANSPORT_ERROR_PATTERNS = [
 	"socket connection was closed unexpectedly",
@@ -17,26 +19,21 @@ function isTransportError(errorMessage: string | undefined): boolean {
 }
 
 export function handleTransportError(
-	ctx: SessionContext,
-	event: {
-		message: {
-			role?: string
-			model?: string
-			provider?: string
-			api?: string
-			stopReason?: string
-			errorMessage?: string
-		}
-	},
+	telemetry: TelemetryContext,
+	ctx: ExtensionContext,
+	event: { message: AssistantMessage },
 ): void {
 	const msg = event.message
 	if (msg.role !== "assistant") return
 	if (msg.stopReason !== "error") return
 	if (!isTransportError(msg.errorMessage)) return
 
-	ctx.emit("error", {
-		model: msg.model ?? "unknown",
-		error_type: "transport_error",
-		error_message: (msg.errorMessage ?? "").slice(0, 300),
-	})
+	telemetry.emit(
+		"error",
+		{
+			error_type: "transport_error",
+			error_message: (msg.errorMessage ?? "").slice(0, 300),
+		},
+		ctx,
+	)
 }

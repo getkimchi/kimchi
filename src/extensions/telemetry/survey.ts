@@ -1,4 +1,4 @@
-import type { SessionContext } from "./session-context.js"
+import type { TelemetryContext } from "./session-context.js"
 
 type SurveyAttrs = Record<string, string | number | boolean>
 type SurveyOption = SurveyTelemetryDefinition["options"][number]
@@ -48,11 +48,11 @@ function surveyResponseValue(answer: SurveyOption): string {
 	return answer.label
 }
 
-export function emitSurveyShown(ctx: SessionContext, args: SurveyShownTelemetry): void {
+export function emitSurveyShown(ctx: TelemetryContext, args: SurveyShownTelemetry): void {
 	ctx.emit("survey_shown", commonSurveyAttrs(args))
 }
 
-export function emitSurveyAnswered(ctx: SessionContext, args: SurveyAnsweredTelemetry): void {
+export function emitSurveyAnswered(ctx: TelemetryContext, args: SurveyAnsweredTelemetry): void {
 	const answer = args.survey.options.find((option) => option.id === args.answerId)
 	if (!answer) return
 
@@ -65,6 +65,6 @@ export function emitSurveyAnswered(ctx: SessionContext, args: SurveyAnsweredTele
 	})
 }
 
-export function emitSurveyDismissed(ctx: SessionContext, args: SurveyDismissedTelemetry): void {
+export function emitSurveyDismissed(ctx: TelemetryContext, args: SurveyDismissedTelemetry): void {
 	ctx.emit("survey_dismissed", commonSurveyAttrs(args))
 }

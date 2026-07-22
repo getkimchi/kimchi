@@ -6,7 +6,6 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import {
-	getCliModeArg,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
@@ -118,6 +117,7 @@ import {
 	readExperimentalModels,
 	updateModelsConfig,
 } from "./models.js"
+import { IS_ACP_MODE } from "./modes/acp/state.js"
 import {
 	augmentModelRolesWithOllama,
 	injectOllamaProvider,
@@ -229,11 +229,6 @@ if (telemetryConfig.enabled) {
 		subcommand: getSubcommand(originalArgs),
 	})
 }
-
-// ACP mode runs JSON-RPC over stdio; interactive mode runs the standard TUI
-// harness. Decide once at module load, before anything else runs.
-const cliMode = getCliModeArg(originalArgs)
-const acpMode = cliMode === "acp"
 
 // Monkey-patch AgentSession.prototype.exportToJsonl so ALL JSONL exports
 // (interactive, ACP, and teleport mode) get trace IDs injected inline.
@@ -564,7 +559,7 @@ try {
 		}
 
 		const interactiveStartupContext = {
-			nonInteractiveMode: acpMode,
+			nonInteractiveMode: IS_ACP_MODE,
 			...terminalIo,
 		}
 		const startupAuthState = createStartupAuthGateState()
@@ -672,7 +667,7 @@ try {
 			infrastructureBreakerExtension,
 		]
 
-		if (acpMode) {
+		if (IS_ACP_MODE) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			await runAcpMode({ extensionFactories, agentDir })
 		} else {

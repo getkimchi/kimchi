@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
-import { _resetSharedAccumulators, SessionContext } from "./session-context.js"
+import { _resetSharedAccumulators, TelemetryContext } from "./session-context.js"
 import { emitSurveyAnswered, emitSurveyDismissed, emitSurveyShown } from "./survey.js"
 import type { LogRecord } from "./transport.js"
 
@@ -52,7 +52,7 @@ describe("survey telemetry", () => {
 	})
 
 	it("emits survey_shown with the survey id", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 
 		emitSurveyShown(ctx, { survey: TEST_SURVEY })
 
@@ -62,7 +62,7 @@ describe("survey telemetry", () => {
 
 		const attrMap = attrs(record)
 		expect(attrMap.survey_id).toBe(TEST_SURVEY.id)
-		expect(attrMap["session.id"]).toBe(ctx.sessionId)
+		expect(attrMap["session.id"]).toBe(ctx.processId)
 		expect(attrMap.client).toBe("pi")
 		expect(attrMap.source).toBe("cli")
 
@@ -70,7 +70,7 @@ describe("survey telemetry", () => {
 	})
 
 	it("emits survey_answered with the abstract survey response fields", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 
 		emitSurveyAnswered(ctx, { survey: TEST_SURVEY, submissionId: "submission-1", answerId: "mostly_worked" })
 
@@ -89,7 +89,7 @@ describe("survey telemetry", () => {
 	})
 
 	it("does not emit survey_answered for an unknown answer id", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 
 		emitSurveyAnswered(ctx, { survey: TEST_SURVEY, submissionId: "submission-1", answerId: "unknown" })
 
@@ -99,7 +99,7 @@ describe("survey telemetry", () => {
 	})
 
 	it("emits survey_dismissed with the survey id", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 
 		emitSurveyDismissed(ctx, { survey: TEST_SURVEY })
 
@@ -114,7 +114,7 @@ describe("survey telemetry", () => {
 	})
 
 	it("emits triggered survey events with the survey response fields", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 
 		emitSurveyShown(ctx, { survey: TEST_SURVEY, trigger: "ferment_completed" })
 		emitSurveyAnswered(ctx, {
