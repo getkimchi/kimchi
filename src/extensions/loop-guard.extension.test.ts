@@ -159,6 +159,59 @@ describe("loopGuardExtension telemetry", () => {
 	})
 })
 
+describe("loopGuardExtension tool_call handler (advisory-only)", () => {
+	beforeEach(() => {
+		vi.resetModules()
+		vi.doMock("./agent-worker-context.js", () => ({ isAgentWorker: () => false }))
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	it("returns { block: true } for an empty tool name", async () => {
+		const { api, handlers } = createMockApi()
+		const { default: loopGuardExtension } = await import("./loop-guard.js")
+		loopGuardExtension(api)
+		await getHandler(handlers, "session_start")({}, { abort: vi.fn() })
+
+		const result = await runToolCallHandlers(handlers, { toolName: "", input: {} })
+		expect(result?.block).toBe(true)
+		expect(result?.reason).toContain("Tool name is empty")
+	})
+
+	it("never blocks a tool call, even after a warn stored a matching blocked pattern", async () => {
+		// Regression guard for iteration 0014: the tool_call handler is
+		// advisory-only. Even after the loop guard fires a warn on an
+		// edit-run / repeated-edit / bash-repetition pattern (which stores
+		// the offending path/prefix in blockedEditTargets / blockedBashPrefixes),
+		// the handler must NOT block the subsequent matching call — the
+		// agent must be free to rewrite the same file / re-run the same
+		// command as part of a genuine recovery.
+		const { api, handlers } = createMockApi()
+		const { default: loopGuardExtension } = await import("./loop-guard.js")
+		loopGuardExtension(api)
+		await getHandler(handlers, "session_start")({}, { abort: vi.fn() })
+
+		// Drive a bash-repetition loop (12 identical non-error bash results)
+		// so the loop guard fires a warn and stores the bash prefix.
+		const command = "yt-dlp https://example.com/video"
+		const bashResult = {
+			toolName: "bash",
+			input: { command },
+			isError: false,
+			content: [{ type: "text", text: "ok" }],
+		}
+		for (let i = 0; i < 12; i++) {
+			await getHandler(handlers, "tool_result")(bashResult)
+		}
+
+		// A subsequent bash call with the SAME prefix must NOT be blocked.
+		const result = await runToolCallHandlers(handlers, { toolName: "bash", input: { command } })
+		expect(result?.block).toBe(false)
+	})
+})
+
 describe("loopGuardExtension escalating steer messages", () => {
 	beforeEach(() => {
 		vi.resetModules()
@@ -255,11 +308,14 @@ describe("loop-guard + exploration-guard tool_call handler ordering", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("a loop-guard-blocked tool_call still records the tool call in the exploration guard (no false no-tool steer)", async () => {
+	it("a loop-guard-advised tool_call still records the tool call in the exploration guard (no false no-tool steer)", async () => {
 		// Register both extensions in cli.ts order: exploration guard FIRST,
-		// then loop guard. The runner short-circuits emitToolCall on the first
-		// { block: true }, so the exploration guard's handler (registered
-		// first) runs before the loop guard can block.
+		// then loop guard. The loop guard's tool_call handler is advisory-only
+		// (iteration 0014): it never returns { block: true } for a non-empty
+		// tool name, so the tool call proceeds and the exploration guard
+		// records it. This test confirms the exploration guard still records
+		// the call (no false no-tool steer) even after the loop guard has
+		// fired an advisory warn on the same pattern.
 		const { api, handlers } = createMockApi()
 		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
 		const { default: loopGuardExtension } = await import("./loop-guard.js")
@@ -275,7 +331,9 @@ describe("loop-guard + exploration-guard tool_call handler ordering", () => {
 		await getHandler(handlers, "session_start")({}, ctx)
 
 		// Drive a bash-repetition loop (12 identical non-error bash results) so
-		// the loop guard fires a warn AND stores a blocked bash prefix.
+		// the loop guard fires an advisory warn on this bash prefix. The warn
+		// is advisory-only — it stores blocked patterns internally but the
+		// tool_call handler no longer consults them.
 		const command = "yt-dlp https://example.com/video"
 		const bashResult = {
 			toolName: "bash",
@@ -287,18 +345,18 @@ describe("loop-guard + exploration-guard tool_call handler ordering", () => {
 			await getHandler(handlers, "tool_result")(bashResult)
 		}
 
-		// Now simulate a turn whose ONLY tool call matches the blocked bash
-		// prefix. Running the handlers in registration order: exploration guard
-		// records the tool call (returns { block: false }), then loop guard
-		// blocks it. The turn thus has a recorded tool call — consecutiveNoToolTurns
-		// must NOT increment.
-		const blockedCall = { toolName: "bash", input: { command } }
+		// Simulate a turn whose only tool call matches the previously-warned
+		// bash prefix. Running the handlers in registration order: exploration
+		// guard records the tool call (returns { block: false }), then loop guard
+		// returns { block: false } (advisory-only). The turn thus has a
+		// recorded tool call — consecutiveNoToolTurns must NOT increment.
+		const advisedCall = { toolName: "bash", input: { command } }
 		getHandler(handlers, "turn_start")()
-		const blockResult = await runToolCallHandlers(handlers, blockedCall)
-		expect(blockResult?.block).toBe(true)
+		const blockResult = await runToolCallHandlers(handlers, advisedCall)
+		expect(blockResult?.block).toBe(false)
 		await getHandler(handlers, "turn_end")()
 
-		// After one blocked-only turn, no no-tool steer should have fired yet
+		// After one tool-call turn, no no-tool steer should have fired yet
 		// (noToolWarnThreshold=1 would fire on the FIRST no-tool turn). Assert
 		// the exploration guard did NOT send any no-tool steer for this turn.
 		const sends = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls
@@ -307,12 +365,12 @@ describe("loop-guard + exploration-guard tool_call handler ordering", () => {
 				&& ((msg as { content: Array<{ text: string }> }).content[0].text.includes("no tool calls")))
 		expect(noToolSteers.length).toBe(0)
 
-		// Sanity: a SECOND blocked-only turn should also NOT fire the mandatory
-		// steer (noToolSteerThreshold=2). It would only fire if both turns were
-		// miscounted as no-tool turns.
+		// Sanity: a SECOND advised tool-call turn should also NOT fire the
+		// mandatory steer (noToolSteerThreshold=2). It would only fire if both
+		// turns were miscounted as no-tool turns.
 		getHandler(handlers, "turn_start")()
-		const blockResult2 = await runToolCallHandlers(handlers, blockedCall)
-		expect(blockResult2?.block).toBe(true)
+		const blockResult2 = await runToolCallHandlers(handlers, advisedCall)
+		expect(blockResult2?.block).toBe(false)
 		await getHandler(handlers, "turn_end")()
 		const noToolSteers2 = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls.filter(([msg]: unknown[]) =>
 			typeof (msg as { content?: Array<{ text?: string }> })?.content?.[0]?.text === "string"

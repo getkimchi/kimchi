@@ -448,6 +448,13 @@ export class LoopGuard {
 	 * the block persists until the agent makes 5 alternative edit/bash
 	 * calls. After BLOCK_COOLDOWN_CALLS such calls, the blocked patterns
 	 * are cleared.
+	 *
+	 * NOTE: As of iteration 0014 this method is DEAD CODE — the tool_call
+	 * handler no longer consults it (advisory-only behavior). It is
+	 * retained, along with blockIfLoop and the blockedEditTargets /
+	 * blockedBashPrefixes / blockedBashPrefixesNorm state, for potential
+	 * content-aware re-enablement (a future block must key on edit
+	 * content, not file path). Do not re-wire it without that change.
 	 */
 	shouldBlock(call: { toolName: string; toolArgs: string }): { block: boolean; reason?: string } {
 		if (
@@ -1050,21 +1057,15 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 				reason: "Tool name is empty. Check your tool call syntax and use only the tools listed under Available Tools.",
 			}
 		}
-		// Skip blocking for subagents — they have their own abort mechanism
-		// via ctx.abort() in turn_end.
-		if (isAgentWorker()) return { block: false }
-
-		// Block calls that would extend a detected loop. The block is
-		// targeted: only calls matching the edit target or bash prefix
-		// from a recent warn are blocked. Non-matching calls are allowed
-		// and count toward the cooldown that eventually clears the block.
-		const blockResult = guard.shouldBlock({
-			toolName: event.toolName,
-			toolArgs: stableStringify(event.input),
-		})
-		if (blockResult.block) {
-			return { block: true, reason: blockResult.reason }
-		}
+		// Advisory-only: the loop guard never blocks tool calls. The advisory
+		// steer in the tool_result handler informs the agent when it is
+		// looping and nudges it to change approach, but it does not prevent
+		// the agent from taking recovery actions — including rewriting the
+		// same file from scratch, which a path-keyed block would wrongly
+		// refuse (see iteration 0014 hypothesis). shouldBlock/blockIfLoop
+		// and the blockedEditTargets/blockedBashPrefixes state are retained
+		// below as dead code for potential content-aware re-enablement but
+		// are no longer consulted by this handler.
 		return { block: false }
 	})
 
