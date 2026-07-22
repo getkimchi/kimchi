@@ -61,6 +61,7 @@ import llmResponseLogExtension from "./extensions/llm-response-log.js"
 import loginExtension from "./extensions/login/index.js"
 import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
+import wallClockSteerExtension from "./extensions/wall-clock-steer.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
@@ -608,6 +609,7 @@ try {
 			// preventing a blocked-only turn from being miscounted as a no-tool turn
 			// that fires a false-positive mandatory-tool steer.
 			explorationGuardExtension,
+			wallClockSteerExtension,
 			loopGuardExtension,
 			stopNudgeExtension,
 			reviewWriteGuardExtension,
