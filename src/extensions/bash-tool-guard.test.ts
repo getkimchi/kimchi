@@ -15,7 +15,6 @@ import {
 	type BashGuardWarnResult,
 	BashToolGuard,
 	classifyBashCommand,
-	TOOL_PREFERENCES_BLOCK,
 	toolDescriptionOverride,
 } from "./bash-tool-guard.js"
 
@@ -697,43 +696,10 @@ describe("BashToolGuard — semantic intent override (no tool name)", () => {
 // =============================================================================
 //
 // The guard steers AFTER the model picks bash for a file op. The
-// preference block + description override steers BEFORE — nudging the model
-// to pick the dedicated tool in the first place. These tests cover the
-// pure helpers exported for that purpose and the default extension's
-// integration with the system prompt block + session_start mutation.
-
-describe("TOOL_PREFERENCES_BLOCK", () => {
-	it("contains the section header", () => {
-		expect(TOOL_PREFERENCES_BLOCK).toContain("## Tool Preferences")
-	})
-
-	it("maps each file operation to its dedicated tool", () => {
-		// Each line should pair the file operation with the dedicated
-		// tool name in backticks. Verifying the mapping catches
-		// accidental edits that drop the substitution targets.
-		expect(TOOL_PREFERENCES_BLOCK).toContain("use `read`")
-		expect(TOOL_PREFERENCES_BLOCK).toContain("use `edit`")
-		expect(TOOL_PREFERENCES_BLOCK).toContain("use `write`")
-		expect(TOOL_PREFERENCES_BLOCK).toContain("use `grep`")
-		expect(TOOL_PREFERENCES_BLOCK).toContain("use `find`")
-		expect(TOOL_PREFERENCES_BLOCK).toContain("use `ls`")
-	})
-
-	it("lists the anti-patterns being discouraged", () => {
-		// Spot-check the most common anti-patterns so we know the
-		// guidance covers the cases bash-tool-guard steers on.
-		expect(TOOL_PREFERENCES_BLOCK).toContain("cat")
-		expect(TOOL_PREFERENCES_BLOCK).toContain("head")
-		expect(TOOL_PREFERENCES_BLOCK).toContain("tail")
-		expect(TOOL_PREFERENCES_BLOCK).toContain("sed -i")
-	})
-
-	it("specifies what bash IS for", () => {
-		// The block must also say what bash is for, otherwise the model
-		// would think bash is now useless for everything.
-		expect(TOOL_PREFERENCES_BLOCK).toMatch(/build|test|git|package/i)
-	})
-})
+// description override steers BEFORE — nudging the model to pick the
+// dedicated tool in the first place. These tests cover the pure helpers
+// exported for that purpose and the default extension's integration with
+// the system prompt block + session_start mutation.
 
 describe("BASH_TOOL_DESCRIPTION", () => {
 	it("describes what bash is for", () => {

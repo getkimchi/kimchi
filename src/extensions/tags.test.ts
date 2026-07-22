@@ -262,11 +262,11 @@ describe("tags system prompt block", () => {
 				sessionId: TEST_SESSION_ID,
 			})
 
-			expect(result).toContain("## Phase Tagging for Analytics")
+			expect(result).toContain("## Phase Management")
 			expect(result).toContain("Call `set_phase` when the work type changes")
 			expect(result).toContain("Subagents set their phase automatically from their persona")
 			expect(result).not.toContain("questionnaire")
-			expect(result.indexOf("## Phase Tagging for Analytics")).toBeLessThan(result.indexOf("## Available Tools"))
+			expect(result.indexOf("## Phase Management")).toBeLessThan(result.indexOf("## Available Tools"))
 		} finally {
 			pi.fireShutdown()
 		}

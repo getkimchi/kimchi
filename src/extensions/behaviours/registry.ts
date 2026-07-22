@@ -11,7 +11,6 @@
  * entry below.
  */
 
-import boundToolOutputBody from "./bodies/bound-tool-output.md" with { type: "text" }
 import ghCliBody from "./bodies/gh-cli.md" with { type: "text" }
 import gitHygieneBody from "./bodies/git-hygiene.md" with { type: "text" }
 import glabCliBody from "./bodies/glab-cli.md" with { type: "text" }
@@ -32,7 +31,6 @@ const pythonFileEdit = any(
 )
 
 const sources: BehaviourSource[] = [
-	{ raw: boundToolOutputBody, kind: "baseline" },
 	{
 		raw: gitHygieneBody,
 		kind: "triggered",

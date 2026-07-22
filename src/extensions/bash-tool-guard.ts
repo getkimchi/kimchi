@@ -8,14 +8,14 @@
  *
  * Two layers of nudging:
  *
- *   1. **Preference (upstream).** A "Tool Preferences" block in the
- *      system prompt (rendered right before "## Available Tools") plus an
- *      override of the bash tool's description. The upstream snippet
+ *   1. **Preference (upstream).** The consolidated `## Tool Selection`
+ *      section in the core system prompt plus an override of the bash
+ *      tool's description. The upstream snippet
  *      "Execute bash commands (ls, grep, find, etc.)" tells the model
  *      bash can do those things — exactly the substitution we steer
- *      against. The override fixes the snippet, and the block makes
- *      the substitution rules explicit. Goal: the model picks the
- *      dedicated tool the first time, not after being told.
+ *      against. The override fixes the snippet, and the consolidated
+ *      section makes the substitution rules explicit. Goal: the model
+ *      picks the dedicated tool the first time, not after being told.
  *
  *      The description override is delivered via `pi.registerTool()` on
  *      `session_start`, re-registering the bash tool with an overridden
@@ -74,7 +74,6 @@ import {
 } from "./bash-tool-guard-events.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
 import { parseCommandSegments, stripRtk } from "./permissions/taxonomy.js"
-import { createSystemPromptBlocks } from "./prompt-construction/system-prompt-blocks.js"
 
 const RESOURCE_ID = "extensions.bash-tool-guard"
 
@@ -152,28 +151,6 @@ const BLOCK_REASON_BASE =
 const READ_SUGGESTION = "Use the read tool with the file path (and offset/limit for head/tail)."
 const EDIT_SUGGESTION = "Use the edit tool with old_string/new_string."
 const WRITE_SUGGESTION = "Use the edit tool for targeted changes or the write tool for full-file replacements."
-
-/**
- * Markdown block injected into the system prompt immediately before the
- * "## Available Tools" section. Uses inline-code backticks so the model
- * can easily match the substitutions. Lists what bash IS for so the
- * model doesn't think bash is now useless — it just shouldn't be used
- * for the operations with dedicated tools.
- */
-export const TOOL_PREFERENCES_BLOCK = `
-## Tool Preferences
-
-Prefer dedicated tools over bash when possible:
-
-- Reading a file → use \`read\` (not \`cat\`, \`head\`, \`tail\`, \`sed -n\`)
-- Editing a file → use \`edit\` (not \`sed -i\`, \`perl -i\`)
-- Writing a file → use \`write\` (not \`>\`, \`>>\`, \`tee\`, heredoc)
-- Searching file contents → use \`grep\` (respects .gitignore, faster)
-- Finding files by pattern → use \`find\` (respects .gitignore)
-- Listing a directory → use \`ls\`
-
-Use bash only for: build commands, test runners, git, package managers, shell scripting, or system administration.
-`.trim()
 
 /**
  * Replacement description for the bash tool. Keeps the original output
@@ -549,16 +526,6 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 			// guard still functions correctly without telemetry.
 		}
 	}
-
-	// Preference (upstream of the guard): a system prompt block with
-	// explicit substitution rules. The block lands immediately before
-	// "## Available Tools" in the rendered prompt, so the model reads
-	// the preferences right when it sees the tool list.
-	const blocks = createSystemPromptBlocks(pi, "bash-tool-guard")
-	blocks.register({
-		id: "tool-preferences",
-		render: () => TOOL_PREFERENCES_BLOCK,
-	})
 
 	pi.on("session_start", (_event, sessionCtx) => {
 		ctx = sessionCtx
