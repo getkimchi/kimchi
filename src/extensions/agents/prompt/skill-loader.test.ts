@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { preloadSkills } from "./skill-loader.js"
+import { listAvailableSkillNames, preloadSkills } from "./skill-loader.js"
 
 describe("preloadSkills", () => {
 	it("returns empty array when no skill names requested", () => {
@@ -37,5 +37,16 @@ describe("preloadSkills", () => {
 		expect(results).toHaveLength(1)
 		expect(results[0].name).toBe("my-skill")
 		expect(results[0].content).toContain("This is the skill content.")
+	})
+})
+
+describe("listAvailableSkillNames", () => {
+	it("returns an array of skill objects with name and description", () => {
+		const skills = listAvailableSkillNames(process.cwd())
+		expect(Array.isArray(skills)).toBe(true)
+		for (const skill of skills) {
+			expect(typeof skill.name).toBe("string")
+			expect(typeof skill.description).toBe("string")
+		}
 	})
 })

@@ -355,4 +355,26 @@ describe("includeCoreGuidelines", () => {
 		expect(output).not.toContain("## Guidelines")
 		expect(output).not.toContain("## Factual Accuracy")
 	})
+
+	it("includes skillListBlock in the prompt when provided", () => {
+		const agent: AgentConfig = {
+			name: "Test-Skills",
+			description: "Test",
+			extensions: true,
+			skills: true,
+			systemPrompt: "Do the thing.",
+			promptMode: "replace",
+		}
+		const skillListBlock = `## Available Skills
+
+Use the Skill tool to load a skill's full instructions.
+
+- **my-skill**: A test skill`
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, undefined, {
+			skillListBlock,
+		})
+		expect(output).toContain("## Available Skills")
+		expect(output).toContain("**my-skill**")
+		expect(output).toContain("Skill tool")
+	})
 })
