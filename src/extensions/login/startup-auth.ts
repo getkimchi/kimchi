@@ -7,7 +7,7 @@ import type {
 import { loadConfig } from "../../config.js"
 import {
 	createLoginChoiceSelector,
-	KIMCHI_PROVIDER_ID,
+	isKimchiProvider,
 	performKimchiApiKeyLoginViaExtensionUI,
 	performKimchiBrowserLoginWithDialog,
 	setKimchiAuthToken,
@@ -78,7 +78,7 @@ export function hasUsableAuth(ctx: ExtensionContext): boolean {
 	try {
 		const availableModels = ctx.modelRegistry.getAvailable()
 		if (availableModels.length === 0) return false
-		if (availableModels.some((model) => model.provider !== KIMCHI_PROVIDER_ID)) return true
+		if (availableModels.some((model) => !isKimchiProvider(model.provider))) return true
 		return configKey.length > 0
 	} catch {
 		return false
