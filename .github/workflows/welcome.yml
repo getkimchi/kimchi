@@ -9,6 +9,9 @@ on:
 jobs:
   welcome:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
     steps:
       - uses: actions/first-interaction@v1
         with:
