@@ -9,7 +9,7 @@ exports[`default agents — resolved invocation config snapshot > Explore 1`] = 
     "find",
     "ls",
   ],
-  "maxTurns": undefined,
+  "maxTurns": 30,
   "modelId": undefined,
   "name": "Explore",
   "roles": [
@@ -23,7 +23,7 @@ exports[`default agents — resolved invocation config snapshot > Explore 1`] = 
 exports[`default agents — resolved invocation config snapshot > General-Purpose 1`] = `
 {
   "builtinToolNames": undefined,
-  "maxTurns": undefined,
+  "maxTurns": 30,
   "modelId": undefined,
   "name": "General-Purpose",
   "roles": undefined,
@@ -43,7 +43,7 @@ exports[`default agents — resolved invocation config snapshot > Plan 1`] = `
     "write",
     "edit",
   ],
-  "maxTurns": undefined,
+  "maxTurns": 30,
   "modelId": undefined,
   "name": "Plan",
   "roles": [
@@ -63,7 +63,7 @@ exports[`default agents — resolved invocation config snapshot > Researcher 1`]
     "find",
     "ls",
   ],
-  "maxTurns": undefined,
+  "maxTurns": 30,
   "modelId": undefined,
   "name": "Researcher",
   "roles": [
