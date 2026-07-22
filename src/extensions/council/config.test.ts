@@ -3,10 +3,11 @@ import { applyCouncilPreset, DEFAULT_COUNCIL_CONFIG, readCouncilConfig, validate
 import type { CouncilConfig } from "./types.js"
 
 describe("readCouncilConfig", () => {
-	it("is disabled by default and enables only through an explicit flag", () => {
-		expect(readCouncilConfig({}).enabled).toBe(false)
+	it("is enabled by default and supports an explicit opt-out", () => {
+		expect(readCouncilConfig({}).enabled).toBe(true)
 		expect(readCouncilConfig({ KIMCHI_COUNCIL_ENABLED: "true" }).enabled).toBe(true)
-		expect(readCouncilConfig({ KIMCHI_COUNCIL_ENABLED: "sometimes" }).enabled).toBe(false)
+		expect(readCouncilConfig({ KIMCHI_COUNCIL_ENABLED: "false" }).enabled).toBe(false)
+		expect(readCouncilConfig({ KIMCHI_COUNCIL_ENABLED: "sometimes" }).enabled).toBe(true)
 	})
 
 	it("maps named primaries and ordered fallback pools", () => {

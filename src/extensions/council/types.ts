@@ -4,7 +4,58 @@ export const REQUIRED_REVIEWER_ROLES = ["independent", "critic", "checker"] as c
 
 export type ReviewerRole = (typeof REQUIRED_REVIEWER_ROLES)[number]
 export type CouncilStage = "lead" | ReviewerRole | "judge" | "repair" | "revision"
+export type CouncilRole = CouncilStage
 export type CouncilOutcome = "accepted" | "revised" | "tool_use" | "degraded" | "error" | "aborted"
+export type SafeCouncilFailureReason =
+	| "cancelled"
+	| "timed_out"
+	| "review_unavailable"
+	| "validation_failed"
+	| "limit_reached"
+
+export type CouncilProgressEvent =
+	| {
+			type: "run_started"
+			runId: string
+			preset: "fast" | "normal" | "deep"
+			startedAt: number
+	  }
+	| {
+			type: "stage_started"
+			runId: string
+			stageId: string
+			role: CouncilRole
+			startedAt: number
+	  }
+	| {
+			type: "stage_completed"
+			runId: string
+			stageId: string
+			role: CouncilRole
+			durationMs: number
+	  }
+	| {
+			type: "stage_failed"
+			runId: string
+			stageId: string
+			role: CouncilRole
+			durationMs: number
+			reason: SafeCouncilFailureReason
+	  }
+	| {
+			type: "run_completed"
+			runId: string
+			outcome: "accepted" | "revised" | "tool_use" | "degraded"
+			durationMs: number
+			agreement?: "low" | "medium" | "high"
+			estimatedCostUsd?: number
+	  }
+	| {
+			type: "run_failed" | "run_aborted"
+			runId: string
+			durationMs: number
+			reason: SafeCouncilFailureReason
+	  }
 export type CouncilDegradedReason =
 	| "partial_panel"
 	| "judge_unavailable"

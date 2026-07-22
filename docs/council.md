@@ -58,7 +58,7 @@ Environment overrides:
 
 | Variable | Meaning |
 | --- | --- |
-| `KIMCHI_COUNCIL_ENABLED` | `true` or `false`; defaults to disabled. |
+| `KIMCHI_COUNCIL_ENABLED` | `true` or `false`; defaults to enabled. Set to `false` to hide Council models. |
 | `KIMCHI_COUNCIL_LEAD_MODEL` | Physical `provider/model` used for lead and revision. |
 | `KIMCHI_COUNCIL_LEAD_FALLBACK_MODELS` | Comma-separated lead/revision fallbacks. |
 | `KIMCHI_COUNCIL_INDEPENDENT_MODEL`, `KIMCHI_COUNCIL_CRITIC_MODEL`, `KIMCHI_COUNCIL_CHECKER_MODEL` | Named reviewer primaries. |
@@ -90,7 +90,6 @@ Council reserves budgets before dispatch and reconciles them from returned usage
 Select Council anywhere a regular model reference is accepted:
 
 ```bash
-export KIMCHI_COUNCIL_ENABLED=true
 kimchi --model kimchi/council-fast
 kimchi --model kimchi/council
 kimchi --model kimchi/council-deep

@@ -3,7 +3,8 @@ import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agen
 import { applyCouncilPreset, type CouncilPreset, DEFAULT_COUNCIL_CONFIG, readCouncilConfig } from "./config.js"
 import { createCouncilStream } from "./coordinator.js"
 import { COUNCIL_API, COUNCIL_MODEL_IDS, COUNCIL_PROVIDER } from "./model.js"
-import type { CouncilRunRecord } from "./types.js"
+import { CouncilProgressUI } from "./progress-ui.js"
+import type { CouncilProgressEvent, CouncilRunRecord } from "./types.js"
 
 const COUNCIL_MODEL_NAMES: Record<(typeof COUNCIL_MODEL_IDS)[number], string> = {
 	"council-fast": "Kimchi Council Fast",
@@ -16,7 +17,8 @@ interface CouncilSessionRoute {
 	config: ReturnType<typeof readCouncilConfig>
 	registry: ModelRegistry
 	recordRun: (record: CouncilRunRecord) => void
-	onProgress: (label: string | undefined) => void
+	onProgress: (event: CouncilProgressEvent) => void
+	progressUI?: CouncilProgressUI
 }
 
 const sessionRoutes = new Map<string, CouncilSessionRoute>()
@@ -29,6 +31,13 @@ function presetForModel(modelId: string): CouncilPreset {
 	if (modelId === "council-fast") return "fast"
 	if (modelId === "council-deep") return "deep"
 	return "normal"
+}
+
+export function sanitizeCouncilSessionRecord(record: CouncilRunRecord) {
+	return {
+		...record,
+		stages: record.stages.map(({ modelRef: _modelRef, ...stage }) => stage),
+	}
 }
 
 function routeCouncilStream(
@@ -57,27 +66,37 @@ export default function councilExtension(pi: ExtensionAPI): void {
 
 	const recordRun = (record: CouncilRunRecord): void => {
 		try {
-			pi.appendEntry("council_run", record)
+			pi.appendEntry("council_run", sanitizeCouncilSessionRecord(record))
 		} catch {
 			// Session telemetry must never affect the model response.
 		}
 	}
+	const activeProgressUI = (): CouncilProgressUI | undefined => {
+		if (!activeSessionId) return undefined
+		const route = sessionRoutes.get(activeSessionId)
+		return route?.owner === owner ? route.progressUI : undefined
+	}
 
 	pi.on("session_start", (_event, ctx) => {
 		if (activeSessionId && sessionRoutes.get(activeSessionId)?.owner === owner) {
+			sessionRoutes.get(activeSessionId)?.progressUI?.dispose()
 			sessionRoutes.delete(activeSessionId)
 		}
 		activeSessionId = ctx.sessionManager.getSessionId()
+		const progressUI = ctx.mode === "tui" ? new CouncilProgressUI(ctx.ui) : undefined
 		sessionRoutes.set(activeSessionId, {
 			owner,
 			config,
 			registry: ctx.modelRegistry,
 			recordRun,
-			onProgress: (label) => ctx.ui?.setStatus("council", label),
+			onProgress: (event) => progressUI?.handle(event),
+			progressUI,
 		})
 	})
+	pi.on("agent_start", () => activeProgressUI()?.clear())
+	pi.on("model_select", () => activeProgressUI()?.clear())
 	pi.on("session_shutdown", () => {
-		if (activeSessionId) sessionRoutes.get(activeSessionId)?.onProgress(undefined)
+		activeProgressUI()?.dispose()
 		if (activeSessionId && sessionRoutes.get(activeSessionId)?.owner === owner) {
 			sessionRoutes.delete(activeSessionId)
 		}

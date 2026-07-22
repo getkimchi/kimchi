@@ -9,6 +9,7 @@ import {
 	DEFAULT_COUNCIL_CONFIG,
 } from "./runtime.js"
 import { withStrictCouncilFixtures } from "./runtime-test-fixtures.js"
+import type { CouncilProgressEvent } from "./types.js"
 
 const { redactObjectStringsMock } = vi.hoisted(() => ({
 	redactObjectStringsMock: vi.fn(async (value: unknown) => value),
@@ -97,6 +98,39 @@ function response(model: Model<Api>, text: string): AssistantMessage {
 	}
 }
 
+function progressSignature(event: CouncilProgressEvent): string {
+	if (event.type === "run_started") return event.type
+	if (event.type === "run_completed") return `${event.type}:${event.outcome}`
+	if (event.type === "run_failed" || event.type === "run_aborted") return `${event.type}:${event.reason}`
+	if ("role" in event) return `${event.type}:${event.role}${event.type === "stage_failed" ? `:${event.reason}` : ""}`
+	throw new Error("Unknown Council progress event")
+}
+
+function expectValidProgressLifecycle(events: CouncilProgressEvent[]): void {
+	expect(events[0]?.type).toBe("run_started")
+	expect(events.at(-1)?.type).toMatch(/^run_(completed|failed|aborted)$/)
+	const runId = events[0]?.runId
+	expect(events.every((event) => event.runId === runId)).toBe(true)
+	expect(events.filter((event) => /^run_(completed|failed|aborted)$/.test(event.type))).toHaveLength(1)
+	const starts = events.filter((event) => event.type === "stage_started")
+	const terminals = events.filter((event) => event.type === "stage_completed" || event.type === "stage_failed")
+	expect(new Set(starts.map(({ stageId }) => stageId)).size).toBe(starts.length)
+	expect(terminals).toHaveLength(starts.length)
+	expect(new Set(terminals.map(({ stageId }) => stageId)).size).toBe(terminals.length)
+	for (const start of starts) {
+		const terminalIndex = events.findIndex(
+			(event) => (event.type === "stage_completed" || event.type === "stage_failed") && event.stageId === start.stageId,
+		)
+		expect(terminalIndex).toBeGreaterThan(events.indexOf(start))
+	}
+	for (const event of events) {
+		if ("durationMs" in event) expect(event.durationMs).toBeGreaterThanOrEqual(0)
+		if (event.type === "run_completed" && event.estimatedCostUsd !== undefined) {
+			expect(event.estimatedCostUsd).toBeGreaterThan(0)
+		}
+	}
+}
+
 const models = new Map(
 	["kimi-k2.7", "glm-5.2-fp8", "deepseek-v4-flash", "minimax-m3"].map((id) => [id, physicalModel(id)]),
 )
@@ -133,6 +167,7 @@ describe("Council runtime", () => {
 	it("drafts, reviews, judges, and revises a final text response", async () => {
 		let reviewerPacket = ""
 		let revisionPacket = ""
+		const progressEvents: CouncilProgressEvent[] = []
 		const completeModel = vi.fn(
 			async (model: Model<Api>, context: Context, _options?: SimpleStreamOptions): Promise<AssistantMessage> => {
 				const system = context.systemPrompt ?? ""
@@ -187,6 +222,7 @@ describe("Council runtime", () => {
 			config: DEFAULT_COUNCIL_CONFIG,
 			getModelRegistry: () => modelRegistry,
 			completeModel,
+			onProgress: (event) => progressEvents.push(event),
 		})
 		const events = stream(councilModel, {
 			systemPrompt: "Answer accurately.",
@@ -250,11 +286,24 @@ describe("Council runtime", () => {
 		expect(reviewerPrompts.some((prompt) => prompt.includes("skipped, ignored, filtered, or unrun"))).toBe(true)
 		expect(revisionContext?.tools).toBeUndefined()
 		expect(emitted.map((event) => event.type)).toEqual(["start", "text_start", "text_delta", "text_end", "done"])
+		expectValidProgressLifecycle(progressEvents)
+		expect(progressEvents[0]).toMatchObject({ type: "run_started", preset: "normal" })
+		expect(progressEvents.filter((event) => event.type === "stage_started").map(({ role }) => role)).toEqual([
+			"lead",
+			"independent",
+			"critic",
+			"checker",
+			"judge",
+			"revision",
+		])
+		expect(progressEvents.at(-1)).toMatchObject({ type: "run_completed", outcome: "revised", agreement: "high" })
+		expect(progressEvents.at(-1)).not.toHaveProperty("estimatedCostUsd")
 	})
 
 	it("passes through a valid revision tool call for the outer agent", async () => {
 		let revisionContext: Context | undefined
 		let runRecord: CouncilRunRecord | undefined
+		const progressEvents: CouncilProgressEvent[] = []
 		const toolCall = {
 			type: "toolCall" as const,
 			id: "call_fix",
@@ -298,6 +347,7 @@ describe("Council runtime", () => {
 			recordRun: (record) => {
 				runRecord = record
 			},
+			onProgress: (event) => progressEvents.push(event),
 		})(councilModel, {
 			messages: [{ role: "user", content: "Fix the report", timestamp: 1 }],
 			tools,
@@ -310,10 +360,22 @@ describe("Council runtime", () => {
 		expect(revisionContext?.tools).toEqual(tools)
 		expect(runRecord?.outcome).toBe("tool_use")
 		expect(runRecord?.stages).toContainEqual(expect.objectContaining({ stage: "revision", status: "ok" }))
+		expectValidProgressLifecycle(progressEvents)
+		expect(progressEvents.map(progressSignature)).toEqual([
+			"run_started",
+			"stage_started:lead",
+			"stage_completed:lead",
+			"stage_started:independent",
+			"stage_completed:independent",
+			"stage_started:revision",
+			"stage_completed:revision",
+			"run_completed:tool_use",
+		])
 	})
 
 	it("rejects an unadvertised revision tool call", async () => {
 		let runRecord: CouncilRunRecord | undefined
+		const progressEvents: CouncilProgressEvent[] = []
 		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
 			const lastMessage = context.messages.at(-1)
 			const lastText =
@@ -349,6 +411,7 @@ describe("Council runtime", () => {
 			recordRun: (record) => {
 				runRecord = record
 			},
+			onProgress: (event) => progressEvents.push(event),
 		})(councilModel, {
 			messages: [{ role: "user", content: "Fix the report", timestamp: 1 }],
 			tools: [{ name: "read", description: "Read a file", parameters: { type: "object" } }],
@@ -362,10 +425,16 @@ describe("Council runtime", () => {
 		expect(runRecord?.stages).toContainEqual(
 			expect.objectContaining({ stage: "revision", status: "error", error: "invalid_output" }),
 		)
+		expectValidProgressLifecycle(progressEvents)
+		expect(progressEvents.slice(-2).map(progressSignature)).toEqual([
+			"stage_failed:revision:validation_failed",
+			"run_completed:degraded",
+		])
 	})
 
 	it("accepts without a judge or revision when the reviewer finds no issues", async () => {
 		let runRecord: CouncilRunRecord | undefined
+		const progressEvents: CouncilProgressEvent[] = []
 		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
 			if (context.systemPrompt?.includes("Council reviewer")) {
 				return response(
@@ -392,6 +461,7 @@ describe("Council runtime", () => {
 			recordRun: (record) => {
 				runRecord = record
 			},
+			onProgress: (event) => progressEvents.push(event),
 		})(councilModel, {
 			messages: [{ role: "user", content: "Answer this", timestamp: 1 }],
 		})
@@ -403,6 +473,17 @@ describe("Council runtime", () => {
 		expect(runRecord?.stages.some(({ stage }) => stage === "judge" || stage === "revision")).toBe(false)
 		expect(runRecord?.outcome).toBe("accepted")
 		expect(runRecord?.durationMs).toBeGreaterThanOrEqual(0)
+		expectValidProgressLifecycle(progressEvents)
+		expect(progressEvents.map(progressSignature)).toEqual([
+			"run_started",
+			"stage_started:lead",
+			"stage_completed:lead",
+			"stage_started:independent",
+			"stage_completed:independent",
+			"run_completed:accepted",
+		])
+		expect(progressEvents.at(-1)).not.toHaveProperty("agreement")
+		expect(progressEvents.at(-1)).not.toHaveProperty("estimatedCostUsd")
 	})
 
 	it("revises from reviewer feedback without a judge when issues are found", async () => {
@@ -616,6 +697,7 @@ describe("Council runtime", () => {
 
 	it("revises from validated reviews when judge invocation fails", async () => {
 		let runRecord: CouncilRunRecord | undefined
+		const progressEvents: CouncilProgressEvent[] = []
 		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
 			const system = context.systemPrompt ?? ""
 			const lastMessage = context.messages.at(-1)
@@ -648,6 +730,7 @@ describe("Council runtime", () => {
 			recordRun: (record) => {
 				runRecord = record
 			},
+			onProgress: (event) => progressEvents.push(event),
 		})(councilModel, {
 			messages: [{ role: "user", content: "Answer this", timestamp: 1 }],
 		})
@@ -659,6 +742,14 @@ describe("Council runtime", () => {
 		expect(completeModel).toHaveBeenCalledTimes(4)
 		expect(runRecord?.stages.some(({ stage }) => stage === "revision")).toBe(true)
 		expect(runRecord).toMatchObject({ outcome: "degraded", degradedReason: "judge_failed" })
+		expectValidProgressLifecycle(progressEvents)
+		expect(progressEvents.map(progressSignature)).toContain("stage_failed:judge:review_unavailable")
+		expect(progressEvents.slice(-2).map(progressSignature)).toEqual([
+			"stage_completed:revision",
+			"run_completed:degraded",
+		])
+		expect(progressEvents.at(-1)).not.toHaveProperty("agreement")
+		expect(JSON.stringify(progressEvents)).not.toContain("judge unavailable")
 	})
 
 	it("cancels a hung reviewer at the stage timeout and continues", async () => {
@@ -813,6 +904,7 @@ describe("Council runtime", () => {
 
 	it("returns an aborted result when the client cancels during judging", async () => {
 		const controller = new AbortController()
+		const progressEvents: CouncilProgressEvent[] = []
 		let markJudgeStarted: (() => void) | undefined
 		const judgeStarted = new Promise<void>((resolve) => {
 			markJudgeStarted = resolve
@@ -844,6 +936,7 @@ describe("Council runtime", () => {
 			config: DEFAULT_COUNCIL_CONFIG,
 			getModelRegistry: () => modelRegistry,
 			completeModel,
+			onProgress: (event) => progressEvents.push(event),
 		})(
 			councilModel,
 			{ messages: [{ role: "user", content: "Answer this", timestamp: 1 }] },
@@ -856,6 +949,11 @@ describe("Council runtime", () => {
 
 		expect(result.stopReason).toBe("aborted")
 		expect(result.content).toEqual([])
+		expectValidProgressLifecycle(progressEvents)
+		expect(progressEvents.slice(-2).map(progressSignature)).toEqual([
+			"stage_failed:judge:cancelled",
+			"run_aborted:cancelled",
+		])
 	})
 
 	it("bounds concurrent reviewer calls", async () => {
@@ -1292,6 +1390,7 @@ describe("Council runtime", () => {
 		let leadAttempts = 0
 		let reviewerPacket = ""
 		let runRecord: CouncilRunRecord | undefined
+		const progressEvents: CouncilProgressEvent[] = []
 		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
 			const system = context.systemPrompt ?? ""
 			const lastMessage = context.messages.at(-1)
@@ -1325,6 +1424,7 @@ describe("Council runtime", () => {
 			recordRun: (record) => {
 				runRecord = record
 			},
+			onProgress: (event) => progressEvents.push(event),
 		})(councilModel, { messages: [{ role: "user", content: "Answer", timestamp: 1 }] })
 
 		const result = await stream.result()
@@ -1338,14 +1438,21 @@ describe("Council runtime", () => {
 		expect(reviewerPacket).not.toContain("Do not return only internal reasoning")
 		expect(JSON.stringify({ result, reviewerPacket })).not.toContain("LEAD_THINKING_SECRET")
 		expect(runRecord?.stages.map(({ stage }) => stage)).toEqual(["lead", "lead", "independent"])
+		expectValidProgressLifecycle(progressEvents)
+		expect(progressEvents.filter((event) => "role" in event && event.role === "lead").map(progressSignature)).toEqual([
+			"stage_started:lead",
+			"stage_completed:lead",
+		])
 	})
 
 	it("stops after one empty lead retry", async () => {
+		const progressEvents: CouncilProgressEvent[] = []
 		const completeModel = vi.fn(async (model: Model<Api>) => response(model, ""))
 		const stream = createCouncilStream({
 			config: DEFAULT_COUNCIL_CONFIG,
 			getModelRegistry: () => modelRegistry,
 			completeModel,
+			onProgress: (event) => progressEvents.push(event),
 		})(councilModel, { messages: [{ role: "user", content: "Answer", timestamp: 1 }] })
 
 		const result = await stream.result()
@@ -1356,6 +1463,13 @@ describe("Council runtime", () => {
 			errorMessage: "Council could not produce a complete lead response",
 		})
 		expect(completeModel).toHaveBeenCalledTimes(2)
+		expectValidProgressLifecycle(progressEvents)
+		expect(progressEvents.map(progressSignature)).toEqual([
+			"run_started",
+			"stage_started:lead",
+			"stage_failed:lead:validation_failed",
+			"run_failed:validation_failed",
+		])
 	})
 
 	it("rejects serialized tool-call markup from the lead", async () => {
@@ -1408,6 +1522,7 @@ describe("Council runtime", () => {
 
 	it("repairs a judge result with unknown nested fields", async () => {
 		let repairTimeoutMs: number | undefined
+		const progressEvents: CouncilProgressEvent[] = []
 		const validJudge = JSON.stringify({
 			decision: "revise",
 			consensus: [],
@@ -1467,6 +1582,7 @@ describe("Council runtime", () => {
 			config: { ...TEST_COUNCIL_CONFIG, stageTimeoutMs: 100 },
 			getModelRegistry: () => modelRegistry,
 			completeModel,
+			onProgress: (event) => progressEvents.push(event),
 		})(councilModel, { messages: [{ role: "user", content: "Answer", timestamp: 1 }] })
 
 		const result = await stream.result()
@@ -1477,6 +1593,15 @@ describe("Council runtime", () => {
 		expect(repairCalls).toHaveLength(1)
 		expect(repairTimeoutMs).toBeLessThan(100)
 		expect(result.content).toEqual([{ type: "text", text: "Repaired final" }])
+		expectValidProgressLifecycle(progressEvents)
+		const signatures = progressEvents.map(progressSignature)
+		const judgeStarted = signatures.indexOf("stage_started:judge")
+		expect(signatures.slice(judgeStarted, judgeStarted + 4)).toEqual([
+			"stage_started:judge",
+			"stage_started:repair",
+			"stage_completed:repair",
+			"stage_completed:judge",
+		])
 	})
 
 	it("passes through an exact lead tool call without reasoning for an incapable model", async () => {
@@ -2159,5 +2284,101 @@ describe("Council runtime", () => {
 		expect(runRecord?.stages).toContainEqual(
 			expect.objectContaining({ stage: "judge", status: "error", error: "timeout" }),
 		)
+	})
+
+	it("keeps fallback attempts inside one private logical lead stage", async () => {
+		const progressEvents: CouncilProgressEvent[] = []
+		const toolCall: ToolCall = { type: "toolCall", id: "call_fallback", name: "read", arguments: { path: "a.ts" } }
+		const completeModel = vi.fn(async (model: Model<Api>): Promise<AssistantMessage> => {
+			if (model.id === "kimi-k2.7") throw new Error("RAW_PRIMARY_PROVIDER_SECRET")
+			return {
+				...response(model, ""),
+				content: [toolCall],
+				stopReason: "toolUse",
+				usage: { ...usage(), cost: { ...ZERO_COST, total: 0.25 } },
+			}
+		})
+		const stream = createCouncilStream({
+			config: {
+				...TEST_COUNCIL_CONFIG,
+				lead: { primary: "kimchi-dev/kimi-k2.7", fallbacks: ["kimchi-dev/glm-5.2-fp8"] },
+				budget: { ...TEST_COUNCIL_CONFIG.budget, maxRetriesPerCall: 1 },
+			},
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+			onProgress: (event) => progressEvents.push(event),
+		})(councilModel, {
+			messages: [{ role: "user", content: "Read the file", timestamp: 1 }],
+			tools: [{ name: "read", description: "Read a file", parameters: { type: "object" } }],
+		})
+
+		const result = await stream.result()
+
+		expect(result.content).toEqual([toolCall])
+		expect(completeModel).toHaveBeenCalledTimes(3)
+		expectValidProgressLifecycle(progressEvents)
+		expect(progressEvents.map(progressSignature)).toEqual([
+			"run_started",
+			"stage_started:lead",
+			"stage_completed:lead",
+			"run_completed:tool_use",
+		])
+		expect(progressEvents.at(-1)).toMatchObject({ estimatedCostUsd: 0.25 })
+		expect(JSON.stringify(progressEvents)).not.toMatch(/RAW_PRIMARY_PROVIDER_SECRET|kimchi-dev|kimi-k2\.7|glm-5\.2-fp8/)
+	})
+
+	it("converts a raw provider failure into safe public and progress failures", async () => {
+		const progressEvents: CouncilProgressEvent[] = []
+		const completeModel = vi.fn(async (): Promise<AssistantMessage> => {
+			throw new Error("RAW_PROVIDER_EXCEPTION_SECRET")
+		})
+		const stream = createCouncilStream({
+			config: TEST_COUNCIL_CONFIG,
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+			onProgress: (event) => progressEvents.push(event),
+		})(councilModel, { messages: [{ role: "user", content: "Answer", timestamp: 1 }] })
+
+		const result = await stream.result()
+
+		expect(result).toMatchObject({
+			stopReason: "error",
+			errorMessage: "Council could not complete the requested response",
+		})
+		expect(JSON.stringify({ result, progressEvents })).not.toMatch(
+			/RAW_PROVIDER_EXCEPTION_SECRET|kimchi-dev|kimi-k2\.7/,
+		)
+		expectValidProgressLifecycle(progressEvents)
+		expect(progressEvents.map(progressSignature)).toEqual([
+			"run_started",
+			"stage_started:lead",
+			"stage_failed:lead:validation_failed",
+			"run_failed:validation_failed",
+		])
+	})
+
+	it("ignores progress callback failures without changing the tool result", async () => {
+		const toolCall: ToolCall = { type: "toolCall", id: "call_safe", name: "read", arguments: { path: "a.ts" } }
+		const completeModel = vi.fn(
+			async (model: Model<Api>): Promise<AssistantMessage> => ({
+				...response(model, ""),
+				content: [toolCall],
+				stopReason: "toolUse",
+			}),
+		)
+		const stream = createCouncilStream({
+			config: TEST_COUNCIL_CONFIG,
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+			onProgress: () => {
+				throw new Error("UI callback failed")
+			},
+		})(councilModel, {
+			messages: [{ role: "user", content: "Read the file", timestamp: 1 }],
+			tools: [{ name: "read", description: "Read a file", parameters: { type: "object" } }],
+		})
+
+		await expect(stream.result()).resolves.toMatchObject({ content: [toolCall], stopReason: "toolUse" })
+		expect(completeModel).toHaveBeenCalledOnce()
 	})
 })

@@ -1,7 +1,8 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent"
+import { AuthStorage, type ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import councilExtension from "./index.js"
+import councilExtension, { sanitizeCouncilSessionRecord } from "./index.js"
+import type { CouncilRunRecord } from "./types.js"
 
 type ProviderConfig = Parameters<ModelRegistry["registerProvider"]>[1]
 
@@ -63,6 +64,24 @@ describe("councilExtension", () => {
 		expect(config.streamSimple).toBeTypeOf("function")
 	})
 
+	it("exposes Council models through the real available-model registry by default", () => {
+		vi.stubEnv("KIMCHI_COUNCIL_ENABLED", "")
+		const registry = ModelRegistry.inMemory(AuthStorage.inMemory())
+
+		councilExtension({
+			appendEntry: vi.fn(),
+			on: vi.fn(),
+			registerProvider: registry.registerProvider.bind(registry),
+		} as unknown as ExtensionAPI)
+
+		expect(
+			registry
+				.getAvailable()
+				.filter((model) => model.api === "kimchi-council")
+				.map((model) => `${model.provider}/${model.id}`),
+		).toEqual(["kimchi/council-fast", "kimchi/council", "kimchi/council-deep"])
+	})
+
 	it("does not advertise more output than the configured lead", () => {
 		vi.stubEnv("KIMCHI_COUNCIL_LEAD_MAX_TOKENS", "2048")
 		const { config } = register()
@@ -83,31 +102,80 @@ describe("councilExtension", () => {
 		const { appendEntry, config, on } = register()
 		const find = vi.fn()
 		const setStatus = vi.fn()
+		const setWidget = vi.fn()
 		const registry = { find, getApiKeyAndHeaders: vi.fn() } as unknown as ModelRegistry
 		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
 		const sessionShutdown = on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
 		sessionStart(
 			{},
-			{ modelRegistry: registry, sessionManager: { getSessionId: () => "session-a" }, ui: { setStatus } },
+			{
+				mode: "tui",
+				modelRegistry: registry,
+				sessionManager: { getSessionId: () => "session-a" },
+				ui: { setStatus, setWidget },
+			},
 		)
 
 		const result = await config.streamSimple?.(fastCouncilModel, { messages: [] }, { sessionId: "session-a" }).result()
 		sessionShutdown()
 
 		expect(find).toHaveBeenCalledWith("kimchi-dev", "kimi-k2.7")
-		expect(result?.errorMessage).toBe(
-			"Council physical model failed (model_not_found): Council physical model is not registered",
-		)
+		expect(result?.errorMessage).toBe("Council could not complete the requested response")
 		expect(appendEntry).toHaveBeenCalledWith(
 			"council_run",
 			expect.objectContaining({ outcome: "error", virtualModel: "kimchi/council-fast" }),
 		)
-		expect(setStatus.mock.calls).toEqual([
-			["council", "Council: validating models"],
-			["council", "Council: finalizing"],
-			["council", undefined],
-			["council", undefined],
-		])
+		expect(setWidget).toHaveBeenNthCalledWith(1, "council-progress", expect.any(Function), {
+			placement: "aboveEditor",
+		})
+		expect(setWidget).toHaveBeenNthCalledWith(2, "council-progress", undefined, { placement: "aboveEditor" })
+		expect(setStatus.mock.calls[0]?.[1]).toContain("could not safely finalize · validation failed")
+		expect(setStatus).toHaveBeenLastCalledWith("council", undefined)
+	})
+
+	it("removes physical model IDs from the persisted Council run without mutating the runtime record", () => {
+		const record = {
+			runId: "run",
+			virtualModel: "kimchi/council",
+			outcome: "error",
+			unresolvedFindingCount: 0,
+			missingReviewerRoles: [],
+			durationMs: 1,
+			stages: [
+				{
+					stage: "lead",
+					modelRef: "physical/private-canary",
+					status: "error",
+					durationMs: 1,
+					attempts: 1,
+					error: "provider_error",
+				},
+			],
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			budget: {
+				logicalCalls: 1,
+				physicalAttempts: 1,
+				maxObservedConcurrency: 1,
+				aggregateInputTokens: 0,
+				aggregateOutputTokens: 0,
+				estimatedCostUsd: 0,
+				evidenceBytes: 0,
+				structuredBytes: 0,
+			},
+		} satisfies CouncilRunRecord
+
+		const persisted = sanitizeCouncilSessionRecord(record)
+
+		expect(record.stages[0]?.modelRef).toBe("physical/private-canary")
+		expect(persisted.stages[0]).not.toHaveProperty("modelRef")
+		expect(JSON.stringify(persisted)).not.toContain("private-canary")
 	})
 
 	it.each([
@@ -129,19 +197,113 @@ describe("councilExtension", () => {
 		}
 	})
 
+	it.each(["rpc", "json", "print"] as const)("does not call Council UI in %s mode", async (mode) => {
+		const { config, on } = register()
+		const setStatus = vi.fn()
+		const setWidget = vi.fn()
+		const registry = { find: vi.fn(), getApiKeyAndHeaders: vi.fn() } as unknown as ModelRegistry
+		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
+		const sessionShutdown = on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
+		sessionStart(
+			{},
+			{
+				mode,
+				modelRegistry: registry,
+				sessionManager: { getSessionId: () => `non-tui-${mode}` },
+				ui: { setStatus, setWidget },
+			},
+		)
+
+		try {
+			await config.streamSimple?.(fastCouncilModel, { messages: [] }, { sessionId: `non-tui-${mode}` }).result()
+		} finally {
+			sessionShutdown()
+		}
+
+		expect(setStatus).not.toHaveBeenCalled()
+		expect(setWidget).not.toHaveBeenCalled()
+	})
+
+	it("does not remount TUI progress when a queued run starts after session shutdown", async () => {
+		const { config, on } = register()
+		const setStatus = vi.fn()
+		const setWidget = vi.fn()
+		const registry = { find: vi.fn(), getApiKeyAndHeaders: vi.fn() } as unknown as ModelRegistry
+		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
+		const sessionShutdown = on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
+		sessionStart(
+			{},
+			{
+				mode: "tui",
+				modelRegistry: registry,
+				sessionManager: { getSessionId: () => "shutdown-race" },
+				ui: { setStatus, setWidget },
+			},
+		)
+
+		const stream = config.streamSimple?.(fastCouncilModel, { messages: [] }, { sessionId: "shutdown-race" })
+		sessionShutdown()
+		await stream?.result()
+
+		expect(setStatus).not.toHaveBeenCalled()
+		expect(setWidget).not.toHaveBeenCalled()
+	})
+
+	it("clears the ephemeral TUI summary on agent start and model selection", async () => {
+		const { config, on } = register()
+		const setStatus = vi.fn()
+		const setWidget = vi.fn()
+		const registry = { find: vi.fn(), getApiKeyAndHeaders: vi.fn() } as unknown as ModelRegistry
+		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
+		const agentStart = on.mock.calls.find(([event]) => event === "agent_start")?.[1]
+		const modelSelect = on.mock.calls.find(([event]) => event === "model_select")?.[1]
+		const sessionShutdown = on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
+		sessionStart(
+			{},
+			{
+				mode: "tui",
+				modelRegistry: registry,
+				sessionManager: { getSessionId: () => "lifecycle" },
+				ui: { setStatus, setWidget },
+			},
+		)
+
+		try {
+			await config.streamSimple?.(fastCouncilModel, { messages: [] }, { sessionId: "lifecycle" }).result()
+			expect(setStatus.mock.calls.at(-1)?.[1]).toContain("could not safely finalize")
+			agentStart()
+			expect(setStatus).toHaveBeenLastCalledWith("council", undefined)
+
+			await config.streamSimple?.(fastCouncilModel, { messages: [] }, { sessionId: "lifecycle" }).result()
+			expect(setStatus.mock.calls.at(-1)?.[1]).toContain("could not safely finalize")
+			modelSelect()
+			expect(setStatus).toHaveBeenLastCalledWith("council", undefined)
+		} finally {
+			sessionShutdown()
+		}
+	})
+
 	it("routes concurrent sessions to their own registry and run record", async () => {
 		const first = register()
 		const second = register()
 		const firstFind = vi.fn()
 		const secondFind = vi.fn()
+		const firstUI = { setStatus: vi.fn(), setWidget: vi.fn() }
+		const secondUI = { setStatus: vi.fn(), setWidget: vi.fn() }
 		const firstRegistry = { find: firstFind, getApiKeyAndHeaders: vi.fn() } as unknown as ModelRegistry
 		const secondRegistry = { find: secondFind, getApiKeyAndHeaders: vi.fn() } as unknown as ModelRegistry
 		const firstStart = first.on.mock.calls.find(([event]) => event === "session_start")?.[1]
 		const secondStart = second.on.mock.calls.find(([event]) => event === "session_start")?.[1]
 		const firstShutdown = first.on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
 		const secondShutdown = second.on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
-		firstStart({}, { modelRegistry: firstRegistry, sessionManager: { getSessionId: () => "first" } })
-		secondStart({}, { modelRegistry: secondRegistry, sessionManager: { getSessionId: () => "second" } })
+		firstStart(
+			{},
+			{ mode: "tui", modelRegistry: firstRegistry, sessionManager: { getSessionId: () => "first" }, ui: firstUI },
+		)
+		secondStart(
+			{},
+			{ mode: "tui", modelRegistry: secondRegistry, sessionManager: { getSessionId: () => "second" }, ui: secondUI },
+		)
 
 		try {
 			await first.config.streamSimple?.(councilModel, { messages: [] }, { sessionId: "first" }).result()
@@ -154,8 +316,14 @@ describe("councilExtension", () => {
 				expect.objectContaining({ virtualModel: "kimchi/council" }),
 			)
 			expect(second.appendEntry).not.toHaveBeenCalled()
+			expect(firstUI.setWidget).toHaveBeenCalled()
+			expect(firstUI.setStatus).toHaveBeenCalled()
+			expect(secondUI.setWidget).not.toHaveBeenCalled()
+			expect(secondUI.setStatus).not.toHaveBeenCalled()
 
 			firstShutdown()
+			const firstWidgetCalls = firstUI.setWidget.mock.calls.length
+			const firstStatusCalls = firstUI.setStatus.mock.calls.length
 			await first.config.streamSimple?.(councilModel, { messages: [] }, { sessionId: "first" }).result()
 			await second.config.streamSimple?.(councilModel, { messages: [] }, { sessionId: "second" }).result()
 
@@ -163,6 +331,10 @@ describe("councilExtension", () => {
 			expect(first.appendEntry).toHaveBeenCalledTimes(1)
 			expect(secondFind).toHaveBeenCalledWith("kimchi-dev", "kimi-k2.7")
 			expect(second.appendEntry).toHaveBeenCalledTimes(1)
+			expect(firstUI.setWidget).toHaveBeenCalledTimes(firstWidgetCalls)
+			expect(firstUI.setStatus).toHaveBeenCalledTimes(firstStatusCalls)
+			expect(secondUI.setWidget).toHaveBeenCalled()
+			expect(secondUI.setStatus).toHaveBeenCalled()
 		} finally {
 			firstShutdown()
 			secondShutdown()
