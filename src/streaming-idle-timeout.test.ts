@@ -33,6 +33,14 @@ async function drain(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<n
 	return out
 }
 
+const textEncoder = new TextEncoder()
+/** Encode a string to a `Uint8Array` (SSE chunks in tests are text). */
+const encode = (s: string): Uint8Array => textEncoder.encode(s)
+/** An SSE `data:` content chunk (model output token). */
+const dataChunk = (s = "data: {\"token\":\"x\"}\n\n"): Uint8Array => encode(s)
+/** An SSE keep-alive comment chunk (`:`-prefixed line per the SSE spec). */
+const pingChunk = (s = ": ping\n\n"): Uint8Array => encode(s)
+
 describe("withStreamingIdleTimeout", () => {
 	describe("idle detection", () => {
 		it("errors the stream when no data arrives within the idle threshold", async () => {
@@ -40,12 +48,12 @@ describe("withStreamingIdleTimeout", () => {
 			const wrapped = withStreamingIdleTimeout(deadSocketResponse(), idleMs)
 			const reader = wrapped.body!.getReader()
 
-			await expect(reader.read()).rejects.toThrow(/streaming idle timeout: no data for 40ms.*read timed out/)
+			await expect(reader.read()).rejects.toThrow(/streaming idle timeout: no content for 40ms.*read timed out/)
 		})
 
-		it("does not fire when data arrives within the threshold", async () => {
+		it("does not fire when content arrives within the threshold", async () => {
 			const idleMs = 2000
-			const chunks = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])]
+			const chunks = [dataChunk(), dataChunk()]
 			const underlying = new ReadableStream<Uint8Array>({
 				start(controller) {
 					for (const chunk of chunks) controller.enqueue(chunk)
@@ -56,12 +64,14 @@ describe("withStreamingIdleTimeout", () => {
 
 			const bytes = await drain(wrapped.body!.getReader())
 
-			expect(bytes).toEqual([1, 2, 3, 4, 5, 6])
+			// Both content chunks are drained unchanged.
+			expect(bytes).toEqual([...dataChunk(), ...dataChunk()])
 		})
 
-		it("re-arms the timer per chunk so a slow-but-steady stream never trips it", async () => {
-			// Each chunk arrives well within the idle window, but the stream's
-			// total lifetime exceeds idleMs — proving the timer resets per pull.
+		it("re-arms the timer per content chunk so a slow-but-steady stream never trips it", async () => {
+			// Each content chunk arrives well within the idle window, but the
+			// stream's total lifetime exceeds idleMs — proving the timer resets
+			// on every content chunk.
 			const idleMs = 60
 			let emitted = 0
 			const underlying = new ReadableStream<Uint8Array>({
@@ -72,26 +82,26 @@ describe("withStreamingIdleTimeout", () => {
 						return
 					}
 					await new Promise((r) => setTimeout(r, 20))
-					controller.enqueue(new Uint8Array([emitted]))
+					controller.enqueue(dataChunk())
 				},
 			})
 			const wrapped = withStreamingIdleTimeout(new Response(underlying, { status: 200 }), idleMs)
 
 			const bytes = await drain(wrapped.body!.getReader())
 
-			expect(bytes).toEqual([1, 2, 3])
+			expect(bytes).toEqual([...dataChunk(), ...dataChunk(), ...dataChunk()])
 		})
 
-		it("re-arms the timer after an early chunk, then errors if the socket goes silent", async () => {
-			// First chunk arrives immediately (timer cleared), then the socket
-			// hangs — the per-pull timer must fire on the second, silent pull.
+		it("re-arms the timer after an early content chunk, then errors if the socket goes silent", async () => {
+			// First chunk is content (timer cleared), then the socket hangs —
+			// the per-pull timer must fire on the second, silent pull.
 			const idleMs = 40
 			let firstPull = true
 			const underlying = new ReadableStream<Uint8Array>({
 				pull(controller) {
 					if (firstPull) {
 						firstPull = false
-						controller.enqueue(new Uint8Array([42]))
+						controller.enqueue(dataChunk())
 						return
 					}
 					// Second pull: never resolves — dead socket mid-stream.
@@ -102,9 +112,180 @@ describe("withStreamingIdleTimeout", () => {
 
 			const first = await reader.read()
 			if (first.done) throw new Error("expected the first chunk to arrive, not done")
-			expect(Array.from(first.value)).toEqual([42])
+			expect(Array.from(first.value)).toEqual(Array.from(dataChunk()))
 
 			await expect(reader.read()).rejects.toThrow(/streaming idle timeout/)
+		})
+	})
+
+	describe("keep-alive comment pings", () => {
+		/** Build a stream that emits the given chunks with `delayMs` between each. */
+		function timedStream(chunks: Uint8Array[], delayMs: number): ReadableStream<Uint8Array> {
+			let i = 0
+			return new ReadableStream<Uint8Array>({
+				async pull(controller) {
+					if (i >= chunks.length) {
+						controller.close()
+						return
+					}
+					await new Promise((r) => setTimeout(r, delayMs))
+					controller.enqueue(chunks[i++])
+				},
+			})
+		}
+
+		it("keep-alive-only chunks do NOT reset the timer; the timer fires after idleMs", async () => {
+			// Pings arrive every 15ms (well within the 50ms idle window), but
+			// they are comment lines — the content-aware timer must NOT reset
+			// on them and must fire after idleMs of pings.
+			const idleMs = 50
+			const underlying = new ReadableStream<Uint8Array>({
+				async pull(controller) {
+					await new Promise((r) => setTimeout(r, 15))
+					controller.enqueue(pingChunk())
+				},
+			})
+			const wrapped = withStreamingIdleTimeout(new Response(underlying, { status: 200 }), idleMs)
+			const reader = wrapped.body!.getReader()
+
+			// Drain pings until the idle timer fires and errors the stream.
+			// At least one ping must arrive (proving comment chunks are enqueued
+			// but do NOT reset the timer), then the stream must error within
+			// ~idleMs + a couple of ping intervals — NOT hang for the proxy's
+			// own connection timeout.
+			let sawPing = false
+			let lastError: unknown = null
+			try {
+				for (;;) {
+					const res = await reader.read()
+					if (res.done) break
+					sawPing = true
+				}
+			} catch (e) {
+				lastError = e
+			}
+
+			expect(sawPing).toBe(true)
+			expect(lastError).toBeInstanceOf(Error)
+			expect(String(lastError)).toMatch(/streaming idle timeout: no content for 50ms/)
+		})
+
+		it("a content chunk resets the timer so a stream with content never trips", async () => {
+			const idleMs = 60
+			// Content arrives at 20ms intervals — well within the idle window.
+			const underlying = timedStream([dataChunk(), dataChunk()], 20)
+			const wrapped = withStreamingIdleTimeout(new Response(underlying, { status: 200 }), idleMs)
+			const reader = wrapped.body!.getReader()
+
+			const a = await reader.read()
+			expect(a.done).toBe(false)
+			const b = await reader.read()
+			expect(b.done).toBe(false)
+			const c = await reader.read()
+			expect(c.done).toBe(true)
+		})
+
+		it("mixed comment + content chunk resets the timer", async () => {
+			const idleMs = 60
+			// A chunk with both a comment and a data line is content.
+			const mixed = encode(": ping\n\ndata: {\"x\":1}\n\n")
+			const underlying = timedStream([mixed, mixed], 20)
+			const wrapped = withStreamingIdleTimeout(new Response(underlying, { status: 200 }), idleMs)
+			const reader = wrapped.body!.getReader()
+
+			const a = await reader.read()
+			expect(a.done).toBe(false)
+			const b = await reader.read()
+			expect(b.done).toBe(false)
+			const c = await reader.read()
+			expect(c.done).toBe(true)
+		})
+
+		it("a content chunk after pings resets the timer and clears the running idle window", async () => {
+			// Pings arrive at 20ms intervals, then content arrives at 50ms (still
+			// within idleMs=120). The content resets the timer; the stream then
+			// closes normally.
+			const idleMs = 120
+			const underlying = timedStream([pingChunk(), pingChunk(), dataChunk()], 20)
+			const wrapped = withStreamingIdleTimeout(new Response(underlying, { status: 200 }), idleMs)
+			const reader = wrapped.body!.getReader()
+
+			const chunks: Uint8Array[] = []
+			let res = await reader.read()
+			while (!res.done) {
+				chunks.push(res.value)
+				res = await reader.read()
+			}
+			expect(chunks.length).toBe(3)
+		})
+
+		it("handles a data: line split across two chunks", async () => {
+			// Chunk 1 ends mid-line ("dat"), chunk 2 completes it ("a: {}\n\n").
+			// Neither chunk alone contains a complete non-comment line — the
+			// line buffer holds "dat" across the boundary and the completed line
+			// is detected on the second chunk.
+			const idleMs = 60
+			const part1 = encode(": ping\n\ndat")
+			const part2 = encode("a: {}\n\n")
+			const underlying = timedStream([part1, part2], 20)
+			const wrapped = withStreamingIdleTimeout(new Response(underlying, { status: 200 }), idleMs)
+			const reader = wrapped.body!.getReader()
+
+			const a = await reader.read()
+			expect(a.done).toBe(false)
+			const b = await reader.read()
+			expect(b.done).toBe(false)
+			const c = await reader.read()
+			expect(c.done).toBe(true)
+		})
+
+		it("keep-alive pings with CRLF line endings do NOT reset the timer", async () => {
+			// CRLF-terminated keep-alive pings (`: ping\r\n\r\n`) are valid per
+			// the SSE spec and common from HTTP/proxy servers. Splitting only on
+			// `\n` would leave a bare `\r` event terminator that is
+			// misclassified as content — silently defeating keep-alive detection.
+			const idleMs = 50
+			const underlying = new ReadableStream<Uint8Array>({
+				async pull(controller) {
+					await new Promise((r) => setTimeout(r, 15))
+					controller.enqueue(pingChunk(": ping\r\n\r\n"))
+				},
+			})
+			const wrapped = withStreamingIdleTimeout(new Response(underlying, { status: 200 }), idleMs)
+			const reader = wrapped.body!.getReader()
+
+			let sawPing = false
+			let lastError: unknown = null
+			try {
+				for (;;) {
+					const res = await reader.read()
+					if (res.done) break
+					sawPing = true
+				}
+			} catch (e) {
+				lastError = e
+			}
+
+			expect(sawPing).toBe(true)
+			expect(lastError).toBeInstanceOf(Error)
+			expect(String(lastError)).toMatch(/streaming idle timeout: no content for 50ms/)
+		})
+
+		it("mixed CRLF keep-alive + LF content chunk resets the timer", async () => {
+			// A chunk with a CRLF keep-alive comment followed by an LF-terminated
+			// content line is content — the content line resets the timer.
+			const idleMs = 60
+			const mixed = encode(": ping\r\n\r\ndata: {\"x\":1}\n\n")
+			const underlying = timedStream([mixed, mixed], 20)
+			const wrapped = withStreamingIdleTimeout(new Response(underlying, { status: 200 }), idleMs)
+			const reader = wrapped.body!.getReader()
+
+			const a = await reader.read()
+			expect(a.done).toBe(false)
+			const b = await reader.read()
+			expect(b.done).toBe(false)
+			const c = await reader.read()
+			expect(c.done).toBe(true)
 		})
 	})
 
@@ -229,7 +410,7 @@ describe("withStreamingIdleTimeout", () => {
 
 	describe("error classification", () => {
 		it("produces a message that classifies as a retryable transport_failure", () => {
-			const message = `streaming idle timeout: no data for 120000ms (read timed out)`
+			const message = `streaming idle timeout: no content for 120000ms (read timed out)`
 			const verdict = classifyLLMGatewayError(message)
 
 			expect(verdict?.reason).toBe("transport_failure")
