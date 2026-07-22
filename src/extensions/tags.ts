@@ -642,7 +642,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 			if (isStaleCtxError(err)) return
 			throw err
 		}
-		if (model?.provider !== "kimchi-dev") return
+		if (!model?.provider?.startsWith("kimchi-dev")) return
 
 		const payload = event.payload as Record<string, unknown> | null
 		if (!payload || typeof payload !== "object") return

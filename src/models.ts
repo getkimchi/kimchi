@@ -155,26 +155,25 @@ export interface PiModelConfig {
 	cost: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	// Persisted so telemetry can resolve the actual upstream provider after cache round-trip.
 	provider: string
-	compat?: { supportsReasoningEffort?: boolean; cacheControlFormat?: "anthropic" }
+	compat?: { supportsReasoningEffort?: boolean; cacheControlFormat?: "anthropic"; supportsUsageInStreaming?: boolean }
 	/** Model-level API type: upstream custom-provider parseModels falls through to this field. */
 	api?: string
 	/** Model-level base URL: upstream custom-provider parseModels falls through to this field. */
 	baseUrl?: string
+	/** Model-level headers merged into outgoing requests by pi's storeModelHeaders. */
+	headers?: Record<string, string>
 }
 
 function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// TODO: our LiteLLM gateway does not support `thinking.type.enabled` for Anthropic >Opus 4.6 models
 	// Therefore, we disable it for now. Revisit, once we upgrade our LiteLLM version.
-	// Band-aid: the models metadata API returns the same Claude slug under both
-	// "anthropic" and "azure_ai" providers. Pi's mergeCustomModels silently picks
-	// the last entry by (providerName, id) — if the azure_ai entry wins, the compat
-	// block is lost and cache_control markers are never injected. All Claude models
-	// support Anthropic-style prompt caching regardless of the upstream provider, so
-	// match on slug prefix rather than provider. Remove once the API stops returning
-	// duplicate slugs or pi deduplicates by (provider, id).
+	//
+	// Claude models routed through openai-completions need:
+	// - cacheControlFormat: "anthropic" so pi injects cache_control markers
+	// - supportsUsageInStreaming: true so stream_options.include_usage is sent
 	const compat =
 		m.provider === "anthropic" || m.slug.startsWith("claude-")
-			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic" } as const)
+			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
 			: undefined
 	return {
 		id: m.slug,
@@ -191,18 +190,46 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 }
 
 function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
-	return {
-		providers: {
-			"kimchi-dev": {
-				baseUrl: chatCompletionsApi(endpoint),
-				apiKey: "$KIMCHI_API_KEY",
-				api: "openai-completions",
-				authHeader: true,
-				headers: { "User-Agent": `kimchi/${getVersion()}` },
-				models: models.map(metadataToModel),
-			},
+	const aiEnablerModels = models.filter((m) => m.provider === "ai-enabler")
+	const otherModels = models.filter((m) => m.provider !== "ai-enabler")
+
+	// Group non-ai-enabler models by upstream provider
+	const byProvider = new Map<string, ModelMetadata[]>()
+	for (const m of otherModels) {
+		const group = byProvider.get(m.provider) ?? []
+		group.push(m)
+		byProvider.set(m.provider, group)
+	}
+
+	const providerHeaders = (upstreamProvider: string) => ({
+		"User-Agent": `kimchi/${getVersion()}`,
+		"X-Provider-Type": upstreamProvider,
+	})
+
+	const providers: Record<string, unknown> = {
+		"kimchi-dev": {
+			baseUrl: chatCompletionsApi(endpoint),
+			apiKey: "$KIMCHI_API_KEY",
+			api: "openai-completions",
+			authHeader: true,
+			headers: { "User-Agent": `kimchi/${getVersion()}` },
+			models: aiEnablerModels.map(metadataToModel),
 		},
 	}
+
+	for (const [upstreamProvider, group] of byProvider) {
+		const subProviderId = `kimchi-dev/${upstreamProvider}`
+		providers[subProviderId] = {
+			baseUrl: chatCompletionsApi(endpoint),
+			apiKey: "$KIMCHI_API_KEY",
+			api: "openai-completions",
+			authHeader: true,
+			headers: providerHeaders(upstreamProvider),
+			models: group.map(metadataToModel),
+		}
+	}
+
+	return { providers }
 }
 
 export interface ModelsConfigResult {
@@ -237,9 +264,16 @@ function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined
 	try {
 		const raw = readFileSync(modelsJsonPath, "utf-8")
 		const parsed = JSON.parse(raw)
-		const models = parsed?.providers?.["kimchi-dev"]?.models
-		if (!Array.isArray(models) || models.length === 0) return undefined
-		return (models as PiModelConfig[]).map(modelToMetadata)
+		const providers = parsed?.providers ?? {}
+		const result: ModelMetadata[] = []
+		for (const [name, provider] of Object.entries(providers)) {
+			if (!name.startsWith("kimchi-dev")) continue
+			const models = (provider as { models?: PiModelConfig[] }).models
+			if (!Array.isArray(models) || models.length === 0) continue
+			result.push(...models.map(modelToMetadata))
+		}
+		if (result.length === 0) return undefined
+		return result
 	} catch {
 		return undefined
 	}
@@ -251,7 +285,13 @@ function readExistingProviders(modelsJsonPath: string): Record<string, unknown> 
 		const raw = readFileSync(modelsJsonPath, "utf-8")
 		const config = JSON.parse(raw)
 		const providers = config?.providers ?? {}
-		const { "kimchi-dev": _kimchi, "kimchi-experimental": _exp, ...rest } = providers as Record<string, unknown>
+		// Strip all kimchi-managed providers (kimchi-dev and kimchi-dev/* sub-providers)
+		// plus kimchi-experimental, so they get regenerated on refresh.
+		const rest: Record<string, unknown> = {}
+		for (const [name, value] of Object.entries(providers as Record<string, unknown>)) {
+			if (name.startsWith("kimchi-dev") || name === "kimchi-experimental") continue
+			rest[name] = value
+		}
 		return rest
 	} catch {
 		return {}

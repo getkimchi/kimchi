@@ -82,6 +82,7 @@ function createHarness(
 	const modelRegistry = {
 		authStorage,
 		refresh: vi.fn(),
+		getAll: vi.fn(() => availableModels),
 		getAvailable: vi.fn(() => availableModels),
 		getProviderAuthStatus: vi.fn(() => ({ configured: false })),
 	}

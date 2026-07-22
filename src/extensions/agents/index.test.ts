@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { AGENT_MODEL_PARAMETER_DESCRIPTION, AGENT_TOOL_GUIDELINES, summaryForStatus } from "./index.js"
+import {
+	AGENT_MODEL_PARAMETER_DESCRIPTION,
+	AGENT_TOOL_GUIDELINES,
+	resolveRoleModelRef,
+	summaryForStatus,
+} from "./index.js"
 
 describe("summaryForStatus", () => {
 	it("labels token-budget aborts distinctly from max-turn aborts", () => {
@@ -91,6 +96,19 @@ vi.mock("../orchestration/model-roles.js", () => ({
 	getAllowedMultiModelRefs: vi
 		.fn()
 		.mockReturnValue(["kimchi-dev/kimi-k2.7", "kimchi-dev/minimax-m3", "kimchi-dev/nemotron-3-ultra-fp4"]),
+	getModelRoles: vi.fn().mockReturnValue({
+		orchestrator: "kimchi-dev/kimi-k2.7",
+		planner: "kimchi-dev/kimi-k2.7",
+		builder: "kimchi-dev/minimax-m3",
+		reviewer: "kimchi-dev/kimi-k2.7",
+		explorer: "kimchi-dev/nemotron-3-ultra-fp4",
+		researcher: "kimchi-dev/minimax-m3",
+	}),
+	normalizeRoleModels: vi.fn((assignment: unknown) => {
+		if (typeof assignment === "string") return [assignment]
+		if (Array.isArray(assignment)) return assignment
+		return []
+	}),
 }))
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
@@ -478,5 +496,41 @@ describe("Agent tool multi-mode model guard", () => {
 		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
 		const text = result.content[0]?.text ?? ""
 		expect(text).not.toContain("not allowed in multi-model mode")
+	})
+})
+
+describe("resolveRoleModelRef", () => {
+	// These tests verify the agent-type-to-role mapping used when the orchestrator
+	// omits the model parameter. Without this, sub-agents default to the
+	// orchestrator's model instead of the configured role model.
+
+	it("maps Builder to builder role", () => {
+		const ref = resolveRoleModelRef("Builder")
+		expect(ref).toBeDefined()
+		expect(typeof ref).toBe("string")
+	})
+
+	it("maps Fixer to builder role (same model pool)", () => {
+		const builderRef = resolveRoleModelRef("Builder")
+		const fixerRef = resolveRoleModelRef("Fixer")
+		expect(fixerRef).toBeDefined()
+		expect(fixerRef).toBe(builderRef)
+	})
+
+	it("maps General-Purpose to builder role (cheaper model)", () => {
+		const builderRef = resolveRoleModelRef("Builder")
+		const gpRef = resolveRoleModelRef("General-Purpose")
+		expect(gpRef).toBeDefined()
+		expect(gpRef).toBe(builderRef)
+	})
+
+	it("maps Explore to explorer role", () => {
+		const explorerRef = resolveRoleModelRef("Explore")
+		expect(explorerRef).toBeDefined()
+		expect(typeof explorerRef).toBe("string")
+	})
+
+	it("returns undefined for unknown agent types", () => {
+		expect(resolveRoleModelRef("Unknown")).toBeUndefined()
 	})
 })

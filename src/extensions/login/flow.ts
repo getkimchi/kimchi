@@ -22,6 +22,11 @@ import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
 export const KIMCHI_PROVIDER_ID = "kimchi-dev"
 export const KIMCHI_DEFAULT_MODEL_ID = "minimax-m3"
+
+/** True for any kimchi-managed provider (kimchi-dev or kimchi-dev/* sub-providers). */
+export function isKimchiProvider(provider: string): boolean {
+	return provider.startsWith("kimchi-dev")
+}
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
 export const SUBSCRIPTION_LABEL = "Use a subscription"
@@ -83,6 +88,7 @@ interface ProviderModelLike {
 interface ModelRegistryLike<TModel extends ProviderModelLike = ProviderModelLike> {
 	authStorage: AuthStorageLike
 	refresh(): void
+	getAll(): TModel[]
 	getAvailable(): TModel[]
 	getProviderAuthStatus(providerId: string): AuthStatus
 }
@@ -164,20 +170,23 @@ export function setKimchiAuthToken(
 	token: string,
 	credentialType: "api_key" | "oauth" = "api_key",
 ): void {
-	if (credentialType === "oauth") {
-		modelRegistry.authStorage.set(KIMCHI_PROVIDER_ID, {
-			type: "oauth",
-			access: token,
-			refresh: "",
-			expires: Number.MAX_SAFE_INTEGER,
-		})
-		return
-	}
+	const credential =
+		credentialType === "oauth"
+			? { type: "oauth" as const, access: token, refresh: "", expires: Number.MAX_SAFE_INTEGER }
+			: { type: "api_key" as const, key: token }
 
-	modelRegistry.authStorage.set(KIMCHI_PROVIDER_ID, {
-		type: "api_key",
-		key: token,
-	})
+	modelRegistry.authStorage.set(KIMCHI_PROVIDER_ID, credential)
+
+	// Set auth on all kimchi-dev/* sub-providers currently in the registry
+	const subProviders = new Set(
+		modelRegistry
+			.getAll()
+			.map((m) => m.provider)
+			.filter((p) => p.startsWith("kimchi-dev") && p !== KIMCHI_PROVIDER_ID),
+	)
+	for (const providerId of subProviders) {
+		modelRegistry.authStorage.set(providerId, credential)
+	}
 }
 
 export interface KimchiBrowserLoginHost {
@@ -257,7 +266,7 @@ async function configureKimchiToken(
 
 	let providerModels: ProviderModelLike[] = []
 	try {
-		providerModels = host.modelRegistry.getAvailable().filter((m) => m.provider === KIMCHI_PROVIDER_ID)
+		providerModels = host.modelRegistry.getAvailable().filter((m) => isKimchiProvider(m.provider))
 	} catch (error) {
 		refreshError ??= error
 	}
@@ -436,7 +445,7 @@ export function getSubscriptionProviderOptions(
 ): AuthSelectorProvider[] {
 	const providers = modelRegistry.authStorage.getOAuthProviders()
 	return providers
-		.filter((provider) => provider.id !== KIMCHI_PROVIDER_ID)
+		.filter((provider) => !isKimchiProvider(provider.id))
 		.map((provider) => ({
 			id: provider.id,
 			name: provider.name,

@@ -35,6 +35,7 @@ interface ModelLike {
 interface ModelRegistry {
 	authStorage: AuthStorage
 	refresh(): void
+	getAll(): ModelLike[]
 	getAvailable(): ModelLike[]
 	getModelById(id: string): ModelLike | undefined
 	getProviderAuthStatus(providerId: string): AuthStatus
