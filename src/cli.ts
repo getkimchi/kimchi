@@ -599,8 +599,16 @@ try {
 			...terminalUiExtensionFactories,
 			loginExtension,
 			startupAuthGate,
-			loopGuardExtension,
+			// Exploration guard must run before loop guard: the extension runner
+			// (pi-coding-agent core) short-circuits emitToolCall on the first handler
+			// returning { block: true }, so a blocked call never reaches handlers
+			// registered after the blocker. Registering exploration guard first
+			// ensures its tool_call handler (which only records the tool call and
+			// returns { block: false }) runs before the loop guard can block —
+			// preventing a blocked-only turn from being miscounted as a no-tool turn
+			// that fires a false-positive mandatory-tool steer.
 			explorationGuardExtension,
+			loopGuardExtension,
 			stopNudgeExtension,
 			reviewWriteGuardExtension,
 			lspExtension,

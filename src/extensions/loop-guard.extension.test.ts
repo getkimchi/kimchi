@@ -4,6 +4,8 @@ import { LOOP_GUARD_EVENTS } from "./loop-guard-events.js"
 
 type Handler = (...args: unknown[]) => Promise<unknown> | unknown
 
+type ToolCallResult = { block?: boolean; reason?: string } | undefined
+
 function createMockApi(events?: {
 	emit: (ch: string, data: unknown) => void
 	on: (ch: string, fn: (d: unknown) => void) => () => void
@@ -29,6 +31,24 @@ function getHandler(handlers: Map<string, Handler[]>, event: string): Handler {
 	const list = handlers.get(event)
 	if (!list || list.length === 0) throw new Error(`No handler for ${event}`)
 	return list[list.length - 1]
+}
+
+/** Run every registered handler for `event` in registration order,
+ *  short-circuiting (like the pi-coding-agent extension runner's
+ *  emitToolCall) the first time a handler returns `{ block: true }`.
+ *  Handlers that return `{ block: false }` or undefined do not stop the
+ *  chain. Returns the result of the last handler that ran. */
+async function runToolCallHandlers(
+	handlers: Map<string, Handler[]>,
+	event: unknown,
+): Promise<ToolCallResult> {
+	const list = handlers.get("tool_call") ?? []
+	let result: ToolCallResult
+	for (const handler of list) {
+		result = (await handler(event, {})) as ToolCallResult
+		if (result?.block) return result
+	}
+	return result
 }
 
 describe("loopGuardExtension telemetry", () => {
@@ -214,5 +234,89 @@ describe("loopGuardExtension escalating steer messages", () => {
 		expect(texts.length).toBe(3)
 		expect(texts[2]).toContain("Loop warning #3")
 		expect(texts[2]).toContain("ignored 2 previous loop-guard steers")
+	})
+})
+
+describe("loop-guard + exploration-guard tool_call handler ordering", () => {
+	beforeEach(() => {
+		vi.resetModules()
+		// exploration-guard imports these at module load time.
+		vi.doMock("./agent-worker-context.js", () => ({ isAgentWorker: () => false }))
+		vi.doMock("./permissions/mode-controller.js", () => ({
+			createSessionPermissionFlagController: vi.fn(),
+			getSessionPermissionsEnvKey: vi.fn(),
+			clearPermissionMode: vi.fn(),
+			setPermissionMode: vi.fn(),
+			getPermissionMode: vi.fn(() => undefined),
+		}))
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	it("a loop-guard-blocked tool_call still records the tool call in the exploration guard (no false no-tool steer)", async () => {
+		// Register both extensions in cli.ts order: exploration guard FIRST,
+		// then loop guard. The runner short-circuits emitToolCall on the first
+		// { block: true }, so the exploration guard's handler (registered
+		// first) runs before the loop guard can block.
+		const { api, handlers } = createMockApi()
+		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
+		const { default: loopGuardExtension } = await import("./loop-guard.js")
+		explorationGuardExtension(api, { noToolWarnThreshold: 1, noToolSteerThreshold: 2 })
+		loopGuardExtension(api)
+
+		// session_start gives both extensions a ctx. The exploration guard's
+		// isEnabled() reads ctx.sessionManager.getSessionId(); return a truthy id.
+		const ctx = {
+			sessionManager: { getSessionId: () => "test-session" },
+			abort: vi.fn(),
+		}
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		// Drive a bash-repetition loop (12 identical non-error bash results) so
+		// the loop guard fires a warn AND stores a blocked bash prefix.
+		const command = "yt-dlp https://example.com/video"
+		const bashResult = {
+			toolName: "bash",
+			input: { command },
+			isError: false,
+			content: [{ type: "text", text: "ok" }],
+		}
+		for (let i = 0; i < 12; i++) {
+			await getHandler(handlers, "tool_result")(bashResult)
+		}
+
+		// Now simulate a turn whose ONLY tool call matches the blocked bash
+		// prefix. Running the handlers in registration order: exploration guard
+		// records the tool call (returns { block: false }), then loop guard
+		// blocks it. The turn thus has a recorded tool call — consecutiveNoToolTurns
+		// must NOT increment.
+		const blockedCall = { toolName: "bash", input: { command } }
+		getHandler(handlers, "turn_start")()
+		const blockResult = await runToolCallHandlers(handlers, blockedCall)
+		expect(blockResult?.block).toBe(true)
+		await getHandler(handlers, "turn_end")()
+
+		// After one blocked-only turn, no no-tool steer should have fired yet
+		// (noToolWarnThreshold=1 would fire on the FIRST no-tool turn). Assert
+		// the exploration guard did NOT send any no-tool steer for this turn.
+		const sends = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls
+		const noToolSteers = sends.filter(([msg]: unknown[]) =>
+			typeof (msg as { content?: Array<{ text?: string }> })?.content?.[0]?.text === "string"
+				&& ((msg as { content: Array<{ text: string }> }).content[0].text.includes("no tool calls")))
+		expect(noToolSteers.length).toBe(0)
+
+		// Sanity: a SECOND blocked-only turn should also NOT fire the mandatory
+		// steer (noToolSteerThreshold=2). It would only fire if both turns were
+		// miscounted as no-tool turns.
+		getHandler(handlers, "turn_start")()
+		const blockResult2 = await runToolCallHandlers(handlers, blockedCall)
+		expect(blockResult2?.block).toBe(true)
+		await getHandler(handlers, "turn_end")()
+		const noToolSteers2 = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls.filter(([msg]: unknown[]) =>
+			typeof (msg as { content?: Array<{ text?: string }> })?.content?.[0]?.text === "string"
+				&& ((msg as { content: Array<{ text: string }> }).content[0].text.includes("You must use a tool this turn")))
+		expect(noToolSteers2.length).toBe(0)
 	})
 })

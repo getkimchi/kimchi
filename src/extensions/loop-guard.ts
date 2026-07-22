@@ -44,12 +44,16 @@ const EDIT_RUN_TOTAL_THRESHOLD = 12 // same file 12× AND same bash prefix 12× 
 // prefix to match. Catches loops where the agent varies its test/build
 // commands (different make targets, different flags) but keeps patching the
 // same file — a clear non-convergence signal the strict edit-run detector
-// misses. Threshold matches EDIT_RUN_THRESHOLD for consistency; no observed
-// passing task edits any single file more than once, so 8 provides ample
-// headroom. Window variant additionally requires N+ bash calls in window
+// misses. Lowered from 8 to 5: the hardest failing benchmark tasks edit the
+// same file exactly 5× before timing out, while the max same-file edit count
+// across all 20 passing tasks is 3 (2× headroom at threshold 5).
+// Window variant additionally requires N+ bash calls in window
 // (any prefix) to confirm it's an edit→run cycle, not just sequential edits.
-const REPEATED_EDIT_THRESHOLD = 8 // same file edited 8× in window with 8+ bash calls (any prefix)
-const REPEATED_EDIT_TOTAL_THRESHOLD = 8 // same file edited 8× across the whole task (bash-independent)
+const REPEATED_EDIT_THRESHOLD = 5 // same file edited 5× in window with 5+ bash calls (any prefix)
+const REPEATED_EDIT_TOTAL_THRESHOLD = 5 // same file edited 5× across the whole task (bash-independent)
+// After a loop-guard warn, block calls matching the detected pattern for
+// this many non-matching calls before clearing the block (cooldown).
+const BLOCK_COOLDOWN_CALLS = 5
 const BASH_REPEAT_THRESHOLD = 12 // bash-only: same prefix 12× in window (no edit required)
 const BASH_REPEAT_TOTAL_THRESHOLD = 15 // bash-only: same prefix 15× across the task
 const BASH_PREFIX_LENGTH = 50 // normalize bash commands by this prefix
@@ -138,6 +142,20 @@ export class LoopGuard {
 	private bashCountsNormTotal = new Map<string, number>()
 	private warned = false
 	private triggered = false
+	/** Patterns from prior loop-guard warns. After a warn fires, the edit
+	 *  target and/or bash prefix that triggered it are stored here so
+	 *  shouldBlock() can refuse subsequent calls that would extend the
+	 *  same loop. Cleared on reset() or after BLOCK_COOLDOWN_CALLS
+	 *  non-matching calls. */
+	private blockedEditTargets = new Set<string>()
+	private blockedBashPrefixes = new Set<string>()
+	private blockedBashPrefixesNorm = new Set<string>()
+	/** Non-matching call counter for the block cooldown. Incremented by
+	 *  shouldBlock() only on non-matching edit/write/bash calls — the tool
+	 *  types whose patterns are stored; diagnostic reads/greps/ls/find are
+	 *  ignored so they can't burn the cooldown. Cleared when the cooldown
+	 *  is reached (which also clears the blocked patterns). */
+	private nonMatchingCallCount = 0
 
 	reset(): void {
 		this.history = []
@@ -149,6 +167,10 @@ export class LoopGuard {
 		this.bashCountsNormTotal.clear()
 		this.warned = false
 		this.triggered = false
+		this.blockedEditTargets.clear()
+		this.blockedBashPrefixes.clear()
+		this.blockedBashPrefixesNorm.clear()
+		this.nonMatchingCallCount = 0
 	}
 
 	isTriggered(): boolean {
@@ -205,6 +227,95 @@ export class LoopGuard {
 		// Always warn, never terminate. Blocking tool calls forces the model
 		// into no-tool turns which deadlocks with the exploration guard.
 		this.warned = true
+
+		// Store the detected pattern so shouldBlock() can block calls that
+		// would extend the same loop. WHICH patterns are stored depends on
+		// which detector fired — storing an unrelated pattern (e.g. an edit
+		// target when bash_repetition fired, or a bash prefix when
+		// repeated_edit fired) causes false-positive blocking of calls that
+		// are not part of the detected loop. The window and task-total maps
+		// still have their counts at this point (before the resets below),
+		// so mapMax correctly identifies the pattern that crossed threshold
+		// for edit-run and bash-repetition detectors.
+		const detector = detected.detector
+		if (detector === "edit_run") {
+			// Window variant: both edit target and bash prefix crossed the
+			// window threshold together. Fall back to the WINDOW maps only —
+			// consulting the task-total maps would store a different file
+			// when the window and task-total tops disagree.
+			const warnEditTarget = extractEditTarget(rec) ?? mapMax(this.editCounts)?.[0]
+			if (warnEditTarget) this.blockedEditTargets.add(warnEditTarget)
+			const warnBashPrefix = extractBashPrefix(rec) ?? mapMax(this.bashCounts)?.[0]
+			if (warnBashPrefix) this.blockedBashPrefixes.add(warnBashPrefix)
+			const warnBashPrefixNorm = extractBashPrefixNormalized(rec) ?? mapMax(this.bashCountsNorm)?.[0]
+			if (warnBashPrefixNorm) this.blockedBashPrefixesNorm.add(warnBashPrefixNorm)
+		} else if (detector === "edit_run_total") {
+			// Task-total variant: both edit target and bash prefix crossed
+			// the task-total threshold together. Fall back to the TASK-TOTAL
+			// maps only — the triggering record is often a bash call (the
+			// Nth bash that pushes bashCountsTotal to threshold while the
+			// edit count was already met), so extractEditTarget(rec) is
+			// undefined and the window map may point to a different,
+			// unrelated file that was recently edited in the window.
+			const warnEditTarget = extractEditTarget(rec) ?? mapMax(this.editCountsTotal)?.[0]
+			if (warnEditTarget) this.blockedEditTargets.add(warnEditTarget)
+			const warnBashPrefix = extractBashPrefix(rec) ?? mapMax(this.bashCountsTotal)?.[0]
+			if (warnBashPrefix) this.blockedBashPrefixes.add(warnBashPrefix)
+			const warnBashPrefixNorm = extractBashPrefixNormalized(rec) ?? mapMax(this.bashCountsNormTotal)?.[0]
+			if (warnBashPrefixNorm) this.blockedBashPrefixesNorm.add(warnBashPrefixNorm)
+		} else if (detector === "repeated_edit") {
+			// Only the edit target is part of this loop. Bash prefixes vary
+			// by design (that's why the strict edit_run detector didn't fire),
+			// so storing a bash prefix would block an unrelated command.
+			//
+			// The repeated_edit detector has two variants that share the same
+			// detector string: a window variant (checks editCounts +
+			// bashInWindow) and a task-total variant (checks editCountsTotal +
+			// totalBash). The window variant is checked first in
+			// detectRepeatedEditCycle, so if its condition is currently met,
+			// it fired; otherwise the task-total variant fired. We must
+			// consult the map that the firing variant actually checked —
+			// consulting the window map when the task-total variant fired
+			// (or vice versa) stores the wrong file when the two maps have
+			// different top entries (common when edits are spread across
+			// 80+ tool calls and recently evicted from the 30-record window).
+			// The maps have NOT been reset yet at this point (window clears
+			// and firedKeys deletion happen below), so re-checking gives the
+			// same result as when detect() ran.
+			const topEditWin = mapMax(this.editCounts)
+			const bashInWindow = this.history.filter((r) => r.toolName === "bash").length
+			const windowVariantFired =
+				topEditWin !== undefined &&
+				topEditWin[1] >= REPEATED_EDIT_THRESHOLD &&
+				bashInWindow >= REPEATED_EDIT_THRESHOLD
+			const warnEditTarget = extractEditTarget(rec) ??
+				(windowVariantFired
+					? mapMax(this.editCounts)?.[0]
+					: mapMax(this.editCountsTotal)?.[0])
+			if (warnEditTarget) this.blockedEditTargets.add(warnEditTarget)
+		} else if (detector === "bash_repetition") {
+			// Only the bash prefix is part of this loop. No edit target is
+			// involved, so storing one would block an unrelated file edit.
+			const warnBashPrefix = extractBashPrefix(rec) ?? mapMax(this.bashCounts)?.[0] ?? mapMax(this.bashCountsTotal)?.[0]
+			if (warnBashPrefix) this.blockedBashPrefixes.add(warnBashPrefix)
+			const warnBashPrefixNorm = extractBashPrefixNormalized(rec) ?? mapMax(this.bashCountsNorm)?.[0] ?? mapMax(this.bashCountsNormTotal)?.[0]
+			if (warnBashPrefixNorm) this.blockedBashPrefixesNorm.add(warnBashPrefixNorm)
+		} else {
+			// N-gram detectors (consecutive_identical, exact_ngram,
+			// fuzzy_ngram): the repeating call IS the pattern. Extract from
+			// rec only — do NOT consult mapMax, which could return an
+			// unrelated edit/bash that happens to be in the window. If rec
+			// is a read/grep (no edit/bash signature), store nothing; the
+			// advisory steer still fires.
+			const warnEditTarget = extractEditTarget(rec)
+			if (warnEditTarget) this.blockedEditTargets.add(warnEditTarget)
+			const warnBashPrefix = extractBashPrefix(rec)
+			if (warnBashPrefix) this.blockedBashPrefixes.add(warnBashPrefix)
+			const warnBashPrefixNorm = extractBashPrefixNormalized(rec)
+			if (warnBashPrefixNorm) this.blockedBashPrefixesNorm.add(warnBashPrefixNorm)
+		}
+		// Reset the cooldown so the block gets a fresh window of 5 calls.
+		this.nonMatchingCallCount = 0
 
 		// Reset the window counters so the model must loop again before the
 		// next steer fires — avoids flooding the context with steers on
@@ -320,6 +431,96 @@ export class LoopGuard {
 		} finally {
 			this.history = saved
 		}
+	}
+
+	/**
+	 * Check whether a tool call should be blocked because it matches a
+	 * pattern from a recent loop-guard warn. Unlike blockIfLoop (which
+	 * checks the current window state and is ineffective after a warn
+	 * resets the window), this method checks against stored blocked
+	 * patterns from prior warns.
+	 *
+	 * Returns { block: true, reason } if the call matches a blocked
+	 * edit target or bash prefix. Returns { block: false } otherwise.
+	 * The non-matching call counter is incremented only for edit/write/
+	 * bash calls (the tool types whose patterns are stored); diagnostic
+	 * reads/greps/ls/find pass through without advancing the cooldown, so
+	 * the block persists until the agent makes 5 alternative edit/bash
+	 * calls. After BLOCK_COOLDOWN_CALLS such calls, the blocked patterns
+	 * are cleared.
+	 */
+	shouldBlock(call: { toolName: string; toolArgs: string }): { block: boolean; reason?: string } {
+		if (
+			this.blockedEditTargets.size === 0 &&
+			this.blockedBashPrefixes.size === 0 &&
+			this.blockedBashPrefixesNorm.size === 0
+		) {
+			return { block: false }
+		}
+
+		const hypo: ToolHistoryRecord = {
+			toolName: call.toolName,
+			toolArgs: call.toolArgs,
+			isError: false,
+			outputFingerprint: "",
+		}
+		const callEditTarget = extractEditTarget(hypo)
+		const callBashPrefix = extractBashPrefix(hypo)
+		const callBashPrefixNorm = extractBashPrefixNormalized(hypo)
+
+		if (callEditTarget && this.blockedEditTargets.has(callEditTarget)) {
+			return {
+				block: true,
+				reason:
+					`Loop guard: this edit to ${callEditTarget} would extend a detected loop. ` +
+					"The loop guard has warned you about repeating this pattern. " +
+					"Try a different file, a different approach, or re-read the task requirements " +
+					"before continuing.",
+			}
+		}
+		if (callBashPrefix && this.blockedBashPrefixes.has(callBashPrefix)) {
+			return {
+				block: true,
+				reason:
+					"Loop guard: this bash command would extend a detected loop. " +
+					"The loop guard has warned you about repeating this pattern. " +
+					"Try a different command, a different approach, or re-read the task requirements " +
+					"before continuing.",
+			}
+		}
+		if (callBashPrefixNorm && this.blockedBashPrefixesNorm.has(callBashPrefixNorm)) {
+			return {
+				block: true,
+				reason:
+					"Loop guard: this bash command would extend a detected loop. " +
+					"The loop guard has warned you about repeating this pattern. " +
+					"Try a different command, a different approach, or re-read the task requirements " +
+					"before continuing.",
+			}
+		}
+
+		// Non-matching call. Only edit/write/bash calls count toward the
+		// cooldown: these are the tool types whose patterns are stored, and
+		// the cooldown should measure approach-changing attempts, not
+		// diagnostic reads/greps/ls/find. Without this guard, the agent's
+		// typical post-warn sequence (blocked edit → read error → read
+		// source → grep → read → read) would clear the block via benign
+		// diagnostic calls, after which it resumes the exact same loop.
+		const isLoopExtendingTool =
+			callEditTarget !== undefined ||
+			callBashPrefix !== undefined ||
+			callBashPrefixNorm !== undefined
+		if (isLoopExtendingTool) {
+			this.nonMatchingCallCount++
+			if (this.nonMatchingCallCount >= BLOCK_COOLDOWN_CALLS) {
+				this.blockedEditTargets.clear()
+				this.blockedBashPrefixes.clear()
+				this.blockedBashPrefixesNorm.clear()
+				this.nonMatchingCallCount = 0
+			}
+		}
+
+		return { block: false }
 	}
 
 	/** Run all detectors and return the first one that fires, along with
@@ -849,9 +1050,22 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 				reason: "Tool name is empty. Check your tool call syntax and use only the tools listed under Available Tools.",
 			}
 		}
-		// The loop guard never blocks tool calls. Blocking tools forces the
-		// model into no-tool turns which deadlocks with the exploration guard.
-		// Subagents are terminated via ctx.abort() in turn_end instead.
+		// Skip blocking for subagents — they have their own abort mechanism
+		// via ctx.abort() in turn_end.
+		if (isAgentWorker()) return { block: false }
+
+		// Block calls that would extend a detected loop. The block is
+		// targeted: only calls matching the edit target or bash prefix
+		// from a recent warn are blocked. Non-matching calls are allowed
+		// and count toward the cooldown that eventually clears the block.
+		const blockResult = guard.shouldBlock({
+			toolName: event.toolName,
+			toolArgs: stableStringify(event.input),
+		})
+		if (blockResult.block) {
+			return { block: true, reason: blockResult.reason }
+		}
+		return { block: false }
 	})
 
 	pi.on("turn_end", () => {

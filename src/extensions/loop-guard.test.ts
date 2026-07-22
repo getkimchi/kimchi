@@ -479,28 +479,27 @@ describe("Edit-run cycle detector", () => {
 		}
 	}
 
-	it("does not fire below threshold (7 rounds)", () => {
+	it("does not fire below threshold (4 rounds)", () => {
 		const guard = new LoopGuard()
-		feedEditRunRounds(guard, 7)
+		feedEditRunRounds(guard, 4)
 		expect(guard.isWarned()).toBe(false)
 		expect(guard.isTriggered()).toBe(false)
 	})
 
-	it("warns at threshold (8 rounds)", () => {
+	it("warns at threshold (5 rounds)", () => {
 		const guard = new LoopGuard()
-		// Stop at exactly the bash call that triggers warn (record 23 of 24).
-		// The 24th record (read) would re-trigger the detector and bump to
-		// terminate — see the next test.
-		feedEditRunRecords(guard, 23)
+		// Stop at exactly the bash call that triggers warn (record 14 of 15).
+		// The 15th record (read) would re-trigger the detector.
+		feedEditRunRecords(guard, 14)
 		expect(guard.isWarned()).toBe(true)
 		expect(guard.isTriggered()).toBe(false)
 	})
 
 	it("after warn, counters reset so next round does not immediately re-fire", () => {
 		const guard = new LoopGuard()
-		// 23 records triggers warn (at the 8th bash). After that, window
+		// 14 records triggers warn (at the 5th bash). After that, window
 		// counters are cleared so the next few records don't re-fire.
-		feedEditRunRecords(guard, 23)
+		feedEditRunRecords(guard, 14)
 		expect(guard.isWarned()).toBe(true)
 		// One more record (the read) should NOT immediately re-fire.
 		feedEditRunRecords(guard, 1)
@@ -600,14 +599,14 @@ describe("Edit-run cycle detector", () => {
 		expect(guard.isWarned()).toBe(true)
 	})
 
-	it("detects simple edit+bash pattern at 8 rounds when interleaved with diagnostic reads", () => {
+	it("detects simple edit+bash pattern at 5 rounds when interleaved with diagnostic reads", () => {
 		// The simplest case: same file, same bash prefix, but with diagnostic
 		// reads between every call. The reads have different args so the
 		// existing fuzzy n-gram detectors can't latch onto a repeating pattern.
 		const guard = new LoopGuard()
 		const file = "/app/vm.js"
 		const bashPrefix = '{"command":"node vm.js 2>&1 | head -20"}'
-		for (let i = 0; i < 8; i++) {
+		for (let i = 0; i < 5; i++) {
 			guard.record({
 				toolName: "read",
 				toolArgs: `{"path":"/tmp/probe-${i}.txt"}`,
@@ -632,7 +631,7 @@ describe("Edit-run cycle detector", () => {
 
 	it("window eviction drops the edit and bash counts", () => {
 		const guard = new LoopGuard()
-		feedEditRunRounds(guard, 8)
+		feedEditRunRounds(guard, 5)
 		expect(guard.isWarned()).toBe(true)
 
 		// Push 35 fresh records (each a unique bash command) to evict all the
@@ -642,15 +641,15 @@ describe("Edit-run cycle detector", () => {
 			guard.record(rec({ toolArgs: `{"command":"filler-${i}"}`, outputFingerprint: `f${i}` }))
 		}
 		// reset() clears the warn fuse. Replaying the same edit-run pattern
-		// at 7 rounds (below threshold) should not fire again.
+		// at 4 rounds (below threshold) should not fire again.
 		guard.reset()
-		feedEditRunRounds(guard, 7)
+		feedEditRunRounds(guard, 4)
 		expect(guard.isWarned()).toBe(false)
 	})
 
 	it("blockIfLoop returns false after warn (history cleared)", () => {
 		const guard = new LoopGuard()
-		feedEditRunRounds(guard, 8)
+		feedEditRunRounds(guard, 5)
 		expect(guard.isWarned()).toBe(true)
 		// After the warn, window history is cleared. blockIfLoop can't find
 		// a matching proxy in an empty history, so it returns false.
@@ -681,7 +680,7 @@ describe("Edit-run cycle detector", () => {
 
 	it("reset() clears the edit and bash counts", () => {
 		const guard = new LoopGuard()
-		feedEditRunRounds(guard, 8)
+		feedEditRunRounds(guard, 5)
 		expect(guard.isWarned()).toBe(true)
 		guard.reset()
 		expect(guard.isWarned()).toBe(false)
@@ -700,7 +699,11 @@ describe("LoopGuardResult.detector", () => {
 		expect(result.detector).toBe("consecutive_identical")
 	})
 
-	it("populates detector='edit_run' for an edit-run cycle", () => {
+	it("populates detector='repeated_edit' for a same-file+same-bash edit-run cycle", () => {
+		// With REPEATED_EDIT_THRESHOLD lowered to 5, the repeated_edit
+		// detector fires at the 5th edit+bash — before edit_run (threshold 8)
+		// can fire. This test verifies the detector chain produces
+		// repeated_edit for a concentrated same-file+same-bash loop.
 		const guard = new LoopGuard()
 		const file = "/app/vm.js"
 		const bashPrefix = '{"command":"node vm.js 2>&1 | head -20"}'
@@ -724,10 +727,10 @@ describe("LoopGuardResult.detector", () => {
 				isError: true,
 				outputFingerprint: `bash-${i}`,
 			})
-			detector = result.detector
+			if (result.state === "warn") detector = result.detector
 		}
 		expect(guard.isWarned()).toBe(true)
-		expect(detector).toBe("edit_run")
+		expect(detector).toBe("repeated_edit")
 	})
 })
 
@@ -741,7 +744,8 @@ describe("Edit-run cycle detector — task-total backstop", () => {
 		// Interleave edit + bash with `fillerPerRound` other tool calls
 		// between each pair. With fillerPerRound=3, a 30-record window
 		// covers ~6 of each edit/bash target — below the 8/8 window
-		// threshold but the task-total counts keep climbing.
+		// threshold for the strict edit_run detector, but the task-total
+		// counts keep climbing (repeated_edit fires at 5+).
 		const file = "/app/main.c"
 		const bashPrefix = '{"command":"cd /app && make -j8 all 2>&1 | tail -20"}'
 		for (let i = 0; i < editRuns; i++) {
@@ -778,17 +782,19 @@ describe("Edit-run cycle detector — task-total backstop", () => {
 		}
 	}
 
-	it("does not fire below repeated_edit threshold (7 edits + 7 bash, spread out)", () => {
-		// The repeated_edit task-total threshold is 8 (same as the window).
-		// With 7 edits + 7 bash, neither the window nor the task-total
-		// variant of any edit-run detector fires.
+	it("does not fire below repeated_edit threshold (4 edits + 4 bash, spread out)", () => {
+		// The repeated_edit task-total threshold is 5. With 4 edits + 4 bash,
+		// neither the window nor the task-total variant of any edit-run
+		// detector fires.
 		const guard = new LoopGuard()
-		feedSparseEditRun(guard, 7, 7, 3)
+		feedSparseEditRun(guard, 4, 4, 3)
 		expect(guard.isWarned()).toBe(false)
 		expect(guard.isTriggered()).toBe(false)
 	})
 
 	it("fires at 12 rounds (task-total backstop)", () => {
+		// With 12 edits + 12 bash, the task-total repeated_edit detector
+		// fires once totalBash crosses 5 (the edits already total 12).
 		const guard = new LoopGuard()
 		feedSparseEditRun(guard, 12, 12, 3)
 		expect(guard.isWarned()).toBe(true)
@@ -797,8 +803,9 @@ describe("Edit-run cycle detector — task-total backstop", () => {
 	it("task-total fires when window detector does NOT", () => {
 		// Specifically demonstrate that the task-total detector catches
 		// a loop the window misses. With fillerPerRound=3, the window
-		// has ~6 edits and ~6 bash at any time (below 8/8 threshold).
-		// But task-total counts cross 12/12.
+		// has ~6 edits and ~6 bash at any time — below the 8/8 threshold
+		// for the strict edit_run detector. But task-total counts cross
+		// 5 (repeated_edit) and 12 (edit_run_total).
 		const guard = new LoopGuard()
 		feedSparseEditRun(guard, 15, 15, 3)
 
@@ -809,9 +816,9 @@ describe("Edit-run cycle detector — task-total backstop", () => {
 	})
 
 	it("task-total does not fire if one of edit/bash is below threshold", () => {
-		// 12 edits but only 5 bash runs — not a loop.
+		// 12 edits but only 4 bash runs — not a loop (bash below threshold 5).
 		const guard = new LoopGuard()
-		feedSparseEditRun(guard, 12, 5, 3)
+		feedSparseEditRun(guard, 12, 4, 3)
 		expect(guard.isWarned()).toBe(false)
 	})
 
@@ -827,7 +834,7 @@ describe("Edit-run cycle detector — task-total backstop", () => {
 		const guard = new LoopGuard()
 		const file = "/app/vm.js"
 		const bashPrefix = '{"command":"node vm.js 2>&1 | head -20"}'
-		for (let i = 0; i < 8; i++) {
+		for (let i = 0; i < 5; i++) {
 			guard.record({
 				toolName: "edit",
 				toolArgs: `{"path":"${file}","edits":[{"oldText":"x","newText":"v${i}"}]}`,
@@ -1096,35 +1103,35 @@ describe("Repeated edit cycle detector (repeated_edit)", () => {
 		return detector
 	}
 
-	it("fires at threshold: 8 edits + 8 varied bash in window → repeated_edit", () => {
+	it("fires at threshold: 5 edits + 5 varied bash in window → repeated_edit", () => {
 		const guard = new LoopGuard()
-		const detector = feedRepeatedEdit(guard, 8, 8, { varyBash: true })
+		const detector = feedRepeatedEdit(guard, 5, 5, { varyBash: true })
 		expect(guard.isWarned()).toBe(true)
 		expect(detector).toBe("repeated_edit")
 	})
 
-	it("does not fire below threshold: 7 edits + 8 bash", () => {
+	it("does not fire below threshold: 4 edits + 5 bash", () => {
 		const guard = new LoopGuard()
-		feedRepeatedEdit(guard, 7, 8, { varyBash: true })
+		feedRepeatedEdit(guard, 4, 5, { varyBash: true })
 		expect(guard.isWarned()).toBe(false)
 	})
 
-	it("does not fire when bash count is below threshold: 8 edits + 7 bash", () => {
-		// Window variant needs 8 bash calls in window to confirm an edit→run
-		// cycle. With only 7 bash, it's not yet a loop signal.
+	it("does not fire when bash count is below threshold: 5 edits + 4 bash", () => {
+		// Window variant needs 5 bash calls in window to confirm an edit→run
+		// cycle. With only 4 bash, it's not yet a loop signal.
 		const guard = new LoopGuard()
-		feedRepeatedEdit(guard, 8, 7, { varyBash: true })
+		feedRepeatedEdit(guard, 5, 4, { varyBash: true })
 		expect(guard.isWarned()).toBe(false)
 	})
 
-	it("does not fire when edits target different files (no single file reaches 8)", () => {
+	it("does not fire when edits target different files (no single file reaches 5)", () => {
 		const guard = new LoopGuard()
-		// 8 edits spread across 4 different files (2 each) + 8 bash calls.
+		// 5 edits spread across 5 different files (1 each) + 5 bash calls.
 		// No single file crosses the threshold.
-		for (let i = 0; i < 8; i++) {
+		for (let i = 0; i < 5; i++) {
 			guard.record({
 				toolName: "edit",
-				toolArgs: `{"path":"/app/file${i % 4}.c","edits":[{"oldText":"x","newText":"v${i}"}]}`,
+				toolArgs: `{"path":"/app/file${i}.c","edits":[{"oldText":"x","newText":"v${i}"}]}`,
 				isError: false,
 				outputFingerprint: `edit-${i}`,
 			})
@@ -1138,24 +1145,24 @@ describe("Repeated edit cycle detector (repeated_edit)", () => {
 		expect(guard.isWarned()).toBe(false)
 	})
 
-	it("task-total fires when 8 edits are spread across 50 records (window never has 8 at once)", () => {
+	it("task-total fires when 5 edits are spread across 50 records (window never has 5 at once)", () => {
 		// Each edit is followed by 5 reads so the 30-record window never
-		// accumulates 8 edits. The task-total variant catches it on total
-		// counts (8 edits + 8 bash across the task).
+		// accumulates 5 edits. The task-total variant catches it on total
+		// counts (5 edits + 5 bash across the task).
 		const guard = new LoopGuard()
-		const detector = feedRepeatedEdit(guard, 8, 8, { varyBash: true, fillerPerRound: 5 })
+		const detector = feedRepeatedEdit(guard, 5, 5, { varyBash: true, fillerPerRound: 5 })
 		expect(guard.isWarned()).toBe(true)
 		expect(detector).toBe("repeated_edit")
 	})
 
-	it("after a task-total fire, the fired file key is reset so 8 fresh edits are required to re-fire", () => {
+	it("after a task-total fire, the fired file key is reset so 5 fresh edits are required to re-fire", () => {
 		// Post-warn reset deletes the fired file's key from editCountsTotal.
 		// A handful more edits to the same file must NOT immediately re-fire.
 		const guard = new LoopGuard()
-		feedRepeatedEdit(guard, 8, 8, { varyBash: true, fillerPerRound: 5 })
+		feedRepeatedEdit(guard, 5, 5, { varyBash: true, fillerPerRound: 5 })
 		expect(guard.isWarned()).toBe(true)
-		// 3 more edits + bash — below the 8-edit re-fire threshold.
-		feedRepeatedEdit(guard, 3, 3, { varyBash: true })
+		// 2 more edits + bash — below the 5-edit re-fire threshold.
+		feedRepeatedEdit(guard, 2, 2, { varyBash: true })
 		// Still warned (fuse persists), but no second warn flood.
 		expect(guard.isWarned()).toBe(true)
 	})
@@ -1164,11 +1171,13 @@ describe("Repeated edit cycle detector (repeated_edit)", () => {
 		// When both consecutive_identical (earlier in the chain) and
 		// repeated_edit are eligible on the same record, the stricter
 		// signature detector takes priority. We build a history where the
-		// window has 8 edits + 8 bash (repeated_edit would fire) AND the
+		// window has 5 edits + 5 bash (repeated_edit would fire) AND the
 		// last 3 calls are identical (consecutive_identical fires).
 		const guard = new LoopGuard()
-		// 8 edits to one file (varied content so they aren't identical).
-		for (let i = 0; i < 8; i++) {
+		// 5 edits to one file (varied content so they aren't identical).
+		// editCounts reaches 5 but bashInWindow is 0 → repeated_edit does
+		// not fire yet (needs 5+ bash in window too).
+		for (let i = 0; i < 5; i++) {
 			guard.record({
 				toolName: "edit",
 				toolArgs: `{"path":"/app/vm.js","edits":[{"oldText":"x","newText":"v${i}"}]}`,
@@ -1176,9 +1185,9 @@ describe("Repeated edit cycle detector (repeated_edit)", () => {
 				outputFingerprint: `edit-${i}`,
 			})
 		}
-		// 5 varied bash calls (each distinct, so consecutive_identical
-		// does NOT fire on these).
-		for (let i = 0; i < 5; i++) {
+		// 2 varied bash calls (each distinct, so consecutive_identical
+		// does NOT fire on these). bashInWindow reaches 2 → still below 5.
+		for (let i = 0; i < 2; i++) {
 			guard.record({
 				toolName: "bash",
 				toolArgs: `{"command":"node varied-${i}.js"}`,
@@ -1187,8 +1196,8 @@ describe("Repeated edit cycle detector (repeated_edit)", () => {
 			})
 		}
 		// 3 IDENTICAL bash calls. On the 3rd, consecutive_identical fires
-		// (count 3 >= 3). At this same record the window also has 8 edits
-		// and 8 bash (5 varied + 3 identical) so repeated_edit is eligible
+		// (count 3 >= 3). At this same record the window also has 5 edits
+		// and 5 bash (2 varied + 3 identical) so repeated_edit is eligible
 		// too — but consecutive_identical is earlier in the detect() chain.
 		const identical = {
 			toolName: "bash",
@@ -1272,5 +1281,422 @@ describe("Long productive session does not fire signature-independent backstop",
 		const result = guard.record(identical)
 		expect(result.state).toBe("warn")
 		expect(result.detector).toBe("consecutive_identical")
+	})
+})
+
+describe("LoopGuard.shouldBlock (pattern-based blocking after warn)", () => {
+	// Helper: feed a repeated-edit loop until a warn fires, then return
+	// the guard with a blocked edit target stored.
+	function guardWithEditWarn(file = "/app/vm.js"): LoopGuard {
+		const guard = new LoopGuard()
+		for (let i = 0; i < 5; i++) {
+			guard.record({
+				toolName: "edit",
+				toolArgs: `{"path":"${file}","edits":[{"oldText":"x","newText":"v${i}"}]}`,
+				isError: false,
+				outputFingerprint: `edit-${i}`,
+			})
+			guard.record({
+				toolName: "bash",
+				toolArgs: `{"command":"node test-${i}.js"}`,
+				isError: true,
+				outputFingerprint: `bash-${i}`,
+			})
+		}
+		expect(guard.isWarned()).toBe(true)
+		return guard
+	}
+
+	// Helper: feed a bash-repetition loop until a warn fires, then return
+	// the guard with a blocked bash prefix stored.
+	function guardWithBashWarn(command = "yt-dlp https://example.com/video"): LoopGuard {
+		const guard = new LoopGuard()
+		for (let i = 0; i < 12; i++) {
+			guard.record({
+				toolName: "bash",
+				toolArgs: `{"command":${JSON.stringify(command)}}`,
+				isError: false,
+				outputFingerprint: `fp-${i}`,
+			})
+		}
+		expect(guard.isWarned()).toBe(true)
+		return guard
+	}
+
+	it("does not block when no warn has fired", () => {
+		const guard = new LoopGuard()
+		const result = guard.shouldBlock({ toolName: "edit", toolArgs: '{"path":"/app/vm.js","edits":[]}' })
+		expect(result.block).toBe(false)
+	})
+
+	it("blocks matching edit target after a warn", () => {
+		const guard = guardWithEditWarn("/app/vm.js")
+		const result = guard.shouldBlock({
+			toolName: "edit",
+			toolArgs: '{"path":"/app/vm.js","edits":[{"oldText":"a","newText":"b"}]}',
+		})
+		expect(result.block).toBe(true)
+		expect(result.reason).toContain("vm.js")
+	})
+
+	it("does not block non-matching edit target", () => {
+		const guard = guardWithEditWarn("/app/vm.js")
+		const result = guard.shouldBlock({
+			toolName: "edit",
+			toolArgs: '{"path":"/app/other.js","edits":[{"oldText":"a","newText":"b"}]}',
+		})
+		expect(result.block).toBe(false)
+	})
+
+	it("blocks matching bash prefix after a warn", () => {
+		const command = "yt-dlp https://example.com/video"
+		const guard = guardWithBashWarn(command)
+		const result = guard.shouldBlock({
+			toolName: "bash",
+			toolArgs: `{"command":${JSON.stringify(command)}}`,
+		})
+		expect(result.block).toBe(true)
+		expect(result.reason).toContain("bash command")
+	})
+
+	it("does not block non-matching bash prefix", () => {
+		const guard = guardWithBashWarn("yt-dlp https://example.com/video")
+		const result = guard.shouldBlock({
+			toolName: "bash",
+			toolArgs: '{"command":"echo hello"}',
+		})
+		expect(result.block).toBe(false)
+	})
+
+	it("clears blocked patterns after 5 non-matching edit/bash calls (cooldown)", () => {
+		const guard = guardWithEditWarn("/app/vm.js")
+		// Make 4 non-matching edit calls — cooldown not yet reached.
+		for (let i = 0; i < 4; i++) {
+			const r = guard.shouldBlock({
+				toolName: "edit",
+				toolArgs: `{"path":"/app/other-${i}.js","edits":[]}`,
+			})
+			expect(r.block).toBe(false)
+		}
+		// 5th non-matching edit call triggers the cooldown clear.
+		const fifth = guard.shouldBlock({
+			toolName: "edit",
+			toolArgs: '{"path":"/app/other-4.js","edits":[]}',
+		})
+		expect(fifth.block).toBe(false)
+		// After cooldown, the blocked pattern is cleared — a matching call is allowed.
+		const afterCooldown = guard.shouldBlock({
+			toolName: "edit",
+			toolArgs: '{"path":"/app/vm.js","edits":[{"oldText":"a","newText":"b"}]}',
+		})
+		expect(afterCooldown.block).toBe(false)
+	})
+
+	it("does not advance cooldown on diagnostic read/grep/ls/find calls", () => {
+		const guard = guardWithEditWarn("/app/vm.js")
+		// A realistic post-warn sequence of diagnostic calls that used to
+		// burn the cooldown in 5 steps and let the agent resume the same loop.
+		const diagnosticCalls = [
+			{ toolName: "read", toolArgs: '{"path":"/app/error.log"}' },
+			{ toolName: "read", toolArgs: '{"path":"/app/vm.js"}' },
+			{ toolName: "grep", toolArgs: '{"pattern":"foo","path":"/app"}' },
+			{ toolName: "ls", toolArgs: '{"path":"/app"}' },
+			{ toolName: "find", toolArgs: '{"pattern":"*.js","path":"/app"}' },
+			{ toolName: "read", toolArgs: '{"path":"/app/readme.md"}' },
+			{ toolName: "read", toolArgs: '{"path":"/app/notes.txt"}' },
+		]
+		for (const call of diagnosticCalls) {
+			const r = guard.shouldBlock(call)
+			expect(r.block).toBe(false)
+		}
+		// The block is still active — a matching edit is still blocked.
+		const stillBlocked = guard.shouldBlock({
+			toolName: "edit",
+			toolArgs: '{"path":"/app/vm.js","edits":[{"oldText":"a","newText":"b"}]}',
+		})
+		expect(stillBlocked.block).toBe(true)
+	})
+
+	it("diagnostic calls followed by 5 alternative edit/bash calls clear the block", () => {
+		const guard = guardWithEditWarn("/app/vm.js")
+		// Diagnostics do not advance the cooldown.
+		for (const call of [
+			{ toolName: "read", toolArgs: '{"path":"/app/vm.js"}' },
+			{ toolName: "grep", toolArgs: '{"pattern":"x","path":"/app"}' },
+		]) {
+			guard.shouldBlock(call)
+		}
+		// 5 non-matching edit calls clear the cooldown.
+		for (let i = 0; i < 5; i++) {
+			const r = guard.shouldBlock({
+				toolName: "edit",
+				toolArgs: `{"path":"/app/alt-${i}.js","edits":[]}`,
+			})
+			expect(r.block).toBe(false)
+		}
+		const afterCooldown = guard.shouldBlock({
+			toolName: "edit",
+			toolArgs: '{"path":"/app/vm.js","edits":[{"oldText":"a","newText":"b"}]}',
+		})
+		expect(afterCooldown.block).toBe(false)
+	})
+
+	it("does not block non-edit, non-bash calls even after a warn", () => {
+		const guard = guardWithEditWarn("/app/vm.js")
+		const result = guard.shouldBlock({ toolName: "read", toolArgs: '{"path":"/app/vm.js"}' })
+		expect(result.block).toBe(false)
+	})
+
+	it("reset() clears blocked patterns", () => {
+		const guard = guardWithEditWarn("/app/vm.js")
+		guard.reset()
+		const result = guard.shouldBlock({
+			toolName: "edit",
+			toolArgs: '{"path":"/app/vm.js","edits":[{"oldText":"a","newText":"b"}]}',
+		})
+		expect(result.block).toBe(false)
+	})
+
+	it("re-warn after reset stores the pattern again", () => {
+		const guard = guardWithEditWarn("/app/vm.js")
+		guard.reset()
+		// Re-feed the loop to trigger a fresh warn.
+		for (let i = 0; i < 5; i++) {
+			guard.record({
+				toolName: "edit",
+				toolArgs: `{"path":"/app/vm.js","edits":[{"oldText":"x","newText":"w${i}"}]}`,
+				isError: false,
+				outputFingerprint: `edit2-${i}`,
+			})
+			guard.record({
+				toolName: "bash",
+				toolArgs: `{"command":"node retest-${i}.js"}`,
+				isError: true,
+				outputFingerprint: `bash2-${i}`,
+			})
+		}
+		expect(guard.isWarned()).toBe(true)
+		const result = guard.shouldBlock({
+			toolName: "edit",
+			toolArgs: '{"path":"/app/vm.js","edits":[{"oldText":"a","newText":"b"}]}',
+		})
+		expect(result.block).toBe(true)
+	})
+
+	// Regression tests for S3: mapMax fallback must not store unrelated
+	// patterns. Each detector should only store the pattern(s) that are
+	// actually part of the detected loop.
+
+	it("bash_repetition warn does NOT block an unrelated edit target in the window", () => {
+		// 1 edit to /app/unrelated.js (count=1, far below threshold 5),
+		// then 12 identical bash commands -> bash_repetition warn fires.
+		// Before the S3 fix, the edit target was stored via mapMax fallback
+		// and shouldBlock would block an edit to /app/unrelated.js.
+		const guard = new LoopGuard()
+		guard.record({
+			toolName: "edit",
+			toolArgs: '{"path":"/app/unrelated.js","edits":[]}',
+			isError: false,
+			outputFingerprint: "edit-0",
+		})
+		const cmd = "yt-dlp https://example.com/video"
+		for (let i = 0; i < 12; i++) {
+			guard.record({
+				toolName: "bash",
+				toolArgs: `{"command":${JSON.stringify(cmd)}}`,
+				isError: false,
+				outputFingerprint: `fp-${i}`,
+			})
+		}
+		expect(guard.isWarned()).toBe(true)
+		// The unrelated edit must NOT be blocked — it has nothing to do with
+		// the bash loop.
+		const editResult = guard.shouldBlock({
+			toolName: "edit",
+			toolArgs: '{"path":"/app/unrelated.js","edits":[]}',
+		})
+		expect(editResult.block).toBe(false)
+		// The bash prefix that DID trigger the loop must still be blocked.
+		const bashResult = guard.shouldBlock({
+			toolName: "bash",
+			toolArgs: `{"command":${JSON.stringify(cmd)}}`,
+		})
+		expect(bashResult.block).toBe(true)
+	})
+
+	it("repeated_edit warn does NOT block an unrelated bash prefix in the window", () => {
+		// 5 edits to /app/vm.js + 5 varied bash commands -> repeated_edit
+		// warn fires. Also throw in 1 unrelated bash command (count=1) so
+		// mapMax(bashCounts) would pick it up as the top entry (all counts
+		// are 1 — tie). Before the S3 fix, that unrelated bash prefix was
+		// stored and shouldBlock would block it.
+		const guard = new LoopGuard()
+		const unrelatedCmd = "echo totally-unrelated-preamble-command-here"
+		guard.record({
+			toolName: "bash",
+			toolArgs: `{"command":${JSON.stringify(unrelatedCmd)}}`,
+			isError: false,
+			outputFingerprint: "unrelated-bash",
+		})
+		for (let i = 0; i < 5; i++) {
+			guard.record({
+				toolName: "edit",
+				toolArgs: `{"path":"/app/vm.js","edits":[{"oldText":"x","newText":"v${i}"}]}`,
+				isError: false,
+				outputFingerprint: `edit-${i}`,
+			})
+			guard.record({
+				toolName: "bash",
+				toolArgs: `{"command":"node test-${i}.js"}`,
+				isError: true,
+				outputFingerprint: `bash-${i}`,
+			})
+		}
+		expect(guard.isWarned()).toBe(true)
+		// The unrelated bash command must NOT be blocked — it has nothing
+		// to do with the repeated-edit loop.
+		const bashResult = guard.shouldBlock({
+			toolName: "bash",
+			toolArgs: `{"command":${JSON.stringify(unrelatedCmd)}}`,
+		})
+		expect(bashResult.block).toBe(false)
+		// The edit target that DID trigger the loop must still be blocked.
+		const editResult = guard.shouldBlock({
+			toolName: "edit",
+			toolArgs: '{"path":"/app/vm.js","edits":[]}',
+		})
+		expect(editResult.block).toBe(true)
+	})
+
+	it("consecutive_identical warn on a bash call does NOT block an unrelated edit in the window", () => {
+		// 3 identical bash calls -> consecutive_identical fires. Also 1
+		// unrelated edit in the window (count=1). Before the S3 fix,
+		// mapMax(editCounts) stored the unrelated edit target, and
+		// shouldBlock would block it.
+		const guard = new LoopGuard()
+		guard.record({
+			toolName: "edit",
+			toolArgs: '{"path":"/app/unrelated.js","edits":[]}',
+			isError: false,
+			outputFingerprint: "edit-0",
+		})
+		const identical = {
+			toolName: "bash",
+			toolArgs: '{"command":"node test.js"}',
+			isError: true,
+			outputFingerprint: "identical-fp",
+		}
+		guard.record({ ...identical })
+		guard.record({ ...identical })
+		const result = guard.record({ ...identical })
+		expect(result.state).toBe("warn")
+		expect(result.detector).toBe("consecutive_identical")
+		// The unrelated edit must NOT be blocked.
+		const editResult = guard.shouldBlock({
+			toolName: "edit",
+			toolArgs: '{"path":"/app/unrelated.js","edits":[]}',
+		})
+		expect(editResult.block).toBe(false)
+		// The repeating bash command must still be blocked (extracted from rec).
+		const bashResult = guard.shouldBlock({
+			toolName: "bash",
+			toolArgs: '{"command":"node test.js"}',
+		})
+		expect(bashResult.block).toBe(true)
+	})
+
+	// Regression test for S4: repeated_edit task-total variant must store
+	// the TASK-TOTAL top file (the one that crossed the task-total threshold),
+	// not the WINDOW top file (which can be a different, unrelated file when
+	// edits are spread out and evicted from the 30-record window).
+	it("repeated_edit task-total warn stores the task-total top file, not the window top (S4 regression)", () => {
+		// Scenario: 5 edits to /app/vm.js (spread out, mostly evicted from
+		// the 30-record window) + 4 edits to /app/other.js (concentrated,
+		// in window) + 5th bash triggering the task-total warn. The
+		// triggering record is a bash call, so extractEditTarget(rec) is
+		// undefined. Before the S4 fix, the fallback chain consulted
+		// mapMax(editCounts) (window) first and stored /app/other.js
+		// (the window's top) instead of /app/vm.js (the task-total's top).
+		// This caused shouldBlock to NOT block /app/vm.js (false negative
+		// on the actual loop file) and TO block /app/other.js (false
+		// positive on an unrelated file).
+		const guard = new LoopGuard()
+		const vmFile = "/app/vm.js"
+		const otherFile = "/app/other.js"
+
+		// 4 edit+bash rounds to vm.js, each spread out with 10 filler reads
+		// so early vm.js edits are evicted from the 30-record window.
+		for (let i = 0; i < 4; i++) {
+			guard.record({
+				toolName: "edit",
+				toolArgs: `{"path":"${vmFile}","edits":[{"oldText":"x","newText":"v${i}"}]}`,
+				isError: false,
+				outputFingerprint: `vm-edit-${i}`,
+			})
+			guard.record({
+				toolName: "bash",
+				toolArgs: `{"command":"node test-${i}.js"}`,
+				isError: true,
+				outputFingerprint: `bash-${i}`,
+			})
+			for (let f = 0; f < 10; f++) {
+				guard.record({
+					toolName: "read",
+					toolArgs: `{"path":"/tmp/f-${i}-${f}.txt"}`,
+					isError: false,
+					outputFingerprint: `f-${i}-${f}`,
+				})
+			}
+		}
+		// 48 records: 4 vm.js edits, 4 bash, 40 reads.
+		// Window (19-48): vm.js edits at 25,37 (count 2); bash at 26,38 (count 2).
+
+		// 4 concentrated edits to other.js (all in window).
+		for (let i = 0; i < 4; i++) {
+			guard.record({
+				toolName: "edit",
+				toolArgs: `{"path":"${otherFile}","edits":[{"oldText":"x","newText":"o${i}"}]}`,
+				isError: false,
+				outputFingerprint: `other-edit-${i}`,
+			})
+		}
+		// 52 records. Window (23-52): vm.js at 25,37 (count 2); other.js at 49-52 (count 4).
+
+		// 5th edit to vm.js — pushes editCountsTotal[vm.js] to 5, but
+		// totalBash is still 4 so the task-total variant doesn't fire yet.
+		const editResult = guard.record({
+			toolName: "edit",
+			toolArgs: `{"path":"${vmFile}","edits":[{"oldText":"x","newText":"v4"}]}`,
+			isError: false,
+			outputFingerprint: "vm-edit-4",
+		})
+		expect(editResult.state).toBe("ok")
+		// 53 records. Window (24-53): vm.js at 25,37,53 (count 3); other.js at 49-52 (count 4).
+
+		// 5th bash — pushes totalBash to 5, triggering the task-total variant.
+		const warnResult = guard.record({
+			toolName: "bash",
+			toolArgs: `{"command":"node test-4.js"}`,
+			isError: true,
+			outputFingerprint: "bash-4",
+		})
+		expect(warnResult.state).toBe("warn")
+		expect(warnResult.detector).toBe("repeated_edit")
+		// 54 records. Window (25-54): vm.js at 25,37,53 (count 3); other.js at 49-52 (count 4).
+		// Task-total top: vm.js (count 5). Window top: other.js (count 4). They DISAGREE.
+
+		// The actual loop file (vm.js) MUST be blocked.
+		const vmBlock = guard.shouldBlock({
+			toolName: "edit",
+			toolArgs: '{"path":"/app/vm.js","edits":[]}',
+		})
+		expect(vmBlock.block).toBe(true)
+
+		// The unrelated file (other.js) must NOT be blocked.
+		const otherBlock = guard.shouldBlock({
+			toolName: "edit",
+			toolArgs: '{"path":"/app/other.js","edits":[]}',
+		})
+		expect(otherBlock.block).toBe(false)
 	})
 })
