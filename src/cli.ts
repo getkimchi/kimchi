@@ -131,6 +131,7 @@ import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resou
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
+import { resolveStreamingIdleTimeoutMs, withStreamingIdleTimeout } from "./streaming-idle-timeout.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
 import { installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
@@ -550,6 +551,7 @@ try {
 			const userAgent = `kimchi/${getVersion()}`
 			const originalFetch = globalThis.fetch.bind(globalThis)
 			const refreshBilling = () => refreshBillingStatusFromConfig({ fetch: originalFetch })
+			const streamingIdleMs = resolveStreamingIdleTimeoutMs()
 			const patchedFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 				const headers = new Headers(init?.headers)
 				if (!headers.has("user-agent")) {
@@ -557,7 +559,10 @@ try {
 				}
 				const response = await originalFetch(input, { ...init, headers })
 				return isModelCompletionFetch(input)
-					? withBillingRefreshAfterResponseSettles(response, refreshBilling)
+					? withBillingRefreshAfterResponseSettles(
+							withStreamingIdleTimeout(response, streamingIdleMs),
+							refreshBilling,
+					  )
 					: response
 			}
 			;(patchedFetch as typeof patchedFetch & { [key: symbol]: boolean })[fetchPatchedSymbol] = true
