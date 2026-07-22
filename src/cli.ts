@@ -86,6 +86,7 @@ import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
+import stopNudgeExtension from "./extensions/stop-nudge.js"
 import stripImagesExtension from "./extensions/strip-images.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
@@ -595,6 +596,7 @@ try {
 			startupAuthGate,
 			loopGuardExtension,
 			explorationGuardExtension,
+			stopNudgeExtension,
 			reviewWriteGuardExtension,
 			lspExtension,
 			// Always registered — the tool_call handler checks isResourceEnabled
