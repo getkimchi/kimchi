@@ -1,4 +1,4 @@
-import { initTheme, LoginDialogComponent, type Theme } from "@earendil-works/pi-coding-agent"
+import { type ExtensionContext, initTheme, LoginDialogComponent, type Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -24,6 +24,7 @@ vi.mock("../../models.js", () => modelsMock)
 import {
 	createStartupAuthGate,
 	createStartupAuthGateState,
+	hasUsableAuth,
 	type StartupAuthGateState,
 	shouldShowStartupAuthGate,
 } from "./startup-auth.js"
@@ -51,6 +52,7 @@ function createHarness(
 	options: {
 		state?: StartupAuthGateState
 		availableInitially?: boolean
+		availableModels?: Array<{ api: string; id: string; provider: string }>
 		addModelOnAuthSet?: boolean
 		overlayActiveInitially?: boolean
 		onCancel?: ReturnType<typeof vi.fn>
@@ -66,12 +68,12 @@ function createHarness(
 		}),
 		setModel: vi.fn().mockResolvedValue(true),
 	}
-	const availableModels: Array<{ id: string; provider: string }> = options.availableInitially
-		? [{ id: "kimi-k2.6", provider: "kimchi-dev" }]
-		: []
+	const availableModels: Array<{ api?: string; id: string; provider: string }> =
+		options.availableModels ?? (options.availableInitially ? [{ id: "kimi-k2.6", provider: "kimchi-dev" }] : [])
 	const authStorage = {
 		set: vi.fn((provider: string) => {
-			if (provider === "kimchi-dev" && options.addModelOnAuthSet !== false && availableModels.length === 0) {
+			const hasPhysicalModel = availableModels.some((model) => model.api !== "kimchi-council")
+			if (provider === "kimchi-dev" && options.addModelOnAuthSet !== false && !hasPhysicalModel) {
 				availableModels.push({ id: "kimi-k2.6", provider: "kimchi-dev" })
 			}
 		}),
@@ -204,6 +206,29 @@ describe("shouldShowStartupAuthGate", () => {
 })
 
 describe("startup auth gate", () => {
+	it("does not treat a virtual Council model as usable authentication", () => {
+		const harness = createHarness({
+			availableModels: [{ api: "kimchi-council", id: "council", provider: "kimchi" }],
+		})
+
+		expect(hasUsableAuth(harness.ctx as unknown as ExtensionContext)).toBe(false)
+	})
+
+	it("still opens the login gate when Council is the only registered model", async () => {
+		const harness = createHarness({
+			availableModels: [{ api: "kimchi-council", id: "council", provider: "kimchi" }],
+		})
+		const started = harness.start()
+
+		await harness.waitForCustomPrompts(1)
+		expect(harness.ctx.ui.custom).toHaveBeenCalledOnce()
+		harness.input("\n")
+		await started
+
+		expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
+		expect(harness.state.authenticated).toBe(true)
+	})
+
 	it("runs the shared Kimchi login option and selects the configured model", async () => {
 		const harness = createHarness()
 		const started = harness.start()

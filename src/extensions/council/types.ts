@@ -1,0 +1,93 @@
+import type { Usage } from "@earendil-works/pi-ai"
+
+export const REQUIRED_REVIEWER_ROLES = ["independent", "critic", "checker"] as const
+
+export type ReviewerRole = (typeof REQUIRED_REVIEWER_ROLES)[number]
+export type CouncilStage = "lead" | ReviewerRole | "judge" | "repair" | "revision"
+export type CouncilOutcome = "accepted" | "revised" | "tool_use" | "degraded" | "error" | "aborted"
+export type CouncilDegradedReason =
+	| "partial_panel"
+	| "judge_unavailable"
+	| "structured_output_invalid"
+	| "budget_exhausted"
+	| "deadline_exceeded"
+	| "revision_failed"
+	| "insufficient_evidence"
+	| "reviewer_failed"
+	| "reviewers_unavailable"
+	| "judge_failed"
+	| "budget_exceeded"
+	| "structured_output_failed"
+
+export interface CouncilModelPool {
+	primary: string
+	fallbacks: string[]
+}
+
+export interface CouncilBudgetLimits {
+	maxLogicalCalls: number
+	maxPhysicalAttempts: number
+	maxConcurrentCalls: number
+	maxAggregateInputTokens: number
+	maxAggregateOutputTokens: number
+	maxEstimatedCostUsd: number
+	maxRetriesPerCall: number
+}
+
+export interface CouncilConfig {
+	enabled: boolean
+	lead: CouncilModelPool
+	reviewers: Record<ReviewerRole, CouncilModelPool>
+	judge: CouncilModelPool
+	requiredRoles: ReviewerRole[]
+	maxParallelReviewers: number
+	overallTimeoutMs: number
+	stageTimeoutMs: number
+	leadMaxTokens: number
+	internalMaxTokens: number
+	maxEvidenceBytes: number
+	maxStructuredBytes: number
+	/** @deprecated Use budget.maxLogicalCalls. */
+	maxCalls: number
+	budget: CouncilBudgetLimits
+	useJudge: boolean
+	revisionPolicy: "always" | "on-issues"
+}
+
+export interface CouncilBudgetUsage {
+	logicalCalls: number
+	physicalAttempts: number
+	maxObservedConcurrency: number
+	aggregateInputTokens: number
+	aggregateOutputTokens: number
+	estimatedCostUsd: number
+	evidenceBytes: number
+	structuredBytes: number
+}
+
+export interface CouncilStageRecord {
+	stage: CouncilStage
+	modelRef: string
+	status: "ok" | "degraded" | "error" | "aborted"
+	durationMs: number
+	attempts: number
+	usage?: Usage
+	error?: string
+	truncated?: boolean
+	retry?: boolean
+	fallback?: boolean
+}
+
+export interface CouncilRunRecord {
+	runId: string
+	virtualModel: string
+	outcome: CouncilOutcome
+	degradedReason?: CouncilDegradedReason
+	agreement?: "low" | "medium" | "high"
+	unresolvedFindingCount: number
+	missingReviewerRoles: ReviewerRole[]
+	durationMs: number
+	stages: CouncilStageRecord[]
+	usage: Usage
+	budget: CouncilBudgetUsage
+}

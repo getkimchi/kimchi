@@ -63,6 +63,13 @@ describe("councilExtension", () => {
 		expect(config.streamSimple).toBeTypeOf("function")
 	})
 
+	it("does not advertise more output than the configured lead", () => {
+		vi.stubEnv("KIMCHI_COUNCIL_LEAD_MAX_TOKENS", "2048")
+		const { config } = register()
+
+		expect(config.models?.map(({ maxTokens }) => maxTokens)).toEqual([2048, 2048, 2048])
+	})
+
 	it("skips registration when Council is disabled", () => {
 		vi.stubEnv("KIMCHI_COUNCIL_ENABLED", "false")
 		const registerProvider = vi.fn()
@@ -75,20 +82,51 @@ describe("councilExtension", () => {
 	it("uses the session registry and records the selected virtual model", async () => {
 		const { appendEntry, config, on } = register()
 		const find = vi.fn()
+		const setStatus = vi.fn()
 		const registry = { find, getApiKeyAndHeaders: vi.fn() } as unknown as ModelRegistry
 		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
 		const sessionShutdown = on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
-		sessionStart({}, { modelRegistry: registry, sessionManager: { getSessionId: () => "session-a" } })
+		sessionStart(
+			{},
+			{ modelRegistry: registry, sessionManager: { getSessionId: () => "session-a" }, ui: { setStatus } },
+		)
 
 		const result = await config.streamSimple?.(fastCouncilModel, { messages: [] }, { sessionId: "session-a" }).result()
 		sessionShutdown()
 
 		expect(find).toHaveBeenCalledWith("kimchi-dev", "kimi-k2.7")
-		expect(result?.errorMessage).toBe("Council could not produce a complete lead response")
+		expect(result?.errorMessage).toBe(
+			"Council physical model failed (model_not_found): Council physical model is not registered",
+		)
 		expect(appendEntry).toHaveBeenCalledWith(
 			"council_run",
 			expect.objectContaining({ outcome: "error", virtualModel: "kimchi/council-fast" }),
 		)
+		expect(setStatus.mock.calls).toEqual([
+			["council", "Council: validating models"],
+			["council", "Council: finalizing"],
+			["council", undefined],
+			["council", undefined],
+		])
+	})
+
+	it.each([
+		undefined,
+		"sdk-generated-session-id",
+	])("uses the only active route when the SDK supplies non-routable sessionId %s", async (sessionId) => {
+		const { config, on } = register()
+		const find = vi.fn()
+		const registry = { find, getApiKeyAndHeaders: vi.fn() } as unknown as ModelRegistry
+		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
+		const sessionShutdown = on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
+		sessionStart({}, { modelRegistry: registry, sessionManager: { getSessionId: () => "compaction-session" } })
+
+		try {
+			await config.streamSimple?.(fastCouncilModel, { messages: [] }, { sessionId }).result()
+			expect(find).toHaveBeenCalledWith("kimchi-dev", "kimi-k2.7")
+		} finally {
+			sessionShutdown()
+		}
 	})
 
 	it("routes concurrent sessions to their own registry and run record", async () => {
@@ -108,7 +146,7 @@ describe("councilExtension", () => {
 		try {
 			await first.config.streamSimple?.(councilModel, { messages: [] }, { sessionId: "first" }).result()
 
-			expect(first.config.streamSimple).toBe(second.config.streamSimple)
+			expect(first.config.streamSimple).not.toBe(second.config.streamSimple)
 			expect(firstFind).toHaveBeenCalledWith("kimchi-dev", "kimi-k2.7")
 			expect(secondFind).not.toHaveBeenCalled()
 			expect(first.appendEntry).toHaveBeenCalledWith(

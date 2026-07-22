@@ -5,6 +5,7 @@ import type {
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
+import { isCouncilVirtualModel } from "../council/model.js"
 import {
 	createLoginChoiceSelector,
 	isKimchiProvider,
@@ -76,7 +77,7 @@ export function hasUsableAuth(ctx: ExtensionContext): boolean {
 		// as unauthenticated here so the user gets a login path instead of Ferment.
 	}
 	try {
-		const availableModels = ctx.modelRegistry.getAvailable()
+		const availableModels = ctx.modelRegistry.getAvailable().filter((model) => !isCouncilVirtualModel(model))
 		if (availableModels.length === 0) return false
 		if (availableModels.some((model) => !isKimchiProvider(model.provider))) return true
 		return configKey.length > 0

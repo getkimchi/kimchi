@@ -17,11 +17,11 @@ lead -> reviewers (parallel) -> optional judge -> optional revision
                  physical models from ModelRegistry
 ```
 
-Kimchi owns Council orchestration, limits, task-packet construction, structured review parsing, fallback behavior, usage aggregation, and the public response. Pi's `ModelRegistry` owns physical model lookup and credentials. The existing provider implementations still own physical requests. This follows Pi's [custom-provider extension](https://pi.dev/docs/latest/custom-provider) mechanism instead of adding another transport.
+Kimchi owns Council orchestration, atomic run budgets, typed evidence compilation, strict role schemas, fallback behavior, usage aggregation, and the public response. Pi's `ModelRegistry` owns physical model lookup and credentials. Existing provider implementations still own physical requests. This follows Pi's [custom-provider extension](https://pi.dev/docs/latest/custom-provider) mechanism instead of adding another transport.
 
 Internal reviewer and judge responses are not replayed or persisted. The public message is attributed to the selected Council model.
 
-Each session stores a `council_run` record with wall-clock duration, outcome, per-stage duration and status, and aggregate usage.
+Each Council request stores one sanitized `council_run` record with wall-clock duration, terminal outcome, degraded reason, agreement, unresolved-finding count, missing reviewer roles, per-attempt truncation/retry/fallback status, aggregate usage/cost, and logical/physical/concurrency/token/evidence budgets.
 
 ## Presets
 
@@ -46,32 +46,44 @@ Deep ceilings and physical model defaults:
 | Overall timeout | 1,200 seconds |
 | Lead/revision output | 32,768 tokens each |
 | Reviewer/judge output | 8,192 tokens each |
-| Physical reasoning (capable models) | `medium` |
-| Model invocations | 8 maximum |
+| Physical reasoning (capable models) | role-specific: reviewer `low`/`medium`, judge `high`, revision `low` |
+| Logical calls / physical attempts | 8 / 12 maximum |
 | Parallel reviewers | 3 maximum |
 | Evidence packet | 128 KiB maximum |
-| Structured reviewer/judge result | 32 KiB maximum |
+| Aggregate structured output | 32 KiB maximum |
+| Aggregate input/output tokens | 262,144 / 65,536 maximum |
+| Estimated physical cost | USD 5 maximum |
 
 Environment overrides:
 
 | Variable | Meaning |
 | --- | --- |
-| `KIMCHI_COUNCIL_ENABLED` | `true` or `false`; defaults to enabled. |
+| `KIMCHI_COUNCIL_ENABLED` | `true` or `false`; defaults to disabled. |
 | `KIMCHI_COUNCIL_LEAD_MODEL` | Physical `provider/model` used for lead and revision. |
-| `KIMCHI_COUNCIL_REVIEWER_MODELS` | Comma-separated independent, critic, then checker model references; two or three are required and the first three are used. With two models, Council reuses one under the missing role prompt so every preset keeps its documented review roles. |
+| `KIMCHI_COUNCIL_LEAD_FALLBACK_MODELS` | Comma-separated lead/revision fallbacks. |
+| `KIMCHI_COUNCIL_INDEPENDENT_MODEL`, `KIMCHI_COUNCIL_CRITIC_MODEL`, `KIMCHI_COUNCIL_CHECKER_MODEL` | Named reviewer primaries. |
+| `KIMCHI_COUNCIL_INDEPENDENT_FALLBACK_MODELS`, `KIMCHI_COUNCIL_CRITIC_FALLBACK_MODELS`, `KIMCHI_COUNCIL_CHECKER_FALLBACK_MODELS` | Per-role comma-separated fallbacks. |
+| `KIMCHI_COUNCIL_REVIEWER_MODELS` | Deprecated compatibility mapping: independent, critic, then optional checker primary. |
 | `KIMCHI_COUNCIL_JUDGE_MODEL` | Physical model used for the judge. |
+| `KIMCHI_COUNCIL_JUDGE_FALLBACK_MODELS` | Comma-separated judge/repair fallbacks. |
 | `KIMCHI_COUNCIL_TIMEOUT_MS` | Whole-run timeout in milliseconds; default and hard maximum `1200000`. |
 | `KIMCHI_COUNCIL_STAGE_TIMEOUT_MS` | Per-stage timeout in milliseconds; default and hard maximum `300000`. |
 | `KIMCHI_COUNCIL_MAX_PARALLEL_REVIEWERS` | Maximum concurrent reviewers; default `3`. |
 | `KIMCHI_COUNCIL_LEAD_MAX_TOKENS` | Lead and revision output budget; default and hard maximum `32768`. |
 | `KIMCHI_COUNCIL_INTERNAL_MAX_TOKENS` | Reviewer and judge output budget; default and hard maximum `8192`. |
 | `KIMCHI_COUNCIL_MAX_EVIDENCE_BYTES` | Text evidence packet limit; default and hard maximum `131072`. |
-| `KIMCHI_COUNCIL_MAX_STRUCTURED_BYTES` | Per-review or judge JSON limit; default and hard maximum `32768`. |
-| `KIMCHI_COUNCIL_MAX_CALLS` | Whole-run model-invocation cap; default `8`. |
+| `KIMCHI_COUNCIL_MAX_STRUCTURED_BYTES` | Aggregate structured-output limit; default and hard maximum `32768`. |
+| `KIMCHI_COUNCIL_MAX_LOGICAL_CALLS` | Whole-run logical call cap; default `8` (`KIMCHI_COUNCIL_MAX_CALLS` remains an alias). |
+| `KIMCHI_COUNCIL_MAX_PHYSICAL_ATTEMPTS` | Whole-run physical attempt cap; default `12`. |
+| `KIMCHI_COUNCIL_MAX_CONCURRENT_CALLS` | Whole-run concurrent physical-call cap; default `3`. |
+| `KIMCHI_COUNCIL_MAX_AGGREGATE_INPUT_TOKENS` | Aggregate physical input-token cap; default `262144`. |
+| `KIMCHI_COUNCIL_MAX_AGGREGATE_OUTPUT_TOKENS` | Aggregate physical output-token cap; default `65536`. |
+| `KIMCHI_COUNCIL_MAX_ESTIMATED_COST_USD` | Pre-dispatch estimated physical-cost cap; default `5`. |
+| `KIMCHI_COUNCIL_MAX_RETRIES_PER_CALL` | Invoker-owned retries before a pool fallback; default `1`. |
 
 Numeric values must be positive integers; invalid values fall back to the defaults. Environment values form the deep ceiling; fast and normal apply their lower preset caps after overrides. Physical references must resolve through the normal model registry and may not point back to a Council virtual model.
 
-The call cap counts Council model invocations; provider transport retries remain governed by the inherited retry options.
+Council reserves budgets before dispatch and reconciles them from returned usage. Provider-library retries are forced to zero; the counted Council invoker owns retries and pool fallback. Cost estimation and the USD cap are effective only when the physical model registry supplies non-zero pricing; the current Kimchi proxy catalog reports zero prices, so cost remains zero and the cap cannot be enforced for those models.
 
 ## Use
 
@@ -106,7 +118,7 @@ MODEL='kimchi-dev/kimi-k2.7' ./scripts/run-local.sh -i terminal-bench/fix-git -n
 MODEL='kimchi-dev/glm-5.2-fp8' ./scripts/run-local.sh -i terminal-bench/fix-git -n 1 -k 1
 ```
 
-The built-in Council defaults need no extra environment forwarding. `run-local.sh` forwards `KIMCHI_API_KEY`; non-default `KIMCHI_COUNCIL_*` values must be forwarded explicitly to Harbor, for example:
+`run-local.sh` automatically forwards `KIMCHI_API_KEY` and enables Council when `MODEL` starts with `kimchi/council`. Non-default `KIMCHI_COUNCIL_*` values must still be forwarded explicitly to Harbor, for example:
 
 ```bash
 MODEL='kimchi/council' ./scripts/run-local.sh \
@@ -117,18 +129,18 @@ MODEL='kimchi/council' ./scripts/run-local.sh \
 
 ## Hackathon boundaries
 
-- Responses are buffered until Council completes; the TUI gets no per-stage progress.
+- Responses are buffered until Council completes; the TUI shows fixed, non-sensitive validating/drafting/reviewing/judging/revising/finalizing progress labels.
 - Coordination and limits are process-local.
 - Each request is one bounded round. Fast omits the judge; normal may omit revision; deep runs the full lead, three-reviewer, judge, and revision path.
 - A stopped lead with no public answer or tool call is retried once inside the same bounded round; hidden reasoning is never promoted to the answer.
-- Council advertises text input, matching the proxy prototype. Reviewers receive a bounded text evidence packet; the lead still sees the original tools and conversation.
-- Reviewer packets and revision history exclude transient injected messages that lack the conversation timestamp required by Pi; the lead still receives them as operational guidance. Long revision histories drop the oldest messages to fit the physical lead model's context window while retaining the lead draft, objective, constraints, and review data.
+- Council advertises text input. Reviewers receive bounded typed artifacts for system/user/assistant/tool-call/tool-result evidence; independent review omits the lead draft. Every physical attempt fits its context and output cap to the selected model. The virtual model's picker limits are static because provider registration happens before the session `ModelRegistry` is available; runtime fitting remains authoritative for custom physical models with smaller limits.
+- Evidence strings are redacted fail-closed and remain data, never reviewer/judge instructions. Revision carries the objective, cited evidence, strict review artifacts, and judge dispositions; old history is trimmed only when needed to fit the selected lead model.
 - If only some reviewers produce usable structured results, their missing roles are passed to the judge as evidence gaps and force revision; they never count as acceptance votes.
 - Raw reviewer, judge, and chain-of-thought content is not persisted or returned.
-- Normal and deep return an error instead of an unreviewed lead if task-packet construction fails or no reviewer produces a usable result; fast preserves the lead as an availability fallback.
-- A reviewer critical remains authoritative unless a successful judge returns a resolved, high-impact disagreement whose topic exactly matches the finding statement and whose resolution is nonempty. Judge criticals remain authoritative. If a critical remains and revision fails, Council returns an error instead of the flagged lead draft.
+- Normal and deep return an error instead of an unreviewed lead if context compilation fails or no reviewer produces a usable result; fast returns a labeled degraded lead.
+- Findings receive stable IDs. A judge must disposition every finding exactly once as `resolved`, `upheld`, or `needs_evidence`; resolved findings require cited evidence. If an unresolved high or critical finding remains and revision fails, Council returns an error instead of the flagged lead draft.
 - The virtual model advertises zero USD rates; it is not a pricing contract for the physical calls.
-- Child calls use `ModelRegistry` authentication and preserve retry settings and request/response callbacks. Virtual-provider headers and environment values are not forwarded, and Pi's physical-model-specific attribution merge and `before_provider_headers` hook are not rerun.
+- Child calls use `ModelRegistry` lookup/auth, preserve request/response callbacks and safe session headers, and attach explicit virtual/run/stage/physical metadata. Virtual-provider auth, arbitrary headers, and environment values are not forwarded. The pinned Pi SDK exposes no bound normal-invocation seam, so its private attribution merge and `before_provider_headers` hook cannot be rerun; provider retries are disabled and counted locally.
 - Catalog metadata does not prove that every physical model is equally reliable at tool calls or structured JSON.
 - This work does not deploy Council or change the proxy.
 

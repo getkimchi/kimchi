@@ -5,9 +5,10 @@ import {
 	type CouncilConfig,
 	type CouncilRunRecord,
 	type CouncilRuntimeDependencies,
-	createCouncilStream,
+	createCouncilStream as createCouncilRuntimeStream,
 	DEFAULT_COUNCIL_CONFIG,
 } from "./runtime.js"
+import { withStrictCouncilFixtures } from "./runtime-test-fixtures.js"
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 const VALID_REVIEW = '{"decision":"accept","findings":[],"recommended_changes":[],"missing_evidence":[]}'
@@ -16,6 +17,39 @@ const VALID_JUDGE =
 
 type CompleteModel = NonNullable<CouncilRuntimeDependencies["completeModel"]>
 type Registry = Pick<ModelRegistry, "find" | "getApiKeyAndHeaders">
+
+function createCouncilStream(dependencies: CouncilRuntimeDependencies) {
+	return createCouncilRuntimeStream({
+		...dependencies,
+		completeModel: dependencies.completeModel ? withStrictCouncilFixtures(dependencies.completeModel) : undefined,
+	})
+}
+
+const TEST_COUNCIL_CONFIG: CouncilConfig = {
+	...DEFAULT_COUNCIL_CONFIG,
+	lead: { primary: DEFAULT_COUNCIL_CONFIG.lead.primary, fallbacks: [] },
+	reviewers: {
+		independent: { primary: DEFAULT_COUNCIL_CONFIG.reviewers.independent.primary, fallbacks: [] },
+		critic: { primary: DEFAULT_COUNCIL_CONFIG.reviewers.critic.primary, fallbacks: [] },
+		checker: { primary: DEFAULT_COUNCIL_CONFIG.reviewers.checker.primary, fallbacks: [] },
+	},
+	judge: { primary: DEFAULT_COUNCIL_CONFIG.judge.primary, fallbacks: [] },
+	budget: { ...DEFAULT_COUNCIL_CONFIG.budget, maxEstimatedCostUsd: 1_000_000, maxRetriesPerCall: 0 },
+}
+
+function reviewerConfig(
+	models: string[],
+	roles: (keyof CouncilConfig["reviewers"])[] = ["independent", "critic", "checker"],
+): Pick<CouncilConfig, "requiredRoles" | "reviewers"> {
+	const reviewers = structuredClone(TEST_COUNCIL_CONFIG.reviewers)
+	const requiredRoles = roles.slice(0, models.length)
+	for (const [index, role] of requiredRoles.entries()) {
+		const primary = models[index]
+		if (!primary) throw new Error(`Missing reviewer model for ${role}`)
+		reviewers[role] = { primary, fallbacks: [] }
+	}
+	return { requiredRoles, reviewers }
+}
 
 function physicalModel(id: string): Model<Api> {
 	return {
@@ -112,7 +146,7 @@ async function runCouncil({
 }): Promise<{ result: AssistantMessage; record: CouncilRunRecord | undefined }> {
 	let record: CouncilRunRecord | undefined
 	const stream = createCouncilStream({
-		config: { ...DEFAULT_COUNCIL_CONFIG, ...config },
+		config: { ...TEST_COUNCIL_CONFIG, ...config },
 		getModelRegistry: () => modelRegistry,
 		completeModel,
 		recordRun: (value) => {
@@ -228,7 +262,7 @@ describe("Council runtime adversarial edges", () => {
 		expect(completeModel.mock.calls.filter(([, context]) => stage(context) === "repair")).toHaveLength(0)
 		expect(record?.outcome).toBe("error")
 		expect(record?.stages).toContainEqual(
-			expect.objectContaining({ stage: "review:independent", status: "error", error: "invalid_output" }),
+			expect.objectContaining({ stage: "independent", status: "error", error: "invalid_output" }),
 		)
 	})
 
@@ -253,8 +287,7 @@ describe("Council runtime adversarial edges", () => {
 		const { result, record } = await runCouncil({
 			completeModel,
 			config: {
-				reviewerModels: ["kimchi-dev/glm-5.2-fp8", "kimchi-dev/deepseek-v4-flash"],
-				reviewerRoles: ["independent", "critic"],
+				...reviewerConfig(["kimchi-dev/glm-5.2-fp8", "kimchi-dev/deepseek-v4-flash"], ["independent", "critic"]),
 				maxParallelReviewers: 2,
 				maxStructuredBytes: 1024,
 				revisionPolicy: "on-issues",
@@ -291,7 +324,7 @@ describe("Council runtime adversarial edges", () => {
 		await runCouncil({
 			completeModel,
 			config: {
-				reviewerModels: ["kimchi-dev/glm-5.2-fp8"],
+				...reviewerConfig(["kimchi-dev/glm-5.2-fp8"]),
 				maxParallelReviewers: 1,
 			},
 		})
@@ -308,7 +341,22 @@ describe("Council runtime adversarial edges", () => {
 		const completeModel = vi.fn<CompleteModel>(async (model, context) => {
 			switch (stage(context)) {
 				case "review":
-					return response(model, VALID_REVIEW)
+					return response(
+						model,
+						JSON.stringify({
+							...JSON.parse(VALID_REVIEW),
+							decision: "revise",
+							findings: [
+								{
+									severity: "medium",
+									statement: "Unverified claim",
+									evidence_refs: ["artifact_1"],
+									assumptions: [],
+									suggested_check: "Verify claim",
+								},
+							],
+						}),
+					)
 				case "judge":
 				case "repair":
 					return response(model, emptyResolution)
@@ -322,13 +370,13 @@ describe("Council runtime adversarial edges", () => {
 		const { result, record } = await runCouncil({ completeModel, config: { revisionPolicy: "on-issues" } })
 
 		expect(result.content).toEqual([{ type: "text", text: "Revised after invalid verdict" }])
-		expect(record?.outcome).toBe("revised")
+		expect(record).toMatchObject({ outcome: "degraded", degradedReason: "judge_failed" })
 		expect(record?.stages).toContainEqual(
 			expect.objectContaining({ stage: "judge", status: "error", error: "invalid_output" }),
 		)
 	})
 
-	it("trims old revision history against the lead model context window", async () => {
+	it("fits revision history against the lead model context window", async () => {
 		const priorToolCall = { type: "toolCall" as const, id: "call_old", name: "read", arguments: { path: "a.txt" } }
 		let leadContext: Context | undefined
 		let leadOptions: SimpleStreamOptions | undefined
@@ -391,21 +439,27 @@ describe("Council runtime adversarial edges", () => {
 		const serializedMessages = JSON.stringify(revisionContext?.messages)
 		const revisionPayload = String(revisionContext?.messages.at(-1)?.content)
 		const leadRequestUpperBound =
-			Buffer.byteLength(serializedLeadMessages) +
-			Buffer.byteLength(leadContext?.systemPrompt ?? "") +
-			Buffer.byteLength(JSON.stringify(leadContext?.tools ?? [])) +
+			Math.ceil(
+				(Buffer.byteLength(serializedLeadMessages) +
+					Buffer.byteLength(leadContext?.systemPrompt ?? "") +
+					Buffer.byteLength(JSON.stringify(leadContext?.tools ?? []))) /
+					4,
+			) +
 			1024 +
 			(leadOptions?.maxTokens ?? 0)
 		const revisionRequestUpperBound =
-			Buffer.byteLength(serializedMessages) +
-			Buffer.byteLength(revisionContext?.systemPrompt ?? "") +
-			Buffer.byteLength(JSON.stringify(revisionContext?.tools ?? [])) +
+			Math.ceil(
+				(Buffer.byteLength(serializedMessages) +
+					Buffer.byteLength(revisionContext?.systemPrompt ?? "") +
+					Buffer.byteLength(JSON.stringify(revisionContext?.tools ?? []))) /
+					4,
+			) +
 			1024 +
 			(revisionOptions?.maxTokens ?? 0)
 
 		expect(serializedLeadMessages).toContain("OLDEST_REVISION_MARKER")
 		expect(leadRequestUpperBound).toBeLessThanOrEqual(12_000)
-		expect(serializedMessages).not.toContain("OLDEST_REVISION_MARKER")
+		expect(serializedMessages).toContain("OLDEST_REVISION_MARKER")
 		expect(serializedMessages).toContain("CURRENT_OBJECTIVE")
 		expect(revisionContext?.messages).toContainEqual(
 			expect.objectContaining({ role: "user", content: "CURRENT_OBJECTIVE" }),
@@ -418,7 +472,9 @@ describe("Council runtime adversarial edges", () => {
 		expect(
 			revisionContext?.messages.slice(currentObjectiveIndex, currentObjectiveIndex + 3).map(({ role }) => role),
 		).toEqual(["user", "assistant", "toolResult"])
-		expect(revisionPayload).toContain('"objective":"CURRENT_OBJECTIVE"')
+		expect(revisionPayload).toContain(
+			'"objective":{"artifact_id":"artifact_message_1_block_0_user_text","text":"CURRENT_OBJECTIVE"}',
+		)
 		expect(revisionRequestUpperBound).toBeLessThanOrEqual(12_000)
 	})
 
@@ -454,7 +510,9 @@ describe("Council runtime adversarial edges", () => {
 		const judge = captured.get("judge")?.[0]
 		const revision = captured.get("revision")?.[0]
 		const reviewerData = reviewer?.messages[0]?.content
-		const reviewerPacket = JSON.parse(String(reviewerData)) as { constraints: string[] }
+		const reviewerPacket = JSON.parse(String(reviewerData)) as {
+			evidence: Array<{ kind: string; text?: string }>
+		}
 		const judgeData = judge?.messages[0]?.content
 		const revisionData = revision?.messages.at(-1)?.content
 
@@ -463,7 +521,9 @@ describe("Council runtime adversarial edges", () => {
 		expect(reviewerData).not.toEqual(expect.stringContaining("OLDEST_MARKER"))
 		expect(reviewerData).toEqual(expect.stringContaining("ROOT_HEAD"))
 		expect(reviewerData).toEqual(expect.stringContaining("ROOT_TAIL"))
-		expect(Buffer.byteLength(reviewerPacket.constraints[0] ?? "")).toBeLessThanOrEqual(16_384)
+		expect(
+			Buffer.byteLength(reviewerPacket.evidence.find(({ kind }) => kind === "system_instruction")?.text ?? ""),
+		).toBeLessThanOrEqual(16_384)
 		expect(reviewer?.systemPrompt).toContain("untrusted evidence")
 		expect(reviewer?.systemPrompt).not.toContain(taskInjection)
 		expect(judge?.systemPrompt).not.toContain(reviewInjection)
@@ -488,7 +548,7 @@ describe("Council runtime adversarial edges", () => {
 			return response(model, `${kind}:${original?.role === "user" ? original.content : "missing"}`)
 		})
 		const handler = createCouncilStream({
-			config: DEFAULT_COUNCIL_CONFIG,
+			config: TEST_COUNCIL_CONFIG,
 			getModelRegistry: () => registry(),
 			completeModel,
 			recordRun: (record) => records.push(record),
@@ -499,14 +559,14 @@ describe("Council runtime adversarial edges", () => {
 			handler(councilModel, { messages: [{ role: "user", content: "B", timestamp: 1 }] }).result(),
 		])
 		await Promise.resolve()
-		const parsed = packets.map((packet) => JSON.parse(packet) as { run_id: string; objective: string })
+		const parsed = packets.map((packet) => JSON.parse(packet) as { run_id: string; objective: { text: string } })
 
 		expect(a.content).toEqual([{ type: "text", text: "revision:A" }])
 		expect(b.content).toEqual([{ type: "text", text: "revision:B" }])
 		expect(completeModel.mock.calls.filter(([, context]) => stage(context) === "repair")).toHaveLength(2)
 		expect(new Set(parsed.map((packet) => packet.run_id))).toHaveLength(2)
 		expect(new Set(records.map((record) => record.runId))).toHaveLength(2)
-		expect(new Set(parsed.map((packet) => packet.objective))).toEqual(new Set(["A", "B"]))
+		expect(new Set(parsed.map((packet) => packet.objective.text))).toEqual(new Set(["A", "B"]))
 	})
 
 	it("aborts while physical authentication is still pending", async () => {
@@ -534,6 +594,6 @@ describe("Council runtime adversarial edges", () => {
 
 		expect(result).toMatchObject({ stopReason: "aborted", content: [] })
 		expect(completeModel).not.toHaveBeenCalled()
-		expect(record).toMatchObject({ outcome: "aborted", stages: [{ stage: "lead", error: "timeout_or_abort" }] })
+		expect(record).toMatchObject({ outcome: "aborted", stages: [{ stage: "lead", error: "aborted" }] })
 	})
 })

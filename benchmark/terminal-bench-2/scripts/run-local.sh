@@ -13,6 +13,12 @@ DATASET="terminal-bench/terminal-bench-2"
 
 : "${KIMCHI_API_KEY:?set KIMCHI_API_KEY in env}"
 
+COUNCIL_MODEL="${MODEL:-kimchi-dev/kimi-k2.5}"
+COUNCIL_AGENT_ENV=(--ae "KIMCHI_API_KEY=$KIMCHI_API_KEY")
+if [[ "$COUNCIL_MODEL" == kimchi/council* ]]; then
+    COUNCIL_AGENT_ENV+=(--ae "KIMCHI_COUNCIL_ENABLED=true")
+fi
+
 BENCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(git -C "$BENCH_DIR" rev-parse --show-toplevel)"
 
@@ -26,7 +32,7 @@ cd "$BENCH_DIR"
 exec uv run --python 3.14 harbor run \
     --agent-import-path kimchi_agent:Kimchi \
     --env docker \
-    --model "${MODEL:-kimchi-dev/kimi-k2.5}" \
-    --ae "KIMCHI_API_KEY=$KIMCHI_API_KEY" \
+    --model "$COUNCIL_MODEL" \
+    "${COUNCIL_AGENT_ENV[@]}" \
     -d "$DATASET" \
     "$@"
