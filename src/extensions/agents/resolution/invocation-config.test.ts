@@ -70,13 +70,13 @@ describe("resolveAgentInvocationConfig — persona policy precedence", () => {
 	})
 
 	it("params.thinking wins over agentConfig.thinking", () => {
-		const result = resolveAgentInvocationConfig({ ...agent, thinking: "minimal" }, { thinking: "high" })
+		const result = resolveAgentInvocationConfig({ ...agent, thinking: "low" }, { thinking: "high" })
 		expect(result.thinking).toBe("high")
 	})
 
 	it("falls back to agentConfig.thinking when params omit thinking", () => {
-		const result = resolveAgentInvocationConfig({ ...agent, thinking: "minimal" }, {})
-		expect(result.thinking).toBe("minimal")
+		const result = resolveAgentInvocationConfig({ ...agent, thinking: "low" }, {})
+		expect(result.thinking).toBe("low")
 	})
 
 	it("agentConfig.maxTurns wins over params.max_turns", () => {

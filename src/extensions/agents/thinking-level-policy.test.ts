@@ -3,12 +3,13 @@ import {
 	bumpThinkingLevel,
 	renderDelegationThinkingLevelTable,
 	resolveDelegationThinkingLevel,
+	THINKING_LEVEL_ORDER,
 	thinkingScopeForSubagentType,
 } from "./thinking-level-policy.js"
 
 describe("resolveDelegationThinkingLevel", () => {
-	it("maps explore simple to minimal and complex to low", () => {
-		expect(resolveDelegationThinkingLevel("explore", "simple")).toBe("minimal")
+	it("maps explore simple to low and complex to low", () => {
+		expect(resolveDelegationThinkingLevel("explore", "simple")).toBe("low")
 		expect(resolveDelegationThinkingLevel("explore", "complex")).toBe("low")
 	})
 
@@ -59,5 +60,10 @@ describe("renderDelegationThinkingLevelTable", () => {
 		const table = renderDelegationThinkingLevelTable()
 		expect(table).toContain("| Build chunk | Builder |")
 		expect(table).toContain("complex chunk")
+	})
+
+	it("does not contain the removed 'minimal' level", () => {
+		expect(THINKING_LEVEL_ORDER).not.toContain("minimal")
+		expect(renderDelegationThinkingLevelTable()).not.toContain("minimal")
 	})
 })

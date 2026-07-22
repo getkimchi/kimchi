@@ -73,7 +73,7 @@ models: ["<provider>/<id>", ...] # Optional: set of allowed models for this pers
                                  # tier/strengths. If omitted at the call site, the runtime falls back to
                                  # the first entry (a stable default, not a complexity-aware pick). Omit
                                  # `models` entirely to inherit the parent's model.
-thinking: <string>               # off | minimal | low | medium | high | xhigh
+thinking: <string>               # off | low | medium | high | xhigh
 tools: <csv>                     # Comma-separated built-in tools, "none", or omit (= inherit all)
 disallowed_tools: <csv>          # Comma-separated tools to deny even if otherwise inherited
 extensions: <bool|csv>           # true (inherit MCP/extension tools) | false (disable) | comma-list
