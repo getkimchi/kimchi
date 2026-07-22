@@ -19,6 +19,7 @@ export const FERMENT_WORKER_BUDGETS = {
 
 /** Shared delegation budgets used by prompts and Ferment step handoffs. */
 export const AGENT_WORKER_BUDGETS = {
+	default: { maxTurns: 30, maxDuration: 600, tokenBudget: 150_000 },
 	singleFile: { maxTurns: 12, maxDuration: 300, tokenBudget: 50_000 },
 	multiFile: { maxTurns: 30, maxDuration: 600, tokenBudget: 150_000 },
 	review: { maxTurns: 20, maxDuration: 600, tokenBudget: 100_000 },

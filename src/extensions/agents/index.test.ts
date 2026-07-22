@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	AGENT_MODEL_PARAMETER_DESCRIPTION,
 	AGENT_TOOL_GUIDELINES,
+	clampTokenBudget,
 	resolveRoleModelRef,
 	summaryForStatus,
 } from "./index.js"
@@ -532,5 +533,28 @@ describe("resolveRoleModelRef", () => {
 
 	it("returns undefined for unknown agent types", () => {
 		expect(resolveRoleModelRef("Unknown")).toBeUndefined()
+	})
+})
+
+describe("clampTokenBudget", () => {
+	it("returns undefined when no budget is set", () => {
+		expect(clampTokenBudget(undefined, true)).toBeUndefined()
+		expect(clampTokenBudget(undefined, false)).toBeUndefined()
+	})
+
+	it("clamps up to minimum when multi-model is active and budget is below minimum", () => {
+		expect(clampTokenBudget(2000, true)).toBe(150_000)
+		expect(clampTokenBudget(8000, true)).toBe(150_000)
+		expect(clampTokenBudget(149_999, true)).toBe(150_000)
+	})
+
+	it("does not clamp when multi-model is disabled even if budget is tiny", () => {
+		expect(clampTokenBudget(2000, false)).toBe(2000)
+		expect(clampTokenBudget(8000, false)).toBe(8000)
+	})
+
+	it("does not clamp when budget is at or above minimum", () => {
+		expect(clampTokenBudget(150_000, true)).toBe(150_000)
+		expect(clampTokenBudget(200_000, true)).toBe(200_000)
 	})
 })

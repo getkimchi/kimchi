@@ -99,9 +99,11 @@ import {
 	type Theme,
 	type UICtx,
 } from "./ui/agent-widget.js"
+import { AGENT_WORKER_BUDGETS } from "./worker-budget-policy.js"
 
 // ---- Shared helpers ----
 
+/**
 /**
  * Maps an agent persona type to its model-roles key.
  * Returns null for types that don't have a configured role.
@@ -133,6 +135,22 @@ export function resolveRoleModelRef(subagentType: string): string | undefined {
 	if (!assignment) return undefined
 	const modelRefs = normalizeRoleModels(assignment)
 	return modelRefs[0]
+}
+
+/**
+ * Clamp token budget to the minimum when multi-model is active.
+ * The orchestrator often passes tiny budgets (2000-8000) that are too
+ * small for any real implementation work — a single file write can
+ * exceed 2000 output tokens. Clamps up to AGENT_WORKER_BUDGETS.default.tokenBudget.
+ *
+ * Returns undefined when no budget was set (pass-through).
+ */
+export function clampTokenBudget(rawBudget: number | undefined, multiModelEnabled: boolean): number | undefined {
+	if (rawBudget == null) return undefined
+	if (multiModelEnabled && rawBudget < AGENT_WORKER_BUDGETS.default.tokenBudget) {
+		return AGENT_WORKER_BUDGETS.default.tokenBudget
+	}
+	return rawBudget
 }
 
 // Give aborted sub-agents a bounded chance to reach runner finally blocks.
@@ -1285,10 +1303,20 @@ ${AGENT_TOOL_GUIDELINES}`,
 					(params as { token_budget?: number; tokenBudget?: number }).token_budget ??
 					(params as { token_budget?: number; tokenBudget?: number }).tokenBudget
 				const activeBudgetRetryBlock = budgetRetryBlock
+
+				// Enforce minimum token budget when multi-model is active. The
+				// orchestrator often passes tiny budgets (2000-8000) that are too
+				// small for any real implementation work — a single file write can
+				// exceed 2000 output tokens. Clamp to the minimum from the budget
+				// table so Builders have enough room to complete their work.
+				const effectiveTokenBudget = clampTokenBudget(
+					resolvedConfig.tokenBudget,
+					getMultiModelEnabled(ctx.sessionManager),
+				)
 				if (
 					activeBudgetRetryBlock &&
 					shouldBlockBudgetRetry(activeBudgetRetryBlock, {
-						tokenBudget: resolvedConfig.tokenBudget,
+						tokenBudget: effectiveTokenBudget,
 						subagentType,
 						description: params.description as string,
 						prompt: params.prompt as string,
@@ -1346,9 +1374,10 @@ ${AGENT_TOOL_GUIDELINES}`,
 						: undefined
 				const agentTags: string[] = []
 				if (thinking) agentTags.push(`thinking: ${thinking}`)
-				if (resolvedConfig.tokenBudget != null) agentTags.push(`budget: ${formatTokens(resolvedConfig.tokenBudget)}`)
+				if (resolvedConfig.tokenBudget != null && effectiveTokenBudget != null)
+					agentTags.push(`budget: ${formatTokens(effectiveTokenBudget)}`)
 				if (isolated) agentTags.push("isolated")
-				const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? getDefaultMaxTurns())
+				const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns)
 				const detailBase = {
 					displayName,
 					description: params.description as string,
@@ -1394,7 +1423,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 							visibility,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
 							maxTurns: effectiveMaxTurns,
-							tokenBudget: resolvedConfig.tokenBudget,
+							tokenBudget: effectiveTokenBudget,
 							taskRef,
 							maxDuration: resolvedConfig.maxDuration,
 							isolated,
@@ -1540,7 +1569,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 						visibility,
 						model: model as Parameters<typeof manager.spawn>[4]["model"],
 						maxTurns: effectiveMaxTurns,
-						tokenBudget: resolvedConfig.tokenBudget,
+						tokenBudget: effectiveTokenBudget,
 						taskRef,
 						maxDuration: resolvedConfig.maxDuration,
 						isolated,

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { AGENT_WORKER_BUDGETS } from "../worker-budget-policy.js"
 import { resolveAgentInvocationConfig } from "./invocation-config.js"
 
 const agent = {
@@ -69,18 +70,41 @@ describe("resolveAgentInvocationConfig — persona policy precedence", () => {
 		vi.clearAllMocks()
 	})
 
+	it("agentConfig.thinking used when params has no thinking", () => {
+		const result = resolveAgentInvocationConfig({ ...agent, thinking: "medium" as const }, {})
+		expect(result.thinking).toBe("medium")
+	})
+
 	it("params.thinking wins over agentConfig.thinking", () => {
-		const result = resolveAgentInvocationConfig({ ...agent, thinking: "minimal" }, { thinking: "high" })
+		const result = resolveAgentInvocationConfig({ ...agent, thinking: "medium" as const }, { thinking: "high" })
 		expect(result.thinking).toBe("high")
 	})
+})
 
-	it("falls back to agentConfig.thinking when params omit thinking", () => {
-		const result = resolveAgentInvocationConfig({ ...agent, thinking: "minimal" }, {})
-		expect(result.thinking).toBe("minimal")
+describe("resolveAgentInvocationConfig — default max_turns", () => {
+	it("uses AGENT_WORKER_BUDGETS.default.maxTurns when neither caller nor persona specify max_turns", () => {
+		const result = resolveAgentInvocationConfig(undefined, {})
+		expect(result.maxTurns).toBe(AGENT_WORKER_BUDGETS.default.maxTurns)
 	})
 
-	it("agentConfig.maxTurns wins over params.max_turns", () => {
-		const result = resolveAgentInvocationConfig({ ...agent, maxTurns: 3 }, { max_turns: 10 })
-		expect(result.maxTurns).toBe(3)
+	it("uses caller-provided max_turns over the default", () => {
+		const result = resolveAgentInvocationConfig(undefined, { max_turns: 50 })
+		expect(result.maxTurns).toBe(50)
+	})
+
+	it("uses persona-provided maxTurns over the default", () => {
+		const result = resolveAgentInvocationConfig(
+			{ maxTurns: 20 } as Parameters<typeof resolveAgentInvocationConfig>[0],
+			{},
+		)
+		expect(result.maxTurns).toBe(20)
+	})
+
+	it("persona maxTurns takes precedence over caller max_turns", () => {
+		const result = resolveAgentInvocationConfig(
+			{ maxTurns: 20 } as Parameters<typeof resolveAgentInvocationConfig>[0],
+			{ max_turns: 50 },
+		)
+		expect(result.maxTurns).toBe(20)
 	})
 })
