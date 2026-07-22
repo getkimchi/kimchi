@@ -185,8 +185,6 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		// Store upstream provider for telemetry round-trip via models.json
 		provider: m.provider,
-		// Force the gateway to route to the correct upstream provider type
-		headers: { "X-Provider-Type": m.provider },
 		...(compat && { compat }),
 	}
 }
@@ -203,13 +201,18 @@ function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 		byProvider.set(m.provider, group)
 	}
 
+	const providerHeaders = (upstreamProvider: string) => ({
+		"User-Agent": `kimchi/${getVersion()}`,
+		"X-Provider-Type": upstreamProvider,
+	})
+
 	const providers: Record<string, unknown> = {
 		"kimchi-dev": {
 			baseUrl: chatCompletionsApi(endpoint),
 			apiKey: "$KIMCHI_API_KEY",
 			api: "openai-completions",
 			authHeader: true,
-			headers: { "User-Agent": `kimchi/${getVersion()}` },
+			headers: providerHeaders("ai-enabler"),
 			models: aiEnablerModels.map(metadataToModel),
 		},
 	}
@@ -221,7 +224,7 @@ function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 			apiKey: "$KIMCHI_API_KEY",
 			api: "openai-completions",
 			authHeader: true,
-			headers: { "User-Agent": `kimchi/${getVersion()}` },
+			headers: providerHeaders(upstreamProvider),
 			models: group.map(metadataToModel),
 		}
 	}
