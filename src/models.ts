@@ -212,7 +212,7 @@ function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 			apiKey: "$KIMCHI_API_KEY",
 			api: "openai-completions",
 			authHeader: true,
-			headers: providerHeaders("ai-enabler"),
+			headers: { "User-Agent": `kimchi/${getVersion()}` },
 			models: aiEnablerModels.map(metadataToModel),
 		},
 	}

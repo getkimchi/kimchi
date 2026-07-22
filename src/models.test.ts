@@ -120,7 +120,7 @@ describe("updateModelsConfig", () => {
 		})
 	})
 
-	it("sets X-Provider-Type header at the provider level", async () => {
+	it("sets X-Provider-Type header at the provider level for sub-providers only", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [SONNET_46, KIMI] }),
@@ -129,10 +129,10 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		// ai-enabler provider
-		expect(config.providers["kimchi-dev"].headers["X-Provider-Type"]).toBe("ai-enabler")
+		// base kimchi-dev provider does NOT have the header
+		expect(config.providers["kimchi-dev"].headers["X-Provider-Type"]).toBeUndefined()
 
-		// anthropic sub-provider
+		// anthropic sub-provider has the header
 		expect(config.providers["kimchi-dev/anthropic"].headers["X-Provider-Type"]).toBe("anthropic")
 	})
 
