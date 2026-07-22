@@ -1,4 +1,5 @@
 // extensions/lsp/client.ts
+import { resolveTsserverPath } from "./servers.js"
 import type {
 	BunProcess,
 	DiagnosticWaiter,
@@ -248,12 +249,17 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 		})()
 
 		try {
+			const initOpts = { ...(config.initOptions ?? {}) }
+			if (config.command === "typescript-language-server") {
+				const tsserverPath = resolveTsserverPath(cwd)
+				if (tsserverPath) initOpts.tsserver = { path: tsserverPath }
+			}
 			await sendRequest(client, "initialize", {
 				processId: process.pid,
 				rootUri: fileToUri(cwd),
 				rootPath: cwd,
 				capabilities: CLIENT_CAPABILITIES,
-				initializationOptions: config.initOptions ?? {},
+				initializationOptions: initOpts,
 				workspaceFolders: [{ uri: fileToUri(cwd), name: cwd.split("/").pop() ?? "workspace" }],
 			})
 			await sendNotification(client, "initialized", {})
