@@ -208,7 +208,7 @@ export async function openMcpPanel(
 		},
 		onSave: (changes) => {
 			writeDirectToolsConfig(changes, provenanceMap, config)
-			ctx.ui.notify("Direct tools updated. Restart pi to apply.", "info")
+			ctx.ui.notify("Direct tools updated. Restart kimchi to apply.", "info")
 		},
 	}
 
@@ -220,7 +220,7 @@ export async function openMcpPanel(
 				return createMcpPanel(config, cache, provenanceMap, callbacks, tui, (result: McpPanelResult) => {
 					if (!result.cancelled && result.changes.size > 0) {
 						writeDirectToolsConfig(result.changes, provenanceMap, config)
-						ctx.ui.notify("Direct tools updated. Restart pi to apply.", "info")
+						ctx.ui.notify("Direct tools updated. Restart kimchi to apply.", "info")
 					}
 					done(undefined)
 					// Force a clean redraw so any overlay artifacts are cleared from

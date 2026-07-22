@@ -334,7 +334,7 @@ class McpPanel {
 					})
 				})
 				this.updateDirty()
-				this.saveNotice = "Saved ✓ — restart pi to apply"
+				this.saveNotice = "Saved ✓ — restart kimchi to apply"
 			}
 			this.tui.requestRender()
 			return
