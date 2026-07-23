@@ -87,6 +87,7 @@ export interface CouncilBudgetLimits {
 
 export interface CouncilConfig {
 	enabled: boolean
+	reviewPolicy: "always" | "changes"
 	lead: CouncilModelPool
 	reviewers: Record<ReviewerRole, CouncilModelPool>
 	judge: CouncilModelPool

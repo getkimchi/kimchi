@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { expect, test } from "@microsoft/tui-test"
@@ -123,6 +123,17 @@ test("Council shows private progress and a safe completion summary", async ({ te
 			extraArgs: ["--provider", "kimchi", "--model", "council"],
 			models: [privateModel],
 			responses: [
+				{
+					stream: ["Writing", " marker."],
+					toolCalls: [
+						{
+							function: {
+								name: "write",
+								arguments: JSON.stringify({ path: "council-change.txt", content: "changed\n" }),
+							},
+						},
+					],
+				},
 				{ stream: ["Reviewed", " Council", " answer."], textDelayMs: 400 },
 				{
 					thinking: [`<think>${PRIVATE_REASONING_CANARY}</think>`],
@@ -184,7 +195,7 @@ test("Council shows private progress and a safe completion summary", async ({ te
 			// PROMPT_READY is rendered just before the interactive loop starts waiting
 			// for input, so give that startup boundary one tick before submitting.
 			await sleep(100)
-			terminal.submit("Give me a short verified answer")
+			terminal.submit("Create council-change.txt and give me a short verified answer")
 			trace.step("submitted Council prompt")
 
 			await waitForText(terminal, "Council · drafting", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
@@ -205,28 +216,76 @@ test("Council shows private progress and a safe completion summary", async ({ te
 			trace.step("adjudication progress visible")
 
 			await expect(terminal.getByText("Reviewed Council answer.", { full: true })).toBeVisible()
-			await waitForText(terminal, "Council · accepted", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "high agreement", { timeoutMs: STREAM_TIMEOUT_MS })
 			expectPrivateTextHidden(terminal)
 
 			const completionLine = fullText(terminal)
 				.split("\n")
-				.find((line) => line.includes("Council · accepted"))
+				.find((line) => line.includes("Council · accepted") && line.includes("high agreement"))
 			expect(completionLine).toBeDefined()
 			expect(completionLine).toContain("high agreement")
 			expect(completionLine).toMatch(/\d+(?:\.\d+)?s/)
 			expect(completionLine).not.toContain("$")
 			trace.step("safe completion summary rendered without unavailable cost")
 
-			const physicalRequests = physicalChatRequests(fixture)
-			expect(physicalRequests).toHaveLength(4)
+			const physicalRequests = physicalChatRequests(fixture).filter((request) =>
+				JSON.stringify(request.body ?? "").includes("council-change.txt"),
+			)
+			expect(readFileSync(join(fixture.workDir, "council-change.txt"), "utf8")).toBe("changed\n")
+			expect(physicalRequests).toHaveLength(5)
 			const bodies = physicalRequests.map((request) => JSON.stringify(request.body ?? ""))
 			expect(bodies[0]).toContain("Finish this turn with either a normal user-facing answer or a valid tool call")
-			expect(bodies[1]).toContain("You are a Council reviewer")
-			expect(JSON.parse(lastUserText(physicalRequests[1])).role).toBe("independent")
+			expect(bodies[1]).toContain("Finish this turn with either a normal user-facing answer or a valid tool call")
 			expect(bodies[2]).toContain("You are a Council reviewer")
-			expect(JSON.parse(lastUserText(physicalRequests[2])).role).toBe("critic")
-			expect(bodies[3]).toContain("You are the Council judge")
+			expect(JSON.parse(lastUserText(physicalRequests[2])).role).toBe("independent")
+			expect(bodies[3]).toContain("You are a Council reviewer")
+			expect(JSON.parse(lastUserText(physicalRequests[3])).role).toBe("critic")
+			expect(bodies[4]).toContain("You are the Council judge")
 			trace.step("expected physical architecture ran without extra Council turns")
+		},
+	)
+})
+
+test("Council skips review after a read-only tool turn", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "council-read-only",
+			env: councilEnv,
+			extraArgs: ["--provider", "kimchi", "--model", "council"],
+			models: [privateModel],
+			seedHome: (_homeDir, workDir) => writeFileSync(join(workDir, "read-only.txt"), "READ_ONLY_OK\n"),
+			responses: [
+				{
+					toolCalls: [
+						{
+							function: {
+								name: "read",
+								arguments: JSON.stringify({ path: "read-only.txt" }),
+							},
+						},
+					],
+				},
+				{ stream: ["Read-only answer: ", "READ_ONLY_OK"], textDelayMs: 300 },
+			],
+		},
+		async (fixture, trace) => {
+			await sleep(100)
+			terminal.submit("Read read-only.txt and report its contents")
+			trace.step("submitted read-only Council prompt")
+
+			await expect(terminal.getByText("Read-only answer: READ_ONLY_OK", { full: true })).toBeVisible()
+			await waitForText(terminal, "Council · accepted", { timeoutMs: STREAM_TIMEOUT_MS })
+			expectPrivateTextHidden(terminal)
+
+			const physicalRequests = physicalChatRequests(fixture).filter((request) =>
+				JSON.stringify(request.body ?? "").includes("read-only.txt"),
+			)
+			expect(physicalRequests).toHaveLength(2)
+			for (const request of physicalRequests) {
+				expect(JSON.stringify(request.body ?? "")).not.toContain("You are a Council reviewer")
+			}
+			trace.step("read-only turn completed with lead calls only")
 		},
 	)
 })
@@ -287,7 +346,9 @@ test("Council preserves a client tool call without starting review", async ({ te
 			expectPrivateTextHidden(terminal)
 			trace.step("ask_user tool call preserved")
 
-			const physicalRequests = physicalChatRequests(fixture)
+			const physicalRequests = physicalChatRequests(fixture).filter((request) =>
+				JSON.stringify(request.body ?? "").includes("Ask me which route"),
+			)
 			expect(physicalRequests).toHaveLength(1)
 			expect(JSON.stringify(physicalRequests[0]?.body ?? "")).not.toContain("You are a Council reviewer")
 			trace.step("tool-use path skipped review and added no model turn")

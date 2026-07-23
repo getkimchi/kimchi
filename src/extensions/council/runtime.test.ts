@@ -35,6 +35,7 @@ function createCouncilStream(dependencies: CouncilRuntimeDependencies) {
 
 const TEST_COUNCIL_CONFIG: CouncilConfig = {
 	...DEFAULT_COUNCIL_CONFIG,
+	reviewPolicy: "always",
 	lead: { primary: DEFAULT_COUNCIL_CONFIG.lead.primary, fallbacks: [] },
 	reviewers: {
 		independent: { primary: DEFAULT_COUNCIL_CONFIG.reviewers.independent.primary, fallbacks: [] },
@@ -164,6 +165,124 @@ describe("Council runtime", () => {
 		redactObjectStringsMock.mockImplementation(async (value: unknown) => value)
 	})
 
+	it("trusts lifecycle state when no tool successfully changed files", async () => {
+		const progressEvents: CouncilProgressEvent[] = []
+		const completeModel = vi.fn(async (model: Model<Api>) => response(model, "Three files read"))
+		const failedEditCall: ToolCall = {
+			type: "toolCall",
+			id: "edit-failed",
+			name: "edit",
+			arguments: { path: "src/a.ts", oldText: "missing", newText: "changed" },
+		}
+		const readCall: ToolCall = { type: "toolCall", id: "read-1", name: "read", arguments: { path: "src/a.ts" } }
+		const priorAssistant: AssistantMessage = {
+			...response(councilModel, ""),
+			content: [readCall],
+			stopReason: "toolUse",
+		}
+		const stream = createCouncilStream({
+			config: { ...TEST_COUNCIL_CONFIG, reviewPolicy: "changes" },
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+			onProgress: (event) => progressEvents.push(event),
+			shouldReviewTurn: () => false,
+		})(councilModel, {
+			messages: [
+				{ role: "user", content: "Read three files", timestamp: 1 },
+				{ ...priorAssistant, content: [failedEditCall] },
+				{
+					role: "toolResult",
+					toolCallId: failedEditCall.id,
+					toolName: failedEditCall.name,
+					content: [{ type: "text", text: "old text not found" }],
+					isError: true,
+					timestamp: 2,
+				},
+				priorAssistant,
+				{
+					role: "toolResult",
+					toolCallId: readCall.id,
+					toolName: readCall.name,
+					content: [{ type: "text", text: "file contents" }],
+					isError: false,
+					timestamp: 2,
+				},
+			],
+		})
+
+		await expect(stream.result()).resolves.toMatchObject({
+			content: [{ type: "text", text: "Three files read" }],
+			stopReason: "stop",
+		})
+		expect(completeModel).toHaveBeenCalledOnce()
+		expect(progressEvents.map(progressSignature)).toEqual([
+			"run_started",
+			"stage_started:lead",
+			"stage_completed:lead",
+			"run_completed:accepted",
+		])
+	})
+
+	it("reviews a turn that edited a file", async () => {
+		const progressEvents: CouncilProgressEvent[] = []
+		const completeModel = vi.fn(async (model: Model<Api>, context: Context) =>
+			response(
+				model,
+				context.systemPrompt?.includes("Council reviewer")
+					? JSON.stringify({ decision: "accept", findings: [], recommended_changes: [], missing_evidence: [] })
+					: "Changed answer",
+			),
+		)
+		const editCall: ToolCall = {
+			type: "toolCall",
+			id: "edit-1",
+			name: "edit",
+			arguments: { path: "src/a.ts", oldText: "a", newText: "b" },
+		}
+		const priorAssistant: AssistantMessage = {
+			...response(councilModel, ""),
+			content: [editCall],
+			stopReason: "toolUse",
+		}
+		const stream = createCouncilStream({
+			config: {
+				...TEST_COUNCIL_CONFIG,
+				reviewPolicy: "changes",
+				requiredRoles: ["critic"],
+				maxParallelReviewers: 1,
+				useJudge: false,
+				revisionPolicy: "on-issues",
+			},
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+			onProgress: (event) => progressEvents.push(event),
+		})(councilModel, {
+			messages: [
+				{ role: "user", content: "Change the file", timestamp: 1 },
+				priorAssistant,
+				{
+					role: "toolResult",
+					toolCallId: editCall.id,
+					toolName: editCall.name,
+					content: [{ type: "text", text: "updated src/a.ts" }],
+					isError: false,
+					timestamp: 2,
+				},
+			],
+		})
+
+		await expect(stream.result()).resolves.toMatchObject({
+			content: [{ type: "text", text: "Changed answer" }],
+			stopReason: "stop",
+		})
+		expect(completeModel).toHaveBeenCalledTimes(2)
+		expect(progressEvents.filter((event) => event.type === "stage_started").map(({ role }) => role)).toEqual([
+			"lead",
+			"critic",
+		])
+		expect(progressEvents.at(-1)).toMatchObject({ type: "run_completed", outcome: "accepted" })
+	})
+
 	it("drafts, reviews, judges, and revises a final text response", async () => {
 		let reviewerPacket = ""
 		let revisionPacket = ""
@@ -219,7 +338,7 @@ describe("Council runtime", () => {
 		)
 
 		const stream = createCouncilStream({
-			config: DEFAULT_COUNCIL_CONFIG,
+			config: TEST_COUNCIL_CONFIG,
 			getModelRegistry: () => modelRegistry,
 			completeModel,
 			onProgress: (event) => progressEvents.push(event),
@@ -249,7 +368,7 @@ describe("Council runtime", () => {
 		])
 		expect(completeModel.mock.calls.map(([, , options]) => options?.reasoning)).toEqual([
 			undefined,
-			"medium",
+			"low",
 			"medium",
 			"low",
 			"high",
@@ -835,7 +954,8 @@ describe("Council runtime", () => {
 			new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("test timed out")), 150)),
 		])
 
-		expect(result).toMatchObject(REVIEW_FAILURE)
+		expect(result.content).toEqual([{ type: "text", text: "Lead under shared deadline" }])
+		expect(result.stopReason).toBe("stop")
 		expect(reviewerCalls).toBe(1)
 		expect(completeModel).toHaveBeenCalledTimes(2)
 	})
@@ -897,7 +1017,8 @@ describe("Council runtime", () => {
 			new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("test timed out")), 150)),
 		])
 
-		expect(result).toMatchObject(REVIEW_FAILURE)
+		expect(result.content).toEqual([{ type: "text", text: "Lead before malformed review" }])
+		expect(result.stopReason).toBe("stop")
 		expect(repairCalls).toBe(1)
 		expect(completeModel).toHaveBeenCalledTimes(3)
 	})
@@ -933,7 +1054,7 @@ describe("Council runtime", () => {
 			},
 		)
 		const stream = createCouncilStream({
-			config: DEFAULT_COUNCIL_CONFIG,
+			config: TEST_COUNCIL_CONFIG,
 			getModelRegistry: () => modelRegistry,
 			completeModel,
 			onProgress: (event) => progressEvents.push(event),
@@ -1135,7 +1256,7 @@ describe("Council runtime", () => {
 			return response(model, "Complete lead draft")
 		})
 		const stream = createCouncilStream({
-			config: DEFAULT_COUNCIL_CONFIG,
+			config: TEST_COUNCIL_CONFIG,
 			getModelRegistry: () => modelRegistry,
 			completeModel,
 		})(councilModel, { messages: [{ role: "user", content: "Answer", timestamp: 1 }] })
@@ -1449,7 +1570,7 @@ describe("Council runtime", () => {
 		const progressEvents: CouncilProgressEvent[] = []
 		const completeModel = vi.fn(async (model: Model<Api>) => response(model, ""))
 		const stream = createCouncilStream({
-			config: DEFAULT_COUNCIL_CONFIG,
+			config: TEST_COUNCIL_CONFIG,
 			getModelRegistry: () => modelRegistry,
 			completeModel,
 			onProgress: (event) => progressEvents.push(event),
@@ -1477,7 +1598,7 @@ describe("Council runtime", () => {
 			response(model, "I'll inspect it. <|tool_calls_section_begin|><|tool_call_begin|>functions.grep"),
 		)
 		const stream = createCouncilStream({
-			config: DEFAULT_COUNCIL_CONFIG,
+			config: TEST_COUNCIL_CONFIG,
 			getModelRegistry: () => modelRegistry,
 			completeModel,
 		})(councilModel, { messages: [{ role: "user", content: "Answer", timestamp: 1 }] })
@@ -1630,7 +1751,7 @@ describe("Council runtime", () => {
 			getApiKeyAndHeaders: modelRegistry.getApiKeyAndHeaders,
 		} satisfies Pick<ModelRegistry, "find" | "getApiKeyAndHeaders">
 		const stream = createCouncilStream({
-			config: DEFAULT_COUNCIL_CONFIG,
+			config: TEST_COUNCIL_CONFIG,
 			getModelRegistry: () => nonReasoningRegistry,
 			completeModel,
 		})(
@@ -1674,9 +1795,9 @@ describe("Council runtime", () => {
 	})
 
 	it.each([
-		["judged", true, "error"],
-		["fast", false, "degraded"],
-	] as const)("handles every unusable reviewer output in %s mode", async (_mode, useJudge, expectedOutcome) => {
+		["judged", true],
+		["fast", false],
+	] as const)("preserves the lead when every reviewer output is unusable in %s mode", async (_mode, useJudge) => {
 		let runRecord: CouncilRunRecord | undefined
 		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
 			const system = context.systemPrompt ?? ""
@@ -1702,15 +1823,11 @@ describe("Council runtime", () => {
 
 		const result = await stream.result()
 
-		if (useJudge) {
-			expect(result).toMatchObject(REVIEW_FAILURE)
-		} else {
-			expect(result.content).toEqual([{ type: "text", text: "Lead fallback" }])
-			expect(result.stopReason).toBe("stop")
-		}
+		expect(result.content).toEqual([{ type: "text", text: "Lead fallback" }])
+		expect(result.stopReason).toBe("stop")
 		expect(completeModel).toHaveBeenCalledTimes(3)
 		expect(runRecord?.stages.some(({ stage }) => stage === "judge" || stage === "revision")).toBe(false)
-		expect(runRecord?.outcome).toBe(expectedOutcome)
+		expect(runRecord).toMatchObject({ outcome: "degraded", degradedReason: "reviewers_unavailable" })
 	})
 
 	it("fails closed when strict task-packet redaction fails", async () => {
@@ -1718,7 +1835,7 @@ describe("Council runtime", () => {
 		let runRecord: CouncilRunRecord | undefined
 		const completeModel = vi.fn(async (model: Model<Api>) => response(model, "Lead kept private"))
 		const stream = createCouncilStream({
-			config: DEFAULT_COUNCIL_CONFIG,
+			config: TEST_COUNCIL_CONFIG,
 			getModelRegistry: () => modelRegistry,
 			completeModel,
 			recordRun: (record) => {
@@ -1778,7 +1895,7 @@ describe("Council runtime", () => {
 		let runRecord: CouncilRunRecord | undefined
 		const completeModel = vi.fn(async (model: Model<Api>) => response(model, "Lead before client abort"))
 		const stream = createCouncilStream({
-			config: DEFAULT_COUNCIL_CONFIG,
+			config: TEST_COUNCIL_CONFIG,
 			getModelRegistry: () => modelRegistry,
 			completeModel,
 			recordRun: (record) => {
@@ -1831,7 +1948,8 @@ describe("Council runtime", () => {
 
 		const result = await stream.result()
 
-		expect(result).toMatchObject(REVIEW_FAILURE)
+		expect(result.content).toEqual([{ type: "text", text: "Lead fallback" }])
+		expect(result.stopReason).toBe("stop")
 		expect(completeModel).toHaveBeenCalledTimes(2)
 	})
 
@@ -1889,7 +2007,7 @@ describe("Council runtime", () => {
 			}),
 		)
 		const stream = createCouncilStream({
-			config: DEFAULT_COUNCIL_CONFIG,
+			config: TEST_COUNCIL_CONFIG,
 			getModelRegistry: () => modelRegistry,
 			completeModel,
 		})(councilModel, {
@@ -1924,7 +2042,7 @@ describe("Council runtime", () => {
 			}),
 		)
 		const stream = createCouncilStream({
-			config: DEFAULT_COUNCIL_CONFIG,
+			config: TEST_COUNCIL_CONFIG,
 			getModelRegistry: () => modelRegistry,
 			completeModel,
 		})(councilModel, {

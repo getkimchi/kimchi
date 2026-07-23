@@ -12,6 +12,7 @@ const MODELS = {
 
 export const DEFAULT_COUNCIL_CONFIG: CouncilConfig = {
 	enabled: true,
+	reviewPolicy: "changes",
 	lead: { primary: MODELS.kimi, fallbacks: [MODELS.glm, MODELS.deepseek] },
 	reviewers: {
 		independent: { primary: MODELS.glm, fallbacks: [MODELS.minimax, MODELS.deepseek] },

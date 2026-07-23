@@ -4,6 +4,7 @@ import { applyCouncilPreset, type CouncilPreset, DEFAULT_COUNCIL_CONFIG, readCou
 import { createCouncilStream } from "./coordinator.js"
 import { COUNCIL_API, COUNCIL_MODEL_IDS, COUNCIL_PROVIDER } from "./model.js"
 import { CouncilProgressUI } from "./progress-ui.js"
+import { isMutatingCouncilToolCall } from "./review-policy.js"
 import type { CouncilProgressEvent, CouncilRunRecord } from "./types.js"
 
 const COUNCIL_MODEL_NAMES: Record<(typeof COUNCIL_MODEL_IDS)[number], string> = {
@@ -18,6 +19,8 @@ interface CouncilSessionRoute {
 	registry: ModelRegistry
 	recordRun: (record: CouncilRunRecord) => void
 	onProgress: (event: CouncilProgressEvent) => void
+	changedThisTurn: boolean
+	pendingMutatingToolCalls: Set<string>
 	progressUI?: CouncilProgressUI
 }
 
@@ -54,6 +57,7 @@ function routeCouncilStream(
 		getModelRegistry: () => route.registry,
 		recordRun: route.recordRun,
 		onProgress: route.onProgress,
+		shouldReviewTurn: () => route.changedThisTurn,
 	})(model, context, options)
 }
 
@@ -90,8 +94,30 @@ export default function councilExtension(pi: ExtensionAPI): void {
 			registry: ctx.modelRegistry,
 			recordRun,
 			onProgress: (event) => progressUI?.handle(event),
+			changedThisTurn: false,
+			pendingMutatingToolCalls: new Set(),
 			progressUI,
 		})
+	})
+	pi.on("input", (event, ctx) => {
+		if (event.source === "extension") return
+		const route = sessionRoutes.get(ctx.sessionManager.getSessionId())
+		if (route?.owner !== owner) return
+		route.changedThisTurn = false
+		route.pendingMutatingToolCalls.clear()
+	})
+	pi.on("tool_execution_start", (event, ctx) => {
+		const route = sessionRoutes.get(ctx.sessionManager.getSessionId())
+		if (route?.owner !== owner) return
+		if (isMutatingCouncilToolCall(event.toolName, event.args)) {
+			route.pendingMutatingToolCalls.add(event.toolCallId)
+		}
+	})
+	pi.on("tool_execution_end", (event, ctx) => {
+		const route = sessionRoutes.get(ctx.sessionManager.getSessionId())
+		if (route?.owner !== owner) return
+		const wasMutating = route.pendingMutatingToolCalls.delete(event.toolCallId)
+		if (!event.isError && wasMutating) route.changedThisTurn = true
 	})
 	pi.on("agent_start", () => activeProgressUI()?.clear())
 	pi.on("model_select", () => activeProgressUI()?.clear())

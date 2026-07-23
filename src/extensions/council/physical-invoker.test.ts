@@ -116,10 +116,12 @@ describe("PhysicalModelInvoker", () => {
 		run.close()
 	})
 
-	it("does not use a fallback to hide an output-contract failure", async () => {
+	it("falls back when a reviewer reaches its output limit", async () => {
 		const primary = model("primary")
 		const fallback = model("fallback")
-		const completeModel = vi.fn<CompletePhysicalModel>(async (physical) => response(physical, "length"))
+		const completeModel = vi.fn<CompletePhysicalModel>(async (physical) =>
+			response(physical, physical.id === "primary" ? "length" : "stop"),
+		)
 		const registry = {
 			find: vi.fn((_provider: string, id: string) => (id === "primary" ? primary : fallback)),
 			getApiKeyAndHeaders: vi.fn(async () => ({ ok: true as const, apiKey: "key" })),
@@ -127,20 +129,21 @@ describe("PhysicalModelInvoker", () => {
 		const run = new CouncilRunContext(limits)
 		const invoker = new PhysicalModelInvoker({ registry, completeModel, maxRetriesPerCall: 1 })
 
-		await expect(
-			invoker.invoke({
-				run,
-				runId: "run",
-				virtualModelRef: "kimchi/council",
-				stage: "lead",
-				pool: { primary: "physical/primary", fallbacks: ["physical/fallback"] },
-				context,
-				requestedMaxTokens: 100,
-				stageTimeoutMs: 1_000,
-				parentOptions: {},
-			}),
-		).rejects.toMatchObject({ code: "output_limit", fallbackEligible: false })
-		expect(completeModel).toHaveBeenCalledOnce()
+		const result = await invoker.invoke({
+			run,
+			runId: "run",
+			virtualModelRef: "kimchi/council",
+			stage: "independent",
+			pool: { primary: "physical/primary", fallbacks: ["physical/fallback"] },
+			context,
+			requestedMaxTokens: 100,
+			stageTimeoutMs: 1_000,
+			parentOptions: {},
+		})
+
+		expect(result).toMatchObject({ modelRef: "physical/fallback", attempts: 2 })
+		expect(completeModel).toHaveBeenCalledTimes(2)
+		expect(completeModel.mock.calls[0]?.[2]).toMatchObject({ reasoning: "low" })
 		run.close()
 	})
 

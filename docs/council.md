@@ -11,15 +11,18 @@ Kimchi CLI / TUI / print / ACP
 Pi custom provider: kimchi/council
           |
           v
-lead -> reviewers (parallel) -> optional judge -> optional revision
-  |              |                         |                   |
-  +--------------+-------------------------+-------------------+
-                 physical models from ModelRegistry
+lead -> changed this turn?
+          | no             | yes
+          v                v
+        direct      reviewers (parallel) -> optional judge -> optional revision
+                              physical models from ModelRegistry
 ```
 
 Kimchi owns Council orchestration, atomic run budgets, typed evidence compilation, strict role schemas, fallback behavior, usage aggregation, and the public response. Pi's `ModelRegistry` owns physical model lookup and credentials. Existing provider implementations still own physical requests. This follows Pi's [custom-provider extension](https://pi.dev/docs/latest/custom-provider) mechanism instead of adding another transport.
 
 Internal reviewer and judge responses are not replayed or persisted. The public message is attributed to the selected Council model.
+
+Council reviews only turns that changed files. `edit`, `write`, and shell commands recognized by Kimchi's bash guard as edits or writes count as changes. Read-only turns stop after the lead response, so inspection requests do not pay for a review panel. Internal callers can set `reviewPolicy: "always"` when unconditional review is required.
 
 Each Council request stores one sanitized `council_run` record with wall-clock duration, terminal outcome, degraded reason, agreement, unresolved-finding count, missing reviewer roles, per-attempt truncation/retry/fallback status, aggregate usage/cost, and logical/physical/concurrency/token/evidence budgets.
 
@@ -136,7 +139,7 @@ MODEL='kimchi/council' ./scripts/run-local.sh \
 - Evidence strings are redacted fail-closed and remain data, never reviewer/judge instructions. Revision carries the objective, cited evidence, strict review artifacts, and judge dispositions; old history is trimmed only when needed to fit the selected lead model.
 - If only some reviewers produce usable structured results, their missing roles are passed to the judge as evidence gaps and force revision; they never count as acceptance votes.
 - Raw reviewer, judge, and chain-of-thought content is not persisted or returned.
-- Normal and deep return an error instead of an unreviewed lead if context compilation fails or no reviewer produces a usable result; fast returns a labeled degraded lead.
+- Normal and deep return an error if context compilation fails. If no reviewer produces a usable result, every preset returns the lead as degraded with `reviewers_unavailable`.
 - Findings receive stable IDs. A judge must disposition every finding exactly once as `resolved`, `upheld`, or `needs_evidence`; resolved findings require cited evidence. If an unresolved high or critical finding remains and revision fails, Council returns an error instead of the flagged lead draft.
 - The virtual model advertises zero USD rates; it is not a pricing contract for the physical calls.
 - Child calls use `ModelRegistry` lookup/auth, preserve request/response callbacks and safe session headers, and attach explicit virtual/run/stage/physical metadata. Virtual-provider auth, arbitrary headers, and environment values are not forwarded. The pinned Pi SDK exposes no bound normal-invocation seam, so its private attribution merge and `before_provider_headers` hook cannot be rerun; provider retries are disabled and counted locally.

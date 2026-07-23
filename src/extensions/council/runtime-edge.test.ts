@@ -27,6 +27,7 @@ function createCouncilStream(dependencies: CouncilRuntimeDependencies) {
 
 const TEST_COUNCIL_CONFIG: CouncilConfig = {
 	...DEFAULT_COUNCIL_CONFIG,
+	reviewPolicy: "always",
 	lead: { primary: DEFAULT_COUNCIL_CONFIG.lead.primary, fallbacks: [] },
 	reviewers: {
 		independent: { primary: DEFAULT_COUNCIL_CONFIG.reviewers.independent.primary, fallbacks: [] },
@@ -254,13 +255,10 @@ describe("Council runtime adversarial edges", () => {
 		)
 		const { result, record } = await runCouncil({ completeModel, config: { maxStructuredBytes: 1024 } })
 
-		expect(result).toMatchObject({
-			content: [],
-			stopReason: "error",
-			errorMessage: "Council could not validate the lead response.",
-		})
+		expect(result.content).toEqual([{ type: "text", text: "Lead survives" }])
+		expect(result.stopReason).toBe("stop")
 		expect(completeModel.mock.calls.filter(([, context]) => stage(context) === "repair")).toHaveLength(0)
-		expect(record?.outcome).toBe("error")
+		expect(record).toMatchObject({ outcome: "degraded", degradedReason: "reviewers_unavailable" })
 		expect(record?.stages).toContainEqual(
 			expect.objectContaining({ stage: "independent", status: "error", error: "invalid_output" }),
 		)
