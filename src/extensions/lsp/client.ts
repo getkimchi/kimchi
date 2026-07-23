@@ -252,7 +252,10 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 			const initOpts = { ...(config.initOptions ?? {}) }
 			if (config.command === "typescript-language-server") {
 				const tsserverPath = resolveTsserverPath(cwd)
-				if (tsserverPath) initOpts.tsserver = { path: tsserverPath }
+				if (tsserverPath) {
+					const existing = typeof initOpts.tsserver === "object" && initOpts.tsserver !== null ? initOpts.tsserver : {}
+					initOpts.tsserver = { ...existing, path: tsserverPath }
+				}
 			}
 			await sendRequest(client, "initialize", {
 				processId: process.pid,

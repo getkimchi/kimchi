@@ -111,7 +111,8 @@ export function findMainRepoRoot(cwd: string): string | undefined {
 	const worktreeMatch = gitdir.match(/^(.+?\/\.git)\/worktrees\/[^/]+$/)
 	if (!worktreeMatch) return undefined
 
-	return path.dirname(worktreeMatch[1])
+	const mainRoot = path.dirname(worktreeMatch[1])
+	return path.isAbsolute(mainRoot) ? mainRoot : path.resolve(cwd, mainRoot)
 }
 
 /**

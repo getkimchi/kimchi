@@ -175,6 +175,15 @@ describe("findMainRepoRoot", () => {
 		mockReadFileSync.mockReturnValue("gitdir: /other-repo/.git/modules/foo\n")
 		expect(findMainRepoRoot(cwd)).toBeUndefined()
 	})
+
+	it("resolves relative gitdir paths against cwd", () => {
+		const cwd = "/worktree/foo"
+		const dotGit = `${cwd}/.git`
+		mockExistsSync.mockImplementation((p: unknown) => p === dotGit)
+		mockStatSync.mockReturnValue({ isDirectory: () => false } as unknown as fs.Stats)
+		mockReadFileSync.mockReturnValue("gitdir: ../main-repo/.git/worktrees/foo\n")
+		expect(findMainRepoRoot(cwd)).toBe("/worktree/main-repo")
+	})
 })
 
 describe("resolveTsserverPath", () => {
