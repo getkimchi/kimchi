@@ -1,7 +1,7 @@
 import type { Context, ToolCall } from "@earendil-works/pi-ai"
 import { classifyBashCommand } from "../bash-tool-guard.js"
 
-const MUTATING_TOOLS = new Set(["edit", "write"])
+const MUTATING_TOOLS = new Set(["edit", "write", "council_delete_file", "council_rename_file"])
 
 export function isMutatingCouncilToolCall(toolName: string, args: unknown): boolean {
 	if (MUTATING_TOOLS.has(toolName)) return true

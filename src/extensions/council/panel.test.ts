@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
+	FINAL_CHECK_RESULT_SCHEMA,
+	finalCheckerSystemPrompt,
 	REVIEW_RESULT_SCHEMAS,
 	referencedReviewEvidenceIds,
 	reviewerSystemPrompt,
@@ -35,17 +37,17 @@ describe("Council panel contract", () => {
 	it.each([
 		[
 			"independent",
-			"Produce an independent solution from the task packet without relying on a lead draft. Derive the required outputs, exact identifiers, formats, and checks from the supplied objective and evidence.",
+			"Produce an independent solution and candidate approach from the objective and base evidence. You intentionally receive neither the lead draft nor its candidate patch. Derive required behavior, exact identifiers, formats, and checks plus edge cases independently.",
 			"independent_solution",
 		],
 		[
 			"critic",
-			"Challenge the lead draft for wrong assumptions, unsafe behavior, and missed edge cases. Trace requirements, state transitions, failure paths, and cleanup when relevant, using task-appropriate counterexamples. Treat any required check that is failing, skipped, ignored, filtered, or unrun as unresolved unless the task explicitly permits it.",
+			"Challenge the lead draft and the exact candidate_patch artifact for wrong assumptions, unsafe behavior, and missed edge cases. Bind findings to the supplied patch hash and trace state transitions, failure paths, cleanup, and task-appropriate counterexamples. Treat every failing, skipped, ignored, filtered, or unrun required check as unresolved unless the task explicitly permits it.",
 			"challenged_assumptions",
 		],
 		[
 			"checker",
-			"Map every explicit requirement and exact requested output to evidence in the lead draft. Verify identifiers, formats, classifications, filenames, values, and required checks; do not accept assertions without proof. Treat any required check that is failing, skipped, ignored, filtered, or unrun as unresolved unless the task explicitly permits it. Separate evidence-backed claims from assumptions.",
+			"Map every explicit requirement and the exact requested output to the exact candidate_patch and candidate_validation artifacts. Verify identifiers, paths, formats, values, base hashes, patch hash, and required checks; do not accept lead assertions without evidence. Mark failing, skipped, ignored, filtered, unrun, or absent candidate checks unresolved unless explicitly permitted. Separate proof from assumptions.",
 			"requirement_checks",
 		],
 	] satisfies [ReviewerRole, string, string][])("builds the exact %s prompt", (role, rolePrompt, roleField) => {
@@ -111,5 +113,13 @@ describe("Council panel contract", () => {
 
 		expect(reviewNeedsRevision([checker], [])).toBe(true)
 		expect(reviewMetadataNeedsRevision([checker], [])).toBe(true)
+	})
+
+	it("requires evidence-backed, obligation-complete final acceptance", () => {
+		const prompt = finalCheckerSystemPrompt()
+
+		expect(prompt).toContain("accept if and only if every obligation is resolved")
+		expect(prompt).toContain("each resolved obligation must cite at least one supplied evidence artifact")
+		expect(prompt).toContain(FINAL_CHECK_RESULT_SCHEMA)
 	})
 })

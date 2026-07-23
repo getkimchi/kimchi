@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { expect, test } from "@microsoft/tui-test"
@@ -114,7 +114,18 @@ function seedPausedFerment(workDir: string, fermentId: string, phaseId: string) 
 	return { env: { KIMCHI_ACTIVE_FERMENT: fermentId, KIMCHI_FERMENTS_DIR: fermentsDir } }
 }
 
-test("Council shows private progress and a safe completion summary", async ({ terminal }) => {
+function seedCouncilValidation(workDir: string): void {
+	writeFileSync(
+		join(workDir, "package.json"),
+		`${JSON.stringify({
+			scripts: {
+				test: `node -e "const fs=require('node:fs');if(fs.readFileSync('council-change.txt','utf8')!=='changed\\\\n')process.exit(1)"`,
+			},
+		})}\n`,
+	)
+}
+
+test("Council reviews, applies, validates, and settles an exact candidate", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -122,6 +133,7 @@ test("Council shows private progress and a safe completion summary", async ({ te
 			env: councilEnv,
 			extraArgs: ["--provider", "kimchi", "--model", "council"],
 			models: [privateModel],
+			seedHome: (_homeDir, workDir) => seedCouncilValidation(workDir),
 			responses: [
 				{
 					stream: ["Writing", " marker."],
@@ -175,6 +187,26 @@ test("Council shows private progress and a safe completion summary", async ({ te
 					stream: [
 						JSON.stringify({
 							schema_version: 1,
+							role: "checker",
+							decision: "accept",
+							findings: [],
+							recommended_changes: [],
+							missing_evidence: [],
+							requirement_checks: [
+								{
+									requirement: "Create council-change.txt with the exact requested content.",
+									status: "satisfied",
+									evidence_refs: ["artifact_candidate_patch"],
+								},
+							],
+						}),
+					],
+				},
+				{
+					delayMs: 400,
+					stream: [
+						JSON.stringify({
+							schema_version: 1,
 							decision: "accept",
 							dispositions: [],
 							consensus: [],
@@ -183,10 +215,21 @@ test("Council shows private progress and a safe completion summary", async ({ te
 							unique_insights: [],
 							blind_spots: [],
 							unsupported_claims: [],
-							required_checks: [],
+							required_checks: ["npm test"],
 							revision_instructions: [],
 							agreement: "high",
 						}),
+					],
+				},
+				{
+					stream: ["Running", " required", " validation."],
+					toolCalls: [
+						{
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command: "npm test" }),
+							},
+						},
 					],
 				},
 			],
@@ -205,11 +248,16 @@ test("Council shows private progress and a safe completion summary", async ({ te
 			await waitForText(terminal, "Council · reviewing", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "independent", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 			await expectPrivateTextStaysHidden(terminal, 900)
+			expect(existsSync(join(fixture.workDir, "council-change.txt"))).toBe(false)
 			trace.step("independent progress visible without private content")
 
 			await waitForText(terminal, "critic", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 			expectPrivateTextHidden(terminal)
 			trace.step("critic progress visible separately")
+
+			await waitForText(terminal, "checker", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			expectPrivateTextHidden(terminal)
+			trace.step("checker progress visible separately")
 
 			await waitForText(terminal, "Council · adjudicating", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 			expectPrivateTextHidden(terminal)
@@ -217,6 +265,7 @@ test("Council shows private progress and a safe completion summary", async ({ te
 
 			await expect(terminal.getByText("Reviewed Council answer.", { full: true })).toBeVisible()
 			await waitForText(terminal, "high agreement", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(fullText(terminal)).toContain("Settle Agent Patch")
 			expectPrivateTextHidden(terminal)
 
 			const completionLine = fullText(terminal)
@@ -232,7 +281,7 @@ test("Council shows private progress and a safe completion summary", async ({ te
 				JSON.stringify(request.body ?? "").includes("council-change.txt"),
 			)
 			expect(readFileSync(join(fixture.workDir, "council-change.txt"), "utf8")).toBe("changed\n")
-			expect(physicalRequests).toHaveLength(5)
+			expect(physicalRequests).toHaveLength(7)
 			const bodies = physicalRequests.map((request) => JSON.stringify(request.body ?? ""))
 			expect(bodies[0]).toContain("Finish this turn with either a normal user-facing answer or a valid tool call")
 			expect(bodies[1]).toContain("Finish this turn with either a normal user-facing answer or a valid tool call")
@@ -240,7 +289,16 @@ test("Council shows private progress and a safe completion summary", async ({ te
 			expect(JSON.parse(lastUserText(physicalRequests[2])).role).toBe("independent")
 			expect(bodies[3]).toContain("You are a Council reviewer")
 			expect(JSON.parse(lastUserText(physicalRequests[3])).role).toBe("critic")
-			expect(bodies[4]).toContain("You are the Council judge")
+			expect(bodies[4]).toContain("You are a Council reviewer")
+			expect(JSON.parse(lastUserText(physicalRequests[4])).role).toBe("checker")
+			expect(bodies[5]).toContain("You are the Council judge")
+			expect(bodies[6]).toContain('Run this exact required command now: \\"npm test\\"')
+			expect(bodies[6]).toContain("apply_agent_patch")
+			for (const request of physicalRequests) {
+				const tools = (request.body as { tools?: unknown }).tools
+				expect(JSON.stringify(tools ?? [])).not.toContain("apply_agent_patch")
+				expect(JSON.stringify(tools ?? [])).not.toContain("settle_agent_patch")
+			}
 			trace.step("expected physical architecture ran without extra Council turns")
 		},
 	)
@@ -252,7 +310,7 @@ test("Council skips review after a read-only tool turn", async ({ terminal }) =>
 		{
 			artifactName: "council-read-only",
 			env: councilEnv,
-			extraArgs: ["--provider", "kimchi", "--model", "council"],
+			extraArgs: ["--provider", "kimchi", "--model", "council-fast"],
 			models: [privateModel],
 			seedHome: (_homeDir, workDir) => writeFileSync(join(workDir, "read-only.txt"), "READ_ONLY_OK\n"),
 			responses: [

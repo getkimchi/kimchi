@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
 	type CouncilSchemaError,
 	extractJsonObject,
+	parseFinalCheckArtifact,
 	parseJudgeArtifact,
 	parseReviewArtifact,
 	stableFindingId,
@@ -188,5 +189,109 @@ describe("judge artifacts", () => {
 		expect(() =>
 			parseJudgeArtifact(JSON.stringify({ ...base, decision: "revise" }), [finding], ["artifact_1"]),
 		).toThrowError(expect.objectContaining({ code: "invalid_shape" }))
+	})
+})
+
+describe("final checker artifacts", () => {
+	const patchSha256 = "a".repeat(64)
+	const obligations = ["finding_1", "required_check_1"]
+	const allowedEvidence = ["artifact_candidate_patch", "artifact_candidate_validation"]
+	const output = {
+		schema_version: 1,
+		role: "checker",
+		decision: "accept",
+		patch_sha256: patchSha256,
+		resolutions: obligations.map((obligation_id, index) => ({
+			obligation_id,
+			status: "resolved",
+			rationale: "The candidate addresses this obligation.",
+			evidence_refs: [allowedEvidence[index]],
+		})),
+	}
+
+	it("requires the exact patch hash, one resolution per obligation, and valid evidence", () => {
+		const parsed = parseFinalCheckArtifact(JSON.stringify(output), patchSha256, obligations, allowedEvidence)
+
+		expect(parsed.patch_sha256).toBe(patchSha256)
+		expect(parsed.resolutions.map(({ obligation_id }) => obligation_id)).toEqual(obligations)
+	})
+
+	it("rejects patch drift and incomplete, duplicate, or unsupported resolutions", () => {
+		expect(() =>
+			parseFinalCheckArtifact(JSON.stringify(output), "b".repeat(64), obligations, allowedEvidence),
+		).toThrowError(expect.objectContaining({ code: "invalid_shape" }))
+		expect(() =>
+			parseFinalCheckArtifact(
+				JSON.stringify({ ...output, resolutions: output.resolutions.slice(0, 1) }),
+				patchSha256,
+				obligations,
+				allowedEvidence,
+			),
+		).toThrowError(expect.objectContaining({ code: "invalid_shape" }))
+		expect(() =>
+			parseFinalCheckArtifact(
+				JSON.stringify({ ...output, resolutions: [output.resolutions[0], output.resolutions[0]] }),
+				patchSha256,
+				obligations,
+				allowedEvidence,
+			),
+		).toThrowError(expect.objectContaining({ code: "invalid_shape" }))
+		expect(() =>
+			parseFinalCheckArtifact(
+				JSON.stringify({
+					...output,
+					resolutions: [{ ...output.resolutions[0], evidence_refs: ["artifact_unknown"] }, output.resolutions[1]],
+				}),
+				patchSha256,
+				obligations,
+				allowedEvidence,
+			),
+		).toThrowError(expect.objectContaining({ code: "unsupported_reference" }))
+	})
+
+	it("requires evidence for every resolved obligation", () => {
+		expect(() =>
+			parseFinalCheckArtifact(
+				JSON.stringify({
+					...output,
+					resolutions: [{ ...output.resolutions[0], evidence_refs: [] }, output.resolutions[1]],
+				}),
+				patchSha256,
+				obligations,
+				allowedEvidence,
+			),
+		).toThrowError(expect.objectContaining({ code: "invalid_shape" }))
+	})
+
+	it("accepts if and only if every obligation is resolved", () => {
+		const unresolved = {
+			...output,
+			decision: "reject",
+			resolutions: [{ ...output.resolutions[0], status: "unresolved", evidence_refs: [] }, output.resolutions[1]],
+		}
+		expect(
+			parseFinalCheckArtifact(JSON.stringify(unresolved), patchSha256, obligations, allowedEvidence).decision,
+		).toBe("reject")
+		const evidenceGap = {
+			...unresolved,
+			decision: "needs_evidence",
+			resolutions: [{ ...output.resolutions[0], status: "needs_evidence" }, output.resolutions[1]],
+		}
+		expect(
+			parseFinalCheckArtifact(JSON.stringify(evidenceGap), patchSha256, obligations, allowedEvidence).decision,
+		).toBe("needs_evidence")
+		expect(() =>
+			parseFinalCheckArtifact(
+				JSON.stringify({ ...unresolved, decision: "accept" }),
+				patchSha256,
+				obligations,
+				allowedEvidence,
+			),
+		).toThrowError(expect.objectContaining({ code: "invalid_shape" }))
+		for (const decision of ["reject", "needs_evidence"]) {
+			expect(() =>
+				parseFinalCheckArtifact(JSON.stringify({ ...output, decision }), patchSha256, obligations, allowedEvidence),
+			).toThrowError(expect.objectContaining({ code: "invalid_shape" }))
+		}
 	})
 })

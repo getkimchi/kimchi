@@ -103,6 +103,7 @@ function progressSignature(event: CouncilProgressEvent): string {
 	if (event.type === "run_started") return event.type
 	if (event.type === "run_completed") return `${event.type}:${event.outcome}`
 	if (event.type === "run_failed" || event.type === "run_aborted") return `${event.type}:${event.reason}`
+	if (event.type === "transaction_progress") return `${event.type}:${event.phase}`
 	if ("role" in event) return `${event.type}:${event.role}${event.type === "stage_failed" ? `:${event.reason}` : ""}`
 	throw new Error("Unknown Council progress event")
 }

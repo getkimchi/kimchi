@@ -2,6 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import { AuthStorage, type ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import councilExtension, { sanitizeCouncilSessionRecord } from "./index.js"
+import { CouncilTransactionRuntime } from "./transaction-runtime.js"
 import type { CouncilRunRecord } from "./types.js"
 
 type ProviderConfig = Parameters<ModelRegistry["registerProvider"]>[1]
@@ -9,17 +10,34 @@ type ProviderConfig = Parameters<ModelRegistry["registerProvider"]>[1]
 function register(): {
 	appendEntry: ReturnType<typeof vi.fn>
 	config: ProviderConfig
+	getActiveTools: ReturnType<typeof vi.fn>
 	on: ReturnType<typeof vi.fn>
 	registerProvider: ReturnType<typeof vi.fn>
+	registerTool: ReturnType<typeof vi.fn>
+	setActiveTools: ReturnType<typeof vi.fn>
 } {
 	vi.stubEnv("KIMCHI_COUNCIL_ENABLED", "true")
 	const on = vi.fn()
 	const registerProvider = vi.fn()
 	const appendEntry = vi.fn()
-	councilExtension({ appendEntry, on, registerProvider } as unknown as ExtensionAPI)
+	const activeTools = new Set(["read", "edit", "write", "bash"])
+	const registerTool = vi.fn((tool: { name: string }) => activeTools.add(tool.name))
+	const getActiveTools = vi.fn(() => [...activeTools])
+	const setActiveTools = vi.fn((names: string[]) => {
+		activeTools.clear()
+		for (const name of names) activeTools.add(name)
+	})
+	councilExtension({
+		appendEntry,
+		getActiveTools,
+		on,
+		registerProvider,
+		registerTool,
+		setActiveTools,
+	} as unknown as ExtensionAPI)
 	const [provider, config] = registerProvider.mock.calls[0]
 	expect(provider).toBe("kimchi")
-	return { appendEntry, config, on, registerProvider }
+	return { appendEntry, config, getActiveTools, on, registerProvider, registerTool, setActiveTools }
 }
 
 const councilModel = {
@@ -57,8 +75,8 @@ describe("councilExtension", () => {
 			authHeader: false,
 		})
 		expect(config.models).toEqual([
-			expect.objectContaining({ id: "council-fast", reasoning: false, maxTokens: 8_192 }),
-			expect.objectContaining({ id: "council", reasoning: false, maxTokens: 16_384 }),
+			expect.objectContaining({ id: "council-fast", reasoning: false, maxTokens: 12_288 }),
+			expect.objectContaining({ id: "council", reasoning: false, maxTokens: 24_576 }),
 			expect.objectContaining({ id: "council-deep", reasoning: false, maxTokens: 32_768 }),
 		])
 		expect(config.streamSimple).toBeTypeOf("function")
@@ -106,7 +124,7 @@ describe("councilExtension", () => {
 		const registry = { find, getApiKeyAndHeaders: vi.fn() } as unknown as ModelRegistry
 		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
 		const sessionShutdown = on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
-		sessionStart(
+		await sessionStart(
 			{},
 			{
 				mode: "tui",
@@ -117,7 +135,7 @@ describe("councilExtension", () => {
 		)
 
 		const result = await config.streamSimple?.(fastCouncilModel, { messages: [] }, { sessionId: "session-a" }).result()
-		sessionShutdown()
+		await sessionShutdown()
 
 		expect(find).toHaveBeenCalledWith("kimchi-dev", "kimi-k2.7")
 		expect(result?.errorMessage).toBe("Council could not complete the requested response")
@@ -169,13 +187,107 @@ describe("councilExtension", () => {
 				evidenceBytes: 0,
 				structuredBytes: 0,
 			},
+			transaction: {
+				transactionId: "transaction",
+				state: "applied",
+				outcome: "applied",
+				patchSha256: "patch",
+				stats: { files: 1, addedLines: 1, removedLines: 0, patchBytes: 10 },
+				baseVerification: "passed",
+				revisionCount: 0,
+				postApplyChecks: [{ toolName: "bash", ok: true }],
+				rollbackState: "not_available",
+				hardRecoveryRequired: false,
+			},
 		} satisfies CouncilRunRecord
+		Object.assign(record.transaction, { token: "server-secret", internalReasoning: "private chain" })
 
 		const persisted = sanitizeCouncilSessionRecord(record)
 
 		expect(record.stages[0]?.modelRef).toBe("physical/private-canary")
 		expect(persisted.stages[0]).not.toHaveProperty("modelRef")
 		expect(JSON.stringify(persisted)).not.toContain("private-canary")
+		expect(persisted.transaction).toMatchObject({ transactionId: "transaction", patchSha256: "patch" })
+		expect(JSON.stringify(persisted)).not.toMatch(/server-secret|private chain|token|internalReasoning/)
+	})
+
+	it("counts only allowlisted post-apply validation commands as checks", async () => {
+		const state = vi.spyOn(CouncilTransactionRuntime.prototype, "state", "get").mockReturnValue("post_apply_checks")
+		const recordCheck = vi.spyOn(CouncilTransactionRuntime.prototype, "recordPostApplyCheck")
+		const { on } = register()
+		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
+		const toolStart = on.mock.calls.find(([event]) => event === "tool_execution_start")?.[1]
+		const toolEnd = on.mock.calls.find(([event]) => event === "tool_execution_end")?.[1]
+		const sessionShutdown = on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
+		const ctx = {
+			cwd: process.cwd(),
+			mode: "rpc",
+			modelRegistry: { find: vi.fn(), getApiKeyAndHeaders: vi.fn() },
+			sessionManager: { getSessionId: () => "validation-session" },
+		}
+		await sessionStart({}, ctx)
+
+		try {
+			toolStart({ toolName: "bash", toolCallId: "read", args: { command: "git diff" } }, ctx)
+			toolEnd({ toolName: "bash", toolCallId: "read", isError: false }, ctx)
+			expect(recordCheck).not.toHaveBeenCalled()
+
+			toolStart({ toolName: "bash", toolCallId: "test", args: { command: "pnpm test" } }, ctx)
+			toolEnd({ toolName: "bash", toolCallId: "test", isError: false }, ctx)
+			expect(recordCheck).toHaveBeenLastCalledWith("bash", "pnpm test", true)
+
+			toolStart({ toolName: "bash", toolCallId: "failed", args: { command: "pnpm run typecheck" } }, ctx)
+			toolEnd({ toolName: "bash", toolCallId: "failed", isError: true }, ctx)
+			expect(recordCheck).toHaveBeenLastCalledWith("bash", "pnpm run typecheck", false)
+			expect(recordCheck).toHaveBeenCalledTimes(2)
+		} finally {
+			await sessionShutdown({}, ctx)
+			state.mockRestore()
+			recordCheck.mockRestore()
+		}
+	})
+
+	it("starts a fresh Council transaction on user input", async () => {
+		const resetForNewTurn = vi.spyOn(CouncilTransactionRuntime.prototype, "resetForNewTurn")
+		const { on } = register()
+		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
+		const input = on.mock.calls.find(([event]) => event === "input")?.[1]
+		const sessionShutdown = on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
+		const ctx = {
+			cwd: process.cwd(),
+			mode: "rpc",
+			modelRegistry: { find: vi.fn(), getApiKeyAndHeaders: vi.fn() },
+			sessionManager: { getSessionId: () => "new-turn-session" },
+		}
+		await sessionStart({}, ctx)
+
+		try {
+			await input({ source: "extension" }, ctx)
+			expect(resetForNewTurn).not.toHaveBeenCalled()
+
+			await input({ source: "interactive" }, ctx)
+			expect(resetForNewTurn).toHaveBeenCalledOnce()
+		} finally {
+			await sessionShutdown({}, ctx)
+			resetForNewTurn.mockRestore()
+		}
+	})
+
+	it("abandons the previous transaction before replacing a session route", async () => {
+		const abandon = vi.spyOn(CouncilTransactionRuntime.prototype, "abandon")
+		const { on } = register()
+		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
+		const sessionShutdown = on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
+		const registry = { find: vi.fn(), getApiKeyAndHeaders: vi.fn() } as unknown as ModelRegistry
+
+		try {
+			await sessionStart({}, { modelRegistry: registry, sessionManager: { getSessionId: () => "replaced-a" } })
+			await sessionStart({}, { modelRegistry: registry, sessionManager: { getSessionId: () => "replaced-b" } })
+			expect(abandon).toHaveBeenCalledTimes(1)
+		} finally {
+			await sessionShutdown()
+			abandon.mockRestore()
+		}
 	})
 
 	it.each([
@@ -187,13 +299,13 @@ describe("councilExtension", () => {
 		const registry = { find, getApiKeyAndHeaders: vi.fn() } as unknown as ModelRegistry
 		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
 		const sessionShutdown = on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
-		sessionStart({}, { modelRegistry: registry, sessionManager: { getSessionId: () => "compaction-session" } })
+		await sessionStart({}, { modelRegistry: registry, sessionManager: { getSessionId: () => "compaction-session" } })
 
 		try {
 			await config.streamSimple?.(fastCouncilModel, { messages: [] }, { sessionId }).result()
 			expect(find).toHaveBeenCalledWith("kimchi-dev", "kimi-k2.7")
 		} finally {
-			sessionShutdown()
+			await sessionShutdown()
 		}
 	})
 
@@ -204,7 +316,7 @@ describe("councilExtension", () => {
 		const registry = { find: vi.fn(), getApiKeyAndHeaders: vi.fn() } as unknown as ModelRegistry
 		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
 		const sessionShutdown = on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
-		sessionStart(
+		await sessionStart(
 			{},
 			{
 				mode,
@@ -217,7 +329,7 @@ describe("councilExtension", () => {
 		try {
 			await config.streamSimple?.(fastCouncilModel, { messages: [] }, { sessionId: `non-tui-${mode}` }).result()
 		} finally {
-			sessionShutdown()
+			await sessionShutdown()
 		}
 
 		expect(setStatus).not.toHaveBeenCalled()
@@ -231,7 +343,7 @@ describe("councilExtension", () => {
 		const registry = { find: vi.fn(), getApiKeyAndHeaders: vi.fn() } as unknown as ModelRegistry
 		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
 		const sessionShutdown = on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
-		sessionStart(
+		await sessionStart(
 			{},
 			{
 				mode: "tui",
@@ -242,7 +354,7 @@ describe("councilExtension", () => {
 		)
 
 		const stream = config.streamSimple?.(fastCouncilModel, { messages: [] }, { sessionId: "shutdown-race" })
-		sessionShutdown()
+		await sessionShutdown()
 		await stream?.result()
 
 		expect(setStatus).not.toHaveBeenCalled()
@@ -258,7 +370,7 @@ describe("councilExtension", () => {
 		const agentStart = on.mock.calls.find(([event]) => event === "agent_start")?.[1]
 		const modelSelect = on.mock.calls.find(([event]) => event === "model_select")?.[1]
 		const sessionShutdown = on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
-		sessionStart(
+		await sessionStart(
 			{},
 			{
 				mode: "tui",
@@ -276,10 +388,10 @@ describe("councilExtension", () => {
 
 			await config.streamSimple?.(fastCouncilModel, { messages: [] }, { sessionId: "lifecycle" }).result()
 			expect(setStatus.mock.calls.at(-1)?.[1]).toContain("could not safely finalize")
-			modelSelect()
+			await modelSelect()
 			expect(setStatus).toHaveBeenLastCalledWith("council", undefined)
 		} finally {
-			sessionShutdown()
+			await sessionShutdown()
 		}
 	})
 
@@ -296,16 +408,23 @@ describe("councilExtension", () => {
 		const secondStart = second.on.mock.calls.find(([event]) => event === "session_start")?.[1]
 		const firstShutdown = first.on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
 		const secondShutdown = second.on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
-		firstStart(
+		await firstStart(
 			{},
 			{ mode: "tui", modelRegistry: firstRegistry, sessionManager: { getSessionId: () => "first" }, ui: firstUI },
 		)
-		secondStart(
+		await secondStart(
 			{},
 			{ mode: "tui", modelRegistry: secondRegistry, sessionManager: { getSessionId: () => "second" }, ui: secondUI },
 		)
 
 		try {
+			const crossOwner = await first.config
+				.streamSimple?.(councilModel, { messages: [] }, { sessionId: "second" })
+				.result()
+			expect(crossOwner?.errorMessage).toBe("Council model registry is unavailable")
+			expect(firstFind).not.toHaveBeenCalled()
+			expect(secondFind).not.toHaveBeenCalled()
+
 			await first.config.streamSimple?.(councilModel, { messages: [] }, { sessionId: "first" }).result()
 
 			expect(first.config.streamSimple).not.toBe(second.config.streamSimple)
@@ -321,7 +440,7 @@ describe("councilExtension", () => {
 			expect(secondUI.setWidget).not.toHaveBeenCalled()
 			expect(secondUI.setStatus).not.toHaveBeenCalled()
 
-			firstShutdown()
+			await firstShutdown()
 			const firstWidgetCalls = firstUI.setWidget.mock.calls.length
 			const firstStatusCalls = firstUI.setStatus.mock.calls.length
 			await first.config.streamSimple?.(councilModel, { messages: [] }, { sessionId: "first" }).result()
@@ -336,8 +455,8 @@ describe("councilExtension", () => {
 			expect(secondUI.setWidget).toHaveBeenCalled()
 			expect(secondUI.setStatus).toHaveBeenCalled()
 		} finally {
-			firstShutdown()
-			secondShutdown()
+			await firstShutdown()
+			await secondShutdown()
 		}
 	})
 })

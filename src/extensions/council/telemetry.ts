@@ -1,6 +1,6 @@
 import type { Usage } from "@earendil-works/pi-ai"
 import type { RunBudgetSnapshot } from "./run-context.js"
-import type { CouncilBudgetUsage, CouncilRunRecord } from "./types.js"
+import type { CouncilBudgetUsage, CouncilRunRecord, CouncilTransactionSnapshot } from "./types.js"
 
 export const ZERO_USAGE: Usage = {
 	input: 0,
@@ -62,5 +62,23 @@ export function sanitizeRunRecord(record: CouncilRunRecord): CouncilRunRecord {
 			...stage,
 			...(stage.error ? { error: SAFE_STAGE_ERRORS.has(stage.error) ? stage.error : "unknown" } : {}),
 		})),
+		transaction: record.transaction ? sanitizeCouncilTransactionSnapshot(record.transaction) : undefined,
+	}
+}
+
+export function sanitizeCouncilTransactionSnapshot(
+	transaction: CouncilTransactionSnapshot,
+): CouncilTransactionSnapshot {
+	return {
+		transactionId: transaction.transactionId,
+		state: transaction.state,
+		outcome: transaction.outcome,
+		patchSha256: transaction.patchSha256,
+		stats: transaction.stats ? { ...transaction.stats } : undefined,
+		baseVerification: transaction.baseVerification,
+		revisionCount: transaction.revisionCount,
+		postApplyChecks: transaction.postApplyChecks.map(({ toolName, ok }) => ({ toolName, ok })),
+		rollbackState: transaction.rollbackState,
+		hardRecoveryRequired: transaction.hardRecoveryRequired,
 	}
 }

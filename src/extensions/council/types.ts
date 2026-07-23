@@ -1,4 +1,5 @@
 import type { Usage } from "@earendil-works/pi-ai"
+import type { ChangeSetStats, ChangeTransactionState } from "../../agent-patch/index.js"
 
 export const REQUIRED_REVIEWER_ROLES = ["independent", "critic", "checker"] as const
 
@@ -6,6 +7,13 @@ export type ReviewerRole = (typeof REQUIRED_REVIEWER_ROLES)[number]
 export type CouncilStage = "lead" | ReviewerRole | "judge" | "repair" | "revision"
 export type CouncilRole = CouncilStage
 export type CouncilOutcome = "accepted" | "revised" | "tool_use" | "degraded" | "error" | "aborted"
+export type CouncilTransactionProgressPhase =
+	| "preparing_candidate"
+	| "validating_patch"
+	| "reviewing"
+	| "adjudicating"
+	| "revising"
+	| "applying"
 export type SafeCouncilFailureReason =
 	| "cancelled"
 	| "timed_out"
@@ -41,6 +49,11 @@ export type CouncilProgressEvent =
 			role: CouncilRole
 			durationMs: number
 			reason: SafeCouncilFailureReason
+	  }
+	| {
+			type: "transaction_progress"
+			runId: string
+			phase: CouncilTransactionProgressPhase
 	  }
 	| {
 			type: "run_completed"
@@ -130,6 +143,19 @@ export interface CouncilStageRecord {
 	fallback?: boolean
 }
 
+export interface CouncilTransactionSnapshot {
+	transactionId: string
+	state: ChangeTransactionState
+	outcome: "pending" | "applied" | "discarded" | "rolled_back" | "failed" | "hard_recovery"
+	patchSha256?: string
+	stats?: ChangeSetStats
+	baseVerification: "not_run" | "passed" | "failed"
+	revisionCount: number
+	postApplyChecks: Array<{ toolName: string; ok: boolean }>
+	rollbackState: "not_available" | "available" | "completed" | "failed"
+	hardRecoveryRequired: boolean
+}
+
 export interface CouncilRunRecord {
 	runId: string
 	virtualModel: string
@@ -142,4 +168,5 @@ export interface CouncilRunRecord {
 	stages: CouncilStageRecord[]
 	usage: Usage
 	budget: CouncilBudgetUsage
+	transaction?: CouncilTransactionSnapshot
 }

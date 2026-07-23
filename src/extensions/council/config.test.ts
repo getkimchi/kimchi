@@ -105,10 +105,10 @@ describe("validateCouncilConfig", () => {
 
 describe("applyCouncilPreset", () => {
 	it.each([
-		["fast", ["critic"], 5, 7, 1, false, "on-issues"],
-		["normal", ["independent", "critic"], 7, 10, 2, true, "on-issues"],
-		["deep", ["independent", "critic", "checker"], 8, 12, 3, true, "always"],
-	] as const)("applies the %s execution policy", (preset, roles, logical, physical, concurrent, judge, revision) => {
+		["fast", ["critic"], 10, 14, 1, false, "on-issues", "changes"],
+		["normal", ["independent", "critic", "checker"], 20, 30, 3, true, "on-issues", "always"],
+		["deep", ["independent", "critic", "checker"], 24, 36, 3, true, "always", "always"],
+	] as const)("applies the %s execution policy", (preset, roles, logical, physical, concurrent, judge, revision, reviewPolicy) => {
 		const config = applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, preset)
 		expect(config.requiredRoles).toEqual(roles)
 		expect(config.maxCalls).toBe(logical)
@@ -119,6 +119,7 @@ describe("applyCouncilPreset", () => {
 		})
 		expect(config.useJudge).toBe(judge)
 		expect(config.revisionPolicy).toBe(revision)
+		expect(config.reviewPolicy).toBe(reviewPolicy)
 	})
 
 	it("keeps lower caller limits below preset caps and preserves model pools", () => {
@@ -149,16 +150,27 @@ describe("applyCouncilPreset", () => {
 		}
 	})
 
-	it.each(["normal", "deep"] as const)("keeps quality headroom in the %s preset", (preset) => {
+	it("keeps enough fast-mode evidence headroom for the real harness prompt plus an exact patch", () => {
+		expect(applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, "fast").maxEvidenceBytes).toBe(131_072)
+	})
+
+	it.each([
+		["normal", 1_800_000, 24_576, 1_048_576, 196_608],
+		["deep", 2_400_000, 32_768, 1_572_864, 262_144],
+	] as const)("keeps quality headroom in the %s preset", (preset, timeout, leadTokens, inputTokens, outputTokens) => {
 		const config = applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, preset)
 
 		expect(config).toMatchObject({
-			overallTimeoutMs: 1_200_000,
-			stageTimeoutMs: 300_000,
+			overallTimeoutMs: timeout,
+			stageTimeoutMs: 600_000,
+			leadMaxTokens: leadTokens,
 			internalMaxTokens: 16_384,
 			maxEvidenceBytes: 131_072,
 			maxStructuredBytes: 65_536,
-			budget: { maxAggregateOutputTokens: 65_536 },
+			budget: {
+				maxAggregateInputTokens: inputTokens,
+				maxAggregateOutputTokens: outputTokens,
+			},
 		})
 	})
 })

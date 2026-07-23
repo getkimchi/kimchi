@@ -64,11 +64,11 @@ describe("CouncilProgressUI", () => {
 		} as CouncilProgressEvent)
 
 		const output = render()
-		expect(output).toMatch(/^⠋ Council · reviewing 1\/2/)
+		expect(output).toMatch(/^⠋ Council · reviewing 1\/3/)
 		expect(output).toContain("independent")
-		expect(output).toContain("└─ ⚠ critic · review unavailable")
+		expect(output).toContain("├─ ⚠ critic · review unavailable")
 		expect(output).not.toContain("adjudicating")
-		expect(output).not.toContain("checker")
+		expect(output).toContain("checker")
 		expect(output.match(/critic/g)).toHaveLength(1)
 		expect(output).not.toMatch(/private-run|physical\/|retry-|<think>|secret|raw provider exception/)
 	})
@@ -99,6 +99,21 @@ describe("CouncilProgressUI", () => {
 		controller.handle({ type: "stage_completed", runId: "roles", stageId: "repair", role: "repair", durationMs: 1 })
 		controller.handle({ type: "stage_started", runId: "roles", stageId: "revision", role: "revision", startedAt: 14 })
 		expect(render()).toContain("Council · revising")
+	})
+
+	it.each([
+		["preparing_candidate", "preparing candidate"],
+		["validating_patch", "validating patch"],
+		["reviewing", "reviewing"],
+		["adjudicating", "adjudicating"],
+		["revising", "revising"],
+		["applying", "applying"],
+	] as const)("shows the safe transaction phase %s", (phase, label) => {
+		const { controller, render } = createHarness()
+		controller.handle(start(`phase-${phase}`, 10))
+		controller.handle({ type: "transaction_progress", runId: `phase-${phase}`, phase })
+
+		expect(render()).toContain(`Council · ${label}`)
 	})
 
 	it("replaces live progress with a static summary containing only provided positive cost and agreement", () => {

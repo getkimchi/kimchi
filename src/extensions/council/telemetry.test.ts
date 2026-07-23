@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { addUsage, sanitizeRunRecord, toCouncilBudgetUsage, ZERO_USAGE } from "./telemetry.js"
+import type { CouncilTransactionSnapshot } from "./types.js"
 
 describe("Council telemetry", () => {
 	it("aggregates usage and emits only bounded structured stage data", () => {
@@ -22,6 +23,21 @@ describe("Council telemetry", () => {
 			evidenceBytes: 10,
 			structuredBytes: 20,
 		})
+		const transaction = Object.assign(
+			{
+				transactionId: "transaction",
+				state: "applied",
+				outcome: "applied",
+				patchSha256: "patch",
+				stats: { files: 1, addedLines: 1, removedLines: 0, patchBytes: 10 },
+				baseVerification: "passed",
+				revisionCount: 0,
+				postApplyChecks: [{ toolName: "bash", ok: true }],
+				rollbackState: "not_available",
+				hardRecoveryRequired: false,
+			} satisfies CouncilTransactionSnapshot,
+			{ token: "server-secret", internalReasoning: "private chain" },
+		)
 		const record = sanitizeRunRecord({
 			runId: "run",
 			virtualModel: "kimchi/council",
@@ -31,6 +47,7 @@ describe("Council telemetry", () => {
 			durationMs: 1,
 			usage,
 			budget,
+			transaction,
 			stages: [
 				{
 					stage: "lead",
@@ -50,5 +67,7 @@ describe("Council telemetry", () => {
 		expect(record.stages[0]?.error).toBe("unknown")
 		expect(record).toMatchObject({ unresolvedFindingCount: 1, missingReviewerRoles: ["checker"] })
 		expect(record.stages[0]).toMatchObject({ truncated: true, retry: true })
+		expect(record.transaction).toMatchObject({ transactionId: "transaction", patchSha256: "patch" })
+		expect(JSON.stringify(record)).not.toMatch(/server-secret|private chain|token|internalReasoning/)
 	})
 })

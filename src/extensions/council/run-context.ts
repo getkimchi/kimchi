@@ -64,7 +64,7 @@ export class CouncilRunContext {
 	private readonly controller = new AbortController()
 	private readonly callerSignal?: AbortSignal
 	private readonly callerAbort: () => void
-	private readonly deadlineTimer: ReturnType<typeof setTimeout>
+	private readonly deadlineTimer?: ReturnType<typeof setTimeout>
 	private failure?: RunFailure
 	private closed = false
 	private logicalCalls = 0
@@ -82,21 +82,44 @@ export class CouncilRunContext {
 
 	constructor(
 		readonly limits: RunBudgetLimits,
-		options: { callerSignal?: AbortSignal; callerTimeoutMs?: number; now?: number } = {},
+		options: {
+			callerSignal?: AbortSignal
+			callerTimeoutMs?: number
+			now?: number
+			startedAt?: number
+			deadlineAt?: number
+			initialSnapshot?: RunBudgetSnapshot
+		} = {},
 	) {
-		this.startedAt = options.now ?? Date.now()
+		const now = options.now ?? Date.now()
+		this.startedAt = options.startedAt ?? now
 		const callerTimeout = options.callerTimeoutMs && options.callerTimeoutMs > 0 ? options.callerTimeoutMs : Infinity
 		const timeoutMs = Math.max(1, Math.min(limits.overallTimeoutMs, callerTimeout))
-		this.deadlineAt = this.startedAt + timeoutMs
+		this.deadlineAt = Math.min(options.deadlineAt ?? Infinity, this.startedAt + timeoutMs)
+		if (options.initialSnapshot) {
+			this.logicalCalls = nonNegative(options.initialSnapshot.logicalCalls)
+			this.physicalAttempts = nonNegative(options.initialSnapshot.physicalAttempts)
+			this.peakConcurrentCalls = nonNegative(options.initialSnapshot.peakConcurrentCalls)
+			this.inputTokens = nonNegative(options.initialSnapshot.inputTokens)
+			this.outputTokens = nonNegative(options.initialSnapshot.outputTokens)
+			this.estimatedCostUsd = nonNegative(options.initialSnapshot.estimatedCostUsd)
+			this.evidenceBytes = nonNegative(options.initialSnapshot.evidenceBytes)
+			this.structuredBytes = nonNegative(options.initialSnapshot.structuredBytes)
+		}
 		this.signal = this.controller.signal
 		this.callerSignal = options.callerSignal
 		this.callerAbort = () => this.abort(new RunFailure("aborted", "Council request aborted by caller"))
 		this.callerSignal?.addEventListener("abort", this.callerAbort, { once: true })
 		if (this.callerSignal?.aborted) this.callerAbort()
-		this.deadlineTimer = setTimeout(
-			() => this.abort(new RunFailure("deadline_exceeded", "Council whole-run deadline exceeded")),
-			timeoutMs,
-		)
+		const remainingMs = this.deadlineAt - now
+		if (remainingMs <= 0) {
+			this.abort(new RunFailure("deadline_exceeded", "Council whole-run deadline exceeded"))
+		} else {
+			this.deadlineTimer = setTimeout(
+				() => this.abort(new RunFailure("deadline_exceeded", "Council whole-run deadline exceeded")),
+				remainingMs,
+			)
+		}
 	}
 
 	remainingMs(stageLimitMs: number): number {

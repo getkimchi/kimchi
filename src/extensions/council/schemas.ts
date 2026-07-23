@@ -80,12 +80,49 @@ export interface ToolResultArtifact extends EvidenceArtifactBase {
 	}
 }
 
+export interface CandidatePatchArtifact extends EvidenceArtifactBase {
+	kind: "candidate_patch"
+	trust: "untrusted_assistant_output"
+	candidate_patch: {
+		transaction_id: string
+		patch_sha256: string
+		operations: Array<{
+			kind: "create" | "update" | "delete" | "rename"
+			path: string
+			from_path?: string
+			base_sha256?: string
+		}>
+		stats: {
+			files: number
+			added_lines: number
+			removed_lines: number
+			patch_bytes: number
+		}
+		patch: string
+	}
+}
+
+export interface CandidateValidationArtifact extends EvidenceArtifactBase {
+	kind: "candidate_validation"
+	trust: "untrusted_tool_output"
+	candidate_validation: {
+		checks: Array<{
+			name: string
+			status: "passed" | "failed" | "not_run"
+			detail: string
+		}>
+		limitations: string[]
+	}
+}
+
 export type EvidenceArtifact =
 	| SystemInstructionArtifact
 	| UserTextArtifact
 	| AssistantTextArtifact
 	| ToolCallArtifact
 	| ToolResultArtifact
+	| CandidatePatchArtifact
+	| CandidateValidationArtifact
 
 export type ReviewDecision = "accept" | "revise" | "needs_evidence"
 export type FindingSeverity = "critical" | "high" | "medium" | "low"
@@ -236,6 +273,27 @@ export const JudgeArtifactSchema = z
 
 export type FindingDisposition = z.infer<typeof FindingDispositionSchema>
 export type JudgeArtifact = z.infer<typeof JudgeArtifactSchema>
+
+const FinalCheckResolutionSchema = z
+	.object({
+		obligation_id: nonEmptyString(128),
+		status: z.enum(["resolved", "unresolved", "needs_evidence"]),
+		rationale: nonEmptyString(4096),
+		evidence_refs: boundedStringList(),
+	})
+	.strict()
+
+export const FinalCheckOutputSchema = z
+	.object({
+		schema_version: z.literal(1),
+		role: z.literal("checker"),
+		decision: z.enum(["accept", "reject", "needs_evidence"]),
+		patch_sha256: z.string().regex(/^[a-f0-9]{64}$/),
+		resolutions: z.array(FinalCheckResolutionSchema).max(80),
+	})
+	.strict()
+
+export type FinalCheckArtifact = z.infer<typeof FinalCheckOutputSchema>
 
 export type CouncilSchemaErrorCode =
 	| "missing_json"
@@ -459,6 +517,44 @@ export function parseJudgeArtifact(
 		throw new CouncilSchemaError(
 			"invalid_shape",
 			`Judge decision ${parsed.data.decision} conflicts with dispositions; expected ${expectedDecision}`,
+		)
+	}
+	return parsed.data
+}
+
+export function parseFinalCheckArtifact(
+	raw: string,
+	expectedPatchSha256: string,
+	expectedObligationIds: Iterable<string>,
+	allowedEvidenceIds: Iterable<string>,
+): FinalCheckArtifact {
+	const parsed = FinalCheckOutputSchema.safeParse(parseDeterministicJson(raw))
+	if (!parsed.success) invalidShape(parsed.error)
+	if (parsed.data.patch_sha256 !== expectedPatchSha256) {
+		throw new CouncilSchemaError("invalid_shape", "Council final checker returned a different patch hash")
+	}
+	const expected = new Set(expectedObligationIds)
+	const seen = new Set<string>()
+	const allowed = new Set(allowedEvidenceIds)
+	let allResolved = true
+	for (const resolution of parsed.data.resolutions) {
+		if (!expected.has(resolution.obligation_id) || seen.has(resolution.obligation_id)) {
+			throw new CouncilSchemaError("invalid_shape", "Council final checker returned invalid obligation coverage")
+		}
+		seen.add(resolution.obligation_id)
+		if (resolution.status === "resolved" && resolution.evidence_refs.length === 0) {
+			throw new CouncilSchemaError("invalid_shape", "Council final checker resolved an obligation without evidence")
+		}
+		if (resolution.status !== "resolved") allResolved = false
+		validateEvidenceReferences(resolution.evidence_refs, allowed)
+	}
+	if (seen.size !== expected.size) {
+		throw new CouncilSchemaError("invalid_shape", "Council final checker did not resolve every obligation")
+	}
+	if ((parsed.data.decision === "accept") !== allResolved) {
+		throw new CouncilSchemaError(
+			"invalid_shape",
+			"Council final checker decision conflicts with obligation resolutions",
 		)
 	}
 	return parsed.data

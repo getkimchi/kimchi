@@ -2,9 +2,17 @@ import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOpti
 import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { applyCouncilPreset, type CouncilPreset, DEFAULT_COUNCIL_CONFIG, readCouncilConfig } from "./config.js"
 import { createCouncilStream } from "./coordinator.js"
-import { COUNCIL_API, COUNCIL_MODEL_IDS, COUNCIL_PROVIDER } from "./model.js"
+import { COUNCIL_API, COUNCIL_MODEL_IDS, COUNCIL_PROVIDER, isCouncilVirtualModel } from "./model.js"
 import { CouncilProgressUI } from "./progress-ui.js"
 import { isMutatingCouncilToolCall } from "./review-policy.js"
+import { sanitizeCouncilTransactionSnapshot } from "./telemetry.js"
+import { CouncilTransactionRuntime } from "./transaction-runtime.js"
+import {
+	installCouncilMutationGuard,
+	isCouncilPostApplyValidationCommand,
+	registerCouncilTransactionTools,
+	syncCouncilTransactionToolVisibility,
+} from "./transaction-tools.js"
 import type { CouncilProgressEvent, CouncilRunRecord } from "./types.js"
 
 const COUNCIL_MODEL_NAMES: Record<(typeof COUNCIL_MODEL_IDS)[number], string> = {
@@ -21,6 +29,8 @@ interface CouncilSessionRoute {
 	onProgress: (event: CouncilProgressEvent) => void
 	changedThisTurn: boolean
 	pendingMutatingToolCalls: Set<string>
+	pendingPostApplyValidationCalls: Map<string, string>
+	transaction: CouncilTransactionRuntime
 	progressUI?: CouncilProgressUI
 }
 
@@ -40,17 +50,19 @@ export function sanitizeCouncilSessionRecord(record: CouncilRunRecord) {
 	return {
 		...record,
 		stages: record.stages.map(({ modelRef: _modelRef, ...stage }) => stage),
+		transaction: record.transaction ? sanitizeCouncilTransactionSnapshot(record.transaction) : undefined,
 	}
 }
 
 function routeCouncilStream(
+	owner: symbol,
 	model: Model<Api>,
 	context: Context,
 	options: SimpleStreamOptions = {},
 	fallbackRoute?: () => CouncilSessionRoute | undefined,
 ): AssistantMessageEventStream {
 	const exactRoute = options.sessionId ? sessionRoutes.get(options.sessionId) : undefined
-	const route = exactRoute ?? fallbackRoute?.()
+	const route = exactRoute ? (exactRoute.owner === owner ? exactRoute : undefined) : fallbackRoute?.()
 	if (!route) return unavailableCouncilStream(model, context, options)
 	return createCouncilStream({
 		config: applyCouncilPreset(route.config, presetForModel(model.id)),
@@ -58,6 +70,7 @@ function routeCouncilStream(
 		recordRun: route.recordRun,
 		onProgress: route.onProgress,
 		shouldReviewTurn: () => route.changedThisTurn,
+		transaction: route.transaction,
 	})(model, context, options)
 }
 
@@ -80,13 +93,26 @@ export default function councilExtension(pi: ExtensionAPI): void {
 		const route = sessionRoutes.get(activeSessionId)
 		return route?.owner === owner ? route.progressUI : undefined
 	}
+	const routeForContext = (ctx?: { sessionManager?: { getSessionId(): string } }): CouncilSessionRoute | undefined => {
+		const sessionId = ctx?.sessionManager?.getSessionId() ?? activeSessionId
+		if (!sessionId) return undefined
+		const route = sessionRoutes.get(sessionId)
+		return route?.owner === owner ? route : undefined
+	}
+	installCouncilMutationGuard(pi, (ctx) => routeForContext(ctx)?.transaction)
 
-	pi.on("session_start", (_event, ctx) => {
-		if (activeSessionId && sessionRoutes.get(activeSessionId)?.owner === owner) {
-			sessionRoutes.get(activeSessionId)?.progressUI?.dispose()
-			sessionRoutes.delete(activeSessionId)
+	pi.on("session_start", async (_event, ctx) => {
+		if (activeSessionId) {
+			const previous = sessionRoutes.get(activeSessionId)
+			if (previous?.owner === owner) {
+				previous.progressUI?.dispose()
+				await previous.transaction.abandon()
+				previous.transaction.resetRunBudget()
+				sessionRoutes.delete(activeSessionId)
+			}
 		}
 		activeSessionId = ctx.sessionManager.getSessionId()
+		const sessionCwd = ctx.cwd || process.cwd()
 		const progressUI = ctx.mode === "tui" ? new CouncilProgressUI(ctx.ui) : undefined
 		sessionRoutes.set(activeSessionId, {
 			owner,
@@ -96,15 +122,21 @@ export default function councilExtension(pi: ExtensionAPI): void {
 			onProgress: (event) => progressUI?.handle(event),
 			changedThisTurn: false,
 			pendingMutatingToolCalls: new Set(),
+			pendingPostApplyValidationCalls: new Map(),
+			transaction: new CouncilTransactionRuntime(sessionCwd),
 			progressUI,
 		})
+		registerCouncilTransactionTools(pi, sessionCwd, (toolContext) => routeForContext(toolContext)?.transaction)
+		syncCouncilTransactionToolVisibility(pi, ctx.model)
 	})
-	pi.on("input", (event, ctx) => {
+	pi.on("input", async (event, ctx) => {
 		if (event.source === "extension") return
-		const route = sessionRoutes.get(ctx.sessionManager.getSessionId())
-		if (route?.owner !== owner) return
+		const route = routeForContext(ctx)
+		if (!route) return
+		await route.transaction.resetForNewTurn()
 		route.changedThisTurn = false
 		route.pendingMutatingToolCalls.clear()
+		route.pendingPostApplyValidationCalls.clear()
 	})
 	pi.on("tool_execution_start", (event, ctx) => {
 		const route = sessionRoutes.get(ctx.sessionManager.getSessionId())
@@ -112,24 +144,56 @@ export default function councilExtension(pi: ExtensionAPI): void {
 		if (isMutatingCouncilToolCall(event.toolName, event.args)) {
 			route.pendingMutatingToolCalls.add(event.toolCallId)
 		}
+		const command =
+			event.args && typeof event.args === "object" ? (event.args as { command?: unknown }).command : undefined
+		if (
+			route.transaction.state === "post_apply_checks" &&
+			event.toolName === "bash" &&
+			typeof command === "string" &&
+			isCouncilPostApplyValidationCommand(command)
+		) {
+			route.pendingPostApplyValidationCalls.set(event.toolCallId, command)
+		}
 	})
 	pi.on("tool_execution_end", (event, ctx) => {
-		const route = sessionRoutes.get(ctx.sessionManager.getSessionId())
-		if (route?.owner !== owner) return
+		const route = routeForContext(ctx)
+		if (!route) return
 		const wasMutating = route.pendingMutatingToolCalls.delete(event.toolCallId)
 		if (!event.isError && wasMutating) route.changedThisTurn = true
+		const validationCommand = route.pendingPostApplyValidationCalls.get(event.toolCallId)
+		if (validationCommand !== undefined) {
+			route.pendingPostApplyValidationCalls.delete(event.toolCallId)
+			route.transaction.recordPostApplyCheck(event.toolName, validationCommand, !event.isError)
+		}
 	})
 	pi.on("agent_start", () => activeProgressUI()?.clear())
-	pi.on("model_select", () => activeProgressUI()?.clear())
-	pi.on("session_shutdown", () => {
-		activeProgressUI()?.dispose()
-		if (activeSessionId && sessionRoutes.get(activeSessionId)?.owner === owner) {
-			sessionRoutes.delete(activeSessionId)
+	pi.on("before_agent_start", (_event, ctx) => syncCouncilTransactionToolVisibility(pi, ctx.model))
+	pi.on("model_select", async (event, ctx) => {
+		activeProgressUI()?.clear()
+		const route = routeForContext(ctx)
+		const model = event?.model ?? ctx?.model
+		if (route && model && !isCouncilVirtualModel(model)) {
+			await route.transaction.abandon()
+			route.transaction.resetRunBudget()
+			route.changedThisTurn = false
+			route.pendingMutatingToolCalls.clear()
+			route.pendingPostApplyValidationCalls.clear()
 		}
+		if (model) syncCouncilTransactionToolVisibility(pi, model)
+	})
+	pi.on("session_shutdown", async (_event, ctx) => {
+		const route = routeForContext(ctx)
+		const sessionId = ctx?.sessionManager?.getSessionId() ?? activeSessionId
+		if (route) {
+			route.progressUI?.dispose()
+			await route.transaction.abandon()
+			route.transaction.resetRunBudget()
+		}
+		if (sessionId && sessionRoutes.get(sessionId)?.owner === owner) sessionRoutes.delete(sessionId)
 		activeSessionId = undefined
 	})
 	const streamSimple = (model: Model<Api>, context: Context, options?: SimpleStreamOptions) =>
-		routeCouncilStream(model, context, options, () => {
+		routeCouncilStream(owner, model, context, options, () => {
 			if (!activeSessionId) return undefined
 			const route = sessionRoutes.get(activeSessionId)
 			return route?.owner === owner ? route : undefined

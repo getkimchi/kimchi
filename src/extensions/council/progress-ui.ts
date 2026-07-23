@@ -1,6 +1,12 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { truncateToWidth } from "@earendil-works/pi-tui"
-import type { CouncilProgressEvent, CouncilRole, ReviewerRole, SafeCouncilFailureReason } from "./types.js"
+import type {
+	CouncilProgressEvent,
+	CouncilRole,
+	CouncilTransactionProgressPhase,
+	ReviewerRole,
+	SafeCouncilFailureReason,
+} from "./types.js"
 
 export const COUNCIL_PROGRESS_WIDGET_KEY = "council-progress"
 
@@ -17,9 +23,17 @@ const ROLE_LABELS: Record<CouncilRole, string> = {
 	repair: "validating review",
 	revision: "revising",
 }
+const TRANSACTION_PHASE_LABELS: Record<CouncilTransactionProgressPhase, string> = {
+	preparing_candidate: "preparing candidate",
+	validating_patch: "validating patch",
+	reviewing: "reviewing",
+	adjudicating: "adjudicating",
+	revising: "revising",
+	applying: "applying",
+}
 const PRESET_REVIEWERS: Record<"fast" | "normal" | "deep", readonly ReviewerRole[]> = {
 	fast: ["critic"],
-	normal: ["independent", "critic"],
+	normal: ["independent", "critic", "checker"],
 	deep: ["independent", "critic", "checker"],
 }
 const SAFE_FAILURE_LABELS: Record<SafeCouncilFailureReason, string> = {
@@ -74,6 +88,7 @@ export class CouncilProgressUI {
 	private seenRunIds = new Set<string>()
 	private reviewerRoles: readonly ReviewerRole[] = []
 	private stages = new Map<CouncilRole, StageView>()
+	private transactionPhase?: CouncilTransactionProgressPhase
 	private spinnerFrame = 0
 	private timer: ReturnType<typeof setInterval> | undefined
 	private tui: { requestRender(): void } | undefined
@@ -94,6 +109,11 @@ export class CouncilProgressUI {
 		}
 		if (!this.activeRunId || event.runId !== this.activeRunId) return
 
+		if (event.type === "transaction_progress") {
+			this.transactionPhase = event.phase
+			this.requestRender()
+			return
+		}
 		if (event.type === "stage_started") {
 			const stage = this.stages.get(event.role)
 			if (stage && stage.status !== "pending") return
@@ -124,6 +144,7 @@ export class CouncilProgressUI {
 		this.activeRunId = undefined
 		this.reviewerRoles = []
 		this.stages.clear()
+		this.transactionPhase = undefined
 		const summary = event.type === "run_completed" ? completedSummary(event) : failedSummary(event)
 		this.ui.setStatus(STATUS_KEY, summary)
 		this.ui.setWidget(COUNCIL_PROGRESS_WIDGET_KEY, [summary], WIDGET_OPTIONS)
@@ -136,6 +157,7 @@ export class CouncilProgressUI {
 		this.activeRunId = undefined
 		this.reviewerRoles = []
 		this.stages.clear()
+		this.transactionPhase = undefined
 		if (this.hasSummary) {
 			this.ui.setStatus(STATUS_KEY, undefined)
 			this.hasSummary = false
@@ -158,6 +180,7 @@ export class CouncilProgressUI {
 		this.activeRunId = event.runId
 		this.spinnerFrame = 0
 		this.stages.clear()
+		this.transactionPhase = undefined
 		this.reviewerRoles = PRESET_REVIEWERS[event.preset]
 		this.stages.set("lead", { status: "pending" })
 		for (const role of this.reviewerRoles) this.stages.set(role, { status: "pending" })
@@ -205,19 +228,21 @@ export class CouncilProgressUI {
 			return status === "completed" || status === "failed"
 		}).length
 		const reviewing = this.reviewerRoles.some((role) => this.stages.get(role)?.status !== "pending")
-		const headline = runningRoles.includes("revision")
-			? "revising"
-			: runningRoles.includes("repair")
-				? "validating review"
-				: runningRoles.includes("judge")
-					? "adjudicating"
-					: reviewing
-						? completedReviewers === 0
-							? "reviewing"
-							: `reviewing ${completedReviewers}/${this.reviewerRoles.length}`
-						: runningRoles.includes("lead")
-							? "drafting"
-							: "drafting"
+		const headline = this.transactionPhase
+			? TRANSACTION_PHASE_LABELS[this.transactionPhase]
+			: runningRoles.includes("revision")
+				? "revising"
+				: runningRoles.includes("repair")
+					? "validating review"
+					: runningRoles.includes("judge")
+						? "adjudicating"
+						: reviewing
+							? completedReviewers === 0
+								? "reviewing"
+								: `reviewing ${completedReviewers}/${this.reviewerRoles.length}`
+							: runningRoles.includes("lead")
+								? "drafting"
+								: "drafting"
 		const spinner = theme.fg("accent", SPINNER[this.spinnerFrame] ?? SPINNER[0] ?? "•")
 		const lines = [theme.bold(`${spinner} Council · ${headline}`)]
 		const visibleRoles = ROLE_ORDER.filter((role) => {

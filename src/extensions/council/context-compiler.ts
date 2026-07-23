@@ -1,7 +1,10 @@
 import type { Api, Context, Model, ToolCall } from "@earendil-works/pi-ai"
+import type { ChangeSet } from "../../agent-patch/index.js"
 import { redactObjectStrings } from "../pii-redaction/redactor.js"
 import type {
 	AssistantTextArtifact,
+	CandidatePatchArtifact,
+	CandidateValidationArtifact,
 	EvidenceArtifact,
 	EvidenceContent,
 	JsonObject,
@@ -60,6 +63,8 @@ export interface CompileCouncilContextOptions {
 	context: Context
 	runId: string
 	leadDraft?: string
+	candidate?: ChangeSet
+	candidateValidation?: CandidateValidationArtifact["candidate_validation"]
 	maxEvidenceBytes?: number
 }
 
@@ -358,7 +363,7 @@ function truncateArtifact(artifact: EvidenceArtifact, maximumBytes: number): Evi
 				preview: truncateHeadTail(serialized, Math.max(128, maximumBytes)),
 			}
 		}
-	} else {
+	} else if (copy.kind === "tool_result") {
 		copy.tool_result.content = copy.tool_result.content.map((part) =>
 			part.type === "text" ? { ...part, text: truncateHeadTail(part.text, Math.max(128, maximumBytes)) } : part,
 		)
@@ -392,6 +397,9 @@ function boundCompiledContext(context: CompiledCouncilContext, maximumBytes: num
 	const mandatoryIds = new Set([
 		working.objective.artifact_id,
 		...working.artifacts.filter(({ kind }) => kind === "system_instruction").map(({ artifact_id }) => artifact_id),
+		...working.artifacts
+			.filter(({ kind }) => kind === "candidate_patch" || kind === "candidate_validation")
+			.map(({ artifact_id }) => artifact_id),
 	])
 	const mandatory = working.artifacts.filter(({ artifact_id }) => mandatoryIds.has(artifact_id))
 	const optional = working.artifacts.filter(({ artifact_id }) => !mandatoryIds.has(artifact_id))
@@ -410,7 +418,9 @@ function boundCompiledContext(context: CompiledCouncilContext, maximumBytes: num
 	}
 	if (byteLength(working) > maximumBytes) {
 		working.artifacts = working.artifacts.map((artifact) =>
-			truncateArtifact(artifact, Math.max(128, Math.floor(maximumBytes / 12))),
+			artifact.kind === "candidate_patch" || artifact.kind === "candidate_validation"
+				? artifact
+				: truncateArtifact(artifact, Math.max(128, Math.floor(maximumBytes / 12))),
 		)
 	}
 	if (byteLength(working) > maximumBytes) {
@@ -423,6 +433,8 @@ export async function compileCouncilContext({
 	context,
 	runId,
 	leadDraft,
+	candidate,
+	candidateValidation,
 	maxEvidenceBytes = DEFAULT_MAX_EVIDENCE_BYTES,
 }: CompileCouncilContextOptions): Promise<CompiledCouncilContext> {
 	const artifacts = compileArtifacts(context)
@@ -431,6 +443,47 @@ export async function compileCouncilContext({
 		.find((artifact): artifact is UserTextArtifact => artifact.kind === "user_text")
 	if (!objective?.text.trim())
 		throw new ContextCompilerError("invalid_context", "Council context has no user objective")
+	let sequence = artifacts.reduce((maximum, artifact) => Math.max(maximum, artifact.sequence), -1) + 1
+	if (candidate) {
+		const candidateArtifact: CandidatePatchArtifact = {
+			artifact_id: "artifact_candidate_patch",
+			kind: "candidate_patch",
+			sequence: sequence++,
+			message_index: null,
+			block_index: null,
+			trust: "untrusted_assistant_output",
+			candidate_patch: {
+				transaction_id: candidate.transactionId,
+				patch_sha256: candidate.patchSha256,
+				operations: candidate.operations.map((operation) => ({
+					kind: operation.kind,
+					path: operation.path,
+					...(operation.kind === "rename" ? { from_path: operation.fromPath } : {}),
+					...(operation.kind === "create" ? {} : { base_sha256: operation.baseSha256 }),
+				})),
+				stats: {
+					files: candidate.stats.files,
+					added_lines: candidate.stats.addedLines,
+					removed_lines: candidate.stats.removedLines,
+					patch_bytes: candidate.stats.patchBytes,
+				},
+				patch: candidate.patch,
+			},
+		}
+		artifacts.push(candidateArtifact)
+	}
+	if (candidateValidation) {
+		const validationArtifact: CandidateValidationArtifact = {
+			artifact_id: "artifact_candidate_validation",
+			kind: "candidate_validation",
+			sequence,
+			message_index: null,
+			block_index: null,
+			trust: "untrusted_tool_output",
+			candidate_validation: candidateValidation,
+		}
+		artifacts.push(validationArtifact)
+	}
 	const packet: CompiledCouncilContext = {
 		schema_version: 1,
 		run_id: runId,
@@ -447,7 +500,43 @@ export async function compileCouncilContext({
 	} catch (error) {
 		throw new ContextCompilerError("redaction_failed", "Council evidence redaction failed", { cause: error })
 	}
+	const originalCandidate = packet.artifacts.find(
+		(artifact): artifact is CandidatePatchArtifact => artifact.kind === "candidate_patch",
+	)
+	const redactedCandidate = redacted.artifacts.find(
+		(artifact): artifact is CandidatePatchArtifact => artifact.kind === "candidate_patch",
+	)
+	if (originalCandidate && redactedCandidate?.candidate_patch.patch !== originalCandidate.candidate_patch.patch) {
+		throw new ContextCompilerError("redaction_failed", "Council cannot review a patch altered by evidence redaction")
+	}
 	return boundCompiledContext(redacted, maxEvidenceBytes)
+}
+
+const STAGED_MUTATION_TOOLS = new Set(["edit", "write", "council_delete_file", "council_rename_file"])
+
+function independentEvidence(context: CompiledCouncilContext): EvidenceArtifact[] {
+	const objective = context.artifacts.find(({ artifact_id }) => artifact_id === context.objective.artifact_id)
+	if (objective?.kind !== "user_text" || objective.message_index === null) {
+		throw new ContextCompilerError("invalid_context", "Council context has no current user turn")
+	}
+	const turnStart = objective.message_index
+	const firstMutation = context.artifacts.find(
+		(artifact) =>
+			artifact.kind === "tool_call" &&
+			artifact.message_index !== null &&
+			artifact.message_index >= turnStart &&
+			STAGED_MUTATION_TOOLS.has(artifact.tool_call.name),
+	)
+	const cutoff = firstMutation?.sequence ?? Number.POSITIVE_INFINITY
+	return context.artifacts.filter(
+		(artifact) =>
+			artifact.kind === "system_instruction" ||
+			(artifact.kind !== "candidate_patch" &&
+				artifact.kind !== "candidate_validation" &&
+				artifact.message_index !== null &&
+				artifact.message_index >= turnStart &&
+				artifact.sequence < cutoff),
+	)
 }
 
 export function buildRoleContext(context: CompiledCouncilContext, role: ReviewerRole): RoleContextArtifact {
@@ -455,7 +544,7 @@ export function buildRoleContext(context: CompiledCouncilContext, role: Reviewer
 		schema_version: 1 as const,
 		run_id: context.run_id,
 		objective: context.objective,
-		evidence: context.artifacts,
+		evidence: role === "independent" ? independentEvidence(context) : context.artifacts,
 		truncation: context.truncation,
 	}
 	if (role === "independent") return { ...common, role }
