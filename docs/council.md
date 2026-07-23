@@ -33,8 +33,8 @@ Preset choice is explicit; Council does not guess task complexity. Use fast for 
 | Model | Review path | Revision | Invocation cap | Lead/internal tokens | Evidence/result | Stage/overall timeout |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
 | `kimchi/council-fast` | critic only; no judge | on critic issues | 5 | 8,192 / 2,048 | 32 / 8 KiB | 60 / 240 seconds |
-| `kimchi/council` | independent + critic; judge | on unresolved issues after judging | 7 | 16,384 / 8,192 | 64 / 32 KiB | 180 / 720 seconds |
-| `kimchi/council-deep` | independent + critic + checker; judge | always | 8 | 32,768 / 8,192 | 128 / 32 KiB | 300 / 1,200 seconds |
+| `kimchi/council` | independent + critic; judge | on unresolved issues after judging | 7 | 16,384 / 16,384 | 128 / 64 KiB | 300 / 1,200 seconds |
+| `kimchi/council-deep` | independent + critic + checker; judge | always | 8 | 32,768 / 16,384 | 128 / 64 KiB | 300 / 1,200 seconds |
 
 ## Configuration
 
@@ -48,12 +48,12 @@ Deep ceilings and physical model defaults:
 | Stage timeout | 300 seconds |
 | Overall timeout | 1,200 seconds |
 | Lead/revision output | 32,768 tokens each |
-| Reviewer/judge output | 8,192 tokens each |
+| Reviewer/judge output | 16,384 tokens each |
 | Physical reasoning (capable models) | role-specific: reviewer `low`/`medium`, judge `high`, revision `low` |
 | Logical calls / physical attempts | 8 / 12 maximum |
 | Parallel reviewers | 3 maximum |
 | Evidence packet | 128 KiB maximum |
-| Aggregate structured output | 32 KiB maximum |
+| Aggregate structured output | 64 KiB maximum |
 | Aggregate input/output tokens | 262,144 / 65,536 maximum |
 | Estimated physical cost | USD 5 maximum |
 
@@ -73,9 +73,9 @@ Environment overrides:
 | `KIMCHI_COUNCIL_STAGE_TIMEOUT_MS` | Per-stage timeout in milliseconds; default and hard maximum `300000`. |
 | `KIMCHI_COUNCIL_MAX_PARALLEL_REVIEWERS` | Maximum concurrent reviewers; default `3`. |
 | `KIMCHI_COUNCIL_LEAD_MAX_TOKENS` | Lead and revision output budget; default and hard maximum `32768`. |
-| `KIMCHI_COUNCIL_INTERNAL_MAX_TOKENS` | Reviewer and judge output budget; default and hard maximum `8192`. |
+| `KIMCHI_COUNCIL_INTERNAL_MAX_TOKENS` | Reviewer and judge output budget; default and hard maximum `16384`. |
 | `KIMCHI_COUNCIL_MAX_EVIDENCE_BYTES` | Text evidence packet limit; default and hard maximum `131072`. |
-| `KIMCHI_COUNCIL_MAX_STRUCTURED_BYTES` | Aggregate structured-output limit; default and hard maximum `32768`. |
+| `KIMCHI_COUNCIL_MAX_STRUCTURED_BYTES` | Aggregate structured-output limit; default and hard maximum `65536`. |
 | `KIMCHI_COUNCIL_MAX_LOGICAL_CALLS` | Whole-run logical call cap; default `8` (`KIMCHI_COUNCIL_MAX_CALLS` remains an alias). |
 | `KIMCHI_COUNCIL_MAX_PHYSICAL_ATTEMPTS` | Whole-run physical attempt cap; default `12`. |
 | `KIMCHI_COUNCIL_MAX_CONCURRENT_CALLS` | Whole-run concurrent physical-call cap; default `3`. |

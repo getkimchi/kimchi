@@ -368,7 +368,7 @@ describe("Council runtime", () => {
 		])
 		expect(completeModel.mock.calls.map(([, , options]) => options?.reasoning)).toEqual([
 			undefined,
-			"low",
+			"medium",
 			"medium",
 			"low",
 			"high",
@@ -2100,11 +2100,19 @@ describe("Council runtime", () => {
 		const repairMessage = repairCalls[0]?.[1].messages[0]
 		const repairPayload = JSON.parse(
 			repairMessage?.role === "user" && typeof repairMessage.content === "string" ? repairMessage.content : "{}",
-		) as { schema?: string; allowed_evidence_refs?: string[] }
+		) as {
+			schema?: string
+			validation_error?: { code?: string; message?: string }
+			allowed_evidence_refs?: string[]
+		}
 
 		expect(result.content).toEqual([{ type: "text", text: "Safe final" }])
 		expect(repairCalls).toHaveLength(1)
 		expect(repairPayload.schema).toContain('"evidence_refs":[]')
+		expect(repairPayload.validation_error).toMatchObject({
+			code: "invalid_json",
+			message: "Council output is not valid JSON",
+		})
 		expect(repairPayload.allowed_evidence_refs).toEqual(["artifact_message_0_block_0_user_text"])
 		expect(JSON.stringify(result)).not.toContain(rawInternal)
 		expect(JSON.stringify(runRecord)).not.toContain(rawInternal)

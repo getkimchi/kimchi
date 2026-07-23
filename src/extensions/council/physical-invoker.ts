@@ -81,7 +81,7 @@ export interface PhysicalInvokerOptions {
 
 const STAGE_POLICIES: Record<CouncilStage, Pick<SimpleStreamOptions, "reasoning" | "temperature"> | undefined> = {
 	lead: undefined,
-	independent: { temperature: 0.4, reasoning: "low" },
+	independent: { temperature: 0.4, reasoning: "medium" },
 	critic: { temperature: 0.2, reasoning: "medium" },
 	checker: { temperature: 0, reasoning: "low" },
 	judge: { temperature: 0, reasoning: "high" },

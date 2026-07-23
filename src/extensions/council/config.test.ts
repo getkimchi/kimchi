@@ -148,4 +148,17 @@ describe("applyCouncilPreset", () => {
 			expect(applied.judge).toEqual(lower.judge)
 		}
 	})
+
+	it.each(["normal", "deep"] as const)("keeps quality headroom in the %s preset", (preset) => {
+		const config = applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, preset)
+
+		expect(config).toMatchObject({
+			overallTimeoutMs: 1_200_000,
+			stageTimeoutMs: 300_000,
+			internalMaxTokens: 16_384,
+			maxEvidenceBytes: 131_072,
+			maxStructuredBytes: 65_536,
+			budget: { maxAggregateOutputTokens: 65_536 },
+		})
+	})
 })

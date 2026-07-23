@@ -40,6 +40,7 @@ import { shouldReviewCouncilTurn } from "./review-policy.js"
 import { CouncilRunContext, RunFailure } from "./run-context.js"
 import {
 	type CouncilFinding,
+	CouncilSchemaError,
 	type EvidenceArtifact,
 	type JudgeArtifact,
 	parseJudgeArtifact,
@@ -360,6 +361,13 @@ export function createCouncilStream({
 										content: JSON.stringify({
 											kind,
 											schema,
+											validation_error: {
+												code: error instanceof CouncilSchemaError ? error.code : "invalid_output",
+												message: truncateBytes(
+													error instanceof Error ? error.message : "Council structured output failed validation",
+													4096,
+												),
+											},
 											...(allowedEvidenceRefs ? { allowed_evidence_refs: allowedEvidenceRefs } : {}),
 											...(allowedFindings ? { allowed_findings: allowedFindings } : {}),
 											raw: truncateBytes(raw, maxStructuredBytes),

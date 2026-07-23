@@ -143,7 +143,7 @@ describe("PhysicalModelInvoker", () => {
 
 		expect(result).toMatchObject({ modelRef: "physical/fallback", attempts: 2 })
 		expect(completeModel).toHaveBeenCalledTimes(2)
-		expect(completeModel.mock.calls[0]?.[2]).toMatchObject({ reasoning: "low" })
+		expect(completeModel.mock.calls[0]?.[2]).toMatchObject({ reasoning: "medium" })
 		run.close()
 	})
 

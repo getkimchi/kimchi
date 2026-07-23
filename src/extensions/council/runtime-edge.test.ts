@@ -331,6 +331,47 @@ describe("Council runtime adversarial edges", () => {
 		expect(repairRaw).toContain("REPAIR_TAIL")
 	})
 
+	it("keeps enough structured-output budget to reach revision after a large valid review", async () => {
+		const largeReview = JSON.stringify({
+			schema_version: 1,
+			role: "independent",
+			decision: "revise",
+			findings: [],
+			recommended_changes: Array.from({ length: 9 }, (_, index) => `${index}:${"x".repeat(3700)}`),
+			missing_evidence: [],
+			independent_solution: "Apply the recommended changes.",
+			key_claims: [],
+			assumptions: [],
+			risks: [],
+			required_checks: [],
+		})
+		const completeModel = vi.fn<CompleteModel>(async (model, context) => {
+			switch (stage(context)) {
+				case "review":
+					return response(model, largeReview)
+				case "judge":
+					return response(model, VALID_JUDGE)
+				case "revision":
+					return response(model, "Revised after large review")
+				default:
+					return response(model, "Lead")
+			}
+		})
+
+		const { result, record } = await runCouncil({
+			completeModel,
+			config: {
+				...reviewerConfig(["kimchi-dev/glm-5.2-fp8"]),
+				maxParallelReviewers: 1,
+			},
+		})
+
+		expect(Buffer.byteLength(largeReview)).toBeGreaterThan(32_768)
+		expect(result.content).toEqual([{ type: "text", text: "Revised after large review" }])
+		expect(record).toMatchObject({ outcome: "revised" })
+		expect(record?.budget.structuredBytes).toBeGreaterThan(32_768)
+	})
+
 	it("does not accept a resolved disagreement without a resolution", async () => {
 		const emptyResolution = JSON.stringify({
 			...JSON.parse(VALID_JUDGE),
