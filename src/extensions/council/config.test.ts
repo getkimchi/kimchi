@@ -105,9 +105,9 @@ describe("validateCouncilConfig", () => {
 
 describe("applyCouncilPreset", () => {
 	it.each([
-		["fast", ["critic"], 10, 14, 1, false, "on-issues", "changes"],
-		["normal", ["independent", "critic", "checker"], 20, 30, 3, true, "on-issues", "always"],
-		["deep", ["independent", "critic", "checker"], 24, 36, 3, true, "always", "always"],
+		["fast", ["critic"], 8, 8, 1, false, "on-issues", "changes"],
+		["normal", ["independent", "critic", "checker"], 10, 10, 3, true, "on-issues", "always"],
+		["deep", ["independent", "critic", "checker"], 10, 10, 3, true, "always", "always"],
 	] as const)("applies the %s execution policy", (preset, roles, logical, physical, concurrent, judge, revision, reviewPolicy) => {
 		const config = applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, preset)
 		expect(config.requiredRoles).toEqual(roles)
@@ -120,6 +120,19 @@ describe("applyCouncilPreset", () => {
 		expect(config.useJudge).toBe(judge)
 		expect(config.revisionPolicy).toBe(revision)
 		expect(config.reviewPolicy).toBe(reviewPolicy)
+	})
+
+	it("covers the minimum supported revision call sequence", () => {
+		expect(applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, "fast").budget).toMatchObject({
+			maxLogicalCalls: 8,
+			maxPhysicalAttempts: 8,
+		})
+		for (const preset of ["normal", "deep"] as const) {
+			expect(applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, preset).budget).toMatchObject({
+				maxLogicalCalls: 10,
+				maxPhysicalAttempts: 10,
+			})
+		}
 	})
 
 	it("keeps lower caller limits below preset caps and preserves model pools", () => {
@@ -138,7 +151,11 @@ describe("applyCouncilPreset", () => {
 
 		for (const preset of ["fast", "normal", "deep"] as const) {
 			const applied = applyCouncilPreset(lower, preset)
-			expect(applied).toMatchObject({ maxParallelReviewers: 1, overallTimeoutMs: 120_000, maxCalls: 3 })
+			expect(applied).toMatchObject({
+				maxParallelReviewers: 1,
+				overallTimeoutMs: preset === "fast" ? 45_000 : 120_000,
+				maxCalls: 3,
+			})
 			expect(applied.budget).toMatchObject({
 				maxLogicalCalls: 3,
 				maxPhysicalAttempts: 4,
@@ -155,18 +172,18 @@ describe("applyCouncilPreset", () => {
 	})
 
 	it.each([
-		["normal", 1_800_000, 24_576, 1_048_576, 196_608],
-		["deep", 2_400_000, 32_768, 1_572_864, 262_144],
-	] as const)("keeps quality headroom in the %s preset", (preset, timeout, leadTokens, inputTokens, outputTokens) => {
+		["normal", 120_000, 90_000, 24_576, 32_768, 524_288, 65_536],
+		["deep", 300_000, 120_000, 32_768, 49_152, 786_432, 98_304],
+	] as const)("keeps quality headroom in the %s preset", (preset, timeout, stageTimeout, leadTokens, structuredBytes, inputTokens, outputTokens) => {
 		const config = applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, preset)
 
 		expect(config).toMatchObject({
 			overallTimeoutMs: timeout,
-			stageTimeoutMs: 600_000,
+			stageTimeoutMs: stageTimeout,
 			leadMaxTokens: leadTokens,
 			internalMaxTokens: 16_384,
 			maxEvidenceBytes: 131_072,
-			maxStructuredBytes: 65_536,
+			maxStructuredBytes: structuredBytes,
 			budget: {
 				maxAggregateInputTokens: inputTokens,
 				maxAggregateOutputTokens: outputTokens,

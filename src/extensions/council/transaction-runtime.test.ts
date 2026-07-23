@@ -3,8 +3,35 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { CouncilTransactionRuntime } from "./transaction-runtime.js"
+import type { ValidationCheck } from "./validation.js"
 
 const roots: string[] = []
+const validationChecks: ValidationCheck[] = [
+	{
+		id: "package.test",
+		kind: "test",
+		cwd: ".",
+		executable: "node",
+		args: ["--test"],
+		timeoutMs: 30_000,
+		mutationPolicy: "read-only",
+		expectedOutputs: [],
+	},
+	{
+		id: "package.typecheck",
+		kind: "typecheck",
+		cwd: ".",
+		executable: "node",
+		args: ["--check", "file.txt"],
+		timeoutMs: 30_000,
+		mutationPolicy: "read-only",
+		expectedOutputs: [],
+	},
+]
+
+function runtimeWithChecks(root: string): CouncilTransactionRuntime {
+	return new CouncilTransactionRuntime(root, undefined, validationChecks)
+}
 
 async function fixture(content = "before\n"): Promise<{ root: string; file: string }> {
 	const root = await mkdtemp(join(tmpdir(), "council-transaction-runtime-"))
@@ -58,11 +85,14 @@ describe("CouncilTransactionRuntime telemetry", () => {
 
 	it("records successful base verification, post-apply checks, and rollback", async () => {
 		const { root, file } = await fixture()
-		const runtime = new CouncilTransactionRuntime(root)
+		const runtime = runtimeWithChecks(root)
 		await runtime.ensure().stageWrite("file.txt", "after\n")
 		const candidate = runtime.propose()
+		runtime.setRequiredPostApplyChecks(["package.test"])
 		await runtime.apply(runtime.accept(candidate.patchSha256))
-		runtime.recordPostApplyCheck("bash", "pnpm test", false)
+		const check = await runtime.preparePostApplyCheck()
+		if (!check) throw new Error("missing validation check")
+		await runtime.recordPostApplyCheck("bash", check.command, false)
 		const settlement = runtime.settlementRequest("rollback")
 		if (!settlement) throw new Error("missing settlement capability")
 		await runtime.settle(settlement)
@@ -80,32 +110,39 @@ describe("CouncilTransactionRuntime telemetry", () => {
 
 	it("binds settlement to every exact required validation command", async () => {
 		const { root } = await fixture()
-		const runtime = new CouncilTransactionRuntime(root)
+		const runtime = runtimeWithChecks(root)
 		await runtime.ensure().stageWrite("file.txt", "after\n")
 		const candidate = runtime.propose()
-		runtime.setRequiredPostApplyChecks(["pnpm test", "pnpm run typecheck"])
+		runtime.setRequiredPostApplyChecks(["package.test", "package.typecheck"])
 		await runtime.apply(runtime.accept(candidate.patchSha256))
 
-		runtime.recordPostApplyCheck("bash", "pnpm run lint", true)
+		await runtime.recordPostApplyCheck("bash", "pnpm run lint", true)
 		expect(runtime.postApplyChecksComplete).toBe(false)
-		expect(runtime.pendingPostApplyCheck).toBe("pnpm test")
+		expect(runtime.pendingPostApplyCheck?.id).toBe("package.test")
 
-		runtime.recordPostApplyCheck("bash", "pnpm test", true)
+		const test = await runtime.preparePostApplyCheck()
+		if (!test) throw new Error("missing test check")
+		await runtime.recordPostApplyCheck("bash", test.command, true)
 		expect(runtime.postApplyChecksComplete).toBe(false)
-		expect(runtime.pendingPostApplyCheck).toBe("pnpm run typecheck")
+		expect(runtime.pendingPostApplyCheck?.id).toBe("package.typecheck")
 
-		runtime.recordPostApplyCheck("bash", "pnpm run typecheck", true)
+		const typecheck = await runtime.preparePostApplyCheck()
+		if (!typecheck) throw new Error("missing typecheck")
+		await runtime.recordPostApplyCheck("bash", typecheck.command, true)
 		expect(runtime.postApplyChecksComplete).toBe(true)
 		expect(runtime.postApplyChecksPassed).toBe(true)
 	})
 
 	it("emits settlement capability once and keeps rollback available if execution is denied", async () => {
 		const { root, file } = await fixture()
-		const runtime = new CouncilTransactionRuntime(root)
+		const runtime = runtimeWithChecks(root)
 		await runtime.ensure().stageWrite("file.txt", "after\n")
 		const candidate = runtime.propose()
+		runtime.setRequiredPostApplyChecks(["package.test"])
 		await runtime.apply(runtime.accept(candidate.patchSha256))
-		runtime.recordPostApplyCheck("bash", "pnpm test", true)
+		const check = await runtime.preparePostApplyCheck()
+		if (!check) throw new Error("missing validation check")
+		await runtime.recordPostApplyCheck("bash", check.command, true)
 
 		expect(runtime.settlementRequest("finalize")).toBeDefined()
 		expect(runtime.settlementRequest("finalize")).toBeUndefined()
@@ -116,14 +153,65 @@ describe("CouncilTransactionRuntime telemetry", () => {
 		expect(runtime.reviewAgreement).toBeUndefined()
 	})
 
+	it("restores unexpected validation mutations and blocks finalization", async () => {
+		const { root, file } = await fixture()
+		const runtime = runtimeWithChecks(root)
+		await runtime.ensure().stageWrite("file.txt", "after\n")
+		const candidate = runtime.propose()
+		runtime.setRequiredPostApplyChecks(["package.test"])
+		await runtime.apply(runtime.accept(candidate.patchSha256))
+		const check = await runtime.preparePostApplyCheck()
+		if (!check) throw new Error("missing validation check")
+		await writeFile(join(root, "leaked.txt"), "unexpected\n")
+
+		await runtime.recordPostApplyCheck("bash", check.command, true)
+
+		await expect(readFile(join(root, "leaked.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" })
+		expect(await readFile(file, "utf8")).toBe("after\n")
+		expect(runtime.postApplyChecksPassed).toBe(false)
+		expect(runtime.settlementRequest("finalize")).toBeUndefined()
+		expect(runtime.checks[0]).toMatchObject({
+			id: "package.test",
+			ok: false,
+			mutation: "unexpected_restored",
+		})
+		await settle(runtime, "rollback")
+		expect(await readFile(file, "utf8")).toBe("before\n")
+	})
+
+	it("rejects unknown validation IDs before apply", async () => {
+		const { root } = await fixture()
+		const runtime = runtimeWithChecks(root)
+		await runtime.ensure().stageWrite("file.txt", "after\n")
+		runtime.propose()
+
+		expect(() => runtime.setRequiredPostApplyChecks(["unknown.check"])).toThrow(
+			"Council selected unknown validation check",
+		)
+	})
+
+	it("stores the reviewed response byte-for-byte", async () => {
+		const { root } = await fixture()
+		const runtime = runtimeWithChecks(root)
+		const candidate = await stageCandidate(runtime)
+		const reviewedResponse = "\nReviewed response with intentional whitespace.\n"
+
+		runtime.accept(candidate.patchSha256, reviewedResponse)
+
+		expect(runtime.acceptedResponse).toBe(reviewedResponse)
+	})
+
 	it.each([
 		{
 			state: "applied",
 			prepare: async (runtime: CouncilTransactionRuntime) => {
 				const candidate = await stageCandidate(runtime)
 				runtime.setReviewAgreement("high")
+				runtime.setRequiredPostApplyChecks(["package.test"])
 				await runtime.apply(runtime.accept(candidate.patchSha256, "Reviewed response"))
-				runtime.recordPostApplyCheck("bash", "pnpm test", true)
+				const check = await runtime.preparePostApplyCheck()
+				if (!check) throw new Error("missing validation check")
+				await runtime.recordPostApplyCheck("bash", check.command, true)
 				await settle(runtime, "finalize")
 			},
 		},
@@ -131,8 +219,11 @@ describe("CouncilTransactionRuntime telemetry", () => {
 			state: "rolled_back",
 			prepare: async (runtime: CouncilTransactionRuntime) => {
 				const candidate = await stageCandidate(runtime)
+				runtime.setRequiredPostApplyChecks(["package.test"])
 				await runtime.apply(runtime.accept(candidate.patchSha256))
-				runtime.recordPostApplyCheck("bash", "pnpm test", false)
+				const check = await runtime.preparePostApplyCheck()
+				if (!check) throw new Error("missing validation check")
+				await runtime.recordPostApplyCheck("bash", check.command, false)
 				await settle(runtime, "rollback")
 			},
 		},
@@ -154,7 +245,7 @@ describe("CouncilTransactionRuntime telemetry", () => {
 		},
 	])("starts a fresh next turn after $state", async ({ state, prepare }) => {
 		const { root, file } = await fixture()
-		const runtime = new CouncilTransactionRuntime(root)
+		const runtime = runtimeWithChecks(root)
 		await prepare(runtime, file)
 		const previous = runtime.current
 		expect(runtime.state).toBe(state)

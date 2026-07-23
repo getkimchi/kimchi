@@ -12,17 +12,20 @@ describe("Council telemetry", () => {
 			totalTokens: 14,
 			cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 },
 		})
-		const budget = toCouncilBudgetUsage({
-			logicalCalls: 2,
-			physicalAttempts: 3,
-			activeCalls: 0,
-			peakConcurrentCalls: 2,
-			inputTokens: 2,
-			outputTokens: 3,
-			estimatedCostUsd: 1,
-			evidenceBytes: 10,
-			structuredBytes: 20,
-		})
+		const budget = toCouncilBudgetUsage(
+			{
+				logicalCalls: 2,
+				physicalAttempts: 3,
+				activeCalls: 0,
+				peakConcurrentCalls: 2,
+				inputTokens: 2,
+				outputTokens: 3,
+				estimatedCostUsd: 1,
+				evidenceBytes: 10,
+				structuredBytes: 20,
+			},
+			{ hits: 2, misses: 3 },
+		)
 		const transaction = Object.assign(
 			{
 				transactionId: "transaction",
@@ -32,7 +35,22 @@ describe("Council telemetry", () => {
 				stats: { files: 1, addedLines: 1, removedLines: 0, patchBytes: 10 },
 				baseVerification: "passed",
 				revisionCount: 0,
-				postApplyChecks: [{ toolName: "bash", ok: true }],
+				selectedValidationCheckIds: ["package.test"],
+				postApplyChecks: [
+					{
+						id: "package.test",
+						kind: "test",
+						toolName: "bash",
+						command: "node verify.mjs --token castai_v1_abcdefgh123456",
+						ok: true,
+						exitCode: 0,
+						durationMs: 10,
+						beforeSha256: "a".repeat(64),
+						afterSha256: "a".repeat(64),
+						mutationPolicy: "read-only",
+						mutation: "none",
+					},
+				],
 				rollbackState: "not_available",
 				hardRecoveryRequired: false,
 			} satisfies CouncilTransactionSnapshot,
@@ -64,10 +82,14 @@ describe("Council telemetry", () => {
 
 		expect(record.usage).toEqual(usage)
 		expect(record.budget).toEqual(budget)
+		expect(record.budget).toMatchObject({ cacheHits: 2, cacheMisses: 3 })
 		expect(record.stages[0]?.error).toBe("unknown")
 		expect(record).toMatchObject({ unresolvedFindingCount: 1, missingReviewerRoles: ["checker"] })
 		expect(record.stages[0]).toMatchObject({ truncated: true, retry: true })
 		expect(record.transaction).toMatchObject({ transactionId: "transaction", patchSha256: "patch" })
-		expect(JSON.stringify(record)).not.toMatch(/server-secret|private chain|token|internalReasoning/)
+		expect(record.transaction?.postApplyChecks[0]?.command).toMatch(/^sha256:[a-f0-9]{64}$/)
+		expect(JSON.stringify(record)).not.toMatch(
+			/server-secret|private chain|castai_v1_abcdefgh123456|token|internalReasoning/,
+		)
 	})
 })

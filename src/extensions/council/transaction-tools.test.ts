@@ -202,7 +202,10 @@ describe("Council transaction tools", () => {
 	it("fails closed for unknown and mutating tools but permits reads and post-apply checks", () => {
 		const registered = harness()
 		const staging = { state: "staging" } as CouncilTransactionRuntime
-		const postApply = { state: "post_apply_checks" } as CouncilTransactionRuntime
+		const postApply = {
+			state: "post_apply_checks",
+			isExpectedPostApplyValidationCommand: (command: string) => command === "pnpm test",
+		} as unknown as CouncilTransactionRuntime
 		let current = staging
 		installCouncilMutationGuard(registered.pi, () => current)
 		const handler = registered.on.mock.calls.find(([event]) => event === "tool_call")?.[1] as ToolCallHandler
@@ -218,7 +221,9 @@ describe("Council transaction tools", () => {
 
 		current = postApply
 		expect(handler({ toolName: "bash", input: { command: "pnpm test" } }, ctx)).toBeUndefined()
-		expect(handler({ toolName: "bash", input: { command: "pnpm exec vitest run file.test.ts" } }, ctx)).toBeUndefined()
+		expect(handler({ toolName: "bash", input: { command: "pnpm exec vitest run file.test.ts" } }, ctx)).toMatchObject({
+			block: true,
+		})
 		expect(handler({ toolName: "bash", input: { command: "pytest --basetemp=." } }, ctx)).toMatchObject({
 			block: true,
 		})

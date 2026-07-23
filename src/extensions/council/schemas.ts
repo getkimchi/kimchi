@@ -141,10 +141,10 @@ const SeveritySchema = z.enum(["critical", "high", "medium", "low"])
 const RawFindingSchema = z
 	.object({
 		severity: SeveritySchema,
-		statement: nonEmptyString(4096),
-		evidence_refs: boundedStringList(),
-		assumptions: boundedStringList(),
-		suggested_check: z.string().max(2048),
+		statement: nonEmptyString(2048),
+		evidence_refs: boundedStringList(12, 256),
+		assumptions: boundedStringList(8, 1024),
+		suggested_check: z.string().max(1024),
 	})
 	.strict()
 
@@ -157,24 +157,24 @@ export type CouncilFinding = z.infer<typeof CouncilFindingSchema>
 const commonRawReviewShape = {
 	schema_version: z.literal(1),
 	decision: DecisionSchema,
-	findings: z.array(RawFindingSchema).max(20),
-	recommended_changes: boundedStringList(),
-	missing_evidence: boundedStringList(),
+	findings: z.array(RawFindingSchema).max(8),
+	recommended_changes: boundedStringList(8, 2048),
+	missing_evidence: boundedStringList(8, 2048),
 }
 
 const commonReviewShape = {
 	schema_version: z.literal(1),
 	decision: DecisionSchema,
-	findings: z.array(CouncilFindingSchema).max(20),
-	recommended_changes: boundedStringList(),
-	missing_evidence: boundedStringList(),
+	findings: z.array(CouncilFindingSchema).max(8),
+	recommended_changes: boundedStringList(8, 2048),
+	missing_evidence: boundedStringList(8, 2048),
 }
 
 const RequirementCheckSchema = z
 	.object({
-		requirement: nonEmptyString(4096),
+		requirement: nonEmptyString(2048),
 		status: z.enum(["satisfied", "unsatisfied", "not_proven"]),
-		evidence_refs: boundedStringList(),
+		evidence_refs: boundedStringList(12, 256),
 	})
 	.strict()
 
@@ -182,11 +182,11 @@ export const IndependentReviewOutputSchema = z
 	.object({
 		...commonRawReviewShape,
 		role: z.literal("independent"),
-		independent_solution: nonEmptyString(16_384),
-		key_claims: boundedStringList(40),
-		assumptions: boundedStringList(40),
-		risks: boundedStringList(40),
-		required_checks: boundedStringList(40),
+		independent_solution: nonEmptyString(8192),
+		key_claims: boundedStringList(8, 2048),
+		assumptions: boundedStringList(8, 2048),
+		risks: boundedStringList(8, 2048),
+		required_checks: boundedStringList(5, 2048),
 	})
 	.strict()
 
@@ -194,9 +194,9 @@ export const CriticReviewOutputSchema = z
 	.object({
 		...commonRawReviewShape,
 		role: z.literal("critic"),
-		challenged_assumptions: boundedStringList(),
-		counterexamples: boundedStringList(40),
-		affected_claims: boundedStringList(40),
+		challenged_assumptions: boundedStringList(8, 2048),
+		counterexamples: boundedStringList(8, 2048),
+		affected_claims: boundedStringList(8, 2048),
 	})
 	.strict()
 
@@ -204,7 +204,7 @@ export const CheckerReviewOutputSchema = z
 	.object({
 		...commonRawReviewShape,
 		role: z.literal("checker"),
-		requirement_checks: z.array(RequirementCheckSchema).max(50),
+		requirement_checks: z.array(RequirementCheckSchema).max(20),
 	})
 	.strict()
 
@@ -212,11 +212,11 @@ export const IndependentReviewArtifactSchema = z
 	.object({
 		...commonReviewShape,
 		role: z.literal("independent"),
-		independent_solution: nonEmptyString(16_384),
-		key_claims: boundedStringList(40),
-		assumptions: boundedStringList(40),
-		risks: boundedStringList(40),
-		required_checks: boundedStringList(40),
+		independent_solution: nonEmptyString(8192),
+		key_claims: boundedStringList(8, 2048),
+		assumptions: boundedStringList(8, 2048),
+		risks: boundedStringList(8, 2048),
+		required_checks: boundedStringList(5, 2048),
 	})
 	.strict()
 
@@ -224,9 +224,9 @@ export const CriticReviewArtifactSchema = z
 	.object({
 		...commonReviewShape,
 		role: z.literal("critic"),
-		challenged_assumptions: boundedStringList(),
-		counterexamples: boundedStringList(40),
-		affected_claims: boundedStringList(40),
+		challenged_assumptions: boundedStringList(8, 2048),
+		counterexamples: boundedStringList(8, 2048),
+		affected_claims: boundedStringList(8, 2048),
 	})
 	.strict()
 
@@ -234,7 +234,7 @@ export const CheckerReviewArtifactSchema = z
 	.object({
 		...commonReviewShape,
 		role: z.literal("checker"),
-		requirement_checks: z.array(RequirementCheckSchema).max(50),
+		requirement_checks: z.array(RequirementCheckSchema).max(20),
 	})
 	.strict()
 
@@ -247,10 +247,10 @@ export const FindingDispositionSchema = z
 	.object({
 		finding_id: CouncilFindingSchema.shape.id,
 		disposition: z.enum(["upheld", "resolved", "needs_evidence"]),
-		rationale: nonEmptyString(4096),
-		evidence_refs: boundedStringList(),
-		revision_instruction: z.string().max(4096).nullable(),
-		required_check: z.string().max(4096).nullable(),
+		rationale: nonEmptyString(2048),
+		evidence_refs: boundedStringList(12, 256),
+		revision_instruction: z.string().max(2048).nullable(),
+		required_check: z.string().max(2048).nullable(),
 	})
 	.strict()
 
@@ -258,15 +258,15 @@ export const JudgeArtifactSchema = z
 	.object({
 		schema_version: z.literal(1),
 		decision: DecisionSchema,
-		dispositions: z.array(FindingDispositionSchema).max(60),
-		consensus: boundedStringList(40),
-		contradictions: boundedStringList(40),
-		partial_coverage: boundedStringList(40),
-		unique_insights: boundedStringList(40),
-		blind_spots: boundedStringList(40),
-		unsupported_claims: boundedStringList(40),
-		required_checks: boundedStringList(40),
-		revision_instructions: boundedStringList(40),
+		dispositions: z.array(FindingDispositionSchema).max(24),
+		consensus: boundedStringList(8, 2048),
+		contradictions: boundedStringList(8, 2048),
+		partial_coverage: boundedStringList(8, 2048),
+		unique_insights: boundedStringList(8, 2048),
+		blind_spots: boundedStringList(8, 2048),
+		unsupported_claims: boundedStringList(8, 2048),
+		required_checks: z.array(nonEmptyString(64)).max(3),
+		revision_instructions: boundedStringList(8, 2048),
 		agreement: z.enum(["low", "medium", "high"]),
 	})
 	.strict()
@@ -278,8 +278,8 @@ const FinalCheckResolutionSchema = z
 	.object({
 		obligation_id: nonEmptyString(128),
 		status: z.enum(["resolved", "unresolved", "needs_evidence"]),
-		rationale: nonEmptyString(4096),
-		evidence_refs: boundedStringList(),
+		rationale: nonEmptyString(2048),
+		evidence_refs: boundedStringList(12, 256),
 	})
 	.strict()
 
@@ -289,7 +289,7 @@ export const FinalCheckOutputSchema = z
 		role: z.literal("checker"),
 		decision: z.enum(["accept", "reject", "needs_evidence"]),
 		patch_sha256: z.string().regex(/^[a-f0-9]{64}$/),
-		resolutions: z.array(FinalCheckResolutionSchema).max(80),
+		resolutions: z.array(FinalCheckResolutionSchema).max(40),
 	})
 	.strict()
 
@@ -435,6 +435,7 @@ export function parseReviewArtifact(
 	raw: string,
 	role: ReviewerRole,
 	allowedEvidenceIds: Iterable<string>,
+	expectedRequirementIds: Iterable<string> = [],
 ): ReviewArtifact {
 	const value = parseDeterministicJson(raw)
 	const parsed =
@@ -447,7 +448,25 @@ export function parseReviewArtifact(
 	const allowed = new Set(allowedEvidenceIds)
 	for (const finding of parsed.data.findings) validateEvidenceReferences(finding.evidence_refs, allowed)
 	if (parsed.data.role === "checker") {
-		for (const check of parsed.data.requirement_checks) validateEvidenceReferences(check.evidence_refs, allowed)
+		const expected = new Set(expectedRequirementIds)
+		const seen = new Set<string>()
+		for (const check of parsed.data.requirement_checks) {
+			validateEvidenceReferences(check.evidence_refs, allowed)
+			if (!expected.has(check.requirement)) {
+				throw new CouncilSchemaError(
+					"unsupported_reference",
+					`Requirement check references an unsupported requirement: ${check.requirement}`,
+				)
+			}
+			if (seen.has(check.requirement)) {
+				throw new CouncilSchemaError("invalid_shape", `Requirement check is duplicated: ${check.requirement}`)
+			}
+			seen.add(check.requirement)
+		}
+		const missing = [...expected].filter((requirementId) => !seen.has(requirementId))
+		if (missing.length > 0) {
+			throw new CouncilSchemaError("invalid_shape", `Requirement checks are missing: ${missing.join(", ")}`)
+		}
 	}
 	const findings = parsed.data.findings.map((finding) => ({ ...finding, id: stableFindingId(role, finding) }))
 	if (new Set(findings.map(({ id }) => id)).size !== findings.length) {
@@ -468,6 +487,7 @@ export function parseJudgeArtifact(
 	raw: string,
 	findings: readonly CouncilFinding[],
 	allowedEvidenceIds: Iterable<string>,
+	allowedValidationCheckIds?: Iterable<string>,
 ): JudgeArtifact {
 	const parsed = JudgeArtifactSchema.safeParse(parseDeterministicJson(raw))
 	if (!parsed.success) invalidShape(parsed.error)
@@ -518,6 +538,17 @@ export function parseJudgeArtifact(
 			"invalid_shape",
 			`Judge decision ${parsed.data.decision} conflicts with dispositions; expected ${expectedDecision}`,
 		)
+	}
+	if (allowedValidationCheckIds !== undefined) {
+		const allowedChecks = new Set(allowedValidationCheckIds)
+		if (parsed.data.required_checks.length === 0) {
+			throw new CouncilSchemaError("invalid_shape", "Council judge omitted the deterministic validation selection")
+		}
+		for (const checkId of parsed.data.required_checks) {
+			if (!allowedChecks.has(checkId)) {
+				throw new CouncilSchemaError("unsupported_reference", `Unsupported validation check ID: ${checkId}`)
+			}
+		}
 	}
 	return parsed.data
 }

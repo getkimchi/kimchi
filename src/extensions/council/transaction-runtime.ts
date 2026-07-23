@@ -1,8 +1,19 @@
 import { randomUUID } from "node:crypto"
 import type { ApplyReceipt, ChangeSet } from "../../agent-patch/index.js"
 import { ChangeTransaction } from "../../agent-patch/index.js"
+import { CouncilSessionCache } from "./cache.js"
 import type { RunBudgetLimits, RunBudgetSnapshot } from "./run-context.js"
-import type { CouncilTransactionSnapshot } from "./types.js"
+import type { CouncilStage, CouncilTransactionSnapshot } from "./types.js"
+import {
+	captureWorkspaceSnapshot,
+	restoreWorkspaceSnapshot,
+	type ValidationCheck,
+	type ValidationCheckKind,
+	type ValidationMutationPolicy,
+	validationCatalogForPrompt,
+	validationCommand,
+	type WorkspaceSnapshot,
+} from "./validation.js"
 
 export interface CouncilTransactionLimits {
 	maxFiles: number
@@ -41,9 +52,24 @@ export interface CouncilSettlementRequest extends CouncilPromotionRequest {
 }
 
 export interface CouncilPostApplyCheck {
+	id: string
+	kind: ValidationCheckKind
 	toolName: string
 	command: string
 	ok: boolean
+	exitCode: number | null
+	durationMs: number
+	beforeSha256: string
+	afterSha256?: string
+	mutationPolicy: ValidationMutationPolicy
+	mutation: "none" | "expected_only" | "unexpected_restored" | "unexpected_restore_failed"
+}
+
+interface PendingPostApplyCheck {
+	check: ValidationCheck
+	command: string
+	startedAt: number
+	before: WorkspaceSnapshot
 }
 
 export interface CouncilRunBudgetState {
@@ -51,6 +77,8 @@ export interface CouncilRunBudgetState {
 	startedAt: number
 	deadlineAt: number
 	snapshot: RunBudgetSnapshot
+	repairsUsed: number
+	repairedStages: CouncilStage[]
 }
 
 export interface CouncilRevisionObligation {
@@ -66,12 +94,14 @@ export interface CouncilRevisionGate {
 }
 
 export class CouncilTransactionRuntime {
+	readonly cache = new CouncilSessionCache()
 	private transaction?: ChangeTransaction
 	private acceptance?: AcceptanceCapability
 	private settlement?: SettlementCapability
 	private settlementEmitted = false
 	private postApplyChecks: CouncilPostApplyCheck[] = []
-	private requiredPostApplyChecks: string[] = []
+	private selectedValidationCheckIds: string[] = []
+	private pendingValidation?: PendingPostApplyCheck
 	private revisionGate?: CouncilRevisionGate
 	private runBudget?: CouncilRunBudgetState
 	private reviewedResponse?: string
@@ -85,6 +115,7 @@ export class CouncilTransactionRuntime {
 	constructor(
 		private readonly cwd: string,
 		private readonly limits: CouncilTransactionLimits = DEFAULT_COUNCIL_TRANSACTION_LIMITS,
+		private readonly validationChecks: readonly ValidationCheck[] = [],
 	) {}
 
 	get current(): ChangeTransaction | undefined {
@@ -103,20 +134,37 @@ export class CouncilTransactionRuntime {
 		return this.postApplyChecks
 	}
 
-	get pendingPostApplyCheck(): string | undefined {
-		return this.requiredPostApplyChecks.find(
-			(required) => !this.postApplyChecks.some(({ command, ok }) => ok && command === required),
+	get pendingPostApplyCheck(): ValidationCheck | undefined {
+		const id = this.selectedValidationCheckIds.find(
+			(required) => !this.postApplyChecks.some((check) => check.id === required && check.ok),
 		)
+		return id ? this.validationChecks.find((check) => check.id === id) : undefined
 	}
 
 	get postApplyChecksComplete(): boolean {
 		if (this.postApplyChecks.some(({ ok }) => !ok)) return true
-		if (this.requiredPostApplyChecks.length === 0) return this.postApplyChecks.length > 0
+		if (this.selectedValidationCheckIds.length === 0) return false
 		return this.pendingPostApplyCheck === undefined
 	}
 
 	get postApplyChecksPassed(): boolean {
 		return this.postApplyChecksComplete && this.postApplyChecks.every(({ ok }) => ok)
+	}
+
+	get validationCatalog(): readonly ValidationCheck[] {
+		return this.validationChecks
+	}
+
+	get validationCatalogPrompt(): ReturnType<typeof validationCatalogForPrompt> {
+		return validationCatalogForPrompt(this.validationChecks)
+	}
+
+	get selectedValidationChecks(): readonly string[] {
+		return this.selectedValidationCheckIds
+	}
+
+	isExpectedPostApplyValidationCommand(command: string): boolean {
+		return this.state === "post_apply_checks" && this.pendingValidation?.command === command.trim()
 	}
 
 	get savedRunBudget(): CouncilRunBudgetState | undefined {
@@ -148,7 +196,8 @@ export class CouncilTransactionRuntime {
 			stats: changeSet ? { ...changeSet.stats } : undefined,
 			baseVerification: this.baseVerification,
 			revisionCount: this.revisionCount,
-			postApplyChecks: this.postApplyChecks.map(({ toolName, ok }) => ({ toolName, ok })),
+			selectedValidationCheckIds: [...this.selectedValidationCheckIds],
+			postApplyChecks: this.postApplyChecks.map((check) => ({ ...check })),
 			rollbackState:
 				state === "post_apply_checks"
 					? "available"
@@ -169,7 +218,8 @@ export class CouncilTransactionRuntime {
 			this.settlement = undefined
 			this.settlementEmitted = false
 			this.postApplyChecks = []
-			this.requiredPostApplyChecks = []
+			this.selectedValidationCheckIds = []
+			this.pendingValidation = undefined
 			this.revisionGate = undefined
 			this.reviewedResponse = undefined
 			this.agreement = undefined
@@ -230,13 +280,16 @@ export class CouncilTransactionRuntime {
 		this.revisionGate = undefined
 	}
 
-	setRequiredPostApplyChecks(commands: string[]): void {
+	setRequiredPostApplyChecks(checkIds: string[]): void {
 		if (!["proposed", "revision"].includes(this.state)) {
 			throw new Error(`Council cannot set post-apply checks while ${this.state}`)
 		}
-		const normalized = [...new Set(commands.map((command) => command.trim()).filter(Boolean))]
+		const normalized = [...new Set(checkIds.map((id) => id.trim()).filter(Boolean))]
 		if (normalized.length > 3) throw new Error("Council permits at most three required post-apply checks")
-		this.requiredPostApplyChecks = normalized
+		const known = new Set(this.validationChecks.map(({ id }) => id))
+		const unknown = normalized.find((id) => !known.has(id))
+		if (unknown) throw new Error(`Council selected unknown validation check: ${unknown}`)
+		this.selectedValidationCheckIds = normalized
 	}
 
 	setReviewAgreement(agreement: "low" | "medium" | "high"): void {
@@ -258,9 +311,8 @@ export class CouncilTransactionRuntime {
 		const transaction = this.requireCurrent()
 		transaction.accept(expectedPatchSha256)
 		if (reviewedResponse !== undefined) {
-			const normalized = reviewedResponse.trim()
-			if (!normalized) throw new Error("Council reviewed response must not be empty")
-			this.reviewedResponse = normalized
+			if (!reviewedResponse.trim()) throw new Error("Council reviewed response must not be empty")
+			this.reviewedResponse = reviewedResponse
 		}
 		const capability: AcceptanceCapability = {
 			token: randomUUID(),
@@ -305,15 +357,82 @@ export class CouncilTransactionRuntime {
 		}
 		this.settlementEmitted = false
 		this.postApplyChecks = []
+		this.pendingValidation = undefined
 		return receipt
 	}
 
-	recordPostApplyCheck(toolName: string, command: string, ok: boolean): void {
-		if (this.state !== "post_apply_checks") return
-		this.postApplyChecks.push({ toolName, command: command.trim(), ok })
+	async preparePostApplyCheck(): Promise<{ id: string; command: string; timeoutSeconds: number } | undefined> {
+		if (this.state !== "post_apply_checks") return undefined
+		if (this.pendingValidation) {
+			return {
+				id: this.pendingValidation.check.id,
+				command: this.pendingValidation.command,
+				timeoutSeconds: Math.max(1, Math.ceil(this.pendingValidation.check.timeoutMs / 1_000)),
+			}
+		}
+		const check = this.pendingPostApplyCheck
+		if (!check) return undefined
+		const command = validationCommand(check)
+		const before = await captureWorkspaceSnapshot(this.cwd, check.expectedOutputs)
+		this.pendingValidation = { check, command, startedAt: Date.now(), before }
+		return {
+			id: check.id,
+			command,
+			timeoutSeconds: Math.max(1, Math.ceil(check.timeoutMs / 1_000)),
+		}
+	}
+
+	async recordPostApplyCheck(
+		toolName: string,
+		command: string,
+		ok: boolean,
+		exitCode: number | null = ok ? 0 : null,
+	): Promise<void> {
+		const pending = this.pendingValidation
+		if (this.state !== "post_apply_checks" || !pending || pending.command !== command.trim()) return
+		let afterSha256: string | undefined
+		let mutation: CouncilPostApplyCheck["mutation"] =
+			pending.check.mutationPolicy === "expected-output-only" ? "expected_only" : "none"
+		let finalOk = ok
+		try {
+			const after = await captureWorkspaceSnapshot(this.cwd, pending.check.expectedOutputs)
+			afterSha256 = after.sha256
+			if (after.sha256 !== pending.before.sha256) {
+				finalOk = false
+				try {
+					await restoreWorkspaceSnapshot(this.cwd, pending.before)
+					mutation = "unexpected_restored"
+				} catch {
+					mutation = "unexpected_restore_failed"
+				}
+			}
+		} catch {
+			finalOk = false
+			try {
+				await restoreWorkspaceSnapshot(this.cwd, pending.before)
+				mutation = "unexpected_restored"
+			} catch {
+				mutation = "unexpected_restore_failed"
+			}
+		}
+		this.postApplyChecks.push({
+			id: pending.check.id,
+			kind: pending.check.kind,
+			toolName,
+			command: pending.command,
+			ok: finalOk,
+			exitCode,
+			durationMs: Math.max(0, Date.now() - pending.startedAt),
+			beforeSha256: pending.before.sha256,
+			afterSha256,
+			mutationPolicy: pending.check.mutationPolicy,
+			mutation,
+		})
+		this.pendingValidation = undefined
 	}
 
 	settlementRequest(action: "finalize" | "rollback"): CouncilSettlementRequest | undefined {
+		if (action === "finalize" && !this.postApplyChecksPassed) return undefined
 		if (!this.settlement || this.settlement.used || this.settlementEmitted) return undefined
 		this.settlementEmitted = true
 		return { ...this.publicCapability(this.settlement), action }
@@ -330,6 +449,9 @@ export class CouncilTransactionRuntime {
 		) {
 			throw new Error("Council settlement capability is invalid or already consumed")
 		}
+		if (request.action === "finalize" && !this.postApplyChecksPassed) {
+			throw new Error("Council cannot finalize without successful deterministic validation")
+		}
 		capability.used = true
 		if (request.action === "finalize") await this.requireCurrent().finalizeApplied()
 		else await this.requireCurrent().rollbackApplied()
@@ -343,6 +465,7 @@ export class CouncilTransactionRuntime {
 		this.acceptance = undefined
 		this.settlement = undefined
 		this.settlementEmitted = false
+		this.pendingValidation = undefined
 		this.revisionGate = undefined
 		this.reviewedResponse = undefined
 		this.agreement = undefined

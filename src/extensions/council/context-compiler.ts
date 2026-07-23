@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto"
+import { isDeepStrictEqual } from "node:util"
 import type { Api, Context, Model, ToolCall } from "@earendil-works/pi-ai"
 import type { ChangeSet } from "../../agent-patch/index.js"
 import { redactObjectStrings } from "../pii-redaction/redactor.js"
@@ -16,6 +18,7 @@ import type {
 	ToolResultMetadata,
 	UserTextArtifact,
 } from "./schemas.js"
+import type { validationCatalogForPrompt } from "./validation.js"
 
 const DEFAULT_MAX_EVIDENCE_BYTES = 128 * 1024
 const DEFAULT_CONTEXT_OVERHEAD_TOKENS = 1024
@@ -34,11 +37,25 @@ export interface CompiledCouncilContext {
 	}
 }
 
+export interface CouncilRequirement {
+	id: string
+	text: string
+}
+
+export interface CouncilConstraint {
+	artifact_id: string
+	text: string
+}
+
+export type ValidationCatalogEntry = ReturnType<typeof validationCatalogForPrompt>[number]
+
 interface RoleContextBase {
 	schema_version: 1
 	run_id: string
 	role: ReviewerRole
 	objective: CompiledCouncilContext["objective"]
+	requirements: CouncilRequirement[]
+	constraints: CouncilConstraint[]
 	evidence: EvidenceArtifact[]
 	truncation: CompiledCouncilContext["truncation"]
 }
@@ -54,7 +71,7 @@ export interface CriticRoleContext extends RoleContextBase {
 
 export interface CheckerRoleContext extends RoleContextBase {
 	role: "checker"
-	lead_draft: NonNullable<CompiledCouncilContext["lead_draft"]>
+	validation_catalog: ValidationCatalogEntry[]
 }
 
 export type RoleContextArtifact = IndependentRoleContext | CriticRoleContext | CheckerRoleContext
@@ -429,6 +446,59 @@ function boundCompiledContext(context: CompiledCouncilContext, maximumBytes: num
 	return working
 }
 
+type CandidateOperation = CandidatePatchArtifact["candidate_patch"]["operations"][number]
+
+function candidateHashToken(kind: "patch" | "base", index = 0): string {
+	return `__KIMCHI_CANDIDATE_${kind.toUpperCase()}_SHA256_${index}__`
+}
+
+function replaceCandidateHeaderHash(patch: string, operation: CandidateOperation, from: string, to: string): string {
+	let prefix: string
+	if (operation.kind === "update") prefix = `# update ${operation.path} base=${from}`
+	else if (operation.kind === "delete") prefix = `# delete ${operation.path} base=${from}`
+	else if (operation.kind === "rename") prefix = `# rename ${operation.from_path} -> ${operation.path} base=${from}`
+	else throw new ContextCompilerError("invalid_context", "Create operations do not have base hashes")
+
+	const lines = patch.split("\n")
+	const matches = lines
+		.map((line, index) => ({ line, index }))
+		.filter(({ line }) => (operation.kind === "delete" ? line === prefix : line.startsWith(`${prefix} mode=`)))
+	if (matches.length !== 1) {
+		throw new ContextCompilerError("invalid_context", "Candidate base hash does not match its patch metadata")
+	}
+	lines[matches[0].index] = matches[0].line.replace(`base=${from}`, `base=${to}`)
+	return lines.join("\n")
+}
+
+function protectCandidateHashes(original: CandidatePatchArtifact): CandidatePatchArtifact {
+	const patchToken = candidateHashToken("patch")
+	const baseTokens = original.candidate_patch.operations.map((operation, index) =>
+		operation.base_sha256 ? candidateHashToken("base", index) : undefined,
+	)
+	const serialized = JSON.stringify(original)
+	if ([patchToken, ...baseTokens].some((token) => token && serialized.includes(token))) {
+		throw new ContextCompilerError("invalid_context", "Candidate collides with reserved hash metadata")
+	}
+
+	let protectedPatch = original.candidate_patch.patch
+	const protectedOperations = original.candidate_patch.operations.map((operation, index) => {
+		const token = baseTokens[index]
+		if (!token || !operation.base_sha256) return operation
+		protectedPatch = replaceCandidateHeaderHash(protectedPatch, operation, operation.base_sha256, token)
+		return { ...operation, base_sha256: token }
+	})
+	const protectedCandidate: CandidatePatchArtifact = {
+		...original,
+		candidate_patch: {
+			...original.candidate_patch,
+			patch_sha256: patchToken,
+			operations: protectedOperations,
+			patch: protectedPatch,
+		},
+	}
+	return protectedCandidate
+}
+
 export async function compileCouncilContext({
 	context,
 	runId,
@@ -494,25 +564,83 @@ export async function compileCouncilContext({
 			: { lead_draft: { trust: "untrusted_assistant_output" as const, text: leadDraft } }),
 		truncation: { truncated: false, omitted_artifact_ids: [] },
 	}
+	const candidateIndex = packet.artifacts.findIndex(({ kind }) => kind === "candidate_patch")
+	const originalCandidate =
+		candidateIndex === -1 ? undefined : (packet.artifacts[candidateIndex] as CandidatePatchArtifact)
+	const protectedCandidate = originalCandidate ? protectCandidateHashes(originalCandidate) : undefined
+	const packetWithoutCandidate =
+		candidateIndex === -1
+			? packet
+			: { ...packet, artifacts: packet.artifacts.filter((_, index) => index !== candidateIndex) }
 	let redacted: CompiledCouncilContext
 	try {
-		redacted = await redactObjectStrings(packet, { failClosed: true })
+		const [redactedPacket, redactedCandidate] = await Promise.all([
+			redactObjectStrings(packetWithoutCandidate, { failClosed: true }),
+			protectedCandidate ? redactObjectStrings(protectedCandidate, { failClosed: true }) : Promise.resolve(undefined),
+		])
+		if (protectedCandidate && !isDeepStrictEqual(redactedCandidate, protectedCandidate)) {
+			throw new ContextCompilerError("redaction_failed", "Council cannot review altered candidate evidence")
+		}
+		redacted =
+			originalCandidate && candidateIndex !== -1
+				? {
+						...redactedPacket,
+						artifacts: [
+							...redactedPacket.artifacts.slice(0, candidateIndex),
+							originalCandidate,
+							...redactedPacket.artifacts.slice(candidateIndex),
+						],
+					}
+				: redactedPacket
 	} catch (error) {
+		if (error instanceof ContextCompilerError) throw error
 		throw new ContextCompilerError("redaction_failed", "Council evidence redaction failed", { cause: error })
-	}
-	const originalCandidate = packet.artifacts.find(
-		(artifact): artifact is CandidatePatchArtifact => artifact.kind === "candidate_patch",
-	)
-	const redactedCandidate = redacted.artifacts.find(
-		(artifact): artifact is CandidatePatchArtifact => artifact.kind === "candidate_patch",
-	)
-	if (originalCandidate && redactedCandidate?.candidate_patch.patch !== originalCandidate.candidate_patch.patch) {
-		throw new ContextCompilerError("redaction_failed", "Council cannot review a patch altered by evidence redaction")
 	}
 	return boundCompiledContext(redacted, maxEvidenceBytes)
 }
 
 const STAGED_MUTATION_TOOLS = new Set(["edit", "write", "council_delete_file", "council_rename_file"])
+const MAX_REQUIREMENTS = 20
+const MAX_SYSTEM_CONSTRAINT_BYTES = 12 * 1024
+const SYSTEM_CONSTRAINT_SECTION_BYTES = new Map([
+	["guidelines", 4 * 1024],
+	["factual accuracy", 3 * 1024],
+	["project guidelines", 8 * 1024],
+	["council constraints", 4 * 1024],
+])
+
+export function councilRequirements(context: CompiledCouncilContext): CouncilRequirement[] {
+	const lines = context.objective.text
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean)
+	const statements = lines.length > 1 ? lines : [context.objective.text.trim()]
+	const unique = [...new Set(statements)].slice(0, MAX_REQUIREMENTS)
+	return unique.map((text) => ({
+		id: `requirement_${createHash("sha256").update(text).digest("hex").slice(0, 16)}`,
+		text,
+	}))
+}
+
+export function councilConstraints(context: CompiledCouncilContext): CouncilConstraint[] {
+	return context.artifacts
+		.filter((artifact): artifact is SystemInstructionArtifact => artifact.kind === "system_instruction")
+		.map(({ artifact_id, text }) => ({ artifact_id, text: relevantSystemConstraints(text) }))
+}
+
+function relevantSystemConstraints(systemPrompt: string): string {
+	const headings = [...systemPrompt.matchAll(/^## ([^\n]+)\s*$/gm)]
+	const selected = headings.flatMap((match, index) => {
+		const heading = match[1]?.trim()
+		const limit = heading ? SYSTEM_CONSTRAINT_SECTION_BYTES.get(heading.toLowerCase()) : undefined
+		if (!heading || !limit || match.index === undefined) return []
+		const start = match.index
+		const end = headings[index + 1]?.index ?? systemPrompt.length
+		return [truncateHeadTail(systemPrompt.slice(start, end).trim(), limit)]
+	})
+	const relevant = selected.join("\n\n")
+	return truncateHeadTail(relevant || systemPrompt, MAX_SYSTEM_CONSTRAINT_BYTES)
+}
 
 function independentEvidence(context: CompiledCouncilContext): EvidenceArtifact[] {
 	const objective = context.artifacts.find(({ artifact_id }) => artifact_id === context.objective.artifact_id)
@@ -530,20 +658,95 @@ function independentEvidence(context: CompiledCouncilContext): EvidenceArtifact[
 	const cutoff = firstMutation?.sequence ?? Number.POSITIVE_INFINITY
 	return context.artifacts.filter(
 		(artifact) =>
-			artifact.kind === "system_instruction" ||
-			(artifact.kind !== "candidate_patch" &&
-				artifact.kind !== "candidate_validation" &&
-				artifact.message_index !== null &&
-				artifact.message_index >= turnStart &&
-				artifact.sequence < cutoff),
+			(artifact.kind === "tool_call" || artifact.kind === "tool_result") &&
+			artifact.message_index !== null &&
+			artifact.message_index >= turnStart &&
+			artifact.sequence < cutoff,
 	)
 }
 
-export function buildRoleContext(context: CompiledCouncilContext, role: ReviewerRole): RoleContextArtifact {
+function matchesAffectedPath(path: string | undefined, affectedPaths: ReadonlySet<string>): boolean {
+	if (!path) return false
+	const normalized = path.replaceAll("\\", "/")
+	return [...affectedPaths].some(
+		(affected) =>
+			normalized === affected ||
+			normalized.endsWith(`/${affected}`) ||
+			affected.startsWith(`${normalized}/`) ||
+			normalized.startsWith(`${affected}/`),
+	)
+}
+
+function candidateEvidence(context: CompiledCouncilContext): EvidenceArtifact[] {
+	const candidate = context.artifacts.find(
+		(artifact): artifact is CandidatePatchArtifact => artifact.kind === "candidate_patch",
+	)
+	if (!candidate) {
+		const objective = context.artifacts.find(({ artifact_id }) => artifact_id === context.objective.artifact_id)
+		const turnStart = objective?.message_index ?? 0
+		return context.artifacts.filter(
+			(artifact) =>
+				(artifact.kind === "tool_call" || artifact.kind === "tool_result") &&
+				artifact.message_index !== null &&
+				artifact.message_index >= turnStart,
+		)
+	}
+	const affectedPaths = new Set(
+		candidate.candidate_patch.operations.flatMap((operation) => [
+			operation.path,
+			...(operation.from_path ? [operation.from_path] : []),
+		]),
+	)
+	const resultIds = new Set(
+		context.artifacts
+			.filter(
+				(artifact): artifact is ToolResultArtifact =>
+					artifact.kind === "tool_result" &&
+					(matchesAffectedPath(artifact.tool_result.metadata.path, affectedPaths) ||
+						artifact.tool_result.metadata.test !== undefined),
+			)
+			.map(({ tool_result }) => tool_result.id),
+	)
+	return context.artifacts.filter(
+		(artifact) =>
+			artifact.kind === "candidate_patch" ||
+			artifact.kind === "candidate_validation" ||
+			(artifact.kind === "tool_result" && resultIds.has(artifact.tool_result.id)) ||
+			(artifact.kind === "tool_call" && resultIds.has(artifact.tool_call.id)),
+	)
+}
+
+export function buildRoleContext(
+	context: CompiledCouncilContext,
+	role: "independent",
+	validationCatalog?: ValidationCatalogEntry[],
+): IndependentRoleContext
+export function buildRoleContext(
+	context: CompiledCouncilContext,
+	role: "critic",
+	validationCatalog?: ValidationCatalogEntry[],
+): CriticRoleContext
+export function buildRoleContext(
+	context: CompiledCouncilContext,
+	role: "checker",
+	validationCatalog?: ValidationCatalogEntry[],
+): CheckerRoleContext
+export function buildRoleContext(
+	context: CompiledCouncilContext,
+	role: ReviewerRole,
+	validationCatalog?: ValidationCatalogEntry[],
+): RoleContextArtifact
+export function buildRoleContext(
+	context: CompiledCouncilContext,
+	role: ReviewerRole,
+	validationCatalog: ValidationCatalogEntry[] = [],
+): RoleContextArtifact {
 	const common = {
 		schema_version: 1 as const,
 		run_id: context.run_id,
 		objective: context.objective,
+		requirements: councilRequirements(context),
+		constraints: councilConstraints(context),
 		evidence: role === "independent" ? independentEvidence(context) : context.artifacts,
 		truncation: context.truncation,
 	}
@@ -551,13 +754,16 @@ export function buildRoleContext(context: CompiledCouncilContext, role: Reviewer
 	if (!context.lead_draft) {
 		throw new ContextCompilerError("invalid_context", `${role} review requires a lead draft`)
 	}
-	return { ...common, role, lead_draft: context.lead_draft }
+	const evidence = candidateEvidence(context)
+	if (role === "critic") return { ...common, role, evidence, lead_draft: context.lead_draft }
+	return { ...common, role, evidence, validation_catalog: validationCatalog }
 }
 
 export function fitCouncilContextToModel(
 	compiled: CompiledCouncilContext,
 	role: ReviewerRole,
 	limits: ModelContextLimits,
+	validationCatalog: ValidationCatalogEntry[] = [],
 ): FittedRoleContext {
 	const safetyMargin = limits.safetyMargin ?? DEFAULT_CONTEXT_SAFETY_MARGIN
 	const overheadTokens = limits.overheadTokens ?? DEFAULT_CONTEXT_OVERHEAD_TOKENS
@@ -568,7 +774,7 @@ export function fitCouncilContextToModel(
 	if (maximumInputTokens <= 0)
 		throw new ContextCompilerError("context_limit", "Physical model context window is too small")
 	const fitted = boundCompiledContext(compiled, maximumInputTokens * 4)
-	const roleContext = buildRoleContext(fitted, role)
+	const roleContext = buildRoleContext(fitted, role, validationCatalog)
 	const inputTokens = estimatedTokens(roleContext) + overheadTokens
 	const maxOutputTokens = Math.min(requestedOutput, safeWindow - inputTokens)
 	if (maxOutputTokens <= 0)

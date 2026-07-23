@@ -355,7 +355,7 @@ export function installCouncilMutationGuard(pi: ExtensionAPI, lookup: CouncilRun
 			if (
 				runtime?.state === "post_apply_checks" &&
 				typeof command === "string" &&
-				isCouncilPostApplyValidationCommand(command)
+				runtime.isExpectedPostApplyValidationCommand(command)
 			) {
 				return undefined
 			}

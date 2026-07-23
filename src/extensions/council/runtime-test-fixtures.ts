@@ -28,7 +28,37 @@ function strictReview(
 	value: Record<string, unknown>,
 	role: ReviewerRole,
 	evidenceIds: string[],
+	requirementIds: string[],
 ): Record<string, unknown> {
+	const requirementChecks =
+		role === "checker"
+			? requirementIds.map((requirement, index) => {
+					const supplied = Array.isArray(value.requirement_checks) ? value.requirement_checks : []
+					const exact = supplied.find(
+						(check) =>
+							check &&
+							typeof check === "object" &&
+							!Array.isArray(check) &&
+							(check as { requirement?: unknown }).requirement === requirement,
+					)
+					const candidate = exact ?? supplied[index]
+					const record =
+						candidate && typeof candidate === "object" && !Array.isArray(candidate)
+							? (candidate as { status?: unknown; evidence_refs?: unknown })
+							: undefined
+					return {
+						requirement,
+						status: ["satisfied", "unsatisfied", "not_proven"].includes(String(record?.status))
+							? record?.status
+							: "satisfied",
+						evidence_refs: Array.isArray(record?.evidence_refs)
+							? record.evidence_refs
+							: evidenceIds[0]
+								? [evidenceIds[0]]
+								: [],
+					}
+				})
+			: undefined
 	const roleFields =
 		role === "independent"
 			? {
@@ -40,8 +70,10 @@ function strictReview(
 				}
 			: role === "critic"
 				? { challenged_assumptions: [], counterexamples: [], affected_claims: [] }
-				: { requirement_checks: [] }
-	if (value.schema_version === 1 && value.role === role) return { ...roleFields, ...value }
+				: { requirement_checks: requirementChecks }
+	if (value.schema_version === 1 && value.role === role) {
+		return role === "checker" ? { ...value, ...roleFields } : { ...roleFields, ...value }
+	}
 	const remapRefs = (candidate: unknown): unknown =>
 		Array.isArray(candidate)
 			? candidate.map((reference) => (reference === "artifact_1" && evidenceIds[0] ? evidenceIds[0] : reference))
@@ -54,6 +86,20 @@ function strictReview(
 			)
 		: value.findings
 	return { schema_version: 1, ...value, findings, role, ...roleFields }
+}
+
+function reviewRequirementIds(payload: Record<string, unknown> | undefined): string[] {
+	if (Array.isArray(payload?.allowed_requirement_ids)) {
+		return payload.allowed_requirement_ids.filter((value): value is string => typeof value === "string")
+	}
+	if (!Array.isArray(payload?.requirements)) return []
+	return payload.requirements
+		.map((requirement) =>
+			requirement && typeof requirement === "object" && !Array.isArray(requirement)
+				? (requirement as { id?: unknown }).id
+				: undefined,
+		)
+		.filter((value): value is string => typeof value === "string")
 }
 
 function reviewEvidenceIds(payload: Record<string, unknown> | undefined): string[] {
@@ -101,17 +147,23 @@ function judgeInputs(
 		return Array.isArray(candidate) ? (candidate as CouncilFinding[]) : []
 	})
 	const task = input?.task
-	const artifacts =
-		task &&
-		typeof task === "object" &&
-		!Array.isArray(task) &&
-		Array.isArray((task as { artifacts?: unknown }).artifacts)
+	const artifacts = Array.isArray(input?.evidence)
+		? (input.evidence as Array<{ artifact_id?: unknown }>)
+		: task &&
+				typeof task === "object" &&
+				!Array.isArray(task) &&
+				Array.isArray((task as { artifacts?: unknown }).artifacts)
 			? ((task as { artifacts: Array<{ artifact_id?: unknown }> }).artifacts ?? [])
 			: []
+	const constraints = Array.isArray(input?.constraints) ? (input.constraints as Array<{ artifact_id?: unknown }>) : []
+	const objective =
+		input?.objective && typeof input.objective === "object" && !Array.isArray(input.objective)
+			? (input.objective as { artifact_id?: unknown })
+			: undefined
 	return {
 		findings,
-		evidenceIds: artifacts
-			.map(({ artifact_id }) => artifact_id)
+		evidenceIds: [objective, ...constraints, ...artifacts]
+			.map((artifact) => artifact?.artifact_id)
 			.filter((value): value is string => typeof value === "string"),
 	}
 }
@@ -234,7 +286,7 @@ function normalizeText(text: string, context: Context): string {
 	const payload = parseObject(userText(context))
 	const role = reviewerRole(context, payload)
 	if (role && Array.isArray(value.findings))
-		return JSON.stringify(strictReview(value, role, reviewEvidenceIds(payload)))
+		return JSON.stringify(strictReview(value, role, reviewEvidenceIds(payload), reviewRequirementIds(payload)))
 	if (context.systemPrompt?.includes("Council judge") || payload?.kind === "judge") {
 		const { findings, evidenceIds } = judgeInputs(context, payload)
 		return JSON.stringify(strictJudge(value, findings, evidenceIds))

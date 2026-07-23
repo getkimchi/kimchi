@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto"
 import type { Usage } from "@earendil-works/pi-ai"
+import type { CouncilCacheStats } from "./cache.js"
 import type { RunBudgetSnapshot } from "./run-context.js"
 import type { CouncilBudgetUsage, CouncilRunRecord, CouncilTransactionSnapshot } from "./types.js"
 
@@ -42,7 +44,10 @@ export function addUsage(total: Usage, next: Usage): Usage {
 	}
 }
 
-export function toCouncilBudgetUsage(snapshot: RunBudgetSnapshot): CouncilBudgetUsage {
+export function toCouncilBudgetUsage(
+	snapshot: RunBudgetSnapshot,
+	cache: Pick<CouncilCacheStats, "hits" | "misses"> = { hits: 0, misses: 0 },
+): CouncilBudgetUsage {
 	return {
 		logicalCalls: snapshot.logicalCalls,
 		physicalAttempts: snapshot.physicalAttempts,
@@ -52,6 +57,8 @@ export function toCouncilBudgetUsage(snapshot: RunBudgetSnapshot): CouncilBudget
 		estimatedCostUsd: snapshot.estimatedCostUsd,
 		evidenceBytes: snapshot.evidenceBytes,
 		structuredBytes: snapshot.structuredBytes,
+		cacheHits: cache.hits,
+		cacheMisses: cache.misses,
 	}
 }
 
@@ -77,7 +84,11 @@ export function sanitizeCouncilTransactionSnapshot(
 		stats: transaction.stats ? { ...transaction.stats } : undefined,
 		baseVerification: transaction.baseVerification,
 		revisionCount: transaction.revisionCount,
-		postApplyChecks: transaction.postApplyChecks.map(({ toolName, ok }) => ({ toolName, ok })),
+		selectedValidationCheckIds: [...transaction.selectedValidationCheckIds],
+		postApplyChecks: transaction.postApplyChecks.map((check) => ({
+			...check,
+			command: `sha256:${createHash("sha256").update(check.command).digest("hex")}`,
+		})),
 		rollbackState: transaction.rollbackState,
 		hardRecoveryRequired: transaction.hardRecoveryRequired,
 	}

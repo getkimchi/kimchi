@@ -186,6 +186,8 @@ describe("councilExtension", () => {
 				estimatedCostUsd: 0,
 				evidenceBytes: 0,
 				structuredBytes: 0,
+				cacheHits: 0,
+				cacheMisses: 0,
 			},
 			transaction: {
 				transactionId: "transaction",
@@ -195,7 +197,22 @@ describe("councilExtension", () => {
 				stats: { files: 1, addedLines: 1, removedLines: 0, patchBytes: 10 },
 				baseVerification: "passed",
 				revisionCount: 0,
-				postApplyChecks: [{ toolName: "bash", ok: true }],
+				selectedValidationCheckIds: ["package.test"],
+				postApplyChecks: [
+					{
+						id: "package.test",
+						kind: "test",
+						toolName: "bash",
+						command: "pnpm exec vitest run",
+						ok: true,
+						exitCode: 0,
+						durationMs: 10,
+						beforeSha256: "a".repeat(64),
+						afterSha256: "a".repeat(64),
+						mutationPolicy: "read-only",
+						mutation: "none",
+					},
+				],
 				rollbackState: "not_available",
 				hardRecoveryRequired: false,
 			},
@@ -211,8 +228,11 @@ describe("councilExtension", () => {
 		expect(JSON.stringify(persisted)).not.toMatch(/server-secret|private chain|token|internalReasoning/)
 	})
 
-	it("counts only allowlisted post-apply validation commands as checks", async () => {
+	it("counts only the catalog-bound post-apply validation command as a check", async () => {
 		const state = vi.spyOn(CouncilTransactionRuntime.prototype, "state", "get").mockReturnValue("post_apply_checks")
+		const expectedCommand = vi
+			.spyOn(CouncilTransactionRuntime.prototype, "isExpectedPostApplyValidationCommand")
+			.mockImplementation((command) => command === "pnpm test" || command === "pnpm run typecheck")
 		const recordCheck = vi.spyOn(CouncilTransactionRuntime.prototype, "recordPostApplyCheck")
 		const { on } = register()
 		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
@@ -229,20 +249,21 @@ describe("councilExtension", () => {
 
 		try {
 			toolStart({ toolName: "bash", toolCallId: "read", args: { command: "git diff" } }, ctx)
-			toolEnd({ toolName: "bash", toolCallId: "read", isError: false }, ctx)
+			await toolEnd({ toolName: "bash", toolCallId: "read", isError: false }, ctx)
 			expect(recordCheck).not.toHaveBeenCalled()
 
 			toolStart({ toolName: "bash", toolCallId: "test", args: { command: "pnpm test" } }, ctx)
-			toolEnd({ toolName: "bash", toolCallId: "test", isError: false }, ctx)
+			await toolEnd({ toolName: "bash", toolCallId: "test", isError: false }, ctx)
 			expect(recordCheck).toHaveBeenLastCalledWith("bash", "pnpm test", true)
 
 			toolStart({ toolName: "bash", toolCallId: "failed", args: { command: "pnpm run typecheck" } }, ctx)
-			toolEnd({ toolName: "bash", toolCallId: "failed", isError: true }, ctx)
+			await toolEnd({ toolName: "bash", toolCallId: "failed", isError: true }, ctx)
 			expect(recordCheck).toHaveBeenLastCalledWith("bash", "pnpm run typecheck", false)
 			expect(recordCheck).toHaveBeenCalledTimes(2)
 		} finally {
 			await sessionShutdown({}, ctx)
 			state.mockRestore()
+			expectedCommand.mockRestore()
 			recordCheck.mockRestore()
 		}
 	})

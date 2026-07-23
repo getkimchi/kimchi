@@ -147,6 +147,32 @@ describe("PhysicalModelInvoker", () => {
 		run.close()
 	})
 
+	it("uses deterministic judge inference instead of caller sampling settings", async () => {
+		const physical = model("judge")
+		const completeModel = vi.fn<CompletePhysicalModel>(async (selected) => response(selected))
+		const registry = {
+			find: vi.fn(() => physical),
+			getApiKeyAndHeaders: vi.fn(async () => ({ ok: true as const, apiKey: "key" })),
+		}
+		const run = new CouncilRunContext(limits)
+		const invoker = new PhysicalModelInvoker({ registry, completeModel, maxRetriesPerCall: 0 })
+
+		await invoker.invoke({
+			run,
+			runId: "run",
+			virtualModelRef: "kimchi/council",
+			stage: "judge",
+			pool: { primary: "physical/judge", fallbacks: [] },
+			context,
+			requestedMaxTokens: 100,
+			stageTimeoutMs: 1_000,
+			parentOptions: { temperature: 0.9, reasoning: "minimal" },
+		})
+
+		expect(completeModel.mock.calls[0]?.[2]).toMatchObject({ temperature: 0, reasoning: "high" })
+		run.close()
+	})
+
 	it("propagates caller cancellation to the active physical request", async () => {
 		const physical = model("primary")
 		const caller = new AbortController()

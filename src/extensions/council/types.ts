@@ -1,5 +1,6 @@
 import type { Usage } from "@earendil-works/pi-ai"
 import type { ChangeSetStats, ChangeTransactionState } from "../../agent-patch/index.js"
+import type { ValidationCheckKind, ValidationMutationPolicy } from "./validation.js"
 
 export const REQUIRED_REVIEWER_ROLES = ["independent", "critic", "checker"] as const
 
@@ -128,6 +129,8 @@ export interface CouncilBudgetUsage {
 	estimatedCostUsd: number
 	evidenceBytes: number
 	structuredBytes: number
+	cacheHits: number
+	cacheMisses: number
 }
 
 export interface CouncilStageRecord {
@@ -141,6 +144,7 @@ export interface CouncilStageRecord {
 	truncated?: boolean
 	retry?: boolean
 	fallback?: boolean
+	cacheHit?: boolean
 }
 
 export interface CouncilTransactionSnapshot {
@@ -151,7 +155,20 @@ export interface CouncilTransactionSnapshot {
 	stats?: ChangeSetStats
 	baseVerification: "not_run" | "passed" | "failed"
 	revisionCount: number
-	postApplyChecks: Array<{ toolName: string; ok: boolean }>
+	selectedValidationCheckIds: string[]
+	postApplyChecks: Array<{
+		id: string
+		kind: ValidationCheckKind
+		toolName: string
+		command: string
+		ok: boolean
+		exitCode: number | null
+		durationMs: number
+		beforeSha256: string
+		afterSha256?: string
+		mutationPolicy: ValidationMutationPolicy
+		mutation: "none" | "expected_only" | "unexpected_restored" | "unexpected_restore_failed"
+	}>
 	rollbackState: "not_available" | "available" | "completed" | "failed"
 	hardRecoveryRequired: boolean
 }

@@ -73,6 +73,7 @@ describe("review artifacts", () => {
 	})
 
 	it("enforces critic and checker-specific contracts", () => {
+		const requirementId = "requirement_0123456789abcdef"
 		const critic = JSON.stringify({
 			schema_version: 1,
 			role: "critic",
@@ -88,17 +89,69 @@ describe("review artifacts", () => {
 			schema_version: 1,
 			role: "checker",
 			decision: "accept",
-			requirement_checks: [{ requirement: "Tests pass", status: "satisfied", evidence_refs: ["test_1"] }],
+			requirement_checks: [{ requirement: requirementId, status: "satisfied", evidence_refs: ["test_1"] }],
 			findings: [],
 			recommended_changes: [],
 			missing_evidence: [],
 		})
 
 		expect(parseReviewArtifact(critic, "critic", []).role).toBe("critic")
-		expect(parseReviewArtifact(checker, "checker", ["test_1"]).role).toBe("checker")
+		expect(parseReviewArtifact(checker, "checker", ["test_1"], [requirementId]).role).toBe("checker")
 		expect(() => parseReviewArtifact(critic, "checker", [])).toThrowError(
 			expect.objectContaining({ code: "invalid_shape" }),
 		)
+	})
+
+	it("requires the checker to cover every supplied requirement exactly once", () => {
+		const first = "requirement_0123456789abcdef"
+		const second = "requirement_fedcba9876543210"
+		const checker = (requirementChecks: unknown[]) =>
+			JSON.stringify({
+				schema_version: 1,
+				role: "checker",
+				decision: "accept",
+				requirement_checks: requirementChecks,
+				findings: [],
+				recommended_changes: [],
+				missing_evidence: [],
+			})
+		const check = (requirement: string) => ({ requirement, status: "satisfied", evidence_refs: ["test_1"] })
+
+		expect(() => parseReviewArtifact(checker([check(first)]), "checker", ["test_1"], [first, second])).toThrowError(
+			/Requirement checks are missing/,
+		)
+		expect(() =>
+			parseReviewArtifact(checker([check(first), check(first)]), "checker", ["test_1"], [first, second]),
+		).toThrowError(/duplicated/)
+		expect(() =>
+			parseReviewArtifact(
+				checker([check(first), check("requirement_unknown")]),
+				"checker",
+				["test_1"],
+				[first, second],
+			),
+		).toThrowError(expect.objectContaining({ code: "unsupported_reference" }))
+		expect(
+			parseReviewArtifact(checker([check(first), check(second)]), "checker", ["test_1"], [first, second]),
+		).toMatchObject({
+			role: "checker",
+			requirement_checks: [{ requirement: first }, { requirement: second }],
+		})
+	})
+
+	it("bounds reviewer findings and required checks", () => {
+		expect(() =>
+			parseReviewArtifact(independent({ findings: Array.from({ length: 9 }, () => rawFinding) }), "independent", [
+				"artifact_1",
+			]),
+		).toThrowError(expect.objectContaining({ code: "invalid_shape" }))
+		expect(() =>
+			parseReviewArtifact(
+				independent({ required_checks: Array.from({ length: 6 }, (_, index) => `check ${index}`) }),
+				"independent",
+				["artifact_1"],
+			),
+		).toThrowError(expect.objectContaining({ code: "invalid_shape" }))
 	})
 })
 
@@ -188,6 +241,33 @@ describe("judge artifacts", () => {
 		)
 		expect(() =>
 			parseJudgeArtifact(JSON.stringify({ ...base, decision: "revise" }), [finding], ["artifact_1"]),
+		).toThrowError(expect.objectContaining({ code: "invalid_shape" }))
+	})
+
+	it("accepts only known deterministic validation IDs when a catalog is supplied", () => {
+		const judge = {
+			schema_version: 1,
+			decision: "accept",
+			dispositions: [],
+			revision_instructions: [],
+			consensus: [],
+			contradictions: [],
+			partial_coverage: [],
+			unique_insights: [],
+			blind_spots: [],
+			unsupported_claims: [],
+			required_checks: ["package.test"],
+			agreement: "high",
+		}
+
+		expect(parseJudgeArtifact(JSON.stringify(judge), [], [], ["package.test"]).required_checks).toEqual([
+			"package.test",
+		])
+		expect(() => parseJudgeArtifact(JSON.stringify(judge), [], [], ["package.typecheck"])).toThrowError(
+			expect.objectContaining({ code: "unsupported_reference" }),
+		)
+		expect(() =>
+			parseJudgeArtifact(JSON.stringify({ ...judge, required_checks: [] }), [], [], ["package.test"]),
 		).toThrowError(expect.objectContaining({ code: "invalid_shape" }))
 	})
 })

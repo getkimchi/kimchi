@@ -331,13 +331,13 @@ describe("Council runtime adversarial edges", () => {
 		expect(repairRaw).toContain("REPAIR_TAIL")
 	})
 
-	it("keeps enough structured-output budget to reach revision after a large valid review", async () => {
+	it("keeps enough structured-output budget to reach revision after a bounded valid review", async () => {
 		const largeReview = JSON.stringify({
 			schema_version: 1,
 			role: "independent",
 			decision: "revise",
 			findings: [],
-			recommended_changes: Array.from({ length: 9 }, (_, index) => `${index}:${"x".repeat(3700)}`),
+			recommended_changes: Array.from({ length: 8 }, (_, index) => `${index}:${"x".repeat(1900)}`),
 			missing_evidence: [],
 			independent_solution: "Apply the recommended changes.",
 			key_claims: [],
@@ -366,10 +366,11 @@ describe("Council runtime adversarial edges", () => {
 			},
 		})
 
-		expect(Buffer.byteLength(largeReview)).toBeGreaterThan(32_768)
+		expect(Buffer.byteLength(largeReview)).toBeGreaterThan(14_000)
+		expect(Buffer.byteLength(largeReview)).toBeLessThan(32_768)
 		expect(result.content).toEqual([{ type: "text", text: "Revised after large review" }])
 		expect(record).toMatchObject({ outcome: "revised" })
-		expect(record?.budget.structuredBytes).toBeGreaterThan(32_768)
+		expect(record?.budget.structuredBytes).toBeGreaterThan(14_000)
 	})
 
 	it("does not accept a resolved disagreement without a resolution", async () => {
@@ -498,19 +499,10 @@ describe("Council runtime adversarial edges", () => {
 
 		expect(serializedLeadMessages).toContain("OLDEST_REVISION_MARKER")
 		expect(leadRequestUpperBound).toBeLessThanOrEqual(12_000)
-		expect(serializedMessages).toContain("OLDEST_REVISION_MARKER")
+		expect(serializedMessages).not.toContain("OLDEST_REVISION_MARKER")
 		expect(serializedMessages).toContain("CURRENT_OBJECTIVE")
-		expect(revisionContext?.messages).toContainEqual(
-			expect.objectContaining({ role: "user", content: "CURRENT_OBJECTIVE" }),
-		)
-		const currentObjectiveIndex =
-			revisionContext?.messages.findIndex(
-				(message) => message.role === "user" && message.content === "CURRENT_OBJECTIVE",
-			) ?? -1
-		expect(currentObjectiveIndex).toBeGreaterThanOrEqual(0)
-		expect(
-			revisionContext?.messages.slice(currentObjectiveIndex, currentObjectiveIndex + 3).map(({ role }) => role),
-		).toEqual(["user", "assistant", "toolResult"])
+		expect(revisionContext?.messages).toHaveLength(1)
+		expect(revisionContext?.messages[0]?.role).toBe("user")
 		expect(revisionPayload).toContain(
 			'"objective":{"artifact_id":"artifact_message_1_block_0_user_text","text":"CURRENT_OBJECTIVE"}',
 		)
@@ -550,7 +542,7 @@ describe("Council runtime adversarial edges", () => {
 		const revision = captured.get("revision")?.[0]
 		const reviewerData = reviewer?.messages[0]?.content
 		const reviewerPacket = JSON.parse(String(reviewerData)) as {
-			evidence: Array<{ kind: string; text?: string }>
+			constraints: Array<{ text?: string }>
 		}
 		const judgeData = judge?.messages[0]?.content
 		const revisionData = revision?.messages.at(-1)?.content
@@ -560,9 +552,7 @@ describe("Council runtime adversarial edges", () => {
 		expect(reviewerData).not.toEqual(expect.stringContaining("OLDEST_MARKER"))
 		expect(reviewerData).toEqual(expect.stringContaining("ROOT_HEAD"))
 		expect(reviewerData).toEqual(expect.stringContaining("ROOT_TAIL"))
-		expect(
-			Buffer.byteLength(reviewerPacket.evidence.find(({ kind }) => kind === "system_instruction")?.text ?? ""),
-		).toBeLessThanOrEqual(16_384)
+		expect(Buffer.byteLength(reviewerPacket.constraints[0]?.text ?? "")).toBeLessThanOrEqual(16_384)
 		expect(reviewer?.systemPrompt).toContain("untrusted evidence")
 		expect(reviewer?.systemPrompt).not.toContain(taskInjection)
 		expect(judge?.systemPrompt).not.toContain(reviewInjection)
@@ -584,6 +574,12 @@ describe("Council runtime adversarial edges", () => {
 			if (kind === "repair") return response(model, VALID_REVIEW)
 			if (kind === "judge") return response(model, VALID_JUDGE)
 			const original = context.messages.find((message) => message.role === "user")
+			if (kind === "revision" && original?.role === "user" && typeof original.content === "string") {
+				const payload = JSON.parse(
+					original.content.replace(/^<council_review_data>\n/, "").replace(/\n<\/council_review_data>$/, ""),
+				) as { objective: { text: string } }
+				return response(model, `${kind}:${payload.objective.text}`)
+			}
 			return response(model, `${kind}:${original?.role === "user" ? original.content : "missing"}`)
 		})
 		const handler = createCouncilStream({
@@ -602,7 +598,7 @@ describe("Council runtime adversarial edges", () => {
 
 		expect(a.content).toEqual([{ type: "text", text: "revision:A" }])
 		expect(b.content).toEqual([{ type: "text", text: "revision:B" }])
-		expect(completeModel.mock.calls.filter(([, context]) => stage(context) === "repair")).toHaveLength(2)
+		expect(completeModel.mock.calls.filter(([, context]) => stage(context) === "repair")).toHaveLength(4)
 		expect(new Set(parsed.map((packet) => packet.run_id))).toHaveLength(2)
 		expect(new Set(records.map((record) => record.runId))).toHaveLength(2)
 		expect(new Set(parsed.map((packet) => packet.objective.text))).toEqual(new Set(["A", "B"]))

@@ -12,6 +12,7 @@ import {
 	fitContextToModel,
 	fitCouncilContextToModel,
 } from "./context-compiler.js"
+import type { CandidatePatchArtifact } from "./schemas.js"
 
 const usage: Usage = {
 	input: 1,
@@ -28,7 +29,11 @@ const model = (contextWindow: number): Pick<Model<Api>, "provider" | "id" | "con
 	contextWindow,
 })
 
+const baseSha256 = "a".repeat(64)
+const patchSha256 = "b".repeat(64)
 const candidatePatch = [
+	"# kimchi-change-set v1",
+	`# update src/a.ts base=${baseSha256} mode=644`,
 	"diff --git a/src/a.ts b/src/a.ts",
 	"--- a/src/a.ts",
 	"+++ b/src/a.ts",
@@ -44,13 +49,13 @@ const candidate: ChangeSet = {
 		{
 			kind: "update",
 			path: "src/a.ts",
-			baseSha256: "a".repeat(64),
+			baseSha256,
 			content: "after\n",
 		},
 	],
-	base: [{ path: "src/a.ts", exists: true, sha256: "a".repeat(64), mode: 0o644 }],
+	base: [{ path: "src/a.ts", exists: true, sha256: baseSha256, mode: 0o644 }],
 	patch: candidatePatch,
-	patchSha256: "b".repeat(64),
+	patchSha256,
 	stats: { files: 1, addedLines: 1, removedLines: 1, patchBytes: Buffer.byteLength(candidatePatch) },
 }
 
@@ -144,6 +149,79 @@ describe("compileCouncilContext", () => {
 		expect(redactObjectStrings).toHaveBeenCalledWith(expect.anything(), { failClosed: true })
 	})
 
+	it("preserves only generated candidate hash metadata through redaction", async () => {
+		redactObjectStrings.mockImplementation(async <T>(value: T): Promise<T> => {
+			const serialized = JSON.stringify(value)
+				.replace(/[a-f0-9]{64}/g, "[REDACTED-CRYPTO]")
+				.replaceAll("person@example.com", "[REDACTED-EMAIL]")
+			return JSON.parse(serialized) as T
+		})
+
+		const compiled = await compileCouncilContext({
+			context: { messages: [{ role: "user", content: "Contact person@example.com", timestamp: 1 }] },
+			runId: "run_1",
+			candidate,
+		})
+		const candidateArtifact = compiled.artifacts.find(
+			(artifact): artifact is CandidatePatchArtifact => artifact.kind === "candidate_patch",
+		)
+
+		expect(compiled.objective.text).toBe("Contact [REDACTED-EMAIL]")
+		expect(candidateArtifact?.candidate_patch).toMatchObject({
+			patch_sha256: patchSha256,
+			operations: [{ base_sha256: baseSha256 }],
+			patch: candidatePatch,
+		})
+	})
+
+	it("fails closed when redaction changes candidate code", async () => {
+		redactObjectStrings.mockImplementation(async <T>(value: T): Promise<T> => {
+			return JSON.parse(JSON.stringify(value).replace("+after", "+[REDACTED-SECRET]")) as T
+		})
+
+		await expect(
+			compileCouncilContext({
+				context: { messages: [{ role: "user", content: "Update the code", timestamp: 1 }] },
+				runId: "run_1",
+				candidate,
+			}),
+		).rejects.toMatchObject({ code: "redaction_failed" })
+	})
+
+	it("does not exempt a base hash repeated inside a code hunk", async () => {
+		redactObjectStrings.mockImplementation(async <T>(value: T): Promise<T> => {
+			return JSON.parse(JSON.stringify(value).replace(/[a-f0-9]{64}/g, "[REDACTED-CRYPTO]")) as T
+		})
+		const patch = candidatePatch.replace("+after", `+${baseSha256}`)
+
+		await expect(
+			compileCouncilContext({
+				context: { messages: [{ role: "user", content: "Update the code", timestamp: 1 }] },
+				runId: "run_1",
+				candidate: {
+					...candidate,
+					operations: [{ ...candidate.operations[0], content: `${baseSha256}\n` }],
+					patch,
+					stats: { ...candidate.stats, patchBytes: Buffer.byteLength(patch) },
+				},
+			}),
+		).rejects.toMatchObject({ code: "redaction_failed" })
+	})
+
+	it("fails closed when redaction changes a candidate path", async () => {
+		redactObjectStrings.mockImplementation(async <T>(value: T): Promise<T> => {
+			return JSON.parse(JSON.stringify(value).replaceAll("src/a.ts", "[REDACTED-PATH]")) as T
+		})
+
+		await expect(
+			compileCouncilContext({
+				context: { messages: [{ role: "user", content: "Update the code", timestamp: 1 }] },
+				runId: "run_1",
+				candidate,
+			}),
+		).rejects.toMatchObject({ code: "redaction_failed" })
+	})
+
 	it("hides the lead and candidate from the independent reviewer but gives critics the exact candidate", async () => {
 		const compiled = await compileCouncilContext({
 			context: { messages: [{ role: "user", content: "Answer", timestamp: 1 }] },
@@ -158,9 +236,32 @@ describe("compileCouncilContext", () => {
 		expect(independent.evidence.map(({ kind }) => kind)).not.toContain("candidate_patch")
 		expect(independent.evidence.map(({ kind }) => kind)).not.toContain("candidate_validation")
 
-		for (const role of ["critic", "checker"] as const) {
-			const roleContext = buildRoleContext(compiled, role)
-			expect(roleContext).toMatchObject({ role, lead_draft: { text: "Lead answer" } })
+		const critic = buildRoleContext(compiled, "critic")
+		expect(critic).toMatchObject({ role: "critic", lead_draft: { text: "Lead answer" } })
+		expect(critic.evidence.find(({ kind }) => kind === "candidate_patch")).toMatchObject({
+			candidate_patch: {
+				transaction_id: candidate.transactionId,
+				patch_sha256: candidate.patchSha256,
+				patch: candidatePatch,
+			},
+		})
+		expect(critic.evidence.find(({ kind }) => kind === "candidate_validation")).toMatchObject({
+			candidate_validation: candidateValidation,
+		})
+
+		const checker = buildRoleContext(compiled, "checker", [
+			{
+				id: "package.test",
+				kind: "test",
+				cwd: ".",
+				description: "pnpm exec vitest run",
+				timeout_ms: 30_000,
+				mutation_policy: "read-only",
+			},
+		])
+		expect(checker).not.toHaveProperty("lead_draft")
+		expect(checker.validation_catalog).toMatchObject([{ id: "package.test" }])
+		for (const roleContext of [critic, checker]) {
 			expect(roleContext.evidence.find(({ kind }) => kind === "candidate_patch")).toMatchObject({
 				candidate_patch: {
 					transaction_id: candidate.transactionId,
@@ -196,13 +297,12 @@ describe("compileCouncilContext", () => {
 		const compiled = await compileCouncilContext({ context, runId: "run_1", leadDraft: "Lead answer" })
 		const independent = buildRoleContext(compiled, "independent")
 
-		expect(independent.evidence.map(({ kind }) => kind)).toEqual([
-			"system_instruction",
-			"user_text",
-			"tool_call",
-			"tool_result",
+		expect(independent.evidence.map(({ kind }) => kind)).toEqual(["tool_call", "tool_result"])
+		expect(independent.objective.text).toBe("Fix src/a.ts")
+		expect(independent.constraints).toEqual([expect.objectContaining({ text: "Follow the repository rules." })])
+		expect(independent.requirements).toEqual([
+			expect.objectContaining({ id: expect.stringMatching(/^requirement_[a-f0-9]{16}$/), text: "Fix src/a.ts" }),
 		])
-		expect(independent.evidence.find(({ kind }) => kind === "user_text")).toMatchObject({ text: "Fix src/a.ts" })
 		expect(independent.evidence.find(({ kind }) => kind === "tool_call")).toMatchObject({
 			tool_call: { id: "base_read", name: "read", arguments: { path: "src/a.ts" } },
 		})
@@ -213,10 +313,67 @@ describe("compileCouncilContext", () => {
 		expect(JSON.stringify(independent)).not.toContain("Old lead analysis")
 	})
 
+	it("caps generated requirements at the checker schema cardinality", async () => {
+		const objective = Array.from({ length: 21 }, (_, index) => `Requirement ${index + 1}`).join("\n")
+		const compiled = await compileCouncilContext({
+			context: { messages: [{ role: "user", content: objective, timestamp: 1 }] },
+			runId: "run_1",
+			leadDraft: "Draft",
+		})
+
+		const checker = buildRoleContext(compiled, "checker")
+
+		expect(checker.requirements).toHaveLength(20)
+		expect(checker.requirements.map(({ text }) => text)).toEqual(
+			Array.from({ length: 20 }, (_, index) => `Requirement ${index + 1}`),
+		)
+	})
+
+	it("keeps only bounded task-relevant system constraint sections in role packets", async () => {
+		const irrelevantTools = `TOOL_SCHEMA_CANARY_${"x".repeat(20_000)}`
+		const irrelevantEnvironment = `ENVIRONMENT_CANARY_${"y".repeat(4_000)}`
+		const context: Context = {
+			systemPrompt: [
+				"Single-model metadata.",
+				"## Guidelines",
+				"Never invent test results.",
+				"## Factual Accuracy",
+				"Use concrete evidence.",
+				"## Available Tools",
+				irrelevantTools,
+				"## Environment",
+				irrelevantEnvironment,
+				"## Project Guidelines",
+				"Use pnpm and preserve the transaction architecture.",
+			].join("\n"),
+			messages: [{ role: "user", content: "Fix the transaction", timestamp: 1 }],
+		}
+
+		const compiled = await compileCouncilContext({ context, runId: "run_1", leadDraft: "Lead answer" })
+		const packet = buildRoleContext(compiled, "independent")
+		const serialized = JSON.stringify(packet.constraints)
+
+		expect(serialized).toContain("Never invent test results.")
+		expect(serialized).toContain("Use concrete evidence.")
+		expect(serialized).toContain("Use pnpm and preserve the transaction architecture.")
+		expect(serialized).not.toContain("TOOL_SCHEMA_CANARY")
+		expect(serialized).not.toContain("ENVIRONMENT_CANARY")
+		expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(12 * 1024 + 512)
+	})
+
 	it("cuts independent evidence before staged mutation arguments and overlay-backed reads", async () => {
 		const context: Context = {
 			messages: [
 				{ role: "user", content: "Fix src/a.ts", timestamp: 1 },
+				assistant([{ type: "toolCall", id: "other_read", name: "read", arguments: { path: "src/b.ts" } }]),
+				{
+					role: "toolResult",
+					toolCallId: "other_read",
+					toolName: "read",
+					content: [{ type: "text", text: "irrelevant contents" }],
+					isError: false,
+					timestamp: 2,
+				},
 				assistant([{ type: "toolCall", id: "base_read", name: "read", arguments: { path: "src/a.ts" } }]),
 				{
 					role: "toolResult",
@@ -266,6 +423,7 @@ describe("compileCouncilContext", () => {
 		const serialized = JSON.stringify(independent)
 
 		expect(independent.evidence.filter(({ kind }) => kind === "tool_call")).toMatchObject([
+			{ tool_call: { id: "other_read", name: "read" } },
 			{ tool_call: { id: "base_read", name: "read" } },
 		])
 		expect(serialized).not.toContain("mutation")
@@ -278,6 +436,8 @@ describe("compileCouncilContext", () => {
 		const critic = buildRoleContext(compiled, "critic")
 		expect(JSON.stringify(critic)).toContain("secret staged contents")
 		expect(JSON.stringify(critic)).toContain("candidate_patch")
+		expect(JSON.stringify(critic)).not.toContain("other_read")
+		expect(JSON.stringify(critic)).not.toContain("irrelevant contents")
 	})
 
 	it("retains explicit truncation evidence when the packet is bounded", async () => {
@@ -327,6 +487,7 @@ describe("compileCouncilContext", () => {
 	})
 
 	it("rejects the packet instead of truncating an oversized candidate", async () => {
+		const oversizedPatch = `${candidatePatch}${"x".repeat(5000)}`
 		await expect(
 			compileCouncilContext({
 				context: { messages: [{ role: "user", content: "Objective", timestamp: 1 }] },
@@ -334,8 +495,8 @@ describe("compileCouncilContext", () => {
 				leadDraft: "draft",
 				candidate: {
 					...candidate,
-					patch: "x".repeat(5000),
-					stats: { ...candidate.stats, patchBytes: 5000 },
+					patch: oversizedPatch,
+					stats: { ...candidate.stats, patchBytes: Buffer.byteLength(oversizedPatch) },
 				},
 				candidateValidation,
 				maxEvidenceBytes: 4096,

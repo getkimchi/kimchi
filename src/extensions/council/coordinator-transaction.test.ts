@@ -15,7 +15,8 @@ import {
 } from "./schemas.js"
 import { CouncilTransactionRuntime } from "./transaction-runtime.js"
 import { COUNCIL_APPLY_TOOL, COUNCIL_SETTLE_TOOL } from "./transaction-tools.js"
-import type { CouncilConfig } from "./types.js"
+import type { CouncilConfig, CouncilRunRecord } from "./types.js"
+import type { ValidationCheck } from "./validation.js"
 
 vi.mock("../pii-redaction/redactor.js", () => ({
 	redactObjectStrings: async (value: unknown) => value,
@@ -23,6 +24,22 @@ vi.mock("../pii-redaction/redactor.js", () => ({
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 const roots: string[] = []
+const validationChecks: ValidationCheck[] = [
+	{
+		id: "package.test",
+		kind: "test",
+		cwd: ".",
+		executable: "node",
+		args: ["--test"],
+		timeoutMs: 30_000,
+		mutationPolicy: "read-only",
+		expectedOutputs: [],
+	},
+]
+
+function transactionRuntime(root: string): CouncilTransactionRuntime {
+	return new CouncilTransactionRuntime(root, undefined, validationChecks)
+}
 
 const physicalModels = new Map(
 	["lead", "independent", "critic", "checker", "judge"].map((id) => [
@@ -157,7 +174,7 @@ const cleanJudge = JudgeArtifactSchema.parse({
 	unique_insights: [],
 	blind_spots: [],
 	unsupported_claims: [],
-	required_checks: [],
+	required_checks: ["package.test"],
 	revision_instructions: [],
 	agreement: "high",
 })
@@ -178,63 +195,81 @@ function createModelDriver(options: { needsRevision?: boolean; finalCheck?: Fina
 		revision_gate: { obligations: Array<{ id: string }> }
 	} | null = null
 
-	const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
-		const systemPrompt = context.systemPrompt ?? ""
-		const last = context.messages.at(-1)
-		const lastText = last?.role === "user" && typeof last.content === "string" ? last.content : ""
+	const completeModel = vi.fn(
+		async (model: Model<Api>, context: Context, _options?: SimpleStreamOptions): Promise<AssistantMessage> => {
+			const systemPrompt = context.systemPrompt ?? ""
+			const last = context.messages.at(-1)
+			const lastText = last?.role === "user" && typeof last.content === "string" ? last.content : ""
 
-		if (systemPrompt.includes("one focused final checker")) {
-			focusedCheckerCalls++
-			const payload = JSON.parse(lastText) as NonNullable<typeof focusedPayload>
-			focusedPayload = payload
-			if (options.finalCheck === "malformed") return response(model, '{"schema_version":1,"role":"checker"}')
-			const status = options.finalCheck === "unresolved" ? "unresolved" : "resolved"
-			const artifact = FinalCheckOutputSchema.parse({
-				schema_version: 1,
-				role: "checker",
-				decision: status === "resolved" ? "accept" : "reject",
-				patch_sha256: payload.candidate_patch_sha256,
-				resolutions: payload.revision_gate.obligations.map(({ id }) => ({
-					obligation_id: id,
-					status,
-					rationale: status === "resolved" ? "The revised patch satisfies this obligation." : "Still unresolved.",
-					evidence_refs: status === "resolved" ? ["artifact_candidate_patch"] : [],
-				})),
-			})
-			return response(model, JSON.stringify(artifact))
-		}
+			if (systemPrompt.includes("one focused final checker")) {
+				focusedCheckerCalls++
+				const payload = JSON.parse(lastText) as NonNullable<typeof focusedPayload>
+				focusedPayload = payload
+				if (options.finalCheck === "malformed") return response(model, '{"schema_version":1,"role":"checker"}')
+				const status = options.finalCheck === "unresolved" ? "unresolved" : "resolved"
+				const artifact = FinalCheckOutputSchema.parse({
+					schema_version: 1,
+					role: "checker",
+					decision: status === "resolved" ? "accept" : "reject",
+					patch_sha256: payload.candidate_patch_sha256,
+					resolutions: payload.revision_gate.obligations.map(({ id }) => ({
+						obligation_id: id,
+						status,
+						rationale: status === "resolved" ? "The revised patch satisfies this obligation." : "Still unresolved.",
+						evidence_refs: status === "resolved" ? ["artifact_candidate_patch"] : [],
+					})),
+				})
+				return response(model, JSON.stringify(artifact))
+			}
 
-		if (systemPrompt.includes("Repair the supplied object")) {
-			return response(model, '{"schema_version":1,"role":"checker"}')
-		}
-		if (model.id === "independent") return response(model, JSON.stringify(cleanReviews.independent))
-		if (model.id === "critic") {
-			const critic = options.needsRevision
-				? CriticReviewOutputSchema.parse({
-						...cleanReviews.critic,
-						decision: "revise",
-						recommended_changes: ["Replace the candidate with the revised content."],
-					})
-				: cleanReviews.critic
-			return response(model, JSON.stringify(critic))
-		}
-		if (model.id === "checker") return response(model, JSON.stringify(cleanReviews.checker))
-		if (model.id === "judge") {
-			const judge = options.needsRevision
-				? JudgeArtifactSchema.parse({
-						...cleanJudge,
-						required_checks: ["pnpm test"],
-						revision_instructions: ["Replace the candidate with the revised content."],
-					})
-				: cleanJudge
-			return response(model, JSON.stringify(judge))
-		}
-		if (lastText.includes("<council_review_data>")) return toolResponse(model, revisionCall)
-		if (systemPrompt.includes("continuing the single permitted Council revision")) {
-			return response(model, "The staged candidate now resolves every obligation.")
-		}
-		return response(model, "Lead candidate summary.")
-	})
+			if (systemPrompt.includes("Repair the supplied object")) {
+				return response(model, '{"schema_version":1,"role":"checker"}')
+			}
+			if (model.id === "independent") return response(model, JSON.stringify(cleanReviews.independent))
+			if (model.id === "critic") {
+				const critic = options.needsRevision
+					? CriticReviewOutputSchema.parse({
+							...cleanReviews.critic,
+							decision: "revise",
+							recommended_changes: ["Replace the candidate with the revised content."],
+						})
+					: cleanReviews.critic
+				return response(model, JSON.stringify(critic))
+			}
+			if (model.id === "checker") {
+				const payload = JSON.parse(lastText) as {
+					requirements?: Array<{ id: string }>
+					evidence?: Array<{ artifact_id: string }>
+				}
+				return response(
+					model,
+					JSON.stringify({
+						...cleanReviews.checker,
+						requirement_checks: (payload.requirements ?? []).map(({ id }) => ({
+							requirement: id,
+							status: "satisfied",
+							evidence_refs: payload.evidence?.[0]?.artifact_id ? [payload.evidence[0].artifact_id] : [],
+						})),
+					}),
+				)
+			}
+			if (model.id === "judge") {
+				const judge = options.needsRevision
+					? JudgeArtifactSchema.parse({
+							...cleanJudge,
+							required_checks: ["package.test"],
+							revision_instructions: ["Replace the candidate with the revised content."],
+						})
+					: cleanJudge
+				return response(model, JSON.stringify(judge))
+			}
+			if (lastText.includes("<council_review_data>")) return toolResponse(model, revisionCall)
+			if (systemPrompt.includes("continuing the single permitted Council revision")) {
+				return response(model, "The staged candidate now resolves every obligation.")
+			}
+			return response(model, "Lead candidate summary.")
+		},
+	)
 
 	return {
 		completeModel,
@@ -248,12 +283,14 @@ function runCouncil(
 	completeModel: ReturnType<typeof createModelDriver>["completeModel"],
 	options?: SimpleStreamOptions,
 	runConfig: CouncilConfig = config,
+	recordRun?: (record: CouncilRunRecord) => void,
 ) {
 	return createCouncilStream({
 		config: runConfig,
 		getModelRegistry: () => registry,
 		completeModel,
 		transaction: runtime,
+		recordRun,
 	})(
 		councilModel,
 		{
@@ -290,9 +327,31 @@ afterEach(async () => {
 })
 
 describe("Council coordinator transactions", () => {
+	it("reuses only schema-valid structured results for identical transaction inputs", async () => {
+		const { root } = await fixture()
+		const runtime = transactionRuntime(root)
+		const driver = createModelDriver()
+		const records: CouncilRunRecord[] = []
+
+		await runCouncil(runtime, driver.completeModel, undefined, config, (record) => records.push(record)).result()
+		await runCouncil(runtime, driver.completeModel, undefined, config, (record) => records.push(record)).result()
+
+		expect(driver.completeModel.mock.calls.map(([model]) => model.id)).toEqual([
+			"lead",
+			"independent",
+			"critic",
+			"checker",
+			"judge",
+			"lead",
+		])
+		expect(records).toHaveLength(2)
+		expect(records[1]?.budget).toMatchObject({ cacheHits: 4, physicalAttempts: 6 })
+		expect(records[1]?.stages.filter(({ cacheHit }) => cacheHit)).toHaveLength(4)
+	})
+
 	it("keeps a clean candidate staged and emits the exact hidden apply capability after one full review", async () => {
 		const { root, file } = await fixture()
-		const runtime = new CouncilTransactionRuntime(root)
+		const runtime = transactionRuntime(root)
 		await runtime.ensure().stageWrite("file.txt", "candidate\n")
 		const candidate = runtime.current?.changeSet()
 		if (!candidate) throw new Error("missing candidate")
@@ -320,6 +379,17 @@ describe("Council coordinator transactions", () => {
 			"judge",
 		])
 		expect(
+			Object.fromEntries(
+				driver.completeModel.mock.calls.map(([model, _context, options]) => [model.id, options?.maxTokens]),
+			),
+		).toEqual({
+			lead: 4096,
+			independent: 2500,
+			critic: 2000,
+			checker: 1500,
+			judge: 4000,
+		})
+		expect(
 			driver.completeModel.mock.calls.some(([, context]) =>
 				context.tools?.some(({ name }) => name === COUNCIL_APPLY_TOOL),
 			),
@@ -328,7 +398,17 @@ describe("Council coordinator transactions", () => {
 		const promotion = runtime.promotionRequest()
 		if (!promotion) throw new Error("missing promotion capability")
 		await runtime.apply(promotion)
-		runtime.recordPostApplyCheck("bash", "pnpm test", true)
+		driver.completeModel.mockClear()
+		const validation = await runCouncil(runtime, driver.completeModel).result()
+		expect(validation.content[0]).toMatchObject({
+			type: "toolCall",
+			name: "bash",
+			arguments: { command: "node --test", timeout: 30 },
+		})
+		expect(driver.completeModel).not.toHaveBeenCalled()
+		const prepared = await runtime.preparePostApplyCheck()
+		if (!prepared) throw new Error("missing deterministic validation check")
+		await runtime.recordPostApplyCheck("bash", prepared.command, true)
 		const settlement = runtime.settlementRequest("finalize")
 		if (!settlement) throw new Error("missing settlement capability")
 		await runtime.settle(settlement)
@@ -341,9 +421,54 @@ describe("Council coordinator transactions", () => {
 		expect(await readFile(file, "utf8")).toBe("candidate\n")
 	})
 
+	it("clamps deterministic validation to the remaining whole-run deadline", async () => {
+		const { root } = await fixture()
+		const runtime = transactionRuntime(root)
+		await runtime.ensure().stageWrite("file.txt", "candidate\n")
+		const driver = createModelDriver()
+		await runCouncil(runtime, driver.completeModel).result()
+		const promotion = runtime.promotionRequest()
+		if (!promotion) throw new Error("missing promotion capability")
+		await runtime.apply(promotion)
+		const saved = runtime.savedRunBudget
+		if (!saved) throw new Error("missing saved Council run budget")
+		runtime.saveRunBudget({ ...saved, deadlineAt: Date.now() + 1_500 })
+
+		const validation = await runCouncil(runtime, driver.completeModel).result()
+		const call = validation.content[0]
+		const timeout =
+			call?.type === "toolCall" && typeof call.arguments.timeout === "number" ? call.arguments.timeout : undefined
+
+		expect(timeout).toBeGreaterThan(0)
+		expect(timeout).toBeLessThanOrEqual(1.5)
+	})
+
+	it("rolls back instead of validating after the whole-run deadline", async () => {
+		const { root, file } = await fixture()
+		const runtime = transactionRuntime(root)
+		await runtime.ensure().stageWrite("file.txt", "candidate\n")
+		const driver = createModelDriver()
+		await runCouncil(runtime, driver.completeModel).result()
+		const promotion = runtime.promotionRequest()
+		if (!promotion) throw new Error("missing promotion capability")
+		await runtime.apply(promotion)
+		const saved = runtime.savedRunBudget
+		if (!saved) throw new Error("missing saved Council run budget")
+		runtime.saveRunBudget({ ...saved, deadlineAt: Date.now() - 1 })
+
+		const result = await runCouncil(runtime, driver.completeModel).result()
+
+		expect(result).toMatchObject({
+			stopReason: "error",
+			errorMessage: "Council whole-run deadline exceeded",
+		})
+		expect(runtime.state).toBe("rolled_back")
+		expect(await readFile(file, "utf8")).toBe("before\n")
+	})
+
 	it("adjudicates and promotes a fast-mode candidate even though fast text responses skip the judge", async () => {
 		const { root, file } = await fixture()
-		const runtime = new CouncilTransactionRuntime(root)
+		const runtime = transactionRuntime(root)
 		await runtime.ensure().stageWrite("file.txt", "candidate\n")
 		const driver = createModelDriver()
 
@@ -360,9 +485,24 @@ describe("Council coordinator transactions", () => {
 		expect(await readFile(file, "utf8")).toBe("before\n")
 	})
 
-	it("preserves revision obligations and promotes only after one focused checker resolves all of them", async () => {
+	it("returns needs-evidence failure when no deterministic validation check exists", async () => {
 		const { root, file } = await fixture()
 		const runtime = new CouncilTransactionRuntime(root)
+		await runtime.ensure().stageWrite("file.txt", "candidate\n")
+		const driver = createModelDriver()
+
+		const result = await runCouncil(runtime, driver.completeModel).result()
+
+		expect(result.stopReason).toBe("error")
+		expect(result.errorMessage).toContain("no safe deterministic validation checks")
+		expect(driver.completeModel.mock.calls.map(([model]) => model.id)).toEqual(["lead"])
+		expect(runtime.state).toBe("discarded")
+		expect(await readFile(file, "utf8")).toBe("before\n")
+	})
+
+	it("preserves revision obligations and promotes only after one focused checker resolves all of them", async () => {
+		const { root, file } = await fixture()
+		const runtime = transactionRuntime(root)
 		const driver = createModelDriver({ needsRevision: true, finalCheck: "accept" })
 		const gate = await advanceToRevision(runtime, driver)
 		expect(() => runtime.markFullReview()).toThrow("one full review")
@@ -387,14 +527,14 @@ describe("Council coordinator transactions", () => {
 		expect(driver.focusedCheckerCalls()).toBe(1)
 		expect(driver.focusedPayload()?.revision_gate).toEqual(gate)
 		expect(runtime.pendingRevisionGate).toBeUndefined()
-		expect(runtime.pendingPostApplyCheck).toBe("pnpm test")
+		expect(runtime.pendingPostApplyCheck?.id).toBe("package.test")
 		expect(runtime.state).toBe("accepted")
 		expect(await readFile(file, "utf8")).toBe("before\n")
 	})
 
 	it.each(["unresolved", "malformed"] as const)("fails closed and discards a %s focused-check result", async (mode) => {
 		const { root, file } = await fixture()
-		const runtime = new CouncilTransactionRuntime(root)
+		const runtime = transactionRuntime(root)
 		const driver = createModelDriver({ needsRevision: true, finalCheck: mode })
 		await advanceToRevision(runtime, driver)
 		await runtime.ensure().stageWrite("file.txt", "revised\n")
@@ -409,9 +549,35 @@ describe("Council coordinator transactions", () => {
 		expect(driver.focusedCheckerCalls()).toBe(1)
 	})
 
+	it.each([
+		["one repair per stage", 1, ["checker"] as const],
+		["two repairs per run", 2, ["critic", "judge"] as const],
+	])("keeps the %s budget across transaction tool rounds", async (_label, repairsUsed, repairedStages) => {
+		const { root } = await fixture()
+		const runtime = transactionRuntime(root)
+		const driver = createModelDriver({ needsRevision: true, finalCheck: "malformed" })
+		await advanceToRevision(runtime, driver)
+		const saved = runtime.savedRunBudget
+		if (!saved) throw new Error("missing saved Council run budget")
+		runtime.saveRunBudget({ ...saved, repairsUsed, repairedStages: [...repairedStages] })
+		await runtime.ensure().stageWrite("file.txt", "revised\n")
+
+		const result = await runCouncil(runtime, driver.completeModel).result()
+		const repairCalls = driver.completeModel.mock.calls.filter(([, context]) =>
+			context.systemPrompt?.includes("Repair the supplied object"),
+		)
+
+		expect(result.stopReason).toBe("error")
+		expect(repairCalls).toHaveLength(0)
+		expect(runtime.savedRunBudget).toMatchObject({
+			repairsUsed,
+			repairedStages,
+		})
+	})
+
 	it("discards a staged candidate without touching the workspace when the client is already aborted", async () => {
 		const { root, file } = await fixture()
-		const runtime = new CouncilTransactionRuntime(root)
+		const runtime = transactionRuntime(root)
 		await runtime.ensure().stageWrite("file.txt", "candidate\n")
 		const driver = createModelDriver()
 		const client = new AbortController()
@@ -427,7 +593,7 @@ describe("Council coordinator transactions", () => {
 
 	it("enforces one cumulative call budget across successive tool rounds", async () => {
 		const { root } = await fixture()
-		const runtime = new CouncilTransactionRuntime(root)
+		const runtime = transactionRuntime(root)
 		const driver = createModelDriver()
 		const constrained: CouncilConfig = {
 			...config,
@@ -449,7 +615,7 @@ describe("Council coordinator transactions", () => {
 
 	it("rolls back once when an emitted settlement tool is not executed", async () => {
 		const { root, file } = await fixture()
-		const runtime = new CouncilTransactionRuntime(root)
+		const runtime = transactionRuntime(root)
 		await runtime.ensure().stageWrite("file.txt", "candidate\n")
 		const candidate = runtime.propose()
 		await runtime.apply(runtime.accept(candidate.patchSha256))

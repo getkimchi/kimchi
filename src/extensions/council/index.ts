@@ -9,11 +9,11 @@ import { sanitizeCouncilTransactionSnapshot } from "./telemetry.js"
 import { CouncilTransactionRuntime } from "./transaction-runtime.js"
 import {
 	installCouncilMutationGuard,
-	isCouncilPostApplyValidationCommand,
 	registerCouncilTransactionTools,
 	syncCouncilTransactionToolVisibility,
 } from "./transaction-tools.js"
 import type { CouncilProgressEvent, CouncilRunRecord } from "./types.js"
+import { buildValidationCatalog } from "./validation.js"
 
 const COUNCIL_MODEL_NAMES: Record<(typeof COUNCIL_MODEL_IDS)[number], string> = {
 	"council-fast": "Kimchi Council Fast",
@@ -123,7 +123,7 @@ export default function councilExtension(pi: ExtensionAPI): void {
 			changedThisTurn: false,
 			pendingMutatingToolCalls: new Set(),
 			pendingPostApplyValidationCalls: new Map(),
-			transaction: new CouncilTransactionRuntime(sessionCwd),
+			transaction: new CouncilTransactionRuntime(sessionCwd, undefined, buildValidationCatalog(sessionCwd)),
 			progressUI,
 		})
 		registerCouncilTransactionTools(pi, sessionCwd, (toolContext) => routeForContext(toolContext)?.transaction)
@@ -150,12 +150,12 @@ export default function councilExtension(pi: ExtensionAPI): void {
 			route.transaction.state === "post_apply_checks" &&
 			event.toolName === "bash" &&
 			typeof command === "string" &&
-			isCouncilPostApplyValidationCommand(command)
+			route.transaction.isExpectedPostApplyValidationCommand(command)
 		) {
 			route.pendingPostApplyValidationCalls.set(event.toolCallId, command)
 		}
 	})
-	pi.on("tool_execution_end", (event, ctx) => {
+	pi.on("tool_execution_end", async (event, ctx) => {
 		const route = routeForContext(ctx)
 		if (!route) return
 		const wasMutating = route.pendingMutatingToolCalls.delete(event.toolCallId)
@@ -163,7 +163,7 @@ export default function councilExtension(pi: ExtensionAPI): void {
 		const validationCommand = route.pendingPostApplyValidationCalls.get(event.toolCallId)
 		if (validationCommand !== undefined) {
 			route.pendingPostApplyValidationCalls.delete(event.toolCallId)
-			route.transaction.recordPostApplyCheck(event.toolName, validationCommand, !event.isError)
+			await route.transaction.recordPostApplyCheck(event.toolName, validationCommand, !event.isError)
 		}
 	})
 	pi.on("agent_start", () => activeProgressUI()?.clear())

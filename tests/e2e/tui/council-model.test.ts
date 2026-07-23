@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -14,6 +14,11 @@ const PHYSICAL_MODEL_DISPLAY = "PRIVATE_PHYSICAL_MODEL_CANARY"
 const PRIVATE_REVIEW_CANARY = "PRIVATE_REVIEW_CANARY_7f40"
 const PRIVATE_REASONING_CANARY = "PRIVATE_REASONING_CANARY_94ad"
 const FERMENT_NOW = "2026-01-01T00:00:00.000Z"
+const COUNCIL_CHANGE_OBJECTIVE = "Create council-change.txt and give me a short verified answer"
+const COUNCIL_CHANGE_REQUIREMENT_ID = `requirement_${createHash("sha256")
+	.update(COUNCIL_CHANGE_OBJECTIVE)
+	.digest("hex")
+	.slice(0, 16)}`
 const PRIVATE_MARKERS = [
 	PHYSICAL_MODEL_REF,
 	PHYSICAL_MODEL_SLUG,
@@ -119,9 +124,13 @@ function seedCouncilValidation(workDir: string): void {
 		join(workDir, "package.json"),
 		`${JSON.stringify({
 			scripts: {
-				test: `node -e "const fs=require('node:fs');if(fs.readFileSync('council-change.txt','utf8')!=='changed\\\\n')process.exit(1)"`,
+				test: "node verify.mjs",
 			},
 		})}\n`,
+	)
+	writeFileSync(
+		join(workDir, "verify.mjs"),
+		"import { readFileSync } from 'node:fs'\nif (readFileSync('council-change.txt', 'utf8') !== 'changed\\n') process.exit(1)\n",
 	)
 }
 
@@ -194,7 +203,7 @@ test("Council reviews, applies, validates, and settles an exact candidate", asyn
 							missing_evidence: [],
 							requirement_checks: [
 								{
-									requirement: "Create council-change.txt with the exact requested content.",
+									requirement: COUNCIL_CHANGE_REQUIREMENT_ID,
 									status: "satisfied",
 									evidence_refs: ["artifact_candidate_patch"],
 								},
@@ -215,21 +224,10 @@ test("Council reviews, applies, validates, and settles an exact candidate", asyn
 							unique_insights: [],
 							blind_spots: [],
 							unsupported_claims: [],
-							required_checks: ["npm test"],
+							required_checks: ["package.test"],
 							revision_instructions: [],
 							agreement: "high",
 						}),
-					],
-				},
-				{
-					stream: ["Running", " required", " validation."],
-					toolCalls: [
-						{
-							function: {
-								name: "bash",
-								arguments: JSON.stringify({ command: "npm test" }),
-							},
-						},
 					],
 				},
 			],
@@ -238,7 +236,7 @@ test("Council reviews, applies, validates, and settles an exact candidate", asyn
 			// PROMPT_READY is rendered just before the interactive loop starts waiting
 			// for input, so give that startup boundary one tick before submitting.
 			await sleep(100)
-			terminal.submit("Create council-change.txt and give me a short verified answer")
+			terminal.submit(COUNCIL_CHANGE_OBJECTIVE)
 			trace.step("submitted Council prompt")
 
 			await waitForText(terminal, "Council · drafting", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
@@ -281,7 +279,7 @@ test("Council reviews, applies, validates, and settles an exact candidate", asyn
 				JSON.stringify(request.body ?? "").includes("council-change.txt"),
 			)
 			expect(readFileSync(join(fixture.workDir, "council-change.txt"), "utf8")).toBe("changed\n")
-			expect(physicalRequests).toHaveLength(7)
+			expect(physicalRequests).toHaveLength(6)
 			const bodies = physicalRequests.map((request) => JSON.stringify(request.body ?? ""))
 			expect(bodies[0]).toContain("Finish this turn with either a normal user-facing answer or a valid tool call")
 			expect(bodies[1]).toContain("Finish this turn with either a normal user-facing answer or a valid tool call")
@@ -292,8 +290,10 @@ test("Council reviews, applies, validates, and settles an exact candidate", asyn
 			expect(bodies[4]).toContain("You are a Council reviewer")
 			expect(JSON.parse(lastUserText(physicalRequests[4])).role).toBe("checker")
 			expect(bodies[5]).toContain("You are the Council judge")
-			expect(bodies[6]).toContain('Run this exact required command now: \\"npm test\\"')
-			expect(bodies[6]).toContain("apply_agent_patch")
+			expect(bodies).not.toEqual(
+				expect.arrayContaining([expect.stringContaining("Run this exact required command now:")]),
+			)
+			expect(fullText(terminal)).toContain("$ node verify.mjs")
 			for (const request of physicalRequests) {
 				const tools = (request.body as { tools?: unknown }).tools
 				expect(JSON.stringify(tools ?? [])).not.toContain("apply_agent_patch")
