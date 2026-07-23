@@ -1,0 +1,10 @@
+The report draft at {draft_path} failed automated validation: {validation_error}.
+
+The automated validator checks for these exact forbidden patterns (case-insensitive):
+- `<script` tags
+- `<iframe>`, `<object>`, `<embed>`, or `<link>` tags
+- `src=` or `srcset=` attributes on any element
+- CSS `@import` statements or `url(...)` references
+- Inline event handlers such as `onload=`, `onclick=`, `onerror=`, etc.
+
+The error above includes the line number and a snippet showing the first violation. Remove only that specific pattern from the draft; do not rewrite the report or redo the timeout analysis. After editing, read the file back and verify the validator error is gone. Finish only after the report starts with <!doctype html> and is a complete, self-contained, script-free HTML document. Do not modify any other files.

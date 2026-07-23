@@ -41,6 +41,17 @@ OPUS_SYSTEM_PROMPT = (
     "name the suspected root cause layer, and give a one-line recommendation. "
     "Keep output under 2000 characters."
 )
+TIMEOUT_OPUS_SYSTEM_PROMPT = (
+    "You are analyzing the root causes of agent timeouts in a coding-agent benchmark. "
+    "For each timed-out trial, a root cause category was assigned: "
+    "infrastructure, agent loop, tool hang, subagent stall, inference stall, "
+    "ferment plan issue, insufficient timeout, or unknown. "
+    "Summarize every distinct timeout reason across the provided runs. "
+    "For each reason, state: the root cause category, which task(s) and model(s) "
+    "were affected, a one-sentence explanation of what happened, and a "
+    "one-line recommendation to prevent it. Group identical root causes together. "
+    "Keep output under 2000 characters."
+)
 DISCORD_MAX_CHARS = 2000  # Used by _post_long_message for chunking
 MAX_RETRIES = 3
 DISCORD_API_BASE = "https://discord.com/api/v10"
@@ -225,6 +236,48 @@ def call_opus(user_content: str, api_key: str) -> str | None:
         "model": OPUS_MODEL,
         "messages": [
             {"role": "system", "content": OPUS_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        "max_tokens": 4096,
+    }).encode()
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": "kimchi-benchmark-summarizer/1.0",
+    }
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            req = request.Request(OPUS_API_URL, data=payload, headers=headers, method="POST")
+            with request.urlopen(req, timeout=120) as response:
+                if response.status != 200:
+                    print(f"Opus API returned status {response.status}", file=sys.stderr, flush=True)
+                    if attempt < MAX_RETRIES - 1:
+                        time.sleep(2 ** (attempt + 1))
+                    continue
+                data = json.loads(response.read().decode())
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if content:
+                    return content.strip()
+                print("Opus API returned empty content", file=sys.stderr, flush=True)
+        except (error.URLError, error.HTTPError, OSError) as exc:
+            print(f"Opus API attempt {attempt + 1} failed: {exc}", file=sys.stderr, flush=True)
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(2 ** (attempt + 1))
+
+    return None
+
+
+def call_opus_with_prompt(user_content: str, api_key: str, system_prompt: str) -> str | None:
+    """Call Claude Opus with a custom system prompt and return the summary text.
+
+    Returns None if all retries fail.
+    """
+    payload = json.dumps({
+        "model": OPUS_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ],
         "max_tokens": 4096,
@@ -446,6 +499,19 @@ def main() -> int:
             print("  No summary.json found for run", file=sys.stderr, flush=True)
             metadata["_summary_local_path"] = None
 
+        # Fetch timeout-analysis.html if it exists (optional — not all runs have timeouts).
+        timeout_analysis_uri = f"gs://{bucket}/{prefix}/timeout-analysis.html"
+        timeout_analysis_local_path = work_dir / f"timeout-analysis-{idx}.html"
+        print(f"  Checking for timeout-analysis.html: {timeout_analysis_uri}", flush=True)
+        try:
+            run(["gcloud", "storage", "cp", timeout_analysis_uri, str(timeout_analysis_local_path), "--quiet"])
+            size = timeout_analysis_local_path.stat().st_size
+            print(f"  Downloaded timeout-analysis.html ({size} bytes)", flush=True)
+            metadata["_timeout_analysis_local_path"] = str(timeout_analysis_local_path)
+        except subprocess.CalledProcessError:
+            print("  No timeout-analysis.html found", file=sys.stderr, flush=True)
+            metadata["_timeout_analysis_local_path"] = None
+
         metadata["_analysis_local_path"] = str(analysis_local_path)
         metadata["_gcs_prefix"] = prefix
         qualifying_runs.append(metadata)
@@ -492,6 +558,7 @@ def main() -> int:
 
         # Extract text from analysis HTML and concatenate
         analyses: list[str] = []
+        timeout_analyses: list[str] = []
         for run_meta in group_runs:
             analysis_path = Path(run_meta.get("_analysis_local_path", ""))
             try:
@@ -502,6 +569,18 @@ def main() -> int:
             except OSError as exc:
                 print(f"Failed to read analysis for run: {exc}", file=sys.stderr, flush=True)
 
+            # Extract timeout analysis text if available
+            timeout_path_str = run_meta.get("_timeout_analysis_local_path")
+            if timeout_path_str:
+                timeout_path = Path(timeout_path_str)
+                try:
+                    timeout_html = timeout_path.read_text(encoding="utf-8")
+                    timeout_text = extract_text(timeout_html)
+                    if timeout_text.strip():
+                        timeout_analyses.append(timeout_text.strip())
+                except OSError as exc:
+                    print(f"Failed to read timeout analysis for run: {exc}", file=sys.stderr, flush=True)
+
         if not analyses:
             print(f"No analysis content found for {group_name} group", file=sys.stderr, flush=True)
             continue
@@ -509,6 +588,22 @@ def main() -> int:
         combined = "\n\n".join(analyses)
         print(f"Calling Opus for {group_name} group ({len(group_runs)} runs, {len(combined)} chars total)", flush=True)
         summary = call_opus(combined, api_key)
+
+        # Summarize timeout analysis if any timeout reports exist
+        timeout_summary: str | None = None
+        if timeout_analyses:
+            timeout_combined = "\n\n".join(timeout_analyses)
+            print(
+                f"Calling Opus for {group_name} timeout analysis "
+                f"({len(timeout_analyses)} reports, {len(timeout_combined)} chars total)",
+                flush=True,
+            )
+            timeout_summary = call_opus_with_prompt(timeout_combined, api_key, TIMEOUT_OPUS_SYSTEM_PROMPT)
+            if timeout_summary is None:
+                print(f"Opus timeout summarization failed for {group_name} group", file=sys.stderr, flush=True)
+        else:
+            print(f"No timeout analysis content found for {group_name} group", flush=True)
+
         if summary is None:
             message = f"Opus summarization failed for {group_name} group after {MAX_RETRIES} retries"
             print(message, file=sys.stderr, flush=True)
@@ -524,6 +619,8 @@ def main() -> int:
             return 1
 
         print(f"Opus returned summary ({len(summary)} chars)", flush=True)
+        if timeout_summary:
+            print(f"Opus returned timeout summary ({len(timeout_summary)} chars)", flush=True)
 
         # Build the runs-in-scope table for this group.
         runs_table = build_runs_table(group_runs)
@@ -535,6 +632,11 @@ def main() -> int:
         print(runs_table, flush=True)
         print(f"{'-' * 80}", flush=True)
         print(summary, flush=True)
+        if timeout_summary:
+            print(f"\n{'=' * 80}", flush=True)
+            print(f"TIMEOUT ANALYSIS — {group_name.upper()} GROUP", flush=True)
+            print(f"{'=' * 80}", flush=True)
+            print(timeout_summary, flush=True)
         print(f"{'=' * 80}\n", flush=True)
 
         # Post to Discord if configured
@@ -545,6 +647,9 @@ def main() -> int:
 
             print(f"Posting {group_name} summary to Discord ({len(summary)} chars)", flush=True)
             content_blocks = [headline, runs_table, summary]
+            if timeout_summary:
+                content_blocks.append(f"⏱️ Timeout Breakdown — {group_name.capitalize()}")
+                content_blocks.append(timeout_summary)
             if not post_to_discord(bot_token, channel_id, thread_name, content_blocks):
                 print(f"Failed to post {group_name} summary to Discord", file=sys.stderr, flush=True)
         else:

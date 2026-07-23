@@ -1,53 +1,86 @@
 #!/usr/bin/env bash
-# run_analysis_locally.sh — Fetch artifacts from a failed pipeline, run the
+# run_analysis_locally.sh — Fetch artifacts from a pipeline, run the
 # benchmark session analysis locally, validate the output, and optionally
 # upload it to GCS.
 #
 # Usage:
-#   ./benchmark/scripts/gitlab/run_analysis_locally.sh <pipeline_id> [--upload]
+#   ./benchmark/scripts/gitlab/run_analysis_locally.sh <pipeline_id> [--timeouts] [--upload]
+#
+# Flags:
+#   --timeouts  Run the timeout deep-dive analysis instead of the general analysis.
+#   --upload    Upload the result to GCS after validation.
 #
 # Prerequisites:
 #   - glab CLI authenticated
 #   - kimchi binary on PATH (or set KIMCHI_CODE_BINARY)
 #   - gcloud CLI authenticated (only needed with --upload)
 #   - BENCHMARK_GCS_BUCKET env var (only needed with --upload)
-#
-# What it does:
-#   1. Lists jobs in the pipeline, finds chunk + summary jobs
-#   2. Downloads and extracts their artifacts into a temp work dir
-#   3. Runs analyze_sessions.py with the local kimchi binary
-#   4. Validates the produced HTML report
-#   5. With --upload, uploads to GCS using the run metadata's gcs.prefix
 
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <pipeline_id> [--upload]" >&2
+  echo "Usage: $0 <pipeline_id> [--timeouts] [--upload]" >&2
   exit 1
 fi
 
 PIPELINE_ID="$1"
+shift || true
+TIMEOUTS_ONLY=false
 UPLOAD=false
-[[ "${2:-}" == "--upload" ]] && UPLOAD=true
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --timeouts) TIMEOUTS_ONLY=true; shift ;;
+    --upload)   UPLOAD=true; shift ;;
+    *) echo "Unknown flag: $1" >&2; exit 1 ;;
+  esac
+done
 
 PROJECT_ID="82797533"  # castai/kimchi/kimchi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-ANALYZE_SCRIPT="$SCRIPT_DIR/analyze_sessions.py"
+
+if $TIMEOUTS_ONLY; then
+  ANALYZE_SCRIPT="$SCRIPT_DIR/analyze_timeouts.py"
+  ANALYSIS_ENV_FILE=".benchmark/timeout-analysis.html"
+  DRAFT_ENV_FILE=".benchmark/timeout-analysis-work/report.html"
+  SESSION_ENV_NAME="BENCHMARK_TIMEOUT_ANALYSIS_SESSION_DIR"
+  FINAL_REPORT="$(pwd)/timeout-analysis-${PIPELINE_ID}.html"
+  FINAL_EVIDENCE="$(pwd)/timeout-evidence-${PIPELINE_ID}.json"
+  GCS_FILENAME="timeout-analysis.html"
+  ANALYSIS_LABEL="timeout deep-dive"
+  ANALYSIS_TIMEOUT="5400"  # 90 min
+else
+  ANALYZE_SCRIPT="$SCRIPT_DIR/analyze_sessions.py"
+  ANALYSIS_ENV_FILE=".benchmark/analysis.html"
+  DRAFT_ENV_FILE=".benchmark/analysis-work/report.html"
+  SESSION_ENV_NAME="BENCHMARK_ANALYSIS_SESSION_DIR"
+  FINAL_REPORT="$(pwd)/analysis-${PIPELINE_ID}.html"
+  FINAL_EVIDENCE=""
+  GCS_FILENAME="analysis.html"
+  ANALYSIS_LABEL="general session"
+  ANALYSIS_TIMEOUT="3600"  # 60 min
+fi
+
 WORK_DIR="$(mktemp -d -t "analysis-${PIPELINE_ID}-XXXXXX")"
-FINAL_REPORT="$(pwd)/analysis-${PIPELINE_ID}.html"
 
 cleanup() {
-  if [[ -f "$WORK_DIR/repo/.benchmark/analysis.html" ]]; then
-    cp "$WORK_DIR/repo/.benchmark/analysis.html" "$FINAL_REPORT"
+  if [[ -f "$WORK_DIR/repo/$ANALYSIS_ENV_FILE" ]]; then
+    cp "$WORK_DIR/repo/$ANALYSIS_ENV_FILE" "$FINAL_REPORT"
+  fi
+  if [[ -n "$FINAL_EVIDENCE" && -f "$WORK_DIR/repo/.benchmark/timeout-evidence.json" ]]; then
+    cp "$WORK_DIR/repo/.benchmark/timeout-evidence.json" "$FINAL_EVIDENCE"
   fi
   rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
 
-echo "=== Pipeline $PIPELINE_ID — local analysis ==="
+echo "=== Pipeline $PIPELINE_ID — local ${ANALYSIS_LABEL} analysis ==="
 echo "Work dir:      $WORK_DIR"
 echo "Final report:  $FINAL_REPORT"
+if [[ -n "$FINAL_EVIDENCE" ]]; then
+  echo "Evidence JSON: $FINAL_EVIDENCE"
+fi
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -169,8 +202,8 @@ fi
 # ---------------------------------------------------------------------------
 # 3. Run the analysis
 # ---------------------------------------------------------------------------
-echo ">> Running Kimchi analysis..."
-echo "   This may take up to 1 hour. The analysis runs with the same prompt"
+echo ">> Running Kimchi ${ANALYSIS_LABEL} analysis..."
+echo "   This may take a while. The analysis runs with the same prompt"
 echo "   and model used in CI (kimchi-dev/glm-5.2-fp8)."
 echo ""
 
@@ -178,19 +211,27 @@ cd "$WORK_DIR/repo"
 
 export BENCHMARK_RESULTS_DIR="$RESULTS_REL"
 export BENCHMARK_SUMMARY_PATH=".benchmark/summary.json"
-export BENCHMARK_ANALYSIS_OUTPUT=".benchmark/analysis.html"
-export BENCHMARK_ANALYSIS_DRAFT=".benchmark/analysis-work/report.html"
-export BENCHMARK_ANALYSIS_SESSION_DIR="$WORK_DIR/analysis-session"
-export KIMCHI_ANALYSIS_TIMEOUT_SECONDS="3600"
+export KIMCHI_ANALYSIS_TIMEOUT_SECONDS="$ANALYSIS_TIMEOUT"
 export KIMCHI_ANALYSIS_MAX_RETRIES="2"
 export KIMCHI_ANALYSIS_MODEL="kimchi-dev/glm-5.2-fp8"
 
-ANALYSIS_OUTPUT="$WORK_DIR/repo/.benchmark/analysis.html"
-DRAFT_PATH="$WORK_DIR/repo/.benchmark/analysis-work/report.html"
+ANALYSIS_OUTPUT="$WORK_DIR/repo/$ANALYSIS_ENV_FILE"
+DRAFT_PATH="$WORK_DIR/repo/$DRAFT_ENV_FILE"
+
+if $TIMEOUTS_ONLY; then
+  export BENCHMARK_TIMEOUT_ANALYSIS_OUTPUT="$ANALYSIS_ENV_FILE"
+  export BENCHMARK_TIMEOUT_ANALYSIS_DRAFT="$DRAFT_ENV_FILE"
+  export BENCHMARK_TIMEOUT_EVIDENCE=".benchmark/timeout-evidence.json"
+  export "$SESSION_ENV_NAME"="$WORK_DIR/timeout-analysis-session"
+else
+  export BENCHMARK_ANALYSIS_OUTPUT="$ANALYSIS_ENV_FILE"
+  export BENCHMARK_ANALYSIS_DRAFT="$DRAFT_ENV_FILE"
+  export "$SESSION_ENV_NAME"="$WORK_DIR/analysis-session"
+fi
 
 # Don't let set -e kill us here — we want to check the result ourselves
-# analyze_sessions.py and its sibling prompt files live in the repo, not in
-# the downloaded artifacts — use absolute paths so it can find them.
+# analyze scripts and their sibling prompt files live in the repo, not in
+# the downloaded artifacts — use absolute paths so they can find them.
 python3 "$ANALYZE_SCRIPT" || true
 ANALYSIS_EXIT=$?
 
@@ -203,7 +244,7 @@ echo ">> Analysis exit code: $ANALYSIS_EXIT"
 echo ">> Validating output..."
 
 if [[ ! -f "$ANALYSIS_OUTPUT" ]]; then
-  echo "WARNING: analysis.html was not produced at the expected path" >&2
+  echo "WARNING: output was not produced at the expected path" >&2
   # Check if draft exists as fallback (same bug as CI: Kimchi finished but
   # the script was killed before copying draft → final)
   if [[ -f "$DRAFT_PATH" ]]; then
@@ -286,10 +327,10 @@ print(gcs.get('prefix', ''))
     exit 1
   fi
 
-  DESTINATION="gs://$BUCKET/$GCS_PREFIX/analysis.html"
+  DESTINATION="gs://$BUCKET/$GCS_PREFIX/$GCS_FILENAME"
   echo "   Destination: $DESTINATION"
   gcloud storage cp "$ANALYSIS_OUTPUT" "$DESTINATION" --quiet
-  echo "   analysis.html uploaded"
+  echo "   $GCS_FILENAME uploaded"
 
 fi
 
