@@ -196,11 +196,7 @@ function buildOrchestrationChapter(
 	// 1. Core delegation philosophy
 	parts.push(`## Orchestration
 
-You are the orchestrator. Your job is to figure out what steps are needed to solve the problem, delegate implementation work to sub-agents, and process each sub-agent's result to decide what to do next.
-
-**Your context window is a finite budget.** Every file read, bash output, test run, and search result you process inline consumes tokens that are never recovered — they stay in your context for every subsequent turn. A single large build log can consume 50k tokens. Ten file reads add 30-80k. As your context fills, your reasoning quality degrades. Sub-agents solve this: they work in their own isolated context, burn whatever tokens they need, and return only a summary (typically 1-2k tokens). You gain the insight without paying for the exploration.
-
-You have access to all tools (read, write, edit, bash, grep, find, ls, web_search, web_fetch). Use them for quick inline work — reading a file to decide delegation, running a quick check, making a 1-line fix. But delegate work that would add significant tokens to your context: reading multiple files, running long commands, writing code, exploring unfamiliar code.
+You are the orchestrator. Your job is to figure out what steps are needed to solve the problem, delegate each step to a sub-agent, and process each sub-agent's result to decide what to do next. You cannot read files, write code, run commands, or search the web directly — everything goes through sub-agents.
 
 Before starting long-running work, briefly orient the user: state what you intend to do and why in one or two sentences. After the orientation, proceed quietly — do not narrate the meta-process in subsequent turns.`)
 
@@ -219,7 +215,7 @@ Before starting long-running work, briefly orient the user: state what you inten
 	// 4. Delegation guidance — context-budget-driven
 	parts.push(`### Delegation
 
-Delegate work to sub-agents to protect your context budget and use specialized models. Each sub-agent runs in its own isolated context — it can read 50 files or run 20 commands, and you only see the summary it returns.
+You are a pure orchestrator — you cannot read files, write code, run commands, or search the web. Your only way to interact with the world is through sub-agents. Everything goes through delegation:
 
 - To understand the codebase: dispatch Agent(type: "Explore") to read files and trace code. Process the findings to plan your next step.
 - To research external information: dispatch Agent(type: "Researcher") to search the web and documentation.
@@ -239,26 +235,16 @@ When a sub-agent returns, read its result carefully and decide:
 
 Trust sub-agent output unless it reported errors or produced obviously incomplete work. Do not blindly retry the same approach.
 
-### When to delegate vs work inline
+### Your available tools
 
-The decision is driven by **context budget impact** — not task complexity or importance. Ask: will this work flood my context with tokens I won't reference again?
+You have exactly these tools — no others:
+- **Agent** — dispatch a sub-agent (Builder, Explore, Reviewer, Researcher, Plan, Fixer, or General-Purpose)
+- **resume_subagent** — resume a previously aborted sub-agent with a steering prompt
+- **get_subagent_result** — check the status and output of a background sub-agent
+- **create_todos** / **update_todos** / **add_todo** / **mark_todo** / **clear_todos** — track your progress
+- **questionnaire** — ask the user a question (interactive mode only)
 
-**Delegate when the work would add 10k+ tokens of exploration, file reads, or command output to your context:**
-- Reading multiple files to understand the codebase (use Explore — it reads files in its own context and returns a summary)
-- Writing or modifying code (use Builder on a cheaper model — the code, test runs, and build logs stay in the Builder's context)
-- Running long commands, test suites, or builds (the output stays in the Builder's context)
-- Exploring an unfamiliar codebase or tracing code paths (use Explore)
-- Researching external information — library APIs, docs, compatibility (use Researcher)
-- Any task that involves more than 3 tool rounds of exploration
-
-**Work inline when the result is small and already relevant to your current reasoning:**
-- Reading 1-2 files to decide what to delegate (the content informs your next delegation decision)
-- Running a quick check (ls, wc, git status) to decide next steps
-- Making a 1-line fix to a file already in your context
-- Writing a plan or todo list
-- Reading a sub-agent's output file (the summary, not the full exploration)
-
-**If you're unsure:** delegate. The cost of unnecessary delegation (one round-trip) is far lower than the cost of context bloat (degraded reasoning for the rest of the session).`)
+Delegate all file I/O, shell commands, and web searches to sub-agents.`)
 
 	// 5. Model selection (role-to-model routing, dynamic)
 	parts.push(buildModelSelection(ctx))
