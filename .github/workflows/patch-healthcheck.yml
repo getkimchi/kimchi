@@ -1,0 +1,50 @@
+name: Check patches
+
+on:
+  pull_request:
+    paths:
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "patches/**"
+      - ".github/dependabot.yml"
+      - ".github/workflows/patch-healthcheck.yml"
+      - ".github/workflows/release.yml"
+
+concurrency:
+  group: check-patches-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check-patches:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Needs no dependencies, so it reports a clear message even when a stale
+      # patch would break `pnpm install`. Runs before install for that reason.
+      - name: Check @earendil-works/* patches are in sync
+        run: node scripts/check-patches.js
+
+      - name: Install (verifies patches apply)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Unit-test the patch check
+        run: pnpm exec vitest run scripts/check-patches.test.ts
+
+  # Dependabot pi-mono bumps must survive a full dry-run release. The
+  # release/homebrew jobs stay tag-gated, so nothing actually publishes.
+  dry-run-release:
+    if: ${{ github.event.pull_request.user.login == 'dependabot[bot]' }}
+    needs: [check-patches]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release.yml

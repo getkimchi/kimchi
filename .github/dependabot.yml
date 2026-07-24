@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    allow:
+      - dependency-name: "@earendil-works/*"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+    groups:
+      pi-mono:
+        patterns:
+          - "@earendil-works/*"
+    commit-message:
+      prefix: "deps"
+    open-pull-requests-limit: 5
