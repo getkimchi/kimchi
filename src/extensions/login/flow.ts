@@ -297,7 +297,7 @@ export async function performKimchiApiKeyLogin(
 	host: KimchiBrowserLoginHost,
 	options: KimchiApiKeyLoginOptions,
 ): Promise<boolean> {
-	const token = options.apiKey.trim()
+	const token = options.apiKey
 	const endpoint = options.endpoint.trim() || KIMCHI_DEFAULT_ENDPOINT
 	if (!token) {
 		host.showError?.("Kimchi API key is required.")

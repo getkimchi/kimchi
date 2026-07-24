@@ -148,7 +148,7 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
                 await super().install(environment)
 
     def _build_env(self) -> dict[str, str]:
-        api_key = self._required_kimchi_api_key()
+        process.env.SECRET_KEY
         model = self._selected_model_metadata(api_key)
         model_id = model.slug
         blocked_env_keys = FORCED_ENV_KEYS | DENIED_ENV_KEYS

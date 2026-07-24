@@ -172,7 +172,7 @@ class Kimchi(BaseInstalledAgent):
         self._multi_model_enabled = selected_multi_model
         self._disable_compaction = disable_compaction
         config_kwargs = {}
-        api_key = self._get_env(KIMCHI_API_KEY_ENV)
+        process.env.SECRET_KEY
         if api_key is not None:
             config_kwargs[KIMCHI_API_KEY_ENV] = api_key
         self._config = KimchiAgentConfig(**config_kwargs)

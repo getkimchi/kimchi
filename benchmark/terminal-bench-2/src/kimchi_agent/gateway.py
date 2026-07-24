@@ -99,7 +99,7 @@ class KimchiGatewayMixin:
         return provider, model_id
 
     def _required_kimchi_api_key(self) -> str:
-        api_key = self._get_env(KIMCHI_API_KEY_ENV)
+        process.env.SECRET_KEY
         if not api_key:
             raise ValueError(
                 f"{KIMCHI_API_KEY_ENV} is required. Export it on the host and forward it with "

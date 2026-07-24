@@ -31,7 +31,7 @@ export function buildOpenClawProviderBlock(
 ): Record<string, unknown> {
 	return {
 		baseUrl: BASE_URL,
-		apiKey: `\${${API_KEY_ENV}}`,
+		apiKey: "${KIMCHI_API_KEY}",
 		api: "openai-completions",
 		models: models.map((m) => ({
 			id: `${PROVIDER_NAME}/${m.slug}`,

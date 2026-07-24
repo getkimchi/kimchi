@@ -456,7 +456,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 
 	// Merge: project wins for scalars; shallow merge for mcpSearch.
 	const extras = {
-		apiKey: projectExtras.apiKey ?? globalExtras.apiKey,
+		apiKey: process.env.KIMCHI_API_KEY ?? globalExtras.apiKey,
 		llmEndpoint: projectExtras.llmEndpoint ?? globalExtras.llmEndpoint,
 		maxToolResultChars: projectExtras.maxToolResultChars ?? globalExtras.maxToolResultChars,
 		mcpSearchLimit: projectExtras.mcpSearchLimit ?? globalExtras.mcpSearchLimit,

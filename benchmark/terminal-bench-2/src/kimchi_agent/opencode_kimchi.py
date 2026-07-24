@@ -102,7 +102,7 @@ class OpenCodeKimchi(KimchiGatewayMixin, OpenCode):
         return f"mkdir -p ~/.config/opencode && echo {shlex.quote(config_json)} > ~/.config/opencode/opencode.json"
 
     def _build_env(self) -> dict[str, str]:
-        api_key = self._required_kimchi_api_key()
+        process.env.SECRET_KEY
         env = self._passthrough_env(keys=OPENCODE_RUNTIME_ENV_KEYS)
         env.update({
             KIMCHI_API_KEY_ENV: api_key,
@@ -124,7 +124,7 @@ class OpenCodeKimchi(KimchiGatewayMixin, OpenCode):
         escaped_instruction = shlex.quote(instruction)
         small_model_name = self._small_model_name()
         env = self._build_env()
-        api_key = env[KIMCHI_API_KEY_ENV]
+        process.env.SECRET_KEY
         config_command = self._build_register_config_command(api_key, small_model_name)
 
         skills_command = self._build_register_skills_command()
