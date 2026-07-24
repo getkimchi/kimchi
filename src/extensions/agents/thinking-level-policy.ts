@@ -13,17 +13,10 @@ export type ThinkingTaskScope =
 	| "orchestrator-coord"
 	| "orchestrator-judge"
 
-export const THINKING_LEVEL_ORDER: readonly ThinkingLevel[] = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-] as const
+export const THINKING_LEVEL_ORDER: readonly ThinkingLevel[] = ["off", "low", "medium", "high", "xhigh"] as const
 
 const DELEGATION_THINKING_BASE: Record<ThinkingTaskScope, Record<ChunkComplexity, ThinkingLevel>> = {
-	explore: { simple: "minimal", complex: "low" },
+	explore: { simple: "low", complex: "low" },
 	research: { simple: "low", complex: "medium" },
 	plan: { simple: "high", complex: "high" },
 	build: { simple: "medium", complex: "high" },
@@ -83,7 +76,7 @@ export function resolveDelegationThinkingLevel(
 
 export function renderDelegationThinkingLevelTable(): string {
 	const rows: Array<[string, string, ThinkingLevel, ThinkingLevel, ThinkingLevel]> = [
-		["Explore (bounded fact-finding)", "Explore", "minimal", "low", "medium"],
+		["Explore (bounded fact-finding)", "Explore", "low", "low", "medium"],
 		["Research note", "Researcher", "low", "medium", "high"],
 		["Plan or plan verification", "Plan", "high", "high", "high"],
 		["Build chunk", "Builder", "medium", "high", "xhigh"],

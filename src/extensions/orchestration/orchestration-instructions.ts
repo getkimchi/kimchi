@@ -182,7 +182,7 @@ Always pass a \`thinking\` parameter on every Agent call — never omit it. Use 
 
 const THINKING_LEVELS = `### Thinking levels
 
-\`thinking\` controls extended reasoning for the orchestrator and each delegated worker. Levels (lowest to highest): off, minimal, low, medium, high, xhigh. Use the lowest level that fits the task — higher thinking costs more tokens and time.
+\`thinking\` controls extended reasoning for the orchestrator and each delegated worker. Levels (lowest to highest): off, low, medium, high, xhigh. Use the lowest level that fits the task — higher thinking costs more tokens and time.
 
 **Orchestrator (main thread):** keep thinking low while coordinating (spawning agents, reading artifact paths). Raise only when classifying the pipeline, self-validating a plan, or interpreting ambiguous subagent reports.
 

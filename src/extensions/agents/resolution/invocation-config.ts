@@ -1,3 +1,4 @@
+import { coerceThinkingLevel } from "../personas/custom-agents.js"
 import type { AgentConfig, IsolationMode, JoinMode, ThinkingLevel } from "../personas/types.js"
 
 interface AgentInvocationParams {
@@ -53,7 +54,9 @@ export function resolveAgentInvocationConfig(
 	return {
 		modelInput,
 		modelFromParams,
-		thinking: (params.thinking ?? agentConfig?.thinking) as ThinkingLevel | undefined,
+		thinking: coerceThinkingLevel((params.thinking ?? agentConfig?.thinking) as string | undefined) as
+			| ThinkingLevel
+			| undefined,
 		maxTurns: agentConfig?.maxTurns ?? params.max_turns,
 		tokenBudget: params.token_budget ?? params.tokenBudget ?? agentConfig?.tokenBudget,
 		maxDuration: params.max_duration ?? agentConfig?.maxDuration,
