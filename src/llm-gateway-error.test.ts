@@ -71,6 +71,26 @@ describe("classifyLLMGatewayError", () => {
 			reason: "transport_failure",
 		},
 		{
+			name: "undici bodyTimeout mid-stream (bare fetch TypeError message)",
+			message: "terminated",
+			reason: "transport_failure",
+		},
+		{
+			name: "undici bodyTimeout mid-stream with provider metadata appended",
+			message: 'terminated\n{"request_id":"abc"}',
+			reason: "transport_failure",
+		},
+		{
+			name: "undici bodyTimeout recorded via String(err) with the error-name prefix",
+			message: "TypeError: terminated",
+			reason: "transport_failure",
+		},
+		{
+			name: "undici bodyTimeout wrapped Go-style by a proxy layer",
+			message: 'Post "https://llm.kimchi.dev/openai/v1/chat/completions": terminated',
+			reason: "transport_failure",
+		},
+		{
 			name: "stream ended without finish reason",
 			message: "Stream ended without finish_reason",
 			reason: "stream_interrupted",
