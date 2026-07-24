@@ -54,6 +54,7 @@ export interface PhysicalInvocationRequest {
 	stageTimeoutMs: number
 	parentOptions: SimpleStreamOptions
 	inputTokenHint?: number
+	fallback?: boolean
 	prepareContext?: (
 		model: Model<Api>,
 		requestedMaxTokens: number,
@@ -308,7 +309,7 @@ export class PhysicalModelInvoker {
 						usage: message.usage,
 						...(truncated ? { truncated: true } : {}),
 						...(retry > 0 ? { retry: true } : {}),
-						...(modelRef !== request.pool.primary ? { fallback: true } : {}),
+						...(request.fallback || modelRef !== request.pool.primary ? { fallback: true } : {}),
 					})
 					return { message, model, modelRef, attempts: totalAttempts }
 				} catch (error) {
@@ -327,7 +328,7 @@ export class PhysicalModelInvoker {
 						error: failure.code,
 						...(truncated ? { truncated: true } : {}),
 						...(retry > 0 ? { retry: true } : {}),
-						...(modelRef !== request.pool.primary ? { fallback: true } : {}),
+						...(request.fallback || modelRef !== request.pool.primary ? { fallback: true } : {}),
 						...(message ? { usage: message.usage } : {}),
 					})
 					if (!failure.retryable || retry === this.options.maxRetriesPerCall) break

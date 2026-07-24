@@ -28,6 +28,7 @@ describe("readCouncilConfig", () => {
 		expect(config.reviewers.independent.primary).toBe("physical/independent")
 		expect(config.reviewers.critic.primary).toBe("physical/critic")
 		expect(config.reviewers.checker.primary).toBe("physical/checker")
+		expect(config.reviewers.checker.fallbacks).toEqual(["kimchi-dev/glm-5.2-fp8", "kimchi-dev/deepseek-v4-flash"])
 		expect(config.judge).toEqual({ primary: "physical/judge", fallbacks: ["physical/backup"] })
 	})
 
@@ -105,9 +106,9 @@ describe("validateCouncilConfig", () => {
 
 describe("applyCouncilPreset", () => {
 	it.each([
-		["fast", ["critic"], 8, 8, 1, false, "on-issues", "changes"],
-		["normal", ["independent", "critic", "checker"], 10, 10, 3, true, "on-issues", "always"],
-		["deep", ["independent", "critic", "checker"], 10, 10, 3, true, "always", "always"],
+		["fast", ["critic"], 12, 14, 1, false, "on-issues", "changes"],
+		["normal", ["independent", "critic", "checker"], 16, 20, 3, true, "on-issues", "always"],
+		["deep", ["independent", "critic", "checker"], 16, 20, 3, true, "always", "always"],
 	] as const)("applies the %s execution policy", (preset, roles, logical, physical, concurrent, judge, revision, reviewPolicy) => {
 		const config = applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, preset)
 		expect(config.requiredRoles).toEqual(roles)
@@ -124,13 +125,13 @@ describe("applyCouncilPreset", () => {
 
 	it("covers the minimum supported revision call sequence", () => {
 		expect(applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, "fast").budget).toMatchObject({
-			maxLogicalCalls: 8,
-			maxPhysicalAttempts: 8,
+			maxLogicalCalls: 12,
+			maxPhysicalAttempts: 14,
 		})
 		for (const preset of ["normal", "deep"] as const) {
 			expect(applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, preset).budget).toMatchObject({
-				maxLogicalCalls: 10,
-				maxPhysicalAttempts: 10,
+				maxLogicalCalls: 16,
+				maxPhysicalAttempts: 20,
 			})
 		}
 	})
@@ -153,7 +154,7 @@ describe("applyCouncilPreset", () => {
 			const applied = applyCouncilPreset(lower, preset)
 			expect(applied).toMatchObject({
 				maxParallelReviewers: 1,
-				overallTimeoutMs: preset === "fast" ? 45_000 : 120_000,
+				overallTimeoutMs: preset === "fast" ? 90_000 : 120_000,
 				maxCalls: 3,
 			})
 			expect(applied.budget).toMatchObject({
@@ -172,8 +173,8 @@ describe("applyCouncilPreset", () => {
 	})
 
 	it.each([
-		["normal", 120_000, 90_000, 24_576, 32_768, 524_288, 65_536],
-		["deep", 300_000, 120_000, 32_768, 49_152, 786_432, 98_304],
+		["normal", 420_000, 160_000, 24_576, 131_072, 524_288, 65_536],
+		["deep", 420_000, 160_000, 32_768, 131_072, 786_432, 98_304],
 	] as const)("keeps quality headroom in the %s preset", (preset, timeout, stageTimeout, leadTokens, structuredBytes, inputTokens, outputTokens) => {
 		const config = applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, preset)
 

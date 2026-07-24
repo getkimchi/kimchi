@@ -405,7 +405,8 @@ describe("Council runtime", () => {
 		expect(reviewerPrompts.some((prompt) => prompt.includes("exact identifiers, formats, and checks"))).toBe(true)
 		expect(reviewerPrompts.some((prompt) => prompt.includes("task-appropriate counterexamples"))).toBe(true)
 		expect(reviewerPrompts.some((prompt) => prompt.includes("exact requested output"))).toBe(true)
-		expect(reviewerPrompts.some((prompt) => prompt.includes("skipped, ignored, filtered, or unrun"))).toBe(true)
+		expect(reviewerPrompts.some((prompt) => prompt.includes("not by itself a source defect"))).toBe(true)
+		expect(reviewerPrompts.some((prompt) => prompt.includes("candidate_test_isolation not_run state"))).toBe(true)
 		expect(revisionContext?.tools).toBeUndefined()
 		expect(emitted.map((event) => event.type)).toEqual(["start", "text_start", "text_delta", "text_end", "done"])
 		expectValidProgressLifecycle(progressEvents)
@@ -1598,10 +1599,12 @@ describe("Council runtime", () => {
 		])
 	})
 
-	it("rejects serialized tool-call markup from the lead", async () => {
-		const completeModel = vi.fn(async (model: Model<Api>) =>
-			response(model, "I'll inspect it. <|tool_calls_section_begin|><|tool_call_begin|>functions.grep"),
-		)
+	it("retries once without tools before rejecting repeated serialized tool-call markup from the lead", async () => {
+		const contexts: Context[] = []
+		const completeModel = vi.fn(async (model: Model<Api>, context: Context) => {
+			contexts.push(context)
+			return response(model, "I'll inspect it. <|tool_calls_section_begin|><|tool_call_begin|>functions.grep")
+		})
 		const stream = createCouncilStream({
 			config: TEST_COUNCIL_CONFIG,
 			getModelRegistry: () => modelRegistry,
@@ -1615,7 +1618,8 @@ describe("Council runtime", () => {
 			stopReason: "error",
 			errorMessage: "Council could not produce a complete lead response",
 		})
-		expect(completeModel).toHaveBeenCalledTimes(1)
+		expect(completeModel).toHaveBeenCalledTimes(2)
+		expect(contexts[1]?.tools).toBeUndefined()
 	})
 
 	it("records one failed stage with returned usage", async () => {
@@ -1722,8 +1726,8 @@ describe("Council runtime", () => {
 
 		expect(repairCalls).toHaveLength(1)
 		expect(repairTimeoutMs).toBeLessThan(100)
-		expect(repairMaxTokens).toBe(1000)
-		expect(repairModelRef).toBe(TEST_COUNCIL_CONFIG.reviewers.checker.primary)
+		expect(repairMaxTokens).toBe(4096)
+		expect(repairModelRef).toBe(TEST_COUNCIL_CONFIG.judge.primary)
 		expect(result.content).toEqual([{ type: "text", text: "Repaired final" }])
 		expectValidProgressLifecycle(progressEvents)
 		const signatures = progressEvents.map(progressSignature)

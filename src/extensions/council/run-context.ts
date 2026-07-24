@@ -135,8 +135,8 @@ export class CouncilRunContext {
 
 	beginLogicalCall(): void {
 		this.assertActive()
+		if (this.logicalCalls + 1 > this.limits.maxLogicalCalls) this.exhaust("maxLogicalCalls")
 		this.logicalCalls += 1
-		if (this.logicalCalls > this.limits.maxLogicalCalls) this.exhaust("maxLogicalCalls")
 	}
 
 	reserveAttempt(estimate: AttemptEstimate): AttemptReservation {
@@ -146,8 +146,7 @@ export class CouncilRunContext {
 			outputTokens: nonNegative(estimate.outputTokens),
 			costUsd: nonNegative(estimate.costUsd),
 		}
-		this.physicalAttempts += 1
-		if (this.physicalAttempts > this.limits.maxPhysicalAttempts) this.exhaust("maxPhysicalAttempts")
+		if (this.physicalAttempts + 1 > this.limits.maxPhysicalAttempts) this.exhaust("maxPhysicalAttempts")
 		if (this.activeCalls + 1 > this.limits.maxConcurrentCalls) this.exhaust("maxConcurrentCalls")
 		if (this.inputTokens + this.reservedInputTokens + reserved.inputTokens > this.limits.maxAggregateInputTokens) {
 			this.exhaust("maxAggregateInputTokens")
@@ -158,6 +157,7 @@ export class CouncilRunContext {
 		if (this.estimatedCostUsd + this.reservedCostUsd + reserved.costUsd > this.limits.maxEstimatedCostUsd) {
 			this.exhaust("maxEstimatedCostUsd")
 		}
+		this.physicalAttempts += 1
 		this.activeCalls += 1
 		this.peakConcurrentCalls = Math.max(this.peakConcurrentCalls, this.activeCalls)
 		this.reservedInputTokens += reserved.inputTokens
@@ -192,14 +192,16 @@ export class CouncilRunContext {
 
 	reserveEvidence(bytes: number): void {
 		this.assertActive()
-		this.evidenceBytes += nonNegative(bytes)
-		if (this.evidenceBytes > this.limits.maxEvidenceBytes) this.exhaust("maxEvidenceBytes")
+		const next = this.evidenceBytes + nonNegative(bytes)
+		if (next > this.limits.maxEvidenceBytes) this.exhaust("maxEvidenceBytes")
+		this.evidenceBytes = next
 	}
 
 	reserveStructured(bytes: number): void {
 		this.assertActive()
-		this.structuredBytes += nonNegative(bytes)
-		if (this.structuredBytes > this.limits.maxStructuredBytes) this.exhaust("maxStructuredBytes")
+		const next = this.structuredBytes + nonNegative(bytes)
+		if (next > this.limits.maxStructuredBytes) this.exhaust("maxStructuredBytes")
+		this.structuredBytes = next
 	}
 
 	snapshot(): RunBudgetSnapshot {

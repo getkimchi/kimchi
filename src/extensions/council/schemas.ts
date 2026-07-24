@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto"
 import { z } from "zod"
-import { REQUIRED_REVIEWER_ROLES, type ReviewerRole } from "./types.js"
+import { type CouncilSchemaErrorCode, REQUIRED_REVIEWER_ROLES, type ReviewerRole } from "./types.js"
 
-export type { ReviewerRole } from "./types.js"
+export type { CouncilSchemaErrorCode, ReviewerRole } from "./types.js"
 
 export type JsonPrimitive = string | number | boolean | null
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[]
@@ -259,12 +259,12 @@ export const JudgeArtifactSchema = z
 		schema_version: z.literal(1),
 		decision: DecisionSchema,
 		dispositions: z.array(FindingDispositionSchema).max(24),
-		consensus: boundedStringList(8, 2048),
-		contradictions: boundedStringList(8, 2048),
-		partial_coverage: boundedStringList(8, 2048),
-		unique_insights: boundedStringList(8, 2048),
-		blind_spots: boundedStringList(8, 2048),
-		unsupported_claims: boundedStringList(8, 2048),
+		consensus: boundedStringList(8, 2048).default([]),
+		contradictions: boundedStringList(8, 2048).default([]),
+		partial_coverage: boundedStringList(8, 2048).default([]),
+		unique_insights: boundedStringList(8, 2048).default([]),
+		blind_spots: boundedStringList(8, 2048).default([]),
+		unsupported_claims: boundedStringList(8, 2048).default([]),
 		required_checks: z.array(nonEmptyString(64)).max(3),
 		revision_instructions: boundedStringList(8, 2048),
 		agreement: z.enum(["low", "medium", "high"]),
@@ -294,14 +294,6 @@ export const FinalCheckOutputSchema = z
 	.strict()
 
 export type FinalCheckArtifact = z.infer<typeof FinalCheckOutputSchema>
-
-export type CouncilSchemaErrorCode =
-	| "missing_json"
-	| "ambiguous_json"
-	| "invalid_json"
-	| "invalid_shape"
-	| "unsupported_reference"
-	| "missing_disposition"
 
 export class CouncilSchemaError extends Error {
 	readonly code: CouncilSchemaErrorCode
@@ -541,12 +533,35 @@ export function parseJudgeArtifact(
 	}
 	if (allowedValidationCheckIds !== undefined) {
 		const allowedChecks = new Set(allowedValidationCheckIds)
+		const selectedChecks = new Set(parsed.data.required_checks)
+		if (!hasUpheld && parsed.data.revision_instructions.length > 0) {
+			throw new CouncilSchemaError(
+				"invalid_shape",
+				"Council judge cannot request source revision without an upheld finding",
+			)
+		}
 		if (parsed.data.required_checks.length === 0) {
 			throw new CouncilSchemaError("invalid_shape", "Council judge omitted the deterministic validation selection")
 		}
 		for (const checkId of parsed.data.required_checks) {
 			if (!allowedChecks.has(checkId)) {
 				throw new CouncilSchemaError("unsupported_reference", `Unsupported validation check ID: ${checkId}`)
+			}
+		}
+		for (const disposition of parsed.data.dispositions) {
+			if (disposition.disposition !== "needs_evidence") continue
+			const checkId = disposition.required_check
+			if (!checkId || !allowedChecks.has(checkId)) {
+				throw new CouncilSchemaError(
+					"unsupported_reference",
+					`Evidence gap references an unsupported validation check ID: ${checkId ?? ""}`,
+				)
+			}
+			if (!selectedChecks.has(checkId)) {
+				throw new CouncilSchemaError(
+					"invalid_shape",
+					`Evidence gap validation check is not selected in required_checks: ${checkId}`,
+				)
 			}
 		}
 	}

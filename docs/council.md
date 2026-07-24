@@ -34,7 +34,7 @@ Internal reviewer and judge responses are not replayed or persisted. The public 
 
 For code changes, `read` sees the transaction overlay while `edit`, `write`, `council_delete_file`, and `council_rename_file` change only that overlay. The real workspace is untouched until the cumulative patch has been reviewed and accepted. Independent review sees a compact current-turn base-evidence packet without the lead draft or candidate. Critic and checker see the exact candidate patch, its hash, and only relevant validation evidence. Role packets retain bounded `Guidelines`, `Factual Accuracy`, `Project Guidelines`, and explicit `Council Constraints` sections while omitting tool schemas, environment metadata, and orchestration instructions. Unknown mutation tools and mutating shell commands are blocked while a transaction is open. Council does not use Git worktrees as its runtime isolation mechanism.
 
-The accepted patch is applied through the normal permission path with a one-use, server-side capability tied to transaction ID and patch hash. Base bytes and modes are verified immediately before apply. The judge selects stable IDs from a deterministic, repository-derived catalog of safe validation checks; it cannot supply shell commands. Rollback data remains available until every selected check runs through its exact catalog command and settlement completes. A failed check, denied settlement, cancellation, or safe cleanup path rolls the patch back. After successful settlement, Council returns the stored reviewed response without another unreviewed model call.
+The accepted patch is applied through the normal permission path with a one-use, server-side capability tied to transaction ID and patch hash. Base bytes and modes are verified immediately before apply. The judge routes upheld source defects to revision and catalog-backed `needs_evidence` findings to post-apply validation; raw reviewer metadata cannot bypass that adjudication. The judge selects stable IDs from a deterministic, repository-derived catalog of safe validation checks and cannot supply shell commands. Rollback data remains available until every selected check runs through its exact catalog command and settlement completes. A failed check, denied settlement, cancellation, or safe cleanup path rolls the patch back. After successful settlement, Council returns the stored reviewed response without another unreviewed model call.
 
 Exact compact packets and schema-valid structured results are cached for the lifetime of one transaction. Cache keys include the patch, base snapshot, objective, constraints, evidence, role, model, prompt version, and schema version. The cache is bounded, isolated by packet/result namespace, and never stores raw reasoning or schema-invalid output.
 
@@ -46,15 +46,15 @@ Preset choice is explicit; Council does not guess task complexity. Use fast for 
 
 | Model | Review path | Revision | Logical/physical cap | Lead/internal tokens | Evidence/result | Stage/overall timeout |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| `kimchi/council-fast` | critic; judge required for code candidates | on issues | 8 / 8 | 12,288 / 4,096 | 128 / 8 KiB | 30 / 45 seconds |
-| `kimchi/council` | independent + critic + checker; judge | on unresolved issues after judging | 10 / 10 | 24,576 / 16,384 | 128 / 32 KiB | 90 / 120 seconds |
-| `kimchi/council-deep` | independent + critic + checker; judge | always | 10 / 10 | 32,768 / 16,384 | 128 / 48 KiB | 120 / 300 seconds |
+| `kimchi/council-fast` | critic; judge required for code candidates | on issues | 12 / 14 | 12,288 / 4,096 | 128 / 8 KiB | 30 / 90 seconds |
+| `kimchi/council` | independent + critic + checker; judge | on upheld source issues after judging | 16 / 20 | 24,576 / 16,384 | 128 / 128 KiB | 160 / 420 seconds |
+| `kimchi/council-deep` | independent + critic + checker; judge | always | 16 / 20 | 32,768 / 16,384 | 128 / 128 KiB | 160 / 420 seconds |
 
 Normal and deep review text-only answers as well as code candidates. Fast skips its critic for direct/read-only text turns, but any nontrivial staged code candidate still receives critic review and judge adjudication before promotion.
 
-The call caps cover the smallest supported read → staged edit → review → one revision → focused-check path. Repairs and pool fallbacks still consume the same bounded physical-attempt budget and may fail closed when no headroom remains.
+The call caps cover lead tool work, review, one revision, focused checking, and bounded repairs. Council stops advertising lead tools when the remaining call slots are needed for review and verification. Pool fallbacks still consume the bounded physical-attempt budget and may fail closed when no headroom remains.
 
-Structured stages have smaller independent output ceilings: independent 2,500 tokens, critic 2,000, checker 1,500, judge 4,000, and repair 1,000. A malformed stage can be repaired once, with at most two repairs in the whole run; those counters persist across transaction tool rounds.
+Structured stages have smaller independent output ceilings: independent 2,500 tokens, critic 4,000, checker 8,000, judge 8,000, and repair 8,000. A malformed stage can be repaired once, with at most two repairs in the whole run; those counters persist across transaction tool rounds.
 
 ## Configuration
 
@@ -65,15 +65,15 @@ Deep ceilings and physical model defaults:
 | Lead | `kimchi-dev/kimi-k2.7` |
 | Reviewers | critic: `kimchi-dev/deepseek-v4-flash`; checker: `kimchi-dev/minimax-m3`; independent: `kimchi-dev/glm-5.2-fp8` |
 | Judge | `kimchi-dev/deepseek-v4-flash` |
-| Stage timeout | 120 seconds |
-| Overall timeout | 300 seconds |
+| Stage timeout | 160 seconds |
+| Overall timeout | 420 seconds |
 | Lead/revision output | 32,768 tokens each |
 | Reviewer/judge output | 16,384 tokens each |
 | Physical reasoning (capable models) | role-specific: reviewer `low`/`medium`, judge `high`, revision `low` |
-| Logical calls / physical attempts | 10 / 10 maximum |
+| Logical calls / physical attempts | 16 / 20 maximum |
 | Parallel reviewers | 3 maximum |
 | Evidence packet | 128 KiB maximum |
-| Aggregate structured output | 48 KiB maximum |
+| Aggregate structured output | 128 KiB maximum |
 | Aggregate input/output tokens | 786,432 / 98,304 maximum |
 | Estimated physical cost | USD 25 maximum |
 
@@ -89,15 +89,15 @@ Environment overrides:
 | `KIMCHI_COUNCIL_REVIEWER_MODELS` | Deprecated compatibility mapping: independent, critic, then optional checker primary. |
 | `KIMCHI_COUNCIL_JUDGE_MODEL` | Physical model used for the judge. |
 | `KIMCHI_COUNCIL_JUDGE_FALLBACK_MODELS` | Comma-separated judge fallbacks. |
-| `KIMCHI_COUNCIL_TIMEOUT_MS` | Whole-turn timeout in milliseconds; default and hard maximum `300000`. |
-| `KIMCHI_COUNCIL_STAGE_TIMEOUT_MS` | Per-stage timeout in milliseconds; default and hard maximum `120000`. |
+| `KIMCHI_COUNCIL_TIMEOUT_MS` | Whole-turn timeout in milliseconds; default and hard maximum `420000`. |
+| `KIMCHI_COUNCIL_STAGE_TIMEOUT_MS` | Per-stage timeout in milliseconds; default and hard maximum `160000`. |
 | `KIMCHI_COUNCIL_MAX_PARALLEL_REVIEWERS` | Maximum concurrent reviewers; default `3`. |
 | `KIMCHI_COUNCIL_LEAD_MAX_TOKENS` | Lead and revision output budget; default and hard maximum `32768`. |
 | `KIMCHI_COUNCIL_INTERNAL_MAX_TOKENS` | Reviewer and judge output budget; default and hard maximum `16384`. |
 | `KIMCHI_COUNCIL_MAX_EVIDENCE_BYTES` | Text evidence packet limit; default and hard maximum `131072`. |
-| `KIMCHI_COUNCIL_MAX_STRUCTURED_BYTES` | Aggregate structured-output limit; default and hard maximum `49152`. |
-| `KIMCHI_COUNCIL_MAX_LOGICAL_CALLS` | Whole-turn logical call cap; default `10` (`KIMCHI_COUNCIL_MAX_CALLS` remains an alias). |
-| `KIMCHI_COUNCIL_MAX_PHYSICAL_ATTEMPTS` | Whole-turn physical attempt cap; default `10`. |
+| `KIMCHI_COUNCIL_MAX_STRUCTURED_BYTES` | Aggregate structured-output limit; default and hard maximum `131072`. |
+| `KIMCHI_COUNCIL_MAX_LOGICAL_CALLS` | Whole-turn logical call cap; default `16` (`KIMCHI_COUNCIL_MAX_CALLS` remains an alias). |
+| `KIMCHI_COUNCIL_MAX_PHYSICAL_ATTEMPTS` | Whole-turn physical attempt cap; default `20`. |
 | `KIMCHI_COUNCIL_MAX_CONCURRENT_CALLS` | Whole-run concurrent physical-call cap; default `3`. |
 | `KIMCHI_COUNCIL_MAX_AGGREGATE_INPUT_TOKENS` | Aggregate physical input-token cap; default `786432`. |
 | `KIMCHI_COUNCIL_MAX_AGGREGATE_OUTPUT_TOKENS` | Aggregate physical output-token cap; default `98304`. |
@@ -108,7 +108,7 @@ Numeric limits must be positive (integer except for the USD cap); invalid values
 
 Council reserves budgets before dispatch and reconciles them from returned usage. Provider-library retries are forced to zero; the counted Council invoker owns retries and pool fallback. Cost estimation and the USD cap are effective only when the physical model registry supplies non-zero pricing; the current Kimchi proxy catalog reports zero prices, so cost remains zero and the cap cannot be enforced for those models.
 
-Malformed structured output is repaired through the checker model pool, whose job already requires concise schema-valid output. Repair remains capped at 1,000 tokens, once per source stage and twice per run.
+Malformed structured output is repaired through the same role pool, including the judge pool for judge output. Repair is capped at 8,000 tokens, once per source stage and twice per run.
 
 Validation models receive only check IDs, kind, working directory, allowlisted executable, timeout, and mutation policy; exact arguments stay inside the runtime. Sanitized run telemetry records a SHA-256 command fingerprint instead of the command text.
 
@@ -164,7 +164,7 @@ MODEL='kimchi/council' ./scripts/run-local.sh \
 - If only some reviewers produce usable structured results, their missing roles are passed to the judge as evidence gaps and force revision; they never count as acceptance votes.
 - Raw reviewer, judge, and chain-of-thought content is not persisted or returned.
 - A code candidate fails closed if context compilation, a required reviewer, adjudication, final evidence checking, exact apply, or settlement fails. Text-only fast responses may still return the lead as degraded when its reviewer is unavailable.
-- Findings receive stable IDs. A judge must disposition every finding exactly once as `resolved`, `upheld`, or `needs_evidence`; resolved findings require cited evidence. If an unresolved high or critical finding remains and revision fails, Council returns an error instead of the flagged lead draft.
+- Findings receive stable IDs. A judge must disposition every finding exactly once as `resolved`, `upheld`, or `needs_evidence`; resolved findings require cited evidence, upheld findings require source revision, and each evidence gap must name a selected deterministic validation ID. A failed selected check rolls the candidate back instead of asking the lead to revise missing runtime evidence.
 - A transaction permits one full panel review, at most one lead revision, and one focused final checker. A resolved final-check obligation must cite evidence from the exact revised candidate context.
 - Post-apply validation accepts only narrow, non-mutating test, typecheck, lint, or build commands discovered from package, repository, and configuration metadata. Judge-required checks are catalog IDs; the runtime resolves and executes their exact argument arrays, and all selected checks must succeed before finalization. Validation is refused after the absolute whole-run deadline, and each emitted command timeout is clamped to the remaining deadline.
 - Supported candidate mutations are UTF-8 file create/update/delete/rename operations. Traversal, symbolic-link paths, case or physical path aliases, directories, binary content, concurrent base drift, and unsupported mutation tools fail closed. Apply revalidates moved base bytes and installs new content without replacing a concurrently created path.

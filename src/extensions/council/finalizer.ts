@@ -4,6 +4,8 @@ export const LEAD_OUTPUT_SYSTEM_PROMPT =
 	"Finish this turn with either a normal user-facing answer or a valid tool call. Do not return only internal reasoning."
 export const LEAD_RETRY_SYSTEM_PROMPT =
 	"The previous attempt ended without a user-facing answer or tool call. Correct that now."
+export const RESERVED_CALLS_FINALIZE_SYSTEM_PROMPT =
+	"Call budget is reserved for review and verification. Do not call tools; return the best complete user-facing answer now."
 
 export const CRITICAL_REVISION_ERROR_MESSAGE = "Council could not safely finalize the reviewed response."
 

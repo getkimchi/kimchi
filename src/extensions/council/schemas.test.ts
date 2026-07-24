@@ -185,17 +185,19 @@ describe("judge artifacts", () => {
 				},
 			],
 			revision_instructions: ["Run and report the focused test."],
+			required_checks: ["Run the focused test."],
+			agreement: "high",
+		})
+
+		expect(parseJudgeArtifact(judge, [finding], ["artifact_1"])).toMatchObject({
+			decision: "revise",
 			consensus: [],
 			contradictions: [],
 			partial_coverage: [],
 			unique_insights: [],
 			blind_spots: [],
 			unsupported_claims: [],
-			required_checks: ["Run the focused test."],
-			agreement: "high",
 		})
-
-		expect(parseJudgeArtifact(judge, [finding], ["artifact_1"]).decision).toBe("revise")
 		expect(() =>
 			parseJudgeArtifact(JSON.stringify({ ...JSON.parse(judge), dispositions: [] }), [finding], ["artifact_1"]),
 		).toThrowError(expect.objectContaining({ code: "missing_disposition" }))
@@ -268,6 +270,66 @@ describe("judge artifacts", () => {
 		)
 		expect(() =>
 			parseJudgeArtifact(JSON.stringify({ ...judge, required_checks: [] }), [], [], ["package.test"]),
+		).toThrowError(expect.objectContaining({ code: "invalid_shape" }))
+	})
+
+	it("requires disposition evidence checks to come from the selected validation IDs", () => {
+		const finding = parseReviewArtifact(independent(), "independent", ["artifact_1"]).findings[0]
+		const judge = {
+			schema_version: 1,
+			decision: "needs_evidence",
+			dispositions: [
+				{
+					finding_id: finding.id,
+					disposition: "needs_evidence",
+					rationale: "The candidate needs deterministic validation.",
+					evidence_refs: [],
+					revision_instruction: null,
+					required_check: "package.test",
+				},
+			],
+			revision_instructions: [],
+			consensus: [],
+			contradictions: [],
+			partial_coverage: [],
+			unique_insights: [],
+			blind_spots: [],
+			unsupported_claims: [],
+			required_checks: ["package.test"],
+			agreement: "medium",
+		}
+
+		expect(parseJudgeArtifact(JSON.stringify(judge), [finding], ["artifact_1"], ["package.test"])).toMatchObject({
+			decision: "needs_evidence",
+			required_checks: ["package.test"],
+		})
+		expect(() =>
+			parseJudgeArtifact(
+				JSON.stringify({ ...judge, required_checks: ["package.typecheck"] }),
+				[finding],
+				["artifact_1"],
+				["package.test", "package.typecheck"],
+			),
+		).toThrowError(expect.objectContaining({ code: "invalid_shape" }))
+		expect(() =>
+			parseJudgeArtifact(
+				JSON.stringify({
+					...judge,
+					dispositions: [{ ...judge.dispositions[0], required_check: "package.typecheck" }],
+					required_checks: ["package.typecheck"],
+				}),
+				[finding],
+				["artifact_1"],
+				["package.test"],
+			),
+		).toThrowError(expect.objectContaining({ code: "unsupported_reference" }))
+		expect(() =>
+			parseJudgeArtifact(
+				JSON.stringify({ ...judge, revision_instructions: ["Change the source instead."] }),
+				[finding],
+				["artifact_1"],
+				["package.test"],
+			),
 		).toThrowError(expect.objectContaining({ code: "invalid_shape" }))
 	})
 })

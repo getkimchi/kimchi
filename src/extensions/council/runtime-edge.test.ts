@@ -301,13 +301,15 @@ describe("Council runtime adversarial edges", () => {
 	it("passes the configured structured-output budget to repair", async () => {
 		const malformed = `{"broken":"${"x".repeat(20_000)}REPAIR_TAIL`
 		let repairRaw = ""
-		const completeModel = vi.fn<CompleteModel>(async (model, context) => {
+		let repairMaxTokens: number | undefined
+		const completeModel = vi.fn<CompleteModel>(async (model, context, options) => {
 			switch (stage(context)) {
 				case "review":
 					return response(model, malformed)
 				case "repair": {
 					const payload = JSON.parse(String(context.messages[0]?.content)) as { raw: string }
 					repairRaw = payload.raw
+					repairMaxTokens = options?.maxTokens
 					return response(model, VALID_REVIEW)
 				}
 				case "judge":
@@ -329,6 +331,7 @@ describe("Council runtime adversarial edges", () => {
 
 		expect(Buffer.byteLength(repairRaw)).toBeGreaterThan(16_384)
 		expect(repairRaw).toContain("REPAIR_TAIL")
+		expect(repairMaxTokens).toBe(4096)
 	})
 
 	it("keeps enough structured-output budget to reach revision after a bounded valid review", async () => {

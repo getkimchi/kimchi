@@ -6,12 +6,14 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { applyCouncilPreset, DEFAULT_COUNCIL_CONFIG } from "./config.js"
 import { createCouncilStream } from "./coordinator.js"
+import { LEAD_RETRY_SYSTEM_PROMPT, RESERVED_CALLS_FINALIZE_SYSTEM_PROMPT, REVISION_SYSTEM_PROMPT } from "./finalizer.js"
 import {
 	CheckerReviewOutputSchema,
 	CriticReviewOutputSchema,
 	FinalCheckOutputSchema,
 	IndependentReviewOutputSchema,
 	JudgeArtifactSchema,
+	stableFindingId,
 } from "./schemas.js"
 import { CouncilTransactionRuntime } from "./transaction-runtime.js"
 import { COUNCIL_APPLY_TOOL, COUNCIL_SETTLE_TOOL } from "./transaction-tools.js"
@@ -42,7 +44,16 @@ function transactionRuntime(root: string): CouncilTransactionRuntime {
 }
 
 const physicalModels = new Map(
-	["lead", "independent", "critic", "checker", "judge"].map((id) => [
+	[
+		"lead",
+		"independent",
+		"independent-fallback",
+		"critic",
+		"checker",
+		"checker-fallback",
+		"judge",
+		"judge-fallback",
+	].map((id) => [
 		id,
 		{
 			id,
@@ -186,9 +197,29 @@ const revisionCall: ToolCall = {
 	arguments: { path: "file.txt", content: "revised\n" },
 }
 
+const evidenceGapFinding = {
+	severity: "medium" as const,
+	statement: "The candidate needs the deterministic package.test validation before it is final.",
+	evidence_refs: ["artifact_candidate_validation"],
+	assumptions: ["Pre-apply validation cannot inspect the candidate overlay."],
+	suggested_check: "package.test",
+}
+const evidenceGapFindingId = stableFindingId("critic", evidenceGapFinding)
+
+const upheldFinding = {
+	severity: "high" as const,
+	statement: "The candidate must be replaced with the revised content.",
+	evidence_refs: ["artifact_candidate_patch"],
+	assumptions: [],
+	suggested_check: "Inspect the revised candidate.",
+}
+const upheldFindingId = stableFindingId("critic", upheldFinding)
+
 type FinalCheckMode = "accept" | "unresolved" | "malformed"
 
-function createModelDriver(options: { needsRevision?: boolean; finalCheck?: FinalCheckMode } = {}) {
+function createModelDriver(
+	options: { needsRevision?: boolean; validationGap?: boolean; finalCheck?: FinalCheckMode } = {},
+) {
 	let focusedCheckerCalls = 0
 	let focusedPayload: {
 		candidate_patch_sha256: string
@@ -227,13 +258,22 @@ function createModelDriver(options: { needsRevision?: boolean; finalCheck?: Fina
 			}
 			if (model.id === "independent") return response(model, JSON.stringify(cleanReviews.independent))
 			if (model.id === "critic") {
-				const critic = options.needsRevision
+				const critic = options.validationGap
 					? CriticReviewOutputSchema.parse({
 							...cleanReviews.critic,
-							decision: "revise",
-							recommended_changes: ["Replace the candidate with the revised content."],
+							decision: "needs_evidence",
+							findings: [evidenceGapFinding],
+							recommended_changes: ["Wait for package.test validation."],
+							missing_evidence: ["package.test"],
 						})
-					: cleanReviews.critic
+					: options.needsRevision
+						? CriticReviewOutputSchema.parse({
+								...cleanReviews.critic,
+								decision: "revise",
+								findings: [upheldFinding],
+								recommended_changes: ["Replace the candidate with the revised content."],
+							})
+						: cleanReviews.critic
 				return response(model, JSON.stringify(critic))
 			}
 			if (model.id === "checker") {
@@ -254,13 +294,41 @@ function createModelDriver(options: { needsRevision?: boolean; finalCheck?: Fina
 				)
 			}
 			if (model.id === "judge") {
-				const judge = options.needsRevision
+				const judge = options.validationGap
 					? JudgeArtifactSchema.parse({
 							...cleanJudge,
+							decision: "needs_evidence",
+							dispositions: [
+								{
+									finding_id: evidenceGapFindingId,
+									disposition: "needs_evidence",
+									rationale: "The candidate can be proved by the selected deterministic validation.",
+									evidence_refs: [],
+									revision_instruction: null,
+									required_check: "package.test",
+								},
+							],
 							required_checks: ["package.test"],
-							revision_instructions: ["Replace the candidate with the revised content."],
+							agreement: "medium",
 						})
-					: cleanJudge
+					: options.needsRevision
+						? JudgeArtifactSchema.parse({
+								...cleanJudge,
+								decision: "revise",
+								dispositions: [
+									{
+										finding_id: upheldFindingId,
+										disposition: "upheld",
+										rationale: "The candidate itself must change.",
+										evidence_refs: ["artifact_candidate_patch"],
+										revision_instruction: "Replace the candidate with the revised content.",
+										required_check: null,
+									},
+								],
+								required_checks: ["package.test"],
+								revision_instructions: ["Replace the candidate with the revised content."],
+							})
+						: cleanJudge
 				return response(model, JSON.stringify(judge))
 			}
 			if (lastText.includes("<council_review_data>")) return toolResponse(model, revisionCall)
@@ -378,6 +446,18 @@ describe("Council coordinator transactions", () => {
 			"checker",
 			"judge",
 		])
+		const checkerMessage = driver.completeModel.mock.calls
+			.find(([model]) => model.id === "checker")?.[1]
+			.messages.at(-1)
+		if (checkerMessage?.role !== "user" || typeof checkerMessage.content !== "string")
+			throw new Error("missing checker input")
+		const checkerInput = JSON.parse(checkerMessage.content) as {
+			allowed_evidence_refs: string[]
+			required_requirement_ids: string[]
+		}
+		expect(checkerInput.allowed_evidence_refs).toContain("artifact_candidate_patch")
+		expect(checkerInput.required_requirement_ids.length).toBeGreaterThan(0)
+		expect(checkerInput.required_requirement_ids.every((id) => id.startsWith("requirement_"))).toBe(true)
 		expect(
 			Object.fromEntries(
 				driver.completeModel.mock.calls.map(([model, _context, options]) => [model.id, options?.maxTokens]),
@@ -385,9 +465,9 @@ describe("Council coordinator transactions", () => {
 		).toEqual({
 			lead: 4096,
 			independent: 2500,
-			critic: 2000,
-			checker: 1500,
-			judge: 4000,
+			critic: 4000,
+			checker: 4096,
+			judge: 4096,
 		})
 		expect(
 			driver.completeModel.mock.calls.some(([, context]) =>
@@ -419,6 +499,35 @@ describe("Council coordinator transactions", () => {
 		expect(final.stopReason).toBe("stop")
 		expect(driver.completeModel).not.toHaveBeenCalled()
 		expect(await readFile(file, "utf8")).toBe("candidate\n")
+	})
+
+	it("promotes judge-selected validation gaps without asking for a source revision", async () => {
+		const { root, file } = await fixture()
+		const runtime = transactionRuntime(root)
+		await runtime.ensure().stageWrite("file.txt", "candidate\n")
+		const driver = createModelDriver({ validationGap: true })
+		let record: CouncilRunRecord | undefined
+
+		const result = await runCouncil(runtime, driver.completeModel, undefined, config, (value) => {
+			record = value
+		}).result()
+
+		expect(result.content[0]).toMatchObject({ type: "toolCall", name: COUNCIL_APPLY_TOOL })
+		expect(driver.completeModel.mock.calls.map(([model]) => model.id)).toEqual([
+			"lead",
+			"independent",
+			"critic",
+			"checker",
+			"judge",
+		])
+		expect(
+			driver.completeModel.mock.calls.some(([, context]) => context.systemPrompt?.includes(REVISION_SYSTEM_PROMPT)),
+		).toBe(false)
+		expect(runtime.pendingRevisionGate).toBeUndefined()
+		expect(runtime.pendingPostApplyCheck?.id).toBe("package.test")
+		expect(record?.unresolvedFindingCount).toBe(1)
+		expect(runtime.state).toBe("accepted")
+		expect(await readFile(file, "utf8")).toBe("before\n")
 	})
 
 	it("clamps deterministic validation to the remaining whole-run deadline", async () => {
@@ -466,6 +575,159 @@ describe("Council coordinator transactions", () => {
 		expect(await readFile(file, "utf8")).toBe("before\n")
 	})
 
+	it("tries the checker fallback after structured output and repair both fail", async () => {
+		const { root } = await fixture()
+		const runtime = transactionRuntime(root)
+		await runtime.ensure().stageWrite("file.txt", "candidate\n")
+		const driver = createModelDriver()
+		let record: CouncilRunRecord | undefined
+		const completeModel = vi.fn(
+			async (model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage> => {
+				const systemPrompt = context.systemPrompt ?? ""
+				if (model.id === "checker" && !systemPrompt.includes("Repair the supplied object")) {
+					return response(model, "not json")
+				}
+				if (model.id === "checker-fallback") {
+					const checker = physicalModels.get("checker")
+					if (!checker) throw new Error("missing checker model")
+					const valid = await driver.completeModel(checker, context, options)
+					const text = valid.content.find((block) => block.type === "text")?.text ?? ""
+					return response(model, text)
+				}
+				return driver.completeModel(model, context, options)
+			},
+		)
+		const fallbackConfig: CouncilConfig = {
+			...config,
+			reviewers: {
+				...config.reviewers,
+				checker: { primary: "test/checker", fallbacks: ["test/checker-fallback"] },
+			},
+		}
+
+		const result = await runCouncil(runtime, completeModel, undefined, fallbackConfig, (value) => {
+			record = value
+		}).result()
+
+		expect(result.content[0]).toMatchObject({ type: "toolCall", name: COUNCIL_APPLY_TOOL })
+		expect(completeModel.mock.calls.filter(([model]) => model.id === "checker-fallback")).toHaveLength(1)
+		expect(record?.missingReviewerRoles).not.toContain("checker")
+		expect(runtime.state).toBe("accepted")
+	})
+
+	it("tries the independent fallback after structured output and repair both fail", async () => {
+		const { root } = await fixture()
+		const runtime = transactionRuntime(root)
+		await runtime.ensure().stageWrite("file.txt", "candidate\n")
+		const driver = createModelDriver()
+		let record: CouncilRunRecord | undefined
+		const completeModel = vi.fn(
+			async (model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage> => {
+				if (model.id === "independent") return response(model, "not json")
+				if (model.id === "independent-fallback") {
+					const independent = physicalModels.get("independent")
+					if (!independent) throw new Error("missing independent model")
+					const valid = await driver.completeModel(independent, context, options)
+					const text = valid.content.find((block) => block.type === "text")?.text ?? ""
+					return response(model, text)
+				}
+				return driver.completeModel(model, context, options)
+			},
+		)
+		const fallbackConfig: CouncilConfig = {
+			...config,
+			reviewers: {
+				...config.reviewers,
+				independent: { primary: "test/independent", fallbacks: ["test/independent-fallback"] },
+			},
+		}
+
+		const result = await runCouncil(runtime, completeModel, undefined, fallbackConfig, (value) => {
+			record = value
+		}).result()
+
+		expect(result.content[0]).toMatchObject({ type: "toolCall", name: COUNCIL_APPLY_TOOL })
+		expect(completeModel.mock.calls.filter(([model]) => model.id === "independent-fallback")).toHaveLength(1)
+		expect(record?.missingReviewerRoles).not.toContain("independent")
+		expect(runtime.state).toBe("accepted")
+	})
+
+	it("tries one judge fallback after the primary output and repair both fail", async () => {
+		const { root } = await fixture()
+		const runtime = transactionRuntime(root)
+		await runtime.ensure().stageWrite("file.txt", "candidate\n")
+		const driver = createModelDriver()
+		let record: CouncilRunRecord | undefined
+		const completeModel = vi.fn(
+			async (model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage> => {
+				if (model.id === "judge") return response(model, "not json")
+				if (model.id === "judge-fallback") {
+					const judge = physicalModels.get("judge")
+					if (!judge) throw new Error("missing judge model")
+					const valid = await driver.completeModel(judge, context, options)
+					const text = valid.content.find((block) => block.type === "text")?.text ?? ""
+					return response(model, text)
+				}
+				return driver.completeModel(model, context, options)
+			},
+		)
+		const fallbackConfig: CouncilConfig = {
+			...config,
+			judge: { primary: "test/judge", fallbacks: ["test/judge-fallback"] },
+		}
+
+		const result = await runCouncil(runtime, completeModel, undefined, fallbackConfig, (value) => {
+			record = value
+		}).result()
+
+		expect(result.content[0]).toMatchObject({ type: "toolCall", name: COUNCIL_APPLY_TOOL })
+		expect(completeModel.mock.calls.filter(([model]) => model.id === "judge-fallback")).toHaveLength(1)
+		expect(
+			completeModel.mock.calls.filter(([, context]) => context.systemPrompt?.includes("Repair the supplied object")),
+		).toHaveLength(1)
+		expect(record?.stages).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ stage: "judge", error: "invalid_output", schemaErrorCode: "missing_json" }),
+				expect.objectContaining({ stage: "repair", error: "invalid_output", schemaErrorCode: "missing_json" }),
+			]),
+		)
+		expect(record?.stages.some(({ stage, fallback }) => stage === "judge" && fallback)).toBe(true)
+		expect(runtime.state).toBe("accepted")
+	})
+
+	it("repairs the primary judge output before trying an alternate judge", async () => {
+		const { root } = await fixture()
+		const runtime = transactionRuntime(root)
+		await runtime.ensure().stageWrite("file.txt", "candidate\n")
+		const driver = createModelDriver()
+		let repairPayload: { allowed_validation_check_ids?: string[] } | undefined
+		const completeModel = vi.fn(
+			async (model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage> => {
+				const systemPrompt = context.systemPrompt ?? ""
+				if (systemPrompt.includes("Repair the supplied object")) {
+					const last = context.messages.at(-1)
+					const text = last && typeof last.content === "string" ? last.content : ""
+					repairPayload = JSON.parse(text) as typeof repairPayload
+					return response(model, JSON.stringify(cleanJudge))
+				}
+				if (model.id === "judge") return response(model, "not json")
+				if (model.id === "judge-fallback") throw new Error("fallback unavailable")
+				return driver.completeModel(model, context, options)
+			},
+		)
+		const fallbackConfig: CouncilConfig = {
+			...config,
+			judge: { primary: "test/judge", fallbacks: ["test/judge-fallback"] },
+		}
+
+		const result = await runCouncil(runtime, completeModel, undefined, fallbackConfig).result()
+
+		expect(result.content[0]).toMatchObject({ type: "toolCall", name: COUNCIL_APPLY_TOOL })
+		expect(repairPayload?.allowed_validation_check_ids).toEqual(["package.test"])
+		expect(completeModel.mock.calls.filter(([model]) => model.id === "judge-fallback")).toHaveLength(0)
+		expect(runtime.state).toBe("accepted")
+	})
+
 	it("adjudicates and promotes a fast-mode candidate even though fast text responses skip the judge", async () => {
 		const { root, file } = await fixture()
 		const runtime = transactionRuntime(root)
@@ -505,6 +767,18 @@ describe("Council coordinator transactions", () => {
 		const runtime = transactionRuntime(root)
 		const driver = createModelDriver({ needsRevision: true, finalCheck: "accept" })
 		const gate = await advanceToRevision(runtime, driver)
+		expect(gate.obligations).toEqual([
+			{
+				id: upheldFindingId,
+				kind: "finding",
+				statement: upheldFinding.statement,
+				severity: "high",
+			},
+			expect.objectContaining({
+				kind: "requirement",
+				statement: "Replace the candidate with the revised content.",
+			}),
+		])
 		expect(() => runtime.markFullReview()).toThrow("one full review")
 		expect(() => runtime.reopenForRevision(gate.reviewedPatchSha256)).toThrow("only one lead revision")
 
@@ -529,6 +803,62 @@ describe("Council coordinator transactions", () => {
 		expect(runtime.pendingRevisionGate).toBeUndefined()
 		expect(runtime.pendingPostApplyCheck?.id).toBe("package.test")
 		expect(runtime.state).toBe("accepted")
+		expect(await readFile(file, "utf8")).toBe("before\n")
+	})
+
+	it("tries the checker fallback after a malformed focused-check result cannot be repaired", async () => {
+		const { root } = await fixture()
+		const runtime = transactionRuntime(root)
+		const driver = createModelDriver({ needsRevision: true, finalCheck: "malformed" })
+		await advanceToRevision(runtime, driver)
+		await runtime.ensure().stageWrite("file.txt", "revised\n")
+		const completeModel = vi.fn(
+			async (model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage> => {
+				if (model.id === "checker-fallback" && context.systemPrompt?.includes("one focused final checker")) {
+					const checker = physicalModels.get("checker")
+					if (!checker) throw new Error("missing checker model")
+					const valid = await createModelDriver({ finalCheck: "accept" }).completeModel(checker, context, options)
+					const text = valid.content.find((block) => block.type === "text")?.text ?? ""
+					return response(model, text)
+				}
+				return driver.completeModel(model, context, options)
+			},
+		)
+		const fallbackConfig: CouncilConfig = {
+			...config,
+			reviewers: {
+				...config.reviewers,
+				checker: { primary: "test/checker", fallbacks: ["test/checker-fallback"] },
+			},
+		}
+
+		const result = await runCouncil(runtime, completeModel, undefined, fallbackConfig).result()
+
+		expect(result.content[0]).toMatchObject({ type: "toolCall", name: COUNCIL_APPLY_TOOL })
+		expect(completeModel.mock.calls.filter(([model]) => model.id === "checker-fallback")).toHaveLength(1)
+		expect(runtime.state).toBe("accepted")
+	})
+
+	it("discards a revision when its continuation response is serialized tool markup", async () => {
+		const { root, file } = await fixture()
+		const runtime = transactionRuntime(root)
+		const driver = createModelDriver({ needsRevision: true })
+		await advanceToRevision(runtime, driver)
+		await runtime.ensure().stageWrite("file.txt", "revised\n")
+		const completeModel = vi.fn(
+			async (model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage> => {
+				if (context.systemPrompt?.includes("continuing the single permitted Council revision")) {
+					return response(model, "<|tool_calls_section_begin|><|tool_call_begin|>functions.grep")
+				}
+				return driver.completeModel(model, context, options)
+			},
+		)
+
+		const result = await runCouncil(runtime, completeModel).result()
+
+		expect(result.stopReason).toBe("error")
+		expect(runtime.state).toBe("discarded")
+		expect(runtime.acceptedResponse).toBeUndefined()
 		expect(await readFile(file, "utf8")).toBe("before\n")
 	})
 
@@ -610,7 +940,144 @@ describe("Council coordinator transactions", () => {
 		expect(second.stopReason).toBe("error")
 		expect(second.errorMessage).toBe("Council run budget exceeded")
 		expect(driver.completeModel).toHaveBeenCalledTimes(5)
-		expect(runtime.savedRunBudget?.snapshot.logicalCalls).toBe(6)
+		expect(runtime.savedRunBudget?.snapshot.logicalCalls).toBe(5)
+	})
+
+	it("keeps lead tools available after a staged edit while review capacity remains", async () => {
+		const { root } = await fixture()
+		const runtime = transactionRuntime(root)
+		await runtime.ensure().stageWrite("file.txt", "candidate\n")
+		const driver = createModelDriver()
+		const completeModel = vi.fn(
+			async (model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage> => {
+				if (model.id === "lead" && context.tools?.length) {
+					return toolResponse(model, {
+						type: "toolCall",
+						id: "lead-follow-up",
+						name: "write",
+						arguments: { path: "file.txt", content: "candidate follow-up\n" },
+					})
+				}
+				return driver.completeModel(model, context, options)
+			},
+		)
+
+		const result = await runCouncil(runtime, completeModel).result()
+
+		expect(result).toMatchObject({ stopReason: "toolUse" })
+		expect(result.content[0]).toMatchObject({ type: "toolCall", id: "lead-follow-up", name: "write" })
+		expect(completeModel).toHaveBeenCalledTimes(1)
+		expect(completeModel.mock.calls[0]?.[1].tools).toHaveLength(1)
+		expect(runtime.state).toBe("staging")
+	})
+
+	it("reserves enough calls for review after repeated lead tool rounds", async () => {
+		const { root } = await fixture()
+		const runtime = transactionRuntime(root)
+		runtime.ensure()
+		const driver = createModelDriver()
+		let toolCalls = 0
+		let forcedLeadAttempts = 0
+		const completeModel = vi.fn(
+			async (model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage> => {
+				if (model.id === "lead" && context.tools?.length) {
+					toolCalls++
+					return toolResponse(model, {
+						type: "toolCall",
+						id: `lead-tool-${toolCalls}`,
+						name: "write",
+						arguments: { path: "file.txt", content: "candidate\n" },
+					})
+				}
+				if (model.id === "lead" && context.systemPrompt?.includes(RESERVED_CALLS_FINALIZE_SYSTEM_PROMPT)) {
+					forcedLeadAttempts++
+					if (forcedLeadAttempts === 1) {
+						return {
+							...response(model, ""),
+							content: [{ type: "thinking", thinking: "Finished internally without a public answer." }],
+						}
+					}
+				}
+				return driver.completeModel(model, context, options)
+			},
+		)
+		for (let round = 0; round < 6; round++) {
+			expect((await runCouncil(runtime, completeModel).result()).stopReason).toBe("toolUse")
+		}
+		const result = await runCouncil(runtime, completeModel).result()
+		const leadCalls = completeModel.mock.calls.filter(([model]) => model.id === "lead")
+		const finalLeadContext = leadCalls.at(-1)?.[1]
+
+		expect(result.stopReason).toBe("stop")
+		expect(leadCalls).toHaveLength(8)
+		expect(forcedLeadAttempts).toBe(2)
+		expect(finalLeadContext?.tools).toBeUndefined()
+		expect(finalLeadContext?.systemPrompt).toContain("Call budget is reserved for review")
+		expect(finalLeadContext?.systemPrompt).toContain("previous attempt ended")
+		expect(runtime.savedRunBudget?.snapshot.logicalCalls).toBe(12)
+	})
+
+	it("reviews a staged candidate after repeated serialized lead tool markup", async () => {
+		const { root } = await fixture()
+		const runtime = transactionRuntime(root)
+		await runtime.ensure().stageWrite("file.txt", "candidate\n")
+		const driver = createModelDriver()
+		let leadAttempts = 0
+		let revisionCalls = 0
+		const completeModel = vi.fn(
+			async (model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage> => {
+				if (model.id === "lead" && context.systemPrompt?.includes(REVISION_SYSTEM_PROMPT)) {
+					revisionCalls++
+					return response(model, "Implemented the requested change and preserved the validated behavior.")
+				}
+				if (model.id === "lead") {
+					leadAttempts++
+					if (leadAttempts === 2) {
+						expect(context.tools).toBeUndefined()
+						expect(context.systemPrompt).toContain(LEAD_RETRY_SYSTEM_PROMPT)
+					}
+					return response(model, "I'll inspect it. <|tool_calls_section_begin|><|tool_call_begin|>functions.grep")
+				}
+				return driver.completeModel(model, context, options)
+			},
+		)
+
+		const result = await runCouncil(runtime, completeModel).result()
+
+		expect(result.content[0]).toMatchObject({ type: "toolCall", name: COUNCIL_APPLY_TOOL })
+		expect(leadAttempts).toBe(2)
+		expect(revisionCalls).toBe(1)
+		expect(runtime.state).toBe("accepted")
+		expect(runtime.acceptedResponse).toBe("Implemented the requested change and preserved the validated behavior.")
+	})
+
+	it("reserves focused-check capacity when revising in the same run", async () => {
+		const { root } = await fixture()
+		const runtime = transactionRuntime(root)
+		await runtime.ensure().stageWrite("file.txt", "candidate\n")
+		const driver = createModelDriver({ needsRevision: true })
+		const completeModel = vi.fn(
+			async (model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage> => {
+				if (context.systemPrompt?.includes(REVISION_SYSTEM_PROMPT) && context.tools === undefined) {
+					return response(model, "Revised within the reserved call budget.")
+				}
+				return driver.completeModel(model, context, options)
+			},
+		)
+		const constrained: CouncilConfig = {
+			...config,
+			maxCalls: 9,
+			budget: { ...config.budget, maxLogicalCalls: 9, maxPhysicalAttempts: 13 },
+		}
+
+		const result = await runCouncil(runtime, completeModel, undefined, constrained).result()
+		const revisionContext = completeModel.mock.calls.find(([, context]) =>
+			context.systemPrompt?.includes(REVISION_SYSTEM_PROMPT),
+		)?.[1]
+
+		expect(result.content[0]).toMatchObject({ type: "toolCall", name: COUNCIL_APPLY_TOOL })
+		expect(revisionContext?.tools).toBeUndefined()
+		expect(revisionContext?.systemPrompt).toContain(RESERVED_CALLS_FINALIZE_SYSTEM_PROMPT)
 	})
 
 	it("rolls back once when an emitted settlement tool is not executed", async () => {

@@ -27,13 +27,28 @@ describe("CouncilRunContext", () => {
 		first.reconcile({ inputTokens: 10, outputTokens: 5, costUsd: 0.1 })
 		second.reconcile({ inputTokens: 20, outputTokens: 10, costUsd: 0.2 })
 		expect(run.snapshot()).toMatchObject({
-			physicalAttempts: 3,
+			physicalAttempts: 2,
 			activeCalls: 0,
 			peakConcurrentCalls: 2,
 			inputTokens: 30,
 			outputTokens: 15,
 		})
 		expect(run.snapshot().estimatedCostUsd).toBeCloseTo(0.3)
+		run.close()
+	})
+
+	it("does not count a rejected physical attempt", () => {
+		const run = new CouncilRunContext({ ...limits, maxPhysicalAttempts: 2, maxConcurrentCalls: 3 })
+		const first = run.reserveAttempt({ inputTokens: 1, outputTokens: 1, costUsd: 0.01 })
+		const second = run.reserveAttempt({ inputTokens: 1, outputTokens: 1, costUsd: 0.01 })
+
+		expect(() => run.reserveAttempt({ inputTokens: 1, outputTokens: 1, costUsd: 0.01 })).toThrowError(
+			expect.objectContaining<Partial<RunFailure>>({ code: "budget_exceeded", limit: "maxPhysicalAttempts" }),
+		)
+		expect(run.snapshot()).toMatchObject({ physicalAttempts: 2, activeCalls: 2 })
+		first.release()
+		second.release()
+		expect(run.snapshot()).toMatchObject({ physicalAttempts: 2, activeCalls: 0 })
 		run.close()
 	})
 
@@ -45,8 +60,27 @@ describe("CouncilRunContext", () => {
 		expect(() => run.beginLogicalCall()).toThrowError(
 			expect.objectContaining<Partial<RunFailure>>({ code: "budget_exceeded", limit: "maxLogicalCalls" }),
 		)
+		expect(run.snapshot().logicalCalls).toBe(2)
 		expect(run.signal.aborted).toBe(true)
 		run.close()
+	})
+
+	it("does not record rejected evidence or structured bytes", () => {
+		const evidence = new CouncilRunContext(limits)
+		evidence.reserveEvidence(90)
+		expect(() => evidence.reserveEvidence(20)).toThrowError(
+			expect.objectContaining<Partial<RunFailure>>({ code: "budget_exceeded", limit: "maxEvidenceBytes" }),
+		)
+		expect(evidence.snapshot().evidenceBytes).toBe(90)
+		evidence.close()
+
+		const structured = new CouncilRunContext(limits)
+		structured.reserveStructured(90)
+		expect(() => structured.reserveStructured(20)).toThrowError(
+			expect.objectContaining<Partial<RunFailure>>({ code: "budget_exceeded", limit: "maxStructuredBytes" }),
+		)
+		expect(structured.snapshot().structuredBytes).toBe(90)
+		structured.close()
 	})
 
 	it("uses the shorter caller timeout as the whole-run deadline", () => {
@@ -101,6 +135,7 @@ describe("CouncilRunContext", () => {
 		expect(() => second.beginLogicalCall()).toThrowError(
 			expect.objectContaining<Partial<RunFailure>>({ code: "budget_exceeded", limit: "maxLogicalCalls" }),
 		)
+		expect(second.snapshot().logicalCalls).toBe(2)
 		second.close()
 	})
 
