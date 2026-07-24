@@ -7,6 +7,13 @@ export const REQUIRED_REVIEWER_ROLES = ["independent", "critic", "checker"] as c
 export type ReviewerRole = (typeof REQUIRED_REVIEWER_ROLES)[number]
 export type CouncilStage = "lead" | ReviewerRole | "judge" | "repair" | "revision"
 export type CouncilRole = CouncilStage
+export type CouncilSchemaErrorCode =
+	| "missing_json"
+	| "ambiguous_json"
+	| "invalid_json"
+	| "invalid_shape"
+	| "unsupported_reference"
+	| "missing_disposition"
 export type CouncilOutcome = "accepted" | "revised" | "tool_use" | "degraded" | "error" | "aborted"
 export type CouncilTransactionProgressPhase =
 	| "preparing_candidate"
@@ -141,6 +148,7 @@ export interface CouncilStageRecord {
 	attempts: number
 	usage?: Usage
 	error?: string
+	schemaErrorCode?: CouncilSchemaErrorCode
 	truncated?: boolean
 	retry?: boolean
 	fallback?: boolean

@@ -2,7 +2,12 @@ import { createHash } from "node:crypto"
 import type { Usage } from "@earendil-works/pi-ai"
 import type { CouncilCacheStats } from "./cache.js"
 import type { RunBudgetSnapshot } from "./run-context.js"
-import type { CouncilBudgetUsage, CouncilRunRecord, CouncilTransactionSnapshot } from "./types.js"
+import type {
+	CouncilBudgetUsage,
+	CouncilRunRecord,
+	CouncilSchemaErrorCode,
+	CouncilTransactionSnapshot,
+} from "./types.js"
 
 export const ZERO_USAGE: Usage = {
 	input: 0,
@@ -24,6 +29,14 @@ const SAFE_STAGE_ERRORS = new Set([
 	"output_limit",
 	"provider_error",
 	"timeout",
+])
+const SAFE_SCHEMA_ERROR_CODES: ReadonlySet<CouncilSchemaErrorCode> = new Set([
+	"missing_json",
+	"ambiguous_json",
+	"invalid_json",
+	"invalid_shape",
+	"unsupported_reference",
+	"missing_disposition",
 ])
 
 export function addUsage(total: Usage, next: Usage): Usage {
@@ -68,6 +81,9 @@ export function sanitizeRunRecord(record: CouncilRunRecord): CouncilRunRecord {
 		stages: record.stages.map((stage) => ({
 			...stage,
 			...(stage.error ? { error: SAFE_STAGE_ERRORS.has(stage.error) ? stage.error : "unknown" } : {}),
+			...(stage.schemaErrorCode
+				? { schemaErrorCode: SAFE_SCHEMA_ERROR_CODES.has(stage.schemaErrorCode) ? stage.schemaErrorCode : undefined }
+				: {}),
 		})),
 		transaction: record.transaction ? sanitizeCouncilTransactionSnapshot(record.transaction) : undefined,
 	}

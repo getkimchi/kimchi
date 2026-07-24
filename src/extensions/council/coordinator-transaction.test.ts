@@ -1001,10 +1001,19 @@ describe("Council coordinator transactions", () => {
 				return driver.completeModel(model, context, options)
 			},
 		)
-		for (let round = 0; round < 6; round++) {
-			expect((await runCouncil(runtime, completeModel).result()).stopReason).toBe("toolUse")
+		const constrained: CouncilConfig = {
+			...config,
+			maxCalls: 16,
+			budget: {
+				...config.budget,
+				maxLogicalCalls: 16,
+				maxPhysicalAttempts: 20,
+			},
 		}
-		const result = await runCouncil(runtime, completeModel).result()
+		for (let round = 0; round < 6; round++) {
+			expect((await runCouncil(runtime, completeModel, undefined, constrained).result()).stopReason).toBe("toolUse")
+		}
+		const result = await runCouncil(runtime, completeModel, undefined, constrained).result()
 		const leadCalls = completeModel.mock.calls.filter(([model]) => model.id === "lead")
 		const finalLeadContext = leadCalls.at(-1)?.[1]
 

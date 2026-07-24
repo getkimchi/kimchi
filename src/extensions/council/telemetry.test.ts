@@ -74,6 +74,7 @@ describe("Council telemetry", () => {
 					durationMs: 1,
 					attempts: 1,
 					error: "secret message with spaces",
+					schemaErrorCode: "private-schema-secret" as never,
 					truncated: true,
 					retry: true,
 				},
@@ -84,12 +85,13 @@ describe("Council telemetry", () => {
 		expect(record.budget).toEqual(budget)
 		expect(record.budget).toMatchObject({ cacheHits: 2, cacheMisses: 3 })
 		expect(record.stages[0]?.error).toBe("unknown")
+		expect(record.stages[0]?.schemaErrorCode).toBeUndefined()
 		expect(record).toMatchObject({ unresolvedFindingCount: 1, missingReviewerRoles: ["checker"] })
 		expect(record.stages[0]).toMatchObject({ truncated: true, retry: true })
 		expect(record.transaction).toMatchObject({ transactionId: "transaction", patchSha256: "patch" })
 		expect(record.transaction?.postApplyChecks[0]?.command).toMatch(/^sha256:[a-f0-9]{64}$/)
 		expect(JSON.stringify(record)).not.toMatch(
-			/server-secret|private chain|castai_v1_abcdefgh123456|token|internalReasoning/,
+			/server-secret|private chain|private-schema-secret|castai_v1_abcdefgh123456|token|internalReasoning/,
 		)
 	})
 })

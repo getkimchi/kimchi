@@ -70,7 +70,7 @@ Deep ceilings and physical model defaults:
 | Lead/revision output | 32,768 tokens each |
 | Reviewer/judge output | 16,384 tokens each |
 | Physical reasoning (capable models) | role-specific: reviewer `low`/`medium`, judge `high`, revision `low` |
-| Logical calls / physical attempts | 16 / 20 maximum |
+| Logical calls / physical attempts | 24 / 30 maximum |
 | Parallel reviewers | 3 maximum |
 | Evidence packet | 128 KiB maximum |
 | Aggregate structured output | 128 KiB maximum |
@@ -96,8 +96,8 @@ Environment overrides:
 | `KIMCHI_COUNCIL_INTERNAL_MAX_TOKENS` | Reviewer and judge output budget; default and hard maximum `16384`. |
 | `KIMCHI_COUNCIL_MAX_EVIDENCE_BYTES` | Text evidence packet limit; default and hard maximum `131072`. |
 | `KIMCHI_COUNCIL_MAX_STRUCTURED_BYTES` | Aggregate structured-output limit; default and hard maximum `131072`. |
-| `KIMCHI_COUNCIL_MAX_LOGICAL_CALLS` | Whole-turn logical call cap; default `16` (`KIMCHI_COUNCIL_MAX_CALLS` remains an alias). |
-| `KIMCHI_COUNCIL_MAX_PHYSICAL_ATTEMPTS` | Whole-turn physical attempt cap; default `20`. |
+| `KIMCHI_COUNCIL_MAX_LOGICAL_CALLS` | Whole-turn logical call cap; default `24` (`KIMCHI_COUNCIL_MAX_CALLS` remains an alias). |
+| `KIMCHI_COUNCIL_MAX_PHYSICAL_ATTEMPTS` | Whole-turn physical attempt cap; default `30`. |
 | `KIMCHI_COUNCIL_MAX_CONCURRENT_CALLS` | Whole-run concurrent physical-call cap; default `3`. |
 | `KIMCHI_COUNCIL_MAX_AGGREGATE_INPUT_TOKENS` | Aggregate physical input-token cap; default `786432`. |
 | `KIMCHI_COUNCIL_MAX_AGGREGATE_OUTPUT_TOKENS` | Aggregate physical output-token cap; default `98304`. |

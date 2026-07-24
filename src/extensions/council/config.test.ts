@@ -107,8 +107,8 @@ describe("validateCouncilConfig", () => {
 describe("applyCouncilPreset", () => {
 	it.each([
 		["fast", ["critic"], 12, 14, 1, false, "on-issues", "changes"],
-		["normal", ["independent", "critic", "checker"], 16, 20, 3, true, "on-issues", "always"],
-		["deep", ["independent", "critic", "checker"], 16, 20, 3, true, "always", "always"],
+		["normal", ["independent", "critic", "checker"], 24, 30, 3, true, "on-issues", "always"],
+		["deep", ["independent", "critic", "checker"], 24, 30, 3, true, "always", "always"],
 	] as const)("applies the %s execution policy", (preset, roles, logical, physical, concurrent, judge, revision, reviewPolicy) => {
 		const config = applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, preset)
 		expect(config.requiredRoles).toEqual(roles)
@@ -130,8 +130,8 @@ describe("applyCouncilPreset", () => {
 		})
 		for (const preset of ["normal", "deep"] as const) {
 			expect(applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, preset).budget).toMatchObject({
-				maxLogicalCalls: 16,
-				maxPhysicalAttempts: 20,
+				maxLogicalCalls: 24,
+				maxPhysicalAttempts: 30,
 			})
 		}
 	})
