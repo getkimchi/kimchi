@@ -83,6 +83,15 @@ describe("resource definitions", () => {
 		// required when the user flips the /resources toggle.
 		expect(resource?.restartRequired).toBeFalsy()
 	})
+
+	it("registers goal mode as an opt-in experimental feature", () => {
+		expect(getResourceDefinitions().find((resource) => resource.id === "extensions.goal")).toMatchObject({
+			kind: "extensions",
+			label: "Goal mode (experimental)",
+			defaultEnabled: false,
+			restartRequired: true,
+		})
+	})
 })
 
 function writeJson(path: string, data: unknown): void {

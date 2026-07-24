@@ -1,5 +1,6 @@
 import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../extensions/bash-default-timeout.js"
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../extensions/claude-code-skills/definition.js"
+import { GOAL_RESOURCE_ID } from "../extensions/goal/constants.js"
 import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { discoverClaudeCodeHookResourceDefinitions } from "./claude-code-hook-resources.js"
@@ -106,6 +107,14 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		label: "MCP apps",
 		description: "Enable MCP/app connector tools.",
 		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
+		id: GOAL_RESOURCE_ID,
+		kind: "extensions",
+		label: "Goal mode (experimental)",
+		description: "Enable persistent session goals with guarded automatic continuation.",
+		defaultEnabled: false,
 		restartRequired: true,
 	},
 ]
