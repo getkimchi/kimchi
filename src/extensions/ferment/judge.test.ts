@@ -63,6 +63,17 @@ describe("judgeJourneyGrade", () => {
 		expect(result.rationale).toContain("coverage is thin")
 	})
 
+	it("caps the journey-grade output with a bounded maxTokens", async () => {
+		const apiCall = vi
+			.fn<(_sys: string, _msg: string, _maxTokens?: number) => Promise<JudgeApiResult>>()
+			.mockResolvedValue(ok('{"grade":"B","rationale":"ok"}'))
+		await judgeJourneyGrade(makeInput(), apiCall)
+		const maxTokens = apiCall.mock.calls[0][2]
+		expect(typeof maxTokens).toBe("number")
+		expect(maxTokens).toBeGreaterThan(0)
+		expect(maxTokens).toBeLessThanOrEqual(512)
+	})
+
 	it("strips markdown fences from the model output", async () => {
 		const apiCall = vi.fn(async () => ok('```json\n{"grade":"A","rationale":"clean"}\n```'))
 		const result = await judgeJourneyGrade(makeInput(), apiCall)
@@ -107,7 +118,7 @@ describe("judgeJourneyGrade", () => {
 		const result = await judgeJourneyGrade(makeInput(), apiCall)
 
 		expect(apiCall).toHaveBeenCalledTimes(3)
-		expect(apiCall.mock.calls.map((call) => call.length)).toEqual([2, 2, 2])
+		expect(apiCall.mock.calls.map((call) => call.length)).toEqual([3, 3, 3])
 		expect(result.ok).toBe(true)
 		if (!result.ok) return
 		expect(result.grade).toBe("B")
@@ -125,7 +136,7 @@ describe("judgeJourneyGrade", () => {
 		const result = await judgeJourneyGrade(makeInput(), apiCall)
 
 		expect(apiCall).toHaveBeenCalledTimes(3)
-		expect(apiCall.mock.calls.map((call) => call.length)).toEqual([2, 2, 2])
+		expect(apiCall.mock.calls.map((call) => call.length)).toEqual([3, 3, 3])
 		expect(result.ok).toBe(false)
 		if (result.ok) return
 		expect(result.reason).toBe("empty_response")
