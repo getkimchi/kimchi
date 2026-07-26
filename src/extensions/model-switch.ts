@@ -11,6 +11,7 @@ import {
 	sessionHasImages,
 } from "./model-guard.js"
 import { setMultiModelEnabled } from "./multi-model.js"
+import { getSettingsManager } from "../settings-watcher.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
 import { getOrchestratorModel, getOrchestratorModelRef } from "./orchestration/model-roles.js"
@@ -81,6 +82,10 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 				suppressModelSelectGuard = true
 				try {
 					await pi.setModel(orchestrator)
+					// Persist the synthetic ref so multi-model survives restarts.
+					// pi.setModel writes the REAL model to defaultModel/defaultProvider,
+					// overwriting the synthetic ref — so we re-write it after.
+					getSettingsManager()?.setDefaultModelAndProvider("orchestration", "multi-model")
 				} finally {
 					suppressModelSelectGuard = false
 				}

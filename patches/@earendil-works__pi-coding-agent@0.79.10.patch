@@ -471,17 +471,28 @@ index 8f8c5019a46285adc43b6116aaed0c0758efd2db..03db595639c8a66d25778dae1ecde841
                  const providerBadge = theme.fg("muted", `[${item.provider}]`);
                  const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
                  line = `${modelText} ${providerBadge}${checkmark}`;
-@@ -268,6 +289,11 @@ export class ModelSelectorComponent extends Container {
+@@ -268,6 +289,20 @@ export class ModelSelectorComponent extends Container {
          }
      }
      handleSelect(model) {
 +        const selectedItem = this.filteredModels[this.selectedIndex];
++        const isMultiModelEntry = !!selectedItem?._isMultiModel;
 +        if (!(process.__kimchiMultiModelEnabled instanceof Map)) {
 +            process.__kimchiMultiModelEnabled = new Map();
 +        }
-+        process.__kimchiMultiModelEnabled.set(this.sessionId, !!selectedItem?._isMultiModel);
-         // Save as new default
-         this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
++        process.__kimchiMultiModelEnabled.set(this.sessionId, isMultiModelEntry);
+-        // Save as new default
+-        this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
++        // Save as new default. When the virtual multi-model entry is selected,
++        // persist the synthetic `orchestration/multi-model` ref so the choice
++        // survives across sessions (kimchi reads it back as the global default
++        // in resolveMultiModelEnabled). Otherwise persist the real model.
++        this.settingsManager.setDefaultModelAndProvider(
++            isMultiModelEntry ? 'orchestration' : model.provider,
++            isMultiModelEntry ? 'multi-model' : model.id,
++        );
++        // Attach the flag so the onSelectCallback can route multi-model correctly.
++        model._isMultiModel = isMultiModelEntry;
          this.onSelectCallback(model);
 diff --git a/dist/modes/interactive/components/skill-invocation-message.js b/dist/modes/interactive/components/skill-invocation-message.js
 index 561f3d2540db0a8d934bc2bbecb097aaa7c88458..da4601b0aa0ea1145505300ba77485cfc5c48bb0 100644
@@ -576,7 +587,7 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce
          };
      }
      /**
-@@ -3425,6 +3436,33 @@ export class InteractiveMode {
+@@ -3425,6 +3436,37 @@
              this.showModelSelector();
              return;
          }
@@ -595,6 +606,10 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce
 +                process.__kimchiMultiModelEnabled.set(sessionId, true);
 +                try {
 +                    await this.session.setModel(orchestratorModel);
++                    // Persist the synthetic ref AFTER setModel — setModel writes
++                    // the REAL model to defaultModel/defaultProvider, so we
++                    // overwrite it back to the synthetic ref to survive restarts.
++                    this.settingsManager.setDefaultModelAndProvider('orchestration', 'multi-model');
 +                    this.footer.invalidate();
 +                    this.updateEditorBorderColor();
 +                    this.showStatus('Model: multi-model');
@@ -610,13 +625,18 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-@@ -3539,6 +3577,7 @@ export class InteractiveMode {
+@@ -3539,6 +3577,12 @@
      }
      showModelSelector(initialSearchInput) {
          this.showSelector((done) => {
 +            const sessionId = this.sessionManager.getSessionId();
              const selector = new ModelSelectorComponent(this.ui, this.session.model, this.settingsManager, this.session.modelRegistry, this.session.scopedModels, async (model) => {
                  try {
++                    if (model._isMultiModel) {
++                        done();
++                        await this.handleModelCommand('multi-model');
++                        return;
++                    }
                      await this.session.setModel(model);
 @@ -3556,7 +3595,7 @@ export class InteractiveMode {
              }, () => {
