@@ -370,7 +370,7 @@ try {
 			// registry. Probe is silent on failure — startup is never blocked.
 			await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
 			models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
-			injectAtlasCloudProvider(modelsJsonPath)
+			injectAtlasCloudProvider(modelsJsonPath, { createIfMissing: true })
 			models = [...models, ...readAtlasCloudModelMetadata(modelsJsonPath)]
 		} catch (err) {
 			const is401 = err instanceof Error && err.message.includes("401")
@@ -394,7 +394,7 @@ try {
 				}
 				await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
 				models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
-				injectAtlasCloudProvider(modelsJsonPath)
+				injectAtlasCloudProvider(modelsJsonPath, { createIfMissing: true })
 				models = [...models, ...readAtlasCloudModelMetadata(modelsJsonPath)]
 			} else if (isTransientModelsError(err)) {
 				// Rate limit / gateway error with no cached models to fall back on.

@@ -29,6 +29,7 @@ describe("injectAtlasCloudProvider", () => {
 			modelsJsonPath,
 			JSON.stringify(
 				{
+					version: 1,
 					providers: {
 						"kimchi-dev": { models: [{ id: "kimi-k2.7" }] },
 						custom: { models: [{ id: "custom-model" }] },
@@ -43,6 +44,7 @@ describe("injectAtlasCloudProvider", () => {
 		injectAtlasCloudProvider(modelsJsonPath)
 
 		const providers = readConfig().providers
+		expect(JSON.parse(readFileSync(modelsJsonPath, "utf-8")).version).toBe(1)
 		expect(providers["kimchi-dev"]?.models?.map((m) => m.id)).toEqual(["kimi-k2.7"])
 		expect(providers.custom?.models?.map((m) => m.id)).toEqual(["custom-model"])
 		expect(providers.atlascloud).toMatchObject({
@@ -77,6 +79,34 @@ describe("injectAtlasCloudProvider", () => {
 		const second = readFileSync(modelsJsonPath, "utf-8")
 
 		expect(second).toBe(first)
+	})
+
+	it("does not overwrite malformed models.json", () => {
+		const malformed = "{ not-valid-json"
+		writeFileSync(modelsJsonPath, malformed, "utf-8")
+
+		expect(() => injectAtlasCloudProvider(modelsJsonPath)).toThrow()
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(malformed)
+	})
+
+	it("does not overwrite a malformed providers value", () => {
+		const malformed = JSON.stringify({ providers: [] })
+		writeFileSync(modelsJsonPath, malformed, "utf-8")
+
+		expect(() => injectAtlasCloudProvider(modelsJsonPath)).toThrow("models.json providers must contain a JSON object")
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(malformed)
+	})
+
+	it("filters malformed model entries before exposing metadata", () => {
+		injectAtlasCloudProvider(modelsJsonPath, { createIfMissing: true })
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		config.providers.atlascloud.models.push({ id: "missing-required-fields" })
+		writeFileSync(modelsJsonPath, JSON.stringify(config), "utf-8")
+
+		expect(readAtlasCloudModelsFromConfig(modelsJsonPath).map((model) => model.id)).toEqual([
+			"qwen/qwen3.5-flash",
+			"deepseek-ai/deepseek-v4-pro",
+		])
 	})
 
 	it("reads Atlas Cloud model metadata for startup model discovery", () => {

@@ -5,6 +5,7 @@ import type { ModelMetadata, PiModelConfig } from "./models.js"
 const ATLASCLOUD_PROVIDER_ID = "atlascloud"
 const ATLASCLOUD_BASE_URL = "https://api.atlascloud.ai/v1"
 const ATLASCLOUD_API_KEY = "$ATLASCLOUD_API_KEY"
+const MODEL_INPUT_MODALITIES = new Set(["text", "image"])
 
 const ATLASCLOUD_MODELS: readonly PiModelConfig[] = [
 	{
@@ -29,17 +30,43 @@ const ATLASCLOUD_MODELS: readonly PiModelConfig[] = [
 	},
 ]
 
-function readAllProviders(modelsJsonPath: string): Record<string, unknown> {
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function readModelsConfig(modelsJsonPath: string): Record<string, unknown> {
 	if (!existsSync(modelsJsonPath)) return {}
-	try {
-		const raw = readFileSync(modelsJsonPath, "utf-8")
-		const parsed = JSON.parse(raw)
-		const providers = parsed?.providers
-		if (!providers || typeof providers !== "object") return {}
-		return providers as Record<string, unknown>
-	} catch {
-		return {}
+
+	const parsed: unknown = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+	if (!isRecord(parsed)) {
+		throw new Error("models.json must contain a JSON object")
 	}
+	if (parsed.providers !== undefined && !isRecord(parsed.providers)) {
+		throw new Error("models.json providers must contain a JSON object")
+	}
+	return parsed
+}
+
+function isPiModelConfig(value: unknown): value is PiModelConfig {
+	if (!isRecord(value)) return false
+	const cost = value.cost
+	return (
+		typeof value.id === "string" &&
+		typeof value.name === "string" &&
+		typeof value.reasoning === "boolean" &&
+		Array.isArray(value.input) &&
+		value.input.every((modality) => typeof modality === "string" && MODEL_INPUT_MODALITIES.has(modality)) &&
+		typeof value.contextWindow === "number" &&
+		Number.isFinite(value.contextWindow) &&
+		typeof value.maxTokens === "number" &&
+		Number.isFinite(value.maxTokens) &&
+		typeof value.provider === "string" &&
+		isRecord(cost) &&
+		typeof cost.input === "number" &&
+		typeof cost.output === "number" &&
+		typeof cost.cacheRead === "number" &&
+		typeof cost.cacheWrite === "number"
+	)
 }
 
 function atlasCloudProviderConfig(): {
@@ -72,8 +99,10 @@ export interface InjectAtlasCloudProviderOptions {
 export function injectAtlasCloudProvider(modelsJsonPath: string, options: InjectAtlasCloudProviderOptions = {}): void {
 	if (!existsSync(modelsJsonPath) && !options.createIfMissing) return
 
-	const providers = readAllProviders(modelsJsonPath)
+	const config = readModelsConfig(modelsJsonPath)
+	const providers = (config.providers as Record<string, unknown> | undefined) ?? {}
 	const merged = {
+		...config,
 		providers: {
 			...providers,
 			[ATLASCLOUD_PROVIDER_ID]: atlasCloudProviderConfig(),
@@ -88,9 +117,7 @@ export function readAtlasCloudModelsFromConfig(modelsJsonPath: string): PiModelC
 		const parsed = JSON.parse(raw)
 		const models = parsed?.providers?.[ATLASCLOUD_PROVIDER_ID]?.models
 		if (!Array.isArray(models)) return []
-		return models.filter(
-			(m): m is PiModelConfig => !!m && typeof m === "object" && typeof (m as { id?: unknown }).id === "string",
-		) as PiModelConfig[]
+		return models.filter(isPiModelConfig)
 	} catch {
 		return []
 	}
