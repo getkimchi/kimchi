@@ -89,8 +89,9 @@ const ADAPTERS: DapAdapterConfig[] = [
 	},
 	{
 		name: "debugpy",
-		command: "debugpy",
-		args: ["--listen", "stdio"],
+		command: "python3",
+		args: ["-m", "debugpy.adapter"],
+		detectBinary: "debugpy",
 		transport: { kind: "stdio" },
 		languages: ["python"],
 		extensions: ["py", "pyw"],

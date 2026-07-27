@@ -6,7 +6,7 @@
 // layering of lsp/client.ts (wire transport) ← lsp session logic ← tools.
 //
 // Key design decisions:
-// - One DapSession per `debug_launch` call (registered in a module-level Map
+// - One DapSession per `debug_launch` call (registered in a DapSessionRegistry
 //   keyed by sessionId). The underlying DapClient is keyed by (adapter,cwd) in
 //   client.ts; DapSession adds launch-time state on top.
 // - `continue()` / `stepIn/Over/Out()` register a `stopped` waiter BEFORE
@@ -16,7 +16,7 @@
 // - `terminate()` is best-effort: sends `terminate` if supported (short
 //   timeout), then SIGKILLs the proc unconditionally. Matches the shutdownAll
 //   philosophy that DAP has no safe clean-shutdown handshake under forced kill.
-//   The client.ts `exited` handler cleans the client map when the proc dies.
+//   The registry owner calls shutdownAll on the DapClientRegistry when the proc dies.
 
 import { randomUUID } from "node:crypto"
 import { sendRequest } from "./client.js"
@@ -56,7 +56,7 @@ export interface DapSessionLaunchOptions {
 export interface DapSessionOptions {
 	adapter: DapAdapterConfig
 	cwd: string
-	/** A connected DapClient (from getOrCreateClient) — the wire transport. */
+	/** A connected DapClient (from DapClientRegistry.getOrCreate) — the wire transport. */
 	client: DapClient
 	/** Per-request timeout (default 30s, matches client.ts DEFAULT_TIMEOUT_MS). */
 	timeoutMs?: number
@@ -120,20 +120,40 @@ export class DapSession {
 		this.launched = true
 	}
 
+	/** Await the pending `launch` response. For adapters that defer the
+	 *  response until after configurationDone (js-debug), this deadlocks if
+	 *  called before configurationDone — use completeLaunch() instead.
+	 *  For adapters that respond immediately (debugpy, dlv), this resolves
+	 *  instantly and allows sending setExceptionBreakpoints before
+	 *  configurationDone. */
+	async awaitLaunch(): Promise<void> {
+		if (this.launchPromise) await this.launchPromise
+	}
+
 	/** Send configurationDone to signal the adapter that the launch sequence is
 	 *  complete and the debuggee may start running. Call this AFTER setting any
-	 *  initial breakpoints. Idempotent. For adapters that defer the `launch`
-	 *  response until after configurationDone (js-debug), this also awaits the
-	 *  pending launch response. */
-	async completeLaunch(): Promise<void> {
+	 *  initial breakpoints. If `exceptionFilters` is provided, sends
+	 *  setExceptionBreakpoints before configurationDone (the DAP spec requires
+	 *  this ordering). Idempotent. */
+	async completeLaunch(exceptionFilters?: string[]): Promise<void> {
 		if (!this.launched || this.launchCompleted) return
 		this.launchCompleted = true
-		if (this.client.capabilities?.supportsConfigurationDoneRequest) {
-			await sendRequest(this.client, "configurationDone", {}, this.timeoutMs)
+		// Some adapters (debugpy, js-debug) defer responses to
+		// setExceptionBreakpoints and launch until after configurationDone.
+		// Send all as fire-and-forget, then await them in parallel.
+		const pending: Promise<unknown>[] = []
+		if (exceptionFilters && exceptionFilters.length > 0) {
+			pending.push(
+				sendRequest(this.client, "setExceptionBreakpoints", { filters: exceptionFilters }, this.timeoutMs).catch(
+					() => {},
+				),
+			)
 		}
-		// Await the launch response (if launch() fired it without awaiting).
-		// For adapters that respond immediately, this resolves instantly.
-		if (this.launchPromise) await this.launchPromise
+		if (this.client.capabilities?.supportsConfigurationDoneRequest) {
+			pending.push(sendRequest(this.client, "configurationDone", {}, this.timeoutMs))
+		}
+		if (this.launchPromise) pending.push(this.launchPromise.catch(() => {}))
+		await Promise.all(pending)
 	}
 
 	/** Terminate the debug session. Best-effort `terminate` request (if the
@@ -186,6 +206,13 @@ export class DapSession {
 		this.breakpoints.set(file, existing)
 		const breakpoints = body.breakpoints ?? []
 		return breakpoints[breakpoints.length - 1] ?? { verified: false, message: "no breakpoint returned" }
+	}
+
+	/** Configure which exceptions to break on. Call this before completeLaunch()
+	 *  to ensure the adapter stops on exceptions. The filters depend on the
+	 *  adapter — debugpy supports "raised", "uncaught", "userUnhandled". */
+	async setExceptionBreakpoints(filters: string[]): Promise<void> {
+		await sendRequest(this.client, "setExceptionBreakpoints", { filters }, this.timeoutMs)
 	}
 
 	// ---------------------------------------------------------------------------
@@ -423,36 +450,44 @@ export class DapSession {
 }
 
 // =============================================================================
-// Session registry (module-level, keyed by sessionId)
+// Session registry — DapSessionRegistry (per-extension-instance)
 // =============================================================================
 
-const sessions = new Map<string, DapSession>()
+/** Per-extension-instance registry of live DapSession instances, keyed by
+ *  sessionId. Held as instance fields (not module-level) so two extension
+ *  activations in the same process do not share session state. Layer 1 tools
+ *  receive a sessionId and route through this registry via the injected
+ *  `getSession` dep. */
+export class DapSessionRegistry {
+	private readonly sessions = new Map<string, DapSession>()
 
-/** Create and register a new DapSession. The session is tracked by id so
- *  Layer 1 tools (which receive a sessionId) can look it up. */
-export function createSession(opts: DapSessionOptions): DapSession {
-	const session = new DapSession(opts)
-	sessions.set(session.id, session)
-	return session
-}
+	/** Create and register a new DapSession. The session is tracked by id so
+	 *  Layer 1 tools (which receive a sessionId) can look it up. */
+	create(opts: DapSessionOptions): DapSession {
+		const session = new DapSession(opts)
+		this.sessions.set(session.id, session)
+		return session
+	}
 
-/** Look up a session by id (used by Layer 1 tools to route by sessionId). */
-export function getSession(id: string): DapSession | undefined {
-	return sessions.get(id)
-}
+	/** Look up a session by id (used by Layer 1 tools to route by sessionId). */
+	get(id: string): DapSession | undefined {
+		return this.sessions.get(id)
+	}
 
-/** Remove a session from the registry (after terminate). */
-export function removeSession(id: string): void {
-	sessions.delete(id)
-}
+	/** Remove a session from the registry (after terminate). */
+	remove(id: string): void {
+		this.sessions.delete(id)
+	}
 
-/** All registered sessions (active + terminated). Used by status reporting. */
-export function getActiveSessions(): DapSession[] {
-	return Array.from(sessions.values())
-}
+	/** All registered sessions (active + terminated). Used by status reporting. */
+	getActive(): DapSession[] {
+		return Array.from(this.sessions.values())
+	}
 
-/** Clear all sessions — called on session_shutdown before shutdownAll kills
- *  the underlying clients. Prevents stale references after a session reset. */
-export function clearAllSessions(): void {
-	sessions.clear()
+	/** Clear all sessions — called on session_shutdown before the DapClientRegistry
+	 *  shuts down the underlying clients. Prevents stale references after a
+	 *  session reset. */
+	clearAll(): void {
+		this.sessions.clear()
+	}
 }
