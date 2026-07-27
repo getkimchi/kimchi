@@ -175,7 +175,7 @@ const DAP_TS_SKILL = `### TypeScript/JavaScript Debugging with js-debug
 js-debug (V8 debugger) supports full JavaScript eval — any valid JS expression works:
 - Property access: \`obj.property\`, \`arr[0]\`, \`arr.length\`
 - Method calls: \`arr.map(x => x * 2)\`, \`obj.toString()\`, \`JSON.stringify(obj)\`
-- Template literals: \`\`value: \${variable}\"\`
+- Template literals: \`\`value: \${variable}\`\`
 - Destructuring: \`const { a, b } = obj\` (in eval context, use \`obj.a\` instead)
 - Built-in functions: \`Array.isArray(x)\`, \`typeof x\`, \`Object.keys(obj)\`, \`Object.entries(obj)\`
 - Async: \`await promise\` (if at an await point)

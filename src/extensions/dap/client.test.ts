@@ -419,7 +419,8 @@ describe("DAP client (in-memory fake adapter)", () => {
 			})
 
 			// Manually resolve the pending request (no message reader in test)
-			const childClient = parentClient.childClient!
+			const childClient = parentClient.childClient
+			if (!childClient) throw new Error("childClient not set")
 			const pending = childClient.pendingRequests.get(childWritten?.seq ?? 1)
 			pending?.resolve({ stackFrames: [] })
 
@@ -461,6 +462,31 @@ describe("DAP client (in-memory fake adapter)", () => {
 
 			const result = await resultP
 			expect(result).toEqual({ threads: [{ id: 1, name: "main" }] })
+		})
+
+		it("startDebugging handler replies success and is not treated as unsupported", async () => {
+			const clientPromise = registry.getOrCreate(FAKE_CONFIG, CWD)
+			await answerInitialize(fake)
+			await clientPromise
+
+			fake.enqueue({
+				seq: 500,
+				type: "request",
+				command: "startDebugging",
+				arguments: {
+					request: "launch",
+					configuration: { type: "pwa-node", name: "test" },
+				},
+			})
+			await new Promise((r) => setTimeout(r, 50))
+
+			const responses = fake.written
+				.map((w) => parseOneFrame(w))
+				.filter((m) => m?.type === "response" && m?.request_seq === 500)
+			const startDbgResp = responses[0]
+			expect(startDbgResp).toBeDefined()
+			// The handler should reply success:true for stdio adapters
+			expect(startDbgResp?.success).toBe(true)
 		})
 	})
 
