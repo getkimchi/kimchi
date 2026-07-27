@@ -18,7 +18,7 @@ import { Readable } from "node:stream"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import type { BunProcess } from "../lsp/types.js"
 import { DapClientRegistry, sendRequest } from "./client.js"
-import type { DapAdapterConfig } from "./types.js"
+import type { DapAdapterConfig, DapClient } from "./types.js"
 
 // =============================================================================
 // Shared config / helpers
@@ -354,6 +354,113 @@ describe("DAP client (in-memory fake adapter)", () => {
 			expect(runInTerminalResp?.success).toBe(false)
 			expect(runInTerminalResp?.message).toMatch(/Unsupported server request: runInTerminal/)
 			void client
+		})
+	})
+
+	describe("nested-session routing (startDebugging)", () => {
+		it("sendRequest routes to childClient when set", async () => {
+			const childFake = createFakeProc()
+			const parentClient: DapClient = {
+				name: "test-parent",
+				cwd: CWD,
+				proc: fake.proc,
+				seq: 0,
+				capabilities: null,
+				pendingRequests: new Map(),
+				messageBuffer: Buffer.alloc(0),
+				isReading: false,
+				lastActivity: Date.now(),
+				threadId: null,
+				stoppedEvent: null,
+				stoppedWaiters: [],
+				terminatedWaiters: [],
+				outputLines: [],
+				terminated: false,
+				initializedPromise: Promise.resolve(),
+				childClient: {
+					name: "test-child",
+					cwd: CWD,
+					proc: childFake.proc,
+					seq: 100,
+					capabilities: null,
+					pendingRequests: new Map(),
+					messageBuffer: Buffer.alloc(0),
+					isReading: false,
+					lastActivity: Date.now(),
+					threadId: null,
+					stoppedEvent: null,
+					stoppedWaiters: [],
+					terminatedWaiters: [],
+					outputLines: [],
+					terminated: false,
+					initializedPromise: Promise.resolve(),
+				},
+			}
+
+			// Send a request — it should go to the child's proc
+			const resultP = sendRequest(parentClient, "stackTrace", { threadId: 1 }, 1000)
+			await Promise.resolve() // let write settle
+
+			// The child's proc should have received the request, not the parent's
+			expect(childFake.written.length).toBeGreaterThan(0)
+			expect(fake.written.length).toBe(0) // parent didn't receive it
+
+			const childWritten = parseOneFrame(childFake.written[0])
+			expect(childWritten?.command).toBe("stackTrace")
+
+			// Reply from child
+			childFake.enqueue({
+				seq: 1,
+				type: "response",
+				request_seq: childWritten?.seq ?? 1,
+				success: true,
+				command: "stackTrace",
+				body: { stackFrames: [] },
+			})
+
+			// Manually resolve the pending request (no message reader in test)
+			const childClient = parentClient.childClient!
+			const pending = childClient.pendingRequests.get(childWritten?.seq ?? 1)
+			pending?.resolve({ stackFrames: [] })
+
+			const result = await resultP
+			expect(result).toEqual({ stackFrames: [] })
+		})
+
+		it("sendRequest falls back to parent when childClient is not set", async () => {
+			const parentClient: DapClient = {
+				name: "test-parent-no-child",
+				cwd: CWD,
+				proc: fake.proc,
+				seq: 0,
+				capabilities: null,
+				pendingRequests: new Map(),
+				messageBuffer: Buffer.alloc(0),
+				isReading: false,
+				lastActivity: Date.now(),
+				threadId: null,
+				stoppedEvent: null,
+				stoppedWaiters: [],
+				terminatedWaiters: [],
+				outputLines: [],
+				terminated: false,
+				initializedPromise: Promise.resolve(),
+			}
+
+			const resultP = sendRequest(parentClient, "threads", {}, 1000)
+			await Promise.resolve()
+
+			// The parent's proc should have received the request
+			expect(fake.written.length).toBeGreaterThan(0)
+			const parentWritten = parseOneFrame(fake.written[0])
+			expect(parentWritten?.command).toBe("threads")
+
+			// Manually resolve the pending request
+			const pending = parentClient.pendingRequests.get(parentWritten?.seq ?? 1)
+			pending?.resolve({ threads: [{ id: 1, name: "main" }] })
+
+			const result = await resultP
+			expect(result).toEqual({ threads: [{ id: 1, name: "main" }] })
 		})
 	})
 
