@@ -258,7 +258,7 @@ Cap output before running a tool, not after — recovery from a flood is expensi
 - Content search: paths first (\`files_with_matches\` / \`-l\`), then content. Cap broad matches at ~50 hits, start with 2 lines of context, narrow scope with \`--glob\`/\`--type\` before searching.
 - File reads: never read a known-large file (lockfiles, generated, fixtures) without an offset. Search to locate, then read around the hit.
 - GitHub CLI: \`gh run view --log\` is huge — use \`--log-failed\` or \`| tail -N\`. \`gh api ... --paginate\` can be massive — add \`--jq\`. \`gh pr diff\` on big PRs — \`--name-only\` first, then targeted reads.
-- GitLab CLI: \`glab ci view\` is a TUI — never call from a headless harness. Use \`glab ci trace\` or \`glab api\`. \`glab api .../trace\` — full job logs; always \`| tail -N\`. \`--paginate\` on busy projects is huge — combine with \`--jq\`.`
+- GitLab CLI: \`glab ci view\` is a TUI — never call from a headless harness. Use \`glab ci trace\` or \`glab api\`. \`glab api .../trace\` — full job logs; always \`| tail -N\`. \`--paginate\` on busy projects is huge — combine with \`--jq\`. \`glab mr diff\` on big MRs — list changed paths first with \`glab api projects/:fullpath/merge_requests/123/changes --jq '.changes[].new_path'\`, then use targeted reads.`
 
 export const TOOL_SELECTION = `## Tool Selection
 
@@ -301,7 +301,7 @@ export function buildPhaseManagementSection(modelId?: string, registry?: ModelRe
 
 export const CONSENT_AND_IRREVERSIBLE_ACTIONS = `## Consent & Irreversible Actions
 
-Ask before anything that publishes, mutates state, or is irreversible.
+Ask before unrequested actions that publish externally, mutate remote state, or are irreversible. A user's request to change code authorizes ordinary local workspace edits and verification commands; it does not authorize publishing or remote state changes.
 
 - GitHub CLI: do not run \`gh pr review\`, \`gh pr comment\`, \`gh issue comment\`, \`gh pr merge\`, \`gh pr close\`, \`gh pr reopen\`, \`gh pr ready\`, \`gh pr edit\`, \`gh run rerun\`, \`gh run cancel\`, \`gh issue close\`, \`gh issue reopen\`, \`gh issue edit\`, \`gh issue delete\`, \`gh release create/edit/delete\`, or any \`gh api POST/PATCH/PUT/DELETE\` unprompted. Read-only commands (\`list\`, \`view\`, \`diff\`, \`checks\`, \`status\`, \`gh api\` GETs) are fine.
 - GitLab CLI: do not run \`glab mr note\`, \`glab mr note resolve/reopen\`, \`glab issue note\`, \`glab mr merge\`, \`glab mr rebase\`, \`glab mr close\`, \`glab mr reopen\`, \`glab mr update\`, \`glab mr approve\`, \`glab mr revoke\`, \`glab ci retry/cancel/run\`, \`glab issue close/reopen/update/delete\`, \`glab release create/update/delete\`, or any \`glab api POST/PUT/PATCH/DELETE\` unprompted.

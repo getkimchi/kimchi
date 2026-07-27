@@ -95,6 +95,30 @@ describe("buildSystemPrompt", () => {
 		{ name: "steer_subagent", description: "Steer a running background agent" },
 	]
 
+	it("scopes consent requirements without blocking requested local development work", () => {
+		const result = buildSystemPrompt({
+			tools,
+			env: testEnv,
+			mode: "single",
+		})
+
+		expect(result).toContain(
+			"A user's request to change code authorizes ordinary local workspace edits and verification commands",
+		)
+		expect(result).not.toContain("Ask before anything that publishes, mutates state, or is irreversible.")
+	})
+
+	it("caps GitLab merge request diffs before targeted reads", () => {
+		const result = buildSystemPrompt({
+			tools,
+			env: testEnv,
+			mode: "single",
+		})
+
+		expect(result).toContain("`glab mr diff` on big MRs")
+		expect(result).toContain("'.changes[].new_path'")
+	})
+
 	describe("orchestrator mode", () => {
 		it("includes all expected sections", () => {
 			const result = buildSystemPrompt({
