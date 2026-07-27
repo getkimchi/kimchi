@@ -149,6 +149,56 @@ Python debugpy supports full Python eval — any valid Python expression works:
 - Use \`debug_last_error({program})\` to capture exceptions with locals at the throw site
 - Interactive stepping: \`debug_launch\` → \`debug_set_breakpoint\` → \`debug_continue\` → \`debug_locals\` → \`step_over\` → \`debug_locals\` (repeat)`
 
+const DAP_TS_SKILL = `### TypeScript/JavaScript Debugging with js-debug
+
+**What you can debug:**
+- Any .ts or .js file: \`debug_state_at({file: "app.ts", line: N})\`
+- Node.js programs: \`debug_launch({program: "app.ts"})\`
+- js-debug uses a nested session architecture (startDebugging reverse-request). The client automatically handles this — you don't need to do anything special.
+
+**Where to set breakpoints — think about WHERE the bug manifests:**
+- At the decision point: the \`if\`/\`switch\`/\`for\` where wrong behavior starts
+- At the entry of the function that returns the wrong value
+- At the mutation point: where a data structure is modified (\`push\`, \`splice\`, \`set\`, \`delete\`)
+- At error handling: \`catch\` blocks where the error path diverges
+- At async boundaries: \`await\` points where promises resolve with unexpected values
+
+**Debugging methodology — how to be a good debugger:**
+1. **Reproduce first**: Run the program (\`bash: node app.ts\` or \`bash: npx tsx app.ts\`) to see the actual wrong output. Note which line produces it.
+2. **Set a breakpoint near the symptom**: Use \`debug_state_at\` at the line where wrong output appears.
+3. **Work backward**: If the variable is wrong, where was it set? Set a breakpoint at the mutation point.
+4. **Compare expected vs actual**: At each breakpoint, ask "what should this value be?" and compare.
+5. **Inspect data structures, not just primitives**: For arrays/objects, use \`debug_locals\` — the bug is often in a nested property.
+
+**Expression syntax for debug_eval and debug_state_at evaluated parameter:**
+
+js-debug (V8 debugger) supports full JavaScript eval — any valid JS expression works:
+- Property access: \`obj.property\`, \`arr[0]\`, \`arr.length\`
+- Method calls: \`arr.map(x => x * 2)\`, \`obj.toString()\`, \`JSON.stringify(obj)\`
+- Template literals: \`\`value: \${variable}\"\`
+- Destructuring: \`const { a, b } = obj\` (in eval context, use \`obj.a\` instead)
+- Built-in functions: \`Array.isArray(x)\`, \`typeof x\`, \`Object.keys(obj)\`, \`Object.entries(obj)\`
+- Async: \`await promise\` (if at an await point)
+
+**Inspecting common JS/TS data structures:**
+- Arrays: \`arr.length\`, \`arr[0]\`, \`arr.slice(0, 10)\`
+- Objects: \`Object.keys(obj)\`, \`Object.entries(obj)\`, \`JSON.stringify(obj, null, 2)\`
+- Maps: \`map.size\`, \`Array.from(map.entries())\`
+- Sets: \`set.size\`, \`Array.from(set)\`
+- Classes: \`obj.constructor.name\`, \`Object.getPrototypeOf(obj)\`
+- Errors: \`err.message\`, \`err.stack\`, \`err.code\`
+
+**Gotchas:**
+- js-debug requires the program to be launched via the adapter (not run separately). The adapter handles starting the Node.js process.
+- Source maps: if debugging TypeScript, js-debug reads source maps automatically. Ensure \`sourceMaps: true\` in the launch config (it's set by default).
+- Async debugging: breakpoints inside \`async\` functions work correctly. The adapter handles \`await\` points.
+
+**Productive patterns:**
+- One-shot inspection: \`debug_state_at({file, line, evaluated: ["arr.length", "JSON.stringify(obj)", "Object.keys(map)"]})\`
+- Use \`debug_eval\` freely — JS/TS has no expression limitations unlike Go
+- Use \`debug_last_error({program})\` to capture uncaught exceptions with locals at the throw site
+- Interactive stepping: \`debug_launch\` → \`debug_set_breakpoint\` → \`debug_continue\` → \`debug_locals\` → \`step_over\` → \`debug_locals\` (repeat)`
+
 export default function (pi: ExtensionAPI) {
 	let cwd = ""
 	let activeAdapters = detectAdapters("")
@@ -168,6 +218,7 @@ export default function (pi: ExtensionAPI) {
 	// API call when the agent is not debugging.
 	let goSkillActive = false
 	let pythonSkillActive = false
+	let tsSkillActive = false
 
 	createSystemPromptBlocks(pi, "dap").register({
 		id: "dap-tools",
@@ -185,6 +236,10 @@ export default function (pi: ExtensionAPI) {
 		id: "dap-python-skill",
 		render: () => (pythonSkillActive ? DAP_PYTHON_SKILL : undefined),
 	})
+	createSystemPromptBlocks(pi, "dap").register({
+		id: "dap-ts-skill",
+		render: () => (tsSkillActive ? DAP_TS_SKILL : undefined),
+	})
 
 	// ── Session start: detect adapters, set status footer, register tools ───────
 
@@ -194,6 +249,7 @@ export default function (pi: ExtensionAPI) {
 		warned = false
 		goSkillActive = false
 		pythonSkillActive = false
+		tsSkillActive = false
 		activeAdapters = detectAdapters(cwd)
 		missingAdapters = detectMissingAdapters(cwd)
 
@@ -244,6 +300,7 @@ export default function (pi: ExtensionAPI) {
 		if (name.startsWith("debug_") || name.startsWith("step_")) {
 			if (activeAdapters.some((a) => a.name === "dlv")) goSkillActive = true
 			if (activeAdapters.some((a) => a.name === "debugpy")) pythonSkillActive = true
+			if (activeAdapters.some((a) => a.name === "js-debug")) tsSkillActive = true
 		}
 	})
 
