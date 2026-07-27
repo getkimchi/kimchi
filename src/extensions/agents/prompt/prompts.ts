@@ -76,7 +76,7 @@ Platform: ${env.platform}`
 		const activeToolNames = extras?.activeToolNames
 		const parentPrompt = parentSystemPrompt || genericBase
 		const identity = activeToolNames
-			? stripInheritedToolSections(parentPrompt)
+			? stripInheritedContextSections(parentPrompt)
 			: stripAvailableToolsSection(parentPrompt)
 		const toolNames = activeToolNames ? new Set(uniqueToolNames(activeToolNames)) : undefined
 		const localToolSections = toolNames
@@ -168,8 +168,9 @@ function stripAvailableToolsSection(prompt: string): string {
 		.trim()
 }
 
-function stripInheritedToolSections(prompt: string): string {
+function stripInheritedContextSections(prompt: string): string {
 	return prompt
+		.replace(/(^|\n)## Phase Management\b[^\n]*\n[\s\S]*?(?=\n#{1,2} |\n*$)/g, "$1")
 		.replace(/(^|\n)## (?:Available Tools|Output & Truncation|Tool Selection)\b[^\n]*\n[\s\S]*?(?=\n#+ |\n*$)/g, "$1")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim()

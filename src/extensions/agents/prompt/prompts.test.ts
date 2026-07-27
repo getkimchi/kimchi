@@ -130,6 +130,44 @@ Keep these parent rules.`
 		expect(output).toContain("Keep these parent rules.")
 	})
 
+	it("removes main-thread phase management while preserving persona-specific phase guidance", () => {
+		const appendAgent: AgentConfig = {
+			name: "Test-Phase-Append",
+			description: "Test append agent phase guidance",
+			extensions: true,
+			skills: true,
+			systemPrompt: "",
+			promptMode: "append",
+		}
+		const parentPrompt = `# Parent
+
+## Phase Management
+
+Call \`set_phase\` when the work type changes.
+
+### Phase-specific behaviour
+
+During **plan** phase:
+- Write a plan.
+
+## Rules
+Keep these parent rules.`
+		const output = buildAgentPrompt(appendAgent, FIXED_CWD, FIXED_ENV, parentPrompt, {
+			activeToolNames: ["read"],
+			guidelinesBlock: `## Phase Guidelines (build)
+
+During **build** phase:
+- Implement the requested change.`,
+		})
+
+		expect(output).not.toContain("## Phase Management")
+		expect(output).not.toContain("Call `set_phase`")
+		expect(output).not.toContain("During **plan** phase")
+		expect(output).toContain("Keep these parent rules.")
+		expect(output).toContain("## Phase Guidelines (build)")
+		expect(output).toContain("During **build** phase")
+	})
+
 	it("Explore agent assembles expected prompt (replace mode)", () => {
 		const agent = getRequired(AGENT_EXPLORE)
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
