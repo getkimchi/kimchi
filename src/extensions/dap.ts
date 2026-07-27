@@ -23,16 +23,7 @@ import { createSystemPromptBlocks } from "./prompt-construction/index.js"
 
 const DAP_SYSTEM_PROMPT = `## Debugger (DAP)
 
-DAP tools give you a live debugger — your first tool for understanding runtime behavior, not a last resort. **Do NOT trace variable values through code by hand.** If you need to know what a variable's value is at runtime, set a breakpoint and look at it. A breakpoint + \`debug_eval\` shows you the actual value in seconds and ~500 tokens; reasoning through code takes minutes, ~50,000 tokens, and can still be wrong. The debugger is both faster and cheaper.
-
-**Use the debugger instead of:**
-- Tracing variable values through code by hand ("if generation is 1 here, then after the loop it becomes...") → **STOP.** Use \`debug_state_at({file, line, evaluated: ["var"]})\` to see the actual value. Do not spend thinking tokens on tracing runtime values — the debugger answers in one call.
-- Writing a throwaway repro script to test a hypothesis → \`debug_state_at\` or \`debug_watch_change\` will show you the value directly, no script needed
-- Adding \`console.log\` / \`fmt.Println\` / \`print()\` to see a value → \`debug_state_at\` with \`evaluated\` gives you the exact value at a breakpoint, with no code to clean up
-- Guessing why a program panics or throws → \`debug_last_error\` captures the exception, locals at the throw site, and the backtrace in one call
-- Reading code to figure out which path runs or in what order → \`debug_trace_calls\` returns the actual call sequence with arguments
-
-The debugger shows you what *actually happened*, not what you *think should happen*. When you are about to reason about runtime behavior, ask: can the debugger answer this faster?
+DAP tools give you a live debugger — your first tool for understanding runtime behavior. **Do NOT trace variable values through code by hand.** A breakpoint + \`debug_eval\` shows you the actual value in ~500 tokens; reasoning through code takes ~50,000 tokens and can still be wrong. The debugger is both faster and cheaper.
 
 **Quick start — one call answers most questions:**
 - "What is the value of X at line N?" → \`debug_state_at({file, line, evaluated: ["X"]})\`
@@ -40,22 +31,9 @@ The debugger shows you what *actually happened*, not what you *think should happ
 - "Which functions actually run and in what order?" → \`debug_trace_calls({program})\`
 - "How does this value change as the program steps?" → \`debug_watch_change({file, line, expression})\`
 
-**Layer 2 composed tools** (preferred — one call handles the full launch→breakpoint→inspect→terminate lifecycle):
-- \`debug_state_at({file, line, evaluated?})\` — set a breakpoint, run to it, return locals + backtrace + evaluated expressions + captured stdout/stderr. Auto-launches and terminates a session if no \`session_id\` is given.
-- \`debug_last_error({program})\` — run until throw; return exception type/message + locals at the throw site + backtrace. Returns null if the program completes without throwing.
-- \`debug_trace_calls({program})\` — structured call records (function name, args, return value) via sentinel-prefixed logMessage parsing.
-- \`debug_watch_change({file, line, expression})\` — watch an expression for changes; returns change locations with old/new values.
+For interactive stepping: \`debug_launch\` → \`debug_set_breakpoint\` → \`debug_continue\` → \`debug_locals\` / \`debug_eval\` → \`debug_terminate\`.
 
-**Layer 1 primitive tools** (interactive stepping when you need fine control):
-- \`debug_launch({program, adapter?})\` → returns \`session_id\`. For Go, pass a \`.go\` file or a package directory (e.g. \`./cmd/server\`); set \`adapter: "dlv"\` explicitly if the path has no extension.
-- \`debug_set_breakpoint({session_id, file, line})\` → set a breakpoint
-- \`debug_continue({session_id})\` → run to next stop
-- \`debug_locals({session_id})\` / \`debug_eval({session_id, expression})\` → inspect values (requires a stopped session)
-- \`debug_backtrace({session_id})\` → call stack
-- \`step_in\` / \`step_over\` / \`step_out\` → step through code
-- \`debug_terminate({session_id})\` → always clean up when done
-
-The adapter is auto-detected from the program file extension (.ts/.js→js-debug, .go→dlv, .py→debugpy, .rs/.c→lldb-dap). For Go package directories, the adapter is detected from the presence of \`.go\` files in the directory.`
+The adapter is auto-detected from the file extension (.go→dlv, .py→debugpy, .ts/.js→js-debug, .rs/.c→lldb-dap). For Go package directories, the adapter is detected from \`.go\` files.`
 
 const DAP_GO_SKILL = `### Go Debugging with dlv
 
