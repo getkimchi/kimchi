@@ -16,8 +16,8 @@ import { readdirSync } from "node:fs"
 import path from "node:path"
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { adapterForFile, allAdapters, detectAdapters, detectMissingAdapters } from "./dap/adapters.js"
-import { getOrCreateClient, shutdownAll } from "./dap/client.js"
-import { clearAllSessions, createSession, getSession } from "./dap/session.js"
+import { DapClientRegistry } from "./dap/client.js"
+import { DapSessionRegistry } from "./dap/session.js"
 import { createLayer1Tools, createLayer2Tools, type LaunchSessionOptions } from "./dap/tools.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
 
@@ -178,6 +178,13 @@ export default function (pi: ExtensionAPI) {
 	let warned = false
 	let ui: ExtensionUIContext | undefined
 
+	// Per-extension-instance registries. Held in closure scope (not module-level)
+	// so two activations of this extension in the same process do not share
+	// debug client or session state. Mirrors the LSP extension's scoping but
+	// instance-scoped rather than module-scoped.
+	const clientRegistry = new DapClientRegistry()
+	const sessionRegistry = new DapSessionRegistry()
+
 	createSystemPromptBlocks(pi, "dap").register({
 		id: "dap-tools",
 		render: () => (activeAdapters.length > 0 ? DAP_SYSTEM_PROMPT : undefined),
@@ -210,7 +217,7 @@ export default function (pi: ExtensionAPI) {
 		// Deps are wired here so tools.ts stays free of extension wiring.
 		const deps = {
 			cwd,
-			getSession: (id: string) => getSession(id),
+			getSession: (id: string) => sessionRegistry.get(id),
 			launchSession: (opts: LaunchSessionOptions) => launchSession(opts),
 		}
 		for (const tool of createLayer1Tools(deps)) {
@@ -225,8 +232,8 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	pi.on("session_shutdown", async () => {
-		clearAllSessions()
-		shutdownAll()
+		sessionRegistry.clearAll()
+		clientRegistry.shutdownAll()
 		if (ui) {
 			ui.setStatus("dap", undefined)
 			ui = undefined
@@ -336,8 +343,8 @@ export default function (pi: ExtensionAPI) {
 			)
 		}
 
-		const client = await getOrCreateClient(adapter, cwd)
-		const session = createSession({ adapter, cwd, client })
+		const client = await clientRegistry.getOrCreate(adapter, cwd)
+		const session = sessionRegistry.create({ adapter, cwd, client })
 		await session.launch({
 			program,
 			cwd,

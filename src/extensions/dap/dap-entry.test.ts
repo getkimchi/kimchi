@@ -43,18 +43,25 @@ const clientState = vi.hoisted(() => ({
 }))
 
 vi.mock("./client.js", () => ({
-	getOrCreateClient: vi.fn(async () => ({}) as unknown),
-	shutdownAll: vi.fn(() => {
-		clientState.shutdownAllCalled = true
-	}),
+	DapClientRegistry: vi.fn().mockImplementation(() => ({
+		getOrCreate: vi.fn(async () => ({}) as unknown),
+		shutdownAll: vi.fn(() => {
+			clientState.shutdownAllCalled = true
+		}),
+		getAll: vi.fn(() => []),
+	})),
 }))
 
 vi.mock("./session.js", () => ({
-	createSession: vi.fn(() => ({ id: "test-session" })),
-	getSession: vi.fn(() => undefined),
-	clearAllSessions: vi.fn(() => {
-		clientState.clearAllCalled = true
-	}),
+	DapSessionRegistry: vi.fn().mockImplementation(() => ({
+		create: vi.fn(() => ({ id: "test-session" })),
+		get: vi.fn(() => undefined),
+		remove: vi.fn(),
+		clearAll: vi.fn(() => {
+			clientState.clearAllCalled = true
+		}),
+		getActive: vi.fn(() => []),
+	})),
 }))
 
 // Capture the createSystemPromptBlocks registration so we can invoke render().

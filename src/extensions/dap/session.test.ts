@@ -18,6 +18,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { BunProcess } from "../lsp/types.js"
+import { type DapSession, type DapSessionOptions, DapSessionRegistry } from "./session.js"
 import type {
 	DapAdapterConfig,
 	DapCapabilities,
@@ -58,9 +59,7 @@ vi.mock("./client.js", () => ({
 }))
 
 // Import AFTER vi.mock so session.ts picks up the mocked sendRequest.
-const { clearAllSessions, createSession, getActiveSessions, getSession, removeSession } = await import("./session.js")
-
-import type { DapSessionOptions } from "./session.js"
+const registry = new DapSessionRegistry()
 
 // =============================================================================
 // Mock DapClient — satisfies the DapClient interface without a subprocess
@@ -128,9 +127,9 @@ const FAKE_CONFIG: DapAdapterConfig = {
 
 const CWD = "/tmp/dap-session-test"
 
-function makeSession(client: MockClient): ReturnType<typeof createSession> {
+function makeSession(client: MockClient): DapSession {
 	const opts: DapSessionOptions = { adapter: FAKE_CONFIG, cwd: CWD, client }
-	return createSession(opts)
+	return registry.create(opts)
 }
 
 function queueResponse(command: string, body: unknown, success = true): void {
@@ -145,12 +144,12 @@ function queueResponse(command: string, body: unknown, success = true): void {
 
 describe("DapSession", () => {
 	beforeEach(() => {
-		clearAllSessions()
+		registry.clearAll()
 		captured.length = 0
 		queued.clear()
 	})
 	afterEach(() => {
-		clearAllSessions()
+		registry.clearAll()
 		captured.length = 0
 		queued.clear()
 	})
@@ -462,38 +461,39 @@ describe("DapSession", () => {
 	})
 
 	describe("session registry", () => {
-		it("createSession registers the session and getSession retrieves it", () => {
+		it("create registers the session and get retrieves it", () => {
 			const client = createMockClient(null)
 			const session = makeSession(client)
-			expect(getSession(session.id)).toBe(session)
+			expect(registry.get(session.id)).toBe(session)
 		})
 
-		it("removeSession removes it from the registry", () => {
+		it("remove removes it from the registry", () => {
 			const client = createMockClient(null)
 			const session = makeSession(client)
-			removeSession(session.id)
-			expect(getSession(session.id)).toBeUndefined()
+			registry.remove(session.id)
+			expect(registry.get(session.id)).toBeUndefined()
 		})
 
-		it("getActiveSessions returns all registered sessions", () => {
+		it("getActive returns all registered sessions", () => {
 			const client1 = createMockClient(null)
 			const client2 = createMockClient(null)
 			const s1 = makeSession(client1)
 			const s2 = makeSession(client2)
-			expect(getActiveSessions()).toHaveLength(2)
+			expect(registry.getActive()).toHaveLength(2)
 			expect(
-				getActiveSessions()
-					.map((s) => s.id)
+				registry
+					.getActive()
+					.map((s: DapSession) => s.id)
 					.sort(),
 			).toEqual([s1.id, s2.id].sort())
 		})
 
-		it("clearAllSessions empties the registry", () => {
+		it("clearAll empties the registry", () => {
 			const client = createMockClient(null)
 			makeSession(client)
-			expect(getActiveSessions()).toHaveLength(1)
-			clearAllSessions()
-			expect(getActiveSessions()).toHaveLength(0)
+			expect(registry.getActive()).toHaveLength(1)
+			registry.clearAll()
+			expect(registry.getActive()).toHaveLength(0)
 		})
 	})
 })

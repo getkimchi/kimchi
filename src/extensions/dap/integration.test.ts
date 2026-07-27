@@ -23,10 +23,10 @@ import os from "node:os"
 import path from "node:path"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { allAdapters } from "./adapters.js"
-import { shutdownAll } from "./client.js"
+import { DapClientRegistry } from "./client.js"
 import type { ComposedDeps } from "./composed.js"
 import { debugLastError, debugStateAt, debugTraceCalls } from "./composed.js"
-import { clearAllSessions } from "./session.js"
+import { DapSessionRegistry } from "./session.js"
 
 // =============================================================================
 // Adapter availability detection
@@ -69,18 +69,18 @@ function writeFixture(dir: string, name: string, content: string): string {
 
 /** ComposedDeps that creates a fresh session per call (no shared sessionId). */
 function makeDeps(cwd: string): ComposedDeps {
+	const clientRegistry = new DapClientRegistry()
+	const sessionRegistry = new DapSessionRegistry()
 	return {
 		cwd,
-		getSession: () => undefined, // always create fresh
+		getSession: (id: string) => sessionRegistry.get(id),
 		launchSession: async (opts: { program: string; stopOnEntry?: boolean }) => {
-			const { getOrCreateClient } = await import("./client.js")
-			const { createSession } = await import("./session.js")
 			const { adapterForFile } = await import("./adapters.js")
 			const adapters = allAdapters()
 			const adapter = adapterForFile(opts.program, adapters)
 			if (!adapter) throw new Error(`No adapter for ${opts.program}`)
-			const client = await getOrCreateClient(adapter, cwd)
-			const session = createSession({ adapter, cwd, client })
+			const client = await clientRegistry.getOrCreate(adapter, cwd)
+			const session = sessionRegistry.create({ adapter, cwd, client })
 			await session.launch({ program: opts.program, cwd, stopOnEntry: opts.stopOnEntry })
 			return session
 		},
@@ -210,7 +210,7 @@ describe("DAP integration — Go (dlv dap)", () => {
 	let fixturePath: string
 	let deps: ComposedDeps
 
-	beforeAll(() => {
+	beforeEach(() => {
 		if (!HAS_DLV) return
 		dir = tmpDir("dap-go-")
 		fixturePath = writeFixture(dir, "main.go", GO_FIXTURE)
@@ -339,17 +339,10 @@ function childProcessCount(): number {
 const baselineChildCount = childProcessCount()
 
 beforeEach(() => {
-	// Ensure a fresh DAP client per test — the client map is keyed by
-	// (command, cwd) and a terminated session leaves a stale entry.
-	shutdownAll()
-	clearAllSessions()
+	// No global cleanup needed — each test creates its own clientRegistry via makeDeps
 })
 
 afterAll(() => {
-	// Clean up all DAP clients (kills subprocesses)
-	shutdownAll()
-	clearAllSessions()
-
 	// Give subprocesses a moment to die after SIGKILL
 	const childCount = childProcessCount()
 	// Allow some slack for vitest workers, but the count should not have grown

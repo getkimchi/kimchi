@@ -26,7 +26,7 @@ import type {
  *  caller can force-kill it. */
 interface TcpProcessHandle extends BunProcess {
 	/** The underlying node:child_process spawn (the dapDebugServer.js process).
-	 *  Tracked so getOrCreateClient can kill it when the client is shut down. */
+	 *  Tracked so the DapClientRegistry can kill it when the client is shut down. */
 	childProc: { kill: (signal?: string) => void; exitCode: number | null; exited: Promise<void> }
 }
 
@@ -277,9 +277,6 @@ async function spawnTcpAdapterForConfig(config: DapAdapterConfig, cwd: string): 
 // Client State
 // =============================================================================
 
-const clients = new Map<string, DapClient>()
-const clientLocks = new Map<string, Promise<DapClient>>()
-
 const DEFAULT_TIMEOUT_MS = 30_000
 
 // =============================================================================
@@ -420,116 +417,136 @@ async function startMessageReader(client: DapClient): Promise<void> {
 }
 
 // =============================================================================
-// Client Lifecycle
+// Client Lifecycle — DapClientRegistry
 // =============================================================================
 
-export async function getOrCreateClient(config: DapAdapterConfig, cwd: string): Promise<DapClient> {
-	const key = `${config.command}:${cwd}`
+/** Per-extension-instance registry of live DapClient instances. Holds the
+ *  `clients` Map and the in-flight `clientLocks` Map (which dedupes concurrent
+ *  getOrCreate calls for the same key) as instance fields so two extension
+ *  activations in the same process do not share debug client state. Mirrors
+ *  the LSP client scoping strategy, but per-instance rather than module-level.
+ *
+ *  Keyed by `${adapter.command}:${cwd}` — the same adapter in different working
+ *  directories gets separate subprocesses. */
+export class DapClientRegistry {
+	private readonly clients = new Map<string, DapClient>()
+	private readonly clientLocks = new Map<string, Promise<DapClient>>()
 
-	const existing = clients.get(key)
-	if (existing) {
-		existing.lastActivity = Date.now()
-		return existing
-	}
+	/** Return the existing client for (command, cwd) if present (and bump its
+	 *  lastActivity), else spawn the adapter subprocess, run the initialize
+	 *  handshake, and register the client. Concurrent calls for the same key
+	 *  share a single in-flight promise so the adapter is spawned only once. */
+	async getOrCreate(config: DapAdapterConfig, cwd: string): Promise<DapClient> {
+		const key = `${config.command}:${cwd}`
 
-	const existingLock = clientLocks.get(key)
-	if (existingLock) return existingLock
-
-	const clientPromise = (async () => {
-		// For TCP-based adapters (js-debug), spawn the server and connect a socket.
-		// For stdio adapters (dlv, debugpy, lldb-dap), spawn the adapter directly.
-		const proc =
-			config.transport?.kind === "tcp" ? await spawnTcpAdapterForConfig(config, cwd) : spawnStdioAdapter(config, cwd)
-
-		const client: DapClient = {
-			name: key,
-			cwd,
-			proc,
-			seq: 0,
-			capabilities: null,
-			pendingRequests: new Map(),
-			messageBuffer: Buffer.alloc(0),
-			isReading: false,
-			lastActivity: Date.now(),
-			threadId: null,
-			stoppedEvent: null,
-			stoppedWaiters: [],
-			terminatedWaiters: [],
-			outputLines: [],
-			terminated: false,
+		const existing = this.clients.get(key)
+		if (existing) {
+			existing.lastActivity = Date.now()
+			return existing
 		}
-		clients.set(key, client)
 
-		// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
-		;(proc as any).exited.then(() => {
-			clients.delete(key)
-			clientLocks.delete(key)
+		const existingLock = this.clientLocks.get(key)
+		if (existingLock) return existingLock
+
+		const clientPromise = (async () => {
+			// For TCP-based adapters (js-debug), spawn the server and connect a socket.
+			// For stdio adapters (dlv, debugpy, lldb-dap), spawn the adapter directly.
+			const proc =
+				config.transport?.kind === "tcp" ? await spawnTcpAdapterForConfig(config, cwd) : spawnStdioAdapter(config, cwd)
+
+			const client: DapClient = {
+				name: key,
+				cwd,
+				proc,
+				seq: 0,
+				capabilities: null,
+				pendingRequests: new Map(),
+				messageBuffer: Buffer.alloc(0),
+				isReading: false,
+				lastActivity: Date.now(),
+				threadId: null,
+				stoppedEvent: null,
+				stoppedWaiters: [],
+				terminatedWaiters: [],
+				outputLines: [],
+				terminated: false,
+			}
+			this.clients.set(key, client)
+
 			// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
-			const err = new Error(`DAP adapter exited (code ${(proc as any).exitCode})`)
-			for (const pending of client.pendingRequests.values()) pending.reject(err)
-			client.pendingRequests.clear()
-		})
+			;(proc as any).exited.then(() => {
+				this.clients.delete(key)
+				this.clientLocks.delete(key)
+				// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
+				const err = new Error(`DAP adapter exited (code ${(proc as any).exitCode})`)
+				for (const pending of client.pendingRequests.values()) pending.reject(err)
+				client.pendingRequests.clear()
+			})
 
-		startMessageReader(client)
-		// Drain stderr to prevent pipe buffer filling and blocking stdout.
-		;(async () => {
-			const reader = client.proc.stderr.getReader()
-			try {
-				while (true) {
-					const { done } = await reader.read()
-					if (done) break
+			startMessageReader(client)
+			// Drain stderr to prevent pipe buffer filling and blocking stdout.
+			;(async () => {
+				const reader = client.proc.stderr.getReader()
+				try {
+					while (true) {
+						const { done } = await reader.read()
+						if (done) break
+					}
+				} finally {
+					reader.releaseLock()
 				}
+			})()
+
+			try {
+				const initBody = await sendRequest(client, "initialize", {
+					clientID: "kimchi",
+					clientName: "Kimchi DAP Client",
+					adapterID: config.launchType,
+					locale: "en-US",
+					linesStartAt1: true,
+					columnsStartAt1: true,
+					supportsVariableType: false,
+					supportsVariablePaging: false,
+					supportsRunInTerminalRequest: false,
+					supportsProgressReporting: false,
+					supportsInvalidatedEvent: false,
+					supportsMemoryReferences: false,
+					pathFormat: "path",
+				})
+				client.capabilities = (initBody as DapCapabilities) ?? null
+				return client
+			} catch (err) {
+				this.clients.delete(key)
+				this.clientLocks.delete(key)
+				proc.kill()
+				throw err
 			} finally {
-				reader.releaseLock()
+				this.clientLocks.delete(key)
 			}
 		})()
 
-		try {
-			const initBody = await sendRequest(client, "initialize", {
-				clientID: "kimchi",
-				clientName: "Kimchi DAP Client",
-				adapterID: config.launchType,
-				locale: "en-US",
-				linesStartAt1: true,
-				columnsStartAt1: true,
-				supportsVariableType: false,
-				supportsVariablePaging: false,
-				supportsRunInTerminalRequest: false,
-				supportsProgressReporting: false,
-				supportsInvalidatedEvent: false,
-				supportsMemoryReferences: false,
-				pathFormat: "path",
-			})
-			client.capabilities = (initBody as DapCapabilities) ?? null
-			return client
-		} catch (err) {
-			clients.delete(key)
-			clientLocks.delete(key)
-			proc.kill()
-			throw err
-		} finally {
-			clientLocks.delete(key)
-		}
-	})()
-
-	clientLocks.set(key, clientPromise)
-	return clientPromise
-}
-
-export function shutdownAll(): void {
-	const all = Array.from(clients.values())
-	clients.clear()
-	const err = new Error("DAP shutdown")
-	for (const client of all) {
-		for (const pending of client.pendingRequests.values()) pending.reject(err)
-		client.pendingRequests.clear()
-		client.terminated = true
-		client.proc.kill()
+		this.clientLocks.set(key, clientPromise)
+		return clientPromise
 	}
-}
 
-export function getAllClients(): DapClient[] {
-	return Array.from(clients.values())
+	/** Tear down every tracked client: reject pending requests, mark terminated,
+	 *  and SIGKILL the adapter subprocesses. Called on session_shutdown. */
+	shutdownAll(): void {
+		const all = Array.from(this.clients.values())
+		this.clients.clear()
+		const err = new Error("DAP shutdown")
+		for (const client of all) {
+			for (const pending of client.pendingRequests.values()) pending.reject(err)
+			client.pendingRequests.clear()
+			client.terminated = true
+			client.proc.kill()
+		}
+	}
+
+	/** All currently tracked clients. Used by status reporting / tests. */
+	getAll(): DapClient[] {
+		return Array.from(this.clients.values())
+	}
 }
 
 // =============================================================================
