@@ -199,6 +199,70 @@ js-debug (V8 debugger) supports full JavaScript eval — any valid JS expression
 - Use \`debug_last_error({program})\` to capture uncaught exceptions with locals at the throw site
 - Interactive stepping: \`debug_launch\` → \`debug_set_breakpoint\` → \`debug_continue\` → \`debug_locals\` → \`step_over\` → \`debug_locals\` (repeat)`
 
+const DAP_JAVA_SKILL = `### Java Debugging with java-debug
+
+**What you can debug:**
+- Any Java program with a main method: \`debug_state_at({file: "Main.java", line: N})\`
+- Kotlin programs (.kt/.kts): same adapter, same workflow
+- Requires Java Debug Server (com.microsoft.java.debug.plugin)
+
+**Expression syntax:**
+- Field access: \`this.field\`, \`obj.field\`
+- Method calls: \`obj.toString()\`, \`list.size()\`, \`map.get("key")\`
+- Built-in: \`Math.max(a, b)\`, \`String.valueOf(obj)\`, \`Arrays.toString(arr)\`
+
+**Inspecting data structures:**
+- Lists: \`list.size()\`, \`list.get(0)\`
+- Maps: \`map.keySet()\`, \`map.get("key")\`, \`map.size()\`
+- Arrays: \`arr.length\`, \`Arrays.toString(arr)\`
+- Objects: \`obj.toString()\`, \`obj.getClass().getName()\`
+
+**Productive patterns:**
+- One-shot: \`debug_state_at({file, line, evaluated: ["list.size()", "map.get(\\"key\\")"]})\`
+- Use \`debug_eval\` freely — Java supports method calls in eval`
+
+const DAP_RUBY_SKILL = `### Ruby Debugging with rdbg
+
+**What you can debug:**
+- Any Ruby script: \`debug_state_at({file: "app.rb", line: N})\`
+- Rails apps: set breakpoints in controllers/models
+- rdbg ships with Ruby 3.1+ (no install needed)
+
+**Expression syntax:**
+- Full Ruby eval: \`obj.method\`, \`arr.length\`, \`hash["key"]\`
+- Method calls: \`obj.to_s\`, \`arr.map { |x| x * 2 }\`, \`hash.keys\`
+- Built-in: \`obj.class\`, \`obj.instance_variables\`, \`obj.methods\`
+
+**Inspecting data structures:**
+- Arrays: \`arr.length\`, \`arr[0]\`, \`arr.first\`, \`arr.last\`
+- Hashes: \`hash.keys\`, \`hash.values\`, \`hash["key"]\`
+- Objects: \`obj.instance_variables\`, \`obj.class\`, \`obj.to_s\`
+
+**Productive patterns:**
+- One-shot: \`debug_state_at({file, line, evaluated: ["arr.length", "hash.keys", "obj.class"]})\`
+- Use \`debug_eval\` freely — Ruby has no expression limitations`
+
+const DAP_PHP_SKILL = `### PHP Debugging with php-debug-adapter
+
+**What you can debug:**
+- Any PHP script: \`debug_state_at({file: "index.php", line: N})\`
+- Laravel/Symfony apps: set breakpoints in controllers
+- Requires Xdebug extension + php-debug-adapter
+
+**Expression syntax:**
+- Full PHP eval: \`$obj->method()\`, \`count($arr)\`, \`$arr[0]\`
+- Method calls: \`$obj->getProperty()\`, \`array_map(fn($x) => $x * 2, $arr)\`
+- Built-in: \`get_class($obj)\`, \`array_keys($arr)\`, \`count($arr)\`
+
+**Inspecting data structures:**
+- Arrays: \`count($arr)\`, \`$arr[0]\`, \`array_keys($arr)\`
+- Objects: \`get_class($obj)\`, \`$obj->getProperty()\`, \`get_object_vars($obj)\`
+- Exceptions: \`$e->getMessage()\`, \`$e->getTraceAsString()\`
+
+**Productive patterns:**
+- One-shot: \`debug_state_at({file, line, evaluated: ["count($arr)", "get_class($obj)"]})\`
+- Use \`debug_eval\` freely — PHP supports method calls in eval`
+
 export default function (pi: ExtensionAPI) {
 	let cwd = ""
 	let activeAdapters = detectAdapters("")
@@ -219,6 +283,9 @@ export default function (pi: ExtensionAPI) {
 	let goSkillActive = false
 	let pythonSkillActive = false
 	let tsSkillActive = false
+	let javaSkillActive = false
+	let rubySkillActive = false
+	let phpSkillActive = false
 
 	createSystemPromptBlocks(pi, "dap").register({
 		id: "dap-tools",
@@ -240,6 +307,18 @@ export default function (pi: ExtensionAPI) {
 		id: "dap-ts-skill",
 		render: () => (tsSkillActive ? DAP_TS_SKILL : undefined),
 	})
+	createSystemPromptBlocks(pi, "dap").register({
+		id: "dap-java-skill",
+		render: () => (javaSkillActive ? DAP_JAVA_SKILL : undefined),
+	})
+	createSystemPromptBlocks(pi, "dap").register({
+		id: "dap-ruby-skill",
+		render: () => (rubySkillActive ? DAP_RUBY_SKILL : undefined),
+	})
+	createSystemPromptBlocks(pi, "dap").register({
+		id: "dap-php-skill",
+		render: () => (phpSkillActive ? DAP_PHP_SKILL : undefined),
+	})
 
 	// ── Session start: detect adapters, set status footer, register tools ───────
 
@@ -250,6 +329,9 @@ export default function (pi: ExtensionAPI) {
 		goSkillActive = false
 		pythonSkillActive = false
 		tsSkillActive = false
+		javaSkillActive = false
+		rubySkillActive = false
+		phpSkillActive = false
 		activeAdapters = detectAdapters(cwd)
 		missingAdapters = detectMissingAdapters(cwd)
 
@@ -301,6 +383,9 @@ export default function (pi: ExtensionAPI) {
 			if (activeAdapters.some((a) => a.name === "dlv")) goSkillActive = true
 			if (activeAdapters.some((a) => a.name === "debugpy")) pythonSkillActive = true
 			if (activeAdapters.some((a) => a.name === "js-debug")) tsSkillActive = true
+			if (activeAdapters.some((a) => a.name === "java-debug")) javaSkillActive = true
+			if (activeAdapters.some((a) => a.name === "rdbg")) rubySkillActive = true
+			if (activeAdapters.some((a) => a.name === "php-debug-adapter")) phpSkillActive = true
 		}
 	})
 
