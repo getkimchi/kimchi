@@ -118,10 +118,45 @@ const ADAPTERS: DapAdapterConfig[] = [
 		command: "lldb-dap",
 		args: [],
 		transport: { kind: "stdio" },
-		languages: ["rust", "c", "cpp"],
-		extensions: ["rs", "c", "h", "cc", "cpp", "cxx", "hpp"],
+		// Swift reuses lldb-dap (LLDB is Apple's Swift debugger). No separate
+		// adapter needed — just add the language/extension + Package.swift marker.
+		languages: ["rust", "c", "cpp", "swift"],
+		extensions: ["rs", "c", "h", "cc", "cpp", "cxx", "hpp", "swift"],
 		launchType: "lldb",
 		installHint: "Install via your LLVM/Clang distribution or `cargo install lldb-dap`",
+	},
+	{
+		name: "java-debug",
+		command: "java-debug",
+		args: [],
+		transport: { kind: "stdio" },
+		// Kotlin compiles to JVM bytecode and debugs via the same Java Debug
+		// Server, so .kt/.kts reuse this adapter (no separate Kotlin adapter).
+		languages: ["java", "kotlin"],
+		extensions: ["java", "kt", "kts"],
+		launchType: "java",
+		installHint:
+			"Install the Java Debug Server (com.microsoft.java.debug.plugin) — see github.com/microsoft/vscode-java-debug, or `:DapInstall java-debug` via Mason",
+	},
+	{
+		name: "rdbg",
+		command: "rdbg",
+		args: [],
+		transport: { kind: "stdio" },
+		languages: ["ruby"],
+		extensions: ["rb"],
+		launchType: "ruby",
+		installHint: "rdbg ships with Ruby 3.1+ or: gem install debug",
+	},
+	{
+		name: "php-debug-adapter",
+		command: "php-debug-adapter",
+		args: [],
+		transport: { kind: "stdio" },
+		languages: ["php"],
+		extensions: ["php"],
+		launchType: "php",
+		installHint: "npm install -g php-debug-adapter",
 	},
 ]
 
@@ -135,7 +170,10 @@ const ROOT_MARKERS: Record<string, string[]> = {
 	"js-debug": ["package.json", "tsconfig.json"],
 	debugpy: ["pyproject.toml", "setup.py", "requirements.txt", "Pipfile"],
 	dlv: ["go.mod"],
-	"lldb-dap": ["Cargo.toml", "CMakeLists.txt", "Makefile"],
+	"lldb-dap": ["Cargo.toml", "CMakeLists.txt", "Makefile", "Package.swift"],
+	"java-debug": ["pom.xml", "build.gradle", "build.gradle.kts"],
+	rdbg: ["Gemfile", "Rakefile"],
+	"php-debug-adapter": ["composer.json"],
 }
 
 /**

@@ -219,6 +219,24 @@ export class DapSession {
 		await sendRequest(this.client, "setExceptionBreakpoints", { filters }, this.timeoutMs)
 	}
 
+	/** Set a variable's value at runtime. Requires a variablesReference from
+	 *  a scope or another variable (obtained via getScopes/getVariables). */
+	async setVariable(variablesReference: number, name: string, value: string): Promise<{ value: string; variablesReference?: number }> {
+		const body = await sendRequest(this.client, "setVariable", { variablesReference, name, value }, this.timeoutMs)
+		return body as { value: string; variablesReference?: number }
+	}
+
+	/** Restart the debug session. Only works if the adapter supports it
+	 *  (supportsRestartRequest capability). Resets session state. */
+	async restart(): Promise<void> {
+		if (!this.client.capabilities?.supportsRestartRequest) {
+			throw new Error("Adapter does not support restart. Use debug_terminate + debug_launch instead.")
+		}
+		await sendRequest(this.client, "restart", {}, this.timeoutMs)
+		this.client.stoppedEvent = null
+		this.client.threadId = null
+	}
+
 	// ---------------------------------------------------------------------------
 	// Execution control
 	// ---------------------------------------------------------------------------
