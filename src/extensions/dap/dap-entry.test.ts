@@ -323,6 +323,80 @@ describe("DAP extension entry point", () => {
 		})
 	})
 
+	describe("on-demand skill injection", () => {
+		it("skills return undefined before any debug tool call", async () => {
+			adapterState.active = [DLV]
+			const ctx = createCtx()
+			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
+
+			const output = renderAllPromptBlocks()
+			expect(output).toBeDefined()
+			expect(output).toContain("## Debugger (DAP)")
+			expect(output).not.toContain("### Go Debugging")
+			expect(output).not.toContain("### Python Debugging")
+		})
+
+		it("Go skill activates after a debug_ tool call when dlv is active", async () => {
+			adapterState.active = [DLV]
+			const ctx = createCtx()
+			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
+
+			// Before debug call — no skill
+			expect(renderAllPromptBlocks()).not.toContain("### Go Debugging")
+
+			// Fire a debug tool call
+			await mock.handlers.tool_call?.({ toolName: "debug_state_at" }, ctx)
+
+			// After debug call — skill is injected
+			expect(renderAllPromptBlocks()).toContain("### Go Debugging")
+		})
+
+		it("non-debug tool calls do NOT activate skills", async () => {
+			adapterState.active = [DLV]
+			const ctx = createCtx()
+			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
+
+			await mock.handlers.tool_call?.({ toolName: "bash" }, ctx)
+			await mock.handlers.tool_call?.({ toolName: "read" }, ctx)
+
+			expect(renderAllPromptBlocks()).not.toContain("### Go Debugging")
+		})
+
+		it("step_ tool calls also activate skills", async () => {
+			adapterState.active = [DLV]
+			const ctx = createCtx()
+			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
+
+			await mock.handlers.tool_call?.({ toolName: "step_over" }, ctx)
+
+			expect(renderAllPromptBlocks()).toContain("### Go Debugging")
+		})
+
+		it("flags reset on session_start", async () => {
+			adapterState.active = [DLV]
+			const ctx = createCtx()
+			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
+
+			await mock.handlers.tool_call?.({ toolName: "debug_launch" }, ctx)
+			expect(renderAllPromptBlocks()).toContain("### Go Debugging")
+
+			// Re-fire session_start — flags should reset
+			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
+			expect(renderAllPromptBlocks()).not.toContain("### Go Debugging")
+		})
+
+		it("Python skill does not activate when only dlv is active", async () => {
+			adapterState.active = [DLV]
+			const ctx = createCtx()
+			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
+
+			await mock.handlers.tool_call?.({ toolName: "debug_eval" }, ctx)
+
+			expect(renderAllPromptBlocks()).toContain("### Go Debugging")
+			expect(renderAllPromptBlocks()).not.toContain("### Python Debugging")
+		})
+	})
+
 	describe("always-available visibility", () => {
 		it("DAP tools are always visible regardless of phase", async () => {
 			adapterState.active = [JS_DEBUG]
