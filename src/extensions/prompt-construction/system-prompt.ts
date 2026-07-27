@@ -88,6 +88,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 
 	return buildPrompt({
 		mode,
+		toolNames: new Set(effectiveTools.map((tool) => tool.name)),
 		toolsSection,
 		environmentSection,
 		projectContext,
@@ -106,6 +107,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 
 interface PromptParts {
 	mode: PromptMode
+	toolNames: ReadonlySet<string>
 	toolsSection: string
 	environmentSection: string
 	projectContext: string
@@ -234,15 +236,18 @@ export const FACTUAL_ACCURACY = `- Never guess, assume, or fabricate information
  * lifecycle — their persona fixes their phase, and they never call
  * `set_phase`.
  */
-export function buildCoreGuidelinesSections(): string {
+export function buildCoreGuidelinesSections(activeToolNames?: readonly string[]): string {
+	const toolNames = activeToolNames ? new Set(activeToolNames) : undefined
 	return [
 		`## Guidelines\n\n${CORE_GUIDELINES}`,
 		`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`,
 		`## Documents\n\n${DOCUMENTS_SECTION}`,
-		OUTPUT_AND_TRUNCATION,
-		TOOL_SELECTION,
+		buildOutputAndTruncationSection(toolNames),
+		buildToolSelectionSection(toolNames),
 		CONSENT_AND_IRREVERSIBLE_ACTIONS,
-	].join("\n\n")
+	]
+		.filter(Boolean)
+		.join("\n\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -250,31 +255,82 @@ export function buildCoreGuidelinesSections(): string {
 // Phase Management, Consent & Irreversible Actions)
 // ---------------------------------------------------------------------------
 
-export const OUTPUT_AND_TRUNCATION = `## Output & Truncation
+function hasTool(toolNames: ReadonlySet<string> | undefined, name: string): boolean {
+	return toolNames === undefined || toolNames.has(name)
+}
+
+export function buildOutputAndTruncationSection(toolNames?: ReadonlySet<string>): string {
+	const lines: string[] = []
+	if (hasTool(toolNames, "bash")) {
+		lines.push(
+			"- Bash: pipe to `head`/`tail` or pass `-n`/`--tail`. Use `git log -n 20 --oneline`, `git diff --stat`, `2>&1 | tail -100` for build/test/install output, `--log-failed` for CI logs, `| head -c 5000` or `| jq` for large `curl` responses, `tree -L 2`, never `git status -uall` on large repos.",
+			"- GitHub CLI: `gh run view --log` is huge — use `--log-failed` or `| tail -N`. `gh api ... --paginate` can be massive — add `--jq`. `gh pr diff` on big PRs — `--name-only` first, then targeted reads.",
+			"- GitLab CLI: `glab ci view` is a TUI — never call from a headless harness. Use `glab ci trace` or `glab api`. `glab api .../trace` — full job logs; always `| tail -N`. `--paginate` on busy projects is huge — combine with `--jq`. `glab mr diff` on big MRs — list changed paths first with `glab api --paginate projects/:fullpath/merge_requests/<iid>/diffs --jq '.[].new_path'`, then use targeted reads.",
+		)
+	}
+	if (hasTool(toolNames, "grep")) {
+		lines.push(
+			"- Content search: paths first (`files_with_matches` / `-l`), then content. Cap broad matches at ~50 hits, start with 2 lines of context, narrow scope with `--glob`/`--type` before searching.",
+		)
+	}
+	if (hasTool(toolNames, "read")) {
+		lines.push(
+			"- File reads: never read a known-large file (lockfiles, generated, fixtures) without an offset. Search to locate, then read around the hit.",
+		)
+	}
+	if (lines.length === 0) return ""
+	return `## Output & Truncation
 
 Cap output before running a tool, not after — recovery from a flood is expensive.
 
-- Bash: pipe to \`head\`/\`tail\` or pass \`-n\`/\`--tail\`. Use \`git log -n 20 --oneline\`, \`git diff --stat\`, \`2>&1 | tail -100\` for build/test/install output, \`--log-failed\` for CI logs, \`| head -c 5000\` or \`| jq\` for large \`curl\` responses, \`tree -L 2\`, never \`git status -uall\` on large repos.
-- Content search: paths first (\`files_with_matches\` / \`-l\`), then content. Cap broad matches at ~50 hits, start with 2 lines of context, narrow scope with \`--glob\`/\`--type\` before searching.
-- File reads: never read a known-large file (lockfiles, generated, fixtures) without an offset. Search to locate, then read around the hit.
-- GitHub CLI: \`gh run view --log\` is huge — use \`--log-failed\` or \`| tail -N\`. \`gh api ... --paginate\` can be massive — add \`--jq\`. \`gh pr diff\` on big PRs — \`--name-only\` first, then targeted reads.
-- GitLab CLI: \`glab ci view\` is a TUI — never call from a headless harness. Use \`glab ci trace\` or \`glab api\`. \`glab api .../trace\` — full job logs; always \`| tail -N\`. \`--paginate\` on busy projects is huge — combine with \`--jq\`. \`glab mr diff\` on big MRs — list changed paths first with \`glab api --paginate projects/:fullpath/merge_requests/<iid>/diffs --jq '.[].new_path'\`, then use targeted reads.`
+${lines.join("\n")}`
+}
 
-export const TOOL_SELECTION = `## Tool Selection
+export function buildToolSelectionSection(toolNames?: ReadonlySet<string>): string {
+	const lines: string[] = []
+	if (hasTool(toolNames, "read")) {
+		lines.push("- Reading a file → use `read` (not `cat`, `head`, `tail`, `sed -n`).")
+	}
+	if (hasTool(toolNames, "edit")) {
+		lines.push("- Editing a file → use `edit` (not `sed -i`, `perl -i`).")
+	}
+	if (hasTool(toolNames, "write")) {
+		lines.push("- Writing a file → use `write` (not `>`, `>>`, `tee`, heredoc).")
+	}
+	if (hasTool(toolNames, "grep")) {
+		lines.push(
+			"- Searching file contents → use `grep` (respects `.gitignore`, faster).",
+			"- Don't `cat file | grep X` — use the harness's content search tool instead.",
+		)
+	}
+	if (hasTool(toolNames, "find")) {
+		lines.push(
+			"- Finding files by pattern → use `find` (respects `.gitignore`).",
+			"- Don't `find . -name X` — use the harness's filename search tool instead.",
+		)
+	}
+	if (hasTool(toolNames, "ls")) {
+		lines.push("- Listing a directory → use `ls`.")
+	}
+	if (hasTool(toolNames, "bash")) {
+		lines.push(
+			"- Use bash only for: build commands, test runners, git, package managers, shell scripting, or system administration.",
+		)
+	}
+	if (hasTool(toolNames, "mcp")) {
+		lines.push(
+			"- Before resorting to web search, web fetch, or giving up on authenticated/external data, check your Available Tools list and MCP integrations. MCP servers often provide authenticated access to Jira, Confluence, GitHub, GitLab, etc.",
+			'- Use `mcp({ search: "query" })` to discover available servers and tools.',
+			"- Prefer MCP tools over `web_fetch` for any service that requires authentication.",
+		)
+	}
+	if (lines.length === 0) return ""
+	return `## Tool Selection
 
 Prefer the right dedicated tool before falling back to bash or external fetches.
 
-- Reading a file → use \`read\` (not \`cat\`, \`head\`, \`tail\`, \`sed -n\`).
-- Editing a file → use \`edit\` (not \`sed -i\`, \`perl -i\`).
-- Writing a file → use \`write\` (not \`>\`, \`>>\`, \`tee\`, heredoc).
-- Searching file contents → use \`grep\` (respects \`.gitignore\`, faster).
-- Finding files by pattern → use \`find\` (respects \`.gitignore\`).
-- Listing a directory → use \`ls\`.
-- Don't \`cat file | grep X\` or \`find . -name X\` — use the harness's content/filename search tools instead.
-- Use bash only for: build commands, test runners, git, package managers, shell scripting, or system administration.
-- Before resorting to web search, web fetch, or giving up on authenticated/external data, check your Available Tools list and MCP integrations. MCP servers often provide authenticated access to Jira, Confluence, GitHub, GitLab, etc.
-- If you see an \`mcp\` tool in your tool list, use \`mcp({ search: "query" })\` to discover available servers and tools.
-- Prefer MCP tools over \`web_fetch\` for any service that requires authentication.`
+${lines.join("\n")}`
+}
 
 export const PHASE_MANAGEMENT_INTRO = `## Phase Management
 
@@ -294,9 +350,14 @@ const PHASE_ORDER: readonly Phase[] = ["explore", "research", "plan", "build", "
  * `set_phase` would invalidate the provider's KV cache. The model is
  * session-stable, so family resolution is also cache-stable.
  */
-export function buildPhaseManagementSection(modelId?: string, registry?: ModelRegistry): string {
+export function buildPhaseManagementSection(
+	modelId?: string,
+	registry?: ModelRegistry,
+	includeToolInstructions = true,
+): string {
 	const guidelines = PHASE_ORDER.map((phase) => resolvePhaseGuideline(phase, modelId, registry)).join("\n\n")
-	return `${PHASE_MANAGEMENT_INTRO}\n\n### Phase-specific behaviour\n\n${guidelines}`
+	const intro = includeToolInstructions ? `${PHASE_MANAGEMENT_INTRO}\n\n` : "## Phase Management\n\n"
+	return `${intro}### Phase-specific behaviour\n\n${guidelines}`
 }
 
 export const CONSENT_AND_IRREVERSIBLE_ACTIONS = `## Consent & Irreversible Actions
@@ -327,9 +388,9 @@ function buildPrompt(parts: PromptParts): string {
 	sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
 
 	// 6. Consolidated core sections: output, tool selection, phase, consent
-	sections.push(OUTPUT_AND_TRUNCATION)
-	sections.push(TOOL_SELECTION)
-	sections.push(buildPhaseManagementSection(parts.currentModelId, parts.registry))
+	sections.push(buildOutputAndTruncationSection(parts.toolNames))
+	sections.push(buildToolSelectionSection(parts.toolNames))
+	sections.push(buildPhaseManagementSection(parts.currentModelId, parts.registry, parts.toolNames.has("set_phase")))
 	sections.push(CONSENT_AND_IRREVERSIBLE_ACTIONS)
 
 	// 7. Rest: system prompt blocks, tools, skills, environment, project context

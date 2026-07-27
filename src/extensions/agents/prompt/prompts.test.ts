@@ -334,6 +334,31 @@ describe("includeCoreGuidelines", () => {
 		expect(output).not.toContain("## Phase Management")
 	})
 
+	it("includes only guidance for tools available to a restricted replace-mode agent", () => {
+		const agent: AgentConfig = {
+			name: "Test-Restricted-Core",
+			description: "Test",
+			extensions: true,
+			skills: true,
+			systemPrompt: "Inspect the project.",
+			promptMode: "replace",
+			includeCoreGuidelines: true,
+		}
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			activeToolNames: ["read", "bash"],
+		})
+
+		expect(output).toContain("Reading a file → use `read`")
+		expect(output).toContain("Use bash only for")
+		expect(output).not.toContain("Editing a file → use `edit`")
+		expect(output).not.toContain("Writing a file → use `write`")
+		expect(output).not.toContain("Searching file contents → use `grep`")
+		expect(output).not.toContain("Finding files by pattern → use `find`")
+		expect(output).not.toContain("Listing a directory → use `ls`")
+		expect(output).not.toContain("mcp({ search:")
+		expect(output).not.toContain("Content search: paths first")
+	})
+
 	it("does not include core guidelines when includeCoreGuidelines is absent (replace mode)", () => {
 		const agent: AgentConfig = {
 			name: "Test-NoCore",

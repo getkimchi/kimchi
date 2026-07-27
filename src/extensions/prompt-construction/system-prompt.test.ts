@@ -149,7 +149,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain('<tool name="Agent">')
 		})
 
-		it("does not include phase tagging instructions without the tags extension", () => {
+		it("keeps phase behaviour but omits phase tool instructions without set_phase", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -157,7 +157,9 @@ describe("buildSystemPrompt", () => {
 			})
 
 			expect(result).not.toContain("Phase Tagging for Analytics")
-			expect(result).not.toContain("You must call `set_phase`")
+			expect(result).not.toContain("Call `set_phase`")
+			expect(result).toContain("### Phase-specific behaviour")
+			expect(result).toContain("During **explore** phase")
 		})
 
 		it("handles empty tools list", () => {

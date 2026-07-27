@@ -96,7 +96,9 @@ You have been invoked to handle a specific task autonomously.
 ${envBlock}`
 
 	const toolSection = availableToolsBlock ? `\n\n${availableToolsBlock}` : ""
-	const coreGuidelines = config.includeCoreGuidelines ? `\n\n${buildCoreGuidelinesSections()}` : ""
+	const coreGuidelines = config.includeCoreGuidelines
+		? `\n\n${buildCoreGuidelinesSections(extras?.activeToolNames)}`
+		: ""
 	return `${replaceHeader}${toolSection}\n\n${config.systemPrompt}${coreGuidelines}${extrasSuffix}`
 }
 
