@@ -258,7 +258,7 @@ Cap output before running a tool, not after — recovery from a flood is expensi
 - Content search: paths first (\`files_with_matches\` / \`-l\`), then content. Cap broad matches at ~50 hits, start with 2 lines of context, narrow scope with \`--glob\`/\`--type\` before searching.
 - File reads: never read a known-large file (lockfiles, generated, fixtures) without an offset. Search to locate, then read around the hit.
 - GitHub CLI: \`gh run view --log\` is huge — use \`--log-failed\` or \`| tail -N\`. \`gh api ... --paginate\` can be massive — add \`--jq\`. \`gh pr diff\` on big PRs — \`--name-only\` first, then targeted reads.
-- GitLab CLI: \`glab ci view\` is a TUI — never call from a headless harness. Use \`glab ci trace\` or \`glab api\`. \`glab api .../trace\` — full job logs; always \`| tail -N\`. \`--paginate\` on busy projects is huge — combine with \`--jq\`. \`glab mr diff\` on big MRs — list changed paths first with \`glab api projects/:fullpath/merge_requests/123/changes --jq '.changes[].new_path'\`, then use targeted reads.`
+- GitLab CLI: \`glab ci view\` is a TUI — never call from a headless harness. Use \`glab ci trace\` or \`glab api\`. \`glab api .../trace\` — full job logs; always \`| tail -N\`. \`--paginate\` on busy projects is huge — combine with \`--jq\`. \`glab mr diff\` on big MRs — list changed paths first with \`glab api --paginate projects/:fullpath/merge_requests/<iid>/diffs --jq '.[].new_path'\`, then use targeted reads.`
 
 export const TOOL_SELECTION = `## Tool Selection
 

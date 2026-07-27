@@ -116,7 +116,10 @@ describe("buildSystemPrompt", () => {
 		})
 
 		expect(result).toContain("`glab mr diff` on big MRs")
-		expect(result).toContain("'.changes[].new_path'")
+		expect(result).toContain("merge_requests/<iid>/diffs")
+		expect(result).toContain("--paginate")
+		expect(result).toContain("'.[].new_path'")
+		expect(result).not.toContain("merge_requests/123/changes")
 	})
 
 	describe("orchestrator mode", () => {
