@@ -40,5 +40,13 @@ describe("Grader agent registration", () => {
 		expect(cfg.systemPrompt).toContain("tools")
 		expect(cfg.systemPrompt).toContain("JSON")
 		expect(cfg.systemPrompt).toContain("grade")
+
+		// Must prohibit implementation work — no installing deps, no writing files
+		expect(cfg.systemPrompt).toContain("inspection only, never implementation")
+		expect(cfg.systemPrompt).toContain("MUST NOT")
+		expect(cfg.systemPrompt).toContain("Install, download, or build dependencies")
+		expect(cfg.systemPrompt).toContain("Write or create files")
+		expect(cfg.systemPrompt).toContain("bash redirects or heredocs")
+		expect(cfg.systemPrompt).toContain("Author new test scripts")
 	})
 })
