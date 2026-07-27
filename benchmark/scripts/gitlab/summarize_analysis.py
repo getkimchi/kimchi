@@ -23,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib import error, request
+from uuid import uuid4
 
 from extract_analysis_text import extract_text
 
@@ -331,6 +332,57 @@ def _discord_post(url: str, bot_token: str, payload: dict[str, Any]) -> dict[str
         return None
 
 
+def _discord_post_multipart(
+    url: str,
+    bot_token: str,
+    payload: dict[str, Any],
+    attachments: list[Path],
+) -> dict[str, Any] | None:
+    """POST multipart/form-data to Discord API with file attachments.
+
+    ``payload`` is sent as the ``payload_json`` form field; each file in
+    ``attachments`` is uploaded as ``files[n]``.  Discord supports up to 10
+    attachments per message.
+    """
+    boundary = f"----kimchi{uuid4().hex}"
+    body_parts: list[bytes] = []
+
+    # payload_json field
+    payload_json = json.dumps(payload).encode()
+    body_parts.append(f"--{boundary}\r\n".encode())
+    body_parts.append(b'Content-Disposition: form-data; name="payload_json"\r\n')
+    body_parts.append(b"Content-Type: application/json\r\n\r\n")
+    body_parts.append(payload_json + b"\r\n")
+
+    # file fields
+    for idx, path in enumerate(attachments):
+        filename = path.name
+        file_data = path.read_bytes()
+        body_parts.append(f"--{boundary}\r\n".encode())
+        body_parts.append(
+            f'Content-Disposition: form-data; name="files[{idx}]"; filename="{filename}"\r\n'.encode()
+        )
+        body_parts.append(b"Content-Type: text/html\r\n\r\n")
+        body_parts.append(file_data + b"\r\n")
+
+    body_parts.append(f"--{boundary}--\r\n".encode())
+    body = b"".join(body_parts)
+
+    headers = {
+        "Authorization": f"Bot {bot_token}",
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "User-Agent": "curl/8.7.1",
+    }
+    try:
+        req = request.Request(url, data=body, headers=headers, method="POST")
+        with request.urlopen(req, timeout=60) as response:
+            resp_body = response.read().decode()
+            return json.loads(resp_body) if resp_body else {}
+    except (error.URLError, error.HTTPError, OSError, json.JSONDecodeError) as exc:
+        print(f"Discord multipart API call to {url} failed: {exc}", file=sys.stderr, flush=True)
+        return None
+
+
 def _post_long_message(url: str, bot_token: str, content: str) -> bool:
     """Post a message that may exceed Discord's 2000-char limit by splitting into multiple messages."""
     chunks = []
@@ -364,11 +416,23 @@ def _post_long_message(url: str, bot_token: str, content: str) -> bool:
     return True
 
 
-def post_to_discord(bot_token: str, channel_id: str, thread_name: str, content_blocks: list[str]) -> bool:
+def post_to_discord(
+    bot_token: str,
+    channel_id: str,
+    thread_name: str,
+    content_blocks: list[str],
+    attachments: list[Path] | None = None,
+) -> bool:
     """Create a thread in the channel and post each content block in order.
 
     Uses the Discord Bot API (v10). Creates a standalone thread (not attached to a message)
     to avoid requiring READ_MESSAGE_HISTORY permission.
+
+    If ``attachments`` is provided, the files are uploaded as a single message
+    in the thread after all content blocks have been posted.  Discord allows up
+    to 10 attachments per message; extra files are split across additional
+    messages.
+
     Returns True on success, False on failure.
     """
     # Step 1: Create a thread (type 11 = PUBLIC_THREAD, no message reference needed)
@@ -379,7 +443,12 @@ def post_to_discord(bot_token: str, channel_id: str, thread_name: str, content_b
         print("Discord thread creation failed; posting content as channel messages", file=sys.stderr, flush=True)
         # Fall back: post all blocks as regular messages in the channel (split if needed)
         messages_url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
-        return _post_long_message(messages_url, bot_token, "\n\n".join(content_blocks))
+        if not _post_long_message(messages_url, bot_token, "\n\n".join(content_blocks)):
+            return False
+        # Post attachments to the channel as well
+        if attachments:
+            _post_attachments_to_channel(messages_url, bot_token, attachments)
+        return True
 
     thread_channel_id = str(thread_resp.get("id", ""))
     if not thread_channel_id:
@@ -393,8 +462,34 @@ def post_to_discord(bot_token: str, channel_id: str, thread_name: str, content_b
         print(f"Discord: posting block ({len(block)} chars) to thread {thread_channel_id}", flush=True)
         if not _post_long_message(thread_messages_url, bot_token, block):
             return False
-    print("Discord: all blocks posted successfully", flush=True)
+
+    # Step 3: Post file attachments if any
+    if attachments and not _post_attachments(thread_messages_url, bot_token, attachments):
+        return False
+
+    print("Discord: all blocks and attachments posted successfully", flush=True)
     return True
+
+
+def _post_attachments(url: str, bot_token: str, attachments: list[Path]) -> bool:
+    """Upload file attachments to a Discord channel, batching at 10 per message."""
+    for i in range(0, len(attachments), 10):
+        batch = attachments[i : i + 10]
+        labels = ", ".join(p.name for p in batch)
+        print(f"Discord: uploading {len(batch)} attachment(s) ({labels})", flush=True)
+        payload: dict[str, Any] = {"content": "\U0001F4C1 Attached analysis reports:"}
+        resp = _discord_post_multipart(url, bot_token, payload, batch)
+        if resp is None:
+            return False
+    return True
+
+
+def _post_attachments_to_channel(channel_url: str, bot_token: str, attachments: list[Path]) -> None:
+    """Best-effort attachment upload when thread creation fails."""
+    for i in range(0, len(attachments), 10):
+        batch = attachments[i : i + 10]
+        payload: dict[str, Any] = {"content": "\U0001F4C1 Attached analysis reports:"}
+        _discord_post_multipart(channel_url, bot_token, payload, batch)
 
 
 # --- Main ---
@@ -650,7 +745,23 @@ def main() -> int:
             if timeout_summary:
                 content_blocks.append(f"⏱️ Timeout Breakdown — {group_name.capitalize()}")
                 content_blocks.append(timeout_summary)
-            if not post_to_discord(bot_token, channel_id, thread_name, content_blocks):
+            # Collect HTML analysis files to attach to the Discord thread.
+            html_attachments: list[Path] = []
+            for run_meta in group_runs:
+                analysis_path_str = run_meta.get("_analysis_local_path")
+                if analysis_path_str:
+                    analysis_path = Path(analysis_path_str)
+                    if analysis_path.is_file():
+                        html_attachments.append(analysis_path)
+                timeout_path_str = run_meta.get("_timeout_analysis_local_path")
+                if timeout_path_str:
+                    timeout_path = Path(timeout_path_str)
+                    if timeout_path.is_file():
+                        html_attachments.append(timeout_path)
+            if not post_to_discord(
+                bot_token, channel_id, thread_name, content_blocks,
+                attachments=html_attachments or None,
+            ):
                 print(f"Failed to post {group_name} summary to Discord", file=sys.stderr, flush=True)
         else:
             print(f"Discord not configured; skipping Discord post for {group_name} group", flush=True)
