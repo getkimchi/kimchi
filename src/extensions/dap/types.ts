@@ -220,7 +220,13 @@ export interface DapOutputLine {
 }
 
 /** Per-session DAP client state, mirroring LSP's `LspClient`. Keyed by cwd in a
- *  DapClientRegistry's `clients` Map (the same scoping strategy LSP uses). */
+ *  DapClientRegistry's `clients` Map (the same scoping strategy LSP uses).
+ *
+ *  js-debug nested sessions: when the parent adapter sends a `startDebugging`
+ *  reverse-request, the client opens a CHILD connection to the same TCP server
+ *  and routes all subsequent debug requests to it. The child's events
+ *  (stopped/terminated/output) update this (parent) client's state so the
+ *  session layer — which only ever reads from the parent — sees them. */
 export interface DapClient {
 	name: string
 	cwd: string
@@ -246,6 +252,19 @@ export interface DapClient {
 	/** Resolves when the `initialized` event arrives (after launch). */
 	initializedResolve?: () => void
 	initializedPromise: Promise<void>
+	/** For TCP transports (js-debug), the host:port of the parent adapter's
+	 *  listening socket. Stored so a child connection can be opened on
+	 *  `startDebugging`. Undefined for stdio adapters (no nested session). */
+	parentServer?: { host: string; port: number }
+	/** The child client created on `startDebugging`. When set, `sendRequest`
+	 *  transparently routes to it. The child reader still updates THIS (parent)
+	 *  client's stoppedEvent/outputLines/etc. */
+	childClient?: DapClient
+	/** Resolves once the child client has completed its initialize + launch +
+	 *  configurationDone handshake (or failed, in which case `childClient`
+	 *  remains unset). `sendRequest` awaits this before routing to the child so
+	 *  the child is fully ready before any debug request is sent. */
+	childClientReady?: Promise<void>
 }
 
 /** How the DAP client talks to the adapter subprocess.
