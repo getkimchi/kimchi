@@ -185,6 +185,38 @@ describe("DapSession", () => {
 			expect(captured.map((r) => r.command)).toEqual(["launch"]) // no configurationDone
 		})
 
+		it("completeLaunch with exceptionFilters sends setExceptionBreakpoints before configurationDone", async () => {
+			const client = createMockClient({ supportsConfigurationDoneRequest: true } as DapCapabilities)
+			const session = makeSession(client)
+			queueResponse("launch", {})
+			queueResponse("setExceptionBreakpoints", {})
+			queueResponse("configurationDone", {})
+
+			await session.launch({ program: "/tmp/app.py", cwd: CWD })
+			await session.completeLaunch(["raised", "uncaught"])
+
+			const commands = captured.map((r) => r.command)
+			expect(commands).toContain("setExceptionBreakpoints")
+			expect(commands).toContain("configurationDone")
+			// setExceptionBreakpoints must come before configurationDone
+			const sbIdx = commands.indexOf("setExceptionBreakpoints")
+			const cdIdx = commands.indexOf("configurationDone")
+			expect(sbIdx).toBeLessThan(cdIdx)
+		})
+
+		it("completeLaunch with exceptionFilters handles adapter rejection gracefully", async () => {
+			const client = createMockClient({ supportsConfigurationDoneRequest: true } as DapCapabilities)
+			const session = makeSession(client)
+			queueResponse("launch", {})
+			// setExceptionBreakpoints will fail (no queued response → throws)
+			queueResponse("configurationDone", {})
+
+			await session.launch({ program: "/tmp/app.py", cwd: CWD })
+			// Should not throw despite setExceptionBreakpoints failure
+			await session.completeLaunch(["raised"])
+			expect(captured.map((r) => r.command)).toContain("configurationDone")
+		})
+
 		it("completeLaunch is idempotent", async () => {
 			const client = createMockClient({ supportsConfigurationDoneRequest: true } as DapCapabilities)
 			const session = makeSession(client)
