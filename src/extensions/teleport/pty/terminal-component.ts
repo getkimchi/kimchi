@@ -249,6 +249,9 @@ export class TerminalComponent implements Component {
 		let prevStyle = ""
 		for (let col = 0; col < width; col++) {
 			const cell = this.terminal.getCell(row, col)
+			// width 0 = continuation cell of a wide char (CJK/emoji);
+			// skip emitting it — the lead cell already wrote the codepoint.
+			if (cell.width === 0) continue
 			const style = cellStyle(cell)
 			if (style !== prevStyle) {
 				text += `\x1b[0m${style}`
