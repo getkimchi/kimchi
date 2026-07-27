@@ -414,8 +414,14 @@ async function startMessageReader(client: DapClient, stateTarget?: DapClient): P
 						// Unknown events are intentionally ignored.
 					}
 				} else if (message.type === "request") {
-					if (message.command === "startDebugging" && client.parentServer) {
-						handleStartDebuggingRequest(client, message).catch(() => {})
+					if (message.command === "startDebugging") {
+						if (client.parentServer) {
+							handleStartDebuggingRequest(client, message).catch(() => {})
+						} else {
+							// stdio adapter — no parent TCP server to connect a child to.
+							// Reply success:true so the adapter doesn't hang waiting.
+							sendResponse(client, message.seq, true, undefined, undefined).catch(() => {})
+						}
 					} else {
 						// Server-initiated requests (e.g. runInTerminal) are unsupported.
 						// Reply success:false so the adapter falls back to internalConsole.
