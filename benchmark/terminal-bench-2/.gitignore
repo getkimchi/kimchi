@@ -1,6 +1,7 @@
 .venv/
 .harbor/
 .ruff_cache/
+.tb-workflow-build/
 jobs/
 __pycache__/
 *.egg-info/
