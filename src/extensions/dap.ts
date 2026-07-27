@@ -185,6 +185,12 @@ export default function (pi: ExtensionAPI) {
 	const clientRegistry = new DapClientRegistry()
 	const sessionRegistry = new DapSessionRegistry()
 
+	// On-demand skill injection: language skills are NOT injected until the
+	// agent calls a debug tool for the first time. This saves ~1K tokens per
+	// API call when the agent is not debugging.
+	let goSkillActive = false
+	let pythonSkillActive = false
+
 	createSystemPromptBlocks(pi, "dap").register({
 		id: "dap-tools",
 		render: () => (activeAdapters.length > 0 ? DAP_SYSTEM_PROMPT : undefined),
@@ -195,11 +201,11 @@ export default function (pi: ExtensionAPI) {
 	// and adapter-specific gotchas that the general DAP_SYSTEM_PROMPT doesn't cover.
 	createSystemPromptBlocks(pi, "dap").register({
 		id: "dap-go-skill",
-		render: () => (activeAdapters.some((a) => a.name === "dlv") ? DAP_GO_SKILL : undefined),
+		render: () => (goSkillActive ? DAP_GO_SKILL : undefined),
 	})
 	createSystemPromptBlocks(pi, "dap").register({
 		id: "dap-python-skill",
-		render: () => (activeAdapters.some((a) => a.name === "debugpy") ? DAP_PYTHON_SKILL : undefined),
+		render: () => (pythonSkillActive ? DAP_PYTHON_SKILL : undefined),
 	})
 
 	// ── Session start: detect adapters, set status footer, register tools ───────
@@ -208,6 +214,8 @@ export default function (pi: ExtensionAPI) {
 		cwd = ctx.cwd
 		ui = ctx.ui
 		warned = false
+		goSkillActive = false
+		pythonSkillActive = false
 		activeAdapters = detectAdapters(cwd)
 		missingAdapters = detectMissingAdapters(cwd)
 
@@ -250,6 +258,15 @@ export default function (pi: ExtensionAPI) {
 		const lines = missingAdapters.map((a) => `${a.name} — install with: ${a.installHint ?? a.command}`)
 		ui.notify(`DAP unavailable: debug adapter(s) not installed for this project.\n${lines.join("\n")}`, "warning")
 		warned = true
+	})
+
+	// ── On-demand skill injection: activate language skills on first debug tool call ─
+	pi.on("tool_call", (event) => {
+		const name = (event as { toolName?: string }).toolName ?? ""
+		if (name.startsWith("debug_") || name.startsWith("step_")) {
+			if (activeAdapters.some((a) => a.name === "dlv")) goSkillActive = true
+			if (activeAdapters.some((a) => a.name === "debugpy")) pythonSkillActive = true
+		}
 	})
 
 	// ── Helpers ─────────────────────────────────────────────────────────────────
