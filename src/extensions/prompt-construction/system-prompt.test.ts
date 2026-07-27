@@ -277,7 +277,6 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				currentModelId: "kimi-k2.7",
-				currentPhase: "plan",
 				registry,
 				roles: DEFAULT_MODEL_ROLES,
 				mode: "orchestrator",
@@ -356,7 +355,6 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
-				currentPhase: "plan",
 				registry,
 				roles: {
 					...DEFAULT_MODEL_ROLES,
@@ -420,7 +418,6 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
-				currentPhase: "build",
 				registry,
 				mode: "subagent",
 			})
@@ -547,7 +544,6 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
-				currentPhase: "build",
 				registry,
 				mode: "single",
 			})
@@ -561,7 +557,6 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				currentModelId: "claude-opus-4-6-20250514",
-				currentPhase: "research",
 				registry,
 				mode: "single",
 			})
@@ -579,13 +574,17 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
-				currentPhase: "research",
 				registry,
 				mode: "single",
 			})
 			expect(result).toContain("## Phase Management")
 			expect(result).toContain("During **research** phase")
 			expect(result).toContain("version you are assuming")
+			// Family-specific override (MiniMax) must reach the prompt, not just
+			// the default research text. This is the regression the
+			// consolidation commit ababd67 introduced by dumping DEFAULT_PHASE_GUIDELINES
+			// without resolving through the registry.
+			expect(result).toContain("hallucinating APIs")
 		})
 
 		it("includes build-phase default nudge for an OSS model in build phase", () => {
@@ -593,7 +592,6 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
-				currentPhase: "build",
 				registry,
 				mode: "single",
 			})
@@ -601,6 +599,10 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("During **build** phase")
 			expect(result).toContain("uncertain about a library API")
 			expect(result).toContain("assume your knowledge may be stale")
+			// Family-specific build override (MiniMax M2 family):
+			// "STAY IN SCOPE" targets M2's over-reaching failure mode.
+			expect(result).toContain("STAY IN SCOPE")
+			expect(result).toContain("do NOT hallucinate APIs")
 		})
 
 		it("makes subagent spawning opt-in and defaults to the current model", () => {

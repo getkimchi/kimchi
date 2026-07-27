@@ -9,7 +9,7 @@
 
 import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent"
 import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
-import { DEFAULT_PHASE_GUIDELINES } from "../orchestration/model-registry/guidelines/default-phase-guidelines.js"
+import { resolvePhaseGuideline } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 import type { Phase } from "../orchestration/model-registry/types.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
@@ -48,10 +48,6 @@ export interface SystemPromptBuildOptions {
 	contextFiles?: readonly ContextFile[]
 	skills?: readonly Skill[]
 	currentModelId?: string
-	/** @deprecated Phase guidelines are now part of the consolidated ## Phase Management
-	 *  section. This field is accepted for backward compatibility but is no longer used
-	 *  when assembling the orchestrator prompt. */
-	currentPhase?: Phase
 	registry?: ModelRegistry
 	mode: PromptMode
 	/** Role-based model assignments for orchestrator mode. */
@@ -99,6 +95,8 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		orchestrationSection,
 		systemPromptBlocks: blocks.map((block) => block.content).join("\n\n"),
 		suppressed,
+		currentModelId,
+		registry,
 	})
 }
 
@@ -115,6 +113,8 @@ interface PromptParts {
 	orchestrationSection: string
 	systemPromptBlocks: string
 	suppressed: ReadonlySet<SuppressibleSection>
+	currentModelId?: string
+	registry?: ModelRegistry
 }
 
 const BASE_INSTRUCTIONS =
@@ -223,14 +223,25 @@ export const FACTUAL_ACCURACY = `- Never guess, assume, or fabricate information
 - Distinguish what you found from what you assume. If you must reason about something uncertain, label it explicitly as an assumption and ask the user to confirm before acting on it.`
 
 /**
- * Combine the three shared guideline sections into a single string,
- * formatted for injection into a replace-mode subagent system prompt.
+ * Combine the shared guideline sections into a single string, formatted
+ * for injection into a replace-mode subagent system prompt.
+ *
+ * Includes the consolidated `## Tool Selection`, `## Output & Truncation`,
+ * and `## Consent & Irreversible Actions` sections so replace-mode
+ * subagents (e.g. General-Purpose) receive the same tool-substitution,
+ * output-capping, and consent rules as the main thread. `## Phase
+ * Management` is deliberately omitted: subagents do not manage phase
+ * lifecycle — their persona fixes their phase, and they never call
+ * `set_phase`.
  */
 export function buildCoreGuidelinesSections(): string {
 	return [
 		`## Guidelines\n\n${CORE_GUIDELINES}`,
 		`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`,
 		`## Documents\n\n${DOCUMENTS_SECTION}`,
+		OUTPUT_AND_TRUNCATION,
+		TOOL_SELECTION,
+		CONSENT_AND_IRREVERSIBLE_ACTIONS,
 	].join("\n\n")
 }
 
@@ -259,20 +270,34 @@ Prefer the right dedicated tool before falling back to bash or external fetches.
 - Searching file contents → use \`grep\` (respects \`.gitignore\`, faster).
 - Finding files by pattern → use \`find\` (respects \`.gitignore\`).
 - Listing a directory → use \`ls\`.
+- Don't \`cat file | grep X\` or \`find . -name X\` — use the harness's content/filename search tools instead.
 - Use bash only for: build commands, test runners, git, package managers, shell scripting, or system administration.
 - Before resorting to web search, web fetch, or giving up on authenticated/external data, check your Available Tools list and MCP integrations. MCP servers often provide authenticated access to Jira, Confluence, GitHub, GitLab, etc.
 - If you see an \`mcp\` tool in your tool list, use \`mcp({ search: "query" })\` to discover available servers and tools.
 - Prefer MCP tools over \`web_fetch\` for any service that requires authentication.`
 
-export const PHASE_MANAGEMENT = `## Phase Management
+export const PHASE_MANAGEMENT_INTRO = `## Phase Management
 
 The session starts in \`explore\` phase by default. Call \`set_phase\` when the work type changes — pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\`. Only one phase is active at a time; the most recent call wins. Subagents set their phase automatically from their persona, so this tool is for tagging the main thread's work.
 
-When the orchestrator decides to perform a phase itself (not delegate), include the matching \`thinking\` parameter from the Orchestration **Thinking levels** table. Leave \`thinking\` unset when only tagging coordination work or when delegating the phase to an Agent.
+When the orchestrator decides to perform a phase itself (not delegate), include the matching \`thinking\` parameter from the Orchestration **Thinking levels** table. Leave \`thinking\` unset when only tagging coordination work or when delegating the phase to an Agent.`
 
-### Phase-specific behaviour
+const PHASE_ORDER: readonly Phase[] = ["explore", "research", "plan", "build", "review"]
 
-${Object.values(DEFAULT_PHASE_GUIDELINES).join("\n\n")}`
+/**
+ * Build the consolidated ## Phase Management section, resolving each phase's
+ * guideline through the model registry so family-specific overrides (e.g.
+ * MiniMax M2's "STAY IN SCOPE" / "do NOT hallucinate APIs") reach the prompt.
+ *
+ * All phases are embedded (not just the active one) to keep the prompt static
+ * across phase transitions — see Finding 6 (won't-fix): swapping content on
+ * `set_phase` would invalidate the provider's KV cache. The model is
+ * session-stable, so family resolution is also cache-stable.
+ */
+export function buildPhaseManagementSection(modelId?: string, registry?: ModelRegistry): string {
+	const guidelines = PHASE_ORDER.map((phase) => resolvePhaseGuideline(phase, modelId, registry)).join("\n\n")
+	return `${PHASE_MANAGEMENT_INTRO}\n\n### Phase-specific behaviour\n\n${guidelines}`
+}
 
 export const CONSENT_AND_IRREVERSIBLE_ACTIONS = `## Consent & Irreversible Actions
 
@@ -304,7 +329,7 @@ function buildPrompt(parts: PromptParts): string {
 	// 6. Consolidated core sections: output, tool selection, phase, consent
 	sections.push(OUTPUT_AND_TRUNCATION)
 	sections.push(TOOL_SELECTION)
-	sections.push(PHASE_MANAGEMENT)
+	sections.push(buildPhaseManagementSection(parts.currentModelId, parts.registry))
 	sections.push(CONSENT_AND_IRREVERSIBLE_ACTIONS)
 
 	// 7. Rest: system prompt blocks, tools, skills, environment, project context

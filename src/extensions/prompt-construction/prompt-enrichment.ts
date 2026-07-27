@@ -71,7 +71,6 @@ import {
 	validateModelRoles,
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
-import { getCurrentPhase } from "../tags.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import {
 	buildSystemPrompt,
@@ -535,7 +534,6 @@ export default function (skillPaths: string[]) {
 				contextFiles: cachedContextFiles,
 				skills: cachedSkills,
 				currentModelId: mode === "orchestrator" ? getOrchestratorModelId(sessionId) : ctx.model?.id,
-				currentPhase: getCurrentPhase(sessionId),
 				registry: registry,
 				mode,
 				roles,

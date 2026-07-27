@@ -325,6 +325,13 @@ describe("includeCoreGuidelines", () => {
 		expect(output).toContain("Be concise in your responses")
 		expect(output).toContain("Never guess, assume, or fabricate")
 		expect(output).toContain("Documents directory")
+		// Consolidated sections that subagents need: tool substitution,
+		// output capping, and consent. Phase Management is deliberately
+		// omitted — subagents do not manage phase lifecycle.
+		expect(output).toContain("## Tool Selection")
+		expect(output).toContain("## Output & Truncation")
+		expect(output).toContain("## Consent & Irreversible Actions")
+		expect(output).not.toContain("## Phase Management")
 	})
 
 	it("does not include core guidelines when includeCoreGuidelines is absent (replace mode)", () => {
@@ -339,6 +346,9 @@ describe("includeCoreGuidelines", () => {
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
 		expect(output).not.toContain("Be concise in your responses")
 		expect(output).not.toContain("Never guess, assume, or fabricate")
+		expect(output).not.toContain("## Tool Selection")
+		expect(output).not.toContain("## Output & Truncation")
+		expect(output).not.toContain("## Consent & Irreversible Actions")
 	})
 
 	it("does not include core guidelines in append mode even if flag is true", () => {
