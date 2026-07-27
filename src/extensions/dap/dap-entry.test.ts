@@ -238,7 +238,7 @@ describe("DAP extension entry point", () => {
 			expect(ctx.ui?.setStatus).toHaveBeenCalledWith("dap", undefined)
 		})
 
-		it("registers all 14 DAP tools (10 Layer 1 + 4 Layer 2) on session_start", async () => {
+		it("registers all 16 DAP tools (12 Layer 1 + 4 Layer 2) on session_start", async () => {
 			adapterState.active = [JS_DEBUG]
 			const ctx = createCtx()
 			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
@@ -251,7 +251,9 @@ describe("DAP extension entry point", () => {
 					"debug_launch",
 					"debug_last_error",
 					"debug_locals",
+					"debug_restart",
 					"debug_set_breakpoint",
+					"debug_set_variable",
 					"debug_state_at",
 					"debug_terminate",
 					"debug_trace_calls",

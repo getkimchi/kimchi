@@ -221,7 +221,11 @@ export class DapSession {
 
 	/** Set a variable's value at runtime. Requires a variablesReference from
 	 *  a scope or another variable (obtained via getScopes/getVariables). */
-	async setVariable(variablesReference: number, name: string, value: string): Promise<{ value: string; variablesReference?: number }> {
+	async setVariable(
+		variablesReference: number,
+		name: string,
+		value: string,
+	): Promise<{ value: string; variablesReference?: number }> {
 		const body = await sendRequest(this.client, "setVariable", { variablesReference, name, value }, this.timeoutMs)
 		return body as { value: string; variablesReference?: number }
 	}
