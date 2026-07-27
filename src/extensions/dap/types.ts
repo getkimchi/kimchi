@@ -220,7 +220,7 @@ export interface DapOutputLine {
 }
 
 /** Per-session DAP client state, mirroring LSP's `LspClient`. Keyed by cwd in a
- *  module-level `clients` Map (the same scoping strategy LSP uses). */
+ *  DapClientRegistry's `clients` Map (the same scoping strategy LSP uses). */
 export interface DapClient {
 	name: string
 	cwd: string

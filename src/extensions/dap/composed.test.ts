@@ -53,6 +53,8 @@ interface StubSession extends DapSession {
 	terminate: ReturnType<typeof vi.fn>
 	launch: ReturnType<typeof vi.fn>
 	completeLaunch: ReturnType<typeof vi.fn>
+	awaitLaunch: ReturnType<typeof vi.fn>
+	setExceptionBreakpoints: ReturnType<typeof vi.fn>
 	isLaunched: boolean
 	isTerminated: boolean
 	threadId: number | null
@@ -88,6 +90,8 @@ function createStubSession(id = "sess-aaa-bbb-ccc"): StubSession {
 		terminate: vi.fn().mockResolvedValue(undefined),
 		launch: vi.fn().mockResolvedValue(undefined),
 		completeLaunch: vi.fn().mockResolvedValue(undefined),
+		awaitLaunch: vi.fn().mockResolvedValue(undefined),
+		setExceptionBreakpoints: vi.fn().mockResolvedValue(undefined),
 		isLaunched: true,
 		isTerminated: false,
 		threadId: 1,

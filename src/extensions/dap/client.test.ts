@@ -17,7 +17,7 @@ import path from "node:path"
 import { Readable } from "node:stream"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import type { BunProcess } from "../lsp/types.js"
-import { getAllClients, getOrCreateClient, sendRequest, shutdownAll } from "./client.js"
+import { DapClientRegistry, sendRequest } from "./client.js"
 import type { DapAdapterConfig } from "./types.js"
 
 // =============================================================================
@@ -159,6 +159,7 @@ describe("DAP client (in-memory fake adapter)", () => {
 	// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
 	let originalBun: any
 	let fake: FakeProc
+	let registry: DapClientRegistry
 
 	beforeAll(() => {
 		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
@@ -171,29 +172,30 @@ describe("DAP client (in-memory fake adapter)", () => {
 
 	beforeEach(() => {
 		fake = createFakeProc()
+		registry = new DapClientRegistry()
 		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
 		;(globalThis as any).Bun = {
 			spawn: () => fake.proc,
 		}
 	})
 	afterEach(() => {
-		shutdownAll()
+		registry.shutdownAll()
 	})
 
 	describe("message framing and request/response correlation", () => {
 		it("completes the initialize handshake and stores capabilities", async () => {
-			const clientPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+			const clientPromise = registry.getOrCreate(FAKE_CONFIG, CWD)
 			await answerInitialize(fake)
 			const client = await clientPromise
 
 			expect(client.capabilities).not.toBeNull()
 			expect(client.capabilities?.supportsTerminateRequest).toBe(true)
-			expect(getAllClients()).toHaveLength(1)
-			expect(getAllClients()[0]).toBe(client)
+			expect(registry.getAll()).toHaveLength(1)
+			expect(registry.getAll()[0]).toBe(client)
 		})
 
 		it("correlates a response to its request by request_seq", async () => {
-			const clientPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+			const clientPromise = registry.getOrCreate(FAKE_CONFIG, CWD)
 			await answerInitialize(fake)
 			const client = await clientPromise
 
@@ -217,7 +219,7 @@ describe("DAP client (in-memory fake adapter)", () => {
 		})
 
 		it("rejects when the adapter returns success:false with a message", async () => {
-			const clientPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+			const clientPromise = registry.getOrCreate(FAKE_CONFIG, CWD)
 			await answerInitialize(fake)
 			const client = await clientPromise
 
@@ -239,7 +241,7 @@ describe("DAP client (in-memory fake adapter)", () => {
 
 	describe("timeout", () => {
 		it("sendRequest times out after the configured deadline and clears the pending slot", async () => {
-			const clientPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+			const clientPromise = registry.getOrCreate(FAKE_CONFIG, CWD)
 			await answerInitialize(fake)
 			const client = await clientPromise
 
@@ -250,7 +252,7 @@ describe("DAP client (in-memory fake adapter)", () => {
 
 	describe("event pump", () => {
 		it("captures stopped events, sets threadId, and resolves stopped waiters", async () => {
-			const clientPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+			const clientPromise = registry.getOrCreate(FAKE_CONFIG, CWD)
 			await answerInitialize(fake)
 			const client = await clientPromise
 
@@ -281,7 +283,7 @@ describe("DAP client (in-memory fake adapter)", () => {
 		})
 
 		it("captures terminated events and sets terminated=true, resolves waiters", async () => {
-			const clientPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+			const clientPromise = registry.getOrCreate(FAKE_CONFIG, CWD)
 			await answerInitialize(fake)
 			const client = await clientPromise
 
@@ -303,7 +305,7 @@ describe("DAP client (in-memory fake adapter)", () => {
 		})
 
 		it("captures output events by category and caps the buffer at 1000 lines", async () => {
-			const clientPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+			const clientPromise = registry.getOrCreate(FAKE_CONFIG, CWD)
 			await answerInitialize(fake)
 			const client = await clientPromise
 
@@ -330,7 +332,7 @@ describe("DAP client (in-memory fake adapter)", () => {
 		})
 
 		it("replies success:false to server-initiated requests (e.g. runInTerminal)", async () => {
-			const clientPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+			const clientPromise = registry.getOrCreate(FAKE_CONFIG, CWD)
 			await answerInitialize(fake)
 			const client = await clientPromise
 
@@ -357,7 +359,7 @@ describe("DAP client (in-memory fake adapter)", () => {
 
 	describe("shutdownAll", () => {
 		it("rejects pending requests and kills the subprocess", async () => {
-			const clientPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+			const clientPromise = registry.getOrCreate(FAKE_CONFIG, CWD)
 			await answerInitialize(fake)
 			const client = await clientPromise
 
@@ -367,11 +369,11 @@ describe("DAP client (in-memory fake adapter)", () => {
 			await Promise.resolve()
 			expect(client.pendingRequests.size).toBe(1)
 
-			shutdownAll()
+			registry.shutdownAll()
 
 			await expect(pending).rejects.toThrow(/DAP shutdown/)
 			expect(fake.isKilled()).toBe(true)
-			expect(getAllClients()).toHaveLength(0)
+			expect(registry.getAll()).toHaveLength(0)
 			expect(client.terminated).toBe(true)
 		})
 	})
@@ -463,12 +465,14 @@ describe("DAP client shutdown kills real subprocesses (no leaks)", () => {
 	// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
 	let originalBun: any
 	let tmpScript: string
+	let registry: DapClientRegistry
 
 	beforeAll(() => {
 		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
 		originalBun = (globalThis as any).Bun
 		tmpScript = path.join(os.tmpdir(), `dap-echo-${process.pid}-${Date.now()}.js`)
 		fs.writeFileSync(tmpScript, ECHO_ADAPTER_SCRIPT)
+		registry = new DapClientRegistry()
 		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
 		;(globalThis as any).Bun = {
 			spawn: (args: string[], opts: { cwd: string }) => {
@@ -484,7 +488,7 @@ describe("DAP client shutdown kills real subprocesses (no leaks)", () => {
 		// Restore so other test files see the original environment.
 		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
 		;(globalThis as any).Bun = originalBun
-		shutdownAll()
+		registry.shutdownAll()
 
 		// The "process-count assertion": every real child spawned across this
 		// describe block must be dead — no leaked subprocesses.
@@ -512,9 +516,9 @@ describe("DAP client shutdown kills real subprocesses (no leaks)", () => {
 			extensions: [".ts"],
 			launchType: "node",
 		}
-		const client = await getOrCreateClient(config, os.tmpdir())
+		const client = await registry.getOrCreate(config, os.tmpdir())
 		expect(client.capabilities?.supportsTerminateRequest).toBe(true)
-		expect(getAllClients()).toHaveLength(1)
+		expect(registry.getAll()).toHaveLength(1)
 
 		// Capture the child pid before shutdown.
 		const child = (client.proc as unknown as { child: ChildProcess }).child
@@ -524,12 +528,12 @@ describe("DAP client shutdown kills real subprocesses (no leaks)", () => {
 		// Process should be alive right now.
 		expect(() => process.kill(pid, 0)).not.toThrow()
 
-		shutdownAll()
+		registry.shutdownAll()
 
 		// The real subprocess must be gone after shutdownAll.
 		const exited = await waitForProcessExit(pid, 2000)
 		expect(exited).toBe(true)
 		expect(() => process.kill(pid, 0)).toThrow()
-		expect(getAllClients()).toHaveLength(0)
+		expect(registry.getAll()).toHaveLength(0)
 	})
 })

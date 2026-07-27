@@ -333,7 +333,7 @@ export async function debugLastError(
 	return withTimeoutAndCleanup(
 		timeoutMs,
 		async () => {
-			await session.completeLaunch()
+			await session.completeLaunch(["raised", "uncaught"])
 			// Loop: continue until we hit an exception or the program terminates.
 			// Most DAP adapters stop on uncaught exceptions by default.
 			while (true) {
