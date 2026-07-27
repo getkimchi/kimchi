@@ -16,6 +16,10 @@
  *      against. The override fixes the snippet, and the consolidated
  *      section makes the substitution rules explicit. Goal: the model
  *      picks the dedicated tool the first time, not after being told.
+ *      The resource toggle controls the runtime guard below, not Kimchi's
+ *      core tool-selection preference. If the extension was loaded for the
+ *      current session, its bash description override also remains registered
+ *      until the session restarts.
  *
  *      The description override is delivered via `pi.registerTool()` on
  *      `session_start`, re-registering the bash tool with an overridden

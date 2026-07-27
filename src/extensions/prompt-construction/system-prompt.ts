@@ -14,6 +14,7 @@ import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 import type { Phase } from "../orchestration/model-registry/types.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
+import { orchestratorShouldReceivePhaseGuidelines } from "../orchestration/orchestrator-roles.js"
 import type { ContextFile } from "./context-files.js"
 import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { renderSystemPromptBlocks, type SuppressibleSection } from "./system-prompt-blocks.js"
@@ -98,6 +99,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		suppressed,
 		currentModelId,
 		registry,
+		roles,
 	})
 }
 
@@ -117,6 +119,7 @@ interface PromptParts {
 	suppressed: ReadonlySet<SuppressibleSection>
 	currentModelId?: string
 	registry?: ModelRegistry
+	roles?: ModelRoles
 }
 
 const BASE_INSTRUCTIONS =
@@ -345,19 +348,27 @@ const PHASE_ORDER: readonly Phase[] = ["explore", "research", "plan", "build", "
  * guideline through the model registry so family-specific overrides (e.g.
  * MiniMax M2's "STAY IN SCOPE" / "do NOT hallucinate APIs") reach the prompt.
  *
- * All phases are embedded (not just the active one) to keep the prompt static
- * across phase transitions — see Finding 6 (won't-fix): swapping content on
- * `set_phase` would invalidate the provider's KV cache. The model is
- * session-stable, so family resolution is also cache-stable.
+ * Applicable phases are embedded (not just the active one) to keep the prompt
+ * static across phase transitions. Single-model and subagent prompts receive
+ * all phases; orchestrators receive only phases allowed by their stable role
+ * assignments. Swapping content on `set_phase` would invalidate the provider's
+ * KV cache, while role and model resolution remain cache-stable for the session.
  */
 export function buildPhaseManagementSection(
 	modelId?: string,
 	registry?: ModelRegistry,
 	includeToolInstructions = true,
+	mode: PromptMode = "single",
+	roles?: ModelRoles,
 ): string {
-	const guidelines = PHASE_ORDER.map((phase) => resolvePhaseGuideline(phase, modelId, registry)).join("\n\n")
-	const intro = includeToolInstructions ? `${PHASE_MANAGEMENT_INTRO}\n\n` : "## Phase Management\n\n"
-	return `${intro}### Phase-specific behaviour\n\n${guidelines}`
+	const applicablePhases =
+		mode === "orchestrator"
+			? PHASE_ORDER.filter((phase) => orchestratorShouldReceivePhaseGuidelines(phase, modelId, roles))
+			: PHASE_ORDER
+	const guidelines = applicablePhases.map((phase) => resolvePhaseGuideline(phase, modelId, registry)).join("\n\n")
+	const intro = includeToolInstructions ? PHASE_MANAGEMENT_INTRO : "## Phase Management"
+	if (!guidelines) return includeToolInstructions ? intro : ""
+	return `${intro}\n\n### Phase-specific behaviour\n\n${guidelines}`
 }
 
 export const CONSENT_AND_IRREVERSIBLE_ACTIONS = `## Consent & Irreversible Actions
@@ -390,7 +401,15 @@ function buildPrompt(parts: PromptParts): string {
 	// 6. Consolidated core sections: output, tool selection, phase, consent
 	sections.push(buildOutputAndTruncationSection(parts.toolNames))
 	sections.push(buildToolSelectionSection(parts.toolNames))
-	sections.push(buildPhaseManagementSection(parts.currentModelId, parts.registry, parts.toolNames.has("set_phase")))
+	sections.push(
+		buildPhaseManagementSection(
+			parts.currentModelId,
+			parts.registry,
+			parts.toolNames.has("set_phase"),
+			parts.mode,
+			parts.roles,
+		),
+	)
 	sections.push(CONSENT_AND_IRREVERSIBLE_ACTIONS)
 
 	// 7. Rest: system prompt blocks, tools, skills, environment, project context

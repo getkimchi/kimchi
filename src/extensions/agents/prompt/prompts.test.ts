@@ -85,6 +85,51 @@ Keep these parent rules.`
 		expect(output).not.toContain("set_phase")
 	})
 
+	it("regenerates inherited tool guidance from append-mode agent tools", () => {
+		const appendAgent: AgentConfig = {
+			name: "Test-Restricted-Append",
+			description: "Test restricted append agent",
+			extensions: true,
+			skills: true,
+			systemPrompt: "",
+			promptMode: "append",
+		}
+		const parentPrompt = `# Parent
+
+## Output & Truncation
+
+- Bash guidance from parent.
+- Content search guidance from parent.
+
+## Tool Selection
+
+- Reading a file → use \`read\`.
+- Editing a file → use \`edit\`.
+- Use \`mcp\` for authenticated services.
+
+## Available Tools
+- read
+- edit
+- mcp
+
+## Rules
+Keep these parent rules.`
+		const output = buildAgentPrompt(appendAgent, FIXED_CWD, FIXED_ENV, parentPrompt, {
+			activeToolNames: ["read"],
+		})
+
+		expect(output).toContain("## Output & Truncation")
+		expect(output).toContain("File reads:")
+		expect(output).not.toContain("Bash guidance from parent")
+		expect(output).not.toContain("Content search guidance from parent")
+		expect(output).toContain("## Tool Selection")
+		expect(output).toContain("Reading a file → use `read`")
+		expect(output).not.toContain("Editing a file → use `edit`")
+		expect(output).not.toContain("Use `mcp` for authenticated services")
+		expect(output).toContain("## Available Tools\n- read")
+		expect(output).toContain("Keep these parent rules.")
+	})
+
 	it("Explore agent assembles expected prompt (replace mode)", () => {
 		const agent = getRequired(AGENT_EXPLORE)
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)

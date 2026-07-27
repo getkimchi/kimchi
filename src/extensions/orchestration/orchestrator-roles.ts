@@ -42,7 +42,9 @@ export function resolveModelRoleNames(ref: string, roles?: ModelRoles): string[]
 
 /**
  * Worker phase guidelines apply to the orchestrator only when it may perform
- * that phase itself per Orchestration. Build and review are always delegated.
+ * that phase itself per Orchestration. Build is always delegated; review
+ * guidance applies when the orchestrator also owns the reviewer role because
+ * trivial, low-risk changes may be self-reviewed.
  */
 export function orchestratorShouldReceivePhaseGuidelines(
 	phase: Phase,
@@ -50,7 +52,7 @@ export function orchestratorShouldReceivePhaseGuidelines(
 	roles?: ModelRoles,
 ): boolean {
 	if (!roles || !currentModelId) return false
-	if (phase === "build" || phase === "review") return false
+	if (phase === "build") return false
 	const needed = PHASE_DELEGABLE_ROLE[phase]
 	return resolveModelRoleNames(currentModelId, roles).includes(needed)
 }

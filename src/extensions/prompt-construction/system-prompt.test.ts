@@ -153,13 +153,15 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
+				currentModelId: "kimi-k2.7",
+				roles: DEFAULT_MODEL_ROLES,
 				mode: "orchestrator",
 			})
 
 			expect(result).not.toContain("Phase Tagging for Analytics")
 			expect(result).not.toContain("Call `set_phase`")
 			expect(result).toContain("### Phase-specific behaviour")
-			expect(result).toContain("During **explore** phase")
+			expect(result).toContain("During **plan** phase")
 		})
 
 		it("handles empty tools list", () => {
@@ -289,19 +291,21 @@ describe("buildSystemPrompt", () => {
 			expect(envPos).toBeLessThan(contextPos)
 		})
 
-		it("always includes the consolidated Phase Management section for orchestrator", () => {
+		it("omits phase management when no phase tool or owned phase behaviour applies", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("### Phase-specific behaviour")
-			expect(result).toContain("During **explore** phase")
-			expect(result).toContain("During **build** phase")
+			expect(result).not.toContain("## Phase Management")
+			expect(result).not.toContain("During **explore** phase")
+			expect(result).not.toContain("During **research** phase")
+			expect(result).not.toContain("During **plan** phase")
+			expect(result).not.toContain("During **build** phase")
+			expect(result).not.toContain("During **review** phase")
 		})
 
-		it("includes phase-specific behaviour for plan in orchestrator prompts", () => {
+		it("includes phase behaviour the orchestrator may perform directly", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -312,6 +316,10 @@ describe("buildSystemPrompt", () => {
 			})
 			expect(result).toContain("## Phase Management")
 			expect(result).toContain("During **plan** phase")
+			expect(result).not.toContain("During **explore** phase")
+			expect(result).not.toContain("During **research** phase")
+			expect(result).not.toContain("During **build** phase")
+			expect(result).toContain("During **review** phase")
 		})
 
 		it("uses orchestrator-specific core guidelines", () => {

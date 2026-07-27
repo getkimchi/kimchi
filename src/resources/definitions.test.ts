@@ -77,6 +77,7 @@ describe("resource definitions", () => {
 			kind: "extensions",
 			label: "Bash-tool guard",
 			defaultEnabled: true,
+			description: expect.stringContaining("core prompt continues to prefer dedicated tools"),
 		})
 		// Toggling is dynamic — the tool_call handler consults
 		// isResourceEnabled on every bash call, so no restart is
