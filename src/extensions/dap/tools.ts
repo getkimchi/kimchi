@@ -208,6 +208,15 @@ const SessionIdSchema = Type.Object({
 	session_id: Type.String({ description: "DAP session id returned by debug_launch" }),
 })
 
+const SetVariableSchema = Type.Object({
+	session_id: Type.String({ description: "DAP session id returned by debug_launch" }),
+	variables_reference: Type.Number({
+		description: "Variables reference from debug_locals or debug_eval (the parent scope/variable)",
+	}),
+	name: Type.String({ description: "Variable name to set" }),
+	value: Type.String({ description: "New value (as a string expression)" }),
+})
+
 const SetBreakpointSchema = Type.Object({
 	session_id: Type.String({ description: "DAP session id returned by debug_launch" }),
 	file: Type.String({ description: "Absolute or cwd-relative path to the source file" }),
@@ -622,6 +631,44 @@ export function createLayer2Tools(deps: DapToolDeps): ToolDefinition[] {
 				}
 			},
 			renderCall: dapRenderCall("DAP: Watch Expression Changes"),
+		},
+		// ── debug_set_variable ─────────────────────────────────────────────
+		{
+			name: "debug_set_variable",
+			label: "DAP: Set Variable",
+			description:
+				"Set a variable's value at runtime. Useful for testing hypotheses — \"what if this value were 42?\" Requires a variablesReference from debug_locals output. The variable is modified in the debuggee's memory.",
+			promptSnippet: "Set a variable value at runtime to test a hypothesis",
+			parameters: SetVariableSchema,
+			async execute(_toolCallId, params: Static<typeof SetVariableSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
+				try {
+					const session = requireSession(deps, params.session_id)
+					const result = await session.setVariable(params.variables_reference, params.name, params.value)
+					return textResult(`Set ${params.name} = ${result.value}`)
+				} catch (err) {
+					return errorResult((err as Error).message)
+				}
+			},
+			renderCall: dapRenderCall("DAP: Set Variable"),
+		},
+		// ── debug_restart ──────────────────────────────────────────────────
+		{
+			name: "debug_restart",
+			label: "DAP: Restart Session",
+			description:
+				"Restart the debug session. Faster than terminate + launch for iterative debugging. Only works if the adapter supports restart (supportsRestartRequest capability).",
+			promptSnippet: "Restart the debug session for faster iteration",
+			parameters: SessionIdSchema,
+			async execute(_toolCallId, params: Static<typeof SessionIdSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
+				try {
+					const session = requireSession(deps, params.session_id)
+					await session.restart()
+					return textResult(`Session ${params.session_id} restarted.`)
+				} catch (err) {
+					return errorResult((err as Error).message)
+				}
+			},
+			renderCall: dapRenderCall("DAP: Restart Session"),
 		},
 	]
 }
