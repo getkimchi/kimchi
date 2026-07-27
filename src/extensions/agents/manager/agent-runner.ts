@@ -18,6 +18,7 @@ import { runAsAgentWorker } from "../../agent-worker-context.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
+import maxOutputTokensExtension from "../../max-output-tokens.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
@@ -461,7 +462,15 @@ ${skillLines}`
 			: bashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
 	// successes must close the shared infrastructure breaker just like the parent's.
-	const extensionFactories = [telemetryExtension(readTelemetryConfig()), bashExtension, infrastructureBreakerExtension]
+	// The output cap is registered here for the same reason it is on the parent:
+	// subagents do the long exploratory work, so an uncapped one is at least as
+	// likely to run away as the main loop.
+	const extensionFactories = [
+		telemetryExtension(readTelemetryConfig()),
+		bashExtension,
+		infrastructureBreakerExtension,
+		maxOutputTokensExtension,
+	]
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}

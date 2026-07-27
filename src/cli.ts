@@ -62,6 +62,7 @@ import loginExtension from "./extensions/login/index.js"
 import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
+import maxOutputTokensExtension from "./extensions/max-output-tokens.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
@@ -599,6 +600,7 @@ try {
 			piiRedactionExtension,
 			stripImagesExtension,
 			traceIdExtension,
+			maxOutputTokensExtension,
 			requestTimingExtension,
 			llmResponseLogExtension,
 			activityExtension,
