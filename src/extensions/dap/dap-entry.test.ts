@@ -395,6 +395,40 @@ describe("DAP extension entry point", () => {
 			expect(renderAllPromptBlocks()).toContain("### Go Debugging")
 			expect(renderAllPromptBlocks()).not.toContain("### Python Debugging")
 		})
+
+		it("TypeScript skill activates after a debug_ tool call when js-debug is active", async () => {
+			adapterState.active = [JS_DEBUG]
+			const ctx = createCtx()
+			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
+
+			expect(renderAllPromptBlocks()).not.toContain("### TypeScript/JavaScript Debugging")
+
+			await mock.handlers.tool_call?.({ toolName: "debug_state_at" }, ctx)
+
+			expect(renderAllPromptBlocks()).toContain("### TypeScript/JavaScript Debugging")
+		})
+
+		it("TypeScript skill does not activate when only dlv is active", async () => {
+			adapterState.active = [DLV]
+			const ctx = createCtx()
+			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
+
+			await mock.handlers.tool_call?.({ toolName: "debug_launch" }, ctx)
+
+			expect(renderAllPromptBlocks()).not.toContain("### TypeScript/JavaScript Debugging")
+		})
+
+		it("TypeScript skill resets on session_start", async () => {
+			adapterState.active = [JS_DEBUG]
+			const ctx = createCtx()
+			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
+
+			await mock.handlers.tool_call?.({ toolName: "debug_continue" }, ctx)
+			expect(renderAllPromptBlocks()).toContain("### TypeScript/JavaScript Debugging")
+
+			await mock.handlers.session_start?.({ type: "session_start" }, ctx)
+			expect(renderAllPromptBlocks()).not.toContain("### TypeScript/JavaScript Debugging")
+		})
 	})
 
 	describe("always-available visibility", () => {
