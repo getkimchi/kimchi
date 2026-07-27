@@ -34,14 +34,16 @@ function setFiles(files: string[]) {
 	}) as never)
 }
 
-/** `setBinaries` matches args?.[0] — the binary name passed to `which [cmd]`. */
+/** `setBinaries` matches args?.[0] for `which` calls, and _cmd for direct
+ *  spawn calls (e.g. `python3 -c "import debugpy"`). */
 function setBinaries(onPath: string[]) {
-	mockSpawnSync.mockImplementation(
-		(_cmd: string, args?: readonly string[]) =>
-			({
-				status: onPath.includes(args?.[0] ?? "") ? 0 : 1,
-			}) as never,
-	)
+	mockSpawnSync.mockImplementation((cmd: string, args?: readonly string[]) => {
+		// `which <name>` → check if <name> is on the list
+		if (cmd === "which" && onPath.includes(args?.[0] ?? "")) return { status: 0 } as never
+		// Direct spawn (existsCmd) → check if cmd is on the list
+		if (cmd !== "which" && onPath.includes(cmd)) return { status: 0 } as never
+		return { status: 1 } as never
+	})
 }
 
 describe("detectAdapters", () => {
@@ -61,9 +63,9 @@ describe("detectAdapters", () => {
 		expect(result[0].name).toBe("js-debug")
 	})
 
-	it("returns debugpy when pyproject.toml present and debugpy on PATH", () => {
+	it("returns debugpy when pyproject.toml present and debugpy installed", () => {
 		setFiles(["pyproject.toml"])
-		setBinaries(["debugpy"])
+		setBinaries(["python3"])
 		const result = detectAdapters("/project")
 		expect(result).toHaveLength(1)
 		expect(result[0].name).toBe("debugpy")
@@ -79,7 +81,7 @@ describe("detectAdapters", () => {
 
 	it("returns empty when binary is on PATH but no marker file exists", () => {
 		setFiles([])
-		setBinaries(["dlv", "js-debug-adapter", "debugpy", "lldb-dap"])
+		setBinaries(["dlv", "js-debug-adapter", "python3", "lldb-dap"])
 		expect(detectAdapters("/project")).toHaveLength(0)
 	})
 
@@ -264,9 +266,9 @@ describe("run_cmd prefix heuristic (detectBinary)", () => {
 		expect(missing.find((a) => a.name === "js-debug")).toBeDefined()
 	})
 
-	it("debugpy uses command as detectBinary (no override needed)", () => {
+	it("debugpy uses detectModule (python3 -c import debugpy)", () => {
 		setFiles(["pyproject.toml"])
-		setBinaries(["debugpy"])
+		setBinaries(["python3"])
 		expect(detectAdapters("/project")[0].name).toBe("debugpy")
 	})
 
@@ -304,7 +306,7 @@ describe("KIMCHI_DAP_BINARIES override", () => {
 	})
 
 	it("returns only adapters whose detectBinary is whitelisted", async () => {
-		process.env.KIMCHI_DAP_BINARIES = "js-debug-adapter,debugpy"
+		process.env.KIMCHI_DAP_BINARIES = "js-debug-adapter,python3"
 		const { detectAdapters } = await import("./adapters.js")
 		// Multiple markers present; only js-debug + debugpy whitelisted (not dlv).
 		vi.mocked(fs.existsSync).mockImplementation(((p: unknown) => {

@@ -60,3 +60,4 @@ __pycache__/
 
 # LLM tools
 .codegraph/
+.benchmark/

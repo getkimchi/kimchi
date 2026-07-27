@@ -91,7 +91,7 @@ const ADAPTERS: DapAdapterConfig[] = [
 		name: "debugpy",
 		command: "python3",
 		args: ["-m", "debugpy.adapter"],
-		detectBinary: "debugpy",
+		detectModule: ["python3", "-c", "import debugpy"],
 		transport: { kind: "stdio" },
 		languages: ["python"],
 		extensions: ["py", "pyw"],
@@ -176,6 +176,43 @@ function exists(cmd: string): boolean {
 	}
 }
 
+/** Check if a command+args exits 0 (for module-presence checks like
+ *  `python3 -c "import debugpy"`). Uses Bun.spawnSync when available, falls
+ *  back to node:child_process spawnSync. */
+function existsCmd(argv: string[]): boolean {
+	if (DAP_BINARIES_OVERRIDE !== undefined) {
+		// For module-based adapters, check if the module name is in the override
+		const available = DAP_BINARIES_OVERRIDE.split(",").map((s) => s.trim())
+		return available.includes(argv[0])
+	}
+	try {
+		// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
+		const Bun = (globalThis as any).Bun
+		if (Bun?.spawnSync) {
+			const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" })
+			return result.exitCode === 0
+		}
+	} catch {
+		// ignore, try Node fallback
+	}
+	try {
+		const result = spawnSync(argv[0], argv.slice(1), { stdio: "pipe" })
+		return result.status === 0
+	} catch {
+		return false
+	}
+}
+
+/** Check if an adapter's binary/module is available. Uses detectModule
+ *  (e.g. `python3 -c "import debugpy"`) when set, otherwise detectBinary
+ *  or command (via `which`). */
+function adapterExists(adapter: DapAdapterConfig): boolean {
+	if (adapter.detectModule) {
+		return existsCmd(adapter.detectModule)
+	}
+	return exists(detectBinaryOf(adapter))
+}
+
 /** The binary name `which` should check for this adapter — `detectBinary` if
  *  set, else `command`. This is the "run_cmd prefix heuristic": for adapters
  *  invoked as `node <script>` or `python -m <module>`, we detect the
@@ -194,7 +231,7 @@ function detectBinaryOf(adapter: DapAdapterConfig): string {
 export function detectAdapters(cwd: string): DapAdapterConfig[] {
 	return ADAPTERS.filter((a) => {
 		const markers = ROOT_MARKERS[a.name] ?? []
-		return findMarkerUp(cwd, markers) && exists(detectBinaryOf(a))
+		return findMarkerUp(cwd, markers) && adapterExists(a)
 	})
 }
 
@@ -209,7 +246,7 @@ export function detectMissingAdapters(cwd: string): DapAdapterConfig[] {
 	return ADAPTERS.filter((a) => {
 		const markers = ROOT_MARKERS[a.name] ?? []
 		const hasMarker = findMarkerUp(cwd, markers)
-		return hasMarker && !exists(detectBinaryOf(a))
+		return hasMarker && !adapterExists(a)
 	})
 }
 
