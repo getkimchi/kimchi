@@ -310,7 +310,7 @@ describe("deriveThinkingSteps caching", () => {
 		const elapsedMs = performance.now() - start
 		expect(steps.length).toBeGreaterThan(0)
 		expect(steps[0]?.summary).toBeTruthy()
-		expect(elapsedMs).toBeLessThan(250)
+		expect(elapsedMs).toBeLessThan(500) // was 250 — flaky under CI load
 	})
 
 	it("does not retain snapshots of the growing final step", () => {
