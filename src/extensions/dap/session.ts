@@ -138,22 +138,26 @@ export class DapSession {
 	async completeLaunch(exceptionFilters?: string[]): Promise<void> {
 		if (!this.launched || this.launchCompleted) return
 		this.launchCompleted = true
-		// Some adapters (debugpy, js-debug) defer responses to
-		// setExceptionBreakpoints and launch until after configurationDone.
-		// Send all as fire-and-forget, then await them in parallel.
-		const pending: Promise<unknown>[] = []
+		// Wait for the `initialized` event before sending setExceptionBreakpoints
+		// and configurationDone. DAP spec requires this ordering: initialized →
+		// setBreakpoints/setExceptionBreakpoints → configurationDone.
+		await Promise.race([this.client.initializedPromise, new Promise((resolve) => setTimeout(resolve, 5000))])
+		// Send setExceptionBreakpoints and configurationDone. For adapters that
+		// defer responses (debugpy), use short timeouts and don't block.
 		if (exceptionFilters && exceptionFilters.length > 0) {
-			pending.push(
-				sendRequest(this.client, "setExceptionBreakpoints", { filters: exceptionFilters }, this.timeoutMs).catch(
-					() => {},
-				),
-			)
+			try {
+				await sendRequest(this.client, "setExceptionBreakpoints", { filters: exceptionFilters }, 5000)
+			} catch {
+				// Some adapters reject or timeout — ignore
+			}
 		}
 		if (this.client.capabilities?.supportsConfigurationDoneRequest) {
-			pending.push(sendRequest(this.client, "configurationDone", {}, this.timeoutMs))
+			try {
+				await sendRequest(this.client, "configurationDone", {}, 5000)
+			} catch {
+				// Some adapters timeout on configurationDone — proceed anyway
+			}
 		}
-		if (this.launchPromise) pending.push(this.launchPromise.catch(() => {}))
-		await Promise.all(pending)
 	}
 
 	/** Terminate the debug session. Best-effort `terminate` request (if the
