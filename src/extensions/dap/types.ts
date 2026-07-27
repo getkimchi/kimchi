@@ -243,6 +243,9 @@ export interface DapClient {
 	/** Captured output lines (stdout/stderr/console), capped by the client. */
 	outputLines: DapOutputLine[]
 	terminated: boolean
+	/** Resolves when the `initialized` event arrives (after launch). */
+	initializedResolve?: () => void
+	initializedPromise: Promise<void>
 }
 
 /** How the DAP client talks to the adapter subprocess.
@@ -260,6 +263,9 @@ export interface DapAdapterConfig {
 	 *  `command` is a generic interpreter — e.g. js-debug runs as `node <script>`
 	 *  but we detect the `js-debug-adapter` shim instead of `node` (always present). */
 	detectBinary?: string
+	/** Detection command for module-based adapters — e.g. ["python3", "-c", "import debugpy"]
+	 *  to check if debugpy is installed as a Python module rather than a binary. */
+	detectModule?: string[]
 	/** Transport the DAP client uses to talk to this adapter. Defaults to stdio. */
 	transport?: DapTransport
 	languages: string[]

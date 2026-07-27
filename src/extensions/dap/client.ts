@@ -382,6 +382,10 @@ async function startMessageReader(client: DapClient): Promise<void> {
 							if (body.threadId != null) client.threadId = body.threadId
 							break
 						}
+						case "initialized": {
+							if (client.initializedResolve) client.initializedResolve()
+							break
+						}
 						case "output": {
 							const body = message.body as OutputEvent
 							client.outputLines.push({
@@ -470,7 +474,13 @@ export class DapClientRegistry {
 				terminatedWaiters: [],
 				outputLines: [],
 				terminated: false,
+				initializedPromise: undefined as unknown as Promise<void>,
 			}
+			// Set up the initialized promise after the client object exists
+			// so initializedResolve can reference it.
+			client.initializedPromise = new Promise((resolve) => {
+				client.initializedResolve = resolve
+			})
 			this.clients.set(key, client)
 
 			// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
