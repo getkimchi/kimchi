@@ -15,7 +15,7 @@ import { emitFermentCreated } from "./domain-events-emitter.js"
 import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { clearLifecycleGuard } from "./lifecycle-obligation-guard.js"
-import { appendRefEntry, resetScopingStopNudgeCount } from "./nudge.js"
+import { appendRefEntry } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import {
 	buildPhaseActionOptions,
@@ -782,8 +782,6 @@ export class FermentCommandController {
 				ctx.ui.notify("No active ferment to resume.")
 				return { handled: true }
 			}
-			resetScopingStopNudgeCount(active.id)
-
 			if (active.status !== "paused") {
 				const canContinue = active.status === "running" || active.status === "planned"
 				const message = canContinue

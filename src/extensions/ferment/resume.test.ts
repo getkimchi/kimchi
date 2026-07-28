@@ -319,6 +319,13 @@ describe("resumeFerment paused-state nudge guard", () => {
 			return { ok: false, error: { code: "FERMENT_NOT_FOUND", message: "simulated resume failure" } }
 		})
 
+		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({ kind: "scheduled" })
+		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({ kind: "scheduled" })
+		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({
+			kind: "claimed",
+			reason: "exhausted",
+		})
+
 		resumeFerment(h.pi, draft.id, hasUIContext(), h.runtime)
 
 		// No resume nudge should be sent to the model.
@@ -331,6 +338,10 @@ describe("resumeFerment paused-state nudge guard", () => {
 		const noticeText = pausedNotice?.content?.map((c) => c.text ?? "").join("") ?? ""
 		expect(noticeText).toContain("currently paused")
 		expect(noticeText).toContain("/ferment resume")
+		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({
+			kind: "claimed",
+			reason: "exhausted",
+		})
 	})
 })
 

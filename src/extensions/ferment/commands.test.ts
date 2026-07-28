@@ -1446,7 +1446,7 @@ describe("registerFermentCommands", () => {
 		)
 	})
 
-	it("/ferment resume resets an exhausted draft scoping-stop budget", async () => {
+	it("/ferment resume does not reset an exhausted draft scoping-stop budget when there is nothing to resume", async () => {
 		const h = createHarness()
 		const draft = h.storage.create("Exhausted Draft")
 		h.runtime.setActive(draft)
@@ -1471,7 +1471,11 @@ describe("registerFermentCommands", () => {
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("resume", h.ctx)
 
-		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({ kind: "scheduled" })
+		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({
+			kind: "claimed",
+			reason: "exhausted",
+		})
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith('"Exhausted Draft" is draft; nothing to resume.')
 	})
 
 	it("implements pause → /ferment auto → /ferment resume with policy separated from lifecycle", async () => {

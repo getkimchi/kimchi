@@ -69,7 +69,6 @@ export function resumeFerment(
 		return
 	}
 	clearLifecycleGuard(existing.id)
-	resetScopingStopNudgeCount(existing.id)
 
 	if (existing.status === "complete" || existing.status === "abandoned") {
 		setActiveFermentAndApplyProfile(pi, runtime, undefined)
@@ -175,6 +174,9 @@ export function resumeFerment(
 	)
 
 	if (existing.status !== "paused") {
+		// Renew draft-scoping recovery only once resume has passed every
+		// blocking check and will actually schedule another model turn.
+		resetScopingStopNudgeCount(existing.id)
 		safeSendMessage(
 			pi,
 			{
