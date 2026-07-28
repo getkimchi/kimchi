@@ -1,9 +1,11 @@
-// OSC 11 query: ask the terminal what its current background color is.
-// Response shape: \x1b]11;rgb:RRRR/GGGG/BBBB(\x07|\x1b\\) — channels are
+// OSC color queries: ask the terminal for its current foreground (OSC 10)
+// and background (OSC 11) colors.
+// Response shape: \x1b]<10|11>;rgb:RRRR/GGGG/BBBB(\x07|\x1b\\) — channels are
 // 1-4 hex digits each; we take the most-significant byte. Modern terminals
 // (iTerm2, Terminal.app, Alacritty, Kitty, WezTerm, GNOME Terminal) all
 // support this; we time out after 200ms for ones that don't.
 
+export const QUERY_FG = "\x1b]10;?\x07"
 export const QUERY_BG = "\x1b]11;?\x07"
 const QUERY_TIMEOUT_MS = 200
 // OSC 11 response is ~25 bytes. Cap the buffer well above that so a flood of
@@ -12,6 +14,12 @@ const QUERY_TIMEOUT_MS = 200
 const MAX_BUFFER_BYTES = 4096
 
 export type Rgb = { r: number; g: number; b: number }
+
+export type TerminalColorProbeResult = {
+	background: Rgb | undefined
+	rawBackground: string | undefined
+	rawForeground: string | undefined
+}
 
 // Module-level cache so other extensions (notably terminal-colors.ts) can
 // reuse the probe result instead of re-querying. `probed` separates "didn't
@@ -23,6 +31,7 @@ export type Rgb = { r: number; g: number; b: number }
 // 16-bit terminals send (`1A2B` → we'd write back `1A1A`).
 let cachedProbedBg: Rgb | undefined
 let cachedRawBgPayload: string | undefined
+let cachedRawFgPayload: string | undefined
 let probed = false
 
 export function getProbedBackground(): Rgb | undefined {
@@ -31,6 +40,10 @@ export function getProbedBackground(): Rgb | undefined {
 
 export function getRawBgPayload(): string | undefined {
 	return cachedRawBgPayload
+}
+
+export function getRawFgPayload(): string | undefined {
+	return cachedRawFgPayload
 }
 
 // Bail without running the probe in environments known to either swallow
@@ -56,26 +69,50 @@ export async function probeTerminalBackground(): Promise<Rgb | undefined> {
 
 	if (shouldSkipProbe()) return undefined
 
-	const wasRaw = process.stdin.isRaw
-	process.stdin.setRawMode?.(true)
-	process.stdin.resume()
+	const result = await probeTerminalColors(process.stdin, process.stdout)
+	cachedProbedBg = result.background
+	cachedRawBgPayload = result.rawBackground
+	cachedRawFgPayload = result.rawForeground
+	return cachedProbedBg
+}
 
-	return new Promise<Rgb | undefined>((resolveResult) => {
+/** Run the OSC 10/11 exchange against terminal streams without touching the module cache. */
+export function probeTerminalColors(
+	stdin: NodeJS.ReadStream,
+	stdout: NodeJS.WriteStream,
+): Promise<TerminalColorProbeResult> {
+	const wasRaw = stdin.isRaw
+	stdin.setRawMode?.(true)
+	stdin.resume()
+
+	return new Promise<TerminalColorProbeResult>((resolveResult) => {
 		let buffer = ""
+		let gotFg = false
+		let gotBg = false
+		let background: Rgb | undefined
+		let rawBackground: string | undefined
+		let rawForeground: string | undefined
 
-		// Anything that arrived during the probe window but isn't the OSC 11
-		// response (early keystrokes, focus events, mouse, paste fragments)
-		// gets pushed BACK into stdin so pi sees it when it takes over. Without
-		// this the user's first few bytes after launch silently vanish.
-		const finish = (result: Rgb | undefined, rawPayload: string | undefined, leftover: string) => {
+		// Anything that arrived during the probe window but isn't an OSC
+		// 10/11 response (early keystrokes, focus events, mouse, paste
+		// fragments) gets pushed BACK into stdin so pi sees it when it takes
+		// over. Without this the user's first few bytes after launch silently
+		// vanish. Both queries share one stdin listener so the probe window
+		// is a single interval, not two serial ones.
+		const finish = () => {
 			clearTimeout(timeout)
-			process.stdin.removeListener("data", handler)
-			cachedProbedBg = result
-			cachedRawBgPayload = rawPayload
-			if (leftover.length > 0) process.stdin.unshift(Buffer.from(leftover, "utf8"))
-			if (!wasRaw) process.stdin.setRawMode?.(false)
-			process.stdin.pause()
-			resolveResult(result)
+			stdin.removeListener("data", handler)
+			// Strip the OSC 10/11 responses from the buffer; push back anything
+			// else (keystrokes, paste) so pi sees it when it takes over.
+			let leftover = buffer
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: OSC terminal escape sequence
+			leftover = leftover.replace(/\x1b\]10;.+?(?:\x07|\x1b\\)/, "")
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: OSC terminal escape sequence
+			leftover = leftover.replace(/\x1b\]11;.+?(?:\x07|\x1b\\)/, "")
+			if (leftover.length > 0) stdin.unshift(Buffer.from(leftover, "utf8"))
+			if (!wasRaw) stdin.setRawMode?.(false)
+			stdin.pause()
+			resolveResult({ background, rawBackground, rawForeground })
 		}
 
 		const handler = (data: Buffer | string) => {
@@ -86,25 +123,37 @@ export async function probeTerminalBackground(): Promise<Rgb | undefined> {
 			if (buffer.length > MAX_BUFFER_BYTES) {
 				buffer = buffer.slice(buffer.length - MAX_BUFFER_BYTES)
 			}
-			// biome-ignore lint/suspicious/noControlCharactersInRegex: OSC terminal escape sequence
-			const re = /\x1b\]11;(rgb:([0-9a-fA-F]+)\/([0-9a-fA-F]+)\/([0-9a-fA-F]+))(?:\x07|\x1b\\)/
-			const match = buffer.match(re)
-			if (match) {
-				// Per X11 spec, a 1-digit channel replicates to fill: "A" → "AA" = 170.
-				// padEnd then slice handles 2-4 digit channels correctly; special-case 1.
-				const toByte = (h: string) =>
-					h.length === 1 ? Number.parseInt(h + h, 16) : Number.parseInt(h.padEnd(4, "0").slice(0, 2), 16)
-				const idx = match.index ?? 0
-				const leftover = buffer.slice(0, idx) + buffer.slice(idx + match[0].length)
-				const rgb = { r: toByte(match[2]), g: toByte(match[3]), b: toByte(match[4]) }
-				finish(rgb, match[1], leftover)
+
+			if (!gotFg) {
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: OSC terminal escape sequence
+				const fgMatch = buffer.match(/\x1b\]10;(.+?)(?:\x07|\x1b\\)/)
+				if (fgMatch) {
+					rawForeground = fgMatch[1]
+					gotFg = true
+				}
 			}
+			if (!gotBg) {
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: OSC terminal escape sequence
+				const re = /\x1b\]11;(rgb:([0-9a-fA-F]+)\/([0-9a-fA-F]+)\/([0-9a-fA-F]+))(?:\x07|\x1b\\)/
+				const match = buffer.match(re)
+				if (match) {
+					// Per X11 spec, a 1-digit channel replicates to fill: "A" → "AA" = 170.
+					// padEnd then slice handles 2-4 digit channels correctly; special-case 1.
+					const toByte = (h: string) =>
+						h.length === 1 ? Number.parseInt(h + h, 16) : Number.parseInt(h.padEnd(4, "0").slice(0, 2), 16)
+					background = { r: toByte(match[2]), g: toByte(match[3]), b: toByte(match[4]) }
+					rawBackground = match[1]
+					gotBg = true
+				}
+			}
+			if (gotFg && gotBg) finish()
 		}
 
-		const timeout = setTimeout(() => finish(undefined, undefined, buffer), QUERY_TIMEOUT_MS)
+		const timeout = setTimeout(() => finish(), QUERY_TIMEOUT_MS)
 
-		process.stdin.on("data", handler)
-		process.stdout.write(QUERY_BG)
+		stdin.on("data", handler)
+		stdout.write(QUERY_FG)
+		stdout.write(QUERY_BG)
 	})
 }
 
