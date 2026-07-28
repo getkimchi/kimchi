@@ -71,11 +71,18 @@ Best for: codebase exploration, research, and trivial re-verification (confirmin
 after a fix). \
 Not suitable for: code review, building code, or any task requiring correctness judgment.`
 
+// Sourced from the DeepSeek-V4-Flash model card:
+// https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash
+// and the DeepSeek V4 Preview release notes:
+// https://api-docs.deepseek.com/news/news260424/
 const DEEPSEEK_V4_FLASH_DESCRIPTION = `\
-Fast and cost-effective model for codebase exploration and lightweight tasks. \
-Best for: codebase exploration, reading code, tracing architecture, and trivial re-verification \
-(confirming tests pass after a fix). \
-Not suitable for: code review, building code, or any task requiring correctness judgment.`
+284B total / 13B activated parameter MoE model with a 1M-token context window. \
+Fast, efficient, and economical; supports thinking/reasoning modes for stronger logical \
+analysis and agentic coding tasks. \
+Best for: codebase exploration, reading code, tracing architecture, trivial re-verification, \
+and lightweight build tasks (single-file edits, mechanical fixes, simple test wiring). \
+Not suitable for: code review, complex multi-file builds, or tasks requiring deep correctness \
+judgment without explicit thinking-mode configuration.`
 
 /** Filter out empty layers and join with double newlines. */
 function concatGuidelines(...layers: string[]): string {
@@ -178,6 +185,7 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			guidelines: guidelinesMap({
 				explore: [DEFAULT_EXPLORE_GUIDELINES],
 				research: [DEFAULT_RESEARCH_GUIDELINES],
+				build: [DEFAULT_BUILD_GUIDELINES],
 			}),
 			orchestrationGuidelines:
 				"When orchestrating (deepseek-v4-flash): No model-specific orchestration overrides — follow the default delegation rules.",

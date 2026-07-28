@@ -94,7 +94,7 @@ const ROLE_KEYS: readonly (keyof Omit<ModelRoles, "compactor">)[] = ["orchestrat
 export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
 	orchestrator: "kimchi-dev/kimi-k2.7",
 	planner: "kimchi-dev/kimi-k2.7",
-	builder: ["kimchi-dev/minimax-m3"],
+	builder: ["kimchi-dev/minimax-m3", "kimchi-dev/deepseek-v4-flash"],
 	reviewer: ["kimchi-dev/kimi-k2.7"],
 	explorer: "kimchi-dev/deepseek-v4-flash",
 	researcher: "kimchi-dev/minimax-m3",

@@ -35,4 +35,13 @@ describe("builtin-models — K2.6 / K2.7 flagship distinction", () => {
 		expect(k26.description).toContain("vision support")
 		expect(k26.description).toContain("planning decisions")
 	})
+
+	it("deepseek-v4-flash has build guidelines now that it is a builder candidate", () => {
+		const deepseek = MODEL_CAPABILITIES.get("deepseek-v4-flash")
+		expect(deepseek).toBeDefined()
+		expect(deepseek).not.toBe("ignored")
+		if (!deepseek || deepseek === "ignored") return
+		expect(deepseek.guidelines?.build).toBeDefined()
+		expect(deepseek.guidelines?.build?.length).toBeGreaterThan(0)
+	})
 })
