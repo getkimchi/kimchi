@@ -14,7 +14,7 @@ import { registerFermentEvents } from "./events.js"
 import { clearAllLifecycleGuards } from "./lifecycle-obligation-guard.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
-import { clearActiveFermentId, getFermentLockPath, writeFermentLock } from "./state.js"
+import { clearActiveFermentId, getFermentLockPath, markScopingInteractive, writeFermentLock } from "./state.js"
 import { filterSentMessages } from "./test-helpers.js"
 import { FERMENT_TOOL_NAMES } from "./tool-names.js"
 import { profileForFerment } from "./tool-scope.js"
@@ -859,6 +859,106 @@ describe("turn_end lifecycle obligation guard", () => {
 		const continuationCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
 		expect(scopingStopCalls).toHaveLength(2)
 		expect(continuationCalls).toHaveLength(0)
+	})
+
+	it("does not bypass the user-input dropdown when scoping recovery is exhausted (interactive)", async () => {
+		// P1 regression: after two scoping-stop nudges, a qualifying turn that
+		// also contains a user-directed question must still reach
+		// maybeRunUserInputDropdown in interactive mode. The `claimed` outcome
+		// suppresses generic Ferment stop recovery, but it must not suppress
+		// interactive user handling.
+		const { pi, runtime, ferment, handlers } = setupAutomatedGuardFixture("Exhausted Dropdown", {
+			state: "draft",
+			automated: false,
+		})
+		markScopingInteractive(ferment.id)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const select = vi.fn().mockResolvedValue("No, revise")
+		const ctx = createContext({ hasUI: true, ui: { select } })
+
+		const exploringTurn = {
+			message: {
+				role: "assistant",
+				stopReason: "stop",
+				content: [{ type: "toolCall", name: "read", id: "call-1", arguments: { path: "README.md" } }],
+			},
+		}
+		// Exhaust the scoping-stop budget.
+		await turnEnd(exploringTurn, ctx)
+		await turnEnd(exploringTurn, ctx)
+
+		// A third qualifying turn that ends with a user-directed question.
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [
+						{ type: "toolCall", name: "read", id: "call-2", arguments: { path: "src/index.ts" } },
+						{ type: "text", text: "I have enough context. Does this plan look right?" },
+					],
+				},
+			},
+			ctx,
+		)
+
+		// The dropdown must have been shown despite scoping recovery exhaustion.
+		expect(select).toHaveBeenCalled()
+		// Generic Ferment stop recovery must not have started a second budget.
+		const continuationCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		expect(continuationCalls).toHaveLength(0)
+		// The scoping-stop nudge was sent exactly twice (budget exhausted on turn 3).
+		const scopingStopCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_scoping_stop_nudge")
+		expect(scopingStopCalls).toHaveLength(2)
+
+		runtime.setActive(undefined)
+	})
+
+	it("resets the scoping-stop budget when a new session begins", async () => {
+		// P2 regression: scopingStopNudgeCounts is process-global. Without a
+		// reset on session_start, a draft that reached exhaustion in a prior
+		// session continues to return `claimed` forever (within the same
+		// process) — no recovery message is ever sent again. After the reset,
+		// a resumed draft must get a fresh two-nudge budget.
+		const { pi, runtime, ferment, handlers } = setupAutomatedGuardFixture("Scoping Session Reset", {
+			state: "draft",
+			oneshot: true,
+		})
+		const turnEnd = handlers.get("turn_end")
+		const sessionStart = handlers.get("session_start")
+		if (!turnEnd || !sessionStart) throw new Error("required event handler was not registered")
+		const ctx = createContext({ hasUI: false })
+
+		const qualifyingTurn = {
+			message: {
+				role: "assistant",
+				stopReason: "stop",
+				content: [
+					{ type: "toolCall", name: "read", id: "call-1", arguments: { path: "README.md" } },
+					{ type: "text", text: "Done reading." },
+				],
+			},
+		}
+
+		// Exhaust the scoping-stop budget.
+		await turnEnd(qualifyingTurn, ctx)
+		await turnEnd(qualifyingTurn, ctx)
+		await turnEnd(qualifyingTurn, ctx) // claimed:exhausted
+		let scopingStopCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_scoping_stop_nudge")
+		expect(scopingStopCalls).toHaveLength(2)
+
+		// A new session begins (resume). session_start must clear the budget.
+		await sessionStart({}, ctx)
+		runtime.setActive(ferment)
+		vi.mocked(pi.sendMessage).mockClear()
+
+		// The same qualifying turn must schedule a nudge again — fresh budget.
+		await turnEnd(qualifyingTurn, ctx)
+		scopingStopCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_scoping_stop_nudge")
+		expect(scopingStopCalls).toHaveLength(1)
+
+		runtime.setActive(undefined)
 	})
 })
 

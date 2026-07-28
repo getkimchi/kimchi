@@ -25,6 +25,7 @@ import {
 	maybeInjectScopingProgressNudge,
 	maybeInjectScopingStopNudge,
 	onFermentToolCallSeen,
+	resetAllScopingStopNudgeCounts,
 	resetFermentStopNudgeCount,
 	resetScopingStopNudgeCount,
 } from "./nudge.js"
@@ -345,6 +346,7 @@ export function registerFermentEvents(
 		runtime.clearAllPendingScopes()
 		runtime.clearAllPendingPlanReviews()
 		runtime.clearAllPendingCompactions()
+		resetAllScopingStopNudgeCounts()
 		clearFermentCache()
 
 		const envId = getActiveFermentId()
@@ -655,6 +657,7 @@ export function registerFermentEvents(
 		// without progressing through the scoping steps. Fires for both
 		// interactive and one-shot scoping — consistency across modes is
 		// important so the model gets the same kick regardless of entry point.
+		let scopingClaimed = false
 		if (f.status === "draft" && toolCallSeen) {
 			const toolNames = getToolCallNames(content)
 			const interactive = runtime.isScopingInteractive(f.id)
@@ -663,19 +666,25 @@ export function registerFermentEvents(
 
 			// Stop-without-scoping: the model made tool calls but ended with
 			// stopReason "stop" without calling any scoping-completion tool.
-			// Only `not_applicable` lets a later recovery mechanism evaluate the
-			// same turn. `scheduled` (a nudge was sent) and `claimed` (the
-			// scoping budget is exhausted) both retain ownership of the draft-
+			// `scheduled` (a nudge was sent) owns the turn immediately. `claimed`
+			// (the scoping budget is exhausted) retains ownership of the draft-
 			// scoping obligation so generic Ferment stop recovery cannot start a
-			// second budget for it.
+			// second budget for it — but it must not bypass interactive user-input
+			// handling, so it falls through to the dropdown below and only
+			// suppresses generic recovery afterwards.
 			if (stopReason === "stop") {
 				const outcome = maybeInjectScopingStopNudge(pi, f.id, toolNames, stopReason, { interactive })
-				if (outcome.kind !== "not_applicable") return
+				if (outcome.kind === "scheduled") return
+				if (outcome.kind === "claimed") scopingClaimed = true
 			}
 		}
 
 		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
 		if (userInputHandled) return
+		// Scoping recovery claimed this turn (budget exhausted). Interactive
+		// handling already had its chance above; suppress generic Ferment stop
+		// recovery so it cannot start a second budget for the same obligation.
+		if (scopingClaimed) return
 		if (!toolCallSeen) {
 			if (!hasPendingPlanReview(runtime)) {
 				// Zero-tool stop while a lifecycle obligation may be pending. The guard

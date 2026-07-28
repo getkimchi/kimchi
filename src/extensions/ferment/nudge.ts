@@ -252,6 +252,10 @@ export function resetScopingStopNudgeCount(fermentId: string): void {
 	scopingStopNudgeCounts.delete(fermentId)
 }
 
+export function resetAllScopingStopNudgeCounts(): void {
+	scopingStopNudgeCounts.clear()
+}
+
 /** Outcome of evaluating a draft-scoping turn for the stop nudge.
  *
  * - `not_applicable` — the turn does not qualify for draft scoping-stop
