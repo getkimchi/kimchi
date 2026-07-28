@@ -42,11 +42,21 @@ describe("Grader agent registration", () => {
 		expect(cfg.systemPrompt).toContain("grade")
 
 		// Must prohibit implementation work — no installing deps, no writing files
-		expect(cfg.systemPrompt).toContain("inspection only, never implementation")
+		expect(cfg.systemPrompt).toContain("verify, don't trust")
 		expect(cfg.systemPrompt).toContain("MUST NOT")
 		expect(cfg.systemPrompt).toContain("Install, download, or build dependencies")
 		expect(cfg.systemPrompt).toContain("Write or create files")
 		expect(cfg.systemPrompt).toContain("bash redirects or heredocs")
 		expect(cfg.systemPrompt).toContain("Author new test scripts")
+
+		// Must allow inline verification code (independent verification is the grader's job)
+		expect(cfg.systemPrompt).toContain("You MAY write inline code to verify specific claims")
+		expect(cfg.systemPrompt).toContain("This is NOT implementation work")
+
+		// Must prescribe requirement-driven verification for consistency
+		expect(cfg.systemPrompt).toContain("Requirement-driven verification procedure")
+		expect(cfg.systemPrompt).toContain("Identify requirements")
+		expect(cfg.systemPrompt).toContain("Classify each requirement")
+		expect(cfg.systemPrompt).toContain("one per requirement")
 	})
 })
