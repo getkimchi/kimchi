@@ -30,6 +30,47 @@ export function resolveMaxOutputTokens(env: NodeJS.ProcessEnv = process.env): nu
 	return DEFAULT_MAX_OUTPUT_TOKENS
 }
 
+/**
+ * Per-turn budget for *thinking* tokens, enforced client-side by
+ * upstream-thinking-budget-patch.ts. The output cap above bounds everything the
+ * model emits, so a limit strict enough to stop runaway deliberation also severs
+ * tool calls; measuring only reasoning avoids that. `0` disables it entirely.
+ *
+ * ── Why 8k ──────────────────────────────────────────────────────────────────
+ * Thinking per turn across 37 stored terminal-bench sessions (381 thinking
+ * turns, mostly glm-5.2-fp8) runs p50 229 · p90 4.7k · p95 10k · p99 58k, so the
+ * waste sits in a very thin tail: 8k cuts ~6% of thinking turns and recovers
+ * ~37% of the thinking that survives the 32k output cap.
+ *
+ * Most of that tail is one task family reasoning 57-70k tokens per turn without
+ * ever acting. 8k also reaches `path-tracing` and `adaptive-rejection-sampler`,
+ * which is deliberate: they are coin flips in
+ * docs/benchmark-confidence-intervals.md, so they are the only tasks where the
+ * score can still move, and they deliberate 8-13k tokens without acting. 16k is
+ * the conservative alternative — the runaway family alone, half the recovery.
+ *
+ * Counted in estimated tokens (chars/4). Measurement and enforcement share those
+ * units so the threshold is self-consistent, but real reasoning tokens for a turn
+ * cut here run somewhat above 8k.
+ */
+export const DEFAULT_MAX_THINKING_TOKENS = 8_000
+export const MAX_THINKING_TOKENS_ENV = "KIMCHI_MAX_THINKING_TOKENS"
+
+/**
+ * Read per request rather than once at startup: benchmark arms and tests change
+ * the configured budget without restarting the process.
+ */
+export function resolveMaxThinkingTokens(env: NodeJS.ProcessEnv = process.env): number {
+	const raw = env[MAX_THINKING_TOKENS_ENV]
+	if (raw !== undefined && raw.trim() !== "") {
+		// Number(), not parseInt(): parseInt truncates at the first non-digit, so
+		// "8k" would become 8 and cut every turn after two words of reasoning.
+		const parsed = Number(raw.trim())
+		if (Number.isInteger(parsed) && parsed >= 0) return parsed
+	}
+	return DEFAULT_MAX_THINKING_TOKENS
+}
+
 function normalizeKimchiEndpoint(endpoint?: string): string {
 	const trimmed = endpoint?.trim()
 	if (!trimmed) return KIMCHI_API

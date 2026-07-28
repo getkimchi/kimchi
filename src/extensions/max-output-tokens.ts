@@ -21,11 +21,22 @@
  * when too little context remains for a cap to be meaningful the payload is
  * left completely alone rather than carrying a value that would trip the vLLM
  * check or strangle the turn.
+ *
+ * ── Why the steer is queued as a steer, not a follow-up ─────────────────────
+ * The follow-up queue is drained only once the agent loop runs dry, so under
+ * ferment the guidance waited behind long tool loops and arrived far too late,
+ * or never, with follow-ups stacking up behind each other. The steering queue is
+ * drained after every turn. `triggerTurn` covers the other end: a truncation
+ * with no tool calls ends the run, leaving no turn for the steer to ride.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { resolveMaxOutputTokens } from "../models.js"
+import {
+	suppressThinkingBudgetForNextTurn,
+	THINKING_BUDGET_DIAGNOSTIC_TYPE,
+} from "../upstream-thinking-budget-patch.js"
 
 /**
  * Both spellings are clamped when present. LiteLLM accepts `max_tokens` and
@@ -204,6 +215,39 @@ export const TRUNCATION_GAVE_UP_CUSTOM_TYPE = "max-output-tokens-truncation-gave
  */
 export const MAX_CONSECUTIVE_TRUNCATION_STEERS = 3
 
+/**
+ * Steer for a turn severed by the *thinking* budget rather than the output cap.
+ *
+ * Separate wording because the two mean different things: the output cap can
+ * sever a turn that was already acting, while this one only ever fires
+ * mid-deliberation, so "you were still thinking" is always true here.
+ */
+export const THINKING_STEER_MESSAGE =
+	"Your previous response was cut off: it exceeded the per-turn thinking budget before you produced " +
+	"any action. The reasoning you had done was discarded, so there is nothing to resume. " +
+	"Do not plan further. Take the single most useful next action now with a tool call, " +
+	"and keep any prose to one or two sentences. If the task needs many steps, do one step per turn."
+
+/** Sent instead of the steer once steering has given up, on the one uncapped turn. */
+export const THINKING_GAVE_UP_MESSAGE =
+	"Your responses have been cut off by the thinking budget several times in a row. " +
+	"This turn is not capped. Produce a concrete result now — take an action or give your answer — " +
+	"rather than reasoning further."
+
+export const THINKING_STEER_CUSTOM_TYPE = "max-thinking-tokens-truncation"
+export const THINKING_GAVE_UP_CUSTOM_TYPE = "max-thinking-tokens-truncation-gave-up"
+
+/**
+ * True when the truncation came from the thinking budget rather than the output
+ * cap. Read off the message's own diagnostics rather than a module-level
+ * callback: subagents run in the same process, so a shared notification channel
+ * would let one session's truncation be attributed to another's turn.
+ */
+export function isThinkingBudgetTruncation(message: unknown): boolean {
+	const diagnostics = (message as { diagnostics?: { type?: string }[] })?.diagnostics
+	return Array.isArray(diagnostics) && diagnostics.some((d) => d?.type === THINKING_BUDGET_DIAGNOSTIC_TYPE)
+}
+
 /** True for any assistant message, truncated or not. Exported for tests. */
 export function isAssistantMessage(message: unknown): message is AssistantMessage {
 	return typeof message === "object" && message !== null && (message as AssistantMessage).role === "assistant"
@@ -225,9 +269,17 @@ export default function maxOutputTokensExtension(pi: ExtensionAPI): void {
 	// the session rather than carrying a grudge from an earlier rough patch.
 	let consecutiveTruncations = 0
 
-	pi.on("turn_start", async () => {
-		// Belt-and-braces: a turn the user starts is a fresh attempt.
-		if (consecutiveTruncations >= MAX_CONSECUTIVE_TRUNCATION_STEERS) consecutiveTruncations = 0
+	// A prompt the *user* submits is a fresh attempt, so the allowance resets with it.
+	//
+	// Neither turn-level nor run-level events work here. A turn is one model round
+	// trip and there are many per prompt. A run is worse: `agent_start` opens every
+	// agent loop, including the one `triggerTurn` starts to carry the steer below,
+	// so the counter would reset on the run it is counting and the give-up would
+	// never fire. Only genuine user input marks a fresh attempt; the source filter
+	// excludes our own steer and every other extension-triggered turn.
+	pi.on("input", (event) => {
+		if (event.source === "extension") return
+		consecutiveTruncations = 0
 	})
 
 	pi.on("message_end", async (event) => {
@@ -237,6 +289,27 @@ export default function maxOutputTokensExtension(pi: ExtensionAPI): void {
 		}
 
 		consecutiveTruncations += 1
+
+		// The thinking budget cuts mid-deliberation, so its truncations never carry a
+		// tool call. Separate wording and customType keep the two causes apart in
+		// session analysis; delivery is the same as below.
+		if (isThinkingBudgetTruncation(event.message)) {
+			const gaveUp = consecutiveTruncations > MAX_CONSECUTIVE_TRUNCATION_STEERS
+			if (gaveUp) {
+				// Steering has stopped, so a still-capped turn would be cut off again
+				// with nothing left to recover it and the run would end empty-handed.
+				suppressThinkingBudgetForNextTurn()
+			}
+			const text = gaveUp ? THINKING_GAVE_UP_MESSAGE : THINKING_STEER_MESSAGE
+			const customType = gaveUp ? THINKING_GAVE_UP_CUSTOM_TYPE : THINKING_STEER_CUSTOM_TYPE
+			pi.sendMessage(
+				{ customType, content: [{ type: "text", text }], display: false },
+				{ deliverAs: "steer", triggerTurn: true },
+			)
+			pi.appendEntry(customType, { steered: true, gaveUp, consecutiveTruncations, text })
+			return
+		}
+
 		if (consecutiveTruncations > MAX_CONSECUTIVE_TRUNCATION_STEERS) {
 			// Give up rather than steer forever; record it so the give-up is
 			// visible in session analysis instead of looking like a clean stop.
@@ -248,16 +321,14 @@ export default function maxOutputTokensExtension(pi: ExtensionAPI): void {
 			return
 		}
 
-		// followUp + triggerTurn: the turn is already ending, so this must queue a
-		// fresh turn rather than steer the in-flight one (which has nothing left
-		// to steer).
+		// Steer rather than follow-up, and triggerTurn for the idle case; see header.
 		pi.sendMessage(
 			{
 				customType: TRUNCATION_STEER_CUSTOM_TYPE,
 				content: [{ type: "text", text: TRUNCATION_STEER_MESSAGE }],
 				display: false,
 			},
-			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "steer", triggerTurn: true },
 		)
 	})
 

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest"
 import { DEFAULT_MAX_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS_ENV, resolveMaxOutputTokens } from "../models.js"
+import { THINKING_BUDGET_DIAGNOSTIC_TYPE } from "../upstream-thinking-budget-patch.js"
 import maxOutputTokensExtension, {
 	applyMaxOutputTokens,
 	contextSafetyMargin,
 	MAX_CONSECUTIVE_TRUNCATION_STEERS,
+	THINKING_GAVE_UP_CUSTOM_TYPE,
+	THINKING_STEER_CUSTOM_TYPE,
 	TRUNCATION_GAVE_UP_CUSTOM_TYPE,
 	TRUNCATION_STEER_CUSTOM_TYPE,
 } from "./max-output-tokens.js"
@@ -136,9 +139,11 @@ describe("truncation steering", () => {
 	function runExtension() {
 		const handlers = new Map<string, (event: unknown) => Promise<unknown> | unknown>()
 		const rec: Recorded = { steers: 0, gaveUp: 0 }
+		const queued: { customType: string; deliverAs?: string; triggerTurn?: boolean }[] = []
 		const pi = {
 			on: (name: string, fn: (event: unknown) => Promise<unknown> | unknown) => handlers.set(name, fn),
-			sendMessage: (msg: { customType: string }) => {
+			sendMessage: (msg: { customType: string }, options?: { deliverAs?: string; triggerTurn?: boolean }) => {
+				queued.push({ customType: msg.customType, deliverAs: options?.deliverAs, triggerTurn: options?.triggerTurn })
 				if (msg.customType === TRUNCATION_STEER_CUSTOM_TYPE) rec.steers += 1
 			},
 			appendEntry: (customType: string) => {
@@ -149,8 +154,47 @@ describe("truncation steering", () => {
 		maxOutputTokensExtension(pi as any)
 		const end = async (stopReason: string, role = "assistant") =>
 			await handlers.get("message_end")?.({ type: "message_end", message: { role, stopReason } })
-		return { rec, end }
+
+		/** A turn severed by the thinking budget: the patch stamps this diagnostic on it. */
+		const endThinking = async (stopReason = "length") =>
+			await handlers.get("message_end")?.({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					stopReason,
+					diagnostics: [{ type: THINKING_BUDGET_DIAGNOSTIC_TYPE, timestamp: 0 }],
+				},
+			})
+
+		const input = async (source: string) => await handlers.get("input")?.({ type: "input", text: "hi", source })
+
+		return { rec, end, endThinking, queued, input }
 	}
+
+	// The trap: `triggerTurn` starts a fresh agent loop to deliver each steer, and
+	// every loop emits agent_start. Resetting the counter there would zero it on
+	// the very run it is counting, so the give-up would never fire and steering
+	// would continue forever.
+	it("does not reset the counter on the run its own steer triggers", async () => {
+		const { rec, end, input } = runExtension()
+		for (let i = 0; i < MAX_CONSECUTIVE_TRUNCATION_STEERS + 2; i += 1) {
+			await end("length")
+			await input("extension")
+		}
+		expect(rec.steers).toBe(MAX_CONSECUTIVE_TRUNCATION_STEERS)
+		expect(rec.gaveUp).toBe(2)
+	})
+
+	it("does reset when the user submits a fresh prompt", async () => {
+		const { rec, end, input } = runExtension()
+		for (let i = 0; i < MAX_CONSECUTIVE_TRUNCATION_STEERS; i += 1) await end("length")
+		await input("user")
+		await end("length")
+		// The reset gave the model its full allowance back, so this is a steer
+		// rather than the give-up it would otherwise have been.
+		expect(rec.steers).toBe(MAX_CONSECUTIVE_TRUNCATION_STEERS + 1)
+		expect(rec.gaveUp).toBe(0)
+	})
 
 	it("steers once per truncated turn", async () => {
 		const { rec, end } = runExtension()
@@ -182,6 +226,51 @@ describe("truncation steering", () => {
 			await end("toolUse")
 		}
 		expect(rec).toEqual({ steers: 10, gaveUp: 0 })
+	})
+
+	// A thinking truncation carries no tool calls at all, so the agent loop would
+	// otherwise drain nothing and end the run.
+	it("steers a thinking truncation with its own wording and customType", async () => {
+		const { endThinking, queued, rec } = runExtension()
+		await endThinking()
+
+		expect(queued).toEqual([{ customType: THINKING_STEER_CUSTOM_TYPE, deliverAs: "steer", triggerTurn: true }])
+		// It must not be counted as, or worded as, an output-cap truncation.
+		expect(rec.steers).toBe(0)
+	})
+
+	// followUp only fires when the agent would stop; a steer is drained after the
+	// very next turn, so the guidance cannot be stranded behind a long tool loop.
+	it("delivers the thinking steer as a steer, never a followUp", async () => {
+		const { endThinking, queued } = runExtension()
+		await endThinking()
+		expect(queued[0].deliverAs).toBe("steer")
+	})
+
+	it("gives up after the limit and still queues a message", async () => {
+		const { endThinking, queued } = runExtension()
+		for (let i = 0; i <= MAX_CONSECUTIVE_TRUNCATION_STEERS; i += 1) await endThinking()
+
+		expect(queued).toHaveLength(MAX_CONSECUTIVE_TRUNCATION_STEERS + 1)
+		expect(queued[queued.length - 1].customType).toBe(THINKING_GAVE_UP_CUSTOM_TYPE)
+	})
+
+	// A followUp is drained only once the agent loop runs dry, so under ferment it
+	// sat behind long tool loops and arrived too late or never. A steer is drained
+	// after every turn.
+	it("delivers the output-cap steer as a steer, never a followUp", async () => {
+		const { end, queued } = runExtension()
+		await end("length")
+		expect(queued).toEqual([{ customType: TRUNCATION_STEER_CUSTOM_TYPE, deliverAs: "steer", triggerTurn: true }])
+	})
+
+	// The other end of the same problem: a truncation with no tool calls breaks the
+	// loop, so without triggerTurn there is no turn left to carry the steer.
+	it("sets triggerTurn on every steer so an idle agent still gets one", async () => {
+		const { end, endThinking, queued } = runExtension()
+		await end("length")
+		await endThinking()
+		expect(queued.every((q) => q.triggerTurn === true)).toBe(true)
 	})
 
 	it("does not reset on non-assistant messages", async () => {

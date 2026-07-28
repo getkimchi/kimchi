@@ -136,6 +136,7 @@ import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
 import { installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
+import { installThinkingBudgetPatch } from "./upstream-thinking-budget-patch.js"
 import {
 	postProcessHtmlExport,
 	postProcessJsonlExport,
@@ -147,6 +148,9 @@ import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
 installInlineCompactPatch()
+// Must run before any AgentSession is constructed: it wraps the agent's stream
+// function from inside the constructor.
+installThinkingBudgetPatch()
 installPiNativeCompatibilityShim()
 
 function getSubcommand(args: string[]): string {
