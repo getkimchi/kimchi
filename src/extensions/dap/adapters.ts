@@ -1,53 +1,10 @@
 // extensions/dap/adapters.ts
 //
-// =============================================================================
-// js-debug protocol conclusion (spike, 2026-07-20)
-// =============================================================================
-// Q: Does `node --inspect-brk` speak DAP directly, or Chrome DevTools Protocol
-//    (CDP)?
-// A: CDP. Node's --inspect* flags start the V8 inspector, which exposes a
-//    WebSocket endpoint on 127.0.0.1:9229 speaking CDP — NOT DAP. Confirmed by
-//    the Node.js inspector docs: "Node.js inspector supports all the Chrome
-//    DevTools Protocol domains declared by V8." There is no DAP framing on
-//    that socket.
-//
-//    Therefore `node --inspect-brk` alone CANNOT be driven by the DAP client
-//    in client.ts. TypeScript is a must-have v1 acceptance target, so we use
-//    @vscode/js-debug (microsoft/vscode-js-debug) — a DAP-native JavaScript
-//    debugger that internally translates DAP <-> CDP. It is the default JS
-//    debugger in VS Code and ships a standalone pure-DAP server tarball
-//    (`js-debug-dap-<ver>.tar.gz`) on its GitHub releases page, also packaged
-//    as the `js-debug-adapter` npm/Mason package for editors like Neovim.
-//
-// Architectural impact (resolved below):
-//   js-debug's standalone DAP server entry point is `dapDebugServer.js`, and
-//   it is TCP-based, NOT stdio. Invocation is:
-//       node <js-debug>/src/dapDebugServer.js <port> [host]
-//   The DAP client then CONNECTS to 127.0.0.1:<port> over TCP. This differs
-//   from dlv dap / debugpy / lldb-dap, which all speak DAP over stdio and fit
-//   the existing `command + args` BunProcess.spawn model in client.ts.
-//
-//   DapAdapterConfig now carries a `transport` discriminator (see types.ts):
-//     - { kind: "stdio" }                              // dlv, debugpy, lldb-dap
-//     - { kind: "tcp"; portArgIndex: number }          // js-debug
-//   client.ts's getOrCreateClient will branch on it at the session layer
-//   (Phase 3): for "tcp" adapters, spawn the server with port=0, parse the
-//   bound port from stdout, then open a TCP socket and run the same framing
-//   pump over the socket. The framing/correlation/event-pump logic in
-//   client.ts is transport-agnostic (only needs a duplex byte stream), so the
-//   change is isolated to spawn+connect plumbing.
-//
-//   js-debug's `command` is `node` (always on PATH), so detection via `which
-//   node` is meaningless. The `detectBinary` field points `which` at the
-//   `js-debug-adapter` shim instead — the npm/Mason package name that exists
-//   iff js-debug is actually installed.
-//
-// Sources:
-//   - https://nodejs.org/docs/v22.11.0/api/inspector.html  (CDP, not DAP)
-//   - https://github.com/microsoft/vscode-js-debug          (DAP-based JS debugger)
-//   - https://github.com/microsoft/vscode-js-debug/releases (js-debug-dap tarball)
-//   - nvim-dap wiki: Debug Adapter installation             (dapDebugServer.js <port>)
-// =============================================================================
+// Adapter registry for DAP debug adapters. Mirrors lsp/servers.ts.
+// Supports stdio (dlv, debugpy, lldb-dap, java-debug, rdbg, php-debug-adapter)
+// and TCP transports (js-debug). js-debug uses nested sessions via
+// the startDebugging reverse-request — see client.ts for handling.
+// See docs/extensions/dap.md for architecture details.
 
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
