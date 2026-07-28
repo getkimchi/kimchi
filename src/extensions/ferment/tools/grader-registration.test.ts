@@ -53,10 +53,17 @@ describe("Grader agent registration", () => {
 		expect(cfg.systemPrompt).toContain("You MAY write inline code to verify specific claims")
 		expect(cfg.systemPrompt).toContain("This is NOT implementation work")
 
+		// Must prohibit filesystem searches for runtimes
+		expect(cfg.systemPrompt).toContain("Search the filesystem for runtimes or libraries")
+
 		// Must prescribe requirement-driven verification for consistency
 		expect(cfg.systemPrompt).toContain("Requirement-driven verification procedure")
 		expect(cfg.systemPrompt).toContain("Identify requirements")
 		expect(cfg.systemPrompt).toContain("Classify each requirement")
 		expect(cfg.systemPrompt).toContain("one per requirement")
+		// Must deduplicate verification when one command covers multiple requirements
+		expect(cfg.systemPrompt).toContain("that single re-run satisfies all requirements it covers")
+		// Must cap inline checks at one per requirement
+		expect(cfg.systemPrompt).toContain("Do not write a second check if the first passes")
 	})
 })
