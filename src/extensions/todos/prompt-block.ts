@@ -3,11 +3,18 @@ import { getActive } from "../ferment/state.js"
 import { getTurnsSinceStepTodoWrite } from "../ferment/todo-sync.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { parseTodoScopeKey } from "./scope.js"
-import { getTodoState } from "./store.js"
+import { getTodoState, getToolCallsSinceTodoWrite } from "./store.js"
 import type { TodoItem, TodoScope, TodoStatus } from "./types.js"
 
 const TODO_GUIDANCE =
-	"## Todos\nFor any non-trivial task, maintain a todo list. This includes code changes, debugging, reviews, investigations, multi-file reads, or anything with more than one meaningful step. Skip todos only for a single straightforward answer or a purely conversational task. Using todo tools is for tracking your work in the session; it is different from leaving TODO comments/placeholders in code, which you must not do unless explicitly requested. Use create_todos for the initial list before starting multi-step work, add_todo for one missing item, mark_todo for one status change, update_todos for batch replacement, and clear_todos only when the work is done or obsolete. Keep the list tactical and update it after meaningful progress, before switching to the next item, and before your final response. Keep at most one item in_progress when possible; when a current list is visible, continue the in_progress item before starting pending work. When updating an existing list, preserve user-created todos and existing ids unless the user asked to remove or rewrite them; append new todos after existing todos."
+	"## Todos\n" +
+	"For non-trivial work, maintain a todo list — it is a contract with the user, not just your own memory. The user reads it to verify sequencing and catch mistakes early.\n\n" +
+	"Create a list for tasks with multiple non-trivial steps: code changes, debugging, reviews, investigations, multi-file work. Start short (2-3 items) and grow it as the task structure emerges — a long list at turn one signals false confidence about the shape of the work. Skip todos for single-step answers, trivial two-step tasks, or purely conversational exchanges.\n\n" +
+	"Using todo tools is for tracking your work in the session; it is different from leaving TODO comments/placeholders in code, which you must not do unless explicitly requested. " +
+	"Use create_todos for the initial list before starting multi-step work, add_todo for one missing item, mark_todo for one status change, update_todos for batch replacement, and clear_todos only when the work is done or obsolete. " +
+	"Update the list at natural break points: when a step completes, when the plan changes, or when switching focus. Combine todo updates with other tool calls in the same turn when possible — avoid making a turn just for todo bookkeeping. " +
+	"Keep at most one item in_progress at a time; when a current list is visible, continue the in_progress item before starting pending work. When updating an existing list, preserve user-created todos and existing ids unless the user asked to remove or rewrite them; append new todos after existing todos. " +
+	'If you see a staleness warning in your todo state ("⚠ N changes since last update"), update your list at the next natural break point to keep it in sync with reality.'
 
 const FERMENT_TODO_GUIDANCE =
 	"\n\nWhen working inside a ferment step, break the step into concrete sub-tasks using add_todo before writing code. Each sub-task should be a specific verifiable action (run a command, write a file, check an output). Mark each sub-task as you complete it rather than batch-replacing the entire list at the end."
@@ -33,20 +40,48 @@ export function registerTodoPromptBlock(pi: ExtensionAPI): void {
 function statusGlyph(status: TodoStatus): string {
 	switch (status) {
 		case "completed":
-			return "[x]"
+			return "✓"
 		case "in_progress":
-			return "[~]"
+			return "▶"
 		case "blocked":
-			return "[!]"
+			return "!"
 		case "pending":
-			return "[ ]"
+			return "○"
 		default:
-			return "[ ]"
+			return "○"
 	}
 }
 
 function formatTodoLine(todo: TodoItem): string {
 	return `- ${statusGlyph(todo.status)} ${todo.content}`
+}
+
+/** Render a compact progress summary, e.g. "1/3 done · 2 active · 1 blocked". */
+function formatProgressSummary(todos: TodoItem[]): string {
+	const total = todos.length
+	if (total === 0) return ""
+	const completed = todos.filter((t) => t.status === "completed").length
+	const active = todos.filter((t) => t.status === "pending" || t.status === "in_progress").length
+	const blocked = todos.filter((t) => t.status === "blocked").length
+	const parts = [`${completed}/${total} done`, `${active} active`]
+	if (blocked > 0) parts.push(`${blocked} blocked`)
+	return parts.join(" · ")
+}
+
+/**
+ * Returns a graduated staleness indicator string based on the number of
+ * non-todo tool calls since the last todo write. Returns `undefined` when
+ * staleness is low enough not to warrant a warning.
+ *
+ * This replaces the old active nudge messages with passive state
+ * enrichment — the model sees the warning in the state block it already
+ * reads, and can choose to act on it at the next natural break point.
+ */
+function stalenessIndicator(changes: number): string | undefined {
+	if (changes <= 2) return undefined
+	if (changes <= 6) return `${changes} changes since last update`
+	if (changes <= 11) return `⚠ ${changes} changes since last update — consider reconciling`
+	return `⚠ ${changes} changes — list is significantly stale`
 }
 
 /** Render the current todo store as a markdown section suitable for injection
@@ -97,33 +132,48 @@ export function renderTodoStateMarkdown(sessionId: string): string | undefined {
 	lines.push("## Current Todos")
 	lines.push("")
 
+	// Collect all staleness signals to show the strongest one at the end.
+	const stalenessWarnings: string[] = []
+
 	if (global.length > 0) {
-		lines.push("**Global**")
+		const summary = formatProgressSummary(global)
+		lines.push(`**Global**${summary ? ` (${summary})` : ""}`)
 		for (const todo of global) lines.push(formatTodoLine(todo))
 		lines.push("")
+
+		// Global-scope staleness (from toolCallsSinceTodoWrite counter)
+		const globalStale = stalenessIndicator(getToolCallsSinceTodoWrite(sessionId))
+		if (globalStale) stalenessWarnings.push(globalStale)
 	}
 
 	for (const phase of fermentScopes) {
+		const allPhaseTodos = [phase.header, ...phase.steps]
+		const summary = formatProgressSummary(allPhaseTodos)
 		// Phase header: show content directly (already prefixed with `[Phase N]`).
-		lines.push(`**${phase.header.content}**`)
+		lines.push(`**${phase.header.content}**${summary ? ` (${summary})` : ""}`)
 		for (const step of phase.steps) lines.push(formatTodoLine(step))
 		lines.push("")
 	}
 
 	for (const stepScope of stepScopes) {
-		lines.push(`**Step ${stepScope.phaseId}/${stepScope.stepId}**`)
+		const summary = formatProgressSummary(stepScope.todos)
+		lines.push(`**Step ${stepScope.phaseId}/${stepScope.stepId}**${summary ? ` (${summary})` : ""}`)
 		for (const todo of stepScope.todos) lines.push(formatTodoLine(todo))
 		lines.push("")
 	}
 
-	// Stall detection: if a ferment step is running and the step-scope
-	// todos haven't been updated in several turns, nudge the model.
+	// Ferment stall detection: if a ferment step is running and the step-scope
+	// todos haven't been updated in several turns, add a staleness warning.
 	const staleTurns = getTurnsSinceStepTodoWrite(sessionId)
 	if (staleTurns >= 5) {
-		lines.push("")
-		lines.push(
-			`\u26a0 Step todos have not been updated for ${staleTurns} turns. If you are iterating without progress, step back and reassess your approach. Update your todo plan with what you have tried and what to try next.`,
+		stalenessWarnings.push(
+			`⚠ Step todos have not been updated for ${staleTurns} turns. If you are iterating without progress, step back and reassess your approach. Update your todo plan with what you have tried and what to try next.`,
 		)
+	}
+
+	if (stalenessWarnings.length > 0) {
+		lines.push("")
+		for (const warning of stalenessWarnings) lines.push(warning)
 	}
 
 	// Trim trailing blank line for cleanliness.

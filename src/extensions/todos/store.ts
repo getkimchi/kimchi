@@ -12,6 +12,22 @@ const stateMap = new Map<string, TodosSliceState>()
 const todoStoreListeners = new Set<(details: WriteTodosDetails, sessionId: string) => void>()
 const activeScopeProviders: TodoScopeProvider[] = []
 
+/** Per-session count of non-todo tool calls since the last todo write.
+ * Used by renderTodoStateMarkdown to show a passive staleness indicator. */
+const toolCallsSinceTodoWrite = new Map<string, number>()
+
+export function getToolCallsSinceTodoWrite(sessionId: string): number {
+	return toolCallsSinceTodoWrite.get(sessionId) ?? 0
+}
+
+export function bumpToolCallsSinceTodoWrite(sessionId: string): void {
+	toolCallsSinceTodoWrite.set(sessionId, (toolCallsSinceTodoWrite.get(sessionId) ?? 0) + 1)
+}
+
+export function resetToolCallsSinceTodoWrite(sessionId: string): void {
+	toolCallsSinceTodoWrite.set(sessionId, 0)
+}
+
 function getSessionState(sessionId: string): TodosSliceState {
 	const existing = stateMap.get(sessionId)
 	if (existing) {
@@ -106,4 +122,5 @@ export function __resetTodoStore(): void {
 	stateMap.clear()
 	activeScopeProviders.length = 0
 	todoStoreListeners.clear()
+	toolCallsSinceTodoWrite.clear()
 }
