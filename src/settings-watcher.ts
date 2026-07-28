@@ -32,10 +32,13 @@ let settingsManager: SettingsManager | undefined
 let projectTrusted = false
 
 /**
- * Sync the session's project-trust decision onto the settings reader. Callers with
- * an ExtensionContext should pass ctx.isProjectTrusted() so project-scope settings
- * are honored exactly when pi's own session honors them. setProjectTrusted
- * re-reads the project scope in-memory; it never writes settings files.
+ * Sync the session's project-trust decision onto the settings reader, so
+ * project-scope settings are honored exactly when pi's own session honors them.
+ * Called by settingsTrustSyncExtension on every session_start — before the first
+ * model request — which keeps the reader's trust current for the whole session
+ * (pi settles trust before extensions load, and it cannot change mid-session).
+ * setProjectTrusted re-reads the project scope in-memory; it never writes
+ * settings files.
  */
 export function setSettingsProjectTrusted(trusted: boolean): void {
 	projectTrusted = trusted
@@ -79,15 +82,11 @@ export function getActiveThemeName(): string | undefined {
 
 /**
  * Whether the /settings Auto-compact toggle is enabled, read via pi's own
- * accessor (missing key defaults to enabled). Pass the session's
- * ctx.isProjectTrusted() when available so project-scope settings apply exactly
- * when pi's own session applies them; omitted, the last-synced trust is used
- * (untrusted until a caller reports otherwise).
+ * accessor (missing key defaults to enabled). Project-scope settings apply per
+ * the last-synced trust — settingsTrustSyncExtension syncs the session's
+ * decision at session_start, before any handler can reach this read.
  */
-export function getCompactionEnabled(isProjectTrusted?: boolean): boolean {
-	if (isProjectTrusted !== undefined && isProjectTrusted !== projectTrusted) {
-		setSettingsProjectTrusted(isProjectTrusted)
-	}
+export function getCompactionEnabled(): boolean {
 	try {
 		return getSettingsManager()?.getCompactionEnabled() ?? true
 	} catch {

@@ -77,6 +77,8 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import type { PermissionMode } from "../../extensions/permissions/types.js"
+import { configureHttpIdleTimeout } from "../../http/proxy.js"
+import { resolveHeadlessProjectTrust } from "../../project-trust.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, CAPABILITIES_KEY } from "./capabilities.js"
@@ -1275,6 +1277,38 @@ function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
 	}
 }
 
+/**
+ * Shared session-setup: create settings manager, apply theme + HTTP idle
+ * timeout, and load resources. Both the session loader and factory
+ * diverge only in how they obtain a SessionManager.
+ */
+async function createSessionSettings(cwd: string, options: RunAcpOptions) {
+	// Construct untrusted first: pi's SettingsManager.create defaults
+	// projectTrusted to TRUE, which would let an untrusted repo's
+	// .pi/settings.json influence HTTP behavior (e.g. disable the idle
+	// timeout) — and the defaultProjectTrust read below must be global-scope
+	// only so a project cannot grant itself trust. Trust is then resolved the
+	// way pi's own no-UI path does and applied in-memory.
+	const settingsManager = SettingsManager.create(cwd, options.agentDir, { projectTrusted: false })
+	settingsManager.setProjectTrusted(
+		resolveHeadlessProjectTrust(cwd, options.agentDir, settingsManager.getDefaultProjectTrust()),
+	)
+	initializeHeadlessTheme(settingsManager)
+	// Getter form: re-read on every request so mid-session settings edits
+	// apply live. The override slot is process-global — with several ACP
+	// sessions in one process, the last-configured session's value governs
+	// all of them (see setStreamIdleTimeoutOverride).
+	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
+	const resourceLoader = new DefaultResourceLoader({
+		cwd,
+		agentDir: options.agentDir,
+		settingsManager,
+		extensionFactories: options.extensionFactories,
+	})
+	await resourceLoader.reload()
+	return { settingsManager, resourceLoader }
+}
+
 function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 	return async (params: LoadSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd
@@ -1350,15 +1384,7 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			const msg = err instanceof Error ? err.message : String(err)
 			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
 		}
-		const settingsManager = SettingsManager.create(cwd, options.agentDir)
-		initializeHeadlessTheme(settingsManager)
-		const resourceLoader = new DefaultResourceLoader({
-			cwd,
-			agentDir: options.agentDir,
-			settingsManager,
-			extensionFactories: options.extensionFactories,
-		})
-		await resourceLoader.reload()
+		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,
@@ -1373,15 +1399,7 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 	return async (params: NewSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
-		const settingsManager = SettingsManager.create(cwd, options.agentDir)
-		initializeHeadlessTheme(settingsManager)
-		const resourceLoader = new DefaultResourceLoader({
-			cwd,
-			agentDir: options.agentDir,
-			settingsManager,
-			extensionFactories: options.extensionFactories,
-		})
-		await resourceLoader.reload()
+		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,

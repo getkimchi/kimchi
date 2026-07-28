@@ -156,12 +156,12 @@ describe("project trust", () => {
 		expect(mockCreate).toHaveBeenCalledWith(expect.any(String), "/fake/agent/dir", { projectTrusted: false })
 	})
 
-	it("syncs a caller-reported trust decision onto the live manager", () => {
+	it("syncs a trust decision onto the live manager in place", () => {
 		const sm = fakeManager({ compactionEnabled: true })
 		mockCreate.mockReturnValue(asManager(sm))
 
 		getCompactionEnabled() // constructs untrusted
-		getCompactionEnabled(true) // syncs trust onto the live instance
+		setSettingsProjectTrusted(true) // the session_start sync
 
 		expect(sm.setProjectTrusted).toHaveBeenCalledWith(true)
 		// The live instance was updated in place — no rebuild required.
@@ -172,15 +172,6 @@ describe("project trust", () => {
 		setSettingsProjectTrusted(true)
 		getSettingsManager()
 		expect(mockCreate).toHaveBeenLastCalledWith(expect.any(String), "/fake/agent/dir", { projectTrusted: true })
-	})
-
-	it("does not touch trust when the caller cannot report it", () => {
-		const sm = fakeManager()
-		mockCreate.mockReturnValue(asManager(sm))
-
-		getCompactionEnabled(undefined)
-
-		expect(sm.setProjectTrusted).not.toHaveBeenCalled()
 	})
 })
 

@@ -42,6 +42,7 @@ function makeFakeModelRegistry() {
 			remove: vi.fn(),
 		},
 		refresh: vi.fn(),
+		getAll: vi.fn().mockReturnValue([]),
 		getAvailable: vi.fn().mockReturnValue([]),
 		getProviderAuthStatus: vi.fn().mockReturnValue({ configured: false }),
 	}
