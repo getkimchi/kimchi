@@ -820,6 +820,46 @@ describe("turn_end lifecycle obligation guard", () => {
 			expect.objectContaining({ deliverAs: "steer" }),
 		)
 	})
+
+	it("caps draft-scoping stop recovery at two nudges and does not fall through to generic recovery", async () => {
+		// Regression: when the draft-specific scoping-stop budget is exhausted,
+		// maybeInjectScopingStopNudge used to return false — indistinguishable
+		// from "not applicable" — so turn_end fell through to
+		// maybeInjectFermentStopNudge, which derived the same scope action and
+		// started its own retry budget. One unchanged scoping obligation then
+		// received up to four recovery messages. The third qualifying turn must
+		// be claimed by the scoping mechanism (exhausted), not handed to generic
+		// Ferment stop recovery.
+		const { pi, handlers } = setupAutomatedGuardFixture("Scoping Budget Fallthrough", {
+			state: "draft",
+			oneshot: true,
+		})
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const ctx = createContext({ hasUI: false })
+
+		// A qualifying tool-call-plus-stop turn: read tools, stopReason "stop",
+		// no scoping-completion tool.
+		const qualifyingTurn = {
+			message: {
+				role: "assistant",
+				stopReason: "stop",
+				content: [
+					{ type: "toolCall", name: "read", id: "call-1", arguments: { path: "README.md" } },
+					{ type: "text", text: "Done reading." },
+				],
+			},
+		}
+
+		await turnEnd(qualifyingTurn, ctx) // scoping stop nudge 1
+		await turnEnd(qualifyingTurn, ctx) // scoping stop nudge 2
+		await turnEnd(qualifyingTurn, ctx) // budget exhausted — must NOT fall through
+
+		const scopingStopCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_scoping_stop_nudge")
+		const continuationCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		expect(scopingStopCalls).toHaveLength(2)
+		expect(continuationCalls).toHaveLength(0)
+	})
 })
 
 describe("turn_end error recovery in one-shot mode", () => {

@@ -493,9 +493,9 @@ describe("maybeInjectScopingStopNudge", () => {
 
 	it("fires when stopReason is 'stop' and no scoping tool was called", () => {
 		const pi = createPi()
-		const nudged = maybeInjectScopingStopNudge(pi, fermentId, ["read", "grep"], "stop")
+		const outcome = maybeInjectScopingStopNudge(pi, fermentId, ["read", "grep"], "stop")
 
-		expect(nudged).toBe(true)
+		expect(outcome).toEqual({ kind: "scheduled" })
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_scoping_stop_nudge",
@@ -511,37 +511,48 @@ describe("maybeInjectScopingStopNudge", () => {
 
 	it("does not fire when the turn called scope_ferment", () => {
 		const pi = createPi()
-		const nudged = maybeInjectScopingStopNudge(pi, fermentId, ["read", "scope_ferment"], "stop")
+		const outcome = maybeInjectScopingStopNudge(pi, fermentId, ["read", "scope_ferment"], "stop")
 
-		expect(nudged).toBe(false)
+		expect(outcome).toEqual({ kind: "not_applicable" })
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("does not fire when the turn called propose_ferment_scoping", () => {
 		const pi = createPi()
-		const nudged = maybeInjectScopingStopNudge(pi, fermentId, ["propose_ferment_scoping"], "stop")
+		const outcome = maybeInjectScopingStopNudge(pi, fermentId, ["propose_ferment_scoping"], "stop")
 
-		expect(nudged).toBe(false)
+		expect(outcome).toEqual({ kind: "not_applicable" })
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("does not fire when stopReason is not 'stop'", () => {
 		const pi = createPi()
-		const nudged = maybeInjectScopingStopNudge(pi, fermentId, ["read"], "end_turn")
+		const outcome = maybeInjectScopingStopNudge(pi, fermentId, ["read"], "end_turn")
 
-		expect(nudged).toBe(false)
+		expect(outcome).toEqual({ kind: "not_applicable" })
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("does not fire when no tools were called (pure text turn)", () => {
 		const pi = createPi()
-		const nudged = maybeInjectScopingStopNudge(pi, fermentId, [], "stop")
+		const outcome = maybeInjectScopingStopNudge(pi, fermentId, [], "stop")
 
-		expect(nudged).toBe(false)
+		expect(outcome).toEqual({ kind: "not_applicable" })
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("suppresses additional nudges after the cap is hit", () => {
+	it("returns scheduled for the first two qualifying turns", () => {
+		const pi = createPi()
+
+		const first = maybeInjectScopingStopNudge(pi, fermentId, ["read"], "stop")
+		const second = maybeInjectScopingStopNudge(pi, fermentId, ["read"], "stop")
+
+		expect(first).toEqual({ kind: "scheduled" })
+		expect(second).toEqual({ kind: "scheduled" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
+	})
+
+	it("returns claimed:exhausted after the cap is hit", () => {
 		const pi = createPi()
 
 		// Fires up to MAX_PLANNING_STOP_NUDGES times.
@@ -549,7 +560,8 @@ describe("maybeInjectScopingStopNudge", () => {
 		maybeInjectScopingStopNudge(pi, fermentId, ["read"], "stop")
 		const third = maybeInjectScopingStopNudge(pi, fermentId, ["read"], "stop")
 
-		expect(third).toBe(false)
+		expect(third).toEqual({ kind: "claimed", reason: "exhausted" })
+		// No new message on the exhausted turn — only the two scheduled nudges.
 		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
 	})
 })

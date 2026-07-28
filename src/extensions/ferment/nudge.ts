@@ -252,13 +252,29 @@ export function resetScopingStopNudgeCount(fermentId: string): void {
 	scopingStopNudgeCounts.delete(fermentId)
 }
 
+/** Outcome of evaluating a draft-scoping turn for the stop nudge.
+ *
+ * - `not_applicable` — the turn does not qualify for draft scoping-stop
+ *   recovery (no tool calls, wrong stop reason, or a scoping-completion tool
+ *   was present). Another recovery mechanism may evaluate the same turn.
+ * - `scheduled` — a scoping recovery message was injected.
+ * - `claimed` — the turn qualifies but the retry budget is exhausted. The
+ *   scoping mechanism retains ownership of the obligation; generic Ferment
+ *   stop recovery must NOT start a separate budget for the same obligation. */
+export type ScopingStopNudgeOutcome =
+	| { kind: "not_applicable" }
+	| { kind: "scheduled" }
+	| { kind: "claimed"; reason: "exhausted" }
+
 /**
  * Fires when the model made tool calls during draft scoping but ended the turn
  * with stopReason "stop" without calling any scoping-completion tool. Mirrors
  * plan-mode-supplement's stop nudge: it prevents the silent stall where the
  * model explores, decides it's done, and quits without calling scope_ferment.
  *
- * Returns true if a nudge was injected.
+ * Returns an explicit outcome so the caller can distinguish "the budget is
+ * exhausted, this mechanism still owns the obligation" from "this turn is not
+ * applicable". Only `not_applicable` allows another recovery mechanism to act.
  */
 export function maybeInjectScopingStopNudge(
 	pi: ExtensionAPI,
@@ -266,17 +282,19 @@ export function maybeInjectScopingStopNudge(
 	toolNames: string[],
 	stopReason: string | undefined,
 	opts: { interactive: boolean } = { interactive: true },
-): boolean {
+): ScopingStopNudgeOutcome {
 	const completionSignalPresent = hasFermentScopingCompletionSignal(toolNames)
 
 	if (!shouldNudge({ hasToolCall: toolNames.length > 0, stopReason, completionSignalPresent })) {
-		return false
+		return { kind: "not_applicable" }
 	}
 
 	const count = (scopingStopNudgeCounts.get(fermentId) ?? 0) + 1
 	scopingStopNudgeCounts.set(fermentId, count)
 
-	if (isNudgeSuppressed(count)) return false
+	if (isNudgeSuppressed(count)) {
+		return { kind: "claimed", reason: "exhausted" }
+	}
 
 	const nudgeText = opts.interactive ? FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE : FERMENT_SCOPING_STOP_NUDGE_ONESHOT
 	safeSendMessage(
@@ -289,5 +307,5 @@ export function maybeInjectScopingStopNudge(
 		},
 		{ triggerTurn: true },
 	)
-	return true
+	return { kind: "scheduled" }
 }

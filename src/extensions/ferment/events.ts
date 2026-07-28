@@ -663,9 +663,14 @@ export function registerFermentEvents(
 
 			// Stop-without-scoping: the model made tool calls but ended with
 			// stopReason "stop" without calling any scoping-completion tool.
+			// Only `not_applicable` lets a later recovery mechanism evaluate the
+			// same turn. `scheduled` (a nudge was sent) and `claimed` (the
+			// scoping budget is exhausted) both retain ownership of the draft-
+			// scoping obligation so generic Ferment stop recovery cannot start a
+			// second budget for it.
 			if (stopReason === "stop") {
-				const stopNudged = maybeInjectScopingStopNudge(pi, f.id, toolNames, stopReason, { interactive })
-				if (stopNudged) return
+				const outcome = maybeInjectScopingStopNudge(pi, f.id, toolNames, stopReason, { interactive })
+				if (outcome.kind !== "not_applicable") return
 			}
 		}
 
