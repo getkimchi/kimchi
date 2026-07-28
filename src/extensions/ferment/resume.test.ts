@@ -347,7 +347,7 @@ describe("resumeFerment paused-state nudge guard", () => {
 
 describe("resumeFerment scoping-stop budget reset", () => {
 	it("resets the scoping-stop budget so a resumed draft gets a fresh nudge budget", () => {
-		// P2 regression: /ferment resume calls resumeFerment directly without
+		// /ferment resume calls resumeFerment directly without
 		// a session_start. Before the fix, the process-global
 		// scopingStopNudgeCounts was never cleared on resume, so a draft that
 		// reached exhaustion stayed permanently `claimed` — no recovery nudge

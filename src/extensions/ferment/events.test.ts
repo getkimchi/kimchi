@@ -822,7 +822,7 @@ describe("turn_end lifecycle obligation guard", () => {
 	})
 
 	it("caps draft-scoping stop recovery at two nudges and does not fall through to generic recovery", async () => {
-		// Regression: when the draft-specific scoping-stop budget is exhausted,
+		// when the draft-specific scoping-stop budget is exhausted,
 		// maybeInjectScopingStopNudge used to return false — indistinguishable
 		// from "not applicable" — so turn_end fell through to
 		// maybeInjectFermentStopNudge, which derived the same scope action and
@@ -862,7 +862,7 @@ describe("turn_end lifecycle obligation guard", () => {
 	})
 
 	it("does not bypass the user-input dropdown when scoping recovery is exhausted (interactive)", async () => {
-		// P1 regression: after two scoping-stop nudges, a qualifying turn that
+		// after two scoping-stop nudges, a qualifying turn that
 		// also contains a user-directed question must still reach
 		// maybeRunUserInputDropdown in interactive mode. The `claimed` outcome
 		// suppresses generic Ferment stop recovery, but it must not suppress
@@ -916,7 +916,7 @@ describe("turn_end lifecycle obligation guard", () => {
 	})
 
 	it("resets the scoping-stop budget when a new session begins", async () => {
-		// P2 regression: scopingStopNudgeCounts is process-global. Without a
+		// scopingStopNudgeCounts is process-global. Without a
 		// reset on session_start, a draft that reached exhaustion in a prior
 		// session continues to return `claimed` forever (within the same
 		// process) — no recovery message is ever sent again. After the reset,
