@@ -6,6 +6,10 @@ import { appendTodoPromptBlockIfMissing, registerTodoPromptBlock, registerTodoSt
 import {
 	bumpToolCallsSinceTodoWrite,
 	getTodosForScope,
+	getToolCallsSinceTodoWrite,
+	hasEverHadTodos,
+	hasTodoNudgeFired,
+	markTodoNudgeFired,
 	resetToolCallsSinceTodoWrite,
 	resolveTodoScope,
 	restoreTodoStoreFromDetails,
@@ -67,6 +71,20 @@ function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager,
 		entries.map(getWriteTodosDetails).filter((details) => details !== undefined),
 		sessionId,
 	)
+}
+
+const TODO_EARLY_NUDGE_THRESHOLD = 5
+
+const TODO_EARLY_NUDGE_MESSAGE =
+	"You are working on a multi-step task without a todo list. Consider creating one to plan your approach — pair the create_todos call with your next work tool call in the same turn."
+
+function hiddenTodoMessage(text: string) {
+	return {
+		customType: TODO_CUSTOM_ENTRY_TYPE,
+		content: [{ type: "text" as const, text }],
+		display: false,
+		details: { reason: "early_nudge" },
+	}
 }
 
 export default function todosExtension(pi: ExtensionAPI): void {
@@ -135,6 +153,18 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	pi.on("tool_execution_end", (event, ctx) => {
 		if (event.isError || TODO_REPLAY_TOOL_NAME_SET.has(event.toolName)) return
 		const sessionId = ctx.sessionManager.getSessionId()
+
+		// One-shot early nudge: if the session has done several non-todo tool
+		// calls and never created a todo list, send a single hidden message
+		// suggesting the model create one. Fires once per session, never recurs.
+		if (!hasEverHadTodos(sessionId) && !hasTodoNudgeFired(sessionId)) {
+			const count = getToolCallsSinceTodoWrite(sessionId) + 1
+			if (count >= TODO_EARLY_NUDGE_THRESHOLD) {
+				markTodoNudgeFired(sessionId)
+				pi.sendMessage(hiddenTodoMessage(TODO_EARLY_NUDGE_MESSAGE), { deliverAs: "followUp" })
+			}
+		}
+
 		// Only track staleness when there are existing todos to keep in sync.
 		const scope = resolveTodoScope()
 		if (getTodosForScope(scope, sessionId).length > 0) {

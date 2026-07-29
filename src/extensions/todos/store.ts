@@ -16,6 +16,18 @@ const activeScopeProviders: TodoScopeProvider[] = []
  * Used by renderTodoStateMarkdown to show a passive staleness indicator. */
 const toolCallsSinceTodoWrite = new Map<string, number>()
 
+/** Per-session flag: has this session ever had a todo list? Used to gate
+ * the one-shot early nudge — only fires when no list has ever been created. */
+const sessionsWithTodos = new Set<string>()
+
+/** Per-session flag: has the one-shot early nudge already fired? Prevents
+ * the nudge from recurring after it fires once. */
+const todoNudgeFired = new Set<string>()
+
+/** Tracks whether the todo list has been updated since creation (vs create-and-forget).
+ * Reset to false on create, set to true on any subsequent write. */
+const todoListEverUpdated = new Set<string>()
+
 export function getToolCallsSinceTodoWrite(sessionId: string): number {
 	return toolCallsSinceTodoWrite.get(sessionId) ?? 0
 }
@@ -26,6 +38,26 @@ export function bumpToolCallsSinceTodoWrite(sessionId: string): void {
 
 export function resetToolCallsSinceTodoWrite(sessionId: string): void {
 	toolCallsSinceTodoWrite.set(sessionId, 0)
+}
+
+/** Returns true if this session has ever had any todos in its store. */
+export function hasEverHadTodos(sessionId: string): boolean {
+	return sessionsWithTodos.has(sessionId)
+}
+
+/** Returns true if the one-shot early nudge has already fired for this session. */
+export function hasTodoNudgeFired(sessionId: string): boolean {
+	return todoNudgeFired.has(sessionId)
+}
+
+/** Marks that the one-shot early nudge has fired for this session. */
+export function markTodoNudgeFired(sessionId: string): void {
+	todoNudgeFired.add(sessionId)
+}
+
+/** Returns true if the todo list has been updated since creation (not create-and-forget). */
+export function hasTodoListBeenUpdated(sessionId: string): boolean {
+	return todoListEverUpdated.has(sessionId)
 }
 
 function getSessionState(sessionId: string): TodosSliceState {
@@ -72,6 +104,21 @@ export function applyWriteTodos(params: WriteTodosParams, sessionId: string): Wr
 	const current = getSessionState(sessionId)
 	const result = reduceReplaceList(current, { ...params, scope })
 	setSessionState(sessionId, result.state)
+
+	// Track session state for nudge gating and create-and-forget detection.
+	const hadTodosBefore = sessionsWithTodos.has(sessionId)
+	const hasTodosAfter = result.details.todos.length > 0
+	if (hasTodosAfter) {
+		sessionsWithTodos.add(sessionId)
+		// If the session already had todos, this is an update (not initial creation).
+		if (hadTodosBefore) {
+			todoListEverUpdated.add(sessionId)
+		}
+	} else if (hadTodosBefore) {
+		// Clearing todos counts as an update.
+		todoListEverUpdated.add(sessionId)
+	}
+
 	notifyTodoStoreListeners(result.details, sessionId)
 	return result.details
 }
@@ -123,4 +170,7 @@ export function __resetTodoStore(): void {
 	activeScopeProviders.length = 0
 	todoStoreListeners.clear()
 	toolCallsSinceTodoWrite.clear()
+	sessionsWithTodos.clear()
+	todoNudgeFired.clear()
+	todoListEverUpdated.clear()
 }

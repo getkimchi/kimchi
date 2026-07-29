@@ -60,12 +60,12 @@ describe("todo tools", () => {
 		})
 	})
 
-	it("describes update_todos as an update path", () => {
+	it("describes update_todos as a batch replacement path", () => {
 		const tools = registeredTools()
 		const tool = tools[UPDATE_TODOS_TOOL_NAME]
 
-		expect(tool.description).toContain("Update todo progress")
-		expect(tool.description).toContain("meaningful progress")
+		expect(tool.description).toContain("Replace the entire todo list")
+		expect(tool.description).toContain("mark_todo instead")
 	})
 
 	it("describes and executes create_todos as the initial planning path", async () => {
