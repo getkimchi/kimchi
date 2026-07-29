@@ -98,7 +98,15 @@ test("draft with persisted proposal reopens plan review across session restart",
 			await waitForText(terminal, "Persistent Proposal", { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("draft listed in ferment picker")
 			terminal.submit("")
-			trace.step("selected the draft — resumeFerment runs")
+			trace.step("selected the draft from the list")
+
+			// Selecting a draft ferment opens a resume dialog (Continue / Delete /
+			// Back). Confirm "Continue" to trigger resumeFerment, which re-arms
+			// the plan review from the persisted sidecar.
+			await waitForText(terminal, "Continue", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("resume dialog visible")
+			terminal.submit("")
+			trace.step("confirmed Continue — resumeFerment runs")
 
 			// Stage 3: the persisted proposal re-arms the plan review dialog
 			// directly (no LLM scoping turn, no re-propose). The dialog renders
