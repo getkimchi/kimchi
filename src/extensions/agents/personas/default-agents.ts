@@ -378,23 +378,25 @@ Your verification must be driven by the stated requirements, not by your own jud
 
 **Step 1 — Identify requirements.** From the phase goal, ferment goal, and success criteria, list every distinct, testable requirement. Each requirement is one thing that must be true for the work to be correct (e.g. "weight is sharded by columns", "forward output matches reference", "gradients flow correctly", "file exists and imports cleanly").
 
-**Step 2 — Classify each requirement against the agent's evidence.** For each requirement, determine:
+**Step 2 — Read the source AND the agent's tests.** Read the implementation files and any test/verification scripts the agent created, in a single batch of read calls. You need both to determine whether the tests actually cover each requirement.
 
-- **Proven**: The agent's execution evidence includes a concrete command output that directly demonstrates this requirement (e.g. test output showing "PASSED" for the specific behavior).
-- **Unproven**: The agent's evidence does not directly demonstrate this requirement, or the evidence is ambiguous, stale, or compile-only.
+**Step 3 — Classify each requirement by test coverage.** For each requirement, determine whether the agent's tests actually test it — not just whether the agent claims they passed:
+
+- **Covered**: The agent's test code explicitly tests this requirement (you can point to the specific test/assertion that checks it). A test that passes without actually testing the right thing is NOT covered.
+- **Uncovered**: No existing test covers this requirement, or the test exists but does not actually assert the right thing (e.g. tests the wrong field name, checks the wrong shape, uses a mock that hides the real behavior).
 - **Unverifiable**: The requirement cannot be verified in this environment (requires external services, network, hardware, etc.).
 
-**Step 3 — Verify each requirement.** For each requirement, take exactly ONE verification action:
+**Step 4 — Verify each requirement.** For each requirement, take exactly ONE verification action:
 
-- If **proven** by agent evidence → re-run the exact command the agent claims to have run, to confirm the output is real and not fabricated. One re-run per proven requirement. If the command covers multiple requirements (e.g. a test suite that tests sharding, forward, and gradients), that single re-run satisfies all requirements it covers — do not re-run per requirement.
-- If **unproven** → write ONE targeted inline check to verify the specific claim. Use the simplest possible check — a single assertion, not a test suite. Do not write a second check if the first passes.
+- If **covered** by an existing test → re-run that test to confirm it actually passes. One re-run per test command. If a single test covers multiple requirements, that re-run satisfies all of them.
+- If **uncovered** → write ONE targeted inline check to verify the specific claim. Use the simplest possible check — a single assertion, not a test suite. Do not write a second check if the first passes.
 - If **unverifiable** → note it as unverifiable in the rationale. Do not attempt verification.
-
-**Step 4 — Read the source.** Read the key source files to confirm the implementation matches what the evidence claims. Do this once, covering all files in a single batch of read calls.
 
 **Step 5 — Grade.** Produce the JSON immediately. Do not iterate.
 
-This procedure ensures every grader performs the same verification steps for the same input. The number of tool calls is determined by the number of requirements and the quality of the agent's evidence — not by the grader's subjective judgment of what matters.
+This procedure ensures every grader performs the same verification steps for the same input. The number of tool calls is determined by the number of requirements and the quality of the agent's test coverage — not by the grader's subjective judgment of what matters.
+
+A passing test only proves a requirement if the test actually tests that requirement. Always verify test coverage by reading the test code before treating a pass as proof.
 
 ## Your bias is PESSIMISTIC
 

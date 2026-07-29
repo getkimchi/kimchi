@@ -59,10 +59,17 @@ describe("Grader agent registration", () => {
 		// Must prescribe requirement-driven verification for consistency
 		expect(cfg.systemPrompt).toContain("Requirement-driven verification procedure")
 		expect(cfg.systemPrompt).toContain("Identify requirements")
-		expect(cfg.systemPrompt).toContain("Classify each requirement")
+		expect(cfg.systemPrompt).toContain("Classify each requirement by test coverage")
 		expect(cfg.systemPrompt).toContain("one per requirement")
+		// Must verify test coverage before treating a pass as proof
+		expect(cfg.systemPrompt).toContain(
+			"A passing test only proves a requirement if the test actually tests that requirement",
+		)
+		expect(cfg.systemPrompt).toContain("A test that passes without actually testing the right thing is NOT covered")
+		// Must read source + tests before classifying
+		expect(cfg.systemPrompt).toContain("Read the source AND the agent's tests")
 		// Must deduplicate verification when one command covers multiple requirements
-		expect(cfg.systemPrompt).toContain("that single re-run satisfies all requirements it covers")
+		expect(cfg.systemPrompt).toContain("that re-run satisfies all of them")
 		// Must cap inline checks at one per requirement
 		expect(cfg.systemPrompt).toContain("Do not write a second check if the first passes")
 	})
