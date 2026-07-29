@@ -864,7 +864,7 @@ export class FermentCommandController {
 				const previousActiveId = runtime.getActiveId()
 				if (previousActiveId && previousActiveId !== f.id) runtime.clearPendingPlanReview(previousActiveId)
 				sendBreadcrumb(pi, `Switched to "${f.name}" [${f.status}]${wtWarning}`, "ack", "ferment_ack")
-				resumeFerment(pi, f.id, ctx, runtime)
+				resumeFerment(pi, f.id, ctx, runtime, { allowManualPhaseBoundary: true })
 			} catch (err) {
 				ctx.ui.notify(err instanceof FermentError ? err.message : "Switch failed.")
 			}

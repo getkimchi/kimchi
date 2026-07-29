@@ -43,6 +43,14 @@ interface SendMessageCall {
 	content?: { text?: string }[]
 }
 
+/** Count messages across both actionable hidden custom types (the resume
+ *  contract: at most one per resume). */
+function actionableHidden(messages: SendMessageCall[]): SendMessageCall[] {
+	return messages.filter(
+		(m) => m.customType === "ferment_resume_nudge" || m.customType === "ferment_continuation_nudge",
+	)
+}
+
 function createHarness() {
 	const fermentsDir = mkdtempSync(join(tmpdir(), "ferment-resume-test-"))
 	const eventStorage = new FermentEventStore(fermentsDir)
@@ -152,7 +160,9 @@ describe("resumeFerment pending-proposal hydration", () => {
 		expect(pendingScope?.goal).toBe("A test goal")
 		expect(pendingScope?.proposeIterations).toBe(1)
 
-		// No LLM scoping nudge (ferment_resume_nudge) — that path was skipped.
+		// No actionable hidden continuation is sent while a plan review is
+		// pending — neither the resume nudge nor the continuation nudge.
+		expect(actionableHidden(h.sentMessages)).toHaveLength(0)
 		const resumeNudge = h.sentMessages.find((m) => m.customType === "ferment_resume_nudge")
 		expect(resumeNudge).toBeUndefined()
 
@@ -178,6 +188,11 @@ describe("resumeFerment pending-proposal hydration", () => {
 		// The existing resume nudge fires (regression guard).
 		const resumeNudge = h.sentMessages.find((m) => m.customType === "ferment_resume_nudge")
 		expect(resumeNudge).toBeDefined()
+
+		// Resume contract: exactly one actionable hidden message, and it is the
+		// resume nudge — no continuation nudge should be sent for a draft.
+		expect(actionableHidden(h.sentMessages)).toHaveLength(1)
+		expect(h.sentMessages.find((m) => m.customType === "ferment_continuation_nudge")).toBeUndefined()
 	})
 
 	it("confirming the plan deletes the persisted sidecar file", () => {
@@ -220,23 +235,83 @@ describe("resumeFerment pending-proposal hydration", () => {
 	})
 })
 
-describe("resumeFerment automated scope-nudge dedup", () => {
-	it("automated draft resume without a persisted proposal does not queue duplicate scoping nudges", () => {
-		const ferment = h.eventStorage.create("Automated Untouched Draft")
-		h.runtime.setContinuationPolicy("automated")
+describe("resumeFerment planned state", () => {
+	it("planned resume sends exactly one continuation nudge naming the activate_phase action", () => {
+		const ferment = h.eventStorage.create("Planned Resume")
 		h.runtime.setActive(ferment)
+
+		const applyAndPersist = createApplyAndPersist(h.runtime)
+		const scoped = applyAndPersist(ferment.id, {
+			type: "scope",
+			title: "Planned Resume",
+			goal: "g",
+			successCriteria: ["c"],
+			constraints: [],
+			assumptions: "a",
+			phases: [{ name: "P1", goal: "g", steps: [{ description: "s1" }] }],
+		})
+		expect(scoped.ok).toBe(true)
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		// A freshly scoped ferment lands in "planned" with all phases planned.
+		expect(scoped.ferment.status).toBe("planned")
 
 		resumeFerment(h.pi, ferment.id, { hasUI: false } as ExtensionCommandContext, h.runtime)
 
-		const hiddenNudges = h.sentMessages
-			.filter((m) => m.customType === "ferment_resume_nudge" || m.customType === "ferment_continuation_nudge")
-			.map((m) => m.customType)
-		expect(hiddenNudges).toEqual(["ferment_resume_nudge"])
+		// Resume contract: exactly one actionable hidden message.
+		expect(actionableHidden(h.sentMessages)).toHaveLength(1)
+
+		// It is the scheduler's contextual continuation nudge (not the resume
+		// nudge) and it names the expected activate_phase action.
+		const continuation = h.sentMessages.find((m) => m.customType === "ferment_continuation_nudge")
+		expect(continuation).toBeDefined()
+		const text = continuation?.content?.map((c) => c.text ?? "").join("") ?? ""
+		expect(text).toContain("activate_ferment_phase")
+		expect(text).toContain(scoped.ferment.phases[0].id)
+
+		// No resume nudge is sent for a planned ferment.
+		expect(h.sentMessages.find((m) => m.customType === "ferment_resume_nudge")).toBeUndefined()
+		expect(h.sentMessages.filter((m) => m.customType === "ferment_breadcrumb")).toHaveLength(1)
+		expect(h.pi.appendEntry).not.toHaveBeenCalledWith("ferment_breadcrumb", expect.anything())
+	})
+
+	it("continues a planned ferment whose final phase is complete", () => {
+		const ferment = h.eventStorage.create("Ready To Complete")
+		h.runtime.setActive(ferment)
+
+		const applyAndPersist = createApplyAndPersist(h.runtime)
+		const scoped = applyAndPersist(ferment.id, {
+			type: "scope",
+			title: "Ready To Complete",
+			goal: "g",
+			successCriteria: ["c"],
+			constraints: [],
+			assumptions: "a",
+			phases: [{ name: "P1", goal: "g", steps: [] }],
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const phaseId = scoped.ferment.phases[0].id
+		const activated = applyAndPersist(ferment.id, { type: "activate_phase", phaseId })
+		if (!activated.ok) throw new Error(activated.error.message)
+		const phaseDone = applyAndPersist(ferment.id, {
+			type: "complete_phase",
+			phaseId,
+			summary: "done",
+		})
+		if (!phaseDone.ok) throw new Error(phaseDone.error.message)
+		expect(phaseDone.ferment.status).toBe("planned")
+
+		resumeFerment(h.pi, ferment.id, { hasUI: false } as ExtensionCommandContext, h.runtime)
+
+		expect(actionableHidden(h.sentMessages)).toHaveLength(1)
+		const continuation = h.sentMessages.find((message) => message.customType === "ferment_continuation_nudge")
+		const text = continuation?.content?.map((content) => content.text ?? "").join("") ?? ""
+		expect(text).toContain("complete_ferment")
+		expect(h.sentMessages.find((message) => message.customType === "ferment_resume_nudge")).toBeUndefined()
 	})
 })
 
-describe("resumeFerment paused-state nudge guard", () => {
-	it("paused ferment that resumes to running emits the resume nudge", () => {
+describe("resumeFerment running state", () => {
+	it("paused ferment that resumes to running sends one continuation nudge with the resume imperative and next action", () => {
 		const draft = h.eventStorage.create("Paused Then Running")
 		h.runtime.setActive(draft)
 
@@ -268,18 +343,31 @@ describe("resumeFerment paused-state nudge guard", () => {
 
 		resumeFerment(h.pi, draft.id, hasUIContext(), h.runtime)
 
-		// After resume, status should be running and the model gets the imperative nudge.
+		// After resume, status should be running.
 		const running = h.eventStorage.get(draft.id)
 		expect(running?.status).toBe("running")
 
-		const resumeNudge = h.sentMessages.find((m) => m.customType === "ferment_resume_nudge")
-		expect(resumeNudge).toBeDefined()
-		const nudgeText = resumeNudge?.content?.map((c) => c.text ?? "").join("") ?? ""
+		// Resume contract: exactly one actionable hidden message.
+		expect(actionableHidden(h.sentMessages)).toHaveLength(1)
+
+		// It is the scheduler's contextual continuation nudge containing both
+		// the resume imperative and the next-action instructions.
+		const continuation = h.sentMessages.find((m) => m.customType === "ferment_continuation_nudge")
+		expect(continuation).toBeDefined()
+		const nudgeText = continuation?.content?.map((c) => c.text ?? "").join("") ?? ""
 		expect(nudgeText).toContain("RESUMING ferment")
 		expect(nudgeText).toContain("Pick up the work immediately")
-	})
+		expect(nudgeText).toContain("start_ferment_step")
 
-	it("paused ferment that remains paused does not emit the resume nudge", () => {
+		// No resume nudge is sent for a running ferment.
+		expect(h.sentMessages.find((m) => m.customType === "ferment_resume_nudge")).toBeUndefined()
+		expect(h.sentMessages.filter((m) => m.customType === "ferment_breadcrumb")).toHaveLength(1)
+		expect(h.pi.appendEntry).not.toHaveBeenCalledWith("ferment_breadcrumb", expect.anything())
+	})
+})
+
+describe("resumeFerment still-paused state", () => {
+	it("a failed resume attempt sends the paused notice and no actionable hidden message", () => {
 		const draft = h.eventStorage.create("Stays Paused")
 		h.runtime.setActive(draft)
 
@@ -310,11 +398,6 @@ describe("resumeFerment paused-state nudge guard", () => {
 		// force it to fail with a non-ok outcome. Because resume.ts only
 		// reassigns `existing = out.ferment` when `out.ok`, leaving
 		// existing.status === "paused" exercises the ferment_paused_notice branch.
-		// We can't achieve this by mocking eventStorage.get alone: resume.ts
-		// reassigns `existing` from the applyAndPersist return value, and
-		// mutateWithEvents reads the underlying storage via this.storage.get
-		// (not this.get), so a spy on eventStorage.get would not intercept the
-		// mutate path.
 		vi.spyOn(h.eventStorage, "mutateWithEvents").mockImplementationOnce(() => {
 			return { ok: false, error: { code: "FERMENT_NOT_FOUND", message: "simulated resume failure" } }
 		})
@@ -328,9 +411,8 @@ describe("resumeFerment paused-state nudge guard", () => {
 
 		resumeFerment(h.pi, draft.id, hasUIContext(), h.runtime)
 
-		// No resume nudge should be sent to the model.
-		const resumeNudge = h.sentMessages.find((m) => m.customType === "ferment_resume_nudge")
-		expect(resumeNudge).toBeUndefined()
+		// Resume contract: no actionable hidden message is sent.
+		expect(actionableHidden(h.sentMessages)).toHaveLength(0)
 
 		// A user-facing paused notice should be sent instead.
 		const pausedNotice = h.sentMessages.find((m) => m.customType === "ferment_paused_notice")
@@ -342,6 +424,60 @@ describe("resumeFerment paused-state nudge guard", () => {
 			kind: "claimed",
 			reason: "exhausted",
 		})
+	})
+})
+
+describe("resumeFerment early-return states", () => {
+	it.each(["complete", "abandoned"] as const)("does not continue a %s ferment", (terminalStatus) => {
+		const draft = h.eventStorage.create(`${terminalStatus} Resume`)
+		const applyAndPersist = createApplyAndPersist(h.runtime)
+
+		if (terminalStatus === "abandoned") {
+			const abandoned = applyAndPersist(draft.id, { type: "abandon", reason: "done" })
+			expect(abandoned.ok).toBe(true)
+		} else {
+			const scoped = applyAndPersist(draft.id, {
+				type: "scope",
+				title: "Complete Resume",
+				goal: "g",
+				successCriteria: ["c"],
+				constraints: [],
+				assumptions: "a",
+				phases: [{ name: "P1", goal: "g", steps: [] }],
+			})
+			if (!scoped.ok) throw new Error(scoped.error.message)
+			const phaseId = scoped.ferment.phases[0].id
+			const activated = applyAndPersist(draft.id, { type: "activate_phase", phaseId })
+			if (!activated.ok) throw new Error(activated.error.message)
+			const completedPhase = applyAndPersist(draft.id, {
+				type: "complete_phase",
+				phaseId,
+				summary: "done",
+			})
+			if (!completedPhase.ok) throw new Error(completedPhase.error.message)
+			const completed = applyAndPersist(draft.id, { type: "complete_ferment", finalSummary: "done" })
+			expect(completed.ok).toBe(true)
+		}
+
+		resumeFerment(h.pi, draft.id, hasUIContext(), h.runtime)
+
+		expect(actionableHidden(h.sentMessages)).toHaveLength(0)
+		expect(h.sentMessages).toHaveLength(0)
+		expect(h.runtime.getActive()).toBeUndefined()
+	})
+
+	it("sends a warning without continuing when the worktree check blocks resume", () => {
+		const ferment = h.eventStorage.create("Blocked Worktree Resume")
+		vi.spyOn(h.eventStorage, "get").mockReturnValue({
+			...ferment,
+			worktree: { ...ferment.worktree, path: join(tmpdir(), "different-worktree") },
+		})
+
+		resumeFerment(h.pi, ferment.id, hasUIContext(), h.runtime)
+
+		expect(actionableHidden(h.sentMessages)).toHaveLength(0)
+		expect(h.sentMessages.find((message) => message.customType === "ferment_worktree_warning")).toBeDefined()
+		expect(h.sentMessages.find((message) => message.customType === "ferment_breadcrumb")).toBeUndefined()
 	})
 })
 

@@ -16,6 +16,7 @@ import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
 import { clearActiveFermentId, getFermentLockPath, markScopingInteractive, writeFermentLock } from "./state.js"
 import { filterSentMessages } from "./test-helpers.js"
+import { createApplyAndPersist } from "./tool-helpers.js"
 import { FERMENT_TOOL_NAMES } from "./tool-names.js"
 import { profileForFerment } from "./tool-scope.js"
 
@@ -62,6 +63,74 @@ afterEach(() => {
 })
 
 describe("registerFermentEvents", () => {
+	it("continues across a manual phase boundary when the user explicitly resumes from the session banner", async () => {
+		vi.useFakeTimers()
+		const storageDir = mkdtempSync(join(tmpdir(), "ferment-events-manual-resume-"))
+		const storage = new FermentEventStore(storageDir)
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		try {
+			vi.stubEnv("KIMCHI_FERMENT_LOCK_DIR", join(storageDir, "locks"))
+			const draft = storage.create("Manual Boundary Resume")
+			const applyAndPersist = createApplyAndPersist(runtime)
+			const scoped = applyAndPersist(draft.id, {
+				type: "scope",
+				title: "Manual Boundary Resume",
+				goal: "g",
+				successCriteria: ["c"],
+				constraints: [],
+				assumptions: "a",
+				phases: [
+					{ name: "P1", goal: "g1", steps: [] },
+					{ name: "P2", goal: "g2", steps: [{ description: "s2" }] },
+				],
+			})
+			if (!scoped.ok) throw new Error(scoped.error.message)
+			const firstPhaseId = scoped.ferment.phases[0].id
+			const activated = applyAndPersist(draft.id, { type: "activate_phase", phaseId: firstPhaseId })
+			if (!activated.ok) throw new Error(activated.error.message)
+			const completed = applyAndPersist(draft.id, {
+				type: "complete_phase",
+				phaseId: firstPhaseId,
+				summary: "done",
+			})
+			if (!completed.ok) throw new Error(completed.error.message)
+			const paused = applyAndPersist(draft.id, { type: "pause" })
+			if (!paused.ok) throw new Error(paused.error.message)
+
+			vi.stubEnv("KIMCHI_ACTIVE_FERMENT", draft.id)
+			const { handlers, pi } = createPi()
+			registerFermentEvents(pi, runtime)
+			const sessionStart = handlers.get("session_start")
+			if (!sessionStart) throw new Error("session_start handler was not registered")
+			const ctx = createContext({ ui: { select: vi.fn().mockResolvedValue("Resume") } })
+
+			await sessionStart({}, ctx)
+			await vi.runAllTimersAsync()
+
+			const actionableHidden = [
+				...filterSentMessages(vi.mocked(pi.sendMessage), "ferment_resume_nudge"),
+				...filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge"),
+			]
+			expect(actionableHidden).toHaveLength(1)
+			expect(pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					customType: "ferment_continuation_nudge",
+					content: expect.arrayContaining([
+						expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") }),
+					]),
+				}),
+				expect.objectContaining({ triggerTurn: true }),
+			)
+		} finally {
+			vi.useRealTimers()
+			runtime.setActive(undefined)
+			rmSync(storageDir, { recursive: true, force: true })
+		}
+	})
+
 	it("clears injected runtime state and active cache when env resume id is missing", async () => {
 		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", "missing-ferment-id")
 		const storage = { get: vi.fn(() => undefined) } as unknown as FermentEventStore

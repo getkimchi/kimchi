@@ -390,7 +390,7 @@ export function registerFermentEvents(
 				const choice = await ctx.ui.select(banner, ["Resume", "Leave paused"])
 				runtime.markHumanInput()
 				if (choice === "Resume") {
-					deferExtensionAction(() => resumeFerment(pi, envId, ctx, runtime))
+					deferExtensionAction(() => resumeFerment(pi, envId, ctx, runtime, { allowManualPhaseBoundary: true }))
 				} else {
 					// User explicitly declined to resume — emit stalled telemetry.
 					pi.events.emit(FERMENT_EVENTS.STALLED, buildStalledPayload(ferment, runtime.now().getTime()))

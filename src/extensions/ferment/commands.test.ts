@@ -871,6 +871,57 @@ describe("registerFermentCommands", () => {
 		expect(getPendingPlanReview(target.id)).toBeDefined()
 	})
 
+	it("/ferment switch resumes a paused ferment across a manual phase boundary", async () => {
+		const h = createHarness()
+		const applyAndPersist = createApplyAndPersist(h.runtime)
+		const draft = h.storage.create("Boundary Switch")
+		const scoped = applyAndPersist(draft.id, {
+			type: "scope",
+			goal: "Goal",
+			successCriteria: ["Works"],
+			constraints: [],
+			phases: [
+				{ name: "Done", goal: "Build", steps: [] },
+				{ name: "Next", goal: "Continue", steps: [] },
+			],
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const firstPhaseId = scoped.ferment.phases[0].id
+		const activated = applyAndPersist(scoped.ferment.id, { type: "activate_phase", phaseId: firstPhaseId })
+		if (!activated.ok) throw new Error(activated.error.message)
+		const completed = applyAndPersist(activated.ferment.id, {
+			type: "complete_phase",
+			phaseId: firstPhaseId,
+			summary: "done",
+		})
+		if (!completed.ok) throw new Error(completed.error.message)
+		const paused = applyAndPersist(completed.ferment.id, { type: "pause" })
+		if (!paused.ok) throw new Error(paused.error.message)
+
+		const commands = new Map<string, RegisteredCommand>()
+		const pi = {
+			...h.pi,
+			registerCommand: (name: string, command: RegisteredCommand) => {
+				commands.set(name, command)
+			},
+		} as unknown as ExtensionAPI
+		registerFermentCommands(pi, h.runtime)
+
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		await fermentCommand.handler(`switch "${paused.ferment.name}"`, h.ctx)
+
+		expect(h.storage.get(paused.ferment.id)?.status).toBe("planned")
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_continuation_nudge",
+				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
+				details: expect.objectContaining({ action: "wake_up", expectedAction: "activate_phase" }),
+			}),
+			{ triggerTurn: true },
+		)
+	})
+
 	it("completes /ferment nested static argument groups", () => {
 		const h = createHarness()
 

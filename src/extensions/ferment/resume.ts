@@ -153,14 +153,7 @@ export function resumeFerment(
 		}
 	}
 
-	const action = determineNextAction(existing)
-	const baseMsg = action ? formatActionNudgeLine(action) : ""
 	const breadcrumb = `Resumed ferment: "${existing.name}" [${existing.status}] ${runtime.getContinuationPolicy()} policy`
-
-	const imperative =
-		existing.status === "running"
-			? `RESUMING ferment "${existing.name}" — the previous session was interrupted. Pick up the work immediately. Do NOT explain or summarize — execute the next action below.\n\n${baseMsg}`
-			: baseMsg
 
 	safeSendMessage(
 		pi,
@@ -173,21 +166,7 @@ export function resumeFerment(
 		{ triggerTurn: false },
 	)
 
-	if (existing.status !== "paused") {
-		// Renew draft-scoping recovery only once resume has passed every
-		// blocking check and will actually schedule another model turn.
-		resetScopingStopNudgeCount(existing.id)
-		safeSendMessage(
-			pi,
-			{
-				customType: "ferment_resume_nudge",
-				content: [{ type: "text", text: imperative }],
-				display: false,
-				details: undefined,
-			},
-			{ triggerTurn: true },
-		)
-	} else {
+	if (existing.status === "paused") {
 		safeSendMessage(
 			pi,
 			{
@@ -206,9 +185,45 @@ export function resumeFerment(
 		return
 	}
 
-	// `resumeFerment` already sent a `ferment_resume_nudge` with triggerTurn for
-	// this ferment. Passing `skipNudge` prevents `scheduleFermentWakeUp` from
-	// queuing a duplicate `ferment_continuation_nudge` for the same scope action
-	// (only affects draft ferments where determineNextAction returns { kind: "scope" }).
-	scheduleFermentWakeUp(pi, runtime, { ...opts, fermentId: existing.id, tag: "Resume wake-up", skipNudge: true })
+	// Renew draft-scoping recovery only once resume has passed every
+	// blocking check and will actually schedule another model turn.
+	resetScopingStopNudgeCount(existing.id)
+
+	// Draft without pending review: send one ferment_resume_nudge directly and
+	// return. This preserves the existing draft-scoping behavior without
+	// depending on action-specific skipNudge logic in the scheduler.
+	if (existing.status === "draft") {
+		const action = determineNextAction(existing)
+		const baseMsg = action ? formatActionNudgeLine(action) : ""
+		safeSendMessage(
+			pi,
+			{
+				customType: "ferment_resume_nudge",
+				content: [{ type: "text", text: baseMsg }],
+				display: false,
+				details: undefined,
+			},
+			{ triggerTurn: true },
+		)
+		return
+	}
+
+	// Planned or running: route through the scheduler as the single
+	// hidden-message owner. The scheduler sends one action-specific
+	// ferment_continuation_nudge. For a resumed running ferment, pass the
+	// resume imperative as messagePrefix so the final hidden message contains
+	// both the resume context and the exact next-action instructions.
+	const messagePrefix =
+		existing.status === "running"
+			? `RESUMING ferment "${existing.name}" — the previous session was interrupted. Pick up the work immediately. Do NOT explain or summarize — execute the next action below.`
+			: undefined
+
+	scheduleFermentWakeUp(pi, runtime, {
+		...opts,
+		fermentId: existing.id,
+		tag: "Resume wake-up",
+		messagePrefix,
+		skipBreadcrumb: true,
+		treatCompleteFermentAsContinue: true,
+	})
 }
