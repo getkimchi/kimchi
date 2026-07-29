@@ -86,6 +86,7 @@ export type FermentEventType =
 	| "step_graded"
 	| "step_description_updated"
 	| "ferment_graded"
+	| "plan_graded"
 	| "decision_added"
 	| "memory_added"
 	| "worktree_updated"
@@ -275,6 +276,10 @@ export interface FermentGradedPayload {
 	grade: JudgeGrade
 }
 
+export interface PlanGradedPayload {
+	grade: JudgeGrade
+}
+
 export interface DecisionAddedPayload {
 	decision: Decision
 }
@@ -339,6 +344,7 @@ export type StepDescriptionUpdatedEvent = FermentEventBase & {
 	payload: StepDescriptionUpdatedPayload
 }
 export type FermentGradedEvent = FermentEventBase & { type: "ferment_graded"; payload: FermentGradedPayload }
+export type PlanGradedEvent = FermentEventBase & { type: "plan_graded"; payload: PlanGradedPayload }
 export type DecisionAddedEvent = FermentEventBase & { type: "decision_added"; payload: DecisionAddedPayload }
 export type MemoryAddedEvent = FermentEventBase & { type: "memory_added"; payload: MemoryAddedPayload }
 export type WorktreeUpdatedEvent = FermentEventBase & { type: "worktree_updated"; payload: WorktreeUpdatedPayload }
@@ -374,6 +380,7 @@ export type FermentEvent =
 	| StepGradedEvent
 	| StepDescriptionUpdatedEvent
 	| FermentGradedEvent
+	| PlanGradedEvent
 	| DecisionAddedEvent
 	| MemoryAddedEvent
 	| WorktreeUpdatedEvent
@@ -863,6 +870,13 @@ export class FermentEventStore {
 		if (ferment.grade) {
 			pending.push({ timestamp: ferment.grade.gradedAt, type: "ferment_graded", payload: { grade: ferment.grade } })
 		}
+		if (ferment.planGrade) {
+			pending.push({
+				timestamp: ferment.planGrade.gradedAt,
+				type: "plan_graded",
+				payload: { grade: ferment.planGrade },
+			})
+		}
 		if (ferment.status === "complete") {
 			pending.push({
 				timestamp: ferment.updatedAt,
@@ -1290,6 +1304,11 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			if (!state) throw new Error("ferment_graded requires existing state")
 			const p = event.payload as FermentGradedPayload
 			return { ...state, grade: p.grade, updatedAt: event.timestamp }
+		}
+		case "plan_graded": {
+			if (!state) throw new Error("plan_graded requires existing state")
+			const p = event.payload as PlanGradedPayload
+			return { ...state, planGrade: p.grade, updatedAt: event.timestamp }
 		}
 		case "decision_added": {
 			if (!state) throw new Error("decision_added requires existing state")

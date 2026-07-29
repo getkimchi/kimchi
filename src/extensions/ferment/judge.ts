@@ -849,3 +849,213 @@ function buildJourneyGraderPrompt(input: JudgeJourneyGradeInput): string {
 	parts.push('{"grade":"A"|"B"|"C"|"D"|"F","rationale":"...","recommendations":[...]}')
 	return parts.join("\n")
 }
+
+// ─── Public API: plan grade (post-scoping LLM review) ─────────────────────────
+//
+// At scope_ferment, after the plan is saved, this judge assigns a letter
+// grade A–F to the PLAN — not the implementation. It compares the proposed
+// success criteria against the original task prompt to catch criteria that
+// don't match what the prompt actually asks for, before any implementation
+// work begins. The grade drives a block-retry loop: A/B proceed, C/D/F refuse
+// and route through MAX_BLOCK_RETRIES.
+
+export interface JudgePlanGradeInput {
+	fermentName: string
+	/** The original task prompt the user gave the ferment (ferment.description). */
+	originalPrompt: string
+	/** The proposed goal the agent derived from the prompt. */
+	proposedGoal: string
+	/** The proposed success criteria the agent derived from the prompt. */
+	proposedCriteria: string
+	/** The proposed constraints the agent derived from the prompt. */
+	proposedConstraints: string
+	/** The proposed phases (name + goal each). */
+	proposedPhases: ReadonlyArray<{ name: string; goal: string }>
+}
+
+export interface JudgePlanGradeOk {
+	ok: true
+	grade: Grade
+	rationale: string
+	/** Concrete fix bullets the grader recommends to reach A. Empty for A grades. */
+	recommendations: string[]
+}
+
+export interface JudgePlanGradeFailure {
+	ok: false
+	reason: JudgeUnavailableReason | "unparseable" | "invalid_grade"
+	detail?: string
+}
+
+export type JudgePlanGradeResult = JudgePlanGradeOk | JudgePlanGradeFailure
+
+const PLAN_GRADE_SYSTEM = `You are a strict production-readiness review council compressed into one reviewer, acting as the plan reviewer for an autonomous coding ferment. The agent has just produced a plan (goal, success criteria, constraints, phases) derived from the original task prompt. Your job is to evaluate whether the plan's success criteria and goals ACTUALLY CAPTURE what the original prompt asks for — before any implementation work begins.
+
+Your bias is PESSIMISTIC. A plan that misses a requirement the prompt specifies is a C or worse. A is reserved for plans where every requirement in the prompt is covered by a testable success criterion, and no criterion is vague, ambiguous, or untestable.
+
+## Hard constraints
+
+- Do not treat the agent's criteria as sufficient just because they exist. Missing criteria lower the grade.
+- Vague or untestable criteria (e.g. "it works", "tests pass") are not acceptable.
+- Criteria that test the wrong thing (e.g. checking the output format when the prompt asks for correct values) are gaps.
+- If the prompt specifies exact behavior, the criteria must verify that exact behavior — not a proxy.
+- Prefer concrete findings over vague concerns.
+- Grade harshly when criteria miss requirements the prompt explicitly states.
+
+## Internal review council
+
+Run these reviews silently before assigning the grade.
+
+### 1. Requirement coverage review
+For each distinct requirement in the original prompt, determine whether a success criterion covers it. A requirement is covered only if a criterion explicitly verifies it — not if a criterion could plausibly be interpreted as covering it. List any uncovered requirements.
+
+### 2. Criteria quality review
+Check each criterion is: (a) testable — has a clear pass/fail signal, (b) specific — names the exact behavior/output checked, (c) not a proxy — tests what the prompt asks for, not a substitute. Vague, untestable, or proxy criteria lower the grade.
+
+### 3. Phase alignment review
+Check the phases actually deliver the stated goal. If the phases don't cover a requirement the goal implies, that's a gap. If phases are ordered incorrectly or depend on things they shouldn't, note it.
+
+## Moderator rules
+
+After internal specialist review: cluster duplicate issues, separate proven findings from hypotheses, classify evidence strength, identify blockers, assign one final grade. If the grade is not A, recommend the concrete fixes needed to reach A.
+
+## Grade rubric
+
+- A: Excellent plan. Every requirement in the prompt is covered by a specific, testable criterion. Criteria are not proxies. Phases deliver the goal. No meaningful concerns. Only trivial nits, if any.
+- B: Good plan. Most requirements are covered with testable criteria. Minor gaps or vague criteria exist, but no requirement is entirely uncovered. Should be improved, but not clearly broken.
+- C: Acceptable but concerning. Some requirements are uncovered, some criteria are vague or proxy, or phases don't fully align with the goal. Should be improved before implementation.
+- D: Not ready for implementation. At least one requirement the prompt explicitly states is uncovered, or criteria are so vague they cannot verify the requirement, or phases miss a core deliverable.
+- F: Fail. The plan fundamentally misreads the prompt, criteria test the wrong thing entirely, or core requirements are absent from the plan.
+
+## You will be given
+
+- The ferment name.
+- The original task prompt (what the user actually asked for).
+- The proposed goal, success criteria, constraints, and phases.
+
+## Final output
+
+Respond with EXACTLY one JSON object, no markdown:
+{"grade":"A"|"B"|"C"|"D"|"F","rationale":"<2-3 sentences citing specific requirements that are covered or uncovered>","recommendations":["<bullet>",...]}
+
+If grade is A, recommendations MUST be an empty array [].
+If grade is B–F, each recommendation must include: what is wrong, why it matters, what must change, and what evidence would prove the fix. Do not include vague advice or "nice to have" items.`
+
+function buildPlanGradeUserMsg(input: JudgePlanGradeInput): string {
+	const parts: string[] = []
+	parts.push(`Ferment: "${input.fermentName}"`)
+	parts.push("")
+	parts.push("--- ORIGINAL TASK PROMPT ---")
+	parts.push(input.originalPrompt || "(none — this is a concern)")
+	parts.push("")
+	parts.push("--- PROPOSED PLAN ---")
+	parts.push(`Goal: ${input.proposedGoal || "(none specified)"}`)
+	parts.push("")
+	parts.push("Success criteria:")
+	parts.push(input.proposedCriteria || "(none specified)")
+	parts.push("")
+	parts.push("Constraints:")
+	parts.push(input.proposedConstraints || "(none specified)")
+	parts.push("")
+	parts.push("Phases:")
+	if (input.proposedPhases.length === 0) {
+		parts.push("(none — this is a concern)")
+	} else {
+		for (const p of input.proposedPhases) {
+			parts.push(`  - ${p.name}: ${p.goal}`)
+		}
+	}
+	return parts.join("\n")
+}
+
+export async function judgePlanGrade(
+	input: JudgePlanGradeInput,
+	apiCall: (sys: string, msg: string, maxTokens?: number) => Promise<JudgeApiResult> = judgeApiCall,
+): Promise<JudgePlanGradeResult> {
+	const userMsg = buildPlanGradeUserMsg(input)
+	for (let attempt = 1; attempt <= JOURNEY_GRADE_MAX_ATTEMPTS; attempt++) {
+		const api = await apiCall(PLAN_GRADE_SYSTEM, userMsg)
+		if (!api.ok) {
+			const failure: JudgePlanGradeFailure = { ok: false, reason: api.reason, detail: api.detail }
+			if (api.reason === "empty_response" && attempt < JOURNEY_GRADE_MAX_ATTEMPTS) continue
+			return withJourneyGradeAttemptDetail(failure, attempt)
+		}
+
+		const parsed = tryParseJson<{ grade?: string; rationale?: string; recommendations?: unknown }>(api.text)
+		if (parsed === undefined) {
+			return { ok: false, reason: "unparseable", detail: api.text.slice(0, 200) }
+		}
+		if (!isGrade(parsed.grade)) {
+			return { ok: false, reason: "invalid_grade", detail: `Judge returned: ${parsed.grade}` }
+		}
+		const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
+		const recommendations = normalizeRecommendations(parsed.recommendations)
+		return { ok: true, grade: parsed.grade, rationale, recommendations }
+	}
+
+	throw new Error("unreachable: plan grade retry loop exited without a result")
+}
+
+/** Build the user-message prompt for the plan grader subagent. */
+function buildPlanGraderPrompt(input: JudgePlanGradeInput): string {
+	const parts: string[] = []
+	parts.push(
+		"You are grading a proposed plan for an autonomous coding ferment — before any implementation begins. Compare the proposed success criteria against the original task prompt and produce a grade as JSON.",
+	)
+	parts.push("")
+	parts.push(`Ferment: "${input.fermentName}"`)
+	parts.push("")
+	parts.push("--- ORIGINAL TASK PROMPT (what the user actually asked for) ---")
+	parts.push(input.originalPrompt || "(none — this is a critical concern)")
+	parts.push("")
+	parts.push("--- PROPOSED PLAN ---")
+	parts.push(`Goal: ${input.proposedGoal || "(none specified)"}`)
+	parts.push("")
+	parts.push("Success criteria:")
+	parts.push(input.proposedCriteria || "(none specified)")
+	parts.push("")
+	parts.push("Constraints:")
+	parts.push(input.proposedConstraints || "(none specified)")
+	parts.push("")
+	parts.push("Phases:")
+	if (input.proposedPhases.length === 0) {
+		parts.push("(none — this is a concern)")
+	} else {
+		for (const p of input.proposedPhases) {
+			parts.push(`  - ${p.name}: ${p.goal}`)
+		}
+	}
+	parts.push("")
+	parts.push(
+		"Your job: verify that every requirement in the original prompt is covered by a specific, testable success criterion — and that criteria are not proxies for the wrong thing. Then respond with EXACTLY one JSON object:",
+	)
+	parts.push('{"grade":"A"|"B"|"C"|"D"|"F","rationale":"...","recommendations":[...]}')
+	return parts.join("\n")
+}
+
+/** Grade a plan using a subagent with tool access. Falls back to the
+ *  single-shot judgeApiCall() when the subagent is unavailable or fails. */
+export async function judgePlanGradeViaSubagent(
+	input: JudgePlanGradeInput,
+	spawn: GraderSpawner | undefined,
+	apiCall: (sys: string, msg: string, maxTokens?: number) => Promise<JudgeApiResult> = judgeApiCall,
+): Promise<JudgePlanGradeResult> {
+	// Try the subagent first if a spawner was provided.
+	if (spawn) {
+		try {
+			const prompt = buildPlanGraderPrompt(input)
+			const result = await spawn(prompt)
+			if (result.status === "completed") {
+				const parsed = parseGraderResponse(result.text)
+				if (parsed) return parsed
+				// Subagent completed but output wasn't parseable — fall through to single-shot.
+			}
+			// Subagent aborted/errored — fall through to single-shot.
+		} catch {
+			// Subagent threw — fall through to single-shot.
+		}
+	}
+
+	// Fallback: single-shot LLM call.
+	return judgePlanGrade(input, apiCall)
+}

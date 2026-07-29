@@ -87,6 +87,7 @@ export interface Ferment {
 	memories: Memory[]
 
 	grade?: JudgeGrade // computed at complete_ferment from phase grades
+	planGrade?: JudgeGrade // set by judge after scope_ferment (plan grader)
 
 	createdAt: string
 	updatedAt: string

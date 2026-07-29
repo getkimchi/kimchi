@@ -5,10 +5,13 @@ import {
 	type JudgeApiResult,
 	type JudgeJourneyGradeInput,
 	type JudgePhaseInput,
+	type JudgePlanGradeInput,
 	judgeJourneyGrade,
 	judgeJourneyGradeViaSubagent,
 	judgePhaseGrade,
 	judgePhaseGradeViaSubagent,
+	judgePlanGrade,
+	judgePlanGradeViaSubagent,
 } from "./judge.js"
 
 describe("isGrade", () => {
@@ -667,5 +670,182 @@ describe("judgeJourneyGradeViaSubagent", () => {
 		expect(result.grade).toBe("B")
 		expect(result.rationale).toContain("coverage thin")
 		expect(apiCall).not.toHaveBeenCalled()
+	})
+})
+
+describe("judgePlanGrade", () => {
+	function ok(text: string): JudgeApiResult {
+		return { ok: true, text }
+	}
+
+	function makePlanInput(overrides: Partial<JudgePlanGradeInput> = {}): JudgePlanGradeInput {
+		return {
+			fermentName: "Test Ferment",
+			originalPrompt: "Build a REST API that returns JSON with a 'items' array.",
+			proposedGoal: "Build a REST API endpoint.",
+			proposedCriteria: "GET /items returns 200; response body contains 'items' key.",
+			proposedConstraints: "Use only stdlib.",
+			proposedPhases: [{ name: "Implement endpoint", goal: "Build the /items route" }],
+			...overrides,
+		}
+	}
+
+	it("returns grade A with empty recommendations on a clean plan", async () => {
+		const apiCall = vi.fn(async () =>
+			ok('{"grade":"A","rationale":"All prompt requirements covered by testable criteria.","recommendations":[]}'),
+		)
+		const result = await judgePlanGrade(makePlanInput(), apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("A")
+		expect(result.recommendations).toEqual([])
+	})
+
+	it("returns grade C with recommendations when criteria miss a requirement", async () => {
+		const apiCall = vi.fn(async () =>
+			ok(
+				'{"grade":"C","rationale":"Criteria check for items key but not that it is an array.","recommendations":["Add criterion verifying items is an array"]}',
+			),
+		)
+		const result = await judgePlanGrade(makePlanInput(), apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("C")
+		expect(result.recommendations).toHaveLength(1)
+		expect(result.recommendations[0]).toContain("array")
+	})
+
+	it("returns failure when the judge is unavailable", async () => {
+		const apiCall = vi.fn(async () => ({ ok: false as const, reason: "no_model" as const }))
+		const result = await judgePlanGrade(makePlanInput(), apiCall)
+		expect(result.ok).toBe(false)
+		if (result.ok) return
+		expect(result.reason).toBe("no_model")
+	})
+
+	it("retries on empty_response and accepts the grade once the API responds", async () => {
+		const apiCall = vi
+			.fn()
+			.mockResolvedValueOnce({ ok: false as const, reason: "empty_response" as const })
+			.mockResolvedValueOnce({ ok: false as const, reason: "empty_response" as const })
+			.mockResolvedValueOnce(ok('{"grade":"A","rationale":"All good.","recommendations":[]}'))
+		const result = await judgePlanGrade(makePlanInput(), apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(3)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("A")
+	})
+
+	it("includes the original prompt and proposed criteria in the user message", async () => {
+		let captured = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			captured = msg
+			return ok('{"grade":"A","rationale":"x","recommendations":[]}')
+		})
+		await judgePlanGrade(makePlanInput({ originalPrompt: "Build a CLI tool named frobnicate." }), apiCall)
+		expect(captured).toContain("Build a CLI tool named frobnicate.")
+		expect(captured).toContain("PROPOSED PLAN")
+		expect(captured).toContain("Success criteria:")
+	})
+})
+
+describe("judgePlanGradeViaSubagent", () => {
+	function ok(text: string): JudgeApiResult {
+		return { ok: true, text }
+	}
+
+	function makePlanInput(overrides: Partial<JudgePlanGradeInput> = {}): JudgePlanGradeInput {
+		return {
+			fermentName: "Test Ferment",
+			originalPrompt: "Build a REST API that returns JSON with a 'items' array.",
+			proposedGoal: "Build a REST API endpoint.",
+			proposedCriteria: "GET /items returns 200; response body contains 'items' key.",
+			proposedConstraints: "Use only stdlib.",
+			proposedPhases: [{ name: "Implement endpoint", goal: "Build the /items route" }],
+			...overrides,
+		}
+	}
+
+	it("returns the subagent's parsed grade when it completes with valid JSON", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: '{"grade":"A","rationale":"All requirements covered.","recommendations":[]}',
+				status: "completed",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"C","rationale":"x"}'))
+		const result = await judgePlanGradeViaSubagent(makePlanInput(), spawn, apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("A")
+		expect(result.recommendations).toEqual([])
+		expect(apiCall).not.toHaveBeenCalled()
+	})
+
+	it("falls back to single-shot when subagent returns unparseable text", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: "This plan looks fine to me.",
+				status: "completed",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"B","rationale":"ok"}'))
+		const result = await judgePlanGradeViaSubagent(makePlanInput(), spawn, apiCall)
+		expect(spawn).toHaveBeenCalledTimes(1)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("B")
+	})
+
+	it("falls back to single-shot when subagent aborts", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: "",
+				status: "aborted",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"D","rationale":"gaps"}'))
+		const result = await judgePlanGradeViaSubagent(makePlanInput(), spawn, apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("D")
+	})
+
+	it("falls back to single-shot when subagent throws", async () => {
+		const spawn = vi.fn(async (): Promise<GraderSubagentResult> => {
+			throw new Error("agent system not available")
+		})
+		const apiCall = vi.fn(async () => ok('{"grade":"B","rationale":"ok"}'))
+		const result = await judgePlanGradeViaSubagent(makePlanInput(), spawn, apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("B")
+	})
+
+	it("falls back to single-shot when no spawner is provided", async () => {
+		const apiCall = vi.fn(async () => ok('{"grade":"A","rationale":"clean"}'))
+		const result = await judgePlanGradeViaSubagent(makePlanInput(), undefined, apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("A")
+	})
+
+	it("returns failure when both subagent and single-shot are unavailable", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: "",
+				status: "aborted",
+			}),
+		)
+		const apiCall = vi.fn(async () => ({ ok: false as const, reason: "no_model" as const }))
+		const result = await judgePlanGradeViaSubagent(makePlanInput(), spawn, apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(false)
+		if (result.ok) return
+		expect(result.reason).toBe("no_model")
 	})
 })

@@ -18,6 +18,7 @@ import {
 	type SuccessCriteria,
 } from "../../../ferment/success-criteria.js"
 import { deriveDraftFermentTitle, normalizeFermentTitle } from "../../../ferment/title.js"
+import type { JudgeGrade } from "../../../ferment/types.js"
 import {
 	DEFAULT_SCOPING_QUESTION_TYPE,
 	type Grade,
@@ -37,7 +38,12 @@ import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
 import { ensureGitRepo } from "../git-init.js"
-import { type GraderSpawner, judgeJourneyGradeViaSubagent } from "../judge.js"
+import {
+	type GraderSpawner,
+	type JudgePlanGradeInput,
+	judgeJourneyGradeViaSubagent,
+	judgePlanGradeViaSubagent,
+} from "../judge.js"
 import { clearLifecycleGuard } from "../lifecycle-obligation-guard.js"
 import { appendRefEntry } from "../nudge.js"
 import { PENDING_PROPOSAL_SCHEMA_VERSION, savePendingProposal } from "../pending-proposal-store.js"
@@ -605,7 +611,7 @@ async function confirmCompletionCriteria(
 export async function scopeFerment(
 	runtime: FermentRuntime,
 	params: ScopeArgs,
-	{ ctx }: LifecycleExecutionContext,
+	{ ctx, spawner }: LifecycleExecutionContext & { spawner?: GraderSpawner },
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const title = normalizeFermentTitle(params.title)
@@ -681,9 +687,67 @@ export async function scopeFerment(
 	runtime.clearPendingScope(params.ferment_id)
 
 	const fresh = outcome.ferment
-	const phaseList = fresh.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
 
-	runtime.setActive(fresh)
+	// Plan-grade judge: compares the proposed success criteria against the
+	// original task prompt (ferment.description) to catch criteria that don't
+	// match what the prompt asks for — before implementation begins. C/D/F
+	// refuses scoping and routes through the same block-retry loop as the
+	// phase/journey graders. Judge-unavailable is advisory.
+	const PLAN_GRADE_KEY = "__plan__"
+	const priorPlanRetries = runtime.getBlockRetry(params.ferment_id, PLAN_GRADE_KEY)
+	const minimumAcceptablePlanGrade: Grade = priorPlanRetries === 0 ? "A" : "B"
+	const planGradeOrder: Record<Grade, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 }
+	const planJudgeInput: JudgePlanGradeInput = {
+		fermentName: fresh.name,
+		originalPrompt: fresh.description ?? "",
+		proposedGoal: params.goal,
+		proposedCriteria: renderSuccessCriteria(successCriteria.value, ""),
+		proposedConstraints: (params.constraints ?? []).join("; "),
+		proposedPhases: (params.phases ?? []).map((p) => ({ name: p.name, goal: p.goal })),
+	}
+	const planJudgeResult = await runWithOverlay(`Grading plan for "${fresh.name}"…`, () =>
+		judgePlanGradeViaSubagent(planJudgeInput, spawner),
+	)
+	let resolvedPlanGrade: { grade: Grade; rationale: string; recommendations?: string[] } | undefined
+	if (planJudgeResult.ok) {
+		resolvedPlanGrade = {
+			grade: planJudgeResult.grade,
+			rationale: planJudgeResult.rationale,
+			recommendations: planJudgeResult.recommendations,
+		}
+		if (planGradeOrder[planJudgeResult.grade] < planGradeOrder[minimumAcceptablePlanGrade]) {
+			const recsText = planJudgeResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
+			const retry = runtime.bumpBlockRetry(params.ferment_id, PLAN_GRADE_KEY)
+			if (retry > MAX_BLOCK_RETRIES) {
+				runtime.clearBlockRetry(params.ferment_id, PLAN_GRADE_KEY)
+				// Fall through to persist the grade and proceed.
+			} else {
+				return toolErr(
+					`**Ferment "${fresh.name}"** plan needs revision — plan grader assigned grade ${planJudgeResult.grade}, minimum required is ${minimumAcceptablePlanGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}\n\nRevise the plan via update_ferment_scope_field and call scope_ferment again with an updated success_criteria.`,
+				)
+			}
+		}
+	}
+
+	// Persist the plan grade (if available) on the ferment object.
+	let gradedFerment = fresh
+	if (resolvedPlanGrade) {
+		const gradePayload: JudgeGrade = {
+			grade: resolvedPlanGrade.grade,
+			rationale: resolvedPlanGrade.rationale,
+			gradedAt: runtime.nowIso(),
+			...(resolvedPlanGrade.recommendations && resolvedPlanGrade.recommendations.length > 0
+				? { recommendations: resolvedPlanGrade.recommendations }
+				: {}),
+		}
+		const graded = applyAndPersist(params.ferment_id, { type: "set_plan_grade", grade: gradePayload })
+		if (graded.ok) gradedFerment = graded.ferment
+	}
+
+	const phaseList =
+		gradedFerment.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
+
+	runtime.setActive(gradedFerment)
 
 	return toolOk(
 		withNextActionHint(
@@ -1208,7 +1272,12 @@ ${renderGateGuidance("scope_ferment")}`,
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
 		async execute(_, params, _signal, _onUpdate, ctx) {
-			return scopeFerment(runtime, params, { ctx })
+			const spawner = async (prompt: string) => {
+				const result = await spawnGraderAgent(pi, ctx, prompt)
+				if (!result) return { text: "", status: "unavailable" }
+				return result
+			}
+			return scopeFerment(runtime, params, { ctx, spawner })
 		},
 	})
 

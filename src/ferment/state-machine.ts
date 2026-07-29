@@ -114,6 +114,7 @@ export type Command =
 	| { type: "set_phase_grade"; phaseId: string; grade: JudgeGrade }
 	| { type: "set_step_grade"; phaseId: string; stepId: string; grade: JudgeGrade }
 	| { type: "set_ferment_grade"; grade: JudgeGrade }
+	| { type: "set_plan_grade"; grade: JudgeGrade }
 	| { type: "rename"; name: string }
 
 // ─── Errors ───────────────────────────────────────────────────────────────────
@@ -214,6 +215,8 @@ export function applyCommand(ferment: Ferment, cmd: Command, ctx: TransitionCont
 			return handleSetStepGrade(ferment, cmd, ctx)
 		case "set_ferment_grade":
 			return handleSetFermentGrade(ferment, cmd, ctx)
+		case "set_plan_grade":
+			return handleSetPlanGrade(ferment, cmd, ctx)
 		case "rename":
 			return handleRename(ferment, cmd, ctx)
 	}
@@ -1005,6 +1008,16 @@ function handleSetFermentGrade(
 	ctx: TransitionContext,
 ): TransitionResult {
 	return ok(touch(ferment, ctx, { grade: cmd.grade }))
+}
+
+// ─── set_plan_grade ───────────────────────────────────────────────────────────
+
+function handleSetPlanGrade(
+	ferment: Ferment,
+	cmd: Extract<Command, { type: "set_plan_grade" }>,
+	ctx: TransitionContext,
+): TransitionResult {
+	return ok(touch(ferment, ctx, { planGrade: cmd.grade }))
 }
 
 // ─── Re-exports for callers that need the constants ──────────────────────────

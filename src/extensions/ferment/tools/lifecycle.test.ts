@@ -38,12 +38,20 @@ vi.mock("../judge.js", async () => {
 			rationale: "Clean delivery; gates substantiated.",
 			recommendations: [] as string[],
 		})),
+		judgePlanGradeViaSubagent: vi.fn(async (_input: unknown, _spawner: unknown) => ({
+			ok: true as const,
+			grade: "A" as const,
+			rationale: "All prompt requirements covered by testable criteria.",
+			recommendations: [] as string[],
+		})),
 	}
 })
 
-const { judgeApiCall: mockJudgeApiCall, judgeJourneyGradeViaSubagent: mockJudgeJourneyGrade } = await import(
-	"../judge.js"
-)
+const {
+	judgeApiCall: mockJudgeApiCall,
+	judgeJourneyGradeViaSubagent: mockJudgeJourneyGrade,
+	judgePlanGradeViaSubagent: mockJudgePlanGrade,
+} = await import("../judge.js")
 
 interface RegisteredTool {
 	name: string
@@ -365,6 +373,148 @@ describe("scopeFerment", () => {
 
 		const saved = h.storage.get(h.fermentId)
 		expect(saved?.scoping.assumptions).toBeUndefined()
+	})
+})
+
+describe("scopeFerment plan grader", () => {
+	it("plan grader returns A and scope_ferment succeeds with grade persisted", async () => {
+		const h = createHarness()
+		vi.mocked(mockJudgePlanGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "A",
+			rationale: "All prompt requirements covered by testable criteria.",
+			recommendations: [],
+		})
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				gates: passingPlanGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("scoped and ready")
+		expect(h.storage.get(h.fermentId)?.status).toBe("planned")
+		expect(h.storage.get(h.fermentId)?.planGrade?.grade).toBe("A")
+		expect(mockJudgePlanGrade).toHaveBeenCalledTimes(1)
+	})
+
+	it("plan grader returns C and scope_ferment returns error with recommendations", async () => {
+		const h = createHarness()
+		vi.mocked(mockJudgePlanGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "C",
+			rationale: "Criteria miss the output format requirement.",
+			recommendations: ["Add a criterion verifying the output is valid JSON."],
+		})
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				gates: passingPlanGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		expect(errText(result)).toContain("plan needs revision")
+		expect(errText(result)).toContain("grade C")
+		expect(errText(result)).toContain("minimum required is A")
+		expect(errText(result)).toContain("Add a criterion verifying the output is valid JSON")
+		expect(mockJudgePlanGrade).toHaveBeenCalledTimes(1)
+	})
+
+	it("plan grader unavailable and scope_ferment proceeds (advisory)", async () => {
+		const h = createHarness()
+		vi.mocked(mockJudgePlanGrade).mockResolvedValueOnce({
+			ok: false,
+			reason: "no_model",
+		})
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				gates: passingPlanGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("scoped and ready")
+		expect(h.storage.get(h.fermentId)?.status).toBe("planned")
+		expect(h.storage.get(h.fermentId)?.planGrade).toBeUndefined()
+		expect(mockJudgePlanGrade).toHaveBeenCalledTimes(1)
+	})
+
+	it("spawner is injected and called by the plan grader", async () => {
+		const h = createHarness()
+		const spawner = vi.fn(async () => ({
+			text: '{"grade":"A","rationale":"All covered.","recommendations":[]}',
+			status: "completed",
+		}))
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				gates: passingPlanGates(),
+			},
+			{ ctx: createContext(), spawner },
+		)
+
+		expect(okText(result)).toContain("scoped and ready")
+		expect(h.storage.get(h.fermentId)?.planGrade?.grade).toBe("A")
+		// The mock intercepts the call, so verify the spawner was passed through.
+		expect(mockJudgePlanGrade).toHaveBeenCalledWith(expect.anything(), spawner)
+	})
+
+	it("plan grader accepts a low grade after block retries are exhausted", async () => {
+		const h = createHarness()
+		// Exhaust the plan-grade block-retry budget so a low grade must proceed.
+		for (let i = 0; i < 3; i++) {
+			h.runtime.bumpBlockRetry(h.fermentId, "__plan__")
+		}
+		vi.mocked(mockJudgePlanGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "C",
+			rationale: "Still missing coverage.",
+			recommendations: ["Add array criterion."],
+		})
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				gates: passingPlanGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("scoped and ready")
+		expect(h.storage.get(h.fermentId)?.planGrade?.grade).toBe("C")
+		expect(h.runtime.getBlockRetry(h.fermentId, "__plan__")).toBe(0)
 	})
 })
 

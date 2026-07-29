@@ -306,6 +306,10 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 			b.push("ferment_graded", { grade: cmd.grade })
 			return b.events
 
+		case "set_plan_grade":
+			b.push("plan_graded", { grade: cmd.grade })
+			return b.events
+
 		case "rename":
 			b.push("ferment_renamed", { name: cmd.name })
 			return b.events
