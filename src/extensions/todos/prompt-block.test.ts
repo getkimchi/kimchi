@@ -108,7 +108,7 @@ describe("todo prompt block", () => {
 		expect(block).toContain("Start short (2-3 items)")
 		expect(block).toContain("Skip todos for single-step answers")
 		expect(block).toContain("different from leaving TODO comments/placeholders in code")
-		expect(block).toContain("Combine todo updates with other tool calls")
+		expect(block).toContain("Always pair todo updates with the next work tool call")
 		expect(block).toContain("natural break points")
 		expect(block).toContain("staleness warning")
 		expect(block).not.toContain("before your final response")
@@ -320,7 +320,7 @@ describe("staleness indicator in state markdown", () => {
 		for (let i = 0; i < 8; i++) bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
 
 		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
-		expect(md).toContain("⚠ 8 changes since last update — consider reconciling")
+		expect(md).toContain("⚠ 8 changes since last update — update alongside your next tool call now")
 	})
 
 	it("shows a strong staleness warning at 12+ changes", () => {
