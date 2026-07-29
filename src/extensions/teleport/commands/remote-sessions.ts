@@ -12,6 +12,7 @@ import type { TeleportContext } from "../types.js"
 import type { RemoteWorkspaceNode } from "../ui/remote-sessions-panel.js"
 import { pickRemoteSessions } from "../ui/remote-sessions-panel.js"
 import type { CombinedStatus, SessionRow } from "../ui/sessions-table.js"
+import { assignWorkspaceSlugs } from "../workspace-slugs.js"
 import { runAttachSession } from "./attach.js"
 import { info, refuse, status, warn } from "./errors.js"
 import { runTerminal } from "./terminal.js"
@@ -143,6 +144,8 @@ export async function buildTree(
 		}),
 	)
 
+	const slugMap = assignWorkspaceSlugs(workspaces)
+
 	const nodes = workspaces.map((ws, idx): RemoteWorkspaceNode => {
 		const res = results[idx]
 		const reachable = res?.status === "fulfilled"
@@ -156,6 +159,7 @@ export async function buildTree(
 			row: {
 				id: ws.id,
 				name: ws.name,
+				displayName: slugMap.get(ws.id) ?? ws.name,
 				status: ws.status,
 				createdAt: ws.createdAt,
 				lastActivityAt: ws.lastActivityAt,
