@@ -36,6 +36,8 @@ import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
+import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
+import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
@@ -538,6 +540,14 @@ try {
 			// dynamically on every bash call, so enable/disable from /resources
 			// takes effect immediately without a process restart.
 			bashDefaultTimeoutExtension,
+			// Background bash: MUST register before bashToolGuard so its background
+			// `execute` wins the first-registration-per-name race (runner.js).
+			// Carries BASH_TOOL_DESCRIPTION so the tool-guard's steering composes.
+			// Background mode is opt-in via `checkin_interval`; without it, bash
+			// runs synchronously as before.
+			bashBackgroundExtension,
+			// bash_control companion tool + visibility gating for background processes.
+			bashControlExtension,
 			bashToolGuardExtension,
 			bashTimeoutGuidanceExtension,
 			...enabledExtensionFactories([
