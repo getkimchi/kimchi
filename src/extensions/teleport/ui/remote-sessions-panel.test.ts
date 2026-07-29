@@ -158,6 +158,19 @@ describe("RemoteSessionsPanel", () => {
 			expect(done).toHaveBeenCalledWith({ action: "delete-session", node: treeNodes[0]?.sessions[0] })
 		})
 
+		it("'v' on a workspace resolves action='open-vscode'", () => {
+			const { panel, done } = makePanel()
+			panel.handleInput("v")
+			expect(done).toHaveBeenCalledWith({ action: "open-vscode", node: treeNodes[0] })
+		})
+
+		it("'v' is a no-op on a session entry", () => {
+			const { panel, done } = makePanel()
+			panel.handleInput("j")
+			panel.handleInput("v")
+			expect(done).not.toHaveBeenCalled()
+		})
+
 		it("'r' on a workspace resolves action='rename-workspace'", () => {
 			const { panel, done } = makePanel()
 			panel.handleInput("r")

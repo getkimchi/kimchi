@@ -1,5 +1,6 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { SANDBOX_HOME } from "../provisioning/constants.js"
 
 const {
 	authMock,
@@ -14,6 +15,9 @@ const {
 	runTerminalMock,
 	ensureIncludeDirectiveMock,
 	syncSshConfigMock,
+	isVsCodeAvailableMock,
+	launchVsCodeRemoteMock,
+	getSshAliasMock,
 } = vi.hoisted(() => ({
 	authMock: vi.fn(),
 	verifyApiKeyMock: vi.fn(),
@@ -27,6 +31,9 @@ const {
 	runTerminalMock: vi.fn(),
 	ensureIncludeDirectiveMock: vi.fn(),
 	syncSshConfigMock: vi.fn(),
+	isVsCodeAvailableMock: vi.fn(),
+	launchVsCodeRemoteMock: vi.fn(),
+	getSshAliasMock: vi.fn(),
 }))
 
 vi.mock("../../../sandbox/cloud/auth.js", () => ({
@@ -56,6 +63,11 @@ vi.mock("./terminal.js", () => ({ runTerminal: runTerminalMock }))
 vi.mock("../ssh-config/sync.js", () => ({
 	ensureIncludeDirective: ensureIncludeDirectiveMock,
 	syncSshConfig: syncSshConfigMock,
+}))
+vi.mock("../ssh-config/render.js", () => ({ getSshAlias: getSshAliasMock }))
+vi.mock("../vscode.js", () => ({
+	isVsCodeAvailable: isVsCodeAvailableMock,
+	launchVsCodeRemote: launchVsCodeRemoteMock,
 }))
 
 import type { Workspace } from "../../../sandbox/cloud/types.js"
@@ -180,6 +192,9 @@ beforeEach(() => {
 	runTerminalMock.mockReset().mockResolvedValue(undefined)
 	ensureIncludeDirectiveMock.mockReset().mockResolvedValue(undefined)
 	syncSshConfigMock.mockReset().mockResolvedValue(undefined)
+	isVsCodeAvailableMock.mockReset().mockReturnValue(true)
+	launchVsCodeRemoteMock.mockReset().mockReturnValue(undefined)
+	getSshAliasMock.mockReset().mockReturnValue(undefined)
 })
 
 describe("deriveStatus", () => {
@@ -366,6 +381,59 @@ describe("runRemoteSessions", () => {
 		ui.confirm.mockResolvedValue(true)
 		await runRemoteSessions("", ctx)
 		expect(deleteSessionMock).toHaveBeenCalledWith(expect.anything(), "s-1", undefined)
+		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("opens VSCode on action='open-vscode' for a provisioned workspace", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		getSshAliasMock.mockReturnValue("kimchi-alpha")
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({
+				action: "open-vscode",
+				node: workspaceNode({
+					row: { id: "w-1", name: "alpha", status: "active", sessionCount: 0, host: "host.example" },
+				}),
+			})
+			.mockResolvedValueOnce(undefined)
+		const { ctx } = makeCtx()
+		await runRemoteSessions("", ctx)
+		expect(getSshAliasMock).toHaveBeenCalledWith([expect.objectContaining({ id: "w-1" })], "w-1")
+		expect(isVsCodeAvailableMock).toHaveBeenCalled()
+		expect(launchVsCodeRemoteMock).toHaveBeenCalledWith("kimchi-alpha", `${SANDBOX_HOME}/`)
+		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("warns and does not launch VSCode for an unprovisioned workspace", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({
+				action: "open-vscode",
+				node: workspaceNode({ row: { id: "w-1", name: "alpha", status: "active", sessionCount: 0 } }),
+			})
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		await runRemoteSessions("", ctx)
+		expect(launchVsCodeRemoteMock).not.toHaveBeenCalled()
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("not provisioned"), "warning")
+		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("warns and does not launch VSCode when 'code' is missing from PATH", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		getSshAliasMock.mockReturnValue("kimchi-alpha")
+		isVsCodeAvailableMock.mockReturnValue(false)
+		pickRemoteSessionsMock
+			.mockResolvedValueOnce({
+				action: "open-vscode",
+				node: workspaceNode({
+					row: { id: "w-1", name: "alpha", status: "active", sessionCount: 0, host: "host.example" },
+				}),
+			})
+			.mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		await runRemoteSessions("", ctx)
+		expect(launchVsCodeRemoteMock).not.toHaveBeenCalled()
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("Install VS Code or add it to PATH"), "warning")
 		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(2)
 	})
 })
