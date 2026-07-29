@@ -182,8 +182,10 @@ export async function connectToIde(lockfile: LockfileData): Promise<IdeConnectio
 				inputSchema: t.inputSchema,
 			}))
 		},
-		callTool: async (name, args) => {
-			const res = await client.callTool({ name, arguments: args as Record<string, unknown> | undefined })
+		callTool: async (name, args, signal) => {
+			const res = await client.callTool({ name, arguments: args as Record<string, unknown> | undefined }, undefined, {
+				signal,
+			})
 			return res
 		},
 		setNotificationHandler: (handler: (msg: unknown) => void) => {

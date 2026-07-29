@@ -79,15 +79,15 @@ interface IdeApprovalResult {
 }
 
 /** Call the IDE's `proposeChange` tool and return the approval result, or
- * `null` on failure (network error, malformed response). The MCP response is
- * an envelope — see `unwrapMcpToolResult`. */
+ * `null` on failure (network error, malformed response, abort). */
 async function requestIdeApproval(
 	connection: IdeConnection,
 	params: { filePath: string; originalContent: string; newContent: string; changeId: string },
 	signal: AbortSignal | undefined,
 ): Promise<IdeApprovalResult | null> {
+	if (signal?.aborted) return null
 	try {
-		const result = await connection.callTool("proposeChange", params)
+		const result = await connection.callTool("proposeChange", params, signal)
 		if (signal?.aborted) return null
 		const payload = unwrapMcpToolResult(result)
 		if (payload && typeof payload === "object" && "approved" in payload) {
@@ -379,9 +379,13 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 		const changeId = generateChangeId()
 		const approval = await requestIdeApproval(connection, { ...proposed, changeId }, ctx.signal)
 		if (approval === null) {
-			// IDE call failed — best-effort approval, fall through.
-			console.warn(`[ide-adapter] proposeChange call failed for ${proposed.filePath}; letting ${toolName} proceed`)
-			return undefined
+			// IDE call failed (network error, malformed response, or abort).
+			// block the tool so it cannot execute without either IDE or terminal approval.
+			console.warn(`[ide-adapter] proposeChange call failed for ${proposed.filePath}; blocking ${toolName}`)
+			return {
+				block: true,
+				reason: `IDE approval failed for ${proposed.filePath}. The IDE could not be reached or returned a malformed response. Try again, or disconnect the IDE to fall back to terminal approval.`,
+			}
 		}
 		if (!approval.approved) {
 			return {

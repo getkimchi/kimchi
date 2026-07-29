@@ -80,16 +80,16 @@ export function realpathSafe(p: string): string {
 }
 
 /** Find the lockfile whose `workspaceFolders` contains cwd. Both sides are
- * canonicalized via `realpathSafe` so symlinked project roots match. Falls
- * back to the first lockfile with a live process when none matches the cwd. */
+ * canonicalized via `realpathSafe` so symlinked project roots match.
+ * Returns `undefined` when no alive lockfile matches — the CLI will not
+ * connect to an IDE whose workspace doesn't contain the current project. */
 export function findMatchingLockfile(lockfiles: LockfileData[], cwd: string): LockfileData | undefined {
 	const alive = lockfiles.filter((l) => isProcessAlive(l.pid))
 	const cwdReal = realpathSafe(cwd).replace(/\\/g, "/")
-	const exactMatch = alive.find((l) =>
+	return alive.find((l) =>
 		l.workspaceFolders.some((wf) => {
 			const wfReal = realpathSafe(wf).replace(/\\/g, "/")
 			return wfReal === cwdReal || cwdReal.startsWith(`${wfReal}/`)
 		}),
 	)
-	return exactMatch ?? alive[0]
 }
