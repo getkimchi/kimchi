@@ -1,7 +1,7 @@
 import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { describe, expect, it } from "vitest"
 import { isBareExitAlias } from "./exit-utils.js"
-import { findNextCompatibleModel } from "./ui.js"
+import { ctrlCCascadeDecision, findNextCompatibleModel } from "./ui.js"
 
 // Helper to create a minimal Model mock
 function makeModel(id: string, contextWindow: number, input: string[] = ["text", "image"]) {
@@ -41,6 +41,31 @@ describe("isBareExitAlias", () => {
 		expect(isBareExitAlias("exit now")).toBe(false)
 		expect(isBareExitAlias("please exit")).toBe(false)
 		expect(isBareExitAlias("quit")).toBe(false)
+	})
+})
+
+describe("ctrlCCascadeDecision", () => {
+	it("returns 'clear' when editor has text (regardless of streaming)", () => {
+		expect(ctrlCCascadeDecision(true, true)).toBe("clear")
+		expect(ctrlCCascadeDecision(true, false)).toBe("clear")
+	})
+
+	it("returns 'abort' when no text and agent is streaming", () => {
+		expect(ctrlCCascadeDecision(false, true)).toBe("abort")
+	})
+
+	it("returns 'exit' when no text and agent is idle", () => {
+		expect(ctrlCCascadeDecision(false, false)).toBe("exit")
+	})
+
+	it("cascade ordering: clear takes priority over abort", () => {
+		// Text + streaming → clear first, not abort
+		expect(ctrlCCascadeDecision(true, true)).toBe("clear")
+	})
+
+	it("cascade ordering: abort takes priority over exit", () => {
+		// No text + streaming → abort, not exit
+		expect(ctrlCCascadeDecision(false, true)).toBe("abort")
 	})
 })
 

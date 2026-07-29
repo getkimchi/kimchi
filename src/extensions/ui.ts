@@ -114,6 +114,26 @@ let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
 let currentSessionIndicatorText: string | null = null
 
+/**
+ * Pure decision function for the Ctrl+C cascade state machine.
+ *
+ * Given the current editor and agent state, returns what action to take:
+ * - `"clear"` — clear text; let the event flow to upstream's app.clear handler.
+ * - `"abort"` — abort the agent; consume the event so upstream doesn't fire.
+ * - `"exit"` — let the event flow to upstream's handleCtrlC (exit timer / exit).
+ *
+ * The cascade is:
+ *   1. Text exists       → clear text (upstream handles it)
+ *   2. No text, streaming → abort agent (consume event)
+ *   3. No text, idle      → let upstream handle double-press-to-exit
+ */
+export type CtrlCAction = "clear" | "abort" | "exit"
+export function ctrlCCascadeDecision(hasText: boolean, isStreaming: boolean): CtrlCAction {
+	if (hasText) return "clear"
+	if (isStreaming) return "abort"
+	return "exit"
+}
+
 const branchPoller = createBranchPoller({
 	refreshBranch: (cb) => refreshGitBranch(cb),
 })
@@ -380,14 +400,46 @@ export default function uiExtension(pi: ExtensionAPI) {
 		if (ctx.hasUI) {
 			unsubModelCycleInput = ctx.ui.onTerminalInput((data) => {
 				// In raw-mode terminals Ctrl+C arrives as \x03 rather than raising
-				// SIGINT.  The upstream TUI already maps Escape to abort, but does
-				// not handle Ctrl+C.  Bridge the gap so both keys cancel the active
-				// turn while the agent is working.
+				// SIGINT.  The upstream TUI maps Ctrl+C to app.clear (clear editor /
+				// double-press to exit) and Escape to app.interrupt (abort agent).
+				// We implement a cascade so Ctrl+C is a single-key workflow:
+				//
+				//   1. Text exists       → clear text (let upstream handle it)
+				//   2. No text, streaming → abort agent (consume so upstream exit timer doesn't fire)
+				//   3. No text, idle      → let upstream handle double-press-to-exit
+				//
+				// The exit-on-double-press timing (500ms) is handled by upstream's
+				// handleCtrlC via its own lastSigintTime variable.
 				if (matchesKey(data, Key.ctrl("c")) && !isKeyRelease(data)) {
-					if (currentCtx && !currentCtx.isIdle()) {
-						currentCtx.abort()
+					const hasText = (currentEditor?.getText().trim().length ?? 0) > 0
+					const streaming = currentCtx ? !currentCtx.isIdle() : false
+
+					switch (ctrlCCascadeDecision(hasText, streaming)) {
+						case "clear": {
+							// Stage 1: clear text. Let the event flow to upstream's app.clear
+							// handler (handleCtrlC), which calls clearEditor() and sets
+							// lastSigintTime. Show a hint so the user knows the next press
+							// will abort.
+							if (streaming) {
+								currentCtx?.ui.setStatus("__ctrl_c_hint", "Ctrl+C again to abort")
+							}
+							return undefined // upstream clears text
+						}
+						case "abort": {
+							// Stage 2: abort the agent. Consume the event so upstream's
+							// handleCtrlC doesn't also start its exit timer.
+							currentCtx?.abort()
+							currentCtx?.ui.setStatus("__ctrl_c_hint", undefined)
+							return { consume: true }
+						}
+						case "exit": {
+							// Stage 3: idle + no text. Let upstream handle the exit timer.
+							// Upstream's handleCtrlC checks lastSigintTime; if within 500ms
+							// of the previous press it exits, otherwise it sets the timer.
+							currentCtx?.ui.setStatus("__ctrl_c_hint", undefined)
+							return undefined
+						}
 					}
-					return undefined
 				}
 				if (matchesKey(data, "ctrl+p")) {
 					// Defer to a foreground UI that is forwarding raw terminal input
@@ -590,6 +642,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 	})
 	pi.on("turn_end", (_, ctx) => {
 		currentCtx = ctx
+		// Clear any lingering Ctrl+C hint — the agent is no longer streaming
+		// so the cascade's "press again to abort" guidance is stale.
+		if (ctx.hasUI) ctx.ui.setStatus("__ctrl_c_hint", undefined)
 		refresh("idle")
 		if (ctx.hasUI && turnStartMs > 0) {
 			clearTimeout(workedForTimer)
