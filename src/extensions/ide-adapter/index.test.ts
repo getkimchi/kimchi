@@ -560,6 +560,7 @@ describe("ide-adapter extension", () => {
 					originalContent: "old",
 					newContent: "new",
 				}),
+				undefined,
 			)
 		})
 
@@ -579,6 +580,7 @@ describe("ide-adapter extension", () => {
 					originalContent: "old",
 					newContent: "new",
 				}),
+				undefined,
 			)
 		})
 
@@ -600,6 +602,7 @@ describe("ide-adapter extension", () => {
 					originalContent: "hello world",
 					newContent: "hello kimchi",
 				}),
+				undefined,
 			)
 		})
 
@@ -619,7 +622,7 @@ describe("ide-adapter extension", () => {
 			expect(callTool).not.toHaveBeenCalled()
 		})
 
-		it("falls back to no-op when the IDE call itself fails", async () => {
+		it("blocks when the IDE call itself fails (fail-closed)", async () => {
 			vi.mocked(readFileSync).mockReturnValue("old")
 			const callTool = vi.fn().mockRejectedValue(new Error("ws closed"))
 			const { pi, ctx } = await setupWithConnection(callTool)
@@ -629,12 +632,15 @@ describe("ide-adapter extension", () => {
 				{ toolName: "write", input: { path: "a.txt", content: "new" } },
 				ctx,
 			)
-			expect(result).toBeUndefined()
+			expect(result).toEqual({
+				block: true,
+				reason: expect.stringContaining("IDE approval failed"),
+			})
 			expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("proposeChange call failed"))
 			warnSpy.mockRestore()
 		})
 
-		it("treats a malformed IDE response as a failed call (no block)", async () => {
+		it("blocks when the IDE returns a malformed response (fail-closed)", async () => {
 			vi.mocked(readFileSync).mockReturnValue("old")
 			const callTool = vi.fn().mockResolvedValue(mcpEnvelope({ weirdShape: true }))
 			const { pi, ctx } = await setupWithConnection(callTool)
@@ -644,9 +650,47 @@ describe("ide-adapter extension", () => {
 				{ toolName: "write", input: { path: "a.txt", content: "new" } },
 				ctx,
 			)
-			expect(result).toBeUndefined()
+			expect(result).toEqual({
+				block: true,
+				reason: expect.stringContaining("IDE approval failed"),
+			})
 			expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("proposeChange call failed"))
 			warnSpy.mockRestore()
+		})
+
+		it("blocks without calling the IDE when the signal is already aborted", async () => {
+			vi.mocked(readFileSync).mockReturnValue("old")
+			const callTool = vi.fn().mockResolvedValue(mcpEnvelope({ approved: true }))
+			const { pi, ctx } = await setupWithConnection(callTool)
+
+			const controller = new AbortController()
+			controller.abort()
+			const result = await pi._handlers.tool_call[0](
+				{ toolName: "write", input: { path: "a.txt", content: "new" } },
+				{ ...ctx, signal: controller.signal },
+			)
+			expect(callTool).not.toHaveBeenCalled()
+			expect(result).toEqual({
+				block: true,
+				reason: expect.stringContaining("IDE approval failed"),
+			})
+		})
+
+		it("forwards the abort signal to connection.callTool", async () => {
+			vi.mocked(readFileSync).mockReturnValue("old")
+			const callTool = vi.fn().mockResolvedValue(mcpEnvelope({ approved: true }))
+			const { pi, ctx } = await setupWithConnection(callTool)
+
+			const controller = new AbortController()
+			await pi._handlers.tool_call[0](
+				{ toolName: "write", input: { path: "a.txt", content: "new" } },
+				{ ...ctx, signal: controller.signal },
+			)
+			expect(callTool).toHaveBeenCalledWith(
+				"proposeChange",
+				expect.objectContaining({ filePath: expect.stringContaining("a.txt") }),
+				controller.signal,
+			)
 		})
 
 		it("handles write to a new file (empty originalContent)", async () => {
@@ -663,6 +707,7 @@ describe("ide-adapter extension", () => {
 					originalContent: "",
 					newContent: "fresh",
 				}),
+				undefined,
 			)
 		})
 

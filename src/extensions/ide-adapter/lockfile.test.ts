@@ -133,5 +133,21 @@ describe("lockfile", () => {
 			const match = findMatchingLockfile(lockfiles, "/home/user/project")
 			expect(match).toBeUndefined()
 		})
+
+		it("returns undefined when alive lockfile exists but workspace doesn't match", () => {
+			const lockfiles = [
+				{
+					port: 1,
+					pid: process.pid,
+					ideName: "GoLand",
+					ideVersion: "1",
+					transport: "ws",
+					workspaceFolders: ["/home/user/goland-project"],
+					authToken: "t1",
+				},
+			]
+			const match = findMatchingLockfile(lockfiles, "/home/user/webstorm-project")
+			expect(match).toBeUndefined()
+		})
 	})
 })
