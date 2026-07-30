@@ -35,12 +35,18 @@ function generateChangeId(): string {
 	return `chg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 }
 
-/** Read a file's current contents, returning "" if missing or unreadable. */
-function readCurrentContent(filePath: string): string {
+/** Read a file's current contents. Returns "" for missing files (ENOENT),
+ * or `null` if the file exists but cannot be read (e.g. permission denied).
+ * A `null` return propagates to `computeProposedChange` → `null`, which the
+ * `tool_call` handler treats as a hard block so the user is never shown a
+ * diff that hides the file's real contents. */
+function readCurrentContent(filePath: string): string | null {
 	try {
 		return readFileSync(filePath, "utf-8")
-	} catch {
-		return ""
+	} catch (err) {
+		if ((err as { code?: string }).code === "ENOENT") return ""
+		console.warn(`[ide-adapter] Failed to read ${filePath}:`, err)
+		return null
 	}
 }
 
@@ -57,6 +63,7 @@ function computeProposedChange(
 	if (!rawPath) return null
 	const filePath = resolve(cwd, rawPath)
 	const originalContent = readCurrentContent(filePath)
+	if (originalContent === null) return null
 
 	if (toolName === "write") {
 		const newContent = typeof input.content === "string" ? input.content : ""
@@ -71,8 +78,9 @@ function computeProposedChange(
 
 /** Result of an IDE approval request. `approved: true` carries the user's
  * (possibly hand-edited) `newContent`; `approved: false` means rejected.
- * `null` means the IDE call failed — the hook falls back to letting the
- * write proceed (best-effort, never a hard block). */
+ * `null` means the IDE call failed (network error, malformed response, or
+ * abort). The caller treats `null` as a hard block — the tool will not
+ * execute without either IDE or terminal approval. */
 interface IdeApprovalResult {
 	approved: boolean
 	newContent: string | null
@@ -182,7 +190,7 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 		return pendingAtMentions.length > 0
 	}
 
-	function localSetLatestSelection(selection: SelectionChangedNotification): void {
+	function localSetLatestSelection(selection: SelectionChangedNotification | null): void {
 		_latestSelection = selection
 	}
 
@@ -322,21 +330,28 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 			}
 		} else if (m.method === "selection_changed") {
 			if (typeof params.filePath === "string") {
-				// Pass the IDE-supplied absolute path through verbatim (see
-				// `at_mentioned` above).
+				// Pass the IDE-supplied absolute path through verbatim (see `at_mentioned` above).
 				const filePath = params.filePath
-				const selection: SelectionChangedNotification = {
-					filePath,
-					lineStart: typeof params.lineStart === "number" ? params.lineStart : 0,
-					lineEnd: typeof params.lineEnd === "number" ? params.lineEnd : 0,
-				}
-				localSetLatestSelection(selection)
-				// Surface as a right-aligned indicator inside the input box's top
-				// border — a dedicated segment alongside (not replacing) the pending
-				// image indicator. The selection is also kept sticky in
-				// `_latestSelection` for auto-attach on send (see `pi.on('input')`).
-				if (currentCtx?.hasUI) {
-					setIdeSelectionIndicator(formatAtMention(selection))
+				const lineStart = typeof params.lineStart === "number" ? params.lineStart : 0
+				const lineEnd = typeof params.lineEnd === "number" ? params.lineEnd : 0
+
+				if (lineStart === 0 && lineEnd === 0) {
+					// Per CONTRACT.md: lineStart: 0 and lineEnd: 0 mean "no range" —
+					// clear the selection indicator and sticky selection.
+					localSetLatestSelection(null)
+					if (currentCtx?.hasUI) {
+						setIdeSelectionIndicator(null)
+					}
+				} else {
+					const selection: SelectionChangedNotification = { filePath, lineStart, lineEnd }
+					localSetLatestSelection(selection)
+					// Surface as a right-aligned indicator inside the input box's top
+					// border — a dedicated segment alongside (not replacing) the pending
+					// image indicator. The selection is also kept sticky in
+					// `_latestSelection` for auto-attach on send (see `pi.on('input')`).
+					if (currentCtx?.hasUI) {
+						setIdeSelectionIndicator(formatAtMention(selection))
+					}
 				}
 			}
 		}
@@ -361,19 +376,31 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 		const toolName = event.toolName
 		if (!toolName || !APPROVAL_GATED_TOOLS.has(toolName)) return undefined
 
-		// No IDE connected → no approval surface is available; let the tool run.
-		// The IDE diff viewer is automatically used whenever an IDE is connected.
-		if (!connection) {
+		// When an IDE session is active, the permissions extension skips its
+		// terminal approval prompt for write/edit, deferring to the IDE diff
+		// viewer. This makes the ide-adapter the sole approval authority — every
+		// failure path must block to prevent ungated execution.
+		if (!ideConnectionActive) {
 			return undefined
+		}
+
+		if (!connection) {
+			// IDE was active but the connection dropped before this hook ran.
+			return {
+				block: true,
+				reason: `IDE connection was lost. ${toolName} is blocked to prevent ungated execution. Try again, or disconnect the IDE to fall back to terminal approval.`,
+			}
 		}
 
 		const input = (event.input ?? {}) as Record<string, unknown>
 		const proposed = computeProposedChange(toolName, input, ctx.cwd)
 		if (!proposed) {
-			// Malformed inputs (e.g. edit oldText not found) — defer to the tool's
-			// own validation surface. Don't block; let the tool fail with its own
-			// error message.
-			return undefined
+			// Can't build a proposal (malformed input, unreadable file, etc.).
+			// Block rather than deferring, since permissions already skipped.
+			return {
+				block: true,
+				reason: `Could not compute the proposed change for ${toolName}. The input may be malformed or the file unreadable. Try again, or disconnect the IDE to fall back to terminal approval.`,
+			}
 		}
 
 		const changeId = generateChangeId()
@@ -407,19 +434,23 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 			// Steer the LLM so its summary reflects what was actually written, not
 			// its original proposal. Without this, the agent confidently reports
 			// the proposed value even though the user changed it in the diff viewer.
-			pi.sendMessage(
-				{
-					customType: "ide-adapter-edit-steer",
-					content: [
-						{
-							type: "text",
-							text: `The user hand-edited your proposed change to ${proposed.filePath} in the IDE diff viewer before it was applied. The actual content written to disk differs from your original proposal — do not assume your proposed content was applied verbatim. If you need to reference the exact value, read the file from disk.`,
-						},
-					],
-					display: false,
-				},
-				{ deliverAs: "steer" },
-			)
+			try {
+				pi.sendMessage(
+					{
+						customType: "ide-adapter-edit-steer",
+						content: [
+							{
+								type: "text",
+								text: `The user hand-edited your proposed change to ${proposed.filePath} in the IDE diff viewer before it was applied. The actual content written to disk differs from your original proposal — do not assume your proposed content was applied verbatim. If you need to reference the exact value, read the file from disk.`,
+							},
+						],
+						display: false,
+					},
+					{ deliverAs: "steer" },
+				)
+			} catch (err) {
+				console.warn("[ide-adapter] Failed to send steer message:", err)
+			}
 		}
 		return undefined
 	})
@@ -429,6 +460,11 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 		const cwd = ctx.cwd
 		isShuttingDown = false
 		reconnectRetries = 0
+
+		// Reset stale connection state from a prior session so that
+		// `ideConnectionActive` doesn't carry over after the old IDE disconnected.
+		connection = null
+		ideConnectionActive = false
 
 		// Prevent duplicate poll timers on reconnect
 		if (pollTimer) {
