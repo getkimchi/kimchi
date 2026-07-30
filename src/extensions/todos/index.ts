@@ -5,8 +5,9 @@ import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { appendTodoPromptBlockIfMissing, registerTodoPromptBlock, registerTodoStateBlock } from "./prompt-block.js"
 import {
 	bumpToolCallsSinceTodoWrite,
+	bumpWorkToolCalls,
 	getTodosForScope,
-	getToolCallsSinceTodoWrite,
+	getWorkToolCalls,
 	hasEverHadTodos,
 	hasTodoNudgeFired,
 	markTodoNudgeFired,
@@ -154,11 +155,16 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		if (event.isError || TODO_REPLAY_TOOL_NAME_SET.has(event.toolName)) return
 		const sessionId = ctx.sessionManager.getSessionId()
 
+		// Always count non-todo tool calls for the one-shot early nudge —
+		// it tracks work done without a todo list, so it must increment even
+		// when no todos exist (opposite of the staleness counter below).
+		bumpWorkToolCalls(sessionId)
+
 		// One-shot early nudge: if the session has done several non-todo tool
 		// calls and never created a todo list, send a single hidden message
 		// suggesting the model create one. Fires once per session, never recurs.
 		if (!hasEverHadTodos(sessionId) && !hasTodoNudgeFired(sessionId)) {
-			const count = getToolCallsSinceTodoWrite(sessionId) + 1
+			const count = getWorkToolCalls(sessionId)
 			if (count >= TODO_EARLY_NUDGE_THRESHOLD) {
 				markTodoNudgeFired(sessionId)
 				pi.sendMessage(hiddenTodoMessage(TODO_EARLY_NUDGE_MESSAGE), { deliverAs: "followUp" })

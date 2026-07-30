@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earen
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import todosExtension from "./index.js"
-import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "./store.js"
+import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope, hasEverHadTodos } from "./store.js"
 import { TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoStatus } from "./types.js"
 
@@ -341,5 +341,74 @@ describe("passive staleness counter", () => {
 		applyWriteTodos({ todos: [{ content: "beta for B", status: "pending" }] }, "session-b")
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-a").map((todo) => todo.content)).toEqual(["alpha for A"])
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-b").map((todo) => todo.content)).toEqual(["beta for B"])
+	})
+})
+
+describe("early todo nudge", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+	})
+
+	it("fires when the model does multi-step work without ever creating a todo list", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		// Ten successful non-todo tool calls, no list ever created. The one-shot
+		// nudge threshold is 5, so it should have fired.
+		for (let i = 0; i < 10; i++) {
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+
+		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
+		expect(vi.mocked(harness.sendMessage).mock.calls[0]?.[0]).toMatchObject({
+			details: { reason: "early_nudge" },
+		})
+	})
+
+	it("does not fire when the session already has a todo list", async () => {
+		const harness = createTodosHarness()
+		// Resumed session: the branch already contains a todo list.
+		const ctx = createContext("session", [writeTodosEntry("a", "restored work", "in_progress")])
+		await harness.fire("session_start", { reason: "resume" }, ctx)
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session")).toHaveLength(1)
+
+		for (let i = 0; i < 10; i++) {
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("fires only once even if the model continues without creating a list", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		for (let i = 0; i < 20; i++) {
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+
+		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not fire when the model creates a todo list before the threshold", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		// Three tool calls, then create a todo list (below threshold of 5).
+		for (let i = 0; i < 3; i++) {
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+		applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, "session")
+		expect(hasEverHadTodos("session")).toBe(true)
+
+		// More tool calls — nudge should not fire because the session has had todos.
+		for (let i = 0; i < 10; i++) {
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+
+		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 })

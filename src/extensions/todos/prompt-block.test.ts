@@ -17,8 +17,33 @@ import {
 	bumpToolCallsSinceTodoWrite,
 	resetToolCallsSinceTodoWrite,
 } from "./store.js"
+import type { TodoStatus } from "./types.js"
 
 const TEST_SESSION_ID = "test-session"
+
+// ─── Test helpers ───────────────────────────────────────────────────────────
+
+/** Write a single global todo with the given content and status. */
+function writeTodo(content: string, status: TodoStatus, sessionId: string = TEST_SESSION_ID): void {
+	applyWriteTodos({ todos: [{ content, status }] }, sessionId)
+}
+
+/** Write a single global todo, then bump the staleness counter N times. */
+function writeTodoAndBump(
+	content: string,
+	status: TodoStatus,
+	bumps: number,
+	sessionId: string = TEST_SESSION_ID,
+): void {
+	writeTodo(content, status, sessionId)
+	for (let i = 0; i < bumps; i++) bumpToolCallsSinceTodoWrite(sessionId)
+}
+
+/** Create a todo list then write it a second time to mark it as "updated" (not create-and-forget). */
+function createAndUpdateTodo(content: string, status: TodoStatus, sessionId: string = TEST_SESSION_ID): void {
+	writeTodo(content, status, sessionId)
+	writeTodo(content, status, sessionId)
+}
 
 // ─── Cross-session stall-counter helpers ────────────────────────────────────
 
@@ -298,18 +323,14 @@ describe("staleness indicator in state markdown", () => {
 	})
 
 	it("does not show a staleness warning when changes are minimal (0-2)", () => {
-		applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
-		bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
-		bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
+		writeTodoAndBump("work", "in_progress", 2)
 
 		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
 		expect(md).not.toContain("changes since last update")
 	})
 
 	it("shows a neutral staleness indicator at 3-6 changes", () => {
-		applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
-		// Simulate an update so the list is not flagged as create-and-forget.
-		applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
+		createAndUpdateTodo("work", "in_progress")
 		for (let i = 0; i < 4; i++) bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
 
 		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
@@ -318,8 +339,7 @@ describe("staleness indicator in state markdown", () => {
 	})
 
 	it("shows an advisory staleness warning at 7-11 changes", () => {
-		applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
-		applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
+		createAndUpdateTodo("work", "in_progress")
 		for (let i = 0; i < 8; i++) bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
 
 		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
@@ -327,8 +347,7 @@ describe("staleness indicator in state markdown", () => {
 	})
 
 	it("shows a strong staleness warning at 12+ changes", () => {
-		applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
-		applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
+		createAndUpdateTodo("work", "in_progress")
 		for (let i = 0; i < 15; i++) bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
 
 		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
@@ -336,8 +355,7 @@ describe("staleness indicator in state markdown", () => {
 	})
 
 	it("resets staleness counter after a todo write", () => {
-		applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
-		for (let i = 0; i < 5; i++) bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
+		writeTodoAndBump("work", "in_progress", 5)
 
 		// The first write creates the list; since it was never updated,
 		// the create-and-forget warning appears instead of the normal one.
@@ -345,7 +363,7 @@ describe("staleness indicator in state markdown", () => {
 
 		// Simulate an update by writing again — resets the counter via subscribeTodoStore.
 		resetToolCallsSinceTodoWrite(TEST_SESSION_ID)
-		applyWriteTodos({ todos: [{ content: "work", status: "completed" }] }, TEST_SESSION_ID)
+		writeTodo("work", "completed")
 
 		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
 		expect(md).not.toContain("changes since last update")
@@ -353,8 +371,7 @@ describe("staleness indicator in state markdown", () => {
 	})
 
 	it("shows create-and-forget warning when list was never updated", () => {
-		applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
-		for (let i = 0; i < 5; i++) bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
+		writeTodoAndBump("work", "in_progress", 5)
 
 		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
 		expect(md).toContain("never updated")
@@ -362,9 +379,7 @@ describe("staleness indicator in state markdown", () => {
 	})
 
 	it("does not show create-and-forget warning after list has been updated", () => {
-		applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
-		// Second write marks the list as updated
-		applyWriteTodos({ todos: [{ content: "work", status: "completed" }] }, TEST_SESSION_ID)
+		createAndUpdateTodo("work", "completed")
 		for (let i = 0; i < 5; i++) bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
 
 		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
