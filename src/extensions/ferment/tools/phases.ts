@@ -489,10 +489,18 @@ export async function completePhase(
 		finalRationale = phaseJudgeResult.rationale
 		finalRecommendations = phaseJudgeResult.recommendations
 		const gradeOrder: Record<Grade, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 }
-		if (gradeOrder[phaseJudgeResult.grade] < gradeOrder[minimumAcceptableGrade]) {
+		// Enforce monotonic grade: if the agent addressed previous
+		// recommendations, the grade cannot regress below the previous
+		// round's grade.
+		const prevGrade = runtime.getPreviousBlockGrade(params.ferment_id, phase.id)
+		if (prevGrade && gradeOrder[finalGrade] < gradeOrder[prevGrade]) {
+			finalGrade = prevGrade
+		}
+		if (gradeOrder[finalGrade] < gradeOrder[minimumAcceptableGrade]) {
 			judgeRefused = true
 			judgeRecsText = phaseJudgeResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
 			runtime.setBlockRetryRecommendations(params.ferment_id, phase.id, phaseJudgeResult.recommendations)
+			runtime.setPreviousBlockGrade(params.ferment_id, phase.id, finalGrade)
 		}
 	} else {
 		// Judge unavailable — advisory only, do NOT refuse advancement.
@@ -516,7 +524,7 @@ export async function completePhase(
 			// Fall through to the advance path below with the judge's grade + recs.
 		} else {
 			return toolErr(
-				`**Phase "${phase.name}"** cannot complete — LLM grader assigned grade ${phaseJudgeResult.ok ? phaseJudgeResult.grade : "?"}, minimum required is ${minimumAcceptableGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).${projectChecksNote}\n\nRecommendations:\n${judgeRecsText}${warnLines}\n\nAddress the recommendations above and call complete_ferment_phase again with an updated summary.`,
+				`**Phase "${phase.name}"** cannot complete — LLM grader assigned grade ${finalGrade}, minimum required is ${minimumAcceptableGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).${projectChecksNote}\n\nRecommendations:\n${judgeRecsText}${warnLines}\n\nAddress the recommendations above and call complete_ferment_phase again with an updated summary.`,
 			)
 		}
 	}

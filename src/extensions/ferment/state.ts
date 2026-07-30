@@ -15,7 +15,7 @@ import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { FermentEventStore } from "../../ferment/event-store.js"
-import type { Ferment } from "../../ferment/types.js"
+import type { Ferment, Grade } from "../../ferment/types.js"
 import {
 	deleteRuntimeState,
 	emptyState,
@@ -531,6 +531,11 @@ export const MAX_BLOCK_RETRIES = 3
  * within the same session's retry loop. */
 const blockRetryRecommendations = new Map<string, string[]>()
 
+/** In-memory store of the previous round's grade, keyed by `${fermentId}:${phaseId}`.
+ * Used for monotonic grade enforcement — prevents the grader from downgrading
+ * after the agent addressed its recommendations. */
+const previousBlockGrades = new Map<string, Grade>()
+
 export function setBlockRetryRecommendations(fermentId: string, phaseId: string, recs: string[]): void {
 	blockRetryRecommendations.set(`${fermentId}:${phaseId}`, recs)
 }
@@ -541,6 +546,15 @@ export function getBlockRetryRecommendations(fermentId: string, phaseId: string)
 
 export function clearBlockRetryRecommendations(fermentId: string, phaseId: string): void {
 	blockRetryRecommendations.delete(`${fermentId}:${phaseId}`)
+	previousBlockGrades.delete(`${fermentId}:${phaseId}`)
+}
+
+export function setPreviousBlockGrade(fermentId: string, phaseId: string, grade: Grade): void {
+	previousBlockGrades.set(`${fermentId}:${phaseId}`, grade)
+}
+
+export function getPreviousBlockGrade(fermentId: string, phaseId: string): Grade | undefined {
+	return previousBlockGrades.get(`${fermentId}:${phaseId}`)
 }
 
 export function bumpBlockRetry(fermentId: string, phaseId: string): number {

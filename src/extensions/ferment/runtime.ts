@@ -1,7 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { EventBus, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import type { FermentEventStore } from "../../ferment/event-store.js"
-import type { Ferment } from "../../ferment/types.js"
+import type { Ferment, Grade } from "../../ferment/types.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import {
 	clearAllPendingPlanReviews,
@@ -45,6 +45,7 @@ import {
 	getBlockRetry,
 	getBlockRetryRecommendations,
 	getContinuationPolicy,
+	getPreviousBlockGrade,
 	getLastHumanInputAt,
 	getPendingCompaction,
 	getPhaseStartRef,
@@ -67,6 +68,7 @@ import {
 	setContinuationPolicy,
 	setPendingCompaction,
 	setPhaseStartRef,
+	setPreviousBlockGrade,
 	setStepStartRef,
 } from "./state.js"
 
@@ -122,6 +124,8 @@ export interface FermentRuntime {
 	setBlockRetryRecommendations(fermentId: string, phaseId: string, recs: string[]): void
 	getBlockRetryRecommendations(fermentId: string, phaseId: string): string[] | undefined
 	clearBlockRetryRecommendations(fermentId: string, phaseId: string): void
+	setPreviousBlockGrade(fermentId: string, phaseId: string, grade: Grade): void
+	getPreviousBlockGrade(fermentId: string, phaseId: string): Grade | undefined
 	recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string, hash: string): boolean
 	bumpStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): number
 	clearStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): void
@@ -205,6 +209,8 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		setBlockRetryRecommendations,
 		getBlockRetryRecommendations,
 		clearBlockRetryRecommendations,
+		setPreviousBlockGrade,
+		getPreviousBlockGrade,
 		recordBlockHashAndCheckRepeat,
 		bumpStepCompleteAttempt,
 		clearStepCompleteAttempt,
