@@ -1,5 +1,5 @@
 import type { Message } from "@earendil-works/pi-ai"
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { TelemetryConfig } from "../../config.js"
 import { onBeforeProviderHeaders } from "../../types/before-provider-headers.js"
 import {
@@ -187,11 +187,14 @@ export function consumePhaseTokenDelta(
 // Existing track* functions
 // ---------------------------------------------------------------------------
 
-export async function trackSubagentSpawned(args: { id: string; type: string; description: string }): Promise<void> {
+export async function trackSubagentSpawned(
+	args: { id: string; type: string; description: string },
+	piCtx: ExtensionContext,
+): Promise<void> {
 	if (!isEnabled()) return
 	const ctx = _telemetryCtx
 	if (!ctx) return
-	ctx.emit("subagent.spawned", { agent_type: args.type, reason: args.description })
+	ctx.emit("subagent.spawned", { agent_type: args.type, reason: args.description }, piCtx)
 }
 
 export function trackSurveyShown(args: SurveyShownTelemetry): void {

@@ -874,14 +874,14 @@ export default function (pi: ExtensionAPI) {
 			widget.update()
 		},
 		undefined,
-		(record) => {
+		(record, ctx) => {
 			pi.events.emit("subagents:started", {
 				id: record.id,
 				type: record.type,
 				description: record.description,
 				visibility: record.visibility,
 			})
-			void trackSubagentSpawned(record)
+			void trackSubagentSpawned(record, ctx)
 		},
 		(record, info) => {
 			pi.events.emit("subagents:compacted", {
