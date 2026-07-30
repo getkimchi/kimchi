@@ -8,6 +8,7 @@ import pytest
 from harbor.models.agent.context import AgentContext
 
 from kimchi_agent.agent import (
+    BINARY_PATH,
     CONTAINER_AGENT_PGID_FILE,
     CONTAINER_HARNESS_SKILLS_DIR,
     KIMCHI_EXIT_OUTPUT_TAIL_LINES,
@@ -342,3 +343,143 @@ def test_populate_context_skips_unreadable_session_files(tmp_path: Path) -> None
     assert context.n_cache_tokens == 2
     assert context.cost_usd == 0.5
     warning.assert_called_once()
+
+
+async def test_default_hooks_leave_the_launch_command_unchanged(tmp_path: Path) -> None:
+    # With no overrides the three seam hooks must be invisible in the launch command.
+    class ExplicitDefaultsKimchi(RecordingKimchi):
+        def _extension_paths(self) -> list[str]:
+            return []
+
+        def _stdin_payload(self, instruction: str) -> str:
+            return instruction
+
+        def _pre_launch_commands(self, instruction: str) -> list[str]:
+            return []
+
+    async def launch_command(cls: type[RecordingKimchi]) -> str:
+        agent = cls(
+            logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+            model_name="kimchi-dev/kimi-k2.6",
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await agent.run("hello", object(), AgentContext())
+        return agent.agent_commands[0]
+
+    command = await launch_command(RecordingKimchi)
+
+    assert command == await launch_command(ExplicitDefaultsKimchi)
+    assert f"{BINARY_PATH} --print" in command
+    assert " -e " not in command
+    assert "printf '%s' hello |" in command
+
+
+async def test_extension_paths_override_adds_quoted_e_flags_after_binary_path(
+    tmp_path: Path,
+) -> None:
+    class ExtensionKimchi(RecordingKimchi):
+        def _extension_paths(self) -> list[str]:
+            return ["/installed-agent/kimchi-workflows", "/path with spaces/ext"]
+
+    agent = ExtensionKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert (
+        "/installed-agent/bin/kimchi -e /installed-agent/kimchi-workflows "
+        "-e '/path with spaces/ext' --print --session"
+    ) in command
+
+
+async def test_extension_path_with_shell_metacharacters_is_safely_quoted(
+    tmp_path: Path,
+) -> None:
+    class ExtensionKimchi(RecordingKimchi):
+        def _extension_paths(self) -> list[str]:
+            return ["/tmp/ext; rm -rf /", "/tmp/$(whoami)"]
+
+    agent = ExtensionKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert "-e '/tmp/ext; rm -rf /'" in command
+    assert "-e '/tmp/$(whoami)'" in command
+
+
+async def test_stdin_payload_override_replaces_instruction_on_stdin(tmp_path: Path) -> None:
+    class StdinKimchi(RecordingKimchi):
+        def _stdin_payload(self, instruction: str) -> str:
+            return "/workflow run tb-solver --input @/logs/agent/workflow-input.json"
+
+    agent = StdinKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("the secret task instruction", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert (
+        "printf '%s' '/workflow run tb-solver --input @/logs/agent/workflow-input.json' |"
+    ) in command
+    assert "the secret task instruction" not in command
+
+
+async def test_pre_launch_commands_override_lands_before_kimchi_starts(tmp_path: Path) -> None:
+    class PreLaunchKimchi(RecordingKimchi):
+        def _pre_launch_commands(self, instruction: str) -> list[str]:
+            return [f"touch /tmp/pre-launch-marker-{instruction}"]
+
+    agent = PreLaunchKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    marker = "touch /tmp/pre-launch-marker-hello"
+    assert marker in command
+    # Follows the same established pattern as harness settings / skills
+    # registration: appended to `parts`, immediately before the final
+    # `set -m && { ... }` block that actually launches kimchi.
+    assert f"{marker} && set -m" in command
+
+
+def test_populate_context_counts_nested_workflow_session_files(tmp_path: Path) -> None:
+    logs_dir = tmp_path / "jobs" / "run-1" / "task__trial" / "agent"
+    sessions_dir = logs_dir / "sessions"
+    workflow_dir = sessions_dir / "workflow"
+    workflow_dir.mkdir(parents=True)
+    flat = sessions_dir / "main.jsonl"
+    nested = workflow_dir / "step-1.jsonl"
+    flat.write_text(
+        '{"type":"message","message":{"role":"assistant","usage":{"input":10,"output":3,"cacheRead":2,"cacheWrite":1,"cost":{"total":0.5}}}}\n'
+    )
+    nested.write_text(
+        '{"type":"message","message":{"role":"assistant","usage":{"input":20,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.25}}}}\n'
+    )
+
+    agent = Kimchi(logs_dir=logs_dir, model_name="kimchi-dev/kimi-k2.6")
+    context = AgentContext()
+    agent.populate_context_post_run(context)
+
+    # Both the flat main.jsonl and the nested sessions/workflow/step-1.jsonl
+    # must be counted: a workflow (or any future extension) writing per-step
+    # sessions into a subdirectory must not silently drop those tokens/cost.
+    assert context.n_input_tokens == (10 + 2 + 1) + 20
+    assert context.n_output_tokens == 3 + 5
+    assert context.n_cache_tokens == 2
+    assert context.cost_usd == 0.75

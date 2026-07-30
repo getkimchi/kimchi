@@ -6,3 +6,12 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+node_modules/
+package-lock.json
+# ...except workflows/, which now depends on the PUBLISHED
+# @kimchi-dev/kimchi-workflows rather than a sibling checkout. Its lockfile
+# resolves entirely from the registry (no `file:` entries, so no machine-local
+# paths), which makes `npm ci` reproducible — and reproducibility is the point:
+# a typecheck or test run against a different engine build than the one a trial
+# loads proves nothing about that trial.
+!workflows/package-lock.json
