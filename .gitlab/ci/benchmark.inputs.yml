@@ -15,6 +15,15 @@ inputs:
       - kimchi
       - opencode
       - claude-code
+      - kimchi-workflow
+  workflow:
+    description: "Declared workflow name to run (not a filename). Ignored unless agent is kimchi-workflow."
+    type: string
+    default: "ferment-oneshot"
+  workflow_extension:
+    description: "kimchi-workflows extension spec: 'npm:<pkg>[@<version>]' or 'dir:<host path>'. Unpinned by default so runs pick up new publishes; each result.json records the version that resolved. Ignored unless agent is kimchi-workflow."
+    type: string
+    default: "npm:@kimchi-dev/kimchi-workflows"
   target_ref:
     description: "Git ref to fetch from origin and benchmark. Defaults to master."
     type: string

@@ -1,5 +1,5 @@
 {
-	"//": "Dev-only. The container never installs this \u2014 the extension's jiti loader supplies a workflow's imports as virtual modules. It exists so these workflows get typechecking and tests. Keep the @kimchi-dev/kimchi-workflows pin equal to the EXTENSION default in scripts/run-workflow.sh: checking against a different engine version than the runs load proves nothing.",
+	"//": "Dev-only. The container never installs this \u2014 the extension's jiti loader supplies a workflow's imports as virtual modules. It exists so these workflows get typechecking and tests. The @kimchi-dev/kimchi-workflows pin stays pinned so typechecks are deterministic, and deliberately does NOT track the CI default, which is unpinned so benchmark runs pick up new publishes: read the resolved version out of a run's result.json rather than inferring it from here.",
 	"name": "@kimchi-dev/terminal-bench-workflows",
 	"private": true,
 	"version": "0.0.0",

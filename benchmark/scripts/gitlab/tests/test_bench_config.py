@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from bench_config import is_multi_model, is_retryable, load_llm_params, parse_model
+from bench_config import (
+    is_kimchi_family,
+    is_multi_model,
+    is_retryable,
+    is_workflow_agent,
+    load_llm_params,
+    parse_model,
+)
 from outcome import Outcome
 
 
@@ -153,3 +160,34 @@ def test_load_llm_params_invalid(env_var, value, expected_substring, monkeypatch
     monkeypatch.setenv(env_var, value)
     with pytest.raises(ValueError, match=expected_substring):
         load_llm_params()
+
+
+@pytest.mark.parametrize(
+    "coding_agent,kimchi_family,workflow_agent",
+    [
+        ("kimchi", True, False),
+        ("kimchi-workflow", True, True),
+        ("opencode", False, False),
+        ("claude-code", False, False),
+        # near-misses must not be mistaken for the workflow agent
+        ("kimchi-workflows", False, False),
+        ("workflow", False, False),
+    ],
+)
+def test_agent_family_classification(
+    coding_agent: str, kimchi_family: bool, workflow_agent: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CODING_AGENT", coding_agent)
+
+    assert is_kimchi_family() is kimchi_family
+    assert is_workflow_agent() is workflow_agent
+    # the explicit argument takes precedence over the environment
+    assert is_kimchi_family(coding_agent) is kimchi_family
+    assert is_workflow_agent(coding_agent) is workflow_agent
+
+
+def test_agent_family_defaults_to_kimchi_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CODING_AGENT", raising=False)
+
+    assert is_kimchi_family() is True
+    assert is_workflow_agent() is False

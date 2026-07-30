@@ -10,11 +10,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from chunk_runner import (
+    _agent_import_path,
     _all_trial_dirs_for_task,
     _build_gcs_key_prefix,
     _compaction_disabled,
     _derive_configuration,
     _fetch_all_tasks,
+    _selected_workflow,
+    _selected_workflow_extension,
     _task_name_from_result,
     _write_run_metadata,
     main,
@@ -761,10 +764,21 @@ def test_restore_prior_artifact_uses_include_retried(
         # value is recorded separately as run-metadata "compaction_disabled"
         ({"CODING_AGENT": "kimchi", "MODEL": "kimchi-dev/kimi-k2.7", "KIMCHI_COMPACTION": "disabled"}, "single-model"),
         ({"CODING_AGENT": "kimchi", "MODEL": "kimchi-dev/kimi-k2.7", "KIMCHI_FERMENT_ONESHOT": "true", "KIMCHI_COMPACTION": "auto"}, "single-model-ferment"),  # noqa: E501
+        # the workflow agent is labelled by the workflow it runs, so a workflow
+        # run and a stock run of the same model do not share a GCS prefix
+        ({"CODING_AGENT": "kimchi-workflow"}, "workflow-ferment-oneshot"),
+        ({"CODING_AGENT": "kimchi-workflow", "BENCH_WORKFLOW": "tb-solver"}, "workflow-tb-solver"),
+        # the label names the workflow, not the model mode
+        (
+            {"CODING_AGENT": "kimchi-workflow", "BENCH_WORKFLOW": "tb-solver", "MODEL": "multi-model"},
+            "workflow-tb-solver",
+        ),
+        # blank falls back to the default rather than producing "workflow-"
+        ({"CODING_AGENT": "kimchi-workflow", "BENCH_WORKFLOW": "   "}, "workflow-ferment-oneshot"),
     ],
 )
 def test_derive_configuration(env: dict, expected: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in ("CODING_AGENT", "MODEL", "KIMCHI_FERMENT_ONESHOT", "KIMCHI_COMPACTION"):
+    for key in ("CODING_AGENT", "MODEL", "KIMCHI_FERMENT_ONESHOT", "KIMCHI_COMPACTION", "BENCH_WORKFLOW"):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -792,10 +806,16 @@ def test_derive_configuration(env: dict, expected: str, monkeypatch: pytest.Monk
         # tolerant parsing: case and surrounding whitespace, empty falls back to default
         ({"KIMCHI_COMPACTION": " Disabled "}, True),
         ({"KIMCHI_COMPACTION": ""}, False),
+        # auto also covers workflow runs: the ferment one-shot baseline they are
+        # compared against runs with compaction off, so the default must match
+        ({"CODING_AGENT": "kimchi-workflow"}, True),
+        ({"CODING_AGENT": "kimchi-workflow", "KIMCHI_COMPACTION": "auto"}, True),
+        # explicit values still win for the workflow agent
+        ({"CODING_AGENT": "kimchi-workflow", "KIMCHI_COMPACTION": "enabled"}, False),
     ],
 )
 def test_compaction_disabled_resolution(env: dict, expected: bool, monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in ("KIMCHI_COMPACTION", "KIMCHI_FERMENT_ONESHOT"):
+    for key in ("KIMCHI_COMPACTION", "KIMCHI_FERMENT_ONESHOT", "CODING_AGENT"):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -807,6 +827,53 @@ def test_compaction_disabled_rejects_unknown_value(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("KIMCHI_COMPACTION", "off")
     with pytest.raises(ValueError, match="KIMCHI_COMPACTION"):
         _compaction_disabled()
+
+
+# ---------------------------------------------------------------------------
+# _agent_import_path
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "coding_agent,expected",
+    [
+        ("kimchi", "kimchi_agent:Kimchi"),
+        ("opencode", "kimchi_agent:OpenCodeKimchi"),
+        ("claude-code", "kimchi_agent:ClaudeCodeKimchi"),
+        ("kimchi-workflow", "kimchi_agent:WorkflowAgent"),
+    ],
+)
+def test_agent_import_path(coding_agent: str, expected: str) -> None:
+    assert _agent_import_path(coding_agent) == expected
+
+
+def test_agent_import_path_rejects_unknown_agent() -> None:
+    """An agent the pipeline cannot import must fail before Harbor starts."""
+    with pytest.raises(SystemExit, match="Unknown CODING_AGENT"):
+        _agent_import_path("kimchi-workflows")
+
+
+# ---------------------------------------------------------------------------
+# workflow selection
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("blank", [None, "", "   "])
+def test_workflow_selection_falls_back_to_defaults(blank: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cleared GitLab input field exports an empty variable, not an absent one."""
+    for key in ("BENCH_WORKFLOW", "BENCH_WORKFLOW_EXTENSION"):
+        monkeypatch.delenv(key, raising=False)
+        if blank is not None:
+            monkeypatch.setenv(key, blank)
+
+    assert _selected_workflow() == "ferment-oneshot"
+    assert _selected_workflow_extension() == "npm:@kimchi-dev/kimchi-workflows"
+
+
+def test_workflow_selection_trims_surrounding_whitespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BENCH_WORKFLOW", "  tb-solver  ")
+    monkeypatch.setenv("BENCH_WORKFLOW_EXTENSION", "  dir:/checkouts/kimchi-workflows  ")
+
+    assert _selected_workflow() == "tb-solver"
+    assert _selected_workflow_extension() == "dir:/checkouts/kimchi-workflows"
 
 
 # ---------------------------------------------------------------------------

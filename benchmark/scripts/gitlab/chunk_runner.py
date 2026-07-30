@@ -38,6 +38,8 @@ from bench_config import (
     DEFAULT_CODING_AGENT,
     DEFAULT_KIMCHI_COMPACTION,
     DEFAULT_MODEL,
+    DEFAULT_WORKFLOW,
+    DEFAULT_WORKFLOW_EXTENSION,
     ENV_BENCH_RUN_DATE,
     ENV_BENCH_TASKS_ALL,
     ENV_BENCHMARK_NAME,
@@ -48,9 +50,12 @@ from bench_config import (
     ENV_KIMCHI_COMPACTION,
     ENV_KIMCHI_FERMENT_ONESHOT,
     ENV_MODEL,
+    ENV_WORKFLOW,
+    ENV_WORKFLOW_EXTENSION,
     MULTI_MODEL,
     is_multi_model,
     is_retryable,
+    is_workflow_agent,
     load_llm_params,
     parse_model,
     should_retry_agent_timeout,
@@ -276,15 +281,37 @@ def _derive_configuration() -> str:
     """Derive configuration label from agent/model flags.
 
     Returns one of: 'default', 'multi-mode', 'multi-mode-ferment',
-    'single-model', 'single-model-ferment'.
+    'single-model', 'single-model-ferment', 'workflow-<name>'.
     """
     coding_agent = os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
+    if is_workflow_agent(coding_agent):
+        # Names the workflow, so a workflow run and a stock run of the same
+        # model land under different GCS prefixes and stay comparable.
+        # _build_gcs_key_prefix sanitizes whatever this returns.
+        return f"workflow-{_selected_workflow()}"
     if coding_agent != "kimchi":
         return "default"
     segments = [_configuration_segment()]
     if _env_bool(ENV_KIMCHI_FERMENT_ONESHOT, False):
         segments.append("ferment")
     return "-".join(segments)
+
+
+def _selected_workflow() -> str:
+    """Return the workflow name this run executes.
+
+    Reads through "" so an unset variable and one GitLab exported empty (a
+    cleared input field) both fall back to the default.
+    """
+    return os.environ.get(ENV_WORKFLOW, "").strip() or DEFAULT_WORKFLOW
+
+
+def _selected_workflow_extension() -> str:
+    """Return the kimchi-workflows extension spec this run resolves.
+
+    Empty-tolerant for the same reason as _selected_workflow.
+    """
+    return os.environ.get(ENV_WORKFLOW_EXTENSION, "").strip() or DEFAULT_WORKFLOW_EXTENSION
 
 
 def _configuration_segment() -> str:
@@ -295,16 +322,19 @@ def _configuration_segment() -> str:
 def _compaction_disabled() -> bool:
     """Resolve the KIMCHI_COMPACTION tri-state to "is compaction disabled".
 
-    'auto' (the default) disables compaction exactly for ferment one-shot runs
-    (per-stage compaction was measured eating 21-41% of trial wall time there);
-    'enabled'/'disabled' force it either way for A/B runs. Raises ValueError on
-    any other value so a typo in the CI input fails the run loudly instead of
-    silently benchmarking the wrong configuration.
+    'auto' (the default) disables compaction for the staged runs — ferment
+    one-shot and workflow runs (per-stage compaction was measured eating 21-41%
+    of trial wall time there); 'enabled'/'disabled' force it either way for A/B
+    runs. Raises ValueError on any other value so a typo in the CI input fails
+    the run loudly instead of silently benchmarking the wrong configuration.
+
+    Workflow runs are included so the default A/B against a ferment one-shot
+    baseline compares like with like: that baseline runs with compaction off.
     """
     raw = os.environ.get(ENV_KIMCHI_COMPACTION, DEFAULT_KIMCHI_COMPACTION)
     choice = raw.strip().lower() or DEFAULT_KIMCHI_COMPACTION
     if choice == "auto":
-        return _env_bool(ENV_KIMCHI_FERMENT_ONESHOT, False)
+        return _env_bool(ENV_KIMCHI_FERMENT_ONESHOT, False) or is_workflow_agent()
     if choice not in ("enabled", "disabled"):
         raise ValueError(
             f"{ENV_KIMCHI_COMPACTION} must be 'enabled', 'disabled' or 'auto', got {raw!r}"
@@ -539,6 +569,8 @@ def _agent_import_path(coding_agent: str) -> str:
             return "kimchi_agent:OpenCodeKimchi"
         case "claude-code":
             return "kimchi_agent:ClaudeCodeKimchi"
+        case "kimchi-workflow":
+            return "kimchi_agent:WorkflowAgent"
         case _:
             raise SystemExit(f"Unknown CODING_AGENT: {coding_agent}")
 
@@ -863,6 +895,8 @@ def main() -> int:
         coding_agent=coding_agent,
         llm_params=llm_params,
         llm_per_model_params=llm_per_model_params,
+        workflow=_selected_workflow(),
+        workflow_extension=_selected_workflow_extension(),
     )
     print(f"[chunk-{chunk_index}] command: {format_command_for_log(cmd)}", flush=True)
 

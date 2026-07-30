@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import itertools
 
+import pytest
+
 from harbor_runner import build_harbor_command
 
 # --- Task argument resolution ---
@@ -324,3 +326,93 @@ def test_command_omits_llm_params_when_empty() -> None:
         coding_agent="kimchi",
     )
     assert not any(arg.startswith("llm-params=") or arg.startswith("llm-per-model-params=") for arg in cmd)
+
+
+# --- Workflow agent ---
+
+_WORKFLOW_BASE = {
+    "tasks": ["fix-git"],
+    "agent_import_path": "kimchi_agent:WorkflowAgent",
+    "model": "kimchi-dev/kimi-k2.7",
+    "dataset": "terminal-bench/terminal-bench-2-1",
+    "parallelism": 1,
+    "attempts": 1,
+    "timeout_multiplier": 1.0,
+    "coding_agent": "kimchi-workflow",
+}
+
+
+def test_workflow_agent_command_carries_both_required_kwargs() -> None:
+    cmd = build_harbor_command(
+        **_WORKFLOW_BASE,
+        workflow="ferment-oneshot",
+        workflow_extension="npm:@kimchi-dev/kimchi-workflows",
+    )
+
+    pairs = list(itertools.pairwise(cmd))
+    assert ("--agent-kwarg", "extension=npm:@kimchi-dev/kimchi-workflows") in pairs
+    assert ("--agent-kwarg", "workflow=ferment-oneshot") in pairs
+
+
+@pytest.mark.parametrize(
+    "workflow,workflow_extension,missing",
+    [
+        (None, "npm:@kimchi-dev/kimchi-workflows", "workflow"),
+        ("ferment-oneshot", None, "workflow_extension"),
+        ("   ", "npm:@kimchi-dev/kimchi-workflows", "workflow"),
+        (None, None, "workflow and workflow_extension"),
+    ],
+)
+def test_workflow_agent_without_required_kwargs_fails_before_harbor_starts(
+    workflow: str | None, workflow_extension: str | None, missing: str
+) -> None:
+    """WorkflowAgent raises on a missing kwarg per trial; catch it once, here."""
+    with pytest.raises(ValueError, match=missing):
+        build_harbor_command(**_WORKFLOW_BASE, workflow=workflow, workflow_extension=workflow_extension)
+
+
+def test_workflow_kwargs_are_not_added_for_other_agents() -> None:
+    for coding_agent, import_path in (
+        ("kimchi", "kimchi_agent:Kimchi"),
+        ("opencode", "kimchi_agent:OpenCodeKimchi"),
+        ("claude-code", "kimchi_agent:ClaudeCodeKimchi"),
+    ):
+        cmd = build_harbor_command(
+            tasks=["fix-git"],
+            agent_import_path=import_path,
+            model="kimchi-dev/kimi-k2.7",
+            dataset="terminal-bench/terminal-bench-2-1",
+            parallelism=1,
+            attempts=1,
+            timeout_multiplier=1.0,
+            coding_agent=coding_agent,
+            workflow="ferment-oneshot",
+            workflow_extension="npm:@kimchi-dev/kimchi-workflows",
+        )
+        assert not any(arg.startswith("extension=") or arg.startswith("workflow=") for arg in cmd)
+
+
+def test_workflow_agent_inherits_kimchi_llm_params_and_compaction_kwargs() -> None:
+    """WorkflowAgent subclasses Kimchi, so a workflow arm samples like its baseline."""
+    cmd = build_harbor_command(
+        **_WORKFLOW_BASE,
+        workflow="ferment-oneshot",
+        workflow_extension="npm:@kimchi-dev/kimchi-workflows",
+        kimchi_disable_compaction=True,
+        llm_params={"temperature": 0.7},
+    )
+
+    assert ("--agent-kwarg", "disable-compaction=true") in list(itertools.pairwise(cmd))
+    assert any(arg.startswith("llm-params=") for arg in cmd)
+
+
+def test_workflow_agent_never_gets_ferment_oneshot() -> None:
+    """The workflow replaces kimchi's chat loop; stacking ferment on top is meaningless."""
+    cmd = build_harbor_command(
+        **_WORKFLOW_BASE,
+        workflow="ferment-oneshot",
+        workflow_extension="npm:@kimchi-dev/kimchi-workflows",
+        kimchi_ferment_oneshot=True,
+    )
+
+    assert "ferment-oneshot=true" not in cmd

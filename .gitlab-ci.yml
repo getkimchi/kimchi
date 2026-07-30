@@ -38,6 +38,8 @@ include:
     inputs:
       benchmark: $[[ inputs.benchmark ]]
       agent: $[[ inputs.agent ]]
+      workflow: $[[ inputs.workflow ]]
+      workflow_extension: $[[ inputs.workflow_extension ]]
       target_ref: $[[ inputs.target_ref ]]
       benchmark_tag: $[[ inputs.benchmark_tag ]]
       tasks: $[[ inputs.tasks ]]
@@ -59,6 +61,8 @@ include:
       - if: '"$[[ inputs.benchmark ]]" == "swe-bench-pro" && ($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api")'
     inputs:
       agent: $[[ inputs.agent ]]
+      workflow: $[[ inputs.workflow ]]
+      workflow_extension: $[[ inputs.workflow_extension ]]
       target_ref: $[[ inputs.target_ref ]]
       benchmark_tag: $[[ inputs.benchmark_tag ]]
       tasks: $[[ inputs.tasks ]]

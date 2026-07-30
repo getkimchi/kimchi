@@ -53,6 +53,31 @@ def parse_model() -> tuple[str, str]:
 ENV_CODING_AGENT = "CODING_AGENT"
 DEFAULT_CODING_AGENT = "kimchi"
 
+# WorkflowAgent subclasses Kimchi, so it takes kimchi's agent kwargs — see
+# is_kimchi_family.
+WORKFLOW_CODING_AGENT = "kimchi-workflow"
+
+
+def is_kimchi_family(coding_agent: str | None = None) -> bool:
+    """Return whether the selected agent is Kimchi or a subclass of it."""
+    selected = coding_agent if coding_agent is not None else os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
+    return selected in (DEFAULT_CODING_AGENT, WORKFLOW_CODING_AGENT)
+
+
+def is_workflow_agent(coding_agent: str | None = None) -> bool:
+    """Return whether the selected agent runs a kimchi-workflows workflow."""
+    selected = coding_agent if coding_agent is not None else os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
+    return selected == WORKFLOW_CODING_AGENT
+
+
+ENV_WORKFLOW = "BENCH_WORKFLOW"
+DEFAULT_WORKFLOW = "ferment-oneshot"
+
+# Unpinned on purpose: CI picks up extension publishes without a pipeline
+# change. Each result.json records the version that actually resolved.
+ENV_WORKFLOW_EXTENSION = "BENCH_WORKFLOW_EXTENSION"
+DEFAULT_WORKFLOW_EXTENSION = "npm:@kimchi-dev/kimchi-workflows"
+
 ENV_KIMCHI_FERMENT_ONESHOT = "KIMCHI_FERMENT_ONESHOT"
 DEFAULT_KIMCHI_FERMENT_ONESHOT = "false"
 

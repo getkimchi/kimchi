@@ -13,6 +13,13 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from bench_config import (
+    ENV_WORKFLOW,
+    ENV_WORKFLOW_EXTENSION,
+    is_kimchi_family,
+    is_workflow_agent,
+)
+
 
 def _resolve_task_arg(task: str, dataset: str) -> str:
     """Resolve a bare task name to the Harbor -i argument.
@@ -46,8 +53,27 @@ def build_harbor_command(
     claude_code_version: str | None = None,
     llm_params: dict[str, Any] | None = None,
     llm_per_model_params: dict[str, dict[str, Any]] | None = None,
+    workflow: str | None = None,
+    workflow_extension: str | None = None,
 ) -> list[str]:
-    """Build the `harbor run` command as a list of args (suitable for subprocess)."""
+    """Build the `harbor run` command as a list of args (suitable for subprocess).
+
+    Raises ValueError when CODING_AGENT selects the workflow agent without both
+    of the kwargs WorkflowAgent requires, so a misconfigured pipeline fails
+    here rather than inside every trial.
+    """
+    if is_workflow_agent(coding_agent):
+        missing = [
+            name
+            for name, value in (("workflow", workflow), ("workflow_extension", workflow_extension))
+            if not value or not str(value).strip()
+        ]
+        if missing:
+            raise ValueError(
+                f"coding_agent={coding_agent!r} requires {' and '.join(missing)}; "
+                f"set ${ENV_WORKFLOW} and ${ENV_WORKFLOW_EXTENSION}"
+            )
+
     cmd = [
         "uv", "run", "--project", "benchmark/terminal-bench-2",
         "--python", "3.14", "harbor", "run",
@@ -75,16 +101,20 @@ def build_harbor_command(
 
     # Omitted when compaction stays enabled, so the command remains compatible
     # with checkouts whose kimchi_agent predates the disable-compaction kwarg.
-    if coding_agent == "kimchi" and kimchi_disable_compaction:
+    if is_kimchi_family(coding_agent) and kimchi_disable_compaction:
         cmd.extend(["--agent-kwarg", "disable-compaction=true"])
 
-    if coding_agent == "kimchi":
+    if is_kimchi_family(coding_agent):
         encoded_params = _encode_agent_kwargs(llm_params)
         if encoded_params:
             cmd.extend(["--agent-kwarg", f"llm-params={encoded_params}"])
         encoded_per_model = _encode_agent_kwargs(llm_per_model_params)
         if encoded_per_model:
             cmd.extend(["--agent-kwarg", f"llm-per-model-params={encoded_per_model}"])
+
+    if is_workflow_agent(coding_agent):
+        cmd.extend(["--agent-kwarg", f"extension={workflow_extension}"])
+        cmd.extend(["--agent-kwarg", f"workflow={workflow}"])
 
     if coding_agent == "opencode" and opencode_version:
         cmd.extend(["--agent-kwarg", f"version={opencode_version}"])
