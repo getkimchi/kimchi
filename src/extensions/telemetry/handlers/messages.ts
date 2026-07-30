@@ -83,7 +83,7 @@ export async function handleMessageEnd(
 		tokens.cacheWrite += cacheWrite
 		tm.cumulative.costByModel[model] = (tm.cumulative.costByModel[model] ?? 0) + costTotal
 	} catch (err) {
-		console.error("[tm] message_end handler error:", err)
+		console.error("[telemetry] message_end handler error:", err)
 	}
 }
 
