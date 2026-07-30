@@ -5,7 +5,7 @@
 #
 # Usage examples:
 #   ./scripts/run-local.sh -i terminal-bench/fix-git
-#   MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-local.sh -i terminal-bench/fix-git -k 3
+#   MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-local.sh -i terminal-bench/fix-git -k 3
 #   MODEL=multi-model ./scripts/run-local.sh -i terminal-bench/fix-git -k 3
 set -euo pipefail
 
@@ -26,7 +26,7 @@ cd "$BENCH_DIR"
 exec uv run --python 3.14 harbor run \
     --agent-import-path kimchi_agent:Kimchi \
     --env docker \
-    --model "${MODEL:-kimchi-dev/kimi-k2.5}" \
+    --model "${MODEL:-kimchi-dev/kimi-k2.7}" \
     --ae "KIMCHI_API_KEY=$KIMCHI_API_KEY" \
     -d "$DATASET" \
     --jobs-dir "${JOBS_DIR:-benchmark/${DATASET#terminal-bench/}/jobs}" \

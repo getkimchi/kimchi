@@ -115,10 +115,22 @@ Each task declares its own per-attempt timeouts in `task.toml` (typically 10-15 
 ### Picking a model
 
 ```bash
-MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-local.sh -i terminal-bench/fix-git
+MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-local.sh -i terminal-bench/fix-git
 ```
 
-`MODEL` must be `<provider>/<id>`. Available `kimchi-dev` models include `kimi-k2.5`, `glm-5-fp8`, `minimax-m2.7`, `nemotron-3-super-fp4` (run `kimchi --list-models` for the live list). The qualifier is required because kimchi's built-in catalog also registers some IDs (notably `kimi-k2.5`) under the `opencode` provider — without `kimchi-dev/` the resolver picks `opencode` and fails auth with the kimchi key.
+`MODEL` must be `<provider>/<id>`. The qualifier is required because kimchi's built-in catalog also registers some IDs under the `opencode` provider — without `kimchi-dev/` the resolver picks `opencode` and fails auth with the kimchi key.
+
+> **Check the model exists before you trust a run.** `kimchi --list-models` is the live list; the
+> catalog changes and this file goes stale. A retired id does **not** fail loudly — kimchi prints
+> `Warning: Model "<id>" not found for provider "kimchi-dev". Using custom model id.` on stderr, then
+> every request fails and each agent turn returns an **empty** reply. Under a plain `--print` run that
+> looks like a bad model; under a workflow it looks like every step failing with
+> `the reply was not valid JSON (received: )`, which reads as an agent bug and is not one.
+> `kimi-k2.5` and `kimi-k2.6` were both defaults here after they had been retired, and cost a full
+> debugging cycle each.
+
+Verified present at the time of writing (`kimchi --list-models`): `kimi-k2.7`, `glm-5.2-fp8`,
+`minimax-m3`, `deepseek-v4-flash`, `nemotron-3-ultra-fp4`, plus the `kimchi-dev/anthropic` family.
 
 ### OpenCode with the Kimchi gateway
 
@@ -126,7 +138,7 @@ Use `run-opencode-kimchi.sh` when the benchmark should evaluate the OpenCode sca
 
 ```bash
 export KIMCHI_API_KEY=...
-MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
+MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
 ```
 
 The script requires `KIMCHI_API_KEY` in the host environment and forwards it to Harbor with `--ae KIMCHI_API_KEY=$KIMCHI_API_KEY`; you do not need to pass that `--ae` manually when using the script.
@@ -140,7 +152,7 @@ opencode --model=<MODEL> run --format=json --thinking --dangerously-skip-permiss
 To change models, change only `MODEL`:
 
 ```bash
-MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
+MODEL=kimchi-dev/minimax-m3 ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
 ```
 
 By default OpenCode uses the benchmark model for `small_model` too, keeping the whole run on the selected model. To use a cheaper Kimchi model for summary/title work, set `OPENCODE_SMALL_MODEL=kimchi-dev/<model-id>`; the adapter registers that model from the same metadata endpoint.
@@ -148,7 +160,7 @@ By default OpenCode uses the benchmark model for `small_model` too, keeping the 
 By default Harbor installs the latest `opencode-ai` package. Pin OpenCode for reproducible runs with `OPENCODE_VERSION`:
 
 ```bash
-OPENCODE_VERSION=1.14.33 MODEL=kimchi-dev/kimi-k2.5 \
+OPENCODE_VERSION=1.14.33 MODEL=kimchi-dev/kimi-k2.7 \
   ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
 ```
 
@@ -158,7 +170,7 @@ Use `run-claude-code-kimchi.sh` when the benchmark should evaluate the Claude Co
 
 ```bash
 export KIMCHI_API_KEY=...
-MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
+MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
 ```
 
 The Claude Code adapter accepts any `kimchi-dev/<model-id>` returned by Kimchi's model metadata endpoint (`/v1/models/metadata?include_in_cli=true`). It configures Claude Code with Kimchi's Anthropic-compatible endpoint (`https://llm.kimchi.dev/anthropic`), maps `KIMCHI_API_KEY` to `ANTHROPIC_AUTH_TOKEN`, clears `ANTHROPIC_API_KEY`, and pins Claude Code's default Sonnet/Opus/Haiku/subagent aliases to the selected model.
@@ -166,13 +178,13 @@ The Claude Code adapter accepts any `kimchi-dev/<model-id>` returned by Kimchi's
 To change models, change only `MODEL`:
 
 ```bash
-MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
+MODEL=kimchi-dev/minimax-m3 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
 ```
 
 By default Harbor installs the latest Claude Code package. Pin Claude Code for reproducible runs with `CLAUDE_CODE_VERSION`:
 
 ```bash
-CLAUDE_CODE_VERSION=2.1.144 MODEL=kimchi-dev/kimi-k2.5 \
+CLAUDE_CODE_VERSION=2.1.144 MODEL=kimchi-dev/kimi-k2.7 \
   ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
 ```
 
@@ -182,7 +194,7 @@ Use `run-gsd-kimchi.sh` when the benchmark should evaluate the GSD scaffold whil
 
 ```bash
 export KIMCHI_API_KEY=...
-MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-gsd-kimchi.sh -i terminal-bench/fix-git
+MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-gsd-kimchi.sh -i terminal-bench/fix-git
 ```
 
 The GSD adapter accepts any `kimchi-dev/<model-id>` returned by Kimchi's model metadata endpoint (`/v1/models/metadata?include_in_cli=true`). It installs `gsd-pi@latest` by default, writes a temporary GSD home with only the selected model, writes minimal GSD preferences that route every role to that model, and runs GSD in non-interactive print mode:
@@ -196,13 +208,13 @@ GSD's text output is captured at `agent/gsd.txt`, the resolved version at `agent
 To change models, change only `MODEL`:
 
 ```bash
-MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-gsd-kimchi.sh -i terminal-bench/fix-git
+MODEL=kimchi-dev/minimax-m3 ./scripts/run-gsd-kimchi.sh -i terminal-bench/fix-git
 ```
 
 Override the GSD package version with `GSD_VERSION`:
 
 ```bash
-GSD_VERSION=3.0.0 MODEL=kimchi-dev/kimi-k2.5 \
+GSD_VERSION=3.0.0 MODEL=kimchi-dev/kimi-k2.7 \
   ./scripts/run-gsd-kimchi.sh -i terminal-bench/fix-git
 ```
 
@@ -211,7 +223,7 @@ GSD_VERSION=3.0.0 MODEL=kimchi-dev/kimi-k2.5 \
 To benchmark a model on its own, bypassing kimchi's multi-model orchestration, pass `--model <provider>/<id>` to select a specific model. The helper scripts do this by default through `MODEL`, which starts kimchi in single-model mode.
 
 ```bash
-MODEL=kimchi-dev/kimi-k2.6 ./scripts/run-local.sh -n 8 -k 3
+MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-local.sh -n 8 -k 3
 ```
 
 Do not use `--agent-kwarg disable-multi-model=true`; the adapter accepts that legacy kwarg for compatibility, but current kimchi has no `--multi-model` CLI flag.
@@ -286,7 +298,7 @@ Tag format is `key:value`, comma-separated; keys and values are alphanumeric plu
 | `KIMCHI_API_KEY` | yes | Bearer token for `llm.kimchi.dev`; forwarded to the agent via `--ae` |
 | `KIMCHI_CODE_BINARY` | no | Host path to a prebuilt Linux `kimchi` binary (produced by `pnpm run build:binary-linux-x64` at `dist/bin/kimchi`). The agent uploads the binary's grandparent directory (the build/tarball root containing `bin/` + `share/kimchi/`), so the auxiliary files travel with it. When set, the agent skips the GitHub release download. `./scripts/run-local.sh` sets this for you. |
 | `GITHUB_TOKEN` | no | Raises GitHub API rate limits when fetching the latest release. Not required for public repos |
-| `MODEL` | no | Default `kimchi-dev/kimi-k2.5`. See "Picking a model" for the `<provider>/<id>` requirement |
+| `MODEL` | no | Default `kimchi-dev/kimi-k2.7`. See "Picking a model" for the `<provider>/<id>` requirement |
 | `OPENCODE_VERSION` | no | Pins the OpenCode version used by `run-opencode-kimchi.sh` |
 | `CLAUDE_CODE_VERSION` | no | Pins the Claude Code version used by `run-claude-code-kimchi.sh` |
 | `GSD_VERSION` | no | Overrides the GSD package version used by `run-gsd-kimchi.sh`; default install target is `gsd-pi@latest` |

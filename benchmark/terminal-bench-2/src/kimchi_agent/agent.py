@@ -108,12 +108,12 @@ def _validate_model_name(model_name: str | None) -> None:
     if not model_name or "/" not in model_name:
         raise ValueError(
             "--model is required and must be qualified with a provider "
-            "(e.g. kimchi-dev/kimi-k2.5, kimchi-dev/glm-5-fp8, kimchi-dev/minimax-m2.7)"
+            "(e.g. kimchi-dev/kimi-k2.7, kimchi-dev/glm-5.2-fp8, kimchi-dev/minimax-m3)"
         )
     provider, model_id = model_name.split("/", 1)
     if not provider or not model_id:
         raise ValueError(
-            f"--model must be qualified as <provider>/<id> (got {model_name!r}); use e.g. kimchi-dev/kimi-k2.5"
+            f"--model must be qualified as <provider>/<id> (got {model_name!r}); use e.g. kimchi-dev/kimi-k2.7"
         )
 
 
@@ -344,7 +344,7 @@ class Kimchi(BaseInstalledAgent):
         context: AgentContext,
     ) -> None:
         if not self._multi_model_enabled:
-            # kimchi's built-in pi-ai catalog also registers models like kimi-k2.5 under
+            # kimchi's built-in pi-ai catalog also registers models like kimi-k2.7 under
             # the opencode provider. Without a qualifier the resolver may pick opencode and
             # fail auth with the kimchi key, so we force the caller to be explicit.
             _validate_model_name(self.model_name)
@@ -404,6 +404,26 @@ class Kimchi(BaseInstalledAgent):
             await self._terminate_kimchi_process_group(environment)
             raise
 
+    def _extension_paths(self) -> list[str]:
+        """Paths/specs to load with ``-e``. Empty means no ``-e`` flag at all.
+
+        This and the two hooks below exist so a subclass never has to override
+        ``run()``, which owns model validation, tag merging, the env dict,
+        process-group launch and cancellation cleanup — and carries
+        ``@with_prompt_template``, whose ``render_instruction`` is not
+        idempotent, so a subclass calling a decorated ``super().run()`` would
+        render the template twice.
+        """
+        return []
+
+    def _stdin_payload(self, instruction: str) -> str:
+        """What to pipe to kimchi, when it is not the instruction verbatim."""
+        return instruction
+
+    def _pre_launch_commands(self, instruction: str) -> list[str]:
+        """Shell commands to run in the launch pipeline, before kimchi starts."""
+        return []
+
     def _kimchi_launch_command(self, instruction: str, cli_flags: str) -> str:
         runner = self._kimchi_command(cli_flags)
         parts = [
@@ -432,14 +452,16 @@ class Kimchi(BaseInstalledAgent):
         skills_registration = self._skills_registration_command()
         if skills_registration:
             parts.append(skills_registration)
+        parts.extend(self._pre_launch_commands(instruction))
 
         parts.append(
             # Enable job control so the backgrounded kimchi pipeline gets a
             # process group that can be terminated as a unit on timeout.
             "set -m && { "
-            # Feed the task prompt through stdin and background the pipeline so
-            # this wrapper shell can record the process-group id before waiting.
-            f"(printf '%s' {shlex.quote(instruction)} | {runner}) & "
+            # Feed the task prompt (or a subclass-supplied payload) through
+            # stdin and background the pipeline so this wrapper shell can
+            # record the process-group id before waiting.
+            f"(printf '%s' {shlex.quote(self._stdin_payload(instruction))} | {runner}) & "
             # $! is the pid of the most recent background job, here the kimchi
             # pipeline leader as seen by the shell.
             "agent_pid=$!; "
@@ -496,8 +518,14 @@ class Kimchi(BaseInstalledAgent):
         if not self._multi_model_enabled:
             model_flag = f"--model {shlex.quote(self.model_name or '')} "
 
+        # Extension flags, if any, come right after the binary path — before
+        # --print/--session/--model — matching the ordering used elsewhere
+        # (e.g. the workflow-agent launch command in the design doc).
+        extension_flags = "".join(f"-e {shlex.quote(path)} " for path in self._extension_paths())
+
         return (
             f"{shlex.quote(BINARY_PATH)} "
+            f"{extension_flags}"
             f"--print --session {shlex.quote(CONTAINER_MAIN_SESSION)} "
             f"{model_flag}"
             f"{cli_flags}"
@@ -591,9 +619,10 @@ class Kimchi(BaseInstalledAgent):
         total_cache_write_tokens = 0
         total_cost = 0.0
 
-        # Aggregate main.jsonl + Agent child <timestamp>_<uuid>.jsonl siblings.
-        # Agent runs are separate sessions, so their usage isn't reflected in main.jsonl.
-        for session_file in sorted(sessions_dir.glob("*.jsonl")):
+        # rglob, not glob: an extension may nest per-step sessions under
+        # sessions/<subdir>/, and a flat glob silently under-reports those
+        # as zero tokens for work that really happened.
+        for session_file in sorted(sessions_dir.rglob("*.jsonl")):
             try:
                 lines = session_file.read_text().splitlines()
             except OSError as exc:
