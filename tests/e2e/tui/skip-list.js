@@ -22,9 +22,4 @@ export const SKIPPED_TUI_TESTS = [
 		reason:
 			"overlay rendering timing is flaky under parallel full-suite runs; passes in isolation but times out waiting for human: header when run with other tests",
 	},
-	{
-		test: "todo-widget-ferment",
-		reason:
-			"'todo tools are available during ferment execution' times out waiting for 'would you like to ferment' under parallel full-suite runs; passes in isolation but fails on both this branch and unrelated branches (add-mcp-probe)",
-	},
 ]
