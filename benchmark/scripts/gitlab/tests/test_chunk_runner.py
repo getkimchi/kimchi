@@ -865,7 +865,7 @@ def test_workflow_selection_falls_back_to_defaults(blank: str | None, monkeypatc
             monkeypatch.setenv(key, blank)
 
     assert _selected_workflow() == "ferment-oneshot"
-    assert _selected_workflow_extension() == "npm:@kimchi-dev/kimchi-workflows"
+    assert _selected_workflow_extension() == "npm:@kimchi-dev/kimchi-workflows@latest"
 
 
 def test_workflow_selection_trims_surrounding_whitespace(monkeypatch: pytest.MonkeyPatch) -> None:

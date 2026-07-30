@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from bench_config import (
+    DEFAULT_WORKFLOW_EXTENSION,
     is_kimchi_family,
     is_multi_model,
     is_retryable,
@@ -191,3 +192,13 @@ def test_agent_family_defaults_to_kimchi_when_unset(monkeypatch: pytest.MonkeyPa
 
     assert is_kimchi_family() is True
     assert is_workflow_agent() is False
+
+
+def test_default_workflow_extension_names_a_version_or_dist_tag() -> None:
+    """A bare package name resolves through npm's `*` range, which excludes
+    prereleases — and every published engine version is one, so a bare default
+    fails at agent setup with ETARGET rather than at pipeline configuration."""
+    spec = DEFAULT_WORKFLOW_EXTENSION.removeprefix("npm:")
+    # Scoped name, so the version separator is the "@" after the scope's "/".
+    assert spec.startswith("@")
+    assert spec.find("@", spec.index("/")) != -1, f"{DEFAULT_WORKFLOW_EXTENSION} must carry @<version-or-tag>"

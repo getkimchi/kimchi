@@ -21,9 +21,9 @@ inputs:
     type: string
     default: "ferment-oneshot"
   workflow_extension:
-    description: "kimchi-workflows extension spec: 'npm:<pkg>[@<version>]' or 'dir:<host path>'. Unpinned by default so runs pick up new publishes; each result.json records the version that resolved. Ignored unless agent is kimchi-workflow."
+    description: "kimchi-workflows extension spec: 'npm:<pkg>@<version-or-dist-tag>' or 'dir:<host path>'. Defaults to the 'latest' tag so runs pick up new publishes; each result.json records the version that resolved. Give a version or tag explicitly — a bare package name resolves through the '*' range, which excludes the prereleases this engine publishes. Ignored unless agent is kimchi-workflow."
     type: string
-    default: "npm:@kimchi-dev/kimchi-workflows"
+    default: "npm:@kimchi-dev/kimchi-workflows@latest"
   target_ref:
     description: "Git ref to fetch from origin and benchmark. Defaults to master."
     type: string

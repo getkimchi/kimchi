@@ -346,20 +346,20 @@ def test_workflow_agent_command_carries_both_required_kwargs() -> None:
     cmd = build_harbor_command(
         **_WORKFLOW_BASE,
         workflow="ferment-oneshot",
-        workflow_extension="npm:@kimchi-dev/kimchi-workflows",
+        workflow_extension="npm:@kimchi-dev/kimchi-workflows@latest",
     )
 
     pairs = list(itertools.pairwise(cmd))
-    assert ("--agent-kwarg", "extension=npm:@kimchi-dev/kimchi-workflows") in pairs
+    assert ("--agent-kwarg", "extension=npm:@kimchi-dev/kimchi-workflows@latest") in pairs
     assert ("--agent-kwarg", "workflow=ferment-oneshot") in pairs
 
 
 @pytest.mark.parametrize(
     "workflow,workflow_extension,missing",
     [
-        (None, "npm:@kimchi-dev/kimchi-workflows", "workflow"),
+        (None, "npm:@kimchi-dev/kimchi-workflows@latest", "workflow"),
         ("ferment-oneshot", None, "workflow_extension"),
-        ("   ", "npm:@kimchi-dev/kimchi-workflows", "workflow"),
+        ("   ", "npm:@kimchi-dev/kimchi-workflows@latest", "workflow"),
         (None, None, "workflow and workflow_extension"),
     ],
 )
@@ -387,7 +387,7 @@ def test_workflow_kwargs_are_not_added_for_other_agents() -> None:
             timeout_multiplier=1.0,
             coding_agent=coding_agent,
             workflow="ferment-oneshot",
-            workflow_extension="npm:@kimchi-dev/kimchi-workflows",
+            workflow_extension="npm:@kimchi-dev/kimchi-workflows@latest",
         )
         assert not any(arg.startswith("extension=") or arg.startswith("workflow=") for arg in cmd)
 
@@ -397,7 +397,7 @@ def test_workflow_agent_inherits_kimchi_llm_params_and_compaction_kwargs() -> No
     cmd = build_harbor_command(
         **_WORKFLOW_BASE,
         workflow="ferment-oneshot",
-        workflow_extension="npm:@kimchi-dev/kimchi-workflows",
+        workflow_extension="npm:@kimchi-dev/kimchi-workflows@latest",
         kimchi_disable_compaction=True,
         llm_params={"temperature": 0.7},
     )
@@ -411,7 +411,7 @@ def test_workflow_agent_never_gets_ferment_oneshot() -> None:
     cmd = build_harbor_command(
         **_WORKFLOW_BASE,
         workflow="ferment-oneshot",
-        workflow_extension="npm:@kimchi-dev/kimchi-workflows",
+        workflow_extension="npm:@kimchi-dev/kimchi-workflows@latest",
         kimchi_ferment_oneshot=True,
     )
 

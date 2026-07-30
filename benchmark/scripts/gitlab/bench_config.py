@@ -73,10 +73,13 @@ def is_workflow_agent(coding_agent: str | None = None) -> bool:
 ENV_WORKFLOW = "BENCH_WORKFLOW"
 DEFAULT_WORKFLOW = "ferment-oneshot"
 
-# Unpinned on purpose: CI picks up extension publishes without a pipeline
-# change. Each result.json records the version that actually resolved.
+# A dist-tag rather than a version, so CI picks up extension publishes without
+# a pipeline change; each result.json records the version that actually
+# resolved. The tag is explicit because a bare name resolves through the `*`
+# range, which excludes prereleases — and every published engine version so far
+# is one, so a bare spec fails with ETARGET.
 ENV_WORKFLOW_EXTENSION = "BENCH_WORKFLOW_EXTENSION"
-DEFAULT_WORKFLOW_EXTENSION = "npm:@kimchi-dev/kimchi-workflows"
+DEFAULT_WORKFLOW_EXTENSION = "npm:@kimchi-dev/kimchi-workflows@latest"
 
 ENV_KIMCHI_FERMENT_ONESHOT = "KIMCHI_FERMENT_ONESHOT"
 DEFAULT_KIMCHI_FERMENT_ONESHOT = "false"
