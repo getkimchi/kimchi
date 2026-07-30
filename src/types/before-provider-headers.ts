@@ -17,7 +17,7 @@
  * fixed version is pinned in package.json.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 
 /** Fired in streamFn after static header assembly, before every LLM HTTP call. */
 export interface BeforeProviderHeadersEvent {
@@ -29,6 +29,7 @@ export interface BeforeProviderHeadersEvent {
 /** Handler signature for the before_provider_headers hook. */
 export type BeforeProviderHeadersHandler = (
 	event: BeforeProviderHeadersEvent,
+	ctx: ExtensionContext,
 ) => Record<string, string> | Promise<Record<string, string>>
 
 /**

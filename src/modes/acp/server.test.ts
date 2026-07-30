@@ -45,6 +45,7 @@ import {
 	toAcpSessionInfo,
 	userMessageText,
 } from "./server.js"
+import { getAcpClientInfo, resetAcpClientInfo } from "./state.js"
 
 // Minimal fake of AgentSession surface used by KimchiAcpAgent. The factory seam
 // means we only need to stand in for the methods the ACP server actually calls:
@@ -276,6 +277,24 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// The result depends on merged models (cached + built-in).
 			// Just verify it's a boolean (the logic ran successfully).
 			expect(typeof response.agentCapabilities?.promptCapabilities?.image).toBe("boolean")
+		})
+
+		it("records ACP client name during initialize", async () => {
+			resetAcpClientInfo()
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await testAgent.initialize({
+				protocolVersion: 1,
+				clientInfo: { name: "kimchi-vscode", version: "1.0.0" },
+			})
+
+			const info = getAcpClientInfo()
+			expect(info?.name).toBe("kimchi-vscode")
+			expect(info?.version).toBe("1.0.0")
 		})
 	})
 
