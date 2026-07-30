@@ -1,4 +1,4 @@
-// @ts-nocheck
+import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { createContext } from "../../__mocks__/context.js"
@@ -19,18 +19,14 @@ function mockPiCtx(overrides?: { sessionId?: string; model?: string }): Extensio
 }
 
 describe("handleTransportError", () => {
-	it("does not emit when role is not assistant", () => {
-		const sessionCtx = mockSessionCtx()
-		handleTransportError(sessionCtx as TelemetryContext, mockPiCtx(), {
-			message: { role: "user", stopReason: "error", errorMessage: "socket connection was closed unexpectedly" },
-		})
-		expect(sessionCtx.emit).not.toHaveBeenCalled()
-	})
-
 	it("does not emit when stopReason is not error", () => {
 		const sessionCtx = mockSessionCtx()
 		handleTransportError(sessionCtx as TelemetryContext, mockPiCtx(), {
-			message: { role: "assistant", stopReason: "stop", errorMessage: "socket connection was closed unexpectedly" },
+			message: {
+				role: "assistant",
+				stopReason: "stop",
+				errorMessage: "socket connection was closed unexpectedly",
+			} as AssistantMessage,
 		})
 		expect(sessionCtx.emit).not.toHaveBeenCalled()
 	})
@@ -38,7 +34,11 @@ describe("handleTransportError", () => {
 	it("does not emit when stopReason is aborted (user cancelled)", () => {
 		const sessionCtx = mockSessionCtx()
 		handleTransportError(sessionCtx as TelemetryContext, mockPiCtx(), {
-			message: { role: "assistant", stopReason: "aborted", errorMessage: "socket connection was closed unexpectedly" },
+			message: {
+				role: "assistant",
+				stopReason: "aborted",
+				errorMessage: "socket connection was closed unexpectedly",
+			} as AssistantMessage,
 		})
 		expect(sessionCtx.emit).not.toHaveBeenCalled()
 	})
@@ -46,7 +46,7 @@ describe("handleTransportError", () => {
 	it("does not emit when errorMessage is not a transport error", () => {
 		const sessionCtx = mockSessionCtx()
 		handleTransportError(sessionCtx as TelemetryContext, mockPiCtx(), {
-			message: { role: "assistant", stopReason: "error", errorMessage: "something went wrong" },
+			message: { role: "assistant", stopReason: "error", errorMessage: "something went wrong" } as AssistantMessage,
 		})
 		expect(sessionCtx.emit).not.toHaveBeenCalled()
 	})
@@ -64,7 +64,7 @@ describe("handleTransportError", () => {
 				api: "openai-completions",
 				stopReason: "error",
 				errorMessage,
-			},
+			} as AssistantMessage,
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledTimes(1)
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
@@ -85,7 +85,7 @@ describe("handleTransportError", () => {
 				model: "claude-sonnet-4-20250514",
 				stopReason: "error",
 				errorMessage: "THE SOCKET CONNECTION WAS CLOSED UNEXPECTEDLY",
-			},
+			} as AssistantMessage,
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
@@ -102,7 +102,7 @@ describe("handleTransportError", () => {
 				model: "claude-sonnet-4-20250514",
 				stopReason: "error",
 				errorMessage: "Connection reset by peer",
-			},
+			} as AssistantMessage,
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
@@ -114,7 +114,7 @@ describe("handleTransportError", () => {
 	it("emits error for socket closed", () => {
 		const sessionCtx = mockSessionCtx()
 		handleTransportError(sessionCtx as TelemetryContext, mockPiCtx(), {
-			message: { role: "assistant", stopReason: "error", errorMessage: "socket closed" },
+			message: { role: "assistant", stopReason: "error", errorMessage: "socket closed" } as AssistantMessage,
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
@@ -126,7 +126,7 @@ describe("handleTransportError", () => {
 	it("emits error for connection closed", () => {
 		const sessionCtx = mockSessionCtx()
 		handleTransportError(sessionCtx as TelemetryContext, mockPiCtx(), {
-			message: { role: "assistant", stopReason: "error", errorMessage: "connection closed" },
+			message: { role: "assistant", stopReason: "error", errorMessage: "connection closed" } as AssistantMessage,
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
@@ -138,7 +138,7 @@ describe("handleTransportError", () => {
 	it("emits error for econnreset", () => {
 		const sessionCtx = mockSessionCtx()
 		handleTransportError(sessionCtx as TelemetryContext, mockPiCtx(), {
-			message: { role: "assistant", stopReason: "error", errorMessage: "read ECONNRESET" },
+			message: { role: "assistant", stopReason: "error", errorMessage: "read ECONNRESET" } as AssistantMessage,
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
@@ -150,7 +150,11 @@ describe("handleTransportError", () => {
 	it("emits error for econnrefused", () => {
 		const sessionCtx = mockSessionCtx()
 		handleTransportError(sessionCtx as TelemetryContext, mockPiCtx(), {
-			message: { role: "assistant", stopReason: "error", errorMessage: "connect ECONNREFUSED 127.0.0.1:443" },
+			message: {
+				role: "assistant",
+				stopReason: "error",
+				errorMessage: "connect ECONNREFUSED 127.0.0.1:443",
+			} as AssistantMessage,
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
@@ -165,7 +169,7 @@ describe("handleTransportError", () => {
 	it("emits error for broken pipe", () => {
 		const sessionCtx = mockSessionCtx()
 		handleTransportError(sessionCtx as TelemetryContext, mockPiCtx(), {
-			message: { role: "assistant", stopReason: "error", errorMessage: "Broken pipe" },
+			message: { role: "assistant", stopReason: "error", errorMessage: "Broken pipe" } as AssistantMessage,
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
@@ -178,7 +182,11 @@ describe("handleTransportError", () => {
 		const sessionCtx = mockSessionCtx()
 		const piCtx = mockPiCtx({ sessionId: "sess-2" })
 		handleTransportError(sessionCtx as TelemetryContext, piCtx, {
-			message: { role: "assistant", stopReason: "error", errorMessage: "socket connection was closed unexpectedly" },
+			message: {
+				role: "assistant",
+				stopReason: "error",
+				errorMessage: "socket connection was closed unexpectedly",
+			} as AssistantMessage,
 		})
 		expect(sessionCtx.emit).toHaveBeenCalledWith(
 			"error",
@@ -194,7 +202,7 @@ describe("handleTransportError", () => {
 		const sessionCtx = mockSessionCtx()
 		const longMessage = `socket connection was closed unexpectedly ${"x".repeat(400)}`
 		handleTransportError(sessionCtx as TelemetryContext, mockPiCtx(), {
-			message: { role: "assistant", stopReason: "error", errorMessage: longMessage },
+			message: { role: "assistant", stopReason: "error", errorMessage: longMessage } as AssistantMessage,
 		})
 		const emitted = (sessionCtx.emit as ReturnType<typeof vi.fn>).mock.calls[0][1] as { error_message: string }
 		expect(emitted.error_message.length).toBe(300)

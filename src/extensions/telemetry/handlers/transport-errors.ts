@@ -24,7 +24,6 @@ export function handleTransportError(
 	event: { message: AssistantMessage },
 ): void {
 	const msg = event.message
-	if (msg.role !== "assistant") return
 	if (msg.stopReason !== "error") return
 	if (!isTransportError(msg.errorMessage)) return
 
