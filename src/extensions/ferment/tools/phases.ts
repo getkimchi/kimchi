@@ -466,6 +466,10 @@ export async function completePhase(
 			? { available: evidence.available, filesChanged: evidence.filesChanged, diffSnippet: evidence.diffSnippet }
 			: { available: false },
 		evidence: params.evidence,
+		...(() => {
+			const prev = runtime.getBlockRetryRecommendations(params.ferment_id, phase.id)
+			return prev && prev.length > 0 ? { previousRecommendations: prev } : {}
+		})(),
 	}
 	const phaseJudgeResult = await runWithOverlay(`Grading phase "${phase.name}"…`, () =>
 		services.judgePhaseGrade(judgeInput, services.graderSpawner),
@@ -488,6 +492,7 @@ export async function completePhase(
 		if (gradeOrder[phaseJudgeResult.grade] < gradeOrder[minimumAcceptableGrade]) {
 			judgeRefused = true
 			judgeRecsText = phaseJudgeResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
+			runtime.setBlockRetryRecommendations(params.ferment_id, phase.id, phaseJudgeResult.recommendations)
 		}
 	} else {
 		// Judge unavailable — advisory only, do NOT refuse advancement.

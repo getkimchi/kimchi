@@ -251,6 +251,9 @@ export interface JudgeJourneyGradeInput {
 	/** Agent-pasted execution evidence (command outputs, verification results,
 	 *  file contents). Primary proof source when no git diff is available. */
 	evidence?: string
+	/** Recommendations from the previous grading round, so the grader can verify
+	 *  they were addressed and avoid re-litigating already-fixed issues. */
+	previousRecommendations?: string[]
 }
 
 export interface JudgeJourneyGradeOk {
@@ -325,6 +328,15 @@ After internal specialist review: cluster duplicate issues, separate proven find
 - D: Not production-ready. At least one must-fix issue: missing required verification, compile-only proof for runtime behavior, unexpected skipped required tests, unwired production code, significant architecture/quality/operational gap, medium security issue, missing UI runtime evidence, or maintainability risk that will likely cause defects.
 - F: Fail. Core requirement not met, implementation broken, required tests fail, evidence absent or fabricated, critical/high security issue, data loss/privacy/audit risk, build/runtime broken, or change unsafe to ship.
 
+## Convergence rules (when previous recommendations are provided)
+
+When you receive a "PREVIOUS RECOMMENDATIONS" section, this is a revised ferment submission after your previous review. You MUST:
+1. Verify whether each previous recommendation was addressed in the revision.
+2. If a recommendation was addressed, do NOT re-raise the same issue. Mark it as resolved in your rationale.
+3. Do NOT contradict your own previous recommendations. If you told the agent to add verification X, do not now tell them to remove it.
+4. Only assign a grade below the previous grade if you discover a genuinely NEW issue that was not visible in the prior submission.
+5. If the revision addressed all previous recommendations and no new critical issues are found, the grade should improve (typically by one letter) or stay the same — not regress.
+
 ## You will be given
 
 - The ferment goal and success criteria.
@@ -333,6 +345,7 @@ After internal specialist review: cluster duplicate issues, separate proven find
 - The total diff (files changed + snippet) from ferment start to now, when available.
 - Execution evidence (agent-provided): real command outputs, verification results, or file contents that prove the work was done. This is the primary proof source when no diff is available.
 - The agent's final summary.
+- Previous recommendations (if this is a revision of a previously rejected ferment).
 
 ## Final output
 
@@ -380,6 +393,13 @@ function buildJourneyGradeUserMsg(input: JudgeJourneyGradeInput): string {
 		parts.push("")
 		parts.push("--- EXECUTION EVIDENCE (agent-provided) ---")
 		parts.push(input.evidence.slice(0, 4000))
+	}
+	if (input.previousRecommendations && input.previousRecommendations.length > 0) {
+		parts.push("")
+		parts.push("--- PREVIOUS RECOMMENDATIONS (the agent was told to fix these; verify each was addressed) ---")
+		for (const rec of input.previousRecommendations) {
+			parts.push(`  - ${rec}`)
+		}
 	}
 	return parts.join("\n")
 }
@@ -444,6 +464,9 @@ export interface JudgePhaseInput {
 	/** Agent-pasted execution evidence (command outputs, verification results,
 	 *  file contents). Primary proof source when no git diff is available. */
 	evidence?: string
+	/** Recommendations from the previous grading round, so the grader can verify
+	 *  they were addressed and avoid re-litigating already-fixed issues. */
+	previousRecommendations?: string[]
 }
 
 export interface JudgePhaseGradeOk {
@@ -503,6 +526,15 @@ After internal specialist review: cluster duplicate issues, separate proven find
 - D: Not production-ready. At least one must-fix issue: missing required verification, compile-only proof for runtime behavior, unexpected skipped required tests, significant quality/operational gap, medium security issue, or maintainability risk that will likely cause defects.
 - F: Fail. Core phase requirement not met, implementation broken, required tests fail, evidence absent or fabricated, critical/high security issue, or the change is unsafe to ship.
 
+## Convergence rules (when previous recommendations are provided)
+
+When you receive a "PREVIOUS RECOMMENDATIONS" section, this is a revised phase submission after your previous review. You MUST:
+1. Verify whether each previous recommendation was addressed in the revision.
+2. If a recommendation was addressed, do NOT re-raise the same issue. Mark it as resolved in your rationale.
+3. Do NOT contradict your own previous recommendations. If you told the agent to add verification X, do not now tell them to remove it.
+4. Only assign a grade below the previous grade if you discover a genuinely NEW issue that was not visible in the prior submission.
+5. If the revision addressed all previous recommendations and no new critical issues are found, the grade should improve (typically by one letter) or stay the same — not regress.
+
 ## You will be given
 
 - The ferment name and the phase name + goal.
@@ -511,6 +543,7 @@ After internal specialist review: cluster duplicate issues, separate proven find
 - The project-check summary (if any).
 - The phase diff (files changed + snippet) when available.
 - Execution evidence (agent-provided): real command outputs, verification results, or file contents that prove the work was done. This is the primary proof source when no diff is available.
+- Previous recommendations (if this is a revision of a previously rejected phase).
 
 ## Final output
 
@@ -556,6 +589,13 @@ function buildPhaseGradeUserMsg(input: JudgePhaseInput): string {
 		parts.push("")
 		parts.push("--- EXECUTION EVIDENCE (agent-provided) ---")
 		parts.push(input.evidence.slice(0, 4000))
+	}
+	if (input.previousRecommendations && input.previousRecommendations.length > 0) {
+		parts.push("")
+		parts.push("--- PREVIOUS RECOMMENDATIONS (the agent was told to fix these; verify each was addressed) ---")
+		for (const rec of input.previousRecommendations) {
+			parts.push(`  - ${rec}`)
+		}
 	}
 	return parts.join("\n")
 }
@@ -874,6 +914,9 @@ export interface JudgePlanGradeInput {
 	/** Optional feedback from a previous user rejection of the plan, so the
 	 * grader can verify the revised plan addresses the user's concerns. */
 	userFeedback?: string
+	/** Recommendations from the previous grading round, so the grader can verify
+	 *  they were addressed and avoid re-litigating already-fixed issues. */
+	previousRecommendations?: string[]
 }
 
 export interface JudgePlanGradeOk {
@@ -930,11 +973,21 @@ After internal specialist review: cluster duplicate issues, separate proven find
 - D: Not ready for implementation. At least one requirement the prompt explicitly states is uncovered, or criteria are so vague they cannot verify the requirement, or phases miss a core deliverable.
 - F: Fail. The plan fundamentally misreads the prompt, criteria test the wrong thing entirely, or core requirements are absent from the plan.
 
+## Convergence rules (when previous recommendations are provided)
+
+When you receive a "PREVIOUS RECOMMENDATIONS" section, this is a revised plan submitted after your previous review. You MUST:
+1. Verify whether each previous recommendation was addressed in the revision.
+2. If a recommendation was addressed, do NOT re-raise the same issue. Mark it as resolved in your rationale.
+3. Do NOT contradict your own previous recommendations. If you told the agent to add criterion X, do not now tell them to remove criterion X.
+4. Only assign a grade below the previous grade if you discover a genuinely NEW issue that was not visible in the prior submission.
+5. If the plan addressed all previous recommendations and no new critical issues are found, the grade should improve (typically by one letter) or stay the same — not regress.
+
 ## You will be given
 
 - The ferment name.
 - The original task prompt (what the user actually asked for).
 - The proposed goal, success criteria, constraints, and phases.
+- Previous recommendations (if this is a revision of a previously rejected plan).
 
 ## Final output
 
@@ -974,6 +1027,13 @@ function buildPlanGradeUserMsg(input: JudgePlanGradeInput): string {
 			"--- PREVIOUS USER FEEDBACK (the user rejected the plan with this feedback; verify the revised plan addresses it) ---",
 		)
 		parts.push(input.userFeedback)
+	}
+	if (input.previousRecommendations && input.previousRecommendations.length > 0) {
+		parts.push("")
+		parts.push("--- PREVIOUS RECOMMENDATIONS (the agent was told to fix these; verify each was addressed) ---")
+		for (const rec of input.previousRecommendations) {
+			parts.push(`  - ${rec}`)
+		}
 	}
 	return parts.join("\n")
 }
@@ -1041,6 +1101,13 @@ function buildPlanGraderPrompt(input: JudgePlanGradeInput): string {
 			"--- PREVIOUS USER FEEDBACK (the user rejected the plan with this feedback; verify the revised plan addresses it) ---",
 		)
 		parts.push(input.userFeedback)
+	}
+	if (input.previousRecommendations && input.previousRecommendations.length > 0) {
+		parts.push("")
+		parts.push("--- PREVIOUS RECOMMENDATIONS (the agent was told to fix these; verify each was addressed) ---")
+		for (const rec of input.previousRecommendations) {
+			parts.push(`  - ${rec}`)
+		}
 	}
 	parts.push("")
 	parts.push(

@@ -644,6 +644,10 @@ async function gradePlanBeforeScope(
 		proposedConstraints: proposedConstraints.join("; "),
 		proposedPhases,
 		...(userFeedback ? { userFeedback } : {}),
+		...(() => {
+			const prev = runtime.getBlockRetryRecommendations(fermentId, PLAN_GRADE_KEY)
+			return prev && prev.length > 0 ? { previousRecommendations: prev } : {}
+		})(),
 	}
 	const planJudgeResult = await runWithOverlay(`Grading plan for "${fermentName}"…`, () =>
 		judgePlanGradeViaSubagent(planJudgeInput, spawner),
@@ -666,6 +670,8 @@ async function gradePlanBeforeScope(
 		runtime.clearBlockRetry(fermentId, PLAN_GRADE_KEY)
 		return { kind: "proceed", grade: resolvedPlanGrade }
 	}
+	// Store recommendations so the next grading round can verify they were addressed.
+	runtime.setBlockRetryRecommendations(fermentId, PLAN_GRADE_KEY, planJudgeResult.recommendations)
 	return {
 		kind: "reject",
 		message: `**Ferment "${fermentName}"** plan needs revision — plan grader assigned grade ${planJudgeResult.grade}, minimum required is ${minimumAcceptablePlanGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}`,
@@ -877,6 +883,10 @@ export async function completeFerment(
 					? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
 					: { available: false },
 				evidence: params.evidence,
+				...(() => {
+					const prev = runtime.getBlockRetryRecommendations(params.ferment_id, "__ferment__")
+					return prev && prev.length > 0 ? { previousRecommendations: prev } : {}
+				})(),
 			},
 			spawner,
 		),
@@ -914,6 +924,7 @@ export async function completeFerment(
 				runtime.clearBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
 				// Fall through to the ship path below with the judge's grade + recs.
 			} else {
+				runtime.setBlockRetryRecommendations(params.ferment_id, FERMENT_GRADE_KEY, journeyResult.recommendations)
 				return toolErr(
 					`**Ferment "${ferment.name}"** cannot complete — final LLM grader assigned grade ${journeyResult.grade}, minimum required is ${minimumAcceptableFermentGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}\n\nAddress the recommendations above and call complete_ferment again with an updated summary.`,
 				)

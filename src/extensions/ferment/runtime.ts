@@ -30,6 +30,7 @@ import {
 	clearAllScopingGates,
 	clearAllStepStarts,
 	clearBlockRetry,
+	clearBlockRetryRecommendations,
 	clearCompactionInFlight,
 	clearLifecycleGuardRetryState,
 	clearMidTurnOneshotWarnings,
@@ -42,6 +43,7 @@ import {
 	getActive,
 	getActiveId,
 	getBlockRetry,
+	getBlockRetryRecommendations,
 	getContinuationPolicy,
 	getLastHumanInputAt,
 	getPendingCompaction,
@@ -61,6 +63,7 @@ import {
 	recordBlockHashAndCheckRepeat,
 	setActive,
 	setAutomatedContinuationEnabled,
+	setBlockRetryRecommendations,
 	setContinuationPolicy,
 	setPendingCompaction,
 	setPhaseStartRef,
@@ -116,6 +119,9 @@ export interface FermentRuntime {
 	bumpBlockRetry(fermentId: string, phaseId: string): number
 	getBlockRetry(fermentId: string, phaseId: string): number
 	clearBlockRetry(fermentId: string, phaseId: string): void
+	setBlockRetryRecommendations(fermentId: string, phaseId: string, recs: string[]): void
+	getBlockRetryRecommendations(fermentId: string, phaseId: string): string[] | undefined
+	clearBlockRetryRecommendations(fermentId: string, phaseId: string): void
 	recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string, hash: string): boolean
 	bumpStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): number
 	clearStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): void
@@ -196,6 +202,9 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		bumpBlockRetry,
 		getBlockRetry,
 		clearBlockRetry,
+		setBlockRetryRecommendations,
+		getBlockRetryRecommendations,
+		clearBlockRetryRecommendations,
 		recordBlockHashAndCheckRepeat,
 		bumpStepCompleteAttempt,
 		clearStepCompleteAttempt,

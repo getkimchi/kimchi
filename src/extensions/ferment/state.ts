@@ -526,6 +526,23 @@ const lastBlockHash = new Map<string, string>()
 
 export const MAX_BLOCK_RETRIES = 3
 
+/** In-memory store of recommendations from the previous grading round,
+ * keyed by `${fermentId}:${phaseId}`. Not persisted to disk — only needed
+ * within the same session's retry loop. */
+const blockRetryRecommendations = new Map<string, string[]>()
+
+export function setBlockRetryRecommendations(fermentId: string, phaseId: string, recs: string[]): void {
+	blockRetryRecommendations.set(`${fermentId}:${phaseId}`, recs)
+}
+
+export function getBlockRetryRecommendations(fermentId: string, phaseId: string): string[] | undefined {
+	return blockRetryRecommendations.get(`${fermentId}:${phaseId}`)
+}
+
+export function clearBlockRetryRecommendations(fermentId: string, phaseId: string): void {
+	blockRetryRecommendations.delete(`${fermentId}:${phaseId}`)
+}
+
 export function bumpBlockRetry(fermentId: string, phaseId: string): number {
 	hydrateIfNeeded(fermentId)
 	const next = blockRetryCounts.bump(`${fermentId}:${phaseId}`)
@@ -542,6 +559,7 @@ export function clearBlockRetry(fermentId: string, phaseId: string): void {
 	hydrateIfNeeded(fermentId)
 	blockRetryCounts.clear(`${fermentId}:${phaseId}`)
 	lastBlockHash.delete(`${fermentId}:${phaseId}`)
+	clearBlockRetryRecommendations(fermentId, phaseId)
 	persistFerment(fermentId)
 }
 
