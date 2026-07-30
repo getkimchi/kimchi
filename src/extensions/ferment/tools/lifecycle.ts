@@ -653,6 +653,7 @@ async function gradePlanBeforeScope(
 		judgePlanGradeViaSubagent(planJudgeInput, spawner),
 	)
 	if (!planJudgeResult.ok) {
+		runtime.clearBlockRetry(fermentId, PLAN_GRADE_KEY)
 		return { kind: "proceed" }
 	}
 	const resolvedPlanGrade = {
@@ -661,6 +662,7 @@ async function gradePlanBeforeScope(
 		recommendations: planJudgeResult.recommendations,
 	}
 	if (planGradeOrder[planJudgeResult.grade] >= planGradeOrder[minimumAcceptablePlanGrade]) {
+		runtime.clearBlockRetry(fermentId, PLAN_GRADE_KEY)
 		return { kind: "proceed", grade: resolvedPlanGrade }
 	}
 	// Grade is too low — bump retry and reject.
