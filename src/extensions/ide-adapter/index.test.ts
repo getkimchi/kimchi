@@ -1,9 +1,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setIdeSelectionIndicator } from "../ui.js"
 import ideAdapterExtension from "./index.js"
 import { findMatchingLockfile, getLockfileDir, parseLockfile, scanLockfiles } from "./lockfile.js"
 import { connectToIde } from "./mcp-client.js"
 import type { LockfileData } from "./types.js"
+
+vi.mock("../ui.js", () => ({
+	setIdeSelectionIndicator: vi.fn(),
+}))
 
 vi.mock("./mcp-client.js", () => ({
 	connectToIde: vi.fn(),
@@ -606,7 +611,7 @@ describe("ide-adapter extension", () => {
 			)
 		})
 
-		it("defers to the tool when edit oldText is not found", async () => {
+		it("blocks when edit oldText is not found (fail-closed)", async () => {
 			vi.mocked(readFileSync).mockReturnValue("hello")
 			const callTool = vi.fn().mockResolvedValue(mcpEnvelope({ approved: true }))
 			const { pi, ctx } = await setupWithConnection(callTool)
@@ -618,7 +623,10 @@ describe("ide-adapter extension", () => {
 				},
 				ctx,
 			)
-			expect(result).toBeUndefined()
+			expect(result).toEqual({
+				block: true,
+				reason: expect.stringContaining("Could not compute the proposed change"),
+			})
 			expect(callTool).not.toHaveBeenCalled()
 		})
 
@@ -695,7 +703,9 @@ describe("ide-adapter extension", () => {
 
 		it("handles write to a new file (empty originalContent)", async () => {
 			vi.mocked(readFileSync).mockImplementation(() => {
-				throw new Error("ENOENT")
+				const err = new Error("ENOENT") as Error & { code: string }
+				err.code = "ENOENT"
+				throw err
 			})
 			const callTool = vi.fn().mockResolvedValue(mcpEnvelope({ approved: true }))
 			const { pi, ctx } = await setupWithConnection(callTool)
@@ -756,6 +766,93 @@ describe("ide-adapter extension", () => {
 			// Legacy single-operation fields are cleared.
 			expect(eventInput.oldText).toBeUndefined()
 			expect(eventInput.newText).toBeUndefined()
+		})
+
+		it("blocks when file is unreadable for non-ENOENT reasons", async () => {
+			vi.mocked(readFileSync).mockImplementation(() => {
+				const err = new Error("permission denied") as Error & { code: string }
+				err.code = "EACCES"
+				throw err
+			})
+			const callTool = vi.fn().mockResolvedValue(mcpEnvelope({ approved: true }))
+			const { pi, ctx } = await setupWithConnection(callTool)
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+			const result = await pi._handlers.tool_call[0](
+				{ toolName: "write", input: { path: "a.txt", content: "new" } },
+				ctx,
+			)
+			expect(result).toEqual({
+				block: true,
+				reason: expect.stringContaining("Could not compute the proposed change"),
+			})
+			expect(callTool).not.toHaveBeenCalled()
+			expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Failed to read"), expect.any(Error))
+			warnSpy.mockRestore()
+		})
+	})
+
+	describe("selection_changed notification", () => {
+		beforeEach(() => {
+			vi.useFakeTimers()
+			vi.mocked(connectToIde).mockReset()
+			vi.mocked(scanLockfiles).mockReset()
+			vi.mocked(parseLockfile).mockReset()
+			vi.mocked(findMatchingLockfile).mockReset()
+			vi.mocked(getLockfileDir).mockReset()
+			vi.mocked(setIdeSelectionIndicator).mockReset()
+		})
+
+		afterEach(() => {
+			vi.useRealTimers()
+		})
+
+		it("clears the selection indicator when lineStart:0 and lineEnd:0", async () => {
+			const fakeConnection = {
+				lockfile: { ideName: "TestIDE" },
+				listTools: vi.fn().mockResolvedValue([]),
+				callTool: vi.fn(),
+				close: vi.fn().mockResolvedValue(undefined),
+				setNotificationHandler: vi.fn(),
+			}
+			vi.mocked(connectToIde).mockResolvedValue(fakeConnection as unknown as Awaited<ReturnType<typeof connectToIde>>)
+			vi.mocked(getLockfileDir).mockReturnValue("/tmp/locks")
+			vi.mocked(scanLockfiles).mockReturnValue(["/tmp/locks/ide.lock"])
+			vi.mocked(parseLockfile).mockReturnValue({
+				port: 12345,
+				pid: 1,
+				ideName: "TestIDE",
+				ideVersion: "1.0",
+				transport: "ws",
+				workspaceFolders: ["/tmp"],
+				authToken: "tok",
+			} as LockfileData)
+			vi.mocked(findMatchingLockfile).mockReturnValue({
+				port: 12345,
+				pid: 1,
+				ideName: "TestIDE",
+				ideVersion: "1.0",
+				transport: "ws",
+				workspaceFolders: ["/tmp"],
+				authToken: "tok",
+			} as LockfileData)
+
+			const pi = createFakeExtensionAPI()
+			const ctx = createFakeCtx({ hasUI: true })
+			ideAdapterExtension(pi)
+			pi._handlers.session_start[0](null, ctx)
+			await vi.advanceTimersByTimeAsync(0)
+
+			const handler = vi.mocked(fakeConnection.setNotificationHandler).mock.calls[0][0]
+
+			// First, set a selection
+			handler({ method: "selection_changed", params: { filePath: "/a/b.ts", lineStart: 10, lineEnd: 20 } })
+			expect(setIdeSelectionIndicator).toHaveBeenCalledWith("@/a/b.ts:10-20")
+
+			// Then send a 0:0 selection — should clear per CONTRACT.md
+			vi.mocked(setIdeSelectionIndicator).mockClear()
+			handler({ method: "selection_changed", params: { filePath: "/a/b.ts", lineStart: 0, lineEnd: 0 } })
+			expect(setIdeSelectionIndicator).toHaveBeenCalledWith(null)
 		})
 	})
 })
