@@ -623,6 +623,65 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		expect(errText(result)).toContain('Field "title" must be a non-empty')
 	})
 
+	it("plan grader blocks propose_ferment_scoping on low grade", async () => {
+		const { h, execute } = createProposeHarness()
+		vi.mocked(mockJudgePlanGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "C",
+			rationale: "Missing critical requirement.",
+			recommendations: ["Add a criterion for negative number handling."],
+		})
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext({ hasUI: false }),
+		)
+
+		expect(errText(result)).toContain("plan needs revision")
+		expect(errText(result)).toContain("grade C")
+		expect(h.storage.get(h.fermentId)?.status).toBe("draft")
+	})
+
+	it("plan grader passes on high grade and proposes scoping", async () => {
+		const { h, execute } = createProposeHarness()
+		vi.mocked(mockJudgePlanGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "A",
+			rationale: "All covered.",
+			recommendations: [],
+		})
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext({ hasUI: false }),
+		)
+
+		expect(okText(result)).toContain("Plan saved")
+		expect(h.storage.get(h.fermentId)?.status).toBe("planned")
+	})
+
 	it("rejects prompt because question is the only public question text field", async () => {
 		const { h, execute } = createProposeHarness()
 

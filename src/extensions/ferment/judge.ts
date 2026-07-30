@@ -871,6 +871,9 @@ export interface JudgePlanGradeInput {
 	proposedConstraints: string
 	/** The proposed phases (name + goal each). */
 	proposedPhases: ReadonlyArray<{ name: string; goal: string }>
+	/** Optional feedback from a previous user rejection of the plan, so the
+	 * grader can verify the revised plan addresses the user's concerns. */
+	userFeedback?: string
 }
 
 export interface JudgePlanGradeOk {
@@ -965,6 +968,13 @@ function buildPlanGradeUserMsg(input: JudgePlanGradeInput): string {
 			parts.push(`  - ${p.name}: ${p.goal}`)
 		}
 	}
+	if (input.userFeedback) {
+		parts.push("")
+		parts.push(
+			"--- PREVIOUS USER FEEDBACK (the user rejected the plan with this feedback; verify the revised plan addresses it) ---",
+		)
+		parts.push(input.userFeedback)
+	}
 	return parts.join("\n")
 }
 
@@ -1024,6 +1034,13 @@ function buildPlanGraderPrompt(input: JudgePlanGradeInput): string {
 		for (const p of input.proposedPhases) {
 			parts.push(`  - ${p.name}: ${p.goal}`)
 		}
+	}
+	if (input.userFeedback) {
+		parts.push("")
+		parts.push(
+			"--- PREVIOUS USER FEEDBACK (the user rejected the plan with this feedback; verify the revised plan addresses it) ---",
+		)
+		parts.push(input.userFeedback)
 	}
 	parts.push("")
 	parts.push(

@@ -59,6 +59,9 @@ export interface PendingScope {
 	assumptions?: string
 	/** Number of times propose_ferment_scoping has been called for this ferment. Reset on confirm. */
 	proposeIterations?: number
+	/** Feedback from a previous user rejection of the plan, stored so the
+	 * plan grader can verify the revised plan addresses the user's concerns. */
+	userFeedback?: string
 }
 
 export interface AttachPendingProposalPartial {
@@ -69,6 +72,7 @@ export interface AttachPendingProposalPartial {
 	assumptions?: string
 	phases?: ScopePhaseInput[]
 	proposeIterations?: number
+	userFeedback?: string
 }
 
 const pendingScopes = new Map<string, PendingScope>()
@@ -84,6 +88,7 @@ export function attachPendingProposal(fermentId: string, partial: AttachPendingP
 		phases: partial.phases,
 		assumptions: partial.assumptions,
 		proposeIterations: partial.proposeIterations,
+		userFeedback: partial.userFeedback,
 	})
 	return true
 }
@@ -94,6 +99,22 @@ export function getPendingScope(fermentId: string): PendingScope | undefined {
 
 export function setPendingScope(fermentId: string, scope: PendingScope): void {
 	pendingScopes.set(fermentId, scope)
+}
+
+/** Store user feedback on the pending scope so the plan grader can verify the
+ *  next proposal addresses the user's concerns. No-op if no pending scope. */
+export function setPendingUserFeedback(fermentId: string, feedback: string): void {
+	const existing = pendingScopes.get(fermentId)
+	if (!existing) return
+	pendingScopes.set(fermentId, { ...existing, userFeedback: feedback })
+}
+
+/** Clear user feedback after it has been consumed by the grader. */
+export function clearPendingUserFeedback(fermentId: string): void {
+	const existing = pendingScopes.get(fermentId)
+	if (!existing) return
+	const { userFeedback: _, ...rest } = existing
+	pendingScopes.set(fermentId, rest)
 }
 
 export function clearPendingScope(fermentId: string): void {

@@ -15,8 +15,10 @@ import {
 	attachPendingProposal,
 	clearAllPendingScopes,
 	clearPendingScope,
+	clearPendingUserFeedback,
 	getPendingScope,
 	setPendingScope,
+	setPendingUserFeedback,
 } from "./scoping.js"
 import type { ContinuationPolicy, PendingCompaction } from "./state.js"
 import {
@@ -100,6 +102,8 @@ export interface FermentRuntime {
 	attachPendingProposal(fermentId: string, partial: AttachPendingProposalPartial): boolean
 	clearPendingScope(fermentId: string): void
 	clearAllPendingScopes(): void
+	setPendingUserFeedback(fermentId: string, feedback: string): void
+	clearPendingUserFeedback(fermentId: string): void
 	setPendingPlanReview(review: PendingPlanReview): void
 	getPendingPlanReview(fermentId: string): PendingPlanReview | undefined
 	getCurrentPendingPlanReview(): PendingPlanReview | undefined
@@ -178,6 +182,8 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		attachPendingProposal,
 		clearPendingScope,
 		clearAllPendingScopes,
+		setPendingUserFeedback,
+		clearPendingUserFeedback,
 		setPendingPlanReview,
 		getPendingPlanReview,
 		getCurrentPendingPlanReview,

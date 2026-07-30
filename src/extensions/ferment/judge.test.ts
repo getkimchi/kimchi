@@ -747,6 +747,20 @@ describe("judgePlanGrade", () => {
 		expect(captured).toContain("PROPOSED PLAN")
 		expect(captured).toContain("Success criteria:")
 	})
+
+	it("includes user feedback in the prompt when provided", async () => {
+		let captured = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			captured = msg
+			return ok('{"grade":"A","rationale":"x","recommendations":[]}')
+		})
+		await judgePlanGrade(
+			makePlanInput({ userFeedback: "The user said: make sure it handles negative numbers." }),
+			apiCall,
+		)
+		expect(captured).toContain("PREVIOUS USER FEEDBACK")
+		expect(captured).toContain("make sure it handles negative numbers")
+	})
 })
 
 describe("judgePlanGradeViaSubagent", () => {

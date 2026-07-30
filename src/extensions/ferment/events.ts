@@ -224,8 +224,10 @@ async function maybeRunUserInputDropdown(
 	if (choice === "Let me say something else") {
 		const custom = await promptEditor(ctx, "Your message:")
 		if (!custom) return true
+		if (prompt.isDraft) runtime.setPendingUserFeedback(f.id, custom)
 		reply = custom
 	} else if (choice === prompt.noLabel) {
+		if (prompt.isDraft) runtime.setPendingUserFeedback(f.id, "User rejected the plan — please revise.")
 		reply = prompt.isDraft ? "No — please revise." : "No, pause for now."
 	} else if (prompt.contextualOptions?.includes(choice)) {
 		reply = choice
