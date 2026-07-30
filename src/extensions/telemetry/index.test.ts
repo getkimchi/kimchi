@@ -42,10 +42,10 @@ type Handler = (...args: unknown[]) => Promise<void> | void
 
 function createMockApi(sessionId = "test-session") {
 	const handlers = new Map<string, Handler[]>()
-	const mockCtx = createContext({ sessionManager: { getSessionId: () => sessionId } })
+	const ctx = createContext({ sessionManager: { getSessionId: () => sessionId }, model: { id: "claude-opus-4-6" } })
 	const on = vi.fn((event: string, handler: Handler) => {
 		if (!handlers.has(event)) handlers.set(event, [])
-		const wrapped: Handler = (...args: unknown[]) => handler(args[0], mockCtx)
+		const wrapped: Handler = (...args: unknown[]) => handler(args[0], ctx)
 		handlers.get(event)?.push(wrapped)
 	})
 	// pi.events: a minimal EventBus stub so the telemetry extension can
@@ -61,7 +61,7 @@ function createMockApi(sessionId = "test-session") {
 			return () => {}
 		},
 	}
-	return { on, handlers, events, api: { on, events } as unknown as ExtensionAPI }
+	return { on, handlers, events, api: { on, events } as unknown as ExtensionAPI, ctx }
 }
 
 function getHandler(handlers: Map<string, Handler[]>, event: string): Handler {
@@ -119,12 +119,11 @@ describe("telemetryExtension integration", () => {
 	})
 
 	it("full session lifecycle: start -> message -> tool -> shutdown", async () => {
-		const { handlers, api } = createMockApi()
+		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)
 
-		const mockExtCtx = { model: { id: "claude-opus-4-6" } }
-		await getHandler(handlers, "session_start")({}, mockExtCtx)
-		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, mockExtCtx)
+		await getHandler(handlers, "session_start")({}, ctx)
+		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, ctx)
 
 		await getHandler(
 			handlers,
@@ -174,12 +173,12 @@ describe("telemetryExtension integration", () => {
 	})
 
 	it("emits ACP client_name and client_version when ACP client info is set", async () => {
-		const { handlers, api } = createMockApi()
+		const { handlers, api, ctx } = createMockApi()
 		setAcpClientInfo({ name: "kimchi-vscode", version: "0.0.1" })
 		telemetryExtension(makeConfig())(api)
 
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
-		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, { model: { id: "claude-opus-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
+		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, ctx)
 		await getHandler(handlers, "session_shutdown")({ reason: "disconnect" })
 
 		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
@@ -200,12 +199,13 @@ describe("telemetryExtension integration", () => {
 	})
 
 	it("trackSubagentSpawned sends kimchi.subagent.spawned with source and session_type", async () => {
-		const { handlers, api } = createMockApi()
+		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
-		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, { model: { id: "claude-opus-4-6" } })
 
-		await trackSubagentSpawned({ id: "a1", type: "explore", description: "find files" })
+		await getHandler(handlers, "session_start")({}, ctx)
+		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, ctx)
+
+		await trackSubagentSpawned({ id: "a1", type: "explore", description: "find files" }, ctx)
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
 
 		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
@@ -219,18 +219,30 @@ describe("telemetryExtension integration", () => {
 		const subagentRecord = allRecords.find((rec) => rec.eventName === "subagent.spawned")
 		expect(subagentRecord).toBeDefined()
 		const attrs = Object.fromEntries(subagentRecord?.attributes.map((a) => [a.key, a.value.stringValue]) ?? [])
-		expect(attrs.agent_type).toBe("explore")
-		expect(attrs.reason).toBe("find files")
-		expect(attrs.source).toBe("cli")
-		expect(attrs.session_type).toBe("coding")
-		expect(attrs.ferment_id).toBe("")
+		expect(attrs).toEqual({
+			agent_type: "explore",
+			client: "pi",
+			ferment_id: "",
+			model: "claude-opus-4-6",
+			pi_mode: "tui",
+			pi_session_id: "test-session",
+			reason: "find files",
+			"session.id": expect.any(String),
+			session_type: "coding",
+			source: "cli",
+			"telemetry.arch": expect.any(String),
+			"telemetry.host_os": expect.any(String),
+			"telemetry.is_wsl": expect.any(String),
+			"telemetry.os": expect.any(String),
+			"user.account_uuid": "",
+		})
 	})
 
 	it("survey tracking helpers send survey events through the telemetry batch", async () => {
-		const { handlers, api } = createMockApi()
+		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)
 
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 
 		const submissionId = "submission-1"
 		trackSurveyShown({ survey: TEST_SURVEY })
@@ -275,9 +287,9 @@ describe("telemetryExtension integration", () => {
 	})
 
 	it("turn_start event updates ctx.turnIndex", async () => {
-		const { handlers, api } = createMockApi()
+		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 
 		await getHandler(handlers, "turn_start")({ turnIndex: 3 })
 
@@ -287,9 +299,9 @@ describe("telemetryExtension integration", () => {
 	})
 
 	it("before_provider_headers injects X-Session-Id and X-Turn-Index", async () => {
-		const { handlers, api } = createMockApi()
+		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 
 		// Set a known turn index via the turn_start handler
 		await getHandler(handlers, "turn_start")({ turnIndex: 4 })
@@ -328,10 +340,10 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 	})
 
 	async function setup() {
-		const { handlers, events, api } = createMockApi()
+		const { handlers, events, api, ctx } = createMockApi()
 		const { default: ext } = await import("./index.js")
 		ext(makeConfig())(api)
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 		return { handlers, events }
 	}
 
@@ -781,10 +793,10 @@ describe("edge case coverage", () => {
 	})
 
 	async function setup() {
-		const { handlers, events, api } = createMockApi()
+		const { handlers, events, api, ctx } = createMockApi()
 		const { default: ext } = await import("./index.js")
 		ext(makeConfig())(api)
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 		return { handlers, events }
 	}
 
@@ -963,10 +975,10 @@ describe("token accounting regression tests", () => {
 		// Totals on ferment.completed come from summing phase deltas, not from
 		// diffing the session accumulator. This avoids counting scoping-conversation
 		// tokens that accumulated before phases started.
-		const { handlers, events, api } = createMockApi()
+		const { handlers, events, api, ctx } = createMockApi()
 		const { default: ext, _resetFermentTrackingState } = await import("./index.js")
 		ext(makeConfig())(api)
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 
 		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
 
@@ -1036,7 +1048,7 @@ describe("token accounting regression tests", () => {
 	it("ferment.started is emitted with session_type ferment (active ferment set before emit)", async () => {
 		// Regression: emitFermentCreated was called before setActiveFermentAndApplyProfile,
 		// so session_type was "coding" instead of "ferment".
-		const { handlers, events, api } = createMockApi()
+		const { handlers, events, api, ctx } = createMockApi()
 		const { default: ext } = await import("./index.js")
 		ext(makeConfig())(api)
 
@@ -1044,7 +1056,7 @@ describe("token accounting regression tests", () => {
 		const { getActiveFerment } = await import("../ferment/index.js")
 		vi.mocked(getActiveFerment).mockReturnValue({ id: "f-stype" } as never)
 
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
 		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "f-stype", name: "Session Type", phaseCount: 1 })
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
@@ -1095,10 +1107,10 @@ describe("bash-tool-guard telemetry via pi.events", () => {
 	})
 
 	async function setup() {
-		const { handlers, events, api } = createMockApi()
+		const { handlers, events, api, ctx } = createMockApi()
 		const { default: ext } = await import("./index.js")
 		ext(makeConfig())(api)
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 		return { handlers, events }
 	}
 
@@ -1215,10 +1227,10 @@ describe("loop-guard telemetry via pi.events", () => {
 	})
 
 	async function setup() {
-		const { handlers, events, api } = createMockApi()
+		const { handlers, events, api, ctx } = createMockApi()
 		const { default: ext } = await import("./index.js")
 		ext(makeConfig())(api)
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 		return { handlers, events }
 	}
 
