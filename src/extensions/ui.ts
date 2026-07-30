@@ -114,18 +114,25 @@ let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
 let currentSessionIndicatorText: string | null = null
 
+// Timestamp of the last Ctrl+C press. Updated on every press so the exit
+// stage measures its 500ms window from the most recent press (abort or
+// clear), not from upstream's lastSigintTime which is only updated when the
+// event reaches upstream's handleCtrlC.
+let lastCtrlCTime = 0
+const CTRL_C_EXIT_WINDOW_MS = 500
+
 /**
  * Pure decision function for the Ctrl+C cascade state machine.
  *
  * Given the current editor and agent state, returns what action to take:
  * - `"clear"` — clear text; let the event flow to upstream's app.clear handler.
  * - `"abort"` — abort the agent; consume the event so upstream doesn't fire.
- * - `"exit"` — let the event flow to upstream's handleCtrlC (exit timer / exit).
+ * - `"exit"` — handle exit in the extension layer (check lastCtrlCTime, shut down if within window).
  *
  * The cascade is:
  *   1. Text exists       → clear text (upstream handles it)
  *   2. No text, streaming → abort agent (consume event)
- *   3. No text, idle      → let upstream handle double-press-to-exit
+ *   3. No text, idle      → check exit timer, shut down if within 500ms of last press
  */
 export type CtrlCAction = "clear" | "abort" | "exit"
 export function ctrlCCascadeDecision(hasText: boolean, isStreaming: boolean): CtrlCAction {
@@ -405,39 +412,51 @@ export default function uiExtension(pi: ExtensionAPI) {
 				// We implement a cascade so Ctrl+C is a single-key workflow:
 				//
 				//   1. Text exists       → clear text (let upstream handle it)
-				//   2. No text, streaming → abort agent (consume so upstream exit timer doesn't fire)
-				//   3. No text, idle      → let upstream handle double-press-to-exit
+				//   2. No text, streaming → abort agent (consume so upstream doesn't fire)
+				//   3. No text, idle      → check own timer, shut down if within 500ms
 				//
-				// The exit-on-double-press timing (500ms) is handled by upstream's
-				// handleCtrlC via its own lastSigintTime variable.
+				// Exit timing is managed entirely in this extension via lastCtrlCTime.
+				// We do NOT rely on upstream's lastSigintTime because the abort stage
+				// consumes the event, preventing upstream from updating its timer.
+				// This avoids a timing gap where a rapid triple-press (clear → abort
+				// → exit) would measure the exit window from the clear press instead
+				// of the abort press.
 				if (matchesKey(data, Key.ctrl("c")) && !isKeyRelease(data)) {
+					const now = Date.now()
 					const hasText = (currentEditor?.getText().trim().length ?? 0) > 0
 					const streaming = currentCtx ? !currentCtx.isIdle() : false
 
 					switch (ctrlCCascadeDecision(hasText, streaming)) {
 						case "clear": {
 							// Stage 1: clear text. Let the event flow to upstream's app.clear
-							// handler (handleCtrlC), which calls clearEditor() and sets
-							// lastSigintTime. Show a hint so the user knows the next press
-							// will abort.
+							// handler (handleCtrlC), which calls clearEditor(). Show a hint
+							// so the user knows the next press will abort.
 							if (streaming) {
 								currentCtx?.ui.setStatus("__ctrl_c_hint", "Ctrl+C again to abort")
 							}
+							lastCtrlCTime = now
 							return undefined // upstream clears text
 						}
 						case "abort": {
 							// Stage 2: abort the agent. Consume the event so upstream's
-							// handleCtrlC doesn't also start its exit timer.
+							// handleCtrlC doesn't fire (would set its own exit timer).
 							currentCtx?.abort()
 							currentCtx?.ui.setStatus("__ctrl_c_hint", undefined)
+							lastCtrlCTime = now
 							return { consume: true }
 						}
 						case "exit": {
-							// Stage 3: idle + no text. Let upstream handle the exit timer.
-							// Upstream's handleCtrlC checks lastSigintTime; if within 500ms
-							// of the previous press it exits, otherwise it sets the timer.
+							// Stage 3: idle + no text. Check our own timer. If within
+							// 500ms of the previous press (clear or abort), shut down.
+							// Otherwise just arm the timer. Consume the event in both
+							// cases so upstream's handleCtrlC doesn't set a competing
+							// lastSigintTime that could cause a later unintended exit.
 							currentCtx?.ui.setStatus("__ctrl_c_hint", undefined)
-							return undefined
+							if (now - lastCtrlCTime < CTRL_C_EXIT_WINDOW_MS) {
+								currentCtx?.shutdown()
+							}
+							lastCtrlCTime = now
+							return { consume: true }
 						}
 					}
 				}
