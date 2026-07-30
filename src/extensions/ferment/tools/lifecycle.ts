@@ -658,6 +658,51 @@ export async function scopeFerment(
 	const fsmError = validateFsmTransition(fGate, "SCOPE_FERMENT")
 	if (fsmError) return toolErrWithNextAction(fsmError, fGate, multiModelEnabled)
 
+	// Plan-grade judge: compares the proposed success criteria against the
+	// original task prompt (ferment.description) to catch criteria that don't
+	// match what the prompt asks for — before the scope command is applied.
+	// This ensures the ferment stays in "draft" on rejection, so the
+	// next-action hint correctly points back to scope_ferment (not
+	// activate_ferment_phase). Judge-unavailable is advisory.
+	const PLAN_GRADE_KEY = "__plan__"
+	const priorPlanRetries = runtime.getBlockRetry(params.ferment_id, PLAN_GRADE_KEY)
+	const minimumAcceptablePlanGrade: Grade = priorPlanRetries === 0 ? "A" : "B"
+	const planGradeOrder: Record<Grade, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 }
+	const planJudgeInput: JudgePlanGradeInput = {
+		fermentName: fGate?.name ?? params.title ?? "Ferment",
+		originalPrompt: fGate?.description ?? "",
+		proposedGoal: params.goal,
+		proposedCriteria: renderSuccessCriteria(successCriteria.value, ""),
+		proposedConstraints: (params.constraints ?? []).join("; "),
+		proposedPhases: (params.phases ?? []).map((p) => ({ name: p.name, goal: p.goal })),
+	}
+	const fermentName = planJudgeInput.fermentName
+	const planJudgeResult = await runWithOverlay(`Grading plan for "${fermentName}"…`, () =>
+		judgePlanGradeViaSubagent(planJudgeInput, spawner),
+	)
+	let resolvedPlanGrade: { grade: Grade; rationale: string; recommendations?: string[] } | undefined
+	if (planJudgeResult.ok) {
+		resolvedPlanGrade = {
+			grade: planJudgeResult.grade,
+			rationale: planJudgeResult.rationale,
+			recommendations: planJudgeResult.recommendations,
+		}
+		if (planGradeOrder[planJudgeResult.grade] < planGradeOrder[minimumAcceptablePlanGrade]) {
+			const recsText = planJudgeResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
+			const retry = runtime.bumpBlockRetry(params.ferment_id, PLAN_GRADE_KEY)
+			if (retry > MAX_BLOCK_RETRIES) {
+				runtime.clearBlockRetry(params.ferment_id, PLAN_GRADE_KEY)
+				// Fall through to apply the scope and proceed.
+			} else {
+				return toolErrWithNextAction(
+					`**Ferment "${fermentName}"** plan needs revision — plan grader assigned grade ${planJudgeResult.grade}, minimum required is ${minimumAcceptablePlanGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}\n\nRevise the plan via update_ferment_scope_field, then call scope_ferment again with the updated success_criteria.`,
+					fGate,
+					multiModelEnabled,
+				)
+			}
+		}
+	}
+
 	const cmd: Command = {
 		type: "scope",
 		title,
@@ -687,47 +732,6 @@ export async function scopeFerment(
 	runtime.clearPendingScope(params.ferment_id)
 
 	const fresh = outcome.ferment
-
-	// Plan-grade judge: compares the proposed success criteria against the
-	// original task prompt (ferment.description) to catch criteria that don't
-	// match what the prompt asks for — before implementation begins. C/D/F
-	// refuses scoping and routes through the same block-retry loop as the
-	// phase/journey graders. Judge-unavailable is advisory.
-	const PLAN_GRADE_KEY = "__plan__"
-	const priorPlanRetries = runtime.getBlockRetry(params.ferment_id, PLAN_GRADE_KEY)
-	const minimumAcceptablePlanGrade: Grade = priorPlanRetries === 0 ? "A" : "B"
-	const planGradeOrder: Record<Grade, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 }
-	const planJudgeInput: JudgePlanGradeInput = {
-		fermentName: fresh.name,
-		originalPrompt: fresh.description ?? "",
-		proposedGoal: params.goal,
-		proposedCriteria: renderSuccessCriteria(successCriteria.value, ""),
-		proposedConstraints: (params.constraints ?? []).join("; "),
-		proposedPhases: (params.phases ?? []).map((p) => ({ name: p.name, goal: p.goal })),
-	}
-	const planJudgeResult = await runWithOverlay(`Grading plan for "${fresh.name}"…`, () =>
-		judgePlanGradeViaSubagent(planJudgeInput, spawner),
-	)
-	let resolvedPlanGrade: { grade: Grade; rationale: string; recommendations?: string[] } | undefined
-	if (planJudgeResult.ok) {
-		resolvedPlanGrade = {
-			grade: planJudgeResult.grade,
-			rationale: planJudgeResult.rationale,
-			recommendations: planJudgeResult.recommendations,
-		}
-		if (planGradeOrder[planJudgeResult.grade] < planGradeOrder[minimumAcceptablePlanGrade]) {
-			const recsText = planJudgeResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
-			const retry = runtime.bumpBlockRetry(params.ferment_id, PLAN_GRADE_KEY)
-			if (retry > MAX_BLOCK_RETRIES) {
-				runtime.clearBlockRetry(params.ferment_id, PLAN_GRADE_KEY)
-				// Fall through to persist the grade and proceed.
-			} else {
-				return toolErr(
-					`**Ferment "${fresh.name}"** plan needs revision — plan grader assigned grade ${planJudgeResult.grade}, minimum required is ${minimumAcceptablePlanGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}\n\nRevise the plan via update_ferment_scope_field and call scope_ferment again with an updated success_criteria.`,
-				)
-			}
-		}
-	}
 
 	// Persist the plan grade (if available) on the ferment object.
 	let gradedFerment = fresh

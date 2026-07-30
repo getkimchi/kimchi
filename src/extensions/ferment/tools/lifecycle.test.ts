@@ -516,6 +516,36 @@ describe("scopeFerment plan grader", () => {
 		expect(h.storage.get(h.fermentId)?.planGrade?.grade).toBe("C")
 		expect(h.runtime.getBlockRetry(h.fermentId, "__plan__")).toBe(0)
 	})
+
+	it("plan grader rejection keeps ferment in draft so next-action hint points to scope_ferment", async () => {
+		const h = createHarness()
+		vi.mocked(mockJudgePlanGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "C",
+			rationale: "Criteria miss the output format requirement.",
+			recommendations: ["Add a criterion verifying the output is valid JSON."],
+		})
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				gates: passingPlanGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		expect(errText(result)).toContain("plan needs revision")
+		// The ferment must stay in draft so the next-action hint points to scope_ferment.
+		expect(h.storage.get(h.fermentId)?.status).toBe("draft")
+		// The error must include a next-action hint pointing to scope_ferment.
+		expect(errText(result)).toContain("scope_ferment")
+		expect(errText(result)).toContain("Next action: call")
+	})
 })
 
 describe("propose_ferment_scoping via registerLifecycleTools", () => {
