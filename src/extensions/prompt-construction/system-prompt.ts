@@ -193,15 +193,13 @@ Do not spawn subagents with the \`Agent\` tool by default — only do so when th
 export const DOCUMENTS_SECTION =
 	"The Documents directory is shown in the Environment section. Use it for **all** intermediate and output files: plans, specs, research notes, findings, or any file passed between agents. Never write working documents to the project directory or a temporary directory."
 
-export const CORE_GUIDELINES = `- Be concise in your responses. Do not repeat what you just did or summarize completed steps — act and move on.
-- Before starting any task, gather all necessary context: understand the requirements, naming conventions, frameworks and libraries already in use, and how to run and test the code. Use your tools to read existing code rather than assuming.
-- Adhere to existing code conventions and patterns. Use only libraries and frameworks confirmed to be present in the codebase. Never introduce new dependencies without explicit instruction.
-- Provide complete, functional code — no placeholders, omissions, or TODOs left in delivered work.
-- At the end of a task, verify your work: check that edited or created files are complete and correct, and run tests or the code if possible to confirm it works.
-- Show file paths clearly when working with files. Always use absolute paths.
-- Do NOT introduce security vulnerabilities.
-- After every tool result, ALWAYS produce text — either the next tool call with explicit reasoning, or a final summary. Never re-issue the same tool call after a successful result.
-- Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.`
+export const CORE_GUIDELINES = `- Be terse — no narration, orientation prose, or step summaries. Act, move on.
+- Follow **Orchestration** for delegation. Match existing conventions; use only confirmed-present libraries; no new deps without instruction. Absolute paths. No security vulnerabilities.
+- After tool results: proceed to next action or final summary. Never re-issue successful calls or emit malformed tool calls. After 3 failed attempts, stop and reassess in plain text.
+- Batch independent operations. Update todos only on meaningful progress.
+- Make commands available in PATH by symlinking to /usr/local/bin — not shell profiles, which verifiers don't source.
+- Time-boxed tasks: prefer direct execution, watch the clock, simplify near deadlines rather than over-debugging.
+- At task end, summarize from delegated artifacts. Do not re-verify unless Orchestration assigns that step.`
 
 const ORCHESTRATOR_GUIDELINES = `- Be concise in your responses. Do not repeat what you just did or summarize completed steps — act and move on.
 - Follow **Orchestration** for what to do yourself vs delegate. Do not read implementation files, write or edit source code, run tests, or review diffs unless Orchestration **Phase responsibilities** explicitly says DO for your current phase and role.
