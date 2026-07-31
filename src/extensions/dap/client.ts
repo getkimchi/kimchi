@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process"
 import net from "node:net"
 import type { BunProcess } from "../lsp/types.js"
+import { resolveJsDebugScript } from "./adapters.js"
 import type {
 	DapAdapterConfig,
 	DapCapabilities,
@@ -125,31 +126,6 @@ function spawnChildProcessAsBunProcess(argv: string[], cwd: string): BunProcess 
 		exited: new Promise<void>((resolve) => cp.on("exit", () => resolve())),
 		exitCode: null,
 	}
-}
-
-/** Resolve the js-debug dapDebugServer.js script path. Searches common install
- *  locations: $JS_DEBUG_PATH, node_modules/js-debug-adapter, Mason, and the
- *  standard global npm prefix. Returns null if not found. */
-function resolveJsDebugScript(): string | null {
-	if (process.env.JS_DEBUG_PATH) return process.env.JS_DEBUG_PATH
-	const fs = require("node:fs")
-	const candidates = [
-		"node_modules/js-debug-adapter/src/dapDebugServer.js",
-		"node_modules/@vscode/js-debug/src/dapDebugServer.js",
-	]
-	for (const c of candidates) {
-		if (fs.existsSync(c)) return c
-	}
-	// npm global prefix
-	try {
-		const { execSync } = require("node:child_process")
-		const prefix = execSync("npm prefix -g", { encoding: "utf-8" }).trim()
-		const globalPath = `${prefix}/lib/node_modules/js-debug-adapter/src/dapDebugServer.js`
-		if (fs.existsSync(globalPath)) return globalPath
-	} catch {
-		// npm not available
-	}
-	return null
 }
 
 /** Spawn a TCP-based DAP adapter (js-debug's dapDebugServer.js), wait for the
