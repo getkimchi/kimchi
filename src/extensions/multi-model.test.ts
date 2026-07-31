@@ -26,6 +26,7 @@ import {
 	getMultiModelEnabled,
 	getPersistedMultiModelEnabled,
 	hasExplicitModelFlag,
+	isSyntheticMultiModelRefPersisted,
 	resolveMultiModelEnabled,
 	setAndPersistMultiModelEnabled,
 	setMultiModelEnabled,
@@ -136,11 +137,16 @@ describe("resolveMultiModelEnabled", () => {
 		})
 	})
 
-	it("returns { value, source: 'persisted' } when process map is empty and session has persisted value", () => {
+	it("F8: session entry is audit-only — does NOT override global default in resolution", () => {
+		// Previously this returned { value: false, source: 'persisted' }, creating a
+		// feedback loop (F8): a transient override snapshotted into the session
+		// entry could disable multi-model on resume even when the global synthetic
+		// ref says ON. The session entry is now audit-only: resolution falls
+		// through to the global default (true on empty config).
 		const sm = makeSessionManager([mmEntry(false)])
 		expect(resolveMultiModelEnabled(sm)).toEqual({
-			value: false,
-			source: "persisted",
+			value: true,
+			source: "global",
 		})
 	})
 
@@ -221,13 +227,8 @@ describe("getMultiModelEnabled", () => {
 		expect(getMultiModelEnabled(smRuntime)).toBe(true)
 		expect(typeof getMultiModelEnabled(smRuntime)).toBe("boolean")
 
-		// persisted
-		resetProcessMap()
-		const smPersisted = makeSessionManager([mmEntry(false)])
-		expect(getMultiModelEnabled(smPersisted)).toBe(false)
-		expect(typeof getMultiModelEnabled(smPersisted)).toBe("boolean")
-
 		// cli
+		resetProcessMap()
 		setArgv(["node", "cli", "--model"])
 		const smCli = makeSessionManager([])
 		expect(getMultiModelEnabled(smCli)).toBe(false)
@@ -239,6 +240,12 @@ describe("getMultiModelEnabled", () => {
 		const smGlobal = makeSessionManager([])
 		expect(getMultiModelEnabled(smGlobal)).toBe(true)
 		expect(typeof getMultiModelEnabled(smGlobal)).toBe("boolean")
+
+		// F8: session entry is audit-only — a persisted false entry does NOT
+		// override the global default in resolution (falls through to global true).
+		const smAuditOnly = makeSessionManager([mmEntry(false)])
+		expect(getMultiModelEnabled(smAuditOnly)).toBe(true)
+		expect(typeof getMultiModelEnabled(smAuditOnly)).toBe("boolean")
 	})
 })
 
@@ -258,8 +265,54 @@ describe("hasExplicitModelFlag", () => {
 	})
 })
 
+	describe("isSyntheticMultiModelRefPersisted", () => {
+	it("returns true when defaultProvider=orchestration and defaultModel=multi-model", () => {
+		setGlobalConfig({ defaultProvider: "orchestration", defaultModel: "multi-model" })
+		expect(isSyntheticMultiModelRefPersisted()).toBe(true)
+	})
+
+	it("returns false when only defaultProvider matches", () => {
+		setGlobalConfig({ defaultProvider: "orchestration", defaultModel: "kimi-k2.6" })
+		expect(isSyntheticMultiModelRefPersisted()).toBe(false)
+	})
+
+	it("returns false when only defaultModel matches", () => {
+		setGlobalConfig({ defaultProvider: "kimchi-dev", defaultModel: "multi-model" })
+		expect(isSyntheticMultiModelRefPersisted()).toBe(false)
+	})
+
+	it("returns false when neither matches", () => {
+		setGlobalConfig({ defaultProvider: "kimchi-dev", defaultModel: "glm-5.2-fp8" })
+		expect(isSyntheticMultiModelRefPersisted()).toBe(false)
+	})
+
+	it("returns false when keys are absent", () => {
+		setGlobalConfig({})
+		expect(isSyntheticMultiModelRefPersisted()).toBe(false)
+	})
+
+	it("returns false when values are non-string", () => {
+		setGlobalConfig({ defaultProvider: 123, defaultModel: "multi-model" })
+		expect(isSyntheticMultiModelRefPersisted()).toBe(false)
+	})
+})
+
 describe("getGlobalDefault", () => {
-	it("returns the configured multiModel setting when boolean", () => {
+	it("returns true when the synthetic multi-model ref is persisted", () => {
+		setGlobalConfig({ defaultProvider: "orchestration", defaultModel: "multi-model" })
+		expect(getGlobalDefault()).toBe(true)
+	})
+
+	it("synthetic ref outranks the legacy multiModel=false boolean", () => {
+		setGlobalConfig({
+			defaultProvider: "orchestration",
+			defaultModel: "multi-model",
+			multiModel: false,
+		})
+		expect(getGlobalDefault()).toBe(true)
+	})
+
+	it("returns the configured multiModel setting when boolean and no synthetic ref", () => {
 		setGlobalConfig({ multiModel: false })
 		expect(getGlobalDefault()).toBe(false)
 	})
@@ -272,6 +325,98 @@ describe("getGlobalDefault", () => {
 	it("returns true when multiModel is not a boolean", () => {
 		setGlobalConfig({ multiModel: "yes" })
 		expect(getGlobalDefault()).toBe(true)
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Phase 2 bug-fix tests: F1 (fresh-install default-on), F2 (--model + synthetic ref),
+// F4 (error-path state + recovery)
+// ---------------------------------------------------------------------------
+
+describe("F1: fresh-install default-on via ?? true fallback", () => {
+	it("returns true when config is completely empty (no keys at all)", () => {
+		// Truly fresh install: no defaultProvider, no defaultModel, no multiModel.
+		// The hardcoded `?? true` is the ONLY path that fires.
+		setGlobalConfig({})
+		expect(getGlobalDefault()).toBe(true)
+	})
+
+	it("resolveMultiModelEnabled returns { value: true, source: 'global' } on fresh install", () => {
+		setGlobalConfig({})
+		const sm = makeSessionManager([])
+		expect(resolveMultiModelEnabled(sm)).toEqual({
+			value: true,
+			source: "global",
+		})
+	})
+})
+
+describe("F2: --model CLI flag silently disables persisted multi-model (recovers next run)", () => {
+	it("synthetic ref persisted + --model -> resolveMultiModelEnabled returns false (cli wins)", () => {
+		setGlobalConfig({ defaultProvider: "orchestration", defaultModel: "multi-model" })
+		setArgv(["node", "cli", "--model", "kimi-k2.6"])
+		const sm = makeSessionManager([])
+		expect(resolveMultiModelEnabled(sm)).toEqual({
+			value: false,
+			source: "cli",
+		})
+	})
+
+	it("synthetic ref is NOT mutated by --model (persisted ref preserved for next run)", () => {
+		setGlobalConfig({ defaultProvider: "orchestration", defaultModel: "multi-model" })
+		setArgv(["node", "cli", "--model", "kimi-k2.6"])
+		// --model forces false for this invocation, but the persisted synthetic
+		// ref is untouched: isSyntheticMultiModelRefPersisted still reads true.
+		expect(isSyntheticMultiModelRefPersisted()).toBe(true)
+	})
+
+	it("after clearing --model, multi-model resumes from the persisted synthetic ref", () => {
+		setGlobalConfig({ defaultProvider: "orchestration", defaultModel: "multi-model" })
+		// Simulate the next invocation: no --model flag
+		const sm = makeSessionManager([])
+		expect(resolveMultiModelEnabled(sm)).toEqual({
+			value: true,
+			source: "global",
+		})
+	})
+})
+
+describe("F4: /model shortcut error-path state (process map false + synthetic ref persisted)", () => {
+	it("runtime false overrides persisted synthetic ref (error-path state resolves false)", () => {
+		// Simulates the shortcut error path: process map reset to false while
+		// the synthetic ref remains persisted in global config.
+		setGlobalConfig({ defaultProvider: "orchestration", defaultModel: "multi-model" })
+		setMultiModelEnabled(SESSION_ID, false)
+		const sm = makeSessionManager([])
+		expect(resolveMultiModelEnabled(sm)).toEqual({
+			value: false,
+			source: "runtime",
+		})
+	})
+
+	it("recovers after session restart: process map cleared -> global synthetic ref wins", () => {
+		// New session: process map is empty for the new session id.
+		setGlobalConfig({ defaultProvider: "orchestration", defaultModel: "multi-model" })
+		const sm = makeSessionManager([])
+		expect(resolveMultiModelEnabled(sm)).toEqual({
+			value: true,
+			source: "global",
+		})
+	})
+
+	it("setAndPersistMultiModelEnabled reconciles the error-path state back to true", () => {
+		// Error path left process map=false, persisted session entry absent.
+		// setAndPersistMultiModelEnabled resolves from global (synthetic ref=true),
+		// syncs the process map to true, and persists the session entry.
+		setGlobalConfig({ defaultProvider: "orchestration", defaultModel: "multi-model" })
+		const { persist, spy } = makePersist()
+		const sm = makeSessionManager([])
+
+		const result = setAndPersistMultiModelEnabled(SESSION_ID, sm, persist)
+
+		expect(result).toEqual({ value: true, source: "global" })
+		expect(getProcessMultiModelEnabled(SESSION_ID)).toBe(true)
+		expect(spy).toHaveBeenCalledWith("multi_model_enabled", true)
 	})
 })
 
@@ -296,6 +441,95 @@ function makePersistApi(): {
 	const spy = vi.fn()
 	return { persist: { appendEntry: spy }, spy }
 }
+
+describe("F8 regression: legacy persisted session entry must not alter runtime behavior (no migration)", () => {
+	// Scenario: a session created BEFORE the audit-only change has a stale
+	// `multi_model_enabled: false` entry persisted (e.g. from a transient ACP
+	// disable that got snapshotted). Under the OLD resolution, resuming that
+	// session would read the stale false and disable multi-model — the feedback
+	// loop. Under the NEW (audit-only) resolution, the entry is ignored and
+	// the global synthetic ref wins. This test proves no migration is required:
+	// existing persisted sessions do not need their session entries rewritten.
+
+	it("legacy session entry false + global synthetic ref ON -> resolves true (global)", () => {
+		setGlobalConfig({ defaultProvider: "orchestration", defaultModel: "multi-model" })
+		const sm = makeSessionManager([mmEntry(false)]) // legacy stale entry
+		expect(resolveMultiModelEnabled(sm)).toEqual({
+			value: true,
+			source: "global",
+		})
+		expect(getMultiModelEnabled(sm)).toBe(true)
+	})
+
+	it("legacy session entry false + global synthetic ref ON + --model -> resolves false (cli)", () => {
+		setGlobalConfig({ defaultProvider: "orchestration", defaultModel: "multi-model" })
+		setArgv(["node", "cli", "--model", "kimi-k2.6"])
+		const sm = makeSessionManager([mmEntry(false)]) // legacy stale entry
+		// CLI still wins (cli > global), and the legacy entry is ignored either way.
+		expect(resolveMultiModelEnabled(sm)).toEqual({
+			value: false,
+			source: "cli",
+		})
+	})
+
+	it("legacy session entry false + runtime override true -> resolves true (runtime)", () => {
+		setGlobalConfig({ defaultProvider: "orchestration", defaultModel: "multi-model" })
+		setMultiModelEnabled(SESSION_ID, true)
+		const sm = makeSessionManager([mmEntry(false)]) // legacy stale entry
+		expect(resolveMultiModelEnabled(sm)).toEqual({
+			value: true,
+			source: "runtime",
+		})
+	})
+
+	it("reconciliation corrects the stale legacy entry via drift detection", () => {
+		// setAndPersistMultiModelEnabled still reads the legacy entry for DRIFT
+		// detection (audit). Effective (global true) != persisted (false) -> drift
+		// -> the corrected value is persisted, self-healing the stale entry.
+		setGlobalConfig({ defaultProvider: "orchestration", defaultModel: "multi-model" })
+		const { persist, spy } = makePersist()
+		const sm = makeSessionManager([mmEntry(false)])
+
+		const result = setAndPersistMultiModelEnabled(SESSION_ID, sm, persist)
+
+		expect(result).toEqual({ value: true, source: "global" })
+		expect(spy).toHaveBeenCalledWith("multi_model_enabled", true)
+	})
+
+	it("F8 empirical reproduction: transient ACP disable snapshotted to entry must NOT survive session resume", () => {
+		// This is the EXACT feedback-loop scenario the F8 fix prevents.
+		// Step 1: multi-model is ON via global synthetic ref.
+		setGlobalConfig({ defaultProvider: "orchestration", defaultModel: "multi-model" })
+		const sessionEntries: SessionEntry[] = []
+
+		// Step 2: A transient ACP disable sets a runtime override to false.
+		setMultiModelEnabled(SESSION_ID, false)
+		const sm1 = makeSessionManager(sessionEntries)
+
+		// Step 3: setAndPersistMultiModelEnabled snapshots the transient false
+		// into the session entry (this is the write path — still happens under
+		// the fix; the entry is audit-only for READS, not writes).
+		const { persist, spy } = makePersist()
+		const result1 = setAndPersistMultiModelEnabled(SESSION_ID, sm1, persist)
+		expect(result1).toEqual({ value: false, source: "runtime" })
+		expect(spy).toHaveBeenCalledWith("multi_model_enabled", false)
+
+		// Simulate the snapshot landing in the session entry list.
+		sessionEntries.push(mmEntry(false))
+
+		// Step 4: Session resumes in a NEW process — the runtime map is cleared
+		// (process.__kimchiMultiModelEnabled is in-memory only, lost on restart).
+		resetProcessMap()
+		const sm2 = makeSessionManager(sessionEntries)
+
+		// Step 5: resolveMultiModelEnabled must return true (global synthetic ref),
+		// NOT the stale false from the session entry. Under the OLD code (pre-F8),
+		// this would return { value: false, source: "persisted" } — the feedback loop.
+		const result2 = resolveMultiModelEnabled(sm2)
+		expect(result2).toEqual({ value: true, source: "global" })
+		expect(getMultiModelEnabled(sm2)).toBe(true)
+	})
+})
 
 describe("setAndPersistMultiModelEnabled", () => {
 	it("persists when effective differs from persisted AND source is 'runtime'", () => {
@@ -348,15 +582,19 @@ describe("setAndPersistMultiModelEnabled", () => {
 		expect(spy).not.toHaveBeenCalled()
 	})
 
-	it("does NOT persist when effective equals persisted (no drift)", () => {
+	it("F8: persisted session entry drives drift detection (audit), not resolution", () => {
 		const { persist, spy } = makePersist()
-		// no process map, no --model, persisted false -> effective false (persisted), no drift
+		// no process map, no --model. Session entry says false, but the session
+		// entry is audit-only — resolution falls through to the global default
+		// (true on empty config). Effective (true) differs from persisted (false),
+		// so drift IS detected and the corrected value is persisted.
 		const sm = makeSessionManager([mmEntry(false)])
 
 		const result = setAndPersistMultiModelEnabled(SESSION_ID, sm, persist)
 
-		expect(result).toEqual({ value: false, source: "persisted" })
-		expect(spy).not.toHaveBeenCalled()
+		expect(result).toEqual({ value: true, source: "global" })
+		expect(spy).toHaveBeenCalledTimes(1)
+		expect(spy).toHaveBeenCalledWith("multi_model_enabled", true)
 	})
 
 	it("always syncs process map regardless of persistence decision", () => {
@@ -402,12 +640,13 @@ describe("setAndPersistMultiModelEnabled", () => {
 	it("does not persist when global default equals persisted value (no drift)", () => {
 		const { persist, spy } = makePersist()
 		setGlobalConfig({})
-		// global default true, persisted true -> no drift
+		// global default true, persisted true -> no drift. Resolution source is
+		// 'global' (session entry is audit-only), but no drift means no persist.
 		const sm = makeSessionManager([mmEntry(true)])
 
 		const result = setAndPersistMultiModelEnabled(SESSION_ID, sm, persist)
 
-		expect(result).toEqual({ value: true, source: "persisted" })
+		expect(result).toEqual({ value: true, source: "global" })
 		expect(spy).not.toHaveBeenCalled()
 	})
 

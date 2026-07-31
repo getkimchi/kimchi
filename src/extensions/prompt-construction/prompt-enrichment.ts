@@ -277,6 +277,16 @@ export default function (skillPaths: string[]) {
 				// In multi-model mode the orchestrator must always be the configured
 				// orchestrator model. Force-switch if the user has a different model
 				// selected via /models.
+				//
+				// Startup fallback reality: the persisted synthetic ref
+				// `orchestration/multi-model` is NOT a real registry model, so
+				// `modelRegistry.find('orchestration','multi-model')` returns
+				// undefined. findInitialModel (model-resolver.js) then falls through
+				// to step 4 = "first available model with a valid API key" — NOT to
+				// scopedModels[0] (step 2 is skipped because scopedModels is empty at
+				// the top-level sdk.js:99 entry point). This force-switch restores
+				// correctness: multi-model mode is the persisted default, so the
+				// active model is corrected to the configured orchestrator here.
 				if (multiModelEnabled && ctx.model?.id !== orchestratorModelId) {
 					const ref = splitModelRef(orchestratorModelRef)
 					const orchestratorModel = ref ? ctx.modelRegistry?.find(ref.provider, ref.modelId) : undefined

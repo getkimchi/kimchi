@@ -114,6 +114,27 @@ describe("session-metadata-store", () => {
 			expect(Number.isFinite(meta.capturedAt)).toBe(true)
 		})
 
+		it("surfaces config.multi_model_enabled reflecting the resolved multi-model state (true)", () => {
+			// beforeEach mocks getMultiModelEnabled -> true
+			captureSessionStart(makeConfig(), true)
+
+			const meta = getSessionStartMetadata()
+			if (meta === undefined) throw new Error("expected session start metadata to be defined")
+
+			expect(meta.config["config.multi_model_enabled"]).toBe(true)
+		})
+
+		it("surfaces config.multi_model_enabled reflecting the resolved multi-model state (false)", () => {
+			// Override the beforeEach mock to simulate multi-model disabled.
+			vi.mocked(multiModel.getMultiModelEnabled).mockReturnValue(false)
+			captureSessionStart(makeConfig(), true)
+
+			const meta = getSessionStartMetadata()
+			if (meta === undefined) throw new Error("expected session start metadata to be defined")
+
+			expect(meta.config["config.multi_model_enabled"]).toBe(false)
+		})
+
 		it("returns the captured wrapper frozen so exporters get a stable reference", () => {
 			captureSessionStart(makeConfig(), false)
 

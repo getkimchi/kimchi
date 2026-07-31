@@ -3,7 +3,10 @@ import { readConfigSetting } from "../config/settings.js"
 import { getProcessMultiModelEnabled, setProcessMultiModelEnabled } from "./kimchi-process.js"
 
 // --- Source tags ---
-export type MultiModelSource = "runtime" | "cli" | "persisted" | "global"
+// Note: "persisted" was removed when the session entry became audit-only (F8).
+// It is retained here only for type-level backward compat with any external
+// consumers that may still reference the union; resolution never emits it.
+export type MultiModelSource = "runtime" | "cli" | "global"
 
 export interface MultiModelResolution {
 	value: boolean
@@ -13,12 +16,32 @@ export interface MultiModelResolution {
 // --- Precedence layers (highest to lowest) ---
 // 1. In-session runtime selection (process map, set by user actions mid-session) → source: "runtime"
 // 2. Explicit --model CLI flag (computed once at startup)                        → source: "cli"
-// 3. Persisted session-log value (last custom entry in session entries)          → source: "persisted"
-// 4. Global config default (settings.json "multiModel" key, default true)        → source: "global"
+// 3. Global config default — synthetic model ref `orchestration/multi-model`
+//    persisted in defaultModel/defaultProvider by the model picker, falling back
+//    to the legacy `multiModel` boolean key (deprecated) and then hardcoded true  → source: "global"
+//
+// NOTE: the `multi_model_enabled` session entry is AUDIT-ONLY. It is written by
+// setAndPersistMultiModelEnabled for export/audit (config.multi_model_enabled)
+// and for drift detection, but it is NO LONGER READ for resolution. Reading a
+// cached prior resolution back as a resolution input created a feedback loop
+// (F8): a transient override snapshotted into the session entry could disable
+// multi-model on session resume even when the global synthetic ref says ON.
 
 const MULTI_MODEL_SESSION_ENTRY_TYPE = "multi_model_enabled"
 
-/** Whether --model was passed on the CLI. */
+/** Provider/model id pair persisted as the synthetic multi-model selection. */
+const SYNTHETIC_MULTI_MODEL_PROVIDER = "orchestration"
+const SYNTHETIC_MULTI_MODEL_ID = "multi-model"
+
+/** Whether --model was passed on the CLI.
+ *
+ * When --model is present, multi-model mode is forced OFF for this invocation
+ * (the CLI override wins; see resolveMultiModelEnabled, source "cli"). This
+ * is intended — --model means "use exactly this model, do not delegate" — but
+ * it means a persisted synthetic ref is silently bypassed for the run. The
+ * persisted ref is NOT mutated, so multi-model resumes on the next invocation
+ * without --model.
+ */
 export function hasExplicitModelFlag(): boolean {
 	const args = process.argv
 	for (let i = 0; i < args.length; i++) {
@@ -27,8 +50,37 @@ export function hasExplicitModelFlag(): boolean {
 	return false
 }
 
-/** The global config default (settings.json or hardcoded true). */
+/**
+ * Returns true when the persisted default model selection is the synthetic
+ * `orchestration/multi-model` ref. This is how multi-model mode survives
+ * across sessions: the model picker writes the synthetic ref into
+ * defaultModel/defaultProvider exactly like a real model, and this function
+ * reads it back as the global default.
+ */
+export function isSyntheticMultiModelRefPersisted(): boolean {
+	const provider = readConfigSetting("defaultProvider", (value) => typeof value === "string")
+	const modelId = readConfigSetting("defaultModel", (value) => typeof value === "string")
+	return provider === SYNTHETIC_MULTI_MODEL_PROVIDER && modelId === SYNTHETIC_MULTI_MODEL_ID
+}
+
+/**
+ * The global config default.
+ *
+ * Within the global layer the synthetic ref outranks the legacy boolean: if
+ * the picker has persisted `orchestration/multi-model` as the default model,
+ * multi-model mode is the global default. Otherwise the deprecated
+ * `multiModel` boolean is consulted, then hardcoded `true`.
+ *
+ * The `?? true` fallback means multi-model mode is the DEFAULT for every fresh
+ * install with no explicit config. This is a deliberate product decision:
+ * multi-model (orchestrator-delegates) is the intended default UX, not a
+ * opt-in feature. A user who wants single-model behavior persists a real model
+ * ref via the picker, which clears the synthetic ref and flips the global
+ * default to false via the `multiModel: false` path (or, post-migration, by
+ * persisting a non-synthetic defaultModel).
+ */
 export function getGlobalDefault(): boolean {
+	if (isSyntheticMultiModelRefPersisted()) return true
 	return readConfigSetting("multiModel", (value) => typeof value === "boolean") ?? true
 }
 
@@ -46,7 +98,13 @@ export function getPersistedMultiModelEnabled(sessionManager: Pick<SessionManage
 /**
  * Resolve the effective multi-model enabled state AND its source.
  *
- * Precedence: process map ("runtime") > CLI --model ("cli") > persisted session ("persisted") > global default ("global").
+ * Precedence: process map ("runtime") > CLI --model ("cli") > global default ("global").
+ *
+ * The session-log `multi_model_enabled` entry is NOT consulted here — it is
+ * audit-only (see setAndPersistMultiModelEnabled for the write path). Reading it
+ * back as a resolution input created a feedback loop (F8): a transient override
+ * (e.g. an ACP disable) snapshotted into the entry would incorrectly disable
+ * multi-model on session resume, overriding the global synthetic ref.
  *
  * The source tag is essential for reconciliation: values originating from
  * the "cli" source must NOT be persisted to the session log because --model
@@ -64,14 +122,8 @@ export function resolveMultiModelEnabled(
 		if (runtime !== undefined) return { value: runtime, source: "runtime" }
 	}
 
-	// CLI flag ranks above persisted & global, but below runtime.
-	// Check BEFORE persisted so that --model overrides a stale session value.
+	// CLI flag ranks above global, but below runtime.
 	if (hasExplicitModelFlag()) return { value: false, source: "cli" }
-
-	if (sessionManager) {
-		const persisted = getPersistedMultiModelEnabled(sessionManager)
-		if (persisted !== undefined) return { value: persisted, source: "persisted" }
-	}
 
 	return { value: getGlobalDefault(), source: "global" }
 }
