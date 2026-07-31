@@ -6,12 +6,15 @@ import { deleteWorkspace, listWorkspaces } from "../../../sandbox/cloud/workspac
 import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { deleteSession, listSessions } from "../../../sandbox/worker/sessions.js"
 import type { Session } from "../../../sandbox/worker/types.js"
+import { SANDBOX_HOME } from "../provisioning/constants.js"
 import { isVisibleSession } from "../session-filter.js"
+import { getSshAlias } from "../ssh-config/render.js"
 import { ensureIncludeDirective, syncSshConfig } from "../ssh-config/sync.js"
 import type { TeleportContext } from "../types.js"
 import type { RemoteWorkspaceNode } from "../ui/remote-sessions-panel.js"
 import { pickRemoteSessions } from "../ui/remote-sessions-panel.js"
 import type { CombinedStatus, SessionRow } from "../ui/sessions-table.js"
+import { launchVsCodeRemote, resolveVsCodeCommand } from "../vscode.js"
 import { assignWorkspaceSlugs } from "../workspace-slugs.js"
 import { runAttachSession } from "./attach.js"
 import { info, refuse, status, warn } from "./errors.js"
@@ -78,6 +81,27 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 			} catch (err) {
 				warn(ctx, `Could not rename workspace: ${err instanceof Error ? err.message : String(err)}`)
 			}
+			continue
+		}
+
+		if (result.action === "open-vscode") {
+			const row = result.node.row
+			if (!row.host) {
+				warn(ctx, "This workspace is not provisioned yet — no SSH connection available.")
+				continue
+			}
+			const alias = getSshAlias(workspaces, row.id)
+			if (!alias) {
+				warn(ctx, "This workspace is not provisioned yet — no SSH connection available.")
+				continue
+			}
+			const command = resolveVsCodeCommand()
+			if (!command) {
+				warn(ctx, "VS Code's 'code' command was not found on PATH. Install VS Code or add it to PATH.")
+				continue
+			}
+			launchVsCodeRemote(command, alias, `${SANDBOX_HOME}/`)
+			info(ctx, "Opening VS Code…")
 			continue
 		}
 

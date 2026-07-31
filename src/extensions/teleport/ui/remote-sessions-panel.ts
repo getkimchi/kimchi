@@ -31,6 +31,7 @@ export interface RemoteWorkspaceNode {
 
 export type RemoteSessionsResult =
 	| { action: "open-terminal"; node: RemoteWorkspaceNode }
+	| { action: "open-vscode"; node: RemoteWorkspaceNode }
 	| { action: "delete-workspace"; node: RemoteWorkspaceNode }
 	| { action: "rename-workspace"; node: RemoteWorkspaceNode }
 	| { action: "open-session"; node: RemoteSessionNode }
@@ -169,6 +170,12 @@ export class RemoteSessionsPanel implements Component {
 			}
 			return
 		}
+		if (matchesKey(data, "v")) {
+			const entry = this.entries[this.selectedIndex]
+			if (entry?.kind !== "workspace") return
+			this.done({ action: "open-vscode", node: entry.node })
+			return
+		}
 		if (matchesKey(data, "r")) {
 			const entry = this.entries[this.selectedIndex]
 			if (entry?.kind !== "workspace") return
@@ -279,7 +286,7 @@ export class RemoteSessionsPanel implements Component {
 		}
 
 		lines.push(emptyRow())
-		const hint = "↑/↓ j/k: navigate  enter: open  d: delete  r: rename  esc: close"
+		const hint = "↑/↓ j/k: navigate  enter: open  v: vscode  d: delete  r: rename  esc: close"
 		lines.push(ansiRow(dim(`  ${hint}`), hint.length + 2))
 		lines.push(b(`╰${"─".repeat(innerW)}╯`))
 

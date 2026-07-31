@@ -35,13 +35,34 @@ export function renderSshConfig(workspaces: Workspace[], now: Date = new Date())
 	return `${header}\n\n${body}\n`
 }
 
+/**
+ * Filters to provisioned workspaces and assigns each a `kimchi-<slug>` alias.
+ * Both the SSH config renderer and callers like the VSCode launcher share
+ * this so the alias they construct is guaranteed to match the Host block
+ * written to the managed ssh_config file.
+ */
+function getProvisionedAliases(workspaces: Workspace[]): Map<string, string> {
+	const provisioned = workspaces.filter((w) => typeof w.host === "string" && w.host.length > 0)
+	return assignAliases(provisioned)
+}
+
 function renderBlocks(workspaces: Workspace[]): RenderedBlock[] {
 	const provisioned = workspaces.filter((w) => typeof w.host === "string" && w.host.length > 0)
-	const aliases = assignAliases(provisioned)
+	const aliases = getProvisionedAliases(workspaces)
 	return provisioned.map((ws) => ({
 		alias: aliases.get(ws.id) ?? "",
 		body: renderBlock(aliases.get(ws.id) ?? "", ws),
 	}))
+}
+
+/**
+ * Returns the SSH alias (`kimchi-<slug>`) for a provisioned workspace, or
+ * `undefined` when the workspace has no provisioned `host` (nothing to connect
+ * to yet). Uses {@link getProvisionedAliases} so the result always matches the
+ * Host block written to the managed ssh_config.
+ */
+export function getSshAlias(workspaces: Workspace[], workspaceId: string): string | undefined {
+	return getProvisionedAliases(workspaces).get(workspaceId)
 }
 
 function renderBlock(alias: string, ws: Workspace): string {
