@@ -33,8 +33,7 @@
 
 import { randomUUID } from "node:crypto"
 import type { BashOperations } from "@earendil-works/pi-coding-agent"
-import { OutputAccumulator } from "@earendil-works/pi-coding-agent/dist/core/tools/output-accumulator.js"
-import type { TruncationResult } from "@earendil-works/pi-coding-agent/dist/core/tools/truncate.js"
+import { type Accumulator, createOutputAccumulator, type TruncationResult } from "./output-accumulator.js"
 
 /** Default ring-buffer capacity (bytes) kept per running process. */
 export const DEFAULT_MAX_BUFFER_BYTES = 65_536
@@ -85,7 +84,7 @@ export interface ProcessEntry {
 	intervalSeconds: number
 	deadlineMs: number
 	readonly buffer: OutputRingBuffer
-	readonly accumulator: OutputAccumulator
+	readonly accumulator: Accumulator
 	readonly controller: AbortController
 	execPromise: Promise<{ exitCode: number | null }>
 	deadlineTimer: NodeJS.Timeout | undefined
@@ -238,7 +237,7 @@ export function createProcessRegistry(): ProcessRegistry {
 		const handle = randomUUID()
 		const controller = new AbortController()
 		const buffer = new OutputRingBuffer(opts.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES)
-		const accumulator = new OutputAccumulator({
+		const accumulator = createOutputAccumulator({
 			maxLines: 2000,
 			maxBytes: 50_000,
 			tempFilePrefix: "pi-bash",
