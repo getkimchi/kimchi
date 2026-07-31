@@ -167,7 +167,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 			const count = getWorkToolCalls(sessionId)
 			if (count >= TODO_EARLY_NUDGE_THRESHOLD) {
 				markTodoNudgeFired(sessionId)
-				pi.sendMessage(hiddenTodoMessage(TODO_EARLY_NUDGE_MESSAGE), { deliverAs: "followUp" })
+				pi.sendMessage(hiddenTodoMessage(TODO_EARLY_NUDGE_MESSAGE), { deliverAs: "steer" })
 			}
 		}
 

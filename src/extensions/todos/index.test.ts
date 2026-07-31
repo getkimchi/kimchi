@@ -392,6 +392,18 @@ describe("early todo nudge", () => {
 		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
 	})
 
+	it("delivers the nudge as a steer, never a follow-up", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		for (let i = 0; i < 10; i++) {
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+
+		expect(vi.mocked(harness.sendMessage).mock.calls[0]?.[1]).toEqual({ deliverAs: "steer" })
+	})
+
 	it("does not fire when the model creates a todo list before the threshold", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
