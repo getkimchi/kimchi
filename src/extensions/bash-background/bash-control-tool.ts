@@ -80,12 +80,11 @@ export function createBashControlToolDefinition(
 	async function execute(
 		_toolCallId: string,
 		params: BashControlInput,
-		_signal: AbortSignal | undefined,
+		signal: AbortSignal | undefined,
 		_onUpdate: Parameters<ToolDefinition["execute"]>[3] | undefined,
 	): Promise<{
 		content: { type: "text"; text: string }[]
 		details: BashControlDetails
-		terminate?: boolean
 	}> {
 		const { handle, action, extend_seconds } = params
 		const registry = getRegistry()
@@ -142,15 +141,18 @@ export function createBashControlToolDefinition(
 		// If the process already exited (e.g. between the previous checkin and
 		// this call), return the final output immediately.
 		if (entry.state !== "running") {
+			const final = registry.finalSnapshot(handle)
 			const snapshot = registry.snapshotTail(handle)
 			await registry.remove(handle).catch(() => {})
+			const fullOutput = final?.content ?? snapshot.text
+			if (snapshot.reason === "deadline") {
+				throw new Error(`${fullOutput}\n\nCommand timed out`)
+			}
+			if (snapshot.exitCode !== null && snapshot.exitCode !== 0) {
+				throw new Error(`${fullOutput}\n\nCommand exited with code ${snapshot.exitCode}`)
+			}
 			return {
-				content: [
-					{
-						type: "text",
-						text: `${snapshot.text}\n\n[Process already exited${snapshot.exitCode !== null ? ` with code ${snapshot.exitCode}` : ""}]`,
-					},
-				],
+				content: [{ type: "text", text: fullOutput }],
 				details: {
 					handle,
 					exited: true,
@@ -167,14 +169,42 @@ export function createBashControlToolDefinition(
 			registry.extend(handle, extend_seconds)
 		}
 
+		// Turn abort (ESC) must kill the process, same as bash-background-tool.
+		const onAbort = () => void registry.kill(handle)
+		if (signal?.aborted) onAbort()
+		else signal?.addEventListener("abort", onAbort, { once: true })
+
 		// Re-arm the next checkin (timer vs process exit race). This blocks
 		// until the next checkin OR process exit — naturally pacing the loop
 		// without relying on the event loop staying alive. Works in -p mode.
 		const intervalSeconds = entry.intervalSeconds
-		const snapshot = await awaitCheckin(registry, handle, intervalSeconds)
+		let snapshot: ReturnType<typeof registry.snapshotTail>
+		try {
+			snapshot = await awaitCheckin(registry, handle, intervalSeconds)
+		} finally {
+			signal?.removeEventListener("abort", onAbort)
+		}
 		const exited = snapshot.state !== "running"
 		if (exited) {
+			const final = registry.finalSnapshot(handle)
 			await registry.remove(handle).catch(() => {})
+			const fullOutput = final?.content ?? snapshot.text
+			if (snapshot.reason === "deadline") {
+				throw new Error(`${fullOutput}\n\nCommand timed out`)
+			}
+			if (snapshot.exitCode !== null && snapshot.exitCode !== 0) {
+				throw new Error(`${fullOutput}\n\nCommand exited with code ${snapshot.exitCode}`)
+			}
+			return {
+				content: [{ type: "text", text: fullOutput }],
+				details: {
+					handle,
+					exited: true,
+					exitCode: snapshot.exitCode,
+					action: "continue",
+					reason: snapshot.reason,
+				},
+			}
 		}
 
 		const statusLine = exited

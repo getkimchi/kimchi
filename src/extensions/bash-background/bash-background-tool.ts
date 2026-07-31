@@ -22,7 +22,7 @@ import type { BashOperations, BashToolDetails, BashToolOptions, ToolDefinition }
 import { createBashToolDefinition, createLocalBashOperations } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
 import { awaitCheckin } from "./checkin.js"
-import { createProcessRegistry, type ProcessRegistry } from "./process-registry.js"
+import { createProcessRegistry, type ProcessRegistry, type TailSnapshot } from "./process-registry.js"
 
 /** Short-task threshold: timeouts at or below this run synchronously. */
 export const SHORT_TASK_TIMEOUT_SECONDS = 5
@@ -133,6 +133,11 @@ export function createBackgroundBashToolDefinition(
 			{ intervalSeconds, deadlineMs },
 		)
 
+		// Turn abort (ESC) must kill the process tree, same as the sync path.
+		const onAbort = () => void registry.kill(handle)
+		if (signal?.aborted) onAbort()
+		else signal?.addEventListener("abort", onAbort, { once: true })
+
 		// Emit an initial partial (empty) so the TUI shows the call as running.
 		onUpdate?.({
 			content: [{ type: "text", text: "" }],
@@ -140,12 +145,29 @@ export function createBackgroundBashToolDefinition(
 		})
 
 		// Resolve at the first checkin OR process exit, whichever is first.
-		const snapshot = await awaitCheckin(registry, handle, intervalSeconds)
+		let snapshot: TailSnapshot
+		try {
+			snapshot = await awaitCheckin(registry, handle, intervalSeconds)
+		} finally {
+			signal?.removeEventListener("abort", onAbort)
+		}
 		const exited = snapshot.state !== "running"
 
 		// If the process exited between spawn and the checkin, clean up the entry.
 		if (exited) {
+			const final = registry.finalSnapshot(handle)
 			await registry.remove(handle).catch(() => {})
+
+			// Mirror upstream's error behavior: throw on non-zero exit or deadline.
+			// The wording matters — bash-timeout-guidance.ts matches on
+			// /Command timed out after (\d+) seconds/.
+			const fullOutput = final?.content ?? snapshot.text
+			if (snapshot.reason === "deadline") {
+				throw new Error(`${fullOutput}\n\nCommand timed out after ${deadlineSeconds} seconds`)
+			}
+			if (snapshot.exitCode !== null && snapshot.exitCode !== 0) {
+				throw new Error(`${fullOutput}\n\nCommand exited with code ${snapshot.exitCode}`)
+			}
 		}
 
 		const statusLine = exited

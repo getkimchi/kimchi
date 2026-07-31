@@ -32,3 +32,34 @@ declare module "@earendil-works/pi-coding-agent/dist/utils/clipboard-image.js" {
 		platform?: NodeJS.Platform
 	}): Promise<ClipboardImage | null>
 }
+
+declare module "@earendil-works/pi-coding-agent/dist/core/tools/output-accumulator.js" {
+	export interface OutputAccumulatorOptions {
+		maxLines?: number
+		maxBytes?: number
+		tempFilePrefix?: string
+	}
+	export interface OutputSnapshot {
+		content: string
+		truncation: import("./truncate.js").TruncationResult
+		fullOutputPath?: string
+	}
+	export class OutputAccumulator {
+		constructor(options?: OutputAccumulatorOptions)
+		append(data: Buffer): void
+		finish(): void
+		snapshot(options?: { persistIfTruncated?: boolean }): OutputSnapshot
+		closeTempFile(): Promise<void>
+		getLastLineBytes(): number
+	}
+}
+
+declare module "@earendil-works/pi-coding-agent/dist/core/tools/truncate.js" {
+	export interface TruncationResult {
+		truncated: boolean
+		originalLines?: number
+		originalBytes?: number
+		keptLines?: number
+		keptBytes?: number
+	}
+}

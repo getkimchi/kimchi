@@ -147,7 +147,6 @@ describe("bash_control — action 'continue'", () => {
 		expect(result.details.exited).toBe(true)
 		expect(result.details.exitCode).toBe(0)
 		expect((result.content[0] as { text: string }).text).toContain("done output")
-		expect((result.content[0] as { text: string }).text).toContain("already exited")
 	})
 
 	it("extend_seconds of 0 or omitted keeps the existing deadline", async () => {

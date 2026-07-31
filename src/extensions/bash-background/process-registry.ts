@@ -33,6 +33,8 @@
 
 import { randomUUID } from "node:crypto"
 import type { BashOperations } from "@earendil-works/pi-coding-agent"
+import { OutputAccumulator } from "@earendil-works/pi-coding-agent/dist/core/tools/output-accumulator.js"
+import type { TruncationResult } from "@earendil-works/pi-coding-agent/dist/core/tools/truncate.js"
 
 /** Default ring-buffer capacity (bytes) kept per running process. */
 export const DEFAULT_MAX_BUFFER_BYTES = 65_536
@@ -62,6 +64,19 @@ export interface TailSnapshot {
 	reason: string | null
 }
 
+/** Full output snapshot for final results (mirrors upstream OutputSnapshot). */
+export interface FinalSnapshot {
+	/** Full output text (truncated to upstream limits). */
+	content: string
+	/** Truncation info (matches upstream TruncationResult). */
+	truncation?: TruncationResult
+	/** Path to a temp file with the complete output, when spilled. */
+	fullOutputPath?: string
+	state: ProcessState
+	exitCode: number | null
+	reason: string | null
+}
+
 export interface ProcessEntry {
 	readonly handle: string
 	state: ProcessState
@@ -70,6 +85,7 @@ export interface ProcessEntry {
 	intervalSeconds: number
 	deadlineMs: number
 	readonly buffer: OutputRingBuffer
+	readonly accumulator: OutputAccumulator
 	readonly controller: AbortController
 	execPromise: Promise<{ exitCode: number | null }>
 	deadlineTimer: NodeJS.Timeout | undefined
@@ -154,6 +170,8 @@ export interface ProcessRegistry {
 	): string
 	/** Tail-window snapshot of accumulated output + current state. */
 	snapshotTail(handle: string, maxBytes?: number): TailSnapshot
+	/** Full output snapshot (truncated + temp-file spill, like upstream). */
+	finalSnapshot(handle: string): FinalSnapshot | undefined
 	/** Kill a running process (reason "stop") and await abort settlement. */
 	kill(handle: string): Promise<void>
 	/** Push the deadline out by `addSeconds` and re-arm the deadline timer. */
@@ -220,6 +238,11 @@ export function createProcessRegistry(): ProcessRegistry {
 		const handle = randomUUID()
 		const controller = new AbortController()
 		const buffer = new OutputRingBuffer(opts.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES)
+		const accumulator = new OutputAccumulator({
+			maxLines: 2000,
+			maxBytes: 50_000,
+			tempFilePrefix: "pi-bash",
+		})
 
 		const entry: ProcessEntry = {
 			handle,
@@ -229,6 +252,7 @@ export function createProcessRegistry(): ProcessRegistry {
 			intervalSeconds: opts.intervalSeconds,
 			deadlineMs: opts.deadlineMs,
 			buffer,
+			accumulator,
 			controller,
 			execPromise: undefined as unknown as Promise<{ exitCode: number | null }>,
 			deadlineTimer: undefined,
@@ -236,7 +260,10 @@ export function createProcessRegistry(): ProcessRegistry {
 
 		const execPromise = ops
 			.exec(command, cwd, {
-				onData: (data: Buffer) => buffer.append(data),
+				onData: (data: Buffer) => {
+					buffer.append(data)
+					accumulator.append(data)
+				},
 				signal: controller.signal,
 				// No upstream timeout: background mode manages its own deadline.
 				timeout: undefined,
@@ -260,6 +287,7 @@ export function createProcessRegistry(): ProcessRegistry {
 			})
 			.finally(() => {
 				clearDeadlineTimer(entry)
+				accumulator.finish()
 			})
 
 		entry.execPromise = execPromise
@@ -303,10 +331,25 @@ export function createProcessRegistry(): ProcessRegistry {
 		return entries.get(handle)
 	}
 
+	function finalSnapshot(handle: string): FinalSnapshot | undefined {
+		const entry = entries.get(handle)
+		if (!entry) return undefined
+		const snap = entry.accumulator.snapshot({ persistIfTruncated: true })
+		return {
+			content: snap.content,
+			truncation: snap.truncation,
+			fullOutputPath: snap.fullOutputPath,
+			state: entry.state,
+			exitCode: entry.exitCode,
+			reason: entry.reason,
+		}
+	}
+
 	async function remove(handle: string): Promise<void> {
 		const entry = entries.get(handle)
 		if (!entry) return
 		await kill(handle)
+		await entry.accumulator.closeTempFile().catch(() => {})
 		entries.delete(handle)
 	}
 
@@ -319,6 +362,7 @@ export function createProcessRegistry(): ProcessRegistry {
 	return {
 		spawn,
 		snapshotTail,
+		finalSnapshot,
 		kill,
 		extend,
 		whenExited,
