@@ -168,24 +168,25 @@ export function createBackgroundBashToolDefinition(
 			if (snapshot.exitCode !== null && snapshot.exitCode !== 0) {
 				throw new Error(`${fullOutput}\n\nCommand exited with code ${snapshot.exitCode}`)
 			}
+
+			// Success exit — return plain output, no handle, no status line.
+			return {
+				content: [{ type: "text", text: fullOutput }],
+				details: undefined,
+			}
 		}
 
-		const statusLine = exited
-			? snapshot.exitCode !== null && snapshot.exitCode !== 0
-				? `\n\n[Process exited with code ${snapshot.exitCode}]`
-				: snapshot.reason
-					? `\n\n[Process stopped: ${snapshot.reason}]`
-					: "\n\n[Process exited]"
-			: `\n\n[Background process running — call bash_control with handle ${handle} to continue or stop]`
+		// Process still running — return tail window + handle for bash_control.
+		const statusLine = `\n\n[Background process running — call bash_control with handle ${handle} to continue or stop]`
 
 		return {
 			content: [{ type: "text", text: `${snapshot.text}${statusLine}` }],
 			details: {
 				handle,
-				exited,
-				exitCode: snapshot.exitCode,
-				checkin: !exited,
-				reason: snapshot.reason,
+				exited: false,
+				exitCode: null,
+				checkin: true,
+				reason: null,
 			},
 		}
 	}

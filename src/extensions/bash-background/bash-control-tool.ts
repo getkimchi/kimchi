@@ -207,23 +207,18 @@ export function createBashControlToolDefinition(
 			}
 		}
 
-		const statusLine = exited
-			? snapshot.exitCode !== null && snapshot.exitCode !== 0
-				? `\n\n[Process exited with code ${snapshot.exitCode}]`
-				: snapshot.reason
-					? `\n\n[Process stopped: ${snapshot.reason}]`
-					: "\n\n[Process exited]"
-			: `\n\n[Background process still running — call bash_control again with handle ${handle} to continue or stop]`
+		// Process still running — return tail window + handle.
+		const statusLine = `\n\n[Background process still running — call bash_control again with handle ${handle} to continue or stop]`
 
 		return {
 			content: [{ type: "text", text: `${snapshot.text}${statusLine}` }],
 			details: {
 				handle,
-				exited,
-				exitCode: snapshot.exitCode,
+				exited: false,
+				exitCode: null,
 				action: "continue",
-				checkin: !exited,
-				reason: snapshot.reason,
+				checkin: true,
+				reason: null,
 			},
 		}
 	}

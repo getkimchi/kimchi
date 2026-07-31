@@ -86,6 +86,7 @@ export interface ProcessEntry {
 	readonly buffer: OutputRingBuffer
 	readonly accumulator: Accumulator
 	readonly controller: AbortController
+	rawExecPromise: Promise<{ exitCode: number | null }> | undefined
 	execPromise: Promise<{ exitCode: number | null }>
 	deadlineTimer: NodeJS.Timeout | undefined
 }
@@ -253,21 +254,23 @@ export function createProcessRegistry(): ProcessRegistry {
 			buffer,
 			accumulator,
 			controller,
+			rawExecPromise: undefined as unknown as Promise<{ exitCode: number | null }>,
 			execPromise: undefined as unknown as Promise<{ exitCode: number | null }>,
 			deadlineTimer: undefined,
 		}
 
-		const execPromise = ops
-			.exec(command, cwd, {
-				onData: (data: Buffer) => {
-					buffer.append(data)
-					accumulator.append(data)
-				},
-				signal: controller.signal,
-				// No upstream timeout: background mode manages its own deadline.
-				timeout: undefined,
-				env,
-			})
+		const rawExec = ops.exec(command, cwd, {
+			onData: (data: Buffer) => {
+				buffer.append(data)
+				accumulator.append(data)
+			},
+			signal: controller.signal,
+			// No upstream timeout: background mode manages its own deadline.
+			timeout: undefined,
+			env,
+		})
+		entry.rawExecPromise = rawExec
+		const execPromise = rawExec
 			.then((result) => {
 				if (entry.state === "running") {
 					entry.state = "exited"

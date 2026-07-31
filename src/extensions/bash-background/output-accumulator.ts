@@ -3,12 +3,10 @@
  *
  * The upstream `@earendil-works/pi-coding-agent/dist/core/tools/output-accumulator.js`
  * is not in the package's `exports` map, so `bun build` (used by `build:binary`)
- * cannot resolve the deep-import path. This wrapper uses `createRequire` to
- * load the real upstream module synchronously at runtime, falling back to a
- * minimal inline accumulator when the module path is unavailable (e.g. in
- * tests where the vitest alias stub is used).
- *
- * This follows the same pattern as `src/utils/clipboard-image.ts`.
+ * cannot resolve the deep-import path. This wrapper uses `require` to load the
+ * real upstream module synchronously at runtime, falling back to a minimal
+ * inline accumulator when the module is not resolvable (tests, or environments
+ * where `require` is unavailable).
  */
 
 export interface TruncationResult {
@@ -40,15 +38,16 @@ export interface Accumulator {
 }
 
 /**
- * Create an OutputAccumulator instance synchronously. Uses the upstream
- * module at runtime via `createRequire`; falls back to a minimal inline
- * accumulator when the upstream module is not resolvable (tests).
+ * Create an OutputAccumulator instance synchronously. Tries the upstream
+ * module first; falls back to an inline accumulator.
  */
 export function createOutputAccumulator(options?: AccumulatorOptions): Accumulator {
+	// In test environments (vitest), use the inline fallback to avoid
+	// deep-import resolution issues and keep tests deterministic.
+	if (process.env.VITEST) {
+		return new InlineAccumulator(options)
+	}
 	try {
-		// Resolve the package directory directly on the filesystem, bypassing
-		// the package's `exports` map (which blocks deep imports). The file
-		// exists on disk after `pnpm install` but is not in `exports`.
 		const fs = require("node:fs")
 		const path = require("node:path")
 		const pkgLink = path.resolve("node_modules/@earendil-works/pi-coding-agent")
@@ -57,14 +56,12 @@ export function createOutputAccumulator(options?: AccumulatorOptions): Accumulat
 		const mod = require(modPath)
 		return new mod.OutputAccumulator(options)
 	} catch {
-		// Fallback: minimal accumulator that keeps all output in memory.
 		return new InlineAccumulator(options)
 	}
 }
 
 /**
- * Minimal inline accumulator used as a fallback when the upstream module
- * is not available (tests, or environments where the deep import fails).
+ * Minimal inline accumulator used as a fallback.
  */
 class InlineAccumulator implements Accumulator {
 	private chunks: Buffer[] = []
@@ -81,7 +78,7 @@ class InlineAccumulator implements Accumulator {
 	}
 
 	finish(): void {
-		// No-op — all data is already in memory
+		// No-op
 	}
 
 	snapshot(_options?: { persistIfTruncated?: boolean }): OutputSnapshot {
@@ -106,7 +103,7 @@ class InlineAccumulator implements Accumulator {
 	}
 
 	async closeTempFile(): Promise<void> {
-		// No-op — no temp file used
+		// No-op
 	}
 
 	getLastLineBytes(): number {

@@ -237,17 +237,22 @@ describe("createBackgroundBashToolDefinition — background checkin path (timeou
 	})
 
 	it("resolves with final output when the process exits before the first checkin", async () => {
-		vi.useFakeTimers()
+		// Use a fake ops that exits immediately (before the checkin timer arms).
 		const ops = createFakeOps()
+		// Pre-settle the exec promise so the process exits immediately on spawn.
 		const tool = makeTool(ops)
-		const execPromise = callExecute(tool, { command: "fast-ish", timeout: 60, checkin_interval: 10 })
+		// Start execute, then immediately drive the fake to exit.
+		const execPromise = callExecute(tool, { command: "fast-ish", timeout: 60, checkin_interval: 1 })
 		await Promise.resolve()
 		ops.emit("done output\n")
 		await ops.exit(0)
 		const result = await execPromise
-		expect(result.details?.exited).toBe(true)
-		expect(result.details?.exitCode).toBe(0)
+		// Success exit before first checkin: returns plain output like upstream.
+		// No handle, no checkin flag, no status line.
 		expect((result.content[0] as { text: string }).text).toContain("done output")
+		expect((result.content[0] as { text: string }).text).not.toContain("Process exited")
+		expect((result.content[0] as { text: string }).text).not.toContain("bash_control")
+		expect(result.details?.handle).toBeUndefined()
 		expect(result.details?.checkin).toBeFalsy()
 	})
 })
