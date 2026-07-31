@@ -11,6 +11,33 @@ import fs from "node:fs"
 import path from "node:path"
 import type { DapAdapterConfig } from "./types.js"
 
+/** Resolve the js-debug dapDebugServer.js script path. Searches common install
+ *  locations: $JS_DEBUG_PATH, node_modules paths, and the standard global
+ *  npm prefix. Returns null if not found. Exported so client.ts can reuse
+ *  the same resolution at spawn time. */
+export function resolveJsDebugScript(): string | null {
+	if (process.env.JS_DEBUG_PATH) return process.env.JS_DEBUG_PATH
+	const candidates = [
+		"node_modules/js-debug-adapter/src/dapDebugServer.js",
+		"node_modules/@vscode/js-debug/src/dapDebugServer.js",
+	]
+	for (const c of candidates) {
+		if (fs.existsSync(c)) return c
+	}
+	// npm global prefix
+	try {
+		const result = spawnSync("npm", ["prefix", "-g"], { encoding: "utf-8" })
+		if (result.status === 0) {
+			const prefix = result.stdout.trim()
+			const globalPath = `${prefix}/lib/node_modules/js-debug-adapter/src/dapDebugServer.js`
+			if (fs.existsSync(globalPath)) return globalPath
+		}
+	} catch {
+		// npm not available
+	}
+	return null
+}
+
 /**
  * Registry of supported debug adapters. Mirrors lsp/servers.ts's SERVERS array.
  *
@@ -28,20 +55,19 @@ const ADAPTERS: DapAdapterConfig[] = [
 	{
 		name: "js-debug",
 		command: "node",
-		// Session layer assembles the final argv at launch:
-		//   node <dapDebugServer.js path> <port> 127.0.0.1
-		// `args` is empty here because the script path is resolved from the
-		// js-debug-adapter install location at launch time (not statically
-		// knowable). `transport.portArgIndex` points at the port in the
-		// session-assembled argv.
+		// The DAP server is dapDebugServer.js from the vscode-js-debug
+		// GitHub releases tarball (js-debug-dap-<ver>.tar.gz). There is no
+		// npm package or standalone binary — extract the tarball and set
+		// JS_DEBUG_PATH to the extracted dapDebugServer.js path, or let
+		// client.ts search common install locations.
 		args: [],
-		detectBinary: "js-debug-adapter",
+		detect: () => resolveJsDebugScript() !== null,
 		transport: { kind: "tcp", portArgIndex: 1, host: "127.0.0.1" },
 		languages: ["typescript", "javascript"],
 		extensions: ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
 		launchType: "pwa-node",
 		installHint:
-			"npm i -g js-debug-adapter  (or download js-debug-dap-<ver>.tar.gz from github.com/microsoft/vscode-js-debug/releases)",
+			"Download js-debug-dap-<ver>.tar.gz from github.com/microsoft/vscode-js-debug/releases, extract, and set JS_DEBUG_PATH to the extracted js-debug/src/dapDebugServer.js",
 		launchConfig: { sourceMaps: true },
 	},
 	{
@@ -198,10 +224,26 @@ function existsCmd(argv: string[]): boolean {
 	}
 }
 
-/** Check if an adapter's binary/module is available. Uses detectModule
- *  (e.g. `python3 -c "import debugpy"`) when set, otherwise detectBinary
- *  or command (via `which`). */
+/** Check if an adapter's runtime is available. Uses `detect` (custom function)
+ *  when set, then `detectModule` (e.g. `python3 -c "import debugpy"`),
+ *  otherwise `detectBinary` or `command` (via `which`). */
 function adapterExists(adapter: DapAdapterConfig): boolean {
+	if (DAP_BINARIES_OVERRIDE !== undefined) {
+		// Test override: check by adapter name for custom-detect adapters.
+		if (adapter.detect) {
+			const available = DAP_BINARIES_OVERRIDE.split(",").map((s) => s.trim())
+			return available.includes(adapter.name)
+		}
+		if (adapter.detectModule) {
+			const available = DAP_BINARIES_OVERRIDE.split(",").map((s) => s.trim())
+			return available.includes(adapter.detectModule[0])
+		}
+		const available = DAP_BINARIES_OVERRIDE.split(",").map((s) => s.trim())
+		return available.includes(detectBinaryOf(adapter))
+	}
+	if (adapter.detect) {
+		return adapter.detect()
+	}
 	if (adapter.detectModule) {
 		return existsCmd(adapter.detectModule)
 	}

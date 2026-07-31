@@ -285,6 +285,11 @@ export interface DapAdapterConfig {
 	/** Detection command for module-based adapters — e.g. ["python3", "-c", "import debugpy"]
 	 *  to check if debugpy is installed as a Python module rather than a binary. */
 	detectModule?: string[]
+	/** Function that returns true if this adapter's runtime is available.
+	 *  Used for adapters that need custom detection logic beyond a simple
+	 *  `which` check or module probe — e.g. js-debug checks for the
+	 *  dapDebugServer.js script at known install paths. */
+	detect?: () => boolean
 	/** Transport the DAP client uses to talk to this adapter. Defaults to stdio. */
 	transport?: DapTransport
 	languages: string[]

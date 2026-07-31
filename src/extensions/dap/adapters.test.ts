@@ -46,6 +46,16 @@ function setBinaries(onPath: string[]) {
 	})
 }
 
+/** Mock js-debug's detect() by making existsSync return true for
+ *  dapDebugServer.js paths. */
+function setJsDebugAvailable() {
+	const original = mockExistsSync.getMockImplementation()
+	mockExistsSync.mockImplementation(((p: unknown) => {
+		if (String(p).includes("dapDebugServer.js")) return true
+		return original ? original(p as fs.PathLike) : false
+	}) as never)
+}
+
 describe("detectAdapters", () => {
 	it("returns dlv when go.mod present and dlv binary on PATH", () => {
 		setFiles(["go.mod"])
@@ -55,9 +65,13 @@ describe("detectAdapters", () => {
 		expect(result[0].name).toBe("dlv")
 	})
 
-	it("returns js-debug when package.json present and js-debug-adapter on PATH", () => {
+	it("returns js-debug when package.json present and node + dapDebugServer.js available", () => {
 		setFiles(["package.json"])
-		setBinaries(["js-debug-adapter"])
+		// js-debug uses a custom detect() that checks for dapDebugServer.js
+		// at known install paths. Mock existsSync to return true for it.
+		mockExistsSync.mockImplementation(((p: unknown) => {
+			return String(p).includes("dapDebugServer.js") || String(p) === "/project/package.json"
+		}) as never)
 		const result = detectAdapters("/project")
 		expect(result).toHaveLength(1)
 		expect(result[0].name).toBe("js-debug")
@@ -81,7 +95,8 @@ describe("detectAdapters", () => {
 
 	it("returns empty when binary is on PATH but no marker file exists", () => {
 		setFiles([])
-		setBinaries(["dlv", "js-debug-adapter", "python3", "lldb-dap"])
+		setBinaries(["dlv", "node", "python3", "lldb-dap"])
+		setJsDebugAvailable()
 		expect(detectAdapters("/project")).toHaveLength(0)
 	})
 
@@ -93,14 +108,16 @@ describe("detectAdapters", () => {
 
 	it("returns multiple adapters when multiple markers and binaries are present", () => {
 		setFiles(["go.mod", "package.json", "Cargo.toml"])
-		setBinaries(["dlv", "js-debug-adapter", "lldb-dap"])
+		setBinaries(["dlv", "lldb-dap"])
+		setJsDebugAvailable()
 		const result = detectAdapters("/project")
 		expect(result.map((a) => a.name).sort()).toEqual(["dlv", "js-debug", "lldb-dap"])
 	})
 
-	it("does NOT return js-debug in a Go-only project even if js-debug-adapter is on PATH", () => {
+	it("does NOT return js-debug in a Go-only project even if node is on PATH", () => {
 		setFiles(["go.mod"])
-		setBinaries(["dlv", "js-debug-adapter"])
+		setBinaries(["dlv"])
+		setJsDebugAvailable()
 		const result = detectAdapters("/project")
 		expect(result.find((a) => a.name === "js-debug")).toBeUndefined()
 		expect(result.find((a) => a.name === "dlv")).toBeDefined()
@@ -130,7 +147,7 @@ describe("detectMissingAdapters", () => {
 		expect(result[0].name).toBe("dlv")
 	})
 
-	it("returns js-debug when package.json present but js-debug-adapter not on PATH", () => {
+	it("returns js-debug when package.json present but node not on PATH", () => {
 		setFiles(["package.json"])
 		setBinaries([])
 		const result = detectMissingAdapters("/project")
@@ -241,23 +258,32 @@ describe("adapterForLanguage", () => {
 	})
 })
 
-describe("run_cmd prefix heuristic (detectBinary)", () => {
+describe("module-based detection (detectModule)", () => {
 	// js-debug's command is `node` (always on PATH), but it is detected via
-	// `js-debug-adapter` (the detectBinary shim) instead — so a machine with
-	// node but NOT js-debug installed correctly reports js-debug as absent.
-	it("detects js-debug via js-debug-adapter, NOT via node", () => {
+	// `detectModule` (node -e "require('fs').existsSync(...)") instead of
+	// `which node` — so a machine with node but NOT dapDebugServer.js
+	// correctly reports js-debug as absent.
+	it("detects js-debug when node is available and dapDebugServer.js exists", () => {
 		setFiles(["package.json"])
-		// Only `js-debug-adapter` on PATH — `node` is NOT in the list.
-		setBinaries(["js-debug-adapter"])
+		// `node` on PATH and the detectModule script finds the file.
+		setBinaries(["node"])
+		// The detectModule script checks existsSync for the path — mock it
+		// to return true for the js-debug script path.
+		const original = mockExistsSync.getMockImplementation()
+		mockExistsSync.mockImplementation(((p: unknown) => {
+			const s = String(p)
+			if (s.includes("dapDebugServer.js")) return true
+			return original ? original(p as fs.PathLike) : false
+		}) as never)
 		const result = detectAdapters("/project")
 		expect(result).toHaveLength(1)
 		expect(result[0].name).toBe("js-debug")
 	})
 
-	it("does NOT detect js-debug when only `node` is on PATH (detectBinary=js-debug-adapter)", () => {
+	it("does NOT detect js-debug when dapDebugServer.js is absent", () => {
 		setFiles(["package.json"])
-		// `node` is on PATH but `js-debug-adapter` is not — js-debug must NOT
-		// be detected, because detectBinary overrides command for the which check.
+		// node is on PATH but dapDebugServer.js is not at any install path.
+		// existsSync returns false for dapDebugServer.js paths.
 		setBinaries(["node"])
 		const result = detectAdapters("/project")
 		expect(result.find((a) => a.name === "js-debug")).toBeUndefined()
@@ -305,8 +331,8 @@ describe("KIMCHI_DAP_BINARIES override", () => {
 		expect(spawnSync).not.toHaveBeenCalled()
 	})
 
-	it("returns only adapters whose detectBinary is whitelisted", async () => {
-		process.env.KIMCHI_DAP_BINARIES = "js-debug-adapter,python3"
+	it("returns only adapters whose detection is whitelisted", async () => {
+		process.env.KIMCHI_DAP_BINARIES = "js-debug,python3"
 		const { detectAdapters } = await import("./adapters.js")
 		// Multiple markers present; only js-debug + debugpy whitelisted (not dlv).
 		vi.mocked(fs.existsSync).mockImplementation(((p: unknown) => {
