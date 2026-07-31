@@ -3,8 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 // settings-watcher watches settings.json via fs.watch and reads settings through
 // pi's SettingsManager — mock both so tests don't depend on real files (and so the
 // node:fs mock doesn't leak into pi internals).
+//
+// statSync is mocked so tests can drive the mtime/size signature gate that
+// suppresses spurious fs.watch events. By default it reports a stable signature
+// (no change); tests that simulate a real file change bump `statSeq`.
+const statMock = vi.fn()
 vi.mock("node:fs", () => ({
 	watch: vi.fn(),
+	statSync: (path: string) => statMock(path),
 }))
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({
@@ -62,8 +68,21 @@ beforeEach(() => {
 	mockCreate.mockReturnValue(asManager(fakeManager()))
 	mockAgentDir.mockReset()
 	mockAgentDir.mockReturnValue("/fake/agent/dir")
+	// Default: every stat returns the same signature (no change). Tests that
+	// simulate a real file write call `bumpFileSignature()` to advance the
+	// mtime so `fire()` rebuilds the manager.
+	statMock.mockReset()
+	statMock.mockImplementation(() => ({ mtimeMs: 0, size: 0 }))
 	vi.useFakeTimers()
 })
+
+/** Simulate a real settings file write: advance the stat signature so the next
+ *  `fire()` sees a changed file and rebuilds the cached SettingsManager. */
+function bumpFileSignature(): void {
+	const current = statMock.mock.results.at(-1)?.value ?? { mtimeMs: 0, size: 0 }
+	statMock.mockImplementationOnce(() => ({ mtimeMs: current.mtimeMs + 1, size: 0 }))
+	statMock.mockImplementation(() => ({ mtimeMs: current.mtimeMs + 1, size: 0 }))
+}
 
 afterEach(() => {
 	vi.restoreAllMocks()
@@ -127,6 +146,7 @@ describe("getCompactionEnabled", () => {
 		expect(mockCreate).toHaveBeenCalledTimes(1)
 
 		// Global settings.json changes → watcher fires → manager dropped & rebuilt.
+		bumpFileSignature()
 		mockCreate.mockReturnValue(asManager(fakeManager({ compactionEnabled: true })))
 		getWatchCallback(0)?.()
 		vi.runAllTimers()
@@ -141,6 +161,7 @@ describe("getCompactionEnabled", () => {
 		expect(mockCreate).toHaveBeenCalledTimes(1)
 
 		// Project .pi/settings.json changes → project watcher fires → rebuild.
+		bumpFileSignature()
 		mockCreate.mockReturnValue(asManager(fakeManager({ compactionEnabled: false })))
 		getWatchCallback(1)?.()
 		vi.runAllTimers()
@@ -259,6 +280,9 @@ describe("getSettingsManager", () => {
 		// The global watcher dies; the theme changes while nothing is watching.
 		const errorHandler = watcher.on.mock.calls.find((c) => c[0] === "error")?.[1] as (err: Error) => void
 		errorHandler(new Error("EPERM"))
+		// The file changed while the watcher was dead — advance the stat signature
+		// so the catch-up fire rebuilds and detects the new theme.
+		bumpFileSignature()
 		mockCreate.mockReturnValue(asManager(fakeManager({ theme: "dark" })))
 
 		// The next read re-arms the watcher and schedules a catch-up fire.
@@ -282,12 +306,36 @@ describe("getSettingsManager", () => {
 
 		// The file appears with a different theme; the next read arms the watch
 		// and the catch-up fire delivers the change that predates it.
+		bumpFileSignature()
 		mockCreate.mockReturnValue(asManager(fakeManager({ theme: "dark" })))
 		globalFileMissing = false
 		getSettingsManager()
 		vi.runAllTimers()
 
 		expect(listener).toHaveBeenCalledWith("dark", "light")
+	})
+
+	it("does not rebuild the manager on spurious fs.watch events when the file is unchanged", () => {
+		// Regression: macOS/bun `fs.watch` emits ~20 spurious change events per
+		// second on an unchanged settings.json. Each used to rebuild the
+		// SettingsManager (lockfile + readFileSync) — 20-30% CPU at idle. The
+		// mtime/size signature gate must suppress the rebuild when the file's
+		// stat signature is identical, even across many events.
+		mockCreate.mockReturnValue(asManager(fakeManager({ theme: "dark" })))
+		const listener = vi.fn()
+		onThemeChange(listener) // seeds lastSeenTheme = "dark" and arms watches
+		expect(mockCreate).toHaveBeenCalledTimes(1)
+
+		// Spurious event storm: the global watcher fires 50 times but the file's
+		// mtime/size never changes. fire() must early-return each time.
+		const globalCb = getWatchCallback(0)
+		for (let i = 0; i < 50; i++) globalCb?.()
+		vi.runAllTimers()
+
+		// No rebuild happened — the cached manager is untouched.
+		expect(mockCreate).toHaveBeenCalledTimes(1)
+		// And no theme-change notification fired.
+		expect(listener).not.toHaveBeenCalled()
 	})
 })
 
@@ -312,6 +360,7 @@ describe("onThemeChange", () => {
 		const unsub = onThemeChange(listener)
 
 		// settings change → the rebuilt manager reports a different theme
+		bumpFileSignature()
 		mockCreate.mockReturnValue(asManager(fakeManager({ theme: "dark" })))
 		getWatchCallback(0)?.()
 		vi.runAllTimers()
