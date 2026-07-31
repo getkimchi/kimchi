@@ -22,6 +22,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
 import { awaitCheckin } from "./checkin.js"
 import { getSessionRegistry } from "./index.js"
+import { throwIfTerminal } from "./terminal-status.js"
 
 const bashControlSchema = Type.Object({
 	handle: Type.String({
@@ -116,15 +117,20 @@ export function createBashControlToolDefinition(
 		// ── stop ────────────────────────────────────────────────────────
 		if (action === "stop") {
 			await registry.kill(handle)
+			const final = registry.finalSnapshot(handle)
 			const snapshot = registry.snapshotTail(handle)
 			const finalExitCode = snapshot.exitCode
-			// Remove the entry so the handle can't be reused.
 			await registry.remove(handle).catch(() => {})
+			const stoppedOutput = final?.content ?? snapshot.text
+			const truncated = final?.truncation?.truncated === true
 			return {
 				content: [
 					{
 						type: "text",
-						text: `${snapshot.text}\n\n[Process stopped${finalExitCode !== null ? `; exit code ${finalExitCode}` : ""}]`,
+						text:
+							truncated && final?.fullOutputPath
+								? `${stoppedOutput}\n\n[Process stopped${finalExitCode !== null ? `; exit code ${finalExitCode}` : ""}. Output truncated. Full output: ${final.fullOutputPath}]`
+								: `${stoppedOutput}\n\n[Process stopped${finalExitCode !== null ? `; exit code ${finalExitCode}` : ""}]`,
 					},
 				],
 				details: {
@@ -133,6 +139,7 @@ export function createBashControlToolDefinition(
 					exitCode: finalExitCode,
 					action: "stop",
 					reason: snapshot.reason ?? "stop",
+					...(truncated ? { truncation: final?.truncation, fullOutputPath: final?.fullOutputPath } : {}),
 				},
 			}
 		}
@@ -145,12 +152,7 @@ export function createBashControlToolDefinition(
 			const snapshot = registry.snapshotTail(handle)
 			await registry.remove(handle).catch(() => {})
 			const fullOutput = final?.content ?? snapshot.text
-			if (snapshot.reason === "deadline") {
-				throw new Error(`${fullOutput}\n\nCommand timed out`)
-			}
-			if (snapshot.exitCode !== null && snapshot.exitCode !== 0) {
-				throw new Error(`${fullOutput}\n\nCommand exited with code ${snapshot.exitCode}`)
-			}
+			throwIfTerminal(snapshot, fullOutput, entry.deadlineSeconds)
 			return {
 				content: [{ type: "text", text: fullOutput }],
 				details: {
@@ -170,7 +172,7 @@ export function createBashControlToolDefinition(
 		}
 
 		// Turn abort (ESC) must kill the process, same as bash-background-tool.
-		const onAbort = () => void registry.kill(handle)
+		const onAbort = () => void registry.kill(handle, "aborted")
 		if (signal?.aborted) onAbort()
 		else signal?.addEventListener("abort", onAbort, { once: true })
 
@@ -189,12 +191,7 @@ export function createBashControlToolDefinition(
 			const final = registry.finalSnapshot(handle)
 			await registry.remove(handle).catch(() => {})
 			const fullOutput = final?.content ?? snapshot.text
-			if (snapshot.reason === "deadline") {
-				throw new Error(`${fullOutput}\n\nCommand timed out`)
-			}
-			if (snapshot.exitCode !== null && snapshot.exitCode !== 0) {
-				throw new Error(`${fullOutput}\n\nCommand exited with code ${snapshot.exitCode}`)
-			}
+			throwIfTerminal(snapshot, fullOutput, entry.deadlineSeconds)
 			return {
 				content: [{ type: "text", text: fullOutput }],
 				details: {

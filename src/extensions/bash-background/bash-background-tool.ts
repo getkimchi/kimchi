@@ -23,12 +23,16 @@ import { createBashToolDefinition, createLocalBashOperations } from "@earendil-w
 import { type Static, Type } from "typebox"
 import { awaitCheckin } from "./checkin.js"
 import { createProcessRegistry, type ProcessRegistry, type TailSnapshot } from "./process-registry.js"
+import { throwIfTerminal } from "./terminal-status.js"
 
 /** Short-task threshold: timeouts at or below this run synchronously. */
 export const SHORT_TASK_TIMEOUT_SECONDS = 5
 
 /** Default checkin cadence when `checkin_interval` is omitted. */
 export const DEFAULT_CHECKIN_INTERVAL_SECONDS = 15
+
+/** Deadline used when `timeout` is omitted. Matches bash-default-timeout's default. */
+export const DEFAULT_TIMEOUT_SECONDS = 120
 
 /** Details returned in background-mode results (adds the handle). */
 export interface BackgroundBashToolDetails extends BashToolDetails {
@@ -96,7 +100,7 @@ export function createBackgroundBashToolDefinition(
 		details: BackgroundBashToolDetails | undefined
 	}> {
 		const { command, timeout, checkin_interval } = params
-		const resolvedTimeout = timeout ?? 120 // bash-default-timeout fills 120 when omitted
+		const resolvedTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS
 
 		// ── Short-task path: timeout <= 5 → synchronous run-to-completion. ──
 		if (resolvedTimeout <= SHORT_TASK_TIMEOUT_SECONDS) {
@@ -120,7 +124,7 @@ export function createBackgroundBashToolDefinition(
 		// Deadline: use the provided timeout if explicit, else a generous default
 		// (the agent can extend via bash_control). Background mode never passes
 		// an upstream timeout to ops.exec — the registry owns the deadline.
-		const deadlineSeconds = timeout !== undefined && timeout > 0 ? timeout : intervalSeconds * 4
+		const deadlineSeconds = timeout !== undefined && timeout > 0 ? timeout : DEFAULT_TIMEOUT_SECONDS
 		const deadlineMs = Date.now() + deadlineSeconds * 1000
 
 		const handle = registry.spawn(
@@ -134,7 +138,7 @@ export function createBackgroundBashToolDefinition(
 		)
 
 		// Turn abort (ESC) must kill the process tree, same as the sync path.
-		const onAbort = () => void registry.kill(handle)
+		const onAbort = () => void registry.kill(handle, "aborted")
 		if (signal?.aborted) onAbort()
 		else signal?.addEventListener("abort", onAbort, { once: true })
 
@@ -162,17 +166,21 @@ export function createBackgroundBashToolDefinition(
 			// The wording matters — bash-timeout-guidance.ts matches on
 			// /Command timed out after (\d+) seconds/.
 			const fullOutput = final?.content ?? snapshot.text
-			if (snapshot.reason === "deadline") {
-				throw new Error(`${fullOutput}\n\nCommand timed out after ${deadlineSeconds} seconds`)
-			}
-			if (snapshot.exitCode !== null && snapshot.exitCode !== 0) {
-				throw new Error(`${fullOutput}\n\nCommand exited with code ${snapshot.exitCode}`)
-			}
+			throwIfTerminal(snapshot, fullOutput, deadlineSeconds)
 
-			// Success exit — return plain output, no handle, no status line.
+			// Success exit — return plain output with truncation details if present.
+			const truncated = final?.truncation?.truncated === true
 			return {
-				content: [{ type: "text", text: fullOutput }],
-				details: undefined,
+				content: [
+					{
+						type: "text",
+						text:
+							truncated && final?.fullOutputPath
+								? `${fullOutput}\n\n[Output truncated. Full output: ${final.fullOutputPath}]`
+								: fullOutput,
+					},
+				],
+				details: truncated ? { truncation: final?.truncation, fullOutputPath: final?.fullOutputPath } : undefined,
 			}
 		}
 

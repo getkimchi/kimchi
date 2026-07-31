@@ -32,8 +32,9 @@
  */
 
 import { randomUUID } from "node:crypto"
-import type { BashOperations } from "@earendil-works/pi-coding-agent"
-import { type Accumulator, createOutputAccumulator, type TruncationResult } from "./output-accumulator.js"
+import { rm } from "node:fs/promises"
+import type { BashOperations, TruncationResult } from "@earendil-works/pi-coding-agent"
+import { OutputAccumulator } from "@earendil-works/pi-coding-agent/dist/core/tools/output-accumulator.js"
 
 /** Default ring-buffer capacity (bytes) kept per running process. */
 export const DEFAULT_MAX_BUFFER_BYTES = 65_536
@@ -48,6 +49,8 @@ export interface SpawnOptions {
 	intervalSeconds: number
 	/** Absolute wall-clock deadline in ms (Date.now() + ...). */
 	deadlineMs: number
+	/** Total seconds granted to the process (for timeout messages). Derived from deadlineMs when absent. */
+	deadlineSeconds?: number
 	/** Max bytes retained in the output ring buffer. */
 	maxBufferBytes?: number
 }
@@ -75,7 +78,6 @@ export interface FinalSnapshot {
 	exitCode: number | null
 	reason: string | null
 }
-
 export interface ProcessEntry {
 	readonly handle: string
 	state: ProcessState
@@ -83,8 +85,9 @@ export interface ProcessEntry {
 	reason: string | null
 	intervalSeconds: number
 	deadlineMs: number
+	deadlineSeconds: number
 	readonly buffer: OutputRingBuffer
-	readonly accumulator: Accumulator
+	readonly accumulator: OutputAccumulator
 	readonly controller: AbortController
 	rawExecPromise: Promise<{ exitCode: number | null }> | undefined
 	execPromise: Promise<{ exitCode: number | null }>
@@ -172,8 +175,8 @@ export interface ProcessRegistry {
 	snapshotTail(handle: string, maxBytes?: number): TailSnapshot
 	/** Full output snapshot (truncated + temp-file spill, like upstream). */
 	finalSnapshot(handle: string): FinalSnapshot | undefined
-	/** Kill a running process (reason "stop") and await abort settlement. */
-	kill(handle: string): Promise<void>
+	/** Kill a running process and await abort settlement. `reason` defaults to "stop". */
+	kill(handle: string, reason?: string): Promise<void>
 	/** Push the deadline out by `addSeconds` and re-arm the deadline timer. */
 	extend(handle: string, addSeconds: number): void
 	/** Promise that resolves with the exit code when the process ends. */
@@ -190,6 +193,7 @@ export interface ProcessRegistry {
 
 export function createProcessRegistry(): ProcessRegistry {
 	const entries = new Map<string, ProcessEntry>()
+	const spillPaths = new Set<string>()
 
 	function clearDeadlineTimer(entry: ProcessEntry): void {
 		if (entry.deadlineTimer) {
@@ -238,7 +242,7 @@ export function createProcessRegistry(): ProcessRegistry {
 		const handle = randomUUID()
 		const controller = new AbortController()
 		const buffer = new OutputRingBuffer(opts.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES)
-		const accumulator = createOutputAccumulator({
+		const accumulator = new OutputAccumulator({
 			maxLines: 2000,
 			maxBytes: 50_000,
 			tempFilePrefix: "pi-bash",
@@ -251,6 +255,7 @@ export function createProcessRegistry(): ProcessRegistry {
 			reason: null,
 			intervalSeconds: opts.intervalSeconds,
 			deadlineMs: opts.deadlineMs,
+			deadlineSeconds: opts.deadlineSeconds ?? Math.max(0, Math.round((opts.deadlineMs - Date.now()) / 1000)),
 			buffer,
 			accumulator,
 			controller,
@@ -307,10 +312,10 @@ export function createProcessRegistry(): ProcessRegistry {
 		return { text, bytes, state: entry.state, exitCode: entry.exitCode, reason: entry.reason }
 	}
 
-	async function kill(handle: string): Promise<void> {
+	async function kill(handle: string, reason = "stop"): Promise<void> {
 		const entry = entries.get(handle)
 		if (!entry) return
-		killInternal(entry, "stop")
+		killInternal(entry, reason)
 		// Await abort settlement so callers observe the final exitCode/reason.
 		await entry.execPromise.catch(() => {})
 	}
@@ -319,7 +324,10 @@ export function createProcessRegistry(): ProcessRegistry {
 		const entry = entries.get(handle)
 		if (!entry) return
 		if (entry.state !== "running") return
-		if (addSeconds > 0) entry.deadlineMs += addSeconds * 1000
+		if (addSeconds > 0) {
+			entry.deadlineMs += addSeconds * 1000
+			entry.deadlineSeconds += addSeconds
+		}
 		armDeadline(entry)
 	}
 
@@ -352,6 +360,8 @@ export function createProcessRegistry(): ProcessRegistry {
 		if (!entry) return
 		await kill(handle)
 		await entry.accumulator.closeTempFile().catch(() => {})
+		const snap = entry.accumulator.snapshot()
+		if (snap.fullOutputPath) spillPaths.add(snap.fullOutputPath)
 		entries.delete(handle)
 	}
 
@@ -359,6 +369,8 @@ export function createProcessRegistry(): ProcessRegistry {
 		const pending = [...entries.values()].map((entry) => kill(entry.handle))
 		await Promise.all(pending)
 		entries.clear()
+		await Promise.allSettled([...spillPaths].map((p) => rm(p, { force: true })))
+		spillPaths.clear()
 	}
 
 	return {
