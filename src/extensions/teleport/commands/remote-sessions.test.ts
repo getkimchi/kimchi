@@ -15,7 +15,7 @@ const {
 	runTerminalMock,
 	ensureIncludeDirectiveMock,
 	syncSshConfigMock,
-	isVsCodeAvailableMock,
+	resolveVsCodeCommandMock,
 	launchVsCodeRemoteMock,
 	getSshAliasMock,
 } = vi.hoisted(() => ({
@@ -31,7 +31,7 @@ const {
 	runTerminalMock: vi.fn(),
 	ensureIncludeDirectiveMock: vi.fn(),
 	syncSshConfigMock: vi.fn(),
-	isVsCodeAvailableMock: vi.fn(),
+	resolveVsCodeCommandMock: vi.fn(),
 	launchVsCodeRemoteMock: vi.fn(),
 	getSshAliasMock: vi.fn(),
 }))
@@ -66,7 +66,7 @@ vi.mock("../ssh-config/sync.js", () => ({
 }))
 vi.mock("../ssh-config/render.js", () => ({ getSshAlias: getSshAliasMock }))
 vi.mock("../vscode.js", () => ({
-	isVsCodeAvailable: isVsCodeAvailableMock,
+	resolveVsCodeCommand: resolveVsCodeCommandMock,
 	launchVsCodeRemote: launchVsCodeRemoteMock,
 }))
 
@@ -192,7 +192,7 @@ beforeEach(() => {
 	runTerminalMock.mockReset().mockResolvedValue(undefined)
 	ensureIncludeDirectiveMock.mockReset().mockResolvedValue(undefined)
 	syncSshConfigMock.mockReset().mockResolvedValue(undefined)
-	isVsCodeAvailableMock.mockReset().mockReturnValue(true)
+	resolveVsCodeCommandMock.mockReset().mockReturnValue("code")
 	launchVsCodeRemoteMock.mockReset().mockReturnValue(undefined)
 	getSshAliasMock.mockReset().mockReturnValue(undefined)
 })
@@ -384,7 +384,7 @@ describe("runRemoteSessions", () => {
 		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(2)
 	})
 
-	it("opens VSCode on action='open-vscode' for a provisioned workspace", async () => {
+	it("opens VS Code on action='open-vscode' for a provisioned workspace", async () => {
 		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
 		getSshAliasMock.mockReturnValue("kimchi-alpha")
 		pickRemoteSessionsMock
@@ -398,8 +398,8 @@ describe("runRemoteSessions", () => {
 		const { ctx } = makeCtx()
 		await runRemoteSessions("", ctx)
 		expect(getSshAliasMock).toHaveBeenCalledWith([expect.objectContaining({ id: "w-1" })], "w-1")
-		expect(isVsCodeAvailableMock).toHaveBeenCalled()
-		expect(launchVsCodeRemoteMock).toHaveBeenCalledWith("kimchi-alpha", `${SANDBOX_HOME}/`)
+		expect(resolveVsCodeCommandMock).toHaveBeenCalled()
+		expect(launchVsCodeRemoteMock).toHaveBeenCalledWith("code", "kimchi-alpha", `${SANDBOX_HOME}/`)
 		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(2)
 	})
 
@@ -418,10 +418,10 @@ describe("runRemoteSessions", () => {
 		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(2)
 	})
 
-	it("warns and does not launch VSCode when 'code' is missing from PATH", async () => {
+	it("warns and does not launch VS Code when 'code' is missing from PATH", async () => {
 		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
 		getSshAliasMock.mockReturnValue("kimchi-alpha")
-		isVsCodeAvailableMock.mockReturnValue(false)
+		resolveVsCodeCommandMock.mockReturnValue(null)
 		pickRemoteSessionsMock
 			.mockResolvedValueOnce({
 				action: "open-vscode",

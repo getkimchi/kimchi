@@ -14,7 +14,7 @@ import type { TeleportContext } from "../types.js"
 import type { RemoteWorkspaceNode } from "../ui/remote-sessions-panel.js"
 import { pickRemoteSessions } from "../ui/remote-sessions-panel.js"
 import type { CombinedStatus, SessionRow } from "../ui/sessions-table.js"
-import { isVsCodeAvailable, launchVsCodeRemote } from "../vscode.js"
+import { launchVsCodeRemote, resolveVsCodeCommand } from "../vscode.js"
 import { assignWorkspaceSlugs } from "../workspace-slugs.js"
 import { runAttachSession } from "./attach.js"
 import { info, refuse, status, warn } from "./errors.js"
@@ -95,12 +95,13 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 				warn(ctx, "This workspace is not provisioned yet — no SSH connection available.")
 				continue
 			}
-			if (!isVsCodeAvailable()) {
-				warn(ctx, "VSCode's 'code' command was not found on PATH. Install VS Code or add it to PATH.")
+			const command = resolveVsCodeCommand()
+			if (!command) {
+				warn(ctx, "VS Code's 'code' command was not found on PATH. Install VS Code or add it to PATH.")
 				continue
 			}
-			launchVsCodeRemote(alias, `${SANDBOX_HOME}/`)
-			info(ctx, "Opening VSCode…")
+			launchVsCodeRemote(command, alias, `${SANDBOX_HOME}/`)
+			info(ctx, "Opening VS Code…")
 			continue
 		}
 

@@ -9,43 +9,62 @@ export interface VsCodeInternals {
 	_spawn?: typeof spawn
 }
 
-/** Command kimchi shells out to when launching / detecting VSCode. */
-const CODE_CMD = "code"
+/** Commands to probe, in priority order: stable first, then Insiders. */
+const CODE_COMMANDS = ["code", "code-insiders"]
 
-/** VSCode Remote-SSH scheme prefix. */
+/** VS Code Remote-SSH scheme prefix. */
 const REMOTE_SCHEME = "ssh-remote+"
 
 /**
- * Detects whether VSCode's `code` command is available on PATH.
+ * Resolves which `code` command is available on PATH.
  *
- * Uses `shell: true` so it resolves `code.cmd` on Windows and the `code`
- * shell-script shim on macOS/Linux. Best-effort: any failure (non-zero exit,
- * signal, thrown error) is treated as "not available".
+ * Probes `code` first, then falls back to `code-insiders` for users running
+ * the Insiders build. Uses `shell: true` so it resolves `code.cmd` on Windows
+ * and the `code` shell-script shim on macOS/Linux. Best-effort: any failure
+ * (non-zero exit, signal, thrown error) is treated as "not available".
  */
-export function isVsCodeAvailable(internals: VsCodeInternals = {}): boolean {
+export function resolveVsCodeCommand(internals: VsCodeInternals = {}): string | null {
 	const run = internals._spawnSync ?? spawnSync
 	const opts: SpawnSyncOptions = { shell: true, stdio: "ignore", timeout: 5_000 }
-	try {
-		const result = run(CODE_CMD, ["--version"], opts)
-		return result.status === 0
-	} catch {
-		return false
+	for (const cmd of CODE_COMMANDS) {
+		try {
+			const result = run(cmd, ["--version"], opts)
+			if (result.status === 0) return cmd
+		} catch {
+			// try next candidate
+		}
 	}
+	return null
 }
 
 /**
- * Launches VSCode connected to a remote SSH host, opening `remotePath` as the
+ * Detects whether a VS Code command (`code` or `code-insiders`) is available
+ * on PATH. Convenience wrapper around {@link resolveVsCodeCommand}.
+ */
+export function isVsCodeAvailable(internals: VsCodeInternals = {}): boolean {
+	return resolveVsCodeCommand(internals) !== null
+}
+
+/**
+ * Launches VS Code connected to a remote SSH host, opening `remotePath` as the
  * workspace folder. Fire-and-forget: the child is detached and unreffed so
  * it survives the parent and kimchi's TUI keeps running.
  *
  * Uses `shell: true` for the same cross-platform `code` resolution reasons as
- * {@link isVsCodeAvailable}.
+ * {@link resolveVsCodeCommand}.
+ *
+ * @param command The command to launch (from {@link resolveVsCodeCommand}).
  */
-export function launchVsCodeRemote(alias: string, remotePath: string, internals: VsCodeInternals = {}): void {
+export function launchVsCodeRemote(
+	command: string,
+	alias: string,
+	remotePath: string,
+	internals: VsCodeInternals = {},
+): void {
 	const run = internals._spawn ?? spawn
 	const target = `${REMOTE_SCHEME}${alias}`
 	const opts: SpawnOptions = { shell: true, detached: true, stdio: "ignore" }
-	const child = run(CODE_CMD, ["--remote", target, remotePath], opts)
-	// Detach so VSCode outlives kimchi — we neither wait for nor observe it.
+	const child = run(command, ["--remote", target, remotePath], opts)
+	// Detach so VS Code outlives kimchi — we neither wait for nor observe it.
 	child.unref()
 }
