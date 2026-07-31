@@ -476,9 +476,18 @@ export function minimumAcceptableGrade(priorRetries: number): "A" | "B" {
 
 const GRADE_ORDER: Record<string, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 }
 
-/** True when the grader's verdict is below the bar for this attempt — kimchi's `judgeRefused`. */
+/**
+ * True when the grader's verdict is below the bar — kimchi's `judgeRefused`, with one divergence:
+ * **a missing grade refuses.**
+ *
+ * kimchi reads `undefined` as "judge unreachable, advisory". Here it does not mean that: `phase-grade`
+ * is `optional`, so any failure yields `undefined`, and the usual cause was a verdict the grader had
+ * produced being destroyed before the gate read it — 68 of 107 TB2.1 decisions shipped ungraded against
+ * a minimum of "A". Being wrong is bounded: a refusal buys a rework, and the phase advances anyway once
+ * MAX_BLOCK_RETRIES is spent.
+ */
 export function gradeRefuses(grade: string | undefined, priorRetries: number): boolean {
-	if (grade === undefined) return false // judge unavailable is advisory: it does NOT refuse advancement
+	if (grade === undefined) return true
 	return (GRADE_ORDER[grade] ?? 0) < (GRADE_ORDER[minimumAcceptableGrade(priorRetries)] ?? 0)
 }
 

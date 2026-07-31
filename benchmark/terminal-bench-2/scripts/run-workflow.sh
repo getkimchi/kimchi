@@ -27,7 +27,7 @@ export KIMCHI_CODE_BINARY="$REPO_ROOT/dist/bin/kimchi"
 # with `Executable not found in $PATH: "npm"`. Pin the version — host
 # resolution caches by `<pkg>@<version>`, so a job resolves once, not per trial.
 # Use `dir:<path to a checkout>` to test unreleased engine changes.
-EXTENSION="${EXTENSION:-npm:@kimchi-dev/kimchi-workflows@0.0.1-alpha.1}"
+EXTENSION="${EXTENSION:-npm:@kimchi-dev/kimchi-workflows@0.0.1-alpha.2}"
 # The workflow's declared name, not a filename.
 WORKFLOW="${WORKFLOW:-ferment-oneshot}"
 

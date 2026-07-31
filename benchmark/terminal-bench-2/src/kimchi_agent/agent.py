@@ -489,14 +489,19 @@ class Kimchi(BaseInstalledAgent):
         # every key must land in a single write or the last writer clobbers the
         # rest.
         settings: dict[str, Any] = {}
-        if self._multi_model_enabled:
-            settings["multiModel"] = True
+        # Absent, kimchi defaults to multi-model ON — and a workflow step is a spawned
+        # process whose argv has no --model, so it reads this file, not the launch flag.
+        settings["multiModel"] = self._multi_model_enabled
+        provider, _, model_id = (self.model_name or "").partition("/")
+        if not self._multi_model_enabled and provider and model_id:
+            # Those same subprocesses would otherwise start on kimchi's built-in default
+            # rather than the model this run is labelled with.
+            settings["defaultProvider"] = provider
+            settings["defaultModel"] = model_id
         if self._disable_compaction:
             # Read by kimchi through pi's SettingsManager: disables upstream
             # threshold auto-compaction and both ferment compaction paths.
             settings["compaction"] = {"enabled": False}
-        if not settings:
-            return ""
 
         settings_json = json.dumps(settings, separators=(",", ":"))
         return (

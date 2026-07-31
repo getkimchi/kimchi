@@ -404,26 +404,57 @@ def _phase_contains_time(result: dict, phase: str, timestamp: datetime) -> bool:
     return start is not None and end is not None and start <= timestamp <= end
 
 
+def _read_session_jsonl(path: Path) -> Iterator[dict]:
+    """Yield valid JSON objects from one session JSONL file."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(entry, dict):
+                    yield entry
+    except OSError:
+        return
+
+
 def _iter_session_jsonl(trial_dir: Path, pattern: str = "*.jsonl") -> Iterator[dict]:
     """Yield valid JSON objects from agent/sessions JSONL files matching pattern."""
     sessions_dir = trial_dir / "agent" / "sessions"
     if not sessions_dir.is_dir():
         return
     for path in sessions_dir.rglob(pattern):
-        try:
-            with path.open("r", encoding="utf-8", errors="replace") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(entry, dict):
-                        yield entry
-        except OSError:
-            continue
+        yield from _read_session_jsonl(path)
+
+
+def _timeout_session_entries(trial_dir: Path) -> list[dict]:
+    """The single session the timeout state machine reads.
+
+    A workflow run writes no main.jsonl, so without a fallback every workflow timeout is
+    undiagnosable (22 of 22 on TB2.1). One session, not all of them: the state machine is
+    last-role x gap over a single conversation, and merging several invents a timeline.
+    """
+    entries = list(_iter_session_jsonl(trial_dir, "main.jsonl"))
+    if entries:
+        return entries
+
+    sessions_dir = trial_dir / "agent" / "sessions"
+    if not sessions_dir.is_dir():
+        return []
+    # `.events.jsonl` is a workflow's own run log, not a conversation the state machine can read.
+    paths = [p for p in sorted(sessions_dir.rglob("*.jsonl")) if not p.name.endswith(".events.jsonl")]
+    best: list[dict] = []
+    for path in paths:
+        candidate = list(_read_session_jsonl(path))
+        if "orchestrator" in path.name and candidate:
+            return candidate
+        if len(candidate) > len(best):
+            best = candidate
+    return best
 
 
 def _extract_timeout_duration(msg: str) -> float | None:
@@ -447,7 +478,7 @@ def _empty_timeout_analysis(timeout_duration_sec: float | None) -> dict:
 
 
 def _analyze_agent_timeout(trial_dir: Path, result: dict) -> dict:
-    """Build an agent_timeout_analysis dict from agent/sessions/main.jsonl.
+    """Build an agent_timeout_analysis dict from the trial's driving session.
 
     Mirrors the state machine in scripts/analyze_timeouts.py (last-role x gap).
     Always returns a dict; when the session file is missing or unreadable,
@@ -456,7 +487,7 @@ def _analyze_agent_timeout(trial_dir: Path, result: dict) -> dict:
     exception_message = str(_get_path(result, "exception_info", "exception_message") or "")
     timeout_duration_sec = _extract_timeout_duration(exception_message)
 
-    entries = list(_iter_session_jsonl(trial_dir, "main.jsonl"))
+    entries = _timeout_session_entries(trial_dir)
     if not entries:
         return _empty_timeout_analysis(timeout_duration_sec)
 

@@ -86,8 +86,14 @@ async def test_single_model_run_passes_model_without_multi_model_cli_flag(tmp_pa
     command = agent.agent_commands[0]
     assert "--model kimchi-dev/kimi-k2.6" in command
     assert "--multi-model" not in command
-    # Compaction defaults on (kimchi's default): no settings write at all.
-    assert ".config/kimchi/harness/settings.json" not in command
+    # Pinned on disk, not just on the CLI: workflow steps run as spawned
+    # kimchi subprocesses whose argv carries no --model, and would otherwise
+    # resolve multi-model=true and a different model from the global defaults.
+    assert "~/.config/kimchi/harness/settings.json" in command
+    assert (
+        '{"multiModel":false,"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6"}'
+        in command
+    )
 
 
 async def test_disable_compaction_writes_harness_setting(tmp_path: Path) -> None:
@@ -102,7 +108,11 @@ async def test_disable_compaction_writes_harness_setting(tmp_path: Path) -> None
 
     command = agent.agent_commands[0]
     assert "~/.config/kimchi/harness/settings.json" in command
-    assert '{"compaction":{"enabled":false}}' in command
+    # One wholesale write — the model pin must not be dropped by the compaction key.
+    assert (
+        '{"multiModel":false,"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6",'
+        '"compaction":{"enabled":false}}' in command
+    )
 
 
 async def test_multi_model_run_omits_model_and_enables_harness_setting(tmp_path: Path) -> None:
