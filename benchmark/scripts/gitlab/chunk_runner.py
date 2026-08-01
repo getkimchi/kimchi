@@ -569,6 +569,8 @@ def _agent_import_path(coding_agent: str) -> str:
             return "kimchi_agent:OpenCodeKimchi"
         case "claude-code":
             return "kimchi_agent:ClaudeCodeKimchi"
+        case "pi":
+            return "kimchi_agent:PiKimchi"
         case "kimchi-workflow":
             return "kimchi_agent:WorkflowAgent"
         case _:

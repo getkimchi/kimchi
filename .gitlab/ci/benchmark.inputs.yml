@@ -15,6 +15,7 @@ inputs:
       - kimchi
       - opencode
       - claude-code
+      - pi
       - kimchi-workflow
   workflow:
     description: "Declared workflow name to run (not a filename). Ignored unless agent is kimchi-workflow."
@@ -48,7 +49,10 @@ inputs:
       - multi-model
       - kimchi-dev/kimi-k2.7
       - kimchi-dev/claude-sonnet-4-6
+      - kimchi-dev/claude-sonnet-5
       - kimchi-dev/claude-opus-4-6
+      - kimchi-dev/claude-opus-4-8
+      - kimchi-dev/claude-fable-5
       - kimchi-dev/minimax-m3
       - kimchi-dev/glm-5.2-fp8
   kimchi_ferment_oneshot:

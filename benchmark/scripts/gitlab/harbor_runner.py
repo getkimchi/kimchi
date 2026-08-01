@@ -51,6 +51,7 @@ def build_harbor_command(
     coding_agent: str = "kimchi",
     opencode_version: str | None = None,
     claude_code_version: str | None = None,
+    pi_version: str | None = None,
     llm_params: dict[str, Any] | None = None,
     llm_per_model_params: dict[str, dict[str, Any]] | None = None,
     workflow: str | None = None,
@@ -120,6 +121,8 @@ def build_harbor_command(
         cmd.extend(["--agent-kwarg", f"version={opencode_version}"])
     if coding_agent == "claude-code" and claude_code_version:
         cmd.extend(["--agent-kwarg", f"version={claude_code_version}"])
+    if coding_agent == "pi" and pi_version:
+        cmd.extend(["--agent-kwarg", f"version={pi_version}"])
 
     for task in tasks:
         task_arg = _resolve_task_arg(task, dataset)

@@ -839,6 +839,7 @@ def test_compaction_disabled_rejects_unknown_value(monkeypatch: pytest.MonkeyPat
         ("kimchi", "kimchi_agent:Kimchi"),
         ("opencode", "kimchi_agent:OpenCodeKimchi"),
         ("claude-code", "kimchi_agent:ClaudeCodeKimchi"),
+        ("pi", "kimchi_agent:PiKimchi"),
         ("kimchi-workflow", "kimchi_agent:WorkflowAgent"),
     ],
 )
