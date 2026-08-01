@@ -452,9 +452,26 @@ def tool_call_names(content: Any) -> list[str]:
     return names
 
 
+def _usage_tuple(usage: dict[str, Any]) -> tuple[int, int, int, int]:
+    """Extract a hashable usage signature for deduplication."""
+    return (
+        int_from_keys(usage, "input", "input_tokens"),
+        int_from_keys(usage, "cacheRead", "cache_read", "cache_read_input_tokens"),
+        int_from_keys(usage, "cacheWrite", "cache_write", "cache_creation_input_tokens"),
+        int_from_keys(usage, "output", "output_tokens"),
+    )
+
+
 def scan_session_file(path: Path, warnings: list[str]) -> SessionScan:
     scan = SessionScan()
     current_model: tuple[str, str] | None = None
+    # Track the last usage tuple seen per (provider, model) to skip duplicate
+    # entries. Claude Code splits a single API response into two JSONL entries
+    # (e.g. a thinking block followed by a tool_use block) that carry identical
+    # usage objects. Without deduplication, summing across both inflates token
+    # counts by ~2x. Kimchi writes one entry per API call, so this is a no-op
+    # for those sessions.
+    last_usage: dict[tuple[str, str], tuple[int, int, int, int] | None] = {}
     for entry in iter_jsonl(path, warnings):
         timestamp = entry.get("timestamp")
         if isinstance(timestamp, str):
@@ -476,16 +493,19 @@ def scan_session_file(path: Path, warnings: list[str]) -> SessionScan:
 
         usage = message.get("usage")
         if isinstance(usage, dict):
-            stats.llm_rounds += 1
-            stats.input_tokens += int_from_keys(usage, "input", "input_tokens")
-            stats.cache_read_tokens += int_from_keys(usage, "cacheRead", "cache_read", "cache_read_input_tokens")
-            stats.cache_write_tokens += int_from_keys(
-                usage,
-                "cacheWrite",
-                "cache_write",
-                "cache_creation_input_tokens",
-            )
-            stats.output_tokens += int_from_keys(usage, "output", "output_tokens")
+            current_usage = _usage_tuple(usage)
+            key = (provider, model)
+            if last_usage.get(key) == current_usage:
+                # Duplicate of the previous assistant message for this model —
+                # skip token accumulation but still process tool calls below.
+                pass
+            else:
+                stats.llm_rounds += 1
+                stats.input_tokens += current_usage[0]
+                stats.cache_read_tokens += current_usage[1]
+                stats.cache_write_tokens += current_usage[2]
+                stats.output_tokens += current_usage[3]
+                last_usage[key] = current_usage
 
         for name in tool_call_names(message.get("content")):
             stats.tool_calls[name] += 1

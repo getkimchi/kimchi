@@ -285,6 +285,80 @@ def test_extract_session_evidence_error_message_field(tmp_path: Path) -> None:
     assert any("429" in s for s in evidence.error_signals)
 
 
+def test_extract_session_evidence_dedupes_claude_code_split_entries(tmp_path: Path) -> None:
+    """Claude Code splits a single API response into two JSONL entries
+    (thinking + tool_use) with identical usage. Token counts must not be
+    doubled, but tool calls from both entries are kept.
+    """
+    session_path = tmp_path / "agent" / "sessions" / "main.jsonl"
+    usage = {"input": 100, "output": 50, "cacheRead": 10, "cacheWrite": 5}
+    write_jsonl(session_path, [
+        {"type": "session"},
+        make_session_entry("2026-07-01T12:00:00Z", "user"),
+        # First half of the API response (thinking block)
+        make_session_entry(
+            "2026-07-01T12:00:10Z",
+            "assistant",
+            content=[{"type": "thinking", "thinking": "..."}],
+            usage=usage,
+        ),
+        # Second half of the same API response (tool_use block) — same usage
+        make_session_entry(
+            "2026-07-01T12:00:10Z",
+            "assistant",
+            content=[make_tool_call("bash", {"command": "echo hello"})],
+            usage=usage,
+        ),
+        # A genuinely different API response
+        make_session_entry(
+            "2026-07-01T12:00:20Z",
+            "assistant",
+            content=[make_tool_call("read", {"path": "/app/foo.py"})],
+            usage={"input": 200, "output": 80, "cacheRead": 20, "cacheWrite": 8},
+        ),
+    ])
+
+    evidence = extract_session_evidence(session_path, datetime(2026, 7, 1, 12, 10, tzinfo=UTC))
+    # 3 assistant entries, but only 2 distinct usage objects
+    assert evidence.llm_rounds == 2
+    assert evidence.token_usage["input"] == 100 + 200
+    assert evidence.token_usage["output"] == 50 + 80
+    assert evidence.token_usage["cache_read"] == 10 + 20
+    assert evidence.token_usage["cache_write"] == 5 + 8
+    # Tool calls from all entries are counted
+    assert len(evidence.tool_calls) == 2
+    assert evidence.tool_calls[0].name == "bash"
+    assert evidence.tool_calls[1].name == "read"
+
+
+def test_extract_session_evidence_no_dedupe_for_incremental_usage(tmp_path: Path) -> None:
+    """Kimchi writes one entry per API call with varying usage — no
+    deduplication should occur.
+    """
+    session_path = tmp_path / "agent" / "sessions" / "main.jsonl"
+    write_jsonl(session_path, [
+        {"type": "session"},
+        make_session_entry("2026-07-01T12:00:00Z", "user"),
+        make_session_entry(
+            "2026-07-01T12:00:10Z", "assistant",
+            usage={"input": 12, "output": 154, "cacheRead": 14336, "cacheWrite": 0},
+        ),
+        make_session_entry(
+            "2026-07-01T12:00:20Z", "assistant",
+            usage={"input": 235, "output": 81, "cacheRead": 14336, "cacheWrite": 0},
+        ),
+        make_session_entry(
+            "2026-07-01T12:00:30Z", "assistant",
+            usage={"input": 614, "output": 100, "cacheRead": 14336, "cacheWrite": 0},
+        ),
+    ])
+
+    evidence = extract_session_evidence(session_path, datetime(2026, 7, 1, 12, 10, tzinfo=UTC))
+    assert evidence.llm_rounds == 3
+    assert evidence.token_usage["input"] == 12 + 235 + 614
+    assert evidence.token_usage["output"] == 154 + 81 + 100
+
+
 # ---------------------------------------------------------------------------
 # compute_time_distribution
 # ---------------------------------------------------------------------------

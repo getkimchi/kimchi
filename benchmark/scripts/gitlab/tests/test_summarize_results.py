@@ -1038,5 +1038,153 @@ class BuildRunLLMParametersTest(unittest.TestCase):
         )
 
 
+class ScanSessionFileTokenDedupTest(unittest.TestCase):
+    """Claude Code splits a single API response into two JSONL entries
+    (e.g. a thinking block followed by a tool_use block) that carry identical
+    usage objects. scan_session_file must not double-count these duplicates.
+    """
+
+    def _write_session(self, path: Path, entries: list[dict]) -> None:
+        sessions_dir = path / "agent" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        with open(sessions_dir / "main.jsonl", "w", encoding="utf-8") as f:
+            for entry in entries:
+                f.write(json.dumps(entry) + "\n")
+
+    def _assistant_entry(
+        self,
+        usage: dict,
+        content: list | None = None,
+        model: str = "anthropic/claude-sonnet-5",
+    ) -> dict:
+        return {
+            "type": "assistant",
+            "uuid": f"{id(usage)}-{id(content)}",
+            "timestamp": "2026-07-29T12:00:00Z",
+            "message": {
+                "role": "assistant",
+                "model": model,
+                "usage": usage,
+                "content": content or [],
+            },
+        }
+
+    def test_dedupes_consecutive_identical_usage_from_claude_code(self):
+        """Two assistant entries with identical usage (thinking + tool_use split)
+        should count tokens once but accumulate tool calls from both entries.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "task__abc"
+            trial_dir.mkdir()
+            usage = {
+                "input_tokens": 2610,
+                "cache_read_input_tokens": 987029,
+                "cache_creation_input_tokens": 52256,
+                "output_tokens": 35723,
+            }
+            self._write_session(trial_dir, [
+                self._assistant_entry(usage, [{"type": "thinking", "thinking": "..."}]),
+                self._assistant_entry(usage, [{
+                    "type": "toolCall",
+                    "name": "bash",
+                }]),
+                self._assistant_entry(
+                    {**usage, "input_tokens": 3000, "output_tokens": 500},
+                    [{"type": "toolCall", "name": "read"}],
+                ),
+            ])
+
+            warnings: list[str] = []
+            scan = summarize_results.scan_session_file(
+                trial_dir / "agent" / "sessions" / "main.jsonl", warnings
+            )
+            self.assertEqual(warnings, [])
+            # 3 assistant entries but only 2 have distinct usage → 2 rounds
+            stats = next(iter(scan.models.values()))
+            self.assertEqual(stats.llm_rounds, 2)
+            self.assertEqual(stats.input_tokens, 2610 + 3000)
+            self.assertEqual(stats.cache_read_tokens, 987029 + 987029)
+            self.assertEqual(stats.cache_write_tokens, 52256 + 52256)
+            self.assertEqual(stats.output_tokens, 35723 + 500)
+            # Tool calls from ALL entries (including duplicates) are counted
+            self.assertEqual(stats.tool_calls["bash"], 1)
+            self.assertEqual(stats.tool_calls["read"], 1)
+
+    def test_does_not_dedupe_kimchi_incremental_usage(self):
+        """Kimchi writes one entry per API call with incremental usage.
+        No deduplication should occur when usage values differ.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "task__abc"
+            trial_dir.mkdir()
+            self._write_session(trial_dir, [
+                self._assistant_entry({
+                    "input": 12, "cacheRead": 14336, "cacheWrite": 0, "output": 154,
+                }),
+                self._assistant_entry({
+                    "input": 235, "cacheRead": 14336, "cacheWrite": 0, "output": 81,
+                }),
+                self._assistant_entry({
+                    "input": 614, "cacheRead": 14336, "cacheWrite": 0, "output": 100,
+                }),
+            ])
+
+            warnings: list[str] = []
+            scan = summarize_results.scan_session_file(
+                trial_dir / "agent" / "sessions" / "main.jsonl", warnings
+            )
+            self.assertEqual(warnings, [])
+            stats = next(iter(scan.models.values()))
+            self.assertEqual(stats.llm_rounds, 3)
+            self.assertEqual(stats.input_tokens, 12 + 235 + 614)
+            self.assertEqual(stats.cache_read_tokens, 14336 * 3)
+            self.assertEqual(stats.output_tokens, 154 + 81 + 100)
+
+    def test_dedupes_across_model_boundary(self):
+        """Dedup state is per-model: a duplicate after a model_change still
+        counts if a different model's entry appeared in between.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "task__abc"
+            trial_dir.mkdir()
+            usage_a = {
+                "input_tokens": 100,
+                "cache_read_input_tokens": 500,
+                "cache_creation_input_tokens": 50,
+                "output_tokens": 10,
+            }
+            usage_b = {
+                "input_tokens": 200,
+                "cache_read_input_tokens": 1000,
+                "cache_creation_input_tokens": 100,
+                "output_tokens": 20,
+            }
+            self._write_session(trial_dir, [
+                self._assistant_entry(
+                    usage_a, [{"type": "thinking", "thinking": "..."}], model="anthropic/claude-sonnet-5"
+                ),
+                self._assistant_entry(
+                    usage_a, [{"type": "toolCall", "name": "bash"}], model="anthropic/claude-sonnet-5"
+                ),
+                self._assistant_entry(
+                    usage_b, [{"type": "text", "text": "..."}], model="kimchi-dev/glm-5.2-fp8"
+                ),
+                self._assistant_entry(usage_b, [{"type": "toolCall", "name": "read"}], model="kimchi-dev/glm-5.2-fp8"),
+            ])
+
+            warnings: list[str] = []
+            scan = summarize_results.scan_session_file(
+                trial_dir / "agent" / "sessions" / "main.jsonl", warnings
+            )
+            self.assertEqual(warnings, [])
+            self.assertEqual(len(scan.models), 2)
+            sonnet_stats = scan.models[("anthropic", "claude-sonnet-5")]
+            glm_stats = scan.models[("kimchi-dev", "glm-5.2-fp8")]
+            self.assertEqual(sonnet_stats.llm_rounds, 1)
+            self.assertEqual(sonnet_stats.input_tokens, 100)
+            self.assertEqual(glm_stats.llm_rounds, 1)
+            self.assertEqual(glm_stats.input_tokens, 200)
+
+
 if __name__ == "__main__":
     unittest.main()

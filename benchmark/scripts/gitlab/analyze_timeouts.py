@@ -376,6 +376,13 @@ def extract_session_evidence(
     )
 
     models_seen: set[str] = set()
+    # Track the last usage tuple seen to skip duplicate entries. Claude Code
+    # splits a single API response into two JSONL entries (e.g. a thinking
+    # block followed by a tool_use block) that carry identical usage objects.
+    # Without deduplication, summing across both inflates token counts by ~2x.
+    # Kimchi writes one entry per API call, so this is a no-op for those
+    # sessions.
+    last_usage: tuple[int, int, int, int] | None = None
 
     for entry in entries:
         timestamp = string_or_none(entry.get("timestamp"))
@@ -389,6 +396,9 @@ def extract_session_evidence(
             if isinstance(provider, str) and isinstance(model_id, str):
                 current_model = f"{provider}/{model_id}" if provider else model_id
                 models_seen.add(current_model)
+                # A model change resets the dedup state so that the first
+                # message after the switch is always counted.
+                last_usage = None
 
         entry_type = entry.get("type")
         if entry_type == "message":
@@ -416,9 +426,17 @@ def extract_session_evidence(
                 # Extract token usage
                 usage = _extract_token_usage(message)
                 if usage is not None:
-                    evidence.llm_rounds += 1
-                    for key in evidence.token_usage:
-                        evidence.token_usage[key] += usage.get(key, 0)
+                    current_usage = (
+                        usage.get("input", 0),
+                        usage.get("cache_read", 0),
+                        usage.get("cache_write", 0),
+                        usage.get("output", 0),
+                    )
+                    if current_usage != last_usage:
+                        evidence.llm_rounds += 1
+                        for key in evidence.token_usage:
+                            evidence.token_usage[key] += usage.get(key, 0)
+                        last_usage = current_usage
 
                 # Track model from message
                 msg_provider = message.get("provider")
