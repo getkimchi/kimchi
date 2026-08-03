@@ -71,6 +71,7 @@ type GoalTodoState = GoalTurnAttribution & {
 	settledStatus?: "complete" | "blocked"
 }
 const TODO_TOOL_NAME_SET = new Set<string>(TODO_TOOL_NAMES)
+const MAX_CONSECUTIVE_ERROR_TURNS = 3
 
 export default function goalExtension(pi: ExtensionAPI): void {
 	if (isAgentWorker()) return
@@ -82,6 +83,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	let pendingTerminalFeedback: PendingGoalTerminalFeedback | undefined
 	let activeTurn: GoalTurnAttribution | undefined
 	let todoStateFor: GoalTodoState | undefined
+	let consecutiveErrorTurns = 0
 	let activeSinceMs: number | undefined
 	let statusCtx: ExtensionContext | undefined
 	let statusRefreshTimer: ReturnType<typeof setTimeout> | undefined
@@ -162,6 +164,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		pendingTerminalFeedback = undefined
 		activeTurn = undefined
 		todoStateFor = undefined
+		consecutiveErrorTurns = 0
 		activeSinceMs = undefined
 	}
 
@@ -357,6 +360,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				activeSinceMs = current.status === "active" && activeSinceMs !== undefined ? nowMs : undefined
 				invalidateContinuation()
 				todoStateFor = undefined
+				consecutiveErrorTurns = 0
 				syncGoalStatus(ctx)
 				if (next.status === "active") {
 					queueGoalTurn(ctx, next, buildGoalEditSteer(next, current.revision), "edit")
@@ -426,6 +430,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			const next = setGoalStatus(current, current.id, current.revision, "active", timestamp(nowMs))
 			commitGoal(next)
 			invalidateContinuation()
+			consecutiveErrorTurns = 0
 			syncGoalStatus(ctx)
 			queueGoalTurn(ctx, next, buildGoalStartSteer(next, "resumed"), "resume")
 			ctx.ui.notify("Goal resumed.", "info")
@@ -579,23 +584,13 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		bindSession(ctx)
 		const goal = currentGoal
 		if (goal?.status !== "active") return
-		if (event.toolName === GET_GOAL_TOOL_NAME || TODO_TOOL_NAME_SET.has(event.toolName)) return
+		if (event.toolName !== UPDATE_GOAL_TOOL_NAME) return
 		const currentTodoState = matchesGoal(todoStateFor, goal, currentSessionId) ? todoStateFor : undefined
-		if (event.toolName === UPDATE_GOAL_TOOL_NAME && currentTodoState) {
-			if (currentTodoState.total === 0 && event.input.status === currentTodoState.settledStatus) {
-				return
-			}
-			return {
-				block: true,
-				reason:
-					"Reconcile the tactical todo list before ending the goal: settle every item as completed or genuinely blocked, then clear the fully settled list before update_goal.",
-			}
-		}
-		if (currentTodoState && currentTodoState.total > 0) return
+		if (currentTodoState?.total && event.input.status === currentTodoState.settledStatus) return
 		return {
 			block: true,
 			reason:
-				"Goal mode requires a visible tactical todo list for this goal revision. Use create_todos or another todo tool to create or reconcile the list before calling other tools.",
+				"Before ending the goal, keep a visible tactical todo list for this goal revision and settle every item as completed or genuinely blocked. Then call update_goal with the matching status without clearing the list.",
 		}
 	})
 
@@ -651,17 +646,21 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				const accounted = checkpointGoal(current, assistantTurnTokens(event), nowMs)
 				const reachedBudget = current.status === "active" && accounted.status === "budget_limited"
 				const interruption = current.status === "active" ? assistantTurnInterruption(event) : undefined
-				const next = interruption
+				if (interruption === "error") consecutiveErrorTurns += 1
+				else consecutiveErrorTurns = 0
+				const terminalInterruption =
+					interruption === "aborted" || consecutiveErrorTurns >= MAX_CONSECUTIVE_ERROR_TURNS ? interruption : undefined
+				const next = terminalInterruption
 					? setGoalStatus(accounted, current.id, current.revision, "paused", timestamp(nowMs))
 					: accounted
 				if (next !== current) commitGoal(next)
 				activeSinceMs = undefined
-				if (interruption) {
+				if (terminalInterruption) {
 					invalidateContinuation()
 					ctx.ui.notify(
-						interruption === "aborted"
+						terminalInterruption === "aborted"
 							? "Goal paused because the agent turn was cancelled."
-							: "Goal paused because the agent turn stopped with an error.",
+							: `Goal paused after ${MAX_CONSECUTIVE_ERROR_TURNS} consecutive agent errors.`,
 						"warning",
 					)
 				} else if (reachedBudget) {

@@ -81,6 +81,8 @@ describe("goal extension", () => {
 			expect.objectContaining({ display: false, details: expect.objectContaining({ revision: 1 }) }),
 			{ triggerTurn: true, deliverAs: "steer" },
 		)
+		expect(harness.sendMessage.mock.lastCall?.[0].content).toContain("leave the settled list visible")
+		expect(harness.sendMessage.mock.lastCall?.[0].content).not.toContain("Before other tools")
 
 		harness.ui.confirm.mockResolvedValueOnce(false)
 		await harness.command("ship feature B")
@@ -185,27 +187,20 @@ describe("goal extension", () => {
 		expect(harness.currentGoal()?.tokensUsed).toBe(25)
 	})
 
-	it("requires a visible todo list before other tools for every goal revision", async () => {
+	it("allows work tools but requires visible settled todos before ending every goal revision", async () => {
 		await harness.command("ship it")
 
-		const blocked = await harness.fire("tool_call", { type: "tool_call", toolName: "bash", input: {} })
-		expect(blocked).toMatchObject({ block: true, reason: expect.stringContaining("create_todos") })
+		expect(await harness.fire("tool_call", { type: "tool_call", toolName: "bash", input: {} })).toBeUndefined()
 		expect(
 			await harness.fire("tool_call", { type: "tool_call", toolName: GET_GOAL_TOOL_NAME, input: {} }),
 		).toBeUndefined()
-		await harness.fire("tool_execution_end", {
-			type: "tool_execution_end",
-			toolName: "clear_todos",
-			isError: false,
-			result: { details: { scope: { kind: "global" }, todos: [] } },
-		})
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
 				toolName: UPDATE_GOAL_TOOL_NAME,
 				input: { status: "complete" },
 			}),
-		).toMatchObject({ block: true })
+		).toMatchObject({ block: true, reason: expect.stringContaining("visible tactical todo") })
 
 		await harness.fire("tool_execution_end", {
 			type: "tool_execution_end",
@@ -225,7 +220,7 @@ describe("goal extension", () => {
 				toolName: UPDATE_GOAL_TOOL_NAME,
 				input: { status: "complete" },
 			}),
-		).toMatchObject({ block: true, reason: expect.stringContaining("Reconcile") })
+		).toMatchObject({ block: true, reason: expect.stringContaining("settle every item") })
 
 		await harness.fire("tool_execution_end", {
 			type: "tool_execution_end",
@@ -244,7 +239,7 @@ describe("goal extension", () => {
 				toolName: UPDATE_GOAL_TOOL_NAME,
 				input: { status: "complete" },
 			}),
-		).toMatchObject({ block: true, reason: expect.stringContaining("clear") })
+		).toBeUndefined()
 		await harness.fire("tool_execution_end", {
 			type: "tool_execution_end",
 			toolName: "clear_todos",
@@ -257,19 +252,28 @@ describe("goal extension", () => {
 				toolName: UPDATE_GOAL_TOOL_NAME,
 				input: { status: "complete" },
 			}),
-		).toBeUndefined()
+		).toMatchObject({ block: true, reason: expect.stringContaining("without clearing") })
 
 		harness.setSession("session-b", [])
 		await harness.fire("session_start", { type: "session_start", reason: "new" })
 		await harness.command("another session goal")
-		expect(await harness.fire("tool_call", { type: "tool_call", toolName: "bash", input: {} })).toMatchObject({
-			block: true,
-		})
+		expect(await harness.fire("tool_call", { type: "tool_call", toolName: "bash", input: {} })).toBeUndefined()
+		expect(
+			await harness.fire("tool_call", {
+				type: "tool_call",
+				toolName: UPDATE_GOAL_TOOL_NAME,
+				input: { status: "complete" },
+			}),
+		).toMatchObject({ block: true })
 
 		await harness.command("edit changed objective")
-		expect(await harness.fire("tool_call", { type: "tool_call", toolName: "bash", input: {} })).toMatchObject({
-			block: true,
-		})
+		expect(
+			await harness.fire("tool_call", {
+				type: "tool_call",
+				toolName: UPDATE_GOAL_TOOL_NAME,
+				input: { status: "complete" },
+			}),
+		).toMatchObject({ block: true })
 	})
 
 	it("ignores todo results from a non-visible scope", async () => {
@@ -286,9 +290,13 @@ describe("goal extension", () => {
 			},
 		})
 
-		expect(await harness.fire("tool_call", { type: "tool_call", toolName: "bash", input: {} })).toMatchObject({
-			block: true,
-		})
+		expect(
+			await harness.fire("tool_call", {
+				type: "tool_call",
+				toolName: UPDATE_GOAL_TOOL_NAME,
+				input: { status: "complete" },
+			}),
+		).toMatchObject({ block: true })
 	})
 
 	it("ignores malformed todo result scopes", async () => {
@@ -302,9 +310,13 @@ describe("goal extension", () => {
 				result: { details: { scope: { kind: "unknown" }, todos: [] } },
 			}),
 		).resolves.toBeUndefined()
-		expect(await harness.fire("tool_call", { type: "tool_call", toolName: "bash", input: {} })).toMatchObject({
-			block: true,
-		})
+		expect(
+			await harness.fire("tool_call", {
+				type: "tool_call",
+				toolName: UPDATE_GOAL_TOOL_NAME,
+				input: { status: "complete" },
+			}),
+		).toMatchObject({ block: true })
 	})
 
 	it("prefills the editor and rejects a concurrent edit conflict", async () => {
@@ -494,20 +506,36 @@ describe("goal extension", () => {
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it.each(["error", "aborted"] as const)("pauses accounting when an agent turn ends with %s", async (stopReason) => {
+	it("pauses accounting when an agent turn is cancelled", async () => {
 		const dateNow = vi.spyOn(Date, "now").mockReturnValue(1_000)
 		await harness.command("keep going")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1_000 })
 		dateNow.mockReturnValue(61_000)
 		harness.sendMessage.mockClear()
 
-		await harness.fire("turn_end", terminalTurn(stopReason))
+		await harness.fire("turn_end", terminalTurn("aborted"))
 
 		expect(harness.currentGoal()).toMatchObject({ status: "paused", timeUsedMs: 60_000 })
 		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("goal", "Goal paused · 1m · 0 tokens")
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 		dateNow.mockReturnValue(121_000)
 		expect((await harness.tool(GET_GOAL_TOOL_NAME, {})).details.goal).toMatchObject({ timeUsedMs: 60_000 })
+	})
+
+	it("retries transient turn errors and pauses after three consecutive failures", async () => {
+		await harness.command("keep going")
+		harness.sendMessage.mockClear()
+
+		for (let turnIndex = 1; turnIndex <= 3; turnIndex++) {
+			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
+			await harness.fire("turn_end", terminalTurn("error"))
+			await harness.fire("agent_end", { type: "agent_end", messages: [] })
+			if (turnIndex < 3) expect(harness.currentGoal()?.status).toBe("active")
+		}
+
+		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
+		expect(harness.currentGoal()?.status).toBe("paused")
+		expect(harness.ui.notify).toHaveBeenCalledWith("Goal paused after 3 consecutive agent errors.", "warning")
 	})
 
 	it("stops continuation when the token budget is reached", async () => {

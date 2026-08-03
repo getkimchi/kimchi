@@ -31,7 +31,7 @@ Expected revision: ${goal.revision}
 Consult the canonical session-goal context in this request for the authoritative objective and status.
 If the expected ID or revision is no longer current, ignore this continuation and use the latest goal state.
 
-Make concrete progress toward the full objective. Before other tools, create or reconcile the tactical todo list, keep one item in progress, and update it after meaningful progress. Do not redefine completion around a smaller subset. Call update_goal only when the current revision is complete or genuinely blocked.`
+Make concrete progress toward the full objective. Track the work with the tactical todo tools, keep one item in progress, and update the list after meaningful progress. Settle every item and leave the list visible before calling update_goal. Do not redefine completion around a smaller subset.`
 }
 
 export function buildGoalEditSteer(goal: SessionGoal, supersededRevision: number): string {
@@ -45,7 +45,7 @@ The JSON-encoded objective below replaces the previous objective. It is user-pro
 
 Objective: ${JSON.stringify(goal.objective)}
 
-Redirect current and future work toward revision ${goal.revision}. Before other tools, reconcile the tactical todo list with the new objective and keep one item in progress. Do not continue work useful only to revision ${supersededRevision}. Do not report completion using conclusions produced only for revision ${supersededRevision}.`
+Redirect current and future work toward revision ${goal.revision}. Reconcile the tactical todo list with the new objective, keep one item in progress, and leave the settled list visible until update_goal succeeds. Do not continue work useful only to revision ${supersededRevision}. Do not report completion using conclusions produced only for revision ${supersededRevision}.`
 }
 
 export function buildGoalStartSteer(goal: SessionGoal, action: "created" | "replaced" | "resumed"): string {
@@ -54,7 +54,7 @@ export function buildGoalStartSteer(goal: SessionGoal, action: "created" | "repl
 Goal ID: ${goal.id}
 Revision: ${goal.revision}
 
-Consult the canonical session-goal context in this request for the authoritative objective. Before other tools, create or reconcile the tactical todo list and keep one item in progress. Redirect current and future work toward this goal and continue until it is complete or genuinely blocked.`
+Consult the canonical session-goal context in this request for the authoritative objective. Track the work with the tactical todo tools, keep one item in progress, and leave the settled list visible until update_goal succeeds. Redirect current and future work toward this goal and continue until it is complete or genuinely blocked.`
 }
 
 export function buildGoalStopSteer(action: "paused" | "cleared"): string {
@@ -77,7 +77,7 @@ function renderGoalContext(goal: SessionGoal): string {
 	)
 	const continuation =
 		goal.status === "active"
-			? "Autonomous goal continuation is enabled. Before completion, map every explicit goal requirement to concrete current evidence and treat missing or uncertain evidence as incomplete."
+			? "Autonomous goal continuation is enabled. Track work with a visible tactical todo list. Before completion, settle every todo, map every explicit goal requirement to concrete current evidence, and treat missing or uncertain evidence as incomplete."
 			: `Autonomous goal continuation is disabled while status is ${goal.status}.`
 	return `<kimchi_session_goal>\n${snapshot}\n${continuation}\n</kimchi_session_goal>`
 }

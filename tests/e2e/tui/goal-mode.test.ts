@@ -30,11 +30,6 @@ test("experimental goal stops after exact-revision completion", async ({ termina
 				id: "finish-goal-todo",
 				function: { name: "mark_todo", arguments: JSON.stringify({ id: 1, status: "completed" }) },
 			},
-			{
-				id: "clear-goal-todos",
-				index: 1,
-				function: { name: "clear_todos", arguments: "{}" },
-			},
 		],
 	}
 	const completionResponse: FakeResponseScript = {
