@@ -122,6 +122,8 @@ export interface RunAcpOptions {
 type TurnContext = {
 	cancelled: boolean
 	hiddenToolCallIds: Set<string>
+	announcedToolCallIds: Set<string>
+	lastStreamUpdateTs: Map<string, number>
 	resolve: (res: PromptResponse) => void
 	reject: (err: unknown) => void
 }
@@ -580,6 +582,8 @@ export class KimchiAcpAgent implements Agent {
 		entry.turn = {
 			cancelled: false,
 			hiddenToolCallIds: new Set(),
+			announcedToolCallIds: new Set(),
+			lastStreamUpdateTs: new Map(),
 			resolve: turnResolve,
 			reject: turnReject,
 		}
@@ -718,6 +722,67 @@ export class KimchiAcpAgent implements Agent {
 						},
 					})
 				}
+
+				// Tool call argument generation started — emit pending tool_call so
+				// the client can show progress while the model streams the arguments.
+				if (ame.type === "toolcall_start") {
+					const block = ame.partial?.content?.[ame.contentIndex]
+					if (block?.type === "toolCall" && block.id && block.name) {
+						if (isHiddenToolCall(block.name, block.arguments)) {
+							turn.hiddenToolCallIds.add(block.id)
+							return
+						}
+						const { title, kind, locations } = describeToolCall(block.name, block.arguments)
+						this.send({
+							sessionId,
+							update: {
+								sessionUpdate: "tool_call",
+								toolCallId: block.id,
+								title,
+								kind,
+								status: "pending",
+								locations,
+								rawInput: block.arguments,
+							},
+						})
+						turn.announcedToolCallIds.add(block.id)
+					}
+					return
+				}
+
+				// Throttled progress streaming — emit a character count so the
+				// client can show how much content has been generated without
+				// sending the full (potentially 50KB+) arguments on every update.
+				if (ame.type === "toolcall_delta") {
+					const block = ame.partial?.content?.[ame.contentIndex]
+					if (
+						block?.type === "toolCall" &&
+						block.id &&
+						turn.announcedToolCallIds.has(block.id) &&
+						!turn.hiddenToolCallIds.has(block.id)
+					) {
+						const chars = streamingCharCount(block.arguments)
+						if (chars > 0) {
+							// Throttle: emit at most once per 500ms per toolCallId
+							const now = Date.now()
+							const lastTs = turn.lastStreamUpdateTs.get(block.id) ?? 0
+							if (now - lastTs >= 500) {
+								turn.lastStreamUpdateTs.set(block.id, now)
+								this.send({
+									sessionId,
+									update: {
+										sessionUpdate: "tool_call_update",
+										toolCallId: block.id,
+										status: "pending",
+										_meta: { generatedChars: chars },
+									},
+								})
+							}
+						}
+					}
+					return
+				}
+
 				return
 			}
 			case "tool_execution_start": {
@@ -731,18 +796,35 @@ export class KimchiAcpAgent implements Agent {
 					return
 				}
 				const { title, kind, locations } = describeToolCall(event.toolName, event.args)
-				this.send({
-					sessionId,
-					update: {
-						sessionUpdate: "tool_call",
-						toolCallId: event.toolCallId,
-						title,
-						kind,
-						status: "in_progress",
-						locations,
-						rawInput: event.args,
-					},
-				})
+				if (turn.announcedToolCallIds.has(event.toolCallId)) {
+					// Pending tool_call was already sent via toolcall_start → emit update
+					this.send({
+						sessionId,
+						update: {
+							sessionUpdate: "tool_call_update",
+							toolCallId: event.toolCallId,
+							status: "in_progress",
+							title,
+							kind,
+							locations,
+							rawInput: event.args,
+						},
+					})
+				} else {
+					// No pending notification was sent (back-compat) → emit tool_call as before
+					this.send({
+						sessionId,
+						update: {
+							sessionUpdate: "tool_call",
+							toolCallId: event.toolCallId,
+							title,
+							kind,
+							status: "in_progress",
+							locations,
+							rawInput: event.args,
+						},
+					})
+				}
 				return
 			}
 			case "tool_execution_update": {
@@ -1483,6 +1565,27 @@ function replayTextParts(text: string): ReplayTextPart[] {
 	const after = stripAnsi(text.slice(lastIndex))
 	if (after.length > 0) parts.push({ kind: "text", text: after })
 	return parts
+}
+
+/**
+ * Returns the character count of the main content field being streamed
+ * for common tool calls (write.content, edit.newText, bash.command, etc.).
+ * Returns 0 if no content field is recognized yet.
+ */
+function streamingCharCount(args: unknown): number {
+	const a = (args ?? {}) as Record<string, unknown>
+	// write/edit: content or newText is the large field being generated
+	const content = asString(a.content) ?? asString(a.newText)
+	if (content !== undefined) return content.length
+	// bash: command is the main field
+	const command = asString(a.command)
+	if (command !== undefined) return command.length
+	// Fallback: sum of all string values in args
+	let total = 0
+	for (const v of Object.values(a)) {
+		if (typeof v === "string") total += v.length
+	}
+	return total
 }
 
 export function describeToolCall(
