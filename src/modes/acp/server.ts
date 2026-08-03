@@ -763,8 +763,10 @@ export class KimchiAcpAgent implements Agent {
 					) {
 						const chars = streamingCharCount(block.arguments)
 						if (chars > 0) {
-							// Throttle: emit at most once per 500ms per toolCallId
-							const now = Date.now()
+							// Throttle: emit at most once per 500ms per toolCallId.
+							// Use performance.now() (monotonic) so NTP clock jumps don't
+							// cause burst or suppression of updates.
+							const now = performance.now()
 							const lastTs = turn.lastStreamUpdateTs.get(block.id) ?? 0
 							if (now - lastTs >= 500) {
 								turn.lastStreamUpdateTs.set(block.id, now)

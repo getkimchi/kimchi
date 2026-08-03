@@ -1962,6 +1962,9 @@ describe("KimchiAcpAgent tool execution stream", () => {
 	// the throttle interval between emits.
 	it("emits a tool_call_update for each toolcall_delta that is at least 500ms apart", async () => {
 		vi.useFakeTimers()
+		// performance.now() starts at 0 under fake timers; advance past the
+		// 500ms threshold so the first delta emits.
+		vi.advanceTimersByTime(1000)
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
 			// Announce the tool call
@@ -1992,25 +1995,28 @@ describe("KimchiAcpAgent tool execution stream", () => {
 			fake.emit(agentEnd())
 		}
 
-		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
-		expect(res.stopReason).toBe("end_turn")
-		vi.useRealTimers()
+		try {
+			const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+			expect(res.stopReason).toBe("end_turn")
 
-		const pendingUpdates = updates.filter(
-			(u) =>
-				u.update.sessionUpdate === "tool_call_update" &&
-				(u.update as { status?: string }).status === "pending" &&
-				(u.update as { toolCallId: string }).toolCallId === "tc-fake-timer-1",
-		)
-		expect(pendingUpdates).toHaveLength(3)
+			const pendingUpdates = updates.filter(
+				(u) =>
+					u.update.sessionUpdate === "tool_call_update" &&
+					(u.update as { status?: string }).status === "pending" &&
+					(u.update as { toolCallId: string }).toolCallId === "tc-fake-timer-1",
+			)
+			expect(pendingUpdates).toHaveLength(3)
 
-		// Verify generatedChars increases across updates
-		const chars = pendingUpdates.map(
-			(u) => (u.update as { _meta?: { generatedChars?: number } })._meta?.generatedChars ?? 0,
-		)
-		expect(chars[0]).toBeGreaterThan(0)
-		expect(chars[1]).toBeGreaterThan(chars[0])
-		expect(chars[2]).toBeGreaterThan(chars[1])
+			// Verify generatedChars increases across updates
+			const chars = pendingUpdates.map(
+				(u) => (u.update as { _meta?: { generatedChars?: number } })._meta?.generatedChars ?? 0,
+			)
+			expect(chars[0]).toBeGreaterThan(0)
+			expect(chars[1]).toBeGreaterThan(chars[0])
+			expect(chars[2]).toBeGreaterThan(chars[1])
+		} finally {
+			vi.useRealTimers()
+		}
 	})
 
 	// Spec test 3: deltas for a toolCallId that was never announced via
