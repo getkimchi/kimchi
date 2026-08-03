@@ -56,6 +56,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
@@ -77,11 +78,15 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import type { PermissionMode } from "../../extensions/permissions/types.js"
+import { configureHttpIdleTimeout } from "../../http/proxy.js"
+import { resolveHeadlessProjectTrust } from "../../project-trust.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
-import { ADVERTISED_CAPABILITIES, CAPABILITIES_KEY } from "./capabilities.js"
+import { ADVERTISED_CAPABILITIES, AVAILABLE_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { AVAILABLE_COMMANDS } from "./commands.js"
+import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
+import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 
 /**
  * Produces an unbound AgentSession for a newSession request. The ACP agent owns
@@ -114,6 +119,12 @@ export interface RunAcpOptions {
 	sessionLister?: AcpSessionLister
 	/** Override for tests. Defaults to {@link defaultSessionLoader}. */
 	sessionLoader?: AcpSessionLoader
+	/**
+	 * MCP server manager used by the `_kimchi.dev/probe_mcp_server` extMethod
+	 * handler to create transient probe connections. Injected so tests can stub
+	 * it; production code constructs a real McpServerManager.
+	 */
+	mcpServerManager?: McpServerManager
 }
 
 type TurnContext = {
@@ -152,6 +163,7 @@ export class KimchiAcpAgent implements Agent {
 	private readonly agentDir: string
 	private readonly sessionLister: AcpSessionLister
 	private readonly sessionLoader: AcpSessionLoader
+	private readonly mcpServerManager: McpServerManager | undefined
 	private readonly permissionsEnvFlag = process.env[PERMISSIONS_ENV_KEY]
 	private clientCapabilities: ClientCapabilities | undefined
 	// Track non-text prompt block types we've already warned about so a
@@ -189,9 +201,12 @@ export class KimchiAcpAgent implements Agent {
 		this.agentDir = options.agentDir
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
 		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
+		this.mcpServerManager = options.mcpServerManager
 	}
 
 	async initialize(request: InitializeRequest): Promise<InitializeResponse> {
+		setAcpClientInfo(request.clientInfo ?? { name: "unknown", version: "0.0.0" })
+
 		this.clientCapabilities = request.clientCapabilities
 
 		const authStorage = AuthStorage.create(join(this.agentDir, "auth.json"))
@@ -208,7 +223,12 @@ export class KimchiAcpAgent implements Agent {
 				sessionCapabilities: { list: {}, close: {} },
 				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
 				// Extended capabilities
-				_meta: { [CAPABILITIES_KEY]: ADVERTISED_CAPABILITIES },
+				_meta: {
+					[CAPABILITIES_KEY]: {
+						...ADVERTISED_CAPABILITIES,
+						...(this.mcpServerManager ? {} : { probe_mcp_server: false }),
+					},
+				},
 			},
 			authMethods: [],
 		}
@@ -625,6 +645,15 @@ export class KimchiAcpAgent implements Agent {
 		await entry.session.abort()
 	}
 
+	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+		switch (method) {
+			case AVAILABLE_METHODS.probe_mcp_server:
+				return handleProbeMcpServer(this.mcpServerManager, params) as unknown as Record<string, unknown>
+			default:
+				throw RequestError.methodNotFound(method)
+		}
+	}
+
 	async shutdown(cause: "signal" | "disconnect" = "disconnect"): Promise<void> {
 		if (this.shutdownPromise) return this.shutdownPromise
 		this.shutdownPromise = this.doShutdown(cause)
@@ -645,6 +674,7 @@ export class KimchiAcpAgent implements Agent {
 			await this.disposeSessionRecord(entry)
 		}
 		this.sessions.clear()
+		resetAcpClientInfo()
 	}
 
 	private async closeSessionRecord(sessionId: string): Promise<void> {
@@ -1275,6 +1305,38 @@ function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
 	}
 }
 
+/**
+ * Shared session-setup: create settings manager, apply theme + HTTP idle
+ * timeout, and load resources. Both the session loader and factory
+ * diverge only in how they obtain a SessionManager.
+ */
+async function createSessionSettings(cwd: string, options: RunAcpOptions) {
+	// Construct untrusted first: pi's SettingsManager.create defaults
+	// projectTrusted to TRUE, which would let an untrusted repo's
+	// .pi/settings.json influence HTTP behavior (e.g. disable the idle
+	// timeout) — and the defaultProjectTrust read below must be global-scope
+	// only so a project cannot grant itself trust. Trust is then resolved the
+	// way pi's own no-UI path does and applied in-memory.
+	const settingsManager = SettingsManager.create(cwd, options.agentDir, { projectTrusted: false })
+	settingsManager.setProjectTrusted(
+		resolveHeadlessProjectTrust(cwd, options.agentDir, settingsManager.getDefaultProjectTrust()),
+	)
+	initializeHeadlessTheme(settingsManager)
+	// Getter form: re-read on every request so mid-session settings edits
+	// apply live. The override slot is process-global — with several ACP
+	// sessions in one process, the last-configured session's value governs
+	// all of them (see setStreamIdleTimeoutOverride).
+	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
+	const resourceLoader = new DefaultResourceLoader({
+		cwd,
+		agentDir: options.agentDir,
+		settingsManager,
+		extensionFactories: options.extensionFactories,
+	})
+	await resourceLoader.reload()
+	return { settingsManager, resourceLoader }
+}
+
 function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 	return async (params: LoadSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd
@@ -1350,15 +1412,7 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			const msg = err instanceof Error ? err.message : String(err)
 			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
 		}
-		const settingsManager = SettingsManager.create(cwd, options.agentDir)
-		initializeHeadlessTheme(settingsManager)
-		const resourceLoader = new DefaultResourceLoader({
-			cwd,
-			agentDir: options.agentDir,
-			settingsManager,
-			extensionFactories: options.extensionFactories,
-		})
-		await resourceLoader.reload()
+		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,
@@ -1373,15 +1427,7 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 	return async (params: NewSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
-		const settingsManager = SettingsManager.create(cwd, options.agentDir)
-		initializeHeadlessTheme(settingsManager)
-		const resourceLoader = new DefaultResourceLoader({
-			cwd,
-			agentDir: options.agentDir,
-			settingsManager,
-			extensionFactories: options.extensionFactories,
-		})
-		await resourceLoader.reload()
+		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,

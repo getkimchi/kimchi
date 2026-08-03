@@ -14,9 +14,17 @@ describe("resolveModelRoleNames", () => {
 })
 
 describe("orchestratorShouldReceivePhaseGuidelines", () => {
-	it("never includes build or review worker guidelines", () => {
+	it("never includes build worker guidelines", () => {
 		expect(orchestratorShouldReceivePhaseGuidelines("build", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
-		expect(orchestratorShouldReceivePhaseGuidelines("review", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
+	})
+
+	it("includes review guidelines when orchestrator owns reviewer", () => {
+		expect(orchestratorShouldReceivePhaseGuidelines("review", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(true)
+	})
+
+	it("omits review guidelines when orchestrator lacks reviewer", () => {
+		const roles = { ...DEFAULT_MODEL_ROLES, reviewer: "anthropic/claude-opus-4-7" }
+		expect(orchestratorShouldReceivePhaseGuidelines("review", "kimi-k2.7", roles)).toBe(false)
 	})
 
 	it("includes plan guidelines when orchestrator owns planner", () => {

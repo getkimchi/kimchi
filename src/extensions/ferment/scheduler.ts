@@ -5,21 +5,24 @@ import { formatActionNudgeLine } from "./action-tool-names.js"
 import { decideContinuation } from "./continuation.js"
 import type { FermentRuntime } from "./runtime.js"
 import { safeSendMessage, tryPiAction } from "./safe-send.js"
-import type { ContinuationPolicy } from "./state.js"
+import { type ContinuationPolicy, isInactiveOrPaused, isTerminal } from "./state.js"
 
 export interface ScheduleNextFermentActionOptions {
 	allowManualPhaseBoundary?: boolean
 	treatCompleteFermentAsContinue?: boolean
 	tag?: string
 	deliverAs?: "steer" | "followUp"
+	messagePrefix?: string
 }
 
 export interface ScheduleFermentWakeUpOptions {
 	allowManualPhaseBoundary?: boolean
 	deliverAs?: "followUp"
 	fermentId?: string
-	skipNudge?: boolean
+	messagePrefix?: string
+	skipBreadcrumb?: boolean
 	tag?: string
+	treatCompleteFermentAsContinue?: boolean
 }
 
 // ─── Contextual nudge builder ─────────────────────────────────────────────────
@@ -205,7 +208,8 @@ export function scheduleNextFermentAction(
 		ferment.status === "running"
 			? `RESUMING ferment "${ferment.name}" — the previous session was interrupted. Pick up the work immediately. Do NOT explain or summarize — execute the next action below.\n\n`
 			: ""
-	const messageText = `${interruptedPrefix}${baseMsg}`
+	const messagePrefix = opts.messagePrefix ? `${opts.messagePrefix}\n\n` : ""
+	const messageText = `${interruptedPrefix}${messagePrefix}${baseMsg}`
 
 	tryPiAction(() => {
 		pi.appendEntry("ferment_breadcrumb", {
@@ -230,26 +234,29 @@ export function scheduleFermentWakeUp(
 	opts: ScheduleFermentWakeUpOptions = {},
 ): void {
 	const ferment = freshFerment(runtime, opts.fermentId)
-	if (!ferment || ferment.status === "complete" || ferment.status === "abandoned" || ferment.status === "paused") {
-		if (ferment?.status === "complete" || ferment?.status === "abandoned") runtime.setActive(undefined)
+	if (!ferment || isInactiveOrPaused(ferment)) {
+		if (isTerminal(ferment)) runtime.setActive(undefined)
 		return
 	}
 
 	const decision = decideContinuation(ferment, runtime.getContinuationPolicy(), opts)
 	if (decision.type !== "continue") return
-	if (opts.skipNudge && decision.action.kind === "scope") return
 	if (shouldSuppressHiddenNudge(decision.action, runtime.getContinuationPolicy())) return
 
 	const tag = opts.tag ?? "Wake-up"
+	const baseNudge = buildContextualNudge(ferment, decision.action)
+	const prefix = opts.messagePrefix ? `${opts.messagePrefix}\n\n` : ""
 	tryPiAction(() => {
-		pi.appendEntry("ferment_breadcrumb", {
-			text: `${tag} [${decision.action.kind}]: "${ferment.name}" [${ferment.status}] · policy ${runtime.getContinuationPolicy()}`,
-		})
+		if (!opts.skipBreadcrumb) {
+			pi.appendEntry("ferment_breadcrumb", {
+				text: `${tag} [${decision.action.kind}]: "${ferment.name}" [${ferment.status}] · policy ${runtime.getContinuationPolicy()}`,
+			})
+		}
 		safeSendMessage(
 			pi,
 			{
 				customType: "ferment_continuation_nudge",
-				content: [{ type: "text", text: buildContextualNudge(ferment, decision.action) }],
+				content: [{ type: "text", text: `${prefix}${baseNudge}` }],
 				display: false,
 				details: { action: "wake_up", expectedAction: decision.action.kind },
 			},

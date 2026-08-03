@@ -113,7 +113,7 @@ describe("stale-ctx crash on ferment oneshot transition", () => {
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 
 		// Text-only assistant turn, stopReason "stop", no tool calls. This routes
-		// through maybeInjectReactiveContinuationNudge → scheduleNextFermentAction
+		// through maybeInjectLifecycleObligationGuard → scheduleNextFermentAction
 		// → `tryPiAction(() => { pi.appendEntry(...); safeSendMessage(...) })`.
 		// When appendEntry or sendMessage throw synchronously the surrounding
 		// tryPiAction must catch the stale-ctx error; otherwise it propagates as

@@ -95,6 +95,33 @@ describe("buildSystemPrompt", () => {
 		{ name: "steer_subagent", description: "Steer a running background agent" },
 	]
 
+	it("scopes consent requirements without blocking requested local development work", () => {
+		const result = buildSystemPrompt({
+			tools,
+			env: testEnv,
+			mode: "single",
+		})
+
+		expect(result).toContain(
+			"A user's request to change code authorizes ordinary local workspace edits and verification commands",
+		)
+		expect(result).not.toContain("Ask before anything that publishes, mutates state, or is irreversible.")
+	})
+
+	it("caps GitLab merge request diffs before targeted reads", () => {
+		const result = buildSystemPrompt({
+			tools,
+			env: testEnv,
+			mode: "single",
+		})
+
+		expect(result).toContain("`glab mr diff` on big MRs")
+		expect(result).toContain("merge_requests/<iid>/diffs")
+		expect(result).toContain("--paginate")
+		expect(result).toContain("'.[].new_path'")
+		expect(result).not.toContain("merge_requests/123/changes")
+	})
+
 	describe("orchestrator mode", () => {
 		it("includes all expected sections", () => {
 			const result = buildSystemPrompt({
@@ -122,15 +149,19 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain('<tool name="Agent">')
 		})
 
-		it("does not include phase tagging instructions without the tags extension", () => {
+		it("keeps phase behaviour but omits phase tool instructions without set_phase", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
+				currentModelId: "kimi-k2.7",
+				roles: DEFAULT_MODEL_ROLES,
 				mode: "orchestrator",
 			})
 
 			expect(result).not.toContain("Phase Tagging for Analytics")
-			expect(result).not.toContain("You must call `set_phase`")
+			expect(result).not.toContain("Call `set_phase`")
+			expect(result).toContain("### Phase-specific behaviour")
+			expect(result).toContain("During **plan** phase")
 		})
 
 		it("handles empty tools list", () => {
@@ -260,43 +291,35 @@ describe("buildSystemPrompt", () => {
 			expect(envPos).toBeLessThan(contextPos)
 		})
 
-		it("omits worker build phase guidelines for orchestrator", () => {
+		it("omits phase management when no phase tool or owned phase behaviour applies", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "kimi-k2.7",
-				currentPhase: "build",
-				registry,
-				roles: DEFAULT_MODEL_ROLES,
 				mode: "orchestrator",
 			})
-			expect(result).not.toContain("## Phase Guidelines (build)")
+			expect(result).not.toContain("## Phase Management")
+			expect(result).not.toContain("During **explore** phase")
+			expect(result).not.toContain("During **research** phase")
+			expect(result).not.toContain("During **plan** phase")
+			expect(result).not.toContain("During **build** phase")
+			expect(result).not.toContain("During **review** phase")
 		})
 
-		it("omits explore phase guidelines when orchestrator lacks explorer role", () => {
+		it("includes phase behaviour the orchestrator may perform directly", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				currentModelId: "kimi-k2.7",
-				currentPhase: "explore",
 				registry,
 				roles: DEFAULT_MODEL_ROLES,
 				mode: "orchestrator",
 			})
-			expect(result).not.toContain("## Phase Guidelines (explore)")
-		})
-
-		it("includes plan phase guidelines when orchestrator owns planner role", () => {
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				currentModelId: "kimi-k2.7",
-				currentPhase: "plan",
-				registry,
-				roles: DEFAULT_MODEL_ROLES,
-				mode: "orchestrator",
-			})
-			expect(result).toContain("## Phase Guidelines (plan)")
+			expect(result).toContain("## Phase Management")
+			expect(result).toContain("During **plan** phase")
+			expect(result).not.toContain("During **explore** phase")
+			expect(result).not.toContain("During **research** phase")
+			expect(result).not.toContain("During **build** phase")
+			expect(result).toContain("During **review** phase")
 		})
 
 		it("uses orchestrator-specific core guidelines", () => {
@@ -364,12 +387,11 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("MiniMax M2 family")
 		})
 
-		it("includes plan phase guidelines alongside model-specific orchestration notes", () => {
+		it("includes Phase Management section alongside model-specific orchestration notes", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
-				currentPhase: "plan",
 				registry,
 				roles: {
 					...DEFAULT_MODEL_ROLES,
@@ -378,7 +400,8 @@ describe("buildSystemPrompt", () => {
 				},
 				mode: "orchestrator",
 			})
-			expect(result).toContain("## Phase Guidelines (plan)")
+			expect(result).toContain("## Phase Management")
+			expect(result).toContain("During **plan** phase")
 			expect(result).toContain("### Model-specific notes")
 		})
 	})
@@ -427,17 +450,17 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("Model selection for delegation")
 		})
 
-		it("includes phase guidelines when phase and model are provided", () => {
+		it("includes Phase Management section when phase and model are provided", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
-				currentPhase: "build",
 				registry,
 				mode: "subagent",
 			})
-			expect(result).toContain("## Phase Guidelines (build)")
-			expect(result).toContain("Outline-then-diff")
+			expect(result).toContain("## Phase Management")
+			expect(result).toContain("During **build** phase")
+			expect(result).toContain("Prefer `edit` over `write` for files >30 lines")
 		})
 
 		it("handles tools list with only delegation tools", () => {
@@ -553,17 +576,17 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain('<tool name="Agent">')
 		})
 
-		it("includes phase guidelines when phase and model are provided", () => {
+		it("includes Phase Management section when phase and model are provided", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
-				currentPhase: "build",
 				registry,
 				mode: "single",
 			})
-			expect(result).toContain("## Phase Guidelines (build)")
-			expect(result).toContain("Outline-then-diff")
+			expect(result).toContain("## Phase Management")
+			expect(result).toContain("During **build** phase")
+			expect(result).toContain("Prefer `edit` over `write` for files >30 lines")
 		})
 
 		it("includes default research nudges for a non-OSS model in research phase", () => {
@@ -571,11 +594,11 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				currentModelId: "claude-opus-4-6-20250514",
-				currentPhase: "research",
 				registry,
 				mode: "single",
 			})
-			expect(result).toContain("## Phase Guidelines (research)")
+			expect(result).toContain("## Phase Management")
+			expect(result).toContain("During **research** phase")
 			expect(result).toContain("version you are assuming")
 			expect(result).toContain("version/API assumption")
 			expect(result).toContain("do not bluff")
@@ -583,33 +606,40 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("AT MOST one")
 		})
 
-		it("includes default and family research nudges for an OSS model in research phase", () => {
+		it("includes default research guidelines for an OSS model in research phase", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
-				currentPhase: "research",
 				registry,
 				mode: "single",
 			})
-			expect(result).toContain("## Phase Guidelines (research)")
-			expect(result).toContain("MiniMax family")
-			expect(result).toContain("hallucinating APIs")
+			expect(result).toContain("## Phase Management")
+			expect(result).toContain("During **research** phase")
 			expect(result).toContain("version you are assuming")
+			// Family-specific override (MiniMax) must reach the prompt, not just
+			// the default research text. This is the regression the
+			// consolidation commit ababd67 introduced by dumping DEFAULT_PHASE_GUIDELINES
+			// without resolving through the registry.
+			expect(result).toContain("hallucinating APIs")
 		})
 
-		it("includes build-phase research nudge for an OSS model in build phase", () => {
+		it("includes build-phase default nudge for an OSS model in build phase", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
-				currentPhase: "build",
 				registry,
 				mode: "single",
 			})
-			expect(result).toContain("## Phase Guidelines (build)")
+			expect(result).toContain("## Phase Management")
+			expect(result).toContain("During **build** phase")
 			expect(result).toContain("uncertain about a library API")
 			expect(result).toContain("assume your knowledge may be stale")
+			// Family-specific build override (MiniMax M2 family):
+			// "STAY IN SCOPE" targets M2's over-reaching failure mode.
+			expect(result).toContain("STAY IN SCOPE")
+			expect(result).toContain("do NOT hallucinate APIs")
 		})
 
 		it("makes subagent spawning opt-in and defaults to the current model", () => {

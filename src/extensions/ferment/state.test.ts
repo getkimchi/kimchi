@@ -8,16 +8,21 @@ import {
 	clearCompactionInFlight,
 	clearFermentState,
 	clearPendingCompaction,
+	continuationPolicyForNewFerment,
 	getActiveFermentId,
+	getContinuationPolicy,
 	getFermentLockPath,
 	getPendingCompaction,
 	hasActiveFerment,
 	isCompactionInFlight,
 	isFermentLockedByLiveProcess,
+	isInactiveOrPaused,
+	isTerminal,
 	markCompactionInFlight,
 	onActiveFermentChange,
 	removeFermentLock,
 	setActive,
+	setContinuationPolicy,
 	setPendingCompaction,
 	writeFermentLock,
 } from "./state.js"
@@ -297,4 +302,67 @@ describe("clearFermentState", () => {
 		// Other ferments are unaffected.
 		expect(getPendingCompaction("ferment-B")).toBeDefined()
 	})
+})
+
+describe("continuationPolicyForNewFerment", () => {
+	it("returns manual for interactive UI without one-shot flag", () => {
+		expect(continuationPolicyForNewFerment(true, false)).toBe("manual")
+	})
+
+	it("returns automated for interactive UI with one-shot flag", () => {
+		expect(continuationPolicyForNewFerment(true, true)).toBe("automated")
+	})
+
+	it("returns automated for headless (no UI) without one-shot flag", () => {
+		expect(continuationPolicyForNewFerment(false, false)).toBe("automated")
+	})
+
+	it("returns automated for headless (no UI) with one-shot flag", () => {
+		expect(continuationPolicyForNewFerment(false, true)).toBe("automated")
+	})
+
+	it("does not depend on or mutate global policy state", () => {
+		const previousPolicy = getContinuationPolicy()
+		try {
+			setContinuationPolicy("automated")
+			const result = continuationPolicyForNewFerment(true, false)
+			expect(result).toBe("manual")
+			// Global state is unchanged — the function is pure
+			expect(getContinuationPolicy()).toBe("automated")
+		} finally {
+			setContinuationPolicy(previousPolicy)
+		}
+	})
+})
+
+describe("isTerminal", () => {
+	for (const status of ["draft", "planned", "running", "paused"] as const) {
+		it(`returns false for ${status} ferments`, () => {
+			expect(isTerminal(makeFerment(status))).toBe(false)
+		})
+	}
+	for (const status of ["complete", "abandoned"] as const) {
+		it(`returns true for ${status} ferments`, () => {
+			expect(isTerminal(makeFerment(status))).toBe(true)
+		})
+	}
+	it("returns false when the ferment is undefined", () => {
+		expect(isTerminal(undefined)).toBe(false)
+	})
+})
+
+describe("isInactiveOrPaused", () => {
+	it("returns true when the ferment is undefined", () => {
+		expect(isInactiveOrPaused(undefined)).toBe(true)
+	})
+	for (const status of ["draft", "planned", "running"] as const) {
+		it(`returns false for ${status} ferments`, () => {
+			expect(isInactiveOrPaused(makeFerment(status))).toBe(false)
+		})
+	}
+	for (const status of ["paused", "complete", "abandoned"] as const) {
+		it(`returns true for ${status} ferments`, () => {
+			expect(isInactiveOrPaused(makeFerment(status))).toBe(true)
+		})
+	}
 })

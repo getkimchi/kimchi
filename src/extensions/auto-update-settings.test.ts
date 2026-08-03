@@ -254,6 +254,7 @@ describe("default export — extension factory", () => {
 			registerCommand: (name: string, options: { description: string; handler: (...args: unknown[]) => unknown }) => {
 				commands.push({ name, options })
 			},
+			on: () => {},
 		}
 		// biome-ignore lint/suspicious/noExplicitAny: fake pi satisfies the structural surface used by this extension
 		defaultExport(fakePi as any)

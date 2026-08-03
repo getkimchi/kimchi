@@ -9,11 +9,12 @@
 
 import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent"
 import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
-import { buildPhaseGuidelinesSection } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { resolvePhaseGuideline } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 import type { Phase } from "../orchestration/model-registry/types.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
+import { orchestratorShouldReceivePhaseGuidelines } from "../orchestration/orchestrator-roles.js"
 import type { ContextFile } from "./context-files.js"
 import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { renderSystemPromptBlocks, type SuppressibleSection } from "./system-prompt-blocks.js"
@@ -48,7 +49,6 @@ export interface SystemPromptBuildOptions {
 	contextFiles?: readonly ContextFile[]
 	skills?: readonly Skill[]
 	currentModelId?: string
-	currentPhase?: Phase
 	registry?: ModelRegistry
 	mode: PromptMode
 	/** Role-based model assignments for orchestrator mode. */
@@ -64,7 +64,7 @@ export interface SystemPromptBuildOptions {
 export const DELEGATION_TOOL_NAMES = new Set(["Agent", "resume_subagent", "get_subagent_result", "steer_subagent"])
 
 export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
-	const { tools, env, contextFiles, skills, currentModelId, currentPhase, registry, mode, roles, sessionId } = options
+	const { tools, env, contextFiles, skills, currentModelId, registry, mode, roles, sessionId } = options
 
 	const effectiveTools = mode === "subagent" ? tools.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name)) : tools
 
@@ -81,10 +81,6 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		customConfigs: options.customConfigs,
 	})
 
-	const phaseSection = buildPhaseGuidelinesSection(currentModelId, currentPhase, registry, {
-		mode,
-		roles,
-	})
 	const blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode }) : []
 	const suppressed = new Set<SuppressibleSection>()
 	for (const block of blocks) {
@@ -93,14 +89,17 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 
 	return buildPrompt({
 		mode,
+		toolNames: new Set(effectiveTools.map((tool) => tool.name)),
 		toolsSection,
 		environmentSection,
 		projectContext,
 		skillsSection: formatSkills(filteredSkills),
 		orchestrationSection,
-		phaseSection,
 		systemPromptBlocks: blocks.map((block) => block.content).join("\n\n"),
 		suppressed,
+		currentModelId,
+		registry,
+		roles,
 	})
 }
 
@@ -110,14 +109,17 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 
 interface PromptParts {
 	mode: PromptMode
+	toolNames: ReadonlySet<string>
 	toolsSection: string
 	environmentSection: string
 	projectContext: string
 	skillsSection: string
 	orchestrationSection: string
-	phaseSection: string
 	systemPromptBlocks: string
 	suppressed: ReadonlySet<SuppressibleSection>
+	currentModelId?: string
+	registry?: ModelRegistry
+	roles?: ModelRoles
 }
 
 const BASE_INSTRUCTIONS =
@@ -226,16 +228,156 @@ export const FACTUAL_ACCURACY = `- Never guess, assume, or fabricate information
 - Distinguish what you found from what you assume. If you must reason about something uncertain, label it explicitly as an assumption and ask the user to confirm before acting on it.`
 
 /**
- * Combine the three shared guideline sections into a single string,
- * formatted for injection into a replace-mode subagent system prompt.
+ * Combine the shared guideline sections into a single string, formatted
+ * for injection into a replace-mode subagent system prompt.
+ *
+ * Includes the consolidated `## Tool Selection`, `## Output & Truncation`,
+ * and `## Consent & Irreversible Actions` sections so replace-mode
+ * subagents (e.g. General-Purpose) receive the same tool-substitution,
+ * output-capping, and consent rules as the main thread. `## Phase
+ * Management` is deliberately omitted: subagents do not manage phase
+ * lifecycle — their persona fixes their phase, and they never call
+ * `set_phase`.
  */
-export function buildCoreGuidelinesSections(): string {
+export function buildCoreGuidelinesSections(activeToolNames?: readonly string[]): string {
+	const toolNames = activeToolNames ? new Set(activeToolNames) : undefined
 	return [
 		`## Guidelines\n\n${CORE_GUIDELINES}`,
 		`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`,
 		`## Documents\n\n${DOCUMENTS_SECTION}`,
-	].join("\n\n")
+		buildOutputAndTruncationSection(toolNames),
+		buildToolSelectionSection(toolNames),
+		CONSENT_AND_IRREVERSIBLE_ACTIONS,
+	]
+		.filter(Boolean)
+		.join("\n\n")
 }
+
+// ---------------------------------------------------------------------------
+// Consolidated core sections (Output & Truncation, Tool Selection,
+// Phase Management, Consent & Irreversible Actions)
+// ---------------------------------------------------------------------------
+
+function hasTool(toolNames: ReadonlySet<string> | undefined, name: string): boolean {
+	return toolNames === undefined || toolNames.has(name)
+}
+
+export function buildOutputAndTruncationSection(toolNames?: ReadonlySet<string>): string {
+	const lines: string[] = []
+	if (hasTool(toolNames, "bash")) {
+		lines.push(
+			"- Bash: pipe to `head`/`tail` or pass `-n`/`--tail`. Use `git log -n 20 --oneline`, `git diff --stat`, `2>&1 | tail -100` for build/test/install output, `--log-failed` for CI logs, `| head -c 5000` or `| jq` for large `curl` responses, `tree -L 2`, never `git status -uall` on large repos.",
+			"- GitHub CLI: `gh run view --log` is huge — use `--log-failed` or `| tail -N`. `gh api ... --paginate` can be massive — add `--jq`. `gh pr diff` on big PRs — `--name-only` first, then targeted reads.",
+			"- GitLab CLI: `glab ci view` is a TUI — never call from a headless harness. Use `glab ci trace` or `glab api`. `glab api .../trace` — full job logs; always `| tail -N`. `--paginate` on busy projects is huge — combine with `--jq`. `glab mr diff` on big MRs — list changed paths first with `glab api --paginate projects/:fullpath/merge_requests/<iid>/diffs --jq '.[].new_path'`, then use targeted reads.",
+		)
+	}
+	if (hasTool(toolNames, "grep")) {
+		lines.push(
+			"- Content search: paths first (`files_with_matches` / `-l`), then content. Cap broad matches at ~50 hits, start with 2 lines of context, narrow scope with `--glob`/`--type` before searching.",
+		)
+	}
+	if (hasTool(toolNames, "read")) {
+		lines.push(
+			"- File reads: never read a known-large file (lockfiles, generated, fixtures) without an offset. Search to locate, then read around the hit.",
+		)
+	}
+	if (lines.length === 0) return ""
+	return `## Output & Truncation
+
+Cap output before running a tool, not after — recovery from a flood is expensive.
+
+${lines.join("\n")}`
+}
+
+export function buildToolSelectionSection(toolNames?: ReadonlySet<string>): string {
+	const lines: string[] = []
+	if (hasTool(toolNames, "read")) {
+		lines.push("- Reading a file → use `read` (not `cat`, `head`, `tail`, `sed -n`).")
+	}
+	if (hasTool(toolNames, "edit")) {
+		lines.push("- Editing a file → use `edit` (not `sed -i`, `perl -i`).")
+	}
+	if (hasTool(toolNames, "write")) {
+		lines.push("- Writing a file → use `write` (not `>`, `>>`, `tee`, heredoc).")
+	}
+	if (hasTool(toolNames, "grep")) {
+		lines.push(
+			"- Searching file contents → use `grep` (respects `.gitignore`, faster).",
+			"- Don't `cat file | grep X` — use the harness's content search tool instead.",
+		)
+	}
+	if (hasTool(toolNames, "find")) {
+		lines.push(
+			"- Finding files by pattern → use `find` (respects `.gitignore`).",
+			"- Don't `find . -name X` — use the harness's filename search tool instead.",
+		)
+	}
+	if (hasTool(toolNames, "ls")) {
+		lines.push("- Listing a directory → use `ls`.")
+	}
+	if (hasTool(toolNames, "bash")) {
+		lines.push(
+			"- Use bash only for: build commands, test runners, git, package managers, shell scripting, or system administration.",
+		)
+	}
+	if (hasTool(toolNames, "mcp")) {
+		lines.push(
+			"- Before resorting to web search, web fetch, or giving up on authenticated/external data, check your Available Tools list and MCP integrations. MCP servers often provide authenticated access to Jira, Confluence, GitHub, GitLab, etc.",
+			'- Use `mcp({ search: "query" })` to discover available servers and tools.',
+			"- Prefer MCP tools over `web_fetch` for any service that requires authentication.",
+		)
+	}
+	if (lines.length === 0) return ""
+	return `## Tool Selection
+
+Prefer the right dedicated tool before falling back to bash or external fetches.
+
+${lines.join("\n")}`
+}
+
+export const PHASE_MANAGEMENT_INTRO = `## Phase Management
+
+The session starts in \`explore\` phase by default. Call \`set_phase\` when the work type changes — pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\`. Only one phase is active at a time; the most recent call wins. Subagents set their phase automatically from their persona, so this tool is for tagging the main thread's work.
+
+When the orchestrator decides to perform a phase itself (not delegate), include the matching \`thinking\` parameter from the Orchestration **Thinking levels** table. Leave \`thinking\` unset when only tagging coordination work or when delegating the phase to an Agent.`
+
+const PHASE_ORDER: readonly Phase[] = ["explore", "research", "plan", "build", "review"]
+
+/**
+ * Build the consolidated ## Phase Management section, resolving each phase's
+ * guideline through the model registry so family-specific overrides (e.g.
+ * MiniMax M2's "STAY IN SCOPE" / "do NOT hallucinate APIs") reach the prompt.
+ *
+ * Applicable phases are embedded (not just the active one) to keep the prompt
+ * static across phase transitions. Single-model and subagent prompts receive
+ * all phases; orchestrators receive only phases allowed by their stable role
+ * assignments. Swapping content on `set_phase` would invalidate the provider's
+ * KV cache, while role and model resolution remain cache-stable for the session.
+ */
+export function buildPhaseManagementSection(
+	modelId?: string,
+	registry?: ModelRegistry,
+	includeToolInstructions = true,
+	mode: PromptMode = "single",
+	roles?: ModelRoles,
+): string {
+	const applicablePhases =
+		mode === "orchestrator"
+			? PHASE_ORDER.filter((phase) => orchestratorShouldReceivePhaseGuidelines(phase, modelId, roles))
+			: PHASE_ORDER
+	const guidelines = applicablePhases.map((phase) => resolvePhaseGuideline(phase, modelId, registry)).join("\n\n")
+	const intro = includeToolInstructions ? PHASE_MANAGEMENT_INTRO : "## Phase Management"
+	if (!guidelines) return includeToolInstructions ? intro : ""
+	return `${intro}\n\n### Phase-specific behaviour\n\n${guidelines}`
+}
+
+export const CONSENT_AND_IRREVERSIBLE_ACTIONS = `## Consent & Irreversible Actions
+
+Ask before unrequested actions that publish externally, mutate remote state, or are irreversible. A user's request to change code authorizes ordinary local workspace edits and verification commands; it does not authorize publishing or remote state changes.
+
+- GitHub CLI: do not run \`gh pr review\`, \`gh pr comment\`, \`gh issue comment\`, \`gh pr merge\`, \`gh pr close\`, \`gh pr reopen\`, \`gh pr ready\`, \`gh pr edit\`, \`gh run rerun\`, \`gh run cancel\`, \`gh issue close\`, \`gh issue reopen\`, \`gh issue edit\`, \`gh issue delete\`, \`gh release create/edit/delete\`, or any \`gh api POST/PATCH/PUT/DELETE\` unprompted. Read-only commands (\`list\`, \`view\`, \`diff\`, \`checks\`, \`status\`, \`gh api\` GETs) are fine.
+- GitLab CLI: do not run \`glab mr note\`, \`glab mr note resolve/reopen\`, \`glab issue note\`, \`glab mr merge\`, \`glab mr rebase\`, \`glab mr close\`, \`glab mr reopen\`, \`glab mr update\`, \`glab mr approve\`, \`glab mr revoke\`, \`glab ci retry/cancel/run\`, \`glab issue close/reopen/update/delete\`, \`glab release create/update/delete\`, or any \`glab api POST/PUT/PATCH/DELETE\` unprompted.
+- Git remote ops (any CLI): pushing branches, force-push, deleting branches/tags need explicit approval.`
 
 function buildPrompt(parts: PromptParts): string {
 	const sections: string[] = []
@@ -253,13 +395,22 @@ function buildPrompt(parts: PromptParts): string {
 	sections.push(`## Guidelines\n\n${resolveCoreGuidelines(parts.mode)}`)
 	sections.push(`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`)
 
-	// 5. Phase guidelines
-	if (!parts.suppressed.has("phase-guidelines") && parts.phaseSection) {
-		sections.push(parts.phaseSection)
-	}
-
-	// 6. Documents
+	// 5. Documents
 	sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
+
+	// 6. Consolidated core sections: output, tool selection, phase, consent
+	sections.push(buildOutputAndTruncationSection(parts.toolNames))
+	sections.push(buildToolSelectionSection(parts.toolNames))
+	sections.push(
+		buildPhaseManagementSection(
+			parts.currentModelId,
+			parts.registry,
+			parts.toolNames.has("set_phase"),
+			parts.mode,
+			parts.roles,
+		),
+	)
+	sections.push(CONSENT_AND_IRREVERSIBLE_ACTIONS)
 
 	// 7. Rest: system prompt blocks, tools, skills, environment, project context
 	if (parts.systemPromptBlocks) {

@@ -50,11 +50,10 @@ test("/multi-model opens the main menu with the role summary and bottom-row entr
 			responses: [],
 		},
 		async (_fixture, trace) => {
-			// One-shot "/multi-model\r" races startup; write + submit separately.
-			// Trailing space switches autocomplete to argument mode so Enter
-			// cannot trigger the slash-command autocomplete accept path.
-			terminal.write("/multi-model ")
-			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			// Write + submit separately so the command text is visible before
+			// Enter fires — a one-shot submit races startup and can be lost.
+			terminal.write("/multi-model")
+			await waitForText(terminal, "/multi-model", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("typed /multi-model")
 			terminal.submit("")
 			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
@@ -88,8 +87,8 @@ test("/multi-model reset to defaults persists roles and surfaces a notification"
 			responses: [],
 		},
 		async (_fixture, trace) => {
-			terminal.write("/multi-model ")
-			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write("/multi-model")
+			await waitForText(terminal, "/multi-model", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("typed /multi-model")
 			terminal.submit("")
 			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
@@ -120,8 +119,8 @@ test("/multi-model metadata editor saves tier/vision/description", async ({ term
 			responses: [],
 		},
 		async (fixture, trace) => {
-			terminal.write("/multi-model ")
-			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write("/multi-model")
+			await waitForText(terminal, "/multi-model", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("typed /multi-model")
 			terminal.submit("")
 			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
@@ -226,8 +225,8 @@ test("/multi-model builder role opens toggle-select with current assignment pre-
 			responses: [],
 		},
 		async (_fixture, trace) => {
-			terminal.write("/multi-model ")
-			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write("/multi-model")
+			await waitForText(terminal, "/multi-model", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("typed /multi-model")
 			terminal.submit("")
 			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
@@ -269,8 +268,8 @@ test("/multi-model Enter on first row of toggle-select confirms without scrollin
 			responses: [],
 		},
 		async (_fixture, trace) => {
-			terminal.write("/multi-model ")
-			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write("/multi-model")
+			await waitForText(terminal, "/multi-model", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
 			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("main menu open")
@@ -304,8 +303,8 @@ test("/multi-model toggle-select has no Done/Add custom rows and uses new bottom
 			responses: [],
 		},
 		async (_fixture, trace) => {
-			terminal.write("/multi-model ")
-			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write("/multi-model")
+			await waitForText(terminal, "/multi-model", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
 			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("main menu open")
@@ -344,8 +343,8 @@ test("/multi-model toggle-select cursor resets to row 0 on Escape + re-open", as
 			responses: [],
 		},
 		async (_fixture, trace) => {
-			terminal.write("/multi-model ")
-			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write("/multi-model")
+			await waitForText(terminal, "/multi-model", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
 			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("main menu open")
@@ -400,8 +399,8 @@ test("/multi-model Space toggles checkbox state in toggle-select", async ({ term
 			responses: [],
 		},
 		async (_fixture, trace) => {
-			terminal.write("/multi-model ")
-			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write("/multi-model")
+			await waitForText(terminal, "/multi-model", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
 			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("main menu open")
@@ -446,8 +445,8 @@ test("/multi-model toggle-select title count updates after Space toggle", async 
 			responses: [],
 		},
 		async (_fixture, trace) => {
-			terminal.write("/multi-model ")
-			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write("/multi-model")
+			await waitForText(terminal, "/multi-model", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
 			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("main menu open")
@@ -500,8 +499,8 @@ test("/multi-model main menu cursor resets to row 0 after configuring a role", a
 			responses: [],
 		},
 		async (_fixture, trace) => {
-			terminal.write("/multi-model ")
-			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write("/multi-model")
+			await waitForText(terminal, "/multi-model", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
 			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("main menu open")
@@ -548,8 +547,8 @@ test("/multi-model orchestrator picker omits the Enter custom model... option", 
 			responses: [],
 		},
 		async (_fixture, trace) => {
-			terminal.write("/multi-model ")
-			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write("/multi-model")
+			await waitForText(terminal, "/multi-model", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
 			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("main menu open")

@@ -110,10 +110,30 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({
+		expect(config.providers["kimchi-dev/anthropic"]).toBeDefined()
+		expect(config.providers["kimchi-dev/anthropic"].api).toBe("openai-completions")
+		expect(config.providers["kimchi-dev/anthropic"].baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
+		expect(config.providers["kimchi-dev/anthropic"].models[0].compat).toEqual({
 			supportsReasoningEffort: false,
 			cacheControlFormat: "anthropic",
+			supportsUsageInStreaming: true,
 		})
+	})
+
+	it("sets X-Provider-Type header at the provider level for sub-providers only", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [SONNET_46, KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		// base kimchi-dev provider does NOT have the header
+		expect(config.providers["kimchi-dev"].headers["X-Provider-Type"]).toBeUndefined()
+
+		// anthropic sub-provider has the header
+		expect(config.providers["kimchi-dev/anthropic"].headers["X-Provider-Type"]).toBe("anthropic")
 	})
 
 	it("omits compat for non-anthropic models", async () => {
@@ -128,7 +148,33 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
 	})
 
-	it("puts AI-Enabler models first and preserves API order for others, all under kimchi-dev", async () => {
+	it("sets compat for claude-* models regardless of upstream provider (e.g. azure_ai)", async () => {
+		const CLAUDE_ON_AZURE: unknown = {
+			slug: "claude-sonnet-4-6",
+			display_name: "",
+			provider: "azure_ai",
+			reasoning: true,
+			input_modalities: ["text", "image"],
+			is_serverless: false,
+			limits: { context_window: 1_000_000, max_output_tokens: 128_000 },
+		}
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [CLAUDE_ON_AZURE] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev/azure_ai"]).toBeDefined()
+		expect(config.providers["kimchi-dev/azure_ai"].models[0].compat).toEqual({
+			supportsReasoningEffort: false,
+			cacheControlFormat: "anthropic",
+			supportsUsageInStreaming: true,
+		})
+	})
+
+	it("splits ai-enabler models into kimchi-dev and non-ai-enabler models into kimchi-dev/{provider}", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [OPUS_46, GLM, SONNET_46, KIMI] }),
@@ -137,9 +183,19 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		expect(Object.keys(config.providers)).toEqual(["kimchi-dev"])
-		const ids = config.providers["kimchi-dev"].models.map((m: { id: string }) => m.id)
-		expect(ids).toEqual(["glm-5-fp8", "kimi-k2.5", "claude-opus-4-6", "claude-sonnet-4-6"])
+		expect(Object.keys(config.providers)).toEqual(["kimchi-dev", "kimchi-dev/anthropic"])
+
+		// ai-enabler models stay in kimchi-dev
+		const devIds = config.providers["kimchi-dev"].models.map((m: { id: string }) => m.id)
+		expect(devIds).toEqual(["glm-5-fp8", "kimi-k2.5"])
+
+		// anthropic models go to kimchi-dev/anthropic
+		const anthropicIds = config.providers["kimchi-dev/anthropic"].models.map((m: { id: string }) => m.id)
+		expect(anthropicIds).toEqual(["claude-opus-4-6", "claude-sonnet-4-6"])
+
+		// All providers use openai-completions
+		expect(config.providers["kimchi-dev"].api).toBe("openai-completions")
+		expect(config.providers["kimchi-dev/anthropic"].api).toBe("openai-completions")
 	})
 
 	it("uses correct URL, Authorization header, and timeout", async () => {
@@ -309,6 +365,43 @@ describe("updateModelsConfig", () => {
 
 		expect(fetch).toHaveBeenCalledTimes(2)
 		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
+	})
+
+	it("retries a 200 response with an unparseable body and succeeds on a later attempt", async () => {
+		vi.mocked(fetch)
+			.mockResolvedValueOnce({
+				ok: true,
+				headers: { get: () => null },
+				json: async () => {
+					throw new SyntaxError("Unexpected token < in JSON at position 0")
+				},
+			} as unknown as Response)
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ models: [KIMI] }),
+			} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} })
+
+		expect(fetch).toHaveBeenCalledTimes(2)
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
+	})
+
+	it("classifies a persistent unparseable body as transient after exhausting retries", async () => {
+		vi.mocked(fetch).mockResolvedValue({
+			ok: true,
+			headers: { get: () => null },
+			json: async () => {
+				throw new SyntaxError("Unexpected end of JSON input")
+			},
+		} as unknown as Response)
+
+		const error = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} }).catch((e) => e)
+
+		expect(error).toBeInstanceOf(ModelsFetchError)
+		expect(isTransientModelsError(error)).toBe(true)
+		expect((error as Error).message).toContain("Failed to parse models response")
+		expect(fetch).toHaveBeenCalledTimes(3)
 	})
 
 	it("throws on non-ok response when no cached config exists", async () => {

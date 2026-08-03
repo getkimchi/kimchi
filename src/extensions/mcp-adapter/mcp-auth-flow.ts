@@ -101,12 +101,17 @@ export async function startAuth(
 		}
 	}
 
-	// Start the callback server.
-	// Pre-registered OAuth clients require an exact redirect URI, so enforce strict port binding.
-	await ensureCallbackServer({ strictPort: Boolean(config.clientId) })
+	// Start the callback server with strict port binding. The redirect URI
+	// is tied to the port — if the port changes between registrations, the
+	// OAuth server rejects the callback with "redirect_uri not registered".
+	// Always use the default port (19876) so dynamic client registration
+	// stays consistent across attempts.
+	await ensureCallbackServer({ strictPort: true })
 
-	// Generate and store OAuth state BEFORE creating the provider
-	// The SDK will call provider.state() to read this value
+	// Generate and store OAuth state BEFORE creating the provider.
+	// The SDK calls provider.state() (not saveState) to read the state when
+	// constructing the authorization URL — it expects the state to already
+	// be stored. We generate it here so it's available when the SDK needs it.
 	const oauthState = generateState()
 	await updateOAuthState(serverName, oauthState)
 
@@ -194,10 +199,14 @@ export async function authenticate(
 			return "authenticated"
 		}
 
-		// Get the state that was already generated and stored in startAuth()
+		// Read the OAuth state stored by startAuth() (line ~107) and/or
+		// by the SDK via provider.saveState() during client.connect().
+		// At least one of these paths always saves state before we reach
+		// here — startAuth() pre-generates it, and provider.state()
+		// auto-generates if missing — so this is always defined.
 		const oauthState = await getOAuthState(serverName)
 		if (!oauthState) {
-			throw new Error("OAuth state not found - this should not happen")
+			throw new Error("OAuth state was not saved during startAuth")
 		}
 
 		// Register the callback BEFORE opening the browser
@@ -327,10 +336,21 @@ export async function getValidToken(serverName: string, serverUrl: string): Prom
 /**
  * Check the authentication status for a server.
  *
+ * If `serverUrl` is provided, stored tokens are validated against it —
+ * tokens saved for a different URL are treated as not_authenticated
+ * so the caller can re-authenticate.
+ *
  * @param serverName - The name of the MCP server
+ * @param serverUrl - Optional URL to validate stored tokens against
  * @returns The current auth status
  */
-export async function getAuthStatus(serverName: string): Promise<AuthStatus> {
+export async function getAuthStatus(serverName: string, serverUrl?: string): Promise<AuthStatus> {
+	if (serverUrl) {
+		const entry = getAuthForUrl(serverName, serverUrl)
+		if (!entry?.tokens) return "not_authenticated"
+		const expired = isTokenExpired(serverName)
+		return expired ? "expired" : "authenticated"
+	}
 	const hasTokens = await hasStoredTokens(serverName)
 	if (!hasTokens) return "not_authenticated"
 

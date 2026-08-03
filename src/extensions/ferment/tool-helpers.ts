@@ -199,6 +199,9 @@ export function createApplyAndPersist(runtime: FermentRuntime) {
 			},
 		)
 		if (outcome.ok) {
+			// A persisted lifecycle transition ends the previous guard episode,
+			// even when no text-only stop observes the intermediate obligation.
+			runtime.onLifecycleTransitionApplied(fermentId)
 			runtime.setActive(outcome.ferment)
 			// The status line's ferment segment reads getActive() at render time,
 			// but tool-call mutations happen mid-agent-run with no natural render

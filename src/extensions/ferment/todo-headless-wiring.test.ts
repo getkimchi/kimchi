@@ -136,8 +136,8 @@ describe("ferment → todo → headless prompt wiring", () => {
 			expect(md).toBeDefined()
 			expect(md).toContain("## Current Todos")
 			expect(md).toContain("**[Phase 1] Implementation**")
-			expect(md).toContain("- [ ] ↳ Write the code")
-			expect(md).toContain("- [ ] ↳ Run the tests")
+			expect(md).toContain("- ○ ↳ Write the code")
+			expect(md).toContain("- ○ ↳ Run the tests")
 		} finally {
 			unsubscribe()
 		}
@@ -345,8 +345,8 @@ describe("ferment → todo → headless prompt wiring", () => {
 
 			const ctx = createContext({ hasUI: false, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
 			const md = renderTodoStateBlock(ctx)
-			expect(md).toContain("- [x] ↳ Write the code")
-			expect(md).toContain("- [ ] ↳ Run the tests")
+			expect(md).toContain("- ✓ ↳ Write the code")
+			expect(md).toContain("- ○ ↳ Run the tests")
 		} finally {
 			unsubscribe()
 		}

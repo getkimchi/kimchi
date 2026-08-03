@@ -31,13 +31,15 @@ import { createToolVisibility } from "../../prompt-construction/tool-visibility.
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
 import { askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
+import { createFerment } from "../create.js"
 import { emitFermentCreated } from "../domain-events-emitter.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
 import { ensureGitRepo } from "../git-init.js"
 import { type GraderSpawner, judgeJourneyGradeViaSubagent } from "../judge.js"
-import { appendRefEntry, resetReactiveContinuationNudgeCount } from "../nudge.js"
+import { clearLifecycleGuard } from "../lifecycle-obligation-guard.js"
+import { appendRefEntry } from "../nudge.js"
 import { PENDING_PROPOSAL_SCHEMA_VERSION, savePendingProposal } from "../pending-proposal-store.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
 import { promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
@@ -501,7 +503,12 @@ async function resolveProposeFermentTarget(
 	// Bootstrap a new draft ferment from the proposal, mirroring /ferment new.
 	await ensureGitRepo({ ui: ctx.ui })
 	const shortName = deriveDraftFermentTitle(title)
-	const f = storage.create(shortName, goal)
+	const f = createFerment(runtime, {
+		name: shortName,
+		goal,
+		hasUI: ctx.hasUI,
+		isOneShot: pi.getFlag("ferment-oneshot") === true,
+	})
 	setActiveFermentAndApplyProfile(pi, runtime, f)
 	if (pi.events) {
 		emitFermentCreated(pi.events, f)
@@ -698,7 +705,7 @@ export async function completeFerment(
 	if (!fSnapshot) return toolErr("Ferment not found.")
 	if (fSnapshot.status === "complete") {
 		runtime.clearFermentState(params.ferment_id)
-		resetReactiveContinuationNudgeCount(params.ferment_id)
+		clearLifecycleGuard(params.ferment_id)
 		runtime.setActive(undefined)
 		return toolOk(
 			`Ferment "${fSnapshot.name}" is already complete. No further lifecycle action is available. Do not act on this ferment again without clear user consent.`,
@@ -706,7 +713,7 @@ export async function completeFerment(
 	}
 	if (fSnapshot.status === "abandoned") {
 		runtime.clearFermentState(params.ferment_id)
-		resetReactiveContinuationNudgeCount(params.ferment_id)
+		clearLifecycleGuard(params.ferment_id)
 		runtime.setActive(undefined)
 		return toolErr(`Ferment "${fSnapshot.name}" is abandoned and cannot be completed.`)
 	}
@@ -828,7 +835,7 @@ export async function completeFerment(
 
 	// Cleanup in-memory state.
 	runtime.clearFermentState(params.ferment_id)
-	resetReactiveContinuationNudgeCount(params.ferment_id)
+	clearLifecycleGuard(params.ferment_id)
 	runtime.setActive(undefined)
 
 	const fresh = completeOutcome.ferment

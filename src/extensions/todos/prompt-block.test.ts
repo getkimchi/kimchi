@@ -11,9 +11,39 @@ import {
 	appendTodoPromptBlockIfMissing,
 	renderTodoStateBlock,
 } from "./prompt-block.js"
-import { __resetTodoStore, applyWriteTodos } from "./store.js"
+import {
+	__resetTodoStore,
+	applyWriteTodos,
+	bumpToolCallsSinceTodoWrite,
+	resetToolCallsSinceTodoWrite,
+} from "./store.js"
+import type { TodoStatus } from "./types.js"
 
 const TEST_SESSION_ID = "test-session"
+
+// ─── Test helpers ───────────────────────────────────────────────────────────
+
+/** Write a single global todo with the given content and status. */
+function writeTodo(content: string, status: TodoStatus, sessionId: string = TEST_SESSION_ID): void {
+	applyWriteTodos({ todos: [{ content, status }] }, sessionId)
+}
+
+/** Write a single global todo, then bump the staleness counter N times. */
+function writeTodoAndBump(
+	content: string,
+	status: TodoStatus,
+	bumps: number,
+	sessionId: string = TEST_SESSION_ID,
+): void {
+	writeTodo(content, status, sessionId)
+	for (let i = 0; i < bumps; i++) bumpToolCallsSinceTodoWrite(sessionId)
+}
+
+/** Create a todo list then write it a second time to mark it as "updated" (not create-and-forget). */
+function createAndUpdateTodo(content: string, status: TodoStatus, sessionId: string = TEST_SESSION_ID): void {
+	writeTodo(content, status, sessionId)
+	writeTodo(content, status, sessionId)
+}
 
 // ─── Cross-session stall-counter helpers ────────────────────────────────────
 
@@ -98,16 +128,15 @@ describe("todo prompt block", () => {
 	it("renders guidance without a current list", () => {
 		const block = __test_renderTodoPromptBlock()
 		expect(block).toContain("## Todos")
-		expect(block).toContain("For any non-trivial task, maintain a todo list.")
+		expect(block).toContain("contract with the user")
 		expect(block).toContain("code changes, debugging, reviews, investigations")
-		expect(block).toContain("Skip todos only for a single straightforward answer")
+		expect(block).toContain("Start short (2-3 items)")
+		expect(block).toContain("Skip todos for single-step answers")
 		expect(block).toContain("different from leaving TODO comments/placeholders in code")
-		expect(block).toContain("Use create_todos for the initial list before starting multi-step work")
-		expect(block).toContain("add_todo for one missing item")
-		expect(block).toContain("mark_todo for one status change")
-		expect(block).toContain("clear_todos only when the work is done or obsolete")
-		expect(block).toContain("before your final response")
-		expect(block).not.toContain("Current global todos:")
+		expect(block).toContain("Always pair todo updates with the next work tool call")
+		expect(block).toContain("natural break points")
+		expect(block).toContain("staleness warning")
+		expect(block).not.toContain("before your final response")
 	})
 
 	it("keeps guidance stable when todos exist", () => {
@@ -149,7 +178,7 @@ describe("todo state prompt block (headless)", () => {
 		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toBeUndefined()
 	})
 
-	it("renders global todos with the correct status glyphs", () => {
+	it("renders global todos with widget-style glyphs", () => {
 		applyWriteTodos(
 			{
 				scope: { kind: "global" },
@@ -167,10 +196,28 @@ describe("todo state prompt block (headless)", () => {
 		expect(md).toBeDefined()
 		expect(md).toContain("## Current Todos")
 		expect(md).toContain("**Global**")
-		expect(md).toContain("- [ ] pending one")
-		expect(md).toContain("- [~] working one")
-		expect(md).toContain("- [!] blocked one")
-		expect(md).toContain("- [x] done one")
+		expect(md).toContain("- ○ pending one")
+		expect(md).toContain("- ▶ working one")
+		expect(md).toContain("- ! blocked one")
+		expect(md).toContain("- ✓ done one")
+	})
+
+	it("renders a progress summary in the scope header", () => {
+		applyWriteTodos(
+			{
+				scope: { kind: "global" },
+				todos: [
+					{ content: "pending one", status: "pending" },
+					{ content: "working one", status: "in_progress" },
+					{ content: "blocked one", status: "blocked" },
+					{ content: "done one", status: "completed" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+
+		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		expect(md).toContain("1/4 done · 2 active · 1 blocked")
 	})
 
 	it("renders a ferment phase with header and indented steps", () => {
@@ -189,9 +236,9 @@ describe("todo state prompt block (headless)", () => {
 
 		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
 		expect(md).toContain("**[Phase 1] Test Phase**")
-		expect(md).toContain("- [x] ↳ Step 1")
-		expect(md).toContain("- [~] ↳ Step 2")
-		expect(md).toContain("- [ ] ↳ Step 3")
+		expect(md).toContain("- ✓ ↳ Step 1")
+		expect(md).toContain("- ▶ ↳ Step 2")
+		expect(md).toContain("- ○ ↳ Step 3")
 	})
 
 	it("renders ferment-step scopes with a header line per step", () => {
@@ -205,7 +252,7 @@ describe("todo state prompt block (headless)", () => {
 
 		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
 		expect(md).toContain("**Step phase-1/step-2**")
-		expect(md).toContain("- [~] agent-written plan bullet")
+		expect(md).toContain("- ▶ agent-written plan bullet")
 	})
 
 	it("groups global + multiple ferment phases together", () => {
@@ -257,7 +304,7 @@ describe("todo state prompt block (headless)", () => {
 			},
 			TEST_SESSION_ID,
 		)
-		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toContain("- [ ] first")
+		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toContain("- ○ first")
 
 		applyWriteTodos(
 			{
@@ -266,7 +313,78 @@ describe("todo state prompt block (headless)", () => {
 			},
 			TEST_SESSION_ID,
 		)
-		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toContain("- [x] first")
+		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toContain("- ✓ first")
+	})
+})
+
+describe("staleness indicator in state markdown", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+	})
+
+	it("does not show a staleness warning when changes are minimal (0-2)", () => {
+		writeTodoAndBump("work", "in_progress", 2)
+
+		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		expect(md).not.toContain("changes since last update")
+	})
+
+	it("shows a neutral staleness indicator at 3-6 changes", () => {
+		createAndUpdateTodo("work", "in_progress")
+		for (let i = 0; i < 4; i++) bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
+
+		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		expect(md).toContain("4 changes since last update")
+		expect(md).not.toContain("⚠")
+	})
+
+	it("shows an advisory staleness warning at 7-11 changes", () => {
+		createAndUpdateTodo("work", "in_progress")
+		for (let i = 0; i < 8; i++) bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
+
+		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		expect(md).toContain("⚠ 8 changes since last update — update alongside your next tool call now")
+	})
+
+	it("shows a strong staleness warning at 12+ changes", () => {
+		createAndUpdateTodo("work", "in_progress")
+		for (let i = 0; i < 15; i++) bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
+
+		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		expect(md).toContain("⚠ 15 changes — list is significantly stale")
+	})
+
+	it("resets staleness counter after a todo write", () => {
+		writeTodoAndBump("work", "in_progress", 5)
+
+		// The first write creates the list; since it was never updated,
+		// the create-and-forget warning appears instead of the normal one.
+		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toContain("never updated")
+
+		// Simulate an update by writing again — resets the counter via subscribeTodoStore.
+		resetToolCallsSinceTodoWrite(TEST_SESSION_ID)
+		writeTodo("work", "completed")
+
+		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		expect(md).not.toContain("changes since last update")
+		expect(md).not.toContain("never updated")
+	})
+
+	it("shows create-and-forget warning when list was never updated", () => {
+		writeTodoAndBump("work", "in_progress", 5)
+
+		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		expect(md).toContain("never updated")
+		expect(md).toContain("mark items as you complete them")
+	})
+
+	it("does not show create-and-forget warning after list has been updated", () => {
+		createAndUpdateTodo("work", "completed")
+		for (let i = 0; i < 5; i++) bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
+
+		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		expect(md).not.toContain("never updated")
+		expect(md).toContain("5 changes since last update")
 	})
 })
 
@@ -285,7 +403,7 @@ describe("todo state block gating", () => {
 			TEST_SESSION_ID,
 		)
 		const ctx = createContext({ hasUI: false, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
-		expect(renderTodoStateBlock(ctx)).toContain("- [ ] headline")
+		expect(renderTodoStateBlock(ctx)).toContain("- ○ headline")
 	})
 })
 

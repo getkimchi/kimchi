@@ -9,11 +9,13 @@ import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { decideContinuation } from "./continuation.js"
+import { createFerment } from "./create.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import { emitFermentCreated } from "./domain-events-emitter.js"
 import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
-import { appendRefEntry, resetReactiveContinuationNudgeCount } from "./nudge.js"
+import { clearLifecycleGuard } from "./lifecycle-obligation-guard.js"
+import { appendRefEntry } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import {
 	buildPhaseActionOptions,
@@ -254,7 +256,6 @@ export async function startFermentForIntent({
 		)
 		return undefined
 	}
-	const storage = runtime.getStorage()
 	ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · creating…")
 	try {
 		// Mirror the /ferment new path: prompt the user about git init if needed.
@@ -262,7 +263,12 @@ export async function startFermentForIntent({
 		// either way with whatever branch/commit info is present.
 		await ensureGitRepo({ ui: ctx.ui })
 		const shortName = deriveDraftFermentTitle(title ?? rawIntent)
-		const f = storage.create(shortName, rawIntent)
+		const f = createFerment(runtime, {
+			name: shortName,
+			goal: rawIntent,
+			hasUI: ctx.hasUI,
+			isOneShot: pi.getFlag("ferment-oneshot") === true,
+		})
 		setActiveFermentAndApplyProfile(pi, runtime, f)
 		emitFermentCreated(pi.events, f)
 		appendRefEntry(pi, f.id)
@@ -366,6 +372,7 @@ async function confirmManualPhaseBoundaryForCommand(
 				ctx.ui.notify(`Failed to pause: ${outcome.error.message}`)
 				return true
 			}
+			clearLifecycleGuard(active.id)
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
 			runtime.clearPendingPlanReview(active.id)
 			ctx.ui.notify(`Paused "${outcome.ferment.name}". Type /ferment resume to resume.`)
@@ -465,7 +472,10 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: ExtensionContext, runt
 				)
 				if (confirmed) {
 					const outcome = applyAndPersist(f.id, { type: "abandon" })
-					if (outcome.ok) setActiveFermentAndApplyProfile(pi, runtime, undefined)
+					if (outcome.ok) {
+						clearLifecycleGuard(f.id)
+						setActiveFermentAndApplyProfile(pi, runtime, undefined)
+					}
 					runtime.clearFermentState(f.id)
 					atPhaseList = false
 				}
@@ -607,7 +617,7 @@ function exitFermentMode(pi: ExtensionAPI, ctx: ExtensionCommandContext, runtime
 	runtime.clearPendingPlanReview(active.id)
 	runtime.clearPendingScope(active.id)
 	runtime.consumeScopingGate(active.id)
-	resetReactiveContinuationNudgeCount(active.id)
+	clearLifecycleGuard(active.id)
 	setActiveFermentAndApplyProfile(pi, runtime, undefined)
 	const detail = formatExitDetail(statusLabel)
 	const message = `Exited Ferment mode for "${active.name}". ${detail}`
@@ -739,6 +749,7 @@ export class FermentCommandController {
 			}
 
 			if (active.status === "paused") {
+				clearLifecycleGuard(active.id)
 				const message = `"${active.name}" is already paused. Type /ferment resume to resume.`
 				sendBreadcrumb(pi, message, "ack")
 				ctx.ui.notify(message)
@@ -754,6 +765,7 @@ export class FermentCommandController {
 				return { handled: true }
 			}
 
+			clearLifecycleGuard(active.id)
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
 			runtime.clearPendingPlanReview(active.id)
 			const message = `Paused "${outcome.ferment.name}". Type /ferment resume to resume.`
@@ -770,7 +782,6 @@ export class FermentCommandController {
 				ctx.ui.notify("No active ferment to resume.")
 				return { handled: true }
 			}
-
 			if (active.status !== "paused") {
 				const canContinue = active.status === "running" || active.status === "planned"
 				const message = canContinue
@@ -780,6 +791,7 @@ export class FermentCommandController {
 				ctx.ui.notify(message)
 				applyFermentRuntimeToolProfile(pi, runtime)
 				if (canContinue) {
+					clearLifecycleGuard(active.id)
 					scheduleFermentWakeUp(pi, runtime, { fermentId: active.id, tag: "Resume wake-up" })
 				}
 				return { handled: true }
@@ -793,6 +805,7 @@ export class FermentCommandController {
 				return { handled: true }
 			}
 
+			clearLifecycleGuard(active.id)
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
 			const message = `Resumed "${outcome.ferment.name}". Continuation policy: ${runtime.getContinuationPolicy()}.`
 			sendBreadcrumb(pi, message, "ack")
@@ -851,7 +864,7 @@ export class FermentCommandController {
 				const previousActiveId = runtime.getActiveId()
 				if (previousActiveId && previousActiveId !== f.id) runtime.clearPendingPlanReview(previousActiveId)
 				sendBreadcrumb(pi, `Switched to "${f.name}" [${f.status}]${wtWarning}`, "ack", "ferment_ack")
-				resumeFerment(pi, f.id, ctx, runtime)
+				resumeFerment(pi, f.id, ctx, runtime, { allowManualPhaseBoundary: true })
 			} catch (err) {
 				ctx.ui.notify(err instanceof FermentError ? err.message : "Switch failed.")
 			}
@@ -875,6 +888,7 @@ export class FermentCommandController {
 			const abandonedId = active.id
 			const out = applyAndPersist(abandonedId, { type: "abandon", reason: reason || undefined })
 			if (out.ok) {
+				clearLifecycleGuard(abandonedId)
 				setActiveFermentAndApplyProfile(pi, runtime, undefined)
 				runtime.clearFermentState(abandonedId)
 				ctx.ui.notify(`Ferment "${out.ferment.name}" abandoned.`)
@@ -1010,9 +1024,13 @@ export class FermentCommandController {
 					ui: ctx.ui,
 					autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 				})
-				runtime.setContinuationPolicy("automated")
 				const shortName = deriveDraftFermentTitle(resolvedIntent)
-				const f = storage.create(shortName, resolvedIntent)
+				const f = createFerment(runtime, {
+					name: shortName,
+					goal: resolvedIntent,
+					hasUI: ctx.hasUI,
+					isOneShot: true,
+				})
 				const updated = f
 				setActiveFermentAndApplyProfile(pi, runtime, updated)
 				emitFermentCreated(pi.events, updated)
@@ -1077,7 +1095,12 @@ export class FermentCommandController {
 			// User can decline; ferment still proceeds with no branch/commit info.
 			await ensureGitRepo({ ui: ctx.ui })
 			const shortName = deriveDraftFermentTitle(rawName)
-			const f = storage.create(shortName, rawName)
+			const f = createFerment(runtime, {
+				name: shortName,
+				goal: rawName,
+				hasUI: ctx.hasUI,
+				isOneShot: pi.getFlag("ferment-oneshot") === true,
+			})
 			setActiveFermentAndApplyProfile(pi, runtime, f)
 			emitFermentCreated(pi.events, f)
 			appendRefEntry(pi, f.id)

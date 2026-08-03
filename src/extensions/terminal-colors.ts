@@ -3,10 +3,7 @@ import { basename, resolve } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isProtocolOrPrintMode } from "../cli-args.js"
 import { getActiveThemeName, onThemeChange } from "../settings-watcher.js"
-import { getRawBgPayload, QUERY_BG } from "../terminal-bg-probe.js"
-
-const QUERY_FG = "\x1b]10;?\x07"
-const QUERY_TIMEOUT_MS = 200
+import { getRawBgPayload, getRawFgPayload } from "../terminal-bg-probe.js"
 
 /** Converts hex color (#RRGGBB) to OSC rgb format (rgb:RR/GG/BB). */
 function hexToOscRgb(hex: string): string | null {
@@ -141,58 +138,16 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 		process.once("SIGHUP", () => signalRestore("SIGHUP"))
 	}
 
-	const probeAndSave = (then: () => void) => {
-		// cli.ts already probed OSC 11 at startup and cached the raw payload —
-		// reuse it instead of running a second probe. FG still needs probing.
+	const loadCachedColors = () => {
+		// cli.ts probed OSC 10/11 at startup (before pi-mono took stdin) and
+		// cached the raw payloads. Reuse them — running a second probe here
+		// would attach a stdin listener during the live session, race with
+		// pi-mono's input handling, and replay buffered keystrokes back into
+		// stdin on cleanup (corrupting the user's first command).
+		const cachedFg = getRawFgPayload()
+		if (cachedFg) savedFg = cachedFg
 		const cachedBg = getRawBgPayload()
 		if (cachedBg) savedBg = cachedBg
-
-		let buffer = ""
-		let gotFg = false
-		let gotBg = savedBg !== null
-		const handler = (data: Buffer | string) => {
-			buffer += data.toString()
-
-			if (!gotFg) {
-				// biome-ignore lint/suspicious/noControlCharactersInRegex: OSC terminal escape sequence
-				const fgMatch = buffer.match(/\x1b\]10;(.+?)(?:\x07|\x1b\\)/)
-				if (fgMatch) {
-					savedFg = fgMatch[1]
-					gotFg = true
-				}
-			}
-			if (!gotBg) {
-				// biome-ignore lint/suspicious/noControlCharactersInRegex: OSC terminal escape sequence
-				const bgMatch = buffer.match(/\x1b\]11;(.+?)(?:\x07|\x1b\\)/)
-				if (bgMatch) {
-					savedBg = bgMatch[1]
-					gotBg = true
-				}
-			}
-			if (gotFg && gotBg) {
-				cleanup()
-				then()
-			}
-		}
-		const cleanup = () => {
-			process.stdin.removeListener("data", handler)
-			clearTimeout(timeout)
-			// Strip the OSC 10/11 responses from the buffer and push anything
-			// else (keystrokes, paste) back to stdin so pi sees it.
-			// biome-ignore lint/suspicious/noControlCharactersInRegex: OSC terminal escape sequence
-			let leftover = buffer.replace(/\x1b\]10;.+?(?:\x07|\x1b\\)/, "")
-			// biome-ignore lint/suspicious/noControlCharactersInRegex: OSC terminal escape sequence
-			leftover = leftover.replace(/\x1b\]11;.+?(?:\x07|\x1b\\)/, "")
-			if (leftover.length > 0) process.stdin.unshift(Buffer.from(leftover, "utf8"))
-		}
-		const timeout = setTimeout(() => {
-			cleanup()
-			then()
-		}, QUERY_TIMEOUT_MS)
-
-		process.stdin.on("data", handler)
-		process.stdout.write(QUERY_FG)
-		if (!gotBg) process.stdout.write(QUERY_BG)
 	}
 
 	const reactToThemeChange = (newName: string | undefined) => {
@@ -239,13 +194,12 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 		// when the user later switches away from a theme that sets osc colors.
 		// No clearScreen here — cli.ts paints the initial background before pi-mono
 		// renders its first frame.
-		probeAndSave(() => {
-			const colors = getThemeColors(getActiveThemeName() ?? "")
-			if (colors?.bgHex) apply(colors.fgHex, colors.bgHex)
+		loadCachedColors()
+		const colors = getThemeColors(getActiveThemeName() ?? "")
+		if (colors?.bgHex) apply(colors.fgHex, colors.bgHex)
 
-			unsubscribeThemeChange?.()
-			unsubscribeThemeChange = onThemeChange(reactToThemeChange)
-		})
+		unsubscribeThemeChange?.()
+		unsubscribeThemeChange = onThemeChange(reactToThemeChange)
 	})
 
 	pi.on("session_shutdown", () => {

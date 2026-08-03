@@ -626,6 +626,108 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 	})
 })
 
+describe("propose_ferment_scoping continuation policy reset", () => {
+	it("bootstrapped ferment uses manual policy for interactive UI", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("automated")
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			...h.pi,
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, h.runtime)
+		const execute = tools.get("propose_ferment_scoping")?.execute as unknown as (
+			...args: unknown[]
+		) => Promise<{ content: { text: string }[]; isError?: boolean }>
+
+		await execute(
+			"tool-call-1",
+			{
+				title: "Bootstrapped Ferment",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext({ hasUI: true }),
+		)
+
+		expect(h.runtime.getContinuationPolicy()).toBe("manual")
+	})
+
+	it("bootstrapped ferment uses automated policy for one-shot", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("manual")
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			...h.pi,
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+			getFlag: vi.fn((name: string) => (name === "ferment-oneshot" ? true : undefined)),
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, h.runtime)
+		const execute = tools.get("propose_ferment_scoping")?.execute as unknown as (
+			...args: unknown[]
+		) => Promise<{ content: { text: string }[]; isError?: boolean }>
+
+		await execute(
+			"tool-call-1",
+			{
+				title: "One-shot Ferment",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext({ hasUI: true }),
+		)
+
+		expect(h.runtime.getContinuationPolicy()).toBe("automated")
+	})
+
+	it("re-proposing for an existing draft does not reset its policy", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("automated")
+		const draft = h.storage.create("Existing Draft")
+		h.runtime.setActive(draft)
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			...h.pi,
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, h.runtime)
+		const execute = tools.get("propose_ferment_scoping")?.execute as unknown as (
+			...args: unknown[]
+		) => Promise<{ content: { text: string }[]; isError?: boolean }>
+
+		await execute(
+			"tool-call-1",
+			{
+				ferment_id: draft.id,
+				title: "Existing Draft",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext({ hasUI: true }),
+		)
+
+		expect(h.runtime.getContinuationPolicy()).toBe("automated")
+	})
+})
+
 describe("confirm_ferment_completion_criteria via registerLifecycleTools", () => {
 	function createConfirmCriteriaHarness(options?: { oneShot?: boolean }) {
 		const h = createHarness()

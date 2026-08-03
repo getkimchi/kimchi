@@ -6,7 +6,6 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import {
-	getCliModeArg,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
@@ -37,6 +36,8 @@ import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
+import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
+import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
@@ -85,6 +86,7 @@ import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
+import settingsTrustSyncExtension from "./extensions/settings-trust-sync.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -109,6 +111,7 @@ import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
+import { installGlobalFetchInstrumentation } from "./http/instrument-fetch.js"
 import {
 	applyInfrastructureExitPolicy,
 	createInfrastructureErrorTracker,
@@ -120,6 +123,7 @@ import {
 	readExperimentalModels,
 	updateModelsConfig,
 } from "./models.js"
+import { IS_ACP_MODE } from "./modes/acp/state.js"
 import {
 	augmentModelRolesWithOllama,
 	injectOllamaProvider,
@@ -148,69 +152,20 @@ installInfrastructureRetryPatch()
 installInlineCompactPatch()
 installPiNativeCompatibilityShim()
 
-function isModelCompletionFetch(input: RequestInfo | URL): boolean {
-	const url =
-		typeof input === "string"
-			? input
-			: input instanceof URL
-				? input.href
-				: typeof (input as { url?: unknown }).url === "string"
-					? (input as { url: string }).url
-					: ""
-	return /\/chat\/completions(?:$|[?#])/.test(url)
-}
-
-function withBillingRefreshAfterResponseSettles(response: Response, refreshBilling: () => Promise<unknown>): Response {
-	const body = response.body
-	if (!body) {
-		void refreshBilling()
-		return response
-	}
-
-	const reader = body.getReader()
-	let refreshScheduled = false
-	const refreshOnce = () => {
-		if (refreshScheduled) return
-		refreshScheduled = true
-		void refreshBilling()
-	}
-	const wrappedBody = new ReadableStream<Uint8Array>({
-		async pull(controller) {
-			try {
-				const { done, value } = await reader.read()
-				if (done) {
-					controller.close()
-					refreshOnce()
-					return
-				}
-				controller.enqueue(value)
-			} catch (error) {
-				refreshOnce()
-				controller.error(error)
-			}
-		},
-		async cancel(reason) {
-			try {
-				await reader.cancel(reason)
-			} finally {
-				refreshOnce()
-			}
-		},
-	})
-
-	return new Response(wrappedBody, {
-		status: response.status,
-		statusText: response.statusText,
-		headers: response.headers,
-	})
-}
-
 function getSubcommand(args: string[]): string {
 	if (args.includes("--version") || args.includes("-v")) return "version"
 	if (args.includes("--help") || args.includes("-h")) return "help"
 	const sub = args[0]
 	if (!sub || sub.startsWith("-")) return "harness"
-	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry"].includes(sub)) return sub
+	// Telemetry allowlist: names reported as the `subcommand` label in the
+	// app_started event (getSubcommand's only consumer, below). This is NOT a
+	// dispatch table — dispatch happens independently in dispatchSubcommand()
+	// via the command registry. The list intentionally includes labels that are
+	// not registry commands (logout, doctor, skills, telemetry) so those
+	// invocations report their own label instead of the generic "harness"; `mcp`
+	// appears here for the same telemetry-accuracy reason even though it is also
+	// a registered command.
+	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp"].includes(sub)) return sub
 	return "harness"
 }
 
@@ -231,11 +186,6 @@ if (telemetryConfig.enabled) {
 		subcommand: getSubcommand(originalArgs),
 	})
 }
-
-// ACP mode runs JSON-RPC over stdio; interactive mode runs the standard TUI
-// harness. Decide once at module load, before anything else runs.
-const cliMode = getCliModeArg(originalArgs)
-const acpMode = cliMode === "acp"
 
 // Monkey-patch AgentSession.prototype.exportToJsonl so ALL JSONL exports
 // (interactive, ACP, and teleport mode) get trace IDs injected inline.
@@ -546,27 +496,13 @@ try {
 		// Suppress Node.js warnings (same as pi-mono's own cli.js)
 		process.emitWarning = () => {}
 
-		const fetchPatchedSymbol = Symbol.for("kimchi.fetchPatched")
-		if (!(globalThis.fetch as typeof globalThis.fetch & { [key: symbol]: boolean })[fetchPatchedSymbol]) {
-			const userAgent = `kimchi/${getVersion()}`
-			const originalFetch = globalThis.fetch.bind(globalThis)
-			const refreshBilling = () => refreshBillingStatusFromConfig({ fetch: originalFetch })
-			const patchedFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-				const headers = new Headers(init?.headers)
-				if (!headers.has("user-agent")) {
-					headers.set("user-agent", userAgent)
-				}
-				const response = await originalFetch(input, { ...init, headers })
-				return isModelCompletionFetch(input)
-					? withBillingRefreshAfterResponseSettles(response, refreshBilling)
-					: response
-			}
-			;(patchedFetch as typeof patchedFetch & { [key: symbol]: boolean })[fetchPatchedSymbol] = true
-			globalThis.fetch = patchedFetch
-		}
+		installGlobalFetchInstrumentation({
+			userAgent: `kimchi/${getVersion()}`,
+			onModelCompletionSettled: (originalFetch) => refreshBillingStatusFromConfig({ fetch: originalFetch }),
+		})
 
 		const interactiveStartupContext = {
-			nonInteractiveMode: acpMode,
+			nonInteractiveMode: IS_ACP_MODE,
 			...terminalIo,
 		}
 		const startupAuthState = createStartupAuthGateState()
@@ -585,6 +521,9 @@ try {
 			: []
 		const effectiveSkillPaths = [...new Set([...skillPaths])]
 		const extensionFactories = [
+			// First so its session_start handler syncs project trust onto the
+			// settings watcher before any other handler reads settings.
+			settingsTrustSyncExtension,
 			autoUpdateSettingsExtension,
 			startupUpdateExtension,
 			sessionNameExtension(),
@@ -603,6 +542,14 @@ try {
 			// dynamically on every bash call, so enable/disable from /resources
 			// takes effect immediately without a process restart.
 			bashDefaultTimeoutExtension,
+			// Background bash: MUST register before bashToolGuard so its background
+			// `execute` wins the first-registration-per-name race (runner.js).
+			// Carries BASH_TOOL_DESCRIPTION so the tool-guard's steering composes.
+			// Background mode is opt-in via `checkin_interval`; without it, bash
+			// runs synchronously as before.
+			bashBackgroundExtension,
+			// bash_control companion tool + visibility gating for background processes.
+			bashControlExtension,
 			bashToolGuardExtension,
 			bashTimeoutGuidanceExtension,
 			...enabledExtensionFactories([
@@ -677,9 +624,10 @@ try {
 			infrastructureBreakerExtension,
 		]
 
-		if (acpMode) {
+		if (IS_ACP_MODE) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
-			await runAcpMode({ extensionFactories, agentDir })
+			const { McpServerManager } = await import("./extensions/mcp-adapter/server-manager.js")
+			await runAcpMode({ extensionFactories, agentDir, mcpServerManager: new McpServerManager() })
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 			const { main } = await import("@earendil-works/pi-coding-agent")

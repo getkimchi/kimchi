@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
-import todosExtension, { TODO_CHECKPOINT_MESSAGE, TODO_RECONCILE_MESSAGE } from "./index.js"
-import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "./store.js"
+import todosExtension from "./index.js"
+import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope, hasEverHadTodos } from "./store.js"
 import { TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoStatus } from "./types.js"
 
@@ -232,8 +232,14 @@ describe("todos extension session state", () => {
 		expect(harness.appendEntry).not.toHaveBeenCalled()
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
+})
 
-	it("keeps injecting process checkpoints after successful non-todo work until todos are updated", async () => {
+describe("passive staleness counter", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+	})
+
+	it("does not inject context checkpoints after non-todo work", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
@@ -241,63 +247,13 @@ describe("todos extension session state", () => {
 		applyWriteTodos({ todos: [{ content: "check work", status: "in_progress" }] }, "session")
 		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
 
-		const result = (await harness.fire("context", { messages: [] }, ctx)) as {
-			messages: Array<{ customType: string; display: boolean; details: unknown; content: Array<{ text: string }> }>
-		}
-		const checkpoint = result.messages[0]
-		expect(checkpoint.customType).toBe(TODO_CUSTOM_ENTRY_TYPE)
-		expect(checkpoint.display).toBe(false)
-		expect(checkpoint.details).toEqual({ reason: "todo_checkpoint" })
-		expect(checkpoint.content[0].text).toContain(TODO_CHECKPOINT_MESSAGE)
-		expect(checkpoint.content[0].text).toContain("impossible")
-		expect(checkpoint.content[0].text).toContain("blocked")
-		expect(checkpoint.content[0].text).toContain("#1 [in_progress] check work")
-		const repeated = (await harness.fire("context", { messages: [] }, ctx)) as {
-			messages: Array<{ details: unknown; content: Array<{ text: string }> }>
-		}
-		expect(repeated.messages[0].details).toEqual({ reason: "todo_checkpoint" })
-		expect(repeated.messages[0].content[0].text).toContain("#1 [in_progress] check work")
+		// No context event messages should be injected — the old checkpoint
+		// mechanism has been removed in favor of passive state rendering.
+		const result = await harness.fire("context", { messages: [] }, ctx)
+		expect(result).toBeUndefined()
 	})
 
-	it("clears checkpoint pressure after a todo write", async () => {
-		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
-		await harness.fire("session_start", { reason: "new" }, ctx)
-
-		applyWriteTodos({ todos: [{ content: "check work", status: "in_progress" }] }, "session")
-		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-		applyWriteTodos({ todos: [{ id: 1, content: "check work", status: "completed" }] }, "session")
-
-		expect(await harness.fire("context", { messages: [] }, ctx)).toBeUndefined()
-	})
-
-	it("only resets checkpoint pressure for the session that wrote todos", async () => {
-		const harness = createTodosHarness()
-		const ctxA = createContext("session-a", [])
-		const ctxB = createContext("session-b", [])
-
-		// Start both sessions. The second start registers the active subscriber;
-		// the fix ensures the subscriber uses the writing session id rather than
-		// closing over session-b's context.
-		await harness.fire("session_start", { reason: "new" }, ctxA)
-		await harness.fire("session_start", { reason: "new" }, ctxB)
-
-		applyWriteTodos({ todos: [{ content: "A work", status: "in_progress" }] }, "session-a")
-		applyWriteTodos({ todos: [{ content: "B work", status: "in_progress" }] }, "session-b")
-
-		// Both sessions do non-todo work, creating checkpoint pressure.
-		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctxA)
-		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctxB)
-		expect(await harness.fire("context", { messages: [] }, ctxA)).toBeDefined()
-		expect(await harness.fire("context", { messages: [] }, ctxB)).toBeDefined()
-
-		// Session A writes todos. Only A's pressure should clear.
-		applyWriteTodos({ todos: [{ id: 1, content: "A work", status: "completed" }] }, "session-a")
-		expect(await harness.fire("context", { messages: [] }, ctxA)).toBeUndefined()
-		expect(await harness.fire("context", { messages: [] }, ctxB)).toBeDefined()
-	})
-
-	it("queues reconciliation follow-ups after visible terminal stops", async () => {
+	it("does not send reconciliation follow-ups after terminal turns", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
@@ -305,55 +261,24 @@ describe("todos extension session state", () => {
 		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] }, "session")
 		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
 		await harness.fire("turn_end", terminalTurnWithText(), ctx)
-		await harness.fire("input", { type: "input", text: "", source: "extension", streamingBehavior: "followUp" }, ctx)
-		await harness.fire("turn_end", terminalTurnWithText(), ctx)
 
-		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
-		expect(harness.sendMessage).toHaveBeenCalledWith(
-			{
-				customType: TODO_CUSTOM_ENTRY_TYPE,
-				content: [
-					{
-						type: "text",
-						text: expect.stringContaining(TODO_RECONCILE_MESSAGE),
-					},
-				],
-				display: false,
-				details: { reason: "reconcile_todos" },
-			},
-			{ deliverAs: "followUp" },
-		)
-		const reconcileMessage = vi.mocked(harness.sendMessage).mock.calls[0]?.[0] as {
-			content: Array<{ text: string }>
-		}
-		expect(reconcileMessage.content[0].text).toContain("impossible")
-		expect(reconcileMessage.content[0].text).toContain("blocked")
-		const checkpoint = (await harness.fire("context", { messages: [] }, ctx)) as {
-			messages: Array<{ details: unknown; content: Array<{ text: string }> }>
-		}
-		expect(checkpoint.messages[0].details).toEqual({ reason: "todo_checkpoint" })
-		expect(checkpoint.messages[0].content[0].text).toContain("still active")
-
-		applyWriteTodos({ todos: [{ id: 1, content: "still active", status: "completed" }] }, "session")
-		await harness.fire("turn_end", terminalTurn(), ctx)
-		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
+		// No reconciliation follow-up should be sent — the old forced-turn
+		// mechanism has been removed.
+		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("does not send a reconciliation follow-up after an empty visible stop", async () => {
+	it("does not send reconciliation follow-ups even after multiple terminal stops", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
 		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] }, "session")
 		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-		await harness.fire("turn_end", terminalTurn("stop"), ctx)
+		await harness.fire("turn_end", terminalTurnWithText(), ctx)
+		await harness.fire("turn_end", terminalTurnWithText(), ctx)
+		await harness.fire("turn_end", terminalTurnWithText(), ctx)
 
 		expect(harness.sendMessage).not.toHaveBeenCalled()
-		const checkpoint = (await harness.fire("context", { messages: [] }, ctx)) as {
-			messages: Array<{ details: unknown; content: Array<{ text: string }> }>
-		}
-		expect(checkpoint.messages[0].details).toEqual({ reason: "todo_checkpoint" })
-		expect(checkpoint.messages[0].content[0].text).toContain("still active")
 	})
 
 	it("does not reconcile immediately after only writing todos", async () => {
@@ -401,36 +326,6 @@ describe("todos extension session state", () => {
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("does not send reconciliation follow-ups when todo tools are not available (e.g. ferment plan review)", async () => {
-		// Simulates the plan-review-pending state where the ferment extension
-		// suppresses ALL tools via pi.setActiveTools([]). The model cannot
-		// reconcile todos, so sending a follow-up would create an infinite loop.
-		const harness = createTodosHarness([])
-		const ctx = createContext("session", [])
-		await harness.fire("session_start", { reason: "new" }, ctx)
-
-		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] }, "session")
-		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-		await harness.fire("turn_end", terminalTurnWithText(), ctx)
-
-		expect(harness.sendMessage).not.toHaveBeenCalled()
-		// workSinceTodoWrite should be reset so the next turn also doesn't loop.
-		await harness.fire("turn_end", terminalTurnWithText(), ctx)
-		expect(harness.sendMessage).not.toHaveBeenCalled()
-	})
-
-	it("does not inject context checkpoints when todo tools are not available", async () => {
-		const harness = createTodosHarness([])
-		const ctx = createContext("session", [])
-		await harness.fire("session_start", { reason: "new" }, ctx)
-
-		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] }, "session")
-		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-
-		const result = await harness.fire("context", { messages: [] }, ctx)
-		expect(result).toBeUndefined()
-	})
-
 	it("isolates todos between concurrent sessions", async () => {
 		const harness = createTodosHarness()
 		const ctxA = createContext("session-a", [writeTodosEntry("a1", "alpha for A", "in_progress")])
@@ -446,5 +341,86 @@ describe("todos extension session state", () => {
 		applyWriteTodos({ todos: [{ content: "beta for B", status: "pending" }] }, "session-b")
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-a").map((todo) => todo.content)).toEqual(["alpha for A"])
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-b").map((todo) => todo.content)).toEqual(["beta for B"])
+	})
+})
+
+describe("early todo nudge", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+	})
+
+	it("fires when the model does multi-step work without ever creating a todo list", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		// Ten successful non-todo tool calls, no list ever created. The one-shot
+		// nudge threshold is 5, so it should have fired.
+		for (let i = 0; i < 10; i++) {
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+
+		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
+		expect(vi.mocked(harness.sendMessage).mock.calls[0]?.[0]).toMatchObject({
+			details: { reason: "early_nudge" },
+		})
+	})
+
+	it("does not fire when the session already has a todo list", async () => {
+		const harness = createTodosHarness()
+		// Resumed session: the branch already contains a todo list.
+		const ctx = createContext("session", [writeTodosEntry("a", "restored work", "in_progress")])
+		await harness.fire("session_start", { reason: "resume" }, ctx)
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session")).toHaveLength(1)
+
+		for (let i = 0; i < 10; i++) {
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("fires only once even if the model continues without creating a list", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		for (let i = 0; i < 20; i++) {
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+
+		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("delivers the nudge as a steer, never a follow-up", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		for (let i = 0; i < 10; i++) {
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+
+		expect(vi.mocked(harness.sendMessage).mock.calls[0]?.[1]).toEqual({ deliverAs: "steer" })
+	})
+
+	it("does not fire when the model creates a todo list before the threshold", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		// Three tool calls, then create a todo list (below threshold of 5).
+		for (let i = 0; i < 3; i++) {
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+		applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, "session")
+		expect(hasEverHadTodos("session")).toBe(true)
+
+		// More tool calls — nudge should not fire because the session has had todos.
+		for (let i = 0; i < 10; i++) {
+			await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		}
+
+		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 })

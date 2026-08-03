@@ -1,4 +1,4 @@
-import { type FSWatcher, watch } from "node:fs"
+import { type FSWatcher, statSync, watch } from "node:fs"
 import { resolve } from "node:path"
 import { CONFIG_DIR_NAME, getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent"
 
@@ -32,10 +32,13 @@ let settingsManager: SettingsManager | undefined
 let projectTrusted = false
 
 /**
- * Sync the session's project-trust decision onto the settings reader. Callers with
- * an ExtensionContext should pass ctx.isProjectTrusted() so project-scope settings
- * are honored exactly when pi's own session honors them. setProjectTrusted
- * re-reads the project scope in-memory; it never writes settings files.
+ * Sync the session's project-trust decision onto the settings reader, so
+ * project-scope settings are honored exactly when pi's own session honors them.
+ * Called by settingsTrustSyncExtension on every session_start — before the first
+ * model request — which keeps the reader's trust current for the whole session
+ * (pi settles trust before extensions load, and it cannot change mid-session).
+ * setProjectTrusted re-reads the project scope in-memory; it never writes
+ * settings files.
  */
 export function setSettingsProjectTrusted(trusted: boolean): void {
 	projectTrusted = trusted
@@ -79,15 +82,11 @@ export function getActiveThemeName(): string | undefined {
 
 /**
  * Whether the /settings Auto-compact toggle is enabled, read via pi's own
- * accessor (missing key defaults to enabled). Pass the session's
- * ctx.isProjectTrusted() when available so project-scope settings apply exactly
- * when pi's own session applies them; omitted, the last-synced trust is used
- * (untrusted until a caller reports otherwise).
+ * accessor (missing key defaults to enabled). Project-scope settings apply per
+ * the last-synced trust — settingsTrustSyncExtension syncs the session's
+ * decision at session_start, before any handler can reach this read.
  */
-export function getCompactionEnabled(isProjectTrusted?: boolean): boolean {
-	if (isProjectTrusted !== undefined && isProjectTrusted !== projectTrusted) {
-		setSettingsProjectTrusted(isProjectTrusted)
-	}
+export function getCompactionEnabled(): boolean {
 	try {
 		return getSettingsManager()?.getCompactionEnabled() ?? true
 	} catch {
@@ -107,6 +106,9 @@ export function __resetSettingsWatcherForTest(): void {
 		clearTimeout(debounceTimer)
 		debounceTimer = undefined
 	}
+	fileSignatures.clear()
+	globalSettingsPath = undefined
+	projectSettingsPath = undefined
 }
 
 type ThemeChangeListener = (newName: string | undefined, oldName: string | undefined) => void
@@ -126,9 +128,59 @@ function scheduleFire(): void {
 	debounceTimer.unref?.()
 }
 
+// macOS/bun `fs.watch` emits spurious change events on files that haven't
+// actually changed (a kqueue quirk; ~20/s has been observed on an idle
+// settings.json). Each event used to trigger `fire()` → rebuild the
+// SettingsManager (proper-lockfile acquire/release + readFileSync), which
+// alone burned 20-30% CPU at idle. To stop that, we record an mtime+size
+// signature for each watched file at arm time and on every successful fire;
+// `scheduleFire` only schedules a `fire` when one of those signatures actually
+// changed. Spurious events on an unchanged file are dropped before any rebuild.
+const fileSignatures = new Map<string, string>()
+
+function signatureOf(path: string): string | undefined {
+	try {
+		const st = statSync(path)
+		return `${st.mtimeMs}:${st.size}`
+	} catch {
+		return undefined
+	}
+}
+
+function recordSignature(path: string): void {
+	const sig = signatureOf(path)
+	if (sig !== undefined) fileSignatures.set(path, sig)
+	else fileSignatures.delete(path)
+}
+
+/** Returns true when `path`'s mtime/size differs from the last recorded
+ *  signature (or when it has never been recorded). */
+function signatureChanged(path: string): boolean {
+	return signatureOf(path) !== fileSignatures.get(path)
+}
+
+let globalSettingsPath: string | undefined
+let projectSettingsPath: string | undefined
+
+function eitherFileChanged(): boolean {
+	// No signature yet (first event after arm) → treat as changed so we seed.
+	return (
+		(globalSettingsPath !== undefined && signatureChanged(globalSettingsPath)) ||
+		(projectSettingsPath !== undefined && signatureChanged(projectSettingsPath))
+	)
+}
+
 function fire(): void {
 	debounceTimer = undefined
+	// Drop the cache only when a watched file's mtime/size actually changed.
+	// This is the fix for the idle-CPU busy loop: macOS `fs.watch` emits spurious
+	// change events on unchanged files (~20/s observed); without this gate each
+	// one rebuilt the SettingsManager (lockfile + readFileSync) — 20-30% CPU.
+	const changed = eitherFileChanged()
+	if (!changed) return
 	settingsManager = undefined
+	if (globalSettingsPath) recordSignature(globalSettingsPath)
+	if (projectSettingsPath) recordSignature(projectSettingsPath)
 	const current = getActiveThemeName()
 	if (current === lastSeenTheme) return
 	const previous = lastSeenTheme
@@ -167,24 +219,42 @@ function ensureWatchers(): void {
 		lastSeenTheme = getActiveThemeName()
 	}
 	if (!globalWatcher) {
-		globalWatcher = startWatch(resolve(getAgentDir(), "settings.json"), () => {
+		const path = resolve(getAgentDir(), "settings.json")
+		globalSettingsPath = path
+		globalWatcher = startWatch(path, () => {
 			globalWatcher = undefined
 			globalWatchBroken = true
 		})
 		if (globalWatcher) {
-			if (globalWatchBroken) scheduleFire()
+			if (globalWatchBroken) {
+				// Re-arming after a broken watcher: do NOT record the current
+				// signature — preserve the old one so the catch-up fire() can
+				// detect changes that happened while the watcher was dead.
+				scheduleFire()
+			} else {
+				recordSignature(path)
+			}
 			globalWatchBroken = false
 		} else {
 			globalWatchBroken = true
 		}
 	}
 	if (!projectWatcher) {
-		projectWatcher = startWatch(resolve(process.cwd(), CONFIG_DIR_NAME, "settings.json"), () => {
+		const path = resolve(process.cwd(), CONFIG_DIR_NAME, "settings.json")
+		projectSettingsPath = path
+		projectWatcher = startWatch(path, () => {
 			projectWatcher = undefined
 			projectWatchBroken = true
 		})
 		if (projectWatcher) {
-			if (projectWatchBroken) scheduleFire()
+			if (projectWatchBroken) {
+				// Re-arming after a broken watcher: do NOT record the current
+				// signature — preserve the old one so the catch-up fire() can
+				// detect changes that happened while the watcher was dead.
+				scheduleFire()
+			} else {
+				recordSignature(path)
+			}
 			projectWatchBroken = false
 		} else {
 			projectWatchBroken = true

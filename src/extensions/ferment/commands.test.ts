@@ -11,11 +11,14 @@ import {
 	FermentCommandController,
 	getFermentArgumentCompletions,
 	registerFermentCommands,
+	startFermentForIntent,
 	startInteractiveFerment,
 } from "./commands.js"
-import { maybeInjectReactiveContinuationNudge } from "./nudge.js"
+import { clearAllLifecycleGuards, maybeInjectLifecycleObligationGuard } from "./lifecycle-obligation-guard.js"
+import { maybeInjectScopingStopNudge, resetAllScopingStopNudgeCounts } from "./nudge.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
+import type { ContinuationPolicy } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -55,6 +58,8 @@ afterEach(() => {
 	writeFileSyncMock.mockReset()
 	writeFileSyncMock.mockImplementation(actualFs.writeFileSync)
 	clearAllPendingPlanReviews()
+	clearAllLifecycleGuards()
+	resetAllScopingStopNudgeCounts()
 })
 
 interface RegisteredCommand {
@@ -93,6 +98,7 @@ function createHarness() {
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
+		getFlag: vi.fn(() => undefined),
 		getActiveTools: vi.fn(() => activeTools),
 		getAllTools: vi.fn(() => allTools),
 		setActiveTools: vi.fn((names: string[]) => {
@@ -539,7 +545,7 @@ describe("FermentCommandController", () => {
 		const ferment = createPlannedFerment(h, "No Nudge After Exit")
 		h.runtime.setContinuationPolicy("automated")
 		h.runtime.setActive(ferment)
-		maybeInjectReactiveContinuationNudge(h.pi, h.runtime)
+		maybeInjectLifecycleObligationGuard(h.pi, h.runtime)
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
 			expect.objectContaining({ deliverAs: "steer" }),
@@ -548,7 +554,7 @@ describe("FermentCommandController", () => {
 		const result = await controller.execute({ type: "exit" }, { raw: "exit", pi: h.pi, ctx: h.ctx, runtime: h.runtime })
 		vi.mocked(h.pi.sendMessage).mockClear()
 
-		maybeInjectReactiveContinuationNudge(h.pi, h.runtime)
+		maybeInjectLifecycleObligationGuard(h.pi, h.runtime)
 
 		expect(result).toEqual({ handled: true })
 		expect(h.runtime.getActive()).toBeUndefined()
@@ -558,7 +564,7 @@ describe("FermentCommandController", () => {
 		if (!resumed.ok) throw new Error(resumed.error.message)
 		vi.mocked(h.pi.sendMessage).mockClear()
 
-		maybeInjectReactiveContinuationNudge(h.pi, h.runtime)
+		maybeInjectLifecycleObligationGuard(h.pi, h.runtime)
 
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
@@ -641,6 +647,98 @@ describe("FermentCommandController", () => {
 
 		expect(result).toEqual({ handled: true })
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith("Export failed: permission denied")
+	})
+})
+
+describe("continuation policy reset on new ferment creation", () => {
+	it("/ferment one-shot resets policy to automated", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("manual")
+		const controller = new FermentCommandController()
+
+		await controller.execute(
+			{ type: "one-shot", intent: "fix the failing smoke test" },
+			{ raw: 'one-shot "fix the failing smoke test"', pi: h.pi, ctx: h.ctx, runtime: h.runtime },
+		)
+
+		expect(h.runtime.getContinuationPolicy()).toBe("automated")
+	})
+
+	it("startFermentForIntent resets policy to manual for interactive UI", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("automated")
+		const interactiveCtx = createContext({
+			...h.ctx,
+			hasUI: true,
+			ui: { ...h.ctx.ui, confirm: vi.fn().mockResolvedValue(true) },
+		}) as unknown as ExtensionCommandContext
+
+		await startFermentForIntent({ pi: h.pi, ctx: interactiveCtx, runtime: h.runtime, rawIntent: "Add OAuth support" })
+
+		expect(h.runtime.getContinuationPolicy()).toBe("manual")
+	})
+
+	it("startFermentForIntent resets policy to automated for headless (no UI)", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("manual")
+
+		await startFermentForIntent({ pi: h.pi, ctx: h.ctx, runtime: h.runtime, rawIntent: "Add OAuth support" })
+
+		expect(h.runtime.getContinuationPolicy()).toBe("automated")
+	})
+
+	it("policy reset writes through the runtime, not global state", async () => {
+		const baseH = createHarness()
+		// Simulate an isolated runtime whose policy methods use local state
+		// instead of the module-level global.
+		let isolatedPolicy: ContinuationPolicy = "automated"
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-isolated-policy-")))
+		const isolatedRuntime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			getContinuationPolicy: () => isolatedPolicy,
+			setContinuationPolicy: (p: ContinuationPolicy) => {
+				isolatedPolicy = p
+			},
+		}
+		const interactiveCtx = createContext({
+			...baseH.ctx,
+			hasUI: true,
+			ui: { ...baseH.ctx.ui, confirm: vi.fn().mockResolvedValue(true) },
+		}) as unknown as ExtensionCommandContext
+
+		await startFermentForIntent({
+			pi: baseH.pi,
+			ctx: interactiveCtx,
+			runtime: isolatedRuntime,
+			rawIntent: "Add OAuth support",
+		})
+
+		expect(isolatedRuntime.getContinuationPolicy()).toBe("manual")
+	})
+
+	it("/ferment new resets policy to manual for interactive UI", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("automated")
+		const commands = new Map<string, RegisteredCommand>()
+		const pi = {
+			...h.pi,
+			registerCommand: (name: string, command: RegisteredCommand) => {
+				commands.set(name, command)
+			},
+		} as unknown as ExtensionAPI
+		registerFermentCommands(pi, h.runtime)
+		const interactiveCtx = createContext({
+			...h.ctx,
+			hasUI: true,
+			ui: { ...h.ctx.ui, confirm: vi.fn().mockResolvedValue(true) },
+		}) as unknown as ExtensionCommandContext
+
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		await fermentCommand.handler('new "Next ferment"', interactiveCtx)
+
+		expect(h.runtime.getContinuationPolicy()).toBe("manual")
 	})
 })
 
@@ -771,6 +869,57 @@ describe("registerFermentCommands", () => {
 
 		expect(getPendingPlanReview(previous.id)).toBeUndefined()
 		expect(getPendingPlanReview(target.id)).toBeDefined()
+	})
+
+	it("/ferment switch resumes a paused ferment across a manual phase boundary", async () => {
+		const h = createHarness()
+		const applyAndPersist = createApplyAndPersist(h.runtime)
+		const draft = h.storage.create("Boundary Switch")
+		const scoped = applyAndPersist(draft.id, {
+			type: "scope",
+			goal: "Goal",
+			successCriteria: ["Works"],
+			constraints: [],
+			phases: [
+				{ name: "Done", goal: "Build", steps: [] },
+				{ name: "Next", goal: "Continue", steps: [] },
+			],
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const firstPhaseId = scoped.ferment.phases[0].id
+		const activated = applyAndPersist(scoped.ferment.id, { type: "activate_phase", phaseId: firstPhaseId })
+		if (!activated.ok) throw new Error(activated.error.message)
+		const completed = applyAndPersist(activated.ferment.id, {
+			type: "complete_phase",
+			phaseId: firstPhaseId,
+			summary: "done",
+		})
+		if (!completed.ok) throw new Error(completed.error.message)
+		const paused = applyAndPersist(completed.ferment.id, { type: "pause" })
+		if (!paused.ok) throw new Error(paused.error.message)
+
+		const commands = new Map<string, RegisteredCommand>()
+		const pi = {
+			...h.pi,
+			registerCommand: (name: string, command: RegisteredCommand) => {
+				commands.set(name, command)
+			},
+		} as unknown as ExtensionAPI
+		registerFermentCommands(pi, h.runtime)
+
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		await fermentCommand.handler(`switch "${paused.ferment.name}"`, h.ctx)
+
+		expect(h.storage.get(paused.ferment.id)?.status).toBe("planned")
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_continuation_nudge",
+				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
+				details: expect.objectContaining({ action: "wake_up", expectedAction: "activate_phase" }),
+			}),
+			{ triggerTurn: true },
+		)
 	})
 
 	it("completes /ferment nested static argument groups", () => {
@@ -1346,6 +1495,38 @@ describe("registerFermentCommands", () => {
 			}),
 			{ triggerTurn: false },
 		)
+	})
+
+	it("/ferment resume does not reset an exhausted draft scoping-stop budget when there is nothing to resume", async () => {
+		const h = createHarness()
+		const draft = h.storage.create("Exhausted Draft")
+		h.runtime.setActive(draft)
+
+		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({ kind: "scheduled" })
+		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({ kind: "scheduled" })
+		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({
+			kind: "claimed",
+			reason: "exhausted",
+		})
+
+		const commands = new Map<string, RegisteredCommand>()
+		const pi = {
+			...h.pi,
+			registerCommand: (name: string, command: RegisteredCommand) => {
+				commands.set(name, command)
+			},
+		} as unknown as ExtensionAPI
+		registerFermentCommands(pi, h.runtime)
+
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		await fermentCommand.handler("resume", h.ctx)
+
+		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({
+			kind: "claimed",
+			reason: "exhausted",
+		})
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith('"Exhausted Draft" is draft; nothing to resume.')
 	})
 
 	it("implements pause → /ferment auto → /ferment resume with policy separated from lifecycle", async () => {

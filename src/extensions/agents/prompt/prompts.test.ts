@@ -85,6 +85,89 @@ Keep these parent rules.`
 		expect(output).not.toContain("set_phase")
 	})
 
+	it("regenerates inherited tool guidance from append-mode agent tools", () => {
+		const appendAgent: AgentConfig = {
+			name: "Test-Restricted-Append",
+			description: "Test restricted append agent",
+			extensions: true,
+			skills: true,
+			systemPrompt: "",
+			promptMode: "append",
+		}
+		const parentPrompt = `# Parent
+
+## Output & Truncation
+
+- Bash guidance from parent.
+- Content search guidance from parent.
+
+## Tool Selection
+
+- Reading a file → use \`read\`.
+- Editing a file → use \`edit\`.
+- Use \`mcp\` for authenticated services.
+
+## Available Tools
+- read
+- edit
+- mcp
+
+## Rules
+Keep these parent rules.`
+		const output = buildAgentPrompt(appendAgent, FIXED_CWD, FIXED_ENV, parentPrompt, {
+			activeToolNames: ["read"],
+		})
+
+		expect(output).toContain("## Output & Truncation")
+		expect(output).toContain("File reads:")
+		expect(output).not.toContain("Bash guidance from parent")
+		expect(output).not.toContain("Content search guidance from parent")
+		expect(output).toContain("## Tool Selection")
+		expect(output).toContain("Reading a file → use `read`")
+		expect(output).not.toContain("Editing a file → use `edit`")
+		expect(output).not.toContain("Use `mcp` for authenticated services")
+		expect(output).toContain("## Available Tools\n- read")
+		expect(output).toContain("Keep these parent rules.")
+	})
+
+	it("removes main-thread phase management while preserving persona-specific phase guidance", () => {
+		const appendAgent: AgentConfig = {
+			name: "Test-Phase-Append",
+			description: "Test append agent phase guidance",
+			extensions: true,
+			skills: true,
+			systemPrompt: "",
+			promptMode: "append",
+		}
+		const parentPrompt = `# Parent
+
+## Phase Management
+
+Call \`set_phase\` when the work type changes.
+
+### Phase-specific behaviour
+
+During **plan** phase:
+- Write a plan.
+
+## Rules
+Keep these parent rules.`
+		const output = buildAgentPrompt(appendAgent, FIXED_CWD, FIXED_ENV, parentPrompt, {
+			activeToolNames: ["read"],
+			guidelinesBlock: `## Phase Guidelines (build)
+
+During **build** phase:
+- Implement the requested change.`,
+		})
+
+		expect(output).not.toContain("## Phase Management")
+		expect(output).not.toContain("Call `set_phase`")
+		expect(output).not.toContain("During **plan** phase")
+		expect(output).toContain("Keep these parent rules.")
+		expect(output).toContain("## Phase Guidelines (build)")
+		expect(output).toContain("During **build** phase")
+	})
+
 	it("Explore agent assembles expected prompt (replace mode)", () => {
 		const agent = getRequired(AGENT_EXPLORE)
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
@@ -325,6 +408,38 @@ describe("includeCoreGuidelines", () => {
 		expect(output).toContain("Be concise in your responses")
 		expect(output).toContain("Never guess, assume, or fabricate")
 		expect(output).toContain("Documents directory")
+		// Consolidated sections that subagents need: tool substitution,
+		// output capping, and consent. Phase Management is deliberately
+		// omitted — subagents do not manage phase lifecycle.
+		expect(output).toContain("## Tool Selection")
+		expect(output).toContain("## Output & Truncation")
+		expect(output).toContain("## Consent & Irreversible Actions")
+		expect(output).not.toContain("## Phase Management")
+	})
+
+	it("includes only guidance for tools available to a restricted replace-mode agent", () => {
+		const agent: AgentConfig = {
+			name: "Test-Restricted-Core",
+			description: "Test",
+			extensions: true,
+			skills: true,
+			systemPrompt: "Inspect the project.",
+			promptMode: "replace",
+			includeCoreGuidelines: true,
+		}
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			activeToolNames: ["read", "bash"],
+		})
+
+		expect(output).toContain("Reading a file → use `read`")
+		expect(output).toContain("Use bash only for")
+		expect(output).not.toContain("Editing a file → use `edit`")
+		expect(output).not.toContain("Writing a file → use `write`")
+		expect(output).not.toContain("Searching file contents → use `grep`")
+		expect(output).not.toContain("Finding files by pattern → use `find`")
+		expect(output).not.toContain("Listing a directory → use `ls`")
+		expect(output).not.toContain("mcp({ search:")
+		expect(output).not.toContain("Content search: paths first")
 	})
 
 	it("does not include core guidelines when includeCoreGuidelines is absent (replace mode)", () => {
@@ -339,6 +454,9 @@ describe("includeCoreGuidelines", () => {
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
 		expect(output).not.toContain("Be concise in your responses")
 		expect(output).not.toContain("Never guess, assume, or fabricate")
+		expect(output).not.toContain("## Tool Selection")
+		expect(output).not.toContain("## Output & Truncation")
+		expect(output).not.toContain("## Consent & Irreversible Actions")
 	})
 
 	it("does not include core guidelines in append mode even if flag is true", () => {
@@ -354,5 +472,27 @@ describe("includeCoreGuidelines", () => {
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
 		expect(output).not.toContain("## Guidelines")
 		expect(output).not.toContain("## Factual Accuracy")
+	})
+
+	it("includes skillListBlock in the prompt when provided", () => {
+		const agent: AgentConfig = {
+			name: "Test-Skills",
+			description: "Test",
+			extensions: true,
+			skills: true,
+			systemPrompt: "Do the thing.",
+			promptMode: "replace",
+		}
+		const skillListBlock = `## Available Skills
+
+Use the Skill tool to load a skill's full instructions.
+
+- **my-skill**: A test skill`
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, undefined, {
+			skillListBlock,
+		})
+		expect(output).toContain("## Available Skills")
+		expect(output).toContain("**my-skill**")
+		expect(output).toContain("Skill tool")
 	})
 })

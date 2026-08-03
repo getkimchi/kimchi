@@ -11,7 +11,7 @@ export interface SystemPromptBlock {
 	suppress?(ctx: SystemPromptBlockContext): ReadonlySet<SuppressibleSection> | undefined
 }
 
-export type SuppressibleSection = "orchestration" | "phase-guidelines" | "project-context" | "skills"
+export type SuppressibleSection = "orchestration" | "project-context" | "skills"
 
 export interface SystemPromptBlockContext {
 	mode: PromptMode

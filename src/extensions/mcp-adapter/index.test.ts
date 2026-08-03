@@ -102,7 +102,7 @@ function makeState(meta: ToolMetadata, serverName: string): McpExtensionState {
 }
 
 describe("mcp adapter system prompt block", () => {
-	it("registers tool and MCP discovery instructions with the extension that owns mcp", async () => {
+	it("does not inject a dedicated MCP discovery block (consolidated into core ## Tool Selection)", async () => {
 		vi.stubEnv("MCP_DIRECT_TOOLS", "__none__")
 		const pi = makePi()
 		mcpAdapter(pi)
@@ -115,30 +115,14 @@ describe("mcp adapter system prompt block", () => {
 				sessionId: TEST_SESSION_ID,
 			})
 
-			expect(result).toContain("## Tool and MCP Discovery")
-			expect(result).toContain('use mcp({ search: "query" })')
-			expect(result.indexOf("## Tool and MCP Discovery")).toBeLessThan(result.indexOf("## Available Tools"))
+			// The MCP discovery guidance is now part of the consolidated
+			// `## Tool Selection` core section, not injected by the
+			// adapter. The adapter must not duplicate it.
+			expect(result).not.toContain("## Tool and MCP Discovery")
+			// Consolidated core section must still cover the MCP guidance.
+			expect(result).toContain("## Tool Selection")
+			expect(result).toContain("mcp({ search")
 			expect(result).toContain('<tool name="mcp">')
-		} finally {
-			await pi.fireShutdown()
-		}
-	})
-
-	it("inherits tool and MCP discovery instructions to append-mode subagents", async () => {
-		vi.stubEnv("MCP_DIRECT_TOOLS", "__none__")
-		const pi = makePi()
-		mcpAdapter(pi)
-
-		try {
-			const result = buildSystemPrompt({
-				tools: pi.getAllTools(),
-				env: testEnv,
-				mode: "subagent",
-				sessionId: TEST_SESSION_ID,
-			})
-
-			expect(result).toContain("## Tool and MCP Discovery")
-			expect(result).toContain('use mcp({ search: "query" })')
 		} finally {
 			await pi.fireShutdown()
 		}

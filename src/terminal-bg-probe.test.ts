@@ -1,5 +1,61 @@
-import { describe, expect, it } from "vitest"
-import { CUBE, estimateTerminalBackground, GRAY, hexToBgAnsi, rgbTo256, tintBackground } from "./terminal-bg-probe.js"
+import { EventEmitter } from "node:events"
+import { describe, expect, it, vi } from "vitest"
+import {
+	CUBE,
+	estimateTerminalBackground,
+	GRAY,
+	hexToBgAnsi,
+	probeTerminalColors,
+	QUERY_BG,
+	QUERY_FG,
+	rgbTo256,
+	tintBackground,
+} from "./terminal-bg-probe.js"
+
+describe("probeTerminalColors", () => {
+	it("removes OSC replies and preserves early user input exactly once", async () => {
+		const stdin = new EventEmitter() as EventEmitter & {
+			isRaw: boolean
+			pause: ReturnType<typeof vi.fn>
+			resume: ReturnType<typeof vi.fn>
+			setRawMode: ReturnType<typeof vi.fn>
+			unshift: ReturnType<typeof vi.fn>
+		}
+		stdin.isRaw = false
+		stdin.pause = vi.fn()
+		stdin.resume = vi.fn()
+		stdin.setRawMode = vi.fn()
+		stdin.unshift = vi.fn()
+
+		const writes: string[] = []
+		const stdout = {
+			write: vi.fn((chunk: string) => {
+				writes.push(chunk)
+				if (writes.length === 2) {
+					stdin.emit(
+						"data",
+						`${QUERY_FG.replace("?", "rgb:eeee/dddd/cccc")}/ferment\r${QUERY_BG.replace("?", "rgb:1111/2222/3333")}`,
+					)
+				}
+				return true
+			}),
+		}
+
+		const result = await probeTerminalColors(
+			stdin as unknown as NodeJS.ReadStream,
+			stdout as unknown as NodeJS.WriteStream,
+		)
+
+		expect(result).toEqual({
+			background: { r: 0x11, g: 0x22, b: 0x33 },
+			rawBackground: "rgb:1111/2222/3333",
+			rawForeground: "rgb:eeee/dddd/cccc",
+		})
+		expect(writes).toEqual([QUERY_FG, QUERY_BG])
+		expect(stdin.unshift).toHaveBeenCalledOnce()
+		expect(stdin.unshift).toHaveBeenCalledWith(Buffer.from("/ferment\r"))
+	})
+})
 
 describe("tintBackground", () => {
 	const dark = { r: 0x1a, g: 0x18, b: 0x18 }
