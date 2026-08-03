@@ -7,10 +7,21 @@ const DELEGATION_TOOLS = new Set(["Agent"])
 export interface OrchestratorWriteGuardOptions {
 	/** Tools that count as implementation work. Default: edit, write. */
 	implementationTools?: Set<string>
-	/** Number of implementation tool calls after a subagent return in build phase before a steer fires. Default: 2 */
+	/** Number of implementation tool calls after a successful subagent return in build phase before a steer fires. Default: 2 */
 	buildPhaseThreshold?: number
-	/** Number of implementation tool calls after a subagent return in build phase before a hard block fires. Default: 5 */
+	/** Number of implementation tool calls after a successful subagent return in build phase before a hard block fires. Default: 5 */
 	buildPhaseBlockThreshold?: number
+	/**
+	 * Number of implementation tool calls after a failed/stopped/aborted subagent return
+	 * before a steer fires. Default: 4 — higher than the success threshold because the
+	 * orchestrator is doing triage, not stealing a successful worker's output.
+	 */
+	buildPhaseTriageThreshold?: number
+	/**
+	 * Number of implementation tool calls after a failed/stopped/aborted subagent return
+	 * before a hard block fires. Default: 8.
+	 */
+	buildPhaseTriageBlockThreshold?: number
 }
 
 export const STEER_MESSAGE_TYPE = "review-write-guard-steer"
@@ -28,6 +39,33 @@ const BUILD_BLOCK_REASON =
 	"BLOCKED: You have continued editing subagent output after being warned. " +
 	"The orchestrator must not do a subagent's job. Spawn a fix Agent with the remaining work."
 
+/** Subagent outcome shape exposed in the Agent tool's result details. */
+interface AgentOutcomeSummary {
+	/** "completed" | "aborted" | "stopped" | ... */
+	status?: string
+	/** "completed" | "failed" | ... */
+	outcome?: string
+	/** Subagent persona, e.g. "Builder" | "Fixer" | "Explore". */
+	subagentType?: string
+}
+
+function isSuccessfulOutcome(outcome: AgentOutcomeSummary | undefined): boolean {
+	if (!outcome) return true
+	return outcome.status === "completed" && outcome.outcome === "completed"
+}
+
+function isTriageOutcome(outcome: AgentOutcomeSummary | undefined): boolean {
+	if (!outcome) return false
+	const { status, outcome: result } = outcome
+	// Explicit failure states observed from agent tool results.
+	if (status === "aborted" || status === "stopped") return true
+	if (result === "failed" || result === "error") return true
+	// A successfully completed subagent that required steering is still successful.
+	if (status === "completed" && result === "completed") return false
+	if (status === "steered" && result === "completed") return false
+	return false
+}
+
 export class OrchestratorWriteGuard {
 	private readonly ctx: ExtensionContext
 
@@ -35,8 +73,11 @@ export class OrchestratorWriteGuard {
 	private readonly delegationTools: Set<string>
 	private readonly buildPhaseThreshold: number
 	private readonly buildPhaseBlockThreshold: number
+	private readonly buildPhaseTriageThreshold: number
+	private readonly buildPhaseTriageBlockThreshold: number
 
 	private subagentReturnedInBuild = false
+	private lastSubagentSuccessful = false
 	private buildWriteCount = 0
 	private buildSteered = false
 
@@ -47,10 +88,13 @@ export class OrchestratorWriteGuard {
 		this.delegationTools = new Set(DELEGATION_TOOLS)
 		this.buildPhaseThreshold = options.buildPhaseThreshold ?? 2
 		this.buildPhaseBlockThreshold = options.buildPhaseBlockThreshold ?? 5
+		this.buildPhaseTriageThreshold = options.buildPhaseTriageThreshold ?? 4
+		this.buildPhaseTriageBlockThreshold = options.buildPhaseTriageBlockThreshold ?? 8
 	}
 
 	reset(): void {
 		this.subagentReturnedInBuild = false
+		this.lastSubagentSuccessful = false
 		this.buildWriteCount = 0
 		this.buildSteered = false
 	}
@@ -59,9 +103,7 @@ export class OrchestratorWriteGuard {
 		const phase = getCurrentPhase(this.ctx.sessionManager.getSessionId())
 
 		if (this.delegationTools.has(toolName)) {
-			this.subagentReturnedInBuild = false
-			this.buildWriteCount = 0
-			this.buildSteered = false
+			this.reset()
 			return undefined
 		}
 
@@ -73,10 +115,12 @@ export class OrchestratorWriteGuard {
 			if (!this.subagentReturnedInBuild) return undefined
 
 			this.buildWriteCount++
-			if (this.buildWriteCount >= this.buildPhaseBlockThreshold) {
+			const { steerThreshold, blockThreshold } = this.currentThresholds()
+
+			if (this.buildWriteCount >= blockThreshold) {
 				return { block: true, reason: BUILD_BLOCK_REASON }
 			}
-			if (this.buildWriteCount >= this.buildPhaseThreshold && !this.buildSteered) {
+			if (this.buildWriteCount >= steerThreshold && !this.buildSteered) {
 				this.buildSteered = true
 				return { steer: BUILD_STEER_MESSAGE }
 			}
@@ -89,21 +133,80 @@ export class OrchestratorWriteGuard {
 		return undefined
 	}
 
-	recordSubagentReturn(): void {
+	recordSubagentReturn(outcome?: AgentOutcomeSummary): void {
 		const phase = getCurrentPhase(this.ctx.sessionManager.getSessionId())
-		if (phase === "build") {
+		if (phase !== "build") return
+
+		this.buildWriteCount = 0
+		this.buildSteered = false
+
+		if (isTriageOutcome(outcome)) {
+			// Subagent did not complete successfully. The orchestrator is doing triage
+			// on partial/failed/stopped worker output; allow more direct edits before
+			// steering again. Keep the guard armed but use the higher triage thresholds.
 			this.subagentReturnedInBuild = true
-			this.buildWriteCount = 0
-			this.buildSteered = false
+			this.lastSubagentSuccessful = false
+			return
 		}
+
+		if (!isSuccessfulOutcome(outcome)) {
+			// Unknown or ambiguous outcome: be permissive and disarm rather than risk
+			// trapping the orchestrator in a delegation loop.
+			this.subagentReturnedInBuild = false
+			this.lastSubagentSuccessful = false
+			return
+		}
+
+		this.subagentReturnedInBuild = true
+		this.lastSubagentSuccessful = true
 	}
 
-	getState(): { subagentReturnedInBuild: boolean; buildWriteCount: number; buildSteered: boolean } {
+	getState(): {
+		subagentReturnedInBuild: boolean
+		lastSubagentSuccessful: boolean
+		buildWriteCount: number
+		buildSteered: boolean
+	} {
 		return {
 			subagentReturnedInBuild: this.subagentReturnedInBuild,
+			lastSubagentSuccessful: this.lastSubagentSuccessful,
 			buildWriteCount: this.buildWriteCount,
 			buildSteered: this.buildSteered,
 		}
+	}
+
+	private currentThresholds(): { steerThreshold: number; blockThreshold: number } {
+		if (!this.lastSubagentSuccessful) {
+			return {
+				steerThreshold: this.buildPhaseTriageThreshold,
+				blockThreshold: this.buildPhaseTriageBlockThreshold,
+			}
+		}
+		return {
+			steerThreshold: this.buildPhaseThreshold,
+			blockThreshold: this.buildPhaseBlockThreshold,
+		}
+	}
+}
+
+function extractAgentOutcome(event: { details?: unknown }): AgentOutcomeSummary | undefined {
+	const details = event.details
+	if (!details || typeof details !== "object") return undefined
+
+	const agentOutcome = (details as Record<string, unknown>).agentOutcome
+	if (!agentOutcome || typeof agentOutcome !== "object") return undefined
+
+	const ao = agentOutcome as Record<string, unknown>
+	const detailsSubagentType = (details as Record<string, unknown>).subagentType
+	return {
+		status: typeof ao.status === "string" ? ao.status : undefined,
+		outcome: typeof ao.outcome === "string" ? ao.outcome : undefined,
+		subagentType:
+			typeof ao.subagentType === "string"
+				? ao.subagentType
+				: typeof detailsSubagentType === "string"
+					? detailsSubagentType
+					: undefined,
 	}
 }
 
@@ -154,7 +257,7 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 	pi.on("tool_result", (event, ctx) => {
 		if (event.toolName === "Agent") {
 			const guard = getOrchestratorWriteGuard(ctx)
-			guard.recordSubagentReturn()
+			guard.recordSubagentReturn(extractAgentOutcome(event))
 		}
 	})
 }
