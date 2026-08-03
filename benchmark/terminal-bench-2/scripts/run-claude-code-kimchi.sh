@@ -3,9 +3,9 @@
 # Kimchi Anthropic-compatible gateway. The selected model is controlled by MODEL.
 #
 # Usage examples:
-#   MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
-#   MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git -k 3
-#   CLAUDE_CODE_VERSION=2.1.144 MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
+#   MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
+#   MODEL=kimchi-dev/minimax-m3 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git -k 3
+#   CLAUDE_CODE_VERSION=2.1.144 MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
 #   CLAUDE_CODE_API_MAX_RETRIES=0 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
 set -euo pipefail
 
@@ -27,7 +27,7 @@ RETRY_CONFIG="${RETRY_CONFIG:-$BENCH_DIR/config/retry.yaml}"
 HARBOR_ARGS=(
     --agent-import-path kimchi_agent:ClaudeCodeKimchi
     --env docker
-    --model "${MODEL:-kimchi-dev/kimi-k2.5}"
+    --model "${MODEL:-kimchi-dev/kimi-k2.7}"
     --ae "KIMCHI_API_KEY=$KIMCHI_API_KEY"
     --config "$RETRY_CONFIG"
     --max-retries "${CLAUDE_CODE_API_MAX_RETRIES:-5}"

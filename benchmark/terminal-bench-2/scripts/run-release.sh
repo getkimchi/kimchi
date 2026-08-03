@@ -5,7 +5,7 @@
 #
 # Usage examples:
 #   ./scripts/run-release.sh -i terminal-bench/fix-git
-#   MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-release.sh -i terminal-bench/fix-git
+#   MODEL=kimchi-dev/minimax-m3 ./scripts/run-release.sh -i terminal-bench/fix-git
 #   MODEL=multi-model ./scripts/run-release.sh -i terminal-bench/fix-git -k 3
 set -euo pipefail
 
@@ -22,7 +22,7 @@ unset KIMCHI_CODE_BINARY
 exec uv run --python 3.14 harbor run \
     --agent-import-path kimchi_agent:Kimchi \
     --env docker \
-    --model "${MODEL:-kimchi-dev/kimi-k2.5}" \
+    --model "${MODEL:-kimchi-dev/kimi-k2.7}" \
     --ae "KIMCHI_API_KEY=$KIMCHI_API_KEY" \
     -d "$DATASET" \
     "$@"
