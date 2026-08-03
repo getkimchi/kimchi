@@ -110,7 +110,37 @@ const noGit = {
 		elidedBytes: 0,
 	}),
 	"step-start-ref": () => ({ ref: "abc123" }),
+	"run-start-ref": () => ({ ref: "abc123" }),
+	"run-diff": () => ({
+		available: true,
+		filesChanged: " _includes/about.md | 2 +-",
+		diffSnippet: "@@ -1 +1 @@",
+		elidedBytes: 0,
+	}),
+	// `phase-reverify` shells out too — it re-runs each unsettled step's verify command. Stubbed empty by
+	// default, which is what it would return anyway for a phase whose steps all settled; the tests that
+	// care about a phase closing on a still-failing command override it.
+	"phase-reverify": () => ({ checks: [] }),
 }
+
+/**
+ * One still-failing re-run, as `phase-reverify` reports it to the closing turn.
+ *
+ * `exitCode` is a parameter because the failure IDENTITY drives the short-circuit: a closing turn that
+ * reports the same command failing the same way as last time means the rework changed nothing.
+ */
+const stillFailing = (exitCode = 1, index = 1) => ({
+	checks: [
+		{
+			index,
+			description: "Add the ok print",
+			command: "pytest -q",
+			exitCode,
+			passing: false,
+			output: "E   assert 48 <= 53 < 69",
+		},
+	],
+})
 
 /**
  * kimchi's `taskInputSchema` here is `Type.Object({ instruction: Type.String() })` — `deadlineIso` was
@@ -143,11 +173,19 @@ describe("ferment-oneshot: the lifecycle", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
 		if (run.status !== "completed") throw new Error(`${run.status} @ ${run.path} :: ${run.error}`)
-		expect(run.output).toEqual({ shipped: true, phases: 1, steps: 2, stepsDone: 2 })
+		expect(run.output).toEqual({
+			shipped: true,
+			grade: "A",
+			phases: 1,
+			phasesFailed: 0,
+			steps: 2,
+			stepsDone: 2,
+		})
 		// One turn per step, and nothing else ran: the step turn IS the work.
 		expect(run.agent("step-turn").sessions).toBe(2)
 		expect(run.agent("judge").sessions).toBe(0) // the plan asked nothing
@@ -165,6 +203,7 @@ describe("ferment-oneshot: the lifecycle", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -199,6 +238,7 @@ describe("ferment-oneshot: the lifecycle", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -225,6 +265,7 @@ describe("ferment-oneshot: the lifecycle", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -242,7 +283,9 @@ describe("ferment-oneshot: the lifecycle", () => {
 	it("sends the step back into its own session when triage calls the failure real", async () => {
 		const run = await createTestRun(fermentOneshot, {
 			input: roomyInput(),
-			steps: { ...noGit, verify: verifyFail },
+			// The command that fails for the step loop is still failing when the phase tries to close — the
+			// two stubs have to agree, because the closing turn re-runs the same command.
+			steps: { ...noGit, verify: verifyFail, "phase-reverify": () => stillFailing() },
 			agents: {
 				plan: [reply(onePhaseOneStep)],
 				"step-turn": [reply(stepPass), reply(stepPass), reply(stepPass)],
@@ -251,9 +294,11 @@ describe("ferment-oneshot: the lifecycle", () => {
 					reply({ verdict: "fail", reason: "still broken" }),
 					reply({ verdict: "fail", reason: "still broken" }),
 				],
-				"phase-gates": [reply(phasePass)],
-				"phase-grade": [reply(gradeA)],
+				"phase-gates": Array.from({ length: 6 }, () => reply(phasePass)),
+				"phase-grade": Array.from({ length: 6 }, () => reply(gradeA)),
+				"phase-rework": Array.from({ length: 6 }, () => reply(reworked)),
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -271,16 +316,18 @@ describe("ferment-oneshot: the lifecycle", () => {
 	it("reads a missing triage verdict as failure, the way kimchi does", async () => {
 		const run = await createTestRun(fermentOneshot, {
 			input: roomyInput(),
-			steps: { ...noGit, verify: verifyFail },
+			steps: { ...noGit, verify: verifyFail, "phase-reverify": () => stillFailing() },
 			agents: {
 				plan: [reply(onePhaseOneStep)],
 				"step-turn": [reply(stepPass), reply(stepPass), reply(stepPass)],
 				// The step is `optional`; a judge that never answered leaves nothing behind. False-pass is the
 				// worst outcome available here, so silence must not advance the step.
 				"verify-judge": [],
-				"phase-gates": [reply(phasePass)],
-				"phase-grade": [reply(gradeA)],
+				"phase-gates": Array.from({ length: 6 }, () => reply(phasePass)),
+				"phase-grade": Array.from({ length: 6 }, () => reply(gradeA)),
+				"phase-rework": Array.from({ length: 6 }, () => reply(reworked)),
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -300,6 +347,7 @@ describe("ferment-oneshot: the lifecycle", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -332,11 +380,14 @@ describe("ferment-oneshot: the lifecycle", () => {
 						],
 					}),
 				],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
 		expect(run.status).toBe("completed")
-		expect(run.output).toMatchObject({ shipped: false })
+		// An A from the journey grader does not rescue a flagged C gate: kimchi's C gates decide ship or
+		// refuse, and the grade only enforces quality on top of a run they already cleared.
+		expect(run.output).toMatchObject({ shipped: false, grade: "A" })
 	})
 })
 
@@ -353,6 +404,7 @@ describe("ferment-oneshot: the phase grader", () => {
 				"phase-grade": [reply(gradeC), reply(gradeA)],
 				"phase-rework": [reply(reworked)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -393,6 +445,7 @@ describe("ferment-oneshot: the phase grader", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -416,6 +469,7 @@ describe("ferment-oneshot: the phase grader", () => {
 				"phase-grade": [reply(gradeC), reply(gradeB)],
 				"phase-rework": [reply(reworked)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -437,6 +491,7 @@ describe("ferment-oneshot: the phase grader", () => {
 				"phase-grade": Array.from({ length: 6 }, () => reply(gradeC)),
 				"phase-rework": Array.from({ length: 6 }, () => reply(reworked)),
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -446,6 +501,119 @@ describe("ferment-oneshot: the phase grader", () => {
 		expect(run.agent("phase-rework").sessions).toBe(3)
 		expect(run.agent("phase-grade").sessions).toBe(4)
 		expect(run.output).toMatchObject({ phases: 1 })
+	})
+
+	it("refuses to close a phase whose verification still fails, however the grader graded it", async () => {
+		// A failure that CHANGES each turn (the rework moved something, just not enough), so the run spends
+		// its whole rework budget rather than short-circuiting on a repeat.
+		let turn = 0
+		const run = await createTestRun(fermentOneshot, {
+			input: roomyInput(),
+			steps: { ...noGit, verify: verifyFail, "phase-reverify": () => stillFailing(++turn) },
+			agents: {
+				plan: [reply(onePhaseOneStep)],
+				// The step turn never lands it: three attempts, all with a failing verification.
+				"step-turn": Array.from({ length: 4 }, () => reply(stepPass)),
+				"verify-judge": Array.from({ length: 4 }, () => reply({ verdict: "fail", reason: "a real defect" })),
+				"phase-gates": Array.from({ length: 6 }, () => reply(phasePass)),
+				// The grader says A every single time — this is the bug, in one line. Before this fix the
+				// phase closed on that A and the workflow shipped a container whose tests fail.
+				"phase-grade": Array.from({ length: 6 }, () => reply(gradeA)),
+				"phase-rework": Array.from({ length: 6 }, () => reply(reworked)),
+				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
+			},
+		})
+
+		expect(run.status).toBe("completed")
+		// The phase does NOT get to claim it completed. The run still finishes — there is no human to
+		// escalate to and the container is graded either way — but the record says what happened.
+		expect(run.output).toMatchObject({ phases: 1, phasesFailed: 1, stepsDone: 0 })
+		// And it spent its rework budget trying, rather than closing on the first A.
+		expect(run.agent("phase-rework").sessions).toBe(3)
+	})
+
+	it("closes the phase once a rework makes the failing verification pass", async () => {
+		let closingTurn = 0
+		const run = await createTestRun(fermentOneshot, {
+			input: roomyInput(),
+			steps: {
+				...noGit,
+				verify: verifyFail,
+				// Failing when the phase first tries to close, clean after the rework — the only thing that
+				// can clear this refusal is the command's own exit code changing.
+				"phase-reverify": () => (++closingTurn === 1 ? stillFailing() : { checks: [] }),
+			},
+			agents: {
+				plan: [reply(onePhaseOneStep)],
+				"step-turn": Array.from({ length: 4 }, () => reply(stepPass)),
+				"verify-judge": Array.from({ length: 4 }, () => reply({ verdict: "fail", reason: "a real defect" })),
+				"phase-gates": [reply(phasePass), reply(phasePass)],
+				"phase-grade": [reply(gradeA), reply(gradeA)],
+				"phase-rework": [reply(reworked)],
+				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
+			},
+		})
+
+		expect(run.status).toBe("completed")
+		expect(run.agent("phase-rework").sessions).toBe(1)
+		// Fixed, so it closes completed — and the step counts as settled even though the attempt loop that
+		// recorded `done: false` ran long before the rework did.
+		expect(run.output).toMatchObject({ phasesFailed: 0, stepsDone: 1, shipped: true })
+	})
+
+	it("stops reworking early when a closing turn comes back with the failure it came back with last time", async () => {
+		const run = await createTestRun(fermentOneshot, {
+			input: roomyInput(),
+			steps: { ...noGit, verify: verifyFail, "phase-reverify": () => stillFailing() },
+			agents: {
+				plan: [reply(onePhaseOneStep)],
+				"step-turn": Array.from({ length: 4 }, () => reply(stepPass)),
+				"verify-judge": Array.from({ length: 4 }, () => reply({ verdict: "fail", reason: "a real defect" })),
+				"phase-gates": Array.from({ length: 6 }, () => reply(phasePass)),
+				"phase-grade": Array.from({ length: 6 }, () => reply(gradeA)),
+				"phase-rework": Array.from({ length: 6 }, () => reply(reworked)),
+				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
+			},
+		})
+
+		// kimchi's failure-hash short-circuit (`recordBlockHashAndCheckRepeat`): the same exit code on the
+		// same command means the rework changed nothing, so the rest of the budget is not spent proving it
+		// again. One rework, then the second turn recognises the repeat and stops.
+		expect(run.agent("phase-rework").sessions).toBe(1)
+		expect(run.output).toMatchObject({ phasesFailed: 1 })
+	})
+
+	it("tells the grader and the rework what is failing, not just that something is", async () => {
+		const run = await createTestRun(fermentOneshot, {
+			input: roomyInput(),
+			steps: { ...noGit, verify: verifyFail, "phase-reverify": () => stillFailing() },
+			agents: {
+				plan: [reply(onePhaseOneStep)],
+				"step-turn": Array.from({ length: 4 }, () => reply(stepPass)),
+				"verify-judge": Array.from({ length: 4 }, () => reply({ verdict: "fail", reason: "a real defect" })),
+				"phase-gates": Array.from({ length: 6 }, () => reply(phasePass)),
+				"phase-grade": Array.from({ length: 6 }, () => reply(gradeA)),
+				"phase-rework": Array.from({ length: 6 }, () => reply(reworked)),
+				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
+			},
+		})
+
+		const grader = run.agent("phase-grade").messages[0] as string
+		expect(grader).toContain("VERIFICATION FAILURES")
+		expect(grader).toContain("pytest -q")
+		expect(grader).toContain("exit 1")
+		expect(grader).toContain("assert 48 <= 53 < 69")
+		// The grader must not be able to read the step as fine: its own summary line says otherwise.
+		expect(grader).toContain("UNSETTLED")
+
+		// And the rework is told the same thing, ahead of anything the grade says.
+		const rework = run.agent("phase-rework").messages[0] as string
+		expect(rework).toContain("pytest -q")
+		expect(rework).toContain("only the exit code does")
 	})
 
 	it("advances when the grader itself never answered, because an unreachable judge is advisory", async () => {
@@ -458,6 +626,7 @@ describe("ferment-oneshot: the phase grader", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [], // the step is optional; a grader that returns nothing must not block
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -480,6 +649,7 @@ describe("ferment-oneshot: a step turn that never answers its gates", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -508,6 +678,7 @@ describe("ferment-oneshot: the gate re-call", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -554,6 +725,7 @@ describe("ferment-oneshot: phase-scope flags", () => {
 				"phase-grade": [reply(gradeA)],
 				"phase-rework": [reply(reworked)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -600,6 +772,7 @@ describe("ferment-oneshot: the interview", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -634,6 +807,7 @@ describe("ferment-oneshot: the interview", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -676,6 +850,7 @@ describe("ferment-oneshot: the interview", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -712,6 +887,7 @@ describe("ferment-oneshot: the interview", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -740,6 +916,7 @@ describe("ferment-oneshot: the interview", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -761,6 +938,7 @@ describe("ferment-oneshot: what the steps are told", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 		const planPrompt = run.agent("plan").messages[0] as string
@@ -790,6 +968,7 @@ describe("ferment-oneshot: what the steps are told", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -824,6 +1003,7 @@ describe("ferment-oneshot: what the steps are told", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -865,6 +1045,7 @@ describe("ferment-oneshot: what the steps are told", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -885,6 +1066,7 @@ describe("ferment-oneshot: what the steps are told", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -909,6 +1091,7 @@ describe("ferment-oneshot: what the steps are told", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -932,6 +1115,7 @@ describe("ferment-oneshot: what the steps are told", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -984,6 +1168,7 @@ describe("ferment-oneshot: nobody is dispatched for a step", () => {
 				"phase-gates": [reply(phasePass)],
 				"phase-grade": [reply(gradeA)],
 				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeA)],
 			},
 		})
 
@@ -992,6 +1177,90 @@ describe("ferment-oneshot: nobody is dispatched for a step", () => {
 		// buy another of each.
 		expect(run.agent("step-turn").sessions).toBe(1)
 		expect(run.agent("step-turn").remaining).toBe(0)
+	})
+})
+
+describe("ferment-oneshot: the ship check and the journey grade", () => {
+	/** A run whose only phase closes failed, so both ship-time readers have something to not miss. */
+	const runWithAFailedPhase = () =>
+		createTestRun(fermentOneshot, {
+			input: roomyInput(),
+			steps: { ...noGit, verify: verifyFail, "phase-reverify": () => stillFailing() },
+			agents: {
+				plan: [reply(onePhaseOneStep)],
+				"step-turn": Array.from({ length: 4 }, () => reply(stepPass)),
+				"verify-judge": Array.from({ length: 4 }, () => reply({ verdict: "fail", reason: "a real defect" })),
+				"phase-gates": Array.from({ length: 6 }, () => reply(phasePass)),
+				"phase-grade": Array.from({ length: 6 }, () => reply(gradeA)),
+				"phase-rework": Array.from({ length: 6 }, () => reply(reworked)),
+				ship: [reply(shipPass)],
+				"journey-grade": [reply(gradeC)],
+			},
+		})
+
+	it("shows the ship check the phase outcome and the step counts, not just the summaries", async () => {
+		const run = await runWithAFailedPhase()
+
+		const shipTurn = run.agent("ship").messages[0] as string
+		// The four fields `phase-result` computes and `shipPrompt` used to drop on the floor, because its
+		// parameter type declared a narrower object than the caller passed and TypeScript accepted it.
+		expect(shipTurn).toContain("[failed]")
+		expect(shipTurn).toContain("grade A")
+		expect(shipTurn).toContain("0/1 steps settled")
+		expect(shipTurn).toContain("did not close clean")
+	})
+
+	it("grades the whole run over the phase trail, and refuses ship on a C", async () => {
+		const run = await runWithAFailedPhase()
+
+		expect(run.agent("journey-grade").sessions).toBe(1)
+		const journey = run.agent("journey-grade").messages[0] as string
+		// It is the only reader positioned to see every phase at once — which is the whole reason it exists,
+		// since a phase grader can never notice that an earlier phase closed broken.
+		expect(journey).toContain("Per-phase trail:")
+		expect(journey).toContain("[failed]")
+		expect(journey).toContain("closed without settling")
+
+		// C is below the bar, so the run did not ship — even though every C gate voted pass.
+		expect(run.output).toMatchObject({ shipped: false, grade: "C", phasesFailed: 1 })
+	})
+
+	it("ships on a B, because a single-shot grade is judged against the reworked bar", async () => {
+		const run = await createTestRun(fermentOneshot, {
+			input: roomyInput(),
+			steps: { ...noGit, verify: verifyOk },
+			agents: {
+				plan: [reply(onePhaseOneStep)],
+				"step-turn": [reply(stepPass)],
+				"phase-gates": [reply(phasePass)],
+				"phase-grade": [reply(gradeA)],
+				ship: [reply(shipPass)],
+				"journey-grade": [reply({ grade: "B", rationale: "delivered, thinly evidenced", recommendations: [] })],
+			},
+		})
+
+		// There is no ferment-level rework here, so there is no "first attempt" to hold to an A. The grader
+		// is told to be pessimistic — "Most work is B or C, not A" — and holding a single-shot run to an A
+		// would report shipped:false on nearly every run that ever ships.
+		expect(run.output).toMatchObject({ shipped: true, grade: "B" })
+	})
+
+	it("ships when the journey grader never answered, because an unreachable judge is advisory", async () => {
+		const run = await createTestRun(fermentOneshot, {
+			input: roomyInput(),
+			steps: { ...noGit, verify: verifyOk },
+			agents: {
+				plan: [reply(onePhaseOneStep)],
+				"step-turn": [reply(stepPass)],
+				"phase-gates": [reply(phasePass)],
+				"phase-grade": [reply(gradeA)],
+				ship: [reply(shipPass)],
+				"journey-grade": [], // optional, like every other judge here
+			},
+		})
+
+		expect(run.status).toBe("completed")
+		expect(run.output).toMatchObject({ shipped: true })
 	})
 })
 
@@ -1008,6 +1277,7 @@ describe("ferment-oneshot: the shape", () => {
 			"phase-grade",
 			"phase-rework",
 			"ship",
+			"journey-grade",
 		]
 
 		expect([...steps.keys()].sort()).toEqual([...names].sort())
@@ -1019,26 +1289,61 @@ describe("ferment-oneshot: the shape", () => {
 		}
 	})
 
-	it("puts kimchi's orchestrator turns in one session, and leaves every independent judge cold", () => {
+	it("shares a session where one actor continues its own work, and stays cold for every second opinion", () => {
 		const steps = agentSteps()
 
-		// kimchi owns its gates by TURN, and scope_ferment, the step (start → work → complete),
-		// complete_ferment_phase and complete_ferment are all turns of the ONE session that wrote the plan
-		// (gate-registry.ts's header; tools/steps.ts:146). Sharing a resume key is how that is said here, and
-		// it is what makes the registry's second person true: C1 walks a checklist "declared at scope time"
-		// because this session declared it, and S1 asks about "your own summary" because this session did
-		// the work.
-		for (const name of ["plan", "step-turn", "phase-gates", "ship"]) {
+		// kimchi puts ALL orchestrator turns in one session and COMPACTS it. Compaction is disabled here,
+		// so the run is split along the only line that survives without it: continuity where it is cheap
+		// and load-bearing, cold everywhere the value is a fresh look.
+
+		// The planner's interview, across scoping rounds — and `refine-steps`, which is planning done later.
+		for (const name of ["plan", "refine-steps"]) {
+			expect(steps.get(name)?.resumable, name).toBe("planning")
+		}
+
+		// The orchestrator's own gate turns. Both answer FOR their own work in the second person, neither
+		// runs bash, so the session stays small.
+		for (const name of ["phase-gates", "ship"]) {
 			expect(steps.get(name)?.resumable, name).toBe("orchestrator")
 		}
 
-		// The judges stay cold, and this is not the same argument that lost for the step gates. kimchi
-		// really does spawn these as separate opinions (judgeStepVerification, judgePhaseGradeViaSubagent),
-		// so fresh eyes here is fidelity, not scepticism-by-default. The phase rework is a dispatched agent
-		// in kimchi too.
-		for (const name of ["judge", "verify-judge", "phase-grade", "phase-rework", "refine-steps"]) {
+		// A step and its triage each continue ONE conversation, scoped to that step. `resumable: true`
+		// cannot say this — it keys by step NAME, and every item of the `.foreach` runs the same named
+		// step, so all of them would pool into the single session that produced 148
+		// ContextWindowExceededErrors on build-pov-ray. Hence a per-execution key.
+		for (const name of ["step-turn", "verify-judge"]) {
+			expect(typeof steps.get(name)?.resumable, name).toBe("function")
+		}
+
+		// The judges with TOOLS stay cold. kimchi really does spawn these as separate opinions
+		// (judgePhaseGradeViaSubagent), and a grader that inherits the reasoning behind last round's letter
+		// is a grader agreeing with itself — what it needs back is its own COMMITMENTS, which the prompt
+		// carries. `judge` stands in for the user, so it must answer from the questions alone.
+		for (const name of ["judge", "phase-grade", "journey-grade", "phase-rework"]) {
 			expect(steps.get(name)?.resumable, name).toBeUndefined()
 		}
+	})
+
+	it("keys a step's session to the step, not to the step NAME", () => {
+		const key = agentSteps().get("step-turn")?.resumable
+		if (typeof key !== "function") throw new Error("step-turn should carry a per-execution resume key")
+
+		// Two different items of the same `.foreach` must not land in one session file.
+		const at = (phase: number, step: number) =>
+			key({
+				ctx: {
+					getStepResult: (name: string) =>
+						name === "phase-ctx" ? { index: phase } : name === "step-ctx" ? { index: step } : undefined,
+				} as never,
+			})
+
+		expect(at(1, 1)).not.toBe(at(1, 2))
+		expect(at(1, 1)).not.toBe(at(2, 1))
+		// Stable across attempts, because spanning the attempt loop is the whole point: a step sent back
+		// has to meet its own edits and the refusal, not a summary of them.
+		expect(at(1, 1)).toBe(at(1, 1))
+		// A valid resume key: it becomes a filename on the host, so no node-path syntax.
+		expect(at(1, 1)).not.toMatch(/[/#@]/)
 	})
 
 	it("puts no wall clock on the step turn, or on anything but the phase rework", () => {

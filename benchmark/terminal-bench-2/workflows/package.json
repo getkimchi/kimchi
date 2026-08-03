@@ -9,7 +9,7 @@
 		"test": "vitest run"
 	},
 	"devDependencies": {
-		"@kimchi-dev/kimchi-workflows": "0.0.1-alpha.1",
+		"@kimchi-dev/kimchi-workflows": "0.0.1-alpha.3",
 		"@types/node": "^22.10.0",
 		"typebox": "1.1.38",
 		"typescript": "^7.0.2",

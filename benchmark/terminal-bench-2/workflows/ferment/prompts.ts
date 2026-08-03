@@ -548,13 +548,39 @@ export function phaseGatesPrompt(args: {
 		.join("\n")
 }
 
+/**
+ * One row of the phase trail, as the ship check and the journey grader both read it.
+ *
+ * Every field here is one the closing turn already decided. An earlier version of this type declared
+ * only `index`/`name`/`summary`/`verdicts`; because the caller passes a wider object, TypeScript's
+ * structural typing accepted it and silently dropped the rest, so the ship gate could not see that a
+ * phase had been graded F, had closed as failed, or had settled 1 of its 3 steps. kimchi hands its own
+ * ship-time judge the phase STATUS for exactly this reason (`lifecycle.ts`), so the trail carries it.
+ */
+export interface PhaseTrailRow {
+	index: number
+	name: string
+	summary: string
+	verdicts: string
+	/** "completed" when the phase closed clean; "failed" when it closed with blocking work outstanding. */
+	outcome: string
+	grade: string
+	stepsDone: number
+	stepsTotal: number
+}
+
+/** A phase's headline in the trail — status first, because it is the part that changes the reading. */
+const phaseTrailHeadline = (phase: PhaseTrailRow): string =>
+	`  ${phase.index}. ${phase.name} [${phase.outcome}] — grade ${phase.grade}, ${phase.stepsDone}/${phase.stepsTotal} steps settled`
+
+/** Phases whose record says the machine is still broken somewhere, in the shape both readers warn on. */
+export const unsettledPhases = (phases: readonly PhaseTrailRow[]): PhaseTrailRow[] =>
+	phases.filter((phase) => phase.outcome !== "completed" || phase.stepsDone < phase.stepsTotal)
+
 /** kimchi's `complete_ferment` description + the ferment-scope gate guidance. */
-export function shipPrompt(args: {
-	intent: string
-	plan: Plan | undefined
-	phases: readonly { index: number; name: string; summary: string; verdicts: string }[]
-}): string {
+export function shipPrompt(args: { intent: string; plan: Plan | undefined; phases: readonly PhaseTrailRow[] }): string {
 	const { intent, plan, phases } = args
+	const unsettled = unsettledPhases(phases)
 	return [
 		"All phases of this ferment are terminal. Decide whether it ships.",
 		"",
@@ -567,8 +593,11 @@ export function shipPrompt(args: {
 		"",
 		"What each phase reported:",
 		...phases.map(
-			(phase) => `  ${phase.index}. ${phase.name}\n     summary: ${phase.summary}\n     phase gates: ${phase.verdicts}`,
+			(phase) => `${phaseTrailHeadline(phase)}\n     summary: ${phase.summary}\n     phase gates: ${phase.verdicts}`,
 		),
+		unsettled.length > 0
+			? `\n⚠️  ${unsettled.length} phase(s) did not close clean. A phase marked [failed], or one whose steps did not all settle, is one the machine still reports as broken — its verification exited non-zero and stayed non-zero. C1 and C3 must account for that; do not pass them on the strength of the summaries.`
+			: "",
 		"",
 		"The machine is not in your context — C1 and C3 both ask for evidence, so go and look. Do not fix anything.",
 		"",
@@ -595,8 +624,12 @@ export function phaseGraderPrompt(args: {
 	gateVerdicts: readonly { id: string; verdict: string; rationale: string }[]
 	diff: DiffEvidence
 	cwd: string
+	/** Steps whose verification still exits non-zero at closing time. */
+	failedVerifications?: readonly FailedVerification[]
+	/** What THIS grader required on the previous closing turn — its commitments, not its reasoning. */
+	prior?: { grade: string; recommendations: readonly string[] }
 }): string {
-	const { plan, phase, phaseSummary, stepSummaries, gateVerdicts, diff, cwd } = args
+	const { plan, phase, phaseSummary, stepSummaries, gateVerdicts, diff, cwd, failedVerifications, prior } = args
 	const parts: string[] = []
 	parts.push("You are grading a completed phase of an autonomous coding ferment.")
 	parts.push("Verify the agent's claims independently using your tools, then produce a grade as JSON.")
@@ -632,7 +665,66 @@ export function phaseGraderPrompt(args: {
 	}
 	parts.push("")
 	parts.push(`Working directory: ${cwd}`)
+	if (failedVerifications && failedVerifications.length > 0) {
+		parts.push("")
+		parts.push(renderFailedVerifications(failedVerifications))
+	}
+	// The grader is spawned cold every round, deliberately — it must not inherit the reasoning that
+	// produced last round's letter. But a grader with no record of its own asks cannot run the question a
+	// rework actually raises, and re-derives from scratch instead: two live trials wandered F|D|D|C and
+	// F|D|F|F|D|D|F|F across eight rounds without converging. So the commitments come back, and nothing
+	// else does.
+	if (prior?.grade) {
+		parts.push("")
+		parts.push(`--- YOUR PREVIOUS GRADE ON THIS PHASE: ${prior.grade} ---`)
+		parts.push("The work has been reworked since. You required:")
+		parts.push(
+			prior.recommendations.length > 0
+				? prior.recommendations.map((rec, index) => `  ${index + 1}. ${rec}`).join("\n")
+				: "  (no specific recommendations were recorded)",
+		)
+		parts.push("")
+		parts.push(
+			"Check each one against the machine before anything else, and say per item whether it is now done. Grade this attempt on what you find — not on the letter you gave last time, in either direction.",
+		)
+	}
 	return parts.join("\n")
+}
+
+/**
+ * A step whose verify command exits non-zero at the moment the phase tries to close.
+ *
+ * These are re-run at closing time rather than remembered from the step loop, because the step loop is
+ * outside the closing loop: a rework cannot change a `StepCheck` that was recorded before it ran. The
+ * exit code here is what the machine says NOW.
+ */
+export interface FailedVerification {
+	step: number
+	description: string
+	command: string
+	exitCode: number
+	reason: string
+}
+
+/**
+ * The block both the grader and the rework are shown, so neither can read a failing phase as a clean one.
+ *
+ * This is the port's replacement for the thing kimchi gets from its state machine: a failed verification
+ * there becomes `fail_step`, and the step's `[failed]` status is rendered into every later description of
+ * the phase (`phases.ts`). Here the closing turn re-runs the command and says so in words.
+ */
+export function renderFailedVerifications(failures: readonly FailedVerification[]): string {
+	return [
+		"⚠️  VERIFICATION FAILURES — these steps' verify commands exit non-zero RIGHT NOW, re-run just before this turn.",
+		"They are machine truth, not a claim: the command was executed again and reported failure.",
+		"A grade of A or B requires that every one of them is either fixed (the command exits 0) or explicitly",
+		"accepted as out of scope with a justification that names why the failing assertion does not matter.",
+		"",
+		...failures.map(
+			(failure) =>
+				`  Step ${failure.step} ("${failure.description}"): \`${failure.command}\` → exit ${failure.exitCode}\n     ${failure.reason}`,
+		),
+	].join("\n")
 }
 
 /**
@@ -648,11 +740,41 @@ export function phaseReworkPrompt(args: {
 	minimum: string
 	retry: number
 	maxRetries: number
+	/** Steps whose verify command still exits non-zero — the refusal that outranks both of the others. */
+	failedVerifications?: readonly FailedVerification[]
 }): string {
-	const { plan, phase, grade, flags, minimum, retry, maxRetries } = args
+	const { plan, phase, grade, flags, minimum, retry, maxRetries, failedVerifications } = args
 
-	// A phase is refused for either reason, and kimchi checks them in this order: a flagged F gate feeds
-	// the retry pipeline before the grader is ever consulted, so a flagged phase has no grade to report.
+	// A failing verification is checked FIRST, ahead of the gates and the grade, because it is the only
+	// one of the three that is not an opinion: the command was re-run and it exited non-zero. Fixing it is
+	// also the only thing that can clear it — the closing turn re-runs the same command next time round.
+	if (failedVerifications && failedVerifications.length > 0) {
+		return [
+			`**Phase "${phase.name}"** cannot complete — ${failedVerifications.length} step verification(s) still fail (retry ${retry}/${maxRetries}).`,
+			"",
+			`Ferment: ${plan?.title ?? "(untitled)"}`,
+			`Phase goal: ${phase.goal}`,
+			"",
+			renderFailedVerifications(failedVerifications),
+			"",
+			"Fix the work until those commands exit 0. They are re-run before the phase is judged again, so a",
+			"summary that says the problem is handled changes nothing on its own — only the exit code does.",
+			flags.length > 0
+				? `\nThe phase gates also flagged:\n${flags.map((flag) => `  ⛔ ${flag.id}: ${flag.rationale}`).join("\n")}`
+				: "",
+			// The grader saw the same failures and had tools; its recommendations are usually the most
+			// concrete description of the defect anyone in this loop produced. Carried even though the
+			// grade is not the refusal here, so the spawn that produced them is not wasted.
+			grade?.recommendations?.length
+				? `\nThe grader (grade ${grade.grade}) recommends:\n${grade.recommendations.map((rec, index) => `  ${index + 1}. ${rec}`).join("\n")}`
+				: "",
+		]
+			.filter((line) => line !== "")
+			.join("\n")
+	}
+
+	// Then the two kimchi checks, in kimchi's order: a flagged F gate feeds the retry pipeline before the
+	// grader is ever consulted, so a flagged phase has no grade to report.
 	if (flags.length > 0) {
 		return [
 			gateRefusalText({ what: `Phase "${phase.name}"`, flags, recall: "complete the phase again" }),
@@ -710,4 +832,91 @@ ${stderr.slice(0, 1200)}`
 /** kimchi truncates judge inputs at 1200 chars; the same cap applies to what a retry is shown. */
 function clip(text: string, max = 1200): string {
 	return text.length > max ? `${text.slice(0, max)}…` : text
+}
+
+/**
+ * The journey grader, ported from kimchi's `JOURNEY_GRADE_SYSTEM` + `buildJourneyGraderPrompt`
+ * (`judge.ts`), the third and last of its graders and the one this port did not have.
+ *
+ * kimchi runs it inside `complete_ferment` AFTER the C gates have passed, over the whole run rather than
+ * one phase: the per-phase status trail, the ferment-scope verdicts, and the total diff. A C/D/F refuses
+ * ship and routes through the same retry budget the phase grader uses (`lifecycle.ts`).
+ *
+ * Its reason for existing is the one the phase grader cannot serve: a phase grader only ever sees its own
+ * phase, so nothing in a per-phase pass can notice that phase 1 shipped broken and phase 3 built on top
+ * of it. The status trail is the whole point of the input — which is why {@link PhaseTrailRow} carries
+ * `outcome` and the step counts rather than a summary alone.
+ */
+export function journeyGraderPrompt(args: {
+	intent: string
+	plan: Plan | undefined
+	phases: readonly PhaseTrailRow[]
+	shipVerdicts: readonly { id: string; verdict: string; rationale: string }[]
+	diff: DiffEvidence
+	cwd: string
+}): string {
+	const { intent, plan, phases, shipVerdicts, diff, cwd } = args
+	const unsettled = unsettledPhases(phases)
+	const parts: string[] = []
+	parts.push(
+		"You are a strict production-readiness review council compressed into one reviewer, acting as the final reviewer for an autonomous coding ferment. The agent has completed all phases. Evaluate the completed result against the stated goal, implementation, tests, and evidence, and assign a letter grade A–F that describes HOW WELL the work was done.",
+	)
+	parts.push("")
+	parts.push(
+		"Your bias is PESSIMISTIC. Most work is B or C, not A. A is reserved for ferments that delivered cleanly without retries, with concrete real-execution verification at every phase, and where every gate verdict was substantiated with specific evidence.",
+	)
+	parts.push("")
+	parts.push("## Hard constraints")
+	parts.push("")
+	parts.push("- Do not treat claims as proof. Missing proof lowers the grade.")
+	parts.push("- Passing compile/build alone is not proof of runtime behavior.")
+	parts.push("- Skipped required tests are not pass evidence.")
+	parts.push("- Documentation of a problem is not remediation.")
+	parts.push("- Prefer concrete findings over vague concerns.")
+	parts.push("- Grade harshly when correctness, security, evidence, or production wiring is unclear.")
+	parts.push("")
+	parts.push("Verify the agent's claims independently using your tools, then produce a grade as JSON.")
+	parts.push("")
+	parts.push(`User intent: "${intent}"`)
+	parts.push(`Ferment: "${plan?.title ?? "(untitled)"}"`)
+	parts.push(`Goal: ${plan?.goal ?? "(none specified)"}`)
+	parts.push(
+		`Success criteria: ${plan?.success_criteria?.length ? `\n${plan.success_criteria.map((criterion) => `  - ${criterion}`).join("\n")}` : "(none specified)"}`,
+	)
+	parts.push("")
+	parts.push("Per-phase trail:")
+	for (const phase of phases) {
+		parts.push(`${phaseTrailHeadline(phase)}`)
+		parts.push(`     summary: ${phase.summary}`)
+		parts.push(`     phase gates: ${phase.verdicts}`)
+	}
+	if (unsettled.length > 0) {
+		parts.push("")
+		parts.push(
+			`⚠️  ${unsettled.length} phase(s) closed without settling: ${unsettled.map((phase) => `"${phase.name}" [${phase.outcome}, ${phase.stepsDone}/${phase.stepsTotal}]`).join(", ")}.`,
+		)
+		parts.push(
+			"A phase reaches that state only after its verification was re-run and still failed through the whole retry budget. Grade the ferment on the assumption that the work those phases claim is NOT delivered, unless your own tools prove otherwise.",
+		)
+	}
+	parts.push("")
+	parts.push("Ferment-scope gate verdicts (agent self-reported — verify independently):")
+	for (const verdict of shipVerdicts) parts.push(`  ${verdict.id} (${verdict.verdict}): ${verdict.rationale}`)
+	if (diff.available) {
+		parts.push("")
+		parts.push("--- TOTAL DIFF ---")
+		parts.push(`Files changed:\n${diff.filesChanged || "(none recorded)"}`)
+		if (diff.diffSnippet) parts.push(`\nDiff snippet:\n\`\`\`diff\n${diff.diffSnippet}\n\`\`\``)
+		if (diff.elidedBytes > 0) {
+			parts.push(
+				`\n(This snippet is truncated: ${diff.elidedBytes} bytes were elided from the middle. Work you cannot see here may still exist — check it rather than grading it absent.)`,
+			)
+		}
+	} else {
+		parts.push("")
+		parts.push("(No diff available — use your tools to inspect files directly.)")
+	}
+	parts.push("")
+	parts.push(`Working directory: ${cwd}`)
+	return parts.join("\n")
 }
