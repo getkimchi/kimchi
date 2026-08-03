@@ -226,8 +226,14 @@ function ensureWatchers(): void {
 			globalWatchBroken = true
 		})
 		if (globalWatcher) {
-			recordSignature(path)
-			if (globalWatchBroken) scheduleFire()
+			if (globalWatchBroken) {
+				// Re-arming after a broken watcher: do NOT record the current
+				// signature — preserve the old one so the catch-up fire() can
+				// detect changes that happened while the watcher was dead.
+				scheduleFire()
+			} else {
+				recordSignature(path)
+			}
 			globalWatchBroken = false
 		} else {
 			globalWatchBroken = true
@@ -241,8 +247,14 @@ function ensureWatchers(): void {
 			projectWatchBroken = true
 		})
 		if (projectWatcher) {
-			recordSignature(path)
-			if (projectWatchBroken) scheduleFire()
+			if (projectWatchBroken) {
+				// Re-arming after a broken watcher: do NOT record the current
+				// signature — preserve the old one so the catch-up fire() can
+				// detect changes that happened while the watcher was dead.
+				scheduleFire()
+			} else {
+				recordSignature(path)
+			}
 			projectWatchBroken = false
 		} else {
 			projectWatchBroken = true

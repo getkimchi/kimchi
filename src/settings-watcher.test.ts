@@ -1,3 +1,4 @@
+import { resolve } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 // settings-watcher watches settings.json via fs.watch and reads settings through
@@ -77,11 +78,21 @@ beforeEach(() => {
 })
 
 /** Simulate a real settings file write: advance the stat signature so the next
- *  `fire()` sees a changed file and rebuilds the cached SettingsManager. */
-function bumpFileSignature(): void {
-	const current = statMock.mock.results.at(-1)?.value ?? { mtimeMs: 0, size: 0 }
-	statMock.mockImplementationOnce(() => ({ mtimeMs: current.mtimeMs + 1, size: 0 }))
-	statMock.mockImplementation(() => ({ mtimeMs: current.mtimeMs + 1, size: 0 }))
+ *  `fire()` sees a changed file and rebuilds the cached SettingsManager.
+ *  Only bumps the global settings path by default; pass `"project"` to bump
+ *  the project path instead, so tests properly isolate which file changed. */
+function bumpFileSignature(which: "global" | "project" = "global"): void {
+	const globalPath = "/fake/agent/dir/settings.json"
+	const projectPath = resolve(process.cwd(), ".pi", "settings.json")
+	const target = which === "project" ? projectPath : globalPath
+	const mtimeByPath = new Map<string, number>()
+	// Seed current mtime per path from existing mock results, defaulting to 0.
+	statMock.mockImplementation((p: string) => {
+		const m = mtimeByPath.get(p) ?? 0
+		return { mtimeMs: m, size: 0 }
+	})
+	// Bump only the target path.
+	mtimeByPath.set(target, 1)
 }
 
 afterEach(() => {
@@ -336,6 +347,34 @@ describe("getSettingsManager", () => {
 		expect(mockCreate).toHaveBeenCalledTimes(1)
 		// And no theme-change notification fired.
 		expect(listener).not.toHaveBeenCalled()
+	})
+
+	it("catch-up fire detects changes even when the project file never existed", () => {
+		// The reviewer found a regression: recordSignature was called on re-arm
+		// after a broken watcher, overwriting the old signature so the catch-up
+		// fire() could not detect changes. This test isolates that scenario:
+		// only the global file changes; the project file was never watchable.
+		const globalPath = "/fake/agent/dir/settings.json"
+		let globalFileMissing = true
+		mockWatch.mockImplementation(((path: unknown) => {
+			if (globalFileMissing && path === globalPath) throw new Error("ENOENT")
+			return createMockWatcher() as unknown as ReturnType<typeof watch>
+		}) as unknown as typeof watch)
+		mockCreate.mockReturnValue(asManager(fakeManager({ theme: "light" })))
+		const listener = vi.fn()
+		onThemeChange(listener) // seeds "light"; global watch fails to arm
+
+		// The global file appears with a different theme AND a different mtime.
+		// Only bump the global path — the project path stays at its original
+		// signature (or undefined if it never armed).
+		bumpFileSignature("global")
+		mockCreate.mockReturnValue(asManager(fakeManager({ theme: "dark" })))
+		globalFileMissing = false
+		getSettingsManager()
+		vi.runAllTimers()
+
+		// The catch-up fire must detect the change and notify.
+		expect(listener).toHaveBeenCalledWith("dark", "light")
 	})
 })
 
