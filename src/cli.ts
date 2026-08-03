@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import {
+	hasPrintFlag,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
@@ -633,11 +634,13 @@ try {
 			const { main } = await import("@earendil-works/pi-coding-agent")
 			await main(rawArgs, { extensionFactories })
 		}
-		// Only reclassify runs that already failed (print mode sets exitCode 1);
-		// a clean interactive quit after a transient error stays a success.
-		if (process.exitCode) {
-			applyPostMainInfrastructureExitPolicy(infrastructureErrorTracker.getFailure())
-		}
+		// Goal continuations can end on an infrastructure error without Pi setting
+		// exitCode. In print mode, a trailing tracked failure still failed the run.
+		applyPostMainInfrastructureExitPolicy(
+			infrastructureErrorTracker.getFailure(),
+			process.exit,
+			Boolean(process.exitCode) || hasPrintFlag(rawArgs),
+		)
 	}
 } catch (err) {
 	await drainPreSessionTelemetry()
