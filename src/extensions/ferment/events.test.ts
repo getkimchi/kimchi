@@ -1167,6 +1167,7 @@ describe("turn_end error recovery in one-shot mode", () => {
 			...createDefaultFermentRuntime(),
 			getStorage: () => storage,
 		}
+		runtime.setContinuationPolicy("manual")
 		const active = storage.get(ferment.id)
 		if (!active) throw new Error("ferment not found after setup")
 		runtime.setActive(active)
@@ -1239,6 +1240,72 @@ describe("turn_end error recovery in one-shot mode", () => {
 
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		expect(storage.get(ferment.id)?.status).toBe("running")
+	})
+})
+
+describe("TUI /ferment one-shot without ferment-oneshot flag", () => {
+	it("auto-continues on turn_end error when continuation policy is automated (fix)", async () => {
+		// /ferment one-shot via the TUI slash command sets the continuation
+		// policy to "automated" via createFerment, but does NOT set the
+		// pi flag "ferment-oneshot" (that flag is only set by the CLI
+		// --ferment-oneshot argument). Previously the turn_end error handler
+		// read pi.getFlag("ferment-oneshot") to decide whether to pause or
+		// auto-continue — so a TUI one-shot session got paused on any
+		// connection error. The fix uses runtime.isAutomatedContinuationEnabled()
+		// instead, which is the actual source of truth.
+		const { storage, ferment } = setupScopedRunningFerment("ferment-tui-oneshot-error-", "TUI One-shot Error Ferment")
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			isAutomatedContinuationEnabled: () => true,
+		}
+		const active = storage.get(ferment.id)
+		if (!active) throw new Error("ferment not found after setup")
+		runtime.setActive(active)
+
+		const { handlers, pi } = createPi()
+		// Simulate TUI /ferment one-shot: the flag is NOT set.
+		// createFerment already set the policy to "automated".
+		;(pi.getFlag as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const notify = vi.fn()
+		const ctx = { ui: { notify } }
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "Connection error: socket closed",
+					content: [],
+				},
+			},
+			ctx,
+		)
+
+		// After fix: the ferment stays running and a continuation nudge is injected.
+		const stored = storage.get(ferment.id)
+		expect(stored?.status).toBe("running")
+		expect(notify).not.toHaveBeenCalledWith(expect.stringContaining("was paused"))
+		expect(pi.sendMessage).toHaveBeenCalled()
+	})
+
+	it("abandons on session_shutdown when continuation policy is automated (fix)", async () => {
+		// Same root cause area: session_shutdown previously read
+		// pi.getFlag("ferment-oneshot") to decide pause vs abandon. Without
+		// the flag (TUI one-shot), it paused — leaving a stuck ferment.
+		// The fix uses runtime.isAutomatedContinuationEnabled() instead.
+		const { storage, ferment, handlers } = setupAutomatedGuardFixture("TUI Shutdown Ferment")
+		const shutdown = handlers.get("session_shutdown")
+		if (!shutdown) throw new Error("session_shutdown handler was not registered")
+
+		await shutdown({}, {})
+
+		// After fix: abandoned because the continuation policy is automated.
+		const stored = storage.get(ferment.id)
+		expect(stored?.status).toBe("abandoned")
 	})
 })
 

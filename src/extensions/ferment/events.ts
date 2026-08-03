@@ -5,7 +5,6 @@ import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
-import { isStaleCtxError } from "../stale-ctx.js"
 import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
@@ -34,7 +33,7 @@ import { editPhaseProposal } from "./phase-editor.js"
 import { promptEditor, promptSelect } from "./prompt-ui.js"
 import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
-import { safeSendMessage, tryPiAction } from "./safe-send.js"
+import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { buildStalledPayload } from "./stalled-payload.js"
@@ -50,40 +49,6 @@ import { createApplyAndPersist } from "./tool-helpers.js"
 import { applyFermentRuntimeToolProfile, hasPendingPlanReview, setActiveFermentAndApplyProfile } from "./tool-scope.js"
 
 type AssistantContentPart = { type: string; text?: string; name?: string }
-
-// Telemetry wrapper: reads pi.getFlag(name), appends a ferment_breadcrumb with the
-// result/throw for /export visibility. Returns undefined on throw.
-function readFlag(pi: ExtensionAPI, name: string, location: string, fermentId: string | undefined): unknown {
-	let value: unknown = null
-	let errorMessage: string | null = null
-	try {
-		value = pi.getFlag?.(name) ?? null
-	} catch (err) {
-		errorMessage = err instanceof Error ? err.message : String(err)
-	}
-	const threw = errorMessage !== null
-	const staleCtx = threw && isStaleCtxError(errorMessage)
-	const payload = {
-		telemetry: "ferment_flag_read",
-		flag: name,
-		location,
-		fermentId: fermentId ?? null,
-		getFlagPresent: typeof pi.getFlag === "function",
-		value,
-		threw,
-		staleCtx,
-		error: errorMessage,
-	}
-	// Mirror the scheduler/nudge pattern: appendEntry on a ferment_breadcrumb
-	// so it is rendered in the /export HTML session transcript.
-	tryPiAction(() => {
-		pi.appendEntry("ferment_breadcrumb", {
-			text: `flag-read ${name} [${location}] ferment=${fermentId ?? "none"} threw=${threw} staleCtx=${staleCtx} value=${JSON.stringify(value)}${threw ? ` error=${JSON.stringify(errorMessage)}` : ""}`,
-			telemetry: payload,
-		})
-	})
-	return threw ? undefined : value
-}
 
 function isAssistantContentPart(value: unknown): value is AssistantContentPart {
 	return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string"
@@ -425,8 +390,11 @@ export function registerFermentEvents(
 		if (!f) return
 		if (f.status === "running" || f.status === "planned") {
 			try {
-				const isOneShot = readFlag(pi, "ferment-oneshot", "session_shutdown", f.id) === true
-				applyAndPersist(f.id, { type: isOneShot ? "abandon" : "pause" })
+				// The continuation policy is the source of truth — the ferment-oneshot
+				// flag is only set by the CLI --ferment-oneshot argument, not by the TUI
+				// /ferment one-shot slash command.
+				const isAutomated = runtime.isAutomatedContinuationEnabled()
+				applyAndPersist(f.id, { type: isAutomated ? "abandon" : "pause" })
 			} catch {
 				// If persistence fails during shutdown, we can't fix it here.
 				// The startup scanner will recover the stale state on next launch.
@@ -556,14 +524,17 @@ export function registerFermentEvents(
 
 		// Connection / provider / gateway failure: the model's turn ended with
 		// stopReason "error" after retries were exhausted (or the error was
-		// non-retryable). In interactive mode, pause the ferment so its state
-		// stays valid and surface a clear message to the user. In one-shot mode,
-		// keep the ferment running and inject a continuation nudge so the
+		// non-retryable). Under manual policy, pause the ferment so its state
+		// stays valid and surface a clear message to the user. Under automated
+		// policy, keep the ferment running and inject a continuation nudge so the
 		// orchestrator retries on the next turn — there is no user to resume.
 		if (stopReason === "error") {
-			const isOneShot = readFlag(pi, "ferment-oneshot", "turn_end_error", activeId) === true
+			// The continuation policy is the source of truth — the ferment-oneshot
+			// flag is only set by the CLI --ferment-oneshot argument, not by the TUI
+			// /ferment one-shot slash command.
+			const isAutomated = runtime.isAutomatedContinuationEnabled()
 
-			if (!isOneShot) {
+			if (!isAutomated) {
 				const errorMessage = getMessageStringField(event.message, "errorMessage")
 				const errorFerment = runtime.getActive()
 				if (errorFerment && (errorFerment.status === "running" || errorFerment.status === "planned")) {
@@ -589,12 +560,12 @@ export function registerFermentEvents(
 				resetScopingExploreTurns(activeId)
 			}
 
-			// One-shot error recovery: schedule a continuation turn directly via
+			// Automated error recovery: schedule a continuation turn directly via
 			// the scheduler. This is a transport/provider failure, not a model-chosen
 			// bare stop. Error recovery deliberately clears the lifecycle-stop retry
 			// budget above, then schedules the next action independently. This gives
 			// the unchanged obligation a fresh two-retry budget after transport recovers.
-			if (isOneShot) {
+			if (isAutomated) {
 				const errorFerment = runtime.getActive()
 				// One-shot error recovery fires only when the ferment is still live —
 				// paused/complete/abandoned ferments must not be auto-continued.
