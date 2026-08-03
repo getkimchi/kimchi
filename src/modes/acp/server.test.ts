@@ -1575,6 +1575,621 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		expect(updates.some((u) => u.update.sessionUpdate === "tool_call")).toBe(false)
 		expect(updates.some((u) => u.update.sessionUpdate === "tool_call_update")).toBe(false)
 	})
+
+	// Chunk 1: toolcall_start must emit a tool_call notification with status="pending"
+	// so clients can show progress while the model streams tool call arguments.
+	// See spec-tool-call-streaming-harness.md.
+	it("emits tool_call with status='pending' on toolcall_start", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [
+							{ type: "toolCall", id: "tc-pending-1", name: "write", arguments: { file_path: "/tmp/test.txt" } },
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toHaveLength(1)
+		const pending = toolCalls[0].update as { toolCallId: string; status: string; title?: string }
+		expect(pending.toolCallId).toBe("tc-pending-1")
+		expect(pending.status).toBe("pending")
+		expect(pending.title).toBeDefined()
+	})
+
+	// toolcall_start → tool_execution_start must produce exactly ONE tool_call
+	// (the pending one) plus a tool_call_update (in_progress), not two tool_calls.
+	it("emits exactly one tool_call (pending) then tool_call_update (in_progress) when toolcall_start precedes tool_execution_start", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-flow-1",
+								name: "bash",
+								arguments: { command: "echo hi" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-flow-1",
+				toolName: "bash",
+				args: { command: "echo hi" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-flow-1",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "hi\n" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toHaveLength(1)
+		expect((toolCalls[0].update as { status: string }).status).toBe("pending")
+		expect((toolCalls[0].update as { toolCallId: string }).toolCallId).toBe("tc-flow-1")
+
+		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		expect(toolCallUpdates).toHaveLength(2)
+		const inProgress = toolCallUpdates.find((u) => (u.update as { status?: string }).status === "in_progress")
+		const completed = toolCallUpdates.find((u) => (u.update as { status?: string }).status === "completed")
+		expect(inProgress).toBeDefined()
+		expect((inProgress?.update as { toolCallId: string }).toolCallId).toBe("tc-flow-1")
+		expect(completed).toBeDefined()
+		expect((completed?.update as { toolCallId: string }).toolCallId).toBe("tc-flow-1")
+	})
+
+	// Back-compat: providers that don't emit toolcall_start must still get the
+	// original behavior — tool_execution_start alone emits tool_call (in_progress).
+	it("emits tool_call with status='in_progress' when tool_execution_start fires without a prior toolcall_start", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-backcompat-1",
+				toolName: "bash",
+				args: { command: "echo backcompat" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-backcompat-1",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "backcompat\n" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toHaveLength(1)
+		expect((toolCalls[0].update as { toolCallId: string }).toolCallId).toBe("tc-backcompat-1")
+		expect((toolCalls[0].update as { status: string }).status).toBe("in_progress")
+
+		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		expect(toolCallUpdates).toHaveLength(1)
+		expect((toolCallUpdates[0].update as { status: string }).status).toBe("completed")
+	})
+
+	// Hidden tool calls (system Agent) must produce zero ACP events even when
+	// toolcall_start fires — same suppression rule applies on both event types.
+	it("emits no tool_call or tool_call_update when toolcall_start names a hidden tool", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-hidden-1",
+								name: "Agent",
+								arguments: { visibility: "system", prompt: "classify" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-hidden-1",
+				toolName: "Agent",
+				args: { visibility: "system", prompt: "classify" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-hidden-1",
+				toolName: "Agent",
+				result: { content: [{ type: "text", text: "ok" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+		expect(updates.some((u) => u.update.sessionUpdate === "tool_call")).toBe(false)
+		expect(updates.some((u) => u.update.sessionUpdate === "tool_call_update")).toBe(false)
+	})
+
+	// Multiple concurrent tool calls — each toolCallId gets its own
+	// pending → in_progress → completed sequence, no cross-contamination.
+	it("emits a pending → in_progress → completed sequence per toolCallId across multiple tool calls", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-multi-a",
+								name: "bash",
+								arguments: { command: "echo a" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 1,
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-multi-a",
+								name: "bash",
+								arguments: { command: "echo a" },
+							},
+							{
+								type: "toolCall",
+								id: "tc-multi-b",
+								name: "bash",
+								arguments: { command: "echo b" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-multi-a",
+				toolName: "bash",
+				args: { command: "echo a" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-multi-a",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "a\n" }] },
+				isError: false,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-multi-b",
+				toolName: "bash",
+				args: { command: "echo b" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-multi-b",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "b\n" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toHaveLength(2)
+		const ids = toolCalls.map((u) => (u.update as { toolCallId: string }).toolCallId).sort()
+		expect(ids).toEqual(["tc-multi-a", "tc-multi-b"])
+		for (const tc of toolCalls) {
+			expect((tc.update as { status: string }).status).toBe("pending")
+		}
+
+		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		expect(toolCallUpdates).toHaveLength(4)
+
+		const inProgress = toolCallUpdates.filter((u) => (u.update as { status?: string }).status === "in_progress")
+		const completed = toolCallUpdates.filter((u) => (u.update as { status?: string }).status === "completed")
+		expect(inProgress).toHaveLength(2)
+		expect(completed).toHaveLength(2)
+
+		const inProgressIds = inProgress.map((u) => (u.update as { toolCallId: string }).toolCallId).sort()
+		expect(inProgressIds).toEqual(["tc-multi-a", "tc-multi-b"])
+		const completedIds = completed.map((u) => (u.update as { toolCallId: string }).toolCallId).sort()
+		expect(completedIds).toEqual(["tc-multi-a", "tc-multi-b"])
+	})
+
+	// Helper to build a toolcall_delta message_update event with a given toolCallId,
+	// name and partial arguments. Used by the throttled-streaming tests below.
+	function makeToolcallDelta(toolCallId: string, name: string, args: Record<string, unknown>): AgentSessionEvent {
+		return {
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "toolcall_delta",
+				contentIndex: 0,
+				delta: "irrelevant",
+				partial: {
+					role: "assistant",
+					content: [{ type: "toolCall", id: toolCallId, name, arguments: args } as never],
+				} as unknown as AssistantMessage,
+			},
+			message: {} as unknown as AssistantMessage,
+		}
+	}
+
+	// Spec test 1: toolcall_delta emits throttled tool_call_update with _meta.generatedChars.
+	// Multiple back-to-back deltas must produce at least one throttled update
+	// with status="pending" carrying a generatedChars count, and the number of
+	// updates must be strictly less than the number of deltas (the 500ms throttle
+	// groups them). The count should increase across successive emissions.
+	it("emits throttled tool_call_update with _meta.generatedChars on toolcall_delta", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-stream-1", name: "write", arguments: {} }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			// Five deltas in quick succession — first one emits, the next four
+			// are within 500ms so the throttle skips them.
+			for (let i = 0; i < 5; i++) {
+				fake.emit(
+					makeToolcallDelta("tc-stream-1", "write", {
+						file_path: "/tmp/test.txt",
+						content: `partial content fragment ${i}`,
+					}),
+				)
+			}
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		const pendingUpdates = toolCallUpdates.filter((u) => (u.update as { status?: string }).status === "pending")
+		expect(pendingUpdates.length).toBeGreaterThanOrEqual(1)
+		expect(pendingUpdates.length).toBeLessThan(5)
+
+		const firstPending = pendingUpdates[0].update as {
+			toolCallId: string
+			status: string
+			_meta?: { generatedChars?: number }
+		}
+		expect(firstPending.toolCallId).toBe("tc-stream-1")
+		expect(firstPending.status).toBe("pending")
+		expect(typeof firstPending._meta?.generatedChars).toBe("number")
+		expect(firstPending._meta?.generatedChars).toBeGreaterThan(0)
+	})
+
+	// Spec test 2: throttle skips rapid deltas — emit two deltas within the
+	// throttle window and assert exactly ONE tool_call_update fires (the
+	// second is throttled).
+	it("throttles rapid toolcall_delta events to one tool_call_update per toolCallId", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-throttle-1", name: "write", arguments: {} }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(makeToolcallDelta("tc-throttle-1", "write", { file_path: "/tmp/a.txt", content: "first" }))
+			fake.emit(makeToolcallDelta("tc-throttle-1", "write", { file_path: "/tmp/a.txt", content: "second" }))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const pendingUpdates = updates.filter(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { status?: string }).status === "pending" &&
+				(u.update as { toolCallId: string }).toolCallId === "tc-throttle-1",
+		)
+		expect(pendingUpdates).toHaveLength(1)
+	})
+
+	// Spec test 3b: deltas spaced ≥500ms apart must each emit a pending
+	// tool_call_update — the throttle only groups events that fall inside
+	// the 500ms window. Uses vi.useFakeTimers() to advance the clock past
+	// the throttle interval between emits.
+	it("emits a tool_call_update for each toolcall_delta that is at least 500ms apart", async () => {
+		vi.useFakeTimers()
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			// Announce the tool call
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-fake-timer-1", name: "write", arguments: {} }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			// Delta 1 — emits (first one, no prior timestamp)
+			fake.emit(makeToolcallDelta("tc-fake-timer-1", "write", { file_path: "/tmp/a.txt", content: "chunk1" }))
+			// Advance 600ms — past the 500ms throttle window
+			vi.advanceTimersByTime(600)
+			// Delta 2 — should emit (600ms > 500ms since last)
+			fake.emit(makeToolcallDelta("tc-fake-timer-1", "write", { file_path: "/tmp/a.txt", content: "chunk1chunk2" }))
+			// Advance 600ms again
+			vi.advanceTimersByTime(600)
+			// Delta 3 — should emit
+			fake.emit(
+				makeToolcallDelta("tc-fake-timer-1", "write", { file_path: "/tmp/a.txt", content: "chunk1chunk2chunk3" }),
+			)
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+		vi.useRealTimers()
+
+		const pendingUpdates = updates.filter(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { status?: string }).status === "pending" &&
+				(u.update as { toolCallId: string }).toolCallId === "tc-fake-timer-1",
+		)
+		expect(pendingUpdates).toHaveLength(3)
+
+		// Verify generatedChars increases across updates
+		const chars = pendingUpdates.map(
+			(u) => (u.update as { _meta?: { generatedChars?: number } })._meta?.generatedChars ?? 0,
+		)
+		expect(chars[0]).toBeGreaterThan(0)
+		expect(chars[1]).toBeGreaterThan(chars[0])
+		expect(chars[2]).toBeGreaterThan(chars[1])
+	})
+
+	// Spec test 3: deltas for a toolCallId that was never announced via
+	// toolcall_start must produce ZERO tool_call_update notifications.
+	it("skips toolcall_delta for tool calls that were not announced via toolcall_start", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			// No prior toolcall_start — tc-orphan-1 is not in announcedToolCallIds.
+			fake.emit(makeToolcallDelta("tc-orphan-1", "bash", { command: "ls" }))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const pendingUpdates = updates.filter(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { status?: string }).status === "pending" &&
+				(u.update as { toolCallId: string }).toolCallId === "tc-orphan-1",
+		)
+		expect(pendingUpdates).toHaveLength(0)
+	})
+
+	// Spec test 4: hidden tool calls (system Agent) must produce zero
+	// tool_call_update notifications even when the delta stream is active.
+	it("skips toolcall_delta for hidden (system) tool calls", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-hidden-delta-1",
+								name: "Agent",
+								arguments: { visibility: "system", prompt: "classify" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(
+				makeToolcallDelta("tc-hidden-delta-1", "Agent", {
+					visibility: "system",
+					prompt: "classify this request",
+				}),
+			)
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		// No tool_call (from toolcall_start) AND no tool_call_update (from delta).
+		expect(updates.some((u) => u.update.sessionUpdate === "tool_call")).toBe(false)
+		const pendingUpdates = updates.filter(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { toolCallId: string }).toolCallId === "tc-hidden-delta-1",
+		)
+		expect(pendingUpdates).toHaveLength(0)
+	})
+
+	// Spec test 5: empty arguments (`{}`) carry no useful content — the
+	// handler must skip them rather than emit a rawInput={} update.
+	it("skips toolcall_delta events whose arguments are still empty", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-empty-1", name: "write", arguments: {} }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(makeToolcallDelta("tc-empty-1", "write", {}))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const pendingUpdates = updates.filter(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { toolCallId: string }).toolCallId === "tc-empty-1",
+		)
+		expect(pendingUpdates).toHaveLength(0)
+	})
+
+	// Spec test 6: toolcall_delta for the `write` tool streams the `content`
+	// field length into _meta.generatedChars. Confirms write.content is the
+	// primary large field counted by streamingCharCount.
+	it("reports write.content length as _meta.generatedChars", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-write-1", name: "write", arguments: {} }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(makeToolcallDelta("tc-write-1", "write", { content: "hello world" }))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const pendingUpdates = updates.filter(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { toolCallId: string }).toolCallId === "tc-write-1",
+		)
+		expect(pendingUpdates).toHaveLength(1)
+		const update = pendingUpdates[0].update as {
+			toolCallId: string
+			status: string
+			_meta?: { generatedChars?: number }
+		}
+		expect(update._meta?.generatedChars).toBe(11)
+	})
+
+	// Spec test 7: toolcall_delta for the `edit` tool streams the `newText`
+	// field length into _meta.generatedChars. Confirms edit.newText (the
+	// main payload being generated) is recognized alongside write.content.
+	it("reports edit.newText length as _meta.generatedChars", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-edit-1", name: "edit", arguments: {} }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(makeToolcallDelta("tc-edit-1", "edit", { newText: "abc" }))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const pendingUpdates = updates.filter(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { toolCallId: string }).toolCallId === "tc-edit-1",
+		)
+		expect(pendingUpdates).toHaveLength(1)
+		const update = pendingUpdates[0].update as {
+			toolCallId: string
+			status: string
+			_meta?: { generatedChars?: number }
+		}
+		expect(update._meta?.generatedChars).toBe(3)
+	})
 })
 
 describe("isHiddenToolCall", () => {
