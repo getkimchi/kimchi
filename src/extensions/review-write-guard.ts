@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { AgentOutcomeKind, AgentRecord, SubagentType } from "./agents/personas/types.js"
 import { getCurrentPhase } from "./tags.js"
 
 const IMPLEMENTATION_TOOLS = new Set(["edit", "write"])
@@ -41,14 +42,18 @@ const BUILD_BLOCK_REASON =
 
 /** Subagent outcome shape exposed in the Agent tool's result details. */
 interface AgentOutcomeSummary {
-	/** "completed" | "aborted" | "stopped" | ... */
-	status?: string
-	/** "completed" | "failed" | ... */
-	outcome?: string
+	/** Raw runtime status of the subagent. */
+	status?: AgentRecord["status"]
+	/** Stable classified result for orchestration decisions. */
+	outcome?: AgentOutcomeKind
 	/** Subagent persona, e.g. "Builder" | "Fixer" | "Explore". */
-	subagentType?: string
+	subagentType?: SubagentType
 }
 
+// Undefined outcome defaults to successful. This preserves backward compatibility
+// with subagent tool_results that do not yet include structured agentOutcome details;
+// without it the guard would disarm entirely and stop steering after every legacy
+// subagent return, which would regress existing behavior.
 function isSuccessfulOutcome(outcome: AgentOutcomeSummary | undefined): boolean {
 	if (!outcome) return true
 	return outcome.status === "completed" && outcome.outcome === "completed"
@@ -58,8 +63,8 @@ function isTriageOutcome(outcome: AgentOutcomeSummary | undefined): boolean {
 	if (!outcome) return false
 	const { status, outcome: result } = outcome
 	// Explicit failure states observed from agent tool results.
-	if (status === "aborted" || status === "stopped") return true
-	if (result === "failed" || result === "error") return true
+	if (status === "aborted" || status === "stopped" || status === "error") return true
+	if (result === "failed" || result === "budget_exhausted") return true
 	// A successfully completed subagent that required steering is still successful.
 	if (status === "completed" && result === "completed") return false
 	if (status === "steered" && result === "completed") return false
@@ -189,6 +194,18 @@ export class OrchestratorWriteGuard {
 	}
 }
 
+const AGENT_RECORD_STATUSES: readonly AgentRecord["status"][] = [
+	"queued",
+	"running",
+	"completed",
+	"steered",
+	"aborted",
+	"stopped",
+	"error",
+]
+
+const AGENT_OUTCOME_KINDS: readonly AgentOutcomeKind[] = ["completed", "budget_exhausted", "failed", "stopped"]
+
 function extractAgentOutcome(event: { details?: unknown }): AgentOutcomeSummary | undefined {
 	const details = event.details
 	if (!details || typeof details !== "object") return undefined
@@ -197,10 +214,20 @@ function extractAgentOutcome(event: { details?: unknown }): AgentOutcomeSummary 
 	if (!agentOutcome || typeof agentOutcome !== "object") return undefined
 
 	const ao = agentOutcome as Record<string, unknown>
+	const rawStatus = typeof ao.status === "string" ? ao.status : undefined
+	const rawOutcome = typeof ao.outcome === "string" ? ao.outcome : undefined
 	const detailsSubagentType = (details as Record<string, unknown>).subagentType
+
+	const status = AGENT_RECORD_STATUSES.includes(rawStatus as AgentRecord["status"])
+		? (rawStatus as AgentRecord["status"])
+		: undefined
+	const outcome = AGENT_OUTCOME_KINDS.includes(rawOutcome as AgentOutcomeKind)
+		? (rawOutcome as AgentOutcomeKind)
+		: undefined
+
 	return {
-		status: typeof ao.status === "string" ? ao.status : undefined,
-		outcome: typeof ao.outcome === "string" ? ao.outcome : undefined,
+		status,
+		outcome,
 		subagentType:
 			typeof ao.subagentType === "string"
 				? ao.subagentType

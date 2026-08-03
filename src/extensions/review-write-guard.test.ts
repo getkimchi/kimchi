@@ -89,14 +89,14 @@ describe("OrchestratorWriteGuard — build phase", () => {
 		expect(guard.checkToolCall("edit")).toEqual({ steer: expect.stringContaining("Delegation guard") })
 	})
 
-	it("uses higher triage thresholds after an error outcome", () => {
+	it("uses higher triage thresholds after a status error outcome", () => {
 		mockPhase = "build"
 		const guard = new OrchestratorWriteGuard(createContext(), {
 			buildPhaseThreshold: 2,
 			buildPhaseTriageThreshold: 4,
 			buildPhaseTriageBlockThreshold: 8,
 		})
-		guard.recordSubagentReturn({ status: "completed", outcome: "error" })
+		guard.recordSubagentReturn({ status: "error", outcome: "failed" })
 		for (let i = 0; i < 3; i++) guard.checkToolCall("edit")
 		expect(guard.checkToolCall("edit")).toEqual({ steer: expect.stringContaining("Delegation guard") })
 	})
@@ -109,18 +109,10 @@ describe("OrchestratorWriteGuard — build phase", () => {
 		expect(guard.checkToolCall("edit")).toEqual({ steer: expect.stringContaining("Delegation guard") })
 	})
 
-	it("disarms after an ambiguous outcome", () => {
+	it("disarms after a non-terminal but valid subagent outcome", () => {
 		mockPhase = "build"
 		const guard = new OrchestratorWriteGuard(createContext(), { buildPhaseThreshold: 2 })
-		guard.recordSubagentReturn({ status: "in_progress", outcome: "unknown" })
-		for (let i = 0; i < 10; i++) guard.checkToolCall("edit")
-		expect(guard.getState().subagentReturnedInBuild).toBe(false)
-	})
-
-	it("disarms after an unknown subagent outcome", () => {
-		mockPhase = "build"
-		const guard = new OrchestratorWriteGuard(createContext(), { buildPhaseThreshold: 2 })
-		guard.recordSubagentReturn({ status: "weird", outcome: "unknown" })
+		guard.recordSubagentReturn({ status: "queued", outcome: "completed" })
 		for (let i = 0; i < 10; i++) guard.checkToolCall("edit")
 		expect(guard.getState().subagentReturnedInBuild).toBe(false)
 	})
