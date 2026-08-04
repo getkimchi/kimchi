@@ -294,6 +294,29 @@ describe("reviewWriteGuardExtension wiring", () => {
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 	})
 
+	it("does not reset guard state when the orchestrator spawns another Agent", () => {
+		const pi = createMockPI()
+		reviewWriteGuardExtension(pi as unknown as PI, { buildPhaseThreshold: 2 })
+		mockPhase = "build"
+
+		// First subagent returns and arms the guard.
+		emit(pi, "tool_result", { toolName: "Agent" })
+
+		// One edit counts toward the threshold.
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+
+		// Spawning another Agent must NOT reset the guard.
+		emit(pi, "tool_call", { toolName: "Agent" })
+
+		// The second edit should still trigger the steer from the first subagent return.
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: STEER_MESSAGE_TYPE }), {
+			deliverAs: "steer",
+		})
+	})
+
 	it("evicts the session guard from the map on session_shutdown", () => {
 		const pi = createMockPI()
 		reviewWriteGuardExtension(pi as unknown as PI, { buildPhaseThreshold: 2 })

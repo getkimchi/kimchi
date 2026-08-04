@@ -13,13 +13,13 @@ export interface OrchestratorWriteGuardOptions {
 	buildPhaseBlockThreshold?: number
 	/**
 	 * Number of implementation tool calls after a failed/stopped/aborted subagent return
-	 * before a steer fires. Default: 4 — higher than the success threshold because the
+	 * before a steer fires. Default: 3 — higher than the success threshold because the
 	 * orchestrator is doing triage, not stealing a successful worker's output.
 	 */
 	buildPhaseTriageThreshold?: number
 	/**
 	 * Number of implementation tool calls after a failed/stopped/aborted subagent return
-	 * before a hard block fires. Default: 8.
+	 * before a hard block fires. Default: 6.
 	 */
 	buildPhaseTriageBlockThreshold?: number
 }
@@ -87,8 +87,8 @@ export class OrchestratorWriteGuard {
 		this.implementationTools = options.implementationTools ?? new Set(IMPLEMENTATION_TOOLS)
 		this.buildPhaseThreshold = options.buildPhaseThreshold ?? 2
 		this.buildPhaseBlockThreshold = options.buildPhaseBlockThreshold ?? 5
-		this.buildPhaseTriageThreshold = options.buildPhaseTriageThreshold ?? 4
-		this.buildPhaseTriageBlockThreshold = options.buildPhaseTriageBlockThreshold ?? 8
+		this.buildPhaseTriageThreshold = options.buildPhaseTriageThreshold ?? 3
+		this.buildPhaseTriageBlockThreshold = options.buildPhaseTriageBlockThreshold ?? 6
 
 		if (this.buildPhaseThreshold >= this.buildPhaseBlockThreshold) {
 			throw new Error("buildPhaseBlockThreshold must be greater than buildPhaseThreshold")
@@ -142,7 +142,12 @@ export class OrchestratorWriteGuard {
 
 	recordSubagentReturn(outcome?: AgentOutcomeSummary): void {
 		const phase = getCurrentPhase(this.ctx.sessionManager.getSessionId())
-		if (phase !== "build") return
+		if (phase !== "build") {
+			// A subagent return in a non-build phase should not arm the guard for a
+			// later build phase; clear any stale build-phase state.
+			this.reset()
+			return
+		}
 
 		this.buildWriteCount = 0
 		this.buildSteered = false
@@ -196,7 +201,7 @@ export class OrchestratorWriteGuard {
 	}
 }
 
-const AGENT_RECORD_STATUSES: readonly AgentRecord["status"][] = [
+const AGENT_RECORD_STATUSES: AgentRecord["status"][] = [
 	"queued",
 	"running",
 	"completed",
@@ -206,7 +211,7 @@ const AGENT_RECORD_STATUSES: readonly AgentRecord["status"][] = [
 	"error",
 ]
 
-const AGENT_OUTCOME_KINDS: readonly AgentOutcomeKind[] = ["completed", "budget_exhausted", "failed", "stopped"]
+const AGENT_OUTCOME_KINDS: AgentOutcomeKind[] = ["completed", "budget_exhausted", "failed", "stopped"]
 
 function extractAgentOutcome(event: { details?: unknown }): AgentOutcomeSummary | undefined {
 	const details = event.details
@@ -264,6 +269,11 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 	pi.on("tool_call", (event, ctx) => {
 		if (!event.toolName) return
 
+		// Agent calls are pass-through only. We deliberately do NOT reset the guard
+		// here: spawning a new subagent must not create a disarm gap where the
+		// orchestrator could edit freely while waiting for that subagent to return.
+		// The guard resets its per-return counters only when a subagent actually
+		// finishes (tool_result) or when the session/phase changes.
 		if (event.toolName === "Agent") {
 			return { block: false }
 		}

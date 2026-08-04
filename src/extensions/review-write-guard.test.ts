@@ -187,6 +187,25 @@ describe("OrchestratorWriteGuard — build phase", () => {
 		expect(guard.getState().subagentReturnedInBuild).toBe(false)
 	})
 
+	it("resets build-phase state when a subagent returns outside build phase", () => {
+		mockPhase = "build"
+		const guard = new OrchestratorWriteGuard(createContext(), { buildPhaseThreshold: 2 })
+		guard.recordSubagentReturn({ status: "completed", outcome: "completed" })
+		expect(guard.getState().subagentReturnedInBuild).toBe(true)
+		expect(guard.getState().lastSubagentSuccessful).toBe(true)
+
+		// Subagent returns while the session is in plan phase.
+		mockPhase = "plan"
+		guard.recordSubagentReturn({ status: "completed", outcome: "completed" })
+		expect(guard.getState().subagentReturnedInBuild).toBe(false)
+		expect(guard.getState().lastSubagentSuccessful).toBe(false)
+
+		// Returning to build should not inherit the earlier build-phase state.
+		mockPhase = "build"
+		expect(guard.checkToolCall("edit")).toBeUndefined()
+		expect(guard.checkToolCall("edit")).toBeUndefined()
+	})
+
 	it("uses default threshold of 2", () => {
 		mockPhase = "build"
 		const guard = new OrchestratorWriteGuard(createContext())
