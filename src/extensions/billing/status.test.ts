@@ -845,6 +845,10 @@ describe("refreshBillingStatusFromConfig coordinator", () => {
 	it("throttles automatic refreshes inside the TTL to one snapshot", async () => {
 		configureWithKey()
 		const calls: string[] = []
+		const configLoader = vi.fn(() => ({
+			apiKey: "api-key",
+			llmEndpoint: "https://llm.kimchi.dev/openai/v1",
+		}))
 		const fetchImpl = ((input: RequestInfo | URL) => {
 			calls.push(String(input))
 			return Promise.resolve(
@@ -852,13 +856,15 @@ describe("refreshBillingStatusFromConfig coordinator", () => {
 			)
 		}) as typeof fetch
 
-		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: configLoader, mode: "automatic" })
 		const firstSnapshot = getBillingStatus()
 
-		// Advance less than the TTL — second automatic refresh must be skipped.
+		// Advance less than the TTL — second automatic refresh must be skipped
+		// before performing another synchronous config read.
 		vi.advanceTimersByTime(AUTOMATIC_REFRESH_MIN_INTERVAL_MS - 1_000)
-		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: configLoader, mode: "automatic" })
 
+		expect(configLoader).toHaveBeenCalledOnce()
 		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(1)
 		expect(getBillingStatus()).toBe(firstSnapshot)
 	})
@@ -914,6 +920,55 @@ describe("refreshBillingStatusFromConfig coordinator", () => {
 
 		await refreshBillingStatusFromConfig({ fetch: fetchImpl })
 		expect(getBillingStatus()).toMatchObject({ remainingCredits: 5 })
+	})
+
+	it("does not bump the throttle timestamp when credentials invalidate the in-flight refresh", async () => {
+		// Stable credentials across both calls so the second refresh's
+		// configureBillingCreditsApi is a no-op — otherwise a credential flip
+		// would reset lastRefreshAt=0 and mask the stale-timestamp bug.
+		const configWith = (apiKey: string) => () => ({
+			apiKey,
+			llmEndpoint: "https://llm.kimchi.dev/openai/v1",
+		})
+		// Seed with the old key so the mid-flight credential change is real.
+		configureBillingCreditsApi({ apiKey: "old-key", llmEndpoint: "https://llm.kimchi.dev/openai/v1" })
+
+		let resolveResponse!: (response: Response) => void
+		const pendingResponse = new Promise<Response>((resolve) => {
+			resolveResponse = resolve
+		})
+		const fetchImpl = ((_input: RequestInfo | URL) => pendingResponse) as typeof fetch
+
+		const refresh = refreshBillingStatusFromConfig({
+			fetch: fetchImpl,
+			mode: "automatic",
+			loadConfig: configWith("old-key"),
+		})
+		// Credential change mid-flight invalidates the coalesced refresh and
+		// resets the throttle (lastRefreshAt = 0).
+		configureBillingCreditsApi({ apiKey: "new-key", llmEndpoint: "https://llm.kimchi.dev/openai/v1" })
+		resolveResponse(
+			new Response(JSON.stringify({ serverless: true, is_paid_tier: true, remaining: "5" }), { status: 200 }),
+		)
+
+		await expect(refresh).resolves.toBeUndefined()
+
+		// A subsequent automatic refresh must NOT be throttled by the stale
+		// resolution — the credential reset must stand.
+		const calls: string[] = []
+		const nextFetch = ((input: RequestInfo | URL) => {
+			calls.push(String(input))
+			return Promise.resolve(
+				new Response(JSON.stringify({ serverless: true, is_paid_tier: true, remaining: "5" }), { status: 200 }),
+			)
+		}) as typeof fetch
+		await refreshBillingStatusFromConfig({
+			fetch: nextFetch,
+			mode: "automatic",
+			loadConfig: configWith("new-key"),
+		})
+
+		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(1)
 	})
 })
 

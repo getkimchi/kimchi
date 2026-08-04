@@ -62,7 +62,7 @@ interface BillingApiConfig {
 interface RefreshBillingStatusOptions {
 	fetch?: typeof fetch
 	jsonTimeoutMs?: number
-	loadConfig?: typeof loadConfig
+	loadConfig?: () => Pick<ReturnType<typeof loadConfig>, "apiKey" | "llmEndpoint">
 	requestTimeoutMs?: number
 	/** "automatic" = coalesced + throttled (completion hook); "forced" = bypasses TTL (manual command, login). Defaults to "forced". */
 	mode?: BillingRefreshMode
@@ -245,6 +245,13 @@ export async function refreshBillingStatusFromConfig(
 ): Promise<BillingStatus | undefined> {
 	const mode: BillingRefreshMode = options.mode ?? "forced"
 
+	// Automatic mode: skip before loading config if we refreshed recently.
+	// If a forced refresh is already running, share it so callers still receive
+	// the newest snapshot without repeating synchronous config reads.
+	if (mode === "automatic" && Date.now() - lastRefreshAt < AUTOMATIC_REFRESH_MIN_INTERVAL_MS) {
+		return inFlightRefresh ?? currentBillingStatus
+	}
+
 	// Always sync credentials from config before checking coalescing state.
 	// Forced callers (login, API-key change) must update the billing API
 	// configuration even when an automatic refresh is already running —
@@ -253,22 +260,19 @@ export async function refreshBillingStatusFromConfig(
 	try {
 		const config = (options.loadConfig ?? loadConfig)()
 		configureBillingCreditsApi({ apiKey: config.apiKey, llmEndpoint: config.llmEndpoint })
-	} catch {
+	} catch (error) {
+		console.warn("[billing] failed to load config for billing refresh:", error)
 		return undefined
 	}
 
 	// Coalesce: if a refresh is already in flight, share it regardless of mode.
 	if (inFlightRefresh) return inFlightRefresh
 
-	// Automatic mode: skip if we refreshed recently.
-	if (mode === "automatic" && Date.now() - lastRefreshAt < AUTOMATIC_REFRESH_MIN_INTERVAL_MS) {
-		return currentBillingStatus
-	}
-
 	const promise = (async () => {
 		try {
 			return await refreshBillingSnapshot(options)
-		} catch {
+		} catch (error) {
+			console.warn("[billing] billing refresh failed:", error)
 			return undefined
 		}
 	})()
@@ -276,7 +280,11 @@ export async function refreshBillingStatusFromConfig(
 	inFlightRefresh = promise
 	try {
 		const result = await promise
-		lastRefreshAt = Date.now()
+		// Only bump the throttle timestamp when this promise is still the
+		// active in-flight refresh. If configureBillingCreditsApi invalidated
+		// it (credential change during login/logout/API-key rotation), the
+		// stale resolution must not extend the automatic refresh cooldown.
+		if (inFlightRefresh === promise) lastRefreshAt = Date.now()
 		return result
 	} finally {
 		if (inFlightRefresh === promise) inFlightRefresh = undefined
