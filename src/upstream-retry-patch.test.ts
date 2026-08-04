@@ -49,6 +49,16 @@ describe("upstream retry patch", () => {
 		expect(wrapped?.({ stopReason: "error", errorMessage: "invalid request" })).toBe(false)
 	})
 
+	it("does not retry non-error messages that contain retryable error wording", () => {
+		const original = vi.fn((_message: { stopReason?: string; errorMessage?: string }) => false)
+		const sessionClass = { prototype: { _isRetryableError: original } }
+
+		installInfrastructureRetryPatch(sessionClass)
+		const wrapped = sessionClass.prototype._isRetryableError
+
+		expect(wrapped?.({ stopReason: "stop", errorMessage: "503 Service Unavailable" })).toBe(false)
+	})
+
 	// Critical regression: Pi's original classifier retries any message
 	// containing 429, but Kimchi must override that when the same 429 is a
 	// budget-exhausted verdict — otherwise exhausted budgets burn the full
@@ -71,7 +81,7 @@ describe("upstream retry patch", () => {
 	})
 
 	it("does not let billing wording hide a terminal budget-exhausted 429 from Kimchi", () => {
-		const original = vi.fn(() => true)
+		const original = vi.fn((_message: { stopReason?: string; errorMessage?: string }) => true)
 		const sessionClass = { prototype: { _isRetryableError: original } }
 
 		installInfrastructureRetryPatch(sessionClass)
