@@ -905,6 +905,25 @@ describe("refreshBillingStatusFromConfig coordinator", () => {
 		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(2)
 	})
 
+	it("does not throttle an automatic refresh after a forced refresh", async () => {
+		configureWithKey()
+		const calls: string[] = []
+		const fetchImpl = ((input: RequestInfo | URL) => {
+			calls.push(String(input))
+			return Promise.resolve(
+				new Response(JSON.stringify({ serverless: true, is_paid_tier: true, remaining: "5" }), { status: 200 }),
+			)
+		}) as typeof fetch
+
+		// A forced refresh (startup, login) must not set the automatic TTL —
+		// otherwise the first post-completion automatic refresh is throttled.
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "forced" })
+		vi.advanceTimersByTime(1_000)
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+
+		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(2)
+	})
+
 	it("does not retry a failed automatic billing refresh", async () => {
 		configureWithKey()
 		const fetchImpl = ((_input: RequestInfo | URL) =>

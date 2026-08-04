@@ -280,11 +280,13 @@ export async function refreshBillingStatusFromConfig(
 	inFlightRefresh = promise
 	try {
 		const result = await promise
-		// Only bump the throttle timestamp when this promise is still the
-		// active in-flight refresh. If configureBillingCreditsApi invalidated
-		// it (credential change during login/logout/API-key rotation), the
-		// stale resolution must not extend the automatic refresh cooldown.
-		if (inFlightRefresh === promise) lastRefreshAt = Date.now()
+		// Only bump the throttle timestamp for automatic refreshes that are
+		// still the active in-flight refresh. Forced refreshes (login, manual
+		// command) must not extend the automatic cooldown — otherwise the
+		// first post-completion automatic refresh would be throttled by the
+		// startup forced refresh. The identity guard also skips stale
+		// resolutions invalidated by configureBillingCreditsApi.
+		if (mode === "automatic" && inFlightRefresh === promise) lastRefreshAt = Date.now()
 		return result
 	} finally {
 		if (inFlightRefresh === promise) inFlightRefresh = undefined
