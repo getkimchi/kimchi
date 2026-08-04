@@ -19,6 +19,7 @@ import {
 	refreshFile,
 	sendRequest,
 	shutdownAll,
+	shutdownIdleClients,
 	waitForDiagnostics,
 } from "./lsp/client.js"
 import { applyWorkspaceEdit } from "./lsp/edits.js"
@@ -34,6 +35,8 @@ export function clientCwd(filePath: string, sessionCwd: string): string {
 
 const LSP_DIAGNOSTICS_CUSTOM_TYPE = "lsp_diagnostics"
 const DIAG_WAIT_TIMEOUT_MS = 2000
+const IDLE_THRESHOLD_MS = 15 * 60 * 1000 // 15 minutes
+const IDLE_SWEEP_INTERVAL_MS = 60 * 1000 // check every 60s
 
 const LSP_SYSTEM_PROMPT = `## Language Server Protocol (LSP)
 
@@ -58,6 +61,7 @@ export default function (pi: ExtensionAPI) {
 	// controller is combined with ctx.signal so user/session aborts also unwind
 	// the wait, but we never abort ctx.signal ourselves.
 	let pendingRefresh: { abort: AbortController } | undefined
+	let idleSweepTimer: NodeJS.Timeout | null = null
 
 	function cancelPendingRefresh(): void {
 		if (!pendingRefresh) return
@@ -75,6 +79,15 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd
 		ui = ctx.hasUI ? ctx.ui : undefined
+
+		// Clear any previous sweep timer first. This must happen before the
+		// no-servers early return, otherwise a prior session's interval leaks
+		// and keeps sweeping the module-level clients map.
+		if (idleSweepTimer) {
+			clearInterval(idleSweepTimer)
+			idleSweepTimer = null
+		}
+
 		warned = false
 		degradedServers = []
 		activeServers = detectServers(cwd)
@@ -99,6 +112,14 @@ export default function (pi: ExtensionAPI) {
 
 		if (activeServers.length === 0) return
 
+		// Start idle sweep — shut down LSP servers after 15 min of inactivity.
+		// unref() so the timer doesn't keep the process alive if session_shutdown
+		// is never fired (e.g. unexpected exit).
+		idleSweepTimer = setInterval(() => {
+			shutdownIdleClients(IDLE_THRESHOLD_MS)
+		}, IDLE_SWEEP_INTERVAL_MS)
+		idleSweepTimer.unref()
+
 		// Eagerly start servers that have a project marker directly in sessionCwd
 		const goMarkers = ["go.mod"]
 		const tsMarkers = ["tsconfig.json", "package.json"]
@@ -110,6 +131,10 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	pi.on("session_shutdown", async () => {
+		if (idleSweepTimer) {
+			clearInterval(idleSweepTimer)
+			idleSweepTimer = null
+		}
 		cancelPendingRefresh()
 		if (ui) {
 			ui.setStatus("lsp", undefined)

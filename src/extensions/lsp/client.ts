@@ -285,6 +285,78 @@ export function shutdownAll(): void {
 	}
 }
 
+/**
+ * Shut down LSP clients that have been idle for longer than `thresholdMs`.
+ *
+ * A client is considered idle when:
+ *   - No pending requests are in flight
+ *   - No active progress tokens (project loading / indexing)
+ *   - `lastActivity` is older than `thresholdMs`
+ *
+ * Fully synchronous — no awaits between the idle check and map deletion +
+ * process kill. JS single-threading guarantees getOrCreateClient's synchronous
+ * cache-hit path cannot interleave: either the sweep runs first (client evicted,
+ * next call spawns fresh) or getOrCreateClient runs first (updates lastActivity,
+ * sweep skips). No locking required.
+ *
+ * @param clientMap   The clients map to sweep
+ * @param lockMap     The client locks map
+ * @param thresholdMs Idle duration before shutdown
+ * @param now         Current timestamp (injectable for testing)
+ */
+export function shutdownIdleClientsIn(
+	clientMap: Map<string, LspClient>,
+	lockMap: Map<string, Promise<LspClient>>,
+	thresholdMs: number,
+	now: number = Date.now(),
+): void {
+	for (const [key, client] of clientMap) {
+		if (client.pendingRequests.size > 0) continue
+		if (client.activeProgressTokens.size > 0) continue
+
+		const idleMs = now - client.lastActivity
+		if (idleMs < thresholdMs) continue
+
+		// Remove from maps BEFORE killing so getOrCreateClient can't return
+		// a dying client. Both operations are synchronous — no event-loop turn
+		// between them.
+		clientMap.delete(key)
+		lockMap.delete(key)
+
+		// Fire-and-forget LSP shutdown request, then immediately kill.
+		// We intentionally do NOT await the shutdown response or send the
+		// LSP "exit" notification before killing. This mirrors the existing
+		// shutdownAll() pattern and keeps shutdownIdleClientsIn synchronous,
+		// which is what allows the no-lock concurrency argument to hold (no
+		// event-loop turn between the idle check and kill). The client has
+		// been idle for 15+ minutes with no pending work, so there is nothing
+		// to lose. gopls and typescript-language-server both handle SIGKILL
+		// cleanly.
+		//
+		// Each step is wrapped individually so a failure in one client
+		// cannot abort the sweep for remaining clients (this runs inside a
+		// setInterval callback).
+		try {
+			sendRequest(client, "shutdown", null).catch(() => {})
+		} catch {
+			// sendRequest threw synchronously (e.g. stdin already closed)
+		}
+		try {
+			client.proc.kill()
+		} catch {
+			// Process may already be dead.
+		}
+	}
+}
+
+/**
+ * Sweep the module-level `clients` map and shut down idle LSP servers.
+ * Thin wrapper around `shutdownIdleClientsIn` for production use.
+ */
+export function shutdownIdleClients(thresholdMs: number): void {
+	shutdownIdleClientsIn(clients, clientLocks, thresholdMs)
+}
+
 // =============================================================================
 // Protocol
 // =============================================================================
