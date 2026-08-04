@@ -34,7 +34,7 @@ GitLab pipeline
         │      ├─ _expected_tasks_for_chunk()   # chunk_slicing.slice_tasks()
         │      ├─ load_llm_params()             # env → (global, {}) — per-model not supported via CI
         │      ├─ _write_run_metadata()         # writes .benchmark/run-metadata.json (idempotent)
-        │      ├─ process_trial_results()       # classify() anything already on disk
+        │      ├─ write_enriched_results()      # classify() anything already on disk
         │      ├─ build_harbor_command()       # forward params as --agent-kwarg
         │      └─ run_harbor()                  # subprocess
         │

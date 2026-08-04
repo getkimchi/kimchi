@@ -24,6 +24,36 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+REDACTED_MARKER = b"[redacted]"
+
+
+def redact_tree(root: Path, secrets: list[bytes]) -> None:
+    """Redact every occurrence of each secret in every file under ``root``.
+
+    Reusable by the checkpoint pipeline: the GCS checkpoint plugin stages a
+    trial into a temp directory, then calls this on the staging copy before
+    archiving — so an unredacted secret can never reach GCS.
+
+    Args:
+        root: directory tree to walk recursively.
+        secrets: byte strings to replace with :data:`REDACTED_MARKER`. Empty
+            or whitespace-only entries are ignored. Non-file entries (dirs,
+            symlinks) are skipped.
+    """
+    needles = [s for s in secrets if s and s.strip()]
+    if not needles:
+        return
+    for path in root.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        data = path.read_bytes()
+        if not any(needle in data for needle in needles):
+            continue
+        new_data = data
+        for needle in needles:
+            new_data = new_data.replace(needle, REDACTED_MARKER)
+        path.write_bytes(new_data)
+
 
 def main() -> int:
     api_key = os.environ.get("KIMCHI_API_KEY", "")
@@ -34,24 +64,7 @@ def main() -> int:
     if not jobs_dir.is_dir():
         return 0
 
-    redacted_marker = b"[redacted]"
-    needle = api_key.encode("utf-8")
-
-    for path in jobs_dir.rglob("*"):
-        if not path.is_file():
-            continue
-        try:
-            data = path.read_bytes()
-        except OSError:
-            continue
-        if needle not in data:
-            continue
-        new_data = data.replace(needle, redacted_marker)
-        try:
-            path.write_bytes(new_data)
-        except OSError:
-            continue
-
+    redact_tree(jobs_dir, [api_key.encode("utf-8")])
     return 0
 
 

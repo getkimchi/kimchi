@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from bench_config import is_retryable, should_retry_agent_timeout
-from classify import ERROR_RULES, ErrorRule
+from classify import ERROR_RULES, ErrorRule, classify
 from outcome import Outcome
 
 # Lookup used by extract_error_evidence() to find evidence_markers by kind.
@@ -565,15 +565,21 @@ def is_trial_dir(path: Path) -> bool:
 def find_trial_dirs(results_dir: Path) -> list[Path]:
     if is_trial_dir(results_dir):
         return [results_dir]
-    immediate = sorted(path for path in results_dir.iterdir() if is_trial_dir(path)) if results_dir.is_dir() else []
-    if immediate:
-        return immediate
     if not results_dir.is_dir():
         return []
-    trials: list[Path] = []
-    for run_dir in sorted(path for path in results_dir.iterdir() if path.is_dir()):
-        trials.extend(sorted(path for path in run_dir.iterdir() if is_trial_dir(path)))
-    return trials
+    trials_by_id: dict[str, Path] = {}
+    for path in sorted(results_dir.iterdir()):
+        if is_trial_dir(path):
+            trials_by_id.setdefault(path.name, path)
+    run_dirs = sorted(
+        (path for path in results_dir.iterdir() if path.is_dir()),
+        key=lambda path: (path.name == "_checkpoint-restored", path.name),
+    )
+    for run_dir in run_dirs:
+        for path in sorted(run_dir.iterdir()):
+            if is_trial_dir(path):
+                trials_by_id.setdefault(path.name, path)
+    return sorted(trials_by_id.values(), key=lambda path: path.name)
 
 
 def trial_total_time(result: dict[str, Any], session_scan: SessionScan) -> int | None:
@@ -786,14 +792,34 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
     exception_message = string_or_none(get_path(result, "exception_info", "exception_message"))
 
     raw_outcome = result.get("outcome")
-    try:
-        outcome = Outcome(raw_outcome) if isinstance(raw_outcome, str) else (
-            Outcome.SCORED_PASS if reward == PASS_REWARD else Outcome.SCORED_FAIL
-        )
-    except ValueError:
-        outcome = Outcome.SCORED_FAIL
-    error_category = result.get("error_category") if isinstance(result.get("error_category"), str) else None
-    error_subcategory = result.get("error_subcategory") if isinstance(result.get("error_subcategory"), str) else None
+    if isinstance(raw_outcome, str):
+        try:
+            outcome = Outcome(raw_outcome)
+        except ValueError:
+            verdict = classify(trial_dir)
+            outcome = verdict.outcome
+            error_category = verdict.error_category
+            error_subcategory = verdict.error_subcategory
+        else:
+            error_category = (
+                result.get("error_category")
+                if isinstance(result.get("error_category"), str)
+                else None
+            )
+            error_subcategory = (
+                result.get("error_subcategory")
+                if isinstance(result.get("error_subcategory"), str)
+                else None
+            )
+    else:
+        # Per-trial checkpoints are written by Harbor's END hook before
+        # chunk_runner enriches result.json with classification fields. Apply
+        # the canonical classifier here so GCS-only summaries preserve the
+        # same retryable/final semantics as local reconciliation.
+        verdict = classify(trial_dir)
+        outcome = verdict.outcome
+        error_category = verdict.error_category
+        error_subcategory = verdict.error_subcategory
 
     error_evidence = extract_error_evidence(result, trial_dir, session_files, warnings, error_subcategory)
     error_message = error_evidence.text or exception_message
@@ -904,12 +930,32 @@ def load_chunk_metas(results_dir: Path) -> dict[int, dict[str, Any]]:
         if not isinstance(chunk_index, int):
             print(f"Warning: skipping chunk-meta {meta_path}: missing or non-int 'chunk_index'", file=sys.stderr)
             continue
-        attempt = data.get("chunk_attempt", 0)
-        needs = data.get("needs_retry", []) or []
-        data["exhausted"] = attempt >= MAX_CHUNK_ATTEMPTS and len(needs) > 0
+        if not isinstance(data.get("exhausted"), bool):
+            # Backward compatibility for artifact-only metadata written before
+            # the durable status schema carried an explicit exhaustion flag.
+            attempt = data.get("chunk_attempt", 0)
+            needs = data.get("needs_retry", []) or []
+            data["exhausted"] = (
+                attempt >= MAX_CHUNK_ATTEMPTS and len(needs) > 0
+            )
         metas[chunk_index] = data
     return metas
 
+
+def exhausted_tasks_from_chunk_metas(
+    chunk_metas: dict[int, dict[str, Any]],
+) -> set[str]:
+    """Tasks allowed to publish incomplete attempt sets after retry exhaustion."""
+    exhausted_tasks: set[str] = set()
+    for meta in chunk_metas.values():
+        if not meta.get("exhausted"):
+            continue
+        needs_retry = meta.get("needs_retry", [])
+        if isinstance(needs_retry, list):
+            exhausted_tasks.update(
+                task for task in needs_retry if isinstance(task, str)
+            )
+    return exhausted_tasks
 
 
 def build_summary(
@@ -936,9 +982,7 @@ def build_summary(
     trials_expected = tasks_expected * attempts_per_task
 
     # Exhausted tasks: chunks that ran out of retries and still had failures.
-    exhausted_tasks: set[str] = set()
-    for idx in chunks_exhausted:
-        exhausted_tasks.update(chunk_metas[idx].get("needs_retry", []))
+    exhausted_tasks = exhausted_tasks_from_chunk_metas(chunk_metas)
 
     # no_verdict: exhausted tasks with no result.json at all (true unknown, not in trials).
     trial_task_names = {t.task for t in trials}
@@ -1045,17 +1089,50 @@ def write_summary(metadata_path: Path, output_path: Path, results_dir_override: 
 
     # Distinguish between tasks that never ran (no trial dirs at all) and
     # tasks that were attempted but only produced error/infra verdicts.
-    # - Never-ran tasks: fail (exit 1) — something went wrong with dispatch.
+    # - Never-ran tasks: fail unless chunk-meta explicitly records exhaustion.
     # - All-errored tasks: warn only — the chunk ran and produced evidence,
     #   the errors are visible in the summary for analysis.
     selected_tasks = metadata_dict(metadata, "parameters").get("selected_tasks") or metadata.get("selected_tasks")
     if isinstance(selected_tasks, list) and selected_tasks:
+        exhausted_tasks = exhausted_tasks_from_chunk_metas(
+            load_chunk_metas(results_dir)
+        )
         trial_tasks = {t.task for t in trials}
-        missing_tasks = sorted(set(selected_tasks) - trial_tasks)
+        missing_tasks = sorted(
+            set(selected_tasks) - trial_tasks - exhausted_tasks
+        )
         if missing_tasks:
             print(
                 f"ERROR: {len(missing_tasks)} expected task(s) never produced a trial: "
                 f"{missing_tasks}",
+                file=sys.stderr,
+            )
+            return 1
+
+        attempts_per_task = (
+            int_value(metadata_dict(metadata, "parameters").get("attempts")) or 1
+        )
+        final_attempts = Counter(
+            trial.task
+            for trial in trials
+            if not is_retryable(
+                trial.outcome,
+                trial.error_category,
+                trial.error_subcategory,
+            )
+        )
+        incomplete_tasks = [
+            f"{task} ({final_attempts[task]}/{attempts_per_task} final)"
+            for task in selected_tasks
+            if (
+                task not in exhausted_tasks
+                and final_attempts[task] < attempts_per_task
+            )
+        ]
+        if incomplete_tasks:
+            print(
+                "ERROR: expected tasks have fewer than the configured attempts: "
+                f"{incomplete_tasks}",
                 file=sys.stderr,
             )
             return 1

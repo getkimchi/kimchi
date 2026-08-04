@@ -71,6 +71,11 @@ inputs:
     description: "Retry chunks whose agent runs hit an AgentTimeoutError verdict. Infra errors are always retried."
     type: boolean
     default: false
+  trial_checkpoints:
+    description: "Upload per-trial GCS checkpoints as trials finish and restore them at chunk startup, so a killed chunk loses no completed trial. Requires the BENCH_CHECKPOINT_BUCKET project CI/CD variable to be set when true. Not supported for swe-bench-pro yet (forced off there regardless of this input)."
+    type: boolean
+    default: true
+
   analyze_results:
     description: "Generate and upload session analysis after the benchmark summary."
     type: boolean

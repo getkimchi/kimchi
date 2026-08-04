@@ -29,8 +29,10 @@ import sys
 import time
 import urllib.request
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 
+import checkpoint as ckpt
 from bench_config import (
     DEFAULT_BENCHMARK_NAME,
     DEFAULT_BENCHMARK_RESULTS_DIR,
@@ -40,6 +42,7 @@ from bench_config import (
     DEFAULT_MODEL,
     DEFAULT_WORKFLOW,
     DEFAULT_WORKFLOW_EXTENSION,
+    ENV_BENCH_JOB_MAX_RETRIES,
     ENV_BENCH_RUN_DATE,
     ENV_BENCH_TASKS_ALL,
     ENV_BENCHMARK_NAME,
@@ -53,6 +56,10 @@ from bench_config import (
     ENV_WORKFLOW,
     ENV_WORKFLOW_EXTENSION,
     MULTI_MODEL,
+    checkpoint_bucket,
+    checkpoint_soft_deadline_seconds,
+    checkpoint_upload_retries,
+    checkpoints_enabled,
     is_multi_model,
     is_retryable,
     is_workflow_agent,
@@ -62,8 +69,14 @@ from bench_config import (
 )
 from chunk_slicing import slice_tasks
 from classify import classify
-from harbor_runner import build_harbor_command, format_command_for_log, run_harbor
-from outcome import Outcome
+from gitlab_api import list_pipeline_jobs
+from harbor_runner import (
+    CheckpointPluginArgs,
+    build_harbor_command,
+    format_command_for_log,
+    run_harbor,
+)
+from reconcile import compute_chunk_progress, is_chunk_complete, missing_tasks
 
 # Directory containing static per-dataset task lists (JSON arrays of task name strings).
 # These are committed to git to avoid flaky Harbor CLI calls at runtime.
@@ -156,8 +169,12 @@ def _all_trial_dirs_for_task(results_dir: Path, task_name: str) -> list[Path]:
     """
     if not results_dir.is_dir():
         return []
-    matches: list[Path] = []
-    for run_dir in results_dir.iterdir():
+    matches: dict[str, Path] = {}
+    run_dirs = sorted(
+        (path for path in results_dir.iterdir() if path.is_dir()),
+        key=lambda path: (path.name == ckpt.CHECKPOINT_RESTORE_DIR, path.name),
+    )
+    for run_dir in run_dirs:
         if not run_dir.is_dir():
             continue
         for trial_dir in run_dir.iterdir():
@@ -167,13 +184,13 @@ def _all_trial_dirs_for_task(results_dir: Path, task_name: str) -> list[Path]:
             if recorded_task_name is not None:
                 # Authoritative path: exact match against Harbor's own record.
                 if recorded_task_name == task_name:
-                    matches.append(trial_dir)
+                    matches.setdefault(trial_dir.name, trial_dir)
                 continue
             # Fallback path: no readable task_name (e.g. trial crashed before
             # result.json was written). Directory name starts with
             # `{task_name}__` for short (untruncated) names.
             if trial_dir.name.startswith(f"{task_name}__"):
-                matches.append(trial_dir)
+                matches.setdefault(trial_dir.name, trial_dir)
                 continue
             # Last resort: Harbor truncated the task name. The trial dir name
             # is `{truncated_prefix}__{suffix}`. Check if the full task name
@@ -182,46 +199,30 @@ def _all_trial_dirs_for_task(results_dir: Path, task_name: str) -> list[Path]:
             # authoritative task_name to compare against.
             prefix = trial_dir.name.rsplit("__", 1)[0]
             if task_name.startswith(prefix):
-                matches.append(trial_dir)
-    return sorted(matches, key=lambda p: p.name)
+                matches.setdefault(trial_dir.name, trial_dir)
+    return sorted(matches.values(), key=lambda p: p.name)
 
 
-def process_trial_results(
+def write_enriched_results(
     *,
     results_dir: Path,
     expected_tasks: list[str],
-) -> tuple[list[str], dict[str, int]]:
+) -> None:
     """Classify each trial and write enriched results to the local workspace.
 
     `expected_tasks` is a list of BARE task names (e.g. ['task-a', 'task-b']).
 
-    Returns:
-        needs_retry: bare task names that need retry (have retryable trials
-            and no passing trial).
-        retry_counts: {task_name: count} — number of retryable trials per
-            task. Only includes tasks in needs_retry. Tasks with no trials
-            at all get retry_counts[task] = 1.
-
-    No GCS uploads happen here. The summary job tars the entire
-    `BENCHMARK_RESULTS_DIR` (including this chunk's slice under
-    `jobs/run-N/task__attempt/`) into `jobs.tar.gz` after all chunks finish
-    and uploads that as the single source of truth. Per-trial uploads would
-    be redundant and a transient GCS failure previously triggered unnecessary
-    Harbor re-runs via this function's needs_retry signal.
+    No GCS uploads happen in this function. In checkpoint-enabled runs, the
+    Harbor checkpoint plugin makes completed trials durable individually; the
+    summary job later merges those checkpoints with runner-delivered GitLab
+    artifacts and publishes the canonical `jobs.tar.gz` archive.
     """
-    needs_retry: list[str] = []
-    retry_counts: dict[str, int] = {}
-
     for task_name in expected_tasks:
         trial_dirs = _all_trial_dirs_for_task(results_dir, task_name)
 
         if not trial_dirs:
-            needs_retry.append(task_name)
-            retry_counts[task_name] = 1
             continue
 
-        retryable_count = 0
-        has_pass = False
         for trial_dir in trial_dirs:
             verdict = classify(trial_dir)
 
@@ -237,23 +238,6 @@ def process_trial_results(
                 json.dumps(enriched, indent=2) + "\n"
             )
 
-            if verdict.outcome == Outcome.SCORED_PASS:
-                has_pass = True
-            elif is_retryable(
-                verdict.outcome,
-                verdict.error_category,
-                verdict.error_subcategory,
-            ):
-                retryable_count += 1
-
-        if has_pass:
-            continue
-        if retryable_count > 0:
-            needs_retry.append(task_name)
-            retry_counts[task_name] = retryable_count
-
-    return needs_retry, retry_counts
-
 
 __all__ = [
     "_all_trial_dirs_for_task",
@@ -263,8 +247,8 @@ __all__ = [
     "_write_chunk_meta",
     "list_trial_dirs",
     "main",
-    "process_trial_results",
     "run_id_from_chunk_attempt",
+    "write_enriched_results",
 ]
 
 
@@ -384,6 +368,17 @@ def _build_gcs_key_prefix() -> str:
     )
 
 
+def _build_checkpoint_run_prefix(run_prefix: str) -> str:
+    """Project-scope checkpoints without changing the public results prefix."""
+    project_id = os.environ.get("CI_PROJECT_ID", "")
+    if not project_id:
+        raise ValueError("CI_PROJECT_ID is required when trial checkpoints are enabled")
+    safe_project_id = re.sub(r"[^A-Za-z0-9._-]+", "-", project_id).strip("-")
+    if not safe_project_id:
+        raise ValueError("CI_PROJECT_ID has no usable characters")
+    return f"{run_prefix}/checkpoint-project={safe_project_id}"
+
+
 def _write_run_metadata(
     results_dir: Path,
     selected_tasks: list[str],
@@ -463,6 +458,57 @@ def _write_run_metadata(
     }
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote run metadata to {metadata_path}", flush=True)
+
+
+def _persist_checkpoint_run_metadata(metadata_path: Path, run_prefix: str) -> None:
+    """Persist deterministic run metadata for checkpoint-only recovery.
+
+    The per-job identifiers differ across chunk jobs, so they are removed from
+    the durable copy. All chunks can then race safely to create the same two
+    immutable objects: the canonical run-prefix copy and a stable lookup copy
+    the summary job can locate without GitLab artifacts.
+    """
+    if not checkpoints_enabled():
+        return
+    bucket = checkpoint_bucket()
+    if not bucket:
+        raise ValueError(
+            "BENCH_TRIAL_CHECKPOINTS=true requires BENCH_CHECKPOINT_BUCKET"
+        )
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    gcs = metadata.get("gcs")
+    if isinstance(gcs, dict):
+        gcs["checkpoint_prefix"] = run_prefix
+    # Keep the GitLab-artifact copy self-sufficient too. The summary may recover
+    # this file through its best-effort artifact hydration and must then know the
+    # project-scoped checkpoint namespace without downloading the lookup copy.
+    metadata_path.write_text(
+        json.dumps(metadata, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    gitlab = metadata.get("gitlab")
+    if isinstance(gitlab, dict):
+        gitlab["job_id"] = ""
+        gitlab["job_url"] = ""
+    data = (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    retries = checkpoint_upload_retries()
+    ckpt.gcs_upload_bytes(
+        bucket,
+        ckpt.run_metadata_object_name(run_prefix),
+        data,
+        content_type="application/json",
+        retries=retries,
+    )
+    ckpt.gcs_upload_bytes(
+        bucket,
+        ckpt.run_metadata_lookup_object_name(
+            str(metadata.get("gitlab", {}).get("project_id", "")),
+            str(metadata.get("gitlab", {}).get("pipeline_id", "")),
+        ),
+        data,
+        content_type="application/json",
+        retries=retries,
+    )
 
 
 PASS_REWARD = 1.0
@@ -561,6 +607,26 @@ def _env_bool(name: str, default: bool) -> bool:
     return default
 
 
+def _gitlab_job_elapsed_seconds(*, now: datetime | None = None) -> float:
+    """Wall-clock time already consumed before this runner process started."""
+    started_at = os.environ.get("CI_JOB_STARTED_AT", "")
+    if not started_at:
+        return 0.0
+    try:
+        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+    except ValueError:
+        print(
+            f"[chunk] ignoring invalid CI_JOB_STARTED_AT={started_at!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 0.0
+    current = now or datetime.now(UTC)
+    return max(0.0, (current - started.astimezone(UTC)).total_seconds())
+
+
 def _agent_import_path(coding_agent: str) -> str:
     match coding_agent:
         case "kimchi":
@@ -631,16 +697,27 @@ def _restore_prior_artifact(results_dir: Path, workspace: Path | None = None) ->
     # (failed/succeeded) attempt alongside the currently-running retry. Job
     # IDs are monotonic, so the highest id < current_job_id is the most
     # recent prior attempt of THIS matrix child.
-    list_url = f"{api_url}/projects/{project_id}/pipelines/{pipeline_id}/jobs?include_retried=true"
-    print(f"[chunk-restart] querying prior attempts: {list_url}", file=sys.stderr, flush=True)
+    print(
+        f"[chunk-restart] querying all prior attempts in pipeline {pipeline_id}",
+        file=sys.stderr,
+        flush=True,
+    )
     try:
-        req = urllib.request.Request(list_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            jobs = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+        jobs = list_pipeline_jobs(
+            api_url=api_url,
+            project_id=project_id,
+            pipeline_id=pipeline_id,
+            headers=headers,
+        )
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+    ) as exc:
         print(f"[chunk-restart] could not list pipeline jobs: {exc}", file=sys.stderr, flush=True)
-        return False
-    if not isinstance(jobs, list):
         return False
 
     # CI_JOB_NAME for parallel: matrix jobs includes the matrix suffix
@@ -685,21 +762,71 @@ def _restore_prior_artifact(results_dir: Path, workspace: Path | None = None) ->
         return False
 
     prior.sort(key=lambda j: j.get("id", 0), reverse=True)
-    prior_job_id = prior[0]["id"]
     print(
-        f"[chunk-restart] found {len(prior)} prior attempt(s); restoring artifacts from job {prior_job_id}",
+        f"[chunk-restart] found {len(prior)} prior attempt(s); "
+        f"trying artifacts newest-to-oldest",
         file=sys.stderr,
         flush=True,
     )
 
-    artifact_url = f"{api_url}/projects/{project_id}/jobs/{prior_job_id}/artifacts"
-    try:
-        req = urllib.request.Request(artifact_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            archive_bytes = resp.read()
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
-        print(f"[chunk-restart] could not download artifact: {exc}", file=sys.stderr, flush=True)
+    # Phase 8: try previous attempts from newest to oldest, continuing after a
+    # 404 (artifact never produced / expired / pruned). The first attempt whose
+    # artifact downloads successfully is restored; older attempts are a fallback
+    # for when the newest attempt timed out before uploading artifacts.
+    archive_bytes: bytes | None = None
+    restored_from_job_id: int | None = None
+    for prior_job in prior:
+        prior_job_id = prior_job["id"]
+        artifact_url = f"{api_url}/projects/{project_id}/jobs/{prior_job_id}/artifacts"
+        try:
+            req = urllib.request.Request(artifact_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                candidate = resp.read()
+        except urllib.error.HTTPError as exc:
+            # 404 is expected for attempts that never uploaded artifacts
+            # (timeout, node loss). Continue to the next older attempt rather
+            # than aborting restoration.
+            if exc.code == 404:
+                print(
+                    f"[chunk-restart] job {prior_job_id} has no artifact (404); "
+                    f"trying older attempt",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+            print(
+                f"[chunk-restart] could not download artifact from job {prior_job_id}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            continue
+        except (urllib.error.URLError, TimeoutError) as exc:
+            print(
+                f"[chunk-restart] could not download artifact from job {prior_job_id}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            continue
+        if candidate:
+            archive_bytes = candidate
+            restored_from_job_id = prior_job_id
+            break
+
+    if archive_bytes is None:
+        print(
+            f"[chunk-restart] no prior attempt had a restorable artifact "
+            f"(tried {len(prior)} attempt(s))",
+            file=sys.stderr,
+            flush=True,
+        )
         return False
+
+    assert restored_from_job_id is not None  # narrowed: archive_bytes set only with it
+    print(
+        f"[chunk-restart] restored artifacts from job {restored_from_job_id}",
+        file=sys.stderr,
+        flush=True,
+    )
 
     archive_path = Path("/tmp/prior_chunk_artifact.zip")
     archive_path.write_bytes(archive_bytes)
@@ -763,7 +890,8 @@ def _write_chunk_meta(
     chunk_attempt: int,
     exit_code: int,
     needs_retry: list[str],
-) -> None:
+    exhausted: bool = False,
+) -> Path:
     """Write this chunk's attempt summary. Used by summary job to detect exhausted chunks."""
     meta_path = _chunk_meta_path(results_dir, chunk_index)
     meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -772,18 +900,298 @@ def _write_chunk_meta(
         "chunk_attempt": chunk_attempt,
         "exit_code": exit_code,
         "needs_retry": sorted(needs_retry),
+        "exhausted": exhausted,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     meta_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return meta_path
+
+
+def _persist_chunk_status(
+    *,
+    meta_path: Path,
+    run_prefix: str,
+    chunk_index: int,
+) -> None:
+    """Upload immutable chunk completion metadata for artifact-free summaries."""
+    if not checkpoints_enabled():
+        return
+    bucket = checkpoint_bucket()
+    if not bucket:
+        raise ValueError(
+            "BENCH_TRIAL_CHECKPOINTS=true requires BENCH_CHECKPOINT_BUCKET"
+        )
+    job_id = os.environ.get("CI_JOB_ID", "")
+    if not job_id:
+        raise ValueError("CI_JOB_ID is required to persist chunk status")
+    ckpt.gcs_upload_bytes(
+        bucket,
+        ckpt.chunk_status_object_name(run_prefix, chunk_index, job_id),
+        meta_path.read_bytes(),
+        content_type="application/json",
+        retries=checkpoint_upload_retries(),
+    )
+
+
+def _checkpoint_plugin_args(
+    *,
+    chunk_index: int,
+    run_prefix: str,
+    bench_dir: Path,
+) -> CheckpointPluginArgs | None:
+    """Build plugin args when checkpointing is enabled; None otherwise.
+
+    The plugin is only attached to checkpoint-enabled CI runs so local/dev and
+    shadow-off runs stay plugin-free. ``scripts_dir`` points the plugin (running
+    in Harbor's venv) at the GitLab-scripts directory so it can import the
+    stdlib-only ``checkpoint`` / ``redact_api_key`` modules.
+    """
+    if not checkpoints_enabled():
+        return None
+    bucket = checkpoint_bucket()
+    if not bucket:
+        print(
+            "BENCH_TRIAL_CHECKPOINTS=true but BENCH_CHECKPOINT_BUCKET is unset; "
+            "disabling checkpoint plugin",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+    return CheckpointPluginArgs(
+        bucket=bucket,
+        run_prefix=run_prefix,
+        chunk_index=chunk_index,
+        scripts_dir=bench_dir / "benchmark" / "scripts" / "gitlab",
+        upload_retries=checkpoint_upload_retries(),
+    )
+
+
+def _restore_gcs_checkpoints(
+    *,
+    results_dir: Path,
+    run_prefix: str,
+    chunk_index: int,
+) -> None:
+    """Download + validate + extract per-trial GCS checkpoints for this chunk.
+
+    Merges with whatever GitLab artifact restoration already placed on disk;
+    trial-id deduplication in reconciliation resolves overlap. Logs structured
+    restore counts for observability. Storage/listing failures and corrupt
+    durable objects propagate so the chunk fails before spending model tokens.
+    """
+    if not checkpoints_enabled():
+        return
+    bucket = checkpoint_bucket()
+    if not bucket:
+        return
+    result = ckpt.restore_chunk_checkpoints(
+        bucket=bucket,
+        run_prefix=run_prefix,
+        chunk_index=chunk_index,
+        dest_dir=results_dir,
+    )
+    print(
+        f"[chunk-{chunk_index}] gcs-checkpoint-restore "
+        f"restored={len(result.restored)} duplicates={result.duplicates} "
+        f"corrupt={result.corrupt}",
+        flush=True,
+    )
+
+
+def _chunk_retry_budget_exhausted(chunk_attempt: int) -> bool:
+    """True when GitLab will not retry this chunk again.
+
+    ``BENCH_JOB_MAX_RETRIES`` is the number of *retries* after the first
+    attempt. The chunk is exhausted on its final allowed attempt, at which
+    point retryable infrastructure trials are treated as terminal (they fill
+    pass@k slots so the task can complete with fewer than k final trials).
+    """
+    max_retries = _env_int(ENV_BENCH_JOB_MAX_RETRIES, 0)
+    return chunk_attempt >= 1 + max_retries
+
+
+def _register_durable_chunk_attempt(
+    *,
+    run_prefix: str,
+    chunk_index: int,
+) -> int | None:
+    """Return the GCS-backed attempt ordinal when checkpointing is enabled."""
+    if not checkpoints_enabled():
+        return None
+    bucket = checkpoint_bucket()
+    if not bucket:
+        raise ValueError(
+            "BENCH_TRIAL_CHECKPOINTS=true requires BENCH_CHECKPOINT_BUCKET"
+        )
+    return ckpt.register_chunk_attempt(
+        bucket=bucket,
+        run_prefix=run_prefix,
+        chunk_index=chunk_index,
+        job_id=os.environ.get("CI_JOB_ID", ""),
+        retries=checkpoint_upload_retries(),
+    )
+
+
+def _run_harbor_invocation(
+    *,
+    tasks: list[str],
+    agent_import_path: str,
+    model: str,
+    dataset: str,
+    parallelism: int,
+    attempts: int,
+    timeout_multiplier: float,
+    jobs_dir: Path,
+    job_name: str,
+    kimchi_ferment_oneshot: bool,
+    kimchi_disable_compaction: bool,
+    coding_agent: str,
+    llm_params: dict[str, float | int],
+    llm_per_model_params: dict[str, dict[str, float | int]],
+    checkpoint_plugin: CheckpointPluginArgs | None,
+    results_dir: Path,
+    chunk_index: int,
+    bench_dir: Path,
+    env: dict[str, str],
+    soft_deadline_monotonic: float,
+) -> tuple[int, int | None]:
+    """Run one Harbor invocation, honoring the soft chunk deadline.
+
+    Returns ``(harbor_status, received_signal)``. When the soft deadline is
+    reached, Harbor is terminated gracefully so in-flight checkpoint uploads
+    (handled by the plugin inside the Harbor process) can finish, and the
+    caller exits non-zero for a GitLab retry.
+    """
+    cmd = build_harbor_command(
+        tasks=tasks,
+        agent_import_path=agent_import_path,
+        model=model,
+        dataset=dataset,
+        parallelism=parallelism,
+        attempts=attempts,
+        timeout_multiplier=timeout_multiplier,
+        jobs_dir=jobs_dir,
+        job_name=job_name,
+        kimchi_ferment_oneshot=kimchi_ferment_oneshot,
+        kimchi_disable_compaction=kimchi_disable_compaction,
+        coding_agent=coding_agent,
+        llm_params=llm_params,
+        llm_per_model_params=llm_per_model_params,
+        workflow=_selected_workflow(),
+        workflow_extension=_selected_workflow_extension(),
+        checkpoint_plugin=checkpoint_plugin,
+    )
+    print(f"[chunk-{chunk_index}] command: {format_command_for_log(cmd)}", flush=True)
+
+    proc = run_harbor(cmd=cmd, cwd=bench_dir, env=env)
+    reported_trials: set[str] = set()
+    _print_heartbeat(results_dir, 0, len(tasks), reported_trials, chunk_index)
+
+    received_signal: int | None = None
+    graceful_stop_started: float | None = None
+    force_stop_started: float | None = None
+    drain_grace_seconds = float(
+        os.environ.get("BENCH_CHECKPOINT_SHUTDOWN_GRACE_SECONDS", "300")
+    )
+    force_grace_seconds = 30.0
+
+    def _request_graceful_stop(_signum: int) -> None:
+        """Ask asyncio-based Harbor to cancel trials and finish END hooks."""
+        nonlocal graceful_stop_started
+        if graceful_stop_started is not None or proc.poll() is not None:
+            return
+        graceful_stop_started = time.monotonic()
+        proc.send_signal(signal.SIGINT)
+
+    def _handle_parent_signal(signum: int, _frame: object) -> None:
+        nonlocal received_signal
+        received_signal = signum
+        _request_graceful_stop(signum)
+
+    prev_sigint = signal.signal(signal.SIGINT, _handle_parent_signal)
+    prev_sigterm = signal.signal(signal.SIGTERM, _handle_parent_signal)
+    started = time.monotonic()
+    next_heartbeat = started + _HEARTBEAT_INTERVAL
+    poll_interval = min(5, _HEARTBEAT_INTERVAL)
+    deadline_hit = False
+
+    try:
+        while proc.poll() is None:
+            time.sleep(poll_interval)
+            now = time.monotonic()
+            # Phase 6 soft deadline: stop accepting new work and cooperatively
+            # interrupt Harbor so trial finalizers and checkpoint END hooks can
+            # drain before GitLab's hard 12h timeout kills the pod.
+            if (
+                now >= soft_deadline_monotonic
+                and graceful_stop_started is None
+                and proc.poll() is None
+            ):
+                print(
+                    f"[chunk-{chunk_index}] soft deadline reached "
+                    f"({int(now - started)}s elapsed); interrupting Harbor and "
+                    f"allowing {drain_grace_seconds:.0f}s for checkpoint drain",
+                    flush=True,
+                )
+                deadline_hit = True
+                _request_graceful_stop(signal.SIGINT)
+            if (
+                graceful_stop_started is not None
+                and force_stop_started is None
+                and now - graceful_stop_started >= drain_grace_seconds
+                and proc.poll() is None
+            ):
+                print(
+                    f"[chunk-{chunk_index}] Harbor exceeded checkpoint drain "
+                    "grace period; sending SIGTERM",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                proc.terminate()
+                force_stop_started = now
+            if (
+                force_stop_started is not None
+                and now - force_stop_started >= force_grace_seconds
+                and proc.poll() is None
+            ):
+                print(
+                    f"[chunk-{chunk_index}] Harbor ignored SIGTERM; sending SIGKILL",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                proc.kill()
+            if proc.poll() is None and now >= next_heartbeat:
+                _print_heartbeat(
+                    results_dir, int(now - started), len(tasks), reported_trials, chunk_index
+                )
+                next_heartbeat = now + _HEARTBEAT_INTERVAL
+    finally:
+        signal.signal(signal.SIGINT, prev_sigint)
+        signal.signal(signal.SIGTERM, prev_sigterm)
+
+    harbor_status = proc.wait()
+    _print_heartbeat(
+        results_dir, int(time.monotonic() - started), len(tasks), reported_trials, chunk_index
+    )
+    tag = " (soft-deadline)" if deadline_hit else ""
+    print(f"[chunk-{chunk_index}] Harbor exited with status {harbor_status}{tag}", flush=True)
+    return harbor_status, received_signal
 
 
 def main() -> int:
     """Entry point for the chunk runner. Returns exit code for GitLab retry."""
+    process_started_monotonic = time.monotonic()
+    prior_job_elapsed_seconds = _gitlab_job_elapsed_seconds()
+
     chunk_index = _env_int("BENCH_CHUNK_INDEX", 0)
     chunk_count = _env_int("BENCH_CHUNK_COUNT", 8)
     parallelism = _env_int("BENCH_PARALLELISM", 1)
     attempts = _env_int("BENCH_ATTEMPTS", 1)
     timeout_multiplier = _env_float("BENCH_TIMEOUT_MULTIPLIER", 1.0)
+    benchmark_name = os.environ.get(
+        ENV_BENCHMARK_NAME, DEFAULT_BENCHMARK_NAME
+    )
+    checkpointing = checkpoints_enabled()
     coding_agent = os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
     model = os.environ.get(ENV_MODEL, DEFAULT_MODEL)
     kimchi_ferment_oneshot = _env_bool(ENV_KIMCHI_FERMENT_ONESHOT, False)
@@ -794,6 +1202,13 @@ def main() -> int:
         return 1
     dataset = os.environ.get("DATASET", "terminal-bench/terminal-bench-2")
     api_key = os.environ.get("KIMCHI_API_KEY")
+    if checkpointing and benchmark_name == "swe-bench-pro":
+        print(
+            "BENCH_TRIAL_CHECKPOINTS=true is not supported for "
+            "BENCHMARK_NAME=swe-bench-pro yet",
+            file=sys.stderr,
+        )
+        return 1
     if model == MULTI_MODEL and coding_agent != "kimchi":
         print("MODEL=multi-model is only supported when CODING_AGENT=kimchi", file=sys.stderr)
         return 1
@@ -806,19 +1221,39 @@ def main() -> int:
         results_dir = Path.cwd() / results_dir
     results_dir.mkdir(parents=True, exist_ok=True)
 
+    bench_dir = Path.cwd()
+
     # GitLab's `retry:` starts each attempt with a fresh workspace. Restore the
     # previous attempt's artifact (results, chunk-meta) so we don't re-run tasks
     # that already completed on a prior attempt. See _restore_prior_artifact().
-    _restore_prior_artifact(results_dir, workspace=Path.cwd())
+    _restore_prior_artifact(results_dir, workspace=bench_dir)
+
+    # Phase 4: also restore durable GCS checkpoints for this chunk. Merges with
+    # the GitLab artifact above; trial-id deduplication resolves overlap.
+    public_run_prefix = _build_gcs_key_prefix()
+    try:
+        checkpoint_run_prefix = (
+            _build_checkpoint_run_prefix(public_run_prefix)
+            if checkpointing
+            else public_run_prefix
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _restore_gcs_checkpoints(
+        results_dir=results_dir,
+        run_prefix=checkpoint_run_prefix,
+        chunk_index=chunk_index,
+    )
 
     tasks_all = _env_bool(ENV_BENCH_TASKS_ALL, False)
     raw_selected = os.environ.get("SELECTED_TASKS_JSON", "[]")
     if tasks_all:
-        selected_tasks = _fetch_all_tasks(dataset, bench_dir=Path.cwd())
+        selected_tasks = _fetch_all_tasks(dataset, bench_dir=bench_dir)
     else:
         selected_tasks = json.loads(raw_selected)
         if not selected_tasks:
-            selected_tasks = _fetch_all_tasks(dataset, bench_dir=Path.cwd())
+            selected_tasks = _fetch_all_tasks(dataset, bench_dir=bench_dir)
 
     llm_params, llm_per_model_params = load_llm_params()
     _write_run_metadata(
@@ -827,145 +1262,280 @@ def main() -> int:
         llm_params=llm_params,
         llm_per_model_params=llm_per_model_params,
     )
+    metadata_path = Path(
+        os.environ.get(ENV_BENCHMARK_RUN_METADATA, DEFAULT_BENCHMARK_RUN_METADATA)
+    )
+    try:
+        _persist_checkpoint_run_metadata(metadata_path, checkpoint_run_prefix)
+    except (ckpt.CheckpointError, OSError, ValueError, json.JSONDecodeError) as exc:
+        print(
+            f"[chunk-{chunk_index}] failed to persist checkpoint run metadata: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
 
     expected = _expected_tasks_for_chunk(selected_tasks, chunk_index, chunk_count)
 
     # Determine this chunk's chunk-attempt number (1-based) by inspecting the
     # chunk-meta directory written by previous attempts. On the first attempt
     # the directory is empty / missing, so this is 1.
-    chunk_attempt = _detect_chunk_attempt(results_dir, chunk_index) or 1
+    try:
+        durable_chunk_attempt = _register_durable_chunk_attempt(
+            run_prefix=checkpoint_run_prefix,
+            chunk_index=chunk_index,
+        )
+    except (ckpt.CheckpointError, OSError, ValueError) as exc:
+        print(
+            f"[chunk-{chunk_index}] failed to register durable chunk attempt: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
+    artifact_chunk_attempt = _detect_chunk_attempt(results_dir, chunk_index)
+    chunk_attempt = durable_chunk_attempt or artifact_chunk_attempt or 1
+    retry_budget_exhausted = _chunk_retry_budget_exhausted(chunk_attempt)
 
     if not expected:
         print(f"[chunk-{chunk_index}] empty slice, nothing to do", flush=True)
-        _write_chunk_meta(
+        meta_path = _write_chunk_meta(
             results_dir=results_dir,
             chunk_index=chunk_index,
             chunk_attempt=chunk_attempt,
             exit_code=0,
             needs_retry=[],
         )
+        try:
+            _persist_chunk_status(
+                meta_path=meta_path,
+                run_prefix=checkpoint_run_prefix,
+                chunk_index=chunk_index,
+            )
+        except (ckpt.CheckpointError, OSError, ValueError) as exc:
+            print(
+                f"[chunk-{chunk_index}] failed to persist chunk status: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 1
         return 0
 
-
-    needs_retry, retry_counts = process_trial_results(
-        results_dir=results_dir,
-        expected_tasks=expected,
+    # Phase 3: attach the GCS checkpoint plugin for checkpoint-enabled runs so
+    # completed trials become durable as they finish.
+    checkpoint_plugin = _checkpoint_plugin_args(
+        chunk_index=chunk_index,
+        run_prefix=checkpoint_run_prefix,
+        bench_dir=bench_dir,
     )
 
-    if not needs_retry:
-        print(f"[chunk-{chunk_index}] all {len(expected)} trials already final", flush=True)
-        _write_chunk_meta(
-            results_dir=results_dir,
-            chunk_index=chunk_index,
-            chunk_attempt=chunk_attempt,
-            exit_code=0,
-            needs_retry=[],
+    # Phase 6: the soft deadline is part of checkpoint protection. Without
+    # durable checkpoints, preserve the benchmark's normal GitLab job timeout
+    # instead of interrupting work early (notably SWE-bench Pro's 24h jobs).
+    if checkpointing:
+        remaining_deadline_budget = max(
+            0.0,
+            checkpoint_soft_deadline_seconds() - prior_job_elapsed_seconds,
         )
-        return 0
+        soft_deadline_monotonic = (
+            process_started_monotonic + remaining_deadline_budget
+        )
+    else:
+        soft_deadline_monotonic = float("inf")
 
-    # Invoke Harbor on the missing/infra tasks
-    print(
-        f"[chunk-{chunk_index}/attempt-{chunk_attempt}] running Harbor on {len(needs_retry)} tasks: {needs_retry}",
-        flush=True,
-    )
-    # Per-chunk job name to avoid timestamp collisions when parallel chunks
-    # start within the same second. Harbor defaults the job directory name to
-    # `YYYY-MM-DD__HH-MM-SS`; with 3 chunks dispatched at the same instant
-    # they can collapse onto the same name and clobber each other's
-    # `config.json`, `result.json`, `job.log`, `lock.json` (last writer wins).
-    # Embedding the chunk index + CI_JOB_ID guarantees a unique name per chunk.
-    job_name = f"chunk-{chunk_index}-{os.environ.get('CI_JOB_ID', 'local')}"
-    # On the first attempt (chunk_attempt == 1), use the full BENCH_ATTEMPTS
-    # since all tasks are running fresh. On retries, use the max retryable
-    # count across all retry tasks — Harbor's -k is global (not per-task), so
-    # tasks with fewer infra errors get extra trial dirs. This is harmless:
-    # compute_leaderboard_score.py filters infra-error trials and caps at
-    # expected_attempts.
-    harbor_attempts = attempts if chunk_attempt == 1 else (max(retry_counts.values()) if retry_counts else attempts)
-    cmd = build_harbor_command(
-        tasks=needs_retry,
-        agent_import_path=_agent_import_path(coding_agent),
-        model=model,
-        dataset=dataset,
-        parallelism=parallelism,
-        attempts=harbor_attempts,
-        timeout_multiplier=timeout_multiplier,
-        jobs_dir=results_dir,
-        job_name=job_name,
-        kimchi_ferment_oneshot=kimchi_ferment_oneshot,
-        kimchi_disable_compaction=kimchi_disable_compaction,
-        coding_agent=coding_agent,
-        llm_params=llm_params,
-        llm_per_model_params=llm_per_model_params,
-        workflow=_selected_workflow(),
-        workflow_extension=_selected_workflow_extension(),
-    )
-    print(f"[chunk-{chunk_index}] command: {format_command_for_log(cmd)}", flush=True)
-
-    bench_dir = Path.cwd()
+    agent_import_path = _agent_import_path(coding_agent)
     env = os.environ.copy()
-    proc = run_harbor(cmd=cmd, cwd=bench_dir, env=env)
 
-    reported_trials: set[str] = set()
-    _print_heartbeat(results_dir, 0, len(needs_retry), reported_trials, chunk_index)
+    # Phase 5: run missing work in k=1 rounds. Harbor's -k is global, so each
+    # round gives every task still missing at least one trial exactly one
+    # attempt. This keeps attempt accounting exact when tasks have different
+    # numbers of durable trials. Rounds continue until no task is missing, the
+    # soft deadline is hit, or the round cap is reached. The cap is ``attempts``
+    # (one round per target slot): a task that still has missing trials after
+    # that many rounds genuinely failed to produce durable final results, so
+    # the chunk falls through to the failure/exhaustion path rather than
+    # spinning forever on a stuck trial id.
+    final_needs_retry: list[str] = []
+    deadline_reached = False
+    harbor_failure_status: int | None = None
+    round_num = 0
+    round_cap = max(1, attempts)
+    while round_num < round_cap:
+        round_num += 1
+        # Classify + write enriched local artifacts (preserves resume state)
+        # and recompute durable progress each round so we schedule exactly the
+        # missing trials.
+        write_enriched_results(results_dir=results_dir, expected_tasks=expected)
+        task_to_trials = {
+            task: _all_trial_dirs_for_task(results_dir, task) for task in expected
+        }
+        progress = compute_chunk_progress(
+            task_to_trial_dirs=task_to_trials,
+            target_trials=attempts,
+            # The current GitLab job is itself an available attempt, including
+            # when it is the final allowed job. Only terminalize retryable
+            # results after this job has finished scheduling its work.
+            retry_budget_exhausted=False,
+        )
+        missing = missing_tasks(progress)
+        if not missing:
+            print(
+                f"[chunk-{chunk_index}/attempt-{chunk_attempt}] all {len(expected)} "
+                f"trials durable after round {round_num}",
+                flush=True,
+            )
+            break
 
-    received_signal: int | None = None
+        if time.monotonic() >= soft_deadline_monotonic:
+            print(
+                f"[chunk-{chunk_index}] soft deadline reached before round "
+                f"{round_num}; stopping after {round_num - 1} round(s)",
+                flush=True,
+            )
+            deadline_reached = True
+            final_needs_retry = missing
+            break
 
-    def _terminate(signum: int, _frame: object) -> None:
-        nonlocal received_signal
-        received_signal = signum
-        if proc.poll() is None:
-            proc.terminate()
+        # k=1 each round so attempt accounting stays exact across tasks with
+        # different durable-trial counts.
+        harbor_attempts = 1
+        print(
+            f"[chunk-{chunk_index}/attempt-{chunk_attempt}/round-{round_num}] "
+            f"running Harbor (k=1) on {len(missing)} tasks: {missing}",
+            flush=True,
+        )
+        job_name = f"chunk-{chunk_index}-{os.environ.get('CI_JOB_ID', 'local')}-r{round_num}"
+        harbor_status, _received_signal = _run_harbor_invocation(
+            tasks=missing,
+            agent_import_path=agent_import_path,
+            model=model,
+            dataset=dataset,
+            parallelism=parallelism,
+            attempts=harbor_attempts,
+            timeout_multiplier=timeout_multiplier,
+            jobs_dir=results_dir,
+            job_name=job_name,
+            kimchi_ferment_oneshot=kimchi_ferment_oneshot,
+            kimchi_disable_compaction=kimchi_disable_compaction,
+            coding_agent=coding_agent,
+            llm_params=llm_params,
+            llm_per_model_params=llm_per_model_params,
+            checkpoint_plugin=checkpoint_plugin,
+            results_dir=results_dir,
+            chunk_index=chunk_index,
+            bench_dir=bench_dir,
+            env=env,
+            soft_deadline_monotonic=soft_deadline_monotonic,
+        )
+        # Recompute progress after Harbor finishes this round so the loop
+        # condition reflects the latest durable trials.
+        write_enriched_results(results_dir=results_dir, expected_tasks=expected)
+        if harbor_status != 0:
+            # Harbor failed (or was terminated by the soft deadline mid-round).
+            # Preserve that infrastructure failure independently of local
+            # reconciliation: a checkpoint hook runs after Harbor writes
+            # result.json, so an upload failure can leave an apparently final
+            # local trial that is not durable in GCS.
+            harbor_failure_status = harbor_status
+            task_to_trials = {
+                task: _all_trial_dirs_for_task(results_dir, task) for task in expected
+            }
+            progress = compute_chunk_progress(
+                task_to_trial_dirs=task_to_trials,
+                target_trials=attempts,
+                retry_budget_exhausted=False,
+            )
+            final_needs_retry = missing_tasks(progress)
+            if time.monotonic() >= soft_deadline_monotonic:
+                deadline_reached = True
+            break
 
-    prev_sigint = signal.signal(signal.SIGINT, _terminate)
-    prev_sigterm = signal.signal(signal.SIGTERM, _terminate)
-    started = time.monotonic()
-    next_heartbeat = started + _HEARTBEAT_INTERVAL
-    poll_interval = min(5, _HEARTBEAT_INTERVAL)
-
-    try:
-        while proc.poll() is None:
-            time.sleep(poll_interval)
-            now = time.monotonic()
-            if proc.poll() is None and now >= next_heartbeat:
-                _print_heartbeat(
-                    results_dir, int(now - started), len(needs_retry), reported_trials, chunk_index
-                )
-                next_heartbeat = now + _HEARTBEAT_INTERVAL
-    finally:
-        signal.signal(signal.SIGINT, prev_sigint)
-        signal.signal(signal.SIGTERM, prev_sigterm)
-
-    harbor_status = proc.wait()
-    _print_heartbeat(
-        results_dir, int(time.monotonic() - started), len(needs_retry), reported_trials, chunk_index
+    # Final reconciliation pass over everything.
+    write_enriched_results(results_dir=results_dir, expected_tasks=expected)
+    task_to_trials = {
+        task: _all_trial_dirs_for_task(results_dir, task) for task in expected
+    }
+    progress_before_exhaustion = compute_chunk_progress(
+        task_to_trial_dirs=task_to_trials,
+        target_trials=attempts,
+        retry_budget_exhausted=False,
     )
-    print(f"[chunk-{chunk_index}] Harbor exited with status {harbor_status}", flush=True)
-
-    # Second pass: classify what Harbor produced
-    final_needs_retry, _ = process_trial_results(
-        results_dir=results_dir,
-        expected_tasks=expected,
+    progress = compute_chunk_progress(
+        task_to_trial_dirs=task_to_trials,
+        target_trials=attempts,
+        retry_budget_exhausted=retry_budget_exhausted,
     )
+    if retry_budget_exhausted:
+        # Preserve the tasks whose retryable trials fill slots only because
+        # this was the final GitLab attempt. Summary uses this durable signal
+        # to distinguish legitimate exhaustion from an incomplete sample.
+        final_needs_retry = missing_tasks(progress_before_exhaustion)
+    elif not final_needs_retry:
+        final_needs_retry = missing_tasks(progress)
+    chunk_complete = is_chunk_complete(progress)
 
-    exit_code = 0 if not final_needs_retry else 1
-    _write_chunk_meta(
+    # Exit non-zero when Harbor failed, tasks are still missing with retry
+    # budget left, or the soft deadline fired. When only the retry budget is
+    # exhausted, exit 0 so the summary job records that terminal state.
+    exit_code: int
+    if deadline_reached:
+        exit_code = 1
+        print(
+            f"[chunk-{chunk_index}] soft deadline reached; "
+            f"{len(final_needs_retry)} tasks still missing: {final_needs_retry}",
+            flush=True,
+        )
+    elif harbor_failure_status is not None:
+        exit_code = 1
+        print(
+            f"[chunk-{chunk_index}] Harbor failed with status "
+            f"{harbor_failure_status}; refusing to treat local results as durable",
+            file=sys.stderr,
+            flush=True,
+        )
+    elif chunk_complete:
+        exit_code = 0
+        print(f"[chunk-{chunk_index}] all {len(expected)} trials complete", flush=True)
+    elif retry_budget_exhausted:
+        exit_code = 0
+        print(
+            f"[chunk-{chunk_index}] retry budget exhausted; "
+            f"{len(final_needs_retry)} tasks remain incomplete: {final_needs_retry}",
+            flush=True,
+        )
+    else:
+        exit_code = 1
+        print(
+            f"[chunk-{chunk_index}] {len(final_needs_retry)} tasks still need retry: {final_needs_retry}",
+            flush=True,
+        )
+
+    exhausted = bool(
+        exit_code == 0
+        and retry_budget_exhausted
+        and final_needs_retry
+    )
+    meta_path = _write_chunk_meta(
         results_dir=results_dir,
         chunk_index=chunk_index,
         chunk_attempt=chunk_attempt,
         exit_code=exit_code,
         needs_retry=final_needs_retry,
+        exhausted=exhausted,
     )
-
-    if final_needs_retry:
+    try:
+        _persist_chunk_status(
+            meta_path=meta_path,
+            run_prefix=checkpoint_run_prefix,
+            chunk_index=chunk_index,
+        )
+    except (ckpt.CheckpointError, OSError, ValueError) as exc:
         print(
-            f"[chunk-{chunk_index}] {len(final_needs_retry)} tasks still need retry: {final_needs_retry}",
+            f"[chunk-{chunk_index}] failed to persist chunk status: {exc}",
+            file=sys.stderr,
             flush=True,
         )
         return 1
-
-    print(f"[chunk-{chunk_index}] all {len(expected)} trials complete", flush=True)
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

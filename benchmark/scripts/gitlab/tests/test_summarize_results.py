@@ -49,6 +49,23 @@ def write_session(trial_dir: Path, text: str) -> None:
     (sessions_dir / "main.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
 
 
+def test_find_trial_dirs_merges_harbor_and_checkpoint_layouts(tmp_path: Path) -> None:
+    jobs = tmp_path / "jobs"
+    harbor_trial = jobs / "run-1" / "task-a__harbor"
+    checkpoint_trial = jobs / "_checkpoint-restored" / "task-b__checkpoint"
+    duplicate_checkpoint = jobs / "_checkpoint-restored" / "task-a__harbor"
+    for trial in (harbor_trial, checkpoint_trial, duplicate_checkpoint):
+        trial.mkdir(parents=True)
+        write_json(
+            trial / "result.json",
+            {"trial_name": trial.name, "task_name": trial.name.rsplit("__", 1)[0]},
+        )
+
+    found = summarize_results.find_trial_dirs(jobs)
+
+    assert found == [harbor_trial, checkpoint_trial]
+
+
 class SummarizeResultsClassificationTest(unittest.TestCase):
     def summarize(self, result: dict, session_text: str | None = None, verifier_stdout: str | None = None):
         from classify import classify as _classify
@@ -526,7 +543,6 @@ class WriteSummaryMissingTasksTest(unittest.TestCase):
             sessions_dir = trial_dir / "agent" / "sessions"
             sessions_dir.mkdir(parents=True)
             (sessions_dir / "main.jsonl").write_text("\n", encoding="utf-8")
-
             metadata_path = tmp_path / "run-metadata.json"
             write_json(metadata_path, {
                 "benchmark": "terminal-bench-2",
@@ -579,6 +595,186 @@ class WriteSummaryMissingTasksTest(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 rc = summarize_results.write_summary(metadata_path, output_path, results_dir_override=results_dir)
             self.assertEqual(rc, 0)
+
+    def test_write_summary_fails_when_task_has_fewer_than_configured_attempts(self) -> None:
+        """A GCS-only summary must not publish a partial pass@k sample."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs" / "_checkpoint-restored"
+            results_dir.mkdir(parents=True)
+
+            trial_dir = results_dir / "task-a__abc123"
+            trial_dir.mkdir()
+            write_json(trial_dir / "result.json", {
+                **BASE_RESULT,
+                "trial_name": trial_dir.name,
+                "task_name": "terminal-bench/task-a",
+                "outcome": "scored_pass",
+                "error_category": None,
+                "error_subcategory": None,
+            })
+
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir.parent),
+                "parameters": {
+                    "selected_tasks": ["task-a"],
+                    "attempts": "2",
+                },
+            })
+
+            output_path = tmp_path / "summary.json"
+            err_buf = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(err_buf):
+                rc = summarize_results.write_summary(
+                    metadata_path,
+                    output_path,
+                    results_dir_override=results_dir.parent,
+                )
+
+            self.assertEqual(rc, 1)
+            self.assertIn("configured attempts", err_buf.getvalue())
+            self.assertIn("task-a (1/2 final)", err_buf.getvalue())
+
+    def test_retryable_trials_do_not_fill_attempt_slots_without_exhaustion(self) -> None:
+        """Raw retryable checkpoints must not make a partial pass@k publishable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs" / "_checkpoint-restored"
+            results_dir.mkdir(parents=True)
+
+            for index in range(2):
+                trial_dir = results_dir / f"task-a__retryable-{index}"
+                trial_dir.mkdir()
+                write_json(trial_dir / "result.json", {
+                    **BASE_RESULT,
+                    "trial_name": trial_dir.name,
+                    "task_name": "terminal-bench/task-a",
+                    "verifier_result": None,
+                    "exception_info": {
+                        "exception_type": "ConnectionError",
+                        "exception_message": "connection reset by peer",
+                        "exception_traceback": "",
+                        "occurred_at": "2026-01-01T00:00:00Z",
+                    },
+                })
+
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir.parent),
+                "parameters": {
+                    "selected_tasks": ["task-a"],
+                    "attempts": "2",
+                },
+            })
+
+            output_path = tmp_path / "summary.json"
+            err_buf = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(err_buf):
+                rc = summarize_results.write_summary(
+                    metadata_path,
+                    output_path,
+                    results_dir_override=results_dir.parent,
+                )
+
+            self.assertEqual(rc, 1)
+            self.assertIn("task-a (0/2 final)", err_buf.getvalue())
+
+    def test_write_summary_accepts_incomplete_attempts_after_chunk_exhaustion(self) -> None:
+        """A terminal chunk may publish fewer than k trials with exhaustion metadata."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs"
+            trial_dir = results_dir / "run-1" / "task-a__abc123"
+            trial_dir.mkdir(parents=True)
+            write_json(trial_dir / "result.json", {
+                **BASE_RESULT,
+                "trial_name": trial_dir.name,
+                "task_name": "terminal-bench/task-a",
+                "outcome": "error",
+                "error_category": "infra",
+                "error_subcategory": "infra_network_error",
+            })
+            chunk_meta_dir = results_dir / "chunk-meta"
+            chunk_meta_dir.mkdir()
+            write_json(chunk_meta_dir / "chunk-0.json", {
+                "chunk_index": 0,
+                "chunk_attempt": 3,
+                "exit_code": 0,
+                "needs_retry": ["task-a"],
+            })
+
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir),
+                "parameters": {
+                    "selected_tasks": ["task-a"],
+                    "attempts": "2",
+                },
+            })
+
+            output_path = tmp_path / "summary.json"
+            with contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                rc = summarize_results.write_summary(
+                    metadata_path,
+                    output_path,
+                    results_dir_override=results_dir,
+                )
+
+            self.assertEqual(rc, 0)
+            summary = json.loads(output_path.read_text())
+            self.assertEqual(summary["chunks_exhausted_retries"], ["chunk-0"])
+
+    def test_write_summary_records_no_verdict_for_exhausted_task_without_trial(self) -> None:
+        """Exhaustion metadata makes a never-produced trial an explicit unknown."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs"
+            chunk_meta_dir = results_dir / "chunk-meta"
+            chunk_meta_dir.mkdir(parents=True)
+            write_json(chunk_meta_dir / "chunk-0.json", {
+                "chunk_index": 0,
+                "chunk_attempt": 3,
+                "exit_code": 0,
+                "needs_retry": ["task-a"],
+            })
+
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir),
+                "parameters": {
+                    "selected_tasks": ["task-a"],
+                    "attempts": "2",
+                },
+            })
+
+            output_path = tmp_path / "summary.json"
+            with contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                rc = summarize_results.write_summary(
+                    metadata_path,
+                    output_path,
+                    results_dir_override=results_dir,
+                )
+
+            self.assertEqual(rc, 0)
+            summary = json.loads(output_path.read_text())
+            self.assertEqual(summary["totals"]["tasks"]["no_verdict"], 1)
 
 
 class WriteSummarySweBenchProTaskNamesTest(unittest.TestCase):
@@ -706,6 +902,15 @@ class TestWriteSummaryAllErroredTasks(unittest.TestCase):
             sessions_dir = trial_dir / "agent" / "sessions"
             sessions_dir.mkdir(parents=True)
             (sessions_dir / "main.jsonl").write_text("\n", encoding="utf-8")
+            chunk_meta_dir = results_dir / "chunk-meta"
+            chunk_meta_dir.mkdir()
+            write_json(chunk_meta_dir / "chunk-0.json", {
+                "chunk_index": 0,
+                "chunk_attempt": 3,
+                "exit_code": 0,
+                "needs_retry": ["errored-task"],
+                "exhausted": True,
+            })
 
             metadata_path = tmp_path / "run-metadata.json"
             write_json(metadata_path, {

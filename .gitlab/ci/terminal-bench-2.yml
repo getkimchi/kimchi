@@ -97,8 +97,15 @@ setup-image:
     RUN_ID: "gitlab-p$CI_PIPELINE_ID"
     BENCH_CHUNK_INDEX: "$CHUNK"
     BENCH_CHUNK_COUNT: 3
+    # Keep in sync with the `retry: 2` above — chunk_runner treats a chunk as
+    # retry-budget-exhausted once chunk_attempt reaches 1 + BENCH_JOB_MAX_RETRIES,
+    # so both values must describe the same number of GitLab retries.
     BENCH_JOB_MAX_RETRIES: 2
     BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
+    BENCH_TRIAL_CHECKPOINTS: "$[[ inputs.trial_checkpoints ]]"
+    # BENCH_CHECKPOINT_BUCKET is a CI/CD variable (project settings), not a
+    # pipeline input, so it is injected automatically into all jobs.
+    BENCH_JOB_TIMEOUT_SECONDS: "43200"  # 12h — soft deadline is 96% of this
     BENCH_LLM_TEMPERATURE: "$[[ inputs.temperature ]]"
     BENCH_LLM_TOP_P: "$[[ inputs.top_p ]]"
     BENCH_LLM_TOP_K: "$[[ inputs.top_k ]]"
@@ -170,19 +177,24 @@ $[[ inputs.benchmark ]]-chunks:
 
 $[[ inputs.benchmark ]]-summary:
   stage: postprocess
+  needs:
+    - job: $[[ inputs.benchmark ]]-chunks
+      artifacts: true
   rules:
     - if: '$SUMMARY_ONLY == "true" || $TB21_RETRY_TRIGGER == "true" || $TB21_RETRY_SCHEDULE == "true"'
       when: never
     - when: always
   image: mirror.gcr.io/library/node:22-bookworm
-  needs:
-    - job: $[[ inputs.benchmark ]]-chunks
-      artifacts: true
   variables:
     <<: *gcp-auth-vars
+    BENCHMARK_NAME: $[[ inputs.benchmark ]]
     BENCHMARK_RESULTS_DIR: benchmark/$[[ inputs.benchmark ]]/jobs
     BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
     BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
+    BENCH_TRIAL_CHECKPOINTS: "$[[ inputs.trial_checkpoints ]]"
+    # BENCH_CHECKPOINT_BUCKET is a CI/CD variable (project settings), not a
+    # pipeline input, so it is injected automatically into all jobs.
+    BENCH_CHUNK_COUNT: "3"
     DEBIAN_FRONTEND: noninteractive
     FF_TIMESTAMPS: "true"
     GCS_UPLOAD_REQUIRED: "true"
@@ -190,6 +202,7 @@ $[[ inputs.benchmark ]]-summary:
     - !reference [.auth-gcp-script]
     - !reference [.gcloud-setup, script]
   script:
+    - python3 benchmark/scripts/gitlab/prepare_summary.py
     - python3 benchmark/scripts/gitlab/summarize_results.py
     - python3 benchmark/scripts/gitlab/upload_gcs.py
     - python3 benchmark/scripts/gitlab/upload_summary_gcs.py
@@ -200,6 +213,7 @@ $[[ inputs.benchmark ]]-summary:
     paths:
       - .benchmark/run-metadata.json
       - .benchmark/summary.json
+      - .benchmark-upload/jobs.tar.gz
 
 $[[ inputs.benchmark ]]-analyze:
   stage: postprocess
@@ -216,8 +230,6 @@ $[[ inputs.benchmark ]]-analyze:
   needs:
     - job: setup-image
       artifacts: true
-    - job: $[[ inputs.benchmark ]]-chunks
-      artifacts: true
     - job: $[[ inputs.benchmark ]]-summary
       artifacts: true
   timeout: 3h 30min
@@ -229,6 +241,8 @@ $[[ inputs.benchmark ]]-analyze:
     KIMCHI_ANALYSIS_MAX_RETRIES: "2"
     KIMCHI_ANALYSIS_TIMEOUT_SECONDS: "3600"
   script:
+    - mkdir -p benchmark/$[[ inputs.benchmark ]]
+    - tar -xzf .benchmark-upload/jobs.tar.gz -C benchmark/$[[ inputs.benchmark ]]
     - python3 benchmark/scripts/gitlab/analyze_sessions.py
   artifacts:
     when: always
@@ -277,8 +291,6 @@ $[[ inputs.benchmark ]]-analyze-timeouts:
   needs:
     - job: setup-image
       artifacts: true
-    - job: $[[ inputs.benchmark ]]-chunks
-      artifacts: true
     - job: $[[ inputs.benchmark ]]-summary
       artifacts: true
   timeout: 2h
@@ -290,6 +302,8 @@ $[[ inputs.benchmark ]]-analyze-timeouts:
     KIMCHI_ANALYSIS_MAX_RETRIES: "2"
     KIMCHI_ANALYSIS_TIMEOUT_SECONDS: "5400"
   script:
+    - mkdir -p benchmark/$[[ inputs.benchmark ]]
+    - tar -xzf .benchmark-upload/jobs.tar.gz -C benchmark/$[[ inputs.benchmark ]]
     - python3 benchmark/scripts/gitlab/analyze_timeouts.py
   artifacts:
     when: always

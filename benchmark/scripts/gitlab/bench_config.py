@@ -136,6 +136,38 @@ DEFAULT_BENCH_TIMEOUT_MULTIPLIER = "1.0"
 ENV_BENCH_HEARTBEAT_INTERVAL_SECONDS = "BENCH_HEARTBEAT_INTERVAL_SECONDS"
 DEFAULT_BENCH_HEARTBEAT_INTERVAL_SECONDS = "60"
 
+# --- Durable checkpointing (per-trial GCS checkpoints) ---
+# When true, completed trials are uploaded to GCS as they finish and restored
+# at chunk startup, so a killed chunk loses no durable trial (Phase 1-7).
+ENV_BENCH_TRIAL_CHECKPOINTS = "BENCH_TRIAL_CHECKPOINTS"
+DEFAULT_BENCH_TRIAL_CHECKPOINTS = "false"
+
+# GCS bucket used exclusively for per-trial checkpoints. Distinct from the
+# final results bucket so checkpoint writes can never collide with the
+# published jobs.tar.gz namespace. Set as a CI/CD variable in GitLab project
+# settings (not a pipeline input) so it is shared across all benchmark pipelines.
+ENV_BENCH_CHECKPOINT_BUCKET = "BENCH_CHECKPOINT_BUCKET"
+DEFAULT_BENCH_CHECKPOINT_BUCKET = ""
+
+# GitLab job timeout in seconds. The soft deadline is computed as a fraction of
+# this value, leaving the remainder for checkpoint drain before GitLab's hard
+# kill. Set per benchmark in the CI YAML (12h for terminal-bench, 24h for
+# swe-bench-pro).
+ENV_BENCH_JOB_TIMEOUT_SECONDS = "BENCH_JOB_TIMEOUT_SECONDS"
+DEFAULT_BENCH_JOB_TIMEOUT_SECONDS = "43200"  # 12h (terminal-bench-2)
+
+# The soft deadline fires at this fraction of the job timeout, leaving the
+# remainder for the checkpoint drain cascade (SIGINT → SIGTERM → SIGKILL).
+# 0.96 of 12h = ~11h31m, leaving ~29 min for drain (default grace: 5 min).
+CHECKPOINT_SOFT_DEADLINE_RATIO = 0.96
+
+# Retry budget for a single checkpoint object. A code constant, not
+# configurable via env: the value is tuned for GCS transient-failure rates and
+# should only change with a deliberate code review. Failure after this many
+# attempts is an infrastructure failure that stops unprotected benchmark
+# spending (Phase 3 failure policy).
+CHECKPOINT_UPLOAD_RETRIES = 5
+
 # --- Task selection ---
 ENV_SELECTED_TASKS_JSON = "SELECTED_TASKS_JSON"
 DEFAULT_SELECTED_TASKS_JSON = "[]"
@@ -147,6 +179,49 @@ DEFAULT_BENCH_TASKS_ALL = "false"
 ENV_BENCH_RETRY_AGENT_TIMEOUT = "BENCH_RETRY_AGENT_TIMEOUT"
 DEFAULT_BENCH_RETRY_AGENT_TIMEOUT = False
 NON_RETRYABLE_INFRA_SUBCATEGORIES = frozenset({"api_key_budget_exceeded"})
+
+
+def checkpoints_enabled() -> bool:
+    """Return True when per-trial GCS checkpointing is active for this run.
+
+    Reads $BENCH_TRIAL_CHECKPOINTS at call time so test fixtures can override it.
+    """
+    raw = os.environ.get(ENV_BENCH_TRIAL_CHECKPOINTS, DEFAULT_BENCH_TRIAL_CHECKPOINTS).strip().lower()
+    return raw in ("true", "1", "yes")
+
+
+def checkpoint_bucket() -> str:
+    """Return the GCS bucket used for per-trial checkpoints (empty if unset)."""
+    return os.environ.get(ENV_BENCH_CHECKPOINT_BUCKET, DEFAULT_BENCH_CHECKPOINT_BUCKET)
+
+
+def checkpoint_soft_deadline_seconds() -> int:
+    """Return the soft chunk deadline, computed from the GitLab job timeout.
+
+    The deadline is ``BENCH_JOB_TIMEOUT_SECONDS * CHECKPOINT_SOFT_DEADLINE_RATIO``,
+    leaving the remainder for the checkpoint drain cascade before GitLab's
+    hard kill.
+    """
+    raw = os.environ.get(
+        ENV_BENCH_JOB_TIMEOUT_SECONDS,
+        DEFAULT_BENCH_JOB_TIMEOUT_SECONDS,
+    )
+    try:
+        job_timeout = int(float(raw))
+    except ValueError:
+        raise ValueError(
+            f"{ENV_BENCH_JOB_TIMEOUT_SECONDS}={raw!r} is not a valid integer"
+        ) from None
+    if job_timeout <= 0:
+        raise ValueError(
+            f"{ENV_BENCH_JOB_TIMEOUT_SECONDS}={job_timeout} must be a positive integer"
+        )
+    return int(job_timeout * CHECKPOINT_SOFT_DEADLINE_RATIO)
+
+
+def checkpoint_upload_retries() -> int:
+    """Return the fixed retry budget for a single checkpoint upload."""
+    return CHECKPOINT_UPLOAD_RETRIES
 
 
 def should_retry_agent_timeout() -> bool:

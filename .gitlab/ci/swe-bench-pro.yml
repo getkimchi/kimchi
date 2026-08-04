@@ -97,8 +97,16 @@ setup-image:
     RUN_ID: "gitlab-p$CI_PIPELINE_ID"
     BENCH_CHUNK_INDEX: "$CHUNK"
     BENCH_CHUNK_COUNT: 5
+    # Keep in sync with the `retry: 2` above — chunk_runner treats a chunk as
+    # retry-budget-exhausted once chunk_attempt reaches 1 + BENCH_JOB_MAX_RETRIES,
+    # so both values must describe the same number of GitLab retries.
     BENCH_JOB_MAX_RETRIES: 2
     BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
+    # Checkpointing is not supported for SWE-bench Pro yet. Hardcode false here
+    # (ignoring the shared input, which now defaults to true) so default runs
+    # don't fail chunk_runner's explicit rejection of BENCH_TRIAL_CHECKPOINTS=true
+    # for this benchmark.
+    BENCH_TRIAL_CHECKPOINTS: "false"
     BENCH_LLM_TEMPERATURE: "$[[ inputs.temperature ]]"
     BENCH_LLM_TOP_P: "$[[ inputs.top_p ]]"
     BENCH_LLM_TOP_K: "$[[ inputs.top_k ]]"
