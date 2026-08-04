@@ -252,6 +252,9 @@ export class KimchiAcpAgent implements Agent {
 		for (const s of piSessions) {
 			if (seen.has(s.id)) continue
 			seen.add(s.id)
+			// Skip subagent sessions: pi marks forked sessions with parentSessionPath
+			// so delegated Agent runs don't clutter the user's session list.
+			if (s.parentSessionPath) continue
 			sessions.push(toAcpSessionInfo(s))
 		}
 		// Sort newest-first by updatedAt so Zed's picker surfaces recent threads

@@ -4080,6 +4080,22 @@ describe("KimchiAcpAgent listSessions", () => {
 		const res = await agent.listSessions({ cwd: "/p" } as never)
 		expect(res.sessions[0].title).toBe(`${"z".repeat(80)}…`)
 	})
+
+	it("excludes subagent sessions that have a parentSessionPath", async () => {
+		const userSession = makePiSession({
+			id: "user-session",
+			name: "User session",
+			parentSessionPath: undefined,
+		})
+		const subagentSession = makePiSession({
+			id: "subagent-session",
+			name: "Subagent session",
+			parentSessionPath: "/tmp/sessions/parent.jsonl",
+		})
+		const agent = makeAgent(async () => [userSession, subagentSession])
+		const res = await agent.listSessions({ cwd: "/p" } as never)
+		expect(res.sessions.map((s) => s.sessionId)).toEqual(["user-session"])
+	})
 })
 
 // Helpers for replay tests: build the SessionMessageEntry shape that
