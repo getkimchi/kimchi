@@ -805,6 +805,14 @@ describe("refreshBillingStatusFromConfig coordinator", () => {
 		configureBillingCreditsApi({ apiKey: "api-key", llmEndpoint: "https://llm.kimchi.dev/openai/v1" })
 	}
 
+	/** Mock loadConfig that returns the same credentials configureWithKey sets,
+	 * so refreshBillingStatusFromConfig doesn't overwrite them via the real
+	 * loadConfig() (which returns empty in CI where no config file exists). */
+	const mockLoadConfig = () => ({
+		apiKey: "api-key",
+		llmEndpoint: "https://llm.kimchi.dev/openai/v1",
+	})
+
 	function fetchImplReturning(remaining: string) {
 		return ((_input: RequestInfo | URL) =>
 			Promise.resolve(
@@ -831,9 +839,9 @@ describe("refreshBillingStatusFromConfig coordinator", () => {
 			)
 		}) as typeof fetch
 
-		const first = refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+		const first = refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "automatic" })
 		// Start a second refresh before the first's fetch microtask runs.
-		const second = refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+		const second = refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "automatic" })
 
 		await expect(first).resolves.toMatchObject({ remainingCredits: 5 })
 		await expect(second).resolves.toMatchObject({ remainingCredits: 5 })
@@ -879,10 +887,10 @@ describe("refreshBillingStatusFromConfig coordinator", () => {
 			)
 		}) as typeof fetch
 
-		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "automatic" })
 
 		vi.advanceTimersByTime(1_000)
-		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "forced" })
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "forced" })
 
 		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(2)
 	})
@@ -897,10 +905,10 @@ describe("refreshBillingStatusFromConfig coordinator", () => {
 			)
 		}) as typeof fetch
 
-		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "automatic" })
 
 		vi.advanceTimersByTime(AUTOMATIC_REFRESH_MIN_INTERVAL_MS)
-		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "automatic" })
 
 		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(2)
 	})
@@ -917,9 +925,9 @@ describe("refreshBillingStatusFromConfig coordinator", () => {
 
 		// A forced refresh (startup, login) must not set the automatic TTL —
 		// otherwise the first post-completion automatic refresh is throttled.
-		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "forced" })
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "forced" })
 		vi.advanceTimersByTime(1_000)
-		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "automatic" })
 
 		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(2)
 	})
@@ -929,7 +937,9 @@ describe("refreshBillingStatusFromConfig coordinator", () => {
 		const fetchImpl = ((_input: RequestInfo | URL) =>
 			Promise.resolve(new Response("nope", { status: 500 }))) as typeof fetch
 
-		await expect(refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })).resolves.toBeUndefined()
+		await expect(
+			refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "automatic" }),
+		).resolves.toBeUndefined()
 		expect(getBillingStatus()).toBeUndefined()
 	})
 
@@ -937,7 +947,7 @@ describe("refreshBillingStatusFromConfig coordinator", () => {
 		configureWithKey()
 		const fetchImpl = fetchImplReturning("5")
 
-		await refreshBillingStatusFromConfig({ fetch: fetchImpl })
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig })
 		expect(getBillingStatus()).toMatchObject({ remainingCredits: 5 })
 	})
 
