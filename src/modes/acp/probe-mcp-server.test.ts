@@ -3,7 +3,7 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
 import type { ProbeResult, ServerEntry } from "../../extensions/mcp-adapter/types.js"
-import { AVAILABLE_METHODS } from "./capabilities.js"
+import { AVAILABLE_EXT_METHODS } from "./capabilities.js"
 import { type AcpSessionFactory, KimchiAcpAgent } from "./server.js"
 
 // Mock the auth flow and auth store so tests don't touch real disk state.
@@ -89,7 +89,7 @@ describe("KimchiAcpAgent extMethod probe_mcp_server", () => {
 		const manager = makeFakeMcpServerManager(probeResult)
 		const agent = makeAgent(manager)
 
-		const result = await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, {
 			server: serverEntry,
 			serverName: "test-server",
 		})
@@ -108,7 +108,7 @@ describe("KimchiAcpAgent extMethod probe_mcp_server", () => {
 		const manager = makeFakeMcpServerManager(probeResult)
 		const agent = makeAgent(manager)
 
-		const result = (await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
+		const result = (await agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, {
 			server: serverEntry,
 		})) as unknown as ProbeResult
 
@@ -128,7 +128,7 @@ describe("KimchiAcpAgent extMethod probe_mcp_server", () => {
 		const manager = makeFakeMcpServerManager(probeResult)
 		const agent = makeAgent(manager)
 
-		const result = (await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
+		const result = (await agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, {
 			server: serverEntry,
 		})) as unknown as ProbeResult
 
@@ -144,7 +144,7 @@ describe("KimchiAcpAgent extMethod probe_mcp_server", () => {
 
 	it("throws invalidParams when server parameter is missing", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))
-		await expect(agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {})).rejects.toMatchObject({ code: -32602 })
+		await expect(agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, {})).rejects.toMatchObject({ code: -32602 })
 	})
 
 	it("throws invalidParams when mcpServerManager is not configured", async () => {
@@ -157,7 +157,7 @@ describe("KimchiAcpAgent extMethod probe_mcp_server", () => {
 			sessionFactory,
 		})
 		await expect(
-			agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: { command: "echo" } }),
+			agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, { server: { command: "echo" } }),
 		).rejects.toMatchObject({ code: -32602 })
 	})
 
@@ -167,7 +167,7 @@ describe("KimchiAcpAgent extMethod probe_mcp_server", () => {
 		const manager = makeFakeMcpServerManager(probeResult)
 		const agent = makeAgent(manager)
 
-		await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
+		await agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, {
 			server: serverEntry,
 		})
 
@@ -192,7 +192,7 @@ describe("KimchiAcpAgent extMethod probe_mcp_server OAuth", () => {
 		vi.mocked(authenticate).mockResolvedValue("authenticated" as never)
 
 		const agent = makeAgent(manager)
-		const result = await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, {
 			server: serverEntry,
 			serverName: "my-server",
 		})
@@ -211,7 +211,7 @@ describe("KimchiAcpAgent extMethod probe_mcp_server OAuth", () => {
 		vi.mocked(getAuthStatus).mockResolvedValue("authenticated")
 
 		const agent = makeAgent(manager)
-		const result = await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, {
 			server: serverEntry,
 			serverName: "my-server",
 		})
@@ -229,7 +229,7 @@ describe("KimchiAcpAgent extMethod probe_mcp_server OAuth", () => {
 		vi.mocked(authenticate).mockRejectedValue(new Error("Browser failed to open"))
 
 		const agent = makeAgent(manager)
-		const result = await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, {
 			server: serverEntry,
 			serverName: "my-server",
 		})
@@ -246,7 +246,7 @@ describe("KimchiAcpAgent extMethod probe_mcp_server OAuth", () => {
 		vi.mocked(supportsOAuth).mockReturnValue(true)
 
 		const agent = makeAgent(manager)
-		const result = await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, {
 			server: serverEntry,
 		})
 
@@ -260,21 +260,21 @@ describe("KimchiAcpAgent extMethod probe_mcp_server validation", () => {
 	it("rejects non-object server param", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))
 		await expect(
-			agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: "not-an-object" }),
+			agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, { server: "not-an-object" }),
 		).rejects.toMatchObject({
 			code: -32602,
 		})
-		await expect(agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: null })).rejects.toMatchObject({
+		await expect(agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, { server: null })).rejects.toMatchObject({
 			code: -32602,
 		})
-		await expect(agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: [] })).rejects.toMatchObject({
+		await expect(agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, { server: [] })).rejects.toMatchObject({
 			code: -32602,
 		})
 	})
 
 	it("rejects server without command or url", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))
-		await expect(agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: {} })).rejects.toMatchObject({
+		await expect(agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, { server: {} })).rejects.toMatchObject({
 			code: -32602,
 		})
 	})
@@ -282,28 +282,28 @@ describe("KimchiAcpAgent extMethod probe_mcp_server validation", () => {
 	it("rejects non-string command", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))
 		await expect(
-			agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: { command: 123 } }),
+			agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, { server: { command: 123 } }),
 		).rejects.toMatchObject({ code: -32602 })
 	})
 
 	it("rejects non-array args", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))
 		await expect(
-			agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: { command: "echo", args: "not-array" } }),
+			agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, { server: { command: "echo", args: "not-array" } }),
 		).rejects.toMatchObject({ code: -32602 })
 	})
 
 	it("rejects non-string elements in args", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))
 		await expect(
-			agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: { command: "echo", args: ["ok", 42] } }),
+			agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, { server: { command: "echo", args: ["ok", 42] } }),
 		).rejects.toMatchObject({ code: -32602 })
 	})
 
 	it("rejects env with non-string values", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))
 		await expect(
-			agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: { command: "echo", env: { KEY: 123 } } }),
+			agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, { server: { command: "echo", env: { KEY: 123 } } }),
 		).rejects.toMatchObject({ code: -32602 })
 	})
 
@@ -311,7 +311,7 @@ describe("KimchiAcpAgent extMethod probe_mcp_server validation", () => {
 		const probeResult: ProbeResult = { tools: [{ name: "tool1" }], needsAuth: false, error: null }
 		const manager = makeFakeMcpServerManager(probeResult)
 		const agent = makeAgent(manager)
-		const result = await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, {
 			server: { command: "echo", args: ["hello"], env: { FOO: "bar" } },
 		})
 		expect(result).toEqual(probeResult)
@@ -321,7 +321,7 @@ describe("KimchiAcpAgent extMethod probe_mcp_server validation", () => {
 		const probeResult: ProbeResult = { tools: [{ name: "tool1" }], needsAuth: false, error: null }
 		const manager = makeFakeMcpServerManager(probeResult)
 		const agent = makeAgent(manager)
-		const result = await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, {
 			server: { url: "https://mcp.example.com/sse" },
 		})
 		expect(result).toEqual(probeResult)

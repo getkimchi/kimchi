@@ -82,9 +82,10 @@ import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
-import { ADVERTISED_CAPABILITIES, AVAILABLE_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
+import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { AVAILABLE_COMMANDS } from "./commands.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
+import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 
@@ -651,8 +652,10 @@ export class KimchiAcpAgent implements Agent {
 
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
 		switch (method) {
-			case AVAILABLE_METHODS.probe_mcp_server:
+			case AVAILABLE_EXT_METHODS.probe_mcp_server:
 				return handleProbeMcpServer(this.mcpServerManager, params) as unknown as Record<string, unknown>
+			case AVAILABLE_EXT_METHODS.set_session_title:
+				return handleSetSessionTitle((sessionId) => this.sessions.get(sessionId)?.session, params)
 			default:
 				throw RequestError.methodNotFound(method)
 		}
