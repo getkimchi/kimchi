@@ -276,7 +276,13 @@ THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhigh",
 # Agents that accept the --thinking CLI flag (kimchi and pi families).
 # opencode wraps an external tool that does not use pi-ai's thinking-level
 # mechanism, so the level is dropped for it.
-_THINKING_CAPABLE_AGENTS = frozenset({DEFAULT_CODING_AGENT, "pi", WORKFLOW_CODING_AGENT, PI_WORKFLOW_CODING_AGENT})
+PI_CODING_AGENT = "pi"
+# Agents hosted by upstream pi. PiWorkflowAgent subclasses PiKimchi, so both
+# take --thinking through the same CliFlag.
+PI_THINKING_AGENTS = frozenset({PI_CODING_AGENT, PI_WORKFLOW_CODING_AGENT})
+_THINKING_CAPABLE_AGENTS = frozenset(
+    {DEFAULT_CODING_AGENT, WORKFLOW_CODING_AGENT, *PI_THINKING_AGENTS}
+)
 
 # Claude Code spells the same idea as reasoning effort: `--effort <level>`,
 # accepting low/medium/high/xhigh/max. CLI 2.1.x has no flag to disable

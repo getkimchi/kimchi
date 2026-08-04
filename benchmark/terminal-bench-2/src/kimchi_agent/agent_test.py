@@ -732,11 +732,12 @@ async def test_kimchi_dev_model_does_not_write_openrouter_config(tmp_path: Path)
 
 
 def test_is_openrouter_model_detects_prefixed_names() -> None:
-    from kimchi_agent.agent import _is_openrouter_model
+    # Shared by the kimchi, claude-code and pi adapters.
+    from kimchi_agent.openrouter import is_openrouter_model
 
-    assert _is_openrouter_model("openrouter/z-ai/glm-5.2") is True
-    assert _is_openrouter_model("openrouter/anthropic/claude-opus-5-fast") is True
-    assert _is_openrouter_model("kimchi-dev/kimi-k2.6") is False
-    assert _is_openrouter_model("multi-model") is False
-    assert _is_openrouter_model(None) is False
-    assert _is_openrouter_model("") is False
+    assert is_openrouter_model("openrouter/z-ai/glm-5.2") is True
+    assert is_openrouter_model("openrouter/anthropic/claude-opus-5-fast") is True
+    assert is_openrouter_model("kimchi-dev/kimi-k2.6") is False
+    assert is_openrouter_model("multi-model") is False
+    assert is_openrouter_model(None) is False
+    assert is_openrouter_model("") is False

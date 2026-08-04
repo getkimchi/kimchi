@@ -16,6 +16,7 @@ startup.
 """
 
 import asyncio
+import json
 import os
 import shlex
 import subprocess
@@ -41,6 +42,13 @@ from kimchi_agent.git_install import (
     git_init_and_commit_baseline_command,
 )
 from kimchi_agent.messages import SessionEntry
+from kimchi_agent.openrouter import (
+    OPENROUTER_API_KEY_ENV,
+    OPENROUTER_ENDPOINT_ENV,
+    OPENROUTER_PROVIDER,
+    build_openrouter_models_config,
+    is_openrouter_model,
+)
 
 if TYPE_CHECKING:
     from harbor.environments.base import BaseEnvironment
@@ -56,6 +64,10 @@ CONTAINER_AGENT_PGID_FILE = f"{CONTAINER_LOGS_DIR}/pi-agent.pgid"
 # PI_CODING_AGENT_DIR is read by pi (ENV_AGENT_DIR in pi's config.ts).
 CONTAINER_PI_AGENT_DIR = f"{CONTAINER_LOGS_DIR}/pi-agent"
 CONTAINER_PI_EXTENSIONS_DIR = f"{CONTAINER_PI_AGENT_DIR}/extensions"
+# pi reads custom providers/models from <agentDir>/models.json (config.ts
+# getModelsPath). Entries merge over pi's bundled catalog rather than replacing
+# it, so declaring one model leaves the built-ins intact.
+CONTAINER_PI_MODELS_JSON = f"{CONTAINER_PI_AGENT_DIR}/models.json"
 
 # The pi-kimchi-provider extension source is staged to /tmp and installed
 # (npm install --production) + copied into the auto-discovery directory at
@@ -121,6 +133,12 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
     gateway, and routes chat completions through the OpenAI-compatible endpoint.
     No ``/login`` is needed in benchmark mode: ``KIMCHI_API_KEY`` is read from
     the environment at startup.
+
+    ``openrouter/*`` models skip that extension entirely: upstream pi ships an
+    ``openrouter`` provider and resolves ``OPENROUTER_API_KEY`` from the
+    environment. A generated ``models.json`` still declares the selected model
+    so limits come from OpenRouter's live catalog — see
+    :meth:`_openrouter_models_command` for why that is not optional.
     """
 
     CLI_FLAGS: ClassVar[list[CliFlag]] = [
@@ -128,7 +146,9 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
             "thinking",
             cli="--thinking",
             type="enum",
-            choices=["off", "minimal", "low", "medium", "high", "xhigh"],
+            # Mirrors `pi --thinking` (off..max). 'max' was missing here, so a
+            # max run failed enum coercion before pi was ever launched.
+            choices=["off", "minimal", "low", "medium", "high", "xhigh", "max"],
         ),
         CliFlag("tools", cli="--tools", type="str"),
     ]
@@ -148,7 +168,10 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
         return AgentInfo(
             name=self.name(),
             version=self.version() or "unknown",
-            model_info=ModelInfo(name=self.model_name or "unknown", provider="kimchi"),
+            model_info=ModelInfo(
+                name=self.model_name or "unknown",
+                provider=OPENROUTER_PROVIDER if is_openrouter_model(self.model_name) else "kimchi",
+            ),
         )
 
     def _path_setup(self) -> str:
@@ -356,17 +379,30 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
-        # Validate the model is kimchi-dev/<id> before doing any container work.
-        self._split_model(self.model_name)
-
-        api_key = self._required_kimchi_api_key()
+        # Resolve routing before any container work so a bad model or missing
+        # key fails in seconds rather than after the install.
+        if is_openrouter_model(self.model_name):
+            api_key = self._required_openrouter_api_key()
+            key_env = {OPENROUTER_API_KEY_ENV: api_key}
+            # Raises if the model (or the model a preset wraps) is not offered
+            # by OpenRouter.
+            openrouter_models_config = await build_openrouter_models_config(
+                self.model_name.split("/", 1)[1],
+                api_key=api_key,
+                endpoint=self._get_env(OPENROUTER_ENDPOINT_ENV),
+                include_api_key=False,
+            )
+        else:
+            self._split_model(self.model_name)
+            key_env = {KIMCHI_API_KEY_ENV: self._required_kimchi_api_key()}
+            openrouter_models_config = None
 
         cli_flags = self.build_cli_flags()
         if cli_flags:
             cli_flags += " "
 
         env = {
-            KIMCHI_API_KEY_ENV: api_key,
+            **key_env,
             # Point pi's agent dir at /logs/agent/pi-agent so session JSONL
             # files land where populate_context_post_run can read them.
             "PI_CODING_AGENT_DIR": CONTAINER_PI_AGENT_DIR,
@@ -376,7 +412,11 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
         try:
             await self.exec_as_agent(
                 environment,
-                command=self._pi_launch_command(instruction, cli_flags),
+                command=self._pi_launch_command(
+                    instruction,
+                    cli_flags,
+                    openrouter_models_config=openrouter_models_config,
+                ),
                 env=env,
             )
         except asyncio.CancelledError:
@@ -405,7 +445,45 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
         """Extra env for the pi process."""
         return {}
 
-    def _pi_launch_command(self, instruction: str, cli_flags: str) -> str:
+    def _required_openrouter_api_key(self) -> str:
+        api_key = self._get_env(OPENROUTER_API_KEY_ENV)
+        if not api_key:
+            raise ValueError(
+                f"{OPENROUTER_API_KEY_ENV} is required for {OPENROUTER_PROVIDER}/* models. "
+                f"Export it on the host and forward it with "
+                f"`--ae {OPENROUTER_API_KEY_ENV}=${OPENROUTER_API_KEY_ENV}`."
+            )
+        return api_key
+
+    @staticmethod
+    def _openrouter_models_command(models_config: dict[str, Any]) -> str:
+        """Declare the selected OpenRouter model to pi before it starts.
+
+        Not optional, even for models in pi's bundled catalog. An id pi does not
+        know falls back to default limits, and pi then requests more output
+        tokens than the endpoint allows: OpenRouter answers 400, pi records
+        ``stopReason: error`` with empty content — and still exits 0. Harbor
+        scores that as an ordinary zero, so the run looks like a model failure
+        instead of a config one. Declaring the model keeps limits live from
+        OpenRouter's catalog and keeps the bundled entries from going stale.
+
+        The config deliberately carries no apiKey: pi maps the openrouter
+        provider to OPENROUTER_API_KEY itself, and this file is written inside
+        the bind-mounted logs dir that becomes CI artifacts.
+        """
+        models_json = json.dumps(models_config, separators=(",", ":"))
+        return (
+            f"mkdir -p {shlex.quote(CONTAINER_PI_AGENT_DIR)} && "
+            f"printf '%s\\n' {shlex.quote(models_json)} > {shlex.quote(CONTAINER_PI_MODELS_JSON)}"
+        )
+
+    def _pi_launch_command(
+        self,
+        instruction: str,
+        cli_flags: str,
+        *,
+        openrouter_models_config: dict[str, Any] | None = None,
+    ) -> str:
         runner = self._pi_command(cli_flags)
         parts = [
             # Put both install modes' binaries on PATH for every subsequent
@@ -427,6 +505,8 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
             # tree with node_modules already in it, and running npm over it
             # would need the network the bundle exists to avoid.
             parts.append(f"cd {shlex.quote(CONTAINER_EXTENSION_INSTALL_DIR)} && npm install --production")
+        if openrouter_models_config is not None:
+            parts.append(self._openrouter_models_command(openrouter_models_config))
         # Ensure a git repo exists with a committed baseline, but never clobber
         # one the task image ships with (e.g. fix-git).
         parts.append(f"cd /app && {git_init_and_commit_baseline_command()}")

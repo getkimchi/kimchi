@@ -27,6 +27,11 @@ _models_cache: dict[str, list[dict[str, Any]]] = {}
 _models_inflight: dict[str, asyncio.Task[list[dict[str, Any]]]] = {}
 
 
+def is_openrouter_model(model_name: str | None) -> bool:
+    """Whether ``model_name`` is routed via OpenRouter (``openrouter/<id>``)."""
+    return bool(model_name) and model_name.startswith(f"{OPENROUTER_PROVIDER}/")
+
+
 def resolve_openrouter_endpoint(endpoint: str | None) -> str:
     if endpoint and endpoint.strip():
         return endpoint.strip().rstrip("/")
@@ -278,7 +283,15 @@ async def build_openrouter_models_config(
     *,
     api_key: str | None = None,
     endpoint: str | None = None,
+    include_api_key: bool = True,
 ) -> dict[str, Any]:
+    """Provider block declaring ``model_id`` to a pi-ai-based agent.
+
+    ``include_api_key=False`` omits the ``apiKey`` field for agents that resolve
+    the key from ``OPENROUTER_API_KEY`` themselves (upstream pi maps provider
+    ids to env vars). Prefer it wherever the config is written somewhere that
+    ends up in run artifacts — an omitted key cannot leak from them.
+    """
     resolved_endpoint = resolve_openrouter_endpoint(endpoint)
     # Preset and variant ids are not catalogued, so pricing and limits come from
     # the model they wrap — but the agent must still request the id as given, or
@@ -289,17 +302,16 @@ async def build_openrouter_models_config(
     metadata = await fetch_openrouter_model(catalogue_id, endpoint=resolved_endpoint)
     model_config = {**_model_config(metadata), "id": model_id}
 
-    return {
-        "providers": {
-            OPENROUTER_PROVIDER: {
-                "api": "openai-completions",
-                "baseUrl": resolved_endpoint,
-                "apiKey": f"${OPENROUTER_API_KEY_ENV}",
-                "authHeader": True,
-                "models": [model_config],
-            }
-        }
+    provider: dict[str, Any] = {
+        "api": "openai-completions",
+        "baseUrl": resolved_endpoint,
+        "authHeader": True,
+        "models": [model_config],
     }
+    if include_api_key:
+        provider["apiKey"] = f"${OPENROUTER_API_KEY_ENV}"
+
+    return {"providers": {OPENROUTER_PROVIDER: provider}}
 
 
 def clear_openrouter_models_cache() -> None:

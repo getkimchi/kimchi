@@ -27,8 +27,8 @@ from kimchi_agent.messages import SessionEntry
 from kimchi_agent.openrouter import (
     OPENROUTER_API_KEY_ENV,
     OPENROUTER_ENDPOINT_ENV,
-    OPENROUTER_PROVIDER,
     build_openrouter_models_config,
+    is_openrouter_model,
 )
 from kimchi_agent.release import BINARY_RELPATH, SHARE_RELPATH, GitHubClient
 
@@ -124,11 +124,6 @@ def _validate_model_name(model_name: str | None) -> None:
         raise ValueError(
             f"--model must be qualified as <provider>/<id> (got {model_name!r}); use e.g. kimchi-dev/kimi-k2.7"
         )
-
-
-def _is_openrouter_model(model_name: str | None) -> bool:
-    """Return True when the selected model is routed via OpenRouter."""
-    return bool(model_name) and model_name.startswith(f"{OPENROUTER_PROVIDER}/")
 
 
 def _resolve_infra_breaker_threshold(value: str | None) -> str:
@@ -366,7 +361,7 @@ class Kimchi(BaseInstalledAgent):
             # OpenRouter models are validated against OpenRouter's /api/v1/models
             # endpoint at launch time, not against the Kimchi LLM gateway — so
             # skip the gateway metadata fetch here.
-            self._is_openrouter = _is_openrouter_model(self.model_name)
+            self._is_openrouter = is_openrouter_model(self.model_name)
         else:
             self._is_openrouter = False
 

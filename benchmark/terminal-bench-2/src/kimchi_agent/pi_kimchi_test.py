@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import ClassVar
+from unittest.mock import AsyncMock, patch
 
 from harbor.models.agent.context import AgentContext
 
@@ -19,6 +20,7 @@ from kimchi_agent.pi_kimchi import (
     CONTAINER_EXTENSION_STAGE_DIR,
     CONTAINER_MAIN_SESSION,
     CONTAINER_PI_AGENT_DIR,
+    CONTAINER_PI_MODELS_JSON,
     CONTAINER_SESSIONS_DIR,
     PI_BUNDLE_DIR_ENV,
     PiKimchi,
@@ -475,3 +477,123 @@ class PiKimchiBundleTest(unittest.IsolatedAsyncioTestCase):
 
         package_command = next(c for c in agent.root_commands if "apt-get" in c)
         self.assertNotIn("|| echo", package_command)
+
+
+class PiKimchiOpenRouterTest(unittest.IsolatedAsyncioTestCase):
+    """openrouter/* models bypass the Kimchi gateway and the kimchi-dev provider."""
+
+    OPENROUTER_CONFIG: ClassVar[dict[str, object]] = {
+        "providers": {
+            "openrouter": {
+                "api": "openai-completions",
+                "baseUrl": "https://openrouter.ai/api/v1",
+                "authHeader": True,
+                "models": [{"id": "@preset/glm-5-1-zai", "contextWindow": 204800, "maxTokens": 128000}],
+            }
+        }
+    }
+
+    def setUp(self) -> None:
+        self._env_patch = patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"})
+        self._env_patch.start()
+        os.environ.pop("KIMCHI_API_KEY", None)
+
+    def tearDown(self) -> None:
+        self._env_patch.stop()
+
+    async def _run_agent(self, model_name: str, build_config: AsyncMock) -> RecordingPiKimchi:
+        with (
+            patch("kimchi_agent.pi_kimchi.build_openrouter_models_config", build_config),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingPiKimchi(logs_dir=Path(tmp), model_name=model_name)
+            await agent.run("solve it", object(), AgentContext())
+        return agent
+
+    async def test_preset_model_writes_models_json_and_forwards_key(self) -> None:
+        build_config = AsyncMock(return_value=self.OPENROUTER_CONFIG)
+
+        agent = await self._run_agent("openrouter/@preset/glm-5-1-zai", build_config)
+
+        build_config.assert_awaited_once_with(
+            "@preset/glm-5-1-zai", api_key="sk-or-test", endpoint=None, include_api_key=False
+        )
+        command = agent.agent_commands[0]
+        self.assertIn(CONTAINER_PI_MODELS_JSON, command)
+        self.assertIn('"@preset/glm-5-1-zai"', command)
+        # pi resolves the key from the env; writing it into the bind-mounted
+        # logs dir would put a secret in the run artifacts.
+        self.assertNotIn("apiKey", command)
+        self.assertNotIn("sk-or-test", command)
+        self.assertIn("--model openrouter/@preset/glm-5-1-zai", command)
+        env = agent.agent_envs[0]
+        self.assertEqual(env["OPENROUTER_API_KEY"], "sk-or-test")
+        self.assertNotIn("KIMCHI_API_KEY", env)
+        # The Kimchi gateway is never consulted for openrouter/* models.
+        self.assertEqual(agent.metadata_fetch_count, 0)
+
+    async def test_models_json_is_written_even_for_catalogued_models(self) -> None:
+        """pi's bundled catalog goes stale; live limits beat frozen ones."""
+        build_config = AsyncMock(return_value=self.OPENROUTER_CONFIG)
+
+        agent = await self._run_agent("openrouter/z-ai/glm-5.1", build_config)
+
+        build_config.assert_awaited_once_with(
+            "z-ai/glm-5.1", api_key="sk-or-test", endpoint=None, include_api_key=False
+        )
+        self.assertIn(CONTAINER_PI_MODELS_JSON, agent.agent_commands[0])
+
+    async def test_unknown_openrouter_model_fails_before_container_work(self) -> None:
+        """Better a loud failure than pi's silent 400 scored as a zero."""
+        build_config = AsyncMock(side_effect=ValueError("Model 'z-ai/glm-9' was not returned by ..."))
+
+        with (
+            patch("kimchi_agent.pi_kimchi.build_openrouter_models_config", build_config),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingPiKimchi(logs_dir=Path(tmp), model_name="openrouter/z-ai/glm-9")
+            with self.assertRaisesRegex(ValueError, "was not returned"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
+
+    async def test_missing_openrouter_key_fails_before_container_work(self) -> None:
+        build_config = AsyncMock()
+        os.environ.pop("OPENROUTER_API_KEY", None)
+
+        with (
+            patch("kimchi_agent.pi_kimchi.build_openrouter_models_config", build_config),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingPiKimchi(logs_dir=Path(tmp), model_name="openrouter/z-ai/glm-5.1")
+            with self.assertRaisesRegex(ValueError, "OPENROUTER_API_KEY is required"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
+        build_config.assert_not_awaited()
+
+    async def test_kimchi_dev_models_still_route_through_the_gateway(self) -> None:
+        os.environ["KIMCHI_API_KEY"] = "test-key"
+        build_config = AsyncMock()
+
+        agent = await self._run_agent("kimchi-dev/kimi-k2.5", build_config)
+
+        build_config.assert_not_awaited()
+        command = agent.agent_commands[0]
+        self.assertNotIn(CONTAINER_PI_MODELS_JSON, command)
+        self.assertEqual(agent.agent_envs[0]["KIMCHI_API_KEY"], "test-key")
+
+    async def test_thinking_level_max_reaches_the_cli(self) -> None:
+        """pi accepts --thinking max; a stale choices list rejected it here."""
+        build_config = AsyncMock(return_value=self.OPENROUTER_CONFIG)
+
+        with (
+            patch("kimchi_agent.pi_kimchi.build_openrouter_models_config", build_config),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingPiKimchi(
+                logs_dir=Path(tmp), model_name="openrouter/@preset/glm-5-1-zai", thinking="max"
+            )
+            await agent.run("solve it", object(), AgentContext())
+
+        self.assertIn("--thinking max", agent.agent_commands[0])

@@ -27,6 +27,7 @@ from kimchi_agent.openrouter import (
     OPENROUTER_ENDPOINT_ENV,
     OPENROUTER_PROVIDER,
     fetch_openrouter_model,
+    is_openrouter_model,
     openrouter_model_limits,
     resolve_openrouter_anthropic_base_url,
     resolve_openrouter_catalogue_model,
@@ -180,9 +181,6 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
             with attempt:
                 await super().install(environment)
 
-    def _is_openrouter_model(self) -> bool:
-        return bool(self.model_name) and self.model_name.startswith(f"{OPENROUTER_PROVIDER}/")
-
     def _required_openrouter_api_key(self) -> str:
         api_key = self._get_env(OPENROUTER_API_KEY_ENV)
         if not api_key:
@@ -219,7 +217,7 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
 
     async def _resolve_routing(self) -> tuple[KimchiModelMetadata, str, str]:
         """Return ``(model, auth token, Anthropic base URL)`` for the selected model."""
-        if self._is_openrouter_model():
+        if is_openrouter_model(self.model_name):
             # Key first: a missing key should fail before we hit the network.
             api_key = self._required_openrouter_api_key()
             return (

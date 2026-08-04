@@ -18,6 +18,7 @@ from bench_config import (
     CLAUDE_CODE_CODING_AGENT,
     ENV_WORKFLOW,
     ENV_WORKFLOW_EXTENSION,
+    PI_THINKING_AGENTS,
     is_kimchi_family,
     is_workflow_agent,
 )
@@ -150,9 +151,11 @@ def build_harbor_command(
     if is_kimchi_family(coding_agent) and thinking_level is not None:
         cmd.extend(["--agent-kwarg", f"thinking={thinking_level}"])
 
-    # The pi agent (bare @earendil-works/pi-coding-agent) also accepts
-    # --thinking via the same CliFlag mechanism.
-    if coding_agent == "pi" and thinking_level is not None:
+    # The pi agents (bare @earendil-works/pi-coding-agent, and the workflow
+    # adapter that subclasses it) accept --thinking via the same CliFlag
+    # mechanism. pi-workflow was missing here, so its level was resolved and
+    # recorded in run metadata but never reached the CLI.
+    if coding_agent in PI_THINKING_AGENTS and thinking_level is not None:
         cmd.extend(["--agent-kwarg", f"thinking={thinking_level}"])
 
     # Claude Code has no --thinking flag; the equivalent knob is reasoning
