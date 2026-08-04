@@ -45,7 +45,7 @@ describe("goal reducer", () => {
 
 	it("replaces with a new ID, revision one, and active status", () => {
 		const complete = setGoalStatus(createGoal(undefined, "old", "goal-a", T1), "goal-a", 1, "complete", T2)
-		const replacement = replaceGoal(complete, "new", "goal-b", T2)
+		const replacement = replaceGoal("new", "goal-b", T2)
 
 		expect(replacement).toMatchObject({ id: "goal-b", revision: 1, objective: "new", status: "active" })
 	})

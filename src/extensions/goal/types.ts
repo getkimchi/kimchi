@@ -34,5 +34,3 @@ export interface PendingGoalContinuation {
 	goalId: string
 	revision: number
 }
-
-export type GoalTurnAttribution = PendingGoalContinuation

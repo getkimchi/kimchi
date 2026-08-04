@@ -20,7 +20,6 @@ export function createGoal(
 }
 
 export function replaceGoal(
-	_state: GoalState,
 	objective: unknown,
 	id: string,
 	now: string,

@@ -49,7 +49,7 @@ import {
 	restoreGoal,
 	setGoalStatus,
 } from "./reducer.js"
-import type { GoalStatus, GoalTurnAttribution, PendingGoalContinuation, SessionGoal } from "./types.js"
+import type { GoalStatus, PendingGoalContinuation, SessionGoal } from "./types.js"
 
 const UPDATE_GOAL_PARAMETERS = Type.Object({
 	status: Type.Union([Type.Literal("complete"), Type.Literal("blocked")]),
@@ -61,8 +61,8 @@ interface UpdateGoalParams {
 	reason?: string
 }
 
-type PendingGoalTerminalFeedback = GoalTurnAttribution & { status: "complete" | "blocked" }
-type GoalTodoState = GoalTurnAttribution & {
+type PendingGoalTerminalFeedback = PendingGoalContinuation & { status: "complete" | "blocked" }
+type GoalTodoState = PendingGoalContinuation & {
 	total: number
 	blocked: number
 	completed: number
@@ -79,7 +79,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	let currentSessionId: string | undefined
 	let pendingContinuation: PendingGoalContinuation | undefined
 	let pendingTerminalFeedback: PendingGoalTerminalFeedback | undefined
-	let activeTurn: GoalTurnAttribution | undefined
+	let activeTurn: PendingGoalContinuation | undefined
 	let todoStateFor: GoalTodoState | undefined
 	let consecutiveErrorTurns = 0
 	let activeSinceMs: number | undefined
@@ -321,7 +321,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			const nowMs = Date.now()
 			const now = timestamp(nowMs)
 			const next = captured
-				? replaceGoal(captured, objective, randomUUID(), now, tokenBudget)
+				? replaceGoal(objective, randomUUID(), now, tokenBudget)
 				: createGoal(undefined, objective, randomUUID(), now, tokenBudget)
 			commitGoal(next)
 			resetGoalRuntime()
@@ -717,7 +717,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 }
 
 function matchesGoal(
-	marker: GoalTurnAttribution | undefined,
+	marker: PendingGoalContinuation | undefined,
 	goal: SessionGoal | undefined,
 	sessionId: string | undefined,
 ): goal is SessionGoal {
