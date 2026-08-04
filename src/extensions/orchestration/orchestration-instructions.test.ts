@@ -572,7 +572,7 @@ describe("Trivial fix and triage exceptions", () => {
 		expect(result).toContain("#### Build phase")
 		expect(result).toContain("Trivial fix exception")
 		expect(result).toContain("trivial fix directly")
-		expect(result).toMatch(/2-3 tool calls.*delegate a Fixer agent/s)
+		expect(result).toMatch(/2-3 edit\/write calls.*delegate a Fixer/s)
 	})
 
 	it("includes trivial fix exception for review NEEDS_FIXES", () => {
@@ -593,7 +593,7 @@ describe("Trivial fix and triage exceptions", () => {
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("Post-abort triage")
-		expect(result).toMatch(/at most 2-3 tool calls/s)
+		expect(result).toMatch(/at most 2-3 edit\/write calls/s)
 		expect(result).toMatch(/obvious one-line fix/s)
 		expect(result).toMatch(/more than trivial.*follow-up Agent/s)
 	})

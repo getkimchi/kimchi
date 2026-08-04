@@ -152,7 +152,7 @@ function buildAgentDelegation(delegatePlanning: boolean): string {
 
 	return `### Agent delegation
 
-**Orchestrator discipline**: Between delegation calls, you may do at most 5 tool calls (e.g. reading the spec file, setting the phase, checking a subagent result). If you find yourself doing reads, edits, bash calls, or writes on implementation files, STOP — you are doing a subagent's job. Delegate it instead. **Post-abort triage**: When a subagent aborts (budget or turns), do NOT manually complete its remaining work. You may, however, perform a small amount of triage (at most 2-3 tool calls) to understand the failure, verify state, or apply an obvious one-line fix. If the remaining work is more than trivial, spawn a follow-up Agent scoped to the unfinished portion. List what the aborted agent completed and what remains.
+**Orchestrator discipline**: Between delegation calls, you may do at most 5 tool calls (e.g. reading the spec file, setting the phase, checking a subagent result). If you find yourself doing reads, edits, bash calls, or writes on implementation files, STOP — you are doing a subagent's job. Delegate it instead. **Post-abort triage**: When a subagent aborts (budget or turns), do NOT manually complete its remaining work. You may do a small amount of triage (at most 2-3 edit/write calls; reads and bash checks don't count) to understand the failure, verify state, or apply an obvious one-line fix. If the remaining work is more than trivial, spawn a follow-up Agent scoped to the unfinished portion. List what the aborted agent completed and what remains.
 
 - Write Agent prompts that are fully self-contained. Agents start with fresh context by default — include necessary instructions directly, or point them to a Markdown file containing larger context.
 ${planBullet}
@@ -311,7 +311,7 @@ function buildBuildPhaseDirectives(ctx: PhaseDirectiveContext): string {
 		`- DO delegate each chunk to Agent(type: "Builder", model: ${models}). Simple chunks use a standard-tier Builder; complex chunks (concurrency, state machines, algorithms) require a heavy-tier Builder. Retries may escalate to a heavier tier when the first choice fails.`,
 	)
 	lines.push(
-		"- **Trivial fix exception:** After a subagent returns, you may apply a trivial fix directly (a single edit affecting at most one or two files, such as a typo, missing import, or test mock mismatch) instead of spawning another subagent. If the fix is not immediately obvious within 2-3 tool calls, stop and delegate a Fixer agent.",
+		"- **Trivial fix exception:** After a subagent returns, you may apply a trivial fix directly (one edit touching 1-2 files, e.g. a typo or missing import) instead of spawning another subagent. If the fix is not obvious within 2-3 edit/write calls, delegate a Fixer.",
 	)
 	lines.push("- DO pass the spec file path, the chunk's `complexity`, and set `thinking` per **Thinking levels**.")
 	lines.push(

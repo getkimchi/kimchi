@@ -51,8 +51,8 @@ interface AgentOutcomeSummary {
 
 // Undefined outcome defaults to successful. This preserves backward compatibility
 // with subagent tool_results that do not yet include structured agentOutcome details;
-// without it the guard would disarm entirely and stop steering after every legacy
-// subagent return, which would regress existing behavior.
+// without it those legacy returns would fall back to the higher triage thresholds
+// instead of the stricter success thresholds.
 function isSuccessfulOutcome(outcome: AgentOutcomeSummary | undefined): boolean {
 	if (!outcome) return true
 	if (outcome.status === "steered" && outcome.outcome === "completed") return true
@@ -64,7 +64,7 @@ function isTriageOutcome(outcome: AgentOutcomeSummary | undefined): boolean {
 	const { status, outcome: result } = outcome
 	// Explicit failure states observed from agent tool results.
 	if (status === "aborted" || status === "stopped" || status === "error") return true
-	return result === "failed" || result === "budget_exhausted"
+	return result === "failed" || result === "budget_exhausted" || result === "stopped"
 }
 
 export class OrchestratorWriteGuard {
