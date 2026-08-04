@@ -137,10 +137,15 @@ class GCSCheckpointPlugin(BaseJobPlugin):
         )
         started = time.monotonic()
 
-        # Redaction secrets: KIMCHI_API_KEY only (the single secret this
-        # benchmark injects). Read at upload time so a key rotation mid-run
-        # still redacts the current value.
-        secrets = [os.environ.get("KIMCHI_API_KEY", "").encode("utf-8")] if os.environ.get("KIMCHI_API_KEY") else []
+        # Redaction secrets: the API keys this benchmark injects into agent
+        # environments (KIMCHI_API_KEY, and OPENROUTER_API_KEY for openrouter/*
+        # models). Read at upload time so a key rotation mid-run still redacts
+        # the current value.
+        secrets = [
+            value.encode("utf-8")
+            for value in (os.environ.get(name, "") for name in self._redact_module.REDACTED_ENV_KEYS)
+            if value
+        ]
 
         try:
             archive_bytes, payload_sha256 = self._ckpt.create_trial_archive(

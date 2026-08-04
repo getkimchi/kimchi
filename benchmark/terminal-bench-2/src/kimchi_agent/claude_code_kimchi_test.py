@@ -273,7 +273,7 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(int(CLAUDE_CODE_DEFAULT_API_TIMEOUT_MS), 600_000)
 
     async def test_rejects_non_kimchi_provider(self) -> None:
-        for model_name in ("anthropic/claude-opus-4-6", "openrouter/anthropic/claude-opus-4-6"):
+        for model_name in ("anthropic/claude-opus-4-6", "zai/glm-5.1"):
             with self.subTest(model_name=model_name), tempfile.TemporaryDirectory() as tmp:
                 agent = RecordingClaudeCodeKimchi(
                     logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
@@ -503,6 +503,152 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(http_get.call_args.kwargs["headers"], {"Authorization": "Bearer test-key"})
         self.assertEqual(http_get.call_args.kwargs["timeout"], FETCH_TIMEOUT_SEC)
         self.assertEqual(http_get.call_args.args, (KIMCHI_MODELS_METADATA_URL,))
+
+    async def test_runs_claude_code_against_openrouter_model(self) -> None:
+        fetch = AsyncMock(
+            return_value={
+                "id": "z-ai/glm-5.1",
+                "context_length": 200_000,
+                "top_provider": {"max_completion_tokens": 128_000},
+            }
+        )
+        env_overrides = {"OPENROUTER_API_KEY": "sk-or-test"}
+        with (
+            patch.dict(os.environ, env_overrides),
+            patch("kimchi_agent.claude_code_kimchi.fetch_openrouter_model", fetch),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="openrouter/z-ai/glm-5.1",
+            )
+
+            await agent.run("solve it", object(), AgentContext())
+
+        fetch.assert_awaited_once_with("z-ai/glm-5.1", endpoint=None)
+        env = agent.agent_envs[0]
+        # Claude Code appends /v1/messages, so the base must stop at /api.
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://openrouter.ai/api")
+        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "sk-or-test")
+        self.assertEqual(env["ANTHROPIC_API_KEY"], "")
+        for key in (
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_SMALL_FAST_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ):
+            self.assertEqual(env[key], "z-ai/glm-5.1")
+        self.assertEqual(
+            int(env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]),
+            200_000 - CLAUDE_CODE_OUTPUT_RESERVE_TOKENS - CLAUDE_CODE_CONTEXT_SAFETY_MARGIN_TOKENS,
+        )
+        # The Kimchi gateway is not consulted for openrouter/* models.
+        self.assertEqual(agent.metadata_fetch_count, 0)
+
+    async def test_openrouter_endpoint_override_is_forwarded(self) -> None:
+        fetch = AsyncMock(return_value={"id": "z-ai/glm-5.1", "context_length": 200_000})
+        env_overrides = {
+            "OPENROUTER_API_KEY": "sk-or-test",
+            "KIMCHI_OPENROUTER_ENDPOINT": "https://proxy.internal/api/v1",
+        }
+        with (
+            patch.dict(os.environ, env_overrides),
+            patch("kimchi_agent.claude_code_kimchi.fetch_openrouter_model", fetch),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="openrouter/z-ai/glm-5.1",
+            )
+
+            await agent.run("solve it", object(), AgentContext())
+
+        fetch.assert_awaited_once_with("z-ai/glm-5.1", endpoint="https://proxy.internal/api/v1")
+        self.assertEqual(agent.agent_envs[0]["ANTHROPIC_BASE_URL"], "https://proxy.internal/api")
+
+    async def test_openrouter_model_requires_openrouter_api_key(self) -> None:
+        fetch = AsyncMock()
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("kimchi_agent.claude_code_kimchi.fetch_openrouter_model", fetch),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="openrouter/z-ai/glm-5.1",
+            )
+
+            with self.assertRaisesRegex(ValueError, "OPENROUTER_API_KEY is required"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
+        fetch.assert_not_awaited()
+
+    async def test_openrouter_api_key_can_come_from_agent_extra_env(self) -> None:
+        fetch = AsyncMock(return_value={"id": "z-ai/glm-5.1", "context_length": 200_000})
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("kimchi_agent.claude_code_kimchi.fetch_openrouter_model", fetch),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="openrouter/z-ai/glm-5.1",
+                extra_env={"OPENROUTER_API_KEY": "extra-or-key"},
+            )
+
+            await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_envs[0]["ANTHROPIC_AUTH_TOKEN"], "extra-or-key")
+
+    async def test_preset_model_is_passed_through_but_sized_from_wrapped_model(self) -> None:
+        """A preset pins provider routing; Claude Code must still get the preset id."""
+        fetch = AsyncMock(return_value={"id": "z-ai/glm-5.1", "context_length": 202_752})
+        resolve = AsyncMock(return_value="z-ai/glm-5.1")
+        with (
+            patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}),
+            patch("kimchi_agent.claude_code_kimchi.fetch_openrouter_model", fetch),
+            patch("kimchi_agent.claude_code_kimchi.resolve_openrouter_catalogue_model", resolve),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="openrouter/@preset/glm-5-1-zai",
+            )
+
+            await agent.run("solve it", object(), AgentContext())
+
+        resolve.assert_awaited_once_with(
+            "@preset/glm-5-1-zai", api_key="sk-or-test", endpoint=None
+        )
+        fetch.assert_awaited_once_with("z-ai/glm-5.1", endpoint=None)
+        env = agent.agent_envs[0]
+        self.assertEqual(env["ANTHROPIC_MODEL"], "@preset/glm-5-1-zai")
+        self.assertEqual(
+            int(env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]),
+            202_752 - CLAUDE_CODE_OUTPUT_RESERVE_TOKENS - CLAUDE_CODE_CONTEXT_SAFETY_MARGIN_TOKENS,
+        )
+
+    async def test_openrouter_model_missing_from_catalogue_fails_before_commands(self) -> None:
+        fetch = AsyncMock(side_effect=ValueError("Model 'z-ai/glm-9' was not returned by ..."))
+        with (
+            patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}),
+            patch("kimchi_agent.claude_code_kimchi.fetch_openrouter_model", fetch),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="openrouter/z-ai/glm-9",
+            )
+
+            with self.assertRaisesRegex(ValueError, "was not returned"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
 
 
 if __name__ == "__main__":

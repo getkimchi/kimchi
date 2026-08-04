@@ -44,7 +44,9 @@ def kimchi_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("RUN_ID", raising=False)
     monkeypatch.delenv(KIMCHI_INFRA_BREAKER_THRESHOLD_ENV, raising=False)
 
-    async def openrouter_models_config(model_id: str, *, endpoint: str | None = None) -> dict:
+    async def openrouter_models_config(
+        model_id: str, *, api_key: str | None = None, endpoint: str | None = None
+    ) -> dict:
         return {
             "providers": {
                 "openrouter": {

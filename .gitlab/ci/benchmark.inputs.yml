@@ -43,7 +43,7 @@ inputs:
     type: array
     default: [hf-model-inference, fix-code-vulnerability, build-cython-ext, bn-fit-modify, fix-git, mteb-leaderboard, cobol-modernization, merge-diff-arc-agi-task, extract-elf, pytorch-model-recovery]
   model:
-    description: "Kimchi model or execution mode. Select multi-model to use the target ref's default role configuration."
+    description: "Model or execution mode. kimchi-dev/* routes via the Kimchi gateway; openrouter/* routes via OpenRouter (kimchi, pi, workflow and claude-code agents only). Select multi-model to use the target ref's default role configuration."
     type: string
     default: "kimchi-dev/minimax-m3"
     options:
@@ -58,6 +58,10 @@ inputs:
       - kimchi-dev/glm-5.2-fp8
       - openrouter/z-ai/glm-5.1
       - openrouter/z-ai/glm-5.2
+      # Preset-pinned: route only to Z.AI (fp8) instead of load-balancing across
+      # ~20 endpoints of differing quantization. Use these for recorded scores.
+      - openrouter/@preset/glm-5-1-zai
+      - openrouter/@preset/glm-5-2-zai
   kimchi_ferment_oneshot:
     description: "Run each task through Kimchi ferment one-shot workflow. Ignored unless agent is kimchi."
     type: boolean

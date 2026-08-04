@@ -145,3 +145,140 @@ async def test_retryable_statuses_are_retried(monkeypatch: pytest.MonkeyPatch) -
 
     assert models == [{"id": "vendor/model"}]
     assert responses == []
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "expected"),
+    [
+        (None, "https://openrouter.ai/api"),
+        ("  https://openrouter.ai/api/v1/  ", "https://openrouter.ai/api"),
+        ("https://router.example.test/v1", "https://router.example.test"),
+        # Already Anthropic-shaped endpoints are left alone.
+        ("https://router.example.test/anthropic", "https://router.example.test/anthropic"),
+    ],
+)
+def test_anthropic_base_url_stops_before_the_version_segment(
+    endpoint: str | None, expected: str
+) -> None:
+    # Claude Code appends /v1/messages to ANTHROPIC_BASE_URL.
+    assert openrouter.resolve_openrouter_anthropic_base_url(endpoint) == expected
+
+
+def test_model_limits_fall_back_when_metadata_omits_them() -> None:
+    assert openrouter.openrouter_model_limits(
+        {"id": "vendor/model", "context_length": 200_000, "top_provider": {"max_completion_tokens": 64_000}}
+    ) == (200_000, 64_000)
+    assert openrouter.openrouter_model_limits({"id": "vendor/model"}) == (
+        openrouter.DEFAULT_CONTEXT_WINDOW,
+        openrouter.DEFAULT_MAX_TOKENS,
+    )
+
+
+async def test_fetch_openrouter_model_returns_raw_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        openrouter,
+        "_fetch_models_uncached",
+        AsyncMock(return_value=[{"id": "z-ai/glm-5.1", "context_length": 200_000}]),
+    )
+
+    assert await openrouter.fetch_openrouter_model("z-ai/glm-5.1") == {
+        "id": "z-ai/glm-5.1",
+        "context_length": 200_000,
+    }
+
+    with pytest.raises(ValueError, match="missing/model"):
+        await openrouter.fetch_openrouter_model("missing/model")
+
+
+async def test_preset_resolves_to_the_model_it_wraps(monkeypatch: pytest.MonkeyPatch) -> None:
+    fetch_preset = AsyncMock(
+        return_value={
+            "data": {
+                "slug": "glm-5-1-zai",
+                "designated_version": {
+                    "config": {"model": "z-ai/glm-5.1", "provider": {"only": ["z-ai"]}}
+                },
+            }
+        }
+    )
+    monkeypatch.setattr(openrouter, "_fetch_preset_body", fetch_preset)
+
+    resolved = await openrouter.resolve_openrouter_catalogue_model(
+        "@preset/glm-5-1-zai", api_key="sk-or-test"
+    )
+
+    assert resolved == "z-ai/glm-5.1"
+    fetch_preset.assert_awaited_once_with(
+        "https://openrouter.ai/api/v1", "glm-5-1-zai", "sk-or-test"
+    )
+
+
+async def test_variant_suffix_resolves_to_the_base_model() -> None:
+    assert (
+        await openrouter.resolve_openrouter_catalogue_model(
+            "z-ai/glm-5.1:exacto", api_key="sk-or-test"
+        )
+        == "z-ai/glm-5.1"
+    )
+    assert (
+        await openrouter.resolve_openrouter_catalogue_model("z-ai/glm-5.1", api_key="sk-or-test")
+        == "z-ai/glm-5.1"
+    )
+
+
+async def test_preset_without_a_pinned_model_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        openrouter,
+        "_fetch_preset_body",
+        AsyncMock(return_value={"data": {"designated_version": {"config": {}}}}),
+    )
+
+    with pytest.raises(RuntimeError, match="does not pin a single model"):
+        await openrouter.resolve_openrouter_catalogue_model(
+            "@preset/broken", api_key="sk-or-test"
+        )
+
+
+async def test_models_config_keeps_the_preset_id_but_takes_limits_from_the_wrapped_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sending the wrapped model id instead of the preset would drop provider pinning."""
+    monkeypatch.setattr(
+        openrouter,
+        "_fetch_preset_body",
+        AsyncMock(
+            return_value={
+                "data": {"designated_version": {"config": {"model": "z-ai/glm-5.2"}}}
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        openrouter,
+        "_fetch_models_uncached",
+        AsyncMock(
+            return_value=[
+                {
+                    "id": "z-ai/glm-5.2",
+                    "name": "Z.ai: GLM 5.2",
+                    "context_length": 1_048_576,
+                    "top_provider": {"max_completion_tokens": 131_072},
+                }
+            ]
+        ),
+    )
+
+    config = await openrouter.build_openrouter_models_config(
+        "@preset/glm-5-2-zai", api_key="sk-or-test"
+    )
+
+    model = config["providers"]["openrouter"]["models"][0]
+    assert model["id"] == "@preset/glm-5-2-zai"
+    assert model["contextWindow"] == 1_048_576
+    assert model["maxTokens"] == 131_072
+
+
+async def test_preset_without_an_api_key_is_rejected() -> None:
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY is required"):
+        await openrouter.resolve_openrouter_catalogue_model("@preset/glm-5-2-zai")

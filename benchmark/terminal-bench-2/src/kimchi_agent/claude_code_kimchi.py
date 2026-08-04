@@ -13,6 +13,7 @@ from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_aft
 from kimchi_agent.gateway import (
     KIMCHI_ANTHROPIC_BASE_URL,
     KimchiGatewayMixin,
+    KimchiModelLimits,
     KimchiModelMetadata,
 )
 from kimchi_agent.git_install import (
@@ -20,6 +21,15 @@ from kimchi_agent.git_install import (
     GIT_INSTALL_ENV,
     git_config_command,
     git_init_and_commit_baseline_command,
+)
+from kimchi_agent.openrouter import (
+    OPENROUTER_API_KEY_ENV,
+    OPENROUTER_ENDPOINT_ENV,
+    OPENROUTER_PROVIDER,
+    fetch_openrouter_model,
+    openrouter_model_limits,
+    resolve_openrouter_anthropic_base_url,
+    resolve_openrouter_catalogue_model,
 )
 
 CLAUDE_CODE_AUTO_COMPACT_PERCENT = 85
@@ -94,7 +104,14 @@ class RetryableApiError(RuntimeError):
 
 
 class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
-    """Harbor Claude Code agent wired to the Kimchi Anthropic gateway."""
+    """Harbor Claude Code agent wired to an Anthropic-compatible gateway.
+
+    ``kimchi-dev/*`` models route through the Kimchi gateway using
+    ``KIMCHI_API_KEY``. ``openrouter/*`` models route through OpenRouter's
+    Anthropic-compatible surface (``https://openrouter.ai/api``) using
+    ``OPENROUTER_API_KEY``; both speak Claude Code's native protocol, so only
+    the base URL, the auth token, and the model-metadata source differ.
+    """
 
     @staticmethod
     def name() -> str:
@@ -163,9 +180,59 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
             with attempt:
                 await super().install(environment)
 
-    def _build_env(self) -> dict[str, str]:
+    def _is_openrouter_model(self) -> bool:
+        return bool(self.model_name) and self.model_name.startswith(f"{OPENROUTER_PROVIDER}/")
+
+    def _required_openrouter_api_key(self) -> str:
+        api_key = self._get_env(OPENROUTER_API_KEY_ENV)
+        if not api_key:
+            raise ValueError(
+                f"{OPENROUTER_API_KEY_ENV} is required for {OPENROUTER_PROVIDER}/* models. "
+                f"Export it on the host and forward it with "
+                f"`--ae {OPENROUTER_API_KEY_ENV}=${OPENROUTER_API_KEY_ENV}`."
+            )
+        return api_key
+
+    async def _openrouter_model_metadata(self, api_key: str) -> KimchiModelMetadata:
+        """Model metadata for an ``openrouter/*`` model, from OpenRouter's catalogue.
+
+        Reuses :class:`KimchiModelMetadata` so the auto-compact window is sized
+        the same way for both routes. Preset and variant ids are resolved to the
+        catalogued model they wrap; Claude Code still receives the id as given.
+        """
+        model_id = self.model_name.split("/", 1)[1]
+        if not model_id:
+            raise ValueError(f"--model must include a model id after {OPENROUTER_PROVIDER}/")
+        endpoint = self._get_env(OPENROUTER_ENDPOINT_ENV)
+        metadata = await fetch_openrouter_model(
+            await resolve_openrouter_catalogue_model(model_id, api_key=api_key, endpoint=endpoint),
+            endpoint=endpoint,
+        )
+        context_window, max_output_tokens = openrouter_model_limits(metadata)
+        return KimchiModelMetadata(
+            slug=model_id,
+            limits=KimchiModelLimits(
+                context_window=context_window,
+                max_output_tokens=max_output_tokens,
+            ),
+        )
+
+    async def _resolve_routing(self) -> tuple[KimchiModelMetadata, str, str]:
+        """Return ``(model, auth token, Anthropic base URL)`` for the selected model."""
+        if self._is_openrouter_model():
+            # Key first: a missing key should fail before we hit the network.
+            api_key = self._required_openrouter_api_key()
+            return (
+                await self._openrouter_model_metadata(api_key),
+                api_key,
+                resolve_openrouter_anthropic_base_url(self._get_env(OPENROUTER_ENDPOINT_ENV)),
+            )
+
         api_key = self._required_kimchi_api_key()
-        model = self._selected_model_metadata(api_key)
+        return self._selected_model_metadata(api_key), api_key, KIMCHI_ANTHROPIC_BASE_URL
+
+    async def _build_env(self) -> dict[str, str]:
+        model, api_key, anthropic_base_url = await self._resolve_routing()
         model_id = model.slug
         blocked_env_keys = FORCED_ENV_KEYS | DENIED_ENV_KEYS
         env = self._passthrough_env(
@@ -184,7 +251,7 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
         env.update({
             "ANTHROPIC_API_KEY": "",
             "ANTHROPIC_AUTH_TOKEN": api_key,
-            "ANTHROPIC_BASE_URL": KIMCHI_ANTHROPIC_BASE_URL,
+            "ANTHROPIC_BASE_URL": anthropic_base_url,
             "ANTHROPIC_MODEL": model_id,
             "ANTHROPIC_DEFAULT_SONNET_MODEL": model_id,
             "ANTHROPIC_DEFAULT_OPUS_MODEL": model_id,
@@ -203,7 +270,7 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
         # Default API_TIMEOUT_MS only if the caller did not pass one through
         # (via API_TIMEOUT_MS in the passthrough env). A long timeout prevents
         # Claude Code from aborting on slow first-token responses from the
-        # Kimchi gateway; retryable Cloudflare 524s still surface as
+        # gateway; retryable Cloudflare 524s still surface as
         # RetryableApiError via the stream-log classifier.
         env.setdefault("API_TIMEOUT_MS", CLAUDE_CODE_DEFAULT_API_TIMEOUT_MS)
         env.update({key: "" for key in DENIED_ENV_KEYS})
@@ -352,7 +419,7 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
-        env = self._build_env()
+        env = await self._build_env()
 
         await self.exec_as_agent(
             environment,

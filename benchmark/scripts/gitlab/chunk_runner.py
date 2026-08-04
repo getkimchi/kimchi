@@ -630,6 +630,28 @@ def _gitlab_job_elapsed_seconds(*, now: datetime | None = None) -> float:
     return max(0.0, (current - started.astimezone(UTC)).total_seconds())
 
 
+OPENROUTER_PROVIDER = "openrouter"
+# Agents that can route openrouter/* models: the kimchi family (via the
+# openai-completions provider block) and claude-code (via OpenRouter's
+# Anthropic-compatible surface). opencode still only speaks to the Kimchi
+# gateway, so catch that here instead of failing every trial at agent start.
+OPENROUTER_CAPABLE_AGENTS = frozenset({"kimchi", "kimchi-workflow", "pi", "pi-workflow", "claude-code"})
+
+
+def _openrouter_config_error(model: str, coding_agent: str) -> str | None:
+    """Reason this openrouter/* run cannot proceed, or None when it can."""
+    if not model.startswith(f"{OPENROUTER_PROVIDER}/"):
+        return None
+    if coding_agent not in OPENROUTER_CAPABLE_AGENTS:
+        return (
+            f"MODEL={model} is not supported when CODING_AGENT={coding_agent}; "
+            f"supported agents: {', '.join(sorted(OPENROUTER_CAPABLE_AGENTS))}"
+        )
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        return f"OPENROUTER_API_KEY is required when MODEL={model}"
+    return None
+
+
 def _agent_import_path(coding_agent: str) -> str:
     match coding_agent:
         case "kimchi":
@@ -1221,6 +1243,10 @@ def main() -> int:
         return 1
     if not api_key:
         print("KIMCHI_API_KEY is required", file=sys.stderr)
+        return 1
+    openrouter_error = _openrouter_config_error(model, coding_agent)
+    if openrouter_error:
+        print(openrouter_error, file=sys.stderr)
         return 1
 
     results_dir = Path(os.environ.get(ENV_BENCHMARK_RESULTS_DIR, DEFAULT_BENCHMARK_RESULTS_DIR))

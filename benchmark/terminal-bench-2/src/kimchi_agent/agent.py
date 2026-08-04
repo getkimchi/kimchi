@@ -417,6 +417,7 @@ class Kimchi(BaseInstalledAgent):
             _, openrouter_model_id = self.model_name.split("/", 1)
             openrouter_models_config = await build_openrouter_models_config(
                 openrouter_model_id,
+                api_key=openrouter_key,
                 endpoint=self._get_env(OPENROUTER_ENDPOINT_ENV),
             )
         else:
