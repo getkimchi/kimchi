@@ -37,11 +37,13 @@ describe("interceptShowError (pure decision)", () => {
 		expect(interceptShowError("Cloudflare 524 timeout", undefined)).toBeUndefined()
 	})
 
-	it("sanitizes the auto_retry_end exhaustion message (Retry failed after...)", () => {
-		const result = interceptShowError("Retry failed after 3 attempts: 500 status code (no body)", {
-			rawMessage: "500 InternalServerError: Hosted_vllmException",
-			willRetry: false,
-		})
+	it("suppresses the stale Retrying placeholder", () => {
+		expect(interceptShowError("Retrying…", undefined)).toBeUndefined()
+	})
+
+	it("sanitizes the auto_retry_end exhaustion message using pending.rawMessage for reason", () => {
+		const pending = { rawMessage: VLLM_RAW, willRetry: false }
+		const result = interceptShowError("Retry failed after 3 attempts: Retrying…", pending)
 		expect(result).toBeDefined()
 		for (const forbidden of FORBIDDEN) {
 			expect(result).not.toContain(forbidden)
@@ -88,11 +90,32 @@ describe("interactiveErrorSurfaceExtension (pending-state tracking)", () => {
 		__resetInteractiveErrorSurfaceState()
 	})
 
-	it("sets pending state on an errored assistant message_end", () => {
+	it("sets pending state only for retryable errors", () => {
 		const { emitMessageEnd } = createHarness()
 		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW })
 		expect(__getPendingProviderError()?.rawMessage).toBe(VLLM_RAW)
 		expect(__getPendingProviderError()?.willRetry).toBe(true)
+	})
+
+	it("does NOT set pending state for non-retryable errors", () => {
+		const { emitMessageEnd } = createHarness()
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: "BadRequestError: bad request, code 400" })
+		expect(__getPendingProviderError()).toBeUndefined()
+	})
+
+	it("mutates retryable errorMessage to Retrying placeholder", () => {
+		const { emitMessageEnd } = createHarness()
+		const message = { role: "assistant", stopReason: "error", errorMessage: VLLM_RAW }
+		emitMessageEnd(message)
+		expect(message.errorMessage).toBe("Retrying…")
+	})
+
+	it("mutates non-retryable errorMessage to sanitized message", () => {
+		const { emitMessageEnd } = createHarness()
+		const message = { role: "assistant", stopReason: "error", errorMessage: "BadRequestError: bad request, code 400" }
+		emitMessageEnd(message)
+		expect(message.errorMessage).toContain("The request could not be completed (bad request)")
+		expect(message.errorMessage).not.toContain("BadRequestError")
 	})
 
 	it("clears pending state on a successful assistant message_end", () => {
@@ -119,6 +142,14 @@ describe("interactiveErrorSurfaceExtension (pending-state tracking)", () => {
 			"error",
 		)
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Please retry your request."), "error")
+	})
+
+	it("agent_end does NOT render for non-retryable errors (no pending state)", () => {
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		const notify = vi.fn()
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: "BadRequestError: bad request, code 400" })
+		emitAgentEnd({ willRetry: false }, { ui: { notify } })
+		expect(notify).not.toHaveBeenCalled()
 	})
 
 	it("ignores non-provider errors on message_end", () => {

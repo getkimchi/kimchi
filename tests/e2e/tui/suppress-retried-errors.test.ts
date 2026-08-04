@@ -363,6 +363,15 @@ test("raw provider error retained in session log audit entry when user message i
 
 			// The session log is stored in the agentDir. Find .jsonl files recursively
 			// and verify the audit entry contains the raw provider error.
+			// The infrastructure-error tracker extension runs BEFORE our
+			// interactive-error-surface extension (registered earlier in the
+			// extensions array in cli.ts), so it captures the raw errorMessage
+			// before we mutate it to the "Retrying…" placeholder.
+			//
+			// The fake server returns HTTP 500 with body { error: { message: ... } }
+			// in standard OpenAI error format, so the SDK extracts error.message
+			// and includes it in the thrown error's .message, which pi-ai surfaces
+			// as output.errorMessage — this IS the raw vLLM string.
 			const agentDir = fixture.agentDir
 			let foundRawInAudit = false
 			const scanDir = (dir: string) => {
@@ -372,7 +381,15 @@ test("raw provider error retained in session log audit entry when user message i
 						scanDir(fullPath)
 					} else if (file.name.endsWith(".jsonl")) {
 						const content = readFileSync(fullPath, "utf-8")
-						if (content.includes("kimchi_error_classification") && content.includes("Hosted_vllmException")) {
+						// The audit entry type is "kimchi_error_classification" and
+						// contains a rawMessage field with the raw provider error.
+						// Verify the type marker, the rawMessage field, AND the vLLM
+						// internals are all present in the audit entry.
+						if (
+							content.includes("kimchi_error_classification") &&
+							content.includes("rawMessage") &&
+							content.includes("Hosted_vllmException")
+						) {
 							foundRawInAudit = true
 						}
 					}
