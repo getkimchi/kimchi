@@ -2,16 +2,14 @@
 # Stage a self-contained pi bundle into .cache/pi-bundle/: a linux-x64 node
 # runtime, the pi CLI, and pi-kimchi-provider with real node_modules.
 #
-# PiKimchi (and so PiWorkflowAgent) uploads it into task containers when it is
-# present, which makes agent install need no network at all — the only way a
-# task declaring `allow_internet = false` can run these agents, and faster
-# everywhere else. Nothing requires it: without a bundle every run falls back to
-# the in-container npm install, which is what all runs did before this existed.
+# PiKimchi (and so PiWorkflowAgent) uploads it into task containers when
+# present, making agent install need no network — required for tasks with
+# allow_internet=false. Without a bundle, every run falls back to the in-container
+# npm install.
 #
-# The kimchi-workflows extension is deliberately NOT bundled. It is resolved on
-# the host from the run's own `extension=` spec (npm: or dir:), cached per job,
-# and its resolved version is recorded in result.json — baking a copy in here
-# would quietly override the thing a run says it is testing.
+# The kimchi-workflows extension is NOT bundled: it is resolved on the host from
+# the run's own extension= spec, so baking a copy here would override what a
+# run says it is testing.
 #
 #   ./scripts/build-pi-bundle.sh
 #   PI_VERSION=0.4.2 ./scripts/build-pi-bundle.sh
@@ -47,9 +45,8 @@ fi
 
 mkdir -p "$BUNDLE"
 
-# Official linux-x64 node, which is glibc-linked. Alpine/musl task images cannot
-# execute it; the adapter probes for exactly that and falls back to the network
-# install, so this is a limitation and not a failure.
+# Official linux-x64 node is glibc-linked. Alpine/musl images cannot execute it;
+# the adapter probes and falls back to the network install when it fails.
 if [ ! -x "$BUNDLE/node/bin/node" ]; then
     echo "==> downloading node v$NODE_VERSION"
     curl -fsSL "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-x64.tar.xz" | tar -xJ -C "$BUNDLE"
@@ -71,7 +68,6 @@ cp "$PROVIDER_DIR/package.json" "$DEST/"
 cp -r "$PROVIDER_DIR/src" "$DEST/src"
 # npm, not pnpm: the staged node_modules must be real directories, not symlinks
 # into a pnpm store that does not exist inside the container.
-#
 # --legacy-peer-deps stops npm from pulling a second pi-coding-agent copy for the
 # peer ranges; pi virtualizes those imports with its own bundle.
 (cd "$DEST" && npm install --omit=dev --legacy-peer-deps --no-audit --no-fund)

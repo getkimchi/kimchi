@@ -419,7 +419,6 @@ _PI_WORKFLOW_BASE = {
 
 
 def test_pi_workflow_agent_command_carries_both_required_kwargs() -> None:
-    """The pi-hosted adapter takes the same two kwargs, resolved the same way."""
     cmd = build_harbor_command(
         **_PI_WORKFLOW_BASE,
         workflow="deep-solve",
@@ -437,12 +436,6 @@ def test_pi_workflow_agent_without_required_kwargs_fails_before_harbor_starts() 
 
 
 def test_pi_workflow_agent_gets_no_kimchi_only_kwargs() -> None:
-    """Stock pi has no llm-sampling-params extension and no compaction setting.
-
-    Passing either would fail the run at `harbor run` — PiWorkflowAgent does not
-    accept them — so the family split in bench_config is load-bearing, not
-    cosmetic.
-    """
     cmd = build_harbor_command(
         **_PI_WORKFLOW_BASE,
         workflow="deep-solve",

@@ -1,9 +1,8 @@
 """kimchi + the kimchi-workflows pi extension, running one named workflow.
 
-Produces the same shape of ``result.json`` as stock ``Kimchi`` so one
-downstream pipeline reads both — ``conformance_test.py`` enforces that. Which
-is why this class uses only the hooks ``Kimchi`` exposes and never overrides
-``run()``; see ``Kimchi._extension_paths``.
+Uses only the hooks ``Kimchi`` exposes and never overrides ``run()`` (see
+``Kimchi._extension_paths``). ``conformance_test.py`` enforces that this
+produces the same ``result.json`` shape as stock ``Kimchi``.
 """
 
 import json
@@ -50,27 +49,10 @@ ExtensionResolver = Callable[[ExtensionSpec], ResolvedExtension]
 class WorkflowAgent(Kimchi):
     """Runs a named kimchi-workflows workflow instead of kimchi's default chat loop.
 
-    Two required agent kwargs select what runs:
-
-    - ``extension``: one of two forms, both resolved **on the host** and
-      uploaded to the container — identical treatment, just a different
-      source:
-
-      - ``npm:<pkg>[@<version>]`` — the published package. Resolved by
-        shelling out to ``npm`` on the host (``npm pack`` + extract +
-        ``npm install --omit=dev --omit=peer``), cached by ``<pkg>@<version>``
-        so a job of N trials resolves once.
-      - ``dir:<host path>`` — a developer's working tree, fingerprinted and
-        uploaded as-is (its own ``npm install`` is assumed already run). The
-        local-development path.
-
-      (``git:``-family specs and bare git URLs are rejected at construction —
-      see ``workflow_extension.parse_extension_spec``'s docstring for why.)
-
-    - ``workflow``: a workflow's own declared name (e.g. ``tb-solver``),
-      resolved by the extension against ``.kimchi/workflows/`` inside the
-      container — this adapter names it and nothing more; it does not resolve
-      a path itself (that is the extension's job, not the adapter's).
+    Two required kwargs: ``extension`` (``npm:`` or ``dir:``, resolved on the
+    host and uploaded) and ``workflow`` (a declared workflow name, resolved by
+    the extension against ``.kimchi/workflows/`` inside the container). See
+    ``workflow_extension.parse_extension_spec`` for spec details.
     """
 
     @staticmethod
@@ -97,7 +79,6 @@ class WorkflowAgent(Kimchi):
                 "workflow, e.g. --agent-kwarg workflow=tb-solver"
             )
 
-        # Parsed eagerly so a bad spec fails at `harbor run`, not ten minutes in.
         self._extension_spec: ExtensionSpec = parse_extension_spec(str(extension_raw))
         self._extension_raw = str(extension_raw)
         self._workflow = str(workflow)
@@ -107,18 +88,16 @@ class WorkflowAgent(Kimchi):
         super().__init__(*args, **kwargs)
 
     async def install(self, environment: BaseEnvironment) -> None:
-        # Binary first, so a bad KIMCHI_CODE_BINARY surfaces before we resolve.
         await super().install(environment)
 
         resolved = self._resolve_extension(self._extension_spec)
         self._extension_short_identity = resolved.short_identity
-        # Unfiltered, unlike the workflow sources below: an extension needs its
-        # node_modules (jiti lives there). A `dir:` checkout therefore uploads
-        # its devDependencies too — 342 MB against single-digit MB for `npm:`.
+        # Unfiltered upload: the extension needs its node_modules (jiti lives
+        # there). A dir: checkout uploads devDependencies too (~342 MB vs
+        # single-digit MB for npm:).
         await environment.upload_dir(source_dir=resolved.host_dir, target_dir=CONTAINER_EXTENSION_DIR)
 
-        # Filtered copy — see WORKFLOWS_UPLOAD_IGNORE. Staged BEFORE the guard
-        # below so the guard can inspect what will actually be uploaded.
+        # Staged before the guard so it inspects what will actually be uploaded.
         with tempfile.TemporaryDirectory(prefix="kimchi-workflows-stage-") as stage:
             stage_dir = Path(stage) / "workflows"
             shutil.copytree(WORKFLOWS_HOST_DIR, stage_dir, ignore=WORKFLOWS_UPLOAD_IGNORE)
@@ -126,12 +105,6 @@ class WorkflowAgent(Kimchi):
             await environment.upload_dir(source_dir=stage_dir, target_dir=CONTAINER_WORKFLOWS_STAGE_DIR)
 
     def _assert_a_workflow_can_resolve(self, staged_workflows: Path) -> None:
-        """See ``workflow_staging.assert_a_workflow_can_resolve``.
-
-        Reads ``WORKFLOWS_HOST_DIR`` as a module global on purpose, and passes
-        it in: this suite monkeypatches that name to point the check at a
-        fixture tree.
-        """
         workflow_staging.assert_a_workflow_can_resolve(
             staged_workflows=staged_workflows,
             workflow=self._workflow,
@@ -146,11 +119,9 @@ class WorkflowAgent(Kimchi):
         return [CONTAINER_EXTENSION_DIR]
 
     def _stdin_payload(self, instruction: str) -> str:
-        # `instruction` is intentionally unused here: it reaches kimchi
-        # through the input envelope file written by _pre_launch_commands
-        # below, never on the command line or on stdin — so it can never be
-        # mistaken for a flag (pi's parseArgs treats any token starting
-        # with "-" as one) and never appears in `ps`/shell history.
+        # Instruction travels in the envelope file, not on stdin — so it can
+        # never be mistaken for a flag (pi's parseArgs treats any token
+        # starting with "-" as one).
         del instruction
         return f"/workflow run {self._workflow} --input @{WORKFLOW_INPUT_PATH}"
 
@@ -158,17 +129,9 @@ class WorkflowAgent(Kimchi):
         envelope = json.dumps({"instruction": instruction})
         write_envelope = f"printf '%s' {shlex.quote(envelope)} > {shlex.quote(WORKFLOW_INPUT_PATH)}"
 
-        # PROJECT_WORKFLOWS_DIR is relative, deliberately. This command and
-        # the kimchi process it precedes run in the SAME shell invocation
-        # (see Kimchi._kimchi_launch_command's `parts` list, which this
-        # method's return value is appended to) — so $PWD here is, by
-        # construction, whatever project directory the extension's
-        # resolveWorkflow() looks under (<cwd>/.kimchi/workflows/*.workflow.ts).
-        # There is no reliable way to learn that directory from Python ahead
-        # of time, and hardcoding a guess would silently stop matching the
-        # day harbor changes the task working directory — so this command
-        # discovers it the same way the kimchi process about to read it does:
-        # by not asking, and just running there.
+        # Relative: runs in the same shell as kimchi, so $PWD is the project
+        # root the extension resolves workflow names against. Hardcoding a
+        # guess would silently break if harbor changed the task working dir.
         stage_workflows = (
             f"mkdir -p {shlex.quote(PROJECT_WORKFLOWS_DIR)} && "
             f"cp -a {shlex.quote(CONTAINER_WORKFLOWS_STAGE_DIR)}/. {shlex.quote(PROJECT_WORKFLOWS_DIR)}/"
@@ -178,30 +141,9 @@ class WorkflowAgent(Kimchi):
 
     def to_agent_info(self) -> AgentInfo:
         base_info = super().to_agent_info()
-        # Both forms are host-resolved now, so both go through the same
-        # `resolved.short_identity` set in install() — no per-form branching
-        # needed here any more:
-        #   `dir:` -> `dir:<basename>@<sha-or-"dirty">`
-        #   `npm:` -> `npm:<pkg>@<resolved version>+<short integrity/shasum>`,
-        #             or just `npm:<pkg>@<resolved version>` if the registry
-        #             gave us nothing to hash (workflow_extension._npm_identity)
-        # An unpinned `npm:` spec (no `@<version>`) is still accepted, not
-        # rejected — but unlike the old passthrough design, host resolution
-        # DOES learn the actual resolved version each time, so two runs of an
-        # unpinned spec now record different identities whenever the registry
-        # actually resolved different code, instead of being indistinguishable
-        # by construction.
+        # Workflow file content is not captured: workflows live in this repo,
+        # not the extension. Give an edited variant its own declared name
+        # (e.g. tb-solver-v2) to distinguish it in results.
         extension_identity = self._extension_short_identity or "unresolved"
-        # Accepted limitation: workflow file CONTENT is not captured by
-        # this version string. Workflows are files in THIS repo
-        # (benchmark/terminal-bench-2/workflows/), not the extension, so
-        # neither the kimchi version nor the extension identity covers an
-        # edit to one. Two runs of an edited `tb-solver` therefore produce
-        # identical version strings and are indistinguishable in result.json
-        # — see workflow_agent_test.py's test asserting this deliberately, so
-        # the limitation stays documented in code, not just in prose. The
-        # zero-cost mitigation is a convention, not a mechanism: give an
-        # edited variant its own workflow name (`tb-solver-v2`), which IS
-        # distinguishable, because the name is already part of this string.
         version = f"{base_info.version}+{self._workflow}@{extension_identity}"
         return base_info.model_copy(update={"version": version})

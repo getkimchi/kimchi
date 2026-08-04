@@ -3,35 +3,15 @@ import deepSolve from "../deep-solve.workflow.ts"
 import { createTestRun, reply, throws } from "@kimchi-dev/kimchi-workflows/testing"
 
 /**
- * Structural tests for `deep-solve.workflow.ts`, with every agent step scripted — so this pins the
- * WIRING (who may stop the run, what silence means, when the second opinion is bought, what the next
- * round is told) without a model or a container.
+ * Structural tests for `deep-solve.workflow.ts`, with every agent step scripted.
+ * Pins the wiring: who may stop the run, what silence means at each judge,
+ * when the second opinion is bought, what the next round is told.
  *
- * The claims worth pinning are the ones the workflow's own header makes, because each of them is a
- * decision that a plausible alternative would get backwards:
- *
- *  - **`check` owns the stop.** `execute` has no output schema at all and cannot end the run; a round
- *    stops early only on a checker's verdict.
- *  - **Silence means the opposite thing at the two judges.** A `check` that died at its box has said
- *    nothing, and nothing must read as NOT complete — spend another round rather than declare victory
- *    blind. An `audit` that died has also said nothing, and that must read as NO OBJECTION — because
- *    the first checker already said complete, and reading silence as dissent would let a timeout spin
- *    the loop until the deadline.
- *  - **The second opinion is bought only when it is actionable**: on a round about to stop
- *    successfully, and only while a repair round would still fit.
- *  - **Doom loops are detected outside the model**, by fingerprinting each round's failures.
- *
- * ## Time in these tests
- *
- * Every budget is derived from `deadlineIso`, which the workflow reads against the real `Date.now()`
- * (not the engine's fixed clock), so the helpers below express a deadline as "N seconds from now". With
- * the default `TB_AGENT_TIMEOUT_SEC` of 900 the two thresholds that matter are:
- *
- *  - `auditAffordable` needs ≥ 480s left (audit + a repair round's floor + its check + settle margin);
- *  - `checkpoint.mustStop` fires below 300s (a repair round's floor no longer fits).
- *
- * The names below say which side of those lines a test is on, so a change to the constants shows up as
- * a failing named expectation rather than as an unexplained number.
+ * Every budget is derived from `deadlineIso`, which the workflow reads against
+ * the real `Date.now()`, so helpers express a deadline as "N seconds from now".
+ * With the default `TB_AGENT_TIMEOUT_SEC` of 900:
+ *  - `auditAffordable` needs ≥ 480s left;
+ *  - `checkpoint.mustStop` fires below 300s.
  */
 
 /** A deadline `seconds` from now, in the ISO-8601 Z form the harbor adapter sends. */
@@ -120,10 +100,8 @@ const lastCheckpoint = (run: Awaited<ReturnType<typeof createTestRun>>) =>
 
 describe("deep-solve: the input contract", () => {
 	it("refuses to start without the deadline, which is the whole basis of its scheduling", async () => {
-		// PiWorkflowAgent reconstructs harbor's agent timeout and sends this; WorkflowAgent (kimchi)
-		// sends `{instruction}` alone. This failing loudly in the first second — rather than the workflow
-		// inventing a clock — is what keeps `agent=kimchi-workflow workflow=deep-solve` from quietly
-		// producing a run scheduled against nothing.
+		// Failing loudly here keeps `agent=kimchi-workflow workflow=deep-solve`
+		// from quietly producing a run scheduled against nothing.
 		const run = await createTestRun(deepSolve, {
 			input: { instruction: "Make the cli print ok." },
 			agents: { plan: [reply(planned)], execute: [worked], check: [reply(complete)] },

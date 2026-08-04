@@ -1,38 +1,12 @@
 """Stock ``pi`` plus the kimchi-workflows extension, running one named workflow.
 
-The pi-side counterpart of ``WorkflowAgent``: same extension, same
-``workflows/`` sources, same ``extension=``/``workflow=`` kwargs — with the
-kimchi binary taken out of the picture entirely. What runs is upstream
-``@earendil-works/pi-coding-agent`` with two extensions loaded
-(``pi-kimchi-provider`` for model routing, ``kimchi-workflows`` for the engine),
-so a benchmark result attributes to the *workflow*, not to kimchi's extension
-layer sitting underneath it.
+Unlike ``WorkflowAgent`` (which runs the same workflow under the kimchi binary),
+this runs upstream ``@earendil-works/pi-coding-agent`` with no kimchi in the
+picture, so a benchmark result attributes to the workflow, not to kimchi's
+extension layer.
 
-It subclasses ``PiKimchi`` and overrides only that class's hooks — never
-``run()``, which is decorated with ``@with_prompt_template`` and would render
-the template twice if a subclass called it.
-
-## The deadline, which is why this adapter exists at all
-
-``deep-solve`` sizes every one of its stages from the wall clock: how long
-``execute`` gets this round, whether a second opinion is still affordable,
-whether another round fits before the harness kills the container. Harbor hands
-``agent_timeout_sec`` to the oracle agent and to nobody else, which is why the
-ancestor of that workflow could never be ported here (``workflows/README.md``,
-"tb-solver ... is not here").
-
-So this adapter reconstructs it, by computing exactly what
-``Trial._compute_agent_timeout_sec`` computes:
-
-    base    = agent.override_timeout_sec or <task.toml>[agent].timeout_sec
-    timeout = min(base, agent.max_timeout_sec) * (agent_timeout_multiplier ?? timeout_multiplier)
-
-Every input but one is in the trial's own ``config.json``, written before the
-agent phase starts. The exception is the task's declared ``timeout_sec``, which
-lives in the ``task.toml`` of harbor's task cache — keyed by the same content
-ref ``config.json`` records. A run that cannot work it out falls back to
-``DEFAULT_TIMEOUT_SEC`` rather than failing: a workflow on a wrong-but-sane
-clock still solves tasks, and ``TB_AGENT_TIMEOUT_SEC`` overrides the lot.
+Subclasses ``PiKimchi`` and overrides only hooks — never ``run()`` (see
+``PiKimchi._extension_paths`` for why).
 """
 
 from __future__ import annotations
@@ -63,27 +37,22 @@ if TYPE_CHECKING:
 CONTAINER_EXTENSION_DIR = f"{CONTAINER_INSTALL_DIR}/kimchi-workflows"
 CONTAINER_WORKFLOWS_STAGE_DIR = f"{CONTAINER_INSTALL_DIR}/workflows"
 
-# Relative on purpose: the pre-launch commands run in the same shell, and so the
-# same cwd, as pi itself, which is the project root the extension resolves
-# workflow names against. Python cannot learn that path up front.
-#
+# Relative: pre-launch commands run in the same shell as pi, so $PWD is the
+# project root the extension resolves workflow names against.
 # `.pi`, not `.kimchi`: the extension derives the segment from the running
-# harness's own name rather than hardcoding one (kimchi-workflows'
-# `src/host/project-dir.ts`), and the harness here is stock pi.
+# harness's own name (kimchi-workflows/src/host/project-dir.ts).
 PROJECT_DIR = ".pi"
 PROJECT_WORKFLOWS_DIR = f"{PROJECT_DIR}/workflows"
 
 WORKFLOW_INPUT_PATH = f"{CONTAINER_LOGS_DIR}/workflow-input.json"
 WORKFLOWS_HOST_DIR = Path(__file__).parent.parent.parent / "workflows"
 
-# Kept for debugging after the run, since the live copy is deleted — see
-# _post_launch_commands.
+# Debugging copy of .pi/, kept after _post_launch_commands deletes the live one.
 CONTAINER_PROJECT_DIR_COPY = f"{CONTAINER_LOGS_DIR}/pi-project-dir"
 
 AGENT_TIMEOUT_ENV = "TB_AGENT_TIMEOUT_SEC"
 DEFAULT_TIMEOUT_SEC = 900
-# Stop the workflow before harbor's hard kill, so the last step lands instead of
-# dying mid-write.
+# Stop the workflow before harbor's hard kill so the last step lands.
 DEADLINE_MARGIN_SEC = 45
 # Below this there is no workflow to run, only an expensive way to time out.
 MIN_TIMEOUT_SEC = 60
@@ -94,17 +63,10 @@ ExtensionResolver = Callable[[ExtensionSpec], ResolvedExtension]
 class PiWorkflowAgent(PiKimchi):
     """Runs a named kimchi-workflows workflow on stock pi.
 
-    Two required agent kwargs select what runs, with exactly the meanings
-    ``WorkflowAgent`` gives them:
-
-    - ``extension``: ``npm:<pkg>[@<version-or-dist-tag>]`` or ``dir:<host
-      path>``, resolved **on the host** (never installed in the container — task
-      images ship no node toolchain) and uploaded. Both forms go through
-      ``workflow_extension.resolve_extension_spec``, so both are cached per job
-      and both record what actually resolved in ``AgentInfo.version``.
-    - ``workflow``: a workflow's own declared name (e.g. ``deep-solve``), which
-      the extension resolves against ``.pi/workflows/`` inside the container.
-      This adapter names it and nothing more.
+    Two required kwargs: ``extension`` (resolved on the host, never installed
+    in the container) and ``workflow`` (a declared workflow name resolved
+    against ``.pi/workflows/`` inside the container). See ``WorkflowAgent`` for
+    the same kwargs under kimchi.
     """
 
     @staticmethod
@@ -131,7 +93,6 @@ class PiWorkflowAgent(PiKimchi):
                 "workflow, e.g. --agent-kwarg workflow=deep-solve"
             )
 
-        # Parsed eagerly so a bad spec fails at `harbor run`, not ten minutes in.
         self._extension_spec: ExtensionSpec = parse_extension_spec(str(extension_raw))
         self._extension_raw = str(extension_raw)
         self._workflow = str(workflow)
@@ -143,25 +104,18 @@ class PiWorkflowAgent(PiKimchi):
     # -- install ---------------------------------------------------------
 
     async def install(self, environment: BaseEnvironment) -> None:
-        # pi and pi-kimchi-provider first, so a broken runtime surfaces before
-        # we spend time resolving an npm package on the host.
         await super().install(environment)
 
         resolved = self._resolve_extension(self._extension_spec)
         self._extension_short_identity = resolved.short_identity
-        # Unfiltered, unlike the workflow sources below: an extension needs its
-        # node_modules (jiti lives there). A `dir:` checkout therefore uploads
-        # its devDependencies too — 342 MB against single-digit MB for `npm:`.
-        #
-        # It goes to /installed-agent rather than into pi's auto-discovery
-        # directory, which lives under /logs and is collected as a CI artifact:
-        # an extension with node_modules does not belong in a trial's artifacts.
-        # Loaded by an explicit --extension flag instead (see _extension_paths).
+        # Unfiltered upload: the extension needs its node_modules (jiti lives
+        # there). Goes to /installed-agent, not pi's auto-discovery dir (under
+        # /logs, collected as CI artifact). Loaded via --extension flag.
+        # A dir: checkout uploads devDependencies too (~342 MB vs single-digit
+        # MB for npm:).
         await environment.upload_dir(source_dir=resolved.host_dir, target_dir=CONTAINER_EXTENSION_DIR)
 
-        # Filtered copy — see workflow_staging.WORKFLOWS_UPLOAD_IGNORE. Staged
-        # BEFORE the guard below so the guard inspects what will actually be
-        # uploaded.
+        # Staged before the guard so it inspects what will actually be uploaded.
         with tempfile.TemporaryDirectory(prefix="pi-workflows-stage-") as stage:
             stage_dir = Path(stage) / "workflows"
             workflow_staging.stage_workflows(WORKFLOWS_HOST_DIR, stage_dir)
@@ -176,26 +130,20 @@ class PiWorkflowAgent(PiKimchi):
     # -- the run's clock -------------------------------------------------
 
     def _trial_config(self) -> dict:
-        """The trial's own config.json, written by harbor before the agent phase."""
         try:
             return json.loads((self.logs_dir.parent / "config.json").read_text())
         except (OSError, ValueError):
             return {}
 
     def _task_timeout_sec(self, trial_config: dict) -> int | None:
-        """The task's declared ``[agent] timeout_sec``, from harbor's task cache.
-
-        The trial config names the task and the content ref it was resolved at;
-        harbor's package cache is keyed by that same ref. Falls back to scanning
-        the task's cache directory when the ref is missing or oddly shaped,
-        which is only wrong if two revisions of one task are cached at once.
-        """
+        """The task's declared ``[agent] timeout_sec``, from harbor's task cache."""
+        # The trial config names the task and its content ref; harbor's package
+        # cache is keyed by that ref. Falls back to scanning the cache dir when
+        # the ref is missing, which is only wrong if two revisions are cached.
         task = trial_config.get("task") or {}
         name = task.get("name")
         if not name:
             return None
-        # Task names are "terminal-bench/fix-git"; the cache lays them out as
-        # nested directories under packages/.
         task_dir = Path.home() / ".cache" / "harbor" / "tasks" / "packages" / name
         ref = task.get("ref") or ""
         digest = ref.split(":", 1)[1] if ":" in ref else None
@@ -217,13 +165,9 @@ class PiWorkflowAgent(PiKimchi):
         return None
 
     def _timeout_sec(self) -> int:
-        """How long harbor will let the agent phase run, in seconds.
-
-        Mirrors ``Trial._compute_agent_timeout_sec`` — see this module's
-        docstring for why that is reconstructed here rather than asked for.
-        """
-        # An explicit operator override wins over everything, and is the escape
-        # hatch when the reconstruction below is wrong for some task.
+        """Reconstructs harbor's ``Trial._compute_agent_timeout_sec`` from config.json."""
+        # TB_AGENT_TIMEOUT_SEC overrides everything — escape hatch when the
+        # reconstruction is wrong for some task.
         raw = self._get_env(AGENT_TIMEOUT_ENV)
         if raw:
             try:
@@ -254,7 +198,6 @@ class PiWorkflowAgent(PiKimchi):
         return max(MIN_TIMEOUT_SEC, int(float(base) * float(multiplier)))
 
     def _deadline_iso(self, timeout_sec: int) -> str:
-        """When the workflow must have finished, as an ISO-8601 Z timestamp."""
         deadline = datetime.now(UTC) + timedelta(
             seconds=max(MIN_TIMEOUT_SEC, timeout_sec - DEADLINE_MARGIN_SEC)
         )
@@ -266,18 +209,16 @@ class PiWorkflowAgent(PiKimchi):
         return [CONTAINER_EXTENSION_DIR]
 
     def _stdin_payload(self, instruction: str) -> str:
-        # `instruction` is intentionally unused: it reaches pi through the input
-        # envelope file written by _pre_launch_commands, never on the command
-        # line or on stdin — so it can never be mistaken for a flag (pi's
-        # parseArgs treats any token starting with "-" as one) and never appears
-        # in `ps` or shell history.
+        # Instruction travels in the envelope file, not on stdin — so it can
+        # never be mistaken for a flag (pi's parseArgs treats any token
+        # starting with "-" as one).
         del instruction
         return f"/workflow run {self._workflow} --input @{WORKFLOW_INPUT_PATH}"
 
     def _run_env(self) -> dict[str, str]:
-        # Read by a workflow to size its own step budgets — deep-solve's
-        # BUDGET_SEC and defaultModel. The deadline itself travels in the
-        # envelope, not here: it is per-run data, not configuration.
+        # deep-solve sizes step budgets from TB_AGENT_TIMEOUT_SEC and reads
+        # TB_MODEL for spawned steps that have no --model flag. The deadline
+        # travels in the envelope (per-run data, not configuration).
         return {
             AGENT_TIMEOUT_ENV: str(self._timeout_sec()),
             "TB_MODEL": self.model_name or "",
@@ -290,14 +231,9 @@ class PiWorkflowAgent(PiKimchi):
         )
         write_envelope = f"printf '%s' {shlex.quote(envelope)} > {shlex.quote(WORKFLOW_INPUT_PATH)}"
 
-        # PROJECT_WORKFLOWS_DIR is relative, deliberately: this command and the
-        # pi process it precedes run in the SAME shell invocation, so $PWD here
-        # is by construction the project directory the extension's
-        # resolveWorkflow() looks under. There is no reliable way to learn that
-        # directory from Python ahead of time, and hardcoding a guess would
-        # silently stop matching the day harbor changes the task working
-        # directory — so this discovers it the same way the pi process about to
-        # read it does: by not asking, and just running there.
+        # Relative: runs in the same shell as pi, so $PWD is the project root
+        # the extension resolves workflow names against. Hardcoding a guess
+        # would silently break if harbor changed the task working directory.
         stage_workflows = (
             f"mkdir -p {shlex.quote(PROJECT_WORKFLOWS_DIR)} && "
             f"cp -a {shlex.quote(CONTAINER_WORKFLOWS_STAGE_DIR)}/. {shlex.quote(PROJECT_WORKFLOWS_DIR)}/"
@@ -306,10 +242,8 @@ class PiWorkflowAgent(PiKimchi):
         return [write_envelope, stage_workflows]
 
     def _post_launch_commands(self) -> list[str]:
-        # The workflow sources are OURS, not the task's, and the machine is
-        # graded on its final state after the agent leaves. Keep a copy for
-        # debugging, then take the live one back out. Both tolerate failure: a
-        # tidy-up must never change the trial's recorded outcome.
+        # .pi/ is ours, not the task's. Copy for debugging, then remove before
+        # grading. Both tolerate failure — must not change the exit status.
         return [
             f"cp -a {shlex.quote(PROJECT_DIR)} {shlex.quote(CONTAINER_PROJECT_DIR_COPY)} 2>/dev/null || true",
             f"rm -rf {shlex.quote(PROJECT_DIR)} || true",
@@ -318,11 +252,9 @@ class PiWorkflowAgent(PiKimchi):
     # -- identity --------------------------------------------------------
 
     def to_agent_info(self) -> AgentInfo:
-        # Accepted limitation, shared with WorkflowAgent: workflow file CONTENT
-        # is not captured here. Workflows are files in THIS repo, not in the
-        # extension, so neither the pi version nor the extension identity covers
-        # an edit to one. Give an edited variant its own declared name
-        # (`deep-solve-v2`) if the two must be distinguishable in results.
+        # Workflow file content is not captured: workflows live in this repo,
+        # not the extension. Give an edited variant its own declared name
+        # (e.g. deep-solve-v2) to distinguish it in results.
         extension_identity = self._extension_short_identity or "unresolved"
         return AgentInfo(
             name=self.name(),

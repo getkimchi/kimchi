@@ -70,14 +70,11 @@ HOST_EXTENSION_DIR = Path(__file__).parent / "extensions" / "pi-kimchi-provider"
 EXTENSION_REPO = "getkimchi/pi-kimchi-provider"
 EXTENSION_CLONE_DIR = Path(__file__).parent / "extensions" / "pi-kimchi-provider"
 
-# Offline install bundle: a node runtime, the pi CLI, and pi-kimchi-provider
-# with real (non-symlinked) node_modules, staged on the host by
-# scripts/build-pi-bundle.sh. When present it is uploaded into the container so
-# agent install touches the network zero times — which is the only way tasks
-# declaring `allow_internet = false` can run this agent at all, and is faster
-# everywhere else. Absent, or unusable in the task image, every run falls back
-# to the network install below, which is what all runs did before the bundle
-# existed.
+# Offline install bundle (node + pi + pi-kimchi-provider with real node_modules),
+# staged on the host by scripts/build-pi-bundle.sh. When present and runnable
+# in the task image, install touches the network zero times — required for
+# tasks with allow_internet=false. Absent or unrunnable, every run falls back
+# to the network install below.
 PI_BUNDLE_DIR_ENV = "PI_BUNDLE_DIR"
 HOST_BUNDLE_DIR = Path(__file__).parent.parent.parent / ".cache" / "pi-bundle"
 
@@ -137,11 +134,9 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
     ]
 
     def __init__(self, *args, **kwargs):
-        # The pi-kimchi-provider extension source directory on the host.
         self._extension_source_dir = kwargs.pop("extension-source-dir", None)
         # Set by install(): whether the offline bundle was uploaded AND ran in
-        # this task image. Read by the launch command, which must not run
-        # `npm install` over node_modules the bundle already shipped.
+        # this task image. The launch command skips `npm install` when True.
         self._bundled = False
         super().__init__(*args, **kwargs)
 
@@ -157,14 +152,7 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
         )
 
     def _path_setup(self) -> str:
-        """PATH prologue for every shell that needs ``node``/``npm``/``pi``.
-
-        Covers both install modes in one string — the bundled runtime first,
-        then the nvm-installed one — because each ``exec_as_*`` call is a fresh
-        shell and neither location survives from install() into run(). Harmless
-        when a mode did not happen: a PATH entry that does not exist is skipped,
-        and the nvm source is already guarded on the file being there.
-        """
+        """PATH prologue covering both install modes (bundled runtime + nvm)."""
         return (
             f'export PATH="{CONTAINER_BUNDLE_PI_DIR}/bin:{CONTAINER_BUNDLE_NODE_DIR}/bin:$PATH"; '
             'export NVM_DIR="$HOME/.nvm"; '
@@ -233,9 +221,9 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
         return ext_dir
 
     async def install(self, environment: BaseEnvironment) -> None:
-        # Bundle first, and before the package manager: if it works there is
-        # nothing left that needs the network, so a failing `apt-get update` on
-        # an isolated task image must not take the install down with it.
+        # Bundle before the package manager: if it works, nothing left needs the
+        # network, so a failing apt-get on an isolated image must not take the
+        # install down with it.
         self._bundled = await self._install_from_bundle(environment)
 
         await self._install_system_packages(environment, tolerate_failure=self._bundled)
@@ -246,8 +234,6 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
 
         if not self._bundled:
             await self._install_pi_from_network(environment)
-            # Upload the pi-kimchi-provider extension SOURCE; its node_modules
-            # are installed in-container at launch (see _pi_launch_command).
             # The bundle path uploaded the same tree already installed.
             ext_dir = self._ensure_extension_available()
             await environment.upload_dir(
@@ -260,18 +246,11 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
         return Path(override) if override else HOST_BUNDLE_DIR
 
     async def _install_from_bundle(self, environment: BaseEnvironment) -> bool:
-        """Upload the prebuilt offline bundle. False when there isn't a usable one.
-
-        Two ways this returns False, and both are ordinary rather than errors:
-        the bundle was never built on the host (nobody ran
-        ``scripts/build-pi-bundle.sh``), or it was built and this task image
-        cannot run it. The second is the interesting one — the official node
-        tarballs are glibc-linked, so on a musl image (Alpine) the binary is
-        present and simply will not execute. That is why the probe below runs
-        the thing rather than trusting the upload: a bundle that cannot start
-        must be cleared away, not left shadowing the working nvm install on
-        PATH.
-        """
+        """Upload the prebuilt offline bundle. Returns False when absent or unrunnable."""
+        # Official node tarballs are glibc-linked, so on musl (Alpine) the binary
+        # uploads fine but will not execute. The probe below runs the binary
+        # rather than trusting the upload — a bundle that cannot start must be
+        # cleared away, not left shadowing the working nvm install on PATH.
         bundle = self._bundle_dir()
         required = {
             "node runtime": bundle / "node" / "bin" / "node",
@@ -326,9 +305,8 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
         return True
 
     async def _install_system_packages(self, environment: BaseEnvironment, *, tolerate_failure: bool) -> None:
-        # Install git, curl, and (where available) nodejs/npm via the system
-        # package manager. The nvm fallback needs curl, and installing
-        # nodejs/npm directly avoids the nvm path entirely on Alpine images.
+        # The nvm fallback needs curl; installing nodejs/npm directly avoids
+        # the nvm path entirely on Alpine images.
         command = (
             "if command -v apk &> /dev/null; then"
             "  apk add --no-cache curl bash git nodejs npm;"
@@ -406,37 +384,25 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
             raise
 
     def _extension_paths(self) -> list[str]:
-        """Container paths passed to pi as ``--extension``.
-
-        Empty here: pi-kimchi-provider is loaded by auto-discovery instead (it
-        is copied into ``<agentDir>/extensions/``). This and the three hooks
-        below exist so a subclass never has to override ``run()`` — it is
-        decorated with ``@with_prompt_template``, which is not idempotent, so a
-        subclass calling a decorated ``super().run()`` would render the prompt
-        template twice.
-        """
+        """Container paths passed to pi as ``--extension``. Empty here (auto-discovery)."""
+        # These hooks exist so a subclass never overrides run() — it is
+        # decorated with @with_prompt_template, which is not idempotent.
         return []
 
     def _stdin_payload(self, instruction: str) -> str:
-        """What to pipe to pi, when it is not the instruction verbatim."""
+        """What to pipe to pi via stdin."""
         return instruction
 
     def _pre_launch_commands(self, instruction: str) -> list[str]:
-        """Shell commands to run in the launch pipeline, before pi starts."""
         del instruction
         return []
 
     def _post_launch_commands(self) -> list[str]:
-        """Shell commands to run after pi exits, with its status already captured.
-
-        For anything a subclass added to the task working directory and must
-        take back out before the machine is graded. Each is run unconditionally
-        and must not change the recorded exit status.
-        """
+        """Cleanup after pi exits. Must not change the recorded exit status."""
         return []
 
     def _run_env(self) -> dict[str, str]:
-        """Extra environment for the pi process, on top of the API key and agent dir."""
+        """Extra env for the pi process."""
         return {}
 
     def _pi_launch_command(self, instruction: str, cli_flags: str) -> str:
@@ -450,10 +416,8 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
             f"mkdir -p {shlex.quote(CONTAINER_SESSIONS_DIR)}",
             # Drop stale pgid marker from a previous interrupted attempt.
             f"rm -f {shlex.quote(CONTAINER_AGENT_PGID_FILE)}",
-            # Install the pi-kimchi-provider extension: copy the staged dir into
-            # pi's auto-discovery directory. pi's discoverAndLoadExtensions
-            # scans <agentDir>/extensions/ for subdirectories with a
-            # package.json containing a "pi" field.
+            # Copy the staged extension into pi's auto-discovery directory
+            # (scans <agentDir>/extensions/ for dirs with a package.json "pi" field).
             f"mkdir -p {shlex.quote(CONTAINER_PI_EXTENSIONS_DIR)} && "
             f"cp -a {shlex.quote(CONTAINER_EXTENSION_STAGE_DIR)}/. "
             f"{shlex.quote(CONTAINER_EXTENSION_INSTALL_DIR)}/",
@@ -463,9 +427,8 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
             # tree with node_modules already in it, and running npm over it
             # would need the network the bundle exists to avoid.
             parts.append(f"cd {shlex.quote(CONTAINER_EXTENSION_INSTALL_DIR)} && npm install --production")
-        # Ensure a git repo exists in the task working directory with a
-        # committed baseline, but never clobber one that the task image
-        # ships with (e.g. fix-git).
+        # Ensure a git repo exists with a committed baseline, but never clobber
+        # one the task image ships with (e.g. fix-git).
         parts.append(f"cd /app && {git_init_and_commit_baseline_command()}")
         parts.extend(self._pre_launch_commands(instruction))
 
@@ -474,18 +437,15 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
             # Enable job control so the backgrounded pi pipeline gets a
             # process group that can be terminated as a unit on timeout.
             "set -m && { "
-            # Feed the task prompt (or a subclass-supplied payload) through
-            # stdin instead of as a positional arg: pi's parseArgs treats tokens
-            # starting with "-" as flags (no "--" end-of-options marker), which
-            # would crash on instructions like "- You are given...".
+            # Feed the prompt through stdin — pi's parseArgs treats tokens
+            # starting with "-" as flags (no "--" terminator).
             f"(printf '%s' {shlex.quote(self._stdin_payload(instruction))} | {runner}) & "
             # Record the process-group id for cancellation cleanup.
             "agent_pid=$!; "
             'agent_pgid=$(ps -o pgid= -p "$agent_pid" 2>/dev/null | tr -d "[:space:]" || true); '
             f"printf '%s\\n' \"${{agent_pgid:-$agent_pid}}\" > {shlex.quote(CONTAINER_AGENT_PGID_FILE)}; "
             'wait "$agent_pid"; '
-            # Captured before any cleanup below, so what Harbor sees is pi's own
-            # status and never a tidy-up command's.
+            # Captured before cleanup so Harbor sees pi's status, not a tidy-up's.
             "agent_status=$?; "
             f"{post_launch}"
             f"rm -f {shlex.quote(CONTAINER_AGENT_PGID_FILE)}; "
@@ -542,17 +502,8 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
         total_cache_write_tokens = 0
         total_cost = 0.0
 
-        # Aggregate main.jsonl + Agent child <timestamp>_<uuid>.jsonl siblings.
-        # pi writes the same session format as kimchi (both use pi-coding-agent).
-        #
-        # Recursive because not every session file is a sibling: the
-        # kimchi-workflows extension parks a run's artifacts in a `workflow/`
-        # SUBDIRECTORY of the session dir (its runArtifactsDir), deliberately,
-        # so pi's own non-recursive session pickers do not offer a workflow step
-        # as something to `--continue`. Every step session of a workflow run
-        # therefore lives one level down, and a flat glob would report a
-        # workflow trial as having spent no tokens at all. Harmless for plain pi
-        # runs, which put nothing below this directory.
+        # Recursive: kimchi-workflows parks step sessions in a workflow/
+        # subdirectory of the session dir. A flat glob would miss them.
         for session_file in sorted(sessions_dir.rglob("*.jsonl")):
             try:
                 lines = session_file.read_text().splitlines()

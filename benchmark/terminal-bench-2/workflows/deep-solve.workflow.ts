@@ -1,62 +1,34 @@
 /**
- * deep-solve: a terminal-bench solver built as a staged workflow.
+ * deep-solve: a staged terminal-bench solver workflow.
  *
  * Design sources:
- *  - Deep-agents playbook (LangChain, "Evaluating deepagents-cli on Terminal-Bench 2.0"): explicit
- *    planning artifact, subagents with isolated context windows, state offloaded out of the
- *    conversation, detailed prompting, verification before stopping.
- *  - LangChain, "Improving Deep Agents with harness engineering" (52.8 -> 66.5 on TB 2.0 without
- *    changing the model): the dominant failure is an agent re-reading its own work, deciding it looks
- *    fine, and stopping — so verification must mean RUNNING things; agents waste budget rediscovering
- *    their environment — so map it once and inject it; agents are bad at time estimation — so every
- *    prompt quotes its own budget; and doom loops need detecting from outside the model.
- *  - Terminal-Bench failure taxonomy (ICLR 2026 paper + CLI-Universe follow-up): 47-60% of frontier
- *    failures are Verification-class (premature termination, absent or shallow checks). This workflow
- *    spends a dedicated fresh-context stage per round on exactly that.
+ *  - LangChain deep-agents playbook: planning artifact, subagents with isolated
+ *    context, state offloaded from conversation, verification before stopping.
+ *  - LangChain "harness engineering" (52.8 -> 66.5 on TB 2.0): verification must
+ *    mean RUNNING things; map the environment once; every prompt quotes its budget.
+ *  - TB failure taxonomy (ICLR 2026): 47-60% of frontier failures are
+ *    Verification-class — so a dedicated fresh-context stage per round.
  *
  * Shape: plan -> (clock -> execute -> check -> audit? -> checkpoint)* -> report
  *
- *  - `plan` maps the environment once (context injection) and decomposes the task into TODOS, each
- *    with a `doneWhen` shell probe — the deep-agents planning artifact, made machine-checkable.
- *  - `execute` works the todo list in a resumable session (progress is sustained across rounds
- *    instead of re-derived), but its self-report is never trusted: it has no output schema at all.
- *  - `check` is a fresh subagent that owns the todo statuses. It re-runs every probe from a clean
- *    shell and then audits the task beyond the todo list. The run can only stop early when `check`
- *    says the task is complete.
- *  - `audit` is a second opinion bought only on a "complete" verdict, and only while a disagreement
- *    is still repairable. It is decorrelated by METHOD: it never sees the todo list, works from the
- *    task end to end, and may overturn only with pasted evidence. (Round-2 addition: the first full
- *    run lost 31 tasks and the dominant mode was exactly a checker passing work the hidden tests
- *    failed.)
- *  - `checkpoint` (deterministic) is the middleware: it fingerprints the failures each round and
- *    raises a `stuck` flag when two consecutive rounds fail identically, which switches the next
- *    `execute` prompt from "continue" to "change strategy". It also ends the run before the harness
- *    deadline would kill it mid-edit.
+ *  - `plan` maps the environment and decomposes the task into TODOS with
+ *    `doneWhen` shell probes.
+ *  - `execute` works the todo list in a resumable session. No output schema —
+ *    the product is the machine, not a self-report.
+ *  - `check` is a fresh subagent that re-runs every probe. The run stops early
+ *    only on `check`'s verdict.
+ *  - `audit` is a second opinion on a "complete" verdict, decorrelated by method
+ *    (never sees the todo list). Bought only while a repair round still fits.
+ *  - `checkpoint` fingerprints failures each round; raises `stuck` when two
+ *    consecutive rounds fail identically, switching execute to "change strategy".
  *
- * Every agent step is `background: true`: an isolated pi subprocess, so the orchestrating session
- * holds no conversation and all state moves through typed step results.
+ * Every agent step is `background: true` (isolated pi subprocess, no conversation
+ * in the orchestrator).
  *
- * ## What this workflow needs from its adapter, and who supplies it
- *
- * Unlike `ferment-oneshot`, which is bounded only from outside the container and computes nothing
- * from a clock, EVERY budget below is derived from one: how long `execute` gets this round, whether a
- * second opinion is still affordable, whether another round fits at all. That needs two things the
- * engine cannot invent:
- *
- *  - `deadlineIso` in the run input — when the harness will kill the agent phase;
- *  - `TB_AGENT_TIMEOUT_SEC` in the environment — the size of the whole box, which sets the per-stage
- *    caps (`PLAN_CAP_MS`, `CHECK_CAP_MS`, `AUDIT_CAP_MS`).
- *
- * Harbor hands `agent_timeout_sec` to the oracle agent and to nobody else, which is why the ancestor
- * of this workflow never lived here (see workflows/README.md). **`PiWorkflowAgent`
- * (`src/kimchi_agent/pi_workflow.py`) is what makes it runnable**: it reconstructs harbor's own
- * `_compute_agent_timeout_sec` from the trial's `config.json` and the task's `task.toml`, then sends
- * both values in. `WorkflowAgent` (kimchi) does NOT — its envelope is `{instruction}` alone — so
- * running this workflow under `agent=kimchi-workflow` fails input validation in the first second,
- * deliberately and visibly, rather than silently on a made-up clock.
- *
- * `TB_MODEL` is supplied by the same adapter and carries the run's `--model` down to each spawned
- * step, which has no CLI flag of its own.
+ * Requires `deadlineIso` in the run input and `TB_AGENT_TIMEOUT_SEC` in the env —
+ * supplied only by PiWorkflowAgent. WorkflowAgent (kimchi) sends `{instruction}`
+ * alone, so running this under `agent=kimchi-workflow` fails input validation
+ * visibly rather than silently on a fabricated clock.
  */
 import { type Static, Type } from "typebox"
 import { createAgentStep, createStep, createWorkflow, type RunContext } from "@kimchi-dev/kimchi-workflows"

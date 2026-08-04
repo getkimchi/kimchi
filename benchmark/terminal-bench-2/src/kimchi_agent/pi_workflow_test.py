@@ -1,11 +1,4 @@
-"""PiWorkflowAgent: stock pi hosting a kimchi-workflows workflow.
-
-The interesting surface here is not "does it launch pi" — PiKimchi's own suite
-pins that — but the three things this adapter adds and nothing else supplies:
-the extension is loaded by flag rather than by auto-discovery, the workflow
-sources reach `.pi/workflows` and leave again before grading, and the run is
-handed a wall clock reconstructed from harbor's own inputs.
-"""
+"""PiWorkflowAgent: stock pi hosting a kimchi-workflows workflow."""
 
 import asyncio
 import json
@@ -31,12 +24,7 @@ from kimchi_agent.workflow_extension import ResolvedExtension
 
 
 class RecordingPiWorkflowAgent(PiWorkflowAgent):
-    """Records what would have been run, and stops at the launch command.
-
-    Each kimchi_agent test module declares its own recording harness rather than
-    importing test doubles across modules — the convention the other suites here
-    follow.
-    """
+    """Records what would have been run, and stops at the launch command."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -46,8 +34,6 @@ class RecordingPiWorkflowAgent(PiWorkflowAgent):
         self.setup_commands: list[str] = []
 
     async def exec_as_agent(self, _environment, command: str, env=None, cwd=None, timeout_sec=None):
-        # Install-time housekeeping is recorded apart so agent_commands[0] stays
-        # the launch.
         if "pi --print" not in command and "--extension" not in command:
             self.setup_commands.append(command)
             return
@@ -140,7 +126,6 @@ def test_requires_workflow_kwarg(tmp_path: Path) -> None:
 
 
 def test_rejects_a_bad_extension_spec_at_construction(tmp_path: Path) -> None:
-    # Eagerly, so a typo fails at `harbor run` rather than ten minutes into a trial.
     with pytest.raises(ValueError):
         PiWorkflowAgent(
             logs_dir=tmp_path,
@@ -171,9 +156,6 @@ async def test_install_uploads_extension_and_workflows(tmp_path: Path, workflows
 async def test_install_strips_dev_only_scaffolding_from_the_workflows_upload(
     tmp_path: Path, workflows_dir: Path
 ) -> None:
-    # Pinned here as well as in workflow_agent_test: both adapters upload this
-    # directory, so both have to keep node_modules and the test suite out of a
-    # task container.
     (workflows_dir / "node_modules").mkdir()
     (workflows_dir / "node_modules" / "marker").write_text("x")
     (workflows_dir / "test").mkdir()
@@ -209,8 +191,6 @@ async def test_install_strips_dev_only_scaffolding_from_the_workflows_upload(
 async def test_install_fails_when_no_workflow_can_resolve_by_name(
     tmp_path: Path, workflows_dir: Path
 ) -> None:
-    # A declared name is served only by a non-recursive readdir of the top
-    # level, so a workflow that exists only in a subdirectory cannot run.
     (workflows_dir / "deep-solve.workflow.ts").unlink()
     nested = workflows_dir / "nested"
     nested.mkdir()
@@ -230,15 +210,12 @@ async def test_install_fails_when_no_workflow_can_resolve_by_name(
 async def test_extension_is_loaded_by_flag_not_by_auto_discovery(
     tmp_path: Path, workflows_dir: Path
 ) -> None:
-    # It must NOT land in pi's auto-discovery dir: that lives under /logs, which
-    # is collected as a CI artifact, and this extension carries node_modules.
     (tmp_path / "resolved-extension").mkdir()
     agent = _agent(tmp_path, tmp_path / "resolved-extension")
 
     command = await _launch_command(agent)
 
     assert f"--extension {CONTAINER_EXTENSION_DIR}" in command
-    # ...and the flag comes before pi's own arguments.
     assert command.index("--extension") < command.index("--print")
 
 
@@ -246,9 +223,6 @@ async def test_extension_is_loaded_by_flag_not_by_auto_discovery(
 async def test_instruction_travels_in_the_envelope_never_on_the_command_line(
     tmp_path: Path, workflows_dir: Path
 ) -> None:
-    # pi's parseArgs treats any token starting with "-" as a flag and has no
-    # "--" terminator, so an instruction beginning with a dash would crash the
-    # run if it were ever an argument.
     (tmp_path / "resolved-extension").mkdir()
     agent = _agent(tmp_path, tmp_path / "resolved-extension")
 
@@ -275,8 +249,6 @@ async def test_envelope_carries_the_instruction_and_a_deadline(
     envelope = json.loads(shlex.split(quoted)[0])
 
     assert envelope["instruction"] == "solve it"
-    # deep-solve requires this field; without it the extension rejects the run
-    # during input validation, before a single step executes.
     assert envelope["deadlineIso"].endswith("Z")
 
 
@@ -293,12 +265,7 @@ async def test_workflows_are_staged_into_the_project_dir_by_relative_path(
         f"mkdir -p {shlex.quote(PROJECT_WORKFLOWS_DIR)} && "
         f"cp -a {shlex.quote(CONTAINER_WORKFLOWS_STAGE_DIR)}/. {shlex.quote(PROJECT_WORKFLOWS_DIR)}/"
     ) in command
-    # Relative on purpose: the same shell runs pi, so $PWD is by construction
-    # the project root the extension resolves workflow names against. An
-    # absolute guess would silently stop matching if harbor moved the workdir.
     assert not PROJECT_WORKFLOWS_DIR.startswith("/")
-    # `.pi`, not `.kimchi` — the extension derives the segment from the running
-    # harness's name, and the harness here is stock pi.
     assert PROJECT_WORKFLOWS_DIR == ".pi/workflows"
 
 
@@ -311,10 +278,7 @@ async def test_project_dir_is_removed_after_the_run_without_changing_the_exit_st
 
     command = await _launch_command(agent)
 
-    # The workflow sources are ours, not the task's, and the machine is graded
-    # on the state we leave behind.
     assert f"rm -rf {shlex.quote(PROJECT_DIR)}" in command
-    # Cleanup runs after pi's status is captured, and cannot overwrite it.
     assert command.index("agent_status=$?") < command.index(f"rm -rf {shlex.quote(PROJECT_DIR)}")
     assert command.index(f"rm -rf {shlex.quote(PROJECT_DIR)}") < command.index('exit "$agent_status"')
 
@@ -328,8 +292,6 @@ async def test_run_env_carries_the_budget_and_the_model(tmp_path: Path, workflow
 
     env = agent.agent_envs[0]
     assert env["KIMCHI_API_KEY"] == "test-key"
-    # deep-solve sizes its per-stage caps from this, and each spawned step reads
-    # TB_MODEL because it has no --model flag of its own.
     assert env["TB_AGENT_TIMEOUT_SEC"] == str(DEFAULT_TIMEOUT_SEC)
     assert env["TB_MODEL"] == "kimchi-dev/kimi-k2.7"
 
@@ -352,10 +314,6 @@ def test_timeout_falls_back_to_the_default_without_a_trial_config(tmp_path: Path
 
 
 def test_timeout_uses_the_override_and_applies_the_multiplier(tmp_path: Path) -> None:
-    # Mirrors Trial._compute_agent_timeout_sec: an override replaces the task's
-    # own declaration, and the multiplier scales what comes out. Getting this
-    # wrong is not visible as a failure — the workflow would just quietly stop
-    # halfway through a budget it actually had.
     logs_dir = _trial_config(
         tmp_path,
         {"agent": {"override_timeout_sec": 600}, "timeout_multiplier": 2},
@@ -407,8 +365,6 @@ def test_explicit_env_override_wins_over_everything(
 
 
 def test_deadline_is_pulled_back_from_the_hard_kill(tmp_path: Path) -> None:
-    # The margin is the whole point: a step still writing when harbor kills the
-    # container loses everything it had not yet flushed.
     (tmp_path / "resolved-extension").mkdir()
     agent = _agent(tmp_path, tmp_path / "resolved-extension")
 
@@ -440,33 +396,24 @@ async def test_agent_info_records_the_workflow_and_the_resolved_extension(
 
 
 def test_agent_info_before_install_says_the_extension_is_unresolved(tmp_path: Path) -> None:
-    # Better than an empty string: a result.json that says "unresolved" is
-    # reporting a run that never installed, which is a real thing to see.
     (tmp_path / "resolved-extension").mkdir()
     agent = _agent(tmp_path, tmp_path / "resolved-extension")
     assert "unresolved" in agent.to_agent_info().version
 
 
 def test_workflow_name_is_passed_through_untouched(tmp_path: Path) -> None:
-    # The adapter names a workflow; resolving that name is the extension's job.
     (tmp_path / "resolved-extension").mkdir()
     agent = _agent(tmp_path, tmp_path / "resolved-extension", workflow="ferment-oneshot")
     assert agent._stdin_payload("ignored").startswith("/workflow run ferment-oneshot ")
 
 
 def test_deep_solve_workflow_is_present_and_resolvable_by_name() -> None:
-    # The pipeline's `workflow=deep-solve` input resolves by CONVENTION, which
-    # requires the declared name to equal the filename and the file to sit at
-    # the top level of workflows/ — a non-recursive readdir is all that serves
-    # a name lookup.
     source = Path(__file__).parent.parent.parent / "workflows" / "deep-solve.workflow.ts"
     assert source.is_file(), "workflows/deep-solve.workflow.ts is what agent=pi-workflow runs"
     assert 'name: "deep-solve"' in source.read_text()
 
 
 def test_deep_solve_requires_the_deadline_this_adapter_supplies() -> None:
-    # If this ever stops being required, the reconstruction in pi_workflow.py is
-    # dead weight and should go with it.
     source = Path(__file__).parent.parent.parent / "workflows" / "deep-solve.workflow.ts"
     text = source.read_text()
     assert "deadlineIso: Type.String()" in text

@@ -298,17 +298,10 @@ class PiKimchiTest(unittest.IsolatedAsyncioTestCase):
 
             command = agent.get_version_command()
 
-        # Both install modes on one PATH: the bundle is uploaded here, and nvm
-        # supplies the fallback. A version probe that only knew about one would
-        # report "unknown" for half the runs.
         self.assertIn(f"{CONTAINER_BUNDLE_PI_DIR}/bin", command)
         self.assertIn(f"{CONTAINER_BUNDLE_NODE_DIR}/bin", command)
 
     def test_populate_context_finds_workflow_step_sessions_one_level_down(self) -> None:
-        # The kimchi-workflows extension parks a run's step sessions in a
-        # `workflow/` SUBDIRECTORY of the session dir, deliberately, to keep
-        # them out of pi's own session pickers. A flat glob would report a
-        # workflow trial as having spent no tokens at all.
         with tempfile.TemporaryDirectory() as tmp:
             logs_dir = Path(tmp)
             nested = logs_dir / "sessions" / "workflow"
@@ -366,13 +359,7 @@ class BundleEnvironment(FakeEnvironment):
 
 
 class PiKimchiBundleTest(unittest.IsolatedAsyncioTestCase):
-    """The offline install bundle: node + pi + pi-kimchi-provider, prebuilt.
-
-    Its whole purpose is that agent install touches the network zero times,
-    which is what lets a task declaring `allow_internet = false` run this agent
-    at all. So the tests that matter are about the fallbacks: a bundle that was
-    never built, and one that cannot execute in this task image.
-    """
+    """Offline install bundle: node + pi + pi-kimchi-provider, prebuilt."""
 
     def setUp(self) -> None:
         self._old_api_key = os.environ.get("KIMCHI_API_KEY")
@@ -425,8 +412,6 @@ class PiKimchiBundleTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any("nvm" in c and "install.sh" in c for c in agent.agent_commands))
 
     async def test_bundled_run_does_not_npm_install_the_extension(self) -> None:
-        # The bundle ships that tree with node_modules already in it; running
-        # npm over it would need the network the bundle exists to avoid.
         self._stage_bundle()
         agent = self._agent()
         environment = BundleEnvironment()
@@ -446,13 +431,9 @@ class PiKimchiBundleTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(agent._bundled)
         self.assertTrue(any("npm install -g" in c for c in agent.agent_commands))
-        # ...and the probe never ran, since there was nothing to probe.
         self.assertEqual(environment.exec_commands, [])
 
     async def test_unrunnable_bundle_is_removed_and_the_network_install_takes_over(self) -> None:
-        # The official node tarballs are glibc-linked, so on a musl image the
-        # binary uploads fine and simply will not execute. Leaving it on PATH
-        # would shadow the working nvm install with something that cannot run.
         self._stage_bundle()
         agent = self._agent()
         environment = BundleEnvironment(probe_return_code=1)
@@ -475,14 +456,10 @@ class PiKimchiBundleTest(unittest.IsolatedAsyncioTestCase):
         targets = [target for _, target in environment.uploaded_dirs]
         self.assertNotIn(CONTAINER_BUNDLE_NODE_DIR, targets)
         self.assertNotIn(CONTAINER_BUNDLE_PI_DIR, targets)
-        # Refused before anything was uploaded, so there was nothing to probe.
         self.assertEqual(environment.exec_commands, [])
         self.assertTrue(any("npm install -g" in c for c in agent.agent_commands))
 
     async def test_package_install_failure_is_survivable_when_bundled(self) -> None:
-        # An isolated task image has no package repository to reach. With a
-        # bundle in hand the only thing left to want from apt is git, which is
-        # not worth failing a trial over.
         self._stage_bundle()
         agent = self._agent()
 
@@ -492,8 +469,6 @@ class PiKimchiBundleTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("|| echo", package_command)
 
     async def test_package_install_failure_is_fatal_without_a_bundle(self) -> None:
-        # Here the network install still has to happen, so a package manager
-        # that cannot run is a real failure and must surface as one.
         agent = self._agent()
 
         await agent.install(BundleEnvironment())
