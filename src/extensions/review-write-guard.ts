@@ -3,7 +3,6 @@ import type { AgentOutcomeKind, AgentRecord, SubagentType } from "./agents/perso
 import { getCurrentPhase } from "./tags.js"
 
 const IMPLEMENTATION_TOOLS = new Set(["edit", "write"])
-const DELEGATION_TOOLS = new Set(["Agent"])
 
 export interface OrchestratorWriteGuardOptions {
 	/** Tools that count as implementation work. Default: edit, write. */
@@ -56,6 +55,7 @@ interface AgentOutcomeSummary {
 // subagent return, which would regress existing behavior.
 function isSuccessfulOutcome(outcome: AgentOutcomeSummary | undefined): boolean {
 	if (!outcome) return true
+	if (outcome.status === "steered" && outcome.outcome === "completed") return true
 	return outcome.status === "completed" && outcome.outcome === "completed"
 }
 
@@ -64,18 +64,13 @@ function isTriageOutcome(outcome: AgentOutcomeSummary | undefined): boolean {
 	const { status, outcome: result } = outcome
 	// Explicit failure states observed from agent tool results.
 	if (status === "aborted" || status === "stopped" || status === "error") return true
-	if (result === "failed" || result === "budget_exhausted") return true
-	// A successfully completed subagent that required steering is still successful.
-	if (status === "completed" && result === "completed") return false
-	if (status === "steered" && result === "completed") return false
-	return false
+	return result === "failed" || result === "budget_exhausted"
 }
 
 export class OrchestratorWriteGuard {
 	private readonly ctx: ExtensionContext
 
 	private readonly implementationTools: Set<string>
-	private readonly delegationTools: Set<string>
 	private readonly buildPhaseThreshold: number
 	private readonly buildPhaseBlockThreshold: number
 	private readonly buildPhaseTriageThreshold: number
@@ -90,11 +85,23 @@ export class OrchestratorWriteGuard {
 		this.ctx = ctx
 
 		this.implementationTools = options.implementationTools ?? new Set(IMPLEMENTATION_TOOLS)
-		this.delegationTools = new Set(DELEGATION_TOOLS)
 		this.buildPhaseThreshold = options.buildPhaseThreshold ?? 2
 		this.buildPhaseBlockThreshold = options.buildPhaseBlockThreshold ?? 5
 		this.buildPhaseTriageThreshold = options.buildPhaseTriageThreshold ?? 4
 		this.buildPhaseTriageBlockThreshold = options.buildPhaseTriageBlockThreshold ?? 8
+
+		if (this.buildPhaseThreshold >= this.buildPhaseBlockThreshold) {
+			throw new Error("buildPhaseBlockThreshold must be greater than buildPhaseThreshold")
+		}
+		if (this.buildPhaseTriageThreshold >= this.buildPhaseTriageBlockThreshold) {
+			throw new Error("buildPhaseTriageBlockThreshold must be greater than buildPhaseTriageThreshold")
+		}
+		if (this.buildPhaseTriageThreshold <= this.buildPhaseThreshold) {
+			throw new Error("buildPhaseTriageThreshold must be greater than buildPhaseThreshold")
+		}
+		if (this.buildPhaseTriageBlockThreshold <= this.buildPhaseBlockThreshold) {
+			throw new Error("buildPhaseTriageBlockThreshold must be greater than buildPhaseBlockThreshold")
+		}
 	}
 
 	reset(): void {
@@ -106,11 +113,6 @@ export class OrchestratorWriteGuard {
 
 	checkToolCall(toolName: string): { block: true; reason: string } | { steer: string } | undefined {
 		const phase = getCurrentPhase(this.ctx.sessionManager.getSessionId())
-
-		if (this.delegationTools.has(toolName)) {
-			this.reset()
-			return undefined
-		}
 
 		if (phase === "review" && this.implementationTools.has(toolName)) {
 			return { block: true, reason: REVIEW_BLOCK_REASON }
@@ -155,9 +157,9 @@ export class OrchestratorWriteGuard {
 		}
 
 		if (!isSuccessfulOutcome(outcome)) {
-			// Unknown or ambiguous outcome: be permissive and disarm rather than risk
-			// trapping the orchestrator in a delegation loop.
-			this.subagentReturnedInBuild = false
+			// Unknown or non-success outcome: use triage thresholds rather than disarming,
+			// so legacy/partial runtime outcomes still get some guard protection.
+			this.subagentReturnedInBuild = true
 			this.lastSubagentSuccessful = false
 			return
 		}
@@ -253,6 +255,10 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 	pi.on("session_start", (_event, ctx) => {
 		const guard = getOrchestratorWriteGuard(ctx)
 		guard.reset()
+	})
+
+	pi.on("session_shutdown", (_event, ctx) => {
+		guardMap.delete(ctx.sessionManager.getSessionId())
 	})
 
 	pi.on("tool_call", (event, ctx) => {

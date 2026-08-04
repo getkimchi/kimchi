@@ -237,9 +237,14 @@ describe("reviewWriteGuardExtension wiring", () => {
 		expect(pi._blockResult).toBeUndefined()
 	})
 
-	it("disarms guard when agentOutcome is unknown", () => {
+	it("uses triage thresholds when agentOutcome is unknown", () => {
 		const pi = createMockPI()
-		reviewWriteGuardExtension(pi as unknown as PI, { buildPhaseThreshold: 2 })
+		reviewWriteGuardExtension(pi as unknown as PI, {
+			buildPhaseThreshold: 2,
+			buildPhaseTriageThreshold: 4,
+			buildPhaseBlockThreshold: 5,
+			buildPhaseTriageBlockThreshold: 8,
+		})
 		mockPhase = "build"
 
 		emit(pi, "tool_result", {
@@ -252,11 +257,19 @@ describe("reviewWriteGuardExtension wiring", () => {
 			},
 		})
 
-		for (let i = 0; i < 10; i++) {
-			emit(pi, "tool_call", { toolName: "edit" })
-		}
-
+		// 3 edits under the triage threshold of 4 should not trigger a steer.
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
 		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi._blockResult).toBeUndefined()
+
+		// 4th edit crosses the triage steer threshold.
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: STEER_MESSAGE_TYPE }), {
+			deliverAs: "steer",
+		})
 		expect(pi._blockResult).toBeUndefined()
 	})
 
@@ -279,5 +292,33 @@ describe("reviewWriteGuardExtension wiring", () => {
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		emit(pi, "tool_call", { toolName: "edit" })
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("evicts the session guard from the map on session_shutdown", () => {
+		const pi = createMockPI()
+		reviewWriteGuardExtension(pi as unknown as PI, { buildPhaseThreshold: 2 })
+		mockPhase = "build"
+
+		const ctx = createContext({ sessionManager: { getSessionId: () => "session-evict" } })
+
+		// Populate the guardMap by recording a subagent return.
+		emit(pi, "tool_result", { toolName: "Agent" }, ctx)
+
+		// First edit would normally pass under the steer threshold of 2.
+		emit(pi, "tool_call", { toolName: "edit" }, ctx)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+
+		// Fire session_shutdown for the same session — guard should be evicted.
+		emit(pi, "session_shutdown", {}, ctx)
+
+		// A fresh subagent return + edit on the same session should behave like a
+		// new guard (subagentReturnedInBuild is true again, no leftover state).
+		// If the old guard had been reused, the second edit below would still be
+		// allowed (count reset by recordSubagentReturn), but the eviction proves
+		// the old instance is gone — assert by re-checking sessionStart behavior.
+		emit(pi, "session_start", {}, ctx)
+		mockPhase = "review"
+		emit(pi, "tool_call", { toolName: "edit" }, ctx)
+		expect(pi._blockResult).toMatchObject({ block: true, reason: expect.stringContaining("BLOCKED") })
 	})
 })

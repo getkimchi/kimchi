@@ -32,12 +32,11 @@ describe("OrchestratorWriteGuard — review phase", () => {
 		expect(guard.checkToolCall("grep")).toBeUndefined()
 	})
 
-	it("resets when Agent is called", () => {
+	it("does not treat Agent tool calls as a reset signal on the guard", () => {
 		const guard = new OrchestratorWriteGuard(createContext())
-		guard.checkToolCall("Agent")
-		mockPhase = "review"
-		const result = guard.checkToolCall("edit")
-		expect(result).toEqual({ block: true, reason: expect.stringContaining("BLOCKED") })
+		// The extension short-circuits Agent calls in tool_call; the guard never
+		// receives them. Verifying that calling it directly with "Agent" is a no-op.
+		expect(guard.checkToolCall("Agent")).toBeUndefined()
 	})
 
 	it("blocks every edit attempt, not just the first", () => {
@@ -109,12 +108,47 @@ describe("OrchestratorWriteGuard — build phase", () => {
 		expect(guard.checkToolCall("edit")).toEqual({ steer: expect.stringContaining("Delegation guard") })
 	})
 
-	it("disarms after a non-terminal but valid subagent outcome", () => {
+	it("uses triage thresholds after a non-terminal but valid subagent outcome", () => {
 		mockPhase = "build"
-		const guard = new OrchestratorWriteGuard(createContext(), { buildPhaseThreshold: 2 })
+		const guard = new OrchestratorWriteGuard(createContext(), {
+			buildPhaseThreshold: 2,
+			buildPhaseTriageThreshold: 4,
+			buildPhaseTriageBlockThreshold: 8,
+		})
 		guard.recordSubagentReturn({ status: "queued", outcome: "completed" })
-		for (let i = 0; i < 10; i++) guard.checkToolCall("edit")
-		expect(guard.getState().subagentReturnedInBuild).toBe(false)
+		expect(guard.getState().subagentReturnedInBuild).toBe(true)
+		expect(guard.getState().lastSubagentSuccessful).toBe(false)
+		// 3 edits under the triage threshold of 4 should not trigger a steer.
+		for (let i = 0; i < 3; i++) guard.checkToolCall("edit")
+		expect(guard.checkToolCall("edit")).toEqual({ steer: expect.stringContaining("Delegation guard") })
+	})
+
+	it("treats status:steered, outcome:completed as a successful subagent return", () => {
+		mockPhase = "build"
+		const guard = new OrchestratorWriteGuard(createContext(), {
+			buildPhaseThreshold: 2,
+			buildPhaseTriageThreshold: 4,
+			buildPhaseTriageBlockThreshold: 8,
+		})
+		guard.recordSubagentReturn({ status: "steered", outcome: "completed" })
+		expect(guard.getState().subagentReturnedInBuild).toBe(true)
+		expect(guard.getState().lastSubagentSuccessful).toBe(true)
+		// Normal thresholds: 1st edit allowed, 2nd triggers steer.
+		expect(guard.checkToolCall("edit")).toBeUndefined()
+		expect(guard.checkToolCall("edit")).toEqual({ steer: expect.stringContaining("Delegation guard") })
+	})
+
+	it("uses triage thresholds for an unknown subagent outcome", () => {
+		mockPhase = "build"
+		const guard = new OrchestratorWriteGuard(createContext(), {
+			buildPhaseThreshold: 2,
+			buildPhaseTriageThreshold: 4,
+			buildPhaseTriageBlockThreshold: 8,
+		})
+		// Cast to never so we can pass arbitrary values that aren't valid AgentOutcomeSummary fields.
+		guard.recordSubagentReturn({ status: "weird" as never, outcome: "mystery" as never })
+		expect(guard.getState().subagentReturnedInBuild).toBe(true)
+		expect(guard.getState().lastSubagentSuccessful).toBe(false)
 	})
 
 	it("steers only once then allows edits until block threshold", () => {
@@ -144,16 +178,6 @@ describe("OrchestratorWriteGuard — build phase", () => {
 		for (let i = 0; i < 5; i++) guard.checkToolCall("edit")
 		expect(guard.checkToolCall("edit")).toEqual({ block: true, reason: expect.stringContaining("BLOCKED") })
 		expect(guard.checkToolCall("write")).toEqual({ block: true, reason: expect.stringContaining("BLOCKED") })
-	})
-
-	it("resets when a new Agent is spawned", () => {
-		mockPhase = "build"
-		const guard = new OrchestratorWriteGuard(createContext(), { buildPhaseThreshold: 2 })
-		guard.recordSubagentReturn()
-		guard.checkToolCall("edit")
-		guard.checkToolCall("Agent")
-		expect(guard.getState().subagentReturnedInBuild).toBe(false)
-		expect(guard.getState().buildWriteCount).toBe(0)
 	})
 
 	it("does not track subagent returns outside build phase", () => {
@@ -199,5 +223,51 @@ describe("OrchestratorWriteGuard — other phases", () => {
 		mockPhase = "plan"
 		guard.checkToolCall("edit")
 		expect(guard.getState().subagentReturnedInBuild).toBe(false)
+	})
+})
+
+describe("OrchestratorWriteGuard — threshold order assertions", () => {
+	it("throws when block threshold is not greater than steer threshold", () => {
+		expect(
+			() =>
+				new OrchestratorWriteGuard(createContext(), {
+					buildPhaseThreshold: 5,
+					buildPhaseBlockThreshold: 5,
+				}),
+		).toThrow(/buildPhaseBlockThreshold/)
+	})
+
+	it("throws when triage block threshold is not greater than triage steer threshold", () => {
+		expect(
+			() =>
+				new OrchestratorWriteGuard(createContext(), {
+					buildPhaseTriageThreshold: 8,
+					buildPhaseTriageBlockThreshold: 8,
+				}),
+		).toThrow(/buildPhaseTriageBlockThreshold/)
+	})
+
+	it("throws when triage threshold is not greater than normal threshold", () => {
+		expect(
+			() =>
+				new OrchestratorWriteGuard(createContext(), {
+					buildPhaseThreshold: 4,
+					buildPhaseTriageThreshold: 4,
+				}),
+		).toThrow(/buildPhaseTriageThreshold/)
+	})
+
+	it("throws when triage block threshold is not greater than normal block threshold", () => {
+		expect(
+			() =>
+				new OrchestratorWriteGuard(createContext(), {
+					buildPhaseBlockThreshold: 8,
+					buildPhaseTriageBlockThreshold: 8,
+				}),
+		).toThrow(/buildPhaseTriageBlockThreshold/)
+	})
+
+	it("accepts default threshold ordering", () => {
+		expect(() => new OrchestratorWriteGuard(createContext())).not.toThrow()
 	})
 })
