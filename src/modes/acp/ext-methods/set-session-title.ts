@@ -7,11 +7,6 @@
 import { RequestError } from "@agentclientprotocol/sdk"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 
-export interface SetSessionTitleParams {
-	sessionId: string
-	title: string
-}
-
 /**
  * Handler for the `_kimchi.dev/set_session_title` ACP extension method.
  *
@@ -20,10 +15,10 @@ export interface SetSessionTitleParams {
  * JSONL and emits a session_info_changed event, which the ACP agent surfaces
  * to the client as a session_info_update notification.
  */
-export async function handleSetSessionTitle(
+export function handleSetSessionTitle(
 	getSession: (sessionId: string) => AgentSession | undefined,
 	params: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
+): Record<string, unknown> {
 	const sessionId = params.sessionId
 	if (typeof sessionId !== "string" || sessionId.length === 0) {
 		throw RequestError.invalidParams(undefined, "sessionId is required and must be a non-empty string")

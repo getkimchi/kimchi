@@ -251,8 +251,6 @@ export function createAcpUIContext(
 		async input(title, placeholder, opts) {
 			if (!supportsElicitation) {
 				// No permission-equivalent for free text — notify and resolve undefined.
-				// pi_notify is a best-effort notification; we dispatch it without
-				// checking client capabilities.
 				ui.notify(`Input requested: "${title}" (not supported by this client)`, "warning")
 				return undefined
 			}
