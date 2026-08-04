@@ -1179,6 +1179,7 @@ class BuildRunLLMParametersTest(unittest.TestCase):
             "parameters": {
                 "llm_params": {"temperature": 0.7},
                 "llm_per_model_params": {"kimchi-dev/kimi-k2.6": {"max_tokens": 8192}},
+                "thinking_level": "high",
             },
             "gitlab": {"ref": "benchmarks", "commit_sha": "abc123"},
         }
@@ -1190,6 +1191,7 @@ class BuildRunLLMParametersTest(unittest.TestCase):
         )
         self.assertEqual(run["parameters"]["llm_params"], {"temperature": 0.7})
         self.assertEqual(run["parameters"]["llm_per_model_params"], {"kimchi-dev/kimi-k2.6": {"max_tokens": 8192}})
+        self.assertEqual(run["parameters"]["thinking_level"], "high")
 
     def test_build_run_defaults_llm_parameters_to_empty(self) -> None:
         metadata = {
@@ -1203,6 +1205,7 @@ class BuildRunLLMParametersTest(unittest.TestCase):
         run = summarize_results.build_run(metadata, None, None, self.GENERATED_AT)
         self.assertEqual(run["parameters"]["llm_params"], {})
         self.assertEqual(run["parameters"]["llm_per_model_params"], {})
+        self.assertIsNone(run["parameters"]["thinking_level"])
 
     def test_build_run_llm_params_with_decimal_values_are_json_serializable(self) -> None:
         """Reproduce CI failure: metadata loaded with parse_float=Decimal.

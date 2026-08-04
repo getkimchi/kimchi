@@ -76,6 +76,7 @@ def build_harbor_command(
     pi_version: str | None = None,
     llm_params: dict[str, Any] | None = None,
     llm_per_model_params: dict[str, dict[str, Any]] | None = None,
+    thinking_level: str | None = None,
     workflow: str | None = None,
     workflow_extension: str | None = None,
     checkpoint_plugin: CheckpointPluginArgs | None = None,
@@ -139,6 +140,19 @@ def build_harbor_command(
         encoded_per_model = _encode_agent_kwargs(llm_per_model_params)
         if encoded_per_model:
             cmd.extend(["--agent-kwarg", f"llm-per-model-params={encoded_per_model}"])
+
+    # A fixed thinking level (off/minimal/low/medium/high/xhigh) overrides the
+    # harness's dynamic thinking for every call. None means "use the harness
+    # default" — no kwarg is passed, preserving backward compatibility.
+    # Passed as an --agent-kwarg so Harbor's CliFlag mechanism formats it as
+    # `--thinking <level>` on the agent's command line.
+    if is_kimchi_family(coding_agent) and thinking_level is not None:
+        cmd.extend(["--agent-kwarg", f"thinking={thinking_level}"])
+
+    # The pi agent (bare @earendil-works/pi-coding-agent) also accepts
+    # --thinking via the same CliFlag mechanism.
+    if coding_agent == "pi" and thinking_level is not None:
+        cmd.extend(["--agent-kwarg", f"thinking={thinking_level}"])
 
     if is_workflow_agent(coding_agent):
         cmd.extend(["--agent-kwarg", f"extension={workflow_extension}"])

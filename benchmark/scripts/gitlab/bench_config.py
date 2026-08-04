@@ -268,6 +268,40 @@ ENV_BENCH_LLM_TOP_P = "BENCH_LLM_TOP_P"
 ENV_BENCH_LLM_TOP_K = "BENCH_LLM_TOP_K"
 ENV_BENCH_LLM_MAX_TOKENS = "BENCH_LLM_MAX_TOKENS"
 
+# --- Thinking / reasoning level ---
+ENV_THINKING_LEVEL = "THINKING_LEVEL"
+DEFAULT_THINKING_LEVEL = "default"
+THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhigh", "max"})
+
+# Agents that accept the --thinking CLI flag (kimchi and pi families).
+# opencode and claude-code wrap external tools that do not use pi-ai's
+# thinking-level mechanism.
+_THINKING_CAPABLE_AGENTS = frozenset({DEFAULT_CODING_AGENT, "pi", WORKFLOW_CODING_AGENT, PI_WORKFLOW_CODING_AGENT})
+
+
+def resolve_thinking_level(coding_agent: str | None = None) -> str | None:
+    """Return a fixed thinking level for this run, or None for the harness default.
+
+    Reads ``$THINKING_LEVEL`` at call time so test fixtures can override it.
+    'default' (the CI default) means "let the harness choose dynamically" and
+    returns None so no ``--thinking`` flag is passed to the agent.
+
+    Raises ``ValueError`` on an unrecognized level so a typo in the CI input
+    fails the run loudly instead of silently benchmarking without thinking.
+    """
+    raw = os.environ.get(ENV_THINKING_LEVEL, DEFAULT_THINKING_LEVEL).strip().lower()
+    if raw == DEFAULT_THINKING_LEVEL or raw == "":
+        return None
+    if raw not in THINKING_LEVELS:
+        raise ValueError(
+            f"{ENV_THINKING_LEVEL}={raw!r} is not a valid thinking level; "
+            f"expected one of: default, {', '.join(sorted(THINKING_LEVELS))}"
+        )
+    agent = coding_agent if coding_agent is not None else os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
+    if agent not in _THINKING_CAPABLE_AGENTS:
+        return None
+    return raw
+
 
 def _read_optional_float(env_var: str, low: float, high: float) -> float | None:
     """Read a float env var; return None if unset or zero (sentinel for 'not set')."""

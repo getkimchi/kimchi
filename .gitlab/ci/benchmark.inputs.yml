@@ -109,3 +109,16 @@ inputs:
     description: "Maximum output tokens per LLM call (positive int). Leave unset (0) to use the model default."
     type: number
     default: 0
+  thinking_level:
+    description: "Thinking/reasoning level for models that support it. 'default' uses the harness's dynamic thinking levels; a fixed level (off/minimal/low/medium/high/xhigh) overrides it for every call. Ignored for opencode and claude-code agents."
+    type: string
+    default: "default"
+    options:
+      - "default"
+      - "off"
+      - "minimal"
+      - "low"
+      - "medium"
+      - "high"
+      - "xhigh"
+      - "max"

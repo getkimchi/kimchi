@@ -267,6 +267,11 @@
                   }
                 }
               }
+            },
+            "thinking_level": {
+              "description": "Fixed thinking/reasoning level applied to every LLM call. Null means the harness chose dynamically.",
+              "type": ["string", "null"],
+              "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max", null]
             }
           }
         }

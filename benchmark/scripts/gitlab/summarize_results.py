@@ -893,6 +893,7 @@ def build_run(
             "llm_per_model_params": _convert_decimals(
                 metadata_dict(metadata, "parameters").get("llm_per_model_params", {})
             ),
+            "thinking_level": metadata_dict(metadata, "parameters").get("thinking_level"),
         },
     }
 

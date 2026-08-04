@@ -12,6 +12,7 @@ from bench_config import (
     is_workflow_agent,
     load_llm_params,
     parse_model,
+    resolve_thinking_level,
 )
 from outcome import Outcome
 
@@ -207,3 +208,96 @@ def test_default_workflow_extension_names_a_version_or_dist_tag() -> None:
     # Scoped name, so the version separator is the "@" after the scope's "/".
     assert spec.startswith("@")
     assert spec.find("@", spec.index("/")) != -1, f"{DEFAULT_WORKFLOW_EXTENSION} must carry @<version-or-tag>"
+
+
+# ---------------------------------------------------------------------------
+# Thinking level resolution
+# ---------------------------------------------------------------------------
+
+
+def _clear_thinking_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("THINKING_LEVEL", raising=False)
+    monkeypatch.delenv("CODING_AGENT", raising=False)
+
+
+@pytest.mark.parametrize("level", ["off", "minimal", "low", "medium", "high", "xhigh", "max"])
+def test_resolve_thinking_level_fixed_levels(level: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each valid level returns itself for a kimchi-family agent."""
+    monkeypatch.setenv("THINKING_LEVEL", level)
+    monkeypatch.setenv("CODING_AGENT", "kimchi")
+    assert resolve_thinking_level() == level
+
+
+@pytest.mark.parametrize("level", ["off", "minimal", "low", "medium", "high", "xhigh", "max"])
+def test_resolve_thinking_level_pi_agent(level: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pi agent also accepts --thinking."""
+    monkeypatch.setenv("THINKING_LEVEL", level)
+    monkeypatch.setenv("CODING_AGENT", "pi")
+    assert resolve_thinking_level() == level
+
+
+def test_resolve_thinking_level_default_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """'default' means the harness chooses dynamically — no --thinking flag."""
+    _clear_thinking_env(monkeypatch)
+    assert resolve_thinking_level() is None
+
+
+def test_resolve_thinking_level_explicit_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("THINKING_LEVEL", "default")
+    monkeypatch.setenv("CODING_AGENT", "kimchi")
+    assert resolve_thinking_level() is None
+
+
+def test_resolve_thinking_level_empty_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty THINKING_LEVEL (e.g. cleared CI input field) falls back to default."""
+    monkeypatch.setenv("THINKING_LEVEL", "")
+    monkeypatch.setenv("CODING_AGENT", "kimchi")
+    assert resolve_thinking_level() is None
+
+
+def test_resolve_thinking_level_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("THINKING_LEVEL", "HIGH")
+    monkeypatch.setenv("CODING_AGENT", "kimchi")
+    assert resolve_thinking_level() == "high"
+
+
+def test_resolve_thinking_level_invalid_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("THINKING_LEVEL", "turbo")
+    monkeypatch.setenv("CODING_AGENT", "kimchi")
+    with pytest.raises(ValueError, match="turbo"):
+        resolve_thinking_level()
+
+
+def test_resolve_thinking_level_opencode_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """opencode wraps an external tool that does not use pi-ai thinking levels."""
+    monkeypatch.setenv("THINKING_LEVEL", "high")
+    monkeypatch.setenv("CODING_AGENT", "opencode")
+    assert resolve_thinking_level() is None
+
+
+def test_resolve_thinking_level_claude_code_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """claude-code wraps an external tool that does not use pi-ai thinking levels."""
+    monkeypatch.setenv("THINKING_LEVEL", "high")
+    monkeypatch.setenv("CODING_AGENT", "claude-code")
+    assert resolve_thinking_level() is None
+
+
+def test_resolve_thinking_level_workflow_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Workflow agents subclass Kimchi/PiKimchi and inherit --thinking support."""
+    monkeypatch.setenv("THINKING_LEVEL", "high")
+    monkeypatch.setenv("CODING_AGENT", "kimchi-workflow")
+    assert resolve_thinking_level() == "high"
+
+
+def test_resolve_thinking_level_pi_workflow_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("THINKING_LEVEL", "high")
+    monkeypatch.setenv("CODING_AGENT", "pi-workflow")
+    assert resolve_thinking_level() == "high"
+
+
+def test_resolve_thinking_level_explicit_agent_arg(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The explicit coding_agent arg takes precedence over the env var."""
+    monkeypatch.setenv("THINKING_LEVEL", "high")
+    monkeypatch.setenv("CODING_AGENT", "opencode")
+    assert resolve_thinking_level(coding_agent="kimchi") == "high"
+    assert resolve_thinking_level(coding_agent="opencode") is None

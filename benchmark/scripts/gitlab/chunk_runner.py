@@ -65,6 +65,7 @@ from bench_config import (
     is_workflow_agent,
     load_llm_params,
     parse_model,
+    resolve_thinking_level,
     should_retry_agent_timeout,
 )
 from chunk_slicing import slice_tasks
@@ -385,6 +386,7 @@ def _write_run_metadata(
     *,
     llm_params: dict[str, float | int] | None = None,
     llm_per_model_params: dict[str, dict[str, float | int]] | None = None,
+    thinking_level: str | None = None,
 ) -> None:
     """Write .benchmark/run-metadata.json if it doesn't already exist.
 
@@ -430,6 +432,7 @@ def _write_run_metadata(
             "retry_agent_timeout": should_retry_agent_timeout(),
             "llm_params": llm_params or {},
             "llm_per_model_params": llm_per_model_params or {},
+            "thinking_level": thinking_level,
         },
         "results_dir": str(results_dir),
         "runner": {
@@ -1050,6 +1053,7 @@ def _run_harbor_invocation(
     coding_agent: str,
     llm_params: dict[str, float | int],
     llm_per_model_params: dict[str, dict[str, float | int]],
+    thinking_level: str | None,
     checkpoint_plugin: CheckpointPluginArgs | None,
     results_dir: Path,
     chunk_index: int,
@@ -1079,6 +1083,7 @@ def _run_harbor_invocation(
         coding_agent=coding_agent,
         llm_params=llm_params,
         llm_per_model_params=llm_per_model_params,
+        thinking_level=thinking_level,
         workflow=_selected_workflow(),
         workflow_extension=_selected_workflow_extension(),
         checkpoint_plugin=checkpoint_plugin,
@@ -1258,11 +1263,17 @@ def main() -> int:
             selected_tasks = _fetch_all_tasks(dataset, bench_dir=bench_dir)
 
     llm_params, llm_per_model_params = load_llm_params()
+    try:
+        thinking_level = resolve_thinking_level(coding_agent)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     _write_run_metadata(
         results_dir,
         selected_tasks,
         llm_params=llm_params,
         llm_per_model_params=llm_per_model_params,
+        thinking_level=thinking_level,
     )
     metadata_path = Path(
         os.environ.get(ENV_BENCHMARK_RUN_METADATA, DEFAULT_BENCHMARK_RUN_METADATA)
@@ -1421,6 +1432,7 @@ def main() -> int:
             coding_agent=coding_agent,
             llm_params=llm_params,
             llm_per_model_params=llm_per_model_params,
+            thinking_level=thinking_level,
             checkpoint_plugin=checkpoint_plugin,
             results_dir=results_dir,
             chunk_index=chunk_index,

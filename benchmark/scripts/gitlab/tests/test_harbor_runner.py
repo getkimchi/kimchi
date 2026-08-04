@@ -461,3 +461,106 @@ def test_workflow_agent_never_gets_ferment_oneshot() -> None:
     )
 
     assert "ferment-oneshot=true" not in cmd
+
+
+# --- Thinking level forwarding ---
+
+
+def test_command_includes_thinking_kwarg_when_set() -> None:
+    """A fixed thinking level is passed as --agent-kwarg thinking=<level>."""
+    cmd = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/kimi-k2.6",
+        dataset="terminal-bench/terminal-bench-2",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        coding_agent="kimchi",
+        thinking_level="high",
+    )
+
+    pairs = list(itertools.pairwise(cmd))
+    assert ("--agent-kwarg", "thinking=high") in pairs
+
+
+def test_command_omits_thinking_kwarg_when_none() -> None:
+    """None means 'use the harness default' — no kwarg is added."""
+    cmd = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/kimi-k2.6",
+        dataset="terminal-bench/terminal-bench-2",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        coding_agent="kimchi",
+        thinking_level=None,
+    )
+
+    assert not any(arg.startswith("thinking=") for arg in cmd)
+
+
+def test_command_includes_thinking_kwarg_for_pi_agent() -> None:
+    """The pi agent also accepts --thinking via CliFlag."""
+    cmd = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:PiKimchi",
+        model="kimchi-dev/kimi-k2.6",
+        dataset="terminal-bench/terminal-bench-2",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        coding_agent="pi",
+        thinking_level="xhigh",
+    )
+
+    pairs = list(itertools.pairwise(cmd))
+    assert ("--agent-kwarg", "thinking=xhigh") in pairs
+
+
+def test_command_omits_thinking_kwarg_for_opencode() -> None:
+    """opencode does not use pi-ai's thinking levels — the kwarg is skipped."""
+    cmd = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:OpenCodeKimchi",
+        model="kimchi-dev/kimi-k2.6",
+        dataset="terminal-bench/terminal-bench-2",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        coding_agent="opencode",
+        thinking_level="high",
+    )
+
+    assert not any(arg.startswith("thinking=") for arg in cmd)
+
+
+def test_command_omits_thinking_kwarg_for_claude_code() -> None:
+    """claude-code does not use pi-ai's thinking levels — the kwarg is skipped."""
+    cmd = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:ClaudeCodeKimchi",
+        model="kimchi-dev/kimi-k2.6",
+        dataset="terminal-bench/terminal-bench-2",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        coding_agent="claude-code",
+        thinking_level="high",
+    )
+
+    assert not any(arg.startswith("thinking=") for arg in cmd)
+
+
+def test_command_includes_thinking_kwarg_for_workflow_agent() -> None:
+    """WorkflowAgent subclasses Kimchi and inherits --thinking support."""
+    cmd = build_harbor_command(
+        **_WORKFLOW_BASE,
+        workflow="ferment-oneshot",
+        workflow_extension="npm:@kimchi-dev/kimchi-workflows@latest",
+        thinking_level="high",
+    )
+
+    pairs = list(itertools.pairwise(cmd))
+    assert ("--agent-kwarg", "thinking=high") in pairs

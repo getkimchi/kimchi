@@ -110,6 +110,7 @@ setup-image:
     BENCH_LLM_TOP_P: "$[[ inputs.top_p ]]"
     BENCH_LLM_TOP_K: "$[[ inputs.top_k ]]"
     BENCH_LLM_MAX_TOKENS: "$[[ inputs.max_tokens ]]"
+    THINKING_LEVEL: "$[[ inputs.thinking_level ]]"
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
   before_script:
@@ -147,6 +148,7 @@ setup-image:
       echo "top_p:                    ${BENCH_LLM_TOP_P}"
       echo "top_k:                    ${BENCH_LLM_TOP_K}"
       echo "max_tokens:               ${BENCH_LLM_MAX_TOKENS}"
+      echo "thinking_level:          ${THINKING_LEVEL}"
       echo "chunk:                    ${BENCH_CHUNK_INDEX}/${BENCH_CHUNK_COUNT}"
       echo "------------------------------------------"
       if [ "${CODING_AGENT}" = "kimchi" ]; then
