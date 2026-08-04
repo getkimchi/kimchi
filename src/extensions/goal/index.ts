@@ -6,7 +6,7 @@ import type {
 	SessionEntry,
 	TurnEndEvent,
 } from "@earendil-works/pi-coding-agent"
-import { Type } from "typebox"
+import { type Static, Type } from "typebox"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { formatCount } from "../format.js"
 import { addPromptSummaryMetric } from "../prompt-summary.js"
@@ -15,13 +15,7 @@ import { getTodoScopeKey, normalizeTodoScope } from "../todos/scope.js"
 import { getWriteTodosDetails } from "../todos/session.js"
 import { resolveTodoScope } from "../todos/store.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
-import {
-	formatGoalDuration,
-	formatGoalStatusAccounting,
-	formatGoalSummary,
-	GOAL_COMMAND_COMPLETIONS,
-	parseGoalCommand,
-} from "./command.js"
+import { formatGoalStatusAccounting, formatGoalSummary, GOAL_COMMAND_COMPLETIONS, parseGoalCommand } from "./command.js"
 import {
 	GET_GOAL_TOOL_NAME,
 	GOAL_CONTROL_MESSAGE_TYPE,
@@ -49,17 +43,23 @@ import {
 	restoreGoal,
 	setGoalStatus,
 } from "./reducer.js"
-import type { GoalStatus, PendingGoalContinuation, SessionGoal } from "./types.js"
+import { GOAL_COMPLETION_CONFIDENCES, type PendingGoalContinuation, type SessionGoal } from "./types.js"
 
 const UPDATE_GOAL_PARAMETERS = Type.Object({
 	status: Type.Union([Type.Literal("complete"), Type.Literal("blocked")]),
+	completion_confidence: Type.Optional(
+		Type.Union(
+			GOAL_COMPLETION_CONFIDENCES.map((confidence) => Type.Literal(confidence)),
+			{
+				description:
+					"Completion evidence: speculative (untested), plausible (partial), validated (checks passed), or verified (every requirement evidenced). Required for complete; only validated or verified can finish.",
+			},
+		),
+	),
 	reason: Type.Optional(Type.String()),
 })
 
-interface UpdateGoalParams {
-	status: "complete" | "blocked"
-	reason?: string
-}
+type UpdateGoalParams = Static<typeof UPDATE_GOAL_PARAMETERS>
 
 type PendingGoalTerminalFeedback = PendingGoalContinuation & { status: "complete" | "blocked" }
 type GoalTodoState = PendingGoalContinuation & {
@@ -504,15 +504,22 @@ export default function goalExtension(pi: ExtensionAPI): void {
 							"Goal update rejected: the goal changed or stopped during this turn. Continue against the current active goal before updating it.",
 						)
 					}
+					const completionConfidence = params.status === "complete" ? params.completion_confidence : undefined
+					if (
+						params.status === "complete" &&
+						completionConfidence !== "validated" &&
+						completionConfidence !== "verified"
+					) {
+						throw new Error(
+							"Goal completion rejected: completion_confidence must be validated or verified. Continue working and gather current evidence before trying again.",
+						)
+					}
 					const nowMs = Date.now()
 					const accounted = checkpointGoal(current, 0, nowMs)
-					const next = setGoalStatus(
-						accounted,
-						current.id,
-						current.revision,
-						params.status as GoalStatus,
-						timestamp(nowMs),
-					)
+					const next = {
+						...setGoalStatus(accounted, current.id, current.revision, params.status, timestamp(nowMs)),
+						...(completionConfidence ? { completionConfidence } : {}),
+					}
 					commitGoal(next)
 					activeSinceMs = undefined
 					invalidateContinuation()
@@ -690,7 +697,9 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			const goalAfterAccounting = currentGoal
 			const feedback = pendingTerminalFeedback
 			if (feedback && matchesGoal(feedback, goalAfterAccounting, sessionId)) {
-				addPromptSummaryMetric(sessionId, "goal time", formatGoalDuration(goalAfterAccounting.timeUsedMs))
+				if (goalAfterAccounting.completionConfidence) {
+					addPromptSummaryMetric(sessionId, "goal confidence", goalAfterAccounting.completionConfidence)
+				}
 				ctx.ui.notify(`Goal ${feedback.status}.`, feedback.status === "blocked" ? "warning" : "info")
 				pendingTerminalFeedback = undefined
 			}

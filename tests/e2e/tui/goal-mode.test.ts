@@ -37,7 +37,10 @@ test("experimental goal stops after completion", async ({ terminal }) => {
 		toolCalls: [
 			{
 				id: "complete-goal",
-				function: { name: "update_goal", arguments: JSON.stringify({ status: "complete" }) },
+				function: {
+					name: "update_goal",
+					arguments: JSON.stringify({ status: "complete", completion_confidence: "verified" }),
+				},
 			},
 		],
 	}
@@ -69,8 +72,9 @@ test("experimental goal stops after completion", async ({ terminal }) => {
 			await waitForText(terminal, "Working toward the session goal.", { timeoutMs: 5_000 })
 
 			await waitForText(terminal, "Goal complete.", { timeoutMs: 5_000 })
-			await waitForText(terminal, /goal time\s+(?:<1m|\d+m|\d+h)/, { timeoutMs: 5_000 })
+			await waitForText(terminal, /goal confidence\s+verified/, { timeoutMs: 5_000 })
 			const finalView = viewText(terminal)
+			expect(finalView).not.toContain("goal time")
 			expect(finalView).not.toContain("Goal complete in")
 			expect(finalView).not.toContain("Get Goal")
 			expect(finalView).not.toContain("Update Goal")

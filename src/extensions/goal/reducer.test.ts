@@ -44,7 +44,6 @@ describe("goal reducer", () => {
 	})
 
 	it("replaces with a new ID, revision one, and active status", () => {
-		const complete = setGoalStatus(createGoal(undefined, "old", "goal-a", T1), "goal-a", 1, "complete", T2)
 		const replacement = replaceGoal("new", "goal-b", T2)
 
 		expect(replacement).toMatchObject({ id: "goal-b", revision: 1, objective: "new", status: "active" })
@@ -76,7 +75,7 @@ describe("goal reducer", () => {
 
 	it("replays puts and matching clear tombstones in branch order", () => {
 		const revision1 = createGoal(undefined, "one", "goal-a", T1)
-		const revision2 = editGoal(revision1, "goal-a", 1, "two", T2)
+		const revision2 = { ...editGoal(revision1, "goal-a", 1, "two", T2), completionConfidence: "verified" as const }
 		const unrelatedClear = clearGoalEntry({ ...revision2, id: "other" }, T2)
 
 		expect(restoreGoal([{ bad: true }, putGoalEntry(revision1), putGoalEntry(revision2), unrelatedClear])).toEqual(

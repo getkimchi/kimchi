@@ -1,4 +1,10 @@
-import { GOAL_STATUSES, type GoalJournalEntry, type GoalStatus, type SessionGoal } from "./types.js"
+import {
+	GOAL_COMPLETION_CONFIDENCES,
+	GOAL_STATUSES,
+	type GoalJournalEntry,
+	type GoalStatus,
+	type SessionGoal,
+} from "./types.js"
 
 export type GoalState = SessionGoal | undefined
 
@@ -19,12 +25,7 @@ export function createGoal(
 	return newGoal(objective, id, now, tokenBudget)
 }
 
-export function replaceGoal(
-	objective: unknown,
-	id: string,
-	now: string,
-	tokenBudget?: number,
-): SessionGoal {
+export function replaceGoal(objective: unknown, id: string, now: string, tokenBudget?: number): SessionGoal {
 	return newGoal(objective, id, now, tokenBudget)
 }
 
@@ -166,13 +167,16 @@ function parseGoalJournalEntry(value: unknown): GoalJournalEntry | undefined {
 }
 
 function parseGoal(value: unknown): SessionGoal | undefined {
+	if (!isRecord(value)) return undefined
+	const status = GOAL_STATUSES.find((candidate) => candidate === value.status)
+	const completionConfidence = GOAL_COMPLETION_CONFIDENCES.find((candidate) => candidate === value.completionConfidence)
 	if (
-		!isRecord(value) ||
 		value.schemaVersion !== 1 ||
 		!isNonEmptyString(value.id) ||
 		!isRevision(value.revision) ||
 		!isNonEmptyString(value.objective) ||
-		!GOAL_STATUSES.includes(value.status as GoalStatus) ||
+		status === undefined ||
+		(value.completionConfidence !== undefined && completionConfidence === undefined) ||
 		(value.tokensUsed !== undefined && !isNonNegativeInteger(value.tokensUsed)) ||
 		(value.tokenBudget !== undefined && !isPositiveInteger(value.tokenBudget)) ||
 		(value.timeUsedMs !== undefined && !isNonNegativeInteger(value.timeUsedMs)) ||
@@ -186,7 +190,8 @@ function parseGoal(value: unknown): SessionGoal | undefined {
 		id: value.id,
 		revision: value.revision,
 		objective: value.objective,
-		status: value.status as GoalStatus,
+		status,
+		...(completionConfidence ? { completionConfidence } : {}),
 		tokensUsed: value.tokensUsed ?? 0,
 		...(value.tokenBudget === undefined ? {} : { tokenBudget: value.tokenBudget }),
 		timeUsedMs: value.timeUsedMs ?? 0,

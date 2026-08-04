@@ -1,6 +1,8 @@
 export const GOAL_STATUSES = ["active", "paused", "blocked", "budget_limited", "complete"] as const
+export const GOAL_COMPLETION_CONFIDENCES = ["speculative", "plausible", "validated", "verified"] as const
 
 export type GoalStatus = (typeof GOAL_STATUSES)[number]
+type GoalCompletionConfidence = (typeof GOAL_COMPLETION_CONFIDENCES)[number]
 
 export interface SessionGoal {
 	schemaVersion: 1
@@ -8,6 +10,7 @@ export interface SessionGoal {
 	revision: number
 	objective: string
 	status: GoalStatus
+	completionConfidence?: GoalCompletionConfidence
 	tokensUsed: number
 	tokenBudget?: number
 	timeUsedMs: number

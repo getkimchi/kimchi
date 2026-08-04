@@ -146,6 +146,7 @@ describe("goal extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await harness.tool(UPDATE_GOAL_TOOL_NAME, {
 			status: "complete",
+			completion_confidence: "validated",
 		})
 		harness.ui.confirm.mockClear()
 
@@ -174,10 +175,16 @@ describe("goal extension", () => {
 			goalId: goal.id,
 			revision: goal.revision,
 			status: "complete",
+			completion_confidence: "verified",
 		})
 		await harness.fire("turn_end", terminalTurn("stop", { input: 200, output: 50 }))
 
-		expect(harness.currentGoal()).toMatchObject({ status: "complete", tokensUsed: 1_750, timeUsedMs: 3_500 })
+		expect(harness.currentGoal()).toMatchObject({
+			status: "complete",
+			completionConfidence: "verified",
+			tokensUsed: 1_750,
+			timeUsedMs: 3_500,
+		})
 		expect(harness.ui.notify).toHaveBeenCalledWith("Goal complete.", "info")
 		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("goal", undefined)
 	})
@@ -401,11 +408,37 @@ describe("goal extension", () => {
 		await harness.command("finish without copying protocol metadata")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 
-		const result = await harness.tool(UPDATE_GOAL_TOOL_NAME, { status: "complete" })
+		const result = await harness.tool(UPDATE_GOAL_TOOL_NAME, {
+			status: "complete",
+			completion_confidence: "validated",
+		})
 
 		expect(result.content[0].text).toContain("marked complete")
 		expect(result.terminate).toBe(true)
 		expect(harness.currentGoal()?.status).toBe("complete")
+	})
+
+	it("keeps completion active until confidence is validated", async () => {
+		await harness.command("prove it")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
+
+		const missing = await harness.tool(UPDATE_GOAL_TOOL_NAME, { status: "complete" })
+		expect(missing.content[0].text).toContain("completion_confidence must be validated or verified")
+		expect(harness.currentGoal()?.status).toBe("active")
+
+		const plausible = await harness.tool(UPDATE_GOAL_TOOL_NAME, {
+			status: "complete",
+			completion_confidence: "plausible",
+		})
+		expect(plausible.content[0].text).toContain("completion_confidence must be validated or verified")
+		expect(harness.currentGoal()?.status).toBe("active")
+
+		const validated = await harness.tool(UPDATE_GOAL_TOOL_NAME, {
+			status: "complete",
+			completion_confidence: "validated",
+		})
+		expect(validated.terminate).toBe(true)
+		expect(harness.currentGoal()).toMatchObject({ status: "complete", completionConfidence: "validated" })
 	})
 
 	it("rejects stale and invalid model updates while accepting both terminal statuses", async () => {
@@ -435,6 +468,7 @@ describe("goal extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
 		await harness.tool(UPDATE_GOAL_TOOL_NAME, {
 			status: "complete",
+			completion_confidence: "validated",
 		})
 		expect(harness.currentGoal()?.status).toBe("complete")
 	})
