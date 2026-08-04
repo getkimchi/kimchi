@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from bench_config import (
+    CLAUDE_CODE_CODING_AGENT,
     ENV_WORKFLOW,
     ENV_WORKFLOW_EXTENSION,
     is_kimchi_family,
@@ -153,6 +154,14 @@ def build_harbor_command(
     # --thinking via the same CliFlag mechanism.
     if coding_agent == "pi" and thinking_level is not None:
         cmd.extend(["--agent-kwarg", f"thinking={thinking_level}"])
+
+    # Claude Code has no --thinking flag; the equivalent knob is reasoning
+    # effort, which shares this level scale. Harbor's ClaudeCode CliFlag turns
+    # reasoning_effort into `--effort <level>`. resolve_thinking_level has
+    # already rejected off/minimal for this agent, so the value is always one
+    # the CLI accepts.
+    if coding_agent == CLAUDE_CODE_CODING_AGENT and thinking_level is not None:
+        cmd.extend(["--agent-kwarg", f"reasoning_effort={thinking_level}"])
 
     if is_workflow_agent(coding_agent):
         cmd.extend(["--agent-kwarg", f"extension={workflow_extension}"])

@@ -116,7 +116,7 @@ inputs:
     type: number
     default: 0
   thinking_level:
-    description: "Thinking/reasoning level for models that support it. 'default' uses the harness's dynamic thinking levels; a fixed level (off/minimal/low/medium/high/xhigh) overrides it for every call. Ignored for opencode and claude-code agents."
+    description: "Thinking/reasoning level. 'default' uses the harness's dynamic thinking levels; a fixed level overrides it for every call. kimchi/pi agents accept every level; claude-code maps the level to Claude Code's --effort and rejects off/minimal (no equivalent); opencode ignores it. Note that a level only reaches the model if the model itself supports a reasoning-effort parameter."
     type: string
     default: "default"
     options:

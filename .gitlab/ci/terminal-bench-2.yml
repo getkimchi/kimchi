@@ -148,7 +148,11 @@ setup-image:
       echo "top_p:                    ${BENCH_LLM_TOP_P}"
       echo "top_k:                    ${BENCH_LLM_TOP_K}"
       echo "max_tokens:               ${BENCH_LLM_MAX_TOKENS}"
-      echo "thinking_level:          ${THINKING_LEVEL}"
+      thinking_note=""
+      if [ "${THINKING_LEVEL}" != "default" ] && [ "${CODING_AGENT}" = "opencode" ]; then
+        thinking_note=" (ignored by ${CODING_AGENT})"
+      fi
+      echo "thinking_level:           ${THINKING_LEVEL}${thinking_note}"
       echo "chunk:                    ${BENCH_CHUNK_INDEX}/${BENCH_CHUNK_COUNT}"
       echo "------------------------------------------"
       if [ "${CODING_AGENT}" = "kimchi" ]; then

@@ -274,9 +274,16 @@ DEFAULT_THINKING_LEVEL = "default"
 THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhigh", "max"})
 
 # Agents that accept the --thinking CLI flag (kimchi and pi families).
-# opencode and claude-code wrap external tools that do not use pi-ai's
-# thinking-level mechanism.
+# opencode wraps an external tool that does not use pi-ai's thinking-level
+# mechanism, so the level is dropped for it.
 _THINKING_CAPABLE_AGENTS = frozenset({DEFAULT_CODING_AGENT, "pi", WORKFLOW_CODING_AGENT, PI_WORKFLOW_CODING_AGENT})
+
+# Claude Code spells the same idea as reasoning effort: `--effort <level>`,
+# accepting low/medium/high/xhigh/max. CLI 2.1.x has no flag to disable
+# thinking, so off/minimal have no equivalent — they are rejected rather than
+# silently rounded up to low, which would report a level the run never used.
+CLAUDE_CODE_CODING_AGENT = "claude-code"
+CLAUDE_CODE_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 
 def resolve_thinking_level(coding_agent: str | None = None) -> str | None:
@@ -286,8 +293,9 @@ def resolve_thinking_level(coding_agent: str | None = None) -> str | None:
     'default' (the CI default) means "let the harness choose dynamically" and
     returns None so no ``--thinking`` flag is passed to the agent.
 
-    Raises ``ValueError`` on an unrecognized level so a typo in the CI input
-    fails the run loudly instead of silently benchmarking without thinking.
+    Raises ``ValueError`` on an unrecognized level, or on a level the selected
+    agent cannot express, so a bad CI input fails the run loudly instead of
+    silently benchmarking at a level nobody asked for.
     """
     raw = os.environ.get(ENV_THINKING_LEVEL, DEFAULT_THINKING_LEVEL).strip().lower()
     if raw == DEFAULT_THINKING_LEVEL or raw == "":
@@ -298,6 +306,14 @@ def resolve_thinking_level(coding_agent: str | None = None) -> str | None:
             f"expected one of: default, {', '.join(sorted(THINKING_LEVELS))}"
         )
     agent = coding_agent if coding_agent is not None else os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
+    if agent == CLAUDE_CODE_CODING_AGENT:
+        if raw not in CLAUDE_CODE_EFFORT_LEVELS:
+            raise ValueError(
+                f"{ENV_THINKING_LEVEL}={raw!r} has no equivalent for "
+                f"{ENV_CODING_AGENT}={CLAUDE_CODE_CODING_AGENT}; Claude Code's --effort accepts: "
+                f"{', '.join(sorted(CLAUDE_CODE_EFFORT_LEVELS))} (or 'default')"
+            )
+        return raw
     if agent not in _THINKING_CAPABLE_AGENTS:
         return None
     return raw

@@ -484,6 +484,25 @@ def test_command_includes_thinking_kwarg_when_set() -> None:
     assert ("--agent-kwarg", "thinking=high") in pairs
 
 
+def test_command_passes_thinking_level_as_effort_for_claude_code() -> None:
+    """Claude Code has no --thinking flag; the level becomes --effort <level>."""
+    cmd = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:ClaudeCodeKimchi",
+        model="openrouter/@preset/glm-5-1-zai",
+        dataset="terminal-bench/terminal-bench-2-1",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        coding_agent="claude-code",
+        thinking_level="high",
+    )
+
+    pairs = list(itertools.pairwise(cmd))
+    assert ("--agent-kwarg", "reasoning_effort=high") in pairs
+    assert ("--agent-kwarg", "thinking=high") not in pairs
+
+
 def test_command_omits_thinking_kwarg_when_none() -> None:
     """None means 'use the harness default' — no kwarg is added."""
     cmd = build_harbor_command(

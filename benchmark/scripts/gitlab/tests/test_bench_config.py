@@ -275,9 +275,31 @@ def test_resolve_thinking_level_opencode_returns_none(monkeypatch: pytest.Monkey
     assert resolve_thinking_level() is None
 
 
-def test_resolve_thinking_level_claude_code_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    """claude-code wraps an external tool that does not use pi-ai thinking levels."""
-    monkeypatch.setenv("THINKING_LEVEL", "high")
+@pytest.mark.parametrize("level", ["low", "medium", "high", "xhigh", "max"])
+def test_resolve_thinking_level_claude_code_maps_to_effort(
+    level: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """claude-code spells the same scale as Claude Code's --effort."""
+    monkeypatch.setenv("THINKING_LEVEL", level)
+    monkeypatch.setenv("CODING_AGENT", "claude-code")
+    assert resolve_thinking_level() == level
+
+
+@pytest.mark.parametrize("level", ["off", "minimal"])
+def test_resolve_thinking_level_claude_code_rejects_inexpressible_levels(
+    level: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Claude Code cannot disable thinking; rounding up would misreport the run."""
+    monkeypatch.setenv("THINKING_LEVEL", level)
+    monkeypatch.setenv("CODING_AGENT", "claude-code")
+    with pytest.raises(ValueError, match="no equivalent"):
+        resolve_thinking_level()
+
+
+def test_resolve_thinking_level_claude_code_default_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("THINKING_LEVEL", "default")
     monkeypatch.setenv("CODING_AGENT", "claude-code")
     assert resolve_thinking_level() is None
 
