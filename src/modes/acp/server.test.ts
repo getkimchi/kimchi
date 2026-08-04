@@ -37,9 +37,7 @@ import {
 	type AcpSessionLoader,
 	assertSessionHasModel,
 	buildSessionModelState,
-	describeToolCall,
 	initializeHeadlessTheme,
-	isHiddenToolCall,
 	KimchiAcpAgent,
 	stripAnsi,
 	toAcpSessionInfo,
@@ -855,11 +853,12 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(requests[0]).toMatchObject({
 			sessionId: "session-permission",
 			toolCall: {
-				toolCallId: "tc-permission",
+				toolCallId: "kt.bash.0",
 				title: "touch allowed.txt",
 				kind: "execute",
 				status: "pending",
 				rawInput: { command: "touch allowed.txt" },
+				_meta: { piToolCallId: "tc-permission" },
 			},
 			options: [
 				{ optionId: "choice-0", name: "Allow once", kind: "allow_once" },
@@ -1211,14 +1210,7 @@ describe("KimchiAcpAgent messageId on streaming chunks", () => {
 			prompt: [{ type: "text", text: "two blocks" }],
 		})
 		expect(result.stopReason).toBe("end_turn")
-		expect(messageIdsFor("agent_message_chunk")).toEqual([
-			"kimchi_msg_0",
-			"kimchi_msg_0",
-			"kimchi_msg_0",
-			"kimchi_msg_1",
-			"kimchi_msg_1",
-			"kimchi_msg_1",
-		])
+		expect(messageIdsFor("agent_message_chunk")).toEqual(["km.0", "km.0", "km.0", "km.1", "km.1", "km.1"])
 	})
 
 	it("emits messageId on agent_thought_chunk the same way (same contentIndex → same id)", async () => {
@@ -1235,7 +1227,7 @@ describe("KimchiAcpAgent messageId on streaming chunks", () => {
 			prompt: [{ type: "text", text: "think" }],
 		})
 		expect(result.stopReason).toBe("end_turn")
-		expect(messageIdsFor("agent_thought_chunk")).toEqual(["kimchi_msg_0", "kimchi_msg_0", "kimchi_msg_0"])
+		expect(messageIdsFor("agent_thought_chunk")).toEqual(["km.0", "km.0", "km.0"])
 	})
 
 	it("advances the counter across turns so two turns both starting at contentIndex=0 get distinct ids", async () => {
@@ -1261,7 +1253,7 @@ describe("KimchiAcpAgent messageId on streaming chunks", () => {
 			prompt: [{ type: "text", text: "two turns" }],
 		})
 		expect(result.stopReason).toBe("end_turn")
-		expect(messageIdsFor("agent_message_chunk")).toEqual(["kimchi_msg_0", "kimchi_msg_1"])
+		expect(messageIdsFor("agent_message_chunk")).toEqual(["km.0", "km.1"])
 	})
 })
 
@@ -1619,6 +1611,209 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		expect(updates.some((u) => u.update.sessionUpdate === "tool_call_update")).toBe(false)
 	})
 
+	it("rewrites upstream toolCallIds to session-unique ACP ids", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-1",
+				toolName: "bash",
+				args: { command: "echo a" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-1",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "a" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		const acpId = (toolCalls[0].update as { toolCallId: string }).toolCallId
+		expect(toolCalls).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call",
+					toolCallId: expect.stringMatching(/^kt\.bash\.\d+$/),
+					_meta: { piToolCallId: "tc-1" },
+				}),
+			}),
+		])
+		expect(toolCallUpdates).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					toolCallId: acpId,
+					_meta: { piToolCallId: "tc-1" },
+				}),
+			}),
+		])
+		// The upstream id must not leak to the ACP surface.
+		expect(acpId).not.toBe("tc-1")
+	})
+
+	it("routes updates and end events to the allocated ACP toolCallId", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-partial",
+				toolName: "bash",
+				args: { command: "echo a" },
+			})
+			fake.emit({
+				type: "tool_execution_update",
+				toolCallId: "tc-partial",
+				toolName: "bash",
+				args: { command: "echo a" },
+				partialResult: { content: [{ type: "text", text: "partial" }] },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-partial",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "final" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		expect(toolCalls).toHaveLength(1)
+		const acpId = (toolCalls[0].update as { toolCallId: string }).toolCallId
+		expect(toolCalls[0]).toEqual(
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call",
+					toolCallId: acpId,
+					_meta: { piToolCallId: "tc-partial" },
+				}),
+			}),
+		)
+		expect(toolCallUpdates).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					update: expect.objectContaining({
+						sessionUpdate: "tool_call_update",
+						toolCallId: acpId,
+						_meta: { piToolCallId: "tc-partial" },
+					}),
+				}),
+			]),
+		)
+	})
+
+	it("disambiguates a reused upstream toolCallId across compaction as two distinct calls", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				args: { command: "echo first" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "first" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+
+		// Simulate compaction reusing the same upstream id for a new call.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				args: { command: "echo second" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "second" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run again" }],
+		})
+
+		const calls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(calls).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call",
+					toolCallId: expect.stringMatching(/^kt\.bash\.\d+$/),
+					_meta: { piToolCallId: "tc-reused" },
+				}),
+			}),
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call",
+					toolCallId: expect.stringMatching(/^kt\.bash\.\d+$/),
+					_meta: { piToolCallId: "tc-reused" },
+				}),
+			}),
+		])
+		const firstId = (calls[0].update as { toolCallId: string }).toolCallId
+		const secondId = (calls[1].update as { toolCallId: string }).toolCallId
+		expect(firstId).not.toBe(secondId)
+
+		const firstUpdates = updates.filter(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" && (u.update as { toolCallId: string }).toolCallId === firstId,
+		)
+		const secondUpdates = updates.filter(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" && (u.update as { toolCallId: string }).toolCallId === secondId,
+		)
+		expect(firstUpdates).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					toolCallId: firstId,
+					_meta: { piToolCallId: "tc-reused" },
+				}),
+			}),
+		])
+		expect(secondUpdates).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					toolCallId: secondId,
+					_meta: { piToolCallId: "tc-reused" },
+				}),
+			}),
+		])
+	})
+
 	// Chunk 1: toolcall_start must emit a tool_call notification with status="pending"
 	// so clients can show progress while the model streams tool call arguments.
 	// See spec-tool-call-streaming-harness.md.
@@ -1654,15 +1849,17 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		expect(res.stopReason).toBe("end_turn")
 
 		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
-		expect(toolCalls).toHaveLength(1)
-		const pending = toolCalls[0].update as {
-			toolCallId: string
-			status: string
-			title?: string
-		}
-		expect(pending.toolCallId).toBe("tc-pending-1")
-		expect(pending.status).toBe("pending")
-		expect(pending.title).toBeDefined()
+		expect(toolCalls).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call",
+					toolCallId: expect.stringMatching(/^kt\.write\.\d+$/),
+					status: "pending",
+					title: expect.any(String),
+					_meta: { piToolCallId: "tc-pending-1" },
+				}),
+			}),
+		])
 	})
 
 	// toolcall_start → tool_execution_start must produce exactly ONE tool_call
@@ -1712,18 +1909,37 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		expect(res.stopReason).toBe("end_turn")
 
 		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
-		expect(toolCalls).toHaveLength(1)
-		expect((toolCalls[0].update as { status: string }).status).toBe("pending")
-		expect((toolCalls[0].update as { toolCallId: string }).toolCallId).toBe("tc-flow-1")
+		expect(toolCalls).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call",
+					toolCallId: expect.stringMatching(/^kt\.bash\.\d+$/),
+					status: "pending",
+					_meta: { piToolCallId: "tc-flow-1" },
+				}),
+			}),
+		])
+		const acpId = (toolCalls[0].update as { toolCallId: string }).toolCallId
 
 		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
-		expect(toolCallUpdates).toHaveLength(2)
-		const inProgress = toolCallUpdates.find((u) => (u.update as { status?: string }).status === "in_progress")
-		const completed = toolCallUpdates.find((u) => (u.update as { status?: string }).status === "completed")
-		expect(inProgress).toBeDefined()
-		expect((inProgress?.update as { toolCallId: string }).toolCallId).toBe("tc-flow-1")
-		expect(completed).toBeDefined()
-		expect((completed?.update as { toolCallId: string }).toolCallId).toBe("tc-flow-1")
+		expect(toolCallUpdates).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					toolCallId: acpId,
+					status: "in_progress",
+					_meta: { piToolCallId: "tc-flow-1" },
+				}),
+			}),
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					toolCallId: acpId,
+					status: "completed",
+					_meta: { piToolCallId: "tc-flow-1" },
+				}),
+			}),
+		])
 	})
 
 	// Back-compat: providers that don't emit toolcall_start must still get the
@@ -1754,13 +1970,29 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		expect(res.stopReason).toBe("end_turn")
 
 		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
-		expect(toolCalls).toHaveLength(1)
-		expect((toolCalls[0].update as { toolCallId: string }).toolCallId).toBe("tc-backcompat-1")
-		expect((toolCalls[0].update as { status: string }).status).toBe("in_progress")
+		expect(toolCalls).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call",
+					toolCallId: expect.stringMatching(/^kt\.bash\.\d+$/),
+					status: "in_progress",
+					_meta: { piToolCallId: "tc-backcompat-1" },
+				}),
+			}),
+		])
+		const acpId = (toolCalls[0].update as { toolCallId: string }).toolCallId
 
 		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
-		expect(toolCallUpdates).toHaveLength(1)
-		expect((toolCallUpdates[0].update as { status: string }).status).toBe("completed")
+		expect(toolCallUpdates).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					toolCallId: acpId,
+					status: "completed",
+					_meta: { piToolCallId: "tc-backcompat-1" },
+				}),
+			}),
+		])
 	})
 
 	// Hidden tool calls (system Agent) must produce zero ACP events even when
@@ -1897,25 +2129,63 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		expect(res.stopReason).toBe("end_turn")
 
 		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
-		expect(toolCalls).toHaveLength(2)
-		const ids = toolCalls.map((u) => (u.update as { toolCallId: string }).toolCallId).sort()
-		expect(ids).toEqual(["tc-multi-a", "tc-multi-b"])
-		for (const tc of toolCalls) {
-			expect((tc.update as { status: string }).status).toBe("pending")
-		}
+		expect(toolCalls).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call",
+					status: "pending",
+					toolCallId: expect.stringMatching(/^kt\.bash\.\d+$/),
+					_meta: { piToolCallId: "tc-multi-a" },
+				}),
+			}),
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call",
+					status: "pending",
+					toolCallId: expect.stringMatching(/^kt\.bash\.\d+$/),
+					_meta: { piToolCallId: "tc-multi-b" },
+				}),
+			}),
+		])
+		const acpA = (toolCalls[0].update as { toolCallId: string }).toolCallId
+		const acpB = (toolCalls[1].update as { toolCallId: string }).toolCallId
+		expect(acpA).not.toBe(acpB)
 
 		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
-		expect(toolCallUpdates).toHaveLength(4)
-
-		const inProgress = toolCallUpdates.filter((u) => (u.update as { status?: string }).status === "in_progress")
-		const completed = toolCallUpdates.filter((u) => (u.update as { status?: string }).status === "completed")
-		expect(inProgress).toHaveLength(2)
-		expect(completed).toHaveLength(2)
-
-		const inProgressIds = inProgress.map((u) => (u.update as { toolCallId: string }).toolCallId).sort()
-		expect(inProgressIds).toEqual(["tc-multi-a", "tc-multi-b"])
-		const completedIds = completed.map((u) => (u.update as { toolCallId: string }).toolCallId).sort()
-		expect(completedIds).toEqual(["tc-multi-a", "tc-multi-b"])
+		expect(toolCallUpdates).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					status: "in_progress",
+					toolCallId: acpA,
+					_meta: { piToolCallId: "tc-multi-a" },
+				}),
+			}),
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					status: "completed",
+					toolCallId: acpA,
+					_meta: { piToolCallId: "tc-multi-a" },
+				}),
+			}),
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					status: "in_progress",
+					toolCallId: acpB,
+					_meta: { piToolCallId: "tc-multi-b" },
+				}),
+			}),
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					status: "completed",
+					toolCallId: acpB,
+					_meta: { piToolCallId: "tc-multi-b" },
+				}),
+			}),
+		])
 	})
 
 	// Helper to build a toolcall_delta message_update event with a given toolCallId,
@@ -1995,30 +2265,54 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		})
 		expect(res.stopReason).toBe("end_turn")
 
-		const pendingUpdates = updates.filter(
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call",
+					status: "pending",
+					toolCallId: expect.stringMatching(/^kt\.write\.\d+$/),
+					_meta: { piToolCallId: "tc-every-delta-1" },
+				}),
+			}),
+		])
+		const acpId = (toolCalls[0].update as { toolCallId: string }).toolCallId
+
+		const inProgressUpdates = updates.filter(
 			(u) =>
 				u.update.sessionUpdate === "tool_call_update" &&
-				(u.update as { status?: string }).status === "pending" &&
-				(u.update as { toolCallId: string }).toolCallId === "tc-every-delta-1",
+				u.update.status === "in_progress" &&
+				u.update.toolCallId === acpId,
 		)
-		expect(pendingUpdates).toHaveLength(3)
-
-		// Verify each delta's rawOutput reflects only the new characters and
-		// _meta.generatedChars reflects the cumulative content length.
-		const rawOutputs = pendingUpdates.map(
-			(u) => (u.update as { rawOutput?: { delta?: unknown } }).rawOutput?.delta ?? "",
-		)
-		expect(rawOutputs[0]).toBe("chunk1")
-		expect(rawOutputs[1]).toBe("chunk2")
-		expect(rawOutputs[2]).toBe("chunk3")
-
-		const generatedChars = pendingUpdates.map(
-			(u) => (u.update as { _meta?: { generatedChars?: number } })._meta?.generatedChars ?? 0,
-		)
-		expect(generatedChars).toEqual(["chunk1".length, "chunk1chunk2".length, "chunk1chunk2chunk3".length])
-
-		// Concatenating all rawOutput strings reconstructs the final content.
-		expect(rawOutputs.join("")).toBe("chunk1chunk2chunk3")
+		expect(inProgressUpdates).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					status: "in_progress",
+					toolCallId: acpId,
+					rawOutput: { delta: "chunk1" },
+					_meta: { generatedChars: "chunk1".length, piToolCallId: "tc-every-delta-1" },
+				}),
+			}),
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					status: "in_progress",
+					toolCallId: acpId,
+					rawOutput: { delta: "chunk2" },
+					_meta: { generatedChars: "chunk1chunk2".length, piToolCallId: "tc-every-delta-1" },
+				}),
+			}),
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					status: "in_progress",
+					toolCallId: acpId,
+					rawOutput: { delta: "chunk3" },
+					_meta: { generatedChars: "chunk1chunk2chunk3".length, piToolCallId: "tc-every-delta-1" },
+				}),
+			}),
+		])
 	})
 
 	// Spec test 3: deltas for a toolCallId that was never announced via
@@ -2040,8 +2334,8 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		const pendingUpdates = updates.filter(
 			(u) =>
 				u.update.sessionUpdate === "tool_call_update" &&
-				(u.update as { status?: string }).status === "pending" &&
-				(u.update as { toolCallId: string }).toolCallId === "tc-orphan-1",
+				u.update.status === "pending" &&
+				u.update.toolCallId === "tc-orphan-1",
 		)
 		expect(pendingUpdates).toHaveLength(0)
 	})
@@ -2088,9 +2382,7 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		// No tool_call (from toolcall_start) AND no tool_call_update (from delta).
 		expect(updates.some((u) => u.update.sessionUpdate === "tool_call")).toBe(false)
 		const pendingUpdates = updates.filter(
-			(u) =>
-				u.update.sessionUpdate === "tool_call_update" &&
-				(u.update as { toolCallId: string }).toolCallId === "tc-hidden-delta-1",
+			(u) => u.update.sessionUpdate === "tool_call_update" && u.update.toolCallId === "tc-hidden-delta-1",
 		)
 		expect(pendingUpdates).toHaveLength(0)
 	})
@@ -2130,9 +2422,7 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		expect(res.stopReason).toBe("end_turn")
 
 		const pendingUpdates = updates.filter(
-			(u) =>
-				u.update.sessionUpdate === "tool_call_update" &&
-				(u.update as { toolCallId: string }).toolCallId === "tc-empty-1",
+			(u) => u.update.sessionUpdate === "tool_call_update" && u.update.toolCallId === "tc-empty-1",
 		)
 		expect(pendingUpdates).toHaveLength(0)
 	})
@@ -2177,58 +2467,49 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
 		expect(res.stopReason).toBe("end_turn")
 
-		const writeUpdate = updates.find(
-			(u) =>
-				u.update.sessionUpdate === "tool_call_update" &&
-				(u.update as { toolCallId: string }).toolCallId === "tc-write-1",
-		)
-		expect(writeUpdate).toBeDefined()
-		const writeU = writeUpdate?.update as {
-			rawOutput?: { delta?: string }
-			_meta?: { generatedChars?: number }
-		}
-		expect(writeU.rawOutput?.delta).toBe("hello world")
-		expect(writeU._meta?.generatedChars).toBe(11)
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call",
+					status: "pending",
+					toolCallId: expect.stringMatching(/^kt\.write\.\d+$/),
+					_meta: { piToolCallId: "tc-write-1" },
+				}),
+			}),
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call",
+					status: "pending",
+					toolCallId: expect.stringMatching(/^kt\.edit\.\d+$/),
+					_meta: { piToolCallId: "tc-edit-1" },
+				}),
+			}),
+		])
+		const writeAcpId = (toolCalls[0].update as { toolCallId: string }).toolCallId
+		const editAcpId = (toolCalls[1].update as { toolCallId: string }).toolCallId
 
-		const editUpdate = updates.find(
-			(u) =>
-				u.update.sessionUpdate === "tool_call_update" &&
-				(u.update as { toolCallId: string }).toolCallId === "tc-edit-1",
-		)
-		expect(editUpdate).toBeDefined()
-		const editU = editUpdate?.update as {
-			rawOutput?: { delta?: string }
-			_meta?: { generatedChars?: number }
-		}
-		expect(editU.rawOutput?.delta).toBe("abc")
-		expect(editU._meta?.generatedChars).toBe(3)
-	})
-})
-
-describe("isHiddenToolCall", () => {
-	it("returns false for non-Agent tool names", () => {
-		expect(isHiddenToolCall("bash", {})).toBe(false)
-		expect(isHiddenToolCall("read", { visibility: "system" })).toBe(false)
-	})
-
-	it("returns false when visibility is missing", () => {
-		expect(isHiddenToolCall("Agent", {})).toBe(false)
-		expect(isHiddenToolCall("Agent", { prompt: "hello" })).toBe(false)
-	})
-
-	it("returns false when visibility is not 'system' (any casing)", () => {
-		expect(isHiddenToolCall("Agent", { visibility: "public" })).toBe(false)
-		expect(isHiddenToolCall("Agent", { visibility: "private" })).toBe(false)
-	})
-
-	it("returns true when visibility is 'system' (case-insensitive)", () => {
-		expect(isHiddenToolCall("Agent", { visibility: "system" })).toBe(true)
-		expect(isHiddenToolCall("Agent", { visibility: "System" })).toBe(true)
-		expect(isHiddenToolCall("Agent", { visibility: "SYSTEM" })).toBe(true)
-	})
-
-	it("returns true for Agent with mixed-case 'System' visibility", () => {
-		expect(isHiddenToolCall("Agent", { visibility: "SyStEm" })).toBe(true)
+		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		expect(toolCallUpdates).toEqual([
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					status: "in_progress",
+					toolCallId: writeAcpId,
+					rawOutput: { delta: "hello world" },
+					_meta: { generatedChars: 11, piToolCallId: "tc-write-1" },
+				}),
+			}),
+			expect.objectContaining({
+				update: expect.objectContaining({
+					sessionUpdate: "tool_call_update",
+					status: "in_progress",
+					toolCallId: editAcpId,
+					rawOutput: { delta: "abc" },
+					_meta: { generatedChars: 3, piToolCallId: "tc-edit-1" },
+				}),
+			}),
+		])
 	})
 })
 
@@ -3755,154 +4036,6 @@ describe("session mode controller lifecycle", () => {
 	})
 })
 
-// Direct coverage for describeToolCall. The function drives the tool_call
-// notification's title, kind, and locations — ACP clients key UI affordances
-// off these. Two recent fixes (064ff92, 00f58f3) landed on it; table-driven
-// cases here keep the title/kind matrix from silently drifting.
-describe("describeToolCall", () => {
-	it("detects hidden system Agent calls", () => {
-		expect(isHiddenToolCall("Agent", { visibility: "system" })).toBe(true)
-		expect(isHiddenToolCall("Agent", { visibility: "user" })).toBe(false)
-		expect(isHiddenToolCall("bash", { visibility: "system" })).toBe(false)
-	})
-
-	const longCommand = "a".repeat(120)
-	const longPath = `/tmp/${"x".repeat(120)}`
-	const longPattern = "p".repeat(120)
-	const cases: Array<{
-		name: string
-		toolName: string
-		args: unknown
-		expect: { title: string; kind: string; locations: Array<{ path: string }> }
-	}> = [
-		{
-			name: "bash with command uses command as title and execute kind",
-			toolName: "bash",
-			args: { command: "ls -la" },
-			expect: { title: "ls -la", kind: "execute", locations: [] },
-		},
-		{
-			name: "bash without command falls back to tool name",
-			toolName: "bash",
-			args: {},
-			expect: { title: "bash", kind: "execute", locations: [] },
-		},
-		{
-			name: "bash command is truncated at TITLE_MAX",
-			toolName: "bash",
-			args: { command: longCommand },
-			expect: { title: `${"a".repeat(80)}…`, kind: "execute", locations: [] },
-		},
-		{
-			name: "read with file_path uses path and populates locations",
-			toolName: "read",
-			args: { file_path: "/etc/hosts" },
-			expect: {
-				title: "/etc/hosts",
-				kind: "read",
-				locations: [{ path: "/etc/hosts" }],
-			},
-		},
-		{
-			name: "edit with file_path uses path and edit kind",
-			toolName: "edit",
-			args: { file_path: "/tmp/a.ts" },
-			expect: {
-				title: "/tmp/a.ts",
-				kind: "edit",
-				locations: [{ path: "/tmp/a.ts" }],
-			},
-		},
-		{
-			name: "write with path (not file_path) still populates locations",
-			toolName: "write",
-			args: { path: "/tmp/b.ts" },
-			expect: {
-				title: "/tmp/b.ts",
-				kind: "edit",
-				locations: [{ path: "/tmp/b.ts" }],
-			},
-		},
-		{
-			name: "grep with pattern uses pattern as title and search kind",
-			toolName: "grep",
-			args: { pattern: "foo.*bar" },
-			expect: { title: "foo.*bar", kind: "search", locations: [] },
-		},
-		{
-			name: "ls maps to read kind",
-			toolName: "ls",
-			args: { path: "/tmp" },
-			expect: { title: "/tmp", kind: "read", locations: [{ path: "/tmp" }] },
-		},
-		{
-			name: "find maps to search kind",
-			toolName: "find",
-			args: { pattern: "*.ts" },
-			expect: { title: "*.ts", kind: "search", locations: [] },
-		},
-		{
-			name: "web_fetch maps to fetch kind",
-			toolName: "web_fetch",
-			args: { url: "https://example.com" },
-			expect: { title: "web_fetch", kind: "fetch", locations: [] },
-		},
-		{
-			name: "web_search maps to search kind",
-			toolName: "web_search",
-			args: { query: "kimchi" },
-			expect: { title: "web_search", kind: "search", locations: [] },
-		},
-		{
-			name: "Agent maps to think kind",
-			toolName: "Agent",
-			args: { prompt: "go", visibility: "user" },
-			expect: { title: "Agent", kind: "think", locations: [] },
-		},
-		{
-			name: "unknown tool falls back to other kind",
-			toolName: "mcp__foo__bar",
-			args: { arg: 1 },
-			expect: { title: "mcp__foo__bar", kind: "other", locations: [] },
-		},
-		{
-			name: "null args is tolerated",
-			toolName: "bash",
-			args: null,
-			expect: { title: "bash", kind: "execute", locations: [] },
-		},
-		{
-			name: "long path title is truncated (locations keep full path)",
-			toolName: "read",
-			args: { file_path: longPath },
-			expect: {
-				title: `${longPath.slice(0, 80)}…`,
-				kind: "read",
-				locations: [{ path: longPath }],
-			},
-		},
-		{
-			name: "long pattern title is truncated",
-			toolName: "grep",
-			args: { pattern: longPattern },
-			expect: {
-				title: `${longPattern.slice(0, 80)}…`,
-				kind: "search",
-				locations: [],
-			},
-		},
-	]
-
-	for (const c of cases) {
-		it(c.name, () => {
-			const result = describeToolCall(c.toolName, c.args)
-			expect(result.title).toBe(c.expect.title)
-			expect(result.kind).toBe(c.expect.kind)
-			expect(result.locations).toEqual(c.expect.locations)
-		})
-	}
-})
-
 // Helper for the listSessions tests: builds a pi SessionInfo with sensible
 // defaults so each test only spells out the fields it cares about.
 function makePiSession(overrides: Partial<PiSessionInfo> = {}): PiSessionInfo {
@@ -4774,7 +4907,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			const toolCall = replay[1].update as Record<string, unknown>
 			expect(toolCall).toMatchObject({
 				sessionUpdate: "tool_call",
-				toolCallId: "tc-1",
+				toolCallId: `kt.${c.toolName}.2`,
 				kind: c.expect.kind,
 				title: c.expect.title,
 				status: c.expect.status,
@@ -4784,7 +4917,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			const update = replay[2].update as Record<string, unknown>
 			expect(update).toMatchObject({
 				sessionUpdate: "tool_call_update",
-				toolCallId: "tc-1",
+				toolCallId: `kt.${c.toolName}.2`,
 				status: c.expect.status,
 			})
 			const content = (update as { content: Array<{ content: { text: string } }> }).content

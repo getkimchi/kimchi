@@ -32,16 +32,14 @@ import {
 	type SessionConfigSelectOption,
 	type SessionModelState,
 	type SessionNotification,
+	type SessionUpdate,
 	type SetSessionConfigOptionRequest,
 	type SetSessionConfigOptionResponse,
 	type SetSessionModelRequest,
 	type SetSessionModelResponse,
 	type ToolCallContent,
-	type ToolCallLocation,
-	type ToolCallUpdate,
-	type ToolKind,
 } from "@agentclientprotocol/sdk"
-import type { ImageContent } from "@earendil-works/pi-ai"
+import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai"
 import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
@@ -87,6 +85,8 @@ import { AVAILABLE_COMMANDS } from "./commands.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
+import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
+import { asString, truncate } from "./utils.js"
 
 /**
  * Produces an unbound AgentSession for a newSession request. The ACP agent owns
@@ -157,6 +157,21 @@ type SessionRecord = {
 	 * previous message's assignments.
 	 */
 	contentIndexToBlockId: Map<number, string>
+	/**
+	 * Session-wide monotonic counter for ACP toolCallIds. Pi's toolCall.id
+	 * values are only unique within a compaction segment, so the ACP surface
+	 * rewrites each tool_execution_start to a fresh session-unique id. This
+	 * satisfies the ACP contract "Unique identifier for a tool call within a
+	 * session." Seeded from the branch on loadSession so replay emits matching
+	 * ids.
+	 */
+	nextToolCallId: number
+	/**
+	 * Maps the upstream pi-mono toolCallId to the ACP toolCallId for the call
+	 * currently in flight. A new `tool_execution_start` always allocates a fresh
+	 * ACP id, so collisions across compaction boundaries are disambiguated.
+	 */
+	toolCallIdMap: Map<string, string>
 }
 
 export class KimchiAcpAgent implements Agent {
@@ -289,16 +304,28 @@ export class KimchiAcpAgent implements Agent {
 			const sessionId = session.sessionId
 			const uiContext = this.createUiContext(session)
 			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
-			registerAcpPrompter(sessionId, createAcpPermissionPrompter(this.conn, sessionId, uiContext, buildToolCallUpdate))
-			await this.bindAcpExtensions(session, uiContext)
-
-			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
-			this.sessions.set(sessionId, {
+			// Build the record early so the ACP prompter can allocate ACP
+			// toolCallIds that match the ids later emitted by tool_execution_start.
+			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
+			// extension events are dropped before this.sessions is populated.
+			const record: SessionRecord = {
 				session,
-				unsubscribe,
+				unsubscribe: () => {},
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
-			})
+				nextToolCallId: 0,
+				toolCallIdMap: new Map(),
+			}
+			registerAcpPrompter(
+				sessionId,
+				createAcpPermissionPrompter(this.conn, sessionId, uiContext, (piToolCallId, toolName) =>
+					this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				),
+			)
+			await this.bindAcpExtensions(session, uiContext)
+
+			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
+			this.sessions.set(sessionId, record)
 
 			this.sendAvailableCommandsUpdate(sessionId)
 
@@ -503,22 +530,34 @@ export class KimchiAcpAgent implements Agent {
 
 			const uiContext = this.createUiContext(session)
 			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
-			registerAcpPrompter(sid, createAcpPermissionPrompter(this.conn, sid, uiContext, buildToolCallUpdate))
-			await this.bindAcpExtensions(session, uiContext)
-
-			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
+			// Build the record early so the ACP prompter can allocate ACP
+			// toolCallIds that match the ids later emitted by tool_execution_start.
+			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
+			// extension events are dropped before this.sessions is populated.
 			const record: SessionRecord = {
 				session,
-				unsubscribe,
+				unsubscribe: () => {},
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
+				nextToolCallId: 0,
+				toolCallIdMap: new Map(),
 			}
+			registerAcpPrompter(
+				sid,
+				createAcpPermissionPrompter(this.conn, sid, uiContext, (piToolCallId, toolName) =>
+					this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				),
+			)
+			await this.bindAcpExtensions(session, uiContext)
+
+			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
 			this.sessions.set(sid, record)
 
 			// Seed the block counter from the persisted branch so replay emits the
 			// same messageIds the live turn would have — and so any new block the
 			// user creates after the load gets a fresh, non-colliding id.
 			this.seedBlockCounterFromBranch(session, record)
+			this.seedToolCallCounterFromBranch(session, record)
 
 			// Replay BEFORE the response resolves so client sees a coherent transcript
 			// when the loadSession promise settles. No turn context is created, so a
@@ -720,7 +759,15 @@ export class KimchiAcpAgent implements Agent {
 		if (!entry) return
 		const turn = entry.turn
 		switch (event.type) {
-			case "agent_start":
+			case "agent_start": {
+				// New turn → contentIndex restarts from 0 and any in-flight tool
+				// id mappings from the previous turn are stale (the calls either
+				// ended or were orphaned). Wipe both maps so fresh allocations
+				// don't reuse old ids.
+				entry.contentIndexToBlockId.clear()
+				entry.toolCallIdMap.clear()
+				return
+			}
 			case "message_start": {
 				// New assistant message → contentIndex restarts from 0. Wipe the
 				// per-message map so a fresh block at index 0 gets a fresh id
@@ -734,7 +781,7 @@ export class KimchiAcpAgent implements Agent {
 				if ((ame.type === "text_delta" || ame.type === "thinking_delta") && ame.delta) {
 					let messageId = entry.contentIndexToBlockId.get(ame.contentIndex)
 					if (messageId === undefined) {
-						messageId = `kimchi_msg_${entry.nextBlockId++}`
+						messageId = `km.${entry.nextBlockId++}`
 						entry.contentIndexToBlockId.set(ame.contentIndex, messageId)
 					}
 					this.send({
@@ -756,19 +803,13 @@ export class KimchiAcpAgent implements Agent {
 							turn.hiddenToolCallIds.add(block.id)
 							return
 						}
-						const { title, kind, locations } = describeToolCall(block.name, block.arguments)
-						this.send({
-							sessionId,
-							update: {
-								sessionUpdate: "tool_call",
-								toolCallId: block.id,
-								title,
-								kind,
-								status: "pending",
-								locations,
-								rawInput: block.arguments,
-							},
+						const update: SessionUpdate = buildToolCall({
+							toolName: block.name,
+							toolCallId: this.getOrAllocateAcpToolCallId(entry, block.id, block.name),
+							piToolCallId: block.id,
+							rawInput: block.arguments,
 						})
+						this.send({ sessionId, update })
 						turn.announcedToolCallIds.add(block.id)
 					}
 					return
@@ -791,16 +832,13 @@ export class KimchiAcpAgent implements Agent {
 							const delta = content.slice(prev.length)
 							if (delta.length > 0) {
 								turn.lastStreamedContent.set(block.id, content)
-								this.send({
-									sessionId,
-									update: {
-										sessionUpdate: "tool_call_update",
-										toolCallId: block.id,
-										status: "pending",
-										rawOutput: { delta },
-										_meta: { generatedChars: content.length },
-									},
+								const update: SessionUpdate = buildToolCallUpdate({
+									toolCallId: this.getOrAllocateAcpToolCallId(entry, block.id, block.name),
+									piToolCallId: block.id,
+									rawOutput: { delta },
+									_meta: { generatedChars: content.length },
 								})
+								this.send({ sessionId, update })
 							}
 						}
 					}
@@ -819,35 +857,29 @@ export class KimchiAcpAgent implements Agent {
 					turn.hiddenToolCallIds.add(event.toolCallId)
 					return
 				}
-				const { title, kind, locations } = describeToolCall(event.toolName, event.args)
+				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
 					// Pending tool_call was already sent via toolcall_start → emit update
-					this.send({
-						sessionId,
-						update: {
-							sessionUpdate: "tool_call_update",
-							toolCallId: event.toolCallId,
-							status: "in_progress",
-							title,
-							kind,
-							locations,
-							rawInput: event.args,
-						},
+					const { title, kind, locations } = describeToolCall(event.toolName, event.args)
+					const update: SessionUpdate = buildToolCallUpdate({
+						toolCallId: acpToolCallId,
+						piToolCallId: event.toolCallId,
+						title,
+						kind,
+						locations,
+						rawInput: event.args,
 					})
+					this.send({ sessionId, update })
 				} else {
-					// No pending notification was sent (back-compat) → emit tool_call as before
-					this.send({
-						sessionId,
-						update: {
-							sessionUpdate: "tool_call",
-							toolCallId: event.toolCallId,
-							title,
-							kind,
-							status: "in_progress",
-							locations,
-							rawInput: event.args,
-						},
+					const update: SessionUpdate = buildToolCall({
+						toolCallId: acpToolCallId,
+						piToolCallId: event.toolCallId,
+						toolName: event.toolName,
+						rawInput: event.args,
+						status: "in_progress",
 					})
+					// No pending notification was sent (back-compat) → emit tool_call as before
+					this.send({ sessionId, update })
 				}
 				return
 			}
@@ -857,17 +889,15 @@ export class KimchiAcpAgent implements Agent {
 					turn.hiddenToolCallIds.add(event.toolCallId)
 					return
 				}
+				const acpToolCallId = this.resolveAcpToolCallId(entry, event.toolCallId)
 				const partial = toolResultContent(event.partialResult)
 				if (partial.length === 0) return
-				this.send({
-					sessionId,
-					update: {
-						sessionUpdate: "tool_call_update",
-						toolCallId: event.toolCallId,
-						status: "in_progress",
-						content: partial,
-					},
+				const update: SessionUpdate = buildToolCallUpdate({
+					toolCallId: acpToolCallId,
+					piToolCallId: event.toolCallId,
+					content: partial,
 				})
+				this.send({ sessionId, update })
 				return
 			}
 			case "tool_execution_end": {
@@ -876,16 +906,18 @@ export class KimchiAcpAgent implements Agent {
 					turn.hiddenToolCallIds.delete(event.toolCallId)
 					return
 				}
-				this.send({
-					sessionId,
-					update: {
-						sessionUpdate: "tool_call_update",
-						toolCallId: event.toolCallId,
-						status: event.isError ? "failed" : "completed",
-						content: toolResultContent(event.result),
-						rawOutput: event.result,
-					},
+				const acpToolCallId = this.resolveAcpToolCallId(entry, event.toolCallId)
+				const update: SessionUpdate = buildToolCallUpdate({
+					toolCallId: acpToolCallId,
+					piToolCallId: event.toolCallId,
+					status: event.isError ? "failed" : "completed",
+					content: toolResultContent(event.result),
+					rawOutput: event.result,
 				})
+				this.send({ sessionId, update })
+				// The upstream id may be reused after compaction; drop the mapping
+				// once the call is terminal so a future start allocates a fresh id.
+				entry.toolCallIdMap.delete(event.toolCallId)
 				return
 			}
 			case "session_info_changed": {
@@ -995,9 +1027,37 @@ export class KimchiAcpAgent implements Agent {
 		record.nextBlockId = count + 1
 	}
 
+	/**
+	 * Walk the persisted branch and count how many toolCall blocks the replay
+	 * would emit. Sets `record.nextToolCallId` so replay emits the same ACP
+	 * toolCallIds the live turns would have produced, and so any new tool call
+	 * after the load gets a fresh, non-colliding id.
+	 *
+	 * Mirrors replayAssistantBlocks' emission logic exactly — only non-hidden
+	 * toolCall blocks count, matching the live path's `isHiddenToolCall` filter.
+	 */
+	private seedToolCallCounterFromBranch(session: AgentSession, record: SessionRecord): void {
+		const entries = session.sessionManager.getBranch()
+
+		let count = 0
+		for (const entry of entries) {
+			if (entry?.type !== "message" || entry.message.role !== "assistant") continue
+			const content = entry.message.content
+			if (!Array.isArray(content)) continue
+			for (const block of content) {
+				if (block.type !== "toolCall") continue
+				const args = block.arguments
+				if (typeof block.name === "string" && !isHiddenToolCall(block.name, args)) {
+					count++
+				}
+			}
+		}
+		record.nextToolCallId = count + 1
+	}
+
 	private replayAssistantBlocks(
 		sessionId: string,
-		content: unknown,
+		content: AssistantMessage["content"],
 		toolResults: Map<string, ReplayToolResult>,
 		record: SessionRecord | undefined,
 	): void {
@@ -1007,7 +1067,7 @@ export class KimchiAcpAgent implements Agent {
 		// the unit-test harness wiring a partial replay path).
 		const nextMessageId = () => {
 			if (!record) return undefined
-			return `kimchi_msg_${record.nextBlockId++}`
+			return `km.${record.nextBlockId++}`
 		}
 		// Buffer contiguous text blocks so a single assistant message renders as
 		// one agent_message_chunk per natural text segment — emit the full
@@ -1030,7 +1090,7 @@ export class KimchiAcpAgent implements Agent {
 		}
 		for (const block of content) {
 			if (!block || typeof block !== "object") continue
-			const b = block as { type?: string }
+			const b = block
 			if (b.type === "text") {
 				const text = (b as { text?: unknown }).text
 				if (typeof text !== "string" || text.length === 0) continue
@@ -1068,40 +1128,42 @@ export class KimchiAcpAgent implements Agent {
 				})
 			} else if (b.type === "toolCall") {
 				flushText()
-				const tc = b as { id?: unknown; name?: unknown; arguments?: unknown }
-				const id = typeof tc.id === "string" ? tc.id : undefined
+				const tc = b
+				const upstreamId = typeof tc.id === "string" ? tc.id : undefined
 				const name = typeof tc.name === "string" ? tc.name : undefined
-				if (!id || !name) continue
+				if (!upstreamId || !name) continue
 				const args = (tc.arguments ?? {}) as Record<string, unknown>
 				if (isHiddenToolCall(name, args)) continue
-				const result = toolResults.get(id)
+				const acpToolCallId = record ? this.getOrAllocateAcpToolCallId(record, upstreamId, name) : upstreamId
+				const result = toolResults.get(upstreamId)
 				// No persisted result → the call never finished (interrupted mid
 				// turn). "failed" is the closest terminal status; leaving the call
 				// in_progress would hang the client's spinner forever on replay.
 				const status: "completed" | "failed" = result ? (result.isError ? "failed" : "completed") : "failed"
-				const { title, kind, locations } = describeToolCall(name, args)
 				this.send({
 					sessionId,
-					update: {
-						sessionUpdate: "tool_call",
-						toolCallId: id,
-						title,
-						kind,
+					update: buildToolCall({
+						toolName: name,
+						toolCallId: acpToolCallId,
+						piToolCallId: tc.id,
 						status,
-						locations,
 						rawInput: args,
-					},
+					}),
 				})
 				this.send({
 					sessionId,
-					update: {
-						sessionUpdate: "tool_call_update",
-						toolCallId: id,
+					update: buildToolCallUpdate({
+						toolCallId: acpToolCallId,
+						piToolCallId: tc.id,
 						status,
 						content: result ? toolResultContent(result) : [],
 						rawOutput: result,
-					},
+					}),
 				})
+				// The branch may contain multiple toolCalls with the same upstream id
+				// (e.g., across a compaction boundary). Drop the mapping after replaying
+				// each call so the next one with the same upstream id gets a fresh id.
+				record?.toolCallIdMap.delete(upstreamId)
 			}
 		}
 		// Trailing text after the last structural block (or a text-only message)
@@ -1122,6 +1184,30 @@ export class KimchiAcpAgent implements Agent {
 		this.conn.sessionUpdate(params).catch((err: unknown) => {
 			process.stderr.write(`acp sessionUpdate failed: ${String(err)}\n`)
 		})
+	}
+
+	/**
+	 * Return the existing ACP toolCallId for an upstream id, allocating a fresh
+	 * session-unique id if none exists. Permission prompts fire before
+	 * `tool_execution_start`, so this ensures the permission request and the
+	 * subsequent tool_call notification share the same id.
+	 */
+	private getOrAllocateAcpToolCallId(record: SessionRecord, piToolCallId: string, toolName: string): string {
+		let acpId = record.toolCallIdMap.get(piToolCallId)
+		if (acpId === undefined) {
+			acpId = `kt.${toolName}.${record.nextToolCallId++}`
+			record.toolCallIdMap.set(piToolCallId, acpId)
+		}
+		return acpId
+	}
+
+	/**
+	 * Look up the ACP toolCallId for an in-flight upstream call. Falls back to
+	 * the upstream id if no mapping exists (defensive: should only happen for
+	 * events that arrived before their start, which pi-mono does not emit).
+	 */
+	private resolveAcpToolCallId(record: SessionRecord, piToolCallId: string): string {
+		return record.toolCallIdMap.get(piToolCallId) ?? piToolCallId
 	}
 
 	private sendAvailableCommandsUpdate(sessionId: string): void {
@@ -1270,6 +1356,8 @@ function registerPermissionFlagController(
 	})
 }
 
+const TITLE_MAX = 80
+
 // Title falls back to the truncated first user message when the session has no
 // user-defined name. ACP clients render this in the thread-picker UI; we do
 // NOT trigger a fresh prompt-summary on listSessions because that would mean
@@ -1279,7 +1367,7 @@ export function toAcpSessionInfo(info: PiSessionInfo): AcpSessionInfo {
 	// hand-edited session-info entry) still falls through to firstMessage —
 	// `??` only short-circuits on null/undefined and would otherwise leave the
 	// title as the empty string and end up null below.
-	const fallback = info.firstMessage ? truncate(info.firstMessage) : ""
+	const fallback = info.firstMessage ? truncate(info.firstMessage, TITLE_MAX) : ""
 	const title = info.name && info.name.length > 0 ? info.name : fallback
 	return {
 		sessionId: info.id,
@@ -1520,40 +1608,6 @@ function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 	}
 }
 
-// Mirrors the tool names kimchi actually exposes: pi-coding-agent core tools
-// plus the kimchi extensions in src/extensions (web-fetch, web-search, Agent).
-// ACP clients key UI affordances (icon, grouping, permission messaging) off the
-// kind field, so every registered tool should map to the most specific kind in
-// the ToolKind vocabulary before falling back to "other". MCP tools arrive with
-// dynamic `mcp__server__name` identifiers we can't enumerate statically — those
-// still hit the "other" fallback in describeToolCall().
-const TOOL_KINDS: Record<string, ToolKind> = {
-	bash: "execute",
-	read: "read",
-	ls: "read",
-	grep: "search",
-	find: "search",
-	edit: "edit",
-	write: "edit",
-	web_fetch: "fetch",
-	web_search: "search",
-	Agent: "think",
-}
-const TITLE_MAX = 80
-
-const asString = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined)
-const truncate = (s: string): string => (s.length > TITLE_MAX ? `${s.slice(0, TITLE_MAX)}…` : s)
-
-export function isHiddenToolCall(toolName: string, args: unknown): boolean {
-	// Defense-in-depth: the Agent tool's public schema deliberately omits `visibility`
-	// (see src/extensions/agents/index.ts:execute), so this normally returns false. If a
-	// misbehaving LLM emits the field anyway, we hide the ACP-side tool_call rather than
-	// trust the schema to have caught it.
-	if (toolName !== "Agent") return false
-	const a = (args ?? {}) as Record<string, unknown>
-	return typeof a.visibility === "string" && a.visibility.toLowerCase() === "system"
-}
-
 // Persisted assistant text from hide-thinking-aware models (DeepSeek, QwQ, ...)
 // can contain ANSI styling around inner <think> content. Live TUI styling means
 // "this is reasoning"; ACP plaintext has no such styling, so replay splits the
@@ -1599,44 +1653,6 @@ function replayTextParts(text: string): ReplayTextPart[] {
 function extractStreamContent(args: unknown): string | undefined {
 	const a = (args ?? {}) as Record<string, unknown>
 	return asString(a.content) ?? asString(a.newText) ?? asString(a.command)
-}
-
-export function describeToolCall(
-	toolName: string,
-	args: unknown,
-): { title: string; kind: ToolKind; locations: ToolCallLocation[] } {
-	const a = (args ?? {}) as Record<string, unknown>
-	const path = asString(a.file_path) ?? asString(a.path)
-	const command = asString(a.command)
-	const pattern = asString(a.pattern)
-	// title carries the target/argument only; the ACP `kind` field drives the verb
-	// and icon on the client side. Bash puts its command here; file ops put the
-	// path; search ops put the pattern. Falls back to the tool name when we have
-	// no specific argument to show. Truncate every branch so a long absolute
-	// path or regex doesn't blow up client UIs (locations[].path keeps the full
-	// value for clients that want it).
-	const rawTitle = toolName === "bash" && command ? command : (path ?? pattern ?? toolName)
-	return {
-		title: truncate(rawTitle),
-		kind: TOOL_KINDS[toolName] ?? "other",
-		locations: path ? [{ path }] : [],
-	}
-}
-
-export function buildToolCallUpdate(
-	toolCallId: string,
-	toolName: string,
-	args: Record<string, unknown>,
-): ToolCallUpdate {
-	const { title, kind, locations } = describeToolCall(toolName, args)
-	return {
-		toolCallId,
-		title,
-		kind,
-		status: "pending",
-		locations,
-		rawInput: args,
-	}
 }
 
 // UserMessage.content is `string | (TextContent | ImageContent)[]` per pi-ai
