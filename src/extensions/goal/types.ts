@@ -1,5 +1,5 @@
 export const GOAL_STATUSES = ["active", "paused", "blocked", "budget_limited", "complete"] as const
-export const GOAL_COMPLETION_CONFIDENCES = ["speculative", "plausible", "validated", "verified"] as const
+export const GOAL_COMPLETION_CONFIDENCES = ["guess", "partial", "tested", "proven"] as const
 
 export type GoalStatus = (typeof GOAL_STATUSES)[number]
 type GoalCompletionConfidence = (typeof GOAL_COMPLETION_CONFIDENCES)[number]

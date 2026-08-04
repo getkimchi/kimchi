@@ -52,7 +52,7 @@ const UPDATE_GOAL_PARAMETERS = Type.Object({
 			GOAL_COMPLETION_CONFIDENCES.map((confidence) => Type.Literal(confidence)),
 			{
 				description:
-					"Completion evidence: speculative (untested), plausible (partial), validated (checks passed), or verified (every requirement evidenced). Required for complete; only validated or verified can finish.",
+					"Completion evidence: guess (none), partial (some), tested (checks pass), or proven (every requirement evidenced). Required for complete; only tested or proven can finish.",
 			},
 		),
 	),
@@ -505,13 +505,9 @@ export default function goalExtension(pi: ExtensionAPI): void {
 						)
 					}
 					const completionConfidence = params.status === "complete" ? params.completion_confidence : undefined
-					if (
-						params.status === "complete" &&
-						completionConfidence !== "validated" &&
-						completionConfidence !== "verified"
-					) {
+					if (params.status === "complete" && completionConfidence !== "tested" && completionConfidence !== "proven") {
 						throw new Error(
-							"Goal completion rejected: completion_confidence must be validated or verified. Continue working and gather current evidence before trying again.",
+							"Goal completion rejected: completion_confidence must be tested or proven. Continue working and gather current evidence before trying again.",
 						)
 					}
 					const nowMs = Date.now()

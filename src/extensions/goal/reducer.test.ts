@@ -75,7 +75,7 @@ describe("goal reducer", () => {
 
 	it("replays puts and matching clear tombstones in branch order", () => {
 		const revision1 = createGoal(undefined, "one", "goal-a", T1)
-		const revision2 = { ...editGoal(revision1, "goal-a", 1, "two", T2), completionConfidence: "verified" as const }
+		const revision2 = { ...editGoal(revision1, "goal-a", 1, "two", T2), completionConfidence: "proven" as const }
 		const unrelatedClear = clearGoalEntry({ ...revision2, id: "other" }, T2)
 
 		expect(restoreGoal([{ bad: true }, putGoalEntry(revision1), putGoalEntry(revision2), unrelatedClear])).toEqual(
