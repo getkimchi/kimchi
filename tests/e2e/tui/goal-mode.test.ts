@@ -1,13 +1,13 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { STARTUP_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { STARTUP_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import type { FakeResponseRequest, FakeResponseScript } from "./support/fake-openai-server.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
-test("experimental goal stops after exact-revision completion", async ({ terminal }) => {
+test("experimental goal stops after completion", async ({ terminal }) => {
 	const planningResponse: FakeResponseScript = {
 		stream: ["Creating a tactical plan."],
 		toolCalls: [
@@ -37,12 +37,10 @@ test("experimental goal stops after exact-revision completion", async ({ termina
 		toolCalls: [
 			{
 				id: "complete-goal",
-				function: { name: "update_goal", arguments: "{}" },
+				function: { name: "update_goal", arguments: JSON.stringify({ status: "complete" }) },
 			},
 		],
 	}
-	const completionToolCall = completionResponse.toolCalls?.[0]
-	if (!completionToolCall) throw new Error("Goal completion tool call fixture is missing.")
 
 	await runKimchiSession(
 		terminal,
@@ -58,6 +56,7 @@ test("experimental goal stops after exact-revision completion", async ({ termina
 		},
 		async (fixture, trace) => {
 			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
+			await waitForText(terminal, "Goal ready", { timeoutMs: 5_000 })
 			trace.step("ready with experimental goal resource enabled")
 
 			terminal.submit("/goal --tokens 2k implement feature A")
@@ -66,22 +65,21 @@ test("experimental goal stops after exact-revision completion", async ({ termina
 
 			const goal = goalSnapshot(await waitForChatRequest(fixture.fake.requests, 1))
 			expect(goal).toMatchObject({
-				revision: 1,
 				objective: "implement feature A",
 				status: "active",
 				tokenBudget: 2_000,
 			})
-			completionToolCall.function.arguments = JSON.stringify({
-				goalId: goal.id,
-				revision: goal.revision,
-				status: "complete",
-			})
-			trace.step("model received canonical revision 1 goal context")
+			trace.step("model received canonical goal context")
 			await waitForText(terminal, "Implement feature A", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Working toward the session goal.", { timeoutMs: 5_000 })
 
-			await waitForText(terminal, "Goal complete in", { timeoutMs: 5_000 })
+			await waitForText(terminal, "Goal complete.", { timeoutMs: 5_000 })
+			await waitForText(terminal, /goal time\s+\d/, { timeoutMs: 5_000 })
 			await waitForText(terminal, "Goal completion acknowledged.", { timeoutMs: 5_000 })
+			const finalView = viewText(terminal)
+			expect(finalView).not.toContain("Goal complete in")
+			expect(finalView).not.toContain("Get Goal")
+			expect(finalView).not.toContain("Update Goal")
 			const completedRequestCount = chatRequests(fixture.fake.requests).length
 			await new Promise((resolve) => setTimeout(resolve, 2_000))
 			expect(chatRequests(fixture.fake.requests)).toHaveLength(completedRequestCount)
@@ -112,8 +110,6 @@ function chatRequests(requests: FakeResponseRequest[]): FakeResponseRequest[] {
 }
 
 function goalSnapshot(request: FakeResponseRequest): {
-	id: string
-	revision: number
 	objective: string
 	status: string
 	tokenBudget?: number

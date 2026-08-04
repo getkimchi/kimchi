@@ -3,22 +3,19 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
+	SessionEntry,
 	TurnEndEvent,
 } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { formatCount } from "../format.js"
+import { formatCount, formatDuration } from "../format.js"
+import { addPromptSummaryMetric } from "../prompt-summary.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { getTodoScopeKey, normalizeTodoScope } from "../todos/scope.js"
+import { getWriteTodosDetails } from "../todos/session.js"
 import { resolveTodoScope } from "../todos/store.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
-import {
-	formatGoalAccounting,
-	formatGoalStatusAccounting,
-	formatGoalSummary,
-	GOAL_COMMAND_COMPLETIONS,
-	parseGoalCommand,
-} from "./command.js"
+import { formatGoalStatusAccounting, formatGoalSummary, GOAL_COMMAND_COMPLETIONS, parseGoalCommand } from "./command.js"
 import {
 	GET_GOAL_TOOL_NAME,
 	GOAL_CONTROL_MESSAGE_TYPE,
@@ -43,22 +40,17 @@ import {
 	type GoalState,
 	putGoalEntry,
 	replaceGoal,
-	requireCurrentGoal,
 	restoreGoal,
 	setGoalStatus,
 } from "./reducer.js"
 import type { GoalStatus, GoalTurnAttribution, PendingGoalContinuation, SessionGoal } from "./types.js"
 
 const UPDATE_GOAL_PARAMETERS = Type.Object({
-	goalId: Type.String(),
-	revision: Type.Integer({ minimum: 1 }),
 	status: Type.Union([Type.Literal("complete"), Type.Literal("blocked")]),
 	reason: Type.Optional(Type.String()),
 })
 
 interface UpdateGoalParams {
-	goalId: string
-	revision: number
 	status: "complete" | "blocked"
 	reason?: string
 }
@@ -119,7 +111,8 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
 	function goalStatusText(): string | undefined {
 		const goal = currentGoal
-		if (!goal || goal.status === "complete") return undefined
+		if (!goal) return "Goal ready"
+		if (goal.status === "complete") return undefined
 		const label =
 			goal.status === "active"
 				? activeSinceMs === undefined
@@ -177,12 +170,14 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	function replaySession(ctx: ExtensionContext): void {
 		clearGoalStatus()
 		currentSessionId = ctx.sessionManager.getSessionId()
-		const entries: unknown[] = []
-		for (const entry of ctx.sessionManager.getBranch()) {
-			if (entry.type === "custom" && entry.customType === GOAL_CUSTOM_ENTRY_TYPE) entries.push(entry.data)
-		}
-		currentGoal = restoreGoal(entries)
+		const restored = restoreGoalRuntime(
+			ctx.sessionManager.getBranch(),
+			currentSessionId,
+			getTodoScopeKey(resolveTodoScope()),
+		)
+		currentGoal = restored.goal
 		resetGoalRuntime()
+		todoStateFor = restored.todoState
 		syncGoalStatus(ctx)
 	}
 
@@ -325,7 +320,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			commitGoal(next)
 			resetGoalRuntime()
 			syncGoalStatus(ctx)
-			queueGoalTurn(ctx, next, buildGoalStartSteer(next, captured ? "replaced" : "created"), "command")
+			queueGoalTurn(ctx, next, buildGoalStartSteer(captured ? "replaced" : "created"), "command")
 			ctx.ui.notify(captured ? "Goal replaced." : "Goal created.", "info")
 		})
 	}
@@ -432,7 +427,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			invalidateContinuation()
 			consecutiveErrorTurns = 0
 			syncGoalStatus(ctx)
-			queueGoalTurn(ctx, next, buildGoalStartSteer(next, "resumed"), "resume")
+			queueGoalTurn(ctx, next, buildGoalStartSteer("resumed"), "resume")
 			ctx.ui.notify("Goal resumed.", "info")
 		})
 	}
@@ -481,12 +476,10 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: UPDATE_GOAL_TOOL_NAME,
 		label: "Update Goal",
-		description:
-			"Mark the current goal revision complete or blocked. Requires the exact current goal ID and revision and cannot edit, pause, resume, replace, or clear the goal.",
+		description: "Mark the active turn's goal complete or blocked. Cannot edit, pause, resume, replace, or clear it.",
 		promptSnippet: "Mark the current goal revision complete or blocked",
 		promptGuidelines: [
 			"Use update_goal only after current evidence proves every requirement is complete, or at a real impasse requiring user or external action.",
-			"Always pass the exact goal ID and revision from the current goal context.",
 		],
 		parameters: UPDATE_GOAL_PARAMETERS,
 		async execute(_toolCallId, params: UpdateGoalParams, _signal, _onUpdate, ctx) {
@@ -497,13 +490,18 @@ export default function goalExtension(pi: ExtensionAPI): void {
 					if (params.status !== "complete" && params.status !== "blocked") {
 						throw new Error(`Goal update rejected: invalid terminal status '${String(params.status)}'.`)
 					}
-					const current = requireCurrentGoal(currentGoal, params.goalId, params.revision)
+					const current = currentGoal
+					if (current?.status !== "active" || !matchesGoal(activeTurn, current, sessionId)) {
+						throw new Error(
+							"Goal update rejected: the goal changed or stopped during this turn. Continue against the current active goal before updating it.",
+						)
+					}
 					const nowMs = Date.now()
 					const accounted = checkpointGoal(current, 0, nowMs)
 					const next = setGoalStatus(
 						accounted,
-						params.goalId,
-						params.revision,
+						current.id,
+						current.revision,
 						params.status as GoalStatus,
 						timestamp(nowMs),
 					)
@@ -585,6 +583,13 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		const goal = currentGoal
 		if (goal?.status !== "active") return
 		if (event.toolName !== UPDATE_GOAL_TOOL_NAME) return
+		if (!matchesGoal(activeTurn, goal, currentSessionId)) {
+			return {
+				block: true,
+				reason:
+					"The goal changed or stopped during this turn. Continue against the current active goal before calling update_goal.",
+			}
+		}
 		const currentTodoState = matchesGoal(todoStateFor, goal, currentSessionId) ? todoStateFor : undefined
 		if (currentTodoState?.total && event.input.status === currentTodoState.settledStatus) return
 		return {
@@ -676,10 +681,8 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			const goalAfterAccounting = currentGoal
 			const feedback = pendingTerminalFeedback
 			if (feedback && matchesGoal(feedback, goalAfterAccounting, sessionId)) {
-				ctx.ui.notify(
-					`Goal ${feedback.status} in ${formatGoalAccounting(goalAfterAccounting)}.`,
-					feedback.status === "blocked" ? "warning" : "info",
-				)
+				addPromptSummaryMetric(sessionId, "goal time", formatDuration(goalAfterAccounting.timeUsedMs))
+				ctx.ui.notify(`Goal ${feedback.status}.`, feedback.status === "blocked" ? "warning" : "info")
 				pendingTerminalFeedback = undefined
 			}
 		})
@@ -690,8 +693,9 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		await serializeGoalMutation(sessionId, () => {
 			assertCurrentSession(ctx, sessionId)
 			const goal = currentGoal
-			if (goal?.status !== "active" || ctx.hasPendingMessages() || !goalToolsAvailable()) return
-			queueGoalTurn(ctx, goal, buildGoalContinuation(goal), "agent_end", "followUp")
+			if (goal?.status !== "active" || consecutiveErrorTurns > 0 || ctx.hasPendingMessages() || !goalToolsAvailable())
+				return
+			queueGoalTurn(ctx, goal, buildGoalContinuation(), "agent_end", "followUp")
 		})
 	})
 
@@ -712,6 +716,59 @@ function matchesGoal(
 	return Boolean(
 		marker && goal && marker.sessionId === sessionId && marker.goalId === goal.id && marker.revision === goal.revision,
 	)
+}
+
+function restoreGoalRuntime(
+	entries: readonly SessionEntry[],
+	sessionId: string,
+	expectedScopeKey: string,
+): { goal: GoalState; todoState: GoalTodoState | undefined } {
+	const goalEntries: unknown[] = []
+	let goal: GoalState
+	let todoState: GoalTodoState | undefined
+
+	for (const entry of entries) {
+		if (entry.type === "custom" && entry.customType === GOAL_CUSTOM_ENTRY_TYPE) {
+			const previous = goal
+			goalEntries.push(entry.data)
+			goal = restoreGoal(goalEntries)
+			if (!sameGoalRevision(previous, goal)) todoState = undefined
+		}
+
+		const details = getWriteTodosDetails(entry)
+		if (!goal || !details || getTodoScopeKey(normalizeTodoScope(details.scope)) !== expectedScopeKey) continue
+		const counts = todoCounts(details.todos)
+		todoState = {
+			sessionId,
+			goalId: goal.id,
+			revision: goal.revision,
+			...counts,
+			settledStatus:
+				counts.total === 0
+					? todoState?.settledStatus
+					: counts.completed === counts.total
+						? "complete"
+						: counts.blocked > 0 && counts.completed + counts.blocked === counts.total
+							? "blocked"
+							: undefined,
+		}
+	}
+
+	return { goal, todoState }
+}
+
+function sameGoalRevision(left: GoalState, right: GoalState): boolean {
+	return left?.id === right?.id && left?.revision === right?.revision
+}
+
+function todoCounts(todos: readonly unknown[]): Pick<GoalTodoState, "total" | "blocked" | "completed"> {
+	const counts = { total: todos.length, blocked: 0, completed: 0 }
+	for (const todo of todos) {
+		if (!isRecord(todo)) continue
+		if (todo.status === "blocked") counts.blocked += 1
+		else if (todo.status === "completed") counts.completed += 1
+	}
+	return counts
 }
 
 function assistantTurnTokens(event: TurnEndEvent): number {
@@ -737,13 +794,7 @@ function todoResultState(
 		return undefined
 	}
 
-	const state = { total: result.details.todos.length, blocked: 0, completed: 0 }
-	for (const todo of result.details.todos) {
-		if (!isRecord(todo)) continue
-		if (todo.status === "blocked") state.blocked += 1
-		else if (todo.status === "completed") state.completed += 1
-	}
-	return state
+	return todoCounts(result.details.todos)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

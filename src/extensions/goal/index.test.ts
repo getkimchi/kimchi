@@ -7,7 +7,9 @@ import type {
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
+import { TODO_TOOL_RESULT_SCHEMA_VERSION } from "../todos/types.js"
 import {
 	GET_GOAL_TOOL_NAME,
 	GOAL_CONTEXT_MESSAGE_TYPE,
@@ -137,10 +139,8 @@ describe("goal extension", () => {
 
 	it("replaces a complete goal without confirmation", async () => {
 		await harness.command("first")
-		const first = requireGoal(harness.currentGoal())
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await harness.tool(UPDATE_GOAL_TOOL_NAME, {
-			goalId: first.id,
-			revision: first.revision,
 			status: "complete",
 		})
 		harness.ui.confirm.mockClear()
@@ -174,7 +174,7 @@ describe("goal extension", () => {
 		await harness.fire("turn_end", terminalTurn("stop", { input: 200, output: 50 }))
 
 		expect(harness.currentGoal()).toMatchObject({ status: "complete", tokensUsed: 1_750, timeUsedMs: 3_500 })
-		expect(harness.ui.notify).toHaveBeenCalledWith("Goal complete in 3.5s · 1.8k tokens.", "info")
+		expect(harness.ui.notify).toHaveBeenCalledWith("Goal complete.", "info")
 		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("goal", undefined)
 	})
 
@@ -189,6 +189,7 @@ describe("goal extension", () => {
 
 	it("allows work tools but requires visible settled todos before ending every goal revision", async () => {
 		await harness.command("ship it")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 
 		expect(await harness.fire("tool_call", { type: "tool_call", toolName: "bash", input: {} })).toBeUndefined()
 		expect(
@@ -257,6 +258,7 @@ describe("goal extension", () => {
 		harness.setSession("session-b", [])
 		await harness.fire("session_start", { type: "session_start", reason: "new" })
 		await harness.command("another session goal")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		expect(await harness.fire("tool_call", { type: "tool_call", toolName: "bash", input: {} })).toBeUndefined()
 		expect(
 			await harness.fire("tool_call", {
@@ -267,6 +269,7 @@ describe("goal extension", () => {
 		).toMatchObject({ block: true })
 
 		await harness.command("edit changed objective")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
@@ -390,40 +393,42 @@ describe("goal extension", () => {
 		expect((await harness.tool(GET_GOAL_TOOL_NAME, {})).details.goal).toBeNull()
 	})
 
+	it("uses the active turn revision internally for model updates", async () => {
+		await harness.command("finish without copying protocol metadata")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
+
+		const result = await harness.tool(UPDATE_GOAL_TOOL_NAME, { status: "complete" })
+
+		expect(result.content[0].text).toContain("marked complete")
+		expect(harness.currentGoal()?.status).toBe("complete")
+	})
+
 	it("rejects stale and invalid model updates while accepting both terminal statuses", async () => {
 		await harness.command("original")
-		const revision1 = requireGoal(harness.currentGoal())
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await harness.command("edit changed")
-		const revision2 = requireGoal(harness.currentGoal())
 
 		const stale = await harness.tool(UPDATE_GOAL_TOOL_NAME, {
-			goalId: revision1.id,
-			revision: revision1.revision,
 			status: "complete",
 		})
-		expect(stale.content[0].text).toContain(`current goal is ${revision2.id} revision 2`)
+		expect(stale.content[0].text).toContain("goal changed or stopped during this turn")
 		expect(harness.currentGoal()?.status).toBe("active")
 
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		const invalid = await harness.tool(UPDATE_GOAL_TOOL_NAME, {
-			goalId: revision2.id,
-			revision: revision2.revision,
 			status: "paused",
 		})
 		expect(invalid.content[0].text).toContain("invalid terminal status")
 
 		await harness.tool(UPDATE_GOAL_TOOL_NAME, {
-			goalId: revision2.id,
-			revision: revision2.revision,
 			status: "blocked",
 			reason: "needs user input",
 		})
 		expect(harness.currentGoal()?.status).toBe("blocked")
 
 		await harness.command("resume")
-		const resumed = requireGoal(harness.currentGoal())
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
 		await harness.tool(UPDATE_GOAL_TOOL_NAME, {
-			goalId: resumed.id,
-			revision: resumed.revision,
 			status: "complete",
 		})
 		expect(harness.currentGoal()?.status).toBe("complete")
@@ -522,7 +527,7 @@ describe("goal extension", () => {
 		expect((await harness.tool(GET_GOAL_TOOL_NAME, {})).details.goal).toMatchObject({ timeUsedMs: 60_000 })
 	})
 
-	it("retries transient turn errors and pauses after three consecutive failures", async () => {
+	it("leaves retries to Pi and pauses after three consecutive failures", async () => {
 		await harness.command("keep going")
 		harness.sendMessage.mockClear()
 
@@ -533,7 +538,7 @@ describe("goal extension", () => {
 			if (turnIndex < 3) expect(harness.currentGoal()?.status).toBe("active")
 		}
 
-		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
+		expect(harness.sendMessage).not.toHaveBeenCalled()
 		expect(harness.currentGoal()?.status).toBe("paused")
 		expect(harness.ui.notify).toHaveBeenCalledWith("Goal paused after 3 consecutive agent errors.", "warning")
 	})
@@ -582,6 +587,55 @@ describe("goal extension", () => {
 		await harness.fire("session_start", { type: "session_start", reason: "fork" })
 		await harness.command("edit fork objective")
 		expect(harness.currentGoal()).toMatchObject({ objective: "fork objective", revision: 2 })
+	})
+
+	it("accepts settled todos restored after the current goal revision", async () => {
+		await harness.command("restore the session")
+		harness.setBranch([
+			...harness.branch,
+			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
+				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+				scope: { kind: "global" },
+				todos: [{ id: 1, content: "Restore the session", status: "completed" }],
+				updatedAt: "2026-08-03T00:00:01.000Z",
+			}),
+		])
+
+		await harness.fire("session_tree", { type: "session_tree", oldLeafId: "before", newLeafId: "after" })
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+
+		expect(
+			await harness.fire("tool_call", {
+				type: "tool_call",
+				toolName: UPDATE_GOAL_TOOL_NAME,
+				input: { status: "complete" },
+			}),
+		).toBeUndefined()
+	})
+
+	it("does not carry restored todos across goal revisions", async () => {
+		await harness.command("revision one")
+		harness.setBranch([
+			...harness.branch,
+			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
+				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+				scope: { kind: "global" },
+				todos: [{ id: 1, content: "Finish revision one", status: "completed" }],
+				updatedAt: "2026-08-03T00:00:01.000Z",
+			}),
+		])
+		await harness.command("edit revision two")
+
+		await harness.fire("session_tree", { type: "session_tree", oldLeafId: "before", newLeafId: "after" })
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+
+		expect(
+			await harness.fire("tool_call", {
+				type: "tool_call",
+				toolName: UPDATE_GOAL_TOOL_NAME,
+				input: { status: "complete" },
+			}),
+		).toMatchObject({ block: true, reason: expect.stringContaining("visible tactical todo") })
 	})
 })
 
