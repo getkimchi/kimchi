@@ -855,7 +855,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(requests[0]).toMatchObject({
 			sessionId: "session-permission",
 			toolCall: {
-				toolCallId: "tc-permission",
+				toolCallId: "kt.bash.0",
 				title: "touch allowed.txt",
 				kind: "execute",
 				status: "pending",
@@ -1211,14 +1211,7 @@ describe("KimchiAcpAgent messageId on streaming chunks", () => {
 			prompt: [{ type: "text", text: "two blocks" }],
 		})
 		expect(result.stopReason).toBe("end_turn")
-		expect(messageIdsFor("agent_message_chunk")).toEqual([
-			"kimchi_msg_0",
-			"kimchi_msg_0",
-			"kimchi_msg_0",
-			"kimchi_msg_1",
-			"kimchi_msg_1",
-			"kimchi_msg_1",
-		])
+		expect(messageIdsFor("agent_message_chunk")).toEqual(["km.0", "km.0", "km.0", "km.1", "km.1", "km.1"])
 	})
 
 	it("emits messageId on agent_thought_chunk the same way (same contentIndex → same id)", async () => {
@@ -1235,7 +1228,7 @@ describe("KimchiAcpAgent messageId on streaming chunks", () => {
 			prompt: [{ type: "text", text: "think" }],
 		})
 		expect(result.stopReason).toBe("end_turn")
-		expect(messageIdsFor("agent_thought_chunk")).toEqual(["kimchi_msg_0", "kimchi_msg_0", "kimchi_msg_0"])
+		expect(messageIdsFor("agent_thought_chunk")).toEqual(["km.0", "km.0", "km.0"])
 	})
 
 	it("advances the counter across turns so two turns both starting at contentIndex=0 get distinct ids", async () => {
@@ -1261,7 +1254,7 @@ describe("KimchiAcpAgent messageId on streaming chunks", () => {
 			prompt: [{ type: "text", text: "two turns" }],
 		})
 		expect(result.stopReason).toBe("end_turn")
-		expect(messageIdsFor("agent_message_chunk")).toEqual(["kimchi_msg_0", "kimchi_msg_1"])
+		expect(messageIdsFor("agent_message_chunk")).toEqual(["km.0", "km.1"])
 	})
 })
 
@@ -1574,6 +1567,150 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		expect(res.stopReason).toBe("end_turn")
 		expect(updates.some((u) => u.update.sessionUpdate === "tool_call")).toBe(false)
 		expect(updates.some((u) => u.update.sessionUpdate === "tool_call_update")).toBe(false)
+	})
+
+	it("rewrites upstream toolCallIds to session-unique ACP ids", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-1",
+				toolName: "bash",
+				args: { command: "echo a" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-1",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "a" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		expect(toolCalls).toHaveLength(1)
+		expect(toolCallUpdates).toHaveLength(1)
+		const acpId = (toolCalls[0].update as { toolCallId: string }).toolCallId
+		expect(acpId).toMatch(/^kt\.\w+\.\d+$/)
+		expect((toolCallUpdates[0].update as { toolCallId: string }).toolCallId).toBe(acpId)
+		// The upstream id must not leak to the ACP surface.
+		expect(acpId).not.toBe("tc-1")
+		// The original upstream id is preserved in _meta for correlation.
+		expect((toolCalls[0].update as { _meta?: { piToolCallId?: string } })._meta?.piToolCallId).toBe("tc-1")
+		expect((toolCallUpdates[0].update as { _meta?: { piToolCallId?: string } })._meta?.piToolCallId).toBe("tc-1")
+	})
+
+	it("routes updates and end events to the allocated ACP toolCallId", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-partial",
+				toolName: "bash",
+				args: { command: "echo a" },
+			})
+			fake.emit({
+				type: "tool_execution_update",
+				toolCallId: "tc-partial",
+				toolName: "bash",
+				args: { command: "echo a" },
+				partialResult: { content: [{ type: "text", text: "partial" }] },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-partial",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "final" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+
+		const ids = updates
+			.filter((u) => u.update.sessionUpdate === "tool_call" || u.update.sessionUpdate === "tool_call_update")
+			.map((u) => (u.update as { toolCallId: string }).toolCallId)
+		expect(new Set(ids).size).toBe(1)
+		expect(ids[0]).toMatch(/^kt\.\w+\.\d+$/)
+	})
+
+	it("disambiguates a reused upstream toolCallId across compaction as two distinct calls", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				args: { command: "echo first" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "first" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+
+		// Simulate compaction reusing the same upstream id for a new call.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				args: { command: "echo second" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "second" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run again" }],
+		})
+
+		const calls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(calls).toHaveLength(2)
+		const firstId = (calls[0].update as { toolCallId: string }).toolCallId
+		const secondId = (calls[1].update as { toolCallId: string }).toolCallId
+		expect(firstId).not.toBe(secondId)
+		expect(firstId).toMatch(/^kt\.\w+\.\d+$/)
+		expect(secondId).toMatch(/^kt\.\w+\.\d+$/)
+
+		const firstUpdates = updates.filter(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" && (u.update as { toolCallId: string }).toolCallId === firstId,
+		)
+		const secondUpdates = updates.filter(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" && (u.update as { toolCallId: string }).toolCallId === secondId,
+		)
+		expect(firstUpdates.length).toBeGreaterThan(0)
+		expect(secondUpdates.length).toBeGreaterThan(0)
 	})
 })
 
@@ -4102,7 +4239,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			const toolCall = replay[1].update as Record<string, unknown>
 			expect(toolCall).toMatchObject({
 				sessionUpdate: "tool_call",
-				toolCallId: "tc-1",
+				toolCallId: `kt.${c.toolName}.2`,
 				kind: c.expect.kind,
 				title: c.expect.title,
 				status: c.expect.status,
@@ -4112,7 +4249,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			const update = replay[2].update as Record<string, unknown>
 			expect(update).toMatchObject({
 				sessionUpdate: "tool_call_update",
-				toolCallId: "tc-1",
+				toolCallId: `kt.${c.toolName}.2`,
 				status: c.expect.status,
 			})
 			const content = (update as { content: Array<{ content: { text: string } }> }).content

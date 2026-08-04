@@ -10,11 +10,14 @@ export type ToolCallUpdateBuilder = (
 	input: Record<string, unknown>,
 ) => ToolCallUpdate
 
+export type AcpToolCallIdResolver = (upstreamToolCallId: string, toolName: string) => string
+
 export function createAcpPermissionPrompter(
 	conn: AgentSideConnection,
 	sessionId: string,
 	uiContext: ExtensionUIContext,
 	buildToolCallUpdate: ToolCallUpdateBuilder,
+	resolveAcpToolCallId: AcpToolCallIdResolver,
 ): ToolPermissionPrompter {
 	return {
 		async request(req): Promise<ApprovalOutcome> {
@@ -31,10 +34,14 @@ export function createAcpPermissionPrompter(
 				}
 			})
 
+			const acpToolCallId = resolveAcpToolCallId(req.toolCallId, req.toolName)
 			const response = await requestWithAbort(
 				conn.requestPermission({
 					sessionId,
-					toolCall: buildToolCallUpdate(req.toolCallId, req.toolName, req.input),
+					toolCall: {
+						...buildToolCallUpdate(acpToolCallId, req.toolName, req.input),
+						_meta: { piToolCallId: req.toolCallId },
+					},
 					options,
 				}),
 				req.signal,

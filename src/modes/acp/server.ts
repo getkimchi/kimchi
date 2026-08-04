@@ -155,6 +155,21 @@ type SessionRecord = {
 	 * previous message's assignments.
 	 */
 	contentIndexToBlockId: Map<number, string>
+	/**
+	 * Session-wide monotonic counter for ACP toolCallIds. Pi's toolCall.id
+	 * values are only unique within a compaction segment, so the ACP surface
+	 * rewrites each tool_execution_start to a fresh session-unique id. This
+	 * satisfies the ACP contract "Unique identifier for a tool call within a
+	 * session." Seeded from the branch on loadSession so replay emits matching
+	 * ids.
+	 */
+	nextToolCallId: number
+	/**
+	 * Maps the upstream pi-mono toolCallId to the ACP toolCallId for the call
+	 * currently in flight. A new `tool_execution_start` always allocates a fresh
+	 * ACP id, so collisions across compaction boundaries are disambiguated.
+	 */
+	toolCallIdMap: Map<string, string>
 }
 
 export class KimchiAcpAgent implements Agent {
@@ -287,16 +302,32 @@ export class KimchiAcpAgent implements Agent {
 			const sessionId = session.sessionId
 			const uiContext = this.createUiContext(session)
 			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
-			registerAcpPrompter(sessionId, createAcpPermissionPrompter(this.conn, sessionId, uiContext, buildToolCallUpdate))
-			await this.bindAcpExtensions(session, uiContext)
-
-			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
-			this.sessions.set(sessionId, {
+			// Build the record early so the ACP prompter can allocate ACP
+			// toolCallIds that match the ids later emitted by tool_execution_start.
+			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
+			// extension events are dropped before this.sessions is populated.
+			const record: SessionRecord = {
 				session,
-				unsubscribe,
+				unsubscribe: () => {},
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
-			})
+				nextToolCallId: 0,
+				toolCallIdMap: new Map(),
+			}
+			registerAcpPrompter(
+				sessionId,
+				createAcpPermissionPrompter(
+					this.conn,
+					sessionId,
+					uiContext,
+					buildToolCallUpdate,
+					(upstreamToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, upstreamToolCallId, toolName),
+				),
+			)
+			await this.bindAcpExtensions(session, uiContext)
+
+			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
+			this.sessions.set(sessionId, record)
 
 			this.sendAvailableCommandsUpdate(sessionId)
 
@@ -501,22 +532,34 @@ export class KimchiAcpAgent implements Agent {
 
 			const uiContext = this.createUiContext(session)
 			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
-			registerAcpPrompter(sid, createAcpPermissionPrompter(this.conn, sid, uiContext, buildToolCallUpdate))
-			await this.bindAcpExtensions(session, uiContext)
-
-			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
+			// Build the record early so the ACP prompter can allocate ACP
+			// toolCallIds that match the ids later emitted by tool_execution_start.
+			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
+			// extension events are dropped before this.sessions is populated.
 			const record: SessionRecord = {
 				session,
-				unsubscribe,
+				unsubscribe: () => {},
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
+				nextToolCallId: 0,
+				toolCallIdMap: new Map(),
 			}
+			registerAcpPrompter(
+				sid,
+				createAcpPermissionPrompter(this.conn, sid, uiContext, buildToolCallUpdate, (upstreamToolCallId, toolName) =>
+					this.getOrAllocateAcpToolCallId(record, upstreamToolCallId, toolName),
+				),
+			)
+			await this.bindAcpExtensions(session, uiContext)
+
+			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
 			this.sessions.set(sid, record)
 
 			// Seed the block counter from the persisted branch so replay emits the
 			// same messageIds the live turn would have — and so any new block the
 			// user creates after the load gets a fresh, non-colliding id.
 			this.seedBlockCounterFromBranch(session, record)
+			this.seedToolCallCounterFromBranch(session, record)
 
 			// Replay BEFORE the response resolves so client sees a coherent transcript
 			// when the loadSession promise settles. No turn context is created, so a
@@ -716,7 +759,15 @@ export class KimchiAcpAgent implements Agent {
 		if (!entry) return
 		const turn = entry.turn
 		switch (event.type) {
-			case "agent_start":
+			case "agent_start": {
+				// New turn → contentIndex restarts from 0 and any in-flight tool
+				// id mappings from the previous turn are stale (the calls either
+				// ended or were orphaned). Wipe both maps so fresh allocations
+				// don't reuse old ids.
+				entry.contentIndexToBlockId.clear()
+				entry.toolCallIdMap.clear()
+				return
+			}
 			case "message_start": {
 				// New assistant message → contentIndex restarts from 0. Wipe the
 				// per-message map so a fresh block at index 0 gets a fresh id
@@ -730,7 +781,7 @@ export class KimchiAcpAgent implements Agent {
 				if ((ame.type === "text_delta" || ame.type === "thinking_delta") && ame.delta) {
 					let messageId = entry.contentIndexToBlockId.get(ame.contentIndex)
 					if (messageId === undefined) {
-						messageId = `kimchi_msg_${entry.nextBlockId++}`
+						messageId = `km.${entry.nextBlockId++}`
 						entry.contentIndexToBlockId.set(ame.contentIndex, messageId)
 					}
 					this.send({
@@ -754,17 +805,19 @@ export class KimchiAcpAgent implements Agent {
 					turn.hiddenToolCallIds.add(event.toolCallId)
 					return
 				}
+				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
 				const { title, kind, locations } = describeToolCall(event.toolName, event.args)
 				this.send({
 					sessionId,
 					update: {
 						sessionUpdate: "tool_call",
-						toolCallId: event.toolCallId,
+						toolCallId: acpToolCallId,
 						title,
 						kind,
 						status: "in_progress",
 						locations,
 						rawInput: event.args,
+						_meta: { piToolCallId: event.toolCallId },
 					},
 				})
 				return
@@ -775,15 +828,17 @@ export class KimchiAcpAgent implements Agent {
 					turn.hiddenToolCallIds.add(event.toolCallId)
 					return
 				}
+				const acpToolCallId = this.resolveAcpToolCallId(entry, event.toolCallId)
 				const partial = toolResultContent(event.partialResult)
 				if (partial.length === 0) return
 				this.send({
 					sessionId,
 					update: {
 						sessionUpdate: "tool_call_update",
-						toolCallId: event.toolCallId,
+						toolCallId: acpToolCallId,
 						status: "in_progress",
 						content: partial,
+						_meta: { piToolCallId: event.toolCallId },
 					},
 				})
 				return
@@ -794,16 +849,21 @@ export class KimchiAcpAgent implements Agent {
 					turn.hiddenToolCallIds.delete(event.toolCallId)
 					return
 				}
+				const acpToolCallId = this.resolveAcpToolCallId(entry, event.toolCallId)
 				this.send({
 					sessionId,
 					update: {
 						sessionUpdate: "tool_call_update",
-						toolCallId: event.toolCallId,
+						toolCallId: acpToolCallId,
 						status: event.isError ? "failed" : "completed",
 						content: toolResultContent(event.result),
 						rawOutput: event.result,
+						_meta: { piToolCallId: event.toolCallId },
 					},
 				})
+				// The upstream id may be reused after compaction; drop the mapping
+				// once the call is terminal so a future start allocates a fresh id.
+				entry.toolCallIdMap.delete(event.toolCallId)
 				return
 			}
 			case "session_info_changed": {
@@ -913,6 +973,34 @@ export class KimchiAcpAgent implements Agent {
 		record.nextBlockId = count + 1
 	}
 
+	/**
+	 * Walk the persisted branch and count how many toolCall blocks the replay
+	 * would emit. Sets `record.nextToolCallId` so replay emits the same ACP
+	 * toolCallIds the live turns would have produced, and so any new tool call
+	 * after the load gets a fresh, non-colliding id.
+	 *
+	 * Mirrors replayAssistantBlocks' emission logic exactly — only non-hidden
+	 * toolCall blocks count, matching the live path's `isHiddenToolCall` filter.
+	 */
+	private seedToolCallCounterFromBranch(session: AgentSession, record: SessionRecord): void {
+		const entries = session.sessionManager.getBranch()
+
+		let count = 0
+		for (const entry of entries) {
+			if (entry?.type !== "message" || entry.message.role !== "assistant") continue
+			const content = entry.message.content
+			if (!Array.isArray(content)) continue
+			for (const block of content) {
+				if (block.type !== "toolCall") continue
+				const args = block.arguments
+				if (typeof block.name === "string" && !isHiddenToolCall(block.name, args)) {
+					count++
+				}
+			}
+		}
+		record.nextToolCallId = count + 1
+	}
+
 	private replayAssistantBlocks(
 		sessionId: string,
 		content: unknown,
@@ -925,7 +1013,7 @@ export class KimchiAcpAgent implements Agent {
 		// the unit-test harness wiring a partial replay path).
 		const nextMessageId = () => {
 			if (!record) return undefined
-			return `kimchi_msg_${record.nextBlockId++}`
+			return `km.${record.nextBlockId++}`
 		}
 		// Buffer contiguous text blocks so a single assistant message renders as
 		// one agent_message_chunk per natural text segment — emit the full
@@ -987,12 +1075,13 @@ export class KimchiAcpAgent implements Agent {
 			} else if (b.type === "toolCall") {
 				flushText()
 				const tc = b as { id?: unknown; name?: unknown; arguments?: unknown }
-				const id = typeof tc.id === "string" ? tc.id : undefined
+				const upstreamId = typeof tc.id === "string" ? tc.id : undefined
 				const name = typeof tc.name === "string" ? tc.name : undefined
-				if (!id || !name) continue
+				if (!upstreamId || !name) continue
 				const args = (tc.arguments ?? {}) as Record<string, unknown>
 				if (isHiddenToolCall(name, args)) continue
-				const result = toolResults.get(id)
+				const acpToolCallId = record ? this.getOrAllocateAcpToolCallId(record, upstreamId, name) : upstreamId
+				const result = toolResults.get(upstreamId)
 				// No persisted result → the call never finished (interrupted mid
 				// turn). "failed" is the closest terminal status; leaving the call
 				// in_progress would hang the client's spinner forever on replay.
@@ -1002,24 +1091,30 @@ export class KimchiAcpAgent implements Agent {
 					sessionId,
 					update: {
 						sessionUpdate: "tool_call",
-						toolCallId: id,
+						toolCallId: acpToolCallId,
 						title,
 						kind,
 						status,
 						locations,
 						rawInput: args,
+						_meta: { piToolCallId: upstreamId },
 					},
 				})
 				this.send({
 					sessionId,
 					update: {
 						sessionUpdate: "tool_call_update",
-						toolCallId: id,
+						toolCallId: acpToolCallId,
 						status,
 						content: result ? toolResultContent(result) : [],
 						rawOutput: result,
+						_meta: { piToolCallId: upstreamId },
 					},
 				})
+				// The branch may contain multiple toolCalls with the same upstream id
+				// (e.g., across a compaction boundary). Drop the mapping after replaying
+				// each call so the next one with the same upstream id gets a fresh id.
+				record?.toolCallIdMap.delete(upstreamId)
 			}
 		}
 		// Trailing text after the last structural block (or a text-only message)
@@ -1040,6 +1135,30 @@ export class KimchiAcpAgent implements Agent {
 		this.conn.sessionUpdate(params).catch((err: unknown) => {
 			process.stderr.write(`acp sessionUpdate failed: ${String(err)}\n`)
 		})
+	}
+
+	/**
+	 * Return the existing ACP toolCallId for an upstream id, allocating a fresh
+	 * session-unique id if none exists. Permission prompts fire before
+	 * `tool_execution_start`, so this ensures the permission request and the
+	 * subsequent tool_call notification share the same id.
+	 */
+	private getOrAllocateAcpToolCallId(record: SessionRecord, upstreamToolCallId: string, toolName: string): string {
+		let acpId = record.toolCallIdMap.get(upstreamToolCallId)
+		if (acpId === undefined) {
+			acpId = `kt.${toolName}.${record.nextToolCallId++}`
+			record.toolCallIdMap.set(upstreamToolCallId, acpId)
+		}
+		return acpId
+	}
+
+	/**
+	 * Look up the ACP toolCallId for an in-flight upstream call. Falls back to
+	 * the upstream id if no mapping exists (defensive: should only happen for
+	 * events that arrived before their start, which pi-mono does not emit).
+	 */
+	private resolveAcpToolCallId(record: SessionRecord, upstreamToolCallId: string): string {
+		return record.toolCallIdMap.get(upstreamToolCallId) ?? upstreamToolCallId
 	}
 
 	private sendAvailableCommandsUpdate(sessionId: string): void {
