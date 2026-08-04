@@ -1,4 +1,5 @@
 export type LLMGatewayErrorReason =
+	| "budget_exhausted"
 	| "rate_limit"
 	| "transport_failure"
 	| "stream_interrupted"
@@ -15,6 +16,7 @@ const LLM_GATEWAY_REASON_POLICIES: Record<
 	LLMGatewayErrorReason,
 	{ readonly retryable: boolean; readonly isInfrastructure: boolean; readonly exitCode: number }
 > = {
+	budget_exhausted: { retryable: false, isInfrastructure: false, exitCode: LLM_GATEWAY_REQUEST_EXIT_CODE },
 	rate_limit: { retryable: true, isInfrastructure: true, exitCode: LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE },
 	transport_failure: { retryable: true, isInfrastructure: true, exitCode: LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE },
 	stream_interrupted: { retryable: true, isInfrastructure: true, exitCode: LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE },
@@ -73,6 +75,7 @@ const CONTEXT_WINDOW_RE =
 const NON_GATEWAY_PROVIDER_VERDICT_RE =
 	/unauthorized|authentication[_\s]?(?:error|failed)|invalid api key|\b401\b|\b403\b|permission denied|account.{0,40}\b(?:terminated|suspended|deactivated|disabled)\b|quota|billing|insufficient_quota|out of budget|usage limit/i
 
+const BUDGET_EXHAUSTED_RE = /budget\s+exhausted/i
 const RATE_LIMIT_TEXT_RE = /rate.?limit|too many requests/i
 const STREAM_INTERRUPTED_RE =
 	/stream ended without finish_reason|stream ended before message_stop|ended without finish/i
@@ -119,6 +122,9 @@ export function classifyLLMGatewayError(rawMessage: string): LLMGatewayError | u
 
 	if (INVALID_REQUEST_PAYLOAD_RE.test(rawMessage)) return createError("invalid_request_payload", rawMessage, status)
 	if (CONTEXT_WINDOW_RE.test(rawMessage)) return createError("context_window_exceeded", rawMessage, status)
+	// Budget exhaustion is a terminal Kimchi verdict even when the gateway
+	// describes it using provider-verdict words such as "billing".
+	if (BUDGET_EXHAUSTED_RE.test(rawMessage)) return createError("budget_exhausted", rawMessage, status)
 	if (NON_GATEWAY_PROVIDER_VERDICT_RE.test(rawMessage)) return undefined
 	if (BAD_REQUEST_TEXT_RE.test(rawMessage) || status === 400) return createError("bad_request", rawMessage, status)
 

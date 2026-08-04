@@ -174,6 +174,47 @@ describe("classifyLLMGatewayError", () => {
 
 	it.each([
 		{
+			name: "budget exhausted",
+			message: "budget exhausted",
+			reason: "budget_exhausted",
+		},
+		{
+			name: "api key budget exhausted",
+			message: "api key budget exhausted",
+			reason: "budget_exhausted",
+		},
+		{
+			name: "organization budget exhausted",
+			message: "organization budget exhausted",
+			reason: "budget_exhausted",
+		},
+		{
+			name: "team budget exhausted",
+			message: "team budget exhausted",
+			reason: "budget_exhausted",
+		},
+		{
+			name: "429 budget exhausted (classified before the generic 429 rule)",
+			message: "429 budget exhausted",
+			reason: "budget_exhausted",
+		},
+		{
+			name: "status code 429 budget exhausted",
+			message: "status code 429: budget exhausted",
+			reason: "budget_exhausted",
+			httpStatusCode: 429,
+		},
+		{
+			name: "billing budget exhausted",
+			message: "429 billing budget exhausted",
+			reason: "budget_exhausted",
+		},
+		{
+			name: "billing error with API key budget exhausted",
+			message: "billing error: API key budget exhausted",
+			reason: "budget_exhausted",
+		},
+		{
 			name: "empty tools array",
 			message:
 				"Value error, tools must not be an empty array. Either provide at least one tool or omit the field entirely.",

@@ -48,6 +48,57 @@ describe("upstream retry patch", () => {
 		expect(wrapped?.({ stopReason: "error", errorMessage: "500 internal server error" })).toBe(true)
 		expect(wrapped?.({ stopReason: "error", errorMessage: "invalid request" })).toBe(false)
 	})
+
+	// Critical regression: Pi's original classifier retries any message
+	// containing 429, but Kimchi must override that when the same 429 is a
+	// budget-exhausted verdict — otherwise exhausted budgets burn the full
+	// retry storm plus billing refreshes on every attempt.
+	it("does not retry a 429 budget-exhausted error even when the original classifier would retry it", () => {
+		const original = vi.fn((message: { stopReason?: string; errorMessage?: string }) =>
+			/429/.test(message.errorMessage ?? ""),
+		)
+		const sessionClass = { prototype: { _isRetryableError: original } }
+
+		installInfrastructureRetryPatch(sessionClass)
+		// biome-ignore lint/style/noNonNullAssertion: installInfrastructureRetryPatch always wraps the classifier above
+		const wrapped = sessionClass.prototype._isRetryableError!
+
+		expect(original).not.toHaveBeenCalled()
+		expect(wrapped({ stopReason: "error", errorMessage: "429 budget exhausted" })).toBe(false)
+		// The original classifier must never even be consulted once Kimchi
+		// produces an explicit non-retryable verdict.
+		expect(original).not.toHaveBeenCalled()
+	})
+
+	it("does not let billing wording hide a terminal budget-exhausted 429 from Kimchi", () => {
+		const original = vi.fn(() => true)
+		const sessionClass = { prototype: { _isRetryableError: original } }
+
+		installInfrastructureRetryPatch(sessionClass)
+		// biome-ignore lint/style/noNonNullAssertion: installInfrastructureRetryPatch always wraps the classifier above
+		const wrapped = sessionClass.prototype._isRetryableError!
+
+		expect(wrapped({ stopReason: "error", errorMessage: "429 billing budget exhausted" })).toBe(false)
+		expect(original).not.toHaveBeenCalled()
+	})
+
+	it("keeps ordinary 429 rate-limit errors retryable", () => {
+		// Pi's original classifier recognizes ordinary rate limits; Kimchi must
+		// not suppress them. A 429 that Kimchi classifies as rate_limit stays
+		// retryable, and a 429 Kimchi leaves unclassified still retries when the
+		// original classifier says so.
+		const original = vi.fn((message: { stopReason?: string; errorMessage?: string }) =>
+			/queue full/.test(message.errorMessage ?? ""),
+		)
+		const sessionClass = { prototype: { _isRetryableError: original } }
+
+		installInfrastructureRetryPatch(sessionClass)
+		// biome-ignore lint/style/noNonNullAssertion: installInfrastructureRetryPatch always wraps the classifier above
+		const wrapped = sessionClass.prototype._isRetryableError!
+
+		expect(wrapped({ stopReason: "error", errorMessage: "429 rate limit exceeded" })).toBe(true)
+		expect(wrapped({ stopReason: "error", errorMessage: "429 model queue full" })).toBe(true)
+	})
 })
 
 describe("isInfrastructureErrorRetryable", () => {

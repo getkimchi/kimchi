@@ -64,6 +64,8 @@ interface RefreshBillingStatusOptions {
 	jsonTimeoutMs?: number
 	loadConfig?: typeof loadConfig
 	requestTimeoutMs?: number
+	/** "automatic" = coalesced + throttled (completion hook); "forced" = bypasses TTL (manual command, login). Defaults to "forced". */
+	mode?: BillingRefreshMode
 }
 
 export const LOW_CREDITS_THRESHOLD_USD = 5
@@ -125,6 +127,11 @@ export function configureBillingCreditsApi(options: { apiKey?: string; llmEndpoi
 		latestBillingRefreshId++
 		latestBudgetRefreshId++
 		clearBillingStatus()
+		// Invalidate the coalesced in-flight refresh and reset the throttle —
+		// a credential change makes any pending fetch stale and should allow
+		// the next completion to trigger a fresh automatic refresh.
+		inFlightRefresh = undefined
+		lastRefreshAt = 0
 	}
 }
 
@@ -222,15 +229,57 @@ export async function refreshBillingSnapshot(
 	return currentBillingStatus
 }
 
+export type BillingRefreshMode = "automatic" | "forced"
+
+/** Minimum interval between automatic billing refreshes (completion hook). */
+export const AUTOMATIC_REFRESH_MIN_INTERVAL_MS = 30_000
+
+/** One shared in-flight refresh promise per process — coalesces concurrent callers. */
+let inFlightRefresh: Promise<BillingStatus | undefined> | undefined
+
+/** Timestamp of the last completed refresh (automatic or forced). */
+let lastRefreshAt = 0
+
 export async function refreshBillingStatusFromConfig(
 	options: RefreshBillingStatusOptions = {},
 ): Promise<BillingStatus | undefined> {
+	const mode: BillingRefreshMode = options.mode ?? "forced"
+
+	// Always sync credentials from config before checking coalescing state.
+	// Forced callers (login, API-key change) must update the billing API
+	// configuration even when an automatic refresh is already running —
+	// configureBillingCreditsApi invalidates any stale in-flight fetch via
+	// generation bump when credentials actually change.
 	try {
 		const config = (options.loadConfig ?? loadConfig)()
 		configureBillingCreditsApi({ apiKey: config.apiKey, llmEndpoint: config.llmEndpoint })
-		return await refreshBillingSnapshot(options)
 	} catch {
 		return undefined
+	}
+
+	// Coalesce: if a refresh is already in flight, share it regardless of mode.
+	if (inFlightRefresh) return inFlightRefresh
+
+	// Automatic mode: skip if we refreshed recently.
+	if (mode === "automatic" && Date.now() - lastRefreshAt < AUTOMATIC_REFRESH_MIN_INTERVAL_MS) {
+		return currentBillingStatus
+	}
+
+	const promise = (async () => {
+		try {
+			return await refreshBillingSnapshot(options)
+		} catch {
+			return undefined
+		}
+	})()
+
+	inFlightRefresh = promise
+	try {
+		const result = await promise
+		lastRefreshAt = Date.now()
+		return result
+	} finally {
+		if (inFlightRefresh === promise) inFlightRefresh = undefined
 	}
 }
 

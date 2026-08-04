@@ -92,11 +92,19 @@ export function installInfrastructureRetryPatch(
 	if (!original) return
 
 	proto._isRetryableError = function patchedIsRetryableError(message: RetryableMessage): boolean {
-		const infrastructure = isInfrastructureErrorRetryable(message)
-		if (!(original.call(this, message) || infrastructure)) return false
+		const classification = message.errorMessage ? classifyLLMGatewayError(message.errorMessage) : undefined
+
+		// Kimchi's explicit non-retryable verdicts take precedence over Pi's
+		// generic 429 retry — e.g. "budget exhausted" arrives as a 429 but must
+		// not be retried, so it short-circuits before the original classifier
+		// can force a retry storm.
+		if (classification && !classification.retryable) return false
+
+		const kimchiRetryable = classification?.retryable === true
+		if (!(original.call(this, message) || kimchiRetryable)) return false
 		// Only infrastructure-classified errors are blocked by the breaker;
 		// ordinary upstream-retryable verdicts pass through uncounted.
-		if (!infrastructure) return true
+		if (!kimchiRetryable) return true
 		return !isInfrastructureBreakerTripped()
 	}
 	proto._kimchiInfrastructureRetryPatch = true

@@ -21,7 +21,7 @@ export default function loginExtension(pi: ExtensionAPI): void {
 		const configKey = loadConfig().apiKey
 		if (configKey) {
 			setKimchiAuthToken(ctx.modelRegistry, configKey, "oauth")
-			void refreshBillingStatusFromConfig()
+			void refreshBillingStatusFromConfig({ mode: "forced" })
 		}
 
 		const patchedAuthStorage = authStorage as typeof authStorage & { [KIMCHI_LOGOUT_PATCHED]?: boolean }
@@ -32,7 +32,7 @@ export default function loginExtension(pi: ExtensionAPI): void {
 			originalLogout(provider)
 			if (provider === KIMCHI_PROVIDER_ID) {
 				clearApiKey()
-				void refreshBillingStatusFromConfig()
+				void refreshBillingStatusFromConfig({ mode: "forced" })
 			}
 		}
 		patchedAuthStorage[KIMCHI_LOGOUT_PATCHED] = true
@@ -58,7 +58,7 @@ export default function loginExtension(pi: ExtensionAPI): void {
 			}
 			writeApiKey(key)
 			await updateModelsConfig(modelsJsonPath, key)
-			void refreshBillingStatusFromConfig()
+			void refreshBillingStatusFromConfig({ mode: "forced" })
 			return { access: key, refresh: "", expires: Number.MAX_SAFE_INTEGER }
 		},
 		refreshToken: (credentials: { access: string; refresh: string; expires: number }) => Promise.resolve(credentials),

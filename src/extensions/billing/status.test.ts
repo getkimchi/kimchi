@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const {
+	AUTOMATIC_REFRESH_MIN_INTERVAL_MS,
 	BILLING_EXHAUSTED_MESSAGE,
 	COMMUNITY_TIER_HEADER_NOTICE,
 	budgetEndpointFromLlmEndpoint,
@@ -786,6 +787,133 @@ describe("billing status", () => {
 		} finally {
 			unsubscribe()
 		}
+	})
+})
+
+describe("refreshBillingStatusFromConfig coordinator", () => {
+	beforeEach(() => {
+		configureBillingCreditsApi({})
+		setBillingStatusForTest(undefined)
+		vi.useFakeTimers()
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
+	function configureWithKey() {
+		configureBillingCreditsApi({ apiKey: "api-key", llmEndpoint: "https://llm.kimchi.dev/openai/v1" })
+	}
+
+	function fetchImplReturning(remaining: string) {
+		return ((_input: RequestInfo | URL) =>
+			Promise.resolve(
+				new Response(
+					JSON.stringify({ serverless: true, tier: "coder", is_paid_tier: true, billing_status: "ok", remaining }),
+					{ status: 200 },
+				),
+			)) as typeof fetch
+	}
+
+	it("coalesces concurrent automatic refreshes into one request pair", async () => {
+		configureWithKey()
+		const calls: string[] = []
+		// Yield once per fetch so the response settles on a microtask, letting a
+		// second refresh call arrive while the first is still in flight.
+		const fetchImpl = ((input: RequestInfo | URL) => {
+			calls.push(String(input))
+			return new Promise<Response>((resolve) =>
+				queueMicrotask(() =>
+					resolve(
+						new Response(JSON.stringify({ serverless: true, is_paid_tier: true, remaining: "5" }), { status: 200 }),
+					),
+				),
+			)
+		}) as typeof fetch
+
+		const first = refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+		// Start a second refresh before the first's fetch microtask runs.
+		const second = refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+
+		await expect(first).resolves.toMatchObject({ remainingCredits: 5 })
+		await expect(second).resolves.toMatchObject({ remainingCredits: 5 })
+
+		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(1)
+		expect(calls.filter((url) => url.endsWith("/budget"))).toHaveLength(1)
+	})
+
+	it("throttles automatic refreshes inside the TTL to one snapshot", async () => {
+		configureWithKey()
+		const calls: string[] = []
+		const fetchImpl = ((input: RequestInfo | URL) => {
+			calls.push(String(input))
+			return Promise.resolve(
+				new Response(JSON.stringify({ serverless: true, is_paid_tier: true, remaining: "5" }), { status: 200 }),
+			)
+		}) as typeof fetch
+
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+		const firstSnapshot = getBillingStatus()
+
+		// Advance less than the TTL — second automatic refresh must be skipped.
+		vi.advanceTimersByTime(AUTOMATIC_REFRESH_MIN_INTERVAL_MS - 1_000)
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+
+		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(1)
+		expect(getBillingStatus()).toBe(firstSnapshot)
+	})
+
+	it("allows a forced refresh to bypass the TTL", async () => {
+		configureWithKey()
+		const calls: string[] = []
+		const fetchImpl = ((input: RequestInfo | URL) => {
+			calls.push(String(input))
+			return Promise.resolve(
+				new Response(JSON.stringify({ serverless: true, is_paid_tier: true, remaining: "5" }), { status: 200 }),
+			)
+		}) as typeof fetch
+
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+
+		vi.advanceTimersByTime(1_000)
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "forced" })
+
+		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(2)
+	})
+
+	it("runs an automatic refresh again after the TTL elapses", async () => {
+		configureWithKey()
+		const calls: string[] = []
+		const fetchImpl = ((input: RequestInfo | URL) => {
+			calls.push(String(input))
+			return Promise.resolve(
+				new Response(JSON.stringify({ serverless: true, is_paid_tier: true, remaining: "5" }), { status: 200 }),
+			)
+		}) as typeof fetch
+
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+
+		vi.advanceTimersByTime(AUTOMATIC_REFRESH_MIN_INTERVAL_MS)
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })
+
+		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(2)
+	})
+
+	it("does not retry a failed automatic billing refresh", async () => {
+		configureWithKey()
+		const fetchImpl = ((_input: RequestInfo | URL) =>
+			Promise.resolve(new Response("nope", { status: 500 }))) as typeof fetch
+
+		await expect(refreshBillingStatusFromConfig({ fetch: fetchImpl, mode: "automatic" })).resolves.toBeUndefined()
+		expect(getBillingStatus()).toBeUndefined()
+	})
+
+	it("defaults to forced mode (manual command / login semantics)", async () => {
+		configureWithKey()
+		const fetchImpl = fetchImplReturning("5")
+
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl })
+		expect(getBillingStatus()).toMatchObject({ remainingCredits: 5 })
 	})
 })
 
