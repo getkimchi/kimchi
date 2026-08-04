@@ -65,7 +65,7 @@ function renderGoalContext(goal: SessionGoal): string {
 	)
 	const continuation =
 		goal.status === "active"
-			? "Autonomous goal continuation is enabled. Track work with a visible tactical todo list. Before completion, settle every todo, map every explicit goal requirement to concrete current evidence, and treat missing or uncertain evidence as incomplete."
+			? "Autonomous goal continuation is enabled. The goal JSON above is authoritative. Do not call get_goal while this context is present. Track work with a visible tactical todo list. Before completion, settle every todo, map every explicit goal requirement to concrete current evidence, and treat missing or uncertain evidence as incomplete. Call update_goal only after receiving the final todo result that settles the list, as the only tool call in that response."
 			: `Autonomous goal continuation is disabled while status is ${goal.status}.`
 	return `<kimchi_session_goal>\n${snapshot}\n${continuation}\n</kimchi_session_goal>`
 }

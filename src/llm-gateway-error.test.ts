@@ -131,6 +131,11 @@ describe("classifyLLMGatewayError", () => {
 			reason: "provider_5xx",
 		},
 		{
+			name: "provider temporarily unavailable",
+			message: "The service is temporarily unavailable.",
+			reason: "provider_5xx",
+		},
+		{
 			name: "gateway timeout",
 			message: "504 Gateway Timeout",
 			reason: "provider_5xx",

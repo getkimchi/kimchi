@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { formatGoalStatusAccounting, formatGoalSummary, GOAL_COMMAND_COMPLETIONS, parseGoalCommand } from "./command.js"
+import {
+	formatGoalDuration,
+	formatGoalStatusAccounting,
+	formatGoalSummary,
+	GOAL_COMMAND_COMPLETIONS,
+	parseGoalCommand,
+} from "./command.js"
 import type { GoalStatus, SessionGoal } from "./types.js"
 
 describe("goal command", () => {
@@ -43,6 +49,8 @@ describe("goal command", () => {
 	})
 
 	it("formats status-line time in minutes and hours", () => {
+		expect(formatGoalDuration(249_000)).toBe("4m")
+		expect(formatGoalDuration(65 * 60_000)).toBe("1h 5m")
 		expect(formatGoalStatusAccounting(goal("active"))).toBe("<1m · 1.5k tokens")
 		expect(formatGoalStatusAccounting({ ...goal("active"), timeUsedMs: 19 * 60_000 })).toBe("19m · 1.5k tokens")
 		expect(formatGoalStatusAccounting({ ...goal("active"), timeUsedMs: 65 * 60_000 })).toBe("1h 5m · 1.5k tokens")

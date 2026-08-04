@@ -8,14 +8,20 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { formatCount, formatDuration } from "../format.js"
+import { formatCount } from "../format.js"
 import { addPromptSummaryMetric } from "../prompt-summary.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { getTodoScopeKey, normalizeTodoScope } from "../todos/scope.js"
 import { getWriteTodosDetails } from "../todos/session.js"
 import { resolveTodoScope } from "../todos/store.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
-import { formatGoalStatusAccounting, formatGoalSummary, GOAL_COMMAND_COMPLETIONS, parseGoalCommand } from "./command.js"
+import {
+	formatGoalDuration,
+	formatGoalStatusAccounting,
+	formatGoalSummary,
+	GOAL_COMMAND_COMPLETIONS,
+	parseGoalCommand,
+} from "./command.js"
 import {
 	GET_GOAL_TOOL_NAME,
 	GOAL_CONTROL_MESSAGE_TYPE,
@@ -459,8 +465,9 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: GET_GOAL_TOOL_NAME,
 		label: "Get Goal",
-		description: "Read the current persistent Kimchi session goal, including its ID, revision, objective, and status.",
-		promptSnippet: "Read the current persistent session goal",
+		description:
+			"Recover the persistent Kimchi session goal only when the canonical goal context is missing or inconsistent.",
+		promptSnippet: "Recover missing persistent session goal context",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			bindSession(ctx)
@@ -480,6 +487,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Mark the current goal revision complete or blocked",
 		promptGuidelines: [
 			"Use update_goal only after current evidence proves every requirement is complete, or at a real impasse requiring user or external action.",
+			"After the final todo mutation returns its settled result, call update_goal as the only tool call in a later response.",
 		],
 		parameters: UPDATE_GOAL_PARAMETERS,
 		async execute(_toolCallId, params: UpdateGoalParams, _signal, _onUpdate, ctx) {
@@ -525,6 +533,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 						},
 					],
 					details: { goal, reason: params.reason },
+					terminate: true,
 				}
 			} catch (error) {
 				const message = errorMessage(error)
@@ -681,7 +690,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			const goalAfterAccounting = currentGoal
 			const feedback = pendingTerminalFeedback
 			if (feedback && matchesGoal(feedback, goalAfterAccounting, sessionId)) {
-				addPromptSummaryMetric(sessionId, "goal time", formatDuration(goalAfterAccounting.timeUsedMs))
+				addPromptSummaryMetric(sessionId, "goal time", formatGoalDuration(goalAfterAccounting.timeUsedMs))
 				ctx.ui.notify(`Goal ${feedback.status}.`, feedback.status === "blocked" ? "warning" : "info")
 				pendingTerminalFeedback = undefined
 			}
@@ -693,8 +702,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		await serializeGoalMutation(sessionId, () => {
 			assertCurrentSession(ctx, sessionId)
 			const goal = currentGoal
-			if (goal?.status !== "active" || consecutiveErrorTurns > 0 || ctx.hasPendingMessages() || !goalToolsAvailable())
-				return
+			if (goal?.status !== "active" || ctx.hasPendingMessages() || !goalToolsAvailable()) return
 			queueGoalTurn(ctx, goal, buildGoalContinuation(), "agent_end", "followUp")
 		})
 	})

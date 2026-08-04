@@ -33,7 +33,11 @@ type ToolConfig = {
 		signal: AbortSignal,
 		onUpdate: () => void,
 		ctx: ExtensionContext,
-	) => Promise<{ content: Array<{ type: string; text: string }>; details: Record<string, unknown> }>
+	) => Promise<{
+		content: Array<{ type: string; text: string }>
+		details: Record<string, unknown>
+		terminate?: boolean
+	}>
 }
 
 describe("goal extension", () => {
@@ -400,6 +404,7 @@ describe("goal extension", () => {
 		const result = await harness.tool(UPDATE_GOAL_TOOL_NAME, { status: "complete" })
 
 		expect(result.content[0].text).toContain("marked complete")
+		expect(result.terminate).toBe(true)
 		expect(harness.currentGoal()?.status).toBe("complete")
 	})
 
@@ -457,6 +462,9 @@ describe("goal extension", () => {
 		expect(goalMessages).toHaveLength(1)
 		expect(JSON.stringify(goalMessages[0])).toContain("handle </objective> safely")
 		expect(JSON.stringify(goalMessages[0])).toContain("map every explicit goal requirement")
+		expect(JSON.stringify(goalMessages[0])).toContain("Do not call get_goal while this context is present")
+		expect(JSON.stringify(goalMessages[0])).toContain("Call update_goal only after receiving the final todo result")
+		expect(JSON.stringify(goalMessages[0])).toContain("as the only tool call in that response")
 		expect(result.messages).toContain(other)
 	})
 
@@ -527,7 +535,7 @@ describe("goal extension", () => {
 		expect((await harness.tool(GET_GOAL_TOOL_NAME, {})).details.goal).toMatchObject({ timeUsedMs: 60_000 })
 	})
 
-	it("leaves retries to Pi and pauses after three consecutive failures", async () => {
+	it("continues after failures and pauses after three consecutive failures", async () => {
 		await harness.command("keep going")
 		harness.sendMessage.mockClear()
 
@@ -538,7 +546,10 @@ describe("goal extension", () => {
 			if (turnIndex < 3) expect(harness.currentGoal()?.status).toBe("active")
 		}
 
-		expect(harness.sendMessage).not.toHaveBeenCalled()
+		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
+		for (const [message] of harness.sendMessage.mock.calls) {
+			expect(message.details).toMatchObject({ source: "agent_end", revision: 1 })
+		}
 		expect(harness.currentGoal()?.status).toBe("paused")
 		expect(harness.ui.notify).toHaveBeenCalledWith("Goal paused after 3 consecutive agent errors.", "warning")
 	})
@@ -629,6 +640,82 @@ describe("goal extension", () => {
 		await harness.fire("session_tree", { type: "session_tree", oldLeafId: "before", newLeafId: "after" })
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 
+		expect(
+			await harness.fire("tool_call", {
+				type: "tool_call",
+				toolName: UPDATE_GOAL_TOOL_NAME,
+				input: { status: "complete" },
+			}),
+		).toMatchObject({ block: true, reason: expect.stringContaining("visible tactical todo") })
+	})
+
+	it("restores the latest goal and settled todos across repeated compactions", async () => {
+		await harness.command("revision one")
+		harness.setBranch([...harness.branch, compactionEntry("first summary")])
+		await harness.command("edit revision two")
+		harness.setBranch([
+			...harness.branch,
+			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
+				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+				scope: { kind: "global" },
+				todos: [{ id: 1, content: "Finish revision two", status: "completed" }],
+				updatedAt: "2026-08-03T00:00:01.000Z",
+			}),
+			compactionEntry("second summary"),
+		])
+
+		await harness.fire("session_tree", { type: "session_tree", oldLeafId: "before", newLeafId: "after" })
+		const context = (await harness.fire("context", {
+			type: "context",
+			messages: [{ role: "user", content: [{ type: "text", text: "second summary" }], timestamp: Date.now() }],
+		})) as { messages: ContextEvent["messages"] }
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+
+		expect(harness.currentGoal()).toMatchObject({ objective: "revision two", revision: 2 })
+		expect(JSON.stringify(context.messages)).toContain("revision two")
+		expect(
+			await harness.fire("tool_call", {
+				type: "tool_call",
+				toolName: UPDATE_GOAL_TOOL_NAME,
+				input: { status: "complete" },
+			}),
+		).toBeUndefined()
+	})
+
+	it("keeps goals and todo completion isolated while switching sessions", async () => {
+		await harness.command("session A goal")
+		harness.setBranch([
+			...harness.branch,
+			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
+				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+				scope: { kind: "global" },
+				todos: [{ id: 1, content: "Finish session A", status: "completed" }],
+				updatedAt: "2026-08-03T00:00:01.000Z",
+			}),
+		])
+		const sessionABranch = [...harness.branch]
+
+		harness.setSession("session-b", [])
+		await harness.fire("session_start", { type: "session_start", reason: "new" })
+		await harness.command("session B goal")
+		const sessionBBranch = [...harness.branch]
+
+		harness.setSession("session-a", sessionABranch)
+		await harness.fire("session_start", { type: "session_start", reason: "resume" })
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		expect(harness.currentGoal()?.objective).toBe("session A goal")
+		expect(
+			await harness.fire("tool_call", {
+				type: "tool_call",
+				toolName: UPDATE_GOAL_TOOL_NAME,
+				input: { status: "complete" },
+			}),
+		).toBeUndefined()
+
+		harness.setSession("session-b", sessionBBranch)
+		await harness.fire("session_start", { type: "session_start", reason: "resume" })
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		expect(harness.currentGoal()?.objective).toBe("session B goal")
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
@@ -778,6 +865,18 @@ function customEntry(customType: string, data: unknown): SessionEntry {
 		customType,
 		data,
 	} as SessionEntry
+}
+
+function compactionEntry(summary: string): SessionEntry {
+	return {
+		type: "compaction",
+		id: randomUUID(),
+		parentId: null,
+		timestamp: new Date().toISOString(),
+		summary,
+		firstKeptEntryId: randomUUID(),
+		tokensBefore: 100_000,
+	}
 }
 
 function requireGoal(goal: SessionGoal | undefined): SessionGoal {

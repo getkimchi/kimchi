@@ -47,14 +47,14 @@ export function formatGoalAccounting(goal: SessionGoal, liveElapsedMs = 0): stri
 }
 
 export function formatGoalStatusAccounting(goal: SessionGoal, liveElapsedMs = 0): string {
-	const totalMinutes = Math.floor((goal.timeUsedMs + liveElapsedMs) / 60_000)
-	const duration =
-		totalMinutes < 1
-			? "<1m"
-			: totalMinutes < 60
-				? `${totalMinutes}m`
-				: `${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m`
-	return `${duration} · ${formatGoalTokens(goal)}`
+	return `${formatGoalDuration(goal.timeUsedMs + liveElapsedMs)} · ${formatGoalTokens(goal)}`
+}
+
+export function formatGoalDuration(timeUsedMs: number): string {
+	const totalMinutes = Math.floor(timeUsedMs / 60_000)
+	if (totalMinutes < 1) return "<1m"
+	if (totalMinutes < 60) return `${totalMinutes}m`
+	return `${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m`
 }
 
 function goalCommands(goal: SessionGoal): string {
