@@ -34,6 +34,13 @@ export function handleSetSessionTitle(
 		throw RequestError.invalidParams(undefined, `unknown sessionId ${sessionId}`)
 	}
 
-	session.setSessionName(title.trim())
+	if (title.length > 256) {
+		throw RequestError.invalidParams(
+			undefined,
+			`title must be no longer than 256 characters (received: ${title.length})`,
+		)
+	}
+
+	session.setSessionName(title)
 	return {}
 }
