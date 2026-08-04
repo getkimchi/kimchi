@@ -1,3 +1,44 @@
+# Patch: kimchi-dev runtime extensions for pi-ai
+#
+# NOTE for upgraders: `pnpm patch-commit` regenerates this file and STRIPS this
+# header — re-add it (and re-run `pnpm install` to refresh the lockfile hash)
+# after every regeneration.
+#
+# Changes included:
+#   1. dist/models.js — add "max" to EXTENDED_THINKING_LEVELS so the upstream
+#      thinking-level machinery (getSupportedThinkingLevels, clampThinkingLevel)
+#      recognises "max" as a valid level above "xhigh".
+#   2. dist/types.d.ts — add "max" to the ThinkingLevel type so downstream
+#      type-checking accepts the new level.
+#   3. dist/providers/openai-completions.js — fall back to cache_creation_tokens
+#      for cache write token counting (LiteLLM compatibility).
+#   4. dist/utils/validation.js — improved JSON Schema coercion for array/object
+#      tool arguments.
+#
+# Tracking: open an upstream PR against pi-mono to add "max" as a first-class
+# ThinkingLevel in pi-ai.
+# Issue: TODO — file against https://github.com/earendil-works/pi-mono
+#
+# Removal criteria:
+#   - Items 1-2 (max thinking level): upstream pi-ai ships ThinkingLevel with
+#     "max" included and EXTENDED_THINKING_LEVELS updated, and the fixed version
+#     is pinned in package.json.
+#   - Items 3-4: upstream pi-ai includes the cache_creation_tokens fallback and
+#     the validation improvements, and the fixed version is pinned.
+#
+diff --git a/dist/models.js b/dist/models.js
+index 8c5de030d4b297c624dd2e35a8ea573d5b44ddfe..6c25cc59dae74b475aa2f85760fdbfacb544d41c 100644
+--- a/dist/models.js
++++ b/dist/models.js
+@@ -30,7 +30,7 @@ export function calculateCost(model, usage) {
+     usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
+     return usage.cost;
+ }
+-const EXTENDED_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
++const EXTENDED_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+ export function getSupportedThinkingLevels(model) {
+     if (!model.reasoning)
+         return ["off"];
 diff --git a/dist/providers/openai-completions.js b/dist/providers/openai-completions.js
 index b519e02d589507a283e136a96c79cf3cf9d757ad..586c3c473c5685c4db93df2a6d3fe8175765fd3b 100644
 --- a/dist/providers/openai-completions.js
@@ -66,3 +107,16 @@ index 9ba1a5f5aecd015b01d1e88fdb62b8dcca176e52..ca077cb942a2761f3b24459d4af91692
          const coerced = coerceWithJsonSchema(args, tool.parameters);
          if (coerced !== args) {
              if (isRecord(args) && isRecord(coerced)) {
+diff --git a/dist/types.d.ts b/dist/types.d.ts
+index b2a00df75a4a0f69b84afaf11527feca23abb624..15075f201389d3c278d93f492baea43be7b70ccb 100644
+--- a/dist/types.d.ts
++++ b/dist/types.d.ts
+@@ -9,7 +9,7 @@ export type KnownProvider = "amazon-bedrock" | "ant-ling" | "anthropic" | "googl
+ export type Provider = KnownProvider | string;
+ export type KnownImagesProvider = "openrouter";
+ export type ImagesProvider = KnownImagesProvider | string;
+-export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
++export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+ export type ModelThinkingLevel = "off" | ThinkingLevel;
+ export type ThinkingLevelMap = Partial<Record<ModelThinkingLevel, string | null>>;
+ export type ChatTemplateKwargValue = string | number | boolean | null | {

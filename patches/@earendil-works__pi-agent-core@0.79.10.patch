@@ -1,0 +1,32 @@
+# Patch: kimchi-dev runtime extensions for pi-agent-core
+#
+# NOTE for upgraders: `pnpm patch-commit` regenerates this file and STRIPS this
+# header — re-add it (and re-run `pnpm install` to refresh the lockfile hash)
+# after every regeneration.
+#
+# Changes included:
+#   1. dist/types.d.ts — add "max" to the ThinkingLevel type so downstream
+#      type-checking (pi-coding-agent ExtensionAPI, kimchi harness) accepts
+#      the new level. Mirrors the same change in pi-ai's types.d.ts.
+#
+# Tracking: open an upstream PR against pi-mono to add "max" as a first-class
+# ThinkingLevel in pi-agent-core.
+# Issue: TODO — file against https://github.com/earendil-works/pi-mono
+#
+# Removal criteria:
+#   - upstream pi-agent-core ships ThinkingLevel with "max" included, and the
+#     fixed version is pinned in package.json.
+#
+diff --git a/dist/types.d.ts b/dist/types.d.ts
+index 05f854c2603767da44f30b9f0c6e0078a1950400..e622dd76ecae8203fd006b7d7be6560071ac23a8 100644
+--- a/dist/types.d.ts
++++ b/dist/types.d.ts
+@@ -246,7 +246,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
+  * Note: "xhigh" is only supported by selected model families. Use model thinking-level metadata
+  * from @earendil-works/pi-ai to detect support for a concrete model.
+  */
+-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
++export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+ /**
+  * Extensible interface for custom app messages.
+  * Apps can extend via declaration merging:

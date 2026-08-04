@@ -20,6 +20,11 @@ describe("resolveDelegationThinkingLevel", () => {
 		expect(resolveDelegationThinkingLevel("build", "complex", 1)).toBe("xhigh")
 	})
 
+	it("caps build retries at xhigh (build ceiling)", () => {
+		expect(resolveDelegationThinkingLevel("build", "complex", 2)).toBe("xhigh")
+		expect(resolveDelegationThinkingLevel("build", "complex", 3)).toBe("xhigh")
+	})
+
 	it("bumps explore complex to medium on retry and caps there", () => {
 		expect(resolveDelegationThinkingLevel("explore", "complex", 1)).toBe("medium")
 		expect(resolveDelegationThinkingLevel("explore", "complex", 2)).toBe("medium")
@@ -41,6 +46,18 @@ describe("bumpThinkingLevel", () => {
 
 	it("does not decrease the level when the ceiling is below the current level", () => {
 		expect(bumpThinkingLevel("high", 1, "low")).toBe("high")
+	})
+
+	it("can bump to max when ceiling allows", () => {
+		expect(bumpThinkingLevel("xhigh", 1, "max")).toBe("max")
+	})
+
+	it("defaults ceiling to max", () => {
+		expect(bumpThinkingLevel("xhigh", 1)).toBe("max")
+	})
+
+	it("caps at max when bumping from high with large steps", () => {
+		expect(bumpThinkingLevel("high", 10)).toBe("max")
 	})
 })
 
