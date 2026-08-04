@@ -104,3 +104,46 @@ def test_root_pipeline_forwards_checkpoint_enablement_to_swe_bench_guard() -> No
     swe_include = config[config.index("- local: /.gitlab/ci/swe-bench-pro.yml") :]
 
     assert "trial_checkpoints: $[[ inputs.trial_checkpoints ]]" in swe_include
+
+
+def _forwarded_inputs(root_config: str, include_path: str) -> set[str]:
+    """Input names the root pipeline forwards to an included benchmark file."""
+    start = root_config.index(f"- local: {include_path}")
+    inputs_start = root_config.index("inputs:", start)
+    block = root_config[inputs_start:]
+    forwarded = set()
+    for line in block.splitlines()[1:]:
+        if not line.startswith("      ") or ":" not in line:
+            break
+        forwarded.add(line.strip().split(":", 1)[0])
+    return forwarded
+
+
+def _declared_inputs() -> set[str]:
+    spec = (
+        Path(__file__).resolve().parents[4] / ".gitlab" / "ci" / "benchmark.inputs.yml"
+    ).read_text(encoding="utf-8")
+    body = spec[spec.index("inputs:") :]
+    return {
+        line.strip().rstrip(":")
+        for line in body.splitlines()
+        if line.startswith("  ") and not line.startswith("    ") and line.rstrip().endswith(":")
+    }
+
+
+def test_root_pipeline_forwards_every_declared_input_to_both_benchmarks() -> None:
+    """An input the root spec accepts but never forwards silently uses its default.
+
+    thinking_level was declared and settable in the UI, yet omitted from both
+    include blocks — so every run read 'default' no matter what was selected.
+    """
+    root = ROOT_CI_CONFIG.read_text(encoding="utf-8")
+    declared = _declared_inputs()
+    # benchmark selects which file is included, so only that one is exempt.
+    for include_path, exempt in (
+        ("/.gitlab/ci/terminal-bench-2.yml", set()),
+        ("/.gitlab/ci/swe-bench-pro.yml", {"benchmark"}),
+    ):
+        forwarded = _forwarded_inputs(root, include_path)
+        missing = declared - forwarded - exempt
+        assert not missing, f"{include_path} does not forward: {sorted(missing)}"

@@ -57,6 +57,7 @@ include:
       top_p: $[[ inputs.top_p ]]
       top_k: $[[ inputs.top_k ]]
       max_tokens: $[[ inputs.max_tokens ]]
+      thinking_level: $[[ inputs.thinking_level ]]
   - local: /.gitlab/ci/swe-bench-pro.yml
     rules:
       - if: '"$[[ inputs.benchmark ]]" == "swe-bench-pro" && ($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api")'
@@ -81,6 +82,7 @@ include:
       top_p: $[[ inputs.top_p ]]
       top_k: $[[ inputs.top_k ]]
       max_tokens: $[[ inputs.max_tokens ]]
+      thinking_level: $[[ inputs.thinking_level ]]
 
 benchmarks-tests:
   stage: prepare

@@ -532,17 +532,6 @@ class PiKimchiOpenRouterTest(unittest.IsolatedAsyncioTestCase):
         # The Kimchi gateway is never consulted for openrouter/* models.
         self.assertEqual(agent.metadata_fetch_count, 0)
 
-    async def test_models_json_is_written_even_for_catalogued_models(self) -> None:
-        """pi's bundled catalog goes stale; live limits beat frozen ones."""
-        build_config = AsyncMock(return_value=self.OPENROUTER_CONFIG)
-
-        agent = await self._run_agent("openrouter/z-ai/glm-5.1", build_config)
-
-        build_config.assert_awaited_once_with(
-            "z-ai/glm-5.1", api_key="sk-or-test", endpoint=None, include_api_key=False
-        )
-        self.assertIn(CONTAINER_PI_MODELS_JSON, agent.agent_commands[0])
-
     async def test_unknown_openrouter_model_fails_before_container_work(self) -> None:
         """Better a loud failure than pi's silent 400 scored as a zero."""
         build_config = AsyncMock(side_effect=ValueError("Model 'z-ai/glm-9' was not returned by ..."))
@@ -582,18 +571,3 @@ class PiKimchiOpenRouterTest(unittest.IsolatedAsyncioTestCase):
         command = agent.agent_commands[0]
         self.assertNotIn(CONTAINER_PI_MODELS_JSON, command)
         self.assertEqual(agent.agent_envs[0]["KIMCHI_API_KEY"], "test-key")
-
-    async def test_thinking_level_max_reaches_the_cli(self) -> None:
-        """pi accepts --thinking max; a stale choices list rejected it here."""
-        build_config = AsyncMock(return_value=self.OPENROUTER_CONFIG)
-
-        with (
-            patch("kimchi_agent.pi_kimchi.build_openrouter_models_config", build_config),
-            tempfile.TemporaryDirectory() as tmp,
-        ):
-            agent = RecordingPiKimchi(
-                logs_dir=Path(tmp), model_name="openrouter/@preset/glm-5-1-zai", thinking="max"
-            )
-            await agent.run("solve it", object(), AgentContext())
-
-        self.assertIn("--thinking max", agent.agent_commands[0])

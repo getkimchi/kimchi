@@ -21,6 +21,8 @@ import pytest
 from harbor.models.agent.context import AgentContext
 
 from kimchi_agent.agent import Kimchi
+from kimchi_agent.pi_kimchi import PiKimchi
+from kimchi_agent.pi_workflow import PiWorkflowAgent
 from kimchi_agent.workflow_agent import WorkflowAgent
 
 
@@ -160,3 +162,26 @@ async def test_prompt_template_is_applied_exactly_once(agent_cls: type, tmp_path
     command = agent.agent_commands[0]
     assert "TASK: hello" in command
     assert "TASK: TASK: hello" not in command
+
+
+# The levels the CI `thinking_level` input offers (bench_config.THINKING_LEVELS
+# in benchmark/scripts/gitlab — a separate uv project, so it cannot be imported
+# here). Every agent that advertises --thinking must accept all of them: harbor
+# validates the kwarg against `choices` and raises before the agent launches, so
+# a stale list turns a valid CI selection into a hard run failure.
+CI_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+
+THINKING_AGENTS = [
+    pytest.param(Kimchi, id="kimchi"),
+    pytest.param(WorkflowAgent, id="kimchi-workflow"),
+    pytest.param(PiKimchi, id="pi"),
+    pytest.param(PiWorkflowAgent, id="pi-workflow"),
+]
+
+
+@pytest.mark.parametrize("agent_cls", THINKING_AGENTS)
+def test_thinking_flag_accepts_every_ci_level(agent_cls) -> None:
+    flag = next(f for f in agent_cls.CLI_FLAGS if f.kwarg == "thinking")
+    missing = [level for level in CI_THINKING_LEVELS if level not in (flag.choices or [])]
+
+    assert not missing, f"{agent_cls.__name__} rejects CI thinking level(s): {missing}"

@@ -185,7 +185,10 @@ class Kimchi(BaseInstalledAgent):
             "thinking",
             cli="--thinking",
             type="enum",
-            choices=["off", "minimal", "low", "medium", "high", "xhigh"],
+            # Mirrors `kimchi --thinking` (off..max; max added in kimchi #963).
+            # 'max' was missing here, so a max run failed enum coercion before
+            # kimchi was ever launched — despite the CI input offering it.
+            choices=["off", "minimal", "low", "medium", "high", "xhigh", "max"],
         ),
         CliFlag("tools", cli="--tools", type="str"),
         CliFlag("yolo", cli="--yolo", type="bool"),

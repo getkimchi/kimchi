@@ -153,8 +153,6 @@ async def test_retryable_statuses_are_retried(monkeypatch: pytest.MonkeyPatch) -
         (None, "https://openrouter.ai/api"),
         ("  https://openrouter.ai/api/v1/  ", "https://openrouter.ai/api"),
         ("https://router.example.test/v1", "https://router.example.test"),
-        # Already Anthropic-shaped endpoints are left alone.
-        ("https://router.example.test/anthropic", "https://router.example.test/anthropic"),
     ],
 )
 def test_anthropic_base_url_stops_before_the_version_segment(

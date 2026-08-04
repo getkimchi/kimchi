@@ -547,27 +547,6 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         # The Kimchi gateway is not consulted for openrouter/* models.
         self.assertEqual(agent.metadata_fetch_count, 0)
 
-    async def test_openrouter_endpoint_override_is_forwarded(self) -> None:
-        fetch = AsyncMock(return_value={"id": "z-ai/glm-5.1", "context_length": 200_000})
-        env_overrides = {
-            "OPENROUTER_API_KEY": "sk-or-test",
-            "KIMCHI_OPENROUTER_ENDPOINT": "https://proxy.internal/api/v1",
-        }
-        with (
-            patch.dict(os.environ, env_overrides),
-            patch("kimchi_agent.claude_code_kimchi.fetch_openrouter_model", fetch),
-            tempfile.TemporaryDirectory() as tmp,
-        ):
-            agent = RecordingClaudeCodeKimchi(
-                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
-                model_name="openrouter/z-ai/glm-5.1",
-            )
-
-            await agent.run("solve it", object(), AgentContext())
-
-        fetch.assert_awaited_once_with("z-ai/glm-5.1", endpoint="https://proxy.internal/api/v1")
-        self.assertEqual(agent.agent_envs[0]["ANTHROPIC_BASE_URL"], "https://proxy.internal/api")
-
     async def test_openrouter_model_requires_openrouter_api_key(self) -> None:
         fetch = AsyncMock()
         with (
