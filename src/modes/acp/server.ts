@@ -123,7 +123,7 @@ type TurnContext = {
 	cancelled: boolean
 	hiddenToolCallIds: Set<string>
 	announcedToolCallIds: Set<string>
-	lastStreamUpdateTs: Map<string, number>
+	lastStreamedContent: Map<string, string>
 	resolve: (res: PromptResponse) => void
 	reject: (err: unknown) => void
 }
@@ -583,7 +583,7 @@ export class KimchiAcpAgent implements Agent {
 			cancelled: false,
 			hiddenToolCallIds: new Set(),
 			announcedToolCallIds: new Set(),
-			lastStreamUpdateTs: new Map(),
+			lastStreamedContent: new Map(),
 			resolve: turnResolve,
 			reject: turnReject,
 		}
@@ -750,9 +750,9 @@ export class KimchiAcpAgent implements Agent {
 					return
 				}
 
-				// Throttled progress streaming — emit a character count so the
-				// client can show how much content has been generated without
-				// sending the full (potentially 50KB+) arguments on every update.
+				// Progress streaming — emit the incremental content delta (just
+				// the new characters) so the client can show a live preview without
+				// re-sending the full arguments on every delta.
 				if (ame.type === "toolcall_delta") {
 					const block = ame.partial?.content?.[ame.contentIndex]
 					if (
@@ -761,22 +761,20 @@ export class KimchiAcpAgent implements Agent {
 						turn.announcedToolCallIds.has(block.id) &&
 						!turn.hiddenToolCallIds.has(block.id)
 					) {
-						const chars = streamingCharCount(block.arguments)
-						if (chars > 0) {
-							// Throttle: emit at most once per 500ms per toolCallId.
-							// Use performance.now() (monotonic) so NTP clock jumps don't
-							// cause burst or suppression of updates.
-							const now = performance.now()
-							const lastTs = turn.lastStreamUpdateTs.get(block.id) ?? 0
-							if (now - lastTs >= 500) {
-								turn.lastStreamUpdateTs.set(block.id, now)
+						const content = extractStreamContent(block.arguments)
+						if (content) {
+							const prev = turn.lastStreamedContent.get(block.id) ?? ""
+							const delta = content.slice(prev.length)
+							if (delta.length > 0) {
+								turn.lastStreamedContent.set(block.id, content)
 								this.send({
 									sessionId,
 									update: {
 										sessionUpdate: "tool_call_update",
 										toolCallId: block.id,
 										status: "pending",
-										_meta: { generatedChars: chars },
+										rawOutput: { delta },
+										_meta: { generatedChars: content.length },
 									},
 								})
 							}
@@ -1570,24 +1568,13 @@ function replayTextParts(text: string): ReplayTextPart[] {
 }
 
 /**
- * Returns the character count of the main content field being streamed
- * for common tool calls (write.content, edit.newText, bash.command, etc.).
- * Returns 0 if no content field is recognized yet.
+ * Extracts the main content string being streamed for common tool calls
+ * (write.content, edit.newText, bash.command). Returns undefined if no
+ * content field is recognized yet (model hasn't streamed that key).
  */
-function streamingCharCount(args: unknown): number {
+function extractStreamContent(args: unknown): string | undefined {
 	const a = (args ?? {}) as Record<string, unknown>
-	// write/edit: content or newText is the large field being generated
-	const content = asString(a.content) ?? asString(a.newText)
-	if (content !== undefined) return content.length
-	// bash: command is the main field
-	const command = asString(a.command)
-	if (command !== undefined) return command.length
-	// Fallback: sum of all string values in args
-	let total = 0
-	for (const v of Object.values(a)) {
-		if (typeof v === "string") total += v.length
-	}
-	return total
+	return asString(a.content) ?? asString(a.newText) ?? asString(a.command)
 }
 
 export function describeToolCall(
