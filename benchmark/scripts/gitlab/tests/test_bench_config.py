@@ -168,10 +168,17 @@ def test_load_llm_params_invalid(env_var, value, expected_substring, monkeypatch
     [
         ("kimchi", True, False),
         ("kimchi-workflow", True, True),
+        # Runs the same extension and the same workflows, but on stock pi — so
+        # it takes the workflow kwargs and NONE of kimchi's. Landing in
+        # is_kimchi_family would hand it llm-params and disable-compaction,
+        # which PiWorkflowAgent cannot accept, failing the run at `harbor run`.
+        ("pi-workflow", False, True),
+        ("pi", False, False),
         ("opencode", False, False),
         ("claude-code", False, False),
         # near-misses must not be mistaken for the workflow agent
         ("kimchi-workflows", False, False),
+        ("pi-workflows", False, False),
         ("workflow", False, False),
     ],
 )

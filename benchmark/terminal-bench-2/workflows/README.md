@@ -1,7 +1,21 @@
 # Workflow definitions
 
-This directory holds the `kimchi-workflows` workflow definitions that
-`WorkflowAgent` (`src/kimchi_agent/workflow_agent.py`) runs.
+This directory holds the `kimchi-workflows` workflow definitions that the two
+workflow adapters run:
+
+- `WorkflowAgent` (`src/kimchi_agent/workflow_agent.py`) — hosted by the kimchi
+  binary built from `target_ref`. CI input `agent: kimchi-workflow`.
+- `PiWorkflowAgent` (`src/kimchi_agent/pi_workflow.py`) — hosted by stock `pi`,
+  with no kimchi in the picture at all, so a result attributes to the workflow
+  rather than to kimchi's extension layer underneath it. CI input
+  `agent: pi-workflow`.
+
+Same extension, same sources, same `extension=`/`workflow=` kwargs. They differ
+in the project directory the extension resolves names against — `.kimchi/`
+under kimchi, `.pi/` under pi, derived from the running harness's own name
+(`kimchi-workflows/src/host/project-dir.ts`) — and in **whether the run is told
+what its deadline is**, which is what decides where a given workflow can run.
+See "Which adapter can run which workflow", below.
 
 ## What's here
 
@@ -19,36 +33,54 @@ This directory holds the `kimchi-workflows` workflow definitions that
   input schema — see below), `prompts.ts` (what each step is told, with
   provenance back to the kimchi file it came from), and `verify.ts` (runs a
   step's verify command and gathers the diff its phase grader is shown).
+- `deep-solve.workflow.ts` — a terminal-bench solver designed from measured
+  terminal-bench failures rather than from kimchi: `plan → (clock → execute →
+  check → audit? → checkpoint)* → report`. It owes kimchi nothing, which is the
+  point of running it beside `ferment-oneshot`. Every stage is budgeted from a
+  wall clock, so it runs under `pi-workflow` and not under `kimchi-workflow`
+  (see below). Its declared name is `deep-solve`, matching the filename.
 - `test/ferment-oneshot.test.ts` — that workflow's behavioural test suite
   (ported from kimchi-workflows' own `test/` when the workflow moved here;
   see "Typechecking and tests" below), scripting every agent step and
   stubbing the git/verify calls so it pins the WIRING without a model or a
   container. This directory is not `*.workflow.ts`-discoverable and never
-  copied anywhere `WorkflowAgent` looks for a workflow to run — see "What
+  copied anywhere an adapter looks for a workflow to run — see "What
   goes here" below for why a workflow file itself must stay non-recursively
   at this top level regardless.
+- `test/deep-solve.test.ts` — the same, for `deep-solve`: who may stop a run,
+  what a silent judge means at each of the two judges (opposite things, on
+  purpose), when the second opinion is bought, and how a doom loop is detected.
 
-`tb-solver` — the other workflow designed for comparison against
-`ferment-oneshot` — is **not** here. It was designed around a wall-clock
-deadline the adapter no longer supplies (harbor hands `agent_timeout_sec`
-only to the oracle agent), and porting its scheduling to that reality is
-future work, not a mechanical move. It still lives in the
-`kimchi-workflows` checkout at
-`benchmarks/terminal-bench/tb-solver.workflow.ts`.
+## Which adapter can run which workflow
 
-### Why `ferment-oneshot`'s input schema doesn't match `tb-solver`'s
+A workflow's declared input schema decides this, and the extension validates
+input against it **before** the run starts — so a mismatch fails in the first
+second rather than halfway through a trial.
 
-`ferment/contract.ts` declares its own `taskInputSchema` —
-`Type.Object({ instruction: Type.String() })` — rather than importing
-`tb-solver`'s (which also has a `deadlineIso: Type.String()` field, required).
-`ferment-oneshot` never reads a deadline anywhere in its steps; it is bounded
-only by harbor's own agent-phase timeout, enforced from outside the
-container, never told to the workflow (see the "Budgets" comment at the top
-of `ferment-oneshot.workflow.ts`). The harbor adapter's envelope is exactly
-`{"instruction": ...}` (`workflow_agent.py`'s `_pre_launch_commands`), and the
-extension validates input against a workflow's declared schema **before** the
-run starts — so a required `deadlineIso` this workflow never sends would fail
-every run's input validation in the first second.
+| | `agent: kimchi-workflow` | `agent: pi-workflow` |
+| --- | --- | --- |
+| envelope sent | `{instruction}` | `{instruction, deadlineIso}` |
+| env supplied | — | `TB_AGENT_TIMEOUT_SEC`, `TB_MODEL` |
+| `ferment-oneshot` | ✅ | ✅ (ignores the extra field) |
+| `deep-solve` | ❌ input validation | ✅ |
+
+`ferment-oneshot` never reads a deadline anywhere in its steps: it is bounded
+only by harbor's own agent-phase timeout, enforced from outside the container
+and never told to the workflow (see the "Budgets" comment at the top of that
+file). So its `taskInputSchema` in `ferment/contract.ts` is
+`Type.Object({ instruction: Type.String() })` and nothing more.
+
+`deep-solve` is the opposite: every budget in it — how long `execute` gets this
+round, whether a second opinion is still affordable, whether another round fits
+at all — is computed from a wall clock, so `deadlineIso` is required. Harbor
+hands `agent_timeout_sec` to the oracle agent and to nobody else, which is why
+this workflow's ancestor (`tb-solver`, still in the `kimchi-workflows` checkout
+at `benchmarks/terminal-bench/tb-solver.workflow.ts`) could not live here at
+all. `PiWorkflowAgent` is what changed that: it reconstructs harbor's own
+`Trial._compute_agent_timeout_sec` from the trial's `config.json` and the task's
+`task.toml`, then sends both the deadline and the budget in. `WorkflowAgent`
+does not, deliberately — a workflow scheduling itself against an invented clock
+is worse than one that refuses to start.
 
 ## What goes here
 
@@ -58,12 +90,13 @@ every run's input validation in the first second.
   nested in a subdirectory is invisible to every name-based lookup — only its
   helper modules may live under a subdirectory (like `ferment/` here), reached
   by relative import from the top-level file. The upload is recursive so those
-  helpers reach the container; discovery is not. `WorkflowAgent.install()`
+  helpers reach the container; discovery is not. Both adapters' `install()`
   fails at install if nothing that reaches the container can serve the
-  requested `workflow=`.
+  requested `workflow=` (the shared check lives in `workflow_staging.py`).
 
-  A nested file can still be run by path —
-  `workflow=.kimchi/workflows/<subdir>/<file>.workflow.ts`, which
+  A nested file can still be run by path — `workflow=<project
+  dir>/workflows/<subdir>/<file>.workflow.ts`, where the project dir is
+  `.kimchi` under kimchi and `.pi` under pi — which
   `resolveWorkflow` tries before any name lookup. That is an escape hatch, not
   the convention: it puts a container path into `AgentInfo.version` where a
   workflow name belongs.
@@ -78,7 +111,7 @@ every run's input validation in the first second.
   module map is keyed on the published names exactly, and a deep path simply
   will not resolve inside the container.
 - A workflow is selected **by its own declared name**, not by filename.
-  `WorkflowAgent`'s `workflow=<name>` agent kwarg is passed straight through
+  Either adapter's `workflow=<name>` agent kwarg is passed straight through
   to `/workflow run <name>`, and the extension resolves it against this
   directory once uploaded into the container. `resolveByConvention`
   (`workflow-catalog.ts`) only accepts the `<name>.workflow.ts` path when the
@@ -92,13 +125,18 @@ every run's input validation in the first second.
 ## Where this ends up in the container
 
 Nothing in this directory is committed to talk to `kimchi-workflows`
-directly. `WorkflowAgent.install()` uploads it verbatim to a staging path,
+directly. Each adapter's `install()` uploads it verbatim to a staging path,
 `/installed-agent/workflows`, once per install. Each run then copies that
-staging path into the project directory the extension actually looks in —
-`.kimchi/workflows/`, relative to whatever `$PWD` kimchi launches from —
-immediately before `kimchi` starts. That final hop is where `resolveWorkflow`
-finds workflows by name; nothing about the extension's catalog resolution is
-adapter-specific.
+staging path into the project directory the extension actually looks in,
+relative to whatever `$PWD` the harness launches from — `.kimchi/workflows/`
+under kimchi, `.pi/workflows/` under pi — immediately before the harness
+starts. That relative hop is deliberate and is the reason neither adapter
+hardcodes a workdir: the copy runs in the SAME shell as the harness, so `$PWD`
+is by construction the project root `resolveWorkflow` will look under.
+
+`PiWorkflowAgent` removes its `.pi/` again once pi exits, after copying it to
+`/logs/agent/pi-project-dir` for debugging: these sources are ours rather than
+the task's, and the machine is graded on the state the agent leaves behind.
 
 ## Typechecking and tests (optional, dev-only)
 
@@ -134,7 +172,7 @@ here" gives workflow files themselves: those paths are not exported and are
 free to change shape without notice.
 
 **None of this dev-only scaffolding reaches a task container**, so there is
-nothing to clean up before a trial. `WorkflowAgent.install()` stages a copy
+nothing to clean up before a trial. Each adapter's `install()` stages a copy
 filtered through `WORKFLOWS_UPLOAD_IGNORE` and uploads that instead of this
 directory: `node_modules`, `test`, `package.json`, `package-lock.json`,
 `tsconfig.json`, `vitest.config.ts`, `.gitignore` and `README.md` are all

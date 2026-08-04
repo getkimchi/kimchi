@@ -8,7 +8,7 @@ inputs:
       - "terminal-bench-2-1"
       - "swe-bench-pro"
   agent:
-    description: "Benchmark agent to run."
+    description: "Benchmark agent to run. 'kimchi-workflow' and 'pi-workflow' both run a named workflow through the kimchi-workflows extension — the first hosted by the kimchi binary built from target_ref, the second by stock pi, which isolates the workflow from kimchi's extension layer."
     type: string
     default: kimchi
     options:
@@ -17,12 +17,13 @@ inputs:
       - claude-code
       - pi
       - kimchi-workflow
+      - pi-workflow
   workflow:
-    description: "Declared workflow name to run (not a filename). Ignored unless agent is kimchi-workflow."
+    description: "Declared workflow name to run (not a filename). 'ferment-oneshot' runs under kimchi-workflow; 'deep-solve' needs the wall-clock deadline only pi-workflow supplies. Ignored unless agent is kimchi-workflow or pi-workflow."
     type: string
     default: "ferment-oneshot"
   workflow_extension:
-    description: "kimchi-workflows extension spec: 'npm:<pkg>@<version-or-dist-tag>' or 'dir:<host path>'. Defaults to the 'latest' tag so runs pick up new publishes; each result.json records the version that resolved. Give a version or tag explicitly — a bare package name resolves through the '*' range, which excludes the prereleases this engine publishes. Ignored unless agent is kimchi-workflow."
+    description: "kimchi-workflows extension spec: 'npm:<pkg>@<version-or-dist-tag>' or 'dir:<host path>'. Defaults to the 'latest' tag so runs pick up new publishes; each result.json records the version that resolved. Give a version or tag explicitly — a bare package name resolves through the '*' range, which excludes the prereleases this engine publishes. Ignored unless agent is kimchi-workflow or pi-workflow."
     type: string
     default: "npm:@kimchi-dev/kimchi-workflows@latest"
   target_ref:

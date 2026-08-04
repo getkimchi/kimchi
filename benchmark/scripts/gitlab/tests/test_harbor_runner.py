@@ -406,6 +406,58 @@ def test_workflow_agent_inherits_kimchi_llm_params_and_compaction_kwargs() -> No
     assert any(arg.startswith("llm-params=") for arg in cmd)
 
 
+_PI_WORKFLOW_BASE = {
+    "tasks": ["fix-git"],
+    "agent_import_path": "kimchi_agent:PiWorkflowAgent",
+    "model": "kimchi-dev/kimi-k2.7",
+    "dataset": "terminal-bench/terminal-bench-2-1",
+    "parallelism": 1,
+    "attempts": 1,
+    "timeout_multiplier": 1.0,
+    "coding_agent": "pi-workflow",
+}
+
+
+def test_pi_workflow_agent_command_carries_both_required_kwargs() -> None:
+    """The pi-hosted adapter takes the same two kwargs, resolved the same way."""
+    cmd = build_harbor_command(
+        **_PI_WORKFLOW_BASE,
+        workflow="deep-solve",
+        workflow_extension="npm:@kimchi-dev/kimchi-workflows@latest",
+    )
+
+    pairs = list(itertools.pairwise(cmd))
+    assert ("--agent-kwarg", "extension=npm:@kimchi-dev/kimchi-workflows@latest") in pairs
+    assert ("--agent-kwarg", "workflow=deep-solve") in pairs
+
+
+def test_pi_workflow_agent_without_required_kwargs_fails_before_harbor_starts() -> None:
+    with pytest.raises(ValueError, match="workflow"):
+        build_harbor_command(**_PI_WORKFLOW_BASE, workflow=None, workflow_extension=None)
+
+
+def test_pi_workflow_agent_gets_no_kimchi_only_kwargs() -> None:
+    """Stock pi has no llm-sampling-params extension and no compaction setting.
+
+    Passing either would fail the run at `harbor run` — PiWorkflowAgent does not
+    accept them — so the family split in bench_config is load-bearing, not
+    cosmetic.
+    """
+    cmd = build_harbor_command(
+        **_PI_WORKFLOW_BASE,
+        workflow="deep-solve",
+        workflow_extension="npm:@kimchi-dev/kimchi-workflows@latest",
+        kimchi_disable_compaction=True,
+        kimchi_ferment_oneshot=True,
+        llm_params={"temperature": 0.7},
+    )
+
+    assert "disable-compaction=true" not in cmd
+    assert "ferment-oneshot=true" not in cmd
+    assert not any(arg.startswith("llm-params=") for arg in cmd)
+    assert not any(arg.startswith("llm-per-model-params=") for arg in cmd)
+
+
 def test_workflow_agent_never_gets_ferment_oneshot() -> None:
     """The workflow replaces kimchi's chat loop; stacking ferment on top is meaningless."""
     cmd = build_harbor_command(

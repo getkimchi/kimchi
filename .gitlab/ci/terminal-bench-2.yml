@@ -130,10 +130,12 @@ setup-image:
         echo "tasks:                    ${SELECTED_TASKS_JSON:-}"
       fi
       echo "model:                    ${MODEL}"
-      if [ "${CODING_AGENT}" = "kimchi-workflow" ]; then
-        echo "workflow:                 ${BENCH_WORKFLOW}"
-        echo "workflow_extension:       ${BENCH_WORKFLOW_EXTENSION}"
-      fi
+      case "${CODING_AGENT}" in
+        kimchi-workflow|pi-workflow)
+          echo "workflow:                 ${BENCH_WORKFLOW}"
+          echo "workflow_extension:       ${BENCH_WORKFLOW_EXTENSION}"
+          ;;
+      esac
       echo "kimchi_ferment_oneshot:   ${KIMCHI_FERMENT_ONESHOT}"
       echo "kimchi_compaction:        ${KIMCHI_COMPACTION}"
       echo "parallelism:              ${BENCH_PARALLELISM}"
@@ -153,7 +155,7 @@ setup-image:
         extras=""
         [ "${KIMCHI_FERMENT_ONESHOT}" = "true" ] && extras=" · ferment"
         echo "Configuration: ${model_label}${extras}"
-      elif [ "${CODING_AGENT}" = "kimchi-workflow" ]; then
+      elif [ "${CODING_AGENT}" = "kimchi-workflow" ] || [ "${CODING_AGENT}" = "pi-workflow" ]; then
         echo "Configuration: workflow-${BENCH_WORKFLOW}"
       else
         echo "Configuration: n/a (agent=${CODING_AGENT})"

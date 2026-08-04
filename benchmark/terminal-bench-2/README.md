@@ -42,6 +42,9 @@ You will hit one of two failure modes:
 | `./scripts/run-claude-code-kimchi.sh` | Installs Claude Code in the task container and configures it to use the Kimchi gateway |
 | `./scripts/run-gsd-kimchi.sh` | Installs GSD in the task container and configures it to use one selected Kimchi model |
 | `./scripts/run-pi-kimchi.sh` | Installs the bare `pi` CLI (upstream `@earendil-works/pi-coding-agent`) in the task container, with the `pi-kimchi-provider` extension routing model calls through the Kimchi gateway |
+| `./scripts/run-workflow.sh` | Cross-builds `kimchi` and runs one named `kimchi-workflows` workflow through it (default `ferment-oneshot`) instead of kimchi's chat loop |
+| `./scripts/run-pi-workflow.sh` | The same workflow engine hosted by **stock `pi`** — no kimchi binary is built or used anywhere in this path (default workflow `deep-solve`). See `workflows/README.md`, "Which adapter can run which workflow" |
+| `./scripts/build-pi-bundle.sh` | Not a run script: stages an offline install bundle (node + `pi` + `pi-kimchi-provider`) that the two pi agents upload instead of installing over the network. Required for tasks with `allow_internet = false`; `run-pi-workflow.sh` builds it for you |
 
 All helper scripts target the `terminal-bench/terminal-bench-2-1` dataset by default. Extra arguments are forwarded to `harbor run`, so everything below works for any script.
 
@@ -304,6 +307,11 @@ Tag format is `key:value`, comma-separated; keys and values are alphanumeric plu
 | `CLAUDE_CODE_VERSION` | no | Pins the Claude Code version used by `run-claude-code-kimchi.sh` |
 | `GSD_VERSION` | no | Overrides the GSD package version used by `run-gsd-kimchi.sh`; default install target is `gsd-pi@latest` |
 | `PI_VERSION` | no | Pins the `@earendil-works/pi-coding-agent` version used by `run-pi-kimchi.sh`; default is `@latest` |
+| `WORKFLOW` | no | The workflow's declared **name** (not a filename) for `run-workflow.sh` / `run-pi-workflow.sh`. Defaults: `ferment-oneshot` and `deep-solve` respectively |
+| `EXTENSION` | no | `kimchi-workflows` spec for those two scripts: `npm:<pkg>@<version-or-dist-tag>` or `dir:<host path>`. Resolved on the host and uploaded — task images ship no node toolchain, so an in-container resolve cannot work |
+| `PI_BUNDLE_DIR` | no | Where the offline pi bundle lives. Default `benchmark/terminal-bench-2/.cache/pi-bundle`; absent or unrunnable (musl images), both pi agents fall back to the network install |
+| `SKIP_PI_BUNDLE` | no | Set to skip building the bundle in `run-pi-workflow.sh` and force the in-container network install |
+| `TB_AGENT_TIMEOUT_SEC` | no | Forces one agent-phase budget for every task instead of the per-task value `PiWorkflowAgent` reconstructs. A debugging aid — a wrong value here silently mis-schedules every stage of `deep-solve` |
 
 ## Results
 

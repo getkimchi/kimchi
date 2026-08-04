@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from harbor.models.trial.result import AgentInfo
 
+from kimchi_agent import workflow_staging
 from kimchi_agent.agent import CONTAINER_LOGS_DIR, Kimchi
 from kimchi_agent.workflow_extension import (
     ExtensionSpec,
@@ -38,19 +39,10 @@ PROJECT_WORKFLOWS_DIR = ".kimchi/workflows"
 WORKFLOW_INPUT_PATH = f"{CONTAINER_LOGS_DIR}/workflow-input.json"
 WORKFLOWS_HOST_DIR = Path(__file__).parent.parent.parent / "workflows"
 
-# workflows/ is also a dev directory; none of this belongs in a task container,
-# and `npm install` there would otherwise ship ~72MB plus a symlink out of the
-# repo. A denylist, since a workflow may legitimately need a data file beside it.
-WORKFLOWS_UPLOAD_IGNORE = shutil.ignore_patterns(
-    "node_modules",
-    "test",
-    "package.json",
-    "package-lock.json",
-    "tsconfig.json",
-    "vitest.config.ts",
-    ".gitignore",
-    "README.md",
-)
+# Re-exported rather than defined here: PiWorkflowAgent stages the same
+# directory the same way, and the denylist is pinned by tests in this module's
+# suite. See workflow_staging for why the host dir is NOT shared alongside it.
+WORKFLOWS_UPLOAD_IGNORE = workflow_staging.WORKFLOWS_UPLOAD_IGNORE
 
 ExtensionResolver = Callable[[ExtensionSpec], ResolvedExtension]
 
@@ -134,39 +126,17 @@ class WorkflowAgent(Kimchi):
             await environment.upload_dir(source_dir=stage_dir, target_dir=CONTAINER_WORKFLOWS_STAGE_DIR)
 
     def _assert_a_workflow_can_resolve(self, staged_workflows: Path) -> None:
-        """Fail at install, not ten minutes into a trial, when nothing the
-        container will receive can serve this run's ``workflow=``.
+        """See ``workflow_staging.assert_a_workflow_can_resolve``.
 
-        Scans the staged tree, which is exactly what gets uploaded — the source
-        tree also holds ``node_modules/@kimchi-dev/kimchi-workflows/``'s own
-        ``create.workflow.ts``, which the upload filter strips.
-
-        ``resolveWorkflow`` (``kimchi-workflows/src/host/workflow-catalog.ts``)
-        takes a ``.ts`` argument as a path, which reaches a nested file, and
-        anything else as a declared name, which only ``discoverWorkflows``'
-        non-recursive ``readdir`` can serve. So the required check depends on
-        which form was passed.
+        Reads ``WORKFLOWS_HOST_DIR`` as a module global on purpose, and passes
+        it in: this suite monkeypatches that name to point the check at a
+        fixture tree.
         """
-        staged = sorted(staged_workflows.rglob("*.workflow.ts"))
-        if not staged:
-            raise RuntimeError(
-                f"No *.workflow.ts files found anywhere under {WORKFLOWS_HOST_DIR} that would reach "
-                "the container (the dev-only names in WORKFLOWS_UPLOAD_IGNORE are excluded from the "
-                "upload, and so from this check). WorkflowAgent has nothing to run, by name or by "
-                "path; see workflows/README.md for the expected layout."
-            )
-
-        if self._workflow.endswith(".ts") or any(path.parent == staged_workflows for path in staged):
-            return
-
-        nested = ", ".join(str(path.relative_to(staged_workflows)) for path in staged)
-        raise RuntimeError(
-            f"'workflow={self._workflow}' is a declared workflow name, which the extension resolves "
-            f"through a non-recursive scan of the top level of {WORKFLOWS_HOST_DIR} — but every "
-            f"*.workflow.ts that reaches the container is in a subdirectory ({nested}), where that "
-            "scan cannot see it. Move one to the top level, or address a nested file by path instead "
-            f"(workflow={PROJECT_WORKFLOWS_DIR}/<subdir>/<file>.workflow.ts). "
-            "See workflows/README.md, 'What goes here'."
+        workflow_staging.assert_a_workflow_can_resolve(
+            staged_workflows=staged_workflows,
+            workflow=self._workflow,
+            workflows_host_dir=WORKFLOWS_HOST_DIR,
+            project_workflows_dir=PROJECT_WORKFLOWS_DIR,
         )
 
     def _extension_paths(self) -> list[str]:

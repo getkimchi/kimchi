@@ -70,6 +70,21 @@ HOST_EXTENSION_DIR = Path(__file__).parent / "extensions" / "pi-kimchi-provider"
 EXTENSION_REPO = "getkimchi/pi-kimchi-provider"
 EXTENSION_CLONE_DIR = Path(__file__).parent / "extensions" / "pi-kimchi-provider"
 
+# Offline install bundle: a node runtime, the pi CLI, and pi-kimchi-provider
+# with real (non-symlinked) node_modules, staged on the host by
+# scripts/build-pi-bundle.sh. When present it is uploaded into the container so
+# agent install touches the network zero times — which is the only way tasks
+# declaring `allow_internet = false` can run this agent at all, and is faster
+# everywhere else. Absent, or unusable in the task image, every run falls back
+# to the network install below, which is what all runs did before the bundle
+# existed.
+PI_BUNDLE_DIR_ENV = "PI_BUNDLE_DIR"
+HOST_BUNDLE_DIR = Path(__file__).parent.parent.parent / ".cache" / "pi-bundle"
+
+CONTAINER_INSTALL_DIR = "/installed-agent"
+CONTAINER_BUNDLE_NODE_DIR = f"{CONTAINER_INSTALL_DIR}/node"
+CONTAINER_BUNDLE_PI_DIR = f"{CONTAINER_INSTALL_DIR}/pi"
+
 PI_EXIT_OUTPUT_TAIL_LINES = 20
 
 
@@ -124,6 +139,10 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
     def __init__(self, *args, **kwargs):
         # The pi-kimchi-provider extension source directory on the host.
         self._extension_source_dir = kwargs.pop("extension-source-dir", None)
+        # Set by install(): whether the offline bundle was uploaded AND ran in
+        # this task image. Read by the launch command, which must not run
+        # `npm install` over node_modules the bundle already shipped.
+        self._bundled = False
         super().__init__(*args, **kwargs)
 
     @staticmethod
@@ -137,10 +156,25 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
             model_info=ModelInfo(name=self.model_name or "unknown", provider="kimchi"),
         )
 
+    def _path_setup(self) -> str:
+        """PATH prologue for every shell that needs ``node``/``npm``/``pi``.
+
+        Covers both install modes in one string — the bundled runtime first,
+        then the nvm-installed one — because each ``exec_as_*`` call is a fresh
+        shell and neither location survives from install() into run(). Harmless
+        when a mode did not happen: a PATH entry that does not exist is skipped,
+        and the nvm source is already guarded on the file being there.
+        """
+        return (
+            f'export PATH="{CONTAINER_BUNDLE_PI_DIR}/bin:{CONTAINER_BUNDLE_NODE_DIR}/bin:$PATH"; '
+            'export NVM_DIR="$HOME/.nvm"; '
+            '[ ! -s "$NVM_DIR/nvm.sh" ] || . "$NVM_DIR/nvm.sh"'
+        )
+
     def get_version_command(self) -> str | None:
-        # pi is installed via npm (global). Ensure nvm is loaded so the binary
-        # is on PATH, then print the version.
-        return 'export NVM_DIR="$HOME/.nvm"; [ ! -s "$NVM_DIR/nvm.sh" ] || . "$NVM_DIR/nvm.sh"; pi --version'
+        # pi comes either from the offline bundle or from a global npm install;
+        # put both on PATH, then print the version.
+        return f"{self._path_setup()}; pi --version"
 
     def parse_version(self, stdout: str) -> str:
         return stdout.strip().splitlines()[-1].strip()
@@ -199,31 +233,124 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
         return ext_dir
 
     async def install(self, environment: BaseEnvironment) -> None:
-        # Install git, curl, and (where available) nodejs/npm via the system
-        # package manager. The nvm fallback below needs curl, and installing
-        # nodejs/npm directly avoids the nvm path entirely on Alpine images.
-        await self.exec_as_root(
-            environment,
-            command=(
-                "if command -v apk &> /dev/null; then"
-                "  apk add --no-cache curl bash git nodejs npm;"
-                " elif command -v apt-get &> /dev/null; then"
-                "  apt-get update && apt-get install -y curl git;"
-                " elif command -v yum &> /dev/null; then"
-                "  yum install -y curl git;"
-                " elif command -v git &> /dev/null; then"
-                "  echo 'git already installed:' $(git --version);"
-                " else"
-                '  echo "Warning: No known package manager found and git not present" >&2;'
-                " fi"
-            ),
-            env=GIT_INSTALL_ENV,
-        )
+        # Bundle first, and before the package manager: if it works there is
+        # nothing left that needs the network, so a failing `apt-get update` on
+        # an isolated task image must not take the install down with it.
+        self._bundled = await self._install_from_bundle(environment)
+
+        await self._install_system_packages(environment, tolerate_failure=self._bundled)
         await self.exec_as_agent(
             environment,
             command=git_config_command(),
         )
 
+        if not self._bundled:
+            await self._install_pi_from_network(environment)
+            # Upload the pi-kimchi-provider extension SOURCE; its node_modules
+            # are installed in-container at launch (see _pi_launch_command).
+            # The bundle path uploaded the same tree already installed.
+            ext_dir = self._ensure_extension_available()
+            await environment.upload_dir(
+                source_dir=ext_dir,
+                target_dir=CONTAINER_EXTENSION_STAGE_DIR,
+            )
+
+    def _bundle_dir(self) -> Path:
+        override = self._get_env(PI_BUNDLE_DIR_ENV)
+        return Path(override) if override else HOST_BUNDLE_DIR
+
+    async def _install_from_bundle(self, environment: BaseEnvironment) -> bool:
+        """Upload the prebuilt offline bundle. False when there isn't a usable one.
+
+        Two ways this returns False, and both are ordinary rather than errors:
+        the bundle was never built on the host (nobody ran
+        ``scripts/build-pi-bundle.sh``), or it was built and this task image
+        cannot run it. The second is the interesting one — the official node
+        tarballs are glibc-linked, so on a musl image (Alpine) the binary is
+        present and simply will not execute. That is why the probe below runs
+        the thing rather than trusting the upload: a bundle that cannot start
+        must be cleared away, not left shadowing the working nvm install on
+        PATH.
+        """
+        bundle = self._bundle_dir()
+        required = {
+            "node runtime": bundle / "node" / "bin" / "node",
+            "pi CLI": bundle / "pi" / "bin" / "pi",
+            "pi-kimchi-provider": bundle / "extensions" / "pi-kimchi-provider" / "package.json",
+        }
+        missing = [name for name, path in required.items() if not path.exists()]
+        if missing:
+            if bundle.exists():
+                # A partial bundle is a build that went wrong, unlike no bundle
+                # at all — say which piece so it is fixable.
+                self.logger.warning(
+                    "pi offline bundle is incomplete; using the network install",
+                    extra={"bundle_dir": str(bundle), "missing": missing},
+                )
+            return False
+
+        await self.exec_as_root(
+            environment,
+            command=f"mkdir -p {shlex.quote(CONTAINER_BUNDLE_NODE_DIR)} {shlex.quote(CONTAINER_BUNDLE_PI_DIR)}",
+        )
+        await environment.upload_dir(source_dir=bundle / "node", target_dir=CONTAINER_BUNDLE_NODE_DIR)
+        await environment.upload_dir(source_dir=bundle / "pi", target_dir=CONTAINER_BUNDLE_PI_DIR)
+        await environment.upload_dir(
+            source_dir=bundle / "extensions" / "pi-kimchi-provider",
+            target_dir=CONTAINER_EXTENSION_STAGE_DIR,
+        )
+        # docker cp preserves host ownership; make the trees usable by the agent user.
+        await self.exec_as_root(
+            environment,
+            command=(
+                f"chmod -R a+rwX {shlex.quote(CONTAINER_INSTALL_DIR)} "
+                f"{shlex.quote(CONTAINER_EXTENSION_STAGE_DIR)}"
+            ),
+        )
+
+        probe = await environment.exec(command=f"{self._path_setup()}; node --version && pi --version")
+        if probe.return_code != 0:
+            self.logger.warning(
+                "pi offline bundle does not run in this task image (musl libc?); "
+                "falling back to the network install",
+                extra={"error": _tail_output(probe.stderr or probe.stdout, max_lines=5)},
+            )
+            await self.exec_as_root(
+                environment,
+                command=(
+                    f"rm -rf {shlex.quote(CONTAINER_BUNDLE_NODE_DIR)} "
+                    f"{shlex.quote(CONTAINER_BUNDLE_PI_DIR)} {shlex.quote(CONTAINER_EXTENSION_STAGE_DIR)}"
+                ),
+            )
+            return False
+        return True
+
+    async def _install_system_packages(self, environment: BaseEnvironment, *, tolerate_failure: bool) -> None:
+        # Install git, curl, and (where available) nodejs/npm via the system
+        # package manager. The nvm fallback needs curl, and installing
+        # nodejs/npm directly avoids the nvm path entirely on Alpine images.
+        command = (
+            "if command -v apk &> /dev/null; then"
+            "  apk add --no-cache curl bash git nodejs npm;"
+            " elif command -v apt-get &> /dev/null; then"
+            "  apt-get update && apt-get install -y curl git;"
+            " elif command -v yum &> /dev/null; then"
+            "  yum install -y curl git;"
+            " elif command -v git &> /dev/null; then"
+            "  echo 'git already installed:' $(git --version);"
+            " else"
+            '  echo "Warning: No known package manager found and git not present" >&2;'
+            " fi"
+        )
+        if tolerate_failure:
+            # The bundle already supplied everything the agent needs to run, so
+            # the only thing left here is git for the baseline commit — worth
+            # attempting, never worth failing the trial over on an image with
+            # no package repository reachable.
+            command = f"{{ {command} ; }} || echo 'Warning: package install failed; using bundled runtime' >&2"
+        await self.exec_as_root(environment, command=command, env=GIT_INSTALL_ENV)
+
+    async def _install_pi_from_network(self, environment: BaseEnvironment) -> None:
         # Install pi via npm. Pin to a specific version if provided.
         version_spec = f"@{self._version}" if self._version else "@latest"
         await self.exec_as_agent(
@@ -242,13 +369,6 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
                 f"npm install -g @earendil-works/pi-coding-agent{version_spec} && "
                 "pi --version"
             ),
-        )
-
-        # Upload and install the pi-kimchi-provider extension.
-        ext_dir = self._ensure_extension_available()
-        await environment.upload_dir(
-            source_dir=ext_dir,
-            target_dir=CONTAINER_EXTENSION_STAGE_DIR,
         )
 
     @with_prompt_template
@@ -272,6 +392,7 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
             # Point pi's agent dir at /logs/agent/pi-agent so session JSONL
             # files land where populate_context_post_run can read them.
             "PI_CODING_AGENT_DIR": CONTAINER_PI_AGENT_DIR,
+            **self._run_env(),
         }
 
         try:
@@ -284,48 +405,89 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
             await self._terminate_pi_process_group(environment)
             raise
 
+    def _extension_paths(self) -> list[str]:
+        """Container paths passed to pi as ``--extension``.
+
+        Empty here: pi-kimchi-provider is loaded by auto-discovery instead (it
+        is copied into ``<agentDir>/extensions/``). This and the three hooks
+        below exist so a subclass never has to override ``run()`` — it is
+        decorated with ``@with_prompt_template``, which is not idempotent, so a
+        subclass calling a decorated ``super().run()`` would render the prompt
+        template twice.
+        """
+        return []
+
+    def _stdin_payload(self, instruction: str) -> str:
+        """What to pipe to pi, when it is not the instruction verbatim."""
+        return instruction
+
+    def _pre_launch_commands(self, instruction: str) -> list[str]:
+        """Shell commands to run in the launch pipeline, before pi starts."""
+        del instruction
+        return []
+
+    def _post_launch_commands(self) -> list[str]:
+        """Shell commands to run after pi exits, with its status already captured.
+
+        For anything a subclass added to the task working directory and must
+        take back out before the machine is graded. Each is run unconditionally
+        and must not change the recorded exit status.
+        """
+        return []
+
+    def _run_env(self) -> dict[str, str]:
+        """Extra environment for the pi process, on top of the API key and agent dir."""
+        return {}
+
     def _pi_launch_command(self, instruction: str, cli_flags: str) -> str:
         runner = self._pi_command(cli_flags)
         parts = [
-            # Source nvm first so npm/pi are on PATH for every subsequent step.
-            # Each exec_as_agent call is a fresh shell; nvm was loaded during
-            # install() but that session doesn't persist into run().
-            'export NVM_DIR="$HOME/.nvm"; '
-            '[ ! -s "$NVM_DIR/nvm.sh" ] || . "$NVM_DIR/nvm.sh"',
+            # Put both install modes' binaries on PATH for every subsequent
+            # step. Each exec_as_agent call is a fresh shell; whatever install()
+            # loaded does not persist into run().
+            self._path_setup(),
             # Ensure pi has a stable location for session files.
             f"mkdir -p {shlex.quote(CONTAINER_SESSIONS_DIR)}",
             # Drop stale pgid marker from a previous interrupted attempt.
             f"rm -f {shlex.quote(CONTAINER_AGENT_PGID_FILE)}",
-            # Install the pi-kimchi-provider extension: run npm install --production
-            # in the staged dir, then copy into pi's auto-discovery directory.
-            # pi's discoverAndLoadExtensions scans <agentDir>/extensions/ for
-            # subdirectories with a package.json containing a "pi" field.
+            # Install the pi-kimchi-provider extension: copy the staged dir into
+            # pi's auto-discovery directory. pi's discoverAndLoadExtensions
+            # scans <agentDir>/extensions/ for subdirectories with a
+            # package.json containing a "pi" field.
             f"mkdir -p {shlex.quote(CONTAINER_PI_EXTENSIONS_DIR)} && "
             f"cp -a {shlex.quote(CONTAINER_EXTENSION_STAGE_DIR)}/. "
-            f"{shlex.quote(CONTAINER_EXTENSION_INSTALL_DIR)}/ && "
-            f"cd {shlex.quote(CONTAINER_EXTENSION_INSTALL_DIR)} && "
-            "npm install --production",
-            # Ensure a git repo exists in the task working directory with a
-            # committed baseline, but never clobber one that the task image
-            # ships with (e.g. fix-git).
-            f"cd /app && {git_init_and_commit_baseline_command()}",
+            f"{shlex.quote(CONTAINER_EXTENSION_INSTALL_DIR)}/",
         ]
+        if not self._bundled:
+            # Only the network path stages bare sources; the bundle ships this
+            # tree with node_modules already in it, and running npm over it
+            # would need the network the bundle exists to avoid.
+            parts.append(f"cd {shlex.quote(CONTAINER_EXTENSION_INSTALL_DIR)} && npm install --production")
+        # Ensure a git repo exists in the task working directory with a
+        # committed baseline, but never clobber one that the task image
+        # ships with (e.g. fix-git).
+        parts.append(f"cd /app && {git_init_and_commit_baseline_command()}")
+        parts.extend(self._pre_launch_commands(instruction))
 
+        post_launch = "".join(f"{command}; " for command in self._post_launch_commands())
         parts.append(
             # Enable job control so the backgrounded pi pipeline gets a
             # process group that can be terminated as a unit on timeout.
             "set -m && { "
-            # Feed the task prompt through stdin instead of as a positional arg:
-            # pi's parseArgs treats tokens starting with "-" as flags (no "--"
-            # end-of-options marker), which would crash on instructions like
-            # "- You are given...".
-            f"(printf '%s' {shlex.quote(instruction)} | {runner}) & "
+            # Feed the task prompt (or a subclass-supplied payload) through
+            # stdin instead of as a positional arg: pi's parseArgs treats tokens
+            # starting with "-" as flags (no "--" end-of-options marker), which
+            # would crash on instructions like "- You are given...".
+            f"(printf '%s' {shlex.quote(self._stdin_payload(instruction))} | {runner}) & "
             # Record the process-group id for cancellation cleanup.
             "agent_pid=$!; "
             'agent_pgid=$(ps -o pgid= -p "$agent_pid" 2>/dev/null | tr -d "[:space:]" || true); '
             f"printf '%s\\n' \"${{agent_pgid:-$agent_pid}}\" > {shlex.quote(CONTAINER_AGENT_PGID_FILE)}; "
             'wait "$agent_pid"; '
+            # Captured before any cleanup below, so what Harbor sees is pi's own
+            # status and never a tidy-up command's.
             "agent_status=$?; "
+            f"{post_launch}"
             f"rm -f {shlex.quote(CONTAINER_AGENT_PGID_FILE)}; "
             'exit "$agent_status"; '
             "}"
@@ -333,9 +495,11 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
         return " && ".join(parts)
 
     def _pi_command(self, cli_flags: str) -> str:
-        # nvm is already sourced by _pi_launch_command before this runs.
+        # PATH is already set by _pi_launch_command before this runs.
+        extension_flags = "".join(f"--extension {shlex.quote(path)} " for path in self._extension_paths())
         return (
-            f"pi --print --session {shlex.quote(CONTAINER_MAIN_SESSION)} "
+            f"pi {extension_flags}"
+            f"--print --session {shlex.quote(CONTAINER_MAIN_SESSION)} "
             f"--model {shlex.quote(self.model_name or '')} "
             f"--approve "
             f"{cli_flags}"
@@ -380,7 +544,16 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
 
         # Aggregate main.jsonl + Agent child <timestamp>_<uuid>.jsonl siblings.
         # pi writes the same session format as kimchi (both use pi-coding-agent).
-        for session_file in sorted(sessions_dir.glob("*.jsonl")):
+        #
+        # Recursive because not every session file is a sibling: the
+        # kimchi-workflows extension parks a run's artifacts in a `workflow/`
+        # SUBDIRECTORY of the session dir (its runArtifactsDir), deliberately,
+        # so pi's own non-recursive session pickers do not offer a workflow step
+        # as something to `--continue`. Every step session of a workflow run
+        # therefore lives one level down, and a flat glob would report a
+        # workflow trial as having spent no tokens at all. Harmless for plain pi
+        # runs, which put nothing below this directory.
+        for session_file in sorted(sessions_dir.rglob("*.jsonl")):
             try:
                 lines = session_file.read_text().splitlines()
             except OSError as exc:

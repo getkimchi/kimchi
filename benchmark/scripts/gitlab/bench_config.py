@@ -57,6 +57,16 @@ DEFAULT_CODING_AGENT = "kimchi"
 # is_kimchi_family.
 WORKFLOW_CODING_AGENT = "kimchi-workflow"
 
+# PiWorkflowAgent runs the SAME extension and the same workflows, but on stock
+# pi — so it takes the workflow kwargs and none of kimchi's. That split is the
+# whole reason the two predicates below are separate, and why this constant is
+# deliberately absent from is_kimchi_family: pi has no llm-sampling-params
+# extension and no compaction setting to disable, so passing either kwarg would
+# fail the run at `harbor run` for an agent that cannot accept it.
+PI_WORKFLOW_CODING_AGENT = "pi-workflow"
+
+WORKFLOW_CODING_AGENTS = (WORKFLOW_CODING_AGENT, PI_WORKFLOW_CODING_AGENT)
+
 
 def is_kimchi_family(coding_agent: str | None = None) -> bool:
     """Return whether the selected agent is Kimchi or a subclass of it."""
@@ -65,9 +75,13 @@ def is_kimchi_family(coding_agent: str | None = None) -> bool:
 
 
 def is_workflow_agent(coding_agent: str | None = None) -> bool:
-    """Return whether the selected agent runs a kimchi-workflows workflow."""
+    """Return whether the selected agent runs a kimchi-workflows workflow.
+
+    True for both the kimchi-hosted and the pi-hosted adapter: what this gates
+    is the `extension=`/`workflow=` kwargs, which they share.
+    """
     selected = coding_agent if coding_agent is not None else os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
-    return selected == WORKFLOW_CODING_AGENT
+    return selected in WORKFLOW_CODING_AGENTS
 
 
 ENV_WORKFLOW = "BENCH_WORKFLOW"

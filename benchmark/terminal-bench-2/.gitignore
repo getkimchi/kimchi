@@ -2,6 +2,10 @@
 .harbor/
 .ruff_cache/
 jobs/
+# Offline pi install bundle (scripts/build-pi-bundle.sh): a node runtime, the pi
+# CLI and a node_modules tree — hundreds of MB of downloaded binaries, rebuilt
+# on demand and never a source of truth.
+.cache/
 __pycache__/
 *.egg-info/
 dist/

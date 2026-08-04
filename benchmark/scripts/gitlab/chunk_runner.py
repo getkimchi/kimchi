@@ -639,6 +639,8 @@ def _agent_import_path(coding_agent: str) -> str:
             return "kimchi_agent:PiKimchi"
         case "kimchi-workflow":
             return "kimchi_agent:WorkflowAgent"
+        case "pi-workflow":
+            return "kimchi_agent:PiWorkflowAgent"
         case _:
             raise SystemExit(f"Unknown CODING_AGENT: {coding_agent}")
 
