@@ -56,6 +56,10 @@ import hideThinkingExtension from "./extensions/hide-thinking.js"
 import ideAdapterExtension from "./extensions/ide-adapter/index.js"
 import infrastructureBreakerExtension from "./extensions/infrastructure-breaker.js"
 import inputHistoryExtension from "./extensions/input-history.js"
+import {
+	applyInteractiveErrorSurfacePatch,
+	default as interactiveErrorSurfaceExtension,
+} from "./extensions/interactive-error-surface.js"
 import kimchiHooksAdapter from "./extensions/kimchi-hooks/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import llmResponseLogExtension from "./extensions/llm-response-log.js"
@@ -149,6 +153,10 @@ import { getVersion } from "./utils.js"
 installInfrastructureRetryPatch()
 installInlineCompactPatch()
 installPiNativeCompatibilityShim()
+// Wrap InteractiveMode.prototype.showError so retried provider errors are
+// suppressed / sanitized before reaching the terminal. Must run before any
+// InteractiveMode instance is constructed.
+applyInteractiveErrorSurfacePatch()
 
 function getSubcommand(args: string[]): string {
 	if (args.includes("--version") || args.includes("-v")) return "version"
@@ -617,6 +625,7 @@ try {
 			activityExtension,
 			infrastructureErrorTracker.extension,
 			infrastructureBreakerExtension,
+			interactiveErrorSurfaceExtension,
 		]
 
 		if (IS_ACP_MODE) {
