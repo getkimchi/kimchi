@@ -44,6 +44,23 @@ def kimchi_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("RUN_ID", raising=False)
     monkeypatch.delenv(KIMCHI_INFRA_BREAKER_THRESHOLD_ENV, raising=False)
 
+    async def openrouter_models_config(model_id: str, *, endpoint: str | None = None) -> dict:
+        return {
+            "providers": {
+                "openrouter": {
+                    "api": "openai-completions",
+                    "baseUrl": endpoint or "https://openrouter.ai/api/v1",
+                    "apiKey": "$OPENROUTER_API_KEY",
+                    "authHeader": True,
+                    "models": [{"id": model_id, "provider": "openrouter"}],
+                }
+            }
+        }
+
+    monkeypatch.setattr(
+        "kimchi_agent.agent.build_openrouter_models_config", openrouter_models_config
+    )
+
 
 async def test_run_uses_shell_process_group_cleanup_on_cancellation(tmp_path: Path) -> None:
     agent = RecordingKimchi(
@@ -621,3 +638,103 @@ def test_populate_context_counts_nested_workflow_session_files(tmp_path: Path) -
     assert context.n_output_tokens == 3 + 5
     assert context.n_cache_tokens == 2
     assert context.cost_usd == 0.75
+
+
+# ─── OpenRouter model support ────────────────────────────────────────────────
+
+
+async def test_openrouter_model_writes_models_config_before_kimchi(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An openrouter/* model writes the host-resolved provider block."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="openrouter/z-ai/glm-5.2",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert "node " not in command
+    assert '"id":"z-ai/glm-5.2"' in command
+    assert '"apiKey":"$OPENROUTER_API_KEY"' in command
+    assert "~/.config/kimchi/harness/models.json" in command
+    assert "--model openrouter/z-ai/glm-5.2" in command
+
+
+async def test_openrouter_model_forwards_api_key_into_container_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OPENROUTER_API_KEY is forwarded into the container env for openrouter/* models."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="openrouter/z-ai/glm-5.2",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    env = agent.agent_envs[0]
+    assert env is not None
+    assert env.get("OPENROUTER_API_KEY") == "sk-or-test"
+
+
+async def test_openrouter_endpoint_override_is_resolved_on_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("KIMCHI_OPENROUTER_ENDPOINT", "https://router.example.test/v1")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="openrouter/z-ai/glm-5.2",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert '"baseUrl":"https://router.example.test/v1"' in command
+    assert "KIMCHI_OPENROUTER_ENDPOINT" not in (agent.agent_envs[0] or {})
+
+
+async def test_openrouter_model_without_api_key_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing OPENROUTER_API_KEY raises a clear error for openrouter/* models."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="openrouter/z-ai/glm-5.2",
+    )
+
+    with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY is required"):
+        await agent.run("hello", object(), AgentContext())
+
+
+async def test_kimchi_dev_model_does_not_write_openrouter_config(tmp_path: Path) -> None:
+    """A kimchi-dev/* model must not write an OpenRouter provider."""
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert "harness/models.json" not in command
+    assert "OPENROUTER_API_KEY" not in (agent.agent_envs[0] or {})
+
+
+def test_is_openrouter_model_detects_prefixed_names() -> None:
+    from kimchi_agent.agent import _is_openrouter_model
+
+    assert _is_openrouter_model("openrouter/z-ai/glm-5.2") is True
+    assert _is_openrouter_model("openrouter/anthropic/claude-opus-5-fast") is True
+    assert _is_openrouter_model("kimchi-dev/kimi-k2.6") is False
+    assert _is_openrouter_model("multi-model") is False
+    assert _is_openrouter_model(None) is False
+    assert _is_openrouter_model("") is False

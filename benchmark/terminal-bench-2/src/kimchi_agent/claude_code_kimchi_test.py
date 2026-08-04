@@ -273,16 +273,17 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(int(CLAUDE_CODE_DEFAULT_API_TIMEOUT_MS), 600_000)
 
     async def test_rejects_non_kimchi_provider(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            agent = RecordingClaudeCodeKimchi(
-                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
-                model_name="anthropic/claude-opus-4-6",
-            )
+        for model_name in ("anthropic/claude-opus-4-6", "openrouter/anthropic/claude-opus-4-6"):
+            with self.subTest(model_name=model_name), tempfile.TemporaryDirectory() as tmp:
+                agent = RecordingClaudeCodeKimchi(
+                    logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                    model_name=model_name,
+                )
 
-            with self.assertRaisesRegex(ValueError, "only supports kimchi-dev"):
-                await agent.run("solve it", object(), AgentContext())
+                with self.assertRaisesRegex(ValueError, "only supports kimchi-dev"):
+                    await agent.run("solve it", object(), AgentContext())
 
-        self.assertEqual(agent.agent_commands, [])
+            self.assertEqual(agent.agent_commands, [])
 
     async def test_rejects_model_missing_from_metadata_endpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

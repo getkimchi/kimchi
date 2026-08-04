@@ -215,11 +215,12 @@ class GsdKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("- kimchi-dev/minimax-m2.7", prefs)
 
     async def test_rejects_non_kimchi_provider(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            agent = RecordingGsdKimchi(logs_dir=Path(tmp), model_name="openai/gpt-4.1")
+        for model_name in ("openai/gpt-4.1", "openrouter/z-ai/glm-5.2"):
+            with self.subTest(model_name=model_name), tempfile.TemporaryDirectory() as tmp:
+                agent = RecordingGsdKimchi(logs_dir=Path(tmp), model_name=model_name)
 
-            with self.assertRaisesRegex(ValueError, "only supports kimchi-dev"):
-                await agent.run("solve it", object(), AgentContext())
+                with self.assertRaisesRegex(ValueError, "only supports kimchi-dev"):
+                    await agent.run("solve it", object(), AgentContext())
 
     async def test_missing_kimchi_api_key_fails_before_commands(self) -> None:
         os.environ.pop("KIMCHI_API_KEY", None)

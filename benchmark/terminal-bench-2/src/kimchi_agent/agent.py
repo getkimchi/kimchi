@@ -24,6 +24,12 @@ from kimchi_agent.git_install import (
     git_init_and_commit_baseline_command,
 )
 from kimchi_agent.messages import SessionEntry
+from kimchi_agent.openrouter import (
+    OPENROUTER_API_KEY_ENV,
+    OPENROUTER_ENDPOINT_ENV,
+    OPENROUTER_PROVIDER,
+    build_openrouter_models_config,
+)
 from kimchi_agent.release import BINARY_RELPATH, SHARE_RELPATH, GitHubClient
 
 if TYPE_CHECKING:
@@ -60,6 +66,8 @@ KIMCHI_EXIT_OUTPUT_TAIL_LINES = 20
 HOST_EXTENSION_DIR = Path(__file__).parent / "extensions" / "llm-sampling-params"
 CONTAINER_EXTENSION_STAGE_DIR = "/tmp/kimchi-llm-ext"
 CONTAINER_EXTENSION_INSTALL_DIR = "$HOME/.config/kimchi/extensions/llm-sampling-params"
+
+CONTAINER_HARNESS_MODELS_JSON = f"{CONTAINER_HARNESS_SETTINGS_DIR}/models.json"
 
 
 def _decode_agent_kwarg(value: object) -> dict[str, Any]:
@@ -108,13 +116,19 @@ def _validate_model_name(model_name: str | None) -> None:
     if not model_name or "/" not in model_name:
         raise ValueError(
             "--model is required and must be qualified with a provider "
-            "(e.g. kimchi-dev/kimi-k2.7, kimchi-dev/glm-5.2-fp8, kimchi-dev/minimax-m3)"
+            "(e.g. kimchi-dev/kimi-k2.7, kimchi-dev/glm-5.2-fp8, kimchi-dev/minimax-m3, "
+            "openrouter/z-ai/glm-5.2)"
         )
     provider, model_id = model_name.split("/", 1)
     if not provider or not model_id:
         raise ValueError(
             f"--model must be qualified as <provider>/<id> (got {model_name!r}); use e.g. kimchi-dev/kimi-k2.7"
         )
+
+
+def _is_openrouter_model(model_name: str | None) -> bool:
+    """Return True when the selected model is routed via OpenRouter."""
+    return bool(model_name) and model_name.startswith(f"{OPENROUTER_PROVIDER}/")
 
 
 def _resolve_infra_breaker_threshold(value: str | None) -> str:
@@ -166,8 +180,9 @@ class Kimchi(BaseInstalledAgent):
         2. Otherwise, the latest GitHub release from ``castai/kimchi`` is
            downloaded, sha256-verified, and extracted on the host, then uploaded.
 
-    Model routing is always via the Kimchi LLM gateway (``https://llm.kimchi.dev``) using ``KIMCHI_API_KEY``;
-    no provider-specific keys are needed.
+    ``kimchi-dev/*`` models route through the Kimchi LLM gateway using
+    ``KIMCHI_API_KEY``. ``openrouter/*`` models route directly through OpenRouter
+    using ``OPENROUTER_API_KEY``.
     """
 
     CLI_FLAGS: ClassVar[list[CliFlag]] = [
@@ -348,6 +363,12 @@ class Kimchi(BaseInstalledAgent):
             # the opencode provider. Without a qualifier the resolver may pick opencode and
             # fail auth with the kimchi key, so we force the caller to be explicit.
             _validate_model_name(self.model_name)
+            # OpenRouter models are validated against OpenRouter's /api/v1/models
+            # endpoint at launch time, not against the Kimchi LLM gateway — so
+            # skip the gateway metadata fetch here.
+            self._is_openrouter = _is_openrouter_model(self.model_name)
+        else:
+            self._is_openrouter = False
 
         cli_flags = self.build_cli_flags()
         if cli_flags:
@@ -380,6 +401,26 @@ class Kimchi(BaseInstalledAgent):
             "PI_PACKAGE_DIR": PI_PACKAGE_DIR,
             **ferment_env,
         }
+        # Forward the OpenRouter API key into the container so kimchi's
+        # openai-completions provider can resolve $OPENROUTER_API_KEY from the
+        # environment at request time. The key is read from the host env (set
+        # by the GitLab CI pipeline) and must be present for openrouter/* models.
+        if self._is_openrouter:
+            openrouter_key = self._get_env(OPENROUTER_API_KEY_ENV)
+            if not openrouter_key:
+                raise RuntimeError(
+                    f"{OPENROUTER_API_KEY_ENV} is required to run openrouter/* models. "
+                    f"Export it on the host and forward it with "
+                    f"`--ae {OPENROUTER_API_KEY_ENV}=${OPENROUTER_API_KEY_ENV}`."
+                )
+            env[OPENROUTER_API_KEY_ENV] = openrouter_key
+            _, openrouter_model_id = self.model_name.split("/", 1)
+            openrouter_models_config = await build_openrouter_models_config(
+                openrouter_model_id,
+                endpoint=self._get_env(OPENROUTER_ENDPOINT_ENV),
+            )
+        else:
+            openrouter_models_config = None
         if self._llm_params:
             env["KIMCHI_LLM_PARAMS_JSON"] = json.dumps(self._llm_params)
         if self._llm_per_model_params:
@@ -397,7 +438,11 @@ class Kimchi(BaseInstalledAgent):
         try:
             await self.exec_as_agent(
                 environment,
-                command=self._kimchi_launch_command(instruction, cli_flags),
+                command=self._kimchi_launch_command(
+                    instruction,
+                    cli_flags,
+                    openrouter_models_config=openrouter_models_config,
+                ),
                 env=env,
             )
         except asyncio.CancelledError:
@@ -424,7 +469,13 @@ class Kimchi(BaseInstalledAgent):
         """Shell commands to run in the launch pipeline, before kimchi starts."""
         return []
 
-    def _kimchi_launch_command(self, instruction: str, cli_flags: str) -> str:
+    def _kimchi_launch_command(
+        self,
+        instruction: str,
+        cli_flags: str,
+        *,
+        openrouter_models_config: dict[str, Any] | None = None,
+    ) -> str:
         runner = self._kimchi_command(cli_flags)
         parts = [
             # Ensure kimchi has a stable location for the main session and any
@@ -449,6 +500,8 @@ class Kimchi(BaseInstalledAgent):
         harness_settings = self._harness_settings_command()
         if harness_settings:
             parts.append(harness_settings)
+        if openrouter_models_config is not None:
+            parts.append(self._openrouter_models_command(openrouter_models_config))
         skills_registration = self._skills_registration_command()
         if skills_registration:
             parts.append(skills_registration)
@@ -507,6 +560,14 @@ class Kimchi(BaseInstalledAgent):
         return (
             f"mkdir -p {CONTAINER_HARNESS_SETTINGS_DIR} && "
             f"printf '%s\\n' {shlex.quote(settings_json)} > {CONTAINER_HARNESS_SETTINGS}"
+        )
+
+    def _openrouter_models_command(self, models_config: dict[str, Any]) -> str:
+        """Write host-resolved OpenRouter metadata without container runtime dependencies."""
+        models_json = json.dumps(models_config, separators=(",", ":"))
+        return (
+            f"mkdir -p {CONTAINER_HARNESS_SETTINGS_DIR} && "
+            f"printf '%s\\n' {shlex.quote(models_json)} > {CONTAINER_HARNESS_MODELS_JSON}"
         )
 
     def _skills_registration_command(self) -> str:

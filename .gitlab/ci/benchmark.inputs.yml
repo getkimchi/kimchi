@@ -56,6 +56,8 @@ inputs:
       - kimchi-dev/claude-fable-5
       - kimchi-dev/minimax-m3
       - kimchi-dev/glm-5.2-fp8
+      - openrouter/z-ai/glm-5.1
+      - openrouter/z-ai/glm-5.2
   kimchi_ferment_oneshot:
     description: "Run each task through Kimchi ferment one-shot workflow. Ignored unless agent is kimchi."
     type: boolean

@@ -117,14 +117,15 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent.fetched_with_api_key, "test-key")
 
     async def test_rejects_non_kimchi_provider(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            agent = RecordingOpenCodeKimchi(
-                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
-                model_name="openai/gpt-4.1",
-            )
+        for model_name in ("openai/gpt-4.1", "openrouter/z-ai/glm-5.2"):
+            with self.subTest(model_name=model_name), tempfile.TemporaryDirectory() as tmp:
+                agent = RecordingOpenCodeKimchi(
+                    logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                    model_name=model_name,
+                )
 
-            with self.assertRaisesRegex(ValueError, "only supports kimchi-dev"):
-                await agent.run("solve it", object(), AgentContext())
+                with self.assertRaisesRegex(ValueError, "only supports kimchi-dev"):
+                    await agent.run("solve it", object(), AgentContext())
 
     async def test_allows_unknown_kimchi_model_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
