@@ -61,6 +61,7 @@ const REASON_CATEGORY: Record<LLMGatewayErrorReason, ReasonCategory> = {
 	provider_5xx: { retryable: true, label: "provider unavailable" },
 	provider_error: { retryable: true, label: "provider unavailable" },
 	bad_request: { retryable: false, label: "bad request" },
+	content_filter: { retryable: false, label: "content filter" },
 	context_window_exceeded: { retryable: false, label: "context window exceeded" },
 	invalid_request_payload: { retryable: false, label: "invalid request payload" },
 }

@@ -300,6 +300,8 @@ describe("classifyLLMGatewayError", () => {
 		"model returned 500 tokens before stopping",
 		"tool call unexpectedly missing argument",
 		"model response terminated by safety policy",
+		"response was filtered by the content policy",
+		"content was filtered for safety reasons",
 	])("ignores non-gateway provider verdicts: %s", (message) => {
 		expect(classifyLLMGatewayError(message)).toBeUndefined()
 	})

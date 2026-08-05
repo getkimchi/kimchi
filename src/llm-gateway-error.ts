@@ -72,7 +72,7 @@ const HTTP_STATUS_RES = [
 const FIVE_XX_STATUS_CODES = new Set([500, 502, 503, 504, 524, 529])
 
 const INVALID_REQUEST_PAYLOAD_RE = /tools must not be an empty array/i
-const CONTENT_FILTER_RE = /finish_reason:\s*content_filter|content.?filter/i
+const CONTENT_FILTER_RE = /\bfinish_reason:\s*content_filter\b|\bcontent[- ]?filter\b/i
 const CONTEXT_WINDOW_RE =
 	/ContextWindowExceeded|context(?:\s|-)?(?:window|length|overflow)|maximum context|prompt too long|longer than the model'?s context length/i
 const NON_GATEWAY_PROVIDER_VERDICT_RE =
