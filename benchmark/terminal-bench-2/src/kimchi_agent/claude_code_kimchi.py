@@ -31,11 +31,9 @@ from kimchi_agent.openrouter import (
     OPENROUTER_API_KEY_ENV,
     OPENROUTER_ENDPOINT_ENV,
     OPENROUTER_PROVIDER,
-    fetch_openrouter_model,
+    OpenRouterClient,
     is_openrouter_model,
-    openrouter_model_limits,
     resolve_openrouter_anthropic_base_url,
-    resolve_openrouter_catalogue_model,
 )
 
 CLAUDE_CODE_AUTO_COMPACT_PERCENT = 85
@@ -209,17 +207,15 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
         model_id = self.model_name.split("/", 1)[1]
         if not model_id:
             raise ValueError(f"--model must include a model id after {OPENROUTER_PROVIDER}/")
-        endpoint = self._get_env(OPENROUTER_ENDPOINT_ENV)
-        metadata = await fetch_openrouter_model(
-            await resolve_openrouter_catalogue_model(model_id, api_key=api_key, endpoint=endpoint),
-            endpoint=endpoint,
+        client = OpenRouterClient(
+            api_key=api_key, endpoint=self._get_env(OPENROUTER_ENDPOINT_ENV)
         )
-        context_window, max_output_tokens = openrouter_model_limits(metadata)
+        limits = await client.limits_for(await client.resolve(model_id))
         return KimchiModelMetadata(
             slug=model_id,
             limits=KimchiModelLimits(
-                context_window=context_window,
-                max_output_tokens=max_output_tokens,
+                context_window=limits.context_window,
+                max_output_tokens=limits.max_output_tokens,
             ),
         )
 

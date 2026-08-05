@@ -38,6 +38,32 @@ class FakeMetadataResponse:
         return self._body
 
 
+def _openrouter_routes(
+    *,
+    models: list[dict],
+    preset: dict | None = None,
+    endpoints: list[dict] | None = None,
+) -> tuple[object, list[str]]:
+    """Stub OpenRouterClient's HTTP layer, recording the paths requested.
+
+    Patching the transport rather than the resolution helpers keeps preset
+    unwrapping and endpoint-based sizing under test.
+    """
+    requested: list[str] = []
+
+    async def fake_get(self, path: str, *, authed: bool = False) -> object:
+        requested.append(path)
+        if path.startswith("presets/"):
+            if preset is None:
+                raise AssertionError(f"unexpected preset fetch: {path}")
+            return preset
+        if path.endswith("/endpoints"):
+            return {"data": {"endpoints": endpoints or []}}
+        return {"data": models}
+
+    return fake_get, requested
+
+
 class RecordingClaudeCodeKimchi(ClaudeCodeKimchi):
     metadata: ClassVar[list[dict[str, object]]] = [
         {
@@ -568,17 +594,19 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(http_get.call_args.args, (KIMCHI_MODELS_METADATA_URL,))
 
     async def test_runs_claude_code_against_openrouter_model(self) -> None:
-        fetch = AsyncMock(
-            return_value={
-                "id": "z-ai/glm-5.1",
-                "context_length": 200_000,
-                "top_provider": {"max_completion_tokens": 128_000},
-            }
+        routes, requested = _openrouter_routes(
+            models=[
+                {
+                    "id": "z-ai/glm-5.1",
+                    "context_length": 200_000,
+                    "top_provider": {"max_completion_tokens": 128_000},
+                }
+            ]
         )
         env_overrides = {"OPENROUTER_API_KEY": "sk-or-test"}
         with (
             patch.dict(os.environ, env_overrides),
-            patch("kimchi_agent.claude_code_kimchi.fetch_openrouter_model", fetch),
+            patch("kimchi_agent.openrouter.OpenRouterClient._get", routes),
             tempfile.TemporaryDirectory() as tmp,
         ):
             agent = RecordingClaudeCodeKimchi(
@@ -588,7 +616,7 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
             await agent.run("solve it", object(), AgentContext())
 
-        fetch.assert_awaited_once_with("z-ai/glm-5.1", endpoint=None)
+        self.assertEqual(requested, ["models"])
         env = agent.agent_envs[0]
         # Claude Code appends /v1/messages, so the base must stop at /api.
         self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://openrouter.ai/api")
@@ -611,10 +639,10 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent.metadata_fetch_count, 0)
 
     async def test_openrouter_model_requires_openrouter_api_key(self) -> None:
-        fetch = AsyncMock()
+        routes, requested = _openrouter_routes(models=[])
         with (
             patch.dict(os.environ, {}, clear=False),
-            patch("kimchi_agent.claude_code_kimchi.fetch_openrouter_model", fetch),
+            patch("kimchi_agent.openrouter.OpenRouterClient._get", routes),
             tempfile.TemporaryDirectory() as tmp,
         ):
             os.environ.pop("OPENROUTER_API_KEY", None)
@@ -627,13 +655,15 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
                 await agent.run("solve it", object(), AgentContext())
 
         self.assertEqual(agent.agent_commands, [])
-        fetch.assert_not_awaited()
+        self.assertEqual(requested, [])
 
     async def test_openrouter_api_key_can_come_from_agent_extra_env(self) -> None:
-        fetch = AsyncMock(return_value={"id": "z-ai/glm-5.1", "context_length": 200_000})
+        routes, _requested = _openrouter_routes(
+            models=[{"id": "z-ai/glm-5.1", "context_length": 200_000}]
+        )
         with (
             patch.dict(os.environ, {}, clear=False),
-            patch("kimchi_agent.claude_code_kimchi.fetch_openrouter_model", fetch),
+            patch("kimchi_agent.openrouter.OpenRouterClient._get", routes),
             tempfile.TemporaryDirectory() as tmp,
         ):
             os.environ.pop("OPENROUTER_API_KEY", None)
@@ -647,14 +677,37 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(agent.agent_envs[0]["ANTHROPIC_AUTH_TOKEN"], "extra-or-key")
 
-    async def test_preset_model_is_passed_through_but_sized_from_wrapped_model(self) -> None:
-        """A preset pins provider routing; Claude Code must still get the preset id."""
-        fetch = AsyncMock(return_value={"id": "z-ai/glm-5.1", "context_length": 202_752})
-        resolve = AsyncMock(return_value="z-ai/glm-5.1")
+    async def test_preset_model_is_passed_through_but_sized_from_the_endpoint_it_pins(
+        self,
+    ) -> None:
+        """A preset pins provider routing; Claude Code must still get the preset id.
+
+        The catalogue-wide context describes whichever endpoint OpenRouter
+        favours, so a pinned preset must be sized from the endpoint it pins.
+        """
+        routes, requested = _openrouter_routes(
+            models=[{"id": "z-ai/glm-5.1", "context_length": 1_000_000}],
+            preset={
+                "data": {
+                    "designated_version": {
+                        "config": {
+                            "model": "z-ai/glm-5.1",
+                            "provider": {"only": ["z-ai"], "allow_fallbacks": False},
+                        }
+                    }
+                }
+            },
+            endpoints=[
+                {
+                    "tag": "z-ai/fp8",
+                    "context_length": 202_752,
+                    "max_completion_tokens": 131_072,
+                }
+            ],
+        )
         with (
             patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}),
-            patch("kimchi_agent.claude_code_kimchi.fetch_openrouter_model", fetch),
-            patch("kimchi_agent.claude_code_kimchi.resolve_openrouter_catalogue_model", resolve),
+            patch("kimchi_agent.openrouter.OpenRouterClient._get", routes),
             tempfile.TemporaryDirectory() as tmp,
         ):
             agent = RecordingClaudeCodeKimchi(
@@ -664,10 +717,7 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
             await agent.run("solve it", object(), AgentContext())
 
-        resolve.assert_awaited_once_with(
-            "@preset/glm-5-1-zai", api_key="sk-or-test", endpoint=None
-        )
-        fetch.assert_awaited_once_with("z-ai/glm-5.1", endpoint=None)
+        self.assertIn("presets/glm-5-1-zai", requested)
         env = agent.agent_envs[0]
         self.assertEqual(env["ANTHROPIC_MODEL"], "@preset/glm-5-1-zai")
         self.assertEqual(
@@ -676,10 +726,10 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_openrouter_model_missing_from_catalogue_fails_before_commands(self) -> None:
-        fetch = AsyncMock(side_effect=ValueError("Model 'z-ai/glm-9' was not returned by ..."))
+        routes, _requested = _openrouter_routes(models=[{"id": "z-ai/glm-5.1"}])
         with (
             patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}),
-            patch("kimchi_agent.claude_code_kimchi.fetch_openrouter_model", fetch),
+            patch("kimchi_agent.openrouter.OpenRouterClient._get", routes),
             tempfile.TemporaryDirectory() as tmp,
         ):
             agent = RecordingClaudeCodeKimchi(

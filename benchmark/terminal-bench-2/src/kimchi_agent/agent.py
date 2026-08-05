@@ -27,7 +27,7 @@ from kimchi_agent.messages import SessionEntry
 from kimchi_agent.openrouter import (
     OPENROUTER_API_KEY_ENV,
     OPENROUTER_ENDPOINT_ENV,
-    build_openrouter_models_config,
+    OpenRouterClient,
     is_openrouter_model,
 )
 from kimchi_agent.release import BINARY_RELPATH, SHARE_RELPATH, GitHubClient
@@ -413,10 +413,12 @@ class Kimchi(BaseInstalledAgent):
                 )
             env[OPENROUTER_API_KEY_ENV] = openrouter_key
             _, openrouter_model_id = self.model_name.split("/", 1)
-            openrouter_models_config = await build_openrouter_models_config(
+            openrouter_client = OpenRouterClient(
+                api_key=openrouter_key, endpoint=self._get_env(OPENROUTER_ENDPOINT_ENV)
+            )
+            openrouter_models_config = await openrouter_client.build_models_config(
                 openrouter_model_id,
-                api_key=openrouter_key,
-                endpoint=self._get_env(OPENROUTER_ENDPOINT_ENV),
+                thinking_level=self._resolved_flags.get("thinking"),
             )
         else:
             openrouter_models_config = None

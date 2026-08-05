@@ -45,13 +45,17 @@ def kimchi_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(KIMCHI_INFRA_BREAKER_THRESHOLD_ENV, raising=False)
 
     async def openrouter_models_config(
-        model_id: str, *, api_key: str | None = None, endpoint: str | None = None
+        self,
+        model_id: str,
+        *,
+        include_api_key: bool = True,
+        thinking_level: str | None = None,
     ) -> dict:
         return {
             "providers": {
                 "openrouter": {
                     "api": "openai-completions",
-                    "baseUrl": endpoint or "https://openrouter.ai/api/v1",
+                    "baseUrl": self.endpoint,
                     "apiKey": "$OPENROUTER_API_KEY",
                     "authHeader": True,
                     "models": [{"id": model_id, "provider": "openrouter"}],
@@ -60,7 +64,8 @@ def kimchi_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
         }
 
     monkeypatch.setattr(
-        "kimchi_agent.agent.build_openrouter_models_config", openrouter_models_config
+        "kimchi_agent.openrouter.OpenRouterClient.build_models_config",
+        openrouter_models_config,
     )
 
 

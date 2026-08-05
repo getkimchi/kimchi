@@ -46,7 +46,7 @@ from kimchi_agent.openrouter import (
     OPENROUTER_API_KEY_ENV,
     OPENROUTER_ENDPOINT_ENV,
     OPENROUTER_PROVIDER,
-    build_openrouter_models_config,
+    OpenRouterClient,
     is_openrouter_model,
 )
 
@@ -386,11 +386,13 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
             key_env = {OPENROUTER_API_KEY_ENV: api_key}
             # Raises if the model (or the model a preset wraps) is not offered
             # by OpenRouter.
-            openrouter_models_config = await build_openrouter_models_config(
+            openrouter_client = OpenRouterClient(
+                api_key=api_key, endpoint=self._get_env(OPENROUTER_ENDPOINT_ENV)
+            )
+            openrouter_models_config = await openrouter_client.build_models_config(
                 self.model_name.split("/", 1)[1],
-                api_key=api_key,
-                endpoint=self._get_env(OPENROUTER_ENDPOINT_ENV),
                 include_api_key=False,
+                thinking_level=self._resolved_flags.get("thinking"),
             )
         else:
             self._split_model(self.model_name)

@@ -505,7 +505,10 @@ class PiKimchiOpenRouterTest(unittest.IsolatedAsyncioTestCase):
 
     async def _run_agent(self, model_name: str, build_config: AsyncMock) -> RecordingPiKimchi:
         with (
-            patch("kimchi_agent.pi_kimchi.build_openrouter_models_config", build_config),
+            patch(
+                "kimchi_agent.openrouter.OpenRouterClient.build_models_config",
+                build_config,
+            ),
             tempfile.TemporaryDirectory() as tmp,
         ):
             agent = RecordingPiKimchi(logs_dir=Path(tmp), model_name=model_name)
@@ -517,8 +520,9 @@ class PiKimchiOpenRouterTest(unittest.IsolatedAsyncioTestCase):
 
         agent = await self._run_agent("openrouter/@preset/glm-5-1-zai", build_config)
 
+        # The client carries the key and endpoint; the call carries the model.
         build_config.assert_awaited_once_with(
-            "@preset/glm-5-1-zai", api_key="sk-or-test", endpoint=None, include_api_key=False
+            "@preset/glm-5-1-zai", include_api_key=False, thinking_level=None
         )
         command = agent.agent_commands[0]
         self.assertIn(CONTAINER_PI_MODELS_JSON, command)
@@ -539,7 +543,10 @@ class PiKimchiOpenRouterTest(unittest.IsolatedAsyncioTestCase):
         build_config = AsyncMock(side_effect=ValueError("Model 'z-ai/glm-9' was not returned by ..."))
 
         with (
-            patch("kimchi_agent.pi_kimchi.build_openrouter_models_config", build_config),
+            patch(
+                "kimchi_agent.openrouter.OpenRouterClient.build_models_config",
+                build_config,
+            ),
             tempfile.TemporaryDirectory() as tmp,
         ):
             agent = RecordingPiKimchi(logs_dir=Path(tmp), model_name="openrouter/z-ai/glm-9")
@@ -553,7 +560,10 @@ class PiKimchiOpenRouterTest(unittest.IsolatedAsyncioTestCase):
         os.environ.pop("OPENROUTER_API_KEY", None)
 
         with (
-            patch("kimchi_agent.pi_kimchi.build_openrouter_models_config", build_config),
+            patch(
+                "kimchi_agent.openrouter.OpenRouterClient.build_models_config",
+                build_config,
+            ),
             tempfile.TemporaryDirectory() as tmp,
         ):
             agent = RecordingPiKimchi(logs_dir=Path(tmp), model_name="openrouter/z-ai/glm-5.1")
