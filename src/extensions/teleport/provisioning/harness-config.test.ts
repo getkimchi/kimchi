@@ -41,7 +41,7 @@ describe("provisionHarnessConfig", () => {
 
 		expect(mockedRunRsync).toHaveBeenCalledTimes(1)
 		expect(mockedRunRsync).toHaveBeenCalledWith({
-			localPath: MOCK_CONFIG_DIR,
+			localPath: `${MOCK_CONFIG_DIR}/`,
 			remotePath: REMOTE_HARNESS_CONFIG_DIR,
 			isSourceDirectory: true,
 			remoteHost: "session-host.example.com",

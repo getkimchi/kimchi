@@ -56,7 +56,12 @@ export async function provisionHarnessConfig(args: {
 	const localConfigDir = getAgentConfigDir()
 	try {
 		await runRsync({
-			localPath: localConfigDir,
+			// Trailing slash is load-bearing: without it rsync copies the `harness`
+			// directory *into* the remote `harness` dir (which mkdir just created),
+			// nesting it as .../harness/harness/settings.json instead of
+			// .../harness/settings.json. The trailing slash copies the dir's
+			// *contents* into the dest.
+			localPath: `${localConfigDir}/`,
 			remotePath: REMOTE_HARNESS_CONFIG_DIR,
 			isSourceDirectory: true,
 			remoteHost: args.remoteHost,
