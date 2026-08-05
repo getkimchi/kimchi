@@ -19,7 +19,7 @@ vi.mock("../../../config.js", () => ({
 
 import { SANDBOX_USER } from "./constants.js"
 // Import after mocks are registered so the mocked modules are wired in.
-import { HARNESS_CONFIG_EXCLUDES, provisionHarnessConfig, REMOTE_HARNESS_CONFIG_DIR } from "./harness-config.js"
+import { HARNESS_CONFIG_ALLOWLIST, provisionHarnessConfig, REMOTE_HARNESS_CONFIG_DIR } from "./harness-config.js"
 import { runRsync } from "./rsync-runner.js"
 
 const mockedRunRsync = vi.mocked(runRsync)
@@ -47,8 +47,7 @@ describe("provisionHarnessConfig", () => {
 			remoteHost: "session-host.example.com",
 			remoteUser: SANDBOX_USER,
 			authToken: "tok-123",
-			excludeGlobs: [...HARNESS_CONFIG_EXCLUDES],
-			gitignoredPaths: [],
+			filesFrom: [...HARNESS_CONFIG_ALLOWLIST],
 			deleteExtraneous: false,
 			signal,
 		})
@@ -81,47 +80,8 @@ describe("provisionHarnessConfig", () => {
 	})
 })
 
-describe("HARNESS_CONFIG_EXCLUDES", () => {
-	it("contains all sensitive/runtime entries", () => {
-		const required = [
-			"auth.json",
-			"mcp.json",
-			"mcp-cache.json",
-			"models.json",
-			"skills/",
-			"sessions/",
-			"ferment-locks/",
-			"git/",
-			"bin/",
-			"rtk/",
-			"trust.json",
-			"auto-update.json",
-			".curator_state.json",
-			".usage.json",
-			".usage.json.lock",
-		]
-		for (const entry of required) {
-			expect(HARNESS_CONFIG_EXCLUDES).toContain(entry)
-		}
-	})
-
-	it("matches the exact ordered list", () => {
-		expect([...HARNESS_CONFIG_EXCLUDES]).toEqual([
-			"auth.json",
-			"mcp.json",
-			"mcp-cache.json",
-			"models.json",
-			"skills/",
-			"sessions/",
-			"ferment-locks/",
-			"git/",
-			"bin/",
-			"rtk/",
-			"trust.json",
-			"auto-update.json",
-			".curator_state.json",
-			".usage.json",
-			".usage.json.lock",
-		])
+describe("HARNESS_CONFIG_ALLOWLIST", () => {
+	it("contains exactly the safe harness config entries", () => {
+		expect([...HARNESS_CONFIG_ALLOWLIST]).toEqual(["settings.json", "keybindings.json", "themes"])
 	})
 })
