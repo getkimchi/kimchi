@@ -1,8 +1,8 @@
-import type { AgentSideConnection, PermissionOption, SessionUpdate } from "@agentclientprotocol/sdk"
+import type { AgentSideConnection, PermissionOption, ToolCall } from "@agentclientprotocol/sdk"
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import type { PermissionChoice, ToolPermissionPrompter } from "../../extensions/permissions/prompter.js"
 import type { ApprovalOutcome } from "../../extensions/permissions/prompts.js"
-import { buildToolCall } from "./tool-calls/utils.js"
+import { buildToolCallShape } from "./tool-calls/utils.js"
 import { requestWithAbort } from "./utils.js"
 
 export type AcpToolCallIdResolver = (piToolCallId: string, toolName: string) => string
@@ -29,16 +29,14 @@ export function createAcpPermissionPrompter(
 			})
 
 			const acpToolCallId = resolveAcpToolCallId(req.toolCallId, req.toolName)
-			const toolCallUpdate: SessionUpdate = buildToolCall({
+			const toolCall: ToolCall = buildToolCallShape({
 				toolCallId: acpToolCallId,
 				piToolCallId: req.toolCallId,
 				toolName: req.toolName,
 				rawInput: req.input,
+				status: "pending",
 			})
-			const response = await requestWithAbort(
-				conn.requestPermission({ sessionId, toolCall: toolCallUpdate, options }),
-				req.signal,
-			)
+			const response = await requestWithAbort(conn.requestPermission({ sessionId, toolCall, options }), req.signal)
 
 			if (response === "aborted" || response.outcome.outcome === "cancelled") return { kind: "aborted" }
 

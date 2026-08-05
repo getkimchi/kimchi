@@ -158,12 +158,17 @@ type SessionRecord = {
 	 */
 	contentIndexToBlockId: Map<number, string>
 	/**
-	 * Session-wide monotonic counter for ACP toolCallIds. Pi's toolCall.id
-	 * values are only unique within a compaction segment, so the ACP surface
-	 * rewrites each tool_execution_start to a fresh session-unique id. This
-	 * satisfies the ACP contract "Unique identifier for a tool call within a
-	 * session." Seeded from the branch on loadSession so replay emits matching
-	 * ids.
+	 * Session-wide monotonic counter for ACP toolCallIds.
+	 *
+	 * toolCall.id comes straight from the model provider and carries no
+	 * uniqueness guarantee beyond a single request — nothing in pi renumbers it,
+	 * and providers do recycle ids. The ACP surface therefore rewrites every call
+	 * to a fresh id so it satisfies the ACP contract "Unique identifier for a
+	 * tool call within a session."
+	 *
+	 * This counter is the only source of `kt.*` ids and it never decrements, so
+	 * every id it hands out is distinct regardless of where it starts — it does
+	 * not need seeding from the persisted branch on loadSession.
 	 */
 	nextToolCallId: number
 	/**
@@ -557,7 +562,6 @@ export class KimchiAcpAgent implements Agent {
 			// same messageIds the live turn would have — and so any new block the
 			// user creates after the load gets a fresh, non-colliding id.
 			this.seedBlockCounterFromBranch(session, record)
-			this.seedToolCallCounterFromBranch(session, record)
 
 			// Replay BEFORE the response resolves so client sees a coherent transcript
 			// when the loadSession promise settles. No turn context is created, so a
@@ -808,6 +812,9 @@ export class KimchiAcpAgent implements Agent {
 							toolCallId: this.getOrAllocateAcpToolCallId(entry, block.id, block.name),
 							piToolCallId: block.id,
 							rawInput: block.arguments,
+							// Arguments are still streaming: the call hasn't been approved or started
+							// executing yet, so ACP status is `pending`, not `in_progress`.
+							status: "pending",
 						})
 						this.send({ sessionId, update })
 						turn.announcedToolCallIds.add(block.id)
@@ -837,6 +844,9 @@ export class KimchiAcpAgent implements Agent {
 									piToolCallId: block.id,
 									rawOutput: { delta },
 									_meta: { generatedChars: content.length },
+									// Arguments are still streaming: the call hasn't been approved or started
+									// executing yet, so ACP status is `pending`, not `in_progress`.
+									status: "pending",
 								})
 								this.send({ sessionId, update })
 							}
@@ -855,6 +865,9 @@ export class KimchiAcpAgent implements Agent {
 				if (!turn) return
 				if (isHiddenToolCall(event.toolName, event.args)) {
 					turn.hiddenToolCallIds.add(event.toolCallId)
+					// A hidden call may already have an allocated ACP id if the permission
+					// prompter ran before we knew it was hidden — retire its state.
+					this.retireToolCall(entry, turn, event.toolCallId)
 					return
 				}
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
@@ -868,6 +881,7 @@ export class KimchiAcpAgent implements Agent {
 						kind,
 						locations,
 						rawInput: event.args,
+						status: "in_progress",
 					})
 					this.send({ sessionId, update })
 				} else {
@@ -887,6 +901,9 @@ export class KimchiAcpAgent implements Agent {
 				if (!turn) return
 				if (turn.hiddenToolCallIds.has(event.toolCallId) || isHiddenToolCall(event.toolName, event.args)) {
 					turn.hiddenToolCallIds.add(event.toolCallId)
+					// A hidden call may already have an allocated ACP id if the permission
+					// prompter ran before we knew it was hidden — retire its state.
+					this.retireToolCall(entry, turn, event.toolCallId)
 					return
 				}
 				const acpToolCallId = this.resolveAcpToolCallId(entry, event.toolCallId)
@@ -896,6 +913,7 @@ export class KimchiAcpAgent implements Agent {
 					toolCallId: acpToolCallId,
 					piToolCallId: event.toolCallId,
 					content: partial,
+					status: "in_progress",
 				})
 				this.send({ sessionId, update })
 				return
@@ -903,7 +921,7 @@ export class KimchiAcpAgent implements Agent {
 			case "tool_execution_end": {
 				if (!turn) return
 				if (turn.hiddenToolCallIds.has(event.toolCallId)) {
-					turn.hiddenToolCallIds.delete(event.toolCallId)
+					this.retireToolCall(entry, turn, event.toolCallId, { removeFromHidden: true })
 					return
 				}
 				const acpToolCallId = this.resolveAcpToolCallId(entry, event.toolCallId)
@@ -915,9 +933,10 @@ export class KimchiAcpAgent implements Agent {
 					rawOutput: event.result,
 				})
 				this.send({ sessionId, update })
-				// The upstream id may be reused after compaction; drop the mapping
-				// once the call is terminal so a future start allocates a fresh id.
-				entry.toolCallIdMap.delete(event.toolCallId)
+				// Upstream ids can repeat after compaction or even within a turn. Retire
+				// all state keyed on this upstream id so a future call reusing it starts
+				// with a fresh ACP id and clean streaming/announcement state.
+				this.retireToolCall(entry, turn, event.toolCallId, { removeFromHidden: true })
 				return
 			}
 			case "session_info_changed": {
@@ -1025,34 +1044,6 @@ export class KimchiAcpAgent implements Agent {
 			}
 		}
 		record.nextBlockId = count + 1
-	}
-
-	/**
-	 * Walk the persisted branch and count how many toolCall blocks the replay
-	 * would emit. Sets `record.nextToolCallId` so replay emits the same ACP
-	 * toolCallIds the live turns would have produced, and so any new tool call
-	 * after the load gets a fresh, non-colliding id.
-	 *
-	 * Mirrors replayAssistantBlocks' emission logic exactly — only non-hidden
-	 * toolCall blocks count, matching the live path's `isHiddenToolCall` filter.
-	 */
-	private seedToolCallCounterFromBranch(session: AgentSession, record: SessionRecord): void {
-		const entries = session.sessionManager.getBranch()
-
-		let count = 0
-		for (const entry of entries) {
-			if (entry?.type !== "message" || entry.message.role !== "assistant") continue
-			const content = entry.message.content
-			if (!Array.isArray(content)) continue
-			for (const block of content) {
-				if (block.type !== "toolCall") continue
-				const args = block.arguments
-				if (typeof block.name === "string" && !isHiddenToolCall(block.name, args)) {
-					count++
-				}
-			}
-		}
-		record.nextToolCallId = count + 1
 	}
 
 	private replayAssistantBlocks(
@@ -1208,6 +1199,28 @@ export class KimchiAcpAgent implements Agent {
 	 */
 	private resolveAcpToolCallId(record: SessionRecord, piToolCallId: string): string {
 		return record.toolCallIdMap.get(piToolCallId) ?? piToolCallId
+	}
+
+	/**
+	 * Retire all per-call state keyed on an upstream toolCallId.
+	 *
+	 * Upstream ids are provider-supplied and can repeat within a turn (e.g. after
+	 * compaction). Leaving stale entries in `announcedToolCallIds` or
+	 * `lastStreamedContent` causes corrupted deltas or updates for ids the client
+	 * never saw when the id is reused.
+	 */
+	private retireToolCall(
+		record: SessionRecord,
+		turn: TurnContext,
+		piToolCallId: string,
+		opts: { removeFromHidden?: boolean } = {},
+	): void {
+		record.toolCallIdMap.delete(piToolCallId)
+		turn.announcedToolCallIds.delete(piToolCallId)
+		turn.lastStreamedContent.delete(piToolCallId)
+		if (opts.removeFromHidden) {
+			turn.hiddenToolCallIds.delete(piToolCallId)
+		}
 	}
 
 	private sendAvailableCommandsUpdate(sessionId: string): void {

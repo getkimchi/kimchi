@@ -865,6 +865,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				{ optionId: "choice-1", name: "Deny", kind: "reject_once" },
 			],
 		})
+		expect(requests[0].toolCall).not.toHaveProperty("sessionUpdate")
 
 		await localAgent.shutdown()
 		expect(getAcpPrompter("session-permission")).toBeUndefined()
@@ -1814,6 +1815,60 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		])
 	})
 
+	it("disambiguates a reused upstream toolCallId within the same turn", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				args: { command: "echo first" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "first" }] },
+				isError: false,
+			})
+			// Same upstream id reused immediately in the same turn.
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				args: { command: "echo second" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-reused",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "second" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+
+		const calls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(calls).toHaveLength(2)
+		const firstId = (calls[0].update as { toolCallId: string }).toolCallId
+		const secondId = (calls[1].update as { toolCallId: string }).toolCallId
+		expect(firstId).not.toBe(secondId)
+
+		const firstUpdates = updates.filter(
+			(u) => u.update.sessionUpdate === "tool_call_update" && u.update.toolCallId === firstId,
+		)
+		const secondUpdates = updates.filter(
+			(u) => u.update.sessionUpdate === "tool_call_update" && u.update.toolCallId === secondId,
+		)
+		expect(firstUpdates).toHaveLength(1)
+		expect(secondUpdates).toHaveLength(1)
+	})
+
 	// Chunk 1: toolcall_start must emit a tool_call notification with status="pending"
 	// so clients can show progress while the model streams tool call arguments.
 	// See spec-tool-call-streaming-harness.md.
@@ -2278,17 +2333,15 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		])
 		const acpId = (toolCalls[0].update as { toolCallId: string }).toolCallId
 
-		const inProgressUpdates = updates.filter(
+		const pendingUpdates = updates.filter(
 			(u) =>
-				u.update.sessionUpdate === "tool_call_update" &&
-				u.update.status === "in_progress" &&
-				u.update.toolCallId === acpId,
+				u.update.sessionUpdate === "tool_call_update" && u.update.status === "pending" && u.update.toolCallId === acpId,
 		)
-		expect(inProgressUpdates).toEqual([
+		expect(pendingUpdates).toEqual([
 			expect.objectContaining({
 				update: expect.objectContaining({
 					sessionUpdate: "tool_call_update",
-					status: "in_progress",
+					status: "pending",
 					toolCallId: acpId,
 					rawOutput: { delta: "chunk1" },
 					_meta: { generatedChars: "chunk1".length, piToolCallId: "tc-every-delta-1" },
@@ -2297,7 +2350,7 @@ describe("KimchiAcpAgent tool execution stream", () => {
 			expect.objectContaining({
 				update: expect.objectContaining({
 					sessionUpdate: "tool_call_update",
-					status: "in_progress",
+					status: "pending",
 					toolCallId: acpId,
 					rawOutput: { delta: "chunk2" },
 					_meta: { generatedChars: "chunk1chunk2".length, piToolCallId: "tc-every-delta-1" },
@@ -2306,7 +2359,7 @@ describe("KimchiAcpAgent tool execution stream", () => {
 			expect.objectContaining({
 				update: expect.objectContaining({
 					sessionUpdate: "tool_call_update",
-					status: "in_progress",
+					status: "pending",
 					toolCallId: acpId,
 					rawOutput: { delta: "chunk3" },
 					_meta: { generatedChars: "chunk1chunk2chunk3".length, piToolCallId: "tc-every-delta-1" },
@@ -2494,7 +2547,7 @@ describe("KimchiAcpAgent tool execution stream", () => {
 			expect.objectContaining({
 				update: expect.objectContaining({
 					sessionUpdate: "tool_call_update",
-					status: "in_progress",
+					status: "pending",
 					toolCallId: writeAcpId,
 					rawOutput: { delta: "hello world" },
 					_meta: { generatedChars: 11, piToolCallId: "tc-write-1" },
@@ -2503,7 +2556,7 @@ describe("KimchiAcpAgent tool execution stream", () => {
 			expect.objectContaining({
 				update: expect.objectContaining({
 					sessionUpdate: "tool_call_update",
-					status: "in_progress",
+					status: "pending",
 					toolCallId: editAcpId,
 					rawOutput: { delta: "abc" },
 					_meta: { generatedChars: 3, piToolCallId: "tc-edit-1" },
@@ -4907,7 +4960,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			const toolCall = replay[1].update as Record<string, unknown>
 			expect(toolCall).toMatchObject({
 				sessionUpdate: "tool_call",
-				toolCallId: `kt.${c.toolName}.2`,
+				toolCallId: `kt.${c.toolName}.0`,
 				kind: c.expect.kind,
 				title: c.expect.title,
 				status: c.expect.status,
@@ -4917,7 +4970,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			const update = replay[2].update as Record<string, unknown>
 			expect(update).toMatchObject({
 				sessionUpdate: "tool_call_update",
-				toolCallId: `kt.${c.toolName}.2`,
+				toolCallId: `kt.${c.toolName}.0`,
 				status: c.expect.status,
 			})
 			const content = (update as { content: Array<{ content: { text: string } }> }).content

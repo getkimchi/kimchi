@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./utils.js"
+import { buildToolCall, buildToolCallShape, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./utils.js"
 
 describe("isHiddenToolCall", () => {
 	it("returns false for non-Agent tool names", () => {
@@ -35,11 +35,12 @@ describe("isHiddenToolCall", () => {
 })
 
 describe("buildToolCall", () => {
-	it("builds a pending tool_call from derived display fields", () => {
+	it("builds a tool_call from derived display fields", () => {
 		const result = buildToolCall({
 			toolName: "read",
 			toolCallId: "acp-1",
 			piToolCallId: "pi-1",
+			status: "pending",
 			rawInput: { file_path: "/etc/hosts" },
 		})
 		expect(result).toEqual({
@@ -59,29 +60,40 @@ describe("buildToolCall", () => {
 			toolName: "bash",
 			toolCallId: "acp-2",
 			piToolCallId: "pi-2",
+			status: "in_progress",
 			rawInput: { command: "echo hi" },
 			_meta: { source: "test" },
 		})
 		expect(result._meta).toEqual({ piToolCallId: "pi-2", source: "test" })
 	})
 
-	it("input status overrides the default pending status", () => {
-		const result = buildToolCall({
+	it("builds a bare ToolCall shape without sessionUpdate discriminant", () => {
+		const result = buildToolCallShape({
 			toolName: "Agent",
 			toolCallId: "acp-3",
 			piToolCallId: "pi-3",
 			status: "in_progress",
 			rawInput: { prompt: "go" },
 		})
-		expect((result as { status?: string }).status).toBe("in_progress")
+		expect(result).toEqual({
+			toolCallId: "acp-3",
+			status: "in_progress",
+			title: "Agent",
+			kind: "think",
+			locations: [],
+			rawInput: { prompt: "go" },
+			_meta: { piToolCallId: "pi-3" },
+		})
+		expect(result).not.toHaveProperty("sessionUpdate")
 	})
 })
 
 describe("buildToolCallUpdate", () => {
-	it("builds an in_progress tool_call_update with required fields", () => {
+	it("builds a tool_call_update with required fields", () => {
 		const result = buildToolCallUpdate({
 			toolCallId: "acp-1",
 			piToolCallId: "pi-1",
+			status: "in_progress",
 		})
 		expect(result).toEqual({
 			sessionUpdate: "tool_call_update",
@@ -95,6 +107,7 @@ describe("buildToolCallUpdate", () => {
 		const result = buildToolCallUpdate({
 			toolCallId: "acp-2",
 			piToolCallId: "pi-2",
+			status: "in_progress",
 			title: "custom title",
 			kind: "search",
 			locations: [{ path: "/tmp" }],
@@ -120,12 +133,13 @@ describe("buildToolCallUpdate", () => {
 		const result = buildToolCallUpdate({
 			toolCallId: "acp-3",
 			piToolCallId: "pi-3",
+			status: "pending",
 			_meta: { source: "test" },
 		})
 		expect(result._meta).toEqual({ piToolCallId: "pi-3", source: "test" })
 	})
 
-	it("input status overrides the default in_progress status", () => {
+	it("carries through the input status", () => {
 		const result = buildToolCallUpdate({
 			toolCallId: "acp-4",
 			piToolCallId: "pi-4",

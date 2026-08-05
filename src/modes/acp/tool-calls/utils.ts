@@ -1,5 +1,6 @@
 import type {
 	SessionUpdate,
+	ToolCall,
 	ToolCallContent,
 	ToolCallLocation,
 	ToolCallStatus,
@@ -63,15 +64,21 @@ type ToolCallFields = {
 	toolName: string
 	toolCallId: string
 	piToolCallId: string
-	status?: ToolCallStatus
+	status: ToolCallStatus
 	rawInput: Record<string, unknown>
 	_meta?: Record<string, unknown>
 }
-export function buildToolCall({ toolName, piToolCallId, rawInput, ...params }: ToolCallFields): SessionUpdate {
+
+/**
+ * Build the bare ToolCall shape (no `sessionUpdate` discriminant).
+ *
+ * `session/request_permission` carries a `ToolCallUpdate`, which has no
+ * `sessionUpdate` field — passing a session-notification object there puts an
+ * out-of-schema key on the wire.
+ */
+export function buildToolCallShape({ toolName, piToolCallId, rawInput, ...params }: ToolCallFields): ToolCall {
 	const { title, kind, locations } = describeToolCall(toolName, rawInput)
 	return {
-		sessionUpdate: "tool_call",
-		status: "pending",
 		title,
 		kind,
 		locations,
@@ -81,13 +88,17 @@ export function buildToolCall({ toolName, piToolCallId, rawInput, ...params }: T
 	}
 }
 
+export function buildToolCall(fields: ToolCallFields): SessionUpdate {
+	return { sessionUpdate: "tool_call", ...buildToolCallShape(fields) }
+}
+
 type ToolCallUpdateFields = {
 	toolCallId: string
 	piToolCallId: string
+	status: ToolCallStatus
 	title?: string
 	kind?: ToolKind
 	locations?: ToolCallLocation[]
-	status?: ToolCallStatus
 	content?: ToolCallContent[]
 	rawInput?: Record<string, unknown>
 	rawOutput?: Record<string, unknown>
@@ -96,7 +107,6 @@ type ToolCallUpdateFields = {
 export function buildToolCallUpdate({ piToolCallId, ...params }: ToolCallUpdateFields): SessionUpdate {
 	return {
 		sessionUpdate: "tool_call_update",
-		status: "in_progress",
 		...params,
 		_meta: { piToolCallId, ...(params._meta ?? {}) },
 	}
