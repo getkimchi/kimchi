@@ -24,6 +24,7 @@ import {
 	GOAL_TOOL_NAMES,
 	UPDATE_GOAL_TOOL_NAME,
 } from "./constants.js"
+import { GOAL_EVENTS, type GoalEventName } from "./domain-events.js"
 import {
 	buildGoalContinuation,
 	buildGoalEditSteer,
@@ -85,6 +86,18 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	let activeSinceMs: number | undefined
 	let statusCtx: ExtensionContext | undefined
 	let statusRefreshTimer: ReturnType<typeof setTimeout> | undefined
+
+	function emitGoalLifecycle(event: GoalEventName, goal: SessionGoal): void {
+		pi.events.emit(event, {
+			goalId: goal.id,
+			revision: goal.revision,
+			status: goal.status,
+			tokensUsed: goal.tokensUsed,
+			timeUsedMs: goal.timeUsedMs,
+			...(goal.tokenBudget !== undefined ? { tokenBudget: goal.tokenBudget } : {}),
+			...(goal.completionConfidence ? { completionConfidence: goal.completionConfidence } : {}),
+		})
+	}
 
 	function serializeGoalMutation<T>(sessionId: string, operation: () => Promise<T> | T): Promise<T> {
 		const previous = mutationTails.get(sessionId) ?? Promise.resolve()
@@ -324,6 +337,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				? replaceGoal(objective, randomUUID(), now, tokenBudget)
 				: createGoal(undefined, objective, randomUUID(), now, tokenBudget)
 			commitGoal(next)
+			emitGoalLifecycle(captured ? GOAL_EVENTS.REPLACED : GOAL_EVENTS.STARTED, next)
 			resetGoalRuntime()
 			syncGoalStatus(ctx)
 			queueGoalTurn(ctx, next, buildGoalStartSteer(captured ? "replaced" : "created"), "command")
@@ -358,6 +372,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				const accounted = checkpointGoal(current, 0, nowMs)
 				const next = editGoal(accounted, current.id, current.revision, editedObjective, timestamp(nowMs))
 				commitGoal(next)
+				emitGoalLifecycle(GOAL_EVENTS.EDITED, next)
 				activeSinceMs = current.status === "active" && activeSinceMs !== undefined ? nowMs : undefined
 				invalidateContinuation()
 				todoStateFor = undefined
@@ -517,6 +532,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 						...(completionConfidence ? { completionConfidence } : {}),
 					}
 					commitGoal(next)
+					emitGoalLifecycle(params.status === "complete" ? GOAL_EVENTS.COMPLETED : GOAL_EVENTS.BLOCKED, next)
 					activeSinceMs = undefined
 					invalidateContinuation()
 					pendingTerminalFeedback = {

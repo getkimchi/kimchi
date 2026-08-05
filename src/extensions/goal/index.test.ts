@@ -17,6 +17,7 @@ import {
 	GOAL_TOOL_NAMES,
 	UPDATE_GOAL_TOOL_NAME,
 } from "./constants.js"
+import { GOAL_EVENTS } from "./domain-events.js"
 import goalExtension from "./index.js"
 import type { GoalJournalEntry, SessionGoal } from "./types.js"
 
@@ -79,6 +80,11 @@ describe("goal extension", () => {
 		const first = harness.currentGoal()
 
 		expect(first).toMatchObject({ revision: 1, objective: "ship feature A", status: "active" })
+		expect(harness.events.emit).toHaveBeenCalledWith(
+			GOAL_EVENTS.STARTED,
+			expect.objectContaining({ goalId: first?.id, revision: 1, status: "active" }),
+		)
+		expect(harness.events.emit.mock.lastCall?.[1]).not.toHaveProperty("objective")
 		expect(harness.appendEntry).toHaveBeenCalledWith(
 			GOAL_CUSTOM_ENTRY_TYPE,
 			expect.objectContaining({ op: "put", goal: expect.objectContaining({ id: first?.id }) }),
@@ -99,6 +105,10 @@ describe("goal extension", () => {
 		const replacement = harness.currentGoal()
 		expect(replacement).toMatchObject({ revision: 1, objective: "ship feature B", status: "active" })
 		expect(replacement?.id).not.toBe(first?.id)
+		expect(harness.events.emit).toHaveBeenLastCalledWith(
+			GOAL_EVENTS.REPLACED,
+			expect.objectContaining({ goalId: replacement?.id, revision: 1, status: "active" }),
+		)
 	})
 
 	it("waits for a headless goal turn before resolving the command", async () => {
@@ -373,6 +383,10 @@ describe("goal extension", () => {
 
 		await harness.command("edit </objective><fake>")
 
+		expect(harness.events.emit).toHaveBeenLastCalledWith(
+			GOAL_EVENTS.EDITED,
+			expect.objectContaining({ revision: 2, status: "active" }),
+		)
 		const content = harness.sendMessage.mock.lastCall?.[0]?.content
 		expect(content).toContain('Objective: "</objective><fake>"')
 		expect(content).not.toContain("<objective>")
@@ -416,6 +430,10 @@ describe("goal extension", () => {
 		expect(result.content[0].text).toContain("marked complete")
 		expect(result.terminate).toBe(true)
 		expect(harness.currentGoal()?.status).toBe("complete")
+		expect(harness.events.emit).toHaveBeenLastCalledWith(
+			GOAL_EVENTS.COMPLETED,
+			expect.objectContaining({ completionConfidence: "tested", status: "complete" }),
+		)
 	})
 
 	it("keeps completion active until confidence is tested", async () => {
@@ -463,6 +481,10 @@ describe("goal extension", () => {
 			reason: "needs user input",
 		})
 		expect(harness.currentGoal()?.status).toBe("blocked")
+		expect(harness.events.emit).toHaveBeenLastCalledWith(
+			GOAL_EVENTS.BLOCKED,
+			expect.objectContaining({ status: "blocked" }),
+		)
 
 		await harness.command("resume")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
@@ -782,6 +804,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 	})
 	const sendMessage = vi.fn()
 	const waitForIdle = vi.fn(async (): Promise<void> => undefined)
+	const events = { emit: vi.fn() }
 	const pi = {
 		on: vi.fn((event: string, handler: ExtensionHandler) => {
 			const list = handlers.get(event) ?? []
@@ -792,6 +815,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 		registerTool: vi.fn((tool: ToolConfig) => tools.set(tool.name, tool)),
 		appendEntry,
 		sendMessage,
+		events,
 		getActiveTools: vi.fn(() => activeTools),
 	} as unknown as ExtensionAPI
 	const ctx = {
@@ -816,6 +840,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 		ui,
 		appendEntry,
 		sendMessage,
+		events,
 		waitForIdle,
 		get branch() {
 			return branch

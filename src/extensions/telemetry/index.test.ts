@@ -362,6 +362,47 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		return Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
 	}
 
+	it("maps Goal lifecycle events to privacy-safe OTLP records", async () => {
+		const { handlers, events } = await setup()
+		const { GOAL_EVENTS } = await import("../goal/domain-events.js")
+		const lifecycleEvents = [
+			[GOAL_EVENTS.STARTED, "goal.started", "active"],
+			[GOAL_EVENTS.REPLACED, "goal.replaced", "active"],
+			[GOAL_EVENTS.EDITED, "goal.edited", "active"],
+			[GOAL_EVENTS.COMPLETED, "goal.completed", "complete"],
+			[GOAL_EVENTS.BLOCKED, "goal.blocked", "blocked"],
+		] as const
+
+		for (const [event, , status] of lifecycleEvents) {
+			events.emit(event, {
+				goalId: "g-001",
+				revision: 2,
+				status,
+				tokensUsed: 1200,
+				timeUsedMs: 3000,
+				tokenBudget: 5000,
+				completionConfidence: "tested",
+			})
+		}
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const records = extractRecords()
+		for (const [, eventName] of lifecycleEvents) {
+			const rec = records.find((candidate) => candidate.eventName === eventName)
+			expect(rec).toBeDefined()
+			const attrs = attrsOf(rec as NonNullable<typeof rec>)
+			expect(attrs).toMatchObject({
+				goal_id: "g-001",
+				revision: "2",
+				tokens_used: "1200",
+				time_used_ms: "3000",
+				token_budget: "5000",
+				completion_confidence: "tested",
+			})
+			expect(attrs.objective).toBeUndefined()
+		}
+	})
+
 	it("ferment:started → ferment.started OTLP record with ferment_id, name, model", async () => {
 		const { handlers, events } = await setup()
 		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
