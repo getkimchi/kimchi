@@ -28,7 +28,7 @@ export function createWorkerReportExtension(
 				name: WORKER_REPORT_TOOL_NAME,
 				label: "Submit Agent Report",
 				description:
-					'Submit the final structured progress report for this Ferment-linked worker. Call this alone as the final action after completing edits and verification. When status is "completed", remaining_steps must be an empty array [] (not a placeholder string). When status is "partial", remaining_steps must list concrete work that remains.',
+					'Submit the final structured progress report for this Ferment-linked worker. Call this alone as the final action after completing edits and verification. When status is "completed", remaining_steps must be an empty array []. When status is "partial", remaining_steps must list concrete work that remains.',
 				parameters: Type.Object({
 					status: Type.Union([Type.Literal("completed"), Type.Literal("partial"), Type.Literal("blocked")]),
 					summary: Type.String(),
