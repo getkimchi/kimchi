@@ -101,25 +101,13 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 
 	const lines: string[] = []
 	const termWidth = process.stdout.columns || 80
-	if (riskScore) {
-		const badge = formatRiskBadge(riskScore)
-		const wrapWidth = Math.max(20, termWidth - visibleWidth(badge) - 2)
-		// Wrap the highlighted command so long commands break across lines
-		// instead of being truncated.
-		const wrappedCommand = wrapTextWithAnsi(callDescription, wrapWidth).join("\n")
-		lines.push(`${badge} ${wrappedCommand}`)
-		// For low risk, the classifier is confident enough to skip the explanation.
-		if (subtitle) lines.push(subtitle)
-		lines.push("")
-		lines.push(ctx.ui.theme.fg("accent", ctx.ui.theme.bold("Allow the assistant to run this?")))
-	} else {
-		const wrapWidth = Math.max(20, termWidth)
-		const wrappedCommand = wrapTextWithAnsi(callDescription, wrapWidth).join("\n")
-		lines.push(wrappedCommand)
-		if (subtitle) lines.push(subtitle)
-		lines.push("")
-		lines.push(ctx.ui.theme.fg("accent", ctx.ui.theme.bold("Allow the assistant to run this?")))
-	}
+	const badge = riskScore ? formatRiskBadge(riskScore) : ""
+	const wrapWidth = badge ? Math.max(20, termWidth - visibleWidth(badge) - 2) : Math.max(20, termWidth)
+	const wrappedCommand = wrapTextWithAnsi(callDescription, wrapWidth).join("\n")
+	lines.push(badge ? `${badge} ${wrappedCommand}` : wrappedCommand)
+	if (subtitle) lines.push(subtitle)
+	lines.push("")
+	lines.push(ctx.ui.theme.fg("accent", ctx.ui.theme.bold("Allow the assistant to run this?")))
 
 	const permissionChoices = opts.choices ?? buildPermissionChoices(toolName, input)
 	const choices = numberedChoices(permissionChoices.map((choice) => choice.label))
