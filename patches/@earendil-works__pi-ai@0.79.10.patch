@@ -13,7 +13,8 @@
 #   3. dist/providers/openai-completions.js — fall back to cache_creation_tokens
 #      for cache write token counting (LiteLLM compatibility).
 #   4. dist/utils/validation.js — improved JSON Schema coercion for array/object
-#      tool arguments.
+#      tool arguments, including {} → [] for empty array fields (prevents
+#      Value.Convert from wrapping {} into [{}]).
 #
 # Tracking: open an upstream PR against pi-mono to add "max" as a first-class
 # ThinkingLevel in pi-ai.
@@ -60,7 +61,7 @@ diff --git a/dist/utils/validation.js b/dist/utils/validation.js
 index 9ba1a5f5aecd015b01d1e88fdb62b8dcca176e52..ca077cb942a2761f3b24459d4af916927049963e 100644
 --- a/dist/utils/validation.js
 +++ b/dist/utils/validation.js
-@@ -123,6 +123,24 @@ function coercePrimitiveByType(value, type) {
+@@ -123,6 +123,31 @@ function coercePrimitiveByType(value, type) {
              }
              return value;
          }
@@ -70,6 +71,13 @@ index 9ba1a5f5aecd015b01d1e88fdb62b8dcca176e52..ca077cb942a2761f3b24459d4af91692
 +                    const parsed = JSON.parse(value);
 +                    if (Array.isArray(parsed)) return parsed;
 +                } catch { /* fall through */ }
++            }
++            // LLMs frequently send {} instead of [] for empty arrays. Without
++            // this guard, Value.Convert wraps {} into [{}], which then fails
++            // validation with "items[0]: must be string" — a misleading error
++            // that traps the LLM in a retry loop.
++            if (typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === 0) {
++                return [];
 +            }
 +            return value;
 +        }

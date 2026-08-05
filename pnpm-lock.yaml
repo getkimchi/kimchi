@@ -9,7 +9,7 @@ patchedDependencies:
     hash: 15d2e1baba7ae039625909b8aa1777106094b5923ef582067d088f024f9d7991
     path: patches/@earendil-works__pi-agent-core@0.79.10.patch
   '@earendil-works/pi-ai@0.79.10':
-    hash: 34301ecf015791817e9223ca70ffc10ce75423b67f5e8200a5a96f7dded0187d
+    hash: fb1bce8020def74278b4bd74b66b7777a90f45fc44958c7874e726e2c67a0ecc
     path: patches/@earendil-works__pi-ai@0.79.10.patch
   '@earendil-works/pi-coding-agent@0.79.10':
     hash: b366b26db6ce934eb6defa8af92520f26f71dad0d7491c993a4ca10e1847fee9
