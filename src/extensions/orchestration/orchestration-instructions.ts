@@ -128,7 +128,7 @@ The review agent runs tests, checks lint, and verifies the implementation matche
 
 **If the review agent times out or produces no output:** Retry ONCE with the same or a different standard-tier Reviewer. If the retry also fails, skip review and report to the user that review could not be completed. Do NOT attempt a third reviewer.
 
-**Handling review results:** After the review agent completes, read ONLY the review file — do NOT re-read source files yourself. If the verdict is APPROVED, the review phase is done — produce the final summary and stop. If the verdict is NEEDS_FIXES, delegate a fix agent: pass it the review file path and the spec file path.
+**Handling review results:** After the review agent completes, read ONLY the review file — do NOT re-read source files yourself. If the verdict is APPROVED, the review phase is done — produce the final summary and stop. If the verdict is NEEDS_FIXES, delegate a fix agent by default: pass it the review file path and the spec file path. **Trivial fix exception:** if the reviewer identifies a single obvious issue that you can fix in 1-2 edits (e.g. a typo, missing import, or simple test expectation), you may apply it directly instead of spawning a Fixer. If the fix grows beyond that scope, stop and delegate.
 
 **Fix agent contract:** Instruct the fix agent to: (1) read the review findings file, (2) apply all fixes, (3) run the full test suite (with race/thread-safety detection if applicable) and lint, (4) write a verification report to the Documents directory (e.g. \`.kimchi/docs/verification.md\`) containing:
 - **Test output**: pass/fail count, any failures
@@ -152,7 +152,7 @@ function buildAgentDelegation(delegatePlanning: boolean): string {
 
 	return `### Agent delegation
 
-**Orchestrator discipline**: Between delegation calls, you may do at most 5 tool calls (e.g. reading the spec file, setting the phase, checking a subagent result). If you find yourself doing reads, edits, bash calls, or writes on implementation files, STOP — you are doing a subagent's job. Delegate it instead. **Post-abort anti-pattern**: When a subagent aborts (budget or turns), do NOT manually complete its remaining work — this is the most common violation. Spawn a follow-up Agent scoped to the unfinished portion. List what the aborted agent completed and what remains.
+**Orchestrator discipline**: Between delegation calls, you may do at most 5 tool calls (e.g. reading the spec file, setting the phase, checking a subagent result). If you find yourself doing reads, edits, bash calls, or writes on implementation files, STOP — you are doing a subagent's job. Delegate it instead. **Post-abort triage**: When a subagent aborts (budget or turns), do NOT manually complete its remaining work. You may do a small amount of triage (at most 2-3 edit/write calls; reads and bash checks don't count) to understand the failure, verify state, or apply an obvious one-line fix. If the remaining work is more than trivial, spawn a follow-up Agent scoped to the unfinished portion. List what the aborted agent completed and what remains.
 
 - Write Agent prompts that are fully self-contained. Agents start with fresh context by default — include necessary instructions directly, or point them to a Markdown file containing larger context.
 ${planBullet}
@@ -182,7 +182,7 @@ Always pass a \`thinking\` parameter on every Agent call — never omit it. Use 
 
 const THINKING_LEVELS = `### Thinking levels
 
-\`thinking\` controls extended reasoning for the orchestrator and each delegated worker. Levels (lowest to highest): off, minimal, low, medium, high, xhigh. Use the lowest level that fits the task — higher thinking costs more tokens and time.
+\`thinking\` controls extended reasoning for the orchestrator and each delegated worker. Levels (lowest to highest): off, minimal, low, medium, high, xhigh, max. Use the lowest level that fits the task — higher thinking costs more tokens and time.
 
 **Orchestrator (main thread):** keep thinking low while coordinating (spawning agents, reading artifact paths). Raise only when classifying the pipeline, self-validating a plan, or interpreting ambiguous subagent reports.
 
@@ -309,6 +309,9 @@ function buildBuildPhaseDirectives(ctx: PhaseDirectiveContext): string {
 	lines.push("- DO NOT build code yourself. Delegate one Agent call per chunk from the plan.")
 	lines.push(
 		`- DO delegate each chunk to Agent(type: "Builder", model: ${models}). Simple chunks use a standard-tier Builder; complex chunks (concurrency, state machines, algorithms) require a heavy-tier Builder. Retries may escalate to a heavier tier when the first choice fails.`,
+	)
+	lines.push(
+		"- **Trivial fix exception:** After a subagent returns, you may apply a trivial fix directly (one edit touching 1-2 files, e.g. a typo or missing import) instead of spawning another subagent. If the fix is not obvious within 2-3 edit/write calls, delegate a Fixer.",
 	)
 	lines.push("- DO pass the spec file path, the chunk's `complexity`, and set `thinking` per **Thinking levels**.")
 	lines.push(

@@ -193,8 +193,10 @@ describe("emitTerminalCompatWarning", () => {
 
 	it("does not show warning in JetBrains terminals", async () => {
 		const originalTermEmulator = process.env.TERMINAL_EMULATOR
+		const originalTmux = process.env.TMUX
 		try {
 			process.env.TERMINAL_EMULATOR = "JetBrains-JediTerm"
+			delete process.env.TMUX
 			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })
 
 			const warnings: string[] = []
@@ -211,6 +213,11 @@ describe("emitTerminalCompatWarning", () => {
 				process.env.TERMINAL_EMULATOR = originalTermEmulator
 			} else {
 				delete process.env.TERMINAL_EMULATOR
+			}
+			if (originalTmux !== undefined) {
+				process.env.TMUX = originalTmux
+			} else {
+				delete process.env.TMUX
 			}
 			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })
 		}

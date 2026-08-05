@@ -8,7 +8,9 @@
 # interactive-mode.js, which previewTheme used to call).
 #
 # Changes included:
-#   1. dist/cli/args.js         — expose KIMCHI_API_KEY in --help env-var block
+#   1. dist/cli/args.js         — expose KIMCHI_API_KEY in --help env-var block;
+#                                 add "xhigh" and "max" to VALID_THINKING_LEVELS
+#                                 and --thinking help text so the CLI accepts them.
 #   2. dist/core/extensions/runner.js — add emitBeforeProviderHeaders(headers) method,
 #                                       mirroring emitBeforeProviderRequest pattern
 #   3. dist/core/sdk.js         — call emitBeforeProviderHeaders in streamFn after
@@ -18,6 +20,9 @@
 #                                   from state.tools after each tool batch, enabling
 #                                   mid-run setActiveTools() calls to take effect on
 #                                   the next model response within the same agent run.
+#                                   Also add "xhigh" and "max" to the THINKING_LEVELS
+#                                   fallback constant so getAvailableThinkingLevels()
+#                                   returns them when no model is set.
 #   5. dist/modes/interactive/  — miscellaneous upstream UI fixes bundled in this patch
 #   6. dist/modes/interactive/interactive-mode.js — add previewTheme(name) and
 #      dist/core/extensions/types.d.ts              showError(message) to createExtensionUIContext,
@@ -68,9 +73,11 @@
 #   - Items 1-3 (before_provider_headers): upstream pi-mono ships BeforeProviderHeadersEvent
 #     and ExtensionAPI.on("before_provider_headers", ...) as a first-class hook, and
 #     the fixed version is pinned in package.json.
-#   - Item 4 (prepareNextTurn): upstream pi-mono wires agent.prepareNextTurn in
-#     AgentSession._installAgentToolHooks() so context.tools refreshes after each tool
-#     batch without a patch.
+#   - Item 4 (prepareNextTurn + THINKING_LEVELS): upstream pi-mono wires
+#     agent.prepareNextTurn in AgentSession._installAgentToolHooks() so context.tools
+#     refreshes after each tool batch without a patch, AND upstream pi-coding-agent
+#     includes "xhigh" and "max" in the THINKING_LEVELS constant. Both must be
+#     fixed and the version pinned in package.json.
 #   - Item 5: individual fixes land upstream and the patched version is updated.
 #   - Item 6 (previewTheme + showError): upstream pi-coding-agent ships previewTheme
 #     and showError on ExtensionUIContext and the fixed version is pinned in package.json.
@@ -87,6 +94,18 @@ diff --git a/dist/cli/args.js b/dist/cli/args.js
 index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..ad705421fb9087efd8ad2cfbfe8709d198245751 100644
 --- a/dist/cli/args.js
 +++ b/dist/cli/args.js
+@@ -3,7 +3,7 @@
+  */
+ import chalk from "chalk";
+ import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.js";
+-const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
++const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+ export function isValidThinkingLevel(level) {
+     return VALID_THINKING_LEVELS.includes(level);
+ }
+@@ -248,1 +248,1 @@
+-  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh
++  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max
 @@ -321,6 +321,7 @@ ${chalk.bold("Examples:")}
    ${APP_NAME} --export session.jsonl output.html
  
@@ -99,6 +118,15 @@ diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
 index 3b2c24d1b52869e351ea488f0c535c34eaedf127..7302cc4df1e25be2e38489afb7c8ea8364695542 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
+@@ -60,7 +60,7 @@
+ // Constants
+ // ============================================================================
+ /** Standard thinking levels */
+-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"];
++const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+ // ============================================================================
+ // AgentSession Class
+ // ============================================================================
 @@ -203,6 +203,20 @@ export class AgentSession {
                  throw new Error(`Extension failed, blocking execution: ${String(err)}`);
              }

@@ -79,19 +79,19 @@ const createMockCtx = (entries: unknown[]) => {
 }
 
 describe("deterministicFallback", () => {
-	it("should return input as-is when <= 35 chars", () => {
+	it("should return input as-is when <= 50 chars", () => {
 		expect(deterministicFallback("short-name")).toBe("short-name")
-		expect(deterministicFallback("a".repeat(35))).toBe("a".repeat(35))
+		expect(deterministicFallback("a".repeat(50))).toBe("a".repeat(50))
 	})
 
-	it("should truncate at last space before 35 chars", () => {
+	it("should truncate at last space before 50 chars", () => {
 		const longName = "this is a very long session name that should be truncated"
-		expect(deterministicFallback(longName)).toBe("this is a very long session name")
+		expect(deterministicFallback(longName)).toBe("this is a very long session name that should be")
 	})
 
-	it("should handle no spaces by truncating at 35", () => {
-		const noSpaces = "a".repeat(50)
-		expect(deterministicFallback(noSpaces)).toBe("a".repeat(35))
+	it("should handle no spaces by truncating at 50", () => {
+		const noSpaces = "a".repeat(70)
+		expect(deterministicFallback(noSpaces)).toBe("a".repeat(50))
 	})
 
 	it("should trim whitespace", () => {
@@ -228,7 +228,7 @@ describe("suggestSessionName", () => {
 			},
 		])
 		const result = await suggestSessionName(ctx as never, undefined, true)
-		expect(result).toBe("this is a very long session name")
+		expect(result).toBe("this is a very long session name that should be")
 	})
 
 	it("should use provided hint instead of extracting from context", async () => {

@@ -120,7 +120,8 @@
 			"playwright-core@1.59.1": "patches/playwright-core@1.59.1.patch",
 			"@earendil-works/pi-tui@0.79.10": "patches/@earendil-works__pi-tui@0.79.10.patch",
 			"@earendil-works/pi-ai@0.79.10": "patches/@earendil-works__pi-ai@0.79.10.patch",
-			"@earendil-works/pi-coding-agent@0.79.10": "patches/@earendil-works__pi-coding-agent@0.79.10.patch"
+			"@earendil-works/pi-coding-agent@0.79.10": "patches/@earendil-works__pi-coding-agent@0.79.10.patch",
+			"@earendil-works/pi-agent-core@0.79.10": "patches/@earendil-works__pi-agent-core@0.79.10.patch"
 		},
 		"supportedArchitectures": {
 			"os": [

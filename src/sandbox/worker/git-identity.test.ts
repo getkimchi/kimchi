@@ -21,13 +21,13 @@ function jsonResponse(body: unknown, status = 200): Response {
 const IDENTITY: GitIdentity = { host: "github.com", user: "oauth2", secretRef: "git-token-github-com" }
 
 describe("setGitGlobalConfig", () => {
-	it("PUTs /gitidentity with the user name/email", async () => {
+	it("PUTs /api/gitidentity with the user name/email", async () => {
 		const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 200 }))
 		const client = new WorkerClient(CREDS, { fetch: mockFetch })
 
 		await setGitGlobalConfig(client, { name: "Alice", email: "a@example.com" })
 
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/gitidentity`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/api/gitidentity`)
 		const init = mockFetch.mock.calls[0][1] as RequestInit
 		expect(init.method).toBe("PUT")
 		expect(JSON.parse(init.body as string)).toEqual({ user: { name: "Alice", email: "a@example.com" } })
@@ -64,7 +64,7 @@ describe("upsertGitIdentity", () => {
 
 		expect(result).toEqual(IDENTITY)
 		expect(mockFetch).toHaveBeenCalledTimes(1)
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/gitidentity/github.com`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/api/gitidentity/github.com`)
 		expect((mockFetch.mock.calls[0][1] as RequestInit).method).toBe("POST")
 	})
 
@@ -84,7 +84,7 @@ describe("upsertGitIdentity", () => {
 		expect(mockFetch).toHaveBeenCalledTimes(2)
 		expect((mockFetch.mock.calls[0][1] as RequestInit).method).toBe("POST")
 		expect((mockFetch.mock.calls[1][1] as RequestInit).method).toBe("PUT")
-		expect(mockFetch.mock.calls[1][0]).toBe(`${BASE}/gitidentity/github.com`)
+		expect(mockFetch.mock.calls[1][0]).toBe(`${BASE}/api/gitidentity/github.com`)
 	})
 
 	it("rethrows non-409 errors without retrying", async () => {

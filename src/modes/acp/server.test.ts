@@ -1355,18 +1355,28 @@ describe("KimchiAcpAgent tool execution stream", () => {
 	it("forwards an image block on tool_execution_end as ACP image content", async () => {
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
-			fake.emit({ type: "tool_execution_start", toolCallId: "tc-img", toolName: "web_fetch", args: { url: "x" } })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-img",
+				toolName: "web_fetch",
+				args: { url: "x" },
+			})
 			fake.emit({
 				type: "tool_execution_end",
 				toolCallId: "tc-img",
 				toolName: "web_fetch",
-				result: { content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }] },
+				result: {
+					content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+				},
 				isError: false,
 			})
 			fake.emit(agentEnd())
 		}
 
-		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
 		expect(res.stopReason).toBe("end_turn")
 
 		const completed = updates.find(
@@ -1374,7 +1384,12 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		)
 		expect(completed).toBeDefined()
 		const content = (completed?.update as { content: unknown[] }).content
-		expect(content).toEqual([{ type: "content", content: { type: "image", data: "aGVsbG8=", mimeType: "image/png" } }])
+		expect(content).toEqual([
+			{
+				type: "content",
+				content: { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+			},
+		])
 	})
 
 	// The image path also runs on the streaming branch: an image-only partial
@@ -1382,25 +1397,37 @@ describe("KimchiAcpAgent tool execution stream", () => {
 	it("forwards image blocks from a streaming partialResult", async () => {
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
-			fake.emit({ type: "tool_execution_start", toolCallId: "tc-img2", toolName: "web_fetch", args: { url: "x" } })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-img2",
+				toolName: "web_fetch",
+				args: { url: "x" },
+			})
 			fake.emit({
 				type: "tool_execution_update",
 				toolCallId: "tc-img2",
 				toolName: "web_fetch",
 				args: { url: "x" },
-				partialResult: { content: [{ type: "image", data: "Zm9v", mimeType: "image/jpeg" }] },
+				partialResult: {
+					content: [{ type: "image", data: "Zm9v", mimeType: "image/jpeg" }],
+				},
 			})
 			fake.emit({
 				type: "tool_execution_end",
 				toolCallId: "tc-img2",
 				toolName: "web_fetch",
-				result: { content: [{ type: "image", data: "Zm9v", mimeType: "image/jpeg" }] },
+				result: {
+					content: [{ type: "image", data: "Zm9v", mimeType: "image/jpeg" }],
+				},
 				isError: false,
 			})
 			fake.emit(agentEnd())
 		}
 
-		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
 		expect(res.stopReason).toBe("end_turn")
 
 		const partial = updates.find(
@@ -1409,14 +1436,24 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		)
 		expect(partial).toBeDefined()
 		const content = (partial?.update as { content: unknown[] }).content
-		expect(content).toEqual([{ type: "content", content: { type: "image", data: "Zm9v", mimeType: "image/jpeg" } }])
+		expect(content).toEqual([
+			{
+				type: "content",
+				content: { type: "image", data: "Zm9v", mimeType: "image/jpeg" },
+			},
+		])
 	})
 
 	// A result mixing text and image blocks forwards every block, in order.
 	it("forwards text and image blocks together, preserving order", async () => {
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
-			fake.emit({ type: "tool_execution_start", toolCallId: "tc-mix", toolName: "web_fetch", args: { url: "x" } })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-mix",
+				toolName: "web_fetch",
+				args: { url: "x" },
+			})
 			fake.emit({
 				type: "tool_execution_end",
 				toolCallId: "tc-mix",
@@ -1432,7 +1469,10 @@ describe("KimchiAcpAgent tool execution stream", () => {
 			fake.emit(agentEnd())
 		}
 
-		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
 		expect(res.stopReason).toBe("end_turn")
 
 		const completed = updates.find(
@@ -1441,7 +1481,10 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		const content = (completed?.update as { content: unknown[] }).content
 		expect(content).toEqual([
 			{ type: "content", content: { type: "text", text: "before" } },
-			{ type: "content", content: { type: "image", data: "YmFy", mimeType: "image/png" } },
+			{
+				type: "content",
+				content: { type: "image", data: "YmFy", mimeType: "image/png" },
+			},
 		])
 	})
 
@@ -1574,6 +1617,591 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		expect(res.stopReason).toBe("end_turn")
 		expect(updates.some((u) => u.update.sessionUpdate === "tool_call")).toBe(false)
 		expect(updates.some((u) => u.update.sessionUpdate === "tool_call_update")).toBe(false)
+	})
+
+	// Chunk 1: toolcall_start must emit a tool_call notification with status="pending"
+	// so clients can show progress while the model streams tool call arguments.
+	// See spec-tool-call-streaming-harness.md.
+	it("emits tool_call with status='pending' on toolcall_start", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-pending-1",
+								name: "write",
+								arguments: { file_path: "/tmp/test.txt" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toHaveLength(1)
+		const pending = toolCalls[0].update as {
+			toolCallId: string
+			status: string
+			title?: string
+		}
+		expect(pending.toolCallId).toBe("tc-pending-1")
+		expect(pending.status).toBe("pending")
+		expect(pending.title).toBeDefined()
+	})
+
+	// toolcall_start → tool_execution_start must produce exactly ONE tool_call
+	// (the pending one) plus a tool_call_update (in_progress), not two tool_calls.
+	it("emits exactly one tool_call (pending) then tool_call_update (in_progress) when toolcall_start precedes tool_execution_start", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-flow-1",
+								name: "bash",
+								arguments: { command: "echo hi" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-flow-1",
+				toolName: "bash",
+				args: { command: "echo hi" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-flow-1",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "hi\n" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toHaveLength(1)
+		expect((toolCalls[0].update as { status: string }).status).toBe("pending")
+		expect((toolCalls[0].update as { toolCallId: string }).toolCallId).toBe("tc-flow-1")
+
+		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		expect(toolCallUpdates).toHaveLength(2)
+		const inProgress = toolCallUpdates.find((u) => (u.update as { status?: string }).status === "in_progress")
+		const completed = toolCallUpdates.find((u) => (u.update as { status?: string }).status === "completed")
+		expect(inProgress).toBeDefined()
+		expect((inProgress?.update as { toolCallId: string }).toolCallId).toBe("tc-flow-1")
+		expect(completed).toBeDefined()
+		expect((completed?.update as { toolCallId: string }).toolCallId).toBe("tc-flow-1")
+	})
+
+	// Back-compat: providers that don't emit toolcall_start must still get the
+	// original behavior — tool_execution_start alone emits tool_call (in_progress).
+	it("emits tool_call with status='in_progress' when tool_execution_start fires without a prior toolcall_start", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-backcompat-1",
+				toolName: "bash",
+				args: { command: "echo backcompat" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-backcompat-1",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "backcompat\n" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toHaveLength(1)
+		expect((toolCalls[0].update as { toolCallId: string }).toolCallId).toBe("tc-backcompat-1")
+		expect((toolCalls[0].update as { status: string }).status).toBe("in_progress")
+
+		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		expect(toolCallUpdates).toHaveLength(1)
+		expect((toolCallUpdates[0].update as { status: string }).status).toBe("completed")
+	})
+
+	// Hidden tool calls (system Agent) must produce zero ACP events even when
+	// toolcall_start fires — same suppression rule applies on both event types.
+	it("emits no tool_call or tool_call_update when toolcall_start names a hidden tool", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-hidden-1",
+								name: "Agent",
+								arguments: { visibility: "system", prompt: "classify" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-hidden-1",
+				toolName: "Agent",
+				args: { visibility: "system", prompt: "classify" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-hidden-1",
+				toolName: "Agent",
+				result: { content: [{ type: "text", text: "ok" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+		expect(updates.some((u) => u.update.sessionUpdate === "tool_call")).toBe(false)
+		expect(updates.some((u) => u.update.sessionUpdate === "tool_call_update")).toBe(false)
+	})
+
+	// Multiple concurrent tool calls — each toolCallId gets its own
+	// pending → in_progress → completed sequence, no cross-contamination.
+	it("emits a pending → in_progress → completed sequence per toolCallId across multiple tool calls", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-multi-a",
+								name: "bash",
+								arguments: { command: "echo a" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 1,
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-multi-a",
+								name: "bash",
+								arguments: { command: "echo a" },
+							},
+							{
+								type: "toolCall",
+								id: "tc-multi-b",
+								name: "bash",
+								arguments: { command: "echo b" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-multi-a",
+				toolName: "bash",
+				args: { command: "echo a" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-multi-a",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "a\n" }] },
+				isError: false,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-multi-b",
+				toolName: "bash",
+				args: { command: "echo b" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-multi-b",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "b\n" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call")
+		expect(toolCalls).toHaveLength(2)
+		const ids = toolCalls.map((u) => (u.update as { toolCallId: string }).toolCallId).sort()
+		expect(ids).toEqual(["tc-multi-a", "tc-multi-b"])
+		for (const tc of toolCalls) {
+			expect((tc.update as { status: string }).status).toBe("pending")
+		}
+
+		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
+		expect(toolCallUpdates).toHaveLength(4)
+
+		const inProgress = toolCallUpdates.filter((u) => (u.update as { status?: string }).status === "in_progress")
+		const completed = toolCallUpdates.filter((u) => (u.update as { status?: string }).status === "completed")
+		expect(inProgress).toHaveLength(2)
+		expect(completed).toHaveLength(2)
+
+		const inProgressIds = inProgress.map((u) => (u.update as { toolCallId: string }).toolCallId).sort()
+		expect(inProgressIds).toEqual(["tc-multi-a", "tc-multi-b"])
+		const completedIds = completed.map((u) => (u.update as { toolCallId: string }).toolCallId).sort()
+		expect(completedIds).toEqual(["tc-multi-a", "tc-multi-b"])
+	})
+
+	// Helper to build a toolcall_delta message_update event with a given toolCallId,
+	// name and partial arguments. Used by the incremental-delta streaming tests below.
+	function makeToolcallDelta(toolCallId: string, name: string, args: Record<string, unknown>): AgentSessionEvent {
+		return {
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "toolcall_delta",
+				contentIndex: 0,
+				delta: "irrelevant",
+				partial: {
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: toolCallId,
+							name,
+							arguments: args,
+						} as never,
+					],
+				} as unknown as AssistantMessage,
+			},
+			message: {} as unknown as AssistantMessage,
+		}
+	}
+
+	// Verify each delta's rawOutput reflects only the new characters and
+	// generatedChars is cumulative.
+	it("emits correct incremental rawOutput for each toolcall_delta", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			// Announce the tool call
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-every-delta-1",
+								name: "write",
+								arguments: {},
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(
+				makeToolcallDelta("tc-every-delta-1", "write", {
+					file_path: "/tmp/a.txt",
+					content: "chunk1",
+				}),
+			)
+			fake.emit(
+				makeToolcallDelta("tc-every-delta-1", "write", {
+					file_path: "/tmp/a.txt",
+					content: "chunk1chunk2",
+				}),
+			)
+			fake.emit(
+				makeToolcallDelta("tc-every-delta-1", "write", {
+					file_path: "/tmp/a.txt",
+					content: "chunk1chunk2chunk3",
+				}),
+			)
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		const pendingUpdates = updates.filter(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { status?: string }).status === "pending" &&
+				(u.update as { toolCallId: string }).toolCallId === "tc-every-delta-1",
+		)
+		expect(pendingUpdates).toHaveLength(3)
+
+		// Verify each delta's rawOutput reflects only the new characters and
+		// _meta.generatedChars reflects the cumulative content length.
+		const rawOutputs = pendingUpdates.map(
+			(u) => (u.update as { rawOutput?: { delta?: unknown } }).rawOutput?.delta ?? "",
+		)
+		expect(rawOutputs[0]).toBe("chunk1")
+		expect(rawOutputs[1]).toBe("chunk2")
+		expect(rawOutputs[2]).toBe("chunk3")
+
+		const generatedChars = pendingUpdates.map(
+			(u) => (u.update as { _meta?: { generatedChars?: number } })._meta?.generatedChars ?? 0,
+		)
+		expect(generatedChars).toEqual(["chunk1".length, "chunk1chunk2".length, "chunk1chunk2chunk3".length])
+
+		// Concatenating all rawOutput strings reconstructs the final content.
+		expect(rawOutputs.join("")).toBe("chunk1chunk2chunk3")
+	})
+
+	// Spec test 3: deltas for a toolCallId that was never announced via
+	// toolcall_start must produce ZERO tool_call_update notifications.
+	it("skips toolcall_delta for tool calls that were not announced via toolcall_start", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			// No prior toolcall_start — tc-orphan-1 is not in announcedToolCallIds.
+			fake.emit(makeToolcallDelta("tc-orphan-1", "bash", { command: "ls" }))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		const pendingUpdates = updates.filter(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { status?: string }).status === "pending" &&
+				(u.update as { toolCallId: string }).toolCallId === "tc-orphan-1",
+		)
+		expect(pendingUpdates).toHaveLength(0)
+	})
+
+	// Spec test 4: hidden tool calls (system Agent) must produce zero
+	// tool_call_update notifications even when the delta stream is active.
+	it("skips toolcall_delta for hidden (system) tool calls", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-hidden-delta-1",
+								name: "Agent",
+								arguments: { visibility: "system", prompt: "classify" },
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(
+				makeToolcallDelta("tc-hidden-delta-1", "Agent", {
+					visibility: "system",
+					prompt: "classify this request",
+				}),
+			)
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		// No tool_call (from toolcall_start) AND no tool_call_update (from delta).
+		expect(updates.some((u) => u.update.sessionUpdate === "tool_call")).toBe(false)
+		const pendingUpdates = updates.filter(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { toolCallId: string }).toolCallId === "tc-hidden-delta-1",
+		)
+		expect(pendingUpdates).toHaveLength(0)
+	})
+
+	// Spec test 5: empty arguments (`{}`) carry no useful content — the
+	// handler must skip them rather than emit a rawInput={} update.
+	it("skips toolcall_delta events whose arguments are still empty", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "tc-empty-1",
+								name: "write",
+								arguments: {},
+							},
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(makeToolcallDelta("tc-empty-1", "write", {}))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+
+		const pendingUpdates = updates.filter(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { toolCallId: string }).toolCallId === "tc-empty-1",
+		)
+		expect(pendingUpdates).toHaveLength(0)
+	})
+
+	it("extracts the correct content field for write and edit tool calls", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			// write tool — content field
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "tc-write-1", name: "write", arguments: {} }],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(makeToolcallDelta("tc-write-1", "write", { content: "hello world" }))
+			// edit tool — newText field
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 1,
+					partial: {
+						role: "assistant",
+						content: [
+							{ type: "toolCall", id: "tc-write-1", name: "write", arguments: {} },
+							{ type: "toolCall", id: "tc-edit-1", name: "edit", arguments: {} },
+						],
+					} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(makeToolcallDelta("tc-edit-1", "edit", { newText: "abc" }))
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const writeUpdate = updates.find(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { toolCallId: string }).toolCallId === "tc-write-1",
+		)
+		expect(writeUpdate).toBeDefined()
+		const writeU = writeUpdate?.update as {
+			rawOutput?: { delta?: string }
+			_meta?: { generatedChars?: number }
+		}
+		expect(writeU.rawOutput?.delta).toBe("hello world")
+		expect(writeU._meta?.generatedChars).toBe(11)
+
+		const editUpdate = updates.find(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { toolCallId: string }).toolCallId === "tc-edit-1",
+		)
+		expect(editUpdate).toBeDefined()
+		const editU = editUpdate?.update as {
+			rawOutput?: { delta?: string }
+			_meta?: { generatedChars?: number }
+		}
+		expect(editU.rawOutput?.delta).toBe("abc")
+		expect(editU._meta?.generatedChars).toBe(3)
 	})
 })
 
@@ -1794,7 +2422,9 @@ describe("newSession available commands", () => {
 		expect(update).toBeDefined()
 		expect(update?.sessionId).toBe("session-commands")
 
-		const updatePayload = update?.update as { availableCommands: Array<Record<string, unknown>> }
+		const updatePayload = update?.update as {
+			availableCommands: Array<Record<string, unknown>>
+		}
 		expect(updatePayload.availableCommands).toHaveLength(1)
 
 		const cmd = updatePayload.availableCommands[0]
@@ -1819,7 +2449,11 @@ describe("loadSession available commands", () => {
 			sessionLoader: loader,
 		})
 
-		await agent.loadSession({ sessionId: "session-load-test", cwd: "/tmp", mcpServers: [] })
+		await agent.loadSession({
+			sessionId: "session-load-test",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 
 		// loadSessionFresh re-broadcasts the command palette on resume.
 		const cmdUpdate = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
@@ -2081,7 +2715,10 @@ describe("setSessionConfigOption", () => {
 				value: "provider-b/model-b",
 			})
 
-			expect(fake.model).toMatchObject({ provider: "provider-b", id: "model-b" })
+			expect(fake.model).toMatchObject({
+				provider: "provider-b",
+				id: "model-b",
+			})
 			const modelOption = res.configOptions?.find((o) => o.id === "model")
 			expect(modelOption?.currentValue).toBe("provider-b/model-b")
 		})
@@ -2130,7 +2767,11 @@ describe("setSessionConfigOption", () => {
 				...fake.modelRegistry,
 				getAvailable: () => [
 					{ provider: "provider-a", id: "model-a", name: "Model A" },
-					{ provider: "orchestrator-provider", id: "orchestrator-model", name: "Orchestrator Model" },
+					{
+						provider: "orchestrator-provider",
+						id: "orchestrator-model",
+						name: "Orchestrator Model",
+					},
 				],
 			}
 			// Wire the orchestrator model explicitly instead of relying on the global default role.
@@ -2148,7 +2789,10 @@ describe("setSessionConfigOption", () => {
 				value: "multi-model",
 			})
 
-			expect(fake.model).toMatchObject({ provider: "orchestrator-provider", id: "orchestrator-model" })
+			expect(fake.model).toMatchObject({
+				provider: "orchestrator-provider",
+				id: "orchestrator-model",
+			})
 			const modelOption = res.configOptions?.find((o) => o.id === "model")
 			expect(modelOption?.currentValue).toBe("multi-model")
 		})
@@ -2161,7 +2805,11 @@ describe("setSessionConfigOption", () => {
 				...fake.modelRegistry,
 				getAvailable: () => [
 					{ provider: "provider-a", id: "model-a", name: "Model A" },
-					{ provider: "orchestrator-provider", id: "orchestrator-model", name: "Orchestrator Model" },
+					{
+						provider: "orchestrator-provider",
+						id: "orchestrator-model",
+						name: "Orchestrator Model",
+					},
 				],
 			}
 			fake.setModel = async () => {
@@ -2585,7 +3233,9 @@ describe("ACP mode controller integration with permissions extension", () => {
 
 	function createMockContext(sessionId: string, cwd: string): ExtensionContext {
 		return {
-			sessionManager: { getSessionId: vi.fn().mockReturnValue(sessionId) } as unknown as SessionManager,
+			sessionManager: {
+				getSessionId: vi.fn().mockReturnValue(sessionId),
+			} as unknown as SessionManager,
 			cwd,
 			mode: "rpc",
 			hasUI: true,
@@ -2593,7 +3243,11 @@ describe("ACP mode controller integration with permissions extension", () => {
 				notify: vi.fn(),
 				setStatus: vi.fn(),
 				onTerminalInput: vi.fn(),
-				theme: { fg: vi.fn(), bg: vi.fn(), getFgAnsi: vi.fn() } as unknown as Theme,
+				theme: {
+					fg: vi.fn(),
+					bg: vi.fn(),
+					getFgAnsi: vi.fn(),
+				} as unknown as Theme,
 			} as unknown as ExtensionUIContext,
 			modelRegistry: {
 				authStorage: {} as AuthStorage,
@@ -3042,10 +3696,17 @@ describe("session mode controller lifecycle", () => {
 			sessionFactory: async () => asSession(fake),
 		})
 
-		const { sessionId } = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const { sessionId } = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 
 		// Set a mode so the namespaced env key is definitely written.
-		await agent.setSessionConfigOption({ sessionId, configId: "permissions-mode", value: "yolo" })
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "yolo",
+		})
 		const envKey = `${PERMISSIONS_ENV_KEY}_${sessionId}`
 		expect(process.env[envKey]).toBe("yolo")
 
@@ -3071,8 +3732,16 @@ describe("session mode controller lifecycle", () => {
 		const r2 = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
 		// Write a namespaced env key for each session.
-		await agent.setSessionConfigOption({ sessionId: r1.sessionId, configId: "permissions-mode", value: "plan" })
-		await agent.setSessionConfigOption({ sessionId: r2.sessionId, configId: "permissions-mode", value: "auto" })
+		await agent.setSessionConfigOption({
+			sessionId: r1.sessionId,
+			configId: "permissions-mode",
+			value: "plan",
+		})
+		await agent.setSessionConfigOption({
+			sessionId: r2.sessionId,
+			configId: "permissions-mode",
+			value: "auto",
+		})
 
 		const key1 = `${PERMISSIONS_ENV_KEY}_${r1.sessionId}`
 		const key2 = `${PERMISSIONS_ENV_KEY}_${r2.sessionId}`
@@ -3791,7 +4460,10 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(res.models).toMatchObject({
 			currentModelId: "test/test-model",
 			availableModels: [
-				{ modelId: "multi-model", name: expect.stringMatching(/^Multi-model \(/) },
+				{
+					modelId: "multi-model",
+					name: expect.stringMatching(/^Multi-model \(/),
+				},
 				{ modelId: "test/test-model", name: "Test Model" },
 			],
 		})
@@ -4503,7 +5175,11 @@ describe("KimchiAcpAgent permission flag controller registration ordering", () =
 			sessionLoader: loader,
 		})
 
-		await agent.loadSession({ sessionId: "load-session-ordering", cwd: "/tmp", mcpServers: [] })
+		await agent.loadSession({
+			sessionId: "load-session-ordering",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 
 		expect(loaderCallCount).toBe(1)
 		expect(ordering).toEqual(["controller-present", "bindAcpExtensions-called"])
@@ -4557,9 +5233,13 @@ describe("KimchiAcpAgent permission flag controller registration ordering", () =
 			sessionLoader: loader,
 		})
 
-		await expect(agent.loadSession({ sessionId: "load-bind-failure", cwd: "/tmp", mcpServers: [] })).rejects.toThrow(
-			/bindExtensions failed in load/,
-		)
+		await expect(
+			agent.loadSession({
+				sessionId: "load-bind-failure",
+				cwd: "/tmp",
+				mcpServers: [],
+			}),
+		).rejects.toThrow(/bindExtensions failed in load/)
 
 		expect(getSessionPermissionFlagController("load-bind-failure")).toBeUndefined()
 		expect(fake.disposed).toBe(true)
@@ -4595,7 +5275,10 @@ describe("KimchiAcpAgent permission flag controller registration ordering", () =
 
 		// After setMode in bindExtensions, the controller should have the new mode "plan"
 		const finalController = getSessionPermissionFlagController("session-controller-functional")
-		expect(finalController?.getMode()).toEqual({ mode: "plan", source: "user" })
+		expect(finalController?.getMode()).toEqual({
+			mode: "plan",
+			source: "user",
+		})
 
 		await agent.shutdown()
 	})
@@ -4629,7 +5312,10 @@ describe("KimchiAcpAgent session event handlers", () => {
 			expect(titleUpdates).toHaveLength(1)
 			expect(titleUpdates[0]).toMatchObject({
 				sessionId,
-				update: { sessionUpdate: "session_info_update", title: "Fix the login bug" },
+				update: {
+					sessionUpdate: "session_info_update",
+					title: "Fix the login bug",
+				},
 			})
 		})
 
