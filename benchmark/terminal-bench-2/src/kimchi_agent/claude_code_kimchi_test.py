@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import ClassVar
 from unittest.mock import AsyncMock, patch
 
-from harbor.agents.installed.base import NonZeroAgentExitCodeError
+from harbor.agents.installed.base import ApiUsageLimitError, NonZeroAgentExitCodeError, UnknownApiError
 from harbor.environments.base import ExecResult
 from harbor.models.agent.context import AgentContext
 
@@ -354,6 +354,69 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
                 await agent.run("solve it", FakeEnvironment(stream), AgentContext())
 
         self.assertIs(raised.exception, original_error)
+
+    async def test_403_api_error_raises_api_usage_limit_error_with_full_text(self) -> None:
+        """A 403 (budget/key limit) is re-raised as ApiUsageLimitError with full error text.
+
+        Harbor's _classify_exec_error truncates stdout to 1000 chars, clipping the
+        actual error message at the end of claude-code's init JSON. This test
+        verifies that run() re-reads the full stream and raises a typed exception
+        so classify.py can match on the exception type.
+        """
+        stream = "\n".join([
+            json.dumps({"type": "system", "subtype": "init", "cwd": "/app"}),
+            json.dumps({
+                "type": "result",
+                "is_error": True,
+                "api_error_status": 403,
+                "result": "403 Key limit exceeded (total limit). Manage it using https://openrouter.ai/workspaces/default/keys/abc123",
+            }),
+        ])
+        original_error = NonZeroAgentExitCodeError("claude exited 1")
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = FailingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="kimchi-dev/kimi-k2.5",
+                failure=original_error,
+            )
+
+            with self.assertRaises(ApiUsageLimitError) as raised:
+                await agent.run("solve it", FakeEnvironment(stream), AgentContext())
+
+        self.assertIn("Key limit exceeded", str(raised.exception))
+        self.assertIn("total limit", str(raised.exception))
+
+    async def test_404_api_error_raises_unknown_api_error_with_full_text(self) -> None:
+        """A 404 (model access error) is re-raised as UnknownApiError with full error text.
+
+        The full error text allows classify.py to match on 'may not exist' /
+        'may not have access' markers for the model_access_error subcategory.
+        """
+        stream = "\n".join([
+            json.dumps({"type": "system", "subtype": "init", "cwd": "/app"}),
+            json.dumps({
+                "type": "result",
+                "is_error": True,
+                "api_error_status": 404,
+                "result": (
+                    "There's an issue with the selected model (@preset/glm-5-1-zai)."
+                    " It may not exist or you may not have access to it."
+                ),
+            }),
+        ])
+        original_error = NonZeroAgentExitCodeError("claude exited 1")
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = FailingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="kimchi-dev/kimi-k2.5",
+                failure=original_error,
+            )
+
+            with self.assertRaises(UnknownApiError) as raised:
+                await agent.run("solve it", FakeEnvironment(stream), AgentContext())
+
+        self.assertIn("may not exist", str(raised.exception))
+        self.assertIn("may not have access", str(raised.exception))
 
     async def test_non_api_nonzero_exit_remains_nonzero_exit(self) -> None:
         original_error = NonZeroAgentExitCodeError("claude exited 1")

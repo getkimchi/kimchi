@@ -125,6 +125,11 @@ RESULT_JSON_CASES = [
         id="kimchi-exit-non-ioerr",
     ),
     pytest.param(
+        _exception_payload("NetworkConnectionError"),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "infra_network_error"},
+        id="network-connection-error",
+    ),
+    pytest.param(
         _exception_payload("ConnectionError"),
         {"outcome": "error", "error_category": "infra", "error_subcategory": "infra_network_error"},
         id="connection-error",
@@ -167,6 +172,14 @@ RESULT_JSON_CASES = [
         id="agent-process-killed",
     ),
     pytest.param(
+        _exception_payload(
+            "UnknownApiError",
+            "It may not exist or you may not have access to it. Run --model to pick a different model.",
+        ),
+        {"outcome": "error", "error_category": "agent", "error_subcategory": "model_access_error"},
+        id="model-access-error",
+    ),
+    pytest.param(
         _exception_payload("AssertionError", reward=0.0),
         {"outcome": "error", "error_category": "agent"},
         id="quality-exception",
@@ -196,6 +209,19 @@ RESULT_JSON_CASES = [
         _exception_payload("NonZeroAgentExitCodeError", "API error: insufficient credits to complete request"),
         {"outcome": "error", "error_category": "infra", "error_subcategory": API_KEY_BUDGET_EXCEEDED},
         id="insufficient-credits",
+    ),
+    pytest.param(
+        _exception_payload("ApiUsageLimitError", "403 Key limit exceeded (total limit)"),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": API_KEY_BUDGET_EXCEEDED},
+        id="openrouter-key-limit-by-type",
+    ),
+    pytest.param(
+        _exception_payload(
+            "UnknownApiError",
+            "Command failed (exit 1): claude --verbose\nstdout: 403 Key limit exceeded (total limit)",
+        ),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": API_KEY_BUDGET_EXCEEDED},
+        id="openrouter-key-limit-by-text",
     ),
 ]
 

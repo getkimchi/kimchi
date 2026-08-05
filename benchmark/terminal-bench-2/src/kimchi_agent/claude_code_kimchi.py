@@ -3,7 +3,12 @@ import json
 import shlex
 from typing import Any
 
-from harbor.agents.installed.base import NonZeroAgentExitCodeError, with_prompt_template
+from harbor.agents.installed.base import (
+    ApiUsageLimitError,
+    NonZeroAgentExitCodeError,
+    UnknownApiError,
+    with_prompt_template,
+)
 from harbor.agents.installed.claude_code import ClaudeCode
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
@@ -46,6 +51,9 @@ CLAUDE_CODE_INSTALL_RETRY_DELAYS_SEC = (5, 15)
 # loop can handle). Callers can override via the API_TIMEOUT_MS passthrough.
 CLAUDE_CODE_DEFAULT_API_TIMEOUT_MS = "900000"
 RETRYABLE_API_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 524, 529})
+# Non-retryable API statuses that we still want to classify with full error
+# text (re-raised as typed exceptions so classify.py can match on them).
+NON_RETRYABLE_API_STATUSES = frozenset({403, 404})
 RETRYABLE_API_ERROR_MESSAGE_LIMIT = 2_000
 CLAUDE_PASSTHROUGH_ENV_PREFIXES = ("CLAUDE_CODE_", "OTEL_")
 CLAUDE_PASSTHROUGH_ENV_KEYS = {
@@ -410,6 +418,76 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
             return None
         return self._retryable_api_error_from_stream(result.stdout)
 
+    @classmethod
+    def _non_retryable_api_error_from_event(cls, event: dict[str, Any]) -> NonZeroAgentExitCodeError | None:
+        """Extract a non-retryable API error with full text from a stream event.
+
+        Harbor's _classify_exec_error truncates stdout to 1000 chars, which
+        clips the actual error message at the end of claude-code's init JSON.
+        This method re-reads the full stream and raises a typed exception so
+        classify.py can match on the exception type and full error text.
+        """
+        status = cls._coerce_status(event.get("api_error_status"))
+        if status not in NON_RETRYABLE_API_STATUSES:
+            return None
+
+        is_result_error = event.get("type") == "result" and event.get("is_error") is True
+        has_error_marker = event.get("error") is not None
+        if not is_result_error and not has_error_marker:
+            return None
+
+        detail = cls._event_text(event)
+        if len(detail) > RETRYABLE_API_ERROR_MESSAGE_LIMIT:
+            detail = f"{detail[:RETRYABLE_API_ERROR_MESSAGE_LIMIT]}..."
+
+        if status == 403:
+            return ApiUsageLimitError(detail)
+        # 404 and any other non-retryable status
+        return UnknownApiError(detail)
+
+    @classmethod
+    def _non_retryable_api_error_from_stream(cls, stream: str) -> NonZeroAgentExitCodeError | None:
+        """Scan the full claude-code stream for a non-retryable API error."""
+        for line in stream.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            error = cls._non_retryable_api_error_from_event(event)
+            if error is not None:
+                return error
+        return None
+
+    async def _non_retryable_api_error_from_remote_log(
+        self,
+        environment: BaseEnvironment,
+    ) -> NonZeroAgentExitCodeError | None:
+        """Re-read the full claude-code stream to extract a non-retryable API error.
+
+        Works around Harbor's stdout truncation (1000 chars) by reading the
+        full output file that was tee'd to CLAUDE_CODE_OUTPUT_PATH.
+        """
+        try:
+            result = await environment.exec(
+                f"cat {shlex.quote(CLAUDE_CODE_OUTPUT_PATH)}",
+                timeout_sec=10,
+            )
+        except Exception:
+            self.logger.debug(
+                "Failed to read Claude Code output for non-retryable API error classification",
+                exc_info=True,
+            )
+            return None
+
+        if result.return_code != 0 or not result.stdout:
+            return None
+        return self._non_retryable_api_error_from_stream(result.stdout)
+
     @with_prompt_template
     async def run(
         self,
@@ -439,4 +517,11 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
             retryable_error = await self._retryable_api_error_from_remote_log(environment)
             if retryable_error is not None:
                 raise retryable_error from exc
+            # Re-raise with full error text for non-retryable API errors
+            # (403 budget/limit, 404 model access).  Without this, the
+            # original exception carries Harbor's truncated stdout (1000
+            # chars) and classify.py never sees the actual error message.
+            non_retryable_error = await self._non_retryable_api_error_from_remote_log(environment)
+            if non_retryable_error is not None:
+                raise non_retryable_error from exc
             raise

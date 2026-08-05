@@ -146,6 +146,7 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
             "ConnectionError", "TimeoutError", "NetworkError", "HTTPError",
             "RequestException", "SSLError", "RateLimitError",
             "APIConnectionError", "APITimeoutError",
+            "NetworkConnectionError",
         ),
         evidence_markers=("connection", "network", "timeout", "ssl", "rate limit"),
     ),
@@ -254,6 +255,7 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
         kind=API_KEY_BUDGET_EXCEEDED_SUBCATEGORY,
         outcome=Outcome.ERROR,
         error_category="infra",
+        exception_types=("ApiUsageLimitError",),
         marker_groups=(
             ("api key has reached its spend limit",),
             ("increase the budget in the console",),
@@ -261,6 +263,8 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
             ("budget has been exceeded",),
             ("insufficient credits",),
             ("usage limit has been reached",),
+            ("key limit exceeded",),
+            ("total limit",),
         ),
         evidence_markers=(
             "api key has reached its spend limit",
@@ -269,6 +273,8 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
             "budget has been exceeded",
             "insufficient credits",
             "usage limit has been reached",
+            "key limit exceeded",
+            "total limit",
         ),
     ),
     ErrorRule(
@@ -313,6 +319,13 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
             ("command failed (exit 143)",),
         ),
         evidence_markers=("killed", "exit 137", "exit 143"),
+    ),
+    ErrorRule(
+        kind="model_access_error",
+        outcome=Outcome.ERROR,
+        error_category="agent",
+        marker_groups=(("may not exist", "may not have access"),),
+        evidence_markers=("may not exist", "may not have access"),
     ),
     ErrorRule(
         kind="agent_environment_error",
