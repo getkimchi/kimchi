@@ -85,6 +85,8 @@ export async function runSync(rawArgs: string, ctx: TeleportContext): Promise<vo
 			refuse(ctx, `rsync failed: ${formatRsyncFailure(err)}`)
 		}
 
+		// Fatal here (vs warn-and-continue in /teleport): /sync is an explicit user
+		// action where a config-sync failure should be surfaced clearly, not silent.
 		if (args.direction === "up" && !args.dryRun) {
 			progress.setPhase("Syncing harness config…")
 			const configResult = await provisionHarnessConfig({

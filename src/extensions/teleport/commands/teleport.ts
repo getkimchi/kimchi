@@ -239,21 +239,26 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		// it's a tiny rsync of ~/.config/kimchi/harness/ and never blocks the
 		// teleport. Failures warn but don't abort (config sync is a nicety, not
 		// a requirement for the session to function).
+		// Guard so a late configSyncP .then can't emit a spurious warn() after
+		// the command already refused via the catch below (configSyncP races the
+		// other fan-out promises; if Promise.all rejects first on another failure,
+		// this .then may still fire afterward).
+		let commandFailed = false
 		const configSyncP = provisionHarnessConfig({
 			remoteHost: creds.host,
 			authToken: creds.connectToken,
 			signal,
 		}).then((result) => {
-			if (!result.ok && !signal.aborted) {
+			if (!result.ok && !signal.aborted && !commandFailed) {
 				warn(ctx, `Could not sync harness config to sandbox: ${result.error}`)
 			}
 		})
 
 		let existing: Awaited<ReturnType<typeof listSessions>>
 		try {
-			const settled = await Promise.all([identityP, credsPropP, rsyncP, configSyncP, listP])
-			existing = settled[4] // listP is now index 4 (was 3)
+			;[, , , , existing] = await Promise.all([identityP, credsPropP, rsyncP, configSyncP, listP])
 		} catch (err) {
+			commandFailed = true
 			if (signal.aborted) throw err
 			if (err instanceof SyncFailure) refuse(ctx, `Workspace sync failed: ${err.message}`)
 			if (err instanceof ListFailure) refuse(ctx, `Could not list sessions: ${err.message}`)
