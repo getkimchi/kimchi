@@ -1,8 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { InteractiveMode } from "@earendil-works/pi-coding-agent"
-import { preserveRawErrorMessage } from "./error-preservation.js"
 import { classifyLLMGatewayError } from "../llm-gateway-error.js"
 import { formatSanitizedErrorMessage } from "../sanitized-error-message.js"
+import { preserveRawErrorMessage } from "./error-preservation.js"
 
 interface PendingProviderError {
 	readonly rawMessage: string
