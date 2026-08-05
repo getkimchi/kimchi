@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { ERROR_FG, ORANGE_FG, RST, RST_FG, SUCCESS_FG } from "../../ansi.js"
 import { highlightCode } from "../tool-rendering.js"
 import { withWorkingHidden } from "../ui.js"
@@ -103,8 +103,7 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 	const termWidth = process.stdout.columns || 80
 	if (riskScore) {
 		const badge = formatRiskBadge(riskScore)
-		const badgeWidth = 14 // "● high risk" + padding — approximate visible width
-		const wrapWidth = Math.max(20, termWidth - badgeWidth)
+		const wrapWidth = Math.max(20, termWidth - visibleWidth(badge) - 2)
 		// Wrap the highlighted command so long commands break across lines
 		// instead of being truncated.
 		const wrappedCommand = wrapTextWithAnsi(callDescription, wrapWidth).join("\n")
