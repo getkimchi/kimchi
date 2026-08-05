@@ -160,9 +160,8 @@ export function parseClassifierOutput(raw: string): ClassifierResult {
 	if (!json) return unavailable("classifier returned unparseable output")
 
 	const verdict = normalizeVerdict(json.verdict)
-	if (!verdict) return unavailable("classifier returned unknown verdict")
-
 	const reason = typeof json.reason === "string" && json.reason.trim() ? json.reason.trim() : "no reason provided"
+	if (!verdict) return unavailable(reason)
 	const riskScore = normalizeRiskScore(json.riskScore)
 	return { verdict, reason, ok: true, riskScore }
 }

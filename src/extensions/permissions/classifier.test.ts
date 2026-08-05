@@ -284,6 +284,7 @@ describe("parseClassifierOutput", () => {
 		const r = parseClassifierOutput(`{"verdict":"maybe","reason":"x"}`)
 		expect(r.verdict).toBe("requires-confirmation")
 		expect(r.ok).toBe(false)
+		expect(r.reason).toBe("x")
 	})
 
 	it("defaults reason when missing", () => {
