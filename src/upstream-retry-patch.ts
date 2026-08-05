@@ -1,5 +1,6 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
+import { getRawErrorMessage } from "./extensions/error-preservation.js"
 import { classifyLLMGatewayError } from "./llm-gateway-error.js"
 
 type RetryableMessage = Partial<Pick<AssistantMessage, "stopReason" | "errorMessage">>
@@ -12,8 +13,13 @@ type PatchableAgentSession = {
 }
 
 export function isInfrastructureErrorRetryable(message: RetryableMessage): boolean {
-	if (message.stopReason !== "error" || !message.errorMessage) return false
-	return classifyLLMGatewayError(message.errorMessage)?.retryable ?? false
+	if (message.stopReason !== "error") return false
+	// The errorMessage may have been mutated to a display placeholder (e.g.
+	// "Retrying…") by the interactive-error-surface extension before this
+	// classifier runs. Use the preserved original if available.
+	const rawMessage = getRawErrorMessage(message)
+	if (!rawMessage) return false
+	return classifyLLMGatewayError(rawMessage)?.retryable ?? false
 }
 
 // --- Infrastructure-error circuit breaker ---

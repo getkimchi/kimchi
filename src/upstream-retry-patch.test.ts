@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { preserveRawErrorMessage } from "./extensions/error-preservation.js"
 import {
 	configureInfrastructureBreaker,
 	INFRA_BREAKER_THRESHOLD_ENV,
@@ -134,6 +135,28 @@ describe("isInfrastructureErrorRetryable", () => {
 					"The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()",
 			}),
 		).toBe(true)
+	})
+
+	it("uses the preserved original error when errorMessage was mutated to a display placeholder", () => {
+		// Simulates the interactive-error-surface extension mutating
+		// errorMessage to "Retrying…" before the retry classifier runs.
+		const message = {
+			stopReason: "error" as const,
+			errorMessage:
+				"InternalServerError: Hosted_vllmException - Cannot connect to host serverless-glm-5-2-fp8.castai-llms.svc.cluster.local.:11434",
+		}
+		preserveRawErrorMessage(message)
+		message.errorMessage = "Retrying…"
+
+		expect(isInfrastructureErrorRetryable(message)).toBe(true)
+	})
+
+	it("returns false for a non-retryable error preserved then mutated", () => {
+		const message = { stopReason: "error" as const, errorMessage: "400 Bad Request" }
+		preserveRawErrorMessage(message)
+		message.errorMessage = "Retrying…"
+
+		expect(isInfrastructureErrorRetryable(message)).toBe(false)
 	})
 })
 

@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { InteractiveMode } from "@earendil-works/pi-coding-agent"
+import { preserveRawErrorMessage } from "./error-preservation.js"
 import { classifyLLMGatewayError } from "../llm-gateway-error.js"
 import { formatSanitizedErrorMessage } from "../sanitized-error-message.js"
 
@@ -111,6 +112,11 @@ export default function interactiveErrorSurfaceExtension(pi: ExtensionAPI): void
 			// Track only retryable errors — agent_end renders the sanitized
 			// exhaustion message when retries are exhausted.
 			lastPendingProviderError = { rawMessage: message.errorMessage, willRetry: true }
+			// Preserve the original error for the retry classifier, which runs
+			// in _handlePostAgentRun AFTER this mutation. Without this, the
+			// classifier sees "Retrying…" and fails to identify the error as
+			// retryable, causing retries to silently stop.
+			preserveRawErrorMessage(message)
 			// Replace with a muted placeholder so the component doesn't leak
 			// internals but still renders something. The placeholder is
 			// suppressed by interceptShowError if it reaches showError.
