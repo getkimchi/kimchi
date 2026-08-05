@@ -98,9 +98,15 @@ export function installInfrastructureRetryPatch(
 	if (!original) return
 
 	proto._isRetryableError = function patchedIsRetryableError(message: RetryableMessage): boolean {
-		if (message.stopReason !== "error" || !message.errorMessage) return false
+		if (message.stopReason !== "error") return false
 
-		const classification = classifyLLMGatewayError(message.errorMessage)
+		// The errorMessage may have been mutated to a display placeholder (e.g.
+		// "Retrying…") by the interactive-error-surface extension before this
+		// classifier runs. Use the preserved original if available.
+		const rawMessage = getRawErrorMessage(message)
+		if (!rawMessage) return false
+
+		const classification = classifyLLMGatewayError(rawMessage)
 
 		// Kimchi's explicit non-retryable verdicts take precedence over Pi's
 		// generic 429 retry — e.g. "budget exhausted" arrives as a 429 but must
