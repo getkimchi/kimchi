@@ -9,6 +9,7 @@ import type {
 	ToolInfo,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
@@ -846,6 +847,33 @@ describe("plan mode assumption detection", () => {
 
 		// Reset runtime state in case prior tests in this describe block left it set.
 		defaultFermentRuntime.setActive(undefined)
+	})
+
+	it("Start as ferment keeps planning tools when scoping fails after draft creation", async () => {
+		const mutationSpy = vi.spyOn(FermentEventStore.prototype, "mutateWithEvents").mockImplementationOnce(() => ({
+			ok: false,
+			error: { code: "FERMENT_NOT_FOUND", message: "simulated scope failure" },
+		}))
+		const harness = createPermissionsHarness(["read", "questionnaire", "ask_user"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const planningTools = harness.activeTools()
+
+		const tmpDir = mkdtempSync(join(tmpdir(), "post-create-failure-"))
+		try {
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+
+			expect(harness.activeTools()).toEqual(planningTools)
+			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
+			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
+			expect(defaultFermentRuntime.getActive()).toBeUndefined()
+		} finally {
+			mutationSpy.mockRestore()
+			rmSync(tmpDir, { recursive: true, force: true })
+			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
+			defaultFermentRuntime.setActive(undefined)
+		}
 	})
 
 	// Regression (PR #683 comment 3473746281): when the plan lacks a `## Chunks`

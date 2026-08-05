@@ -20,6 +20,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache } from "../../ferment/store.js"
+import { FERMENT_EVENTS } from "./domain-events.js"
 import { maybeInjectScopingStopNudge, resetAllScopingStopNudgeCounts } from "./nudge.js"
 import {
 	deletePendingProposal,
@@ -69,6 +70,7 @@ function createHarness() {
 		getAllTools: vi.fn(() => []),
 		setActiveTools: vi.fn(),
 		getFlag: vi.fn(() => undefined),
+		events: { emit: vi.fn() },
 	} as unknown as ExtensionAPI
 
 	return { fermentsDir, eventStorage, runtime, pi, sentMessages }
@@ -482,6 +484,19 @@ describe("resumeFerment early-return states", () => {
 })
 
 describe("resumeFerment scoping-stop budget reset", () => {
+	it("restores draft scoping telemetry without emitting another ferment.started", () => {
+		const draft = h.eventStorage.create("Telemetry Resume")
+
+		resumeFerment(h.pi, draft.id, { hasUI: false } as ExtensionCommandContext, h.runtime)
+
+		const emit = vi.mocked(h.pi.events.emit)
+		expect(emit).toHaveBeenCalledWith(
+			FERMENT_EVENTS.SCOPING_RESUMED,
+			expect.objectContaining({ fermentId: draft.id, startedAtMs: Date.parse(draft.createdAt) }),
+		)
+		expect(emit).not.toHaveBeenCalledWith(FERMENT_EVENTS.STARTED, expect.anything())
+	})
+
 	it("resets the scoping-stop budget so a resumed draft gets a fresh nudge budget", () => {
 		// /ferment resume calls resumeFerment directly without
 		// a session_start. Before the fix, the process-global

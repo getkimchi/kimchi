@@ -14,12 +14,15 @@ import {
 	type FermentCompletedPayload,
 	type FermentPhaseCompletedPayload,
 	type FermentPhaseStartedPayload,
+	type FermentScopingCompletedPayload,
+	type FermentScopingResumedPayload,
 	type FermentStalledPayload,
 	type FermentStartedPayload,
 	type FermentSteeringPayload,
 	type FermentStepCompletedPayload,
 	type FermentStepFailedPayload,
 	type FermentStepStartedPayload,
+	type UserUnblockedPayload,
 } from "../ferment/domain-events.js"
 import {
 	LOOP_GUARD_EVENTS,
@@ -59,10 +62,17 @@ import {
 export interface TokenSnapshot {
 	inputByModel: Record<string, number>
 	outputByModel: Record<string, number>
+	costByModel: Record<string, number>
 }
 
 /** Snapshot taken at phase activation, keyed by "${fermentId}:${phaseId}". */
 const phaseTokenSnapshots = new Map<string, TokenSnapshot>()
+
+/**
+ * Snapshot taken at ferment start for scoping delta computation, keyed by fermentId.
+ * Captured in onFermentStarted, consumed in onScopingComplete.
+ */
+const scopingTokenSnapshots = new Map<string, TokenSnapshot>()
 
 /**
  * Running sum of phase token/cost deltas, keyed by fermentId.
@@ -105,6 +115,7 @@ const stepSteeringSnapshots = new Map<string, number>()
 /** @internal — exposed for testing only */
 export function _resetFermentTrackingState(): void {
 	phaseTokenSnapshots.clear()
+	scopingTokenSnapshots.clear()
 	fermentTokenTotals.clear()
 	fermentStartTimes.clear()
 	phaseStartTimes.clear()
@@ -140,26 +151,37 @@ function isEnabled(): boolean {
  * Called at phase activation via the ferment:phase_started domain event.
  */
 function captureSnapshot(ctx: TelemetryContext): TokenSnapshot {
-	const { tokensByModel } = ctx.cumulative
-	const snapshot: TokenSnapshot = { inputByModel: {}, outputByModel: {} }
+	const { tokensByModel, costByModel } = ctx.cumulative
+	const snapshot: TokenSnapshot = { inputByModel: {}, outputByModel: {}, costByModel: {} }
 	for (const [model, t] of Object.entries(tokensByModel)) {
 		snapshot.inputByModel[model] = t.input
 		snapshot.outputByModel[model] = t.output
 	}
+	for (const [model, c] of Object.entries(costByModel)) {
+		snapshot.costByModel[model] = c
+	}
 	return snapshot
 }
 
-function diffSnapshot(ctx: TelemetryContext, snapshot: TokenSnapshot): { deltaInput: number; deltaOutput: number } {
-	const { tokensByModel } = ctx.cumulative
+function diffSnapshot(
+	ctx: TelemetryContext,
+	snapshot: TokenSnapshot,
+): { deltaInput: number; deltaOutput: number; deltaCost: number } {
+	const { tokensByModel, costByModel } = ctx.cumulative
 	let deltaInput = 0
 	let deltaOutput = 0
+	let deltaCost = 0
 	for (const [model, t] of Object.entries(tokensByModel)) {
 		deltaInput += t.input - (snapshot.inputByModel[model] ?? 0)
 		deltaOutput += t.output - (snapshot.outputByModel[model] ?? 0)
 	}
+	for (const [model, c] of Object.entries(costByModel)) {
+		deltaCost += c - (snapshot.costByModel[model] ?? 0)
+	}
 	return {
 		deltaInput: Math.max(0, deltaInput),
 		deltaOutput: Math.max(0, deltaOutput),
+		deltaCost: Math.max(0, deltaCost),
 	}
 }
 
@@ -175,11 +197,11 @@ export function snapshotPhaseTokens(fermentId: string, phaseId: string): void {
 export function consumePhaseTokenDelta(
 	fermentId: string,
 	phaseId: string,
-): { deltaInput: number; deltaOutput: number } {
+): { deltaInput: number; deltaOutput: number; deltaCost: number } {
 	const key = `${fermentId}:${phaseId}`
 	const snapshot = phaseTokenSnapshots.get(key)
 	phaseTokenSnapshots.delete(key)
-	if (!_telemetryCtx || !snapshot) return { deltaInput: 0, deltaOutput: 0 }
+	if (!_telemetryCtx || !snapshot) return { deltaInput: 0, deltaOutput: 0, deltaCost: 0 }
 	return diffSnapshot(_telemetryCtx, snapshot)
 }
 
@@ -226,6 +248,7 @@ function cleanupFermentState(fermentId: string): void {
 	fermentStartTimes.delete(fermentId)
 	fermentTokenTotals.delete(fermentId)
 	fermentSteeringCounts.delete(fermentId)
+	scopingTokenSnapshots.delete(fermentId)
 	for (const key of phaseTokenSnapshots.keys()) {
 		if (key.startsWith(`${fermentId}:`)) phaseTokenSnapshots.delete(key)
 	}
@@ -249,6 +272,9 @@ function onFermentStarted(raw: unknown): void {
 	if (!ctx) return
 	const payload = raw as FermentStartedPayload
 	fermentStartTimes.set(payload.fermentId, Date.now())
+	// Capture a scoping snapshot at ferment start so we can compute token/cost
+	// deltas for the scoping phase (before any phase is activated).
+	scopingTokenSnapshots.set(payload.fermentId, captureSnapshot(ctx))
 	// Initialise the running phase-delta accumulator. Totals are summed as
 	// each phase completes rather than diffing the session accumulator at
 	// ferment start/end (which over-counts scoping-conversation tokens).
@@ -259,6 +285,20 @@ function onFermentStarted(raw: unknown): void {
 		phase_count: payload.phaseCount,
 		model: ctx.currentModel,
 	})
+}
+
+function onFermentScopingResumed(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _telemetryCtx
+	if (!ctx) return
+	const payload = raw as FermentScopingResumedPayload
+	if (!fermentStartTimes.has(payload.fermentId)) fermentStartTimes.set(payload.fermentId, payload.startedAtMs)
+	if (!scopingTokenSnapshots.has(payload.fermentId)) {
+		scopingTokenSnapshots.set(payload.fermentId, captureSnapshot(ctx))
+	}
+	if (!fermentTokenTotals.has(payload.fermentId)) {
+		fermentTokenTotals.set(payload.fermentId, { input: 0, output: 0 })
+	}
 }
 
 function onFermentCompleted(raw: unknown): void {
@@ -457,6 +497,54 @@ function onFermentSteering(raw: unknown): void {
 	fermentSteeringCounts.set(payload.fermentId, current + 1)
 }
 
+function onScopingComplete(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _telemetryCtx
+	if (!ctx) return
+	const payload = raw as FermentScopingCompletedPayload
+	// In normal flows, STARTED initialized the baseline before scope fires.
+	// If no baseline exists (unexpected path), we emit zeros for duration
+	// and deltas rather than skipping the event entirely.
+	const startMs = fermentStartTimes.get(payload.fermentId) ?? 0
+	const durationMs = startMs > 0 ? Date.now() - startMs : 0
+	const steeringCount = fermentSteeringCounts.get(payload.fermentId) ?? 0
+	const snapshot = scopingTokenSnapshots.get(payload.fermentId)
+	let deltaInput = 0
+	let deltaOutput = 0
+	let deltaCost = 0
+	if (snapshot && _telemetryCtx) {
+		const diff = diffSnapshot(_telemetryCtx, snapshot)
+		deltaInput = diff.deltaInput
+		deltaOutput = diff.deltaOutput
+		deltaCost = diff.deltaCost
+	}
+	scopingTokenSnapshots.delete(payload.fermentId)
+	const attrs: TelemetryAttributes & { ferment_id: string } = {
+		ferment_id: payload.fermentId,
+		session_id: ctx.telemetryId,
+		duration_ms: durationMs,
+		steering_count: steeringCount,
+		delta_input_tokens: deltaInput,
+		delta_output_tokens: deltaOutput,
+		delta_cost_usd: deltaCost,
+		block_retries: Math.max(0, payload.proposeIterations - 1),
+		model: ctx.currentModel,
+	}
+	ctx.emitWithIds("ferment.scoping.complete", attrs)
+}
+
+function onUserUnblocked(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _telemetryCtx
+	if (!ctx) return
+	const payload = raw as UserUnblockedPayload
+	ctx.emitWithIds("user.unblock_time", {
+		ferment_id: payload.fermentId,
+		session_id: ctx.telemetryId,
+		duration_ms: payload.durationMs,
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Bash-tool-guard domain event handlers
 // ---------------------------------------------------------------------------
@@ -574,6 +662,9 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(FERMENT_EVENTS.STEP_COMPLETED, onStepCompleted)
 		pi.events.on(FERMENT_EVENTS.STEP_FAILED, onStepFailed)
 		pi.events.on(FERMENT_EVENTS.STEERING, onFermentSteering)
+		pi.events.on(FERMENT_EVENTS.SCOPING_RESUMED, onFermentScopingResumed)
+		pi.events.on(FERMENT_EVENTS.SCOPING_COMPLETE, onScopingComplete)
+		pi.events.on(FERMENT_EVENTS.USER_UNBLOCKED, onUserUnblocked)
 
 		// Subscribe to bash-tool-guard domain events. The guard publishes
 		// facts; telemetry translates them into OTLP records for analytics.

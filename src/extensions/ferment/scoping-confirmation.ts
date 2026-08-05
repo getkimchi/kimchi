@@ -61,6 +61,7 @@ export function confirmPendingScope(
 		constraints: pending.constraints,
 		assumptions: pending.assumptions,
 		phases: scopedPhases,
+		proposeIterations: pending.proposeIterations,
 	})
 	if (!outcome.ok) return { ok: false, error: outcome.error }
 	runtime.clearPendingScope(fermentId)

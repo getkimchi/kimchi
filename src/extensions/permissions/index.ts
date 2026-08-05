@@ -628,6 +628,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					hasUI: ctx.hasUI,
 					isOneShot: pi.getFlag("ferment-oneshot") === true,
 				})
+				// Set the draft active before emitting STARTED so telemetry can capture
+				// the scoping baseline. Keep planning tools until activation succeeds.
+				defaultFermentRuntime.setActive(draft)
+				if (pi.events) emitFermentCreated(pi.events, draft)
 				// Scope it using the structured fields from the shared plan.
 				const applyAndPersist = createApplyAndPersist(runtime)
 				const scoped = applyAndPersist(draft.id, {
@@ -654,22 +658,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					phaseId: scoped.ferment.phases[0]?.id ?? "phase-1",
 				})
 				if (!activated.ok) throw new Error(activated.error.message)
-				// Register the ferment as active in the runtime, emit the creation
-				// event, and append a session ref so resumed sessions can find it.
 				defaultFermentRuntime.setActive(activated.ferment)
 				setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)
-				// pi.events may be undefined in headless / test contexts; guard before emitting.
-				if (pi.events) emitFermentCreated(pi.events, activated.ferment)
 				appendRefEntry(pi, activated.ferment.id)
 				changeMode(ctx, "plan", "auto", "user")
 			} catch (err) {
-				// Fail closed: if the runtime path failed (storage write error, FSM
-				// rejection, etc.), the session must NOT end up with implementation
-				// tools visible but no active ferment, no session ref, no creation
-				// event, and no initialized runtime/scheduler state. That was the
-				// silent-invalid-state bug from PR #683 review (comment 3473746278).
-				// Stay in plan mode, clear any half-set runtime state, and surface
-				// the failure so the user knows promotion did not succeed.
+				// Promotion failed before activation. Keep the planning profile, clear
+				// the half-set runtime state, and tell the user that they can retry.
 				defaultFermentRuntime.setActive(undefined)
 				const message = err instanceof Error ? err.message : String(err)
 				ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
