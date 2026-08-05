@@ -553,9 +553,54 @@ describe("bash tool classification", () => {
 	})
 })
 
-describe("STEER_MESSAGE_TYPE", () => {
+	describe("STEER_MESSAGE_TYPE", () => {
 	it("has a stable custom type string", () => {
 		expect(STEER_MESSAGE_TYPE).toBe("exploration-guard-steer")
+	})
+})
+
+describe("Provider error suppression", () => {
+	// Provider errors (e.g. content_filter, budget exhausted) produce empty
+	// responses with no tool calls. Without this guard the no-tool counter
+	// increments on every error response, triggering steer messages that
+	// re-queue into the agent loop and cause infinite retries until budget
+	// is exhausted.
+
+	it("does not increment no-tool counter on an error turn", () => {
+		const guard = createGuard()
+		guard.turnStart()
+		guard.turnEnd(() => {}, true) // isError = true
+		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
+	})
+
+	it("does not fire steers on consecutive error turns", () => {
+		const guard = createGuard()
+		const steers: string[] = []
+		for (let i = 0; i < 10; i++) {
+			guard.turnStart()
+			guard.turnEnd((text) => steers.push(text), true)
+		}
+		expect(steers).toHaveLength(0)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
+	})
+
+	it("does not reset the no-tool counter on error turns", () => {
+		// An error turn should be neutral — it should not reset an existing
+		// no-tool streak (that would hide real stalls) nor increment it.
+		const guard = createGuard()
+		simulateNoToolTurn(guard)
+		simulateNoToolTurn(guard)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(2)
+		guard.turnStart()
+		guard.turnEnd(() => {}, true)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(2)
+	})
+
+	it("defaults to non-error when isError is omitted", () => {
+		const guard = createGuard()
+		guard.turnStart()
+		guard.turnEnd(() => {})
+		expect(guard.getConsecutiveNoToolTurns()).toBe(1)
 	})
 })
 

@@ -6,6 +6,7 @@ export type LLMGatewayErrorReason =
 	| "provider_5xx"
 	| "provider_error"
 	| "bad_request"
+	| "content_filter"
 	| "context_window_exceeded"
 	| "invalid_request_payload"
 
@@ -23,6 +24,7 @@ const LLM_GATEWAY_REASON_POLICIES: Record<
 	provider_5xx: { retryable: true, isInfrastructure: true, exitCode: LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE },
 	provider_error: { retryable: true, isInfrastructure: true, exitCode: LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE },
 	bad_request: { retryable: false, isInfrastructure: false, exitCode: LLM_GATEWAY_REQUEST_EXIT_CODE },
+	content_filter: { retryable: false, isInfrastructure: false, exitCode: LLM_GATEWAY_REQUEST_EXIT_CODE },
 	context_window_exceeded: { retryable: false, isInfrastructure: false, exitCode: LLM_GATEWAY_REQUEST_EXIT_CODE },
 	invalid_request_payload: { retryable: false, isInfrastructure: false, exitCode: LLM_GATEWAY_REQUEST_EXIT_CODE },
 }
@@ -70,6 +72,7 @@ const HTTP_STATUS_RES = [
 const FIVE_XX_STATUS_CODES = new Set([500, 502, 503, 504, 524, 529])
 
 const INVALID_REQUEST_PAYLOAD_RE = /tools must not be an empty array/i
+const CONTENT_FILTER_RE = /finish_reason:\s*content_filter|content.?filter/i
 const CONTEXT_WINDOW_RE =
 	/ContextWindowExceeded|context(?:\s|-)?(?:window|length|overflow)|maximum context|prompt too long|longer than the model'?s context length/i
 const NON_GATEWAY_PROVIDER_VERDICT_RE =
@@ -121,6 +124,7 @@ export function classifyLLMGatewayError(rawMessage: string): LLMGatewayError | u
 	const status = parseHttpStatusCode(rawMessage)
 
 	if (INVALID_REQUEST_PAYLOAD_RE.test(rawMessage)) return createError("invalid_request_payload", rawMessage, status)
+	if (CONTENT_FILTER_RE.test(rawMessage)) return createError("content_filter", rawMessage, status)
 	if (CONTEXT_WINDOW_RE.test(rawMessage)) return createError("context_window_exceeded", rawMessage, status)
 	// Budget exhaustion is a terminal Kimchi verdict even when the gateway
 	// describes it using provider-verdict words such as "billing".

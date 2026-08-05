@@ -137,6 +137,10 @@ export class ContinuationNudge {
 		// The user explicitly cancelled this turn (Esc / Ctrl+C). Respect the
 		// abort — they don't want the model to be re-prompted with a nudge.
 		if (message.stopReason === "aborted") return false
+		// Provider errors (e.g. content_filter, budget exhausted) produce empty
+		// content. Without this guard the nudge re-queues a followUp message,
+		// causing the agent loop to retry indefinitely until budget is exhausted.
+		if (message.stopReason === "error") return false
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		if (hasToolCalls || !hasText) return false
@@ -198,6 +202,10 @@ export class EmptyTurnNudge {
 	evaluateTurn(message: AssistantMessage): boolean {
 		if (this.nudgeCountThisCycle >= EmptyTurnNudge.MAX_NUDGES) return false
 		if (message.stopReason === "aborted") return false
+		// Provider errors (e.g. content_filter, budget exhausted) produce empty
+		// responses. Without this guard the nudge re-queues a followUp message,
+		// causing the agent loop to retry indefinitely until budget is exhausted.
+		if (message.stopReason === "error") return false
 
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
