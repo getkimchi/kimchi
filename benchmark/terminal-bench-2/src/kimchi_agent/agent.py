@@ -494,8 +494,12 @@ class Kimchi(BaseInstalledAgent):
             )
         # Ensure a git repo exists in the task working directory with a
         # committed baseline, but never clobber one that the task image ships
-        # with (e.g. fix-git).
-        parts.append(f"cd /app && {git_init_and_commit_baseline_command()}")
+        # with (e.g. fix-git).  Harbor sets the working directory via
+        # ``docker exec -w``, so ``$PWD`` is the task workdir at shell start.
+        # Capture it before any prior ``cd`` in the parts chain so the git
+        # baseline always lands in the task workdir, not in an extension or
+        # staging directory a previous step may have cd'd into.
+        parts.append(f"TASK_WORKDIR=$PWD && {git_init_and_commit_baseline_command('$TASK_WORKDIR')}")
         harness_settings = self._harness_settings_command()
         if harness_settings:
             parts.append(harness_settings)

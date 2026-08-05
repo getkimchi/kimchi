@@ -45,7 +45,7 @@ def git_config_command() -> str:
     )
 
 
-def git_init_and_commit_baseline_command() -> str:
+def git_init_and_commit_baseline_command(workdir: str = "/app") -> str:
     """Init a git repo and commit all files as the baseline snapshot.
 
     Only runs when no ``.git`` already exists — some terminal-bench tasks
@@ -55,9 +55,18 @@ def git_init_and_commit_baseline_command() -> str:
 
     After ``git init`` the working tree is staged and committed so that a
     subsequent ``git diff`` shows only the agent's changes.
+
+    The ``workdir`` parameter controls which directory the git repo is
+    initialised in.  It defaults to ``/app`` (the terminal-bench convention)
+    but some tasks use a different working directory (e.g. ``prove-plus-comm``
+    uses ``/workspace``).  Callers that run the command in a fresh shell where
+    the working directory is already correct (set by harbor via ``docker exec
+    -w``) can pass ``workdir=""`` to skip the ``cd`` and operate on the
+    current directory.
     """
+    cd = f"cd {workdir} && " if workdir else ""
     return (
-        "if [ ! -d .git ]; then"
+        f"{cd}if [ ! -d .git ]; then"
         "  git init -q &&"
         "  git add -A &&"
         "  git commit -q -m 'baseline' --allow-empty;"

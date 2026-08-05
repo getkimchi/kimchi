@@ -508,8 +508,11 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
         if openrouter_models_config is not None:
             parts.append(self._openrouter_models_command(openrouter_models_config))
         # Ensure a git repo exists with a committed baseline, but never clobber
-        # one the task image ships with (e.g. fix-git).
-        parts.append(f"cd /app && {git_init_and_commit_baseline_command()}")
+        # one the task image ships with (e.g. fix-git).  Harbor sets the
+        # working directory via ``docker exec -w``, so ``$PWD`` is the task
+        # workdir at shell start.  Capture it early because a prior part may
+        # have ``cd``'d into the extension install dir.
+        parts.append(f"TASK_WORKDIR=$PWD && {git_init_and_commit_baseline_command('$TASK_WORKDIR')}")
         parts.extend(self._pre_launch_commands(instruction))
 
         post_launch = "".join(f"{command}; " for command in self._post_launch_commands())

@@ -190,8 +190,10 @@ class PiKimchiTest(unittest.IsolatedAsyncioTestCase):
         # nvm sourced at the start of the launch command so npm/pi are on PATH
         self.assertIn('NVM_DIR', run_command)
         self.assertIn('nvm.sh', run_command)
-        # Git baseline
-        self.assertIn("cd /app", run_command)
+        # Git baseline — should use $PWD (captured as TASK_WORKDIR) not
+        # hardcoded /app, since some tasks use a different workdir.
+        self.assertIn("TASK_WORKDIR=$PWD", run_command)
+        self.assertIn("$TASK_WORKDIR", run_command)
 
     async def test_run_env_sets_api_key_and_pi_agent_dir(self) -> None:
         with tempfile.TemporaryDirectory() as ext_dir, tempfile.TemporaryDirectory() as tmp:

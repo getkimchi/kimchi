@@ -147,7 +147,7 @@ class OpenCodeKimchi(KimchiGatewayMixin, OpenCode):
 
         await self.exec_as_agent(
             environment,
-            command=f"cd /app && {git_init_and_commit_baseline_command()}",
+            command=git_init_and_commit_baseline_command(workdir=""),
             env=env,
         )
         skills_command = self._build_register_skills_command()
