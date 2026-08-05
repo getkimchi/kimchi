@@ -553,7 +553,7 @@ describe("bash tool classification", () => {
 	})
 })
 
-	describe("STEER_MESSAGE_TYPE", () => {
+describe("STEER_MESSAGE_TYPE", () => {
 	it("has a stable custom type string", () => {
 		expect(STEER_MESSAGE_TYPE).toBe("exploration-guard-steer")
 	})
