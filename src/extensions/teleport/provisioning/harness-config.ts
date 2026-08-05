@@ -4,8 +4,17 @@ import { formatRsyncFailure, runRsync } from "./rsync-runner.js"
 
 /** Allowlist — only these transfer. --files-from is case-sensitive, so a
  * hypothetical Auth.json can't bypass this the way it would a lowercase
- * denylist. New secret files are safe by default. */
-export const HARNESS_CONFIG_ALLOWLIST: readonly string[] = ["settings.json", "keybindings.json", "themes"]
+ * denylist. New secret files are safe by default.
+ *
+ * NOTE: models.json may carry provider `apiKey` fields. Syncing it verbatim
+ * is an accepted trade-off: those keys land on the remote sandbox the user
+ * owns. auth.json / mcp.json (OAuth + MCP tokens) stay excluded. */
+export const HARNESS_CONFIG_ALLOWLIST: readonly string[] = [
+	"settings.json",
+	"keybindings.json",
+	"themes",
+	"models.json",
+]
 
 /** Remote destination for harness config: ~/.config/kimchi/harness/ (derived from SANDBOX_HOME). */
 export const REMOTE_HARNESS_CONFIG_DIR = `${SANDBOX_HOME}/.config/kimchi/harness`
@@ -17,10 +26,10 @@ export interface ProvisionHarnessConfigResult {
 
 /**
  * Sync the user's harness config (~/.config/kimchi/harness/) to the remote
- * sandbox. Only safe, non-secret files are transferred (settings.json,
- * keybindings.json, themes/). Everything else — including auth.json,
- * mcp.json, models.json, and any future secret file — is implicitly
- * excluded.
+ * sandbox. Only allowlisted files transfer (settings.json, keybindings.json,
+ * themes/, models.json). auth.json and mcp.json (OAuth + MCP tokens) and any
+ * future secret file are implicitly excluded. models.json may carry provider
+ * apiKey fields — see HARNESS_CONFIG_ALLOWLIST note.
  *
  * Runs with deleteExtraneous=false so remote-only files (auth.json, mcp.json
  * created by the remote) are preserved — we overwrite synced files but don't

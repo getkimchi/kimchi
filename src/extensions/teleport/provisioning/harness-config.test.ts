@@ -81,7 +81,7 @@ describe("provisionHarnessConfig", () => {
 })
 
 describe("HARNESS_CONFIG_ALLOWLIST", () => {
-	it("contains exactly the safe harness config entries", () => {
-		expect([...HARNESS_CONFIG_ALLOWLIST]).toEqual(["settings.json", "keybindings.json", "themes"])
+	it("contains exactly the synced harness config entries", () => {
+		expect([...HARNESS_CONFIG_ALLOWLIST]).toEqual(["settings.json", "keybindings.json", "themes", "models.json"])
 	})
 })
