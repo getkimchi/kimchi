@@ -157,7 +157,7 @@ describe("promptForApproval — risk-first layout", () => {
 		expect(promptText).toContain("Allow the assistant to run this?")
 	})
 
-	it("skips explanation for low risk even when subtitle is provided", async () => {
+	it("shows explanation for low risk when subtitle is provided", async () => {
 		const ctx = fakeCtx()
 		await promptForApproval({
 			toolName: "bash",
@@ -171,7 +171,7 @@ describe("promptForApproval — risk-first layout", () => {
 		const promptText = callArgs[0] as string
 		expect(promptText).toContain("low risk")
 		expect(promptText).toContain(SUCCESS_FG)
-		expect(promptText).not.toContain("harmless listing")
+		expect(promptText).toContain("harmless listing")
 		expect(promptText).toContain("Allow the assistant to run this?")
 	})
 

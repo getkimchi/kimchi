@@ -110,7 +110,7 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 		const wrappedCommand = wrapTextWithAnsi(callDescription, wrapWidth).join("\n")
 		lines.push(`${badge} ${wrappedCommand}`)
 		// For low risk, the classifier is confident enough to skip the explanation.
-		if (subtitle && riskScore !== "low") lines.push(subtitle)
+		if (subtitle) lines.push(subtitle)
 		lines.push("")
 		lines.push(ctx.ui.theme.fg("accent", ctx.ui.theme.bold("Allow the assistant to run this?")))
 	} else {
