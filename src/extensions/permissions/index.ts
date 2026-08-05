@@ -59,7 +59,7 @@ import {
 	isReadOnlyTool,
 	splitCompoundCommand,
 } from "./taxonomy.js"
-import type { PermissionMode, PermissionModeRuntimeSource, Rule } from "./types.js"
+import type { PermissionMode, PermissionModeRuntimeSource, RiskScore, Rule } from "./types.js"
 
 /**
  * Check whether a file path is within .kimchi/plans/ relative to cwd.
@@ -851,12 +851,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				)
 
 				if (verdict.verdict === "safe") return undefined
-				if (verdict.verdict === "blocked") {
-					return {
-						block: true,
-						reason: `Classifier blocked: ${verdict.reason}`,
-					}
-				}
 				if (!promptAvailable) {
 					return {
 						block: true,
@@ -866,7 +860,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				const result = await handleConfirm(event, {
 					ctx,
 					pi,
-					subtitle: `Classifier: ${verdict.reason}`,
+					subtitle: verdict.reason,
+					riskScore: verdict.riskScore,
 					session,
 					activeAborts: activeAbortControllers,
 					allRules,
@@ -933,6 +928,8 @@ interface ConfirmOptions {
 	ctx: ExtensionContext
 	session: SessionMemory
 	subtitle?: string
+	/** Risk score from the classifier LLM, for display in the prompt. */
+	riskScore?: RiskScore
 	activeAborts: Set<AbortController>
 	allRules?: () => Rule[]
 	pi?: ExtensionAPI
@@ -963,6 +960,7 @@ async function handleConfirm(
 			toolName: event.toolName,
 			input,
 			subtitle: opts.subtitle,
+			riskScore: opts.riskScore,
 			choices: buildPermissionChoices(event.toolName, input),
 			signal: abort.signal,
 		})
@@ -1012,7 +1010,6 @@ export async function handleCompoundConfirm(
 
 		const compoundSubs: CompoundSubcommand[] = opts.subcommands.map((cmd) => ({
 			command: cmd,
-			description: `bash(${truncate(cmd, 100)})`,
 		}))
 
 		const outcome = await promptForCompoundApproval({
@@ -1118,11 +1115,6 @@ function splitFlag(raw: boolean | string | undefined): string[] {
 		.split(",")
 		.map((s) => s.trim())
 		.filter(Boolean)
-}
-
-function truncate(s: string, max: number): string {
-	if (s.length <= max) return s
-	return `${s.slice(0, max - 1)}…`
 }
 
 function formatRule(rule: Rule): string {

@@ -2,7 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import { complete } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import classifierSystemPrompt from "./prompts/classifier-system-prompt.js"
-import type { ClassifierResult, ClassifierVerdict } from "./types.js"
+import type { ClassifierResult, ClassifierVerdict, RiskScore } from "./types.js"
 
 /** Tag added to every classifier LLM request for cost tracking. */
 export const CLASSIFIER_REQUEST_TAG = "source:classifier"
@@ -163,7 +163,8 @@ export function parseClassifierOutput(raw: string): ClassifierResult {
 	if (!verdict) return unavailable("classifier returned unknown verdict")
 
 	const reason = typeof json.reason === "string" && json.reason.trim() ? json.reason.trim() : "no reason provided"
-	return { verdict, reason, ok: true }
+	const riskScore = normalizeRiskScore(json.riskScore)
+	return { verdict, reason, ok: true, riskScore }
 }
 
 /**
@@ -199,7 +200,12 @@ function retryable(reason: string): InternalResult {
 }
 
 function normalizeVerdict(v: unknown): ClassifierVerdict | undefined {
-	if (v === "safe" || v === "requires-confirmation" || v === "blocked") return v
+	if (v === "safe" || v === "requires-confirmation") return v
+	return undefined
+}
+
+function normalizeRiskScore(v: unknown): RiskScore | undefined {
+	if (v === "low" || v === "medium" || v === "high") return v
 	return undefined
 }
 

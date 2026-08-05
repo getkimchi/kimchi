@@ -44,7 +44,7 @@ vi.mock("./classifier.js", async () => {
 	const actual = await vi.importActual<typeof import("./classifier.js")>("./classifier.js")
 	return {
 		...actual,
-		classifyToolCall: vi.fn(async () => ({ verdict: "safe", reason: "mock safe" })),
+		classifyToolCall: vi.fn(async () => ({ verdict: "safe", riskScore: "low", reason: "mock safe" })),
 	}
 })
 
@@ -93,6 +93,7 @@ function createMockContext(
 			setWorkingVisible: vi.fn(),
 			theme: {
 				fg: vi.fn((_, s) => s),
+				bold: vi.fn((s) => s),
 				getFgAnsi: vi.fn(() => ""),
 			},
 			onTerminalInput: vi.fn(() => () => {}),
@@ -1060,7 +1061,7 @@ describe("permissions TUI allow-remember", () => {
 				notify: vi.fn(),
 				setStatus: vi.fn(),
 				setWorkingVisible: vi.fn(),
-				theme: { fg: vi.fn((_, s) => s), getFgAnsi: vi.fn(() => "") },
+				theme: { fg: vi.fn((_, s) => s), bold: vi.fn((s) => s), getFgAnsi: vi.fn(() => "") },
 				onTerminalInput: vi.fn(() => () => {}),
 			},
 		} as unknown as ExtensionContext
@@ -1246,6 +1247,7 @@ describe("permissions ACP prompter", () => {
 		const requests: string[] = []
 		vi.mocked(classifyToolCall).mockResolvedValueOnce({
 			verdict: "requires-confirmation",
+			riskScore: "medium",
 			reason: "needs a human",
 			ok: true,
 		})

@@ -1882,6 +1882,17 @@ async function hlBlock(code: string, language: BundledLanguage | undefined): Pro
 	}
 }
 
+/**
+ * Highlight a code snippet using the same shiki theme as diffs.
+ * Returns the highlighted string (single line or multi-line joined with \n),
+ * or the original code if highlighting is unavailable or fails.
+ */
+export async function highlightCode(code: string, language: BundledLanguage): Promise<string> {
+	if (!code || code.length > MAX_HL_CHARS) return code
+	const lines = await hlBlock(code, language)
+	return lines.join("\n")
+}
+
 function parseDiff(oldContent: string, newContent: string, ctxLines = 3): ParsedDiff {
 	const patch = Diff.structuredPatch("", "", oldContent, newContent, "", "", { context: ctxLines })
 	const lines: DiffLine[] = []
