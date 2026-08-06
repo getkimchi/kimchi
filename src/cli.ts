@@ -67,6 +67,7 @@ import loginExtension from "./extensions/login/index.js"
 import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
+import maxOutputTokensExtension from "./extensions/max-output-tokens.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
@@ -142,6 +143,7 @@ import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
 import { installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
+import { installThinkingBudgetPatch } from "./upstream-thinking-budget-patch.js"
 import {
 	postProcessHtmlExport,
 	postProcessJsonlExport,
@@ -153,6 +155,9 @@ import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
 installInlineCompactPatch()
+// Must run before any AgentSession is constructed: it wraps the agent's stream
+// function from inside the constructor.
+installThinkingBudgetPatch()
 installPiNativeCompatibilityShim()
 // Wrap InteractiveMode.prototype.showError so retried provider errors are
 // suppressed / sanitized before reaching the terminal. Must run before any
@@ -622,6 +627,7 @@ try {
 			piiRedactionExtension,
 			stripImagesExtension,
 			traceIdExtension,
+			maxOutputTokensExtension,
 			requestTimingExtension,
 			llmResponseLogExtension,
 			activityExtension,

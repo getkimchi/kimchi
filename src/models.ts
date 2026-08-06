@@ -5,6 +5,72 @@ import { getVersion } from "./utils.js"
 const KIMCHI_API = "https://llm.kimchi.dev"
 const FETCH_TIMEOUT_MS = 20000
 
+/**
+ * The OpenAI-compatible path offers no thinking-token budget: `thinkingBudgets`
+ * is implemented only for anthropic/google/bedrock, and openai-completions sends
+ * a coarse `reasoning_effort` string. `none` provably disables reasoning
+ * (0 reasoning chars observed); whether the graded levels bound its length is
+ * unverified, and `xhigh` is rejected outright by the gateway with a 400.
+ *
+ * So max output tokens is the only enforceable bound on runaway thinking. It is
+ * a blunt one: it caps the entire completion, tool calls included, and a turn
+ * cut mid-tool-call has not been tested.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 32_000
+export const MAX_OUTPUT_TOKENS_ENV = "KIMCHI_MAX_OUTPUT_TOKENS"
+
+export function resolveMaxOutputTokens(env: NodeJS.ProcessEnv = process.env): number {
+	const raw = env[MAX_OUTPUT_TOKENS_ENV]
+	if (raw !== undefined && raw.trim() !== "") {
+		// Number(), not parseInt(): parseInt truncates at the first non-digit, so
+		// "32k" would become 32 and cap every turn at 32 tokens.
+		const parsed = Number(raw.trim())
+		if (Number.isInteger(parsed) && parsed >= 0) return parsed
+	}
+	return DEFAULT_MAX_OUTPUT_TOKENS
+}
+
+/**
+ * Per-turn budget for *thinking* tokens, enforced client-side by
+ * upstream-thinking-budget-patch.ts. The output cap above bounds everything the
+ * model emits, so a limit strict enough to stop runaway deliberation also severs
+ * tool calls; measuring only reasoning avoids that. `0` disables it entirely.
+ *
+ * ── Why 8k ──────────────────────────────────────────────────────────────────
+ * Thinking per turn across 37 stored terminal-bench sessions (381 thinking
+ * turns, mostly glm-5.2-fp8) runs p50 229 · p90 4.7k · p95 10k · p99 58k, so the
+ * waste sits in a very thin tail: 8k cuts ~6% of thinking turns and recovers
+ * ~37% of the thinking that survives the 32k output cap.
+ *
+ * Most of that tail is one task family reasoning 57-70k tokens per turn without
+ * ever acting. 8k also reaches `path-tracing` and `adaptive-rejection-sampler`,
+ * which is deliberate: they are coin flips in
+ * docs/benchmark-confidence-intervals.md, so they are the only tasks where the
+ * score can still move, and they deliberate 8-13k tokens without acting. 16k is
+ * the conservative alternative — the runaway family alone, half the recovery.
+ *
+ * Counted in estimated tokens (chars/4). Measurement and enforcement share those
+ * units so the threshold is self-consistent, but real reasoning tokens for a turn
+ * cut here run somewhat above 8k.
+ */
+export const DEFAULT_MAX_THINKING_TOKENS = 8_000
+export const MAX_THINKING_TOKENS_ENV = "KIMCHI_MAX_THINKING_TOKENS"
+
+/**
+ * Read per request rather than once at startup: benchmark arms and tests change
+ * the configured budget without restarting the process.
+ */
+export function resolveMaxThinkingTokens(env: NodeJS.ProcessEnv = process.env): number {
+	const raw = env[MAX_THINKING_TOKENS_ENV]
+	if (raw !== undefined && raw.trim() !== "") {
+		// Number(), not parseInt(): parseInt truncates at the first non-digit, so
+		// "8k" would become 8 and cut every turn after two words of reasoning.
+		const parsed = Number(raw.trim())
+		if (Number.isInteger(parsed) && parsed >= 0) return parsed
+	}
+	return DEFAULT_MAX_THINKING_TOKENS
+}
+
 function normalizeKimchiEndpoint(endpoint?: string): string {
 	const trimmed = endpoint?.trim()
 	if (!trimmed) return KIMCHI_API
@@ -196,6 +262,12 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		reasoning: m.reasoning,
 		input: m.input_modalities,
 		contextWindow: m.limits.context_window,
+		// Deliberately NOT clamped by KIMCHI_MAX_OUTPUT_TOKENS: this value is the
+		// gateway's advertised ceiling, persisted to models.json and shown in the
+		// model picker. Clamping it here would misreport the model's real limit
+		// and would not bound anything — pi never forwards model.maxTokens into
+		// the request. The cap is enforced on the payload instead, in
+		// extensions/max-output-tokens.ts.
 		maxTokens: m.limits.max_output_tokens,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		// Store upstream provider for telemetry round-trip via models.json
