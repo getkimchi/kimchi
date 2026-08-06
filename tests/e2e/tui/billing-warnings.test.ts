@@ -118,7 +118,7 @@ test("shows a rate-limit warning when a depleted Coder plan reports as free tier
 			terminal.submit("Use remaining credits")
 
 			await expect(terminal.getByText("Done.", { full: true })).toBeVisible()
-			await waitForText(terminal, "requests are rate limited", { full: true })
+			await waitForText(terminal, "slower rate-limited mode", { full: true })
 			await waitForText(terminal, "https://app.kimchi.dev/billing", { full: true })
 		},
 	)
