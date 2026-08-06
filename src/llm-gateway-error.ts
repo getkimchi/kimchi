@@ -85,7 +85,7 @@ const STREAM_INTERRUPTED_RE =
 const HOSTED_VLLM_PROVIDER_ERROR_RE =
 	/Hosted_vllmException.*(?:server disconnected|cannot connect to host|connect call failed|cannot schedule new futures after shutdown|executor.*shutdown|upstream request|call_upstream_request_error)|call_upstream_request_error|error sending request/i
 const PROVIDER_5XX_TEXT_RE =
-	/bad gateway|service unavailable|gateway timeout|internal server error|overloaded|overloaded_error|cloudflare.*timeout|timeout.*cloudflare/i
+	/bad gateway|service(?:\s+is)?\s+(?:temporarily\s+)?unavailable|gateway timeout|internal server error|overloaded|overloaded_error|cloudflare.*timeout|timeout.*cloudflare/i
 // Named-phrase forms only; numeric statuses are matched via parseHttpStatusCode.
 // `(?:^|:\s)terminated\b`: when undici kills a stream mid-body, fetch rejects
 // the body read with TypeError("terminated") and layers record it either bare

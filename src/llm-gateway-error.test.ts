@@ -137,6 +137,17 @@ describe("classifyLLMGatewayError", () => {
 			httpStatusCode: 504,
 		},
 		{
+			name: "service is temporarily unavailable (HTTP 200 body)",
+			message: "The service is temporarily unavailable.",
+			reason: "provider_5xx",
+		},
+		{
+			name: "service unavailable (compact form)",
+			message: "503 Service Unavailable",
+			reason: "provider_5xx",
+			httpStatusCode: 503,
+		},
+		{
 			name: "hosted vLLM server disconnected",
 			message: "InternalServerError: Hosted_vllmException - Server disconnected",
 			reason: "provider_error",
