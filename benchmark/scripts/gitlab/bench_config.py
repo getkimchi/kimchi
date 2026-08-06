@@ -289,6 +289,9 @@ _THINKING_CAPABLE_AGENTS = frozenset(
 # thinking, so off/minimal have no equivalent — they are rejected rather than
 # silently rounded up to low, which would report a level the run never used.
 CLAUDE_CODE_CODING_AGENT = "claude-code"
+CLAUDE_CODE_STANDARD_CODING_AGENT = "claude-code-standard"
+# Both Claude Code agents map thinking levels to --effort. The standard agent
+# extends the Kimchi one, so both share the same effort level set.
 CLAUDE_CODE_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 
@@ -312,11 +315,11 @@ def resolve_thinking_level(coding_agent: str | None = None) -> str | None:
             f"expected one of: default, {', '.join(sorted(THINKING_LEVELS))}"
         )
     agent = coding_agent if coding_agent is not None else os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
-    if agent == CLAUDE_CODE_CODING_AGENT:
+    if agent in (CLAUDE_CODE_CODING_AGENT, CLAUDE_CODE_STANDARD_CODING_AGENT):
         if raw not in CLAUDE_CODE_EFFORT_LEVELS:
             raise ValueError(
                 f"{ENV_THINKING_LEVEL}={raw!r} has no equivalent for "
-                f"{ENV_CODING_AGENT}={CLAUDE_CODE_CODING_AGENT}; Claude Code's --effort accepts: "
+                f"{ENV_CODING_AGENT}={agent}; Claude Code's --effort accepts: "
                 f"{', '.join(sorted(CLAUDE_CODE_EFFORT_LEVELS))} (or 'default')"
             )
         return raw

@@ -40,6 +40,7 @@ You will hit one of two failure modes:
 | `./scripts/run-release.sh` | Downloads the latest release from `castai/kimchi` |
 | `./scripts/run-opencode-kimchi.sh` | Installs OpenCode in the task container and configures it to use the Kimchi gateway |
 | `./scripts/run-claude-code-kimchi.sh` | Installs Claude Code in the task container and configures it to use the Kimchi gateway |
+| `./scripts/run-claude-code.sh` | Installs Claude Code in the task container and uses the standard Anthropic API (no gateway) |
 | `./scripts/run-gsd-kimchi.sh` | Installs GSD in the task container and configures it to use one selected Kimchi model |
 | `./scripts/run-pi-kimchi.sh` | Installs the bare `pi` CLI (upstream `@earendil-works/pi-coding-agent`) in the task container, with the `pi-kimchi-provider` extension routing model calls through the Kimchi gateway |
 | `./scripts/run-workflow.sh` | Cross-builds `kimchi` and runs one named `kimchi-workflows` workflow through it (default `ferment-oneshot`) instead of kimchi's chat loop |
@@ -192,6 +193,31 @@ CLAUDE_CODE_VERSION=2.1.144 MODEL=kimchi-dev/kimi-k2.7 \
   ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
 ```
 
+### Claude Code (standard release)
+
+Use `run-claude-code.sh` when the benchmark should evaluate the Claude Code scaffold against the **native Anthropic API** — no Kimchi gateway, no model metadata fetching. The model must be an Anthropic model ID with the `anthropic/` prefix.
+
+```bash
+export ANTHROPIC_API_KEY=...
+./scripts/run-claude-code.sh -i terminal-bench/fix-git
+```
+
+The script forwards `ANTHROPIC_API_KEY` to the container via `--ae` and lets harbor's built-in `ClaudeCode` agent handle auth, model resolution, and install. The `anthropic/` prefix is stripped automatically — `anthropic/claude-sonnet-5` becomes `ANTHROPIC_MODEL=claude-sonnet-5`.
+
+To change models, set `MODEL`:
+
+```bash
+MODEL=anthropic/claude-opus-4-8 ./scripts/run-claude-code.sh -i terminal-bench/fix-git
+```
+
+Pin Claude Code for reproducible runs with `CLAUDE_CODE_VERSION`:
+
+```bash
+CLAUDE_CODE_VERSION=2.1.144 ./scripts/run-claude-code.sh -i terminal-bench/fix-git
+```
+
+The retry config (`config/retry.yaml`) is included by default so transient Anthropic API errors (429, 500, 502, 503, 504, 524) are retried with exponential backoff. Override the max retry count with `CLAUDE_CODE_API_MAX_RETRIES`.
+
 ### GSD with the Kimchi gateway
 
 Use `run-gsd-kimchi.sh` when the benchmark should evaluate the GSD scaffold while routing model calls through `llm.kimchi.dev`.
@@ -304,7 +330,8 @@ Tag format is `key:value`, comma-separated; keys and values are alphanumeric plu
 | `GITHUB_TOKEN` | no | Raises GitHub API rate limits when fetching the latest release. Not required for public repos |
 | `MODEL` | no | Default `kimchi-dev/kimi-k2.7`. See "Picking a model" for the `<provider>/<id>` requirement |
 | `OPENCODE_VERSION` | no | Pins the OpenCode version used by `run-opencode-kimchi.sh` |
-| `CLAUDE_CODE_VERSION` | no | Pins the Claude Code version used by `run-claude-code-kimchi.sh` |
+| `CLAUDE_CODE_VERSION` | no | Pins the Claude Code version used by `run-claude-code-kimchi.sh` and `run-claude-code.sh` |
+| `ANTHROPIC_API_KEY` | for `run-claude-code.sh` | Anthropic API key for the standard Claude Code release; forwarded to the agent via `--ae` |
 | `GSD_VERSION` | no | Overrides the GSD package version used by `run-gsd-kimchi.sh`; default install target is `gsd-pi@latest` |
 | `PI_VERSION` | no | Pins the `@earendil-works/pi-coding-agent` version used by `run-pi-kimchi.sh`; default is `@latest` |
 | `WORKFLOW` | no | The workflow's declared **name** (not a filename) for `run-workflow.sh` / `run-pi-workflow.sh`. Defaults: `ferment-oneshot` and `deep-solve` respectively |

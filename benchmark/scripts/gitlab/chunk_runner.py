@@ -660,6 +660,8 @@ def _agent_import_path(coding_agent: str) -> str:
             return "kimchi_agent:OpenCodeKimchi"
         case "claude-code":
             return "kimchi_agent:ClaudeCodeKimchi"
+        case "claude-code-standard":
+            return "kimchi_agent:ClaudeCodeStandard"
         case "pi":
             return "kimchi_agent:PiKimchi"
         case "kimchi-workflow":
@@ -1230,7 +1232,16 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
     dataset = os.environ.get("DATASET", "terminal-bench/terminal-bench-2")
-    api_key = os.environ.get("KIMCHI_API_KEY")
+    # claude-code-standard uses the native Anthropic API, so ANTHROPIC_API_KEY
+    # is required instead of KIMCHI_API_KEY. All other agents route through
+    # the Kimchi gateway and need KIMCHI_API_KEY.
+    if coding_agent == "claude-code-standard":
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            print("ANTHROPIC_API_KEY is required for claude-code-standard", file=sys.stderr)
+            return 1
+    else:
+        api_key = os.environ.get("KIMCHI_API_KEY")
     if checkpointing and benchmark_name == "swe-bench-pro":
         print(
             "BENCH_TRIAL_CHECKPOINTS=true is not supported for "
@@ -1241,7 +1252,7 @@ def main() -> int:
     if model == MULTI_MODEL and coding_agent != "kimchi":
         print("MODEL=multi-model is only supported when CODING_AGENT=kimchi", file=sys.stderr)
         return 1
-    if not api_key:
+    if not api_key and coding_agent != "claude-code-standard":
         print("KIMCHI_API_KEY is required", file=sys.stderr)
         return 1
     openrouter_error = _openrouter_config_error(model, coding_agent)

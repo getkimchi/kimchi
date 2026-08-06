@@ -27,8 +27,9 @@ from pathlib import Path
 REDACTED_MARKER = b"[redacted]"
 # Env vars holding secrets this benchmark injects into agent environments.
 # KIMCHI_API_KEY routes kimchi-dev/* models; OPENROUTER_API_KEY routes
-# openrouter/* models.
-REDACTED_ENV_KEYS = ("KIMCHI_API_KEY", "OPENROUTER_API_KEY")
+# openrouter/* models; ANTHROPIC_API_KEY routes anthropic/* models
+# (claude-code-standard).
+REDACTED_ENV_KEYS = ("KIMCHI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY")
 
 
 def redact_tree(root: Path, secrets: list[bytes]) -> None:

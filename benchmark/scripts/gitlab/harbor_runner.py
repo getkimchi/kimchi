@@ -16,6 +16,7 @@ from typing import Any
 
 from bench_config import (
     CLAUDE_CODE_CODING_AGENT,
+    CLAUDE_CODE_STANDARD_CODING_AGENT,
     ENV_WORKFLOW,
     ENV_WORKFLOW_EXTENSION,
     PI_THINKING_AGENTS,
@@ -121,7 +122,7 @@ def build_harbor_command(
     if job_name is not None:
         cmd.extend(["--job-name", job_name])
 
-    if coding_agent == "claude-code" and claude_code_api_max_retries > 0:
+    if coding_agent == CLAUDE_CODE_CODING_AGENT and claude_code_api_max_retries > 0:
         cmd.extend([
             "--max-retries", str(claude_code_api_max_retries),
             "--retry-include", "RetryableApiError",
@@ -163,7 +164,7 @@ def build_harbor_command(
     # reasoning_effort into `--effort <level>`. resolve_thinking_level has
     # already rejected off/minimal for this agent, so the value is always one
     # the CLI accepts.
-    if coding_agent == CLAUDE_CODE_CODING_AGENT and thinking_level is not None:
+    if coding_agent in (CLAUDE_CODE_CODING_AGENT, CLAUDE_CODE_STANDARD_CODING_AGENT) and thinking_level is not None:
         cmd.extend(["--agent-kwarg", f"reasoning_effort={thinking_level}"])
 
     if is_workflow_agent(coding_agent):
@@ -172,7 +173,7 @@ def build_harbor_command(
 
     if coding_agent == "opencode" and opencode_version:
         cmd.extend(["--agent-kwarg", f"version={opencode_version}"])
-    if coding_agent == "claude-code" and claude_code_version:
+    if coding_agent in (CLAUDE_CODE_CODING_AGENT, CLAUDE_CODE_STANDARD_CODING_AGENT) and claude_code_version:
         cmd.extend(["--agent-kwarg", f"version={claude_code_version}"])
     if coding_agent == "pi" and pi_version:
         cmd.extend(["--agent-kwarg", f"version={pi_version}"])
