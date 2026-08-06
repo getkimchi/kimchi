@@ -57,8 +57,9 @@ inputs:
       - kimchi-dev/claude-fable-5
       - kimchi-dev/minimax-m3
       - kimchi-dev/glm-5.2-fp8
-      - openrouter/z-ai/glm-5.1
-      - openrouter/z-ai/glm-5.2
+      # Preset-pinned: route only to Moonshot (int4) instead of load-balancing across
+      # multiple providers. Use this for recorded scores with Kimi K2.7.
+      - openrouter/@preset/kimi-k2-7-moonshot
       # Preset-pinned: route only to Z.AI (fp8) instead of load-balancing across
       # ~20 endpoints of differing quantization. Use these for recorded scores.
       - openrouter/@preset/glm-5-1-zai
