@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
+import { logEvents, type RecordedEvent } from "../otlp-test-utils.js"
 import { _resetSharedAccumulators, TelemetryContext } from "../session-context.js"
-import type { LogRecord } from "../transport.js"
 import { handleWorkflowEvent } from "./workflows.js"
 
 vi.mock("../../../api/me.js", () => ({
@@ -17,35 +17,6 @@ function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 		apiKey: "",
 		...overrides,
 	}
-}
-
-interface RecordedEvent {
-	eventName: string
-	attrs: Record<string, string>
-}
-
-function attrText(value: LogRecord["attributes"][number]["value"]): string {
-	if ("stringValue" in value) return value.stringValue
-	if ("intValue" in value) return value.intValue
-	return String(value.doubleValue)
-}
-
-/** Every log record POSTed to the logs endpoint, in send order. */
-function logEvents(fetchMock: ReturnType<typeof vi.fn>): RecordedEvent[] {
-	return fetchMock.mock.calls
-		.filter(([url]) => String(url).includes("/logs"))
-		.flatMap(([, init]) => {
-			const body = JSON.parse(String((init as { body?: unknown })?.body)) as {
-				resourceLogs?: Array<{ scopeLogs?: Array<{ logRecords?: LogRecord[] }> }>
-			}
-			return (body.resourceLogs ?? [])
-				.flatMap((resource) => resource.scopeLogs ?? [])
-				.flatMap((scope) => scope.logRecords ?? [])
-				.map((record) => ({
-					eventName: record.eventName,
-					attrs: Object.fromEntries(record.attributes.map((a) => [a.key, attrText(a.value)])),
-				}))
-		})
 }
 
 /** Attrs of one record by its full OTLP name — spelled out per call site to assert the name derivation. */

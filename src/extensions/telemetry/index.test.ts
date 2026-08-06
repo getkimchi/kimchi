@@ -9,8 +9,8 @@ import telemetryExtension, {
 	trackSurveyDismissed,
 	trackSurveyShown,
 } from "./index.js"
+import { logEvents } from "./otlp-test-utils.js"
 import { _resetSharedAccumulators } from "./session-context.js"
-import type { LogRecord } from "./transport.js"
 
 vi.mock("../ferment/index.js", () => ({
 	getActiveFerment: vi.fn(() => undefined),
@@ -1548,21 +1548,7 @@ describe("workflow telemetry via pi.events", () => {
 
 	/** One record's attributes, looked up by its OTLP event name. */
 	function attrsOf(eventName: string): Record<string, string> | undefined {
-		const record = fetchMock.mock.calls
-			.filter(([url]: unknown[]) => String(url).includes("/logs"))
-			.flatMap(([, opts]: unknown[]) => {
-				const body = JSON.parse((opts as { body: string }).body) as {
-					resourceLogs?: Array<{ scopeLogs?: Array<{ logRecords?: LogRecord[] }> }>
-				}
-				return (body.resourceLogs ?? [])
-					.flatMap((resource) => resource.scopeLogs ?? [])
-					.flatMap((scope) => scope.logRecords ?? [])
-			})
-			.find((rec) => rec.eventName === eventName)
-		return (
-			record &&
-			Object.fromEntries(record.attributes.map((a) => [a.key, "stringValue" in a.value ? a.value.stringValue : ""]))
-		)
+		return logEvents(fetchMock).find((record) => record.eventName === eventName)?.attrs
 	}
 
 	/** Flush buffered OTLP log records by triggering session_shutdown. */
