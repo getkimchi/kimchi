@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
-import { promptForApproval, promptForCompoundApproval, truncate } from "./prompts.js"
+import { ERROR_FG, ORANGE_FG, RST_FG, SUCCESS_FG } from "../../ansi.js"
+import { formatRiskBadge, promptForApproval, promptForCompoundApproval, truncate } from "./prompts.js"
 
 describe("truncate helper", () => {
 	it("returns original string if under max length", () => {
@@ -23,6 +24,7 @@ describe("promptForApproval — withWorkingHidden", () => {
 				select: vi.fn(async () => "Yes — just this call"),
 				input: vi.fn(),
 				setWorkingVisible: vi.fn(),
+				theme: { fg: (_c: string, s: string) => s, bold: (s: string) => s },
 			},
 			// biome-ignore lint/suspicious/noExplicitAny: minimal stub for test
 		} as any
@@ -73,16 +75,14 @@ describe("promptForCompoundApproval", () => {
 			ui: {
 				select: vi.fn(async () => "Allow all from now on"),
 				setWorkingVisible: vi.fn(),
+				theme: { fg: (_c: string, s: string) => s, bold: (s: string) => s },
 			},
 			// biome-ignore lint/suspicious/noExplicitAny: minimal stub for test
 		} as any
 
 		const result = await promptForCompoundApproval({
 			toolName: "bash",
-			commands: [
-				{ command: "rtk git status", description: "bash(rtk git status)" },
-				{ command: "rtk kubectl get pods", description: "bash(rtk kubectl get pods)" },
-			],
+			commands: [{ command: "rtk git status" }, { command: "rtk kubectl get pods" }],
 			ctx,
 		})
 
@@ -93,5 +93,117 @@ describe("promptForCompoundApproval", () => {
 				{ toolName: "bash", content: "kubectl *", behavior: "allow", source: "session" },
 			],
 		})
+	})
+})
+
+describe("formatRiskBadge", () => {
+	it("formats low risk with success (green) color", () => {
+		const result = formatRiskBadge("low")
+		expect(result).toContain("low risk")
+		expect(result).toContain(SUCCESS_FG)
+		expect(result).toContain(RST_FG)
+	})
+
+	it("formats medium risk with orange color", () => {
+		const result = formatRiskBadge("medium")
+		expect(result).toContain("medium risk")
+		expect(result).toContain(ORANGE_FG)
+		expect(result).toContain(RST_FG)
+	})
+
+	it("formats high risk with error (red) color", () => {
+		const result = formatRiskBadge("high")
+		expect(result).toContain("high risk")
+		expect(result).toContain(ERROR_FG)
+		expect(result).toContain(RST_FG)
+	})
+})
+
+describe("promptForApproval — risk-first layout", () => {
+	function fakeCtx() {
+		return {
+			hasUI: true,
+			ui: {
+				select: vi.fn(async () => "Yes — just this call"),
+				input: vi.fn(),
+				setWorkingVisible: vi.fn(),
+				theme: { fg: (_c: string, s: string) => s, bold: (s: string) => s },
+			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal stub for test
+		} as any
+	}
+
+	const ansiEscape = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g")
+	function stripAnsi(s: string): string {
+		return s.replace(ansiEscape, "")
+	}
+
+	it("shows risk badge + command on first line, explanation indented below", async () => {
+		const ctx = fakeCtx()
+		await promptForApproval({
+			toolName: "bash",
+			input: { command: "rm -rf docs" },
+			ctx,
+			subtitle: "Deleting the entire docs directory recursively...",
+			riskScore: "high",
+		})
+
+		const callArgs = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0]
+		const promptText = callArgs[0] as string
+		expect(promptText).toContain("high risk")
+		expect(promptText).toContain(ERROR_FG)
+		expect(stripAnsi(promptText)).toContain("rm -rf docs")
+		expect(promptText).toContain("Deleting the entire docs directory recursively...")
+		expect(promptText).toContain("Allow the assistant to run this?")
+	})
+
+	it("shows explanation for low risk when subtitle is provided", async () => {
+		const ctx = fakeCtx()
+		await promptForApproval({
+			toolName: "bash",
+			input: { command: "ls" },
+			ctx,
+			subtitle: "harmless listing",
+			riskScore: "low",
+		})
+
+		const callArgs = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0]
+		const promptText = callArgs[0] as string
+		expect(promptText).toContain("low risk")
+		expect(promptText).toContain(SUCCESS_FG)
+		expect(promptText).toContain("harmless listing")
+		expect(promptText).toContain("Allow the assistant to run this?")
+	})
+
+	it("shows just the command when no risk score (default mode)", async () => {
+		const ctx = fakeCtx()
+		await promptForApproval({
+			toolName: "bash",
+			input: { command: "echo hello" },
+			ctx,
+		})
+
+		const callArgs = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0]
+		const promptText = callArgs[0] as string
+		expect(stripAnsi(promptText)).toContain("bash(echo hello)")
+		expect(promptText).toContain("Allow the assistant to run this?")
+		expect(promptText).not.toContain("high risk")
+		expect(promptText).not.toContain("medium risk")
+		expect(promptText).not.toContain("low risk")
+	})
+
+	it("shows subtitle without risk badge when riskScore is undefined", async () => {
+		const ctx = fakeCtx()
+		await promptForApproval({
+			toolName: "bash",
+			input: { command: "echo hello" },
+			ctx,
+			subtitle: "some explanation",
+		})
+
+		const callArgs = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0]
+		const promptText = callArgs[0] as string
+		expect(stripAnsi(promptText)).toContain("bash(echo hello)")
+		expect(promptText).toContain("some explanation")
 	})
 })

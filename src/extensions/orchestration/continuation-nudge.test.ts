@@ -175,6 +175,28 @@ describe("ContinuationNudge.evaluateTurn", () => {
 		expect(guard.evaluateTurn(aborted)).toBe(false)
 	})
 
+	it("does not nudge when the turn ended with a provider error (stopReason: error)", () => {
+		// Provider errors (e.g. content_filter, budget exhausted) must not
+		// trigger nudges — the nudge would re-queue a followUp message and
+		// cause the agent loop to retry indefinitely until budget is exhausted.
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const error = { ...textOnlyMessage, stopReason: "error" as const }
+		expect(guard.evaluateTurn(error)).toBe(false)
+	})
+
+	it("does not consume a nudge slot when the turn was a provider error", () => {
+		// An error turn must not decrement the per-cycle budget — a subsequent
+		// legitimate text-only turn in the same cycle should still get its nudge.
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const error = { ...textOnlyMessage, stopReason: "error" as const }
+		expect(guard.evaluateTurn(error)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
 	it("does not consume a nudge slot when the turn was aborted", () => {
 		// An aborted turn must not decrement the per-cycle budget — a subsequent
 		// legitimate text-only turn in the same cycle should still get its nudge.
@@ -529,6 +551,29 @@ describe("EmptyTurnNudge", () => {
 		const guard = new EmptyTurnNudge()
 		const aborted = { ...emptyMessage, stopReason: "aborted" as const }
 		expect(guard.evaluateTurn(aborted)).toBe(false)
+	})
+
+	describe("provider error suppression", () => {
+		// Provider errors (e.g. content_filter, budget exhausted) produce empty
+		// responses. Without this guard the nudge re-queues a followUp message,
+		// causing the agent loop to retry indefinitely until budget is exhausted.
+		it("does not nudge on an empty turn with stopReason: error", () => {
+			const guard = new EmptyTurnNudge()
+			const error = { ...emptyMessage, stopReason: "error" as const }
+			expect(guard.evaluateTurn(error)).toBe(false)
+		})
+
+		it("does not consume a nudge slot on error turns", () => {
+			const guard = new EmptyTurnNudge()
+			const error = { ...emptyMessage, stopReason: "error" as const }
+			expect(guard.evaluateTurn(error)).toBe(false)
+			expect(guard.evaluateTurn(error)).toBe(false)
+			expect(guard.evaluateTurn(error)).toBe(false)
+			// Full budget still available for a genuine empty turn.
+			expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+			expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+			expect(guard.evaluateTurn(emptyMessage)).toBe(false)
+		})
 	})
 })
 

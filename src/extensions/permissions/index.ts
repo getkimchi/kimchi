@@ -59,7 +59,7 @@ import {
 	isReadOnlyTool,
 	splitCompoundCommand,
 } from "./taxonomy.js"
-import type { PermissionMode, PermissionModeRuntimeSource, Rule } from "./types.js"
+import type { PermissionMode, PermissionModeRuntimeSource, RiskScore, Rule } from "./types.js"
 
 /**
  * Check whether a file path is within .kimchi/plans/ relative to cwd.
@@ -628,6 +628,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					hasUI: ctx.hasUI,
 					isOneShot: pi.getFlag("ferment-oneshot") === true,
 				})
+				// Set the draft active before emitting STARTED so telemetry can capture
+				// the scoping baseline. Keep planning tools until activation succeeds.
+				defaultFermentRuntime.setActive(draft)
+				if (pi.events) emitFermentCreated(pi.events, draft)
 				// Scope it using the structured fields from the shared plan.
 				const applyAndPersist = createApplyAndPersist(runtime)
 				const scoped = applyAndPersist(draft.id, {
@@ -654,22 +658,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					phaseId: scoped.ferment.phases[0]?.id ?? "phase-1",
 				})
 				if (!activated.ok) throw new Error(activated.error.message)
-				// Register the ferment as active in the runtime, emit the creation
-				// event, and append a session ref so resumed sessions can find it.
 				defaultFermentRuntime.setActive(activated.ferment)
 				setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)
-				// pi.events may be undefined in headless / test contexts; guard before emitting.
-				if (pi.events) emitFermentCreated(pi.events, activated.ferment)
 				appendRefEntry(pi, activated.ferment.id)
 				changeMode(ctx, "plan", "auto", "user")
 			} catch (err) {
-				// Fail closed: if the runtime path failed (storage write error, FSM
-				// rejection, etc.), the session must NOT end up with implementation
-				// tools visible but no active ferment, no session ref, no creation
-				// event, and no initialized runtime/scheduler state. That was the
-				// silent-invalid-state bug from PR #683 review (comment 3473746278).
-				// Stay in plan mode, clear any half-set runtime state, and surface
-				// the failure so the user knows promotion did not succeed.
+				// Promotion failed before activation. Keep the planning profile, clear
+				// the half-set runtime state, and tell the user that they can retry.
 				defaultFermentRuntime.setActive(undefined)
 				const message = err instanceof Error ? err.message : String(err)
 				ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
@@ -851,12 +846,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				)
 
 				if (verdict.verdict === "safe") return undefined
-				if (verdict.verdict === "blocked") {
-					return {
-						block: true,
-						reason: `Classifier blocked: ${verdict.reason}`,
-					}
-				}
 				if (!promptAvailable) {
 					return {
 						block: true,
@@ -866,7 +855,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				const result = await handleConfirm(event, {
 					ctx,
 					pi,
-					subtitle: `Classifier: ${verdict.reason}`,
+					subtitle: verdict.reason,
+					riskScore: verdict.riskScore,
 					session,
 					activeAborts: activeAbortControllers,
 					allRules,
@@ -933,6 +923,8 @@ interface ConfirmOptions {
 	ctx: ExtensionContext
 	session: SessionMemory
 	subtitle?: string
+	/** Risk score from the classifier LLM, for display in the prompt. */
+	riskScore?: RiskScore
 	activeAborts: Set<AbortController>
 	allRules?: () => Rule[]
 	pi?: ExtensionAPI
@@ -963,6 +955,7 @@ async function handleConfirm(
 			toolName: event.toolName,
 			input,
 			subtitle: opts.subtitle,
+			riskScore: opts.riskScore,
 			choices: buildPermissionChoices(event.toolName, input),
 			signal: abort.signal,
 		})
@@ -1012,7 +1005,6 @@ export async function handleCompoundConfirm(
 
 		const compoundSubs: CompoundSubcommand[] = opts.subcommands.map((cmd) => ({
 			command: cmd,
-			description: `bash(${truncate(cmd, 100)})`,
 		}))
 
 		const outcome = await promptForCompoundApproval({
@@ -1118,11 +1110,6 @@ function splitFlag(raw: boolean | string | undefined): string[] {
 		.split(",")
 		.map((s) => s.trim())
 		.filter(Boolean)
-}
-
-function truncate(s: string, max: number): string {
-	if (s.length <= max) return s
-	return `${s.slice(0, max - 1)}…`
 }
 
 function formatRule(rule: Rule): string {

@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { clearFermentCache } from "../../ferment/store.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
+import { formatSanitizedErrorMessage, isRetryableErrorStillPending } from "../../sanitized-error-message.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -537,14 +538,19 @@ export function registerFermentEvents(
 			if (!isAutomated) {
 				const errorMessage = getMessageStringField(event.message, "errorMessage")
 				const errorFerment = runtime.getActive()
+				// `turn_end` fires after the upstream retry loop has already exhausted
+				// (or the error was non-retryable). If a retryable error were somehow
+				// still pending, suppress the pause+notify so the retry spinner keeps
+				// the stage — the next turn_end will surface the final outcome.
+				if (errorMessage && isRetryableErrorStillPending(errorMessage, {})) {
+					return
+				}
 				if (errorFerment && (errorFerment.status === "running" || errorFerment.status === "planned")) {
 					const outcome = applyAndPersist(errorFerment.id, { type: "pause" })
 					if (outcome.ok) {
 						setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
-						const detail = errorMessage ? `: ${errorMessage}` : ""
-						ctx.ui.notify?.(
-							`Interrupted: "${outcome.ferment.name}" was paused due to an error${detail}. Run /ferment resume to continue.`,
-						)
+						const detail = errorMessage ? formatSanitizedErrorMessage(errorMessage, "ferment", { exhausted: true }) : ""
+						ctx.ui.notify?.(`Interrupted: "${outcome.ferment.name}" was paused due to an error. ${detail}`)
 					} else {
 						ctx.ui.notify?.(
 							`Connection error during "${errorFerment.name}" but pause failed: ${outcome.error.message}. Run /ferment pause manually.`,

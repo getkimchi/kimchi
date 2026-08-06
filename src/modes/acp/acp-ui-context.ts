@@ -26,10 +26,11 @@ import type {
 } from "@agentclientprotocol/sdk"
 import type { ExtensionUIContext, Theme as ThemeType } from "@earendil-works/pi-coding-agent"
 import {
-	AVAILABLE_METHODS,
+	type AcpExtMethod,
+	AVAILABLE_EXT_METHODS,
+	AVAILABLE_EXT_NOTIFICATIONS,
 	getClientSupportsElicitation,
 	getClientSupportsMethod,
-	type PiMethod,
 } from "./capabilities.js"
 import { requestWithAbort } from "./utils.js"
 
@@ -58,7 +59,7 @@ export function createAcpUIContext(
 	send: (params: SessionNotification) => void,
 ): ExtensionUIContext {
 	const supportsElicitation = getClientSupportsElicitation(clientCapabilities)
-	const supportsMethod = (method: PiMethod) => getClientSupportsMethod(clientCapabilities, method)
+	const supportsMethod = (method: AcpExtMethod) => getClientSupportsMethod(clientCapabilities, method)
 
 	async function requestDialog<T extends DialogResponse>(
 		acpMethod: "pi_editor",
@@ -67,7 +68,7 @@ export function createAcpUIContext(
 	): Promise<T | "aborted"> {
 		try {
 			return await requestWithAbort(
-				conn.extMethod(AVAILABLE_METHODS[acpMethod], {
+				conn.extMethod(AVAILABLE_EXT_METHODS[acpMethod], {
 					type: REQUEST_TYPE,
 					id: randomUUID(),
 					sessionId,
@@ -76,7 +77,7 @@ export function createAcpUIContext(
 				signal,
 			)
 		} catch (err) {
-			logError(AVAILABLE_METHODS[acpMethod], err)
+			logError(AVAILABLE_EXT_METHODS[acpMethod], err)
 			return { cancelled: true } as T
 		}
 	}
@@ -86,7 +87,7 @@ export function createAcpUIContext(
 			method: "notify" | "setStatus" | "setWidget" | "set_editor_text"
 		},
 	): void {
-		const acpMethod = AVAILABLE_METHODS.pi_notify
+		const acpMethod = AVAILABLE_EXT_NOTIFICATIONS.pi_notify
 		conn
 			.extNotification(acpMethod, {
 				type: REQUEST_TYPE,
@@ -249,15 +250,8 @@ export function createAcpUIContext(
 
 		async input(title, placeholder, opts) {
 			if (!supportsElicitation) {
-				if (supportsMethod("pi_notify")) {
-					// No permission-equivalent for free text — notify and resolve undefined.
-					ui.notify(`Input requested: "${title}" (not supported by this client)`, "warning")
-				} else {
-					warnUnsupportedMethod(
-						"input",
-						`Extension requested free-text input "${title}" but the client supports neither form elicitation nor notifications. The call was dropped.`,
-					)
-				}
+				// No permission-equivalent for free text — notify and resolve undefined.
+				ui.notify(`Input requested: "${title}" (not supported by this client)`, "warning")
 				return undefined
 			}
 

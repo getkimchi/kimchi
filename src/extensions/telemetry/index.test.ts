@@ -1076,6 +1076,215 @@ describe("token accounting regression tests", () => {
 		)
 		expect(attrs.session_type).toBe("ferment")
 	})
+
+	it("ferment:scoping_complete → ferment.scoping.complete with all required attributes", async () => {
+		const { handlers, events, api, ctx } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "f-scoping", name: "Scoping Test", phaseCount: 2 })
+		events.emit(FERMENT_EVENTS.STEERING, { fermentId: "f-scoping" })
+		events.emit(FERMENT_EVENTS.STEERING, { fermentId: "f-scoping" })
+		events.emit(FERMENT_EVENTS.SCOPING_COMPLETE, {
+			fermentId: "f-scoping",
+			name: "Scoping Test",
+			proposeIterations: 2,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+		const rec = allRecords.find((r) => r.eventName === "ferment.scoping.complete")
+		expect(rec).toBeDefined()
+		const attrs = Object.fromEntries(
+			(rec as NonNullable<typeof rec>).attributes.map((a) => [a.key, a.value.stringValue]),
+		)
+		expect(attrs.ferment_id).toBe("f-scoping")
+		expect(attrs.session_id).toBeDefined()
+		expect(Number.isFinite(Number(attrs.duration_ms))).toBe(true)
+		expect(attrs.steering_count).toBe("2")
+		expect(Number(attrs.delta_input_tokens)).toBe(0)
+		expect(Number(attrs.delta_output_tokens)).toBe(0)
+		expect(Number(attrs.delta_cost_usd)).toBe(0)
+		expect(attrs.block_retries).toBe("1")
+		expect(attrs.model).toBeDefined()
+	})
+
+	it("ferment:scoping_complete with no steering → steering_count is 0", async () => {
+		const { handlers, events, api, ctx } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "f-scoping-2", name: "No Steer", phaseCount: 1 })
+		events.emit(FERMENT_EVENTS.SCOPING_COMPLETE, {
+			fermentId: "f-scoping-2",
+			name: "No Steer",
+			proposeIterations: 0,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+		const rec = allRecords.find((r) => r.eventName === "ferment.scoping.complete")
+		expect(rec).toBeDefined()
+		const attrs = Object.fromEntries(
+			(rec as NonNullable<typeof rec>).attributes.map((a) => [a.key, a.value.stringValue]),
+		)
+		expect(attrs.ferment_id).toBe("f-scoping-2")
+		expect(attrs.session_id).toBeDefined()
+		expect(attrs.steering_count).toBe("0")
+		expect(attrs.block_retries).toBe("0")
+	})
+
+	it("draft resume preserves an existing scoping baseline and restores a missing one", async () => {
+		const { handlers, events, api, ctx } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_000)
+
+		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "same-process", name: "Same Process", phaseCount: 1 })
+		now.mockReturnValue(5_000)
+		events.emit(FERMENT_EVENTS.SCOPING_RESUMED, { fermentId: "same-process", startedAtMs: 4_000 })
+		events.emit(FERMENT_EVENTS.SCOPING_RESUMED, { fermentId: "new-process", startedAtMs: 2_000 })
+		now.mockReturnValue(10_000)
+		events.emit(FERMENT_EVENTS.SCOPING_COMPLETE, {
+			fermentId: "same-process",
+			name: "Same Process",
+			proposeIterations: 0,
+		})
+		events.emit(FERMENT_EVENTS.SCOPING_COMPLETE, {
+			fermentId: "new-process",
+			name: "New Process",
+			proposeIterations: 0,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const records = fetchMock.mock.calls
+			.filter(([url]: unknown[]) => String(url).includes("/logs"))
+			.flatMap(([, opts]: unknown[]) => {
+				const body = JSON.parse((opts as { body: string }).body)
+				return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+					eventName: string
+					attributes: Array<{ key: string; value: { stringValue: string } }>
+				}>
+			})
+		const attrsFor = (fermentId: string) => {
+			const record = records.find(
+				(record) =>
+					record.eventName === "ferment.scoping.complete" &&
+					record.attributes.some((attr) => attr.key === "ferment_id" && attr.value.stringValue === fermentId),
+			)
+			return Object.fromEntries(record?.attributes.map((attr) => [attr.key, attr.value.stringValue]) ?? [])
+		}
+
+		expect(attrsFor("same-process").duration_ms).toBe("9000")
+		expect(attrsFor("new-process").duration_ms).toBe("8000")
+		expect(records.filter((record) => record.eventName === "ferment.started")).toHaveLength(1)
+	})
+
+	it("ferment:scoping_complete after STARTED with message_end → non-zero token deltas", async () => {
+		const { handlers, events, api, ctx } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		// Simulate the permissions path: STARTED fires before scope.
+		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "f-perms", name: "Perms Plan", phaseCount: 0 })
+
+		// Simulate token usage during scoping
+		await getHandler(
+			handlers,
+			"message_end",
+		)({
+			message: {
+				role: "assistant",
+				model: "claude-sonnet-4-6",
+				provider: "anthropic",
+				timestamp: Date.now(),
+				usage: { input: 300, output: 100, cacheRead: 0, cacheWrite: 0, cost: { total: 0.02 } },
+			},
+		})
+
+		events.emit(FERMENT_EVENTS.SCOPING_COMPLETE, {
+			fermentId: "f-perms",
+			name: "Perms Plan",
+			proposeIterations: 1,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+		const rec = allRecords.find((r) => r.eventName === "ferment.scoping.complete")
+		expect(rec).toBeDefined()
+		const attrs = Object.fromEntries(
+			(rec as NonNullable<typeof rec>).attributes.map((a) => [a.key, a.value.stringValue]),
+		)
+		expect(attrs.ferment_id).toBe("f-perms")
+		expect(attrs.session_id).toBeDefined()
+		expect(Number.isFinite(Number(attrs.duration_ms))).toBe(true)
+		// Token deltas should reflect the message_end usage
+		expect(Number(attrs.delta_input_tokens)).toBe(300)
+		expect(Number(attrs.delta_output_tokens)).toBe(100)
+		expect(Number(attrs.delta_cost_usd)).toBeCloseTo(0.02, 5)
+		// proposeIterations=1 → Math.max(0, 1-1) = 0 retries
+		expect(attrs.block_retries).toBe("0")
+	})
+
+	it("ferment:user_unblocked → user.unblock_time with ferment_id, session_id and duration_ms", async () => {
+		const { handlers, events, api, ctx } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		events.emit(FERMENT_EVENTS.USER_UNBLOCKED, {
+			fermentId: "f-unblock",
+			durationMs: 5000,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+		const rec = allRecords.find((r) => r.eventName === "user.unblock_time")
+		expect(rec).toBeDefined()
+		const attrs = Object.fromEntries(
+			(rec as NonNullable<typeof rec>).attributes.map((a) => [a.key, a.value.stringValue]),
+		)
+		expect(attrs.ferment_id).toBe("f-unblock")
+		expect(attrs.session_id).toBeDefined()
+		expect(attrs.duration_ms).toBe("5000")
+	})
 })
 
 // ---------------------------------------------------------------------------

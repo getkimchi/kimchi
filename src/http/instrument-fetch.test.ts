@@ -74,6 +74,22 @@ describe("installGlobalFetchInstrumentation", () => {
 		expect(hook).toHaveBeenCalledTimes(1)
 	})
 
+	it("does not fire the billing hook for a failed completion (e.g. 429 budget exhausted)", async () => {
+		const hook = vi.fn(async () => {})
+		install(hook)
+		baseResponse = () => new Response("budget exhausted", { status: 429 })
+		await (await fetch("https://llm.test/openai/v1/chat/completions")).text()
+		expect(hook).not.toHaveBeenCalled()
+	})
+
+	it("does not fire the billing hook for a 503 completion", async () => {
+		const hook = vi.fn(async () => {})
+		install(hook)
+		baseResponse = () => new Response("Service Unavailable", { status: 503 })
+		await (await fetch("https://llm.test/openai/v1/chat/completions")).text()
+		expect(hook).not.toHaveBeenCalled()
+	})
+
 	it("attaches the billing hook to an already-installed fetch (entry.ts installs early, cli.ts attaches late)", async () => {
 		install() // early install without hook, as entry.ts does
 		const hook = vi.fn(async () => {})

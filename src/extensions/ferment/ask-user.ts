@@ -29,6 +29,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { renderLabeledSuccessCriteria } from "../../ferment/success-criteria.js"
 import type { Ferment, ScopingQuestionType } from "../../ferment/types.js"
 import { normalizeQuestionType, YES_NO_OPTIONS } from "../questionnaire/index.js"
+import { FERMENT_EVENTS, type UserUnblockedPayload } from "./domain-events.js"
 import { type JudgeApiResult, judgeApiCall } from "./judge.js"
 import { promptForm } from "./prompt-ui.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -546,10 +547,15 @@ export async function askUserForm(
 
 	const ui = context.ctx?.ui
 	if (ui) {
+		const promptedAtMs = Date.now()
 		const result = await promptForm(context.ctx, { title, description, questions })
 		if (!result || result.cancelled) {
 			return { failed: true, reason: "user_cancelled", detail: "User cancelled the prompt." }
 		}
+		context.pi.events.emit(FERMENT_EVENTS.USER_UNBLOCKED, {
+			fermentId: context.ferment.id,
+			durationMs: Date.now() - promptedAtMs,
+		} satisfies UserUnblockedPayload)
 		context.runtime?.markHumanInput()
 		return {
 			response_type: "form",

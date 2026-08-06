@@ -717,7 +717,58 @@ describe("turn_end connection error recovery", () => {
 			ctx,
 		)
 
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Cloudflare 524 timeout"))
+		// The raw provider error must NOT leak to the user; a sanitized generic
+		// message is surfaced instead. Cloudflare 524 is retryable, so after
+		// retries are exhausted the ferment context points at /ferment resume.
+		expect(notify).not.toHaveBeenCalledWith(expect.stringContaining("Cloudflare 524 timeout"))
+		expect(notify).toHaveBeenCalledWith(
+			expect.stringContaining("The model provider is temporarily unavailable (provider unavailable)"),
+		)
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Run /ferment resume to continue."))
+	})
+
+	it("never leaks vLLM internals / cluster IPs / SSL context pointers to the user", async () => {
+		const { storage, ferment } = setupScopedRunningFerment("ferment-vllm-leak-", "vLLM Leak Ferment")
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		const active = storage.get(ferment.id)
+		if (!active) throw new Error("ferment not found after setup")
+		runtime.setActive(active)
+
+		const { handlers, pi } = createPi()
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const notify = vi.fn()
+		const ctx = createContext({ ui: { notify } })
+
+		const rawVllmError =
+			'{"detail":"InternalServerError: Hosted_vllmException - Cannot connect to host serverless-glm-5-2-fp8.castai-llms.svc.cluster.local.:11434 ssl:<ssl.SSLContext object at 0x7a0e79ee8e40> [Connect call failed (\'10.30.0.226\', 11434)]"}'
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: rawVllmError,
+					content: [],
+				},
+			},
+			ctx,
+		)
+
+		const notifyCalls = notify.mock.calls.map((args) => String(args[0]))
+		for (const forbidden of ["vllm", ".svc.cluster.local", "SSLContext", "0x", "Traceback", "10.30.0.226", "11434"]) {
+			for (const text of notifyCalls) {
+				expect(text).not.toContain(forbidden)
+			}
+		}
+		expect(
+			notifyCalls.some((t) => t.includes("The model provider is temporarily unavailable (provider unavailable)")),
+		).toBe(true)
+		expect(notifyCalls.some((t) => t.includes("Run /ferment resume to continue."))).toBe(true)
 	})
 })
 

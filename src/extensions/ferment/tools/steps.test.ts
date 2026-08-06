@@ -50,6 +50,10 @@ function createHarness(options: { verification?: string; goal?: string; successC
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const pi = {
+		events: {
+			emit: vi.fn(),
+			on: vi.fn(() => () => {}),
+		},
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),

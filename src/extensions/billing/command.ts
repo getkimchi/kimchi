@@ -81,7 +81,7 @@ function formatProviderLimit(limitType: string, budgetLimitUsd: string): string 
 
 async function handleBudgetCommand(ctx: ExtensionCommandContext): Promise<void> {
 	if (!ctx.hasUI) return
-	await refreshBillingStatusFromConfig()
+	await refreshBillingStatusFromConfig({ mode: "forced" })
 	const budget = getBillingStatus()?.budget
 	if (!budget) {
 		ctx.ui.notify("Budget information is currently unavailable.", "warning")

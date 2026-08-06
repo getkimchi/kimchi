@@ -3,7 +3,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import {
+import sessionNameExtension, {
 	deterministicFallback,
 	extractFirstUserMessage,
 	SESSION_NAME_MODEL,
@@ -249,5 +249,72 @@ describe("sessionNameExtension turn_end handler", () => {
 		// All branches are covered by the suggestSessionName tests above
 		// and mocking pi.setSessionName would be trivial but low value
 		expect(true).toBe(true)
+	})
+})
+
+describe("sessionNameExtension shutdown", () => {
+	function createHarness() {
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>()
+		const setSessionName = vi.fn()
+		const pi = {
+			on: (event: string, handler: (e: unknown, c: unknown) => unknown) => {
+				handlers.set(event, handler)
+			},
+			setSessionName,
+		}
+		sessionNameExtension()(pi as never)
+		const entries = [{ type: "message", message: { role: "user", content: "Please review this branch" } }]
+		const ctx = {
+			cwd: "/home/user/my-project",
+			hasUI: false,
+			sessionManager: {
+				getSessionName: () => undefined,
+				getBranch: () => entries,
+				getEntries: () => entries,
+			},
+		}
+		return { handlers, setSessionName, ctx }
+	}
+
+	// turn_end deliberately does not await (a slow listener starves the steering queue), so
+	// shutdown is the only place left to keep a one-shot run from exiting mid-request.
+	it("waits for an in-flight suggestion before shutting down", async () => {
+		let releaseFetch: (() => void) | undefined
+		const fetchGate = new Promise<void>((resolve) => {
+			releaseFetch = resolve
+		})
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				await fetchGate
+				return new Response(JSON.stringify({ choices: [{ message: { content: "Review Branch" } }] }), {
+					status: 200,
+				})
+			}),
+		)
+		mockLoadConfig.mockReturnValue({ apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" })
+		const { handlers, setSessionName, ctx } = createHarness()
+
+		handlers.get("turn_end")?.({}, ctx)
+		expect(setSessionName).not.toHaveBeenCalled()
+
+		let shutdownSettled = false
+		const shutdown = Promise.resolve(handlers.get("session_shutdown")?.({}, ctx)).then(() => {
+			shutdownSettled = true
+		})
+		await Promise.resolve()
+		expect(shutdownSettled).toBe(false)
+
+		releaseFetch?.()
+		await shutdown
+
+		expect(shutdownSettled).toBe(true)
+		expect(setSessionName).toHaveBeenCalledWith("Review Branch")
+	})
+
+	it("shuts down immediately when no suggestion is in flight", async () => {
+		const { handlers, ctx } = createHarness()
+
+		await expect(Promise.resolve(handlers.get("session_shutdown")?.({}, ctx))).resolves.toBeUndefined()
 	})
 })

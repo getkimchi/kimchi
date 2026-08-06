@@ -174,8 +174,96 @@ describe("classifyBashCommand — negative (allowed bash)", () => {
 		["git status && git log", null], // legit compound
 		["mkdir -p dist", null],
 		["mv old new", null], // mv not yet guarded (could be a future enhancement)
+		["echo 'hello'", null], // echo with no redirect or backgrounding
+		["echo 'done' && echo 'world'", null], // && is logical AND, not backgrounding
 	])("does not flag %s", (cmd, expected) => {
 		expect(classifyBashCommand(cmd)).toBe(expected)
+	})
+})
+
+describe("classifyBashCommand — backgrounding patterns", () => {
+	it("flags `nohup python3 ... & echo PID=$!`", () => {
+		const result = classifyBashCommand(
+			'cd /app && nohup python3 -u pystan_analysis.py > /app/run.log 2>&1 & echo "PID=$!"',
+		)
+		expect(result?.category).toBe("background")
+		expect(result?.tool).toBe("nohup")
+	})
+
+	it("flags `nohup ... & disown; echo ...`", () => {
+		const result = classifyBashCommand('nohup python3 run.py > run.log 2>&1 & disown; echo "launched PID $!"')
+		expect(result?.category).toBe("background")
+		expect(result?.tool).toBe("nohup")
+	})
+
+	it("flags bare `disown`", () => {
+		const result = classifyBashCommand("python3 run.py & disown")
+		expect(result?.category).toBe("background")
+	})
+
+	it("flags `python3 ... > /app/run.log 2>&1 &`", () => {
+		const result = classifyBashCommand("cd /app && python3 -u run.py > /app/run.log 2>&1 &")
+		expect(result?.category).toBe("background")
+		expect(result?.tool).toBe("&")
+	})
+
+	it("flags subshell backgrounding `(... > /app/run.log 2>&1 &) echo ...`", () => {
+		const result = classifyBashCommand(
+			'(echo "START"; timeout 1200 python -u convert_masks.py; echo "EXIT=$?") > /app/run_full3.log 2>&1 &\necho "launched pid $!"',
+		)
+		expect(result?.category).toBe("background")
+		expect(result?.tool).toBe("&")
+	})
+
+	it("flags `& echo PID` pattern", () => {
+		const result = classifyBashCommand('python3 run.py & echo "PID=$!"')
+		expect(result?.category).toBe("background")
+	})
+
+	it("flags `& sleep 60` pattern", () => {
+		const result = classifyBashCommand("python3 run.py & sleep 60")
+		expect(result?.category).toBe("background")
+	})
+
+	it("flags `& wait` pattern", () => {
+		const result = classifyBashCommand("setsid bash -c 'echo hi' & wait")
+		expect(result?.category).toBe("background")
+	})
+
+	it("suggestion mentions timeout and bash_control", () => {
+		const result = classifyBashCommand("nohup python3 run.py &")
+		expect(result?.suggestion).toMatch(/timeout/)
+		expect(result?.suggestion).toMatch(/bash_control/)
+	})
+
+	it("does not flag `&&` (logical AND)", () => {
+		expect(classifyBashCommand("git status && git log")).toBeNull()
+		expect(classifyBashCommand("cd src && pnpm test")).toBeNull()
+		expect(classifyBashCommand("echo 'hello' && echo 'world'")).toBeNull()
+	})
+
+	it("does not flag `> /dev/null` redirect without backgrounding", () => {
+		expect(classifyBashCommand("echo 'progress' > /dev/null")).toBeNull()
+	})
+
+	it("does not flag nohup inside quoted strings", () => {
+		expect(classifyBashCommand('echo "do not use nohup for this"')).toBeNull()
+	})
+
+	it("does not flag disown inside quoted strings", () => {
+		expect(classifyBashCommand('echo "the word disown appears here"')).toBeNull()
+	})
+
+	it("flags bare `&` at end of command", () => {
+		expect(classifyBashCommand("python3 run.py &")?.category).toBe("background")
+	})
+
+	it("flags `&` before comment", () => {
+		expect(classifyBashCommand("python3 run.py & # background")?.category).toBe("background")
+	})
+
+	it("flags `&` before subshell", () => {
+		expect(classifyBashCommand("python3 run.py & (other)")?.category).toBe("background")
 	})
 })
 
@@ -349,12 +437,13 @@ describe("BashToolGuard", () => {
 		expect(guard.getWarnThreshold("write")).toBe(3)
 	})
 
-	it.each<BashCategory>(["read", "edit", "write"])("tracks %s category independently", (category) => {
+	it.each<BashCategory>(["read", "edit", "write", "background"])("tracks %s category independently", (category) => {
 		const guard = new BashToolGuard()
 		const triggerByCategory: Record<BashCategory, string> = {
 			read: "cat foo.ts",
 			edit: "sed -i 's/a/b/' foo.ts",
 			write: "echo 'x' > foo.ts",
+			background: "nohup python3 run.py &",
 		}
 		const result = guard.recordCommand(triggerByCategory[category]) as BashGuardWarnResult
 		expect(result.category).toBe(category)
@@ -724,6 +813,21 @@ describe("BASH_TOOL_DESCRIPTION", () => {
 	it("documents that cd does not persist between bash tool calls", () => {
 		expect(BASH_TOOL_DESCRIPTION).toContain("does NOT persist")
 		expect(BASH_TOOL_DESCRIPTION).toContain("cd <dir> && <command>")
+	})
+
+	it("warns against piping output through tail/head to hide it", () => {
+		expect(BASH_TOOL_DESCRIPTION).toMatch(/pipe.*tail.*head.*hide/i)
+	})
+
+	it("warns against backgrounding with nohup/disown/&", () => {
+		expect(BASH_TOOL_DESCRIPTION).toContain("nohup")
+		expect(BASH_TOOL_DESCRIPTION).toContain("disown")
+		expect(BASH_TOOL_DESCRIPTION).toContain("background")
+	})
+
+	it("suggests using long timeout and checkin_interval for long-running commands", () => {
+		expect(BASH_TOOL_DESCRIPTION).toMatch(/timeout=1800/)
+		expect(BASH_TOOL_DESCRIPTION).toMatch(/checkin_interval/)
 	})
 })
 

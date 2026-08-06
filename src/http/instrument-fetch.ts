@@ -74,7 +74,7 @@ export function installGlobalFetchInstrumentation(options: GlobalFetchInstrument
 		}
 		const response = await idleFetch(input, { ...init, headers })
 		const hook = onModelCompletionSettled
-		return hook && isModelCompletionFetch(input)
+		return hook && response.ok && isModelCompletionFetch(input)
 			? withBillingRefreshAfterResponseSettles(response, () => hook(originalFetch))
 			: response
 	}
