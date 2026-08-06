@@ -77,7 +77,7 @@ function createMockContext(
 		hasUI: true,
 		mode: "tui",
 		cwd: "/test",
-		sessionManager: { getSessionId: () => sessionId },
+		sessionManager: { getSessionId: () => sessionId, getEntries: () => [], appendCustomEntry: vi.fn(() => "entry-id") },
 		ui: {
 			select: vi.fn(async (_: string, __: string[], selectOpts?: { signal?: AbortSignal }) => {
 				if (selectOpts?.signal?.aborted) {
@@ -163,6 +163,7 @@ function createPermissionsHarness(
 			activeTools = names.filter((name) => known.has(name))
 		}),
 		sendMessage: vi.fn(),
+		appendEntry: vi.fn(() => "entry-id"),
 		events: { emit: vi.fn() },
 	} as unknown as ExtensionAPI
 
@@ -1053,7 +1054,11 @@ describe("permissions TUI allow-remember", () => {
 		return {
 			hasUI: true,
 			cwd: "/test",
-			sessionManager: { getSessionId: () => TEST_SESSION_ID },
+			sessionManager: {
+				getSessionId: () => TEST_SESSION_ID,
+				getEntries: () => [],
+				appendCustomEntry: vi.fn(() => "entry-id"),
+			},
 			ui: {
 				select,
 				input: vi.fn(async () => ""),
@@ -1803,7 +1808,11 @@ describe("subagent inherits parent session permission mode", () => {
 		// Fire session_start with the CHILD's own session ID (different from parent).
 		const childCtx = {
 			...createMockContext([]),
-			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+			sessionManager: {
+				getSessionId: () => CHILD_SESSION_ID,
+				getEntries: () => [],
+				appendCustomEntry: vi.fn(() => "entry-id"),
+			},
 		} as unknown as ExtensionContext
 		await harness.fire("session_start", {}, childCtx)
 
@@ -1820,7 +1829,11 @@ describe("subagent inherits parent session permission mode", () => {
 
 		const childCtx = {
 			...createMockContext([]),
-			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+			sessionManager: {
+				getSessionId: () => CHILD_SESSION_ID,
+				getEntries: () => [],
+				appendCustomEntry: vi.fn(() => "entry-id"),
+			},
 		} as unknown as ExtensionContext
 		await harness.fire("session_start", {}, childCtx)
 
@@ -1836,7 +1849,11 @@ describe("subagent inherits parent session permission mode", () => {
 
 		const childCtx = {
 			...createMockContext([]),
-			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+			sessionManager: {
+				getSessionId: () => CHILD_SESSION_ID,
+				getEntries: () => [],
+				appendCustomEntry: vi.fn(() => "entry-id"),
+			},
 		} as unknown as ExtensionContext
 		await harness.fire("session_start", {}, childCtx)
 
@@ -1852,7 +1869,11 @@ describe("subagent inherits parent session permission mode", () => {
 
 		const childCtx = {
 			...createMockContext([]),
-			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+			sessionManager: {
+				getSessionId: () => CHILD_SESSION_ID,
+				getEntries: () => [],
+				appendCustomEntry: vi.fn(() => "entry-id"),
+			},
 		} as unknown as ExtensionContext
 		await harness.fire("session_start", {}, childCtx)
 

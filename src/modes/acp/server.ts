@@ -70,9 +70,12 @@ import {
 	clearPermissionMode,
 	createSessionPermissionFlagController,
 	getPermissionMode,
-	setPermissionMode,
+	getSessionLogPermissionMode,
+	resolvePermissionMode,
+	setAndPersistPermissionMode,
 } from "../../extensions/permissions/mode-controller.js"
 import {
+	getSessionPermissionFlagController,
 	registerSessionPermissionFlagController,
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
@@ -318,54 +321,61 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
-		await this.doSetModel(params.sessionId, params.modelId)
+		const record = this.sessions.get(params.sessionId)
+		if (!record) {
+			throw RequestError.invalidParams(undefined, `unknown sessionId ${params.sessionId}`)
+		}
+		await this.doSetModel(record, params.modelId)
 		return {}
 	}
 
 	async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
-		const session = this.sessions.get(params.sessionId)?.session
-		if (!session) {
+		const record = this.sessions.get(params.sessionId)
+		if (!record) {
 			throw RequestError.invalidParams(undefined, `unknown sessionId ${params.sessionId}`)
 		}
 		switch (params.configId) {
 			case "permissions-mode": {
-				this.doSetPermissionMode(params.sessionId, params.value ? `${params.value}` : "")
+				this.doSetPermissionMode(record, params.value ? `${params.value}` : "")
 				break
 			}
 			case "model": {
-				await this.doSetModel(params.sessionId, params.value ? `${params.value}` : "")
+				await this.doSetModel(record, params.value ? `${params.value}` : "")
 				break
 			}
 			default:
 				throw RequestError.invalidParams(undefined, `unknown config option ${params.configId}`)
 		}
 		return {
-			configOptions: buildConfigOptions(session, () => this.resolveInitialMode(session.sessionManager.getSessionDir())),
+			configOptions: buildConfigOptions(record.session, () =>
+				this.resolveInitialMode(record.session.sessionManager.getSessionDir()),
+			),
 		}
 	}
 
-	private doSetPermissionMode(sessionId: string, mode: string): PermissionMode {
+	private doSetPermissionMode(record: SessionRecord, mode: string): PermissionMode {
 		const permissionMode = mode as PermissionMode
 		if (!PERMISSION_MODES.includes(permissionMode)) {
 			throw RequestError.invalidParams(undefined, `invalid mode ${permissionMode}`)
 		}
-		setPermissionMode(sessionId, permissionMode, "user")
+		setAndPersistPermissionMode({
+			sessionManager: record.session.sessionManager,
+			appendCtx: record.session.sessionManager,
+			mode: permissionMode,
+			source: "user",
+		})
 		return permissionMode
 	}
 
-	private async doSetModel(sessionId: string, value: string): Promise<string> {
-		const entry = this.sessions.get(sessionId)
-		if (!entry) {
-			throw RequestError.invalidParams(undefined, `unknown sessionId ${sessionId}`)
-		}
-		if (entry.turn) {
+	private async doSetModel(record: SessionRecord, value: string): Promise<string> {
+		if (record.turn) {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
 		}
 		if (!value) {
 			throw RequestError.invalidParams(undefined, "modelId is required")
 		}
-
-		const { session } = entry
+		const { session } = record
+		const sessionId = session.sessionId
 		if (value === "multi-model") {
 			const { model: orchestrator, modelRef: orchRef } = getOrchestratorModel(session.sessionId, session.modelRegistry)
 			if (!orchestrator) {
@@ -1141,8 +1151,24 @@ function registerPermissionFlagController(
 	initialMode: PermissionMode,
 	send: (params: SessionNotification) => void,
 ): void {
+	// For loaded sessions, prefer the persisted session-log entry (and CLI/env
+	// precedence) over the caller-supplied initialMode. Only fall back to
+	// initialMode when the resolver falls through to the global default.
+	const resolved = resolvePermissionMode(session.sessionManager)
+	let mode = initialMode
+	let source: "user" | "ferment" = "user"
+	if (resolved.source === "runtime") {
+		mode = resolved.mode
+		source = getSessionPermissionFlagController(session.sessionId)?.getMode().source ?? "user"
+	} else if (resolved.source === "cli") {
+		mode = resolved.mode
+		source = "user"
+	} else if (resolved.source === "persisted") {
+		mode = resolved.mode
+		source = getSessionLogPermissionMode(session.sessionManager)?.source ?? "user"
+	}
 	const permissionFlagController = createSessionPermissionFlagController({
-		mode: { mode: initialMode, source: "user" },
+		mode: { mode, source },
 	})
 	// Register with permissions extension so tool gating uses session-scoped mode
 	registerSessionPermissionFlagController(session.sessionId, permissionFlagController)
@@ -1152,7 +1178,7 @@ function registerPermissionFlagController(
 			sessionId: session.sessionId,
 			update: {
 				sessionUpdate: "config_option_update",
-				configOptions: buildConfigOptions(session, initialMode),
+				configOptions: buildConfigOptions(session, mode.mode),
 			},
 		})
 	})

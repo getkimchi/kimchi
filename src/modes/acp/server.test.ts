@@ -88,6 +88,7 @@ class FakeAgentSession {
 		getBranch: () => this.branch,
 		getSessionId: () => this.sessionId,
 		getEntries: () => this.branch,
+		appendCustomEntry: vi.fn(() => "entry-id"),
 	}
 	// Captures whatever setUIContext the agent installs so tests can assert
 	// on it. The real AgentSession exposes this via its extensionRunner
@@ -2542,6 +2543,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 				},
 			}),
 			setActiveToolIdsByServer: () => {},
+			appendEntry: vi.fn().mockReturnValue("entry-id"),
 		} as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI
 
 		permissionsExtension(pi)
@@ -2566,7 +2568,11 @@ describe("ACP mode controller integration with permissions extension", () => {
 
 	function createMockContext(sessionId: string, cwd: string): ExtensionContext {
 		return {
-			sessionManager: { getSessionId: vi.fn().mockReturnValue(sessionId) } as unknown as SessionManager,
+			sessionManager: {
+				getSessionId: vi.fn().mockReturnValue(sessionId),
+				getEntries: vi.fn().mockReturnValue([]),
+				appendCustomEntry: vi.fn().mockReturnValue("entry-id"),
+			} as unknown as SessionManager,
 			cwd,
 			mode: "rpc",
 			hasUI: true,
@@ -4544,6 +4550,45 @@ describe("KimchiAcpAgent permission flag controller registration ordering", () =
 
 		expect(getSessionPermissionFlagController("load-bind-failure")).toBeUndefined()
 		expect(fake.disposed).toBe(true)
+	})
+
+	it("loadSession restores permission mode from persisted session-log entry", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const fake = new FakeAgentSession("load-persisted-permission-mode")
+		fake.branch = [
+			{
+				type: "custom",
+				id: "pm-1",
+				parentId: null,
+				timestamp: new Date().toISOString(),
+				customType: "permission_mode",
+				data: { mode: "plan", source: "user" },
+			},
+		]
+
+		const loader: AcpSessionLoader = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionLoader: loader,
+		})
+
+		const res = await agent.loadSession({
+			sessionId: fake.sessionId,
+			cwd: "/tmp",
+			mcpServers: [],
+		})
+
+		expect(res.configOptions?.[0].currentValue).toBe("plan")
+		// The controller preserves the source stored in the persisted entry.
+		expect(getSessionPermissionFlagController(fake.sessionId)?.getMode()).toEqual({
+			mode: "plan",
+			source: "user",
+		})
+
+		await agent.shutdown()
 	})
 
 	it("provides a working controller that can get and set mode during bindAcpExtensions", async () => {

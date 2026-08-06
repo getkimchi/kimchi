@@ -38,7 +38,13 @@ import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { BUILTIN_DENY, DEFAULT_CONFIG, PERMISSION_MODES_WITH_META as MODES, PERMISSIONS_ENV_KEY } from "./constants.js"
 import { resolveMode } from "./mode.js"
-import { getPermissionMode, getSessionPermissionsEnvKey, setPermissionMode } from "./mode-controller.js"
+import {
+	getPermissionMode,
+	getSessionLogPermissionMode,
+	getSessionPermissionsEnvKey,
+	setAndPersistPermissionMode,
+	setPermissionMode,
+} from "./mode-controller.js"
 import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { saveApprovedPlan } from "./plan-persistence.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
@@ -230,16 +236,37 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	/**
-	 * Returns the current permission mode flag or falls back to a user default.
+	 * Returns the current permission mode.
+	 *
+	 * Fallback precedence:
+	 *   1. runtime controller (per-session in-memory state)
+	 *   2. CLI flag (`cliMode`)
+	 *   3. persisted session-log entry
+	 *   4. env / config (`resolveMode`)
 	 */
 	function getRuntimePermissionMode(): { mode: PermissionMode; source: PermissionModeRuntimeSource } {
-		const runtimeMode = currentCtx && getPermissionMode(currentCtx.sessionManager.getSessionId())
-		if (runtimeMode) {
-			return runtimeMode
+		const sessionId = currentCtx?.sessionManager.getSessionId()
+		if (sessionId) {
+			const runtimeMode = getPermissionMode(sessionId)
+			if (runtimeMode) {
+				return runtimeMode
+			}
 		}
+
+		if (cliMode) {
+			return { mode: cliMode, source: "user" }
+		}
+
+		if (currentCtx) {
+			const persisted = getSessionLogPermissionMode(currentCtx.sessionManager)
+			if (persisted) {
+				return { mode: persisted.mode, source: persisted.source }
+			}
+		}
+
 		return {
 			mode: resolveMode({
-				flag: cliMode,
+				flag: undefined,
 				env: permissionsEnvFlag,
 				config: loaded.config.defaultMode,
 			}).mode,
@@ -248,8 +275,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	/**
-	 * Set current permission mode, keeps the controller in sync, and
-	 * persists the env key for sub-agents.
+	 * Set the runtime permission mode (controller + per-session env).
+	 *
+	 * Does NOT write the session log. Persistence happens at the next
+	 * `session_start` or `before_agent_start` via `syncPermissionModeState`.
 	 */
 	function setRuntimePermissionMode(
 		ctx: ExtensionContext,
@@ -258,6 +287,27 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		skipNotify?: boolean,
 	): void {
 		setPermissionMode(ctx.sessionManager.getSessionId(), mode, source, skipNotify)
+	}
+
+	/**
+	 * Reconcile the runtime controller mode with the session log.
+	 *
+	 * If `baseline` is provided, the mode is persisted only when it diverges
+	 * from that baseline. This prevents writing an initial env/config resolved
+	 * mode at session start while still recording explicit changes such as
+	 * ferment auto-yolo or user cycles that happened before the agent ran.
+	 */
+	function syncPermissionModeState(ctx: ExtensionContext, baseline?: PermissionMode): void {
+		const mode = getPermissionMode(ctx.sessionManager.getSessionId())
+		if (!mode) return
+		if (baseline !== undefined && mode.mode === baseline) return
+		setAndPersistPermissionMode({
+			sessionManager: ctx.sessionManager,
+			appendCtx: pi,
+			mode: mode.mode,
+			source: mode.source,
+			skipNotify: true,
+		})
 	}
 
 	function allRules(): Rule[] {
@@ -438,6 +488,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		else if (pi.getFlag("yolo") || pi.getFlag("dangerously-skip-permissions")) cliMode = "yolo"
 
 		let { mode: current, source } = getRuntimePermissionMode()
+		const resolvedAtStart = current
 		let next = current
 		// Active ferment → auto-yolo so scoping/lifecycle work can proceed without approval prompts.
 		// Permission mode is persisted after the user explicitly approves ferment creation.
@@ -449,6 +500,16 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}
 
 		changeMode(ctx, current, next, source)
+
+		// Reconcile the runtime controller with the session log at the start of
+		// the session and before every agent turn. This mirrors multi-model
+		// persistence: in-flight mode changes (shift+tab cycles, ferment
+		// activation) are queued in the controller and only written when the
+		// agent is about to run.
+		pi.on("before_agent_start", () => {
+			syncPermissionModeState(ctx)
+		})
+		syncPermissionModeState(ctx, resolvedAtStart)
 
 		const sessionId = currentCtx.sessionManager.getSessionId()
 		unsubscribePermissionFlagController = getSessionPermissionFlagController(sessionId)?.subscribe(({ mode: next }) => {
