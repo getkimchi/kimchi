@@ -1,6 +1,6 @@
 import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	type CommandRequest,
 	type CommandResult,
@@ -858,6 +858,59 @@ describe("environment-snapshot", () => {
 			expect(snapshot).toContain('"package.json"')
 			expect(snapshot).toContain('"JavaScript/TypeScript"')
 			expect(snapshot).not.toContain("not collected")
+		})
+
+		it("degrades to partial facts instead of rendering an unfiltered tree when the scan crosses the deadline", async () => {
+			// A slow bounded scan can finish after the collection deadline while
+			// the budget timer is still delayed (e.g. an event-loop stall). The
+			// unverified tree in a Git worktree must never be rendered — the same
+			// omission policy as a failed check-ignore. Fake timers keep the
+			// delayed budget timer out of the race so the collect path wins
+			// deterministically.
+			vi.useFakeTimers()
+			vi.setSystemTime(new Date("2026-01-01T00:00:00Z"))
+			try {
+				const baseFs = fakeFs(
+					new Map([
+						[
+							ROOT,
+							[
+								dirent(".git", "directory"),
+								dirent("secret.ts", "file"),
+								dirent("package.json", "file"),
+								dirent(".env", "file"),
+							],
+						],
+					]),
+				)
+				const fs: FilesystemAdapter = {
+					...baseFs,
+					readdir: async (path) => {
+						// Simulate the scan consuming the remaining budget: jump the
+						// clock past the deadline without firing timers.
+						vi.setSystemTime(Date.now() + 1000)
+						return baseFs.readdir(path)
+					},
+				}
+				const runner = scriptedRunner({ git: { status: "ok", stdout: "secret.ts\0" } })
+				const svc = makeService({ filesystem: fs, runCommand: runner, budgetMs: 100 })
+				const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+				// The filter never ran (no budget left), leaving the tree unverified.
+				expect(runner.calls.some((call) => call.args.includes("check-ignore"))).toBe(false)
+				expect(snapshot).toBeDefined()
+				expect(snapshot).toContain(`Working directory: "${ROOT}"`)
+				expect(snapshot).toContain(`Enclosing Git root: "${ROOT}"`)
+				expect(snapshot).toContain('"Kimchi host runtime"')
+				expect(snapshot).toContain("not collected")
+				// The unverified tree — including encountered .env markers — stays hidden.
+				expect(snapshot).not.toContain('"secret.ts"')
+				expect(snapshot).not.toContain('"package.json"')
+				expect(snapshot).not.toContain('".env"')
+				expect(snapshot).not.toContain("(empty directory)")
+				expect(snapshot).not.toContain("(none detected)")
+			} finally {
+				vi.useRealTimers()
+			}
 		})
 	})
 

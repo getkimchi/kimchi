@@ -1092,7 +1092,13 @@ export class EnvironmentSnapshotService {
 				partial: true,
 			})
 			let tree = await scanTree(cwd, this.filesystem)
-			if (gitRoot && Date.now() < deadline) {
+			// A scan that consumes the remaining budget leaves the Git-ignore
+			// filter no time to verify the tree. An unverified tree in a Git
+			// worktree must never be rendered (prefer omission of uncertain
+			// entries), so degrade to the partial high-priority facts published
+			// above instead of exposing the unfiltered scan.
+			const treeVerified = gitRoot === undefined || Date.now() < deadline
+			if (gitRoot && treeVerified) {
 				tree = {
 					...tree,
 					entries: await filterGitIgnored(
@@ -1103,6 +1109,22 @@ export class EnvironmentSnapshotService {
 						Math.max(1, deadline - Date.now()),
 					),
 				}
+			}
+			if (!treeVerified) {
+				const partialFacts: CollectionFacts = {
+					cwd,
+					gitRoot,
+					rootMarkers: [],
+					tree: { entries: [], totalKnown: false },
+					ecosystems: [],
+					probes: [],
+					partial: true,
+				}
+				onFacts(partialFacts)
+				const snapshot = formatSnapshot(partialFacts, this.hostRuntime)
+				if (!this.diagnostics.get(key)?.timedOut)
+					this.diagnostics.set(key, buildDiagnostics(start, false, probeMetrics, snapshot))
+				return snapshot
 			}
 			probeMetrics.eligibleEntryCount = tree.entries.length
 			const enclosingRootMarkers =
