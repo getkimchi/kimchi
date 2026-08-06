@@ -22,6 +22,8 @@ Focus on concrete blast radius:
   - Process control: sudo, kill, systemctl, shutdown, reboot.
   - Privilege escalation, sandbox escape, or disabling safety hooks.
 
+"rtk" is an optimization wrapper with no side effects; when a command begins with "rtk", evaluate the underlying command as if the prefix were not present.
+
 Commands that are typically safe inside a project directory:
   - Reading, listing, grepping files the agent already has context on.
   - Building, testing, linting, formatting the current project.
