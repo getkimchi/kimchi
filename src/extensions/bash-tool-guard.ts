@@ -271,38 +271,48 @@ export function classifyBashCommand(command: string): BashClassification | null 
  * normal completion — see patch item 8b).
  *
  * Patterns detected:
- *   - `nohup` anywhere in the command
- *   - `disown` anywhere in the command
- *   - ` &` at end of a subshell or command (but NOT `&&` which is logical AND)
+ *   - `nohup` as a command token (not inside quoted strings)
+ *   - `disown` as a command token (not inside quoted strings)
+ *   - Any standalone `&` (not `&&` logical AND)
  *
  * Returns a BashClassification with category "background" or null.
  */
 function detectBackgrounding(command: string): BashClassification | null {
-	// `nohup` — always backgrounds/detaches
-	if (/\bnohup\b/.test(command)) {
-		return {
-			category: "background",
-			suggestion: BACKGROUND_SUGGESTION,
-			matchedSegment: "nohup",
-			tool: "nohup",
+	// Check nohup/disown via parsed token segments to avoid false positives
+	// on quoted text (e.g. `echo "do not use nohup"`).
+	const segments = parseCommandSegments(command)
+	for (const segment of segments) {
+		const tokens = stripRtk(segment.tokens)
+		const tool = tokens[0]
+		if (!tool) continue
+
+		// `nohup` as the first token of any segment — always backgrounds/detaches
+		if (tool === "nohup") {
+			return {
+				category: "background",
+				suggestion: BACKGROUND_SUGGESTION,
+				matchedSegment: tokens.join(" "),
+				tool: "nohup",
+			}
+		}
+
+		// `disown` as the first token of any segment — removes a job from
+		// shell job control, deliberately orphaning it.
+		if (tool === "disown") {
+			return {
+				category: "background",
+				suggestion: BACKGROUND_SUGGESTION,
+				matchedSegment: tokens.join(" "),
+				tool: "disown",
+			}
 		}
 	}
 
-	// `disown` — explicitly removes a job from shell job control
-	if (/\bdisown\b/.test(command)) {
-		return {
-			category: "background",
-			suggestion: BACKGROUND_SUGGESTION,
-			matchedSegment: "disown",
-			tool: "disown",
-		}
-	}
-
-	// ` &` at end of a command or subshell (but NOT `&&` which is logical AND)
-	// Match: `&` followed by optional whitespace then end-of-string, newline,
-	// or `;`. Also match `&)` (backgrounded subshell) and `& echo` patterns.
-	// Exclude `&&` (double ampersand = logical AND).
-	if (/[^&]&\s*(;|$|\)|\n|\s+(echo|wait|sleep))/.test(command)) {
+	// Any standalone `&` (not `&&` logical AND). Use negative lookbehind/
+	// lookahead to catch all backgrounding patterns regardless of what
+	// follows: `cmd &`, `cmd &)`, `cmd & echo PID`, `cmd & # comment`, etc.
+	// JavaScript supports lookbehind in modern engines (Node 16+).
+	if (/(?<!&)&(?!&)/.test(command)) {
 		return {
 			category: "background",
 			suggestion: BACKGROUND_SUGGESTION,

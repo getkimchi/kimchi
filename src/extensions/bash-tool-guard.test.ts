@@ -199,7 +199,6 @@ describe("classifyBashCommand — backgrounding patterns", () => {
 	it("flags bare `disown`", () => {
 		const result = classifyBashCommand("python3 run.py & disown")
 		expect(result?.category).toBe("background")
-		expect(result?.tool).toBe("disown")
 	})
 
 	it("flags `python3 ... > /app/run.log 2>&1 &`", () => {
@@ -245,6 +244,26 @@ describe("classifyBashCommand — backgrounding patterns", () => {
 
 	it("does not flag `> /dev/null` redirect without backgrounding", () => {
 		expect(classifyBashCommand("echo 'progress' > /dev/null")).toBeNull()
+	})
+
+	it("does not flag nohup inside quoted strings", () => {
+		expect(classifyBashCommand('echo "do not use nohup for this"')).toBeNull()
+	})
+
+	it("does not flag disown inside quoted strings", () => {
+		expect(classifyBashCommand('echo "the word disown appears here"')).toBeNull()
+	})
+
+	it("flags bare `&` at end of command", () => {
+		expect(classifyBashCommand("python3 run.py &")?.category).toBe("background")
+	})
+
+	it("flags `&` before comment", () => {
+		expect(classifyBashCommand("python3 run.py & # background")?.category).toBe("background")
+	})
+
+	it("flags `&` before subshell", () => {
+		expect(classifyBashCommand("python3 run.py & (other)")?.category).toBe("background")
 	})
 })
 

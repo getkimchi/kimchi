@@ -140,12 +140,12 @@ describe("bash finally-block killProcessTree: backgrounded processes killed on n
 	it("kills a backgrounded process when the shell exits normally", async () => {
 		const ops = createLocalBashOperations()
 
-		// Launch a background process that writes a marker file every 0.2s
-		// for 30s. After the bash tool returns (echo completes, shell exits 0),
-		// the backgrounded process should be killed by killProcessTree in
-		// the finally block.
+		// Launch a background process that writes its PID to a marker file,
+		// then keeps running for 30s. After the bash tool returns (echo
+		// completes, shell exits 0), the backgrounded process should be
+		// killed by killProcessTree in the finally block.
 		const markerFile = `/tmp/bash-finally-kill-marker-${process.pid}`
-		const command = `rm -f ${markerFile}; (for i in $(seq 1 150); do echo $$ > ${markerFile}; sleep 0.2; done) & echo "launched"`
+		const command = `rm -f ${markerFile}; (echo $$ > ${markerFile}; sleep 30) & echo "launched"`
 
 		const result = await ops.exec(command, "/tmp", {
 			onData: () => {},
@@ -154,20 +154,47 @@ describe("bash finally-block killProcessTree: backgrounded processes killed on n
 
 		expect(result.exitCode).toBe(0)
 
-		// Wait briefly for the process group kill to take effect.
-		await new Promise((resolve) => setTimeout(resolve, 1000))
-
-		// The marker file should NOT be updating — the backgrounded process
-		// should have been killed. We check that no process is writing it
-		// by reading it twice with a gap.
 		try {
-			const firstRead = execSync(`cat ${markerFile} 2>/dev/null || echo "gone"`, { encoding: "utf-8" }).trim()
-			await new Promise((resolve) => setTimeout(resolve, 500))
-			const secondRead = execSync(`cat ${markerFile} 2>/dev/null || echo "gone"`, { encoding: "utf-8" }).trim()
-			expect(secondRead).toBe(firstRead)
+			// Wait for the marker file to appear (background process started).
+			const waitForMarker = async (timeoutMs: number) => {
+				const deadline = Date.now() + timeoutMs
+				while (Date.now() < deadline) {
+					try {
+						return execSync(`cat ${markerFile} 2>/dev/null`, { encoding: "utf-8" }).trim()
+					} catch {
+						// File not written yet
+					}
+					await new Promise((resolve) => setTimeout(resolve, 100))
+				}
+				return null
+			}
+
+			const pidStr = await waitForMarker(3000)
+			expect(pidStr).not.toBeNull()
+			const bgPid = Number.parseInt(pidStr!, 10)
+			expect(Number.isFinite(bgPid)).toBe(true)
+
+			// Poll process.kill(pid, 0) until the process disappears.
+			// This is deterministic — no fixed sleeps.
+			const waitForProcessDeath = async (pid: number, timeoutMs: number) => {
+				const deadline = Date.now() + timeoutMs
+				while (Date.now() < deadline) {
+					try {
+						process.kill(pid, 0)
+						// Process still alive — wait and retry
+						await new Promise((resolve) => setTimeout(resolve, 50))
+					} catch {
+						// Process is dead — done
+						return true
+					}
+				}
+				return false // Timed out — process still alive
+			}
+
+			const killed = await waitForProcessDeath(bgPid, 5000)
+			expect(killed).toBe(true)
 		} finally {
 			execSync(`rm -f ${markerFile} 2>/dev/null || true`, { stdio: "ignore" })
-			execSync(`pkill -f 'bash-finally-kill-marker' 2>/dev/null || true`, { stdio: "ignore" })
 		}
 	})
 })
