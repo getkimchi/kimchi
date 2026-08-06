@@ -337,7 +337,7 @@ index 98b69bb9ccf6464dfaec7b2271cf78677cb73ce9..8a3e5f7b2c1d4e8f9a2b0c3d4e5f6a7b
                      }, timeout * 1000);
                  }
                  // Stream stdout and stderr.
-@@ -95,8 +105,16 @@ export function createLocalBashOperations(options) {
+@@ -95,12 +105,22 @@ export function createLocalBashOperations(options) {
                  return { exitCode };
              }
              finally {
