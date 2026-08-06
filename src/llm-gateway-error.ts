@@ -98,6 +98,38 @@ const TRANSPORT_TERMINATION_RE =
 	/\b(?:connection|request|stream|response|socket|http2 request)\b.{0,40}\b(?:terminated unexpectedly|unexpectedly (?:ended|closed|terminated)|ended unexpectedly|closed unexpectedly)\b/i
 const BAD_REQUEST_TEXT_RE = /bad request|BadRequest/i
 
+// "kimi-k2.7 model is rate limited until 2026-08-05T16:27:33Z" — the gateway states an absolute
+// reopening time, so every attempt before it fails by construction. Anchored on a digit or Z so
+// sentence punctuation backtracks out of the capture instead of reaching Date.parse.
+const RATE_LIMIT_UNTIL_RE = /rate.?limited\s+until\s+([0-9T][0-9TZ:+.-]*[0-9Z])/i
+const EXPLICIT_ZONE_RE = /[Zz]$|[+-]\d{2}:?\d{2}$/
+
+/** Epoch ms the gateway says the limit lifts, or undefined when it named none or it has passed. */
+export function parseRateLimitRetryAt(rawMessage: string, now: number = Date.now()): number | undefined {
+	const match = RATE_LIMIT_UNTIL_RE.exec(rawMessage)
+	if (!match?.[1]) return undefined
+	const stamp = match[1]
+	// The gateway reports UTC; Date.parse would read an unzoned stamp as local time.
+	const retryAt = Date.parse(EXPLICIT_ZONE_RE.test(stamp) ? stamp : `${stamp}Z`)
+	if (Number.isNaN(retryAt) || retryAt <= now) return undefined
+	return retryAt
+}
+
+/** The gateway reports UTC; only local wall-clock time tells the user when to come back. */
+export function formatLocalTime(epochMs: number): string {
+	return new Date(epochMs).toLocaleTimeString(undefined, { timeStyle: "short" })
+}
+
+/** Rounded to one unit: the exact second of a multi-minute wait is noise. */
+export function formatWait(ms: number): string {
+	const seconds = Math.max(Math.round(ms / 1000), 0)
+	if (seconds < 60) return `${seconds} second${seconds === 1 ? "" : "s"}`
+	const minutes = Math.round(seconds / 60)
+	if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`
+	const hours = Math.round(minutes / 60)
+	return `${hours} hour${hours === 1 ? "" : "s"}`
+}
+
 function parseHttpStatusCode(rawMessage: string): number | undefined {
 	for (const pattern of HTTP_STATUS_RES) {
 		const match = pattern.exec(rawMessage)

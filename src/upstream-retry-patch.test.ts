@@ -1,3 +1,4 @@
+import { AgentSession } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { preserveRawErrorMessage } from "./extensions/error-preservation.js"
 import {
@@ -6,7 +7,10 @@ import {
 	installInfrastructureRetryPatch,
 	isInfrastructureBreakerTripped,
 	isInfrastructureErrorRetryable,
+	RATE_LIMIT_MAX_WAIT_MS,
+	rateLimitWaitMs,
 	recordInfrastructureBreakerFailure,
+	rememberRateLimitDeadline,
 	resetInfrastructureBreaker,
 	resolveInfrastructureBreakerThreshold,
 } from "./upstream-retry-patch.js"
@@ -109,6 +113,175 @@ describe("upstream retry patch", () => {
 
 		expect(wrapped({ stopReason: "error", errorMessage: "429 rate limit exceeded" })).toBe(true)
 		expect(wrapped({ stopReason: "error", errorMessage: "429 model queue full" })).toBe(true)
+	})
+})
+
+describe("rate-limit deadline retry", () => {
+	const NOW = Date.parse("2026-08-05T16:00:00Z")
+	const DEADLINE = Date.parse("2026-08-05T16:04:00Z")
+	const WAIT_MS = DEADLINE - NOW
+	const deadlineError = {
+		stopReason: "error" as const,
+		errorMessage: "kimi-k2.7 model is rate limited until 2026-08-05T16:04:00Z",
+	}
+
+	type RetryMessage = { stopReason?: string; errorMessage?: string }
+
+	type FakeSession = {
+		settingsManager: { getRetrySettings: () => { enabled: boolean; maxRetries: number; baseDelayMs: number } }
+		agent: { state: { messages: { role: string }[] } }
+		_retryAttempt: number
+		_retryAbortController?: AbortController
+		_emit: ReturnType<typeof vi.fn>
+	}
+
+	function createSession(
+		overrides: { enabled?: boolean; maxRetries?: number; retryAttempt?: number } = {},
+	): FakeSession {
+		return {
+			settingsManager: {
+				getRetrySettings: () => ({
+					enabled: overrides.enabled ?? true,
+					maxRetries: overrides.maxRetries ?? 3,
+					baseDelayMs: 2000,
+				}),
+			},
+			agent: { state: { messages: [{ role: "user" }, { role: "assistant" }] } },
+			_retryAttempt: overrides.retryAttempt ?? 0,
+			_emit: vi.fn(),
+		}
+	}
+
+	function installPatchedPreparer() {
+		const original = vi.fn<(message: RetryMessage) => Promise<boolean>>(async () => true)
+		const sessionClass = {
+			prototype: {
+				_isRetryableError: (_message: RetryMessage) => true,
+				_prepareRetry: original,
+			},
+		}
+		installInfrastructureRetryPatch(sessionClass, 0)
+		// biome-ignore lint/style/noNonNullAssertion: installInfrastructureRetryPatch always wraps the preparer above
+		return { prepareRetry: sessionClass.prototype._prepareRetry!, original }
+	}
+
+	afterEach(() => {
+		vi.useRealTimers()
+		configureInfrastructureBreaker(0)
+	})
+
+	// The patch wraps a private upstream method. An upstream rename would silently disable the
+	// deadline wait rather than fail, so assert the method still exists.
+	it("upstream still exposes the _prepareRetry hook the patch wraps", () => {
+		const proto = (AgentSession as unknown as { prototype: Record<string, unknown> }).prototype
+		expect(typeof proto._prepareRetry).toBe("function")
+		expect(typeof proto._isRetryableError).toBe("function")
+	})
+
+	it("does not retry when retries are disabled", async () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(NOW)
+		const { prepareRetry } = installPatchedPreparer()
+		const session = createSession({ enabled: false })
+
+		await expect(prepareRetry.call(session as never, deadlineError)).resolves.toBe(false)
+		expect(session._retryAttempt).toBe(0)
+		expect(session._emit).not.toHaveBeenCalled()
+	})
+
+	// Only reachable at maxRetries 0: any higher budget with a spent counter takes the
+	// _retryAttempt > 0 branch and never enters the deadline wait.
+	it("restores the attempt counter when the retry budget is spent", async () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(NOW)
+		const { prepareRetry } = installPatchedPreparer()
+		const session = createSession({ maxRetries: 0 })
+
+		await expect(prepareRetry.call(session as never, deadlineError)).resolves.toBe(false)
+		expect(session._retryAttempt).toBe(0)
+		expect(session._emit).not.toHaveBeenCalled()
+	})
+
+	it("sleeps to the stated deadline rather than backing off exponentially", async () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(NOW)
+		const { prepareRetry, original } = installPatchedPreparer()
+		const session = createSession()
+
+		const pending = prepareRetry.call(session as never, deadlineError)
+
+		expect(session._emit).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: WAIT_MS }),
+		)
+		// The errored assistant message must leave agent state or the retried turn resumes from it.
+		expect(session.agent.state.messages).toEqual([{ role: "user" }])
+
+		await vi.advanceTimersByTimeAsync(WAIT_MS)
+		await expect(pending).resolves.toBe(true)
+		expect(original).not.toHaveBeenCalled()
+	})
+
+	it("cancels the wait when the retry is aborted", async () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(NOW)
+		const { prepareRetry } = installPatchedPreparer()
+		const session = createSession()
+
+		const pending = prepareRetry.call(session as never, deadlineError)
+		session._retryAbortController?.abort()
+
+		await expect(pending).resolves.toBe(false)
+		expect(session._retryAttempt).toBe(0)
+		expect(session._emit).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "auto_retry_end", success: false, finalError: "Retry cancelled" }),
+		)
+	})
+
+	it("hands later attempts back to upstream backoff", async () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(NOW)
+		const { prepareRetry, original } = installPatchedPreparer()
+		const session = createSession({ retryAttempt: 1 })
+
+		await expect(prepareRetry.call(session as never, deadlineError)).resolves.toBe(true)
+		expect(original).toHaveBeenCalledWith(deadlineError)
+		expect(session._emit).not.toHaveBeenCalled()
+	})
+
+	it("hands messages without a stated deadline back to upstream backoff", async () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(NOW)
+		const { prepareRetry, original } = installPatchedPreparer()
+		const session = createSession()
+		const plainError = { stopReason: "error" as const, errorMessage: "429 rate limit exceeded" }
+
+		await expect(prepareRetry.call(session as never, plainError)).resolves.toBe(true)
+		expect(original).toHaveBeenCalledWith(plainError)
+	})
+
+	it("refuses to retry a deadline past the wait bound", () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(NOW)
+		const sessionClass = { prototype: { _isRetryableError: (_message: RetryMessage) => true } }
+		installInfrastructureRetryPatch(sessionClass, 0)
+		const farOff = {
+			stopReason: "error" as const,
+			errorMessage: `rate limited until ${new Date(NOW + RATE_LIMIT_MAX_WAIT_MS + 60_000).toISOString()}`,
+		}
+
+		expect(sessionClass.prototype._isRetryableError?.(farOff)).toBe(false)
+		expect(sessionClass.prototype._isRetryableError?.(deadlineError)).toBe(true)
+	})
+
+	// The notice extension rewrites the message into local time, which Date.parse cannot read back.
+	it("resolves a remembered deadline after the message text is rewritten", () => {
+		const message = { ...deadlineError }
+		rememberRateLimitDeadline(message, DEADLINE)
+		message.errorMessage = "kimi-k2.7 is rate limited until 3:45 PM"
+
+		expect(rateLimitWaitMs(message, NOW)).toBe(WAIT_MS)
+		// Identity, not content, is the key.
+		expect(rateLimitWaitMs({ ...message }, NOW)).toBeUndefined()
 	})
 })
 

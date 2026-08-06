@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { classifyLLMGatewayError, LLMGatewayError } from "./llm-gateway-error.js"
+import { classifyLLMGatewayError, formatWait, LLMGatewayError, parseRateLimitRetryAt } from "./llm-gateway-error.js"
 
 describe("classifyLLMGatewayError", () => {
 	it.each([
@@ -316,5 +316,48 @@ describe("classifyLLMGatewayError", () => {
 		"failed after 503 iterations of the loop",
 	])("does not classify a bare status number outside status context: %s", (message) => {
 		expect(classifyLLMGatewayError(message)).toBeUndefined()
+	})
+})
+
+describe("parseRateLimitRetryAt", () => {
+	const NOW = Date.parse("2026-08-05T12:00:00Z")
+	const EXPECTED = Date.parse("2026-08-05T16:27:33Z")
+
+	it.each([
+		{ name: "bare UTC stamp", stamp: "2026-08-05T16:27:33Z", expected: EXPECTED },
+		{ name: "sentence-final period", stamp: "2026-08-05T16:27:33Z.", expected: EXPECTED },
+		{ name: "trailing clause", stamp: "2026-08-05T16:27:33Z, retry later.", expected: EXPECTED },
+		{ name: "closing parenthesis", stamp: "2026-08-05T16:27:33Z)", expected: EXPECTED },
+		// The gateway reports UTC, so an unzoned stamp must not be read as local time.
+		{ name: "no zone", stamp: "2026-08-05T16:27:33", expected: EXPECTED },
+		{ name: "fractional seconds", stamp: "2026-08-05T16:27:33.123Z", expected: EXPECTED + 123 },
+		{ name: "explicit offset", stamp: "2026-08-05T18:27:33+02:00", expected: EXPECTED },
+	])("parses $name", ({ stamp, expected }) => {
+		expect(parseRateLimitRetryAt(`kimi-k2.7 model is rate limited until ${stamp}`, NOW)).toBe(expected)
+	})
+
+	it.each([
+		{ name: "a bare number", message: "rate limited until 5" },
+		{ name: "no deadline at all", message: "429 Too Many Requests" },
+		{ name: "an unparseable stamp", message: "rate limited until 2026-13-45T99:99:99Z" },
+		{ name: "a deadline already passed", message: "rate limited until 2026-08-05T11:00:00Z" },
+	])("returns undefined for $name", ({ message }) => {
+		expect(parseRateLimitRetryAt(message, NOW)).toBeUndefined()
+	})
+})
+
+describe("formatWait", () => {
+	it.each([
+		{ ms: 1_000, expected: "1 second" },
+		{ ms: 30_000, expected: "30 seconds" },
+		{ ms: 59_000, expected: "59 seconds" },
+		{ ms: 60_000, expected: "1 minute" },
+		{ ms: 90_000, expected: "2 minutes" },
+		{ ms: 59 * 60_000, expected: "59 minutes" },
+		{ ms: 60 * 60_000, expected: "1 hour" },
+		{ ms: 120 * 60_000, expected: "2 hours" },
+		{ ms: -5_000, expected: "0 seconds" },
+	])("formats $ms ms as $expected", ({ ms, expected }) => {
+		expect(formatWait(ms)).toBe(expected)
 	})
 })

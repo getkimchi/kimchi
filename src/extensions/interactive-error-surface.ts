@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { InteractiveMode } from "@earendil-works/pi-coding-agent"
 import { classifyLLMGatewayError } from "../llm-gateway-error.js"
 import { formatSanitizedErrorMessage } from "../sanitized-error-message.js"
+import { RATE_LIMIT_MAX_WAIT_MS, rateLimitWaitMs } from "../upstream-retry-patch.js"
 import { preserveRawErrorMessage } from "./error-preservation.js"
 
 interface PendingProviderError {
@@ -109,9 +110,17 @@ export default function interactiveErrorSurfaceExtension(pi: ExtensionAPI): void
 		// AssistantMessageComponent. Extensions register before the mode's
 		// own message_end handler, so this mutation takes effect first.
 		if (classified.retryable) {
+			// A rate-limit deadline past the wait bound is refused by the retry classifier, and
+			// the rate-limit-notice extension (registered after this one) renders the definitive
+			// "not retrying" guidance on the message itself — pending state here would only
+			// duplicate it as an agent_end exhaustion notification.
+			const waitMs = rateLimitWaitMs(message)
+			const noticeOwnsMessaging = waitMs !== undefined && waitMs > RATE_LIMIT_MAX_WAIT_MS
 			// Track only retryable errors — agent_end renders the sanitized
 			// exhaustion message when retries are exhausted.
-			lastPendingProviderError = { rawMessage: message.errorMessage, willRetry: true }
+			if (!noticeOwnsMessaging) {
+				lastPendingProviderError = { rawMessage: message.errorMessage, willRetry: true }
+			}
 			// Preserve the original error for the retry classifier, which runs
 			// in _handlePostAgentRun AFTER this mutation. Without this, the
 			// classifier sees "Retrying…" and fails to identify the error as

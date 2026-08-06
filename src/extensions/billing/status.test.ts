@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const {
 	AUTOMATIC_REFRESH_MIN_INTERVAL_MS,
 	BILLING_EXHAUSTED_MESSAGE,
+	BILLING_RATE_LIMITED_MESSAGE,
 	COMMUNITY_TIER_HEADER_NOTICE,
 	budgetEndpointFromLlmEndpoint,
 	configureBillingCreditsApi,
@@ -49,7 +50,7 @@ describe("billing status", () => {
 		expect(formatBudgetLimit("0.000000")).toBe("unlimited")
 	})
 
-	it("maps the proxy Community tier to header upsell without paid warnings", () => {
+	it("warns and drops the upsell for a Community tier reported as blocked", () => {
 		observeCreditsPayload({
 			serverless: true,
 			tier: "community",
@@ -66,11 +67,84 @@ describe("billing status", () => {
 			creditStatus: "exhausted",
 			remainingCredits: 0,
 		})
-		expect(getCommunityTierHeaderNotice()).toBe(
-			"You are using Community tier. For faster performance, upgrade to Coder at https://app.kimchi.dev/pricing",
-		)
-		expect(getBillingWarnings()[0]).toBeUndefined()
+		expect(getCommunityTierHeaderNotice()).toBeUndefined()
+		expect(getBillingWarnings()[0]).toEqual({ kind: "exhausted", message: BILLING_EXHAUSTED_MESSAGE })
 		expect(getBillingStatusLine()).toEqual({ amount: "$0.00" })
+	})
+
+	// The reported failure: a Coder subscriber that exhausts its credits is demoted to a free tier for
+	// rate limiting, and the server reports that demoted tier as the billing identity. Every field
+	// except `remaining` describes a user who never paid.
+	it("warns about rate limiting when a demoted paid subscriber reports as free tier", () => {
+		observeCreditsPayload({
+			serverless: true,
+			tier: "community",
+			is_paid_tier: false,
+			billing_status: "free_tier",
+			has_credits: true,
+			remaining: "0",
+		})
+
+		expect(getBillingStatus()).toMatchObject({
+			plan: "community",
+			isPaidTier: false,
+			creditStatus: "ok",
+			restrictedMode: false,
+			remainingCredits: 0,
+		})
+		expect(getBillingWarnings()[0]).toEqual({ kind: "rate-limited", message: BILLING_RATE_LIMITED_MESSAGE })
+		expect(getCommunityTierHeaderNotice()).toBeUndefined()
+	})
+
+	// The warning kind turns on who said what: an explicit billing_status outranks the balance
+	// inference, so a server that declares depletion is never downgraded to the softer variant.
+	it("separates a server-declared depletion from an inferred zero balance", () => {
+		observeCreditsPayload({
+			serverless: true,
+			tier: "coder",
+			is_paid_tier: true,
+			billing_status: "depleted",
+			has_credits: false,
+			remaining: "0",
+		})
+		expect(getBillingWarnings()[0]?.kind).toBe("exhausted")
+
+		// Same declaration, but the payload omits has_credits entirely.
+		observeCreditsPayload({ serverless: false })
+		observeCreditsPayload({
+			serverless: true,
+			tier: "coder",
+			is_paid_tier: true,
+			billing_status: "depleted",
+			remaining: "0",
+		})
+		expect(getBillingWarnings()[0]?.kind).toBe("exhausted")
+
+		// Nothing declared: the balance is the only evidence, and the server is still serving.
+		observeCreditsPayload({ serverless: false })
+		observeCreditsPayload({
+			serverless: true,
+			tier: "community",
+			is_paid_tier: false,
+			billing_status: "free_tier",
+			has_credits: true,
+			remaining: "0",
+		})
+		expect(getBillingWarnings()[0]?.kind).toBe("rate-limited")
+	})
+
+	it("keeps the Community upsell while a free-tier user still has credits", () => {
+		observeCreditsPayload({
+			serverless: true,
+			tier: "community",
+			is_paid_tier: false,
+			billing_status: "free_tier",
+			has_credits: true,
+			remaining: "12",
+		})
+
+		expect(getCommunityTierHeaderNotice()).toBe(COMMUNITY_TIER_HEADER_NOTICE)
+		expect(getBillingWarnings()[0]).toBeUndefined()
 	})
 
 	it("still accepts internal free/free-slow tiers if proxy mapping is not deployed yet", () => {

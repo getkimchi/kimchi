@@ -81,6 +81,7 @@ import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
+import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
@@ -627,6 +628,7 @@ try {
 			infrastructureErrorTracker.extension,
 			infrastructureBreakerExtension,
 			interactiveErrorSurfaceExtension,
+			rateLimitNoticeExtension,
 		]
 
 		if (IS_ACP_MODE) {

@@ -144,6 +144,34 @@ describe("interactiveErrorSurfaceExtension (pending-state tracking)", () => {
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Please retry your request."), "error")
 	})
 
+	it("does NOT set pending state when the rate-limit deadline is past the wait bound", () => {
+		// The rate-limit notice already renders the "not retrying" guidance on the message;
+		// an agent_end exhaustion notification would duplicate it.
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		const notify = vi.fn()
+		const deadline = new Date(Date.now() + 20 * 60_000).toISOString()
+		const message = {
+			role: "assistant",
+			stopReason: "error",
+			errorMessage: `kimi-k2.5 model is rate limited until ${deadline}`,
+		}
+		emitMessageEnd(message)
+		expect(__getPendingProviderError()).toBeUndefined()
+		// The per-attempt placeholder mutation still applies; the notice overwrites it later.
+		expect(message.errorMessage).toBe("Retrying…")
+
+		emitAgentEnd({ willRetry: false }, { ui: { notify } })
+		expect(notify).not.toHaveBeenCalled()
+	})
+
+	it("sets pending state for a rate-limit deadline under the wait bound", () => {
+		const { emitMessageEnd } = createHarness()
+		const deadline = new Date(Date.now() + 5 * 60_000).toISOString()
+		const raw = `kimi-k2.5 model is rate limited until ${deadline}`
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: raw })
+		expect(__getPendingProviderError()?.rawMessage).toBe(raw)
+	})
+
 	it("agent_end does NOT render for non-retryable errors (no pending state)", () => {
 		const { emitMessageEnd, emitAgentEnd } = createHarness()
 		const notify = vi.fn()
