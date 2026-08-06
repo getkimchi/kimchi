@@ -329,6 +329,108 @@ describe("contextFiles injection", () => {
 	})
 })
 
+describe("environment snapshot wiring", () => {
+	const SNAPSHOT_BLOCK =
+		"<!-- kimchi:environment-snapshot:start -->\n## Startup Environment Snapshot\nTest snapshot\n<!-- kimchi:environment-snapshot:end -->"
+
+	it("appends exactly one snapshot block as the final section in replace mode", () => {
+		const agent: AgentConfig = {
+			name: "Test-Snap-Replace",
+			description: "Test",
+			extensions: false,
+			skills: false,
+			systemPrompt: "Do the thing.",
+			promptMode: "replace",
+		}
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			environmentSnapshot: SNAPSHOT_BLOCK,
+		})
+
+		const matches = output.match(/kimchi:environment-snapshot:start/g)
+		expect(matches).toHaveLength(1)
+		expect(output.trimEnd().endsWith(SNAPSHOT_BLOCK)).toBe(true)
+	})
+
+	it("appends exactly one snapshot block as the final section in append mode", () => {
+		const agent: AgentConfig = {
+			name: "Test-Snap-Append",
+			description: "Test",
+			extensions: true,
+			skills: true,
+			systemPrompt: "Subagent-specific instructions.",
+			promptMode: "append",
+		}
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			environmentSnapshot: SNAPSHOT_BLOCK,
+		})
+
+		const matches = output.match(/kimchi:environment-snapshot:start/g)
+		expect(matches).toHaveLength(1)
+		expect(output.trimEnd().endsWith(SNAPSHOT_BLOCK)).toBe(true)
+	})
+
+	it("strips inherited parent snapshot block in append mode before appending the fresh one", () => {
+		const agent: AgentConfig = {
+			name: "Test-Snap-Strip",
+			description: "Test",
+			extensions: true,
+			skills: true,
+			systemPrompt: "",
+			promptMode: "append",
+		}
+		const parentWithSnapshot = `${PARENT_SYSTEM_PROMPT}\n\n${SNAPSHOT_BLOCK}`
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, parentWithSnapshot, {
+			environmentSnapshot: SNAPSHOT_BLOCK,
+		})
+
+		// Exactly one snapshot block — the parent's was stripped, the fresh one appended.
+		const matches = output.match(/kimchi:environment-snapshot:start/g)
+		expect(matches).toHaveLength(1)
+		expect(output.trimEnd().endsWith(SNAPSHOT_BLOCK)).toBe(true)
+	})
+
+	it("omits the snapshot block when environmentSnapshot is undefined in replace mode", () => {
+		const agent: AgentConfig = {
+			name: "Test-Snap-None-Replace",
+			description: "Test",
+			extensions: false,
+			skills: false,
+			systemPrompt: "Do the thing.",
+			promptMode: "replace",
+		}
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
+		expect(output).not.toContain("kimchi:environment-snapshot")
+	})
+
+	it("omits the snapshot block when environmentSnapshot is undefined in append mode", () => {
+		const agent: AgentConfig = {
+			name: "Test-Snap-None-Append",
+			description: "Test",
+			extensions: true,
+			skills: true,
+			systemPrompt: "",
+			promptMode: "append",
+		}
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
+		expect(output).not.toContain("kimchi:environment-snapshot")
+	})
+
+	it("strips inherited snapshot from parent even when subagent snapshot is undefined", () => {
+		const agent: AgentConfig = {
+			name: "Test-Snap-Strip-Undefined",
+			description: "Test",
+			extensions: true,
+			skills: true,
+			systemPrompt: "",
+			promptMode: "append",
+		}
+		const parentWithSnapshot = `${PARENT_SYSTEM_PROMPT}\n\n${SNAPSHOT_BLOCK}`
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, parentWithSnapshot)
+		// The parent's snapshot was stripped and no new one was appended.
+		expect(output).not.toContain("kimchi:environment-snapshot")
+	})
+})
+
 describe("formatTokenBudget", () => {
 	const cases: Record<string, { input: number; expected: string }> = {
 		"formats millions": { input: 1_500_000, expected: "1.5M" },

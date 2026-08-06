@@ -24,9 +24,9 @@
 
 import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { existsSync } from "node:fs"
 import { arch, homedir, version as osVersion, platform, release, userInfo } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import {
 	type ExtensionAPI,
@@ -72,6 +72,17 @@ import {
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
+import { writeDebugPromptArtifact } from "./debug-prompt-writer.js"
+import {
+	createEnvironmentSnapshotRequest,
+	ENVIRONMENT_SNAPSHOT_SESSION_ENTRY,
+	environmentSnapshotService,
+	findEnvironmentSnapshotInPrompt,
+	findPersistedEnvironmentSnapshot,
+	prepareEnvironmentSnapshot,
+	resolveEnvironmentSnapshot,
+	withEnvironmentSnapshot,
+} from "./environment-snapshot.js"
 import {
 	buildSystemPrompt,
 	DELEGATION_TOOL_NAMES,
@@ -97,6 +108,68 @@ function readGitRemote(cwd: string): string | undefined {
 	} catch {
 		return undefined
 	}
+}
+
+async function appendEnvironmentSnapshot(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	systemPrompt: string,
+): Promise<string> {
+	const request = createEnvironmentSnapshotRequest(
+		ctx.sessionManager.getSessionId(),
+		ctx.cwd,
+		pi.getFlag("debug-prompts") === true,
+	)
+	const persistedSnapshot = (() => {
+		try {
+			return findPersistedEnvironmentSnapshot(ctx.sessionManager.getEntries(), ctx.cwd)
+		} catch {
+			return undefined
+		}
+	})()
+	const snapshot = await resolveEnvironmentSnapshot(request, persistedSnapshot, (snapshot) => {
+		pi.appendEntry(ENVIRONMENT_SNAPSHOT_SESSION_ENTRY, { cwd: resolve(ctx.cwd), snapshot })
+	})
+	return withEnvironmentSnapshot(systemPrompt, snapshot)
+}
+
+function writePromptDebugArtifact(pi: ExtensionAPI, ctx: ExtensionContext, systemPrompt: string): void {
+	const debugSession = process.env.KIMCHI_DEBUG_SESSION
+	const debugFlag = pi.getFlag("debug-prompts") === true
+	if (debugFlag || debugSession) {
+		const subagentMode = isSubagent()
+		const debugId = debugSession ?? randomUUID().slice(0, 8)
+		process.env.KIMCHI_DEBUG_PROMPTS = "1"
+		process.env.KIMCHI_DEBUG_SESSION = debugId
+
+		const mode: PromptMode = subagentMode
+			? "subagent"
+			: getMultiModelEnabled(ctx.sessionManager)
+				? "orchestrator"
+				: "single"
+		const label = subagentMode ? "subagent" : `main-agent-${mode}`
+		const filePath = writeDebugPromptArtifact({ cwd: ctx.cwd, sessionId: debugId, label, systemPrompt })
+		if (filePath && ctx.hasUI) ctx.ui.notify(`[debug-prompts] ${filePath}`, "info")
+	} else {
+		delete process.env.KIMCHI_DEBUG_PROMPTS
+		delete process.env.KIMCHI_DEBUG_SESSION
+	}
+}
+
+/**
+ * Final prompt pass. Register this after every other prompt-mutating extension
+ * so the generated snapshot remains the final system-prompt section and debug
+ * artifacts match the exact prompt sent to the provider.
+ */
+export function environmentSnapshotFinalizerExtension(pi: ExtensionAPI): void {
+	pi.on("before_agent_start", async (event, ctx) => {
+		const existingSnapshot = findEnvironmentSnapshotInPrompt(event.systemPrompt)
+		const systemPrompt = existingSnapshot
+			? withEnvironmentSnapshot(event.systemPrompt, existingSnapshot)
+			: await appendEnvironmentSnapshot(pi, ctx, event.systemPrompt)
+		writePromptDebugArtifact(pi, ctx, systemPrompt)
+		return { systemPrompt }
+	})
 }
 
 // Tracks sessions that have already received a deprecation notification to avoid duplicate alerts.
@@ -266,6 +339,7 @@ export default function (skillPaths: string[]) {
 			pi.on("session_shutdown", async (_event, ctx) => {
 				const sessionId = ctx.sessionManager.getSessionId()
 				deprecatedNotificationFired.delete(sessionId)
+				environmentSnapshotService.clearContext(sessionId)
 			})
 
 			pi.on("session_start", async (_event, ctx) => {
@@ -273,6 +347,15 @@ export default function (skillPaths: string[]) {
 				const orchestratorModelId = modelIdFromRef(orchestratorModelRef)
 
 				notifyIfDeprecated(ctx)
+
+				prepareEnvironmentSnapshot(
+					createEnvironmentSnapshotRequest(
+						ctx.sessionManager.getSessionId(),
+						ctx.cwd,
+						pi.getFlag("debug-prompts") === true,
+					),
+					() => ctx.sessionManager.getEntries(),
+				)
 
 				// In multi-model mode the orchestrator must always be the configured
 				// orchestrator model. Force-switch if the user has a different model
@@ -551,27 +634,10 @@ export default function (skillPaths: string[]) {
 				systemPrompt = `${systemPrompt}\n\n${appendSystemPrompt}`
 			}
 
-			const debugSession = process.env.KIMCHI_DEBUG_SESSION
-			const debugFlag = pi.getFlag("debug-prompts") === true
-			if (debugFlag || debugSession) {
-				const sessionId = debugSession ?? randomUUID().slice(0, 8)
-				process.env.KIMCHI_DEBUG_PROMPTS = "1"
-				process.env.KIMCHI_DEBUG_SESSION = sessionId
-
-				const debugDir = join(ctx.cwd, ".kimchi", "debug", sessionId)
-				mkdirSync(debugDir, { recursive: true })
-
-				const label = subagentMode ? "subagent" : `main-agent-${mode}`
-				const filePath = join(debugDir, `${label}-${Date.now()}.md`)
-				writeFileSync(filePath, systemPrompt)
-
-				if (ctx.hasUI) {
-					ctx.ui.notify(`[debug-prompts] ${filePath}`, "info")
-				}
-			} else {
-				process.env.KIMCHI_DEBUG_PROMPTS = undefined
-				process.env.KIMCHI_DEBUG_SESSION = undefined
-			}
+			// Keep this pass for direct users of the prompt-enrichment factory. The
+			// CLI registers environmentSnapshotFinalizerExtension last so any later
+			// prompt additions are moved before the same immutable snapshot bytes.
+			systemPrompt = await appendEnvironmentSnapshot(pi, ctx, systemPrompt)
 
 			return { systemPrompt }
 		})

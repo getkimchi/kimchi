@@ -8,15 +8,36 @@ import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
 import { setResourceOverride } from "../../resources/store.js"
 import * as startupContext from "../../startup-context.js"
+import { createKimchiConfig } from "../__mocks__/config.js"
 import { createContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
 import * as agentWorkerContext from "../agent-worker-context.js"
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../claude-code-skills/definition.js"
+import { setMultiModelEnabled } from "../multi-model.js"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
 import promptEnrichmentExtension, {
 	_resetDeprecatedNotificationTracking,
+	environmentSnapshotFinalizerExtension,
 	stripEmptyToolCalls,
 } from "./prompt-enrichment.js"
 import { createToolVisibility } from "./tool-visibility.js"
+
+// Mock the environment snapshot service so tests don't hit the real filesystem.
+// vi.hoisted ensures the mock fns exist when the hoisted vi.mock factory runs.
+const { mockGet, mockPrime, mockRestore, mockClearContext } = vi.hoisted(() => ({
+	mockGet: vi.fn(),
+	mockPrime: vi.fn(),
+	mockRestore: vi.fn(),
+	mockClearContext: vi.fn(),
+}))
+vi.mock("./environment-snapshot.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./environment-snapshot.js")>()
+	const { environmentSnapshotModuleMock } = await import("../__mocks__/environment-snapshot.js")
+	return environmentSnapshotModuleMock(
+		{ get: mockGet, prime: mockPrime, restore: mockRestore, clearContext: mockClearContext },
+		actual,
+	)
+})
 
 function makeUser(text: string): OrchestratorMessages[number] {
 	return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() }
@@ -53,6 +74,16 @@ function makeToolResult(toolCallId: string, text = "Tool  not found", isError = 
 		timestamp: Date.now(),
 	}
 }
+
+// Reset all environment-snapshot mocks between tests so state doesn't leak.
+beforeEach(() => {
+	mockGet.mockReset()
+	mockPrime.mockReset()
+	mockRestore.mockReset()
+	mockClearContext.mockReset()
+	// By default the snapshot is absent (opt-out / collection returned undefined).
+	mockGet.mockResolvedValue(undefined)
+})
 
 describe("stripEmptyToolCalls", () => {
 	it("returns the same array reference when there are no empty tool calls", () => {
@@ -250,7 +281,7 @@ describe("prompt enrichment tool visibility", () => {
 describe("prompt enrichment environment context", () => {
 	beforeEach(() => {
 		vi.restoreAllMocks()
-		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(config, "loadConfig").mockReturnValue(createKimchiConfig())
 		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
 	})
 
@@ -293,7 +324,7 @@ describe("prompt enrichment Claude Code skills", () => {
 		process.env.KIMCHI_CODING_AGENT_DIR = join(dir, "agent")
 		process.env.HOME = join(dir, "home")
 		process.env.XDG_CACHE_HOME = join(dir, "cache")
-		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(config, "loadConfig").mockReturnValue(createKimchiConfig())
 		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
 	})
 
@@ -469,7 +500,7 @@ describe("prompt enrichment Claude Code skills", () => {
 describe("append system prompt", () => {
 	beforeEach(() => {
 		vi.restoreAllMocks()
-		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(config, "loadConfig").mockReturnValue(createKimchiConfig())
 		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
 	})
 
@@ -483,8 +514,12 @@ describe("append system prompt", () => {
 		)) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain("Custom appended instructions")
-		// It should be at the end of the prompt
-		expect(result.systemPrompt.endsWith("Custom appended instructions")).toBe(true)
+		// The append-system-prompt content appears before the environment
+		// snapshot block (which is the final section).
+		const snapshotIdx = result.systemPrompt.indexOf("kimchi:environment-snapshot")
+		if (snapshotIdx !== -1) {
+			expect(result.systemPrompt.indexOf("Custom appended instructions")).toBeLessThan(snapshotIdx)
+		}
 	})
 
 	it("does not append when appendSystemPrompt is undefined", async () => {
@@ -559,7 +594,7 @@ describe("model role startup warnings", () => {
 	})
 
 	it("does not print unavailable role warnings from cached metadata before auth is configured", () => {
-		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(config, "loadConfig").mockReturnValue(createKimchiConfig())
 		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([modelMetadata("cached-model")])
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		const pi = {
@@ -577,7 +612,7 @@ describe("model role startup warnings", () => {
 	})
 
 	it("keeps unavailable role warnings when Kimchi auth is already configured", () => {
-		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "test-key" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(config, "loadConfig").mockReturnValue(createKimchiConfig({ apiKey: "test-key" }))
 		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([modelMetadata("different-model")])
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		const pi = {
@@ -610,9 +645,12 @@ function buildPromptExtensionWithHandlers(skillPaths: string[] = []) {
 	} as unknown as ExtensionAPI
 	promptEnrichmentExtension(skillPaths)(pi)
 	return {
+		pi,
 		handlers,
 		resourcesDiscover: handlers.get("resources_discover"),
 		beforeAgentStart: handlers.get("before_agent_start"),
+		sessionStart: handlers.get("session_start"),
+		sessionShutdown: handlers.get("session_shutdown"),
 	}
 }
 
@@ -1018,5 +1056,271 @@ describe("continuation nudge turn_end handler", () => {
 		// might be stuck.
 		expect(sendMessageCalls.length).toBe(1)
 		expect((sendMessageCalls[0].message as { content?: string }).content).toContain("If you have finished")
+	})
+})
+
+describe("prompt enrichment environment snapshot", () => {
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		vi.spyOn(config, "loadConfig").mockReturnValue(createKimchiConfig())
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+		mockGet.mockReset()
+		mockPrime.mockReset()
+		mockRestore.mockReset()
+		mockClearContext.mockReset()
+		mockGet.mockResolvedValue(undefined)
+	})
+
+	const SNAPSHOT_BLOCK =
+		"<!-- kimchi:environment-snapshot:start -->\n## Startup Environment Snapshot\nTest snapshot\n<!-- kimchi:environment-snapshot:end -->"
+
+	it("keeps a Ferment planner supplement before the final snapshot", async () => {
+		mockGet.mockResolvedValue(SNAPSHOT_BLOCK)
+		const pi = createExtensionApi({
+			appendEntry: vi.fn(),
+			getFlag: () => false,
+		})
+		environmentSnapshotFinalizerExtension(pi.api)
+
+		const promptAfterLateExtension = `${SNAPSHOT_BLOCK}\n\n## Ferment Planner Context`
+		const result = await pi.getHandler<{ systemPrompt: string }, { systemPrompt: string }>("before_agent_start")(
+			{ systemPrompt: promptAfterLateExtension },
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "main-finalizer" } }),
+		)
+		if (!result) throw new Error("before_agent_start handler returned no prompt")
+
+		expect(result.systemPrompt).toContain("## Ferment Planner Context")
+		expect(result.systemPrompt.trimEnd().endsWith(SNAPSHOT_BLOCK)).toBe(true)
+		expect(result.systemPrompt.match(/kimchi:environment-snapshot:start/g)).toHaveLength(1)
+		expect(mockGet).not.toHaveBeenCalled()
+	})
+
+	it("leaves prompt-debug environment variables unset when debugging is disabled", async () => {
+		delete process.env.KIMCHI_DEBUG_PROMPTS
+		delete process.env.KIMCHI_DEBUG_SESSION
+		const pi = createExtensionApi({
+			getFlag: () => false,
+		})
+		environmentSnapshotFinalizerExtension(pi.api)
+
+		await pi.getHandler("before_agent_start")(
+			{ systemPrompt: SNAPSHOT_BLOCK },
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "debug-disabled" } }),
+		)
+
+		expect(process.env.KIMCHI_DEBUG_PROMPTS).toBeUndefined()
+		expect(process.env.KIMCHI_DEBUG_SESSION).toBeUndefined()
+	})
+
+	it("primes collection at session_start using sessionId as contextId", async () => {
+		const { sessionStart } = buildPromptExtensionWithHandlers()
+		if (!sessionStart) throw new Error("session_start handler not registered")
+
+		const ctx = createContext({ hasUI: false, sessionManager: { getSessionId: () => "main-ctx-1" } })
+		await sessionStart({}, ctx)
+
+		expect(mockPrime).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextId: "main-ctx-1",
+				cwd: expect.any(String),
+			}),
+		)
+	})
+
+	it("restores a persisted snapshot at session_start without collecting", async () => {
+		const persisted = "<!-- kimchi:environment-snapshot:start -->\nORIGINAL\n<!-- kimchi:environment-snapshot:end -->"
+		const { sessionStart } = buildPromptExtensionWithHandlers()
+		if (!sessionStart) throw new Error("session_start handler not registered")
+		const ctx = createContext({
+			hasUI: false,
+			sessionManager: {
+				getSessionId: () => "persisted-main",
+				getEntries: () => [
+					{
+						type: "custom",
+						id: "snapshot-entry",
+						parentId: null,
+						timestamp: "2026-08-05T00:00:00.000Z",
+						customType: "kimchi:environment-snapshot",
+						data: { cwd: "/tmp", snapshot: persisted },
+					},
+				],
+			},
+		})
+
+		await sessionStart({}, ctx)
+
+		expect(mockRestore).toHaveBeenCalledWith(
+			expect.objectContaining({ contextId: "persisted-main", cwd: expect.any(String) }),
+			persisted,
+		)
+		expect(mockPrime).not.toHaveBeenCalled()
+	})
+
+	it("awaits and appends the snapshot as the final section in before_agent_start", async () => {
+		mockGet.mockResolvedValue(SNAPSHOT_BLOCK)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "main-ctx-2" } }),
+		)) as { systemPrompt: string }
+
+		expect(mockGet).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextId: "main-ctx-2",
+				cwd: expect.any(String),
+			}),
+		)
+		expect(result.systemPrompt).toContain(SNAPSHOT_BLOCK)
+		// The snapshot is the LAST section of the prompt.
+		expect(result.systemPrompt.trimEnd().endsWith(SNAPSHOT_BLOCK)).toBe(true)
+	})
+
+	it.each([
+		{ enabled: true, modeHeading: "## Orchestration", sessionId: "snapshot-orchestrator" },
+		{ enabled: false, modeHeading: "## Single-Model Mode", sessionId: "snapshot-single" },
+	])("appends a final snapshot in $modeHeading mode", async ({ enabled, modeHeading, sessionId }) => {
+		mockGet.mockResolvedValue(SNAPSHOT_BLOCK)
+		setMultiModelEnabled(sessionId, enabled)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler not registered")
+		const ctx = createContext({
+			hasUI: false,
+			sessionManager: { getSessionId: () => sessionId, getEntries: () => [] },
+		})
+
+		const result = (await beforeAgentStart({}, ctx)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain(modeHeading)
+		expect(result.systemPrompt.match(/kimchi:environment-snapshot:start/g)).toHaveLength(1)
+		expect(result.systemPrompt.trimEnd().endsWith(SNAPSHOT_BLOCK)).toBe(true)
+	})
+
+	it("appends snapshot AFTER append-system-prompt content", async () => {
+		mockGet.mockResolvedValue(SNAPSHOT_BLOCK)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler not registered")
+
+		const result = (await beforeAgentStart(
+			{ systemPromptOptions: { appendSystemPrompt: "EXTRA_APPEND_CONTENT" } },
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "main-ctx-3" } }),
+		)) as { systemPrompt: string }
+
+		const appendIdx = result.systemPrompt.indexOf("EXTRA_APPEND_CONTENT")
+		const snapshotIdx = result.systemPrompt.indexOf("kimchi:environment-snapshot")
+		expect(appendIdx).toBeLessThan(snapshotIdx)
+		expect(result.systemPrompt.trimEnd().endsWith(SNAPSHOT_BLOCK)).toBe(true)
+	})
+
+	it("strips inherited snapshot block before appending the new one", async () => {
+		mockGet.mockResolvedValue(SNAPSHOT_BLOCK)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler not registered")
+
+		const inheritedSnapshot =
+			"<!-- kimchi:environment-snapshot:start -->\n## Startup Environment Snapshot\nOLD INHERITED\n<!-- kimchi:environment-snapshot:end -->"
+
+		const result = (await beforeAgentStart(
+			{ systemPromptOptions: { appendSystemPrompt: inheritedSnapshot } },
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "main-ctx-4" } }),
+		)) as { systemPrompt: string }
+
+		// The OLD inherited block must NOT appear — only the new one.
+		expect(result.systemPrompt).not.toContain("OLD INHERITED")
+		// The new snapshot appears exactly once.
+		const matches = result.systemPrompt.match(/kimchi:environment-snapshot:start/g)
+		expect(matches).toHaveLength(1)
+	})
+
+	it("omits the snapshot block when collection returns undefined (silent fallback)", async () => {
+		mockGet.mockResolvedValue(undefined)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "main-ctx-5" } }),
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).not.toContain("kimchi:environment-snapshot")
+	})
+
+	it("clears context cache on session_shutdown", async () => {
+		const { sessionShutdown } = buildPromptExtensionWithHandlers()
+		if (!sessionShutdown) throw new Error("session_shutdown handler not registered")
+
+		const ctx = createContext({ hasUI: false, sessionManager: { getSessionId: () => "main-ctx-6" } })
+		await sessionShutdown({}, ctx)
+
+		expect(mockClearContext).toHaveBeenCalledWith("main-ctx-6")
+	})
+
+	it("produces exactly one snapshot block across repeated before_agent_start calls (byte-for-byte reuse)", async () => {
+		mockGet.mockResolvedValue(SNAPSHOT_BLOCK)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler not registered")
+
+		const ctx = createContext({ hasUI: false, sessionManager: { getSessionId: () => "main-ctx-7" } })
+
+		const result1 = (await beforeAgentStart({}, ctx)) as { systemPrompt: string }
+		const result2 = (await beforeAgentStart({}, ctx)) as { systemPrompt: string }
+
+		// Both prompts contain exactly one snapshot block.
+		const matches1 = result1.systemPrompt.match(/kimchi:environment-snapshot:start/g)
+		const matches2 = result2.systemPrompt.match(/kimchi:environment-snapshot:start/g)
+		expect(matches1).toHaveLength(1)
+		expect(matches2).toHaveLength(1)
+
+		// The snapshot portion is byte-for-byte identical across turns.
+		const block1 = result1.systemPrompt.match(
+			/<!-- kimchi:environment-snapshot:start -->[\s\S]*?<!-- kimchi:environment-snapshot:end -->/,
+		)?.[0]
+		const block2 = result2.systemPrompt.match(
+			/<!-- kimchi:environment-snapshot:start -->[\s\S]*?<!-- kimchi:environment-snapshot:end -->/,
+		)?.[0]
+		expect(block1).toBe(block2)
+
+		// get was called twice (once per before_agent_start) but the underlying
+		// cache promise was reused (the mock returns the same resolved value).
+		expect(mockGet).toHaveBeenCalledTimes(2)
+	})
+
+	it("KIMCHI_ENV_SNAPSHOT=0 removes the snapshot block (opt-out produces undefined)", async () => {
+		// When KIMCHI_ENV_SNAPSHOT=0, the real service returns undefined.
+		// The mock simulates this by returning undefined (the default).
+		mockGet.mockResolvedValue(undefined)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler not registered")
+
+		const result = (await beforeAgentStart(
+			{ systemPromptOptions: { appendSystemPrompt: "APPEND_CONTENT" } },
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "opt-out-ctx" } }),
+		)) as { systemPrompt: string }
+
+		// No snapshot markers in the prompt — opt-out removed the block.
+		expect(result.systemPrompt).not.toContain("kimchi:environment-snapshot")
+		// The append-system-prompt content is still present.
+		expect(result.systemPrompt).toContain("APPEND_CONTENT")
+	})
+
+	it("does not crash when snapshot collection rejects (best-effort fallback)", async () => {
+		mockGet.mockRejectedValue(new Error("collection failed"))
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler not registered")
+
+		const result = (await beforeAgentStart(
+			{ systemPromptOptions: { appendSystemPrompt: "APPEND_CONTENT" } },
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "fail-ctx" } }),
+		)) as { systemPrompt: string }
+
+		// The prompt build did not crash — it fell back to no snapshot block.
+		expect(result.systemPrompt).not.toContain("kimchi:environment-snapshot")
+		// The append-system-prompt content is still present.
+		expect(result.systemPrompt).toContain("APPEND_CONTENT")
+		expect(warn).not.toHaveBeenCalled()
+		warn.mockRestore()
 	})
 })

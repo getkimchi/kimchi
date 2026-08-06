@@ -1,13 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
+	let nextSessionId = 0
+	const makeSessionManager = () => ({
+		getSessionId: vi.fn().mockReturnValue(`subagent-session-${++nextSessionId}`),
+		getEntries: vi.fn().mockReturnValue([]),
+		appendCustomEntry: vi.fn(),
+	})
 	return {
 		DefaultResourceLoader: vi.fn().mockImplementation(() => ({
 			reload: vi.fn().mockResolvedValue(undefined),
 		})),
 		SessionManager: {
-			inMemory: vi.fn().mockReturnValue({}),
-			open: vi.fn().mockReturnValue({}),
+			inMemory: vi.fn().mockImplementation(makeSessionManager),
+			open: vi.fn().mockImplementation(makeSessionManager),
 		},
 		SettingsManager: {
 			create: vi.fn().mockReturnValue({ applyOverrides: vi.fn() }),
@@ -88,6 +94,29 @@ vi.mock("../../prompt-construction/context-files.js", () => ({
 	loadProjectContextFiles: vi.fn().mockReturnValue([]),
 }))
 
+const { mockFindPersistedSnapshot, mockSnapshotGet, mockSnapshotPrime, mockSnapshotRestore, mockSnapshotClearContext } =
+	vi.hoisted(() => ({
+		mockFindPersistedSnapshot: vi.fn(),
+		mockSnapshotGet: vi.fn(),
+		mockSnapshotPrime: vi.fn(),
+		mockSnapshotRestore: vi.fn(),
+		mockSnapshotClearContext: vi.fn(),
+	}))
+vi.mock("../../prompt-construction/environment-snapshot.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../prompt-construction/environment-snapshot.js")>()
+	const { environmentSnapshotModuleMock } = await import("../../__mocks__/environment-snapshot.js")
+	return environmentSnapshotModuleMock(
+		{
+			get: mockSnapshotGet,
+			prime: mockSnapshotPrime,
+			restore: mockSnapshotRestore,
+			clearContext: mockSnapshotClearContext,
+			findPersistedEnvironmentSnapshot: mockFindPersistedSnapshot,
+		},
+		actual,
+	)
+})
+
 vi.mock("../../telemetry/index.js", () => ({
 	default: vi.fn().mockReturnValue(() => {}),
 }))
@@ -111,6 +140,7 @@ import {
 	type CreateAgentSessionResult,
 	createAgentSession,
 	DefaultResourceLoader,
+	SessionManager,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../bash-default-timeout.js"
@@ -154,6 +184,7 @@ function makeFakeSession({
 	activeToolNames = [],
 	promptAction,
 	registeredToolNames,
+	systemPrompt = "System prompt text",
 }: {
 	promptTokens?: number
 	outputTokens?: number
@@ -166,6 +197,7 @@ function makeFakeSession({
 	activeToolNames?: string[]
 	promptAction?: (emit: (event: SessionEvent) => void) => Promise<void>
 	registeredToolNames?: string[]
+	systemPrompt?: string
 } = {}) {
 	const subscribers: Subscriber[] = []
 	let promptCalled = false
@@ -193,6 +225,7 @@ function makeFakeSession({
 		getToolDefinition: vi.fn((name: string) => (registeredTools.has(name) ? { name } : undefined)),
 		setActiveToolsByName: vi.fn(),
 		bindExtensions: vi.fn().mockResolvedValue(undefined),
+		systemPrompt,
 		messages: [],
 		getSessionStats: vi.fn().mockReturnValue({
 			tokens: sessionStatsTokens,
@@ -298,6 +331,14 @@ function makeAgentConfig(
 		...overrides,
 	}
 }
+
+beforeEach(() => {
+	mockSnapshotGet.mockReset()
+	mockSnapshotPrime.mockReset()
+	mockSnapshotRestore.mockReset()
+	mockSnapshotClearContext.mockReset()
+	mockSnapshotGet.mockResolvedValue(undefined)
+})
 
 describe("runAgent — telemetry extension", () => {
 	let ctx: ReturnType<typeof makeFakeCtx>
@@ -2082,5 +2123,379 @@ describe("resumeAgent — inactivity steering", () => {
 		expect(session.steer).toHaveBeenCalledWith(expect.stringContaining("You appear to be stalled"))
 
 		vi.useRealTimers()
+	})
+})
+
+describe("runAgent — environment snapshot wiring", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+		mockSnapshotGet.mockReset()
+		mockSnapshotPrime.mockReset()
+		mockSnapshotRestore.mockReset()
+		mockSnapshotClearContext.mockReset()
+		mockFindPersistedSnapshot.mockReset()
+		mockFindPersistedSnapshot.mockReturnValue(undefined)
+		mockSnapshotGet.mockResolvedValue(undefined)
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	function makeSession() {
+		return makeFakeSession({})
+	}
+
+	function setupSession() {
+		const session = makeSession()
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		return session
+	}
+
+	it("primes a fresh collection at spawn with a per-spawn contextId", async () => {
+		setupSession()
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockSnapshotPrime).toHaveBeenCalledTimes(1)
+		const primeArg = mockSnapshotPrime.mock.calls[0]?.[0] as { contextId: string; cwd: string }
+		expect(primeArg.contextId).toEqual(expect.any(String))
+		expect(primeArg.cwd).toBe(ctx.cwd)
+	})
+
+	it("awaits the snapshot before building the system prompt and populates extras.environmentSnapshot", async () => {
+		const snapshotBlock =
+			"<!-- kimchi:environment-snapshot:start -->\nSNAPSHOT\n<!-- kimchi:environment-snapshot:end -->"
+		mockSnapshotGet.mockResolvedValue(snapshotBlock)
+		setupSession()
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockSnapshotGet).toHaveBeenCalledTimes(1)
+		const getArg = mockSnapshotGet.mock.calls[0]?.[0] as { contextId: string; cwd: string }
+		expect(getArg.cwd).toBe(ctx.cwd)
+
+		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
+		expect(extras?.environmentSnapshot).toBe(snapshotBlock)
+	})
+
+	it("records the extension-finalized system prompt used by the model", async () => {
+		const finalizedPrompt = "MUTATED BY EXTENSION\n\n<!-- kimchi:environment-snapshot:end -->"
+		mockCreateAgentSession.mockResolvedValue({
+			session: makeFakeSession({ systemPrompt: finalizedPrompt }) as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		const onSystemPrompt = vi.fn()
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			onSystemPrompt,
+		})
+
+		expect(onSystemPrompt).toHaveBeenCalledOnce()
+		expect(onSystemPrompt).toHaveBeenCalledWith(finalizedPrompt)
+	})
+
+	it("routes a Ferment-linked worker through the shared snapshot prompt path", async () => {
+		const snapshotBlock =
+			"<!-- kimchi:environment-snapshot:start -->\nWORKER SNAPSHOT\n<!-- kimchi:environment-snapshot:end -->"
+		mockSnapshotGet.mockResolvedValue(snapshotBlock)
+		setupSession()
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "implement ferment step", {
+			pi: pi as unknown as RunOptions["pi"],
+			workerReport: { submit: vi.fn(), isAccepted: vi.fn(() => false) },
+		})
+
+		expect(mockBuildAgentPrompt).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.any(String),
+			expect.anything(),
+			expect.any(String),
+			expect.objectContaining({ environmentSnapshot: snapshotBlock }),
+		)
+	})
+
+	it("reappends the snapshot after Pi adds its final custom-prompt metadata", async () => {
+		const snapshotBlock =
+			"<!-- kimchi:environment-snapshot:start -->\nSNAPSHOT\n<!-- kimchi:environment-snapshot:end -->"
+		mockSnapshotGet.mockResolvedValue(snapshotBlock)
+		setupSession()
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const handlers: Array<(event: { systemPrompt: string }) => { systemPrompt: string }> = []
+		for (const factory of mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []) {
+			factory({
+				on: (event: string, handler: (event: { systemPrompt: string }) => { systemPrompt: string }) => {
+					if (event === "before_agent_start") handlers.push(handler)
+				},
+			} as never)
+		}
+
+		expect(handlers).toHaveLength(1)
+		const result = handlers[0]?.({ systemPrompt: "AGENT PROMPT\nCurrent working directory: /workspace" })
+		expect(result?.systemPrompt.endsWith(snapshotBlock)).toBe(true)
+	})
+
+	it("passes undefined to extras when collection returns undefined (silent fallback)", async () => {
+		mockSnapshotGet.mockResolvedValue(undefined)
+		setupSession()
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
+		expect(extras?.environmentSnapshot).toBeUndefined()
+	})
+
+	it("clears context cache in the finally block after prompt completes", async () => {
+		const session = setupSession()
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockSnapshotClearContext).toHaveBeenCalledTimes(1)
+		const clearedId = mockSnapshotClearContext.mock.calls[0]?.[0] as string
+		const primedId = mockSnapshotPrime.mock.calls[0]?.[0].contextId as string
+		expect(clearedId).toBe(primedId)
+		// session_shutdown emit happens before clearContext
+		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" })
+	})
+
+	it("clears context cache even when the prompt throws", async () => {
+		mockCreateAgentSession.mockResolvedValue({
+			session: makeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		mockCreateAgentSession.mockResolvedValueOnce({
+			session: {
+				...makeSession(),
+				prompt: vi.fn().mockRejectedValue(new Error("prompt failed")),
+			} as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow("prompt failed")
+
+		expect(mockSnapshotClearContext).toHaveBeenCalledTimes(1)
+	})
+
+	it("clears context cache when startup fails before the agent session is created", async () => {
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ includeContextFiles: true }))
+		mockLoadProjectContextFiles.mockImplementationOnce(() => {
+			throw new Error("context loading failed")
+		})
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow("context loading failed")
+		expect(mockSnapshotClearContext).toHaveBeenCalledTimes(1)
+	})
+
+	it("restores a persisted snapshot instead of collecting a replacement", async () => {
+		const persisted = "<!-- kimchi:environment-snapshot:start -->\nORIGINAL\n<!-- kimchi:environment-snapshot:end -->"
+		const sessionManager = {
+			getSessionId: vi.fn().mockReturnValue("persisted-child"),
+			getEntries: vi.fn().mockReturnValue([{ type: "custom" }]),
+			appendCustomEntry: vi.fn(),
+		}
+		vi.mocked(SessionManager.open).mockReturnValueOnce(sessionManager as unknown as SessionManager)
+		mockFindPersistedSnapshot.mockReturnValueOnce(persisted)
+		mockSnapshotGet.mockResolvedValueOnce(persisted)
+		setupSession()
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "resume", {
+			pi: pi as unknown as RunOptions["pi"],
+			sessionFile: "/tmp/persisted-child.jsonl",
+		})
+
+		expect(mockSnapshotRestore).toHaveBeenCalledWith(
+			expect.objectContaining({ contextId: "persisted-child", cwd: ctx.cwd }),
+			persisted,
+		)
+		expect(mockSnapshotPrime).not.toHaveBeenCalled()
+		expect(sessionManager.appendCustomEntry).not.toHaveBeenCalled()
+	})
+
+	it("continues spawning when snapshot persistence fails", async () => {
+		const snapshot = "<!-- kimchi:environment-snapshot:start -->\nCURRENT\n<!-- kimchi:environment-snapshot:end -->"
+		const sessionManager = {
+			getSessionId: vi.fn().mockReturnValue("write-failure-child"),
+			getEntries: vi.fn().mockReturnValue([]),
+			appendCustomEntry: vi.fn(() => {
+				throw new Error("session file is read-only")
+			}),
+		}
+		vi.mocked(SessionManager.inMemory).mockReturnValueOnce(sessionManager as unknown as SessionManager)
+		mockSnapshotGet.mockResolvedValueOnce(snapshot)
+		setupSession()
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "continue", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(result.aborted).toBe(false)
+		expect(sessionManager.appendCustomEntry).toHaveBeenCalledOnce()
+		const extras = mockBuildAgentPrompt.mock.calls.at(-1)?.[4]
+		expect(extras?.environmentSnapshot).toBe(snapshot)
+	})
+
+	it("mints a distinct contextId per spawn (fresh collection per new agent context)", async () => {
+		setupSession()
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "first", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "second", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockSnapshotPrime).toHaveBeenCalledTimes(2)
+		const id1 = mockSnapshotPrime.mock.calls[0]?.[0].contextId as string
+		const id2 = mockSnapshotPrime.mock.calls[1]?.[0].contextId as string
+		expect(id1).not.toBe(id2)
+	})
+
+	it("uses the effective cwd (options.cwd) for the snapshot, not ctx.cwd", async () => {
+		setupSession()
+		const overrideCwd = "/custom/worktree"
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			cwd: overrideCwd,
+		})
+
+		const primeArg = mockSnapshotPrime.mock.calls[0]?.[0] as { cwd: string }
+		expect(primeArg.cwd).toBe(overrideCwd)
+		const getArg = mockSnapshotGet.mock.calls[0]?.[0] as { cwd: string }
+		expect(getArg.cwd).toBe(overrideCwd)
+	})
+
+	it("subagent after a repo change gets a fresh snapshot while parent stays byte-identical", async () => {
+		const parentSnapshot =
+			"<!-- kimchi:environment-snapshot:start -->\n## Startup Environment Snapshot\nparent state\n<!-- kimchi:environment-snapshot:end -->"
+		const childSnapshot =
+			"<!-- kimchi:environment-snapshot:start -->\n## Startup Environment Snapshot\nchild state (new file)\n<!-- kimchi:environment-snapshot:end -->"
+
+		// Parent agent collects first — returns parentSnapshot.
+		mockSnapshotGet.mockResolvedValueOnce(parentSnapshot)
+		setupSession()
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "parent task", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+		const parentExtras = mockBuildAgentPrompt.mock.calls.at(-1)?.[4]
+		expect(parentExtras?.environmentSnapshot).toBe(parentSnapshot)
+
+		// After a repo change, child agent gets a FRESH collection (new contextId) → childSnapshot.
+		mockSnapshotGet.mockResolvedValueOnce(childSnapshot)
+		setupSession()
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "child task", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+		const childExtras = mockBuildAgentPrompt.mock.calls.at(-1)?.[4]
+		expect(childExtras?.environmentSnapshot).toBe(childSnapshot)
+
+		// The parent's snapshot is NOT mutated by the child's collection.
+		expect(parentExtras?.environmentSnapshot).toBe(parentSnapshot)
+		expect(childExtras?.environmentSnapshot).not.toBe(parentExtras?.environmentSnapshot)
+
+		// Distinct contextIds prove the child did not reuse the parent's cache entry.
+		const parentId = mockSnapshotPrime.mock.calls[0]?.[0].contextId as string
+		const childId = mockSnapshotPrime.mock.calls[1]?.[0].contextId as string
+		expect(parentId).not.toBe(childId)
+	})
+
+	it("resumeAgent does not rebuild the system prompt or re-collect the snapshot (bytes retained)", async () => {
+		const { resumeAgent } = await import("./agent-runner.js")
+		const snapshotBlock =
+			"<!-- kimchi:environment-snapshot:start -->\n## Startup Environment Snapshot\nresume test\n<!-- kimchi:environment-snapshot:end -->"
+
+		// Initial runAgent: collects snapshot, builds prompt with it.
+		mockSnapshotGet.mockResolvedValueOnce(snapshotBlock)
+		setupSession()
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "initial task", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const initialGetCount = mockSnapshotGet.mock.calls.length
+		const initialPrimeCount = mockSnapshotPrime.mock.calls.length
+
+		// resumeAgent uses the existing session — does NOT call buildAgentPrompt or get/prime again.
+		const session = makeFakeSession({})
+		await resumeAgent(session as unknown as AgentSession, "continue the work", {
+			maxTurns: 5,
+		})
+
+		// No new snapshot collection during resume — the prompt was already built.
+		expect(mockSnapshotGet.mock.calls.length).toBe(initialGetCount)
+		expect(mockSnapshotPrime.mock.calls.length).toBe(initialPrimeCount)
+	})
+
+	it("KIMCHI_ENV_SNAPSHOT=0 removes the snapshot block from subagent prompts (opt-out)", async () => {
+		// When KIMCHI_ENV_SNAPSHOT=0, the real service returns undefined.
+		// The mock simulates this by returning undefined (the default after reset).
+		mockSnapshotGet.mockResolvedValue(undefined)
+		setupSession()
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
+		expect(extras?.environmentSnapshot).toBeUndefined()
+	})
+
+	it("does not crash the subagent spawn when snapshot collection rejects", async () => {
+		mockSnapshotGet.mockRejectedValue(new Error("collection failed"))
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		setupSession()
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		// The subagent spawn did not crash — it fell back to no snapshot.
+		expect(result.aborted).toBe(false)
+		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
+		expect(extras?.environmentSnapshot).toBeUndefined()
+		expect(warn).not.toHaveBeenCalled()
+		warn.mockRestore()
 	})
 })

@@ -74,7 +74,9 @@ import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindi
 import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
 import piiRedactionExtension from "./extensions/pii-redaction/index.js"
 import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/index.js"
-import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
+import promptEnrichmentExtension, {
+	environmentSnapshotFinalizerExtension,
+} from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
@@ -617,6 +619,9 @@ try {
 			activityExtension,
 			infrastructureErrorTracker.extension,
 			infrastructureBreakerExtension,
+			// Must remain last: later before_agent_start handlers must not append
+			// content after the cache-friendly environment snapshot suffix.
+			environmentSnapshotFinalizerExtension,
 		]
 
 		if (IS_ACP_MODE) {

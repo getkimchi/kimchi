@@ -3,9 +3,10 @@ import { vi } from "vitest"
 
 type RegisteredHandler = ExtensionHandler<unknown, unknown>
 
-export function createExtensionApi(): {
+export function createExtensionApi(overrides: Partial<ExtensionAPI> = {}): {
 	api: ExtensionAPI
 	getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R>
+	getHandlers<E, R = undefined>(event: string): Array<ExtensionHandler<E, R>>
 } {
 	const handlers = new Map<string, RegisteredHandler[]>()
 	const on = vi.fn((event: string, handler: RegisteredHandler) => {
@@ -15,11 +16,14 @@ export function createExtensionApi(): {
 	})
 
 	return {
-		api: { on } as unknown as ExtensionAPI,
+		api: { ...overrides, on } as ExtensionAPI,
 		getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R> {
 			const handler = handlers.get(event)?.[0]
 			if (!handler) throw new Error(`Extension did not register a ${event} handler`)
 			return handler as ExtensionHandler<E, R>
+		},
+		getHandlers<E, R = undefined>(event: string): Array<ExtensionHandler<E, R>> {
+			return (handlers.get(event) ?? []) as Array<ExtensionHandler<E, R>>
 		},
 	}
 }

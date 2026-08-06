@@ -3,6 +3,7 @@
  */
 
 import type { ContextFile } from "../../prompt-construction/context-files.js"
+import { withEnvironmentSnapshot } from "../../prompt-construction/environment-snapshot.js"
 import {
 	buildCoreGuidelinesSections,
 	buildOutputAndTruncationSection,
@@ -32,6 +33,8 @@ export interface PromptExtras {
 	contextFiles?: ContextFile[]
 	/** Tool names this subagent is expected to have available. */
 	activeToolNames?: string[]
+	/** Pre-collected environment snapshot block for this agent context. */
+	environmentSnapshot?: string
 }
 
 /**
@@ -40,6 +43,11 @@ export interface PromptExtras {
  * - "replace" mode: env header + config.systemPrompt (full control, no parent identity)
  * - "append" mode: env header + parent system prompt + sub-agent context + config.systemPrompt
  * - "append" with empty systemPrompt: pure parent clone
+ *
+ * The environment snapshot is owned per-agent-context (minted in agent-runner via
+ * crypto.randomUUID), not shared with the top-level session. In append mode the
+ * inherited parent snapshot block is defensively stripped before appending the
+ * fresh subagent snapshot as the final section.
  */
 export function buildAgentPrompt(
 	config: AgentConfig,
@@ -104,7 +112,10 @@ ${toolGuidance}
 
 		const guidanceSection = localToolSections ? `\n\n${localToolSections}` : ""
 		const toolSection = availableToolsBlock ? `\n\n${availableToolsBlock}` : ""
-		return `${envBlock}\n\n<inherited_system_prompt>\n${identity}\n</inherited_system_prompt>${guidanceSection}${toolSection}\n\n${bridge}${customSection}${extrasSuffix}`
+		const appendResult = `${envBlock}\n\n<inherited_system_prompt>\n${identity}\n</inherited_system_prompt>${guidanceSection}${toolSection}\n\n${bridge}${customSection}${extrasSuffix}`
+		// Strip any inherited snapshot block from the parent prompt, then append
+		// this agent's own fresh snapshot as the final section.
+		return withEnvironmentSnapshot(appendResult, extras?.environmentSnapshot)
 	}
 
 	// "replace" mode — env header + the config's full system prompt
@@ -117,7 +128,8 @@ ${envBlock}`
 	const coreGuidelines = config.includeCoreGuidelines
 		? `\n\n${buildCoreGuidelinesSections(extras?.activeToolNames)}`
 		: ""
-	return `${replaceHeader}${toolSection}\n\n${config.systemPrompt}${coreGuidelines}${extrasSuffix}`
+	const replaceResult = `${replaceHeader}${toolSection}\n\n${config.systemPrompt}${coreGuidelines}${extrasSuffix}`
+	return withEnvironmentSnapshot(replaceResult, extras?.environmentSnapshot)
 }
 
 export function formatTokenBudget(tokens: number): string {

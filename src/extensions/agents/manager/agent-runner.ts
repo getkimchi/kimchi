@@ -1,5 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import {
@@ -22,6 +21,16 @@ import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import { writeDebugPromptArtifact } from "../../prompt-construction/debug-prompt-writer.js"
+import {
+	createEnvironmentSnapshotRequest,
+	ENVIRONMENT_SNAPSHOT_SESSION_ENTRY,
+	type EnvironmentSnapshotRequest,
+	environmentSnapshotService,
+	prepareEnvironmentSnapshot,
+	resolveEnvironmentSnapshot,
+	withEnvironmentSnapshot,
+} from "../../prompt-construction/environment-snapshot.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
@@ -86,6 +95,14 @@ function getActiveSubagentToolNames(
 		if (Array.isArray(extensions)) return extensions.some((ext) => name.startsWith(ext) || name.includes(ext))
 		return true
 	})
+}
+
+function createEnvironmentSnapshotPromptExtension(snapshot: string) {
+	return (pi: ExtensionAPI) => {
+		pi.on("before_agent_start", (event) => ({
+			systemPrompt: withEnvironmentSnapshot(event.systemPrompt, snapshot),
+		}))
+	}
 }
 
 /** Prefix applied to automated steering messages so the LLM does not attribute them to the user. */
@@ -341,11 +358,50 @@ async function runAgentInner(
 	prompt: string,
 	options: RunOptions,
 ): Promise<RunResult> {
+	const effectiveCwd = options.cwd ?? ctx.cwd
+	const sessionManager = options.sessionFile
+		? SessionManager.open(options.sessionFile, options.sessionDir, effectiveCwd)
+		: SessionManager.inMemory(effectiveCwd)
+
+	// The child session ID is the logical context identity. A pre-existing
+	// session restores its exact generated block; a genuinely new child session
+	// has a new ID and collects a fresh workspace view.
+	const agentContextId = sessionManager.getSessionId()
+	const request = createEnvironmentSnapshotRequest(agentContextId, effectiveCwd, false)
+	const snapshotContext: AgentSnapshotContext = {
+		request,
+		sessionManager,
+		persisted: prepareEnvironmentSnapshot(request, () => sessionManager.getEntries()),
+	}
+
+	try {
+		return await runAgentWithSnapshot(ctx, type, prompt, options, effectiveCwd, snapshotContext)
+	} finally {
+		environmentSnapshotService.clearContext(agentContextId)
+	}
+}
+
+/** Snapshot state owned by one spawned agent context. */
+interface AgentSnapshotContext {
+	/** Identity + cwd + debug flag, minted once per spawned context. */
+	request: EnvironmentSnapshotRequest
+	/** Child session that persists the collected snapshot block on resume. */
+	sessionManager: SessionManager
+	/** Exact block restored from a pre-existing session, when resuming. */
+	persisted: string | undefined
+}
+
+async function runAgentWithSnapshot(
+	ctx: ExtensionContext,
+	type: SubagentType,
+	prompt: string,
+	options: RunOptions,
+	effectiveCwd: string,
+	snapshotContext: AgentSnapshotContext,
+): Promise<RunResult> {
+	const { request: snapshotRequest, sessionManager, persisted: persistedSnapshot } = snapshotContext
 	const config = getConfig(type)
 	const agentConfig = getAgentConfig(type)
-
-	const effectiveCwd = options.cwd ?? ctx.cwd
-
 	const env = await detectEnv(options.pi, effectiveCwd)
 
 	const parentSystemPrompt = ctx.getSystemPrompt()
@@ -418,6 +474,18 @@ ${skillLines}`
 		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
 	}
 
+	// Await the primed environment snapshot before building the system prompt so
+	// buildAgentPrompt can embed it as the final section. The cached promise
+	// ensures byte-for-byte reuse across turns within this agent context.
+	// Collection failures are swallowed — the snapshot is best-effort and must
+	// never crash the subagent spawn.
+	extras.environmentSnapshot = await resolveEnvironmentSnapshot(snapshotRequest, persistedSnapshot, (snapshot) => {
+		sessionManager.appendCustomEntry(ENVIRONMENT_SNAPSHOT_SESSION_ENTRY, {
+			cwd: resolve(effectiveCwd),
+			snapshot,
+		})
+	})
+
 	const buildSystemPrompt = (activeToolNames: string[]) => {
 		extras.activeToolNames = activeToolNames
 		if (agentConfig) return buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
@@ -427,19 +495,6 @@ ${skillLines}`
 	}
 
 	let systemPrompt = buildSystemPrompt(getPromptToolNames(toolNames, disallowedSet))
-	options.onSystemPrompt?.(systemPrompt)
-
-	const debugSession = process.env.KIMCHI_DEBUG_SESSION
-	if (debugSession) {
-		try {
-			const debugDir = join(effectiveCwd, ".kimchi", "debug", debugSession)
-			mkdirSync(debugDir, { recursive: true })
-			const agentLabel = agentConfig?.name ?? type
-			writeFileSync(join(debugDir, `agent-${agentLabel}-${Date.now()}.md`), systemPrompt)
-		} catch {
-			// best-effort debug logging
-		}
-	}
 
 	const noSkills = skills === false || Array.isArray(skills)
 
@@ -462,6 +517,9 @@ ${skillLines}`
 	// Subagents share this process and its patched retry classifier, so their
 	// successes must close the shared infrastructure breaker just like the parent's.
 	const extensionFactories = [telemetryExtension(readTelemetryConfig()), bashExtension, infrastructureBreakerExtension]
+	if (extras.environmentSnapshot) {
+		extensionFactories.push(createEnvironmentSnapshotPromptExtension(extras.environmentSnapshot))
+	}
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}
@@ -497,9 +555,7 @@ ${skillLines}`
 	const sessionOpts: Parameters<typeof createAgentSession>[0] = {
 		cwd: effectiveCwd,
 		agentDir,
-		sessionManager: options.sessionFile
-			? SessionManager.open(options.sessionFile, options.sessionDir, effectiveCwd)
-			: SessionManager.inMemory(effectiveCwd),
+		sessionManager,
 		settingsManager,
 		modelRegistry: ctx.modelRegistry,
 		model,
@@ -755,6 +811,22 @@ ${skillLines}`
 		}
 		if (personaPhase) {
 			setCurrentPhase(sessionId, prevPhase)
+		}
+		// Extensions may transform the prompt in before_agent_start. Capture the
+		// effective prompt only after that pass so exports and debug artifacts
+		// contain exactly what the provider received. Cleanup runs first so a
+		// consumer callback cannot strand runner-owned resources.
+		const effectiveSystemPrompt = session.systemPrompt
+		options.onSystemPrompt?.(effectiveSystemPrompt)
+		const debugSession = process.env.KIMCHI_DEBUG_SESSION
+		if (debugSession) {
+			const agentLabel = agentConfig?.name ?? type
+			writeDebugPromptArtifact({
+				cwd: effectiveCwd,
+				sessionId: debugSession,
+				label: `agent-${agentLabel}`,
+				systemPrompt: effectiveSystemPrompt,
+			})
 		}
 	}
 
