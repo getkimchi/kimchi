@@ -28,7 +28,13 @@ class FakeAgentSession {
 	disposed = false
 	model = { provider: "test", id: "test-model" }
 	modelRegistry = { getAvailable: () => [{ provider: "test", id: "test-model", name: "Test" }] }
-	sessionManager = { getBranch: () => [] }
+	sessionManager = {
+		getBranch: () => [],
+		getSessionDir: () => "/tmp",
+		getCwd: () => "/tmp",
+		getEntries: () => [],
+		appendCustomEntry: () => "entry-id",
+	}
 	bindExtensionsImpl: ((opts: unknown) => Promise<void>) | null = null
 
 	constructor(id: string) {

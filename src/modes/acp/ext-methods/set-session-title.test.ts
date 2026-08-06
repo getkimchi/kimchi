@@ -17,6 +17,9 @@ class FakeAgentSession {
 		getBranch: () => [],
 		getSessionId: () => this.sessionId,
 		getEntries: () => [],
+		getSessionDir: () => "/tmp",
+		getCwd: () => "/tmp",
+		appendCustomEntry: () => "entry-id",
 	}
 	setSessionName = vi.fn()
 	extensionRunner = { emit: async () => {} }
