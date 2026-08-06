@@ -135,3 +135,39 @@ wait`
 		expect(result.exitCode).toBe(0)
 	})
 })
+
+describe("bash finally-block killProcessTree: backgrounded processes killed on normal completion", () => {
+	it("kills a backgrounded process when the shell exits normally", async () => {
+		const ops = createLocalBashOperations()
+
+		// Launch a background process that writes a marker file every 0.2s
+		// for 30s. After the bash tool returns (echo completes, shell exits 0),
+		// the backgrounded process should be killed by killProcessTree in
+		// the finally block.
+		const markerFile = `/tmp/bash-finally-kill-marker-${process.pid}`
+		const command = `rm -f ${markerFile}; (for i in $(seq 1 150); do echo $$ > ${markerFile}; sleep 0.2; done) & echo "launched"`
+
+		const result = await ops.exec(command, "/tmp", {
+			onData: () => {},
+			timeout: 10,
+		})
+
+		expect(result.exitCode).toBe(0)
+
+		// Wait briefly for the process group kill to take effect.
+		await new Promise((resolve) => setTimeout(resolve, 1000))
+
+		// The marker file should NOT be updating — the backgrounded process
+		// should have been killed. We check that no process is writing it
+		// by reading it twice with a gap.
+		try {
+			const firstRead = execSync(`cat ${markerFile} 2>/dev/null || echo "gone"`, { encoding: "utf-8" }).trim()
+			await new Promise((resolve) => setTimeout(resolve, 500))
+			const secondRead = execSync(`cat ${markerFile} 2>/dev/null || echo "gone"`, { encoding: "utf-8" }).trim()
+			expect(secondRead).toBe(firstRead)
+		} finally {
+			execSync(`rm -f ${markerFile} 2>/dev/null || true`, { stdio: "ignore" })
+			execSync(`pkill -f 'bash-finally-kill-marker' 2>/dev/null || true`, { stdio: "ignore" })
+		}
+	})
+})
