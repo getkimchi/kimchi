@@ -113,6 +113,7 @@ function getEnabledModelIds(): Set<string> | null {
 let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
 let currentSessionIndicatorText: string | null = null
+let currentIdeSelectionIndicatorText: string | null = null
 
 // Own timer for the exit stage — upstream's lastSigintTime isn't updated when
 // the abort stage consumes the event, so we can't rely on it.
@@ -170,6 +171,17 @@ export function setPasteImageHandler(handler: () => void): void {
  */
 export function setPendingImageIndicator(text: string | null): void {
 	currentEditor?.setPendingImageIndicator(text)
+}
+
+/**
+ * Show or clear the current IDE selection (e.g. `@src/foo.ts:10-20`) on the
+ * prompt's first row, as a separate segment from the pending-image indicator.
+ * Used by the ide-adapter extension to surface the live selection. Pass `null`
+ * to clear.
+ */
+export function setIdeSelectionIndicator(text: string | null): void {
+	currentIdeSelectionIndicatorText = text
+	currentEditor?.setIdeSelectionIndicator(text)
 }
 
 /**
@@ -382,6 +394,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 			}
 			if (currentSessionIndicatorText) {
 				editor.setSessionIndicator(currentSessionIndicatorText)
+			}
+			if (currentIdeSelectionIndicatorText !== null) {
+				editor.setIdeSelectionIndicator(currentIdeSelectionIndicatorText)
 			}
 			return editor
 		})

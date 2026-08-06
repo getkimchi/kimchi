@@ -49,6 +49,10 @@ vi.mock("./classifier.js", async () => {
 	}
 })
 
+vi.mock("../ide-adapter/index.js", () => ({
+	isIdeConnected: vi.fn(() => false),
+}))
+
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
 	rawPlatform: "linux",
