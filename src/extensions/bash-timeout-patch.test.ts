@@ -171,7 +171,7 @@ describe("bash finally-block killProcessTree: backgrounded processes killed on n
 
 			const pidStr = await waitForMarker(3000)
 			expect(pidStr).not.toBeNull()
-			const bgPid = Number.parseInt(pidStr!, 10)
+			const bgPid = Number.parseInt(pidStr ?? "0", 10)
 			expect(Number.isFinite(bgPid)).toBe(true)
 
 			// Poll process.kill(pid, 0) until the process disappears.
