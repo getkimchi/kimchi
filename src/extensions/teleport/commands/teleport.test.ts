@@ -24,6 +24,7 @@ const {
 	readLocalGitConfigMock,
 	provisionGitIdentityMock,
 	provisionGitCredentialMock,
+	provisionHarnessConfigMock,
 } = vi.hoisted(() => ({
 	authMock: vi.fn(),
 	waitReadyMock: vi.fn(),
@@ -52,6 +53,7 @@ const {
 	readLocalGitConfigMock: vi.fn(),
 	provisionGitIdentityMock: vi.fn(),
 	provisionGitCredentialMock: vi.fn(),
+	provisionHarnessConfigMock: vi.fn(),
 }))
 
 vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMock }))
@@ -80,6 +82,9 @@ vi.mock("../../../config.js", () => ({
 vi.mock("../provisioning/git-provision.js", () => ({
 	provisionGitIdentity: provisionGitIdentityMock,
 	provisionGitCredential: provisionGitCredentialMock,
+}))
+vi.mock("../provisioning/harness-config.js", () => ({
+	provisionHarnessConfig: provisionHarnessConfigMock,
 }))
 vi.mock("../ui/progress.js", () => ({
 	createTeleportProgress: (...args: unknown[]) => {
@@ -195,6 +200,7 @@ beforeEach(() => {
 	readLocalGitConfigMock.mockReset().mockResolvedValue({})
 	provisionGitIdentityMock.mockReset().mockResolvedValue(undefined)
 	provisionGitCredentialMock.mockReset().mockResolvedValue(undefined)
+	provisionHarnessConfigMock.mockReset().mockResolvedValue({ ok: true })
 })
 
 afterEach(() => {
@@ -424,6 +430,52 @@ describe("runTeleport", () => {
 		expect(createSessionMock).toHaveBeenCalledOnce()
 		const sessionName = createSessionMock.mock.calls[0][1] as string
 		expect(sessionName).toMatch(/^pty-[0-9a-f]{8}$/)
+	})
+
+	describe("harness config sync", () => {
+		it("calls provisionHarnessConfig with the resolved creds and completes the teleport", async () => {
+			const { ctx, ui } = makeCtx()
+
+			await runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
+
+			expect(provisionHarnessConfigMock).toHaveBeenCalledOnce()
+			expect(provisionHarnessConfigMock.mock.calls[0][0]).toMatchObject({
+				remoteHost: CREDS.host,
+				authToken: CREDS.connectToken,
+			})
+			// Teleport still completes — overlay opens, no warning emitted.
+			expect(ui.custom).toHaveBeenCalledOnce()
+			expect(ui.notify).not.toHaveBeenCalledWith(expect.stringMatching(/Could not sync harness config/), "warning")
+		})
+
+		it("syncs harness config even when workspace rsync is skipped (non-git cwd)", async () => {
+			// cwd /work/proj is not a git repo, so shouldRsyncWorkspace is false
+			// and the workspace runRsync is never invoked — but config sync must
+			// still run. Pins the invariant that config sync is not gated behind
+			// shouldRsyncWorkspace.
+			const { ctx, ui } = makeCtx()
+
+			await runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
+
+			expect(provisionHarnessConfigMock).toHaveBeenCalledOnce()
+			expect(ui.custom).toHaveBeenCalledOnce()
+		})
+
+		it("warns but continues when config sync fails", async () => {
+			provisionHarnessConfigMock.mockResolvedValueOnce({ ok: false, error: "boom" })
+			const { ctx, ui } = makeCtx()
+
+			await runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
+
+			expect(provisionHarnessConfigMock).toHaveBeenCalledOnce()
+			expect(ui.notify).toHaveBeenCalledWith(
+				expect.stringContaining("Could not sync harness config to sandbox: boom"),
+				"warning",
+			)
+			// Teleport still completes — overlay opens, session created.
+			expect(createSessionMock).toHaveBeenCalledOnce()
+			expect(ui.custom).toHaveBeenCalledOnce()
+		})
 	})
 
 	describe("git provisioning", () => {
