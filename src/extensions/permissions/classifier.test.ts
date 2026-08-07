@@ -52,7 +52,9 @@ describe("classifyToolCall", () => {
 	})
 
 	it("returns safe verdict on first attempt", async () => {
-		completeMock.mockResolvedValue(fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","reason":"fine"}' }))
+		completeMock.mockResolvedValue(
+			fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
+		)
 
 		const result = await classifyToolCall(
 			fakeRegistry(),
@@ -61,6 +63,7 @@ describe("classifyToolCall", () => {
 		)
 
 		expect(result.verdict).toBe("safe")
+		expect(result.riskScore).toBe("low")
 		expect(result.ok).toBe(true)
 		expect(completeMock).toHaveBeenCalledTimes(1)
 	})
@@ -87,7 +90,9 @@ describe("classifyToolCall", () => {
 	it("succeeds on 2nd attempt after first abort", async () => {
 		completeMock
 			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","reason":"fine"}' }))
+			.mockResolvedValueOnce(
+				fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
+			)
 
 		const promise = classifyToolCall(
 			fakeRegistry(),
@@ -99,6 +104,7 @@ describe("classifyToolCall", () => {
 		const result = await promise
 
 		expect(result.verdict).toBe("safe")
+		expect(result.riskScore).toBe("low")
 		expect(result.ok).toBe(true)
 		expect(completeMock).toHaveBeenCalledTimes(2)
 	})
@@ -107,7 +113,9 @@ describe("classifyToolCall", () => {
 		completeMock
 			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
 			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","reason":"fine"}' }))
+			.mockResolvedValueOnce(
+				fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
+			)
 
 		const promise = classifyToolCall(
 			fakeRegistry(),
@@ -119,6 +127,7 @@ describe("classifyToolCall", () => {
 		const result = await promise
 
 		expect(result.verdict).toBe("safe")
+		expect(result.riskScore).toBe("low")
 		expect(result.ok).toBe(true)
 		expect(completeMock).toHaveBeenCalledTimes(3)
 	})
@@ -128,7 +137,9 @@ describe("classifyToolCall", () => {
 			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
 			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
 			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","reason":"fine"}' }))
+			.mockResolvedValueOnce(
+				fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
+			)
 
 		const promise = classifyToolCall(
 			fakeRegistry([fakeModel(CLASSIFIER_PRIMARY_MODEL_ID), fakeModel(CLASSIFIER_FALLBACK_MODEL_ID)]),
@@ -140,6 +151,7 @@ describe("classifyToolCall", () => {
 		const result = await promise
 
 		expect(result.verdict).toBe("safe")
+		expect(result.riskScore).toBe("low")
 		expect(result.ok).toBe(true)
 		expect(completeMock).toHaveBeenCalledTimes(4)
 	})
@@ -250,9 +262,10 @@ describe("parseClassifierOutput", () => {
 		expect(r.verdict).toBe("requires-confirmation")
 	})
 
-	it("parses blocked", () => {
+	it("falls back to requires-confirmation for removed 'blocked' verdict", () => {
 		const r = parseClassifierOutput(`{"verdict":"blocked","reason":"destructive"}`)
-		expect(r.verdict).toBe("blocked")
+		expect(r.verdict).toBe("requires-confirmation")
+		expect(r.ok).toBe(false)
 	})
 
 	it("extracts embedded JSON when LLM adds prose", () => {
@@ -271,6 +284,7 @@ describe("parseClassifierOutput", () => {
 		const r = parseClassifierOutput(`{"verdict":"maybe","reason":"x"}`)
 		expect(r.verdict).toBe("requires-confirmation")
 		expect(r.ok).toBe(false)
+		expect(r.reason).toBe("x")
 	})
 
 	it("defaults reason when missing", () => {
@@ -279,18 +293,20 @@ describe("parseClassifierOutput", () => {
 	})
 
 	it("strips <think>…</think> and parses JSON after", () => {
-		const raw = `<think>The user is editing a test file, this is safe.</think>\n{"verdict":"safe","reason":"test file edit"}`
+		const raw = `<think>The user is editing a test file, this is safe.</think>\n{"verdict":"safe","riskScore":"low","reason":"test file edit"}`
 		const r = parseClassifierOutput(raw)
 		expect(r.ok).toBe(true)
 		expect(r.verdict).toBe("safe")
+		expect(r.riskScore).toBe("low")
 		expect(r.reason).toBe("test file edit")
 	})
 
 	it("strips <thinking>…</thinking> (alternate delimiter)", () => {
-		const raw = `<thinking>checking blast radius</thinking>\n{"verdict":"requires-confirmation","reason":"writes outside cwd"}`
+		const raw = `<thinking>checking blast radius</thinking>\n{"verdict":"requires-confirmation","riskScore":"medium","reason":"writes outside cwd"}`
 		const r = parseClassifierOutput(raw)
 		expect(r.ok).toBe(true)
 		expect(r.verdict).toBe("requires-confirmation")
+		expect(r.riskScore).toBe("medium")
 	})
 
 	it("ignores braces inside thinking block (the minimax-m2.7 bug)", () => {
@@ -298,10 +314,11 @@ describe("parseClassifierOutput", () => {
 		// then emits the real JSON after the closing tag. The naive
 		// indexOf('{') / lastIndexOf('}') approach latches onto braces
 		// inside the thinking text and returns null.
-		const raw = `<think>The answer should look like {verdict: safe, reason: ...} so I'll output it now.</think>\n{"verdict":"safe","reason":"file edit"}`
+		const raw = `<think>The answer should look like {verdict: safe, reason: ...} so I'll output it now.</think>\n{"verdict":"safe","riskScore":"low","reason":"file edit"}`
 		const r = parseClassifierOutput(raw)
 		expect(r.ok).toBe(true)
 		expect(r.verdict).toBe("safe")
+		expect(r.riskScore).toBe("low")
 		expect(r.reason).toBe("file edit")
 	})
 
@@ -315,10 +332,25 @@ describe("parseClassifierOutput", () => {
 
 	it("strips <mm:think>…</mm:think> (minimax-m3 delimiter)", () => {
 		const raw = `<mm:think>The answer should look like {verdict: safe} so I'll respond now.</mm:think>
-{"verdict":"safe","reason":"file edit"}`
+{"verdict":"safe","riskScore":"low","reason":"file edit"}`
 		const r = parseClassifierOutput(raw)
 		expect(r.ok).toBe(true)
 		expect(r.verdict).toBe("safe")
+		expect(r.riskScore).toBe("low")
+	})
+
+	it("defaults riskScore to undefined when missing", () => {
+		const r = parseClassifierOutput(`{"verdict":"safe","reason":"fine"}`)
+		expect(r.ok).toBe(true)
+		expect(r.verdict).toBe("safe")
+		expect(r.riskScore).toBeUndefined()
+	})
+
+	it("defaults riskScore to undefined when invalid", () => {
+		const r = parseClassifierOutput(`{"verdict":"safe","riskScore":"critical","reason":"fine"}`)
+		expect(r.ok).toBe(true)
+		expect(r.verdict).toBe("safe")
+		expect(r.riskScore).toBeUndefined()
 	})
 })
 

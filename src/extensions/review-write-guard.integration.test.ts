@@ -16,12 +16,15 @@ vi.mock("./tags.js", () => ({
 
 type BlockResult = { block: true; reason: string }
 
+interface ToolEventPayload {
+	toolName?: string
+	result?: unknown
+	details?: unknown
+}
+
 interface MockExtensionAPI {
-	handlers: Record<string, Array<(event: { toolName?: string; result?: unknown }, ctx: ExtensionContext) => unknown>>
-	on: (
-		event: string,
-		handler: (event: { toolName?: string; result?: unknown }, ctx: ExtensionContext) => unknown,
-	) => void
+	handlers: Record<string, Array<(event: ToolEventPayload, ctx: ExtensionContext) => unknown>>
+	on: (event: string, handler: (event: ToolEventPayload, ctx: ExtensionContext) => unknown) => void
 	sendMessage: ReturnType<typeof vi.fn>
 	_blockResult?: BlockResult
 }
@@ -38,12 +41,7 @@ function createMockPI(): MockExtensionAPI {
 	}
 }
 
-function emit(
-	pi: MockExtensionAPI,
-	event: string,
-	payload: { toolName?: string; result?: unknown } = {},
-	ctx = createContext(),
-) {
+function emit(pi: MockExtensionAPI, event: string, payload: ToolEventPayload = {}, ctx = createContext()) {
 	const handlers = pi.handlers[event] ?? []
 	for (const h of handlers) {
 		const result = h(payload, ctx) as BlockResult | undefined
@@ -200,5 +198,150 @@ describe("reviewWriteGuardExtension wiring", () => {
 
 		// Only session A should have triggered a steer.
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("extracts agentOutcome from tool_result details and applies triage thresholds", () => {
+		const pi = createMockPI()
+		reviewWriteGuardExtension(pi as unknown as PI, {
+			buildPhaseThreshold: 2,
+			buildPhaseTriageThreshold: 4,
+			buildPhaseBlockThreshold: 5,
+			buildPhaseTriageBlockThreshold: 8,
+		})
+		mockPhase = "build"
+
+		emit(pi, "tool_result", {
+			toolName: "Agent",
+			result: undefined,
+			details: {
+				status: "aborted",
+				outcome: "failed",
+				subagentType: "Builder",
+				agentOutcome: { status: "aborted", outcome: "failed", subagentType: "Builder" },
+			},
+		})
+
+		// First 3 edits are allowed under triage threshold of 4.
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi._blockResult).toBeUndefined()
+
+		// 4th edit triggers steer (not block).
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: STEER_MESSAGE_TYPE }), {
+			deliverAs: "steer",
+		})
+		expect(pi._blockResult).toBeUndefined()
+	})
+
+	it("uses triage thresholds when agentOutcome is unknown", () => {
+		const pi = createMockPI()
+		reviewWriteGuardExtension(pi as unknown as PI, {
+			buildPhaseThreshold: 2,
+			buildPhaseTriageThreshold: 4,
+			buildPhaseBlockThreshold: 5,
+			buildPhaseTriageBlockThreshold: 8,
+		})
+		mockPhase = "build"
+
+		emit(pi, "tool_result", {
+			toolName: "Agent",
+			result: undefined,
+			details: {
+				status: "weird",
+				outcome: "unknown",
+				agentOutcome: { status: "weird", outcome: "unknown" },
+			},
+		})
+
+		// 3 edits under the triage threshold of 4 should not trigger a steer.
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi._blockResult).toBeUndefined()
+
+		// 4th edit crosses the triage steer threshold.
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: STEER_MESSAGE_TYPE }), {
+			deliverAs: "steer",
+		})
+		expect(pi._blockResult).toBeUndefined()
+	})
+
+	it("uses normal thresholds when agentOutcome indicates success", () => {
+		const pi = createMockPI()
+		reviewWriteGuardExtension(pi as unknown as PI, { buildPhaseThreshold: 2 })
+		mockPhase = "build"
+
+		emit(pi, "tool_result", {
+			toolName: "Agent",
+			result: undefined,
+			details: {
+				status: "completed",
+				outcome: "completed",
+				agentOutcome: { status: "completed", outcome: "completed", subagentType: "Builder" },
+			},
+		})
+
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not reset guard state when the orchestrator spawns another Agent", () => {
+		const pi = createMockPI()
+		reviewWriteGuardExtension(pi as unknown as PI, { buildPhaseThreshold: 2 })
+		mockPhase = "build"
+
+		// First subagent returns and arms the guard.
+		emit(pi, "tool_result", { toolName: "Agent" })
+
+		// One edit counts toward the threshold.
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+
+		// Spawning another Agent must NOT reset the guard.
+		emit(pi, "tool_call", { toolName: "Agent" })
+
+		// The second edit should still trigger the steer from the first subagent return.
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: STEER_MESSAGE_TYPE }), {
+			deliverAs: "steer",
+		})
+	})
+
+	it("evicts the session guard from the map on session_shutdown", () => {
+		const pi = createMockPI()
+		reviewWriteGuardExtension(pi as unknown as PI, { buildPhaseThreshold: 2 })
+		mockPhase = "build"
+
+		const ctx = createContext({ sessionManager: { getSessionId: () => "session-evict" } })
+
+		// Populate the guardMap by recording a subagent return.
+		emit(pi, "tool_result", { toolName: "Agent" }, ctx)
+
+		// First edit would normally pass under the steer threshold of 2.
+		emit(pi, "tool_call", { toolName: "edit" }, ctx)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+
+		// Fire session_shutdown for the same session — guard should be evicted.
+		emit(pi, "session_shutdown", {}, ctx)
+
+		// A fresh subagent return + edit on the same session should behave like a
+		// new guard (subagentReturnedInBuild is true again, no leftover state).
+		// If the old guard had been reused, the second edit below would still be
+		// allowed (count reset by recordSubagentReturn), but the eviction proves
+		// the old instance is gone — assert by re-checking sessionStart behavior.
+		emit(pi, "session_start", {}, ctx)
+		mockPhase = "review"
+		emit(pi, "tool_call", { toolName: "edit" }, ctx)
+		expect(pi._blockResult).toMatchObject({ block: true, reason: expect.stringContaining("BLOCKED") })
 	})
 })

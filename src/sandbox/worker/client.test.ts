@@ -51,11 +51,11 @@ describe("WorkerClient", () => {
 		const mockFetch = vi.fn().mockResolvedValue(jsonResponse({ ok: true }))
 		const client = new WorkerClient(creds({ connectToken: "tok-abc" }), { fetch: mockFetch })
 
-		const result = await client.get<{ ok: boolean }>("/status")
+		const result = await client.get<{ ok: boolean }>("/api/status")
 
 		expect(result).toEqual({ ok: true })
 		expect(mockFetch).toHaveBeenCalledTimes(1)
-		expect(mockFetch.mock.calls[0][0]).toBe("https://ws-1.remote.kimchi.dev/status")
+		expect(mockFetch.mock.calls[0][0]).toBe("https://ws-1.remote.kimchi.dev/api/status")
 		expect(mockFetch.mock.calls[0][1]).toMatchObject({
 			method: "GET",
 			headers: expect.objectContaining({
@@ -69,7 +69,7 @@ describe("WorkerClient", () => {
 		const mockFetch = vi.fn().mockResolvedValue(jsonResponse({ created: true }, 201))
 		const client = new WorkerClient(creds({ connectToken: "tok-xyz" }), { fetch: mockFetch })
 
-		const result = await client.post<{ created: boolean }>("/session/foo", { agentMode: "PTY" })
+		const result = await client.post<{ created: boolean }>("/api/session/foo", { agentMode: "PTY" })
 
 		expect(result).toEqual({ created: true })
 		const [, init] = mockFetch.mock.calls[0]
@@ -87,7 +87,7 @@ describe("WorkerClient", () => {
 		const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 200 }))
 		const client = new WorkerClient(creds(), { fetch: mockFetch })
 
-		await expect(client.del("/session/foo")).resolves.toBeUndefined()
+		await expect(client.del("/api/session/foo")).resolves.toBeUndefined()
 		expect(mockFetch.mock.calls[0][1]).toMatchObject({
 			method: "DELETE",
 			headers: expect.objectContaining({ Authorization: "Bearer jwt-tok" }),
@@ -97,15 +97,15 @@ describe("WorkerClient", () => {
 	it("prefixes paths missing a leading slash", async () => {
 		const mockFetch = vi.fn().mockResolvedValue(jsonResponse({}))
 		const client = new WorkerClient(creds(), { fetch: mockFetch })
-		await client.get("status")
-		expect(mockFetch.mock.calls[0][0]).toBe("https://ws-1.remote.kimchi.dev/status")
+		await client.get("api/status")
+		expect(mockFetch.mock.calls[0][0]).toBe("https://ws-1.remote.kimchi.dev/api/status")
 	})
 
 	it("throws WorkerError with status + parsed JSON body on 4xx", async () => {
 		const mockFetch = vi.fn().mockResolvedValue(jsonResponse({ message: "session not found" }, 404))
 		const client = new WorkerClient(creds(), { fetch: mockFetch })
 
-		await expect(client.get("/session/missing")).rejects.toMatchObject({
+		await expect(client.get("/api/session/missing")).rejects.toMatchObject({
 			name: "WorkerError",
 			status: 404,
 			body: { message: "session not found" },
@@ -121,7 +121,7 @@ describe("WorkerClient", () => {
 		)
 		const client = new WorkerClient(creds(), { fetch: mockFetch })
 
-		await expect(client.get("/status")).rejects.toMatchObject({
+		await expect(client.get("/api/status")).rejects.toMatchObject({
 			name: "WorkerError",
 			status: 500,
 			body: "kaboom",
@@ -140,7 +140,7 @@ describe("WorkerClient", () => {
 		})
 		const client = new WorkerClient(creds(), { fetch: mockFetch })
 
-		await expect(client.get("/status", ctrl.signal)).rejects.toThrow()
+		await expect(client.get("/api/status", ctrl.signal)).rejects.toThrow()
 	})
 
 	it("times out via timeoutMs (signal becomes aborted)", async () => {
@@ -151,6 +151,6 @@ describe("WorkerClient", () => {
 		})
 		const client = new WorkerClient(creds(), { fetch: mockFetch, timeoutMs: 5 })
 
-		await expect(client.get("/status")).rejects.toThrow()
+		await expect(client.get("/api/status")).rejects.toThrow()
 	})
 })

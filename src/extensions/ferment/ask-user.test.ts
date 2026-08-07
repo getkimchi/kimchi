@@ -26,6 +26,10 @@ function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 function makePi(flags: Record<string, boolean> = {}): ExtensionAPI {
 	return {
 		getFlag: vi.fn((name: string) => flags[name]),
+		events: {
+			emit: vi.fn(),
+			on: vi.fn(() => () => {}),
+		},
 	} as unknown as ExtensionAPI
 }
 
@@ -77,6 +81,50 @@ describe("askUserForm routing", () => {
 				labels: ["Tests", "custom answer"],
 			},
 		])
+	})
+
+	it("emits USER_UNBLOCKED on successful interactive form", async () => {
+		const pi = makePi()
+		const ctx = createContext({
+			ui: {
+				select: vi.fn(async () => "safe"),
+				input: vi.fn(async () => ""),
+			},
+		})
+		const result = await askUserForm(
+			"Title",
+			"Desc",
+			[{ id: "q1", type: "single", prompt: "Which?", options: [{ id: "safe", label: "Safe" }] }],
+			{ ferment: makeFerment(), pi, ctx },
+		)
+		expect(result.failed).toBeFalsy()
+
+		const calls = vi.mocked(pi.events.emit).mock.calls
+		const unblockedIndex = calls.findIndex(([ch]) => ch === "ferment:user_unblocked")
+		expect(unblockedIndex).toBeGreaterThanOrEqual(0)
+
+		const unblockedPayload = calls[unblockedIndex][1] as { fermentId: string; durationMs: number }
+		expect(unblockedPayload.fermentId).toBe("ferment-1")
+		expect(Number.isFinite(unblockedPayload.durationMs)).toBe(true)
+		expect(unblockedPayload.durationMs).toBeGreaterThanOrEqual(0)
+	})
+
+	it("does not emit USER_UNBLOCKED when user cancels the prompt", async () => {
+		const pi = makePi()
+		const ctx = createContext({
+			ui: {
+				select: vi.fn(async () => undefined),
+				input: vi.fn(async () => ""),
+			},
+		})
+		const result = await askUserForm("Title", "Desc", [{ id: "q1", type: "text", prompt: "Question?" }], {
+			ferment: makeFerment(),
+			pi,
+			ctx,
+		})
+		expect(result.failed).toBe(true)
+		expect((result as { failed: true; reason: string }).reason).toBe("user_cancelled")
+		expect(pi.events.emit).not.toHaveBeenCalledWith("ferment:user_unblocked", expect.anything())
 	})
 })
 

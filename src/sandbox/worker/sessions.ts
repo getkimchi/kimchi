@@ -4,12 +4,12 @@ import type { CreateSessionRequest, Session } from "./types.js"
 
 export async function listSessions(client: WorkerClient, signal?: AbortSignal): Promise<Session[]> {
 	const params = new URLSearchParams({ clientType: HARNESS_CLIENT_TYPE })
-	const map = await client.get<Record<string, Omit<Session, "name">>>(`/session?${params.toString()}`, signal)
+	const map = await client.get<Record<string, Omit<Session, "name">>>(`/api/session?${params.toString()}`, signal)
 	return Object.entries(map).map(([name, s]) => ({ ...s, name }))
 }
 
 export async function getSession(client: WorkerClient, name: string, signal?: AbortSignal): Promise<Session> {
-	const s = await client.get<Omit<Session, "name">>(`/session/${encodeURIComponent(name)}`, signal)
+	const s = await client.get<Omit<Session, "name">>(`/api/session/${encodeURIComponent(name)}`, signal)
 	return { ...s, name }
 }
 
@@ -20,7 +20,7 @@ export async function createSession(
 	opts: { sessionFile?: string; signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<Session> {
 	const s = await client.postMultipart<Omit<Session, "name">>(
-		`/session/${encodeURIComponent(name)}`,
+		`/api/session/${encodeURIComponent(name)}`,
 		{ request: req, sessionFile: opts.sessionFile },
 		opts.signal,
 		opts.timeoutMs,
@@ -29,5 +29,5 @@ export async function createSession(
 }
 
 export async function deleteSession(client: WorkerClient, name: string, signal?: AbortSignal): Promise<void> {
-	await client.del(`/session/${encodeURIComponent(name)}`, signal)
+	await client.del(`/api/session/${encodeURIComponent(name)}`, signal)
 }

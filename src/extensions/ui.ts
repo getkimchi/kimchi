@@ -114,6 +114,19 @@ let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
 let currentSessionIndicatorText: string | null = null
 
+// Own timer for the exit stage — upstream's lastSigintTime isn't updated when
+// the abort stage consumes the event, so we can't rely on it.
+let lastCtrlCTime = 0
+const CTRL_C_EXIT_WINDOW_MS = 500
+
+/** Cascade: text → clear, streaming → abort, otherwise → exit. */
+export type CtrlCAction = "clear" | "abort" | "exit"
+export function ctrlCCascadeDecision(hasText: boolean, isStreaming: boolean): CtrlCAction {
+	if (hasText) return "clear"
+	if (isStreaming) return "abort"
+	return "exit"
+}
+
 const branchPoller = createBranchPoller({
 	refreshBranch: (cb) => refreshGitBranch(cb),
 })
@@ -379,15 +392,40 @@ export default function uiExtension(pi: ExtensionAPI) {
 		if (unsubModelCycleInput) unsubModelCycleInput()
 		if (ctx.hasUI) {
 			unsubModelCycleInput = ctx.ui.onTerminalInput((data) => {
-				// In raw-mode terminals Ctrl+C arrives as \x03 rather than raising
-				// SIGINT.  The upstream TUI already maps Escape to abort, but does
-				// not handle Ctrl+C.  Bridge the gap so both keys cancel the active
-				// turn while the agent is working.
+				// Ctrl+C cascade: clear text → abort agent → exit app.
+				// The exit stage is handled here (not upstream) because the abort
+				// stage consumes the event, leaving upstream's lastSigintTime stale.
 				if (matchesKey(data, Key.ctrl("c")) && !isKeyRelease(data)) {
-					if (currentCtx && !currentCtx.isIdle()) {
-						currentCtx.abort()
+					const now = Date.now()
+					const hasText = (currentEditor?.getText().trim().length ?? 0) > 0
+					const streaming = currentCtx ? !currentCtx.isIdle() : false
+
+					switch (ctrlCCascadeDecision(hasText, streaming)) {
+						case "clear": {
+							// Let upstream clearEditor() via app.clear.
+							if (streaming) {
+								currentCtx?.ui.setStatus("__ctrl_c_hint", "Ctrl+C again to abort")
+							}
+							lastCtrlCTime = now
+							return undefined
+						}
+						case "abort": {
+							// Consume so upstream's handleCtrlC doesn't fire.
+							currentCtx?.abort()
+							currentCtx?.ui.setStatus("__ctrl_c_hint", undefined)
+							lastCtrlCTime = now
+							return { consume: true }
+						}
+						case "exit": {
+							// Check own timer; consume so upstream doesn't set a competing lastSigintTime.
+							currentCtx?.ui.setStatus("__ctrl_c_hint", undefined)
+							if (now - lastCtrlCTime < CTRL_C_EXIT_WINDOW_MS) {
+								currentCtx?.shutdown()
+							}
+							lastCtrlCTime = now
+							return { consume: true }
+						}
 					}
-					return undefined
 				}
 				if (matchesKey(data, "ctrl+p")) {
 					// Defer to a foreground UI that is forwarding raw terminal input
@@ -590,6 +628,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 	})
 	pi.on("turn_end", (_, ctx) => {
 		currentCtx = ctx
+		// Clear any lingering Ctrl+C hint — the agent is no longer streaming
+		// so the cascade's "press again to abort" guidance is stale.
+		if (ctx.hasUI) ctx.ui.setStatus("__ctrl_c_hint", undefined)
 		refresh("idle")
 		if (ctx.hasUI && turnStartMs > 0) {
 			clearTimeout(workedForTimer)

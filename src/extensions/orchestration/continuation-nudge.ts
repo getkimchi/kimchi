@@ -44,6 +44,18 @@ export const SECOND_NUDGE_TEXT =
 export const EMPTY_TURN_NUDGE_TEXT =
 	"If you have finished, please summarize the result for the user. Otherwise, continue with the next tool call."
 
+/** Stop reasons that should never trigger a nudge. Both `aborted` (user
+ *  cancelled) and `error` (provider failure) are terminal for this turn —
+ *  nudging would either disrespect the user's intent or re-queue a followUp
+ *  message that keeps the agent loop alive on a non-retryable error. */
+const NON_NUDGE_STOP_REASONS = new Set(["aborted", "error"])
+
+/** Returns true when the message's stop reason means the turn is terminal
+ *  and must not be nudged (user abort or provider error). */
+function isNonNudgeStopReason(message: AssistantMessage): boolean {
+	return NON_NUDGE_STOP_REASONS.has(message.stopReason)
+}
+
 /** Post-turn state machine for the "text-only drift" nudge.
  *
  * Fires at most twice per user-input cycle, and only when no tool has been
@@ -136,7 +148,10 @@ export class ContinuationNudge {
 		if (this.pendingDelegationCount > 0) return false
 		// The user explicitly cancelled this turn (Esc / Ctrl+C). Respect the
 		// abort — they don't want the model to be re-prompted with a nudge.
-		if (message.stopReason === "aborted") return false
+		// Provider errors (e.g. content_filter, budget exhausted) produce empty
+		// content. Without this guard the nudge re-queues a followUp message,
+		// causing the agent loop to retry indefinitely until budget is exhausted.
+		if (isNonNudgeStopReason(message)) return false
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		if (hasToolCalls || !hasText) return false
@@ -197,7 +212,7 @@ export class EmptyTurnNudge {
 
 	evaluateTurn(message: AssistantMessage): boolean {
 		if (this.nudgeCountThisCycle >= EmptyTurnNudge.MAX_NUDGES) return false
-		if (message.stopReason === "aborted") return false
+		if (isNonNudgeStopReason(message)) return false
 
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")

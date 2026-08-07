@@ -15,6 +15,15 @@ function registerWorkerReportTool(submit = vi.fn(() => ({ accepted: true, messag
 }
 
 describe("worker report capability", () => {
+	it("exposes a schema that makes empty arrays explicit", () => {
+		const { tool } = registerWorkerReportTool()
+
+		expect(tool.parameters.properties.remaining_steps).toMatchObject({
+			type: "array",
+			items: { type: "string" },
+			minItems: 0,
+		})
+	})
 	it("binds a report to its host capability without worker-provided credentials", async () => {
 		const { tool, submit, onAccepted } = registerWorkerReportTool()
 

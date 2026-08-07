@@ -60,6 +60,16 @@ export interface FakeResponseScript {
 	headers?: Record<string, string>
 	/** Route this script to the subagent queue (consumed by subagent requests). */
 	forSubagent?: boolean
+	/**
+	 * Send an SSE chunk with `finish_reason: "error"` and the given error
+	 * message, simulating a provider-side error stop reason. The provider
+	 * surfaces this as `output.errorMessage`, which flows through to
+	 * `message_end` / `showError`. Use instead of `status: 500` when the test
+	 * needs the raw error string (e.g. vLLM internals) to reach the
+	 * classifier — HTTP 500 bodies are not included in the SDK's error
+	 * message.
+	 */
+	streamError?: string
 }
 
 export interface RecordedRequest extends FakeResponseRequest {
@@ -329,6 +339,18 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 				finish_reason: null,
 			},
 		])
+	}
+
+	// If the script simulates a provider-side error stop reason, emit an
+	// SSE chunk with finish_reason: "error" and the raw error string in the
+	// delta. pi-ai maps this to stopReason: "error" with errorMessage set to
+	// the raw string, which flows through to message_end / showError. This is
+	// the path that carries the actual error text (e.g. vLLM internals).
+	if (script.streamError) {
+		chunk([{ index: 0, delta: { content: script.streamError }, finish_reason: "error" }])
+		res.write("data: [DONE]\n\n")
+		res.end()
+		return
 	}
 
 	chunk([{ index: 0, delta: {}, finish_reason: script.toolCalls?.length ? "tool_calls" : "stop" }])

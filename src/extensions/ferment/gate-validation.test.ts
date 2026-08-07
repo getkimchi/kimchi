@@ -316,4 +316,23 @@ describe("pi-ai validation patch regressions", () => {
 			} as ToolCall),
 		).not.toThrow(SyntaxError)
 	})
+
+	it("coerces empty object {} to empty array [] for array fields", () => {
+		// Regression: LLMs (especially minimax-m3) frequently send {} instead of []
+		// for empty arrays. Without the coercion fix, Value.Convert wraps {} into
+		// [{}], which fails validation with "items[0]: must be string".
+		const tool = {
+			name: "test-empty-object-to-array",
+			description: "test empty object to array coercion",
+			parameters: Type.Object({ remaining_steps: Type.Array(Type.String(), { minItems: 0 }) }),
+			execute: () => {},
+		}
+		const args = validateToolArguments(tool, {
+			type: "toolCall",
+			id: "test-empty-object-call",
+			name: "test-empty-object-to-array",
+			arguments: { remaining_steps: {} },
+		} as ToolCall)
+		expect(args.remaining_steps).toEqual([])
+	})
 })

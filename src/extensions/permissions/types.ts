@@ -23,13 +23,18 @@ export interface Rule {
 
 export type ToolCategory = "readOnly" | "write" | "execute" | "network" | "unknown"
 
-export type ClassifierVerdict = "safe" | "requires-confirmation" | "blocked"
+export type ClassifierVerdict = "safe" | "requires-confirmation"
+
+/** Risk score returned by the LLM classifier for display in the permission prompt. */
+export type RiskScore = "low" | "medium" | "high"
 
 export interface ClassifierResult {
 	verdict: ClassifierVerdict
 	reason: string
 	/** True when the classifier LLM returned a parseable, well-formed verdict. */
 	ok: boolean
+	/** Risk score from the classifier LLM. Undefined when the classifier was not called or failed. */
+	riskScore?: RiskScore
 }
 
 export interface PermissionsConfig {

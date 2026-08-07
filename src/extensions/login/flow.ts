@@ -272,7 +272,7 @@ async function configureKimchiToken(
 	}
 	if (providerModels.length > 0) {
 		options.persistConfig?.()
-		void refreshBillingStatusFromConfig()
+		void refreshBillingStatusFromConfig({ mode: "forced" })
 		const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
 		await host.setModel?.(selectedModel)
 		host.addFeedback?.(formatKimchiLoginSuccessMessage(selectedModel.id))

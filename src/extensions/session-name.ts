@@ -17,10 +17,11 @@ import { loadConfig, RETRY_DEFAULTS } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
 
 export const SESSION_NAME_MODEL = "deepseek-v4-flash"
-const SESSION_NAME_SYSTEM_PROMPT =
-	"You are a title generator. Respond with ONLY a short title. 1-5 words, no quotes, no explanation, no markdown."
-const HINT_MAX_LEN = 500
 const SESSION_NAME_TIMEOUT_MS = 10_000
+
+const SESSION_NAME_MAX_LEN = 50
+const SESSION_NAME_SYSTEM_PROMPT = `You are a title generator. Respond ONLY with a short, descriptive title (3-6 words, max ${SESSION_NAME_MAX_LEN} chars, easy to scan). No quotes, no explanation, no markdown.`
+const HINT_MAX_LEN = 500
 
 function getSessionNameMaxRetries(cwd: string): number {
 	try {
@@ -93,10 +94,10 @@ function extractEarlyUserText(entries: SessionEntries): string | null {
 }
 
 /**
- * Deterministic title: truncate name at 35 chars at last space.
+ * Deterministic title: truncate name at SESSION_NAME_MAX_LEN chars at last space.
  */
 export function deterministicFallback(input: string): string {
-	const max = 35
+	const max = SESSION_NAME_MAX_LEN
 	const normalized = input.trim().replace(/\s+/g, " ")
 	if (normalized.length <= max) return normalized
 	const truncated = normalized.slice(0, max)
@@ -143,9 +144,12 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 					model: SESSION_NAME_MODEL,
 					messages: [
 						{ role: "system", content: SESSION_NAME_SYSTEM_PROMPT },
-						{ role: "user", content: `Short title for this conversation:\n\n${capHint(resolvedHint)}` },
+						{
+							role: "user",
+							content: `Generate a concise, descriptive title for this conversation:\n\n${capHint(resolvedHint)}`,
+						},
 					],
-					max_tokens: 32,
+					max_tokens: 40,
 					temperature: 0,
 				}),
 			},
@@ -178,24 +182,46 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 export default function sessionNameExtension() {
 	return (pi: ExtensionAPI) => {
 		let hasAutoNamed = false
+		let pendingAutoName: Promise<void> | undefined
 
 		// Auto-name sessions after the first turn when no name was set.
-		pi.on("turn_end", async (_event: TurnEndEvent, ctx: ExtensionContext) => {
-			if (hasAutoNamed) return
-			if (ctx.sessionManager.getSessionName()) {
+		//
+		// Never await here. `isStreaming` clears only after every turn_end listener settles, but the
+		// model loop — the only thing that drains the steering queue — has already stopped by then.
+		// Anything typed while a slow listener holds the run open is queued as steering and never sent.
+		pi.on("turn_end", (_event: TurnEndEvent, ctx: ExtensionContext) => {
+			try {
+				if (hasAutoNamed) return
+				if (ctx.sessionManager.getSessionName()) {
+					hasAutoNamed = true
+					return
+				}
+				const hint = extractFirstUserMessage(ctx)
+				if (!hint) {
+					hasAutoNamed = true
+					return
+				}
 				hasAutoNamed = true
-				return
-			}
-			const hint = extractFirstUserMessage(ctx)
-			if (!hint) {
+				pendingAutoName = suggestSessionName(ctx, hint, true)
+					// ctx may be stale once this resolves; a throw here would surface as a model error.
+					.then((suggestion) => {
+						if (suggestion && !ctx.sessionManager.getSessionName()) {
+							pi.setSessionName(suggestion)
+						}
+					})
+					.catch(() => {})
+					.finally(() => {
+						pendingAutoName = undefined
+					})
+			} catch {
 				hasAutoNamed = true
-				return
 			}
-			hasAutoNamed = true
-			const suggestion = await suggestSessionName(ctx, hint, true)
-			if (suggestion && !ctx.sessionManager.getSessionName()) {
-				pi.setSessionName(suggestion)
-			}
+		})
+
+		// One-shot runs exit as soon as the turn ends, which would drop the in-flight request.
+		// Safe to await: suggestSessionName is bounded by SESSION_NAME_TIMEOUT_MS.
+		pi.on("session_shutdown", async () => {
+			await pendingAutoName
 		})
 	}
 }

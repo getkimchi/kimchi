@@ -66,6 +66,8 @@ export type Command =
 			constraints?: string[]
 			assumptions?: string
 			phases: ScopePhaseInput[]
+			/** Number of scoping proposal iterations before confirmation. Passed through to the scoping_complete event. */
+			proposeIterations?: number
 	  }
 	| {
 			type: "update_scope_field"
