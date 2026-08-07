@@ -10,7 +10,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object"
 }
 
-function isWriteTodosDetails(value: unknown): value is WriteTodosDetails {
+export function isWriteTodosDetails(value: unknown): value is WriteTodosDetails {
 	return (
 		isRecord(value) &&
 		value.schemaVersion === TODO_TOOL_RESULT_SCHEMA_VERSION &&

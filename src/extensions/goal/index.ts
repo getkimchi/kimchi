@@ -12,9 +12,10 @@ import { formatCount } from "../format.js"
 import { addPromptSummaryMetric } from "../prompt-summary.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { getTodoScopeKey, normalizeTodoScope } from "../todos/scope.js"
-import { getWriteTodosDetails } from "../todos/session.js"
+import { getWriteTodosDetails, isWriteTodosDetails } from "../todos/session.js"
 import { resolveTodoScope } from "../todos/store.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
+import type { TodoItem } from "../todos/types.js"
 import { formatGoalStatusAccounting, formatGoalSummary, GOAL_COMMAND_COMPLETIONS, parseGoalCommand } from "./command.js"
 import {
 	GET_GOAL_TOOL_NAME,
@@ -64,6 +65,7 @@ type UpdateGoalParams = Static<typeof UPDATE_GOAL_PARAMETERS>
 
 type PendingGoalTerminalFeedback = PendingGoalContinuation & { status: "complete" | "blocked" }
 type GoalTodoState = PendingGoalContinuation & {
+	todos: readonly TodoItem[]
 	total: number
 	blocked: number
 	completed: number
@@ -71,6 +73,7 @@ type GoalTodoState = PendingGoalContinuation & {
 }
 const TODO_TOOL_NAME_SET = new Set<string>(TODO_TOOL_NAMES)
 const MAX_CONSECUTIVE_ERROR_TURNS = 3
+const MAX_UNCHANGED_CONTINUATIONS = 2
 
 export default function goalExtension(pi: ExtensionAPI): void {
 	if (isAgentWorker()) return
@@ -83,6 +86,8 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	let activeTurn: PendingGoalContinuation | undefined
 	let todoStateFor: GoalTodoState | undefined
 	let consecutiveErrorTurns = 0
+	let lastContinuationFingerprint: string | undefined
+	let unchangedContinuationTurns = 0
 	let activeSinceMs: number | undefined
 	let statusCtx: ExtensionContext | undefined
 	let statusRefreshTimer: ReturnType<typeof setTimeout> | undefined
@@ -177,6 +182,8 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		activeTurn = undefined
 		todoStateFor = undefined
 		consecutiveErrorTurns = 0
+		lastContinuationFingerprint = undefined
+		unchangedContinuationTurns = 0
 		activeSinceMs = undefined
 	}
 
@@ -294,6 +301,8 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
 	function invalidateContinuation(): void {
 		pendingContinuation = undefined
+		lastContinuationFingerprint = undefined
+		unchangedContinuationTurns = 0
 	}
 
 	function assertUnchanged(captured: SessionGoal | undefined): SessionGoal | undefined {
@@ -602,7 +611,8 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
 	pi.on("context", (event, ctx) => {
 		bindSession(ctx)
-		const messages = replaceGoalContextMessages(event.messages, currentGoal)
+		const todoState = matchesGoal(todoStateFor, currentGoal, currentSessionId) ? todoStateFor : undefined
+		const messages = replaceGoalContextMessages(event.messages, currentGoal, todoState?.todos)
 		return messages ? { messages } : undefined
 	})
 
@@ -724,7 +734,36 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			assertCurrentSession(ctx, sessionId)
 			const goal = currentGoal
 			if (goal?.status !== "active" || ctx.hasPendingMessages() || !goalToolsAvailable()) return
-			queueGoalTurn(ctx, goal, buildGoalContinuation(), "agent_end", "followUp")
+			const pending = pendingContinuation
+			if (
+				pending &&
+				pending.sessionId === currentSessionId &&
+				pending.goalId === goal.id &&
+				pending.revision === goal.revision
+			) {
+				return
+			}
+
+			const todoState = matchesGoal(todoStateFor, goal, currentSessionId) ? todoStateFor : undefined
+			const fingerprint = JSON.stringify([goal.id, goal.revision, todoState?.todos ?? []])
+			const unchanged = fingerprint === lastContinuationFingerprint ? unchangedContinuationTurns + 1 : 0
+			if (unchanged >= MAX_UNCHANGED_CONTINUATIONS) {
+				const paused = setGoalStatus(goal, goal.id, goal.revision, "paused", timestamp())
+				commitGoal(paused)
+				activeSinceMs = undefined
+				invalidateContinuation()
+				syncGoalStatus(ctx)
+				ctx.ui.notify(
+					`Goal paused after ${MAX_UNCHANGED_CONTINUATIONS} continuation turns without recorded todo progress.`,
+					"warning",
+				)
+				return
+			}
+
+			if (queueGoalTurn(ctx, goal, buildGoalContinuation(unchanged > 0), "agent_end", "followUp")) {
+				lastContinuationFingerprint = fingerprint
+				unchangedContinuationTurns = unchanged
+			}
 		})
 	})
 
@@ -771,6 +810,7 @@ function restoreGoalRuntime(
 			sessionId,
 			goalId: goal.id,
 			revision: goal.revision,
+			todos: details.todos,
 			...counts,
 			settledStatus:
 				counts.total === 0
@@ -813,17 +853,16 @@ function assistantTurnTokens(event: TurnEndEvent): number {
 function todoResultState(
 	result: unknown,
 	expectedScopeKey: string,
-): Pick<GoalTodoState, "total" | "blocked" | "completed"> | undefined {
-	if (!isRecord(result) || !isRecord(result.details) || !Array.isArray(result.details.todos)) {
-		return undefined
-	}
+): Pick<GoalTodoState, "todos" | "total" | "blocked" | "completed"> | undefined {
+	if (!isRecord(result) || !isWriteTodosDetails(result.details)) return undefined
+	const details = result.details
 	try {
-		if (getTodoScopeKey(normalizeTodoScope(result.details.scope)) !== expectedScopeKey) return undefined
+		if (getTodoScopeKey(normalizeTodoScope(details.scope)) !== expectedScopeKey) return undefined
 	} catch {
 		return undefined
 	}
 
-	return todoCounts(result.details.todos)
+	return { todos: details.todos, ...todoCounts(details.todos) }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,34 +1,38 @@
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
+import type { TodoItem } from "../todos/types.js"
 import { GOAL_CONTEXT_MESSAGE_TYPE } from "./constants.js"
 import type { SessionGoal } from "./types.js"
 
 export function replaceGoalContextMessages(
 	messages: ContextEvent["messages"],
 	goal: SessionGoal | undefined,
+	todos: readonly TodoItem[] = [],
 ): ContextEvent["messages"] | undefined {
 	const filtered = messages.filter((message) => !isGoalContextMessage(message))
 	if (!goal) return filtered.length === messages.length ? undefined : filtered
 
-	return [
-		...filtered,
-		{
-			role: "custom" as const,
-			customType: GOAL_CONTEXT_MESSAGE_TYPE,
-			content: [{ type: "text" as const, text: renderGoalContext(goal) }],
-			display: false,
-			details: { goalId: goal.id, revision: goal.revision },
-			timestamp: Date.now(),
-		},
-	]
+	const message = {
+		role: "custom" as const,
+		customType: GOAL_CONTEXT_MESSAGE_TYPE,
+		content: [{ type: "text" as const, text: renderGoalContext(goal, todos) }],
+		display: false,
+		details: { goalId: goal.id, revision: goal.revision },
+		timestamp: Date.parse(goal.createdAt),
+	}
+	const goalIndex = messages.findIndex(isGoalContextMessage)
+	if (goalIndex < 0) return [...messages, message]
+
+	return messages.flatMap((current, index) => {
+		if (index === goalIndex) return [message]
+		return isGoalContextMessage(current) ? [] : [current]
+	})
 }
 
-export function buildGoalContinuation(): string {
-	return `Continue working toward the active Kimchi session goal.
-
-Consult the canonical session-goal context in this request for the authoritative objective and status.
-The runtime validates the current goal revision internally; do not copy goal IDs or revision numbers into tool calls.
-
-Make concrete progress toward the full objective. Track the work with the tactical todo tools, keep one item in progress, and update the list after meaningful progress. Settle every item and leave the list visible before calling update_goal. Do not redefine completion around a smaller subset.`
+export function buildGoalContinuation(needsProgressUpdate = false): string {
+	const progress = needsProgressUpdate
+		? " No todo progress was recorded in the previous continuation; update the current item's status, activeForm, or note with the next action or evidence."
+		: ""
+	return `Continue the active goal using the canonical goal and todo snapshot. Make concrete progress, keep the todo list current, and settle every item before update_goal.${progress}`
 }
 
 export function buildGoalEditSteer(goal: SessionGoal, supersededRevision: number): string {
@@ -51,21 +55,26 @@ export function buildGoalStopSteer(action: "paused" | "cleared"): string {
 	return `The user ${action} the Kimchi session goal. Do not begin additional goal-specific work. Allow any operation already running to finish, then leave the current work in a safe state.`
 }
 
-function renderGoalContext(goal: SessionGoal): string {
+function renderGoalContext(goal: SessionGoal, todos: readonly TodoItem[]): string {
 	const snapshot = JSON.stringify(
 		{
 			status: goal.status,
 			objective: goal.objective,
-			tokensUsed: goal.tokensUsed,
 			tokenBudget: goal.tokenBudget,
-			timeUsedMs: goal.timeUsedMs,
+			todos: todos.map(({ id, content, status, activeForm, note }) => ({
+				id,
+				content,
+				status,
+				...(activeForm ? { activeForm } : {}),
+				...(note ? { note } : {}),
+			})),
 		},
 		null,
 		2,
 	)
 	const continuation =
 		goal.status === "active"
-			? "Autonomous goal continuation is enabled. The goal JSON above is authoritative. Do not call get_goal while this context is present. Track work with a visible tactical todo list. Before completion, settle every todo, map every explicit goal requirement to concrete current evidence, and treat missing or uncertain evidence as incomplete. Call update_goal only after receiving the final todo result that settles the list, as the only tool call in that response."
+			? "Autonomous goal continuation is enabled. The goal JSON above is authoritative. Do not call get_goal while this context is present. Track work with a visible tactical todo list. Keep activeForm as the exact current action and note as concise evidence or decisions that must survive compaction. Before completion, settle every todo, map every explicit goal requirement to concrete current evidence, and treat missing or uncertain evidence as incomplete. Call update_goal only after receiving the final todo result that settles the list, as the only tool call in that response."
 			: `Autonomous goal continuation is disabled while status is ${goal.status}.`
 	return `<kimchi_session_goal>\n${snapshot}\n${continuation}\n</kimchi_session_goal>`
 }

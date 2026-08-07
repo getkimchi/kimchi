@@ -230,8 +230,10 @@ describe("goal extension", () => {
 			isError: false,
 			result: {
 				details: {
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
 					scope: { kind: "global" },
-					todos: [{ content: "Implement the goal", status: "in_progress" }],
+					todos: [{ id: 1, content: "Implement the goal", status: "in_progress" }],
+					updatedAt: "2026-08-03T00:00:01.000Z",
 				},
 			},
 		})
@@ -250,8 +252,10 @@ describe("goal extension", () => {
 			isError: false,
 			result: {
 				details: {
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
 					scope: { kind: "global" },
-					todos: [{ content: "Implement the goal", status: "completed" }],
+					todos: [{ id: 1, content: "Implement the goal", status: "completed" }],
+					updatedAt: "2026-08-03T00:00:02.000Z",
 				},
 			},
 		})
@@ -266,7 +270,14 @@ describe("goal extension", () => {
 			type: "tool_execution_end",
 			toolName: "clear_todos",
 			isError: false,
-			result: { details: { scope: { kind: "global" }, todos: [] } },
+			result: {
+				details: {
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+					scope: { kind: "global" },
+					todos: [],
+					updatedAt: "2026-08-03T00:00:03.000Z",
+				},
+			},
 		})
 		expect(
 			await harness.fire("tool_call", {
@@ -518,10 +529,43 @@ describe("goal extension", () => {
 		expect(goalMessages).toHaveLength(1)
 		expect(JSON.stringify(goalMessages[0])).toContain("handle </objective> safely")
 		expect(JSON.stringify(goalMessages[0])).toContain("map every explicit goal requirement")
+		expect(JSON.stringify(goalMessages[0])).toContain("survive compaction")
 		expect(JSON.stringify(goalMessages[0])).toContain("Do not call get_goal while this context is present")
 		expect(JSON.stringify(goalMessages[0])).toContain("Call update_goal only after receiving the final todo result")
 		expect(JSON.stringify(goalMessages[0])).toContain("as the only tool call in that response")
+		expect(JSON.stringify(goalMessages[0])).not.toContain("tokensUsed")
+		expect(JSON.stringify(goalMessages[0])).not.toContain("timeUsedMs")
+		expect(result.messages[0]).toBe(goalMessages[0])
 		expect(result.messages).toContain(other)
+	})
+
+	it("keeps the goal context stable while only accounting changes", async () => {
+		vi.spyOn(Date, "now").mockReturnValue(1_000)
+		await harness.command("keep the handoff stable")
+		const userMessage = { role: "user" as const, content: [{ type: "text" as const, text: "start" }], timestamp: 1 }
+		const first = (await harness.fire("context", {
+			type: "context",
+			messages: [userMessage],
+		})) as { messages: ContextEvent["messages"] }
+		const firstGoalIndex = first.messages.findIndex(
+			(message) => message.role === "custom" && message.customType === GOAL_CONTEXT_MESSAGE_TYPE,
+		)
+
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1_000 })
+		vi.mocked(Date.now).mockReturnValue(61_000)
+		await harness.fire("turn_end", terminalTurn("stop", { input: 100, output: 20 }))
+		const nextUserMessage = {
+			role: "user" as const,
+			content: [{ type: "text" as const, text: "continue" }],
+			timestamp: 2,
+		}
+		const second = (await harness.fire("context", {
+			type: "context",
+			messages: [...first.messages, nextUserMessage],
+		})) as { messages: ContextEvent["messages"] }
+
+		expect(second.messages[firstGoalIndex]).toEqual(first.messages[firstGoalIndex])
+		expect(second.messages).toContain(nextUserMessage)
 	})
 
 	it("does not mutate the system prompt", async () => {
@@ -554,6 +598,25 @@ describe("goal extension", () => {
 		harness.setPending(true)
 		await harness.fire("agent_end", { type: "agent_end", messages: [] })
 		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("pauses after two continuation turns without recorded todo progress", async () => {
+		await harness.command("keep going")
+		harness.sendMessage.mockClear()
+
+		for (let turnIndex = 1; turnIndex <= 3; turnIndex += 1) {
+			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
+			await harness.fire("turn_end", terminalTurn())
+			await harness.fire("agent_end", { type: "agent_end", messages: [] })
+		}
+
+		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
+		expect(harness.sendMessage.mock.calls[1]?.[0].content).toContain("No todo progress was recorded")
+		expect(harness.currentGoal()?.status).toBe("paused")
+		expect(harness.ui.notify).toHaveBeenCalledWith(
+			"Goal paused after 2 continuation turns without recorded todo progress.",
+			"warning",
+		)
 	})
 
 	it("does not loop when goal tools are hidden", async () => {
@@ -714,7 +777,15 @@ describe("goal extension", () => {
 			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
 				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
 				scope: { kind: "global" },
-				todos: [{ id: 1, content: "Finish revision two", status: "completed" }],
+				todos: [
+					{
+						id: 1,
+						content: "Finish revision two",
+						status: "in_progress",
+						activeForm: "Verifying revision two",
+						note: "Implementation is complete; focused verification remains",
+					},
+				],
 				updatedAt: "2026-08-03T00:00:01.000Z",
 			}),
 			compactionEntry("second summary"),
@@ -729,6 +800,34 @@ describe("goal extension", () => {
 
 		expect(harness.currentGoal()).toMatchObject({ objective: "revision two", revision: 2 })
 		expect(JSON.stringify(context.messages)).toContain("revision two")
+		expect(JSON.stringify(context.messages)).toContain("Verifying revision two")
+		expect(JSON.stringify(context.messages)).toContain("focused verification remains")
+
+		harness.setBranch([
+			...harness.branch,
+			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
+				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+				scope: { kind: "global" },
+				todos: [
+					{
+						id: 1,
+						content: "Finish revision two",
+						status: "completed",
+						note: "Focused verification passed",
+					},
+				],
+				updatedAt: "2026-08-03T00:00:02.000Z",
+			}),
+			compactionEntry("third summary"),
+		])
+		await harness.fire("session_tree", { type: "session_tree", oldLeafId: "after", newLeafId: "final" })
+		const settledContext = (await harness.fire("context", {
+			type: "context",
+			messages: [{ role: "user", content: [{ type: "text", text: "third summary" }], timestamp: Date.now() }],
+		})) as { messages: ContextEvent["messages"] }
+		expect(JSON.stringify(settledContext.messages)).toContain("Focused verification passed")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
+
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
