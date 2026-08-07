@@ -522,3 +522,147 @@ def test_scored_pass_is_not_refined_by_budget_timeout_session(tmp_results_dir: P
     assert verdict.outcome == "scored_pass"
     assert verdict.error_category is None
     assert verdict.error_subcategory is None
+
+
+# ── OpenCode trajectory.json — credit exhaustion from opencode.txt ──────────────────
+
+
+def _write_opencode_txt(trial_dir: Path, text: str) -> None:
+    agent_dir = trial_dir / "agent"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "opencode.txt").write_text(text, encoding="utf-8")
+
+
+def _write_trajectory(
+    trial_dir: Path,
+    steps: list[dict],
+    *,
+    model_name: str = "openrouter/@preset/glm-5-2-zai",
+) -> None:
+    agent_dir = trial_dir / "agent"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    trajectory = {
+        "schema_version": "ATIF-v1.7",
+        "session_id": "ses_test",
+        "agent": {"name": "opencode", "version": "1.18.14", "model_name": model_name},
+        "steps": steps,
+        "final_metrics": {},
+    }
+    (agent_dir / "trajectory.json").write_text(json.dumps(trajectory))
+
+
+def test_opencode_credit_exhaustion_in_opencode_txt(tmp_results_dir: Path) -> None:
+    """Credit-exhaustion error in opencode.txt is classified as api_key_budget_exceeded.
+
+    Opencode writes API errors to agent/opencode.txt, not to result.json's
+    exception_message (which just says "Command failed (exit 1): ...").
+    The classifier must read opencode.txt to find the real error.
+    """
+    trial = tmp_results_dir / "run-1" / "task__1"
+    _write_result(trial, _exception_payload(
+        "NonZeroAgentExitCodeError",
+        "Command failed (exit 1): opencode --model=openrouter/@preset/glm-5-2-zai run --format=json",
+    ))
+    _write_opencode_txt(trial, (
+        '{"type":"error","error":{"name":"APIError","data":{"message":'
+        '"Insufficient credits. Add more using https://openrouter.ai/settings/credits",'
+        '"statusCode":402,"isRetryable":false}}}'
+    ))
+
+    verdict = classify(trial)
+    assert verdict.outcome == "error"
+    assert verdict.error_category == "infra"
+    assert verdict.error_subcategory == API_KEY_BUDGET_EXCEEDED
+
+
+def test_opencode_credit_exhaustion_requires_more_credits(tmp_results_dir: Path) -> None:
+    """OpenRouter 'requires more credits, or fewer max_tokens' is budget exhaustion."""
+    trial = tmp_results_dir / "run-1" / "task__1"
+    _write_result(trial, _exception_payload(
+        "NonZeroAgentExitCodeError",
+        "Command failed (exit 1): opencode --model=openrouter/@preset/glm-5-2-zai run",
+    ))
+    _write_opencode_txt(trial, (
+        '{"type":"error","error":{"name":"APIError","data":{"message":'
+        '"This request requires more credits, or fewer max_tokens. You requested up to 16384 tokens, '
+        'but can only afford 5495.","statusCode":402}}}'
+    ))
+
+    verdict = classify(trial)
+    assert verdict.error_subcategory == API_KEY_BUDGET_EXCEEDED
+
+
+def test_opencode_no_transcript_falls_back_to_exception_message(tmp_results_dir: Path) -> None:
+    """Without opencode.txt, classification falls back to exception_message only."""
+    trial = tmp_results_dir / "run-1" / "task__1"
+    _write_result(trial, _exception_payload(
+        "NonZeroAgentExitCodeError",
+        "Command failed (exit 1): opencode run",
+    ))
+    verdict = classify(trial)
+    assert verdict.outcome == "error"
+    assert verdict.error_category == "agent"
+
+
+# ── OpenCode trajectory.json — timeout analysis ─────────────────────────────────
+
+
+def test_agent_timeout_with_trajectory_extracts_tool_and_messages(tmp_results_dir: Path) -> None:
+    """Agent timeout with trajectory.json (no sessions/*.jsonl) produces real analysis.
+
+    The timeout state machine should read step timestamps and tool calls from
+    the ATIF trajectory, producing a non-unknown timeout_status.
+    """
+    trial = tmp_results_dir / "run-1" / "task__1"
+    _write_result(trial, _agent_timeout_payload("2026-08-06T13:00:00.000000Z"))
+    _write_trajectory(trial, [
+        {"timestamp": "2026-08-06T12:00:00.000000+00:00", "source": "agent",
+         "tool_calls": [{"function_name": "bash"}], "metrics": {}},
+        {"timestamp": "2026-08-06T12:05:00.000000+00:00", "source": "agent",
+         "tool_calls": [{"function_name": "edit"}], "metrics": {}},
+        {"timestamp": "2026-08-06T12:10:00.000000+00:00", "source": "agent",
+         "tool_calls": [{"function_name": "bash"}], "metrics": {}},
+    ])
+
+    verdict = classify(trial)
+    assert verdict.outcome == "agent_timeout"
+    analysis = verdict.raw["agent_timeout_analysis"]
+    assert analysis["timeout_status"] != "unknown"
+    assert analysis["n_messages"] > 0
+    assert analysis["last_tool_name"] == "bash"
+
+
+def test_agent_timeout_trajectory_few_turns(tmp_results_dir: Path) -> None:
+    """Trajectory with very few steps is classified as few_turns."""
+    trial = tmp_results_dir / "run-1" / "task__1"
+    _write_result(trial, _agent_timeout_payload("2026-08-06T12:30:00.000000Z"))
+    _write_trajectory(trial, [
+        {"timestamp": "2026-08-06T12:29:00.000000+00:00", "source": "agent",
+         "tool_calls": [], "metrics": {}},
+    ])
+
+    verdict = classify(trial)
+    analysis = verdict.raw["agent_timeout_analysis"]
+    assert analysis["timeout_status"] == "few_turns"
+
+
+def test_agent_timeout_session_jsonl_preferred_over_trajectory(tmp_results_dir: Path) -> None:
+    """When both session JSONL and trajectory.json exist, JSONL takes priority."""
+    trial = tmp_results_dir / "run-1" / "task__1"
+    _write_result(trial, _agent_timeout_payload("2026-06-25T12:30:00.000000Z"))
+    _write_session(trial, [
+        {"type": "message", "timestamp": "2026-06-25T11:50:00.000000Z", "message": {"role": "user"}},
+        {"type": "message", "timestamp": "2026-06-25T11:55:00.000000Z", "message": {"role": "toolResult"}},
+        {"type": "message", "timestamp": "2026-06-25T12:00:00.000000Z", "message": {"role": "assistant"}},
+        {"customType": "llm_response_debug", "timestamp": "2026-06-25T12:00:01.000000Z",
+         "data": {"toolCalls": [{"name": "bash"}]}},
+    ])
+    _write_trajectory(trial, [
+        {"timestamp": "2026-06-25T12:28:00.000000+00:00", "source": "agent",
+         "tool_calls": [{"function_name": "read"}], "metrics": {}},
+    ])
+
+    verdict = classify(trial)
+    analysis = verdict.raw["agent_timeout_analysis"]
+    assert analysis["timeout_status"] == "tool_hang"
+    assert analysis["last_tool_name"] == "bash"

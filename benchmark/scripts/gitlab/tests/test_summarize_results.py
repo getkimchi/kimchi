@@ -1394,5 +1394,220 @@ class ScanSessionFileTokenDedupTest(unittest.TestCase):
             self.assertEqual(glm_stats.input_tokens, 200)
 
 
+class ScanTrajectoryFileTest(unittest.TestCase):
+    """Opencode agents write agent/trajectory.json (ATIF v1.x) instead of
+    the JSONL session format used by kimchi/claude-code.  The summarizer
+    must fall back to this file and extract token / tool-call data from
+    per-step metrics."""
+
+    def _write_trajectory(self, trial_dir: Path, trajectory: dict) -> None:
+        agent_dir = trial_dir / "agent"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        write_json(agent_dir / "trajectory.json", trajectory)
+
+    def _trajectory(self, *, steps: list[dict], model_name: str = "openrouter/@preset/glm-5-2-zai") -> dict:
+        return {
+            "schema_version": "ATIF-v1.7",
+            "session_id": "ses_test",
+            "agent": {"name": "opencode", "version": "1.18.14", "model_name": model_name},
+            "final_metrics": {
+                "total_prompt_tokens": sum(s.get("metrics", {}).get("prompt_tokens", 0) for s in steps),
+                "total_completion_tokens": sum(s.get("metrics", {}).get("completion_tokens", 0) for s in steps),
+                "total_cached_tokens": sum(s.get("metrics", {}).get("cached_tokens", 0) for s in steps),
+                "total_steps": len(steps),
+            },
+            "steps": steps,
+        }
+
+    def _step(
+        self,
+        *,
+        prompt: int = 0,
+        completion: int = 0,
+        cached: int = 0,
+        tools: list[str] | None = None,
+        model: str | None = None,
+    ) -> dict:
+        step: dict = {
+            "step_id": "step-0",
+            "timestamp": "2026-08-06T12:00:00Z",
+            "source": "agent",
+            "model_name": model or "openrouter/@preset/glm-5-2-zai",
+            "metrics": {"prompt_tokens": prompt, "completion_tokens": completion},
+            "tool_calls": [],
+            "llm_call_count": 1,
+        }
+        if cached:
+            step["metrics"]["cached_tokens"] = cached
+        if tools:
+            step["tool_calls"] = [{"tool_call_id": f"call-{i}", "function_name": t} for i, t in enumerate(tools)]
+        return step
+
+    def test_extracts_tokens_and_tool_calls_from_trajectory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "task__abc"
+            trial_dir.mkdir()
+            self._write_trajectory(trial_dir, self._trajectory(steps=[
+                self._step(prompt=7632, completion=24, cached=7040, tools=["bash"]),
+                self._step(prompt=7707, completion=38, tools=["bash"]),
+                self._step(prompt=7814, completion=33, cached=7680, tools=["edit", "edit"]),
+            ]))
+
+            warnings: list[str] = []
+            scan = summarize_results.scan_trajectory_file(
+                trial_dir / "agent" / "trajectory.json", warnings
+            )
+            self.assertEqual(warnings, [])
+            self.assertEqual(len(scan.models), 1)
+            stats = scan.models[("openrouter", "@preset/glm-5-2-zai")]
+            self.assertEqual(stats.llm_rounds, 3)
+            self.assertEqual(stats.input_tokens, 7632 + 7707 + 7814)
+            self.assertEqual(stats.output_tokens, 24 + 38 + 33)
+            self.assertEqual(stats.cache_read_tokens, 7040 + 7680)
+            self.assertEqual(stats.cache_write_tokens, 0)
+            self.assertEqual(stats.tool_calls["bash"], 2)
+            self.assertEqual(stats.tool_calls["edit"], 2)
+
+    def test_trajectory_used_as_fallback_in_summarize_trial(self):
+        """When no sessions/*.jsonl exists, summarize_trial falls back to trajectory.json."""
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "task__abc"
+            trial_dir.mkdir()
+            result = {
+                **BASE_RESULT,
+                "trial_name": "task__abc",
+                "task_name": "terminal-bench/task",
+                "outcome": "scored_pass",
+                "error_category": None,
+                "error_subcategory": None,
+                "verifier_result": {"rewards": {"reward": 1}},
+            }
+            write_json(trial_dir / "result.json", result)
+            self._write_trajectory(trial_dir, self._trajectory(steps=[
+                self._step(prompt=1000, completion=50, cached=500, tools=["bash"]),
+                self._step(prompt=2000, completion=100, tools=["read"]),
+            ]))
+
+            warnings: list[str] = []
+            summary = summarize_results.summarize_trial(trial_dir, 1, warnings)
+            # No warning about missing transcripts
+            self.assertFalse(any("No agent transcript" in w for w in warnings))
+
+            data = summary.to_summary_json()
+            self.assertEqual(len(data["models"]), 1)
+            model = data["models"][0]
+            self.assertEqual(model["model"], "@preset/glm-5-2-zai")
+            self.assertEqual(model["llm_rounds"], 2)
+            self.assertEqual(model["tokens"]["input"], 3000)
+            self.assertEqual(model["tokens"]["output"], 150)
+            self.assertEqual(model["tokens"]["cache_read"], 500)
+
+    def test_no_session_files_and_no_trajectory_warns(self):
+        """When neither JSONL sessions nor trajectory.json exist, emit the original warning."""
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "task__abc"
+            trial_dir.mkdir()
+            write_json(trial_dir / "result.json", {
+                **BASE_RESULT,
+                "trial_name": "task__abc",
+                "task_name": "terminal-bench/task",
+                "outcome": "scored_fail",
+                "error_category": None,
+                "error_subcategory": None,
+            })
+
+            warnings: list[str] = []
+            summary = summarize_results.summarize_trial(trial_dir, 1, warnings)
+            self.assertTrue(any("No agent transcript" in w for w in warnings))
+            data = summary.to_summary_json()
+            self.assertEqual(data["models"], [])
+
+    def test_session_jsonl_preferred_over_trajectory(self):
+        """When both session JSONL and trajectory.json exist, JSONL wins."""
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "task__abc"
+            trial_dir.mkdir()
+            write_json(trial_dir / "result.json", {
+                **BASE_RESULT,
+                "trial_name": "task__abc",
+                "task_name": "terminal-bench/task",
+                "config": {"agent": {"model_name": "kimchi-dev/kimi-k2.6"}},
+                "outcome": "scored_pass",
+                "error_category": None,
+                "error_subcategory": None,
+                "verifier_result": {"rewards": {"reward": 1}},
+            })
+            # Write a session JSONL with known token counts
+            sessions_dir = trial_dir / "agent" / "sessions"
+            sessions_dir.mkdir(parents=True)
+            entry = {
+                "type": "assistant",
+                "timestamp": "2026-08-06T12:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "model": "kimchi-dev/kimi-k2.6",
+                    "usage": {"input": 42, "cacheRead": 0, "cacheWrite": 0, "output": 7},
+                    "content": [],
+                },
+            }
+            (sessions_dir / "main.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
+            # Also write a trajectory that would produce different numbers
+            self._write_trajectory(trial_dir, self._trajectory(steps=[
+                self._step(prompt=9999, completion=999),
+            ]))
+
+            warnings: list[str] = []
+            summary = summarize_results.summarize_trial(trial_dir, 1, warnings)
+            data = summary.to_summary_json()
+            # JSONL values win
+            self.assertEqual(data["models"][0]["tokens"]["input"], 42)
+            self.assertEqual(data["models"][0]["tokens"]["output"], 7)
+
+    def test_trajectory_with_no_steps_returns_empty_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "task__abc"
+            trial_dir.mkdir()
+            self._write_trajectory(trial_dir, {
+                "schema_version": "ATIF-v1.7",
+                "agent": {"name": "opencode", "model_name": "openrouter/@preset/glm-5-2-zai"},
+                "steps": [],
+                "final_metrics": {},
+            })
+
+            warnings: list[str] = []
+            scan = summarize_results.scan_trajectory_file(
+                trial_dir / "agent" / "trajectory.json", warnings
+            )
+            self.assertEqual(len(scan.models), 0)
+
+    def test_trajectory_step_without_metrics_skipped(self):
+        """Steps with no metrics (e.g. tool-result-only steps) should not inflate llm_rounds."""
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "task__abc"
+            trial_dir.mkdir()
+            self._write_trajectory(trial_dir, self._trajectory(steps=[
+                self._step(prompt=100, completion=10, tools=["bash"]),
+                {
+                    "step_id": "step-1",
+                    "timestamp": "2026-08-06T12:00:01Z",
+                    "source": "tool",
+                    "model_name": "openrouter/@preset/glm-5-2-zai",
+                    "metrics": {},
+                    "tool_calls": [],
+                    "llm_call_count": 0,
+                },
+                self._step(prompt=200, completion=20, tools=["read"]),
+            ]))
+
+            warnings: list[str] = []
+            scan = summarize_results.scan_trajectory_file(
+                trial_dir / "agent" / "trajectory.json", warnings
+            )
+            stats = next(iter(scan.models.values()))
+            self.assertEqual(stats.llm_rounds, 2)
+            self.assertEqual(stats.input_tokens, 300)
+            self.assertEqual(stats.output_tokens, 30)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -512,6 +512,82 @@ def scan_session_file(path: Path, warnings: list[str]) -> SessionScan:
     return scan
 
 
+def scan_trajectory_file(path: Path, warnings: list[str]) -> SessionScan:
+    """Parse an opencode ATIF trajectory.json file into a SessionScan.
+
+    Opencode writes ``agent/trajectory.json`` (schema ATIF-v1.x) instead of
+    the JSONL session format used by kimchi/claude-code agents.  The file
+    contains ``final_metrics`` for totals and per-step ``metrics`` with token
+    counts.  This function extracts token and tool-call data from each step,
+    matching the fields produced by ``scan_session_file``.
+    """
+    data = load_json(path, warnings)
+    scan = SessionScan()
+    if not data:
+        return scan
+
+    agent_block = data.get("agent")
+    if isinstance(agent_block, dict):
+        model_name = string_or_none(agent_block.get("model_name"))
+        if model_name:
+            provider, model = split_model_ref(model_name)
+        else:
+            provider, model = "unknown", "unknown"
+    else:
+        provider, model = "unknown", "unknown"
+
+    steps = data.get("steps")
+    if not isinstance(steps, list):
+        return scan
+
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+
+        timestamp = string_or_none(step.get("timestamp"))
+        if timestamp:
+            scan.start = min(scan.start, timestamp) if scan.start else timestamp
+            scan.end = max(scan.end, timestamp) if scan.end else timestamp
+
+        # Per-step model may differ from the agent-level default.
+        step_model = string_or_none(step.get("model_name"))
+        if step_model:
+            sp, sm = split_model_ref(step_model)
+        else:
+            sp, sm = provider, model
+
+        stats = model_stats(scan.models, sp, sm)
+
+        metrics = step.get("metrics")
+        if isinstance(metrics, dict):
+            prompt_tokens = int_from_keys(
+                metrics, "prompt_tokens", "input", "input_tokens",
+            )
+            completion_tokens = int_from_keys(
+                metrics, "completion_tokens", "output", "output_tokens",
+            )
+            cached_tokens = int_from_keys(
+                metrics, "cached_tokens", "cacheRead",
+                "cache_read", "cache_read_input_tokens",
+            )
+            if prompt_tokens or completion_tokens or cached_tokens:
+                rounds = int_value(step.get("llm_call_count"))
+                stats.llm_rounds += rounds or (1 if prompt_tokens or completion_tokens else 0)
+                stats.input_tokens += prompt_tokens
+                stats.output_tokens += completion_tokens
+                stats.cache_read_tokens += cached_tokens
+
+        # Tool calls in ATIF format use ``function_name`` instead of ``name``.
+        tool_calls = step.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    name = tc.get("function_name") or tc.get("name")
+                    stats.tool_calls[str(name) if name else "unknown"] += 1
+
+    return scan
+
+
 def merge_session_scans(scans: list[SessionScan]) -> SessionScan:
     merged = SessionScan()
     for scan in scans:
@@ -780,9 +856,16 @@ def run_bounds(results_dir: Path, trials: list[TrialSummary]) -> tuple[str | Non
 def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> TrialSummary:
     result = load_json(trial_dir / "result.json", warnings)
     session_files = sorted(path for path in (trial_dir / "agent" / "sessions").rglob("*.jsonl") if path.is_file())
-    if not session_files and not (trial_dir / "agent" / "claude-code.txt").is_file():
-        warnings.append(f"No agent transcript artifacts found for trial {trial_dir.name}")
-    session_scan = merge_session_scans([scan_session_file(path, warnings) for path in session_files])
+    has_claude_code = (trial_dir / "agent" / "claude-code.txt").is_file()
+    trajectory_file = trial_dir / "agent" / "trajectory.json"
+    if not session_files and not has_claude_code:
+        if trajectory_file.is_file():
+            session_scan = scan_trajectory_file(trajectory_file, warnings)
+        else:
+            warnings.append(f"No agent transcript artifacts found for trial {trial_dir.name}")
+            session_scan = SessionScan()
+    else:
+        session_scan = merge_session_scans([scan_session_file(path, warnings) for path in session_files])
     model_ref = configured_model_ref(result)
     if is_kimchi_model_provider(model_ref[0]):
         session_scan = normalize_session_scan_models(session_scan, model_ref)

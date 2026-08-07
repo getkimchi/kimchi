@@ -247,8 +247,8 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
         kind="provider_api_timeout",
         outcome=Outcome.ERROR,
         error_category="infra",
-        marker_groups=(("api error", "524"), ("origin_response_timeout",), ("cloudflare", "timeout")),
-        evidence_markers=("origin_response_timeout", "cloudflare", "524"),
+        marker_groups=(("api error", "524"), ("origin_response_timeout",)),
+        evidence_markers=("origin_response_timeout", "524"),
     ),
     # ── Provider budget / quota errors (direct exception type or in captured stdout) ──
     ErrorRule(
@@ -262,6 +262,7 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
             ("spend limit",),
             ("budget has been exceeded",),
             ("insufficient credits",),
+            ("requires more credits",),
             ("usage limit has been reached",),
             ("key limit exceeded",),
             ("total limit",),
@@ -272,6 +273,7 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
             "spend limit",
             "budget has been exceeded",
             "insufficient credits",
+            "requires more credits",
             "usage limit has been reached",
             "key limit exceeded",
             "total limit",
@@ -380,13 +382,23 @@ def _reward(result: dict) -> float | None:
     return None
 
 
-def _build_error_context(result: dict) -> TrialErrorContext:
+def _build_error_context(trial_dir: Path, result: dict) -> TrialErrorContext:
     exception_type = _get_path(result, "exception_info", "exception_type")
     pieces = [
         exception_type,
         _get_path(result, "exception_info", "exception_message"),
         _get_path(result, "exception_info", "exception_traceback"),
     ]
+    # For opencode agents, the actual error details (e.g. credit exhaustion) are
+    # in agent/opencode.txt, not in exception_info which just says "Command failed".
+    # Append the transcript text so ErrorRule marker matching can see it.
+    opencode_txt = trial_dir / "agent" / "opencode.txt"
+    if opencode_txt.is_file():
+        try:
+            transcript = opencode_txt.read_text(encoding="utf-8", errors="replace")
+            pieces.append(transcript)
+        except OSError:
+            pass
     exception_text = "\n".join(str(p) for p in pieces if p is not None).casefold()
     return TrialErrorContext(
         exception_type=str(exception_type) if isinstance(exception_type, str) else None,
@@ -444,6 +456,63 @@ def _iter_session_jsonl(trial_dir: Path, pattern: str = "*.jsonl") -> Iterator[d
         yield from _read_session_jsonl(path)
 
 
+def _read_trajectory(trial_dir: Path) -> dict | None:
+    """Load opencode's agent/trajectory.json (ATIF v1.x format). Returns None if absent."""
+    path = trial_dir / "agent" / "trajectory.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _trajectory_steps_to_session_entries(step: dict) -> list[dict]:
+    """Convert an ATIF trajectory step into session-JSONL-style entries.
+
+    The timeout state machine reads (timestamp, role) pairs from message entries
+    and tool-call data from llm_response_debug entries. For steps with tool calls,
+    we emit both: an assistant message (for the timeline) and an
+    llm_response_debug entry (for last_tool_name extraction).
+    """
+    source = step.get("source", "agent")
+    timestamp = step.get("timestamp")
+    if isinstance(timestamp, str):
+        ts = timestamp
+    elif isinstance(timestamp, (int, float)):
+        ts = datetime.fromtimestamp(timestamp / 1000, tz=UTC).isoformat()
+    else:
+        ts = None
+
+    entries: list[dict] = []
+
+    # Emit a message entry for every step (assistant or toolResult).
+    role = "toolResult" if source == "tool" else "assistant"
+    entries.append({
+        "type": "message",
+        "timestamp": ts,
+        "message": {"role": role},
+    })
+
+    # If this step dispatched tools, also emit a debug entry.
+    tool_calls = step.get("tool_calls")
+    if isinstance(tool_calls, list) and tool_calls:
+        names = []
+        for tc in tool_calls:
+            if isinstance(tc, dict):
+                name = tc.get("function_name") or tc.get("name")
+                names.append(str(name) if name else "unknown")
+        if names:
+            entries.append({
+                "customType": "llm_response_debug",
+                "timestamp": ts,
+                "data": {"toolCalls": [{"name": n} for n in names]},
+            })
+
+    return entries
+
+
 def _timeout_session_entries(trial_dir: Path) -> list[dict]:
     """The single session the timeout state machine reads.
 
@@ -457,7 +526,18 @@ def _timeout_session_entries(trial_dir: Path) -> list[dict]:
 
     sessions_dir = trial_dir / "agent" / "sessions"
     if not sessions_dir.is_dir():
+        # Fall back to opencode trajectory.json (ATIF v1.x format).
+        trajectory = _read_trajectory(trial_dir)
+        if trajectory is not None:
+            steps = trajectory.get("steps")
+            if isinstance(steps, list):
+                entries: list[dict] = []
+                for s in steps:
+                    if isinstance(s, dict):
+                        entries.extend(_trajectory_steps_to_session_entries(s))
+                return entries
         return []
+
     # `.events.jsonl` is a workflow's own run log, not a conversation the state machine can read.
     paths = [p for p in sorted(sessions_dir.rglob("*.jsonl")) if not p.name.endswith(".events.jsonl")]
     best: list[dict] = []
@@ -627,7 +707,7 @@ def _session_marks_budget_error(trial_dir: Path) -> bool:
 
 
 def _classify_exception(trial_dir: Path, result: dict, reward: float | None) -> Verdict:
-    context = _build_error_context(result)
+    context = _build_error_context(trial_dir, result)
     for rule in ERROR_RULES:
         if rule.matches(context):
             # A generic agent_timeout that was actually caused by a budget error is re-classified
