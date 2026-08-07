@@ -874,15 +874,16 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
     exception = string_or_none(get_path(result, "exception_info", "exception_type"))
     exception_message = string_or_none(get_path(result, "exception_info", "exception_message"))
 
+    classified_verdict: classify.Verdict | None = None
     raw_outcome = result.get("outcome")
     if isinstance(raw_outcome, str):
         try:
             outcome = Outcome(raw_outcome)
         except ValueError:
-            verdict = classify(trial_dir)
-            outcome = verdict.outcome
-            error_category = verdict.error_category
-            error_subcategory = verdict.error_subcategory
+            classified_verdict = classify(trial_dir)
+            outcome = classified_verdict.outcome
+            error_category = classified_verdict.error_category
+            error_subcategory = classified_verdict.error_subcategory
         else:
             error_category = (
                 result.get("error_category")
@@ -899,10 +900,10 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
         # chunk_runner enriches result.json with classification fields. Apply
         # the canonical classifier here so GCS-only summaries preserve the
         # same retryable/final semantics as local reconciliation.
-        verdict = classify(trial_dir)
-        outcome = verdict.outcome
-        error_category = verdict.error_category
-        error_subcategory = verdict.error_subcategory
+        classified_verdict = classify(trial_dir)
+        outcome = classified_verdict.outcome
+        error_category = classified_verdict.error_category
+        error_subcategory = classified_verdict.error_subcategory
 
     error_evidence = extract_error_evidence(result, trial_dir, session_files, warnings, error_subcategory)
     error_message = error_evidence.text or exception_message
@@ -917,7 +918,14 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
         else trial_dir.name.split("__", 1)[0]
     )
 
-    agent_timeout_analysis = _convert_decimals(result.get("agent_timeout_analysis"))
+    # Prefer the freshly-computed analysis from classify() when available;
+    # fall back to the value baked into result.json by chunk_runner.
+    if classified_verdict is not None:
+        agent_timeout_analysis = _convert_decimals(
+            classified_verdict.raw.get("agent_timeout_analysis")
+        )
+    else:
+        agent_timeout_analysis = _convert_decimals(result.get("agent_timeout_analysis"))
     if not isinstance(agent_timeout_analysis, dict):
         agent_timeout_analysis = None
 
