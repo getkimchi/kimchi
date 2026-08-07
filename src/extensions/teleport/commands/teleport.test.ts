@@ -630,7 +630,8 @@ describe("runTeleport", () => {
 
 		it("appends a [Teleport] handoff note as a user message to the uploaded session", async () => {
 			const sessionFile = join(tempDir, "session.jsonl")
-			writeFileSync(sessionFile, '{"type":"session"}\n')
+			const originalContent = '{"type":"session"}\n'
+			writeFileSync(sessionFile, originalContent)
 			const { ctx } = makeCtx({ sessionFile })
 
 			// Read the uploaded file contents inside the createSession mock — the
@@ -643,12 +644,14 @@ describe("runTeleport", () => {
 
 			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx)
 
+			// Original session file is never mutated by the upload.
+			expect(readFileSync(sessionFile, "utf8")).toBe(originalContent)
+
 			// Original content survives the copy…
-			expect(capturedUpload).toContain('{"type":"session"}')
+			expect(capturedUpload).toContain(originalContent.trimEnd())
 			// …and the handoff note got appended as a parseable user-message entry,
 			// so the resumed remote agent sees the environment change in context
 			// (and the user sees it in the transcript).
-			expect(capturedUpload).toContain("[Teleport] Environment handoff")
 			const noteLine = capturedUpload.split("\n").find((l) => l.includes("[Teleport]"))
 			expect(noteLine).toBeDefined()
 			const parsed = JSON.parse(noteLine!)
