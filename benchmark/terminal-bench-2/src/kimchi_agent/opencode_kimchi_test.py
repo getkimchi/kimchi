@@ -17,7 +17,12 @@ from kimchi_agent.gateway import (
     KimchiModelMetadata,
     KimchiModelsMetadataResponse,
 )
-from kimchi_agent.opencode_kimchi import KIMCHI_PROVIDER, OpenCodeKimchi
+from kimchi_agent.opencode_kimchi import (
+    KIMCHI_PROVIDER,
+    OPENROUTER_BASE_URL,
+    OPENROUTER_PROVIDER_NAME,
+    OpenCodeKimchi,
+)
 
 
 class FakeMetadataResponse:
@@ -83,12 +88,16 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._old_api_key = os.environ.get("KIMCHI_API_KEY")
         os.environ["KIMCHI_API_KEY"] = "test-key"
+        self._old_openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+        os.environ.pop("OPENROUTER_API_KEY", None)
 
     def tearDown(self) -> None:
         if self._old_api_key is None:
             os.environ.pop("KIMCHI_API_KEY", None)
         else:
             os.environ["KIMCHI_API_KEY"] = self._old_api_key
+        if self._old_openrouter_key is not None:
+            os.environ["OPENROUTER_API_KEY"] = self._old_openrouter_key
 
     async def test_registers_and_runs_selected_kimchi_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -117,7 +126,7 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent.fetched_with_api_key, "test-key")
 
     async def test_rejects_non_kimchi_provider(self) -> None:
-        for model_name in ("openai/gpt-4.1", "openrouter/z-ai/glm-5.2"):
+        for model_name in ("openai/gpt-4.1", "anthropic/claude-sonnet-5"):
             with self.subTest(model_name=model_name), tempfile.TemporaryDirectory() as tmp:
                 agent = RecordingOpenCodeKimchi(
                     logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
@@ -126,6 +135,80 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
                 with self.assertRaisesRegex(ValueError, "only supports kimchi-dev"):
                     await agent.run("solve it", object(), AgentContext())
+
+    async def test_openrouter_model_registers_provider_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingOpenCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="openrouter/@preset/glm-5-2-zai",
+            )
+            agent._extra_env["OPENROUTER_API_KEY"] = "or-test-key"
+
+            await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(len(agent.agent_commands), 3)
+        config = extract_echo_json(agent.agent_commands[1])
+        # Provider should be openrouter, not kimchi-dev
+        self.assertNotIn(KIMCHI_PROVIDER, config["provider"])
+        self.assertIn(OPENROUTER_PROVIDER_NAME, config["provider"])
+        or_config = config["provider"][OPENROUTER_PROVIDER_NAME]
+        self.assertEqual(or_config["options"]["baseURL"], OPENROUTER_BASE_URL)
+        self.assertEqual(or_config["options"]["apiKey"], "{env:OPENROUTER_API_KEY}")
+        self.assertNotIn("litellmProxy", or_config["options"])
+        # Model metadata from static table
+        model_cfg = or_config["models"]["@preset/glm-5-2-zai"]
+        self.assertTrue(model_cfg["tool_call"])
+        self.assertFalse(model_cfg["reasoning"])
+        self.assertEqual(model_cfg["limit"]["context"], 128_000)
+        self.assertEqual(model_cfg["limit"]["output"], 16_384)
+        # opencode --model should use the full openrouter/ prefix
+        run_command = agent.agent_commands[2]
+        self.assertIn("opencode --model=openrouter/@preset/glm-5-2-zai", run_command)
+        self.assertNotIn("--thinking", run_command)
+        # Environment should have OPENROUTER_API_KEY, not KIMCHI_API_KEY
+        self.assertNotIn("KIMCHI_API_KEY", agent.agent_envs[0])
+        self.assertEqual(agent.agent_envs[0]["OPENROUTER_API_KEY"], "or-test-key")
+        # Should not fetch Kimchi metadata
+        self.assertEqual(agent.metadata_fetch_count, 0)
+
+    async def test_openrouter_reasoning_model_adds_thinking_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingOpenCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="openrouter/@preset/kimi-k2-7-moonshot",
+            )
+            agent._extra_env["OPENROUTER_API_KEY"] = "or-test-key"
+
+            await agent.run("solve it", object(), AgentContext())
+
+        run_command = agent.agent_commands[2]
+        self.assertIn("--thinking", run_command)
+        config = extract_echo_json(agent.agent_commands[1])
+        model_cfg = config["provider"][OPENROUTER_PROVIDER_NAME]["models"]["@preset/kimi-k2-7-moonshot"]
+        self.assertTrue(model_cfg["reasoning"])
+
+    async def test_openrouter_unknown_model_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingOpenCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="openrouter/unknown-model",
+            )
+            agent._extra_env["OPENROUTER_API_KEY"] = "or-test-key"
+
+            with self.assertRaisesRegex(ValueError, "not in the static metadata table"):
+                await agent.run("solve it", object(), AgentContext())
+
+    async def test_openrouter_missing_api_key_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingOpenCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="openrouter/@preset/glm-5-2-zai",
+            )
+
+            with self.assertRaisesRegex(ValueError, "OPENROUTER_API_KEY is required"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
 
     async def test_allows_unknown_kimchi_model_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

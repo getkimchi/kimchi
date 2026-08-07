@@ -632,10 +632,10 @@ def _gitlab_job_elapsed_seconds(*, now: datetime | None = None) -> float:
 
 OPENROUTER_PROVIDER = "openrouter"
 # Agents that can route openrouter/* models: the kimchi family (via the
-# openai-completions provider block) and claude-code (via OpenRouter's
-# Anthropic-compatible surface). opencode still only speaks to the Kimchi
-# gateway, so catch that here instead of failing every trial at agent start.
-OPENROUTER_CAPABLE_AGENTS = frozenset({"kimchi", "kimchi-workflow", "pi", "pi-workflow", "claude-code"})
+# openai-completions provider block), claude-code (via OpenRouter's
+# Anthropic-compatible surface), and opencode (via an OpenRouter provider
+# entry in the opencode config).
+OPENROUTER_CAPABLE_AGENTS = frozenset({"kimchi", "kimchi-workflow", "pi", "pi-workflow", "claude-code", "opencode"})
 
 
 def _openrouter_config_error(model: str, coding_agent: str) -> str | None:

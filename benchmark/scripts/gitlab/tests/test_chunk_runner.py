@@ -939,13 +939,15 @@ def test_openrouter_model_is_rejected_for_agent_without_openrouter_routing(
     _main_env(
         tmp_path,
         monkeypatch,
-        CODING_AGENT="opencode",
+        CODING_AGENT="claude-code-standard",
         MODEL="openrouter/z-ai/glm-5.1",
         OPENROUTER_API_KEY="sk-or-test",
+        ANTHROPIC_API_KEY="sk-ant-test",
     )
 
+    # claude-code-standard only supports anthropic/* models
     assert main() == 1
-    assert "is not supported when CODING_AGENT=opencode" in capsys.readouterr().err
+    assert "is not supported when CODING_AGENT=claude-code-standard" in capsys.readouterr().err
 
 
 def test_openrouter_model_requires_openrouter_api_key(
@@ -966,6 +968,29 @@ def test_openrouter_model_runs_for_claude_code(
         monkeypatch,
         CODING_AGENT="claude-code",
         MODEL="openrouter/z-ai/glm-5.1",
+        OPENROUTER_API_KEY="sk-or-test",
+    )
+
+    results_dir = tmp_path / "jobs"
+    trial = results_dir / "run-1" / "task-a__1"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps({"verifier_result": {"rewards": {"reward": 1.0}}})
+    )
+
+    with patch("chunk_runner.run_harbor"):
+        assert main() == 0
+
+
+def test_openrouter_model_runs_for_opencode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """opencode now supports openrouter/* models."""
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        CODING_AGENT="opencode",
+        MODEL="openrouter/@preset/glm-5-2-zai",
         OPENROUTER_API_KEY="sk-or-test",
     )
 
