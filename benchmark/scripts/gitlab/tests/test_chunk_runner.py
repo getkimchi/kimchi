@@ -13,12 +13,14 @@ from chunk_runner import (
     _agent_import_path,
     _all_trial_dirs_for_task,
     _build_gcs_key_prefix,
+    _collect_docker_health,
     _compaction_disabled,
     _derive_configuration,
     _fetch_all_tasks,
     _selected_workflow,
     _selected_workflow_extension,
     _task_name_from_result,
+    _write_chunk_meta,
     _write_run_metadata,
     main,
     run_id_from_chunk_attempt,
@@ -27,6 +29,57 @@ from chunk_runner import (
 from outcome import Outcome
 
 _BENCH_SCRIPTS_DIR = Path(__file__).parent.parent
+
+
+def test_write_chunk_meta_includes_docker_health(tmp_path: Path) -> None:
+    """chunk-meta folds in retry/pre-warm counters when their files exist."""
+    results_dir = tmp_path / "jobs"
+    results_dir.mkdir()
+    # Files are chunk-namespaced; meta for chunk 0 must ignore chunk 1's files.
+    (results_dir / "docker-retry-health-chunk-0.json").write_text(
+        json.dumps({"retry_engagements": 7, "retry_recoveries": 6, "retry_exhausted": 1})
+    )
+    (results_dir / "pre-warm-result-chunk-0.json").write_text(
+        json.dumps({"pulled": 28, "failed": 2, "images_total": 30})
+    )
+    (results_dir / "pre-warm-result-chunk-1.json").write_text(
+        json.dumps({"pulled": 999, "failed": 0, "images_total": 999})
+    )
+
+    meta_path = _write_chunk_meta(
+        results_dir=results_dir, chunk_index=0, chunk_attempt=1,
+        exit_code=0, needs_retry=[],
+    )
+
+    meta = json.loads(meta_path.read_text())
+    assert meta["docker_health"]["retry"]["retry_recoveries"] == 6
+    assert meta["docker_health"]["prewarm"]["pulled"] == 28
+
+
+def test_write_chunk_meta_omits_docker_health_without_files(tmp_path: Path) -> None:
+    """No health files → no docker_health key (clean meta for non-docker paths)."""
+    results_dir = tmp_path / "jobs"
+    results_dir.mkdir()
+
+    meta_path = _write_chunk_meta(
+        results_dir=results_dir, chunk_index=0, chunk_attempt=1,
+        exit_code=0, needs_retry=[],
+    )
+
+    meta = json.loads(meta_path.read_text())
+    assert "docker_health" not in meta
+
+
+def test_collect_docker_health_skips_corrupt_files(tmp_path: Path) -> None:
+    results_dir = tmp_path / "jobs"
+    results_dir.mkdir()
+    (results_dir / "docker-retry-health-chunk-0.json").write_text("not json{")
+    (results_dir / "pre-warm-result-chunk-0.json").write_text(json.dumps({"pulled": 1, "failed": 0}))
+
+    health = _collect_docker_health(results_dir, 0)
+
+    assert "retry" not in health
+    assert health["prewarm"]["pulled"] == 1
 
 
 def test_fetch_all_tasks_reads_terminal_bench_from_file() -> None:
@@ -583,6 +636,66 @@ def test_restore_prior_artifact_downloads_and_extracts(
     assert json.loads(meta_file.read_text()) == {"chunk_attempt": 1}
     result_file = tmp_path / "benchmark" / "terminal-bench-2" / "jobs" / "run-1" / "task-a__1" / "result.json"
     assert result_file.is_file()
+
+
+def test_restore_prior_artifact_skips_prewarm_keeps_retry_health(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pre-warm files are per-attempt (each attempt re-warms a fresh daemon in
+    before_script, before restore) and must not be restored over the current
+    attempt's counts; retry-health files must be restored (they accumulate)."""
+    import io
+    import zipfile as zf
+
+    from chunk_runner import _restore_prior_artifact
+
+    _ci_env(monkeypatch, BENCH_CHUNK_INDEX="0")
+
+    archive_buf = io.BytesIO()
+    with zf.ZipFile(archive_buf, "w") as z:
+        z.writestr(
+            "benchmark/terminal-bench-2/jobs/pre-warm-result-chunk-0.json",
+            json.dumps({"pulled": 30, "failed": 0}),
+        )
+        z.writestr(
+            "benchmark/terminal-bench-2/jobs/docker-retry-health-chunk-0.json",
+            json.dumps({"retry_engagements": 3, "retry_recoveries": 3, "retry_exhausted": 0}),
+        )
+    archive_bytes = archive_buf.getvalue()
+
+    class FakeResp:
+        def __init__(self, data: bytes) -> None:
+            self.data = data
+
+        def read(self) -> bytes:
+            return self.data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResp(
+                json.dumps([
+                    {"id": 200, "name": "terminal-bench-2-chunks: [0]"},
+                    {"id": 150, "name": "terminal-bench-2-chunks: [0]"},
+                ]).encode("utf-8")
+            )
+        return FakeResp(archive_bytes)
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        restored = _restore_prior_artifact(tmp_path, workspace=tmp_path)
+
+    assert restored is True
+    jobs_dir = tmp_path / "benchmark" / "terminal-bench-2" / "jobs"
+    assert not (jobs_dir / "pre-warm-result-chunk-0.json").exists()
+    assert (jobs_dir / "docker-retry-health-chunk-0.json").is_file()
 
 
 def test_restore_prior_artifact_returns_false_when_api_fails(

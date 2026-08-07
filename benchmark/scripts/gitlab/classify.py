@@ -168,6 +168,25 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
         ),
         evidence_markers=("killed", "oom", "container", "docker", "registry"),
     ),
+    # ── Docker daemon unreachable during environment setup ──────────────────────
+    # Harbor wraps `docker compose up` failures in a plain RuntimeError, so the
+    # exception type carries no signal — match the composed text. Both markers
+    # are required: harbor's "Docker compose command failed" wrapper scopes the
+    # match to environment setup, and the daemon-connectivity substring
+    # distinguishes a cold/restarting DinD sidecar (transient, retry) from
+    # permanent environment breakage like a missing image (must stay
+    # agent/environment_setup_failed — a task with a broken environment is
+    # task evidence, not retryable infra).
+    # Keep the daemon marker in sync with kimchi_agent.docker_retry._RETRY_MARKER.
+    ErrorRule(
+        kind="docker_daemon_unreachable",
+        outcome=Outcome.ERROR,
+        error_category="infra",
+        marker_groups=(
+            ("docker compose command failed", "cannot connect to the docker daemon"),
+        ),
+        evidence_markers=("docker compose command failed", "cannot connect to the docker daemon"),
+    ),
     ErrorRule(
         kind="infra_resource_error",
         outcome=Outcome.ERROR,

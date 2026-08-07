@@ -50,6 +50,7 @@ inputs:
     options:
       - multi-model
       - kimchi-dev/kimi-k2.7
+      - kimchi-dev/kimi-k3
       - kimchi-dev/claude-sonnet-4-6
       - kimchi-dev/claude-sonnet-5
       - kimchi-dev/claude-opus-4-6
@@ -57,6 +58,7 @@ inputs:
       - kimchi-dev/claude-fable-5
       - kimchi-dev/minimax-m3
       - kimchi-dev/glm-5.2-fp8
+      - kimchi-dev/deepseek-v4-flash
       # Preset-pinned: route only to Moonshot (int4) instead of load-balancing across
       # multiple providers. Use this for recorded scores with Kimi K2.7.
       - openrouter/@preset/kimi-k2-7-moonshot

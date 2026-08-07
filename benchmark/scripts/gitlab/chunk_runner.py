@@ -880,6 +880,14 @@ def _restore_prior_artifact(results_dir: Path, workspace: Path | None = None) ->
             for member in zf.namelist():
                 if member.endswith("/"):
                     continue
+                # Pre-warm results are per-attempt (each attempt pre-warms a
+                # fresh DinD daemon in before_script, before this restore)
+                # and are intentionally NOT restored: keeping the prior
+                # attempt's file would overwrite this attempt's fresh counts.
+                # docker-retry health files ARE restored — retry counters
+                # deliberately accumulate across attempts.
+                if Path(member).name.startswith("pre-warm-result-chunk-"):
+                    continue
                 target = workspace / member
                 # Block zip-slip: refuse to extract outside the workspace.
                 try:
@@ -923,6 +931,40 @@ def _detect_chunk_attempt(results_dir: Path, chunk_index: int) -> int | None:
     return int(attempt) + 1 if isinstance(attempt, int) else None
 
 
+def _collect_docker_health(results_dir: Path, chunk_index: int) -> dict:
+    """Aggregate THIS chunk's DinD health metrics written by earlier job stages.
+
+    Filenames are namespaced by chunk index because all chunk jobs share the
+    results-dir artifact root (un-namespaced files were last-writer-wins when
+    GitLab merged the parallel jobs' artifacts).
+
+    Sources (all optional, all silently skipped when missing/corrupt):
+      - docker-retry-health-chunk-<INDEX>.json — written by
+        kimchi_agent.docker_retry inside harbor runs (transient daemon
+        engagements, silent recoveries, exhausted budgets). Recoveries are
+        the leading indicator of DinD degradation: they produce no verdicts,
+        so without this they are invisible. Accumulates across retries via
+        _restore_prior_artifact(); a pod-killed attempt leaves only its
+        job-log DOCKER_RETRY_RECOVERED lines.
+      - pre-warm-result-chunk-<INDEX>.json — written by preload_task_images.py
+        in before_script (task image pre-warm pulled/failed counts),
+        rewritten fresh each attempt.
+    """
+    health: dict = {}
+    for key, filename in (
+        ("retry", f"docker-retry-health-chunk-{chunk_index}.json"),
+        ("prewarm", f"pre-warm-result-chunk-{chunk_index}.json"),
+    ):
+        path = results_dir / filename
+        if not path.is_file():
+            continue
+        try:
+            health[key] = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+    return health
+
+
 def _write_chunk_meta(
     *,
     results_dir: Path,
@@ -943,6 +985,9 @@ def _write_chunk_meta(
         "exhausted": exhausted,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    docker_health = _collect_docker_health(results_dir, chunk_index)
+    if docker_health:
+        payload["docker_health"] = docker_health
     meta_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return meta_path
 

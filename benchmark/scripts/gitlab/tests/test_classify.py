@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from bench_config import is_retryable
 from classify import ERROR_RULES, classify
 from outcome import Outcome
 
@@ -179,6 +180,39 @@ RESULT_JSON_CASES = [
         {"outcome": "error", "error_category": "agent", "error_subcategory": "model_access_error"},
         id="model-access-error",
     ),
+    # Verbatim failure string from the 2026-08-05 DinD outage: harbor wraps the
+    # compose failure in a plain RuntimeError, so only the text matches.
+    pytest.param(
+        {
+            **_exception_payload(
+                "RuntimeError",
+                "Docker compose command failed for environment bn-fit-modify. "
+                "Command: docker compose --project-name bn-fit-modify__x3nfqrv__env "
+                "up --detach --wait. Return code: 1. "
+                "Stdout: unable to get image 'alexgshaw/bn-fit-modify:20251031': "
+                "Cannot connect to the Docker daemon at tcp://docker:2375. "
+                "Is the docker daemon running?. Stderr: None.",
+            ),
+            "environment_setup": {},
+        },
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "docker_daemon_unreachable"},
+        id="docker-daemon-unreachable",
+    ),
+    # Same wrapper, but a permanent missing-image error: must stay agent-level
+    # and non-retryable — a task with a broken environment is task evidence.
+    pytest.param(
+        {
+            **_exception_payload(
+                "RuntimeError",
+                "Docker compose command failed for environment bn-fit-modify. "
+                "Command: docker compose up --detach --wait. Return code: 1. "
+                "Stdout: unable to get image 'alexgshaw/missing:tag': not found.",
+            ),
+            "environment_setup": {},
+        },
+        {"outcome": "error", "error_category": "agent", "error_subcategory": "environment_setup_failed"},
+        id="docker-missing-image-stays-agent",
+    ),
     pytest.param(
         _exception_payload("AssertionError", reward=0.0),
         {"outcome": "error", "error_category": "agent"},
@@ -234,6 +268,35 @@ def test_classify_result_json_cases(tmp_results_dir: Path, payload: dict, expect
     verdict = classify(trial)
 
     _assert_verdict(verdict, expected)
+
+
+def test_docker_daemon_unreachable_is_retryable(tmp_results_dir: Path) -> None:
+    """DinD-connectivity failures must re-schedule, not fill an attempt slot.
+
+    reconcile.compute_task_progress() relies on is_retryable() to decide
+    whether an infra error fills a pass@k slot; a docker_daemon_unreachable
+    verdict that is NOT retryable silently burns the attempt (observed in the
+    2026-08-05 child-pipeline traces: 44 attempt-1 slots lost).
+    """
+    trial = tmp_results_dir / "run-1" / "case__docker_retryable"
+    _write_result(
+        trial,
+        {
+            "exception_info": {
+                "exception_type": "RuntimeError",
+                "exception_message": (
+                    "Docker compose command failed for environment some-task. "
+                    "Stdout: unable to get image 'img:tag': "
+                    "Cannot connect to the Docker daemon at tcp://docker:2375."
+                ),
+            },
+            "environment_setup": {},
+        },
+    )
+
+    verdict = classify(trial)
+
+    assert is_retryable(verdict.outcome, verdict.error_category, verdict.error_subcategory)
 
 
 def _write_session(trial_dir: Path, entries: list[dict]) -> None:

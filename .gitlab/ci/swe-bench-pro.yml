@@ -118,6 +118,13 @@ setup-image:
     - !reference [.auth-gcp-script]
     - !reference [.gcloud-setup, script]
     - benchmark/scripts/gitlab/wait_for_docker.sh
+    # Pre-warm this chunk's task images into the fresh DinD sidecar (best-effort:
+    # serial pulls replace the N-way cold-start storm at trial start and double
+    # as a real-path readiness check; pull failures never gate the job).
+    # SELECTED_TASKS_JSON is re-exported here because the main export lives in
+    # `script:` below, which runs after before_script.
+    - export SELECTED_TASKS_JSON='$[[ inputs.tasks ]]'
+    - python3 benchmark/scripts/gitlab/preload_task_images.py || echo "[WARN] task image pre-warm failed; continuing without it"
   script:
     - export SELECTED_TASKS_JSON='$[[ inputs.tasks ]]'
     - |
