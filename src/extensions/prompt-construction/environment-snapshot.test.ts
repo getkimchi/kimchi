@@ -29,7 +29,7 @@ function dirent(name: string, kind: "directory" | "file" | "symlink"): FsDirent 
 }
 
 /** A filesystem that maps absolute paths → entries (or "missing" for unreadable). */
-function fakeFs(layout: Map<string, FsDirent[] | "missing">): FilesystemAdapter {
+function fakeFs(layout: Map<string, FsDirent[] | "missing">, sizes?: Map<string, number>): FilesystemAdapter {
 	const dirMap = new Map<string, FsDirent[]>()
 	for (const [path, entries] of layout) {
 		if (entries !== "missing") dirMap.set(path, entries)
@@ -51,15 +51,29 @@ function fakeFs(layout: Map<string, FsDirent[] | "missing">): FilesystemAdapter 
 			return [...entries]
 		},
 		exists,
+		...(sizes
+			? {
+					stat: async (path: string) => {
+						const size = sizes.get(path)
+						if (size === undefined) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+						return { size }
+					},
+				}
+			: {}),
 	}
 }
 
-/** A CommandRunner that records calls and returns scripted results keyed by command. */
+/**
+ * A CommandRunner that records calls and returns scripted results keyed by
+ * command, optionally refined by first argument ("git check-ignore" beats
+ * "git") so fixtures can script subcommands independently.
+ */
 function scriptedRunner(table: Record<string, CommandResult>): CommandRunner & { calls: CommandRequest[] } {
 	const calls: CommandRequest[] = []
 	const runner: CommandRunner = async (request) => {
 		calls.push(request)
-		return table[request.command] ?? { status: "missing" }
+		const subcommandKey = `${request.command} ${request.args[0] ?? ""}`.trimEnd()
+		return table[subcommandKey] ?? table[request.command] ?? { status: "missing" }
 	}
 	return Object.assign(runner, { calls })
 }
@@ -400,7 +414,7 @@ describe("environment-snapshot", () => {
 				]),
 			)
 			const runner = scriptedRunner({
-				git: {
+				"git check-ignore": {
 					status: "ok",
 					stdout: `${["ignored.ts", "secret.key"].join("\0")}\0`,
 				},
@@ -429,7 +443,7 @@ describe("environment-snapshot", () => {
 				]),
 			)
 			const runner = scriptedRunner({
-				git: { status: "ok", stdout: `${[".envrc", ".env.local", "ignored.tmp"].join("\0")}\0` },
+				"git check-ignore": { status: "ok", stdout: `${[".envrc", ".env.local", "ignored.tmp"].join("\0")}\0` },
 			})
 			const svc = makeService({ filesystem: fsWithGit, runCommand: runner })
 			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
@@ -461,7 +475,7 @@ describe("environment-snapshot", () => {
 			const fsWithGit = fakeFs(new Map([[ROOT, [dirent("foo.ts", "file"), dirent(".git", "directory")]]]))
 			// A runner that distinguishes git --version from git check-ignore by args.
 			const runner = scriptedRunner({
-				git: { status: "ok", stdout: "foo.ts\0" },
+				"git check-ignore": { status: "ok", stdout: "foo.ts\0" },
 			})
 			try {
 				const svc = makeService({ filesystem: fsWithGit, runCommand: runner })
@@ -892,7 +906,7 @@ describe("environment-snapshot", () => {
 						return baseFs.readdir(path)
 					},
 				}
-				const runner = scriptedRunner({ git: { status: "ok", stdout: "secret.ts\0" } })
+				const runner = scriptedRunner({ "git check-ignore": { status: "ok", stdout: "secret.ts\0" } })
 				const svc = makeService({ filesystem: fs, runCommand: runner, budgetMs: 100 })
 				const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
 				// The filter never ran (no budget left), leaving the tree unverified.
@@ -1395,16 +1409,21 @@ describe("environment-snapshot", () => {
 			const fs = fakeFs(new Map([[ROOT, [dirent("file.ts", "file"), dirent(".git", "directory")]]]))
 			const runner = scriptedRunner({
 				git: { status: "ok", stdout: "git version 2.40.0" },
+				"git log": { status: "ok", stdout: "abc1234 initial commit\n" },
 			})
 			const svc = makeService({ filesystem: fs, runCommand: runner })
 			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
-			// Only --version is run; no status/diff/log.
+			// Working-tree state (status/diff) is never inspected: it changes
+			// constantly during execution and would be stale immediately. Commit
+			// history (bounded --oneline log) is allowed — old entries stay true
+			// even as HEAD moves.
 			const gitCalls = runner.calls.filter((c) => c.command === "git")
 			for (const call of gitCalls) {
 				expect(call.args).not.toContain("status")
 				expect(call.args).not.toContain("diff")
-				expect(call.args).not.toContain("log")
 			}
+			const logCall = gitCalls.find((c) => c.args.includes("log"))
+			expect(logCall?.args).toContain("--oneline")
 			// The snapshot itself must not contain status-like content.
 			expect(snapshot).not.toMatch(/modified:\s|untracked:\s|staged:/)
 		})
@@ -1506,6 +1525,220 @@ describe("environment-snapshot", () => {
 			expect(result).not.toContain(ENVIRONMENT_SNAPSHOT_START)
 			expect(result).not.toContain("## Old")
 			expect(result).toContain("Append me.")
+		})
+	})
+
+	describe("source-file ecosystem detection", () => {
+		it("detects Python from a bare .py file and runs only the runtime probe", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("solve.py", "file")]]]))
+			const runner = scriptedRunner({
+				python3: { status: "ok", stdout: "Python 3.12.4" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('Detected ecosystems:\n- "Python"')
+			expect(snapshot).toContain('"Python": "3.12.4"')
+			// Package-manager probes stay marker-gated: no requirements.txt /
+			// setup.py / Pipfile in the tree, so pip3 must not be probed.
+			expect(runner.calls.some((c) => c.command === "pip3")).toBe(false)
+		})
+
+		it("detects C/C++ from .c/.h files without a Makefile", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("add.c", "file"), dirent("add.h", "file")]]]))
+			const runner = scriptedRunner({
+				gcc: { status: "ok", stdout: "gcc (GCC) 13.2.0" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('Detected ecosystems:\n- "C/C++"')
+			expect(snapshot).toContain('"GCC": "13.2.0"')
+			// Build-tool probes stay marker-gated: no Makefile/CMakeLists.txt.
+			expect(runner.calls.some((c) => c.command === "make")).toBe(false)
+			expect(runner.calls.some((c) => c.command === "cmake")).toBe(false)
+		})
+
+		it("does not duplicate an ecosystem matched by both marker and source file", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("pyproject.toml", "file"), dirent("main.py", "file")]]]))
+			const svc = makeService({ filesystem: fs })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			// Exactly one ecosystem entry despite both signals matching.
+			expect(snapshot).toContain('Detected ecosystems:\n- "Python"\n\nDetected tools:')
+		})
+
+		it("does not treat .ts files as a weak ecosystem signal", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("app.ts", "file")]]]))
+			const runner = scriptedRunner({})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain("Detected ecosystems:\n- (none detected)")
+			// …so the generic fallback toolbox takes over.
+			expect(runner.calls.some((c) => c.command === "python3")).toBe(true)
+		})
+	})
+
+	describe("marker-less generic fallback probes", () => {
+		it("probes the generic toolbox when no ecosystem is detected", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("data.csv", "file")]]]))
+			const runner = scriptedRunner({
+				python3: { status: "ok", stdout: "Python 3.12.4" },
+				pip3: { status: "ok", stdout: "pip 24.0 from /usr/lib/python3/dist-packages/pip (python 3.12)" },
+				gcc: { status: "ok", stdout: "gcc (GCC) 13.2.0" },
+				make: { status: "ok", stdout: "GNU Make 4.4.1" },
+				node: { status: "ok", stdout: "v22.18.0" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain("Detected ecosystems:\n- (none detected)")
+			expect(snapshot).toContain('"Python": "3.12.4"')
+			expect(snapshot).toContain('"pip": "24.0"')
+			expect(snapshot).toContain('"GCC": "13.2.0"')
+			expect(snapshot).toContain('"Make": "4.4.1"')
+			expect(snapshot).toContain('"Node": "22.18.0"')
+		})
+
+		it("reports unavailable fallback tools definitively", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("data.csv", "file")]]]))
+			const runner = scriptedRunner({})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('"Python": "unavailable on PATH"')
+			expect(snapshot).toContain('"GCC": "unavailable on PATH"')
+			expect(snapshot).toContain('"Node": "unavailable on PATH"')
+		})
+
+		it("skips the generic toolbox when an ecosystem is detected", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("package.json", "file")]]]))
+			const runner = scriptedRunner({
+				node: { status: "ok", stdout: "v22.18.0" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(runner.calls.some((c) => c.command === "python3")).toBe(false)
+			expect(runner.calls.some((c) => c.command === "pip3")).toBe(false)
+			expect(runner.calls.some((c) => c.command === "gcc")).toBe(false)
+			expect(runner.calls.some((c) => c.command === "make")).toBe(false)
+		})
+	})
+
+	describe("file size and type annotations", () => {
+		it("annotates files with human-readable sizes", async () => {
+			const fs = fakeFs(
+				new Map([[ROOT, [dirent("notes.txt", "file"), dirent("video.mp4", "file"), dirent("chunk.bin", "file")]]]),
+				new Map([
+					[join(ROOT, "notes.txt"), 318],
+					[join(ROOT, "video.mp4"), 5 * 1024 * 1024],
+					[join(ROOT, "chunk.bin"), 1536],
+				]),
+			)
+			const svc = makeService({ filesystem: fs })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('"notes.txt" [318 B]')
+			expect(snapshot).toContain('"video.mp4" [5.0 MiB; video]')
+			expect(snapshot).toContain('"chunk.bin" [1.5 KiB; binary data]')
+		})
+
+		it("adds name-based type hints for data and model files", async () => {
+			const fs = fakeFs(
+				new Map([
+					[
+						ROOT,
+						[dirent("bn_sample_10k.csv", "file"), dirent("model.safetensors", "file"), dirent("oewn.sqlite", "file")],
+					],
+				]),
+				new Map([
+					[join(ROOT, "bn_sample_10k.csv"), 1_900_000],
+					[join(ROOT, "model.safetensors"), 497_759_232],
+					[join(ROOT, "oewn.sqlite"), 48_000_000],
+				]),
+			)
+			const svc = makeService({ filesystem: fs })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('"bn_sample_10k.csv" [')
+			expect(snapshot).toContain("CSV data")
+			expect(snapshot).toContain("model weights")
+			expect(snapshot).toContain("SQLite database")
+		})
+
+		it("omits type hints for source-code extensions and stays silent without stat support", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("solve.py", "file")]]]))
+			const svc = makeService({ filesystem: fs })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('- "solve.py"')
+			expect(snapshot).not.toContain('- "solve.py" [')
+		})
+
+		it("keeps the sensitive-data annotation alongside size", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent(".env", "file")]]]), new Map([[join(ROOT, ".env"), 12]]))
+			const svc = makeService({ filesystem: fs })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			const envLine = snapshot?.split("\n").find((line) => line.includes('".env"'))
+			expect(envLine).toContain("12 B")
+			expect(envLine).toContain("may contain sensitive data")
+		})
+	})
+
+	describe("recent commits", () => {
+		it("renders git log --oneline entries above the project markers", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent(".git", "directory"), dirent("file.ts", "file")]]]))
+			const runner = scriptedRunner({
+				git: { status: "ok", stdout: "git version 2.43.0" },
+				"git check-ignore": { status: "ok", stdout: "" },
+				"git log": { status: "ok", stdout: "abc1234 add feature\ndef5678 initial import\n" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain("Recent commits:")
+			expect(snapshot).toContain('- "abc1234 add feature"')
+			expect(snapshot).toContain('- "def5678 initial import"')
+			const commitsIndex = snapshot?.indexOf("Recent commits:") ?? -1
+			const markersIndex = snapshot?.indexOf("Project markers:") ?? -1
+			expect(commitsIndex).toBeGreaterThanOrEqual(0)
+			expect(commitsIndex).toBeLessThan(markersIndex)
+		})
+
+		it("omits the section when git log fails (new or empty repository)", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent(".git", "directory"), dirent("file.ts", "file")]]]))
+			const runner = scriptedRunner({
+				"git check-ignore": { status: "ok", stdout: "" },
+				"git log": { status: "error" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).not.toContain("Recent commits:")
+		})
+
+		it("bounds history to five entries", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent(".git", "directory"), dirent("file.ts", "file")]]]))
+			const logOutput = Array.from({ length: 7 }, (_, i) => `sha${i} commit ${i}`).join("\n")
+			const runner = scriptedRunner({
+				"git check-ignore": { status: "ok", stdout: "" },
+				"git log": { status: "ok", stdout: logOutput },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('- "sha4 commit 4"')
+			expect(snapshot).not.toContain('- "sha5 commit 5"')
+			expect(snapshot).not.toContain('- "sha6 commit 6"')
+		})
+
+		it("does not run git log outside a git worktree", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("file.ts", "file")]]]))
+			const runner = scriptedRunner({})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).not.toContain("Recent commits:")
+			expect(runner.calls.some((c) => c.command === "git" && c.args.includes("log"))).toBe(false)
+		})
+
+		it("escapes unsafe characters in commit subjects", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent(".git", "directory"), dirent("file.ts", "file")]]]))
+			const runner = scriptedRunner({
+				"git check-ignore": { status: "ok", stdout: "" },
+				"git log": { status: "ok", stdout: "abc1234 add <script> tag\n" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('- "abc1234 add \\u003cscript\\u003e tag"')
 		})
 	})
 })

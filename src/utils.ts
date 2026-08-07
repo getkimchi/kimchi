@@ -29,7 +29,19 @@ export function getGitBranch(cwd?: string): string | undefined {
 			}).trim() || undefined
 		)
 	} catch {
-		return undefined
+		// Detached HEAD (common in CI checkouts and benchmark containers) has
+		// no symbolic ref; label the checkout with the short commit instead.
+		try {
+			const head = execSync("git rev-parse --short HEAD", {
+				cwd: cwd ?? process.cwd(),
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+				timeout: 500,
+			}).trim()
+			return head ? `${head} (detached)` : undefined
+		} catch {
+			return undefined
+		}
 	}
 }
 
