@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest"
-import { ExplorationGuard, type ExplorationGuardOptions, STEER_MESSAGE_TYPE } from "./exploration-guard.js"
+import { describe, expect, it, vi } from "vitest"
+import explorationGuardExtension, {
+	ExplorationGuard,
+	type ExplorationGuardOptions,
+	STEER_MESSAGE_TYPE,
+} from "./exploration-guard.js"
 
 function createGuard(options?: ExplorationGuardOptions): ExplorationGuard {
 	return new ExplorationGuard(options)
@@ -687,5 +691,58 @@ describe("Subagent terminate behavior", () => {
 		expect(mainSteers[1]).toContain("5 consecutive turns with no tool calls")
 		expect(mainSteers[1]).toContain("You must use a tool this turn")
 		expect(mainSteers[1]).not.toContain("terminated")
+	})
+})
+
+describe("explorationGuardExtension turn_end", () => {
+	function createHarness(options?: ExplorationGuardOptions) {
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>()
+		const sendMessage = vi.fn()
+		const abort = vi.fn()
+		const pi = {
+			on: (event: string, handler: (e: unknown, ctx: unknown) => unknown) => {
+				handlers.set(event, handler)
+			},
+			sendMessage,
+		}
+		explorationGuardExtension(pi as never, options)
+		// The extension gates itself on a session id resolved from the context captured here.
+		handlers.get("session_start")?.({}, { abort, sessionManager: { getSessionId: () => "session-under-test" } })
+
+		function turn(stopReason: "stop" | "error" = "stop") {
+			handlers.get("turn_start")?.({}, {})
+			handlers.get("turn_end")?.({ message: { role: "assistant", stopReason } }, {})
+		}
+
+		return { sendMessage, abort, turn }
+	}
+
+	it("does not count a failed request toward the no-tool streak", () => {
+		const { sendMessage, turn } = createHarness()
+
+		for (let i = 0; i < 5; i++) turn("error")
+		expect(sendMessage).not.toHaveBeenCalled()
+
+		// The warning fires on the third turn the model actually took.
+		turn()
+		turn()
+		expect(sendMessage).not.toHaveBeenCalled()
+		turn()
+		expect(sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	// The errored turn is retried upstream, and the retried turn produces the summary the
+	// orchestrator consumes — aborting on the failure itself would hand it nothing.
+	it("defers a pending subagent abort past a failed request", () => {
+		const { abort, turn } = createHarness({ isSubagent: () => true })
+
+		for (let i = 0; i < 5; i++) turn()
+		expect(abort).not.toHaveBeenCalled()
+
+		turn("error")
+		expect(abort).not.toHaveBeenCalled()
+
+		turn()
+		expect(abort).toHaveBeenCalledTimes(1)
 	})
 })

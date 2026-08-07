@@ -86,6 +86,44 @@ test("shows exhausted-credit warning from credits API after a model response", a
 	)
 })
 
+// A Coder subscriber that runs out of credits is demoted to a free tier for rate limiting, and the
+// credits API reports that demoted tier as the billing identity. Every field except `remaining`
+// describes a user who never paid, so the warning has to key on the balance.
+test("shows a rate-limit warning when a depleted Coder plan reports as free tier", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "billing-demoted-rate-limited",
+			creditsResponses: [
+				{
+					serverless: true,
+					tier: "coder",
+					is_paid_tier: true,
+					billing_status: "ok",
+					has_credits: true,
+					remaining: "10",
+				},
+				{
+					serverless: true,
+					tier: "community",
+					is_paid_tier: false,
+					billing_status: "free_tier",
+					has_credits: true,
+					remaining: "0",
+				},
+			],
+			responses: [{ stream: ["Done."] }],
+		},
+		async () => {
+			terminal.submit("Use remaining credits")
+
+			await expect(terminal.getByText("Done.", { full: true })).toBeVisible()
+			await waitForText(terminal, "requests are rate limited", { full: true })
+			await waitForText(terminal, "https://app.kimchi.dev/billing", { full: true })
+		},
+	)
+})
+
 test("shows Community tier notice from the credits API in the startup header", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,

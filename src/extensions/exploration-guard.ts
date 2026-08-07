@@ -278,6 +278,12 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 	})
 
 	pi.on("turn_end", (event) => {
+		// A failed request produces a turn with no tool calls, but the model never got to act — count
+		// it and the guard steers a turn that was never lazy, re-sending the request that just failed.
+		// This also defers a pending subagent abort: the failed turn is retried upstream, and the
+		// retried turn is the one that produces the summary the orchestrator receives.
+		if (event.message.role === "assistant" && event.message.stopReason === "error") return
+
 		// If a subagent abort is pending, fire it NOW before processing the
 		// steer. The subagent already received the summary-request steer last
 		// turn; whatever it produced this turn becomes the orchestrator output.
@@ -285,8 +291,6 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 			ctx?.abort()
 			return
 		}
-
-		const isError = event.message.role === "assistant" && event.message.stopReason === "error"
 
 		guard.turnEnd((text) => {
 			pi.sendMessage(
@@ -297,6 +301,6 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 				},
 				{ deliverAs: "steer" },
 			)
-		}, isError)
+		})
 	})
 }

@@ -53,10 +53,16 @@
 #                                                            through Map<sessionId, value> instead
 #                                                            of plain globals, so multi-model state
 #                                                            is per-session.
-#   8. dist/core/tools/bash.js — destroy child stdio streams 500ms after a timeout kill
+#   8. dist/core/tools/bash.js — (a) destroy child stdio streams 500ms after a timeout kill
 #      so the tool call returns even when setsid'd grandchildren (e.g. bubblewrap used
 #      by opam install on Linux) escape the process group SIGKILL and keep the stdout
 #      pipe open, which would otherwise cause waitForChildProcess to hang indefinitely.
+#      (b) call killProcessTree in the finally block on normal completion, not just on
+#      timeout/abort. Without this, processes backgrounded with `&` / `nohup` / `disown`
+#      inside a bash command are orphaned when the shell exits, accumulating until the
+#      container OOMs. Upstream tracking: TBD.
+#      Removal criteria: upstream merges a fix that kills the process group on
+#      normal completion in the bash tool.
 #   9. package.json — add "./dist/core/tools/output-accumulator.js" to the package's
 #      exports map (with types + import conditions) so deep imports of OutputAccumulator
 #      resolve correctly at runtime and type-check time. Needed by the background-bash
@@ -311,7 +317,7 @@ index e386db6d62622a8c77c7d7e9844e63020d8af39a..f2f9e0161b47f7111df88f429c36feb7
          },
          onPayload: async (payload, _model) => {
 diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
-index 98b69bb9ccf6464dfaec7b2271cf78677cb73ce9..659fe9c52d0acac4080abfc6d3b92d865d141a4c 100644
+index 98b69bb9ccf6464dfaec7b2271cf78677cb73ce9..8a3e5f7b2c1d4e8f9a2b0c3d4e5f6a7b8c9d0e1f 100644
 --- a/dist/core/tools/bash.js
 +++ b/dist/core/tools/bash.js
 @@ -62,6 +62,16 @@ export function createLocalBashOperations(options) {
@@ -331,6 +337,31 @@ index 98b69bb9ccf6464dfaec7b2271cf78677cb73ce9..659fe9c52d0acac4080abfc6d3b92d86
                      }, timeout * 1000);
                  }
                  // Stream stdout and stderr.
+@@ -95,12 +105,22 @@ export function createLocalBashOperations(options) {
+                 return { exitCode };
+             }
+             finally {
+-                if (child.pid)
+-                    untrackDetachedChildPid(child.pid);
++                // Kill the process group on normal completion too, not just
++                // on timeout/abort. Without this, processes backgrounded with
++                // `&` / `nohup` / `disown` inside the bash command are
++                // orphaned when the shell exits — they survive in the
++                // child's process group, consuming memory until the
++                // container OOMs. Guard against PID-reuse: only kill if the
++                // child hasn't exited yet (exitCode is null until 'exit').
++                if (child.pid && child.exitCode === null) {
++                    killProcessTree(child.pid);
++                }
++                if (child.pid)
++                    untrackDetachedChildPid(child.pid);
+                 if (timeoutHandle)
+                     clearTimeout(timeoutHandle);
+                 if (signal)
+                     signal.removeEventListener("abort", onAbort);
+             }
+         },
+     };
 diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
 index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5d97aa84c 100644
 --- a/dist/core/tools/edit.js

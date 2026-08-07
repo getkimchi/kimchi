@@ -83,7 +83,7 @@ const RESOURCE_ID = "extensions.bash-tool-guard"
 
 export const STEER_MESSAGE_TYPE = "bash-tool-guard-steer"
 
-export type BashCategory = "read" | "edit" | "write"
+export type BashCategory = "read" | "edit" | "write" | "background"
 
 export interface BashClassification {
 	category: BashCategory
@@ -98,6 +98,7 @@ export interface PerCategoryThresholds {
 	read?: number
 	edit?: number
 	write?: number
+	background?: number
 }
 
 export interface BashGuardOptions {
@@ -155,6 +156,9 @@ const BLOCK_REASON_BASE =
 const READ_SUGGESTION = "Use the read tool with the file path (and offset/limit for head/tail)."
 const EDIT_SUGGESTION = "Use the edit tool with old_string/new_string."
 const WRITE_SUGGESTION = "Use the edit tool for targeted changes or the write tool for full-file replacements."
+const BACKGROUND_SUGGESTION =
+	"Use the bash tool with a long timeout (e.g. timeout=1800) and checkin_interval (e.g. 60) for long-running commands, then drive them via bash_control. " +
+	"Do not background processes with `&`, `nohup`, or `disown` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs."
 
 /**
  * Replacement description for the bash tool. Keeps the original output
@@ -168,6 +172,10 @@ export const BASH_TOOL_DESCRIPTION = `
 Execute a bash command for operations without a dedicated tool: build commands, test runners, git, package managers, system administration, shell scripting.
 
 DO NOT use bash for: reading files (use \`read\`), editing files (use \`edit\`), writing files (use \`write\`), searching file contents (use \`grep\`), finding files by pattern (use \`find\`), or listing directories (use \`ls\`) — dedicated tools are faster and unlock LSP context.
+
+DO NOT pipe output through \`tail\` or \`head\` to hide it — this buffers all output until the process ends, preventing real-time progress monitoring. Instead, let the bash tool stream output directly and set a realistic timeout. For long-running commands (builds, tests, training), set a long timeout (e.g. timeout=1800) and checkin_interval (e.g. 60), then drive the process via bash_control.
+
+DO NOT background processes with \`&\`, \`nohup\`, or \`disown\` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs. Instead, set a long timeout on the bash command so it runs in the bash tool's background mode with proper process management.
 
 Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.
 
@@ -210,6 +218,12 @@ export function applyDescriptionOverride<T extends { name: string; description: 
 export function classifyBashCommand(command: string): BashClassification | null {
 	const segments = parseCommandSegments(command)
 
+	// Category 0: background — detect shell backgrounding operators that
+	// orphan processes. Checked before segment-level categories because
+	// these are shell-level constructs, not command-level tools.
+	const bg = detectBackgrounding(command)
+	if (bg) return bg
+
 	for (const segment of segments) {
 		// Drop the leading tool name and any RTK wrapper to inspect args.
 		const tokens = stripRtk(segment.tokens)
@@ -242,6 +256,68 @@ export function classifyBashCommand(command: string): BashClassification | null 
 		// harmless and not flagged.
 		if (isFileReader(tool, tokens)) {
 			return { category: "read", suggestion: READ_SUGGESTION, matchedSegment, tool }
+		}
+	}
+
+	return null
+}
+
+/**
+ * Detect shell-level backgrounding patterns that orphan processes from
+ * the bash tool's process lifecycle. When the bash command completes
+ * normally, the shell exits — but processes launched with `&`, `nohup &`,
+ * or `& disown` survive in the child's process group and are never
+ * cleaned up (killProcessTree is only called on timeout/abort, not on
+ * normal completion — see patch item 8b).
+ *
+ * Patterns detected:
+ *   - `nohup` as a command token (not inside quoted strings)
+ *   - `disown` as a command token (not inside quoted strings)
+ *   - Any standalone `&` (not `&&` logical AND)
+ *
+ * Returns a BashClassification with category "background" or null.
+ */
+function detectBackgrounding(command: string): BashClassification | null {
+	// Check nohup/disown via parsed token segments to avoid false positives
+	// on quoted text (e.g. `echo "do not use nohup"`).
+	const segments = parseCommandSegments(command)
+	for (const segment of segments) {
+		const tokens = stripRtk(segment.tokens)
+		const tool = tokens[0]
+		if (!tool) continue
+
+		// `nohup` as the first token of any segment — always backgrounds/detaches
+		if (tool === "nohup") {
+			return {
+				category: "background",
+				suggestion: BACKGROUND_SUGGESTION,
+				matchedSegment: tokens.join(" "),
+				tool: "nohup",
+			}
+		}
+
+		// `disown` as the first token of any segment — removes a job from
+		// shell job control, deliberately orphaning it.
+		if (tool === "disown") {
+			return {
+				category: "background",
+				suggestion: BACKGROUND_SUGGESTION,
+				matchedSegment: tokens.join(" "),
+				tool: "disown",
+			}
+		}
+	}
+
+	// Any standalone `&` (not `&&` logical AND). Use negative lookbehind/
+	// lookahead to catch all backgrounding patterns regardless of what
+	// follows: `cmd &`, `cmd &)`, `cmd & echo PID`, `cmd & # comment`, etc.
+	// JavaScript supports lookbehind in modern engines (Node 16+).
+	if (/(?<!&)&(?!&)/.test(command)) {
+		return {
+			category: "background",
+			suggestion: BACKGROUND_SUGGESTION,
+			matchedSegment: "& (background)",
+			tool: "&",
 		}
 	}
 
@@ -357,6 +433,14 @@ const SEMANTIC_INTENT_PATTERNS: Record<BashCategory, RegExp[]> = {
 		// "redirect to foo.ts", "redirect output to foo.ts"
 		/\bredirect\b.*\bto\b/,
 	],
+	background: [
+		// "run in the background", "run this in background"
+		/\brun\b.*\bbackground\b/,
+		// "run it detached", "launch detached"
+		/\bdetached\b/,
+		// "use nohup", "run with nohup"
+		/\bnohup\b/,
+	],
 }
 
 export class BashToolGuard {
@@ -375,6 +459,7 @@ export class BashToolGuard {
 			read: options.warnThresholds?.read ?? defaultThreshold,
 			edit: options.warnThresholds?.edit ?? defaultThreshold,
 			write: options.warnThresholds?.write ?? defaultThreshold,
+			background: options.warnThresholds?.background ?? defaultThreshold,
 		}
 		this.isEnabled = options.isEnabled ?? (() => true)
 		this.blockOnThreshold = options.blockOnThreshold ?? false

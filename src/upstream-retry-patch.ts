@@ -1,16 +1,24 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import { getRawErrorMessage } from "./extensions/error-preservation.js"
-import { classifyLLMGatewayError } from "./llm-gateway-error.js"
+import { classifyLLMGatewayError, parseRateLimitRetryAt } from "./llm-gateway-error.js"
 
 type RetryableMessage = Partial<Pick<AssistantMessage, "stopReason" | "errorMessage">>
 type RetryableClassifier = (message: RetryableMessage) => boolean
+type RetryPreparer = (message: RetryableMessage) => Promise<boolean>
 type PatchableAgentSession = {
 	prototype: {
 		_isRetryableError?: RetryableClassifier
+		_prepareRetry?: RetryPreparer
 		_kimchiInfrastructureRetryPatch?: boolean
 	}
 }
+
+/**
+ * Longest we will hold a turn open waiting for a stated rate-limit deadline. Beyond it the wait is
+ * indistinguishable from a hang, so the error is reported once instead.
+ */
+export const RATE_LIMIT_MAX_WAIT_MS = 10 * 60_000
 
 export function isInfrastructureErrorRetryable(message: RetryableMessage): boolean {
 	if (message.stopReason !== "error") return false
@@ -20,6 +28,28 @@ export function isInfrastructureErrorRetryable(message: RetryableMessage): boole
 	const rawMessage = getRawErrorMessage(message)
 	if (!rawMessage) return false
 	return classifyLLMGatewayError(rawMessage)?.retryable ?? false
+}
+
+const rateLimitDeadlines = new WeakMap<object, number>()
+
+/**
+ * Keeps a parsed deadline reachable after the message text is rewritten for display. The rewrite
+ * replaces the gateway's UTC wording with local time, which `Date.parse` cannot read back.
+ */
+export function rememberRateLimitDeadline(message: object, retryAt: number): void {
+	rateLimitDeadlines.set(message, retryAt)
+}
+
+/** Milliseconds until the gateway's stated reopening time, or undefined when it named none. */
+export function rateLimitWaitMs(message: RetryableMessage, now: number = Date.now()): number | undefined {
+	if (message.stopReason !== "error") return undefined
+	const remembered = rateLimitDeadlines.get(message)
+	if (remembered !== undefined) return remembered - now
+	// The visible errorMessage may already be a display placeholder; parse the preserved original.
+	const rawMessage = getRawErrorMessage(message)
+	if (!rawMessage) return undefined
+	const retryAt = parseRateLimitRetryAt(rawMessage, now)
+	return retryAt === undefined ? undefined : retryAt - now
 }
 
 // --- Infrastructure-error circuit breaker ---
@@ -114,6 +144,11 @@ export function installInfrastructureRetryPatch(
 		// can force a retry storm.
 		if (classification && !classification.retryable) return false
 
+		// A reopening time past the wait bound: no attempt before it can succeed, and each one spends
+		// from the same throttled budget that is already exhausted.
+		const waitMs = rateLimitWaitMs(message)
+		if (waitMs !== undefined && waitMs > RATE_LIMIT_MAX_WAIT_MS) return false
+
 		const kimchiRetryable = classification?.retryable === true
 		if (!(original.call(this, message) || kimchiRetryable)) return false
 		// Only infrastructure-classified errors are blocked by the breaker;
@@ -121,5 +156,93 @@ export function installInfrastructureRetryPatch(
 		if (!kimchiRetryable) return true
 		return !isInfrastructureBreakerTripped()
 	}
+
+	const originalPrepareRetry = proto._prepareRetry
+	if (originalPrepareRetry) {
+		proto._prepareRetry = async function patchedPrepareRetry(
+			this: unknown,
+			message: RetryableMessage,
+		): Promise<boolean> {
+			const session = this as RetryingSession
+			const waitMs = rateLimitWaitMs(message)
+			// Only the first retry waits out a deadline; a chain of fresh deadlines would otherwise add up
+			// past the bound. Everything else keeps upstream's exponential backoff.
+			if (waitMs === undefined || waitMs > RATE_LIMIT_MAX_WAIT_MS || session._retryAttempt > 0) {
+				return originalPrepareRetry.call(this as never, message)
+			}
+			return await waitForRateLimitDeadline(session, message, waitMs)
+		}
+	}
+
 	proto._kimchiInfrastructureRetryPatch = true
+}
+
+type RetryingSession = {
+	settingsManager: { getRetrySettings: () => { enabled: boolean; maxRetries: number } }
+	agent: { state: { messages: { role: string }[] } }
+	_retryAttempt: number
+	_retryAbortController?: AbortController
+	_emit: (event: Record<string, unknown>) => void
+}
+
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(resolve, ms)
+		signal.addEventListener(
+			"abort",
+			() => {
+				clearTimeout(timer)
+				reject(signal.reason)
+			},
+			{ once: true },
+		)
+	})
+}
+
+/**
+ * Sleep until the gateway's stated reopening time instead of backing off blindly, mirroring
+ * upstream's `_prepareRetry` bookkeeping so the countdown UI and Esc-to-cancel keep working.
+ */
+async function waitForRateLimitDeadline(
+	session: RetryingSession,
+	message: RetryableMessage,
+	waitMs: number,
+): Promise<boolean> {
+	const settings = session.settingsManager.getRetrySettings()
+	if (!settings.enabled) return false
+
+	session._retryAttempt++
+	if (session._retryAttempt > settings.maxRetries) {
+		session._retryAttempt--
+		return false
+	}
+
+	session._emit({
+		type: "auto_retry_start",
+		attempt: session._retryAttempt,
+		maxAttempts: settings.maxRetries,
+		delayMs: waitMs,
+		errorMessage: message.errorMessage || "Unknown error",
+	})
+
+	// The errored assistant message stays in the session for history but must leave agent state, or
+	// the retried turn resumes from a failure.
+	const messages = session.agent.state.messages
+	if (messages.length > 0 && messages[messages.length - 1]?.role === "assistant") {
+		session.agent.state.messages = messages.slice(0, -1)
+	}
+
+	const controller = new AbortController()
+	session._retryAbortController = controller
+	try {
+		await abortableSleep(waitMs, controller.signal)
+	} catch {
+		const attempt = session._retryAttempt
+		session._retryAttempt = 0
+		session._emit({ type: "auto_retry_end", success: false, attempt, finalError: "Retry cancelled" })
+		return false
+	} finally {
+		session._retryAbortController = undefined
+	}
+	return true
 }

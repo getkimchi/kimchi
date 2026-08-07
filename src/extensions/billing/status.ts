@@ -16,7 +16,10 @@ export interface BillingStatus {
 }
 
 export interface BillingWarning {
-	kind: "low" | "exhausted"
+	// "exhausted" is a hard stop (the server refuses the request); "rate-limited" still serves, just
+	// slower. Kept apart so the tip surfaces the second as a warning rather than an error — for a
+	// free-tier user a zero balance is a steady state, not a failure.
+	kind: "low" | "exhausted" | "rate-limited"
 	message: string
 }
 
@@ -72,6 +75,11 @@ export const LOW_CREDITS_THRESHOLD_USD = 5
 export const COMMUNITY_TIER_HEADER_NOTICE =
 	"You are using Community tier. For faster performance, upgrade to Coder at https://app.kimchi.dev/pricing"
 export const BILLING_EXHAUSTED_MESSAGE = "You ran out of credits. Top up at https://app.kimchi.dev/billing"
+// "Lift", not "restore": a zero balance is reached both by a paid subscriber demoted to free-tier
+// limits and by a free user whose included credits were never spendable, who was therefore rate
+// limited all along. The payload cannot tell the two apart, so the wording must hold for both.
+export const BILLING_RATE_LIMITED_MESSAGE =
+	"You're out of credits, so requests are rate limited. Top up to lift your rate limits: https://app.kimchi.dev/billing"
 const BILLING_REFRESH_TIMEOUT_MS = 5000
 
 const TIER_FIELDS = ["tier", "tier_name", "tierName"] as const
@@ -305,7 +313,11 @@ export function observeCreditsPayload(payload: unknown): BillingStatus | undefin
 export function getCommunityTierHeaderNotice(
 	status: BillingStatus | undefined = currentBillingStatus,
 ): string | undefined {
-	return status?.plan === "community" ? COMMUNITY_TIER_HEADER_NOTICE : undefined
+	if (status?.plan !== "community") return undefined
+	// A depleted paid subscriber is reported as community, so this would tell them to upgrade to the
+	// plan they already pay for. The credit warning carries the actionable remedy instead.
+	if (isCreditsExhausted(status)) return undefined
+	return COMMUNITY_TIER_HEADER_NOTICE
 }
 
 export function getBillingWarnings(status: BillingStatus | undefined = currentBillingStatus): BillingWarning[] {
@@ -316,17 +328,22 @@ export function getBillingWarnings(status: BillingStatus | undefined = currentBi
 }
 
 function getCreditBillingWarning(status: BillingStatus | undefined): BillingWarning | undefined {
-	if (!status || !isPaidPlan(status)) return undefined
+	if (!status) return undefined
 
-	if (status.creditStatus === "ok") return undefined
-
-	const exhausted =
-		status.creditStatus === "exhausted" ||
-		(status.creditStatus === undefined &&
-			(status.restrictedMode === true || (typeof status.remainingCredits === "number" && status.remainingCredits <= 0)))
-	if (exhausted) {
+	// Server-declared: it named the balance spent, or has_credits=false says it is refusing
+	// requests outright. Never soften an explicit statement with an inference.
+	if (status.creditStatus === "exhausted" || status.restrictedMode === true) {
 		return { kind: "exhausted", message: BILLING_EXHAUSTED_MESSAGE }
 	}
+
+	// Inferred from the balance alone — all a demoted subscriber's payload carries.
+	if (typeof status.remainingCredits === "number" && status.remainingCredits <= 0) {
+		return { kind: "rate-limited", message: BILLING_RATE_LIMITED_MESSAGE }
+	}
+
+	if (!isPaidPlan(status)) return undefined
+
+	if (status.creditStatus === "ok") return undefined
 
 	const isLow =
 		status.creditStatus === "low" ||
@@ -344,6 +361,19 @@ function getCreditBillingWarning(status: BillingStatus | undefined): BillingWarn
 	}
 
 	return undefined
+}
+
+/**
+ * Deliberately keyed on the balance before any tier or billing-status field.
+ *
+ * When a paid subscriber exhausts their credits the server demotes them to a free tier for rate
+ * limiting and then reports that demoted tier as their billing identity, so the payload arrives as
+ * `is_paid_tier: false` / `billing_status: "free_tier"` — indistinguishable from a user who never
+ * paid. `remaining` is the only field the demotion does not rewrite.
+ */
+function isCreditsExhausted(status: BillingStatus): boolean {
+	if (status.creditStatus === "exhausted" || status.restrictedMode === true) return true
+	return typeof status.remainingCredits === "number" && status.remainingCredits <= 0
 }
 
 export function getBillingStatusLine(
