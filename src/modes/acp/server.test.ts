@@ -26,10 +26,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
+import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { PERMISSION_MODES, PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
-import { getSessionPermissionFlagController } from "../../extensions/permissions/mode-controller-registry.js"
+import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "../../extensions/permissions/mode.js"
+import { getPermissionModeEnvKey } from "../../extensions/permissions/mode-controller.js"
+import {
+	getSessionPermissionFlagController,
+	unregisterSessionPermissionFlagController,
+} from "../../extensions/permissions/mode-controller-registry.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
 	type AcpSessionFactory,
@@ -44,6 +50,19 @@ import {
 	userMessageText,
 } from "./server.js"
 import { getAcpClientInfo, resetAcpClientInfo } from "./state.js"
+
+function cleanPermissionEnv(): void {
+	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
+	Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
+	for (const key of Object.keys(process.env)) {
+		if (key.startsWith(`${PERMISSIONS_ENV_KEY}_`)) {
+			Reflect.deleteProperty(process.env, key)
+		}
+	}
+}
+
+beforeEach(cleanPermissionEnv)
+afterEach(cleanPermissionEnv)
 
 // Minimal fake of AgentSession surface used by KimchiAcpAgent. The factory seam
 // means we only need to stand in for the methods the ACP server actually calls:
@@ -87,6 +106,12 @@ class FakeAgentSession {
 		getBranch: () => this.branch,
 		getSessionId: () => this.sessionId,
 		getEntries: () => this.branch,
+		getCwd: () => this.cwd,
+		getSessionDir: () => `${this.cwd}/.fake-agent-sessions-dir`,
+		appendCustomEntry: (customType: string, data?: unknown) => {
+			this.branch.push({ type: "custom", customType, data })
+			return "entry-id"
+		},
 	}
 	// Captures whatever setUIContext the agent installs so tests can assert
 	// on it. The real AgentSession exposes this via its extensionRunner
@@ -103,7 +128,10 @@ class FakeAgentSession {
 		},
 	}
 
-	constructor(sessionId: string) {
+	constructor(
+		sessionId: string,
+		private readonly cwd: string = "/tmp",
+	) {
 		this.sessionId = sessionId
 		// Tests assume deterministic single-model state by default. The global
 		// multi-model default may differ between local and CI, so pin it here.
@@ -3376,7 +3404,7 @@ describe("setSessionConfigOption", () => {
 		// Verify the mode was updated
 		const controller = getSessionPermissionFlagController(sessionId)
 		expect(controller).toBeDefined()
-		expect(controller?.getMode()).toEqual({ mode: "plan", source: "user" })
+		expect(controller?.getMode()).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
 
 		// Verify mode can be switched back
 		await agent.setSessionConfigOption({
@@ -3384,7 +3412,7 @@ describe("setSessionConfigOption", () => {
 			configId: "permissions-mode",
 			value: "yolo",
 		})
-		expect(controller?.getMode()).toEqual({ mode: "yolo", source: "user" })
+		expect(controller?.getMode()).toEqual({ mode: "yolo", source: "runtime", initiatedBy: "user" })
 
 		// Cleanup
 		await agent.unstable_closeSession({ sessionId })
@@ -3414,7 +3442,7 @@ describe("setSessionConfigOption", () => {
 		// Verify the session controller is registered
 		const controller = getSessionPermissionFlagController(sessionId)
 		expect(controller).toBeDefined()
-		expect(controller?.getMode()).toEqual({ mode: "default", source: "user" })
+		expect(controller?.getMode()).toEqual({ mode: "default", source: "config", initiatedBy: "user" })
 
 		// Change to plan mode via ACP
 		await agent.setSessionConfigOption({
@@ -3425,7 +3453,7 @@ describe("setSessionConfigOption", () => {
 
 		// Verify the controller reflects the new mode
 
-		expect(controller?.getMode()).toEqual({ mode: "plan", source: "user" })
+		expect(controller?.getMode()).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
 
 		await agent.unstable_closeSession({ sessionId })
 	})
@@ -3537,6 +3565,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 			getFlag: (name: string) => flags[name],
 			registerFlag: () => {},
 			sendMessage: () => {},
+			appendEntry: () => {},
 			getEnvironment: () => ({
 				environmentInfo: {
 					permittedTools: new Set(tools),
@@ -3569,6 +3598,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 		return {
 			sessionManager: {
 				getSessionId: vi.fn().mockReturnValue(sessionId),
+				getEntries: () => [],
 			} as unknown as SessionManager,
 			cwd,
 			mode: "rpc",
@@ -3638,7 +3668,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 		})
 
 		// Verify controller mode is plan
-		expect(controller?.getMode()).toEqual({ mode: "plan", source: "user" })
+		expect(controller?.getMode()).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
 		const writeToolEvent = {
 			toolName: "write",
 			input: { path: "/tmp/test.txt", content: "hello" },
@@ -3691,7 +3721,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 
 		// Verify controller mode is yolo
 		const controller = getSessionPermissionFlagController(sessionId)
-		expect(controller?.getMode()).toEqual({ mode: "yolo", source: "user" })
+		expect(controller?.getMode()).toEqual({ mode: "yolo", source: "runtime", initiatedBy: "user" })
 		const writeToolEvent = {
 			toolName: "write",
 			input: { path: "/tmp/test.txt", content: "hello" },
@@ -3869,6 +3899,17 @@ describe("ACP mode controller integration with permissions extension", () => {
 describe("session mode controller lifecycle", () => {
 	afterEach(() => {
 		vi.unstubAllEnvs()
+		for (const key of Object.keys(process.env)) {
+			if (key.startsWith(`${PERMISSIONS_ENV_KEY}_`)) {
+				Reflect.deleteProperty(process.env, key)
+			}
+		}
+		unregisterSessionPermissionFlagController("env-baseline-1")
+		unregisterSessionPermissionFlagController("env-default-1")
+		unregisterSessionPermissionFlagController("config-default-1")
+		unregisterSessionPermissionFlagController("env-beats-config-1")
+		unregisterSessionPermissionFlagController("no-leak-1")
+		unregisterSessionPermissionFlagController("no-leak-2")
 	})
 
 	it("unregisters mode controller on closeSession", async () => {
@@ -3953,7 +3994,7 @@ describe("session mode controller lifecycle", () => {
 			const agent = new KimchiAcpAgent(makeConn(), {
 				extensionFactories: [],
 				agentDir: "/tmp/fake-agent-dir",
-				sessionFactory: async () => asSession(new FakeAgentSession("config-mode")),
+				sessionFactory: async (params) => asSession(new FakeAgentSession("config-mode", params.cwd)),
 			})
 
 			const res = await agent.newSession({ cwd: tmpDir, mcpServers: [] })
@@ -3977,7 +4018,7 @@ describe("session mode controller lifecycle", () => {
 			const agent = new KimchiAcpAgent(makeConn(), {
 				extensionFactories: [],
 				agentDir: "/tmp/fake-agent-dir",
-				sessionFactory: async () => asSession(new FakeAgentSession("env-precedence")),
+				sessionFactory: async (params) => asSession(new FakeAgentSession("env-precedence", params.cwd)),
 			})
 
 			const res = await agent.newSession({ cwd: tmpDir, mcpServers: [] })
@@ -4004,8 +4045,16 @@ describe("session mode controller lifecycle", () => {
 		const r2 = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
 		// Both sessions start at "default"
-		expect(getSessionPermissionFlagController(r1.sessionId)?.getMode()).toEqual({ mode: "default", source: "user" })
-		expect(getSessionPermissionFlagController(r2.sessionId)?.getMode()).toEqual({ mode: "default", source: "user" })
+		expect(getSessionPermissionFlagController(r1.sessionId)?.getMode()).toEqual({
+			mode: "default",
+			source: "config",
+			initiatedBy: "user",
+		})
+		expect(getSessionPermissionFlagController(r2.sessionId)?.getMode()).toEqual({
+			mode: "default",
+			source: "config",
+			initiatedBy: "user",
+		})
 
 		// Change session 1 to yolo
 		await agent.setSessionConfigOption({
@@ -4015,8 +4064,16 @@ describe("session mode controller lifecycle", () => {
 		})
 
 		// Session 1 is yolo, session 2 is still default
-		expect(getSessionPermissionFlagController(r1.sessionId)?.getMode()).toEqual({ mode: "yolo", source: "user" })
-		expect(getSessionPermissionFlagController(r2.sessionId)?.getMode()).toEqual({ mode: "default", source: "user" })
+		expect(getSessionPermissionFlagController(r1.sessionId)?.getMode()).toEqual({
+			mode: "yolo",
+			source: "runtime",
+			initiatedBy: "user",
+		})
+		expect(getSessionPermissionFlagController(r2.sessionId)?.getMode()).toEqual({
+			mode: "default",
+			source: "config",
+			initiatedBy: "user",
+		})
 	})
 
 	it("closeSession deletes the KIMCHI_PERMISSIONS_<sessionId> env key", async () => {
@@ -5314,6 +5371,267 @@ describe("KimchiAcpAgent loadSession", () => {
 	})
 })
 
+describe("KimchiAcpAgent permission mode session-log persistence", () => {
+	function makeAgent(loader: AcpSessionLoader): KimchiAcpAgent {
+		return new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: loader,
+		})
+	}
+
+	function makePermissionModeEntry(mode: string): {
+		type: "custom"
+		customType: string
+		data: { mode: string; source: string; initiatedBy: string }
+	} {
+		return {
+			type: "custom",
+			customType: PERMISSION_MODE_SESSION_ENTRY_TYPE,
+			data: { mode, source: "runtime", initiatedBy: "user" },
+		}
+	}
+
+	it("loadSession restores the last persisted permission mode", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const fake = new FakeAgentSession("loaded-plan-mode")
+		fake.branch = [makePermissionModeEntry("plan")]
+
+		const agent = makeAgent(async () => asSession(fake))
+		const res = await agent.loadSession({ sessionId: "loaded-plan-mode", cwd: "/tmp", mcpServers: [] })
+
+		expect(res.configOptions?.[0].currentValue).toBe("plan")
+		expect(getSessionPermissionFlagController("loaded-plan-mode")?.getMode()).toEqual({
+			mode: "plan",
+			source: "runtime",
+			initiatedBy: "user",
+		})
+	})
+
+	it("env var beats persisted mode when loading a session", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "yolo")
+
+		const fake = new FakeAgentSession("loaded-auto-mode")
+		fake.branch = [makePermissionModeEntry("auto")]
+
+		const agent = makeAgent(async () => asSession(fake))
+		const res = await agent.loadSession({ sessionId: "loaded-auto-mode", cwd: "/tmp", mcpServers: [] })
+
+		expect(res.configOptions?.[0].currentValue).toBe("yolo")
+	})
+
+	it("setSessionConfigOption persists the mode to the session log", async () => {
+		const fake = new FakeAgentSession("persist-mode", "/tmp")
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		await agent.setSessionConfigOption({
+			sessionId: "persist-mode",
+			configId: "permissions-mode",
+			value: "plan",
+		})
+
+		const modeEntries = (fake.branch as Array<{ type: string; customType: string; data: { mode: string } }>).filter(
+			(e) => e.type === "custom" && e.customType === PERMISSION_MODE_SESSION_ENTRY_TYPE,
+		)
+		// Only the user-driven plan change is persisted; newSession does not log
+		// the resolved initial mode.
+		expect(modeEntries).toHaveLength(1)
+		expect(modeEntries.at(-1)?.data.mode).toBe("plan")
+	})
+
+	it("setSessionConfigOption does not write duplicate permission_mode entries", async () => {
+		const fake = new FakeAgentSession("persist-mode-dup", "/tmp")
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		await agent.setSessionConfigOption({
+			sessionId: "persist-mode-dup",
+			configId: "permissions-mode",
+			value: "plan",
+		})
+		await agent.setSessionConfigOption({
+			sessionId: "persist-mode-dup",
+			configId: "permissions-mode",
+			value: "plan",
+		})
+
+		const modeEntries = (fake.branch as Array<{ type: string; customType: string; data: { mode: string } }>).filter(
+			(e) => e.type === "custom" && e.customType === PERMISSION_MODE_SESSION_ENTRY_TYPE,
+		)
+		// Only the user-driven plan change is persisted; the duplicate plan call
+		// must not add another entry.
+		expect(modeEntries).toHaveLength(1)
+	})
+
+	it("newSession does not persist the resolved initial mode to the session log", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const fake = new FakeAgentSession("new-session-persist", "/tmp")
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const modeEntries = (fake.branch as Array<{ type: string; customType: string; data: { mode: string } }>).filter(
+			(e) => e.type === "custom" && e.customType === PERMISSION_MODE_SESSION_ENTRY_TYPE,
+		)
+		expect(modeEntries).toHaveLength(0)
+	})
+
+	it("loadSession does not persist the resolved initial mode when no prior entry exists", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const fake = new FakeAgentSession("load-session-persist", "/tmp")
+		fake.branch = []
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: async () => asSession(fake),
+		})
+
+		await agent.loadSession({ sessionId: "load-session-persist", cwd: "/tmp", mcpServers: [] })
+
+		const modeEntries = (fake.branch as Array<{ type: string; customType: string; data: { mode: string } }>).filter(
+			(e) => e.type === "custom" && e.customType === PERMISSION_MODE_SESSION_ENTRY_TYPE,
+		)
+		expect(modeEntries).toHaveLength(0)
+	})
+
+	it("subagent inherits the parent session mode via the per-session env key", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const parentSessionId = "parent-acp-session"
+		const childSessionId = "child-acp-session"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = parentSessionId
+		process.env[getPermissionModeEnvKey(parentSessionId)] = "plan"
+
+		const fake = new FakeAgentSession(childSessionId, "/tmp")
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		try {
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			expect(getSessionPermissionFlagController(childSessionId)?.getMode()).toEqual({
+				mode: "plan",
+				source: "runtime",
+				initiatedBy: "user",
+			})
+		} finally {
+			Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
+			Reflect.deleteProperty(process.env, getPermissionModeEnvKey(parentSessionId))
+		}
+	})
+
+	it("parent per-session env key takes precedence over child session log", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const parentSessionId = "parent-acp-session-2"
+		const childSessionId = "child-acp-session-2"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = parentSessionId
+		process.env[getPermissionModeEnvKey(parentSessionId)] = "yolo"
+
+		const fake = new FakeAgentSession(childSessionId, "/tmp")
+		fake.branch = [makePermissionModeEntry("plan")]
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		try {
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			expect(getSessionPermissionFlagController(childSessionId)?.getMode()).toEqual({
+				mode: "yolo",
+				source: "runtime",
+				initiatedBy: "user",
+			})
+		} finally {
+			Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
+			Reflect.deleteProperty(process.env, getPermissionModeEnvKey(parentSessionId))
+		}
+	})
+
+	it("changing mode in one session does not affect another session", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession(`multi-session-${Date.now()}-${Math.random()}`)),
+		})
+
+		const session1 = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const session2 = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const session2InitialValue = session2.configOptions?.[0].currentValue
+
+		const res1 = await agent.setSessionConfigOption({
+			sessionId: session1.sessionId,
+			configId: "permissions-mode",
+			value: "plan",
+		})
+
+		expect(res1.configOptions?.[0].currentValue).toBe("plan")
+		expect(session2InitialValue).toBe("default")
+		expect(getSessionPermissionFlagController(session2.sessionId)?.getMode().mode).toBe("default")
+	})
+
+	it("close and reload a session restores the last persisted mode", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const sessionId = "close-reload-mode"
+		const fake = new FakeAgentSession(sessionId, "/tmp")
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+			sessionLoader: async () => asSession(fake),
+		})
+
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "plan",
+		})
+		await agent.unstable_closeSession({ sessionId })
+
+		const loaded = await agent.loadSession({ sessionId, cwd: "/tmp", mcpServers: [] })
+		expect(loaded.configOptions?.[0].currentValue).toBe("plan")
+		expect(getSessionPermissionFlagController(sessionId)?.getMode()).toEqual({
+			mode: "plan",
+			source: "runtime",
+			initiatedBy: "user",
+		})
+	})
+})
+
 // Ordering regression test: permission flag controller must be registered
 // BEFORE bindAcpExtensions is called. This ensures that when upstream
 // bindExtensions() emits session_start, the permissions extension already
@@ -5457,7 +5775,7 @@ describe("KimchiAcpAgent permission flag controller registration ordering", () =
 				// Verify the controller works - get initial mode
 				capturedMode = controller.getMode()
 				// Set a new mode
-				controller.setMode("plan", "user")
+				controller.setMode({ mode: "plan", initiatedBy: "user", source: "runtime" })
 			}
 		}
 
@@ -5479,7 +5797,8 @@ describe("KimchiAcpAgent permission flag controller registration ordering", () =
 		const finalController = getSessionPermissionFlagController("session-controller-functional")
 		expect(finalController?.getMode()).toEqual({
 			mode: "plan",
-			source: "user",
+			source: "runtime",
+			initiatedBy: "user",
 		})
 
 		await agent.shutdown()
