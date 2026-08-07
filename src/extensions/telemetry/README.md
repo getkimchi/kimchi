@@ -87,13 +87,13 @@ Common attributes: `run_id`, `workflow_name`, `at` (producer ISO timestamp). Ste
 | `workflow.run.resumed` | Run resumed | — |
 | `workflow.run.blocked` | Run handed control back, waiting on a human | — |
 | `workflow.run.completed` | Run finished | `duration_ms` |
-| `workflow.run.crashed` | Run failed terminally (incl. stale-lock reclaim) | `error.message` *(truncated to 300 chars)*, `duration_ms` |
+| `workflow.run.failed` | Run failed terminally (incl. stale-lock reclaim) | `error.message` *(truncated to 300 chars)*, `duration_ms` |
 | `workflow.run.cancelled` | Run cancelled (incl. cold cancel of a blocked run) | — |
 | `workflow.step.started` | Step execution begins | — |
 | `workflow.step.retried` | Step attempt failed and is retried | `attempt`, `reason`, `error.message` *(truncated)* |
 | `workflow.step.completed` | Step succeeded | `duration_ms` |
 | `workflow.step.failed` | `optional` step exhausted retries, run continues — the health signal for shipped workflows | `error.message` *(truncated)*, `duration_ms` |
-| `workflow.step.cancelled` | Blocked step abandoned after a sibling crashed | — |
+| `workflow.step.cancelled` | Blocked step abandoned after a sibling failed | — |
 
 > **Privacy:** payloads are content-free at the source (asserted by test in the producer): no step inputs/outputs, no questionnaire text or answers, no log text, no node paths or session keys. Error messages name schemas/fields/tools, never values, and arrive pre-truncated.
 

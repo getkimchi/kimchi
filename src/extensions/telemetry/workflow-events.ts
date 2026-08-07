@@ -65,8 +65,8 @@ export interface WorkflowRunCompletedPayload extends WorkflowEventCommon {
 	readonly duration_ms?: number
 }
 
-export interface WorkflowRunCrashedPayload extends WorkflowEventCommon {
-	readonly event: "run_crashed"
+export interface WorkflowRunFailedPayload extends WorkflowEventCommon {
+	readonly event: "run_failed"
 	readonly error: WorkflowError
 	readonly duration_ms?: number
 }
@@ -94,7 +94,7 @@ export interface WorkflowStepCompletedPayload extends WorkflowStepEventCommon {
 /**
  * An `optional` step exhausted retries while the run carried on — for shipped workflows (most agent
  * steps are optional, so a run can complete "successfully" with many failed steps) this, not
- * `run_crashed`, is the health signal.
+ * `run_failed`, is the health signal.
  */
 export interface WorkflowStepFailedPayload extends WorkflowStepEventCommon {
 	readonly event: "step_failed"
@@ -112,7 +112,7 @@ export type WorkflowEventPayload =
 	| WorkflowRunResumedPayload
 	| WorkflowRunBlockedPayload
 	| WorkflowRunCompletedPayload
-	| WorkflowRunCrashedPayload
+	| WorkflowRunFailedPayload
 	| WorkflowRunCancelledPayload
 	| WorkflowStepStartedPayload
 	| WorkflowStepRetriedPayload
