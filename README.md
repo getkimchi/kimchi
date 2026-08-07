@@ -171,6 +171,30 @@ Two tags are added automatically to every request and do not count toward the 10
 
 User-defined tags (added via `/tags add`) are persisted to `~/.config/kimchi/tags.json` and survive across sessions. Static tags from `KIMCHI_TAGS` must be set each session.
 
+## Goal mode (experimental)
+
+Goal mode keeps one objective active across turns in the current session branch and automatically continues work until the agent marks that exact goal revision complete or blocked. It uses the normal todo tools for tactical steps; it does not create Ferment phases, workers, or worktrees.
+
+Enable **Goal mode (experimental)** under `/resources` → **Extensions**, then restart Kimchi. It is disabled by default and can change or be removed.
+
+| Command | Description |
+|---------|-------------|
+| `/goal <objective>` | Create a goal, or confirm replacement of an unfinished goal |
+| `/goal --tokens <n\|k\|m> <objective>` | Create a goal with a token budget, such as `--tokens 50k` |
+| `/goal` | Show the current objective, status, and revision |
+| `/goal edit [objective]` | Edit in place and redirect work to the new revision |
+| `/goal pause` | Stop automatic continuation without aborting a running tool |
+| `/goal resume` | Reactivate the current goal |
+| `/goal clear` | Clear the goal from the current session branch |
+
+Goal state is stored in the session journal, so resume, rewind, and fork follow the selected branch. An old turn cannot complete an edited or replaced goal because model updates must match both its ID and revision.
+
+While an agent turn is working on a goal, the status line shows `Goal running` with elapsed time rounded down to minutes (`<1m`, `12m`, or `1h 5m`) and tokens. Goals with a token budget show used and budgeted tokens; reaching the budget stops automatic continuation. Completion or blocking produces a final notification with both totals. Time counts only active agent turns; cancelling a turn pauses the goal immediately, while three consecutive failed turns pause it after bounded retries. Token usage counts input and output tokens from this session's goal turns, excluding agent-worker child sessions.
+
+Goal mode directs the agent to track tactical progress in the normal Todos widget without creating a second goal-specific checklist. Before ending the goal, the agent must leave a visible list for the current goal revision, settle every item, and then mark the matching goal revision complete or blocked. Regular work tools remain available while the list is created or reconciled.
+
+Goal mode validates Todo tool results only for the current session, goal ID, and revision. Todo state observed in another session cannot unlock work or completion.
+
 ## Ferment -- cross-session project management
 
 Ferment is Kimchi's progressive-refinement project mode for multi-session work. Instead of starting from scratch each chat, Ferment persists a structured plan (goal, phases, steps) as a JSON state file.
