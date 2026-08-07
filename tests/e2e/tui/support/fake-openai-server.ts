@@ -70,6 +70,12 @@ export interface FakeResponseScript {
 	 * message.
 	 */
 	streamError?: string
+	/** Token usage reported in the final SSE chunk's `usage` field.
+	 * The openai-completions provider reads `prompt_tokens` and
+	 * `completion_tokens` to compute `totalTokens` on the assistant message.
+	 * Without this, the session has no usage data and compaction gates
+	 * (which read `totalTokens`) see 0 tokens. Defaults to a small value. */
+	usage?: { prompt_tokens: number; completion_tokens: number }
 }
 
 export interface RecordedRequest extends FakeResponseRequest {
@@ -353,7 +359,26 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 		return
 	}
 
-	chunk([{ index: 0, delta: {}, finish_reason: script.toolCalls?.length ? "tool_calls" : "stop" }])
+	const finalChunk: Record<string, unknown> = {
+		index: 0,
+		delta: {},
+		finish_reason: script.toolCalls?.length ? "tool_calls" : "stop",
+	}
+	if (script.usage) {
+		writeSse(res, {
+			id: "chatcmpl_fake",
+			object: "chat.completion.chunk",
+			created: unixNow(),
+			model,
+			choices: [finalChunk],
+			usage: {
+				prompt_tokens: script.usage.prompt_tokens,
+				completion_tokens: script.usage.completion_tokens,
+			},
+		})
+	} else {
+		chunk([finalChunk])
+	}
 	res.write("data: [DONE]\n\n")
 	res.end()
 }

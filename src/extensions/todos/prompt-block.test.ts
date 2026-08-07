@@ -5,10 +5,12 @@ import { createContext } from "../__mocks__/context.js"
 import { FERMENT_EVENTS } from "../ferment/domain-events.js"
 import { setActive } from "../ferment/state.js"
 import { bumpStallCounter, registerFermentTodoSync } from "../ferment/todo-sync.js"
+import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import {
 	__test_renderTodoPromptBlock,
 	__test_renderTodoStateMarkdown,
 	appendTodoPromptBlockIfMissing,
+	registerTodoStateBlock,
 	renderTodoStateBlock,
 } from "./prompt-block.js"
 import {
@@ -388,9 +390,25 @@ describe("staleness indicator in state markdown", () => {
 	})
 })
 
-describe("todo state block gating", () => {
-	it("returns undefined when the session has a UI", () => {
-		const ctx = createContext({ hasUI: true })
+describe("todo state block visibility", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+	})
+
+	it("renders markdown when the session has a UI and todos exist", () => {
+		applyWriteTodos(
+			{
+				scope: { kind: "global" },
+				todos: [{ content: "headline", status: "pending" }],
+			},
+			TEST_SESSION_ID,
+		)
+		const ctx = createContext({ hasUI: true, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+		expect(renderTodoStateBlock(ctx)).toContain("- ○ headline")
+	})
+
+	it("returns undefined when the session has a UI but the store is empty", () => {
+		const ctx = createContext({ hasUI: true, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
 		expect(renderTodoStateBlock(ctx)).toBeUndefined()
 	})
 
@@ -404,6 +422,102 @@ describe("todo state block gating", () => {
 		)
 		const ctx = createContext({ hasUI: false, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
 		expect(renderTodoStateBlock(ctx)).toContain("- ○ headline")
+	})
+
+	it("renders ferment-scoped todos in TUI mode", () => {
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment", phaseId: "phase-1" },
+				todos: [
+					{ content: "[Phase 1] Implementation", status: "in_progress" },
+					{ content: "↳ Step 1", status: "pending" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+		const ctx = createContext({ hasUI: true, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+		const block = renderTodoStateBlock(ctx)
+		expect(block).toContain("[Phase 1] Implementation")
+		expect(block).toContain("↳ Step 1")
+	})
+})
+
+describe("todo state block in system prompt", () => {
+	const testEnv: EnvironmentInfo = {
+		os: "Linux",
+		rawPlatform: "linux",
+		cpuArchitecture: "x64",
+		shell: "/bin/bash",
+		osRelease: "6.1.0-test",
+		osVersion: "#1 SMP",
+		username: "testuser",
+		homeDir: "/home/testuser",
+		cwd: "/home/testuser/project",
+		documentsDir: "/home/testuser/project/.kimchi/docs",
+		localDate: "2026-01-01",
+		isGitRepo: false,
+	}
+	const testTools = [{ name: "read", description: "Read file contents" }]
+
+	beforeEach(() => {
+		__resetTodoStore()
+	})
+
+	it("appends todo state to the system prompt in TUI mode", () => {
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment", phaseId: "phase-1" },
+				todos: [
+					{ content: "[Phase 1] Build", status: "in_progress" },
+					{ content: "↳ Write code", status: "pending" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+
+		const ctx = createContext({ hasUI: true, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+		// pi must fire session_start synchronously so sessionIdByPi is populated
+		// before buildSystemPrompt calls renderSystemPromptBlocks.
+		const pi = {
+			on: (event: string, handler: (e: unknown, c: unknown) => void) => {
+				if (event === "session_start") handler({}, { sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+				return () => {}
+			},
+		} as unknown as ExtensionAPI
+		registerTodoStateBlock(pi, ctx)
+
+		const prompt = buildSystemPrompt({
+			tools: testTools,
+			env: testEnv,
+			contextFiles: [],
+			mode: "orchestrator",
+			sessionId: TEST_SESSION_ID,
+		})
+
+		expect(prompt).toContain("## Current Todos")
+		expect(prompt).toContain("[Phase 1] Build")
+		expect(prompt).toContain("↳ Write code")
+	})
+
+	it("does not append todo state when store is empty", () => {
+		const ctx = createContext({ hasUI: true, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+		const pi = {
+			on: (event: string, handler: (e: unknown, c: unknown) => void) => {
+				if (event === "session_start") handler({}, { sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+				return () => {}
+			},
+		} as unknown as ExtensionAPI
+		registerTodoStateBlock(pi, ctx)
+
+		const prompt = buildSystemPrompt({
+			tools: testTools,
+			env: testEnv,
+			contextFiles: [],
+			mode: "orchestrator",
+			sessionId: TEST_SESSION_ID,
+		})
+
+		expect(prompt).not.toContain("## Current Todos")
 	})
 })
 
