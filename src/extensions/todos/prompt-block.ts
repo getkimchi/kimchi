@@ -186,26 +186,27 @@ export function renderTodoStateMarkdown(sessionId: string): string | undefined {
 	return lines.join("\n")
 }
 
-/** Register the live-state block. Self-gates:
- *  - returns `undefined` when the active session has a UI (widget handles it)
- *  - returns `undefined` when the store is empty
- *  Both cases let the existing prompt-block pipeline skip cleanly. */
+/** Register the live-state block. The block renders the current todo store
+ *  as a markdown section in the system prompt so the model can see its own
+ *  todos. This is independent of the TUI widget — the widget is for the user,
+ *  the state block is for the model. Both render in TUI mode.
+ *
+ *  Returns `undefined` when the store is empty, letting the prompt-block
+ *  pipeline skip cleanly. */
 export function registerTodoStateBlock(pi: ExtensionAPI, ctx: ExtensionContext): void {
 	createSystemPromptBlocks(pi, "todos").register({
 		id: "todo-state",
 		render: () => {
-			if (ctx.hasUI) return undefined
 			const sessionId = ctx.sessionManager.getSessionId()
 			return renderTodoStateMarkdown(sessionId)
 		},
 	})
 }
 
-/** Applies the full gate (ctx.hasUI check) exactly as the registered
- *  system-prompt block does. Use this in tests to validate the complete path
- *  rather than calling the raw renderer directly. */
+/** Renders the todo state block exactly as the registered system-prompt block
+ *  does. Use this in tests to validate the complete path rather than calling
+ *  the raw renderer directly. */
 export function renderTodoStateBlock(ctx: ExtensionContext): string | undefined {
-	if (ctx.hasUI) return undefined
 	const sessionId = ctx.sessionManager.getSessionId()
 	return renderTodoStateMarkdown(sessionId)
 }
