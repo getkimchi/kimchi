@@ -103,10 +103,12 @@ export function getPersistedPermissionMode(
 }
 
 /**
- * Append a permission_mode custom entry if its mode differs from the last
- * logged value. Comparison is against the truly-last entry (including
+ * Append a permission_mode custom entry if its mode or owner differs from the
+ * last logged value. Comparison is against the truly-last entry (including
  * ferment-owned ones): comparing only against user entries would re-append a
- * ferment elevation on every turn, since the resume read skips those entries.
+ * ferment elevation on every turn, since the resume read skips those entries;
+ * comparing only the mode would swallow a user override of an active ferment
+ * elevation and lose it on resume.
  * Returns true when a new entry was written.
  */
 export function persistPermissionModeIfChanged(
@@ -115,7 +117,7 @@ export function persistPermissionModeIfChanged(
 	mode: PermissionModeState,
 ): boolean {
 	const lastLogged = getPersistedPermissionMode(sessionManager)
-	if (lastLogged?.mode === mode.mode) return false
+	if (lastLogged?.mode === mode.mode && lastLogged.initiatedBy === mode.initiatedBy) return false
 	appendEntry(PERMISSION_MODE_SESSION_ENTRY_TYPE, mode)
 	return true
 }
