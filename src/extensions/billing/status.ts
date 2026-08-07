@@ -75,11 +75,11 @@ export const LOW_CREDITS_THRESHOLD_USD = 5
 export const COMMUNITY_TIER_HEADER_NOTICE =
 	"You are using Community tier. For faster performance, upgrade to Coder at https://app.kimchi.dev/pricing"
 export const BILLING_EXHAUSTED_MESSAGE = "You ran out of credits. Top up at https://app.kimchi.dev/billing"
-// "Lift", not "restore": a zero balance is reached both by a paid subscriber demoted to free-tier
-// limits and by a free user whose included credits were never spendable, who was therefore rate
-// limited all along. The payload cannot tell the two apart, so the wording must hold for both.
+// A zero balance is reached both by a paid subscriber demoted to free-tier limits and by a free
+// user whose included credits were never spendable, who was therefore rate limited all along. The
+// payload cannot tell the two apart, so the wording must hold for both.
 export const BILLING_RATE_LIMITED_MESSAGE =
-	"You're out of credits, so requests are rate limited. Top up to lift your rate limits: https://app.kimchi.dev/billing"
+	"You just ran out of credits, you can still use Kimchi, but in a slower rate-limited mode. Buy credits on https://app.kimchi.dev/billing"
 const BILLING_REFRESH_TIMEOUT_MS = 5000
 
 const TIER_FIELDS = ["tier", "tier_name", "tierName"] as const
