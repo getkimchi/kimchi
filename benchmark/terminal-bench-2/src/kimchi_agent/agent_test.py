@@ -736,6 +736,78 @@ async def test_kimchi_dev_model_does_not_write_openrouter_config(tmp_path: Path)
     assert "OPENROUTER_API_KEY" not in (agent.agent_envs[0] or {})
 
 
+async def test_anthropic_model_writes_models_config_before_kimchi(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An anthropic/* model writes the static provider block to models.json."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="anthropic/claude-sonnet-5",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert "node " not in command
+    assert '"id":"claude-sonnet-5"' in command
+    assert '"contextWindow":1000000' in command
+    assert '"maxTokens":128000' in command
+    assert '"reasoning":true' in command
+    assert '"forceAdaptiveThinking":true' in command
+    assert "~/.config/kimchi/harness/models.json" in command
+    assert "--model anthropic/claude-sonnet-5" in command
+
+
+async def test_anthropic_model_forwards_api_key_into_container_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ANTHROPIC_API_KEY is forwarded and KIMCHI_API_KEY is NOT set for anthropic/* models."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("KIMCHI_API_KEY", "should-not-be-forwarded")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="anthropic/claude-sonnet-5",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    env = agent.agent_envs[0]
+    assert env is not None
+    assert env.get("ANTHROPIC_API_KEY") == "sk-ant-test"
+    assert env.get("KIMCHI_API_KEY") is None
+
+
+async def test_anthropic_model_without_api_key_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing ANTHROPIC_API_KEY raises a clear error for anthropic/* models."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="anthropic/claude-sonnet-5",
+    )
+
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY is required"):
+        await agent.run("hello", object(), AgentContext())
+
+
+async def test_anthropic_unknown_model_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unknown anthropic/* model id raises a clear error."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="anthropic/unknown-model",
+    )
+
+    with pytest.raises(ValueError, match="not in the static metadata table"):
+        await agent.run("hello", object(), AgentContext())
+
+
 def test_is_openrouter_model_detects_prefixed_names() -> None:
     # Shared by the kimchi, claude-code and pi adapters.
     from kimchi_agent.openrouter import is_openrouter_model

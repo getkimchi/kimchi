@@ -55,6 +55,8 @@ CONTAINER_HARNESS_SETTINGS_DIR = "~/.config/kimchi/harness"
 CONTAINER_HARNESS_SETTINGS = f"{CONTAINER_HARNESS_SETTINGS_DIR}/settings.json"
 CONTAINER_HARNESS_SKILLS_DIR = f"{CONTAINER_HARNESS_SETTINGS_DIR}/skills"
 KIMCHI_API_KEY_ENV = "KIMCHI_API_KEY"
+ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
+ANTHROPIC_PROVIDER = "anthropic"
 MULTI_MODEL = "multi-model"
 KIMCHI_INFRA_BREAKER_THRESHOLD_ENV = "KIMCHI_INFRA_BREAKER_THRESHOLD"
 KIMCHI_BENCHMARK_INFRA_BREAKER_DEFAULT_ATTEMPTS = "3"
@@ -68,6 +70,30 @@ CONTAINER_EXTENSION_STAGE_DIR = "/tmp/kimchi-llm-ext"
 CONTAINER_EXTENSION_INSTALL_DIR = "$HOME/.config/kimchi/extensions/llm-sampling-params"
 
 CONTAINER_HARNESS_MODELS_JSON = f"{CONTAINER_HARNESS_SETTINGS_DIR}/models.json"
+
+# Static metadata for native Anthropic models that bypass the Kimchi gateway.
+# The Kimchi metadata API only describes gateway-served models, so native
+# anthropic/* models are listed here. pi-ai has a built-in anthropic provider
+# that reads ANTHROPIC_API_KEY, so no provider config needs to be injected
+# into models.json — only the model metadata (context window, output limits,
+# reasoning capability).
+_ANTHROPIC_MODEL_METADATA: dict[str, dict[str, Any]] = {
+    "claude-sonnet-5": {
+        "reasoning": True,
+        "context_window": 1_000_000,
+        "max_output_tokens": 128_000,
+    },
+    "claude-opus-4-8": {
+        "reasoning": True,
+        "context_window": 1_000_000,
+        "max_output_tokens": 128_000,
+    },
+}
+
+
+def is_anthropic_model(model_name: str | None) -> bool:
+    """Whether ``model_name`` is routed via native Anthropic API (``anthropic/<id>``)."""
+    return bool(model_name) and model_name.startswith(f"{ANTHROPIC_PROVIDER}/")
 
 
 def _decode_agent_kwarg(value: object) -> dict[str, Any]:
@@ -365,8 +391,12 @@ class Kimchi(BaseInstalledAgent):
             # endpoint at launch time, not against the Kimchi LLM gateway — so
             # skip the gateway metadata fetch here.
             self._is_openrouter = is_openrouter_model(self.model_name)
+            # anthropic/* models use the native Anthropic API via pi-ai's built-in
+            # provider — no Kimchi gateway involvement.
+            self._is_anthropic = is_anthropic_model(self.model_name)
         else:
             self._is_openrouter = False
+            self._is_anthropic = False
 
         cli_flags = self.build_cli_flags()
         if cli_flags:
@@ -389,7 +419,6 @@ class Kimchi(BaseInstalledAgent):
             ferment_env["KIMCHI_FERMENTS_DIR"] = f"{CONTAINER_LOGS_DIR}/ferments"
 
         env = {
-            "KIMCHI_API_KEY": self._config.api_key,
             # Configure Kimchi's own harness-level breaker for benchmark runs.
             # Harbor trial retries and non-Kimchi agents use separate policies.
             KIMCHI_INFRA_BREAKER_THRESHOLD_ENV: _resolve_infra_breaker_threshold(
@@ -399,6 +428,22 @@ class Kimchi(BaseInstalledAgent):
             "PI_PACKAGE_DIR": PI_PACKAGE_DIR,
             **ferment_env,
         }
+        # anthropic/* models use the native Anthropic API; forward
+        # ANTHROPIC_API_KEY and do NOT set KIMCHI_API_KEY (the gateway is not
+        # involved).
+        if self._is_anthropic:
+            anthropic_key = self._get_env(ANTHROPIC_API_KEY_ENV)
+            if not anthropic_key:
+                raise RuntimeError(
+                    f"{ANTHROPIC_API_KEY_ENV} is required to run anthropic/* models. "
+                    f"Export it on the host and forward it with "
+                    f"`--ae {ANTHROPIC_API_KEY_ENV}=${ANTHROPIC_API_KEY_ENV}`."
+                )
+            env[ANTHROPIC_API_KEY_ENV] = anthropic_key
+            anthropic_models_config = self._build_anthropic_models_config()
+        else:
+            env[KIMCHI_API_KEY_ENV] = self._config.api_key
+            anthropic_models_config = None
         # Forward the OpenRouter API key into the container so kimchi's
         # openai-completions provider can resolve $OPENROUTER_API_KEY from the
         # environment at request time. The key is read from the host env (set
@@ -443,6 +488,7 @@ class Kimchi(BaseInstalledAgent):
                     instruction,
                     cli_flags,
                     openrouter_models_config=openrouter_models_config,
+                    anthropic_models_config=anthropic_models_config,
                 ),
                 env=env,
             )
@@ -476,6 +522,7 @@ class Kimchi(BaseInstalledAgent):
         cli_flags: str,
         *,
         openrouter_models_config: dict[str, Any] | None = None,
+        anthropic_models_config: dict[str, Any] | None = None,
     ) -> str:
         runner = self._kimchi_command(cli_flags)
         parts = [
@@ -507,6 +554,8 @@ class Kimchi(BaseInstalledAgent):
             parts.append(harness_settings)
         if openrouter_models_config is not None:
             parts.append(self._openrouter_models_command(openrouter_models_config))
+        if anthropic_models_config is not None:
+            parts.append(self._anthropic_models_command(anthropic_models_config))
         skills_registration = self._skills_registration_command()
         if skills_registration:
             parts.append(skills_registration)
@@ -569,6 +618,53 @@ class Kimchi(BaseInstalledAgent):
 
     def _openrouter_models_command(self, models_config: dict[str, Any]) -> str:
         """Write host-resolved OpenRouter metadata without container runtime dependencies."""
+        models_json = json.dumps(models_config, separators=(",", ":"))
+        return (
+            f"mkdir -p {CONTAINER_HARNESS_SETTINGS_DIR} && "
+            f"printf '%s\\n' {shlex.quote(models_json)} > {CONTAINER_HARNESS_MODELS_JSON}"
+        )
+
+    def _build_anthropic_models_config(self) -> dict[str, Any]:
+        """Build a pi models.json provider block for a native anthropic/* model.
+
+        pi-ai has a built-in ``anthropic`` provider that reads
+        ``ANTHROPIC_API_KEY`` from the environment. The provider entry here
+        declares the model's metadata (context window, output limits, reasoning)
+        so pi's model resolver has accurate limits without a metadata API call.
+        """
+        _, _, model_id = (self.model_name or "").partition("/")
+        meta = _ANTHROPIC_MODEL_METADATA.get(model_id)
+        if meta is None:
+            raise ValueError(
+                f"Anthropic model {model_id!r} is not in the static metadata table. "
+                f"Known models: {', '.join(sorted(_ANTHROPIC_MODEL_METADATA))}"
+            )
+        return {
+            "providers": {
+                ANTHROPIC_PROVIDER: {
+                    "models": [
+                        {
+                            "id": model_id,
+                            "name": model_id,
+                            "reasoning": meta["reasoning"],
+                            "input": ["text", "image"],
+                            "contextWindow": meta["context_window"],
+                            "maxTokens": meta["max_output_tokens"],
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                            "provider": ANTHROPIC_PROVIDER,
+                            # Claude Sonnet 5 / Opus 4.8 use adaptive thinking
+                            # (thinking.type.adaptive + effort), not the legacy
+                            # thinking.type.enabled format. Without this flag pi-ai
+                            # sends the old format and gets a 400.
+                            "compat": {"forceAdaptiveThinking": True},
+                        }
+                    ],
+                }
+            }
+        }
+
+    def _anthropic_models_command(self, models_config: dict[str, Any]) -> str:
+        """Write static Anthropic model metadata to models.json."""
         models_json = json.dumps(models_config, separators=(",", ":"))
         return (
             f"mkdir -p {CONTAINER_HARNESS_SETTINGS_DIR} && "

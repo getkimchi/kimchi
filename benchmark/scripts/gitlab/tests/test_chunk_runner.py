@@ -1005,6 +1005,66 @@ def test_openrouter_model_runs_for_opencode(
         assert main() == 0
 
 
+def test_anthropic_model_runs_for_kimchi(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """anthropic/* models are supported on the kimchi agent via native Anthropic API."""
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        CODING_AGENT="kimchi",
+        MODEL="anthropic/claude-sonnet-5",
+        ANTHROPIC_API_KEY="sk-ant-test",
+    )
+
+    results_dir = tmp_path / "jobs"
+    trial = results_dir / "run-1" / "task-a__1"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps({"verifier_result": {"rewards": {"reward": 1.0}}})
+    )
+
+    with patch("chunk_runner.run_harbor"):
+        assert main() == 0
+
+
+def test_anthropic_model_requires_anthropic_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        CODING_AGENT="kimchi",
+        MODEL="anthropic/claude-sonnet-5",
+    )
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    assert main() == 1
+    assert "ANTHROPIC_API_KEY is required" in capsys.readouterr().err
+
+
+def test_anthropic_model_does_not_require_kimchi_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """anthropic/* models must not require KIMCHI_API_KEY."""
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        CODING_AGENT="kimchi",
+        MODEL="anthropic/claude-sonnet-5",
+        ANTHROPIC_API_KEY="sk-ant-test",
+    )
+    monkeypatch.delenv("KIMCHI_API_KEY", raising=False)
+
+    results_dir = tmp_path / "jobs"
+    trial = results_dir / "run-1" / "task-a__1"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps({"verifier_result": {"rewards": {"reward": 1.0}}})
+    )
+
+    with patch("chunk_runner.run_harbor"):
+        assert main() == 0
 def test_tasks_all_false_uses_selected_tasks_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

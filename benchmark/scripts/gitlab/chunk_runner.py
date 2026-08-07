@@ -637,6 +637,8 @@ OPENROUTER_PROVIDER = "openrouter"
 # entry in the opencode config).
 OPENROUTER_CAPABLE_AGENTS = frozenset({"kimchi", "kimchi-workflow", "pi", "pi-workflow", "claude-code", "opencode"})
 
+ANTHROPIC_PROVIDER = "anthropic"
+
 
 def _openrouter_config_error(model: str, coding_agent: str) -> str | None:
     """Reason this openrouter/* run cannot proceed, or None when it can."""
@@ -649,6 +651,15 @@ def _openrouter_config_error(model: str, coding_agent: str) -> str | None:
         )
     if not os.environ.get("OPENROUTER_API_KEY"):
         return f"OPENROUTER_API_KEY is required when MODEL={model}"
+    return None
+
+
+def _anthropic_config_error(model: str) -> str | None:
+    """Reason this anthropic/* run cannot proceed, or None when it can."""
+    if not model.startswith(f"{ANTHROPIC_PROVIDER}/"):
+        return None
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return f"ANTHROPIC_API_KEY is required when MODEL={model}"
     return None
 
 
@@ -1232,13 +1243,16 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
     dataset = os.environ.get("DATASET", "terminal-bench/terminal-bench-2")
-    # claude-code-standard uses the native Anthropic API, so ANTHROPIC_API_KEY
-    # is required instead of KIMCHI_API_KEY. All other agents route through
-    # the Kimchi gateway and need KIMCHI_API_KEY.
-    if coding_agent == "claude-code-standard":
+    # anthropic/* models use the native Anthropic API, so ANTHROPIC_API_KEY
+    # is required instead of KIMCHI_API_KEY. claude-code-standard always uses
+    # the native Anthropic API regardless of model. All other agents route
+    # through the Kimchi gateway and need KIMCHI_API_KEY.
+    is_anthropic_model = model.startswith(f"{ANTHROPIC_PROVIDER}/")
+    if coding_agent == "claude-code-standard" or is_anthropic_model:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
-            print("ANTHROPIC_API_KEY is required for claude-code-standard", file=sys.stderr)
+            label = "claude-code-standard" if coding_agent == "claude-code-standard" else f"MODEL={model}"
+            print(f"ANTHROPIC_API_KEY is required for {label}", file=sys.stderr)
             return 1
     else:
         api_key = os.environ.get("KIMCHI_API_KEY")
@@ -1252,12 +1266,16 @@ def main() -> int:
     if model == MULTI_MODEL and coding_agent != "kimchi":
         print("MODEL=multi-model is only supported when CODING_AGENT=kimchi", file=sys.stderr)
         return 1
-    if not api_key and coding_agent != "claude-code-standard":
+    if not api_key and not is_anthropic_model and coding_agent != "claude-code-standard":
         print("KIMCHI_API_KEY is required", file=sys.stderr)
         return 1
     openrouter_error = _openrouter_config_error(model, coding_agent)
     if openrouter_error:
         print(openrouter_error, file=sys.stderr)
+        return 1
+    anthropic_error = _anthropic_config_error(model)
+    if anthropic_error:
+        print(anthropic_error, file=sys.stderr)
         return 1
 
     results_dir = Path(os.environ.get(ENV_BENCHMARK_RESULTS_DIR, DEFAULT_BENCHMARK_RESULTS_DIR))
