@@ -1,12 +1,14 @@
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
 import type { TodoItem } from "../todos/types.js"
 import { GOAL_CONTEXT_MESSAGE_TYPE } from "./constants.js"
+import type { GoalLesson } from "./lessons.js"
 import type { SessionGoal } from "./types.js"
 
 export function replaceGoalContextMessages(
 	messages: ContextEvent["messages"],
 	goal: SessionGoal | undefined,
 	todos: readonly TodoItem[] = [],
+	lessons: readonly GoalLesson[] = [],
 ): ContextEvent["messages"] | undefined {
 	const filtered = messages.filter((message) => !isGoalContextMessage(message))
 	if (!goal) return filtered.length === messages.length ? undefined : filtered
@@ -14,7 +16,7 @@ export function replaceGoalContextMessages(
 	const message = {
 		role: "custom" as const,
 		customType: GOAL_CONTEXT_MESSAGE_TYPE,
-		content: [{ type: "text" as const, text: renderGoalContext(goal, todos) }],
+		content: [{ type: "text" as const, text: renderGoalContext(goal, todos, lessons) }],
 		display: false,
 		details: { goalId: goal.id, revision: goal.revision },
 		timestamp: Date.parse(goal.createdAt),
@@ -55,12 +57,17 @@ export function buildGoalStopSteer(action: "paused" | "cleared"): string {
 	return `The user ${action} the Kimchi session goal. Do not begin additional goal-specific work. Allow any operation already running to finish, then leave the current work in a safe state.`
 }
 
-function renderGoalContext(goal: SessionGoal, todos: readonly TodoItem[]): string {
+function renderGoalContext(goal: SessionGoal, todos: readonly TodoItem[], lessons: readonly GoalLesson[]): string {
+	const visibleTodoIds = new Set(todos.map(({ id }) => id))
+	const archivedLessons = lessons
+		.filter(({ todoId }) => !visibleTodoIds.has(todoId))
+		.map(({ kind, text }) => ({ kind, text }))
 	const snapshot = JSON.stringify(
 		{
 			status: goal.status,
 			objective: goal.objective,
 			tokenBudget: goal.tokenBudget,
+			...(archivedLessons.length > 0 ? { lessons: archivedLessons } : {}),
 			todos: todos.map(({ id, content, status, activeForm, note }) => ({
 				id,
 				content,
@@ -74,7 +81,14 @@ function renderGoalContext(goal: SessionGoal, todos: readonly TodoItem[]): strin
 	)
 	const continuation =
 		goal.status === "active"
-			? "Autonomous goal continuation is enabled. The goal JSON above is authoritative. Do not call get_goal while this context is present. Track work with a visible tactical todo list. Keep activeForm as the exact current action and note as concise evidence or decisions that must survive compaction. Before completion, settle every todo, map every explicit goal requirement to concrete current evidence, and treat missing or uncertain evidence as incomplete. Call update_goal only after receiving the final todo result that settles the list, as the only tool call in that response."
+			? "Autonomous goal continuation is enabled. The goal JSON above is authoritative. " +
+				"Do not call get_goal while this context is present. " +
+				"Track work with a visible tactical todo list. " +
+				"Keep activeForm as the exact current action and note as concise evidence or decisions that must survive compaction. " +
+				"Prefix durable notes with Decision:, Evidence:, or Dead-end:; terminal notes may remain under lessons after their todos leave the list. " +
+				"Do not repeat dead ends without new evidence. " +
+				"Before completion, settle every todo, map every explicit goal requirement to concrete current evidence, and treat missing or uncertain evidence as incomplete. " +
+				"Call update_goal only after receiving the final todo result that settles the list, as the only tool call in that response."
 			: `Autonomous goal continuation is disabled while status is ${goal.status}.`
 	return `<kimchi_session_goal>\n${snapshot}\n${continuation}\n</kimchi_session_goal>`
 }

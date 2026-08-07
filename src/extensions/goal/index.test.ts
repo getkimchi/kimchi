@@ -837,6 +837,57 @@ describe("goal extension", () => {
 		).toBeUndefined()
 	})
 
+	it("retains bounded lessons after terminal todos leave the post-compaction snapshot", async () => {
+		await harness.command("preserve durable findings")
+		harness.setBranch([
+			...harness.branch,
+			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
+				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+				scope: { kind: "global" },
+				todos: [
+					{
+						id: 1,
+						content: "Choose the persistence path",
+						status: "completed",
+						note: "Decision: reuse the native session journal",
+					},
+				],
+				updatedAt: "2026-08-03T00:00:01.000Z",
+			}),
+			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
+				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+				scope: { kind: "global" },
+				todos: [],
+				updatedAt: "2026-08-03T00:00:02.000Z",
+			}),
+			compactionEntry("durable handoff"),
+		])
+
+		await harness.fire("session_tree", { type: "session_tree", oldLeafId: "before", newLeafId: "after" })
+		const context = (await harness.fire("context", {
+			type: "context",
+			messages: [{ role: "user", content: [{ type: "text", text: "continue" }], timestamp: Date.now() }],
+		})) as { messages: ContextEvent["messages"] }
+		const goalContext = context.messages.find(
+			(message) => message.role === "custom" && message.customType === GOAL_CONTEXT_MESSAGE_TYPE,
+		)
+		const goalContextText = JSON.stringify(goalContext)
+
+		expect(goalContextText).toContain("lessons")
+		expect(goalContextText).toContain("decision")
+		expect(goalContextText).toContain("reuse the native session journal")
+		expect(goalContextText).not.toContain("Choose the persistence path")
+
+		await harness.command("edit a replacement objective")
+		await harness.fire("session_tree", { type: "session_tree", oldLeafId: "after", newLeafId: "edited" })
+		const editedContext = (await harness.fire("context", {
+			type: "context",
+			messages: [{ role: "user", content: [{ type: "text", text: "continue" }], timestamp: Date.now() }],
+		})) as { messages: ContextEvent["messages"] }
+
+		expect(JSON.stringify(editedContext.messages)).not.toContain("reuse the native session journal")
+	})
+
 	it("keeps goals and todo completion isolated while switching sessions", async () => {
 		await harness.command("session A goal")
 		harness.setBranch([

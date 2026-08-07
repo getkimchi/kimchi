@@ -26,6 +26,7 @@ import {
 	UPDATE_GOAL_TOOL_NAME,
 } from "./constants.js"
 import { GOAL_EVENTS, type GoalEventName } from "./domain-events.js"
+import { type GoalLesson, updateGoalLessons } from "./lessons.js"
 import {
 	buildGoalContinuation,
 	buildGoalEditSteer,
@@ -85,6 +86,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	let pendingTerminalFeedback: PendingGoalTerminalFeedback | undefined
 	let activeTurn: PendingGoalContinuation | undefined
 	let todoStateFor: GoalTodoState | undefined
+	let goalLessons: GoalLesson[] = []
 	let consecutiveErrorTurns = 0
 	let lastContinuationFingerprint: string | undefined
 	let unchangedContinuationTurns = 0
@@ -181,6 +183,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		pendingTerminalFeedback = undefined
 		activeTurn = undefined
 		todoStateFor = undefined
+		goalLessons = []
 		consecutiveErrorTurns = 0
 		lastContinuationFingerprint = undefined
 		unchangedContinuationTurns = 0
@@ -204,6 +207,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		currentGoal = restored.goal
 		resetGoalRuntime()
 		todoStateFor = restored.todoState
+		goalLessons = restored.lessons
 		syncGoalStatus(ctx)
 	}
 
@@ -385,6 +389,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				activeSinceMs = current.status === "active" && activeSinceMs !== undefined ? nowMs : undefined
 				invalidateContinuation()
 				todoStateFor = undefined
+				goalLessons = []
 				consecutiveErrorTurns = 0
 				syncGoalStatus(ctx)
 				if (next.status === "active") {
@@ -473,6 +478,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			commitClear(current)
 			invalidateContinuation()
 			todoStateFor = undefined
+			goalLessons = []
 			activeSinceMs = undefined
 			syncGoalStatus(ctx)
 			if (!ctx.isIdle()) {
@@ -612,7 +618,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	pi.on("context", (event, ctx) => {
 		bindSession(ctx)
 		const todoState = matchesGoal(todoStateFor, currentGoal, currentSessionId) ? todoStateFor : undefined
-		const messages = replaceGoalContextMessages(event.messages, currentGoal, todoState?.todos)
+		const messages = replaceGoalContextMessages(event.messages, currentGoal, todoState?.todos, goalLessons)
 		return messages ? { messages } : undefined
 	})
 
@@ -645,6 +651,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		const todoState = todoResultState(event.result, expectedScopeKey)
 		if (goal?.status !== "active" || !todoState) return
 		const previous = matchesGoal(todoStateFor, goal, currentSessionId) ? todoStateFor : undefined
+		goalLessons = updateGoalLessons(goalLessons, todoState.todos)
 		const settledStatus =
 			todoState.total === 0
 				? previous?.settledStatus
@@ -790,21 +797,26 @@ function restoreGoalRuntime(
 	entries: readonly SessionEntry[],
 	sessionId: string,
 	expectedScopeKey: string,
-): { goal: GoalState; todoState: GoalTodoState | undefined } {
+): { goal: GoalState; todoState: GoalTodoState | undefined; lessons: GoalLesson[] } {
 	const goalEntries: unknown[] = []
 	let goal: GoalState
 	let todoState: GoalTodoState | undefined
+	let lessons: GoalLesson[] = []
 
 	for (const entry of entries) {
 		if (entry.type === "custom" && entry.customType === GOAL_CUSTOM_ENTRY_TYPE) {
 			const previous = goal
 			goalEntries.push(entry.data)
 			goal = restoreGoal(goalEntries)
-			if (!sameGoalRevision(previous, goal)) todoState = undefined
+			if (!sameGoalRevision(previous, goal)) {
+				todoState = undefined
+				lessons = []
+			}
 		}
 
 		const details = getWriteTodosDetails(entry)
 		if (!goal || !details || getTodoScopeKey(normalizeTodoScope(details.scope)) !== expectedScopeKey) continue
+		lessons = updateGoalLessons(lessons, details.todos)
 		const counts = todoCounts(details.todos)
 		todoState = {
 			sessionId,
@@ -823,7 +835,7 @@ function restoreGoalRuntime(
 		}
 	}
 
-	return { goal, todoState }
+	return { goal, todoState, lessons }
 }
 
 function sameGoalRevision(left: GoalState, right: GoalState): boolean {
