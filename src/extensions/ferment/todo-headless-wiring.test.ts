@@ -83,12 +83,12 @@ describe("ferment → todo → headless prompt wiring", () => {
 		__resetTodoStore()
 	})
 
-	it("renderTodoStateBlock returns undefined when ctx.hasUI is true (widget handles it)", () => {
+	it("renderTodoStateBlock returns undefined when store is empty (TUI mode)", () => {
 		const ctx = createContext({ hasUI: true, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
 		expect(renderTodoStateBlock(ctx)).toBeUndefined()
 	})
 
-	it("renderTodoStateBlock renders when ctx.hasUI is false (headless mode)", () => {
+	it("renderTodoStateBlock returns undefined when store is empty (headless mode)", () => {
 		const ctx = createContext({ hasUI: false, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
 		expect(renderTodoStateBlock(ctx)).toBeUndefined() // store still empty
 	})
@@ -143,7 +143,7 @@ describe("ferment → todo → headless prompt wiring", () => {
 		}
 	})
 
-	it("renderTodoStateBlock returns undefined when UI is present (widget handles it)", () => {
+	it("renderTodoStateBlock renders ferment todos in TUI mode (model sees them alongside the widget)", () => {
 		const ferment = makeFerment()
 		setActive(ferment)
 		const { pi, unsubscribe } = makePiWithRealEventBus()
@@ -154,9 +154,13 @@ describe("ferment → todo → headless prompt wiring", () => {
 			// Store is populated.
 			expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" }, TEST_SESSION_ID)).toHaveLength(3)
 
-			// Switching to interactive mode: renderTodoStateBlock gates on ctx.hasUI.
+			// In TUI mode the model should ALSO see the todo state block — the
+			// widget is for the user, the prompt block is for the model.
 			const ctx = createContext({ hasUI: true, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
-			expect(renderTodoStateBlock(ctx)).toBeUndefined()
+			const md = renderTodoStateBlock(ctx)
+			expect(md).toBeDefined()
+			expect(md).toContain("## Current Todos")
+			expect(md).toContain("**[Phase 1] Implementation**")
 		} finally {
 			unsubscribe()
 		}
