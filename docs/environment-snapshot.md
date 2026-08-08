@@ -54,16 +54,45 @@ before appending the fresh snapshot as the final section.
   entry that is not sent to the model as a message. Reopening a persisted main or
   child session restores those original bytes instead of scanning again.
 
+## Fact sections (default tier)
+
+Beyond working directory, enclosing Git root, markers, ecosystems, tool versions,
+recent commits, and the project map, the snapshot includes at the default tier:
+
+- **Git status** — current branch, changed-file count, ahead/behind vs upstream,
+  from `git status --porcelain=v2 --branch` (machine format only; no diffs and no
+  per-file working-tree detail are ever collected).
+- **System** — OS name (`/etc/os-release` or `macOS`/`Windows`), arch, kernel, CPU
+  count and RAM (cgroup-limit-aware, so containers report what the session actually
+  sees), free disk on the working-directory mount, container detection
+  (`/.dockerenv`, `/run/.containerenv`), and root/non-root user. Collected from
+  node:os and fixed system files — no child processes.
+- **CLI tools** — presence/version of ecosystem-independent utilities (curl, wget,
+  jq, sqlite3, tar, OpenSSL, tmux, ffmpeg, Docker, Podman). Only present tools are
+  listed; the `full` verbosity tier also lists utilities unavailable on PATH.
+- **Python environment** — when a Python ecosystem is detected or a project venv
+  exists: the active environment (project `.venv`/`venv` preferred over the PATH
+  interpreter) and its installed packages from `pip list --format=freeze`, capped
+  at 40 entries (default) / 120 (`full`) with an `N installed; showing first M`
+  notice.
+
+## Verbosity tiers
+
+`KIMCHI_ENV_SNAPSHOT` selects the detail tier: unset/`1`/`true` → `default`,
+`minimal` renders only the original sections (no Git status, System, CLI tools,
+Python environment, or sparse depth expansion), `full` additionally lists
+unavailable CLI utilities and raises the package-list cap. `0`/`false`/`no`/`off`
+disable the block entirely.
+
 ## Map boundaries
 
 | Boundary | Value |
 | --- | --- |
-| Max traversal depth | 2 (cwd + one level of subdirs) |
+| Max traversal depth | 2 (cwd + one level of subdirs); 3 for sparse workspaces (≤40 entries at depth 2) |
 | Max rendered tree entries | 200 (truncated with best-effort totals) |
-| Max block size | 8 KiB |
+| Max block size | 12 KiB |
 | Per-value output cap | 256 UTF-8 bytes |
 | Never traverses beyond cwd | yes |
-| Never traverses beyond depth 2 | yes |
 | Never follows symlinks | yes (symlink visible as name, target not disclosed) |
 | Excluded heavy directories | `node_modules`, `.git`, `dist`, `build`, `target`, `vendor`, `.venv`, etc. |
 
@@ -91,7 +120,7 @@ The snapshot contains **no**:
 - Environment variables or secret values
 - File mtimes or inode metadata
 - Process state (PID, memory, etc.)
-- Git status / diff / log output
+- Git diffs, hunks, or human-format status output (porcelain-v2 branch/change count only)
 - System package manager queries (`apt`, `brew`, `pacman`, etc.)
 
 ## Allowlisted version probes
@@ -140,7 +169,8 @@ Set `KIMCHI_ENV_SNAPSHOT=0` to remove the block from every covered agent mode
 export KIMCHI_ENV_SNAPSHOT=0
 ```
 
-`false`, `no`, and `off` are accepted as equivalent values.
+`false`, `no`, and `off` are accepted as equivalent values. See [Verbosity tiers](#verbosity-tiers)
+for the `minimal`/`full` detail levels.
 
 ## Export / debug persistence
 

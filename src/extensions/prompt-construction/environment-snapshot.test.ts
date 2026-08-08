@@ -1,10 +1,11 @@
-import { tmpdir } from "node:os"
+import { platform, tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	type CommandRequest,
 	type CommandResult,
 	type CommandRunner,
+	collectSystemFacts,
 	ENVIRONMENT_SNAPSHOT_END,
 	ENVIRONMENT_SNAPSHOT_SESSION_ENTRY,
 	ENVIRONMENT_SNAPSHOT_START,
@@ -14,6 +15,7 @@ import {
 	type FsDirent,
 	findPersistedEnvironmentSnapshot,
 	runSnapshotCommand,
+	type SystemFacts,
 	withEnvironmentSnapshot,
 } from "./environment-snapshot.js"
 
@@ -89,6 +91,8 @@ function makeService(opts?: {
 	budgetMs?: number
 	probeTimeoutMs?: number
 	hostRuntime?: string
+	systemFacts?: SystemFacts
+	maxSnapshotBytes?: number
 	onDebug?: (diagnostics: EnvironmentSnapshotDiagnostics) => void
 }): EnvironmentSnapshotService {
 	return new EnvironmentSnapshotService({
@@ -97,6 +101,10 @@ function makeService(opts?: {
 		budgetMs: opts?.budgetMs ?? 5000,
 		probeTimeoutMs: opts?.probeTimeoutMs ?? 1000,
 		hostRuntime: opts?.hostRuntime ?? "TestRuntime 1.0.0",
+		// Host-dependent facts default to empty so snapshots stay deterministic;
+		// system-fact tests inject explicit values.
+		systemFactsProvider: async () => opts?.systemFacts ?? {},
+		...(opts?.maxSnapshotBytes !== undefined ? { maxSnapshotBytes: opts.maxSnapshotBytes } : {}),
 		onDebug: opts?.onDebug,
 	})
 }
@@ -169,7 +177,7 @@ describe("environment-snapshot", () => {
 			const svc = makeService({ filesystem: fs })
 			const snapshot = await svc.get({ contextId: "ctx-long-value", cwd: ROOT })
 			expect(snapshot).toBeDefined()
-			expect(Buffer.byteLength(snapshot ?? "", "utf8")).toBeLessThanOrEqual(8 * 1024)
+			expect(Buffer.byteLength(snapshot ?? "", "utf8")).toBeLessThanOrEqual(12 * 1024)
 			expect(snapshot).toContain("…")
 			expect(snapshot).not.toContain(longName)
 		})
@@ -191,10 +199,14 @@ describe("environment-snapshot", () => {
 	})
 
 	describe("depth-2 traversal", () => {
-		it("includes depth-1 and depth-2 entries but NOT depth-3+", async () => {
+		it("includes depth-1 and depth-2 entries but NOT depth-3+ in dense workspaces", async () => {
+			// Dense workspaces keep the depth-2 bound; the sparse-workspace
+			// expansion sees "sparse-workspace depth expansion" below. Density
+			// here comes from sibling noise entries at the root.
+			const noise: FsDirent[] = Array.from({ length: 41 }, (_, i) => dirent(`noise${i}.ts`, "file"))
 			const fs = fakeFs(
 				new Map([
-					[ROOT, [dirent("a", "directory")]],
+					[ROOT, [dirent("a", "directory"), ...noise]],
 					[join(ROOT, "a"), [dirent("b", "directory")]],
 					[join(ROOT, "a", "b"), [dirent("c", "directory")]],
 					[join(ROOT, "a", "b", "c"), [dirent("deep.txt", "file")]],
@@ -230,14 +242,14 @@ describe("environment-snapshot", () => {
 			expect(snapshot).toContain("Tree truncated: showing 200 entries; additional eligible entries were omitted")
 		})
 
-		it("never exceeds 8 KiB", async () => {
+		it("never exceeds 12 KiB", async () => {
 			const longName = "x".repeat(100)
 			const entries: FsDirent[] = Array.from({ length: 500 }, (_, i) => dirent(`${longName}-${i}.ts`, "file"))
 			const fs = fakeFs(new Map([[ROOT, entries]]))
 			const svc = makeService({ filesystem: fs })
 			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
 			expect(snapshot).toBeDefined()
-			expect(Buffer.byteLength(snapshot ?? "", "utf8")).toBeLessThanOrEqual(8 * 1024)
+			expect(Buffer.byteLength(snapshot ?? "", "utf8")).toBeLessThanOrEqual(12 * 1024)
 		})
 
 		it("retains essential facts when long root markers exhaust the byte budget", async () => {
@@ -245,12 +257,15 @@ describe("environment-snapshot", () => {
 				dirent(`${String(index).padStart(2, "0")}-${"x".repeat(230)}.csproj`, "file"),
 			)
 			const fs = fakeFs(new Map([[ROOT, entries]]))
-			const svc = makeService({ filesystem: fs, hostRuntime: "R".repeat(500) })
+			// 32 markers x ~240 B exceed a shrunken 8 KiB budget; the production
+			// 12 KiB budget admits them all, so the test exercises the path with
+			// an explicit override.
+			const svc = makeService({ filesystem: fs, hostRuntime: "R".repeat(500), maxSnapshotBytes: 8 * 1024 })
 
 			const snapshot = await svc.get({ contextId: "ctx-long-markers", cwd: ROOT })
 
 			expect(snapshot).toBeDefined()
-			expect(Buffer.byteLength(snapshot ?? "", "utf8")).toBeLessThanOrEqual(8 * 1024)
+			expect(Buffer.byteLength(snapshot ?? "", "utf8")).toBeLessThanOrEqual(12 * 1024)
 			expect(snapshot).toContain(`Working directory: "${ROOT}"`)
 			expect(snapshot).toContain('".NET"')
 			expect(snapshot).toContain("Project markers truncated")
@@ -1405,22 +1420,29 @@ describe("environment-snapshot", () => {
 			delete process.env.SUPER_SECRET
 		})
 
-		it("never includes git status or git diff output", async () => {
+		it("never includes git diff output or human-format status", async () => {
 			const fs = fakeFs(new Map([[ROOT, [dirent("file.ts", "file"), dirent(".git", "directory")]]]))
 			const runner = scriptedRunner({
 				git: { status: "ok", stdout: "git version 2.40.0" },
 				"git log": { status: "ok", stdout: "abc1234 initial commit\n" },
+				"git status": {
+					status: "ok",
+					stdout:
+						"# branch.oid abc\n# branch.head main\n# branch.ab +0 -0\n1 .M N... 100644 100644 100644 a b file.ts\n",
+				},
 			})
 			const svc = makeService({ filesystem: fs, runCommand: runner })
 			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
-			// Working-tree state (status/diff) is never inspected: it changes
-			// constantly during execution and would be stale immediately. Commit
-			// history (bounded --oneline log) is allowed — old entries stay true
-			// even as HEAD moves.
+			// Working-tree detail (diffs, per-file hunks, human-format status)
+			// is never inspected: it changes constantly during execution and
+			// would be stale immediately. Branch + change COUNT via porcelain
+			// v2 is allowed — a compact, machine-parsable orientation fact.
 			const gitCalls = runner.calls.filter((c) => c.command === "git")
 			for (const call of gitCalls) {
-				expect(call.args).not.toContain("status")
 				expect(call.args).not.toContain("diff")
+				if (call.args.includes("status")) {
+					expect(call.args).toContain("--porcelain=v2")
+				}
 			}
 			const logCall = gitCalls.find((c) => c.args.includes("log"))
 			expect(logCall?.args).toContain("--oneline")
@@ -1739,6 +1761,227 @@ describe("environment-snapshot", () => {
 			const svc = makeService({ filesystem: fs, runCommand: runner })
 			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
 			expect(snapshot).toContain('- "abc1234 add \\u003cscript\\u003e tag"')
+		})
+	})
+})
+
+describe("environment-snapshot (startup enrichment)", () => {
+	describe("system facts", () => {
+		it("renders OS, resources, and context lines from injected facts", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("main.py", "file")]]]))
+			const svc = makeService({
+				filesystem: fs,
+				systemFacts: {
+					osName: "Ubuntu 24.04.2 LTS",
+					arch: "x86_64",
+					kernel: "6.8.0",
+					cpus: 8,
+					memoryBytes: 16 * 1024 ** 3,
+					diskFreeBytes: 120 * 1024 ** 3,
+					container: true,
+					rootUser: true,
+				},
+			})
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain("System:")
+			expect(snapshot).toContain('- OS: "Ubuntu 24.04.2 LTS"; arch "x86_64"; kernel "6.8.0"')
+			expect(snapshot).toContain("8 CPUs")
+			expect(snapshot).toContain("GiB RAM")
+			expect(snapshot).toContain("free disk")
+			expect(snapshot).toContain("container")
+			expect(snapshot).toContain("running as root")
+		})
+
+		it("omits unavailable fields rather than rendering placeholders", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("main.py", "file")]]]))
+			const svc = makeService({ filesystem: fs, systemFacts: { osName: "macOS", arch: "arm64" } })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('arch "arm64"')
+			expect(snapshot).not.toContain("kernel")
+			expect(snapshot).not.toContain("Resources:")
+			expect(snapshot).not.toContain("Context:")
+		})
+
+		it("renders no System section when no facts are available", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("main.py", "file")]]]))
+			const svc = makeService({ filesystem: fs })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).not.toContain("System:")
+		})
+
+		it("parses cgroup v2 limits when present (Linux only)", async () => {
+			const fs: FilesystemAdapter = {
+				readdir: async () => [],
+				exists: () => false,
+				readFile: async (path) => {
+					if (path === "/sys/fs/cgroup/cpu.max") return "200000 100000"
+					if (path === "/sys/fs/cgroup/memory.max") return String(4 * 1024 ** 3)
+					throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+				},
+			}
+			const facts = await collectSystemFacts(ROOT, fs)
+			if (platform() !== "darwin" && platform() !== "win32") {
+				expect(facts.cpus).toBe(2)
+				expect(facts.memoryBytes).toBeLessThanOrEqual(4 * 1024 ** 3)
+			} else {
+				expect(facts.cpus).toBeGreaterThan(0)
+			}
+		})
+	})
+
+	describe("git status context", () => {
+		it("renders branch, change count, and ahead/behind from porcelain v2", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent(".git", "directory"), dirent("file.ts", "file")]]]))
+			const runner = scriptedRunner({
+				"git status": {
+					status: "ok",
+					stdout:
+						"# branch.oid abc\n# branch.head feature/x\n# branch.ab +2 -1\n" +
+						"1 .M N... 100644 100644 100644 a b file.ts\n? other.ts\n",
+				},
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('- on branch "feature/x", 2 files changed, ahead 2, behind 1')
+		})
+
+		it("renders a clean detached worktree without a branch name", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent(".git", "directory"), dirent("file.ts", "file")]]]))
+			const runner = scriptedRunner({
+				"git status": { status: "ok", stdout: "# branch.oid abc\n# branch.head (detached)\n" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain("worktree clean")
+			expect(snapshot).not.toContain("detached")
+		})
+
+		it("renders no git status line when git status fails", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent(".git", "directory"), dirent("file.ts", "file")]]]))
+			const runner = scriptedRunner({ "git status": { status: "error" } })
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).not.toContain("worktree clean")
+			expect(snapshot).not.toContain("files changed")
+		})
+	})
+
+	describe("CLI utility probes", () => {
+		it("renders only present utilities at the default tier", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("main.py", "file")]]]))
+			const runner = scriptedRunner({
+				curl: { status: "ok", stdout: "curl 8.5.0 (x86_64)" },
+				tar: { status: "ok", stdout: "bsdtar 3.5.3" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain("CLI tools:")
+			expect(snapshot).toContain('"curl": "8.5.0"')
+			expect(snapshot).not.toMatch(/"wget":/u)
+			expect(snapshot).not.toContain('"Docker"')
+		})
+
+		it("lists unavailable utilities at the full tier", async () => {
+			process.env.KIMCHI_ENV_SNAPSHOT = "full"
+			const fs = fakeFs(new Map([[ROOT, [dirent("main.py", "file")]]]))
+			const runner = scriptedRunner({ curl: { status: "ok", stdout: "curl 8.5.0" } })
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('"wget": "unavailable on PATH"')
+			expect(snapshot).toContain('"Docker": "unavailable on PATH"')
+		})
+	})
+
+	describe("Python environment", () => {
+		const pipList = {
+			status: "ok",
+			stdout: "numpy==2.1.0\npandas==2.2.2\n\nWARNING: something\ntorch==2.4.0\n",
+		} as const
+
+		it("lists installed packages from the system interpreter", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("pyproject.toml", "file")]]]))
+			const runner = scriptedRunner({ python3: pipList })
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain("Python environment:")
+			expect(snapshot).toContain("system interpreter")
+			expect(snapshot).toContain('"numpy==2.1.0"')
+			expect(snapshot).toContain('"torch==2.4.0"')
+			expect(snapshot).toContain("3 installed")
+		})
+
+		it("prefers the project venv interpreter and names the environment", async () => {
+			const fs = fakeFs(
+				new Map([
+					[ROOT, [dirent("pyproject.toml", "file"), dirent(".venv", "directory")]],
+					[join(ROOT, ".venv"), [dirent("bin", "directory")]],
+					[join(ROOT, ".venv", "bin"), [dirent("python", "file")]],
+				]),
+			)
+			const venvPython = join(ROOT, ".venv", "bin", "python")
+			const runner = scriptedRunner({ [venvPython]: pipList })
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('- environment: "/fake/project/.venv"')
+			expect(snapshot).toContain('"torch==2.4.0"')
+		})
+
+		it("caps the package list with a visible notice", async () => {
+			const many = Array.from({ length: 60 }, (_, i) => `pkg${i}==1.${i}`).join("\n")
+			const fs = fakeFs(new Map([[ROOT, [dirent("pyproject.toml", "file")]]]))
+			const runner = scriptedRunner({ python3: { status: "ok", stdout: many } })
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain("60 installed")
+			expect(snapshot).toContain("showing first 40")
+			expect(snapshot).not.toContain("pkg59")
+		})
+
+		it("renders no Python environment section when collection fails", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("pyproject.toml", "file")]]]))
+			const runner = scriptedRunner({ python3: { status: "missing" } })
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).not.toContain("Python environment:")
+		})
+	})
+
+	describe("sparse-workspace depth expansion", () => {
+		it("descends to depth 3 when the depth-2 scan stays sparse", async () => {
+			const fs = fakeFs(
+				new Map([
+					[ROOT, [dirent("a", "directory")]],
+					[join(ROOT, "a"), [dirent("b", "directory")]],
+					[join(ROOT, "a", "b"), [dirent("deep.txt", "file")]],
+				]),
+			)
+			const svc = makeService({ filesystem: fs })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain("a/b/")
+			expect(snapshot).toContain("deep.txt")
+		})
+	})
+
+	describe("verbosity tiers", () => {
+		it("minimal tier renders only the original sections", async () => {
+			process.env.KIMCHI_ENV_SNAPSHOT = "minimal"
+			const fs = fakeFs(new Map([[ROOT, [dirent(".git", "directory"), dirent("pyproject.toml", "file")]]]))
+			const runner = scriptedRunner({
+				"git status": { status: "ok", stdout: "# branch.oid abc\n# branch.head main\n" },
+				curl: { status: "ok", stdout: "curl 8.5.0" },
+				python3: { status: "ok", stdout: "numpy==2.1.0\n" },
+			})
+			const svc = makeService({
+				filesystem: fs,
+				runCommand: runner,
+				systemFacts: { osName: "Linux", arch: "x64" },
+			})
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain("Project map:")
+			expect(snapshot).not.toContain("System:")
+			expect(snapshot).not.toContain("CLI tools:")
+			expect(snapshot).not.toContain("Python environment:")
+			expect(snapshot).not.toContain("on branch")
 		})
 	})
 })
