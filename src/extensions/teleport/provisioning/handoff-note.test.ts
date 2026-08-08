@@ -26,13 +26,24 @@ describe("buildHandoffNote", () => {
 		gitCredential: { host: "github.com" },
 	}
 
-	it("describes the rsync heuristic with file count", () => {
-		const note = buildHandoffNote({ ...base, workspace: { kind: "rsync", fileCount: 42, bytes: 1024 } })
-		expect(note).toContain("rsync")
-		expect(note).toContain("42 files")
+	it("rsync: uncommitted changes carried, gitignored not; .kimchi synced when in the include list", () => {
+		const note = buildHandoffNote({
+			...base,
+			workspace: { kind: "rsync", fileCount: 42, syncedDotKimchi: true },
+		})
+		expect(note).toContain("rsync of the working tree (42 files)")
+		expect(note).toContain("uncommitted local changes were carried over")
 		expect(note).toContain("Gitignored content")
-		expect(note).toContain("darwin, cwd /home/dev/projects/demo")
-		expect(note).toContain("Current environment: Linux sandbox, cwd /home/sandbox/demo")
+		expect(note).toContain("(.kimchi/ — ferment plans & runtime, transient docs) was synced")
+	})
+
+	it("rsync: warns explicitly when .kimchi was not synced", () => {
+		const note = buildHandoffNote({
+			...base,
+			workspace: { kind: "rsync", fileCount: 10, syncedDotKimchi: false },
+		})
+		expect(note).toContain("(.kimchi/ — ferment plans & runtime, transient docs) was NOT synced")
+		expect(note).toContain("do not expect ferment state or prior working documents to exist here")
 	})
 
 	it("describes a fresh git clone and missing uncommitted changes", () => {
@@ -41,7 +52,40 @@ describe("buildHandoffNote", () => {
 			workspace: { kind: "git-clone", repo: "https://github.com/org/repo.git", branch: "main" },
 		})
 		expect(note).toContain("fresh git clone of https://github.com/org/repo.git (branch main)")
-		expect(note).toContain("uncommitted changes were NOT carried over")
+		expect(note).toContain("uncommitted changes and gitignored content were NOT carried over")
+	})
+
+	it("clone: appends the local HEAD anchor when available", () => {
+		const note = buildHandoffNote({
+			...base,
+			git: { headSha: "a1b2c3d", dirty: true },
+			workspace: { kind: "git-clone", repo: "https://github.com/org/repo.git" },
+		})
+		expect(note).toContain("local repo was at commit a1b2c3d")
+	})
+
+	it("includes the git anchor in the previous-environment line", () => {
+		const note = buildHandoffNote({
+			...base,
+			git: { headSha: "a1b2c3d", dirty: true },
+			workspace: { kind: "none" },
+		})
+		expect(note).toContain("darwin, cwd /home/dev/projects/demo (local repo at a1b2c3d, working tree dirty)")
+	})
+
+	it("shows only dirtiness when the sha is unavailable", () => {
+		const note = buildHandoffNote({
+			...base,
+			git: { dirty: true },
+			workspace: { kind: "none" },
+		})
+		expect(note).toContain("/home/dev/projects/demo (working tree dirty)")
+	})
+
+	it("omits the git anchor entirely outside git repos", () => {
+		const note = buildHandoffNote({ ...base, git: undefined, workspace: { kind: "none" } })
+		expect(note).not.toContain("local repo at")
+		expect(note).not.toContain("working tree dirty")
 	})
 
 	it("describes no-sync provisioning", () => {
@@ -64,6 +108,7 @@ describe("buildHandoffNote", () => {
 		const note = buildHandoffNote({ ...base, workspace: { kind: "none" } })
 		expect(note).toContain("command -v")
 		expect(note).toContain("package manager")
+		expect(note).toContain("History is not fully replayable here")
 	})
 })
 

@@ -1,6 +1,6 @@
-import { basename, join } from "node:path"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
+import { basename, join } from "node:path"
 
 /**
  * Teleport environment-handoff note.
@@ -59,10 +59,12 @@ export interface HandoffNoteInput {
 	fromCwd: string
 	/** Working directory the remote session will start in, if known. */
 	toCwd?: string
+	/** Git anchor of the local repo at teleport time (undefined outside git repos). */
+	git?: { headSha?: string; dirty: boolean }
 	/** How the remote workspace was bootstrapped. */
 	workspace:
 		| { kind: "git-clone"; repo: string; branch?: string }
-		| { kind: "rsync"; fileCount: number; bytes: number }
+		| { kind: "rsync"; fileCount: number; syncedDotKimchi: boolean }
 		| { kind: "none" }
 	/** Whether a git identity (user.name/user.email) was pushed to the sandbox. */
 	gitIdentityProvisioned: boolean
@@ -73,32 +75,43 @@ export interface HandoffNoteInput {
 }
 
 export function buildHandoffNote(input: HandoffNoteInput): string {
+	let fromDescription = `Previous environment: ${input.fromPlatform}, cwd ${input.fromCwd}`
+	if (input.git) {
+		const parts: string[] = []
+		if (input.git.headSha) parts.push(`local repo at ${input.git.headSha}`)
+		if (input.git.dirty) parts.push("working tree dirty")
+		if (parts.length > 0) fromDescription += ` (${parts.join(", ")})`
+	}
+
 	const lines: string[] = [
 		"[Teleport] Environment handoff: this session was moved from a local machine to a remote sandbox.",
-		`The conversation history above was produced in the previous environment — paths, tools, and artifacts it references may not exist here.`,
-		``,
-		`Previous environment: ${input.fromPlatform}, cwd ${input.fromCwd}`,
+		"The conversation history above was produced in the previous environment — paths, tools, and artifacts it references may not exist here.",
+		"",
+		fromDescription,
 		`Current environment: Linux sandbox${input.toCwd ? `, cwd ${input.toCwd}` : ""}`,
 	]
 
 	switch (input.workspace.kind) {
-		case "git-clone":
+		case "git-clone": {
+			let line = `Workspace provisioning: fresh git clone of ${input.workspace.repo}${input.workspace.branch ? ` (branch ${input.workspace.branch})` : ""} — uncommitted changes and gitignored content were NOT carried over.`
+			if (input.git?.headSha) {
+				line += ` The local repo was at commit ${input.git.headSha}, so history references to newer local commits or files may not resolve.`
+			}
+			lines.push("", line)
+			break
+		}
+		case "rsync": {
+			const dotKimchi = input.workspace.syncedDotKimchi
+				? "The project working state (.kimchi/ — ferment plans & runtime, transient docs) was synced."
+				: "The project working state (.kimchi/ — ferment plans & runtime, transient docs) was NOT synced; do not expect ferment state or prior working documents to exist here."
 			lines.push(
 				"",
-				`Workspace provisioning: the remote workspace is a fresh git clone of ${input.workspace.repo}${input.workspace.branch ? ` (branch ${input.workspace.branch})` : ""}. Local uncommitted changes were NOT carried over.`,
+				`Workspace provisioning: rsync of the working tree (${input.workspace.fileCount} files) — uncommitted local changes were carried over. Gitignored content (dependencies such as node_modules, build outputs, caches) was NOT. ${dotKimchi}`,
 			)
 			break
-		case "rsync":
-			lines.push(
-				"",
-				`Workspace provisioning: the workspace was synced with rsync using a git-based include-list heuristic (${input.workspace.fileCount} files). Only git-tracked files and untracked non-ignored files were copied. Gitignored content such as dependencies (node_modules), build outputs, and local caches may be missing.`,
-			)
-			break
+		}
 		case "none":
-			lines.push(
-				"",
-				`Workspace provisioning: no workspace content was synced to the sandbox.`,
-			)
+			lines.push("", `Workspace provisioning: no workspace content was synced to the sandbox.`)
 			break
 	}
 
@@ -107,7 +120,7 @@ export function buildHandoffNote(input: HandoffNoteInput): string {
 		// gitCredential carries only the host — never the token itself (secret).
 		`Git identity provisioned in sandbox: ${input.gitIdentityProvisioned ? "yes" : "no"}. Git credential: ${input.gitCredential ? `provisioned for ${input.gitCredential.host}` : "not provisioned"}.`,
 		"",
-		`Do not assume tools or file artifacts from the previous machine exist here — verify availability with \`command -v <tool>\` before relying on earlier results, and install missing tools via the sandbox's package manager if needed.`,
+		`History is not fully replayable here: earlier turns may show tools, files, or authenticated commands from the previous machine that would fail now. Verify tool availability with \`command -v <tool>\` and install missing tools via the sandbox package manager before relying on earlier results.`,
 	)
 
 	return lines.join("\n")

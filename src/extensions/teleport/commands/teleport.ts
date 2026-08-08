@@ -11,20 +11,16 @@ import { createSession, listSessions } from "../../../sandbox/worker/sessions.js
 import type { CreateSessionRequest, Session } from "../../../sandbox/worker/types.js"
 import { createTabsOverlay } from "../overlay/overlay-component.js"
 import { generateSessionName } from "../overlay/tab-manager.js"
-import { isGitRepo } from "../preflight/git.js"
+import { getGitHeadSha, gitWorkingTreeDirty, isGitRepo } from "../preflight/git.js"
 import { runPreflight } from "../preflight/index.js"
 import { SIZE_REFUSE_BYTES, SIZE_WARN_BYTES } from "../preflight/workspace-size.js"
 import { SANDBOX_USER } from "../provisioning/constants.js"
 import { sumIncludeListBytes } from "../provisioning/estimate-bytes.js"
 import { provisionGitCredential, provisionGitIdentity } from "../provisioning/git-provision.js"
+import { buildHandoffNote, copySessionFileAndAddHandoffNote, removeTempDir } from "../provisioning/handoff-note.js"
 import { provisionHarnessConfig } from "../provisioning/harness-config.js"
 import { buildIncludeList } from "../provisioning/include-list.js"
 import { deriveSandboxDest, deriveSandboxDestFromRepoUrl, repoBasename } from "../provisioning/paths.js"
-import {
-	buildHandoffNote,
-	copySessionFileAndAddHandoffNote,
-	removeTempDir,
-} from "../provisioning/handoff-note.js"
 import { formatRsyncFailure, runRsync } from "../provisioning/rsync-runner.js"
 import { STATUS_KEY, type TeleportContext } from "../types.js"
 import { formatBytes } from "../ui/format-bytes.js"
@@ -292,14 +288,24 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		let sessionFileToUpload: string | undefined
 		let sessionFileWithHandoffNote: string | undefined
 		if (!args.skipSession && ctx.sessionFile && existsSync(ctx.sessionFile)) {
+			// Git anchor for the note (HEAD sha + tree dirtiness): one-time
+			// provenance facts about where the history was generated.
+			const gitAnchor = isGitRepo(ctx.cwd)
+				? { headSha: getGitHeadSha(ctx.cwd), dirty: gitWorkingTreeDirty(ctx.cwd) }
+				: undefined
 			const note = buildHandoffNote({
 				fromPlatform: platform(),
 				fromCwd: ctx.cwd,
 				toCwd: sessionCwd,
+				git: gitAnchor,
 				workspace: args.gitRepo
 					? { kind: "git-clone", repo: args.gitRepo, branch: args.branch }
 					: shouldRsyncWorkspace
-						? { kind: "rsync", fileCount: filesFrom.length, bytes: estimatedUploadBytes }
+						? {
+								kind: "rsync",
+								fileCount: filesFrom.length,
+								syncedDotKimchi: filesFrom.some((f) => f === ".kimchi" || f.startsWith(".kimchi/")),
+							}
 						: { kind: "none" },
 				gitIdentityProvisioned: Boolean(localGitConfig.name || localGitConfig.email),
 				gitCredential: gitHost && gitToken ? { host: gitHost } : undefined,
