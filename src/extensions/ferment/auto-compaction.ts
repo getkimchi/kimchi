@@ -271,6 +271,10 @@ export function buildCustomInstructions(ferment: Ferment, pending: PendingCompac
 		for (const line of renderCharterCompact(ferment.charter).split("\n")) lines.push(`  ${line}`)
 	}
 
+	lines.push(
+		"- Open concerns: preserve any open concerns, known gaps, deferred fixes, or quality worries (things noticed but unresolved) — they must survive compaction alongside the plan. Do not drop one merely because it has no owner or fix yet.",
+	)
+
 	// For step completions: show the phase that is still active.
 	// For phase completions: show the just-completed phase as "completed", then
 	// show the next active phase (if any) as the current context.
@@ -331,6 +335,10 @@ export function buildMidTurnCustomInstructions(
 		for (const line of renderCharterCompact(ferment.charter).split("\n")) lines.push(`  ${line}`)
 	}
 
+	lines.push(
+		"- Open concerns: preserve any open concerns, known gaps, deferred fixes, or quality worries (things noticed but unresolved) — they must survive compaction alongside the plan. Do not drop one merely because it has no owner or fix yet.",
+	)
+
 	if (phase) {
 		lines.push(`- Active phase: ${phase.name} — ${phase.goal}`)
 	}
@@ -344,6 +352,30 @@ export function buildMidTurnCustomInstructions(
 	)
 
 	return lines.join("\n")
+}
+
+/** Detect a degenerate compaction summary: one that dropped every ferment
+ *  anchor even though the instruction builders mandate it. Observed in the
+ *  wild (Tahoe session analysis): a "No prior history / Turn Context (split
+ *  turn)" summary with no ferment context left the worker un-anchored for a
+ *  whole step until the stage handoff repaired it. Detection only — the
+ *  handoff is the repair channel. */
+export function isDegenerateCompactionSummary(summary: string, ferment: Ferment): boolean {
+	if (summary.includes(ferment.name)) return false
+	if (ferment.goal && summary.includes(ferment.goal)) return false
+	return true
+}
+
+/** Loud breadcrumb when a compaction result carried a degenerate summary.
+ *  Does NOT change control flow: the stage handoff that always follows a
+ *  compaction is the re-anchor repair channel. */
+function reportDegenerateSummaryIfAny(pi: ExtensionAPI, ferment: Ferment, result: CompactionResult): void {
+	if (!isDegenerateCompactionSummary(result.summary, ferment)) return
+	tryPiAction(() => {
+		pi.appendEntry("ferment_breadcrumb", {
+			text: `Degenerate compaction summary for ferment "${ferment.name}" — the summary dropped the ferment anchor; the stage handoff is the re-anchor for the next stage`,
+		})
+	})
 }
 
 export function buildHandoffDetails(
@@ -567,6 +599,7 @@ async function triggerCompactionForPending(
 
 	function finishCompaction(result: CompactionResult): void {
 		runtime.clearCompactionInFlight(fermentId)
+		reportDegenerateSummaryIfAny(pi, ferment, result)
 		appendHandoffEntry(result)
 		scheduleContinuationBestEffort()
 	}
@@ -612,6 +645,7 @@ async function triggerCompactionForPending(
 		const { result, error } = await invokeInlineCompaction(pi, ctx, customInstructions, options)
 		runtime.clearCompactionInFlight(fermentId)
 		if (result) {
+			reportDegenerateSummaryIfAny(pi, ferment, result)
 			tryPiAction(() => {
 				pi.appendEntry("ferment_breadcrumb", {
 					text: `Stage compaction complete: ${(result.tokensBefore ?? 0).toLocaleString()} tokens before compaction`,
@@ -766,6 +800,7 @@ export async function maybeTriggerMidTurnFermentCompaction(
 		const { result, error } = await invokeInlineCompaction(pi, ctx, customInstructions, options)
 		if (result) {
 			runtime.clearCompactionInFlight(fermentId)
+			reportDegenerateSummaryIfAny(pi, activeFerment, result)
 			resumeInProgressStep(result)
 		} else {
 			handleCompactionFailure(error)

@@ -24,6 +24,7 @@ import {
 	buildHandoffDetails,
 	buildMidTurnCustomInstructions,
 	DEFAULT_STAGE_COMPACTION_OPTIONS,
+	isDegenerateCompactionSummary,
 	isToolCallInFlight,
 	isToolCallInFlightInSession,
 	maybeTriggerFermentCompaction,
@@ -331,6 +332,23 @@ describe("buildCustomInstructions", () => {
 		expect(details.charter).toContain("Intent: Recreate the Tahoe desktop")
 	})
 
+	it("instructs the summarizer to preserve open concerns", () => {
+		const ferment = makeFerment({})
+		const instructions = buildCustomInstructions(ferment, makePendingPhase())
+		expect(instructions).toContain("preserve any open concerns, known gaps, deferred fixes, or quality worries")
+		expect(instructions).toContain("must survive compaction")
+	})
+
+	it("mid-turn instructions also preserve open concerns", () => {
+		const ferment = makeFerment({})
+		const instructions = buildMidTurnCustomInstructions(
+			ferment,
+			makePhase({ id: "phase-1", name: "P", goal: "g" }),
+			makeStep({ id: "step-1", description: "d" }),
+		)
+		expect(instructions).toContain("preserve any open concerns")
+	})
+
 	it("includes completed step description and summary for step-kind pending", () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },
@@ -421,6 +439,27 @@ describe("buildCustomInstructions", () => {
 		const instructions = buildCustomInstructions(ferment, pending)
 
 		expect(instructions).toContain("No further lifecycle action")
+	})
+})
+
+describe("isDegenerateCompactionSummary", () => {
+	it("flags a summary that dropped every ferment anchor", () => {
+		const ferment = makeFerment({ name: "Tahoe Replica", goal: "Recreate macOS" })
+		expect(
+			isDegenerateCompactionSummary("No prior history.\n\n**Turn Context (split turn):**\nWorking on notes.", ferment),
+		).toBe(true)
+	})
+
+	it("accepts a summary that names the ferment", () => {
+		const ferment = makeFerment({ name: "Tahoe Replica", goal: "Recreate macOS" })
+		expect(isDegenerateCompactionSummary('## Goal\nExecute Ferment "Tahoe Replica" — Recreate macOS, phase 2.', ferment)).toBe(
+			false,
+		)
+	})
+
+	it("accepts a summary that repeats the goal even when the name is absent", () => {
+		const ferment = makeFerment({ name: "Unknown Title", goal: "Recreate macOS Tahoe" })
+		expect(isDegenerateCompactionSummary("Working on Recreate macOS Tahoe, phase 2 done.", ferment)).toBe(false)
 	})
 })
 
@@ -1062,7 +1101,7 @@ describe("maybeTriggerFermentCompaction", () => {
 			onError: (error: Error) => void
 		}
 
-		const fakeResult = { tokensBefore: 5000 } as unknown as CompactionResult
+		const fakeResult = { tokensBefore: 5000, summary: '## Goal\nExecute Ferment "My Ferment" — Goal' } as unknown as CompactionResult
 		compactCall.onComplete(fakeResult)
 
 		// onComplete should fire two sendMessage calls: handoff entry, then
@@ -1132,7 +1171,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		const compactCall = (ctx.compact as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
 			onComplete: (result: CompactionResult) => void
 		}
-		compactCall.onComplete({ tokensBefore: 1000 } as unknown as CompactionResult)
+		compactCall.onComplete({ tokensBefore: 1000, summary: '## Goal\nExecute Ferment "My Ferment" — Goal' } as unknown as CompactionResult)
 
 		// Now step-2 pending is still in the map and will fire on the next tick.
 		await maybeTriggerFermentCompaction(pi, ctx, runtime)
@@ -1638,7 +1677,9 @@ describe("maybeTriggerFermentCompaction — one-shot Auto-compact toggle", () =>
 		// One-shot ferment with inline compaction available — the path that compacts.
 		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
 		ctx.model = { contextWindow: 100_000 } as ExtensionContext["model"]
-		ctx.inlineCompact = vi.fn(async () => ({ tokensBefore: 1_000 }) as CompactionResult)
+		ctx.inlineCompact = vi.fn(
+			async () => ({ tokensBefore: 1_000, summary: '## Goal\nExecute Ferment "My Ferment" — Goal' }) as CompactionResult,
+		)
 		vi.mocked(getCompactionEnabled).mockReturnValue(true)
 	})
 
