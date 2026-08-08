@@ -41,6 +41,23 @@ export type JudgeUnavailableReason = "no_registry" | "no_model" | "no_auth" | "a
 
 export type JudgeApiResult = { ok: true; text: string } | { ok: false; reason: JudgeUnavailableReason; detail?: string }
 
+/**
+ * Resolve the judge model's display ref for observability (mirrors
+ * judgeApiCall's resolution order): the model-roles `judge` assignment when it
+ * resolves in the captured registry, otherwise the session-model fallback
+ * captured at extension init. Returns `provider/id`, or undefined when neither
+ * side is known (unit tests that inject apiCall hit this).
+ */
+export function describeJudgeModel(): string | undefined {
+	const registry = getJudgeModelRegistry()
+	const judgeAssignment = getModelRoles().judge
+	const judgeModelStr = Array.isArray(judgeAssignment) ? judgeAssignment[0] : judgeAssignment
+	const judgeRef = judgeModelStr ? splitModelRef(judgeModelStr) : undefined
+	const model = (judgeRef && registry ? registry.find(judgeRef.provider, judgeRef.modelId) : undefined) ?? getJudgeModel()
+	if (!model) return undefined
+	return `${model.provider}/${model.id}`
+}
+
 export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTokens?: number): Promise<JudgeApiResult> {
 	const registry = getJudgeModelRegistry()
 	if (!registry) return { ok: false, reason: "no_registry" }

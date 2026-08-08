@@ -1,5 +1,8 @@
+import type { Api, Model } from "@earendil-works/pi-ai"
 import { describe, expect, it, vi } from "vitest"
+import { captureJudgeContext } from "./state.js"
 import {
+	describeJudgeModel,
 	type GraderSubagentResult,
 	isGrade,
 	type JudgeApiResult,
@@ -874,5 +877,12 @@ describe("judge renders intent charter", () => {
 		expect(captured).toContain("INTENT CHARTER")
 		expect(captured).toContain("Boot; look")
 		expect(spawn).toHaveBeenCalled()
+	})
+})
+
+describe("describeJudgeModel", () => {
+	it("returns provider/id from the captured session model", () => {
+		captureJudgeContext({ provider: "kimchi-dev", id: "glm-5.2-fp8" } as unknown as Model<Api>)
+		expect(describeJudgeModel()).toBe("kimchi-dev/glm-5.2-fp8")
 	})
 })

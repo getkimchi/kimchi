@@ -40,7 +40,7 @@ import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
 import { ensureGitRepo } from "../git-init.js"
-import { type GraderSpawner, judgeJourneyGradeViaSubagent } from "../judge.js"
+import { describeJudgeModel, type GraderSpawner, judgeJourneyGradeViaSubagent } from "../judge.js"
 import { clearLifecycleGuard } from "../lifecycle-obligation-guard.js"
 import { appendRefEntry } from "../nudge.js"
 import { PENDING_PROPOSAL_SCHEMA_VERSION, savePendingProposal } from "../pending-proposal-store.js"
@@ -976,6 +976,7 @@ export async function completeFerment(
 		gradeRationale = `Judge unreachable (${failureDetail}); completion proceeded without a graded review.`
 	}
 
+	const gradedBy = describeJudgeModel()
 	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 
 	// Persist completion and grade together.
@@ -991,6 +992,7 @@ export async function completeFerment(
 						? { recommendations: resolvedGrade.recommendations }
 						: {}),
 					...(resolvedGrade.charterVerdicts ? { charterVerdicts: resolvedGrade.charterVerdicts } : {}),
+					...(gradedBy ? { gradedBy } : {}),
 				}
 			: undefined,
 	})
@@ -1017,7 +1019,7 @@ export async function completeFerment(
 	const terminalNotice = `This ferment is complete and terminal. Do not call bash/read/list_ferments or any ferment tools for this ferment again without clear user consent. If the user wants a new ferment, tell them to run \`/ferment new "..."\` or \`/ferment one-shot "..."\` — do not search MCP tools or invent a tool.`
 
 	return toolOk(
-		`**Ferment "${fresh.name}"** complete${failedNote}.\n\n---\n\n**Final gates:**\n${gateLines}\n\n**Final grade:** ${gradeLabel} — ${gradeRationale}\n\n${params.final_summary ?? ""}${charterAudit ? `\n\n${charterAudit}` : ""}\n\n---\n\n${terminalNotice}`,
+		`**Ferment "${fresh.name}"** complete${failedNote}.\n\n---\n\n**Final gates:**\n${gateLines}\n\n**Final grade:** ${gradeLabel} — ${gradeRationale}${gradedBy ? ` · judge: ${gradedBy}` : ""}\n\n${params.final_summary ?? ""}${charterAudit ? `\n\n${charterAudit}` : ""}\n\n---\n\n${terminalNotice}`,
 	)
 }
 

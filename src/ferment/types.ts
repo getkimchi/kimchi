@@ -185,6 +185,10 @@ export interface JudgeGrade {
 	/** Ship-level charter audit: per-clause met/waived/unmet verdicts from the
 	 *  completion grader, present only when the ferment has an intent charter. */
 	charterVerdicts?: CharterClauseVerdict[]
+	/** Display ref of the judge model that produced this grade ("provider/id"),
+	 *  recorded so the grading model is auditable post-hoc — see
+	 *  judge.ts describeJudgeModel(). */
+	gradedBy?: string
 	/** Legacy marker for older completions that persisted a placeholder grade
 	 *  when the journey-grade judge was unreachable. New completions leave
 	 *  Ferment.grade unset instead of recording a synthetic grade. */

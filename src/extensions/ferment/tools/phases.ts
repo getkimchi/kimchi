@@ -22,6 +22,7 @@ import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { flaggedVerdicts, renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
 import {
+	describeJudgeModel,
 	type GraderSpawner,
 	type JudgeFlag,
 	type JudgePhaseGradeResult,
@@ -519,6 +520,7 @@ export async function completePhase(
 
 	// Step 5: advance phase to completed with the final grade + recommendations.
 	const blockRetriesForTelemetry = reviewAttemptForLog - 1
+	const gradedBy = describeJudgeModel()
 	const completeOutcome = applyAndPersist(params.ferment_id, {
 		type: "complete_phase",
 		phaseId: phase.id,
@@ -528,6 +530,7 @@ export async function completePhase(
 			rationale: finalRationale,
 			gradedAt: runtime.nowIso(),
 			...(finalRecommendations.length > 0 ? { recommendations: finalRecommendations } : {}),
+			...(gradedBy ? { gradedBy } : {}),
 		},
 		blockRetries: blockRetriesForTelemetry,
 	})

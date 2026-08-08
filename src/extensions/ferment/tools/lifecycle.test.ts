@@ -2,10 +2,12 @@ import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { Api, Model } from "@earendil-works/pi-ai"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { createContext } from "../../__mocks__/context.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
+import { captureJudgeContext } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
 import { FERMENT_TOOLS } from "../tool-names.js"
 import {
@@ -1332,6 +1334,27 @@ describe("completeFerment", () => {
 
 		expect(okText(result)).toContain("**Charter audit:** not emitted by the grader after retries")
 		expect(h.storage.get(h.fermentId)?.grade?.charterVerdicts).toBeUndefined()
+	})
+
+	it("stamps and renders the judge model when resolvable", async () => {
+		captureJudgeContext({ provider: "kimchi-dev", id: "glm-5.2-fp8" } as unknown as Model<Api>)
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "A",
+			rationale: "Ships cleanly.",
+			recommendations: [],
+		})
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("judge: kimchi-dev/glm-5.2-fp8")
+		expect(h.storage.get(h.fermentId)?.grade?.gradedBy).toBe("kimchi-dev/glm-5.2-fp8")
 	})
 
 	it("judge unavailable ships without a persisted grade", async () => {
