@@ -126,6 +126,25 @@ describe("todo store", () => {
 		expect(second).not.toHaveBeenCalled()
 	})
 
+	it("treats empty scope placeholders as omitted and lets providers auto-scope", () => {
+		const fermentScope = { kind: "ferment-step" as const, phaseId: "phase-1", stepId: "step-1" }
+		const unregister = registerActiveTodoScopeProvider(() => fermentScope)
+		try {
+			// Omission resolves through the provider — baseline behaviour.
+			expect(resolveTodoScope()).toEqual(fermentScope)
+			// Empty string resolves through providers as if omitted.
+			expect(resolveTodoScope("")).toEqual(fermentScope)
+			// GLM-style literal "{}" resolves through providers as if omitted.
+			expect(resolveTodoScope("{}")).toEqual(fermentScope)
+			// Empty object resolves through providers as if omitted.
+			expect(resolveTodoScope({})).toEqual(fermentScope)
+			// A real scope argument is still honoured verbatim.
+			expect(resolveTodoScope("global")).toEqual(GLOBAL_TODO_SCOPE)
+		} finally {
+			unregister()
+		}
+	})
+
 	it("falls back to global in subagent workers regardless of registered providers", async () => {
 		const fermentScope = {
 			kind: "ferment-step" as const,

@@ -95,8 +95,28 @@ export function getTodoState(sessionId: string): TodosSliceState {
 	return getSessionState(sessionId)
 }
 
+/**
+ * Models sometimes pass a placeholder for "no scope" instead of omitting the
+ * field — GLM-series models emit the literal string "{}" (and occasionally an
+ * empty object). Normalize these to omission so providers can auto-scope the
+ * write; otherwise they silently collapse to global and the ferment auto-scope
+ * never engages (observed: GLM dumping all 83 todo writes into global across
+ * a 21-step ferment because scope was "{}" on every call after the first).
+ */
+function isEmptyScopeInput(scopeInput: unknown): boolean {
+	if (scopeInput === undefined || scopeInput === null) return true
+	if (typeof scopeInput === "string") {
+		const trimmed = scopeInput.trim()
+		return trimmed === "" || trimmed === "{}"
+	}
+	if (typeof scopeInput === "object") {
+		return Object.keys(scopeInput as Record<string, unknown>).length === 0
+	}
+	return false
+}
+
 export function resolveTodoScope(scopeInput?: unknown): TodoScope {
-	if (scopeInput !== undefined) return normalizeTodoScope(scopeInput)
+	if (!isEmptyScopeInput(scopeInput)) return normalizeTodoScope(scopeInput)
 
 	// In-process subagent workers never inherit the orchestrator's active
 	// ferment/step scope. Their scope-less writes always target global so
