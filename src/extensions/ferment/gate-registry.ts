@@ -134,6 +134,7 @@ export const GATE_REGISTRY = {
 			"  - proxy:   greps output, checks file existence, counts lines — proves nothing about correctness",
 			"  - sentinel: touches a file or echoes a string — pure ceremony, no signal",
 			"Put that classification in rationale/evidence. The verdict itself should still be pass, flag, or omitted.",
+			"Prefer the strongest evidence you can actually produce: executable checks (test > smoke) outrank walkthrough evidence (run the artifact and record the command + observed output) which outranks a one-off inspected observation; use inspected only when nothing repeatable exists.",
 			"Return 'flag' if your verify is proxy or sentinel for a step that claims semantic work.",
 			"Return 'omitted' for steps with no verification command (your S1 evidence carries the weight).",
 		].join("\n"),
