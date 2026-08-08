@@ -1260,6 +1260,43 @@ describe("completeFerment", () => {
 		expect(h.storage.get(h.fermentId)?.grade?.unavailable).toBeUndefined()
 	})
 
+	it("renders the charter audit and persists per-clause verdicts", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "A",
+			rationale: "Shell is faithful and complete per the acceptance demo.",
+			recommendations: [],
+			charterVerdicts: [
+				{
+					clause: "recreate the Tahoe desktop",
+					status: "unmet",
+					evidence: "only a bootable shell replica exists",
+				},
+				{
+					clause: "feels like the real OS",
+					status: "met",
+					evidence: "window chrome and menus match references",
+				},
+			],
+		})
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("Charter audit")
+		expect(okText(result)).toContain("2 clause(s) — 1 met, 0 waived, 1 unmet")
+		expect(okText(result)).toContain("⚠ unmet: recreate the Tahoe desktop — only a bootable shell replica exists")
+		const persisted = h.storage.get(h.fermentId)?.grade?.charterVerdicts
+		expect(persisted).toHaveLength(2)
+		expect(persisted?.[0]?.status).toBe("unmet")
+		expect(persisted?.[1]?.status).toBe("met")
+	})
+
 	it("judge unavailable ships without a persisted grade", async () => {
 		const h = createHarness()
 		createTerminalFerment(h)

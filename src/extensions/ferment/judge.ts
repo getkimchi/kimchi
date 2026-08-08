@@ -20,7 +20,7 @@
  */
 
 import { complete } from "@earendil-works/pi-ai"
-import type { FermentCharter, Grade } from "../../ferment/types.js"
+import type { CharterClauseVerdict, FermentCharter, Grade } from "../../ferment/types.js"
 import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
 import { renderCharterFull } from "./charter.js"
 import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
@@ -263,6 +263,9 @@ export interface JudgeJourneyGradeOk {
 	rationale: string
 	/** Concrete fix bullets the grader recommends to reach A. Empty for A grades. */
 	recommendations: string[]
+	/** Ship-level charter audit: per-clause met/waived/unmet verdicts, present
+	 *  only when the ferment has an intent charter and the grader returned them. */
+	charterVerdicts?: CharterClauseVerdict[]
 }
 
 export interface JudgeJourneyGradeFailure {
@@ -346,7 +349,12 @@ Respond with EXACTLY one JSON object, no markdown:
 {"grade":"A"|"B"|"C"|"D"|"F","rationale":"<2-3 sentences citing specific phases, gates, or diff regions>","recommendations":["<bullet>",...]}
 
 If grade is A, recommendations MUST be an empty array [].
-If grade is B–F, each recommendation must include: what is wrong, why it matters, what must change, and what evidence would prove the fix. Do not include vague advice or "nice to have" items.`
+If grade is B–F, each recommendation must include: what is wrong, why it matters, what must change, and what evidence would prove the fix. Do not include vague advice or "nice to have" items.
+
+If an intent charter was provided above, also return per-clause verdicts — one entry per charter clause (the intent itself, wow factor, confirmed scope, acceptance demo when present):
+{"grade":"A","rationale":"...","recommendations":[],"charter_verdicts":[{"clause":"<clause text, shortened>","status":"met"|"waived"|"unmet","evidence":"<what demonstrates it>"}]}
+Use "unmet" when the finished artifact does not deliver what that clause asks, and "waived" only when the deviation was explicitly accepted (e.g. recorded in constraints with a named cost). Unmet clauses are strong downgrade signals under the rubric but do not gate ship by themselves.
+Omit charter_verdicts entirely when no charter was provided.`
 
 function buildJourneyGradeUserMsg(input: JudgeJourneyGradeInput): string {
 	const parts: string[] = []
@@ -407,7 +415,9 @@ export async function judgeJourneyGrade(
 			return withJourneyGradeAttemptDetail(failure, attempt)
 		}
 
-		const parsed = tryParseJson<{ grade?: string; rationale?: string; recommendations?: unknown }>(api.text)
+		const parsed = tryParseJson<{ grade?: string; rationale?: string; recommendations?: unknown; charter_verdicts?: unknown }>(
+			api.text,
+		)
 		if (parsed === undefined) {
 			return { ok: false, reason: "unparseable", detail: api.text.slice(0, 200) }
 		}
@@ -416,7 +426,8 @@ export async function judgeJourneyGrade(
 		}
 		const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
 		const recommendations = normalizeRecommendations(parsed.recommendations)
-		return { ok: true, grade: parsed.grade, rationale, recommendations }
+		const charterVerdicts = normalizeCharterVerdicts(parsed.charter_verdicts)
+		return { ok: true, grade: parsed.grade, rationale, recommendations, ...(charterVerdicts ? { charterVerdicts } : {}) }
 	}
 
 	throw new Error("unreachable: journey grade retry loop exited without a result")
@@ -652,17 +663,52 @@ function parseGraderResponse(text: string): GradedResult | undefined {
 	return undefined
 }
 
-/** Shape of the grader's JSON output. */
-type GradeJson = { grade?: string; rationale?: string; recommendations?: unknown }
+/** Shape of the grader's JSON output. charter_verdicts is journey-only: the
+ *  ship-level charter audit the completion grader emits when an intent
+ *  charter was provided. */
+type GradeJson = { grade?: string; rationale?: string; recommendations?: unknown; charter_verdicts?: unknown }
 
 /** Shared result type for both phase and journey grade parsing. */
-type GradedResult = { ok: true; grade: Grade; rationale: string; recommendations: string[] }
+type GradedResult = {
+	ok: true
+	grade: Grade
+	rationale: string
+	recommendations: string[]
+	charterVerdicts?: CharterClauseVerdict[]
+}
+
+/** Coerce the model's `charter_verdicts` field into clean verdict rows.
+ *  Accepts only well-formed {clause, status, evidence} objects with a real
+ *  status; silently drops everything else (judge output is unreliable JSON).
+ *  Caps 12 entries to bound the persisted payload. */
+function normalizeCharterVerdicts(raw: unknown): CharterClauseVerdict[] | undefined {
+	if (!Array.isArray(raw)) return undefined
+	const rows: CharterClauseVerdict[] = []
+	for (const item of raw) {
+		if (!item || typeof item !== "object") continue
+		const o = item as Record<string, unknown>
+		const clause = typeof o.clause === "string" ? o.clause.trim() : ""
+		const evidence = typeof o.evidence === "string" ? o.evidence.trim() : ""
+		const status = o.status === "met" || o.status === "waived" || o.status === "unmet" ? o.status : undefined
+		if (!clause || !evidence || !status) continue
+		rows.push({ clause: clause.slice(0, 200), status, evidence: evidence.slice(0, 400) })
+		if (rows.length >= 12) break
+	}
+	return rows.length > 0 ? rows : undefined
+}
 
 /** Build a GradedResult from parsed JSON. */
 function buildGradedResult(parsed: GradeJson): GradedResult {
 	const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
 	const recommendations = normalizeRecommendations(parsed.recommendations)
-	return { ok: true, grade: parsed.grade as Grade, rationale, recommendations }
+	const charterVerdicts = normalizeCharterVerdicts(parsed.charter_verdicts)
+	return {
+		ok: true,
+		grade: parsed.grade as Grade,
+		rationale,
+		recommendations,
+		...(charterVerdicts ? { charterVerdicts } : {}),
+	}
 }
 
 /** Extract all top-level JSON objects from a text string using a

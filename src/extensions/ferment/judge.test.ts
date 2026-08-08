@@ -316,6 +316,51 @@ describe("judgeJourneyGrade", () => {
 		expect(result.recommendations).toHaveLength(20)
 		expect(result.recommendations[0].length).toBe(600)
 	})
+
+	it("returns normalized charter verdicts when the grader provides them", async () => {
+		const apiCall = vi.fn(async () =>
+			ok(
+				'{"grade":"B","rationale":"shell works","recommendations":[],"charter_verdicts":[' +
+					'{"clause":"recreate the Tahoe desktop","status":"unmet","evidence":"only a bootable shell replica exists"},' +
+					'{"clause":"feels real","status":"met","evidence":"window chrome matches references"},' +
+					'{"clause":"x","status":"bogus","evidence":"y"},' +
+					'{"clause":"","status":"met","evidence":"y"},' +
+					"42 ]}",
+			),
+		)
+		const result = await judgeJourneyGrade(makeInput(), apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.charterVerdicts).toEqual([
+			{ clause: "recreate the Tahoe desktop", status: "unmet", evidence: "only a bootable shell replica exists" },
+			{ clause: "feels real", status: "met", evidence: "window chrome matches references" },
+		])
+	})
+
+	it("omits charterVerdicts when the grader provides none", async () => {
+		const apiCall = vi.fn(async () => ok('{"grade":"A","rationale":"clean"}'))
+		const result = await judgeJourneyGrade(makeInput(), apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.charterVerdicts).toBeUndefined()
+	})
+
+	it("caps charter verdict arrays and sizes to bound the persisted payload", async () => {
+		const many = Array.from({ length: 30 }, (_, i) => ({
+			clause: `clause ${i} ${"x".repeat(500)}`,
+			status: "met",
+			evidence: `evidence ${i} ${"y".repeat(800)}`,
+		}))
+		const apiCall = vi.fn(async () =>
+			ok(`{"grade":"A","rationale":"x","charter_verdicts":${JSON.stringify(many)}}`),
+		)
+		const result = await judgeJourneyGrade(makeInput(), apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.charterVerdicts).toHaveLength(12)
+		expect(result.charterVerdicts?.[0]?.clause.length).toBe(200)
+		expect(result.charterVerdicts?.[0]?.evidence.length).toBe(400)
+	})
 })
 
 describe("judgePhaseGrade", () => {
@@ -635,6 +680,22 @@ describe("judgeJourneyGradeViaSubagent", () => {
 		if (!result.ok) return
 		expect(result.grade).toBe("A")
 		expect(apiCall).not.toHaveBeenCalled()
+	})
+
+	it("surfaces the subagent's charter verdicts", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: '{"grade":"B","rationale":"near miss","recommendations":[],"charter_verdicts":[{"clause":"recreate the Tahoe desktop","status":"unmet","evidence":"only a shell replica"}]}',
+				status: "completed",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"C","rationale":"x"}'))
+		const result = await judgeJourneyGradeViaSubagent(makeInput(), spawn, apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.charterVerdicts).toEqual([
+			{ clause: "recreate the Tahoe desktop", status: "unmet", evidence: "only a shell replica" },
+		])
 	})
 
 	it("falls back to single-shot when subagent returns unparseable text", async () => {

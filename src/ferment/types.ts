@@ -153,6 +153,18 @@ export interface Phase {
 
 export type Grade = "A" | "B" | "C" | "D" | "F"
 
+/** Ship-level charter audit row: the completion grader's verdict on one
+ *  intent-charter clause. Advisory — rendered at ship and persisted on the
+ *  grade record; unmet clauses inform the grade through the rubric, they do
+ *  not gate it (v1 deliberately gates nothing new). */
+export interface CharterClauseVerdict {
+	/** The charter clause evaluated (echoed from the charter). */
+	clause: string
+	status: "met" | "waived" | "unmet"
+	/** What demonstrates the status (for waived: why the waiver was granted). */
+	evidence: string
+}
+
 export interface Delta {
 	category: "scope" | "quality" | "completeness" | "timing" | "correctness" | "other"
 	expected: string
@@ -170,6 +182,9 @@ export interface JudgeGrade {
 	 *  bullet covering what is wrong, why it matters, what must change, and
 	 *  what evidence would prove the fix. */
 	recommendations?: string[]
+	/** Ship-level charter audit: per-clause met/waived/unmet verdicts from the
+	 *  completion grader, present only when the ferment has an intent charter. */
+	charterVerdicts?: CharterClauseVerdict[]
 	/** Legacy marker for older completions that persisted a placeholder grade
 	 *  when the journey-grade judge was unreachable. New completions leave
 	 *  Ferment.grade unset instead of recording a synthetic grade. */

@@ -19,6 +19,7 @@ import {
 } from "../../../ferment/success-criteria.js"
 import { deriveDraftFermentTitle, normalizeFermentTitle } from "../../../ferment/title.js"
 import {
+	type CharterClauseVerdict,
 	DEFAULT_SCOPING_QUESTION_TYPE,
 	type FermentCharter,
 	type Grade,
@@ -840,6 +841,20 @@ export async function scopeFerment(
 	)
 }
 
+/** Advisory ship-level charter audit block for the complete_ferment result.
+ *  Counts met/waived/unmet, then lists the non-met rows (unmet first — that
+ *  is the signal the user most needs to see). Met clauses stay as a count.
+ *  Never gates ship: this is a report, not a gate. */
+export function renderCharterAudit(verdicts: CharterClauseVerdict[]): string {
+	const met = verdicts.filter((v) => v.status === "met").length
+	const waived = verdicts.filter((v) => v.status === "waived")
+	const unmet = verdicts.filter((v) => v.status === "unmet")
+	const lines = [`**Charter audit:** ${verdicts.length} clause(s) — ${met} met, ${waived.length} waived, ${unmet.length} unmet`]
+	for (const v of unmet) lines.push(`- ⚠ unmet: ${v.clause} — ${v.evidence}`)
+	for (const v of waived) lines.push(`- ↷ waived: ${v.clause} — ${v.evidence}`)
+	return lines.join("\n")
+}
+
 export async function completeFerment(
 	runtime: FermentRuntime,
 	params: CompleteFermentArgs,
@@ -926,13 +941,16 @@ export async function completeFerment(
 	const priorFermentRetries = runtime.getBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
 	const minimumAcceptableFermentGrade = priorFermentRetries === 0 ? "A" : "B"
 	const fermentGradeOrder: Record<Grade, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 }
-	let resolvedGrade: { grade: Grade; rationale: string; recommendations?: string[] } | undefined
+	let resolvedGrade:
+		| { grade: Grade; rationale: string; recommendations?: string[]; charterVerdicts?: CharterClauseVerdict[] }
+		| undefined
 	let gradeRationale: string
 	if (journeyResult.ok) {
 		resolvedGrade = {
 			grade: journeyResult.grade,
 			rationale: journeyResult.rationale,
 			recommendations: journeyResult.recommendations,
+			...(journeyResult.charterVerdicts ? { charterVerdicts: journeyResult.charterVerdicts } : {}),
 		}
 		gradeRationale = journeyResult.rationale
 
@@ -972,6 +990,7 @@ export async function completeFerment(
 					...(resolvedGrade.recommendations && resolvedGrade.recommendations.length > 0
 						? { recommendations: resolvedGrade.recommendations }
 						: {}),
+					...(resolvedGrade.charterVerdicts ? { charterVerdicts: resolvedGrade.charterVerdicts } : {}),
 				}
 			: undefined,
 	})
@@ -990,10 +1009,11 @@ export async function completeFerment(
 	const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
 	const gateLines = gates.map((g) => `  ${g.id} (${g.verdict}): ${g.rationale}`).join("\n")
 	const gradeLabel = resolvedGrade?.grade ?? "unavailable"
+	const charterAudit = resolvedGrade?.charterVerdicts?.length ? renderCharterAudit(resolvedGrade.charterVerdicts) : ""
 	const terminalNotice = `This ferment is complete and terminal. Do not call bash/read/list_ferments or any ferment tools for this ferment again without clear user consent. If the user wants a new ferment, tell them to run \`/ferment new "..."\` or \`/ferment one-shot "..."\` — do not search MCP tools or invent a tool.`
 
 	return toolOk(
-		`**Ferment "${fresh.name}"** complete${failedNote}.\n\n---\n\n**Final gates:**\n${gateLines}\n\n**Final grade:** ${gradeLabel} — ${gradeRationale}\n\n${params.final_summary ?? ""}\n\n---\n\n${terminalNotice}`,
+		`**Ferment "${fresh.name}"** complete${failedNote}.\n\n---\n\n**Final gates:**\n${gateLines}\n\n**Final grade:** ${gradeLabel} — ${gradeRationale}\n\n${params.final_summary ?? ""}${charterAudit ? `\n\n${charterAudit}` : ""}\n\n---\n\n${terminalNotice}`,
 	)
 }
 
