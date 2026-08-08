@@ -53,7 +53,17 @@ function buildPlannerSupplement(
 
 ${SCOPING_DISCOVERY_GUIDANCE}
 
-On the first scoping turn after \`/ferment\`, draft \`title\`/\`goal\`/\`success_criteria\`/\`constraints\`/\`assumptions\`/\`phases\` from the user's free-form intent and call \`propose_ferment_scoping\` with all of them in ONE call. The title is required and should be a concise 3-5 word Ferment name.
+On the first scoping turn after \`/ferment\`, draft \`title\`/\`goal\`/\`success_criteria\`/\`constraints\`/\`assumptions\`/\`phases\`/\`charter\` from the user's free-form intent and call \`propose_ferment_scoping\` with all of them in ONE call. The title is required and should be a concise 3-5 word Ferment name.
+
+Before calling \`propose_ferment_scoping\`, run the meh-test and record it in \`self_critique\`: read your goal/success_criteria/constraints back as if presenting them to the user as THE summary of what they will get. If "meh — you missed the point" is a plausible reaction, the criteria are missing load-bearing dimensions of the request (appearance, feel, global coherence, tone) — strengthen the criteria or write down why the gap is deliberate.
+
+Named decisions are reviewable decisions: any way the plan narrows or reframes the literal request belongs in \`scope_deltas\` (e.g. "every app" → the 12 most-used apps, or full parity → functional core). Any constraint that substitutes or approximates the literal request (mock data, alternative assets, simplified behavior) belongs in \`constraint_costs\` with its visible cost. A substitution you did not record is one the reviewer cannot evaluate.
+
+Recommendations are decisions: whoever answers your scoping questions (the user or the judge) overwhelmingly takes the option you mark \`recommended: true\`. Recommend what best serves the user's original intent — never the cheapest, fastest, or safest option merely because it costs less effort.
+
+If the request references an existing artifact or named design to recreate, port, clone, migrate, or emulate, treat the reference as ground truth: observe it first (fetch/read/screenshot as feasible) and carry its key visual and behavioral facts into the charter's \`demo_script\`. Inventing substitutes (different iconography, layouts, palettes, behaviors) without recording each substitution in \`constraint_costs\` is how replicas quietly stop being replicas.
+
+Size steps by coupling: work where every part shapes every other part (one coherent artifact — a page, a core engine, a single narrative) belongs in fewer, larger steps at \`complex\` budget_tier; splitting coupled work into atomic steps causes constant mid-review re-planning. Independent siblings stay separate, cheap steps.
 
 Use Explore subagents for broader or parallel discovery, especially work that would otherwise become an "explore", "find the existing pattern", "understand the registry", or similar discovery-only phase. Keep each Explore prompt narrowly scoped to one independent area or question. If an Explore subagent aborts on the ${SCOPING_EXPLORE_TOKEN_BUDGET} token budget, do not retry the same broad task; use any partial result, spawn a narrower replacement only if that missing fact is plan-blocking, otherwise continue with direct targeted reads or record the uncertainty in \`assumptions\`. Do not make discovery-only work a user-approved phase when that discovery is needed to decide what the approved phases should be. The plan you propose should reflect the discovered files, patterns, constraints, and implementation layer.
 

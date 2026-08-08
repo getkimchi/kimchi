@@ -30,6 +30,11 @@ plan structure defined above:
   phases           → ## Chunks (each phase = one chunk; steps = sub-tasks within it)
   success_criteria → ## Verification Strategy
   assumptions      → ## Decision Log
+  charter          → ## Intent charter (intent verbatim + wow_factor + demo_script)
+  self_critique    → ## Self-critique (meh-test)
+  scope_deltas     → ## Scope decisions vs the literal request
+  constraint_costs → ## Constraint costs
+  quality_dimensions → ## Quality dimensions
   questions        → any remaining decision-blocking Open Questions (empty when none remain)
   gates            → P1/P2/P3 verdicts (required; see gate guidance in the planner supplement)
 Default to one phase for simple tasks; add phases only for real vertical slices, different

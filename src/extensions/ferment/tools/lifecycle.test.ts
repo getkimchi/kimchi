@@ -10,8 +10,10 @@ import { createApplyAndPersist } from "../tool-helpers.js"
 import { FERMENT_TOOLS } from "../tool-names.js"
 import {
 	buildFreeformScopingFeedbackMessage,
+	buildPlanMarkdown,
 	completeFerment,
 	normalizeCharter,
+	normalizeScopingAdvisories,
 	registerLifecycleTools,
 	scopeFerment,
 } from "./lifecycle.js"
@@ -1589,5 +1591,83 @@ describe("normalizeCharter", () => {
 
 	it("rejects non-object charters with an actionable error", () => {
 		expect(normalizeCharter("a string")).toMatch(/charter must be an object/)
+	})
+})
+
+describe("normalizeScopingAdvisories", () => {
+	it("returns undefined when no advisory signal is present", () => {
+		expect(normalizeScopingAdvisories({})).toBeUndefined()
+		expect(normalizeScopingAdvisories({ self_critique: "   ", scope_deltas: [] })).toBeUndefined()
+	})
+
+	it("trims and drops blank entries", () => {
+		expect(
+			normalizeScopingAdvisories({
+				self_critique: "  tone uncovered, deliberate  ",
+				scope_deltas: [" every app → 12 ", "  "],
+				quality_dimensions: ["visual coherence"],
+			}),
+		).toEqual({
+			selfCritique: "tone uncovered, deliberate",
+			scopeDeltas: ["every app → 12"],
+			qualityDimensions: ["visual coherence"],
+		})
+	})
+
+	it("returns an actionable error for malformed constraint_costs items", () => {
+		expect(normalizeScopingAdvisories({ constraint_costs: [{ constraint: "mock", cost: "" }] })).toMatch(
+			/constraint_costs\[0\] requires non-empty/,
+		)
+	})
+
+	it("keeps well-formed constraint_costs", () => {
+		expect(
+			normalizeScopingAdvisories({ constraint_costs: [{ constraint: "mock weather", cost: "no real conditions" }] }),
+		).toEqual({ constraintCosts: [{ constraint: "mock weather", cost: "no real conditions" }] })
+	})
+})
+
+describe("buildPlanMarkdown", () => {
+	const baseArgs = {
+		title: "Tahoe Replica",
+		goal: "recreate the Tahoe desktop",
+		success_criteria: ["apps work"],
+		constraints: ["mock weather data"],
+		assumptions: "desktop browser only",
+		phases: [{ name: "Shell", goal: "desktop shell", steps: [] }],
+		questions: [],
+		gates: [
+			{ id: "P1", verdict: "pass" as const, rationale: "verify per phase", evidence: "pnpm test" },
+			{ id: "P2", verdict: "omitted" as const, rationale: "single phase", evidence: "n/a" },
+			{ id: "P3", verdict: "pass" as const, rationale: "ship checklist", evidence: "criteria" },
+		],
+	}
+
+	it("renders advisory sections when present", () => {
+		const md = buildPlanMarkdown({
+			...baseArgs,
+			advisories: {
+				scopeDeltas: ["every app → the 12 most-used apps"],
+				constraintCosts: [{ constraint: "mock weather", cost: "no real conditions" }],
+				qualityDimensions: ["global visual coherence — shell phase owns it"],
+				selfCritique: "visual tone uncovered; deliberate until grading",
+			},
+		})
+		expect(md).toContain("## Scope decisions (vs the literal request)")
+		expect(md).toContain("- every app → the 12 most-used apps")
+		expect(md).toContain("## Constraint costs")
+		expect(md).toContain("- mock weather — costs: no real conditions")
+		expect(md).toContain("## Quality dimensions")
+		expect(md).toContain("- global visual coherence — shell phase owns it")
+		expect(md).toContain("## Self-critique (meh-test)")
+		expect(md).toContain("visual tone uncovered; deliberate until grading")
+	})
+
+	it("renders no advisory sections when absent", () => {
+		const md = buildPlanMarkdown({ ...baseArgs })
+		expect(md).not.toContain("## Scope decisions")
+		expect(md).not.toContain("## Constraint costs")
+		expect(md).not.toContain("## Quality dimensions")
+		expect(md).not.toContain("## Self-critique")
 	})
 })

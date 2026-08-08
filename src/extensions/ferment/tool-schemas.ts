@@ -69,6 +69,47 @@ const SuccessCriteriaSchema = Type.Array(Type.String(), {
 	description: "Observable acceptance criteria. Each item must be one concrete, verifiable criterion.",
 })
 
+/** One constraint + the visible cost it imposes on the result versus the
+ *  literal request. Used to make substitutions explicit decisions. */
+const ConstraintCostSchema = Type.Object({
+	constraint: Type.String({ description: "The constraint text as it appears in constraints[]." }),
+	cost: Type.String({
+		description: "What this substitution or approximation visibly costs the result versus the literal request.",
+	}),
+})
+
+/** Advisory scoping quality signals shared by propose_ferment_scoping and
+ *  scope_ferment. All optional; they are RENDERED into the plan review / tool
+ *  output, not persisted on the ferment. Their purpose: make narrowings and
+ *  substitutions explicit, named decisions at the one checkpoint that exists,
+ *  and force the planner to answer the meh-test in writing. */
+const ScopingAdvisoryProps = {
+	self_critique: Type.Optional(
+		Type.String({
+			description:
+				"Meh-test: imagine the user reading just your goal/criteria/constraints as THE summary of what they will get. If 'meh — you missed the point' is a plausible reaction, the criteria miss load-bearing dimensions of the request. Name here which request dimensions are NOT covered by any success criterion and whether each gap is deliberate. When the request has qualities that can't be auto-checked (appearance, feel, tone, global coherence), you MUST name them here; 'all covered' is acceptable only when true.",
+		}),
+	),
+	scope_deltas: Type.Optional(
+		Type.Array(Type.String(), {
+			description:
+				"Each way this plan narrows or reframes the literal request and why (e.g. 'every app' → 'the 12 most-used apps'; 'full parity' → 'functional core'). Rendered in review; naming narrowings here makes them explicit decisions instead of silent ones.",
+		}),
+	),
+	constraint_costs: Type.Optional(
+		Type.Array(ConstraintCostSchema, {
+			description:
+				"For each constraint that substitutes or approximates the literal request (mock data, alternative assets, simplified behavior, deferred platforms), the visible cost of that substitution. Example: {constraint: 'weather uses bundled mock dataset', cost: 'weather does not show real conditions'}.",
+		}),
+	),
+	quality_dimensions: Type.Optional(
+		Type.Array(Type.String(), {
+			description:
+				"Aspects of 'done well' that span phases and no single step can own (global visual coherence, API consistency, doc tone, end-to-end flow). For each, name which phase/step answers to it, or note it as an owner gap the final review must cover. Omit only for plain scripts/CLIs with no cross-cutting feel.",
+		}),
+	),
+}
+
 /** Intent charter: the ferment's immutable objective anchor, drafted at scoping
  *  time and never rewritten afterwards. Persisted with the scope event, then
  *  re-injected into continuation nudges, compaction instructions, stage
@@ -159,6 +200,7 @@ export const ScopeParams = Type.Object({
 	),
 	phases: Type.Optional(Type.Array(PhaseProposalSchema)),
 	charter: Type.Optional(CharterSchema),
+	...ScopingAdvisoryProps,
 	gates: Type.Array(GateVerdictSchema, {
 		description:
 			'Plan-scope gate verdicts. Required ids: P1, P2, P3. See tool description for each gate\'s question and what counts as \'pass\' vs \'flag\'. Example: [{"id":"P1","verdict":"pass","rationale":"Every step has a verify command","evidence":"Step 1: pnpm test passes"}, {"id":"P2","verdict":"omitted","rationale":"Single phase, no ordering concerns","evidence":"n/a"}, {"id":"P3","verdict":"pass","rationale":"C3 will check test output and file existence","evidence":"Tests run via pnpm run test"}]',
@@ -244,6 +286,7 @@ export const ProposeScopingParams = Type.Object({
 		}),
 	]),
 	charter: Type.Optional(CharterSchema),
+	...ScopingAdvisoryProps,
 	questions: Type.Optional(
 		Type.Union([
 			Type.Array(ScopingQuestionSchema, {

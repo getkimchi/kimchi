@@ -75,7 +75,16 @@ type ScopeArgs = Static<typeof ScopeParams>
 type ProposeScopingArgs = Static<typeof ProposeScopingParams>
 type NormalizedProposeScopingArgs = Omit<
 	ProposeScopingArgs,
-	"constraints" | "phases" | "questions" | "assumptions" | "success_criteria" | "charter"
+	| "constraints"
+	| "phases"
+	| "questions"
+	| "assumptions"
+	| "success_criteria"
+	| "charter"
+	| "self_critique"
+	| "scope_deltas"
+	| "constraint_costs"
+	| "quality_dimensions"
 > & {
 	constraints?: string[]
 	assumptions?: string
@@ -83,6 +92,17 @@ type NormalizedProposeScopingArgs = Omit<
 	phases: ScopePhaseInput[]
 	questions?: ScopingQuestion[]
 	charter?: FermentCharter
+	advisories?: ScopingAdvisories
+}
+
+/** Advisory scoping quality signals. Not persisted on the Ferment — rendered
+ *  into the plan review and tool output so narrowings and substitutions
+ *  become visible, named decisions at the one checkpoint that exists. */
+export interface ScopingAdvisories {
+	selfCritique?: string
+	scopeDeltas?: string[]
+	constraintCosts?: { constraint: string; cost: string }[]
+	qualityDimensions?: string[]
 }
 type NormalizeProposeScopingResult =
 	| { ok: true; params: NormalizedProposeScopingArgs }
@@ -391,6 +411,85 @@ export function normalizeCharter(value: unknown): FermentCharter | undefined | s
 	}
 }
 
+/** Normalize the four advisory scoping signals. All optional; blank entries
+ *  are dropped. Returns undefined when nothing meaningful was provided so
+ *  renderers can skip the sections entirely. Returns an error string for
+ *  malformed constraint_costs items — the object shape is the one that
+ *  breaks silently when the model fumbles it. Exported for unit tests. */
+export function normalizeScopingAdvisories(params: {
+	self_critique?: string
+	scope_deltas?: string[]
+	constraint_costs?: { constraint: string; cost: string }[]
+	quality_dimensions?: string[]
+}): ScopingAdvisories | undefined | string {
+	const trimList = (list: string[] | undefined): string[] | undefined => {
+		if (!Array.isArray(list)) return undefined
+		const cleaned = list
+			.map((s) => (typeof s === "string" ? s.trim() : ""))
+			.filter((s) => s.length > 0)
+		return cleaned.length > 0 ? cleaned : undefined
+	}
+	const scopeDeltas = trimList(params.scope_deltas)
+	const qualityDimensions = trimList(params.quality_dimensions)
+	const selfCritique =
+		typeof params.self_critique === "string" && params.self_critique.trim().length > 0
+			? params.self_critique.trim()
+			: undefined
+
+	let constraintCosts: { constraint: string; cost: string }[] | undefined
+	if (Array.isArray(params.constraint_costs)) {
+		constraintCosts = []
+		for (const [i, item] of params.constraint_costs.entries()) {
+			if (!item || typeof item !== "object") {
+				return `constraint_costs[${i}] must be an object {constraint, cost}.`
+			}
+			const constraint = typeof item.constraint === "string" ? item.constraint.trim() : ""
+			const cost = typeof item.cost === "string" ? item.cost.trim() : ""
+			if (!constraint || !cost) {
+				return `constraint_costs[${i}] requires non-empty "constraint" and "cost" — name the constraint as it appears in constraints[] and the visible cost of the substitution. Omit the field entirely if no constraint substitutes or approximates the literal request.`
+			}
+			constraintCosts.push({ constraint, cost })
+		}
+		if (constraintCosts.length === 0) constraintCosts = undefined
+	}
+
+	if (!selfCritique && !scopeDeltas && !qualityDimensions && !constraintCosts) return undefined
+	return {
+		...(selfCritique ? { selfCritique } : {}),
+		...(scopeDeltas ? { scopeDeltas } : {}),
+		...(qualityDimensions ? { qualityDimensions } : {}),
+		...(constraintCosts ? { constraintCosts } : {}),
+	}
+}
+
+/** Render the advisory scoping signals as markdown sections for the plan
+ *  review and the scopeFerment tool output. Absent fields produce no section. */
+function renderAdvisorySections(advisories: ScopingAdvisories | undefined): string[] {
+	if (!advisories) return []
+	const sections: string[] = []
+	if (advisories.scopeDeltas && advisories.scopeDeltas.length > 0) {
+		sections.push("## Scope decisions (vs the literal request)")
+		sections.push(...advisories.scopeDeltas.map((d) => `- ${d}`))
+		sections.push("")
+	}
+	if (advisories.constraintCosts && advisories.constraintCosts.length > 0) {
+		sections.push("## Constraint costs")
+		sections.push(...advisories.constraintCosts.map((c) => `- ${c.constraint} — costs: ${c.cost}`))
+		sections.push("")
+	}
+	if (advisories.qualityDimensions && advisories.qualityDimensions.length > 0) {
+		sections.push("## Quality dimensions")
+		sections.push(...advisories.qualityDimensions.map((d) => `- ${d}`))
+		sections.push("")
+	}
+	if (advisories.selfCritique) {
+		sections.push("## Self-critique (meh-test)")
+		sections.push(advisories.selfCritique)
+		sections.push("")
+	}
+	return sections
+}
+
 function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizeProposeScopingResult {
 	const title = normalizeFermentTitle(params.title)
 	if (!title) return { ok: false, error: toolErr(TITLE_REQUIRED_ERROR) }
@@ -404,6 +503,8 @@ function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizePro
 	if (typeof questions === "string") return { ok: false, error: toolErr(questions) }
 	const charter = normalizeCharter(params.charter)
 	if (typeof charter === "string") return { ok: false, error: toolErr(charter) }
+	const advisories = normalizeScopingAdvisories(params)
+	if (typeof advisories === "string") return { ok: false, error: toolErr(advisories) }
 	return {
 		ok: true,
 		params: {
@@ -415,6 +516,7 @@ function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizePro
 			phases,
 			questions,
 			charter,
+			advisories,
 		},
 	}
 }
@@ -470,6 +572,7 @@ export function buildPlanMarkdown(params: NormalizedProposeScopingArgs): string 
 		"",
 		renderBullets("## Assumptions", splitListText(params.assumptions)),
 		"",
+		...renderAdvisorySections(params.advisories),
 		"## Phases",
 		"---",
 		"",
@@ -651,6 +754,8 @@ export async function scopeFerment(
 	if (!successCriteria.ok) return toolErr(successCriteria.error)
 	const charter = normalizeCharter(params.charter)
 	if (typeof charter === "string") return toolErr(charter)
+	const advisories = normalizeScopingAdvisories(params)
+	if (typeof advisories === "string") return toolErr(advisories)
 
 	// Plan-scope gate validation runs BEFORE any state mutation. The agent
 	// must declare verifiable success signals (P1), composition (P2), and
@@ -722,12 +827,13 @@ export async function scopeFerment(
 
 	const fresh = outcome.ferment
 	const phaseList = fresh.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
+	const advisoryBlock = advisories ? `\n\n${renderAdvisorySections(advisories).join("\n").trimEnd()}` : ""
 
 	runtime.setActive(fresh)
 
 	return toolOk(
 		withNextActionHint(
-			`**Ferment "${fresh.name}"** scoped and ready.\n\n- **ferment_id:** ${fresh.id}\n- **Goal:** ${params.goal}\n\n**Phases:**\n${phaseList}`,
+			`**Ferment "${fresh.name}"** scoped and ready.\n\n- **ferment_id:** ${fresh.id}\n- **Goal:** ${params.goal}\n\n**Phases:**\n${phaseList}${advisoryBlock}`,
 			fresh,
 			multiModelEnabled,
 		),
@@ -897,7 +1003,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: FERMENT_TOOLS.PROPOSE_SCOPING,
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: title, goal, success_criteria (array of acceptance criteria), constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. ferment_id is optional; omit it when no ferment is active and the host will create a new draft ferment from this proposal. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one multi question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: title, goal, success_criteria (array of acceptance criteria), constraints, assumptions, 1-7 phases, questions, gates, and the advisory signals (self_critique, scope_deltas, constraint_costs, quality_dimensions) when they apply. title is required and must be a concise 3-5 word Ferment name. ferment_id is optional; omit it when no ferment is active and the host will create a new draft ferment from this proposal. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one multi question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
