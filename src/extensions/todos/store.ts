@@ -1,3 +1,4 @@
+import { isAgentWorker } from "../agent-worker-context.js"
 import { createEmptyTodosSliceState, reduceReplaceList } from "./reducer.js"
 import { getTodoScopeKey, normalizeTodoScope } from "./scope.js"
 import type { TodoCounts, TodoItem, TodoScope, TodosSliceState, WriteTodosDetails, WriteTodosParams } from "./types.js"
@@ -96,6 +97,12 @@ export function getTodoState(sessionId: string): TodosSliceState {
 
 export function resolveTodoScope(scopeInput?: unknown): TodoScope {
 	if (scopeInput !== undefined) return normalizeTodoScope(scopeInput)
+
+	// In-process subagent workers never inherit the orchestrator's active
+	// ferment/step scope. Their scope-less writes always target global so
+	// worker lists are task-local and never borrow the parent's lifecycle
+	// labels (label only — the store is already keyed by session id).
+	if (isAgentWorker()) return GLOBAL_TODO_SCOPE
 
 	for (const provider of activeScopeProviders) {
 		const scope = provider()

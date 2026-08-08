@@ -234,6 +234,11 @@ function handlePhaseStarted(raw: unknown, sessionId: string): void {
 		return
 	}
 
+	// Clear stale global-scope todos from the previous phase so they don't
+	// bleed into the new phase's context. Global todos created during a phase
+	// are tactical/short-lived — they should not persist across phase boundaries.
+	applyWriteTodos({ scope: { kind: "global" }, todos: [] }, sessionId)
+
 	const { todos } = buildPhaseTodos(phase, ferment.id, sessionId)
 	const details = applyWriteTodos({ scope: { kind: "ferment", phaseId: payload.phaseId }, todos }, sessionId)
 
@@ -302,6 +307,11 @@ function handleStepStarted(raw: unknown, sessionId: string): void {
 	const payload = raw as FermentStepStartedPayload
 	const ferment = getActive()
 	if (!ferment || ferment.id !== payload.fermentId) return
+
+	// Clear stale global-scope todos from the previous step so they don't
+	// bleed into the new step's context. Global todos created during a step
+	// are tactical/short-lived — they should not persist across step boundaries.
+	applyWriteTodos({ scope: { kind: "global" }, todos: [] }, sessionId)
 
 	// Track the running step so the scope provider can auto-scope todo calls.
 	// Multiple parallel siblings coexist in the map; the scope provider handles
@@ -419,16 +429,11 @@ function handlePhaseCompleted(raw: unknown, sessionId: string): void {
 		return
 	}
 
-	// Mark all non-completed, non-blocked todos as completed. This handles steps
-	// that were skipped or otherwise didn't receive an explicit STEP_COMPLETED event.
-	const updated = currentTodos.map((todo) => {
-		if (todo.status !== "completed" && todo.status !== "blocked") {
-			return { ...todo, status: "completed" as TodoStatus }
-		}
-		return todo
-	})
-
-	applyWriteTodos({ scope: { kind: "ferment", phaseId: payload.phaseId }, todos: updated }, sessionId)
+	// Clear the ferment-scoped todos entirely. The phase is complete — its todo
+	// list (phase header + step lines) serves no further purpose and would only
+	// add noise to the model's ## Current Todos block. The user already saw the
+	// final state via the TUI widget.
+	applyWriteTodos({ scope: { kind: "ferment", phaseId: payload.phaseId }, todos: [] }, sessionId)
 
 	// Cleanup: drop the ID map for this phase since the phase is now complete
 	clearIdMap(payload.fermentId, payload.phaseId, sessionId)

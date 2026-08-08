@@ -23,8 +23,9 @@ export function renderTodoPromptBlock(): string {
 }
 
 export function appendTodoPromptBlockIfMissing(systemPrompt: string): string | undefined {
-	if (/(^|\n)## Todos(\n|$)/.test(systemPrompt)) return undefined
-	return `${systemPrompt.trimEnd()}\n\n${renderTodoPromptBlock()}`
+	const base = systemPrompt.trimEnd()
+	if (/(^|\n)## Todos(\n|$)/.test(base)) return undefined
+	return `${base}\n\n${renderTodoPromptBlock()}`
 }
 
 export function registerTodoPromptBlock(pi: ExtensionAPI): void {
@@ -193,22 +194,10 @@ export function renderTodoStateMarkdown(sessionId: string): string | undefined {
  *
  *  Returns `undefined` when the store is empty, letting the prompt-block
  *  pipeline skip cleanly. */
-export function registerTodoStateBlock(pi: ExtensionAPI, ctx: ExtensionContext): void {
-	createSystemPromptBlocks(pi, "todos").register({
-		id: "todo-state",
-		render: () => {
-			const sessionId = ctx.sessionManager.getSessionId()
-			return renderTodoStateMarkdown(sessionId)
-		},
-	})
-}
-
-/** Renders the todo state block exactly as the registered system-prompt block
- *  does. Use this in tests to validate the complete path rather than calling
- *  the raw renderer directly. */
+/** Renders the todo state block markdown directly. Use this in tests to
+ *  validate the complete path rather than calling the renderer directly. */
 export function renderTodoStateBlock(ctx: ExtensionContext): string | undefined {
-	const sessionId = ctx.sessionManager.getSessionId()
-	return renderTodoStateMarkdown(sessionId)
+	return renderTodoStateMarkdown(ctx.sessionManager.getSessionId())
 }
 
 export {
