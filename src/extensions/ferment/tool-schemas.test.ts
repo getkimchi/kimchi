@@ -488,6 +488,16 @@ describe("CompleteStepParams schema", () => {
 		}
 
 		expect(Value.Check(CompleteStepParams, payload)).toBe(true)
+		expect(
+			Value.Check(CompleteStepParams, {
+				...payload,
+				gates: [
+					payload.gates[0],
+					{ id: "S2", verdict: "inspected", rationale: "rendered and observed", evidence: "browser notes" },
+					payload.gates[2],
+				],
+			}),
+		).toBe(true)
 	})
 
 	it("requires worker_agent_id because completion validates the linked worker report", () => {

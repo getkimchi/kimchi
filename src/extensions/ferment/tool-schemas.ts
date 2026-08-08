@@ -48,13 +48,14 @@ const StepGateVerdictSchema = gateVerdictObject(
 			// Gate validation normalizes these before persistence.
 			Type.Literal("smoke"),
 			Type.Literal("test"),
+			Type.Literal("inspected"),
 			Type.Literal("syntactic"),
 			Type.Literal("proxy"),
 			Type.Literal("sentinel"),
 		],
 		{
 			description:
-				"Use pass | flag | omitted. For S2 only, smoke/test/syntactic normalize to pass and proxy/sentinel normalize to flag. S1 and S3 must use canonical verdicts.",
+				"Use pass | flag | omitted. For S2 only, smoke/test/inspected/syntactic normalize to pass and proxy/sentinel normalize to flag. S1 and S3 must use canonical verdicts.",
 		},
 	),
 )

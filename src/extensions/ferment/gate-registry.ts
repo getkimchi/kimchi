@@ -78,7 +78,8 @@ export const GATE_REGISTRY = {
 		guidance: [
 			"For every proposed phase, point to the concrete check that proves it succeeded.",
 			"A check is a bash command exit, a passing test, a function that returns a value matching a spec — something a script can decide.",
-			'Reject "looks good", "compiles", or "no errors logged" as success signals — those are not verifications.',
+			"When no script can decide it (rendered output, interactive behavior, visual/interaction quality), an inspected check also counts: the artifact is exercised in its native medium and the observation is recorded as evidence.",
+			'Reject bare "looks good", "compiles", or "no errors logged" as success signals — a claim with no recorded observation is not a verification.',
 			"Return 'flag' if any phase has no verifiable signal; 'pass' only when every phase does.",
 		].join("\n"),
 	},
@@ -128,6 +129,7 @@ export const GATE_REGISTRY = {
 			"Classify your own verify command honestly:",
 			"  - smoke:   runs the artifact end-to-end (function call, CLI invocation, request/response)",
 			"  - test:    executes a real test that asserts behavior",
+			"  - inspected: the artifact was exercised in its native medium with a recorded observation — opened the page and described what rendered, played the CLI flow and captured real output, walked the doc against its spec — used for behavior no script can decide",
 			"  - syntactic: type-check, compile-check, lint — proves shape, not behavior",
 			"  - proxy:   greps output, checks file existence, counts lines — proves nothing about correctness",
 			"  - sentinel: touches a file or echoes a string — pure ceremony, no signal",
@@ -218,7 +220,7 @@ export const GATE_REGISTRY = {
 		guidance: [
 			"Read every S2 and F1 verdict across the ferment.",
 			"If the entire chain is proxy/sentinel/syntactic, the work has never actually run — 'flag', refuse ship.",
-			"Cite at least one step where verify was 'smoke' or 'test' and exercised the load-bearing artifact.",
+			"Cite at least one step where verify was 'smoke', 'test', or 'inspected' and exercised the load-bearing artifact.",
 		].join("\n"),
 	},
 } as const satisfies Record<GateId, GateDefinition>
