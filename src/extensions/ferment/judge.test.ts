@@ -1,6 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { describe, expect, it, vi } from "vitest"
-import { captureJudgeContext } from "./state.js"
 import {
 	describeJudgeModel,
 	type GraderSubagentResult,
@@ -13,6 +12,7 @@ import {
 	judgePhaseGrade,
 	judgePhaseGradeViaSubagent,
 } from "./judge.js"
+import { captureJudgeContext } from "./state.js"
 
 describe("isGrade", () => {
 	it("accepts the five valid letters", () => {
@@ -376,9 +376,7 @@ describe("judgeJourneyGrade", () => {
 		expect(apiCall).toHaveBeenCalledTimes(2)
 		expect(result.ok).toBe(true)
 		if (!result.ok) return
-		expect(result.charterVerdicts).toEqual([
-			{ clause: "recreate Tahoe", status: "met", evidence: "shell recreated" },
-		])
+		expect(result.charterVerdicts).toEqual([{ clause: "recreate Tahoe", status: "met", evidence: "shell recreated" }])
 	})
 
 	it("soft-degrades after max attempts when verdicts never arrive (grade still lands)", async () => {
@@ -741,9 +739,15 @@ describe("judgeJourneyGradeViaSubagent", () => {
 			}),
 		)
 		const apiCall = vi.fn(async () =>
-			ok('{"grade":"A","rationale":"ok","charter_verdicts":[{"clause":"recreate Tahoe","status":"met","evidence":"yes"}]}'),
+			ok(
+				'{"grade":"A","rationale":"ok","charter_verdicts":[{"clause":"recreate Tahoe","status":"met","evidence":"yes"}]}',
+			),
 		)
-		const result = await judgeJourneyGradeViaSubagent(makeInput({ charter: { intent: "recreate Tahoe" } }), spawn, apiCall)
+		const result = await judgeJourneyGradeViaSubagent(
+			makeInput({ charter: { intent: "recreate Tahoe" } }),
+			spawn,
+			apiCall,
+		)
 		expect(spawn).toHaveBeenCalledTimes(1)
 		expect(apiCall).toHaveBeenCalledTimes(1)
 		expect(result.ok).toBe(true)

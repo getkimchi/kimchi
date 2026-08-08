@@ -53,7 +53,8 @@ export function describeJudgeModel(): string | undefined {
 	const judgeAssignment = getModelRoles().judge
 	const judgeModelStr = Array.isArray(judgeAssignment) ? judgeAssignment[0] : judgeAssignment
 	const judgeRef = judgeModelStr ? splitModelRef(judgeModelStr) : undefined
-	const model = (judgeRef && registry ? registry.find(judgeRef.provider, judgeRef.modelId) : undefined) ?? getJudgeModel()
+	const model =
+		(judgeRef && registry ? registry.find(judgeRef.provider, judgeRef.modelId) : undefined) ?? getJudgeModel()
 	if (!model) return undefined
 	return `${model.provider}/${model.id}`
 }
