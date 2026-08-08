@@ -216,6 +216,19 @@ const DEFAULT_PROBE = `(() => {
 			aria: counts("[role],[aria-label]"),
 		},
 		testIds: [...document.querySelectorAll("[data-testid]")].map((el) => el.getAttribute("data-testid")).slice(0, 200),
+		// Rest-state window/dialog inventory: apps already open at boot are
+		// invisible to interaction-diff probes (the replay's About-on-boot case),
+		// so record what's alive when the probe runs.
+		windowSurfaces: [...document.querySelectorAll('[data-testid^="window-"],[data-testid="window"]')]
+			.slice(0, 20)
+			.map((el) => ({ testid: el.getAttribute("data-testid"), text: (el.innerText ?? "").slice(0, 120) })),
+		openDialogs: [...document.querySelectorAll('[role="dialog"]')]
+			.slice(0, 20)
+			.map((el) => ({
+				label: el.getAttribute("aria-label") ?? "",
+				testid: el.getAttribute("data-testid") ?? undefined,
+				text: (el.innerText ?? "").slice(0, 120),
+			})),
 		customGlobals: customGlobals.slice(0, 250),
 		storeish,
 		consoleErrors: window.__harvestErrors ?? [],
@@ -309,7 +322,17 @@ async function harvest(args) {
 	console.log(`bundle -> ${args.out}`)
 }
 
-harvest(parseArgs(process.argv)).catch((err) => {
-	console.error(`harvest failed: ${err.message}`)
+const mainArgs = parseArgs(process.argv)
+harvest(mainArgs).catch((err) => {
+	// Durable failure evidence: the first replay harvest died silently (an
+	// expired background handle swallowed stderr) — never lose the error again.
+	const msg = err instanceof Error ? err.message : String(err)
+	try {
+		mkdirSync(mainArgs.out, { recursive: true })
+		writeFileSync(join(mainArgs.out, "crash.log"), `${err instanceof Error ? (err.stack ?? msg) : msg}\n`)
+		console.error(`harvest failed (evidence: ${join(mainArgs.out, "crash.log")}): ${msg}`)
+	} catch (writeErr) {
+		console.error(`harvest failed: ${msg}; additionally failed to write crash.log: ${writeErr}`)
+	}
 	process.exit(1)
 })
