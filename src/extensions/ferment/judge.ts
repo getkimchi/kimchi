@@ -20,8 +20,9 @@
  */
 
 import { complete } from "@earendil-works/pi-ai"
-import type { Grade } from "../../ferment/types.js"
+import type { FermentCharter, Grade } from "../../ferment/types.js"
 import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
+import { renderCharterFull } from "./charter.js"
 import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
 
 const GRADES: Grade[] = ["A", "B", "C", "D", "F"]
@@ -243,6 +244,9 @@ export interface JourneyDiff {
 export interface JudgeJourneyGradeInput {
 	fermentName: string
 	goal: string
+	/** Intent charter rendered into the grading prompt when present — the
+	 *  original, un-narrowed user intent the grade answers to. */
+	charter?: FermentCharter
 	successCriteria: string
 	finalSummary: string
 	phases: ReadonlyArray<JourneyPhaseInput>
@@ -281,6 +285,8 @@ function withJourneyGradeAttemptDetail(failure: JudgeJourneyGradeFailure, attemp
 const JOURNEY_GRADE_SYSTEM = `You are a strict production-readiness review council compressed into one reviewer, acting as the final reviewer for an autonomous coding ferment. The agent has completed all phases and the ferment-scope gates (C1/C2/C3) all passed — so shipping is allowed. Your job is NOT to decide whether to ship. Your job is to evaluate the completed result against the stated goal, implementation, tests, and evidence, and assign a letter grade A–F that describes HOW WELL the work was done.
 
 Your bias is PESSIMISTIC. Most work is B or C, not A. A is reserved for ferments that delivered cleanly without retries, with concrete real-execution verification at every phase, and where every gate verdict was substantiated with specific evidence.
+
+When an intent charter is provided below, grade how well the result fulfills the user's ORIGINAL INTENT recorded there — the plan and criteria only refine it. A result faithful to narrowed criteria but missing the intent is at best C.
 
 ## Hard constraints
 
@@ -346,6 +352,10 @@ function buildJourneyGradeUserMsg(input: JudgeJourneyGradeInput): string {
 	const parts: string[] = []
 	parts.push(`Ferment: "${input.fermentName}"`)
 	parts.push(`Goal: ${input.goal || "(none specified)"}`)
+	if (input.charter) {
+		parts.push("")
+		parts.push(renderCharterFull(input.charter))
+	}
 	parts.push(`Success criteria: ${input.successCriteria || "(none specified)"}`)
 	parts.push(`Final summary: ${input.finalSummary || "(none)"}`)
 	parts.push("")
@@ -431,6 +441,9 @@ export interface JudgePhaseInput {
 	fermentName: string
 	phaseName: string
 	phaseGoal: string
+	/** Intent charter rendered into the grading prompt when present — the
+	 *  original, un-narrowed user intent this phase should serve. */
+	charter?: FermentCharter
 	/** The agent's complete_ferment_phase summary. */
 	phaseSummary: string
 	/** Step summaries rendered as a single text block (one bullet per step). */
@@ -465,6 +478,8 @@ export type JudgePhaseGradeResult = JudgePhaseGradeOk | JudgePhaseGradeFailure
 const PHASE_GRADE_SYSTEM = `You are a strict production-readiness review council compressed into one reviewer, acting as the per-phase reviewer for an autonomous coding ferment. The agent has completed a single phase and the phase-scope gates (F1/F2/F3) all passed — so phase advancement is allowed by the gates. Your job is NOT to decide whether the phase advances. Your job is to evaluate the phase result against its stated goal, implementation, tests, and evidence, and assign a letter grade A–F that describes HOW WELL the phase was done.
 
 Your bias is PESSIMISTIC. Most phase work is B or C, not A. A is reserved for phases that delivered cleanly without retries, with concrete real-execution verification, and where every gate verdict was substantiated with specific evidence.
+
+When an intent charter is provided below, grade this phase's contribution toward the user's ORIGINAL INTENT recorded there, not only toward the enumerated step outputs.
 
 ## Hard constraints
 
@@ -525,6 +540,10 @@ function buildPhaseGradeUserMsg(input: JudgePhaseInput): string {
 	parts.push(`Ferment: "${input.fermentName}"`)
 	parts.push(`Phase: "${input.phaseName}"`)
 	parts.push(`Phase goal: ${input.phaseGoal || "(none specified)"}`)
+	if (input.charter) {
+		parts.push("")
+		parts.push(renderCharterFull(input.charter))
+	}
 	parts.push(`Phase summary: ${input.phaseSummary || "(none)"}`)
 	if (input.stepSummaries && input.stepSummaries.trim().length > 0) {
 		parts.push("")
@@ -755,6 +774,10 @@ function buildPhaseGraderPrompt(input: JudgePhaseInput): string {
 	parts.push(`Ferment: "${input.fermentName}"`)
 	parts.push(`Phase: "${input.phaseName}"`)
 	parts.push(`Phase goal: ${input.phaseGoal || "(none specified)"}`)
+	if (input.charter) {
+		parts.push("")
+		parts.push(renderCharterFull(input.charter))
+	}
 	parts.push(`Phase summary: ${input.phaseSummary || "(none)"}`)
 	if (input.stepSummaries && input.stepSummaries.trim().length > 0) {
 		parts.push("")
@@ -806,6 +829,10 @@ function buildJourneyGraderPrompt(input: JudgeJourneyGradeInput): string {
 	parts.push("")
 	parts.push(`Ferment: "${input.fermentName}"`)
 	parts.push(`Goal: ${input.goal || "(none specified)"}`)
+	if (input.charter) {
+		parts.push("")
+		parts.push(renderCharterFull(input.charter))
+	}
 	parts.push(`Success criteria: ${input.successCriteria || "(none specified)"}`)
 	parts.push(`Final summary: ${input.finalSummary || "(none)"}`)
 	parts.push("")

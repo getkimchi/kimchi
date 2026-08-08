@@ -31,6 +31,33 @@ export interface ScopingAnswer {
 	confirmedAt: string
 }
 
+/**
+ * Intent charter — the ferment's immutable objective anchor. Drafted at
+ * scoping time by the planner from the user's original request (plus any
+ * scoping answers), persisted with the scope event, and never rewritten
+ * afterwards. Re-injected into continuation nudges, compaction instructions,
+ * stage handoffs, and grader prompts so long-running ferments keep the
+ * original intent in view instead of drifting toward the enumerated proxy.
+ *
+ * All fields beyond `intent` are optional: absent charter or absent fields
+ * change nothing (read-compat with ferments scoped before charters existed).
+ */
+export interface FermentCharter {
+	/** The user's original request, verbatim as the planner received it
+	 *  (trimmed of boilerplate). This is the anchor every grader and the
+	 *  ship decision ultimately answer to. */
+	intent: string
+	/** One line: what outcome would make the user say "wow" rather than
+	 *  "meh". Drafted from the intent + scoping answers, not asked directly. */
+	wowFactor?: string
+	/** One short paragraph: what is in scope and what is explicitly out. */
+	confirmedScope?: string
+	/** 2-4 beats describing what a successful final walkthrough of the
+	 *  finished artifact would show, stated in the artifact's native medium
+	 *  (load the page and see X; run the CLI and get Y). */
+	demoScript?: string
+}
+
 export interface ScopingQuestionOption {
 	id: string
 	label: string
@@ -72,6 +99,9 @@ export interface Ferment {
 	goal?: string
 	successCriteria?: string[]
 	constraints?: string[]
+	/** Immutable objective anchor drafted at scope time. Optional: ferments
+	 *  scoped before charters existed simply lack it. */
+	charter?: FermentCharter
 
 	status: FermentStatus
 	activePhaseId?: string

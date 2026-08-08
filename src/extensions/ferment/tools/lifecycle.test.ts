@@ -11,6 +11,7 @@ import { FERMENT_TOOLS } from "../tool-names.js"
 import {
 	buildFreeformScopingFeedbackMessage,
 	completeFerment,
+	normalizeCharter,
 	registerLifecycleTools,
 	scopeFerment,
 } from "./lifecycle.js"
@@ -1553,5 +1554,40 @@ describe("interactive ferment tool visibility (registerLifecycleTools)", () => {
 
 		// No disable writes — UI is attached, tools work normally.
 		expect(pi.setActiveCalls).toEqual([])
+	})
+})
+
+describe("normalizeCharter", () => {
+	it("passes through an absent charter", () => {
+		expect(normalizeCharter(undefined)).toBeUndefined()
+	})
+
+	it("converts snake_case schema fields to the camelCase FermentCharter", () => {
+		expect(
+			normalizeCharter({
+				intent: "  Recreate the Tahoe desktop  ",
+				wow_factor: "Looks like the real OS",
+				confirmed_scope: "All apps; no backend.",
+				demo_script: "Boot; Finder opens",
+			}),
+		).toEqual({
+			intent: "Recreate the Tahoe desktop",
+			wowFactor: "Looks like the real OS",
+			confirmedScope: "All apps; no backend.",
+			demoScript: "Boot; Finder opens",
+		})
+	})
+
+	it("drops empty optional fields instead of persisting blanks", () => {
+		expect(normalizeCharter({ intent: "Do the thing", wow_factor: "   " })).toEqual({ intent: "Do the thing" })
+	})
+
+	it("returns an actionable error when intent is missing or blank", () => {
+		expect(normalizeCharter({ intent: "   " })).toMatch(/charter\.intent is required/)
+		expect(normalizeCharter({ wow_factor: "x" })).toMatch(/charter\.intent is required/)
+	})
+
+	it("rejects non-object charters with an actionable error", () => {
+		expect(normalizeCharter("a string")).toMatch(/charter must be an object/)
 	})
 })

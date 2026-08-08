@@ -21,7 +21,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { determineNextAction } from "../../ferment/engine.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { SuccessCriteria } from "../../ferment/success-criteria.js"
-import type { Ferment } from "../../ferment/types.js"
+import type { Ferment, FermentCharter } from "../../ferment/types.js"
 import { SCOPING_DISCOVERY_GUIDANCE } from "./constants.js"
 import { promptEditor } from "./prompt-ui.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
@@ -57,6 +57,8 @@ export interface PendingScope {
 	constraints: string[]
 	phases?: ScopePhaseInput[]
 	assumptions?: string
+	/** Intent charter proposed alongside the scope; applied to the ferment on confirm. */
+	charter?: FermentCharter
 	/** Number of times propose_ferment_scoping has been called for this ferment. Reset on confirm. */
 	proposeIterations?: number
 }
@@ -68,6 +70,7 @@ export interface AttachPendingProposalPartial {
 	constraints?: string[]
 	assumptions?: string
 	phases?: ScopePhaseInput[]
+	charter?: FermentCharter
 	proposeIterations?: number
 }
 
@@ -83,6 +86,7 @@ export function attachPendingProposal(fermentId: string, partial: AttachPendingP
 		constraints: partial.constraints ?? [],
 		phases: partial.phases,
 		assumptions: partial.assumptions,
+		charter: partial.charter,
 		proposeIterations: partial.proposeIterations,
 	})
 	return true

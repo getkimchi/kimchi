@@ -21,6 +21,7 @@ import { normalizeSuccessCriteria } from "./success-criteria.js"
 import type {
 	Decision,
 	Ferment,
+	FermentCharter,
 	FermentWorkMode,
 	JudgeGrade,
 	Memory,
@@ -64,6 +65,7 @@ export type FermentEventType =
 	| "scoping_constraints_set"
 	| "scoping_phases_set"
 	| "scoping_assumptions_set"
+	| "scoping_charter_set"
 	| "ferment_planned"
 	| "ferment_running"
 	| "ferment_paused"
@@ -152,6 +154,10 @@ export interface ScopingPhasesSetPayload {
 
 export interface ScopingAssumptionsSetPayload {
 	assumptions: NonNullable<Scoping["assumptions"]>
+}
+
+export interface ScopingCharterSetPayload {
+	charter: FermentCharter
 }
 
 /** Status-transition events carry no payload data — pre/postStateHash captures the change. */
@@ -311,6 +317,10 @@ export type ScopingAssumptionsSetEvent = FermentEventBase & {
 	type: "scoping_assumptions_set"
 	payload: ScopingAssumptionsSetPayload
 }
+export type ScopingCharterSetEvent = FermentEventBase & {
+	type: "scoping_charter_set"
+	payload: ScopingCharterSetPayload
+}
 export type FermentPlannedEvent = FermentEventBase & { type: "ferment_planned"; payload: FermentPlannedPayload }
 export type FermentRunningEvent = FermentEventBase & { type: "ferment_running"; payload: FermentRunningPayload }
 export type FermentPausedEvent = FermentEventBase & { type: "ferment_paused"; payload: FermentPausedPayload }
@@ -352,6 +362,7 @@ export type FermentEvent =
 	| ScopingConstraintsSetEvent
 	| ScopingPhasesSetEvent
 	| ScopingAssumptionsSetEvent
+	| ScopingCharterSetEvent
 	| FermentPlannedEvent
 	| FermentRunningEvent
 	| FermentPausedEvent
@@ -1024,6 +1035,15 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			return {
 				...state,
 				scoping: { ...state.scoping, assumptions: p.assumptions },
+				updatedAt: event.timestamp,
+			}
+		}
+		case "scoping_charter_set": {
+			if (!state) throw new Error("scoping_charter_set requires existing state")
+			const p = event.payload as ScopingCharterSetPayload
+			return {
+				...state,
+				charter: p.charter,
 				updatedAt: event.timestamp,
 			}
 		}

@@ -458,6 +458,7 @@ export async function completePhase(
 		fermentName: f.name,
 		phaseName: phase.name,
 		phaseGoal: phase.goal,
+		charter: f.charter,
 		phaseSummary: params.summary ?? "",
 		stepSummaries: stepSummariesText,
 		gateVerdicts: (params.gates ?? []).map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),

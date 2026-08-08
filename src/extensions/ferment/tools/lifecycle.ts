@@ -20,6 +20,7 @@ import {
 import { deriveDraftFermentTitle, normalizeFermentTitle } from "../../../ferment/title.js"
 import {
 	DEFAULT_SCOPING_QUESTION_TYPE,
+	type FermentCharter,
 	type Grade,
 	SCOPING_QUESTION_TYPES,
 	type ScopingQuestion,
@@ -30,6 +31,7 @@ import { getMultiModelEnabled } from "../../multi-model.js"
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
 import { askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
+import { renderCharterFull } from "../charter.js"
 import { pr_bold, pr_dim } from "../colors.js"
 import { createFerment } from "../create.js"
 import { emitFermentCreated } from "../domain-events-emitter.js"
@@ -73,13 +75,14 @@ type ScopeArgs = Static<typeof ScopeParams>
 type ProposeScopingArgs = Static<typeof ProposeScopingParams>
 type NormalizedProposeScopingArgs = Omit<
 	ProposeScopingArgs,
-	"constraints" | "phases" | "questions" | "assumptions" | "success_criteria"
+	"constraints" | "phases" | "questions" | "assumptions" | "success_criteria" | "charter"
 > & {
 	constraints?: string[]
 	assumptions?: string
 	success_criteria?: SuccessCriteria
 	phases: ScopePhaseInput[]
 	questions?: ScopingQuestion[]
+	charter?: FermentCharter
 }
 type NormalizeProposeScopingResult =
 	| { ok: true; params: NormalizedProposeScopingArgs }
@@ -358,6 +361,36 @@ function normalizeScopingQuestionType(
 	return { ok: true, ...toScopingQuestionType(value) }
 }
 
+/** Normalize the optional intent charter. Schema fields are snake_case
+ *  (wow_factor etc.); the persisted FermentCharter is camelCase. Returns an
+ *  error string when a provided charter has no usable intent — the charter
+ *  exists to hold the verbatim anchor, so an empty intent is never worth
+ *  persisting. An absent charter is always valid (undefined).
+ *
+ *  Exported for unit tests — the schema→domain conversion edge cases are
+ *  easier to pin here than through the full tool harness. */
+export function normalizeCharter(value: unknown): FermentCharter | undefined | string {
+	if (value === undefined || value === null) return undefined
+	if (typeof value !== "object" || Array.isArray(value)) {
+		return 'charter must be an object with at least an "intent" string; omit the field entirely when no charter is being drafted.'
+	}
+	const raw = value as Record<string, unknown>
+	const intent = typeof raw.intent === "string" ? raw.intent.trim() : ""
+	if (!intent) {
+		return 'charter.intent is required when charter is provided — capture the user\'s original request verbatim (trimmed of boilerplate). Omit "charter" entirely only if there is no intent to anchor.'
+	}
+	const opt = (v: unknown): string | undefined => (typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined)
+	const wow = opt(raw.wow_factor)
+	const scope = opt(raw.confirmed_scope)
+	const demo = opt(raw.demo_script)
+	return {
+		intent,
+		...(wow ? { wowFactor: wow } : {}),
+		...(scope ? { confirmedScope: scope } : {}),
+		...(demo ? { demoScript: demo } : {}),
+	}
+}
+
 function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizeProposeScopingResult {
 	const title = normalizeFermentTitle(params.title)
 	if (!title) return { ok: false, error: toolErr(TITLE_REQUIRED_ERROR) }
@@ -369,6 +402,8 @@ function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizePro
 	if (typeof phases === "string") return { ok: false, error: toolErr(phases) }
 	const questions = normalizeQuestions(params.questions)
 	if (typeof questions === "string") return { ok: false, error: toolErr(questions) }
+	const charter = normalizeCharter(params.charter)
+	if (typeof charter === "string") return { ok: false, error: toolErr(charter) }
 	return {
 		ok: true,
 		params: {
@@ -379,6 +414,7 @@ function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizePro
 			assumptions: normalizeAssumptions(params.assumptions),
 			phases,
 			questions,
+			charter,
 		},
 	}
 }
@@ -427,6 +463,7 @@ export function buildPlanMarkdown(params: NormalizedProposeScopingArgs): string 
 		"",
 		renderWrapped("## Goal", params.goal),
 		"",
+		...(params.charter ? [renderCharterFull(params.charter), ""] : []),
 		renderBullets("## Success criteria", params.success_criteria ?? []),
 		"",
 		renderBullets("## Constraints", params.constraints ?? []),
@@ -612,6 +649,8 @@ export async function scopeFerment(
 	if (!title) return toolErr(TITLE_REQUIRED_ERROR)
 	const successCriteria = normalizeSuccessCriteriaInput(params.success_criteria)
 	if (!successCriteria.ok) return toolErr(successCriteria.error)
+	const charter = normalizeCharter(params.charter)
+	if (typeof charter === "string") return toolErr(charter)
 
 	// Plan-scope gate validation runs BEFORE any state mutation. The agent
 	// must declare verifiable success signals (P1), composition (P2), and
@@ -659,6 +698,7 @@ export async function scopeFerment(
 		successCriteria: successCriteria.value,
 		constraints: params.constraints,
 		assumptions: normalizeAssumptions(params.assumptions),
+		charter,
 		phases: params.phases ?? [],
 	}
 	const outcome = applyAndPersist(params.ferment_id, cmd)
@@ -744,6 +784,7 @@ export async function completeFerment(
 			{
 				fermentName: ferment.name,
 				goal: ferment.goal ?? "",
+				charter: ferment.charter,
 				successCriteria: renderSuccessCriteria(ferment.successCriteria, ""),
 				finalSummary: params.final_summary ?? "",
 				phases: ferment.phases.map((p) => {
@@ -942,6 +983,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				constraints: params.constraints,
 				assumptions: params.assumptions,
 				phases: params.phases,
+				charter: params.charter,
 				proposeIterations: nextIterations,
 			})
 
@@ -1005,6 +1047,7 @@ ${renderGateGuidance("scope_ferment")}`,
 					constraints: params.constraints ?? [],
 					assumptions: params.assumptions ?? "",
 					phases: params.phases,
+					charter: params.charter,
 					planMarkdown: planEntry,
 					proposeIterations: nextIterations,
 					savedAt: new Date().toISOString(),

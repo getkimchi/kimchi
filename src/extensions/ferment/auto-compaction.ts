@@ -38,6 +38,7 @@ import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { getCompactionEnabled } from "../../settings-watcher.js"
 import { isToolCallInFlight } from "../../tool-call-in-flight.js"
+import { renderCharterCompact } from "./charter.js"
 import { COMPACTION_RESERVE_TOKENS } from "../compaction-thresholds.js"
 import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -76,6 +77,10 @@ export interface FermentHandoffDetails {
 	fermentName: string
 	fermentGoal?: string
 	successCriteria?: string[]
+	/** Compact-rendered intent charter (see charter.ts) — keeps the original
+	 *  user intent in the model's view at every stage transition. Optional:
+	 *  ferments scoped before charters existed lack it. */
+	charter?: string
 	activePhaseName: string
 	activePhaseGoal: string
 	nextStepDescription?: string
@@ -261,6 +266,11 @@ export function buildCustomInstructions(ferment: Ferment, pending: PendingCompac
 		lines.push(`- Success criteria: ${ferment.successCriteria.join("; ")}`)
 	}
 
+	if (ferment.charter) {
+		lines.push("- Intent charter (preserve verbatim — it is the grading anchor for this ferment):")
+		for (const line of renderCharterCompact(ferment.charter).split("\n")) lines.push(`  ${line}`)
+	}
+
 	// For step completions: show the phase that is still active.
 	// For phase completions: show the just-completed phase as "completed", then
 	// show the next active phase (if any) as the current context.
@@ -316,6 +326,11 @@ export function buildMidTurnCustomInstructions(
 		lines.push(`- Success criteria: ${ferment.successCriteria.join("; ")}`)
 	}
 
+	if (ferment.charter) {
+		lines.push("- Intent charter (preserve verbatim — it is the grading anchor for this ferment):")
+		for (const line of renderCharterCompact(ferment.charter).split("\n")) lines.push(`  ${line}`)
+	}
+
 	if (phase) {
 		lines.push(`- Active phase: ${phase.name} — ${phase.goal}`)
 	}
@@ -345,6 +360,7 @@ export function buildHandoffDetails(
 		fermentName: ferment.name,
 		fermentGoal: ferment.goal,
 		successCriteria: ferment.successCriteria,
+		charter: ferment.charter ? renderCharterCompact(ferment.charter) : undefined,
 		activePhaseName: activePhase?.name ?? "unknown",
 		activePhaseGoal: activePhase?.goal ?? "",
 		nextStepDescription: nextAction?.nextStepDescription,

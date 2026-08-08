@@ -69,6 +69,42 @@ const SuccessCriteriaSchema = Type.Array(Type.String(), {
 	description: "Observable acceptance criteria. Each item must be one concrete, verifiable criterion.",
 })
 
+/** Intent charter: the ferment's immutable objective anchor, drafted at scoping
+ *  time and never rewritten afterwards. Persisted with the scope event, then
+ *  re-injected into continuation nudges, compaction instructions, stage
+ *  handoffs, and grader prompts so long runs cannot drift from the original
+ *  intent toward the narrowed plan. All fields beyond intent are optional. */
+export const CharterSchema = Type.Object(
+	{
+		intent: Type.String({
+			description:
+				"The user's original request, verbatim as you received it (verbatim minus pleasantries). This is the anchor — never paraphrase it into the plan's language.",
+		}),
+		wow_factor: Type.Optional(
+			Type.String({
+				description:
+					"One line: what outcome would genuinely delight the user ('wow', not 'meh'), drafted from the intent and scoping answers — what a great result feels like, not merely a correct one.",
+			}),
+		),
+		confirmed_scope: Type.Optional(
+			Type.String({
+				description:
+					"One short paragraph: what is in scope and what is explicitly out. If the plan narrows the literal request (fewer items, phase-only scope, deferred dimensions), the narrowing must be visible here.",
+			}),
+		),
+		demo_script: Type.Optional(
+			Type.String({
+				description:
+					"2-4 beats describing what a successful final walkthrough of the FINISHED artifact would show, stated in the artifact's native medium: load the page and see X; run the CLI and get exact output Y; read the doc and find section Z.",
+			}),
+		),
+	},
+	{
+		description:
+			"Optional intent charter. Provide it when the user's request is substantive; it anchors grading and ship decisions against the original intent rather than the narrowed plan.",
+	},
+)
+
 // Shared phase schema — used by both scope_ferment (headless path) and
 // propose_ferment_scoping (interactive path). Keep them identical so a proposed plan
 // can be applied verbatim.
@@ -122,6 +158,7 @@ export const ScopeParams = Type.Object({
 		]),
 	),
 	phases: Type.Optional(Type.Array(PhaseProposalSchema)),
+	charter: Type.Optional(CharterSchema),
 	gates: Type.Array(GateVerdictSchema, {
 		description:
 			'Plan-scope gate verdicts. Required ids: P1, P2, P3. See tool description for each gate\'s question and what counts as \'pass\' vs \'flag\'. Example: [{"id":"P1","verdict":"pass","rationale":"Every step has a verify command","evidence":"Step 1: pnpm test passes"}, {"id":"P2","verdict":"omitted","rationale":"Single phase, no ordering concerns","evidence":"n/a"}, {"id":"P3","verdict":"pass","rationale":"C3 will check test output and file existence","evidence":"Tests run via pnpm run test"}]',
@@ -206,6 +243,7 @@ export const ProposeScopingParams = Type.Object({
 				"Fallback only: a valid JSON array string containing phase objects. Prefer a real JSON array. Prose, markdown lists, and malformed JSON are rejected.",
 		}),
 	]),
+	charter: Type.Optional(CharterSchema),
 	questions: Type.Optional(
 		Type.Union([
 			Type.Array(ScopingQuestionSchema, {

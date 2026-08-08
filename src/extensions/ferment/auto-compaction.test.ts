@@ -293,6 +293,44 @@ describe("buildCustomInstructions", () => {
 		expect(instructions).toContain("Write code")
 	})
 
+	it("includes the intent charter lines when the ferment has one", () => {
+		const ferment = makeFerment({
+			charter: { intent: "Recreate the Tahoe desktop", wowFactor: "Looks like the real OS" },
+		})
+		const pending = makePendingPhase()
+
+		const instructions = buildCustomInstructions(ferment, pending)
+
+		expect(instructions).toContain("Intent charter (preserve verbatim")
+		expect(instructions).toContain("  Intent: Recreate the Tahoe desktop")
+		expect(instructions).toContain("  Wow: Looks like the real OS")
+	})
+
+	it("omits the charter block when the ferment has none", () => {
+		const ferment = makeFerment({})
+		const pending = makePendingPhase()
+
+		const instructions = buildCustomInstructions(ferment, pending)
+
+		expect(instructions).not.toContain("Intent charter")
+	})
+
+	it("includes the intent charter in mid-turn instructions and handoff details", () => {
+		const ferment = makeFerment({
+			charter: { intent: "Recreate the Tahoe desktop", demoScript: "Boot; Finder opens" },
+		})
+		const phase = makePhase({ id: "phase-1", name: "P", goal: "g" })
+		const step = makeStep({ id: "step-1", description: "d" })
+
+		const instructions = buildMidTurnCustomInstructions(ferment, phase, step)
+		expect(instructions).toContain("Intent charter (preserve verbatim")
+		expect(instructions).toContain("  Demo: Boot; Finder opens")
+
+		const details = buildHandoffDetails(undefined, ferment, makePendingPhase())
+		expect(details.charter).toContain("Charter:")
+		expect(details.charter).toContain("Intent: Recreate the Tahoe desktop")
+	})
+
 	it("includes completed step description and summary for step-kind pending", () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },
@@ -401,6 +439,7 @@ describe("buildHandoffDetails", () => {
 		expect(details.fermentName).toBe("Handoff Ferment")
 		expect(details.fermentGoal).toBe("Achieve X")
 		expect(details.successCriteria).toEqual(["A", "B"])
+		expect(details.charter).toBeUndefined()
 	})
 
 	it("populates active phase name and goal", () => {

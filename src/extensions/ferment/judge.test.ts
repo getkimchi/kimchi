@@ -144,6 +144,38 @@ describe("judgeJourneyGrade", () => {
 		expect(captured).toContain("C3 (pass): smoke test exercised the retry path")
 	})
 
+	it("renders the intent charter into the prompt above the criteria", async () => {
+		let captured = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			captured = msg
+			return ok('{"grade":"A","rationale":"x"}')
+		})
+		await judgeJourneyGrade(
+			makeInput({
+				charter: {
+					intent: "Recreate the Tahoe desktop",
+					wowFactor: "Feels like the real OS",
+					demoScript: "Boot the page; Finder opens",
+				},
+			}),
+			apiCall,
+		)
+		expect(captured).toContain("INTENT CHARTER")
+		expect(captured).toContain("Recreate the Tahoe desktop")
+		expect(captured).toContain("Feels like the real OS")
+		expect(captured).toContain("Boot the page; Finder opens")
+	})
+
+	it("omits the charter section when the ferment predates charters", async () => {
+		let captured = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			captured = msg
+			return ok('{"grade":"A","rationale":"x"}')
+		})
+		await judgeJourneyGrade(makeInput(), apiCall)
+		expect(captured).not.toContain("INTENT CHARTER")
+	})
+
 	it("renders '(no verdicts on file)' for phases missing review-evidence", async () => {
 		let captured = ""
 		const apiCall = vi.fn(async (_sys: string, msg: string) => {
@@ -667,5 +699,54 @@ describe("judgeJourneyGradeViaSubagent", () => {
 		expect(result.grade).toBe("B")
 		expect(result.rationale).toContain("coverage thin")
 		expect(apiCall).not.toHaveBeenCalled()
+	})
+})
+
+describe("judge renders intent charter", () => {
+	function ok(text: string): JudgeApiResult {
+		return { ok: true, text }
+	}
+
+	it("phase prompt includes the charter when provided", async () => {
+		let captured = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			captured = msg
+			return ok('{"grade":"B","rationale":"x"}')
+		})
+		await judgePhaseGrade(
+			{
+				fermentName: "F",
+				phaseName: "P1",
+				phaseGoal: "g",
+				charter: { intent: "Recreate the Tahoe desktop" },
+				phaseSummary: "done",
+				gateVerdicts: [],
+			},
+			apiCall,
+		)
+		expect(captured).toContain("INTENT CHARTER")
+		expect(captured).toContain("Recreate the Tahoe desktop")
+	})
+
+	it("subagent grader prompt includes the charter when provided", async () => {
+		let captured = ""
+		const spawn = vi.fn(async (prompt: string): Promise<GraderSubagentResult> => {
+			captured = prompt
+			return { text: '{"grade":"A","rationale":"x"}', status: "completed" }
+		})
+		await judgePhaseGradeViaSubagent(
+			{
+				fermentName: "F",
+				phaseName: "P1",
+				phaseGoal: "g",
+				charter: { intent: "Recreate the Tahoe desktop", demoScript: "Boot; look" },
+				phaseSummary: "done",
+				gateVerdicts: [],
+			},
+			spawn,
+		)
+		expect(captured).toContain("INTENT CHARTER")
+		expect(captured).toContain("Boot; look")
+		expect(spawn).toHaveBeenCalled()
 	})
 })
