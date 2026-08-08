@@ -452,9 +452,9 @@ describe("isDegenerateCompactionSummary", () => {
 
 	it("accepts a summary that names the ferment", () => {
 		const ferment = makeFerment({ name: "Tahoe Replica", goal: "Recreate macOS" })
-		expect(isDegenerateCompactionSummary('## Goal\nExecute Ferment "Tahoe Replica" — Recreate macOS, phase 2.', ferment)).toBe(
-			false,
-		)
+		expect(
+			isDegenerateCompactionSummary('## Goal\nExecute Ferment "Tahoe Replica" — Recreate macOS, phase 2.', ferment),
+		).toBe(false)
 	})
 
 	it("accepts a summary that repeats the goal even when the name is absent", () => {
@@ -1101,7 +1101,10 @@ describe("maybeTriggerFermentCompaction", () => {
 			onError: (error: Error) => void
 		}
 
-		const fakeResult = { tokensBefore: 5000, summary: '## Goal\nExecute Ferment "My Ferment" — Goal' } as unknown as CompactionResult
+		const fakeResult = {
+			tokensBefore: 5000,
+			summary: '## Goal\nExecute Ferment "My Ferment" — Goal',
+		} as unknown as CompactionResult
 		compactCall.onComplete(fakeResult)
 
 		// onComplete should fire two sendMessage calls: handoff entry, then
@@ -1171,7 +1174,10 @@ describe("maybeTriggerFermentCompaction", () => {
 		const compactCall = (ctx.compact as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
 			onComplete: (result: CompactionResult) => void
 		}
-		compactCall.onComplete({ tokensBefore: 1000, summary: '## Goal\nExecute Ferment "My Ferment" — Goal' } as unknown as CompactionResult)
+		compactCall.onComplete({
+			tokensBefore: 1000,
+			summary: '## Goal\nExecute Ferment "My Ferment" — Goal',
+		} as unknown as CompactionResult)
 
 		// Now step-2 pending is still in the map and will fire on the next tick.
 		await maybeTriggerFermentCompaction(pi, ctx, runtime)
@@ -1678,7 +1684,8 @@ describe("maybeTriggerFermentCompaction — one-shot Auto-compact toggle", () =>
 		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
 		ctx.model = { contextWindow: 100_000 } as ExtensionContext["model"]
 		ctx.inlineCompact = vi.fn(
-			async () => ({ tokensBefore: 1_000, summary: '## Goal\nExecute Ferment "My Ferment" — Goal' }) as CompactionResult,
+			async () =>
+				({ tokensBefore: 1_000, summary: '## Goal\nExecute Ferment "My Ferment" — Goal' }) as CompactionResult,
 		)
 		vi.mocked(getCompactionEnabled).mockReturnValue(true)
 	})

@@ -33,8 +33,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
-import type { FermentCharter } from "../../ferment/types.js"
 import { resolveFermentsDir } from "../../ferment/store.js"
+import type { FermentCharter } from "../../ferment/types.js"
 
 export const PENDING_PROPOSAL_SCHEMA_VERSION = 1
 

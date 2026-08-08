@@ -351,9 +351,7 @@ describe("judgeJourneyGrade", () => {
 			status: "met",
 			evidence: `evidence ${i} ${"y".repeat(800)}`,
 		}))
-		const apiCall = vi.fn(async () =>
-			ok(`{"grade":"A","rationale":"x","charter_verdicts":${JSON.stringify(many)}}`),
-		)
+		const apiCall = vi.fn(async () => ok(`{"grade":"A","rationale":"x","charter_verdicts":${JSON.stringify(many)}}`))
 		const result = await judgeJourneyGrade(makeInput(), apiCall)
 		expect(result.ok).toBe(true)
 		if (!result.ok) return

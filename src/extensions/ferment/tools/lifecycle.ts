@@ -425,9 +425,7 @@ export function normalizeScopingAdvisories(params: {
 }): ScopingAdvisories | undefined | string {
 	const trimList = (list: string[] | undefined): string[] | undefined => {
 		if (!Array.isArray(list)) return undefined
-		const cleaned = list
-			.map((s) => (typeof s === "string" ? s.trim() : ""))
-			.filter((s) => s.length > 0)
+		const cleaned = list.map((s) => (typeof s === "string" ? s.trim() : "")).filter((s) => s.length > 0)
 		return cleaned.length > 0 ? cleaned : undefined
 	}
 	const scopeDeltas = trimList(params.scope_deltas)
@@ -849,7 +847,9 @@ export function renderCharterAudit(verdicts: CharterClauseVerdict[]): string {
 	const met = verdicts.filter((v) => v.status === "met").length
 	const waived = verdicts.filter((v) => v.status === "waived")
 	const unmet = verdicts.filter((v) => v.status === "unmet")
-	const lines = [`**Charter audit:** ${verdicts.length} clause(s) — ${met} met, ${waived.length} waived, ${unmet.length} unmet`]
+	const lines = [
+		`**Charter audit:** ${verdicts.length} clause(s) — ${met} met, ${waived.length} waived, ${unmet.length} unmet`,
+	]
 	for (const v of unmet) lines.push(`- ⚠ unmet: ${v.clause} — ${v.evidence}`)
 	for (const v of waived) lines.push(`- ↷ waived: ${v.clause} — ${v.evidence}`)
 	return lines.join("\n")

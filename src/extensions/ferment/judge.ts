@@ -415,9 +415,12 @@ export async function judgeJourneyGrade(
 			return withJourneyGradeAttemptDetail(failure, attempt)
 		}
 
-		const parsed = tryParseJson<{ grade?: string; rationale?: string; recommendations?: unknown; charter_verdicts?: unknown }>(
-			api.text,
-		)
+		const parsed = tryParseJson<{
+			grade?: string
+			rationale?: string
+			recommendations?: unknown
+			charter_verdicts?: unknown
+		}>(api.text)
 		if (parsed === undefined) {
 			return { ok: false, reason: "unparseable", detail: api.text.slice(0, 200) }
 		}
@@ -427,7 +430,13 @@ export async function judgeJourneyGrade(
 		const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
 		const recommendations = normalizeRecommendations(parsed.recommendations)
 		const charterVerdicts = normalizeCharterVerdicts(parsed.charter_verdicts)
-		return { ok: true, grade: parsed.grade, rationale, recommendations, ...(charterVerdicts ? { charterVerdicts } : {}) }
+		return {
+			ok: true,
+			grade: parsed.grade,
+			rationale,
+			recommendations,
+			...(charterVerdicts ? { charterVerdicts } : {}),
+		}
 	}
 
 	throw new Error("unreachable: journey grade retry loop exited without a result")
