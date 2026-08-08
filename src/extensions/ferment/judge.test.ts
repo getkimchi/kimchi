@@ -359,6 +359,40 @@ describe("judgeJourneyGrade", () => {
 		expect(result.charterVerdicts?.[0]?.clause.length).toBe(200)
 		expect(result.charterVerdicts?.[0]?.evidence.length).toBe(400)
 	})
+
+	it("retries when a charter exists but charter_verdicts are missing, then accepts them", async () => {
+		const apiCall = vi
+			.fn()
+			.mockResolvedValueOnce(ok('{"grade":"A","rationale":"clean"}'))
+			.mockResolvedValueOnce(
+				ok(
+					'{"grade":"A","rationale":"clean","charter_verdicts":[{"clause":"recreate Tahoe","status":"met","evidence":"shell recreated"}]}',
+				),
+			)
+		const result = await judgeJourneyGrade(makeInput({ charter: { intent: "recreate Tahoe" } }), apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(2)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.charterVerdicts).toEqual([
+			{ clause: "recreate Tahoe", status: "met", evidence: "shell recreated" },
+		])
+	})
+
+	it("soft-degrades after max attempts when verdicts never arrive (grade still lands)", async () => {
+		const apiCall = vi.fn(async () => ok('{"grade":"A","rationale":"clean"}'))
+		const result = await judgeJourneyGrade(makeInput({ charter: { intent: "recreate Tahoe" } }), apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(3)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.charterVerdicts).toBeUndefined()
+	})
+
+	it("does not retry for missing verdicts when no charter exists", async () => {
+		const apiCall = vi.fn(async () => ok('{"grade":"A","rationale":"clean"}'))
+		const result = await judgeJourneyGrade(makeInput(), apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(true)
+	})
 })
 
 describe("judgePhaseGrade", () => {
@@ -694,6 +728,39 @@ describe("judgeJourneyGradeViaSubagent", () => {
 		expect(result.charterVerdicts).toEqual([
 			{ clause: "recreate the Tahoe desktop", status: "unmet", evidence: "only a shell replica" },
 		])
+	})
+
+	it("falls back to the single-shot judge when the subagent omits required charter verdicts", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: '{"grade":"A","rationale":"fine","recommendations":[]}',
+				status: "completed",
+			}),
+		)
+		const apiCall = vi.fn(async () =>
+			ok('{"grade":"A","rationale":"ok","charter_verdicts":[{"clause":"recreate Tahoe","status":"met","evidence":"yes"}]}'),
+		)
+		const result = await judgeJourneyGradeViaSubagent(makeInput({ charter: { intent: "recreate Tahoe" } }), spawn, apiCall)
+		expect(spawn).toHaveBeenCalledTimes(1)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.charterVerdicts).toHaveLength(1)
+	})
+
+	it("keeps the subagent result when no charter exists (no audit required)", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: '{"grade":"B","rationale":"fine","recommendations":[]}',
+				status: "completed",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"A","rationale":"x"}'))
+		const result = await judgeJourneyGradeViaSubagent(makeInput(), spawn, apiCall)
+		expect(apiCall).not.toHaveBeenCalled()
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("B")
 	})
 
 	it("falls back to single-shot when subagent returns unparseable text", async () => {

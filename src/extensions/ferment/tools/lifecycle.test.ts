@@ -1297,6 +1297,43 @@ describe("completeFerment", () => {
 		expect(persisted?.[1]?.status).toBe("met")
 	})
 
+	it("renders an omission breadcrumb when the grader never emits charter verdicts", async () => {
+		const h = createHarness()
+		const applyAndPersist = createApplyAndPersist(h.runtime)
+		const scoped = applyAndPersist(h.fermentId, {
+			type: "scope",
+			goal: "Ship the feature",
+			successCriteria: ["Done"],
+			constraints: [],
+			phases: [{ name: "Build", goal: "Implement", steps: [] }],
+			charter: { intent: "recreate the Tahoe desktop" },
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const activated = applyAndPersist(h.fermentId, { type: "activate_phase", phaseId: "phase-1" })
+		if (!activated.ok) throw new Error(activated.error.message)
+		const completed = applyAndPersist(h.fermentId, {
+			type: "complete_phase",
+			phaseId: "phase-1",
+			summary: "phase done",
+		})
+		if (!completed.ok) throw new Error(completed.error.message)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "A",
+			rationale: "Ships cleanly.",
+			recommendations: [],
+		})
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("**Charter audit:** not emitted by the grader after retries")
+		expect(h.storage.get(h.fermentId)?.grade?.charterVerdicts).toBeUndefined()
+	})
+
 	it("judge unavailable ships without a persisted grade", async () => {
 		const h = createHarness()
 		createTerminalFerment(h)

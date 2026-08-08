@@ -354,7 +354,7 @@ If grade is B–F, each recommendation must include: what is wrong, why it matte
 If an intent charter was provided above, also return per-clause verdicts — one entry per charter clause (the intent itself, wow factor, confirmed scope, acceptance demo when present):
 {"grade":"A","rationale":"...","recommendations":[],"charter_verdicts":[{"clause":"<clause text, shortened>","status":"met"|"waived"|"unmet","evidence":"<what demonstrates it>"}]}
 Use "unmet" when the finished artifact does not deliver what that clause asks, and "waived" only when the deviation was explicitly accepted (e.g. recorded in constraints with a named cost). Unmet clauses are strong downgrade signals under the rubric but do not gate ship by themselves.
-Omit charter_verdicts entirely when no charter was provided.`
+charter_verdicts is REQUIRED when an intent charter was provided; omit it ONLY when no charter was provided.`
 
 function buildJourneyGradeUserMsg(input: JudgeJourneyGradeInput): string {
 	const parts: string[] = []
@@ -430,6 +430,12 @@ export async function judgeJourneyGrade(
 		const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
 		const recommendations = normalizeRecommendations(parsed.recommendations)
 		const charterVerdicts = normalizeCharterVerdicts(parsed.charter_verdicts)
+		if (input.charter && !charterVerdicts && attempt < JOURNEY_GRADE_MAX_ATTEMPTS) {
+			// Charter audit is required when a charter exists: retry (soft — the
+			// final attempt may proceed without verdicts; complete_ferment renders
+			// an honest omission breadcrumb in that case).
+			continue
+		}
 		return {
 			ok: true,
 			grade: parsed.grade,
@@ -805,7 +811,13 @@ export async function judgeJourneyGradeViaSubagent(
 			const result = await spawn(prompt)
 			if (result.status === "completed") {
 				const parsed = parseGraderResponse(result.text)
-				if (parsed) return parsed
+				if (parsed) {
+					if (input.charter && !parsed.charterVerdicts) {
+						// Charter audit required but the subagent omitted it — fall
+						// through to the single-shot fallback, which retries for it
+						// (soft degrade after attempts are exhausted).
+					} else return parsed
+				}
 				// Subagent completed but output wasn't parseable — fall through to single-shot.
 			}
 			// Subagent aborted/errored — fall through to single-shot.
@@ -929,5 +941,18 @@ function buildJourneyGraderPrompt(input: JudgeJourneyGradeInput): string {
 		"Verify the agent's claims by reading files and running commands. Then respond with EXACTLY one JSON object:",
 	)
 	parts.push('{"grade":"A"|"B"|"C"|"D"|"F","rationale":"...","recommendations":[...]}')
+	if (input.charter) {
+		// Ship-level audit: this contract used to omit charter_verdicts entirely,
+		// so subagent graders never emitted it (replay rule-4 miss). REQUIRED
+		// whenever a charter is in play; both paths now enforce it.
+		parts.push("")
+		parts.push("An intent charter is in play above — also return charter_verdicts, one entry per charter clause:")
+		parts.push(
+			'"charter_verdicts":[{"clause":"<clause text, shortened>","status":"met"|"waived"|"unmet","evidence":"<what demonstrates it>"}]',
+		)
+		parts.push(
+			'"unmet" = the finished artifact does not deliver that clause; "waived" = the deviation was explicitly accepted. REQUIRED — this is the ship-level charter audit.',
+		)
+	}
 	return parts.join("\n")
 }

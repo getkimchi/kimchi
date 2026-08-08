@@ -1009,7 +1009,11 @@ export async function completeFerment(
 	const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
 	const gateLines = gates.map((g) => `  ${g.id} (${g.verdict}): ${g.rationale}`).join("\n")
 	const gradeLabel = resolvedGrade?.grade ?? "unavailable"
-	const charterAudit = resolvedGrade?.charterVerdicts?.length ? renderCharterAudit(resolvedGrade.charterVerdicts) : ""
+	const charterAudit = resolvedGrade?.charterVerdicts?.length
+		? renderCharterAudit(resolvedGrade.charterVerdicts)
+		: fresh.charter && resolvedGrade
+			? "**Charter audit:** not emitted by the grader after retries — completion recorded without per-clause verdicts."
+			: ""
 	const terminalNotice = `This ferment is complete and terminal. Do not call bash/read/list_ferments or any ferment tools for this ferment again without clear user consent. If the user wants a new ferment, tell them to run \`/ferment new "..."\` or \`/ferment one-shot "..."\` — do not search MCP tools or invent a tool.`
 
 	return toolOk(
