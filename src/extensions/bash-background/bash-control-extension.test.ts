@@ -430,6 +430,31 @@ describe("bashControlExtension — gate via tool_call hard blocks", () => {
 		expect((await fireToolCall(pi, "read"))?.block).toBe(false)
 	})
 
+	it("an ambiguous bash_control result (checkin:false, exited:false) keeps the gate closed", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry, "h1")
+
+		// Transient error that never observed the process state — must NOT
+		// open the gate while the process may still be running.
+		await fireToolResult(pi, {
+			type: "tool_result",
+			toolName: "bash_control",
+			toolCallId: "c2",
+			input: { handle: "h1", action: "continue" },
+			content: [{ type: "text", text: "transient error" }],
+			isError: true,
+			details: { handle: "h1", checkin: false, exited: false, action: "continue" },
+		})
+
+		expect((await fireToolCall(pi, "read"))?.block).toBe(true)
+
+		// The exit watcher (or a later bash_control result) resolves it.
+		registry.resolveExit("h1", 0)
+		await flush()
+		expect((await fireToolCall(pi, "read"))?.block).toBe(false)
+	})
+
 	it("tool_results from other tools do not affect the gate", async () => {
 		const registry = makeFakeRegistry()
 		const pi = makeFakePi()

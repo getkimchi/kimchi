@@ -13,31 +13,22 @@
  * the description — same string — and its `tool_call` steering still fires
  * because the tool name stays `bash`).
  *
- * A single session-scoped `ProcessRegistry` is created per extension
- * instance and shared with the background tool definition so the
+ * A single session-scoped `ProcessRegistry` is created per session
+ * (stored in `./session-registry.ts` so consumers don't import this
+ * barrel) and shared with the background tool definition so the
  * `bash_control` companion (phase 2) can address running processes by
  * handle. The registry is drained on `session_shutdown`.
  */
 import type { ExtensionAPI, SessionShutdownEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { BASH_TOOL_DESCRIPTION } from "../bash-tool-guard.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
-import { createProcessRegistry, type ProcessRegistry } from "./process-registry.js"
+import { createProcessRegistry } from "./process-registry.js"
+import { getSessionRegistry, setSessionRegistry } from "./session-registry.js"
 
 export type { BackgroundBashInput, BackgroundBashToolDetails } from "./bash-background-tool.js"
 export { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
 export type { ProcessEntry, ProcessRegistry, TailSnapshot } from "./process-registry.js"
 export { createProcessRegistry } from "./process-registry.js"
-
-/**
- * The shared session-scoped registry. The `bash_control` companion tool
- * (phase 2) reads this to resolve handles emitted by background `bash`.
- */
-let sessionRegistry: ProcessRegistry | undefined
-
-/** Test/internal accessor for the active session's registry. */
-export function getSessionRegistry(): ProcessRegistry | undefined {
-	return sessionRegistry
-}
 
 /**
  * Create a background-bash extension. Registers the background `bash` tool
@@ -49,14 +40,15 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 		// Fresh registry per session so handles from a previous session
 		// can't be reused, and so a resumed/forked session gets a clean
 		// process table.
-		sessionRegistry = createProcessRegistry()
+		const registry = createProcessRegistry()
+		setSessionRegistry(registry)
 
 		// Re-register `bash` with the background execution definition.
 		// The description is the bash-tool-guard steering text so the
 		// tool-selection preference still reaches the system prompt even
 		// though our registration wins the tool-name slot.
 		const tool = createBackgroundBashToolDefinition(sessionCtx.cwd, {
-			registry: sessionRegistry,
+			registry,
 		})
 		const toolWithSteering = {
 			...tool,
@@ -70,9 +62,10 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("session_shutdown", async (_event: SessionShutdownEvent) => {
-		if (sessionRegistry) {
-			await sessionRegistry.shutdown()
-			sessionRegistry = undefined
+		const registry = getSessionRegistry()
+		if (registry) {
+			await registry.shutdown()
+			setSessionRegistry(undefined)
 		}
 	})
 }

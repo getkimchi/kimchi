@@ -34,18 +34,22 @@
  *    steer message tells the model the process finished (with its exit
  *    code) — closing the forever-locked gap where a natural exit while the
  *    gate was closed left no event to reopen it.
- *  - A `bash_control` result that resolves the process (stop, or continue
- *    observing an exit) removes the handle. `bash_control` uses
- *    `throwIfTerminal` (throws on non-zero exit / deadline) and may never
- *    produce a resolved tool_result — the exit watcher covers that path.
+ *  - A `bash_control` result that explicitly resolves the process
+ *    (`exited: true` — stop, or continue observing an exit) removes the
+ *    handle. Ambiguous results (`checkin: false` AND `exited: false`,
+ *    e.g. an error that never observed the process state) do NOT open the
+ *    gate — the exit watcher or a later bash_control result resolves it.
+ *    `bash_control` uses `throwIfTerminal` (throws on non-zero exit /
+ *    deadline) and may never produce a resolved tool_result — the exit
+ *    watcher covers that path too.
  *
  * Safety net: user `input` clears the pending set so a stuck gate can't lock
  * the agent out when a human takes over.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { BASH_CONTROL_TOOL_NAME, createBashControlToolDefinition } from "./bash-control-tool.js"
-import { getSessionRegistry } from "./index.js"
 import type { ProcessRegistry } from "./process-registry.js"
+import { getSessionRegistry } from "./session-registry.js"
 
 /** Custom message type for the process-exit steer notice. */
 export const BASH_BACKGROUND_EXIT_MESSAGE_TYPE = "bash-background-exit"
@@ -153,10 +157,13 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 			}
 			return
 		}
-		// Resolved result (stop, or continue that observed the exit): the
-		// handle no longer pends. Deleting an unlisted handle is a no-op
+		// Explicit resolution (stop, or continue that observed the exit):
+		// the handle no longer pends. Deleting an unlisted handle is a no-op
 		// (e.g. bash_control's graceful "unknown handle" error result).
-		pendingHandles.delete(details.handle)
+		if (details.exited) pendingHandles.delete(details.handle)
+		// checkin:false + exited:false is ambiguous (transient error that
+		// never observed the process state) — keep the gate closed rather
+		// than risk opening it while the process still runs.
 	})
 
 	pi.on("tool_call", (event) => {

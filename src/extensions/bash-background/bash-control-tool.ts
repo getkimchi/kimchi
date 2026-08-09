@@ -21,7 +21,7 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
 import { awaitCheckin } from "./checkin.js"
-import { getSessionRegistry } from "./index.js"
+import { getSessionRegistry } from "./session-registry.js"
 import { throwIfTerminal } from "./terminal-status.js"
 
 const bashControlSchema = Type.Object({
