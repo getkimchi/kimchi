@@ -25,6 +25,7 @@ const {
 	provisionGitIdentityMock,
 	provisionGitCredentialMock,
 	provisionHarnessConfigMock,
+	readTeleportCompactHintEnabledMock,
 } = vi.hoisted(() => ({
 	authMock: vi.fn(),
 	waitReadyMock: vi.fn(),
@@ -54,6 +55,7 @@ const {
 	provisionGitIdentityMock: vi.fn(),
 	provisionGitCredentialMock: vi.fn(),
 	provisionHarnessConfigMock: vi.fn(),
+	readTeleportCompactHintEnabledMock: vi.fn(),
 }))
 
 vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMock }))
@@ -78,6 +80,7 @@ vi.mock("../../../config.js", () => ({
 	writeGitToken: writeGitTokenMock,
 	readTeleportHelpSeenAt: readTeleportHelpSeenAtMock,
 	writeTeleportHelpSeenAt: writeTeleportHelpSeenAtMock,
+	readTeleportCompactHintEnabled: readTeleportCompactHintEnabledMock,
 }))
 vi.mock("../provisioning/git-provision.js", () => ({
 	provisionGitIdentity: provisionGitIdentityMock,
@@ -201,6 +204,7 @@ beforeEach(() => {
 	provisionGitIdentityMock.mockReset().mockResolvedValue(undefined)
 	provisionGitCredentialMock.mockReset().mockResolvedValue(undefined)
 	provisionHarnessConfigMock.mockReset().mockResolvedValue({ ok: true })
+	readTeleportCompactHintEnabledMock.mockReset().mockReturnValue(true)
 })
 
 afterEach(() => {
@@ -683,6 +687,111 @@ describe("runTeleport", () => {
 			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx)
 
 			expect(createSessionMock.mock.calls[0][3]).toMatchObject({ sessionFile: undefined })
+		})
+	})
+
+	describe("compaction hint gate", () => {
+		// 25 messages > the production lookback of 20, so a fresh fixture is
+		// hint-eligible (suppression would otherwise kick in).
+		function writeSessionJsonl(timestamp: Date, messageCount = 25): string {
+			const sessionFile = join(tempDir, "session.jsonl")
+			const entry = {
+				type: "message",
+				timestamp: timestamp.toISOString(),
+				message: { role: "user", content: [{ type: "text", text: "hello" }] },
+			}
+			writeFileSync(sessionFile, `${Array.from({ length: messageCount }, () => JSON.stringify(entry)).join("\n")}\n`)
+			return sessionFile
+		}
+
+		function usageOf(tokens: number | null) {
+			return () => ({ tokens, contextWindow: 200_000, percent: tokens === null ? null : tokens / 2000 })
+		}
+
+		beforeEach(() => {
+			readTeleportCompactHintEnabledMock.mockReset().mockReturnValue(true)
+		})
+
+		// Above/below the production threshold (TELEPORT_COMPACT_HINT_DEFAULTS),
+		// which the gate now uses directly.
+		const BIG_TOKENS = 300_000
+		const SMALL_TOKENS = 100_000
+
+		it("refuses a big, recently active session before any network call", async () => {
+			const sessionFile = writeSessionJsonl(new Date())
+			const { ctx, ui } = makeCtx({ sessionFile, getContextUsage: usageOf(BIG_TOKENS) })
+
+			await expect(
+				runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx),
+			).rejects.toBeInstanceOf(TeleportRefusal)
+			expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("--no-compact-hint"), "error")
+			// The gate runs before workspace resolution — no network, no progress UI.
+			expect(authMock).not.toHaveBeenCalled()
+			expect(listWorkspacesMock).not.toHaveBeenCalled()
+			expect(progressInstances).toHaveLength(0)
+		})
+
+		it("proceeds for a big, fresh session when --no-compact-hint is passed", async () => {
+			const sessionFile = writeSessionJsonl(new Date())
+			const { ctx } = makeCtx({ sessionFile, getContextUsage: usageOf(BIG_TOKENS) })
+
+			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111 --no-compact-hint", ctx)
+
+			expect(authMock).toHaveBeenCalledOnce()
+		})
+
+		it("proceeds for a big, fresh session when the config disables the hint", async () => {
+			readTeleportCompactHintEnabledMock.mockReturnValue(false)
+			const sessionFile = writeSessionJsonl(new Date())
+			const { ctx } = makeCtx({ sessionFile, getContextUsage: usageOf(BIG_TOKENS) })
+
+			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx)
+
+			expect(authMock).toHaveBeenCalledOnce()
+		})
+
+		it("proceeds for a small session", async () => {
+			const sessionFile = writeSessionJsonl(new Date())
+			const { ctx } = makeCtx({ sessionFile, getContextUsage: usageOf(SMALL_TOKENS) })
+
+			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx)
+
+			expect(authMock).toHaveBeenCalledOnce()
+		})
+
+		it("proceeds for a big but stale (2h old) session", async () => {
+			const sessionFile = writeSessionJsonl(new Date(Date.now() - 2 * 60 * 60_000))
+			const { ctx } = makeCtx({ sessionFile, getContextUsage: usageOf(BIG_TOKENS) })
+
+			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx)
+
+			expect(authMock).toHaveBeenCalledOnce()
+		})
+
+		it("proceeds when context usage reports tokens null (post-compaction unknown), even for a big fresh file", async () => {
+			const sessionFile = writeSessionJsonl(new Date())
+			const { ctx } = makeCtx({ sessionFile, getContextUsage: usageOf(null) })
+
+			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx)
+
+			expect(authMock).toHaveBeenCalledOnce()
+		})
+
+		it("proceeds silently when getContextUsage is unavailable (hint is non-critical)", async () => {
+			const sessionFile = writeSessionJsonl(new Date())
+			const { ctx } = makeCtx({ sessionFile })
+
+			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx)
+
+			expect(authMock).toHaveBeenCalledOnce()
+		})
+
+		it("proceeds when no session file is available", async () => {
+			const { ctx } = makeCtx({ getContextUsage: usageOf(BIG_TOKENS) })
+
+			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx)
+
+			expect(authMock).toHaveBeenCalledOnce()
 		})
 	})
 })

@@ -26,6 +26,7 @@ function makeHandler(run: CommandFn) {
 			signal: ctx.signal,
 			ui: ctx.ui,
 			sessionFile: ctx.sessionManager.getSessionFile(),
+			getContextUsage: () => ctx.getContextUsage(),
 		}
 		try {
 			await run(args, tctx)
