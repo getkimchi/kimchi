@@ -322,9 +322,7 @@ function handleStepStarted(raw: unknown, sessionId: string): void {
 	// wholesale into the step scope instead of writing their own sub-tasks.
 	// Skip if the scope already has items (e.g. a restarted step whose
 	// sub-task list survived) so retries never wipe model-written work.
-	const stepForSeed = ferment.phases
-		.find((p) => p.id === payload.phaseId)
-		?.steps.find((s) => s.id === payload.stepId)
+	const stepForSeed = ferment.phases.find((p) => p.id === payload.phaseId)?.steps.find((s) => s.id === payload.stepId)
 	if (stepForSeed) {
 		const stepScope: TodoScope = {
 			kind: "ferment-step",

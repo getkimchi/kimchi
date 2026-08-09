@@ -98,9 +98,10 @@ test("model sees ## Current Todos injected in context after writing todos (TUI m
 			// A message in the request should contain the injected todo block
 			const todoMessage = getMessageWithTodos(fixture)
 			expect(todoMessage).toBeDefined()
-			expect(todoMessage!).toContain("## Current Todos")
-			expect(todoMessage!).toContain("write the code")
-			expect(todoMessage!).toContain("run tests")
+			if (!todoMessage) throw new Error("expected a request message containing injected todos")
+			expect(todoMessage).toContain("## Current Todos")
+			expect(todoMessage).toContain("write the code")
+			expect(todoMessage).toContain("run tests")
 			trace.step("## Current Todos block verified in model context")
 		},
 	)

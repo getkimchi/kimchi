@@ -1163,10 +1163,7 @@ describe("scope bleed prevention", () => {
 		// The step scope starts with a single anchor: the step's own title as
 		// an in_progress header. The model is expected to append sub-tasks
 		// beneath it — not to restate the phase plan (observed behaviour).
-		const stepTodos = getTodosForScope(
-			{ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
-			TEST_SESSION_ID,
-		)
+		const stepTodos = getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }, TEST_SESSION_ID)
 		expect(stepTodos).toHaveLength(1)
 		expect(stepTodos[0].content).toBe("[Step 1] Step 1")
 		expect(stepTodos[0].status).toBe("in_progress")
@@ -1201,10 +1198,7 @@ describe("scope bleed prevention", () => {
 			stepIndex: 1,
 		})
 
-		const stepTodos = getTodosForScope(
-			{ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
-			TEST_SESSION_ID,
-		)
+		const stepTodos = getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }, TEST_SESSION_ID)
 		expect(stepTodos).toHaveLength(1)
 		expect(stepTodos[0].content).toBe("run pnpm install")
 	})
