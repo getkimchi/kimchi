@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
@@ -38,7 +39,8 @@ export function copySessionFileAndAddHandoffNote(sessionFile: string, note: stri
 		const filePath = join(tempDir, basename(sessionFile))
 		writeFileSync(filePath, annotated, "utf8")
 		return filePath
-	} catch {
+	} catch (err) {
+		console.warn("Failed to create annotated session copy:", err)
 		return undefined
 	}
 }
@@ -132,7 +134,7 @@ interface ParsedEntry {
 }
 
 function randomId(): string {
-	return (Math.random() * 0xffffffff + 0x100000000).toString(16).slice(-8)
+	return randomUUID()
 }
 
 function stringifyEntry(entry: Record<string, unknown>): string {
