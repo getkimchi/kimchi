@@ -556,7 +556,9 @@ try {
 			// Background mode is opt-in via `checkin_interval`; without it, bash
 			// runs synchronously as before.
 			bashBackgroundExtension,
-			// bash_control companion tool + visibility gating for background processes.
+			// bash_control companion tool. While a background process awaits a
+			// continue/stop decision, other tool calls are hard-blocked with a
+			// steering reason; natural process exit releases the gate.
 			bashControlExtension,
 			bashToolGuardExtension,
 			bashTimeoutGuidanceExtension,
