@@ -1140,6 +1140,75 @@ describe("scope bleed prevention", () => {
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toHaveLength(0)
 	})
 
+	it("seeds the step scope with an in_progress anchor on STEP_STARTED", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 2)
+		setActive(ferment)
+
+		unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+		emit(FERMENT_EVENTS.STEP_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			stepId: "step-1",
+			stepIndex: 1,
+		})
+
+		// The step scope starts with a single anchor: the step's own title as
+		// an in_progress header. The model is expected to append sub-tasks
+		// beneath it — not to restate the phase plan (observed behaviour).
+		const stepTodos = getTodosForScope(
+			{ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+			TEST_SESSION_ID,
+		)
+		expect(stepTodos).toHaveLength(1)
+		expect(stepTodos[0].content).toBe("[Step 1] Step 1")
+		expect(stepTodos[0].status).toBe("in_progress")
+	})
+
+	it("does not reseed the step scope when a restarted step already has todos", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 2)
+		setActive(ferment)
+
+		unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+		// Model wrote its own sub-tasks before the step was (re)started.
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+				todos: [{ content: "run pnpm install", status: "in_progress" }],
+			},
+			TEST_SESSION_ID,
+		)
+
+		emit(FERMENT_EVENTS.STEP_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			stepId: "step-1",
+			stepIndex: 1,
+		})
+
+		const stepTodos = getTodosForScope(
+			{ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+			TEST_SESSION_ID,
+		)
+		expect(stepTodos).toHaveLength(1)
+		expect(stepTodos[0].content).toBe("run pnpm install")
+	})
+
 	it("clears ferment-scoped todos on PHASE_COMPLETED", () => {
 		const { pi, emit } = createFakePI()
 		const ferment = createTestFerment("phase-1", 2)
