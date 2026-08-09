@@ -653,8 +653,8 @@ describe("runTeleport", () => {
 			// so the resumed remote agent sees the environment change in context
 			// (and the user sees it in the transcript).
 			const noteLine = capturedUpload.split("\n").find((l) => l.includes("[Teleport]"))
-			expect(noteLine).toBeDefined()
-			const parsed = JSON.parse(noteLine!)
+			if (noteLine === undefined) throw new Error("handoff note line missing from uploaded JSONL")
+			const parsed = JSON.parse(noteLine)
 			expect(parsed.message.role).toBe("user")
 			expect(parsed.message.content[0].text).toContain("Environment handoff")
 		})
