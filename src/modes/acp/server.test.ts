@@ -486,7 +486,9 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				sessionFactory: async () => asSession(fake),
 			})
 
-			await expect(testAgent.authenticate({ methodId: "kimchi-agent" })).rejects.toThrow(/Browser authentication failed/)
+			await expect(testAgent.authenticate({ methodId: "kimchi-agent" })).rejects.toThrow(
+				/Browser authentication failed/,
+			)
 			expect(writeApiKey).not.toHaveBeenCalled()
 		})
 	})
