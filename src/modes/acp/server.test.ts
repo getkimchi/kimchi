@@ -465,6 +465,18 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			await expect(testAgent.authenticate({ methodId: "unknown" })).rejects.toThrow(/unknown auth method/)
 			expect(authenticateViaBrowser).not.toHaveBeenCalled()
 		})
+
+		it("throws when browser auth returns no token", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "" })
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.authenticate({ methodId: "kimchi-agent" })).rejects.toThrow(/did not return a token/)
+			expect(writeApiKey).not.toHaveBeenCalled()
+		})
 	})
 
 	describe("unstable_logout", () => {

@@ -59,6 +59,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
+import { KIMCHI_PROVIDER_ID } from "../../extensions/login/flow.js"
 import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
 import type { ProbeResult } from "../../extensions/mcp-adapter/types.js"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
@@ -96,6 +97,10 @@ import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompte
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
 import { asString, truncate } from "./utils.js"
+
+/** Auth method ID for Agent Auth (browser-based OAuth). Used in both
+ * initialize() declaration and authenticate() validation to avoid typo drift. */
+const KIMCHI_AGENT_AUTH_METHOD_ID = "kimchi-agent"
 
 /**
  * Produces an unbound AgentSession for a newSession request. The ACP agent owns
@@ -244,7 +249,7 @@ export class KimchiAcpAgent implements Agent {
 		// Client advertised the corresponding capability."
 		const authMethods: AuthMethod[] = [
 			{
-				id: "kimchi-agent",
+				id: KIMCHI_AGENT_AUTH_METHOD_ID,
 				name: "Kimchi Login",
 				description: "Authenticate via browser to Kimchi",
 			},
@@ -324,6 +329,9 @@ export class KimchiAcpAgent implements Agent {
 		// Run the browser OAuth flow: starts a local callback server, opens the
 		// user's browser to the Kimchi web app, and awaits the resulting token.
 		const { token } = await authenticateViaBrowser()
+		if (!token) {
+			throw RequestError.internalError(undefined, "Browser authentication did not return a token")
+		}
 
 		// Persist the key so new sessions pick it up via the login extension's
 		// session_start handler (which reads loadConfig().apiKey).
@@ -345,7 +353,7 @@ export class KimchiAcpAgent implements Agent {
 		// kimchi-dev provider from auth.json. AuthStorage.create is cheap —
 		// it reads auth.json lazily on access.
 		const authStorage = AuthStorage.create(join(this.agentDir, "auth.json"))
-		authStorage.logout("kimchi-dev")
+		authStorage.logout(KIMCHI_PROVIDER_ID)
 
 		return {}
 	}
