@@ -10,7 +10,7 @@
  * Exercises the full event wiring in bashControlExtension(pi) against a
  * fake ExtensionAPI + controllable fake registry.
  */
-import type { ExtensionAPI, ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, InputSource, ToolCallEventResult } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import bashControlExtension, {
 	BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
@@ -150,8 +150,37 @@ async function fireToolCall(pi: ExtensionAPI, toolName: string): Promise<ToolCal
 	return result
 }
 
-async function fireInput(pi: ExtensionAPI, source: "user" | "extension" = "user"): Promise<void> {
+async function fireInput(pi: ExtensionAPI, source: InputSource = "interactive"): Promise<void> {
 	await (pi as unknown as FakePi).emit("input", { source, text: "hi" })
+}
+
+async function fireToolExecutionStart(
+	pi: ExtensionAPI,
+	toolCallId: string,
+	toolName: string,
+	args: Record<string, unknown>,
+): Promise<void> {
+	await (pi as unknown as FakePi).emit("tool_execution_start", {
+		type: "tool_execution_start",
+		toolCallId,
+		toolName,
+		args,
+	})
+}
+
+async function fireToolExecutionEnd(
+	pi: ExtensionAPI,
+	toolCallId: string,
+	toolName: string,
+	isError = false,
+): Promise<void> {
+	await (pi as unknown as FakePi).emit("tool_execution_end", {
+		type: "tool_execution_end",
+		toolCallId,
+		toolName,
+		result: {},
+		isError,
+	})
 }
 
 async function fireShutdown(pi: ExtensionAPI): Promise<void> {
@@ -394,7 +423,7 @@ describe("bashControlExtension — gate via tool_call hard blocks", () => {
 		const pi = makeFakePi()
 		await startGatedSession(pi, registry, "h1")
 
-		await fireInput(pi, "user")
+		await fireInput(pi)
 		expect((await fireToolCall(pi, "read"))?.block).toBe(false)
 
 		registry.resolveExit("h1", 0)
@@ -504,6 +533,132 @@ describe("bashControlExtension — gate via tool_call hard blocks", () => {
 			details: { handle: "h1", exited: true, exitCode: null, action: "stop" },
 		})
 		expect((await fireToolCall(pi, "read"))?.block).toBe(false)
+	})
+})
+
+describe("bashControlExtension — exit watcher vs bash_control ownership", () => {
+	it("no natural-exit steer when a bash_control stop settles the process before its tool_result", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry, "h1")
+
+		await fireToolExecutionStart(pi, "c2", "bash_control", { handle: "h1", action: "stop" })
+		// kill() settles the process before bash_control can emit its result;
+		// the watcher's promise reaction runs first and must defer to the
+		// in-flight control call instead of steering.
+		registry.resolveExit("h1", null)
+		await flush()
+		expect(messages(pi)).toHaveLength(0)
+
+		await fireToolResult(pi, {
+			type: "tool_result",
+			toolName: "bash_control",
+			toolCallId: "c2",
+			input: { handle: "h1", action: "stop" },
+			content: [{ type: "text", text: "final output" }],
+			isError: false,
+			details: { handle: "h1", exited: true, exitCode: null, action: "stop" },
+		})
+		await fireToolExecutionEnd(pi, "c2", "bash_control")
+
+		expect(messages(pi)).toHaveLength(0)
+		expect((await fireToolCall(pi, "read"))?.block).toBe(false)
+	})
+
+	it("no natural-exit steer when bash_control continue observes the exit mid-flight", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry, "h1")
+
+		await fireToolExecutionStart(pi, "c2", "bash_control", { handle: "h1", action: "continue" })
+		registry.resolveExit("h1", 0)
+		await flush()
+		expect(messages(pi)).toHaveLength(0)
+
+		await fireToolResult(pi, {
+			type: "tool_result",
+			toolName: "bash_control",
+			toolCallId: "c2",
+			input: { handle: "h1", action: "continue" },
+			content: [{ type: "text", text: "done" }],
+			isError: false,
+			details: { handle: "h1", exited: true, exitCode: 0, action: "continue" },
+		})
+		await fireToolExecutionEnd(pi, "c2", "bash_control")
+
+		expect(messages(pi)).toHaveLength(0)
+		expect((await fireToolCall(pi, "read"))?.block).toBe(false)
+	})
+
+	it("a claimed exit is released silently at tool_execution_end when the control call throws (throwIfTerminal)", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry, "h1")
+
+		await fireToolExecutionStart(pi, "c2", "bash_control", { handle: "h1", action: "continue" })
+		registry.resolveExit("h1", 1)
+		await flush()
+		expect(messages(pi)).toHaveLength(0)
+
+		// throwIfTerminal threw inside execute — no resolved tool_result with
+		// details, only an error execution end. Release the handle without
+		// steering: the thrown error result already carried the outcome.
+		await fireToolExecutionEnd(pi, "c2", "bash_control", true)
+
+		expect(messages(pi)).toHaveLength(0)
+		expect((await fireToolCall(pi, "read"))?.block).toBe(false)
+	})
+
+	it("an unattended exit on one handle still steers while a control call owns another", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		await startGatedSession(pi, registry, "h1")
+		await fireToolResult(pi, checkinResult("h2"))
+
+		await fireToolExecutionStart(pi, "c2", "bash_control", { handle: "h1", action: "continue" })
+		// h2 exits with no control call on it — unattended, steer expected.
+		registry.resolveExit("h2", 0)
+		await flush()
+
+		expect(messages(pi)).toHaveLength(1)
+		expect(messages(pi)[0]?.content[0]?.text).toContain("h2")
+		// Gate stays closed: h1 still pending under the in-flight call.
+		expect((await fireToolCall(pi, "read"))?.block).toBe(true)
+
+		// h1 then exits mid-flight — claimed, no steer.
+		registry.resolveExit("h1", 0)
+		await flush()
+		await fireToolResult(pi, {
+			type: "tool_result",
+			toolName: "bash_control",
+			toolCallId: "c2",
+			input: { handle: "h1", action: "continue" },
+			content: [{ type: "text", text: "done" }],
+			isError: false,
+			details: { handle: "h1", exited: true, exitCode: 0, action: "continue" },
+		})
+		await fireToolExecutionEnd(pi, "c2", "bash_control")
+
+		expect(messages(pi)).toHaveLength(1)
+		expect((await fireToolCall(pi, "read"))?.block).toBe(false)
+	})
+
+	it("a registry unpublished before the watcher fires (shutdown drain) cannot steer", async () => {
+		const registry = makeFakeRegistry()
+		const pi = makeFakePi()
+		let activeRegistry = registry as unknown as ProcessRegistry | undefined
+		bashControlExtension(pi, { getRegistry: () => activeRegistry })
+		await fireSessionStart(pi)
+		await fireToolResult(pi, checkinResult("h1"))
+
+		// Shutdown unpublishes the session registry, THEN the drain kills
+		// pending processes and settles the watcher promise.
+		activeRegistry = undefined
+		registry.resolveExit("h1", null)
+		await flush()
+
+		expect(messages(pi)).toHaveLength(0)
+		await fireShutdown(pi)
 	})
 })
 

@@ -64,8 +64,12 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async (_event: SessionShutdownEvent) => {
 		const registry = getSessionRegistry()
 		if (registry) {
-			await registry.shutdown()
+			// Unpublish BEFORE draining: shutdown() kills pending processes,
+			// which settles their whenExited promises — and a still-published
+			// registry would let bashControlExtension's exit watcher emit an
+			// "exited on its own" steer into the closing session.
 			setSessionRegistry(undefined)
+			await registry.shutdown()
 		}
 	})
 }
