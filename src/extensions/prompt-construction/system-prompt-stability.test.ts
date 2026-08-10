@@ -3,15 +3,22 @@ import { createEventBus } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
+import { TriggerEngine } from "../behaviours/engine.js"
+import { tool } from "../behaviours/triggers.js"
+import type { TriggeredBehaviour } from "../behaviours/types.js"
 import { emitFermentDomainEvent } from "../ferment/domain-events-emitter.js"
 import { buildFermentPromptBlock } from "../ferment/prompt-block.js"
 import { createDefaultFermentRuntime } from "../ferment/runtime.js"
 import { setActive } from "../ferment/state.js"
 import { registerFermentTodoSync } from "../ferment/todo-sync.js"
+import { buildPlanModeSupplementBlock } from "../permissions/index.js"
+import type { PermissionModeState } from "../permissions/types.js"
+import { FERMENT_TODO_GUIDANCE } from "../todos/ferment-prompt-block.js"
 import todosExtension from "../todos/index.js"
 import { __resetTodoStore, applyWriteTodos } from "../todos/store.js"
 import { createSystemPromptBlocks } from "./index.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "./system-prompt.js"
+import { renderSystemPromptBlocks } from "./system-prompt-blocks.js"
 
 type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>
 
@@ -83,6 +90,7 @@ interface TestHarness {
 	pi: ExtensionAPI
 	handlers: Map<string, ExtensionHandler[]>
 	fire(event: string, payload: unknown): Promise<unknown>
+	registerPlanningBlock(): void
 	buildFinalSystemPrompt(): Promise<string>
 	buildContextText(): Promise<string>
 }
@@ -122,7 +130,14 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 		},
 	})
 
-	if (activeFerment) {
+	// Register the ferment planning block per test (from beforeEach), NOT here
+	// at construction time: createSystemPromptBlocks installs its pi-level
+	// session_start binding listener only on the first call, and resetHarness
+	// clears the handler map between tests. Registering here would consume the
+	// binding once, leaving later tests with no session binding and silently
+	// empty blocks.
+	function registerPlanningBlock(): void {
+		if (!activeFerment) return
 		createSystemPromptBlocks(pi, "ferment").register({
 			id: "ferment-planning-block",
 			suppress: () => new Set(),
@@ -167,6 +182,7 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 		pi,
 		handlers,
 		fire,
+		registerPlanningBlock,
 		buildFinalSystemPrompt,
 		buildContextText,
 	}
@@ -188,6 +204,7 @@ describe("system prompt stability contract", () => {
 					await resetHarness(harness)
 					setActive(surface === "non-ferment" ? undefined : makeFerment())
 					todosExtension(harness.pi)
+					harness.registerPlanningBlock()
 					unsubscribeTodoSync = registerFermentTodoSync(harness.pi, SESSION_ID)
 					await harness.fire("session_start", { reason: "new" })
 				})
@@ -242,6 +259,7 @@ describe("system prompt stability contract", () => {
 					ferment = makeFerment()
 					setActive(ferment)
 					todosExtension(harness.pi)
+					harness.registerPlanningBlock()
 					unsubscribeTodoSync = registerFermentTodoSync(harness.pi, SESSION_ID)
 					await harness.fire("session_start", { reason: "new" })
 				})
@@ -340,5 +358,150 @@ describe("system prompt stability contract", () => {
 				})
 			})
 		}
+	})
+
+	describe("todo-guidance vs ferment supplement split", () => {
+		const harness = createHarness("non-ferment")
+
+		beforeEach(async () => {
+			await resetHarness(harness)
+			setActive(undefined)
+			todosExtension(harness.pi)
+			await harness.fire("session_start", { reason: "new" })
+		})
+
+		afterEach(async () => {
+			await harness.fire("session_shutdown", {})
+			setActive(undefined)
+			__resetTodoStore()
+		})
+
+		it("holds the static todo-guidance block byte-identical while the supplement appears and disappears with ferment activation", async () => {
+			const blocksBefore = renderSystemPromptBlocks(SESSION_ID, { mode: "single" })
+			expect(blocksBefore.map((b) => `${b.owner}/${b.id}`)).toEqual(["todos/todo-guidance"])
+			const promptBefore = await harness.buildFinalSystemPrompt()
+			expect(promptBefore).toContain("## Todos")
+			expect(promptBefore).not.toContain(FERMENT_TODO_GUIDANCE)
+
+			setActive(makeFerment())
+
+			const blocksActive = renderSystemPromptBlocks(SESSION_ID, { mode: "single" })
+			expect(blocksActive.map((b) => `${b.owner}/${b.id}`)).toEqual([
+				"todos/todo-guidance",
+				"todos/todo-guidance-ferment",
+			])
+			// The static block is byte-identical — activation mutates only the supplement.
+			expect(blocksActive[0]?.content).toBe(blocksBefore[0]?.content)
+			expect(blocksActive[1]?.content).toBe(FERMENT_TODO_GUIDANCE)
+
+			const promptActive = await harness.buildFinalSystemPrompt()
+			// The supplement renders immediately after the base guidance (sorted
+			// block ids), so the prompt contains the exact guidance+supplement
+			// sequence as one contiguous run of todo instructions.
+			expect(promptActive).toContain(`${blocksBefore[0]?.content}\n\n${FERMENT_TODO_GUIDANCE}`)
+
+			setActive(undefined)
+
+			expect(renderSystemPromptBlocks(SESSION_ID, { mode: "single" })).toEqual(blocksBefore)
+			// Full byte-identity restored: ferment activation leaves no residue in
+			// the prompt a cached prefix would see.
+			expect(await harness.buildFinalSystemPrompt()).toBe(promptBefore)
+		})
+	})
+
+	describe("permissions plan-mode-supplement bounded dynamism", () => {
+		const harness = createHarness("non-ferment")
+		let mode: PermissionModeState
+
+		beforeEach(async () => {
+			await resetHarness(harness)
+			setActive(undefined)
+			mode = { mode: "plan", initiatedBy: "user", source: "runtime" }
+			todosExtension(harness.pi)
+			createSystemPromptBlocks(harness.pi, "permissions").register(buildPlanModeSupplementBlock(() => mode))
+			await harness.fire("session_start", { reason: "new" })
+		})
+
+		afterEach(async () => {
+			await harness.fire("session_shutdown", {})
+			setActive(undefined)
+			__resetTodoStore()
+		})
+
+		it("holds the assembled prompt byte-stable across todo mutations while plan mode is active", async () => {
+			const promptBefore = await harness.buildFinalSystemPrompt()
+			expect(promptBefore).toContain("Plan mode is active")
+
+			applyWriteTodos({ todos: [{ content: "plan-task", status: "pending" }] }, SESSION_ID)
+			expect(await harness.buildFinalSystemPrompt()).toBe(promptBefore)
+
+			applyWriteTodos({ todos: [{ id: 1, content: "plan-task", status: "completed" }] }, SESSION_ID)
+			expect(await harness.buildFinalSystemPrompt()).toBe(promptBefore)
+		})
+
+		it("toggles only with the permission mode and restores exact prior prompts", async () => {
+			const promptPlan = await harness.buildFinalSystemPrompt()
+
+			mode = { mode: "default", initiatedBy: "user", source: "runtime" }
+			const promptDefault = await harness.buildFinalSystemPrompt()
+			expect(promptDefault).not.toContain("Plan mode is active")
+			// Static sections are untouched by the mode toggle.
+			expect(promptDefault).toContain("## Todos")
+
+			mode = { mode: "plan", initiatedBy: "user", source: "runtime" }
+			expect(await harness.buildFinalSystemPrompt()).toBe(promptPlan)
+		})
+	})
+
+	describe("behaviours triggered:* bounded dynamism", () => {
+		const harness = createHarness("non-ferment")
+		let engine: TriggerEngine
+		const behaviour: TriggeredBehaviour = {
+			kind: "triggered",
+			name: "test-tool-behaviour",
+			description: "loaded for tests",
+			body: "## Tool Behaviour\nPrefer gh over raw curl.",
+			triggers: { tool: tool("bash") },
+		}
+
+		beforeEach(async () => {
+			await resetHarness(harness)
+			setActive(undefined)
+			engine = new TriggerEngine([behaviour])
+			todosExtension(harness.pi)
+			createSystemPromptBlocks(harness.pi, "behaviours").register({
+				id: `triggered:${behaviour.name}`,
+				render: () => (engine.isLoaded(behaviour.name) ? behaviour.body : undefined),
+			})
+			await harness.fire("session_start", { reason: "new" })
+		})
+
+		afterEach(async () => {
+			await harness.fire("session_shutdown", {})
+			setActive(undefined)
+			__resetTodoStore()
+		})
+
+		it("holds the loaded block byte-stable across unrelated todo mutations", async () => {
+			engine.evaluateToolTriggers({ toolName: "bash", input: { command: "gh pr list" } }, 0)
+			expect(engine.isLoaded(behaviour.name)).toBe(true)
+
+			const promptBefore = await harness.buildFinalSystemPrompt()
+			expect(promptBefore).toContain(behaviour.body)
+
+			applyWriteTodos({ todos: [{ content: "behaviour-task", status: "pending" }] }, SESSION_ID)
+			expect(await harness.buildFinalSystemPrompt()).toBe(promptBefore)
+
+			applyWriteTodos({ todos: [] }, SESSION_ID)
+			expect(await harness.buildFinalSystemPrompt()).toBe(promptBefore)
+		})
+
+		it("renders nothing until the trigger loads the behaviour", async () => {
+			const promptUnloaded = await harness.buildFinalSystemPrompt()
+			expect(promptUnloaded).not.toContain("Tool Behaviour")
+
+			engine.evaluateToolTriggers({ toolName: "bash", input: { command: "gh pr list" } }, 0)
+			expect(await harness.buildFinalSystemPrompt()).toContain(behaviour.body)
+		})
 	})
 })

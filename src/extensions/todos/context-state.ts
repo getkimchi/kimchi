@@ -1,5 +1,5 @@
 import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { renderTodoStateMarkdown } from "./prompt-block.js"
+import { renderTodoStateMarkdown } from "./state-markdown.js"
 
 type OrchestratorMessages = ContextEvent["messages"]
 

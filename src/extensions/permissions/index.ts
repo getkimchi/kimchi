@@ -143,6 +143,22 @@ function resolvePrompter(ctx: ExtensionContext): ToolPermissionPrompter | undefi
 	return undefined
 }
 
+/**
+ * Build the plan-mode prompt supplement system-prompt block. The mode
+ * resolver is injected so tests can drive the block deterministically
+ * without booting the full extension — the block's ONLY declared input
+ * is the runtime permission mode (see system-prompt-stability tests).
+ */
+export function buildPlanModeSupplementBlock(getMode: () => PermissionModeState): SystemPromptBlock {
+	return {
+		id: "plan-mode-supplement",
+		render: () => {
+			if (getMode().mode !== "plan") return undefined
+			return planModeSupplement.trim()
+		},
+	}
+}
+
 export default function permissionsExtension(pi: ExtensionAPI): void {
 	pi.registerFlag("plan", {
 		description: "Start in plan mode (read-only exploration).",
@@ -468,13 +484,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// having to walk every extension's blocks handle. The blocks handle is kept
 	// alive (it still owns the `pi` binding for session-shutdown cleanup); the
 	// registry entry below is the canonical lookup path.
-	const planModeSupplementBlock: SystemPromptBlock = {
-		id: "plan-mode-supplement",
-		render: () => {
-			if (getRuntimePermissionMode().mode !== "plan") return undefined
-			return planModeSupplement.trim()
-		},
-	}
+	const planModeSupplementBlock = buildPlanModeSupplementBlock(getRuntimePermissionMode)
 	PromptSupplementRegistry.register("plan-mode-supplement", planModeSupplementBlock, {
 		modes: ["adhoc"],
 	})

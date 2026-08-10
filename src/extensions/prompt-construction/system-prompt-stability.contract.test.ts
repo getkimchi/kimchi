@@ -1,9 +1,15 @@
+import { execSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 
+/** Repo root, resolved from this file's location (src/extensions/prompt-construction/)
+ *  so the contract test is independent of the process working directory. */
+const REPO_ROOT = resolve(fileURLToPath(new URL("../../../", import.meta.url)))
+
 function readSource(relativePath: string): string {
-	return readFileSync(resolve(process.cwd(), relativePath), "utf8")
+	return readFileSync(resolve(REPO_ROOT, relativePath), "utf8")
 }
 
 interface BlockRegistrar {
@@ -31,14 +37,19 @@ const KNOWN_REGISTRARS: BlockRegistrar[] = [
 		owner: "todos",
 		blockId: "todo-guidance",
 		expectedStability: "static",
-		reason: "todo guidance is constant; live todo state lives in the transient context event",
-		allowedVolatileImports: [
-			{
-				modulePath: "./store",
-				reason:
-					"renderTodoStateMarkdown lives in this file for co-location but is only used by the transient context-state path, not by the todo-guidance block",
-			},
-		],
+		reason:
+			"todo guidance is constant; live todo state lives in the transient context event " +
+			"(state-markdown.ts, non-registrar) and the ferment supplement is split out into " +
+			"its own dynamic block, so this file carries zero volatile imports",
+	},
+	{
+		file: "src/extensions/todos/ferment-prompt-block.ts",
+		owner: "todos",
+		blockId: "todo-guidance-ferment",
+		expectedStability: "dynamic",
+		reason:
+			"ferment todo supplement appears only while a ferment is active; " +
+			"id sorts immediately after the base todo-guidance block in the assembled prompt",
 	},
 	{
 		file: "src/extensions/ferment/index.ts",
@@ -82,8 +93,20 @@ const KNOWN_REGISTRARS: BlockRegistrar[] = [
  *  Static system-prompt blocks must not import from these modules. Dynamic
  *  blocks may import from them only when the resulting variability is
  *  intentional and bounded (e.g. ferment lifecycle, permission mode).
- */
-const VOLATILE_STORE_MODULES = ["../todos/store", "./store", "src/extensions/todos/store"]
+ *
+ *  Each entry covers the relative and src-rooted spellings used by registrars
+ *  in src/extensions so an import is caught however it is written. */
+const VOLATILE_STORE_MODULES = [
+	"../todos/store",
+	"./store",
+	"src/extensions/todos/store",
+	"../ferment/state",
+	"./state",
+	"src/extensions/ferment/state",
+	"../ferment/todo-sync",
+	"./todo-sync",
+	"src/extensions/ferment/todo-sync",
+]
 
 function hasBlockRegistration(source: string, owner: string, blockId: string): boolean {
 	// Match createSystemPromptBlocks(pi, "owner").register(...) or similar.
@@ -121,10 +144,9 @@ function scanForUnregisteredRegistrars(): { file: string; owner: string }[] {
 	// Vitest runs in Node, so we can use the real file system via a shell call.
 	// execSync is allowed here because this is a test-time diagnostic, not a
 	// source-code dependency.
-	const { execSync } = require("node:child_process")
 	const raw = execSync(
 		`grep -R "createSystemPromptBlocks(" src/extensions --include="*.ts" -l | grep -v ".test.ts" | sort`,
-		{ encoding: "utf8", cwd: process.cwd() },
+		{ encoding: "utf8", cwd: REPO_ROOT },
 	)
 	const files = raw.split("\n").filter(Boolean)
 	const unregistered: { file: string; owner: string }[] = []
@@ -172,21 +194,37 @@ describe("system-prompt block cache contract (source)", () => {
 
 	it("keeps the todos system-prompt block static and reintroducing todo-state impossible by omission", () => {
 		const promptBlock = readSource("src/extensions/todos/prompt-block.ts")
+		const fermentBlock = readSource("src/extensions/todos/ferment-prompt-block.ts")
 		const index = readSource("src/extensions/todos/index.ts")
 
 		expect(promptBlock).toContain('id: "todo-guidance"')
 		expect(promptBlock).not.toContain('id: "todo-state"')
 		expect(promptBlock).not.toContain("registerTodoStateBlock")
+		// The static block must not re-grow a ferment-state branch — that is
+		// what the dynamic supplement block is for.
+		expect(promptBlock).not.toContain("getActive")
+		// The removed before_agent_start fallback must stay removed: a silent
+		// patch would mask block-pipeline regressions these tests exist to catch.
+		expect(promptBlock).not.toContain("appendTodoPromptBlockIfMissing")
+		expect(index).not.toContain("appendTodoPromptBlockIfMissing")
+
+		expect(fermentBlock).toContain('id: "todo-guidance-ferment"')
 
 		expect(index).toContain("registerTodoContextState(pi)")
+		expect(index).toContain("registerFermentTodoPromptBlock(pi)")
 		expect(index).not.toContain("registerTodoStateBlock")
 	})
 
 	it("keeps dynamic todo state in the transient context event path only", () => {
 		const contextState = readSource("src/extensions/todos/context-state.ts")
+		const stateMarkdown = readSource("src/extensions/todos/state-markdown.ts")
 
 		expect(contextState).toContain('pi.on("context"')
 		expect(contextState).toContain("customType: TODO_STATE_CUSTOM_TYPE")
 		expect(contextState).toContain("renderTodoStateMarkdown")
+
+		// The volatile renderer lives outside any registrar file so the static
+		// import guard above can be strict (zero allowlisted exceptions).
+		expect(stateMarkdown).toContain("renderTodoStateMarkdown")
 	})
 })
