@@ -1,0 +1,267 @@
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { createEventBus } from "@earendil-works/pi-coding-agent"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { Ferment } from "../../ferment/types.js"
+import { createContext } from "../__mocks__/context.js"
+import { emitFermentDomainEvent } from "../ferment/domain-events-emitter.js"
+import { setActive } from "../ferment/state.js"
+import { registerFermentTodoSync } from "../ferment/todo-sync.js"
+import todosExtension from "../todos/index.js"
+import { __resetTodoStore, applyWriteTodos } from "../todos/store.js"
+import { buildSystemPrompt, type EnvironmentInfo } from "./system-prompt.js"
+
+type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>
+
+type BeforeAgentStartResult = { systemPrompt?: string } | undefined
+
+type ContextResult = { messages?: Array<{ content?: unknown }> } | undefined
+
+const SESSION_ID = "system-prompt-stability-session"
+
+const testEnv: EnvironmentInfo = {
+	os: "Linux",
+	rawPlatform: "linux",
+	cpuArchitecture: "x64",
+	shell: "/bin/bash",
+	osRelease: "6.1.0-test",
+	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
+	username: "testuser",
+	homeDir: "/home/testuser",
+	cwd: "/home/testuser/projects/myapp",
+	documentsDir: "/home/testuser/projects/myapp/.kimchi/docs",
+	localDate: "2026-01-01",
+	isGitRepo: false,
+}
+
+const tools = [
+	{ name: "read", description: "Read file contents" },
+	{ name: "bash", description: "Execute bash commands" },
+]
+
+function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
+	return {
+		id: "ferment-stability-test",
+		name: "System Prompt Stability Ferment",
+		status: "running",
+		worktree: { path: "/tmp" },
+		scoping: {},
+		phases: [
+			{
+				id: "phase-1",
+				index: 1,
+				name: "Implementation",
+				goal: "do the work",
+				status: "active",
+				steps: [
+					{ id: "step-1", index: 1, description: "Write the code", status: "running" },
+					{ id: "step-2", index: 2, description: "Run the tests", status: "pending" },
+				],
+			},
+		],
+		decisions: [],
+		memories: [],
+		createdAt: new Date().toISOString(),
+		updatedAt: new Date().toISOString(),
+		...overrides,
+	}
+}
+
+function extractTodoContextText(result: ContextResult): string {
+	return (result?.messages ?? [])
+		.map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+		.join("\n")
+}
+
+describe("system prompt stability contract", () => {
+	const handlers = new Map<string, ExtensionHandler[]>()
+
+	const pi = {
+		events: createEventBus(),
+		registerTool: vi.fn(),
+		registerCommand: vi.fn(),
+		registerShortcut: vi.fn(),
+		registerMessageRenderer: vi.fn(),
+		appendEntry: vi.fn(),
+		sendMessage: vi.fn(),
+		sendUserMessage: vi.fn(),
+		getActiveTools: vi.fn(() => []),
+		getAllTools: vi.fn(() => []),
+		getFlag: vi.fn(),
+		setFlag: vi.fn(),
+		on: vi.fn((event: string, handler: ExtensionHandler) => {
+			const list = handlers.get(event) ?? []
+			list.push(handler)
+			handlers.set(event, list)
+		}),
+	} as unknown as ExtensionAPI
+
+	const ctx = createContext({
+		hasUI: false,
+		sessionManager: {
+			getSessionId: () => SESSION_ID,
+			getBranch: () => [],
+		},
+	})
+
+	let unsubscribeTodoSync: (() => void) | undefined
+
+	async function fire(event: string, payload: unknown): Promise<unknown> {
+		let result: unknown
+		for (const handler of handlers.get(event) ?? []) {
+			result = await handler(payload, ctx)
+		}
+		return result
+	}
+
+	async function buildFinalSystemPrompt(): Promise<string> {
+		let prompt = buildSystemPrompt({ tools, env: testEnv, mode: "single", sessionId: SESSION_ID })
+		for (const handler of handlers.get("before_agent_start") ?? []) {
+			const result = (await handler(
+				{
+					type: "before_agent_start",
+					prompt: "",
+					images: undefined,
+					systemPrompt: prompt,
+					systemPromptOptions: {},
+				},
+				ctx,
+			)) as BeforeAgentStartResult
+			if (result?.systemPrompt) prompt = result.systemPrompt
+		}
+		return prompt
+	}
+
+	async function buildContextText(): Promise<string> {
+		const result = (await fire("context", { type: "context", messages: [] })) as ContextResult
+		return extractTodoContextText(result)
+	}
+
+	beforeEach(async () => {
+		handlers.clear()
+		__resetTodoStore()
+		setActive(undefined)
+
+		todosExtension(pi)
+		unsubscribeTodoSync = registerFermentTodoSync(pi, SESSION_ID)
+		await fire("session_start", { reason: "new" })
+	})
+
+	afterEach(async () => {
+		await fire("session_shutdown", {})
+		unsubscribeTodoSync?.()
+		unsubscribeTodoSync = undefined
+		setActive(undefined)
+		__resetTodoStore()
+	})
+
+	it("keeps the assembled system prompt stable while todo and ferment todo state changes", async () => {
+		const ferment = makeFerment()
+		setActive(ferment)
+		emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
+		emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
+		applyWriteTodos({ todos: [{ content: "write parser", status: "in_progress" }] }, SESSION_ID)
+
+		const promptBefore = await buildFinalSystemPrompt()
+		const contextBefore = await buildContextText()
+		expect(promptBefore).toContain("## Todos")
+		expect(contextBefore).toContain("## Current Todos")
+		expect(contextBefore).toContain("write parser")
+
+		applyWriteTodos({ todos: [{ id: 1, content: "write parser", status: "completed" }] }, SESSION_ID)
+		applyWriteTodos(
+			{
+				scope: { kind: "global" },
+				todos: [{ content: "review parser", status: "pending" }],
+			},
+			SESSION_ID,
+		)
+
+		const completedStepFerment: Ferment = {
+			...ferment,
+			phases: ferment.phases.map((phase) => ({
+				...phase,
+				steps: phase.steps.map((step) => (step.id === "step-1" ? { ...step, status: "done" as const } : step)),
+			})),
+		}
+		emitFermentDomainEvent(
+			pi.events,
+			{ type: "complete_step", phaseId: "phase-1", stepId: "step-1" },
+			completedStepFerment,
+		)
+
+		const promptAfter = await buildFinalSystemPrompt()
+		const contextAfter = await buildContextText()
+
+		expect(promptAfter).toBe(promptBefore)
+		expect(contextAfter).not.toBe(contextBefore)
+		expect(contextAfter).toContain("review parser")
+	})
+
+	it("keeps the assembled system prompt stable when ferment phase lifecycle completes", async () => {
+		const ferment = makeFerment()
+		setActive(ferment)
+		emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
+		emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
+		applyWriteTodos({ todos: [{ content: "ship change", status: "pending" }] }, SESSION_ID)
+
+		const promptBefore = await buildFinalSystemPrompt()
+		const contextBefore = await buildContextText()
+
+		const completedStepFerment: Ferment = {
+			...ferment,
+			phases: ferment.phases.map((phase) => ({
+				...phase,
+				steps: phase.steps.map((step) => (step.id === "step-1" ? { ...step, status: "done" as const } : step)),
+			})),
+		}
+		emitFermentDomainEvent(
+			pi.events,
+			{ type: "complete_step", phaseId: "phase-1", stepId: "step-1" },
+			completedStepFerment,
+		)
+
+		const completedPhaseFerment: Ferment = {
+			...completedStepFerment,
+			phases: completedStepFerment.phases.map((phase) => ({ ...phase, status: "completed" as const })),
+		}
+		emitFermentDomainEvent(
+			pi.events,
+			{ type: "complete_phase", phaseId: "phase-1", summary: "done" },
+			completedPhaseFerment,
+		)
+
+		const promptAfter = await buildFinalSystemPrompt()
+		const contextAfter = await buildContextText()
+
+		expect(promptAfter).toBe(promptBefore)
+		expect(contextAfter).not.toBe(contextBefore)
+		expect(contextAfter).not.toContain("ship change")
+	})
+
+	it("keeps the assembled system prompt stable when todos are added, updated, and cleared", async () => {
+		const promptBefore = await buildFinalSystemPrompt()
+		const contextBefore = await buildContextText()
+		expect(promptBefore).toContain("## Todos")
+		expect(contextBefore).toBe("")
+
+		applyWriteTodos({ todos: [{ content: "initial task", status: "pending" }] }, SESSION_ID)
+		const promptAfterAdd = await buildFinalSystemPrompt()
+		const contextAfterAdd = await buildContextText()
+		expect(promptAfterAdd).toBe(promptBefore)
+		expect(contextAfterAdd).not.toBe(contextBefore)
+		expect(contextAfterAdd).toContain("initial task")
+
+		applyWriteTodos({ todos: [{ id: 1, content: "updated task", status: "in_progress" }] }, SESSION_ID)
+		const promptAfterUpdate = await buildFinalSystemPrompt()
+		const contextAfterUpdate = await buildContextText()
+		expect(promptAfterUpdate).toBe(promptBefore)
+		expect(contextAfterUpdate).not.toBe(contextAfterAdd)
+		expect(contextAfterUpdate).toContain("updated task")
+
+		applyWriteTodos({ todos: [] }, SESSION_ID)
+		const promptAfterClear = await buildFinalSystemPrompt()
+		const contextAfterClear = await buildContextText()
+		expect(promptAfterClear).toBe(promptBefore)
+		expect(contextAfterClear).toBe("")
+	})
+})
