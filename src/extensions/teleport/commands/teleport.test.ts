@@ -697,8 +697,8 @@ describe("runTeleport", () => {
 	})
 
 	describe("compaction hint gate", () => {
-		// 25 messages > the production lookback of 20, so a fresh fixture is
-		// hint-eligible (suppression would otherwise kick in).
+		// 25 messages > the production lookback of 20, exercising the real
+		// lookback path (a never-compacted session hints at any count).
 		function writeSessionJsonl(timestamp: Date, messageCount = 25): string {
 			const sessionFile = join(tempDir, "session.jsonl")
 			const entry = {

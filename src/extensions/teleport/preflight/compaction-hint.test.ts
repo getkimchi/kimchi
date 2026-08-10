@@ -87,6 +87,17 @@ describe("evaluateCompactHint", () => {
 		expect(result.messagesSinceLastCompaction).toBe(4)
 	})
 
+	it("hints for a never-compacted session with fewer messages than the lookback window (few big messages still compact well)", () => {
+		// No compaction marker anywhere → nothing to loop on. A small message
+		// count must not suppress: large tool results can push a handful of
+		// messages well past the token threshold, and compaction would still
+		// summarize most of them (keepRecentTokens is token-, not count-based).
+		const result = evaluate(manyMessages(2))
+		expect(result.decided).toBe(true)
+		expect(result.shouldHint).toBe(true)
+		expect(result.messagesSinceLastCompaction).toBe(2)
+	})
+
 	it("counts only messages after the LAST compaction marker", () => {
 		const result = evaluate([COMPACTION, ...manyMessages(5), COMPACTION, ...manyMessages(1)])
 		expect(result.shouldHint).toBe(false)
@@ -142,7 +153,7 @@ describe("evaluateCompactHint", () => {
 		const numericFresh = NOW - 10 * 60_000
 		// Append-ordered: the LAST entry's timestamp is the most recent activity.
 		const result = evaluate([messageEntry(numericFresh), messageEntry(undefined, FRESH_ISO)])
-		expect(result.shouldHint).toBe(false) // only 2 messages since no compaction, below window
+		expect(result.shouldHint).toBe(true) // fresh + over threshold; no compaction marker to suppress
 		expect(result.lastActivityAt).toBe(new Date(FRESH_ISO).getTime())
 	})
 

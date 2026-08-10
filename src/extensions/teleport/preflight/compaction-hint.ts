@@ -187,15 +187,16 @@ export function evaluateCompactHint(input: EvaluateCompactHintInput): CompactHin
 
 	// Reached only once recent-compaction suppression has been ruled out: apply
 	// the remaining gates (enabled, threshold, liveness) and build the result.
+	// Message count plays no role here — the backward scan above already
+	// implements "few messages since the last compaction" via the marker, and
+	// for a never-compacted session a low count must NOT suppress: big tool
+	// results can push a handful of messages past the threshold, and
+	// compaction keeps recent TOKENS, not recent messages, so it still helps.
 	function evaluateUnsuppressed(activity: number | undefined, count: number): CompactHintEvaluation {
 		const lastActivity = activity ?? input.fallbackTimestampMs
 		const livenessWindowMs = input.config.freshnessWindowMinutes * 60_000
 		const live = lastActivity !== undefined && input.now - lastActivity <= livenessWindowMs
-		const shouldHint =
-			input.config.enabled &&
-			input.estimatedTokens > input.config.tokenThreshold &&
-			live &&
-			count > input.config.compactionLookbackMessages
+		const shouldHint = input.config.enabled && input.estimatedTokens > input.config.tokenThreshold && live
 		return result(true, shouldHint, lastActivity, count)
 	}
 }
