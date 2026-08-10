@@ -254,6 +254,12 @@ describe("classifyBashCommand — backgrounding patterns", () => {
 		expect(classifyBashCommand("cmd &>>run.log")?.category).toBe("write")
 	})
 
+	it("distinguishes spaced background operators from combined redirects", () => {
+		expect(classifyBashCommand("sleep 10 & >run.log")?.category).toBe("background")
+		expect(classifyBashCommand("sleep 10 & >/dev/null")?.category).toBe("background")
+		expect(classifyBashCommand("sleep 10 & 2>/dev/null")?.category).toBe("background")
+	})
+
 	it("does not flag quoted or escaped ampersands", () => {
 		expect(classifyBashCommand('echo "A & B"')).toBeNull()
 		expect(classifyBashCommand("echo A \\& B")).toBeNull()

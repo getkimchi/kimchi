@@ -310,15 +310,8 @@ function detectBackgrounding(command: string): BashClassification | null {
 		}
 	}
 
-	// `parseCommandSegments` emits `&` only for a shell operator. Combined
-	// redirects (`&>` / `&>>`) are the one exception: shell-quote emits them
-	// as adjacent `&` and `>` / `>>` operators.
-	const hasBackgroundOperator = segments.some((segment) =>
-		segment.ops.some(
-			(operator, index) =>
-				operator.op === "&" && segment.ops[index + 1]?.op !== ">" && segment.ops[index + 1]?.op !== ">>",
-		),
-	)
+	const hasBackgroundOperator =
+		segments.some((segment) => segment.ops.some(({ op }) => op === "&")) && hasStandaloneBackgroundOperator(command)
 	if (hasBackgroundOperator) {
 		return {
 			category: "background",
@@ -329,6 +322,36 @@ function detectBackgrounding(command: string): BashClassification | null {
 	}
 
 	return null
+}
+
+function hasStandaloneBackgroundOperator(command: string): boolean {
+	let quote: "'" | '"' | undefined
+	for (let index = 0; index < command.length; index++) {
+		const char = command[index]
+		if (quote) {
+			if (quote === '"' && char === "\\") index++
+			else if (char === quote) quote = undefined
+			continue
+		}
+		if (char === "\\") {
+			index++
+			continue
+		}
+		if (char === "'" || char === '"') {
+			quote = char
+			continue
+		}
+		if (
+			char === "&" &&
+			command[index - 1] !== "&" &&
+			command[index - 1] !== ">" &&
+			command[index + 1] !== "&" &&
+			command[index + 1] !== ">"
+		) {
+			return true
+		}
+	}
+	return false
 }
 
 const STREAM_REDIRECT_TARGETS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr"])
