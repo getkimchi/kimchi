@@ -12,7 +12,7 @@ patchedDependencies:
     hash: fb1bce8020def74278b4bd74b66b7777a90f45fc44958c7874e726e2c67a0ecc
     path: patches/@earendil-works__pi-ai@0.79.10.patch
   '@earendil-works/pi-coding-agent@0.79.10':
-    hash: c667691de118ee4b0c57e76242e9903968056480467def3e37edfa6e20693fa5
+    hash: f69a1a6fd2cd9cd670e2092de6327f381fe1238f6a06b5c7d5c31750d62680cb
     path: patches/@earendil-works__pi-coding-agent@0.79.10.patch
   '@earendil-works/pi-tui@0.79.10':
     hash: 019141c7f01eabbdb737b0e8eed4a5ef6a724cfc8eb4e8d77e4dbe930d5e8529
@@ -36,7 +36,7 @@ importers:
         version: 1.3.0
       '@earendil-works/pi-coding-agent':
         specifier: 0.79.10
-        version: 0.79.10(patch_hash=c667691de118ee4b0c57e76242e9903968056480467def3e37edfa6e20693fa5)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
+        version: 0.79.10(patch_hash=f69a1a6fd2cd9cd670e2092de6327f381fe1238f6a06b5c7d5c31750d62680cb)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-tui':
         specifier: 0.79.10
         version: 0.79.10(patch_hash=019141c7f01eabbdb737b0e8eed4a5ef6a724cfc8eb4e8d77e4dbe930d5e8529)
@@ -2862,7 +2862,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-coding-agent@0.79.10(patch_hash=c667691de118ee4b0c57e76242e9903968056480467def3e37edfa6e20693fa5)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)':
+  '@earendil-works/pi-coding-agent@0.79.10(patch_hash=f69a1a6fd2cd9cd670e2092de6327f381fe1238f6a06b5c7d5c31750d62680cb)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)':
     dependencies:
       '@earendil-works/pi-agent-core': 0.79.10(patch_hash=15d2e1baba7ae039625909b8aa1777106094b5923ef582067d088f024f9d7991)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-ai': 0.79.10(patch_hash=fb1bce8020def74278b4bd74b66b7777a90f45fc44958c7874e726e2c67a0ecc)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)

@@ -161,4 +161,23 @@ describe("upstream before_agent_start on extension-triggered turns patch", () =>
 
 		expect(fake.agent.state.systemPrompt).toBe("PI BASE PROMPT")
 	})
+
+	it("triggerTurn accepts plain-string content (completion notifications, feedback nudges)", async () => {
+		const fake = makeTriggerTurnSession({ systemPrompt: "KIMCHI OVERRIDE PROMPT" })
+
+		await sessionProto.sendCustomMessage.call(
+			fake,
+			{ customType: "agent_completion", content: "long task completed", display: true },
+			{ triggerTurn: true },
+		)
+
+		expect(fake.agent.state.systemPrompt).toBe("KIMCHI OVERRIDE PROMPT")
+		expect(fake._extensionRunner.emitBeforeAgentStart).toHaveBeenCalledWith(
+			"long task completed",
+			undefined,
+			"PI BASE PROMPT",
+			undefined,
+		)
+		expect(fake._runAgentPrompt).toHaveBeenCalledOnce()
+	})
 })

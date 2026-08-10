@@ -95,7 +95,7 @@ index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..63ca4495adc5dc3428d45f3a8bfaa3b7
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
    ANT_LING_API_KEY                 - Ant Ling API key
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 3b2c24d1b52869e351ea488f0c535c34eaedf127..e6edc22b7401eb09cdce866db89ffaace7fe87ae 100644
+index 3b2c24d1b52869e351ea488f0c535c34eaedf127..2006918a17488764ffc7fd7cf4aee973e98d6e5d 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
 @@ -60,7 +60,7 @@
@@ -148,7 +148,7 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..e6edc22b7401eb09cdce866db89ffaac
      }
      /** Whether compaction or branch summarization is currently running */
      get isCompacting() {
-@@ -1001,7 +1023,37 @@
+@@ -1001,7 +1023,42 @@
              }
          }
          else if (options?.triggerTurn) {
@@ -160,7 +160,12 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..e6edc22b7401eb09cdce866db89ffaac
 +            // true }) or followUp delivery (kimchi ferment/one-shot flows), leaving
 +            // the agent on the default base prompt for the whole run.
 +            const triggerMessages = [appMessage];
-+            const triggerText = appMessage.content
++            // content may be a plain string (agent-completion notifications,
++            // feedback nudges) or ContentPart[] — normalize before extracting text.
++            const triggerParts = Array.isArray(appMessage.content)
++                ? appMessage.content
++                : [{ type: "text", text: String(appMessage.content) }];
++            const triggerText = triggerParts
 +                .filter((part) => part.type === "text")
 +                .map((part) => part.text)
 +                .join("\n");
@@ -187,7 +192,7 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..e6edc22b7401eb09cdce866db89ffaac
          }
          else {
              this.agent.state.messages.push(appMessage);
-@@ -1270,8 +1322,9 @@
+@@ -1270,8 +1327,9 @@
       * Manually compact the session context.
       * Aborts current agent operation first.
       * @param customInstructions Optional instructions for the compaction summary
@@ -198,7 +203,7 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..e6edc22b7401eb09cdce866db89ffaac
          this._disconnectFromAgent();
          await this.abort();
          this._compactionAbortController = new AbortController();
-@@ -1283,14 +1336,21 @@
+@@ -1283,14 +1341,21 @@
              const { apiKey, headers, env } = await this._getCompactionRequestAuth(this.model);
              const pathEntries = this.sessionManager.getBranch();
              const settings = this.settingsManager.getCompactionSettings();
@@ -222,7 +227,7 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..e6edc22b7401eb09cdce866db89ffaac
              }
              let extensionCompaction;
              let fromExtension = false;
-@@ -1678,8 +1738,13 @@
+@@ -1678,8 +1743,13 @@
              themePaths: this.buildExtensionResourcePaths(themePaths),
          };
          this._resourceLoader.extendResources(extensionPaths);
@@ -237,7 +242,7 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..e6edc22b7401eb09cdce866db89ffaac
      }
      buildExtensionResourcePaths(entries) {
          return entries.map((entry) => {
-@@ -1809,7 +1874,7 @@
+@@ -1809,7 +1879,7 @@
              compact: (options) => {
                  void (async () => {
                      try {
