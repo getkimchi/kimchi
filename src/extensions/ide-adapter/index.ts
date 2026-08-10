@@ -105,7 +105,8 @@ async function requestIdeApproval(
 			return { approved, newContent }
 		}
 		return null
-	} catch {
+	} catch (err) {
+		console.warn("[ide-adapter] proposeChange request failed:", err)
 		return null
 	}
 }
@@ -234,10 +235,15 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 			return
 		}
 
-		// Wire disconnect callback so we can null the handle and reconnect later
+		// Wire disconnect callback so we can null the handle and reconnect later.
+		// Capture the connection reference so a stale WebSocket closing after
+		// a reconnect doesn't wipe the live handle.
+		const connRef = connection
 		connection.onDisconnect = () => {
-			connection = null
-			ideConnectionActive = false
+			if (connection === connRef) {
+				connection = null
+				ideConnectionActive = false
+			}
 		}
 
 		try {
@@ -434,12 +440,8 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 		// viewer, override the tool's input so the agent applies the user's final
 		// version instead of its original proposal.
 		if (approval.newContent !== null && approval.newContent !== proposed.newContent) {
-			applyEditedContent(
-				event.input as Record<string, unknown>,
-				toolName,
-				approval.newContent,
-				proposed.originalContent,
-			)
+			applyEditedContent(input, toolName, approval.newContent, proposed.originalContent)
+			event.input = input
 			// Steer the LLM so its summary reflects what was actually written, not
 			// its original proposal. Without this, the agent confidently reports
 			// the proposed value even though the user changed it in the diff viewer.
