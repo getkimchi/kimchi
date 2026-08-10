@@ -33,6 +33,7 @@ describe("classifyBashCommand — read patterns", () => {
 
 	it("flags `head -n 5 <file>`", () => {
 		expect(classifyBashCommand("head -n 5 src/foo.ts")?.category).toBe("read")
+		expect(classifyBashCommand("head -n 5 README")?.category).toBe("read")
 	})
 
 	it("flags `tail <file>`", () => {
@@ -240,6 +241,22 @@ describe("classifyBashCommand — backgrounding patterns", () => {
 		expect(classifyBashCommand("git status && git log")).toBeNull()
 		expect(classifyBashCommand("cd src && pnpm test")).toBeNull()
 		expect(classifyBashCommand("echo 'hello' && echo 'world'")).toBeNull()
+	})
+
+	it("does not treat file-descriptor redirection as backgrounding", () => {
+		expect(classifyBashCommand("gh pr view 1 2>&1")).toBeNull()
+		expect(classifyBashCommand("cmd >&2")).toBeNull()
+		expect(classifyBashCommand("gh pr view 1 2>&1 | head -n 5")).toBeNull()
+	})
+
+	it("does not treat combined stdout/stderr redirection as backgrounding", () => {
+		expect(classifyBashCommand("cmd &>run.log")?.category).toBe("write")
+		expect(classifyBashCommand("cmd &>>run.log")?.category).toBe("write")
+	})
+
+	it("does not flag quoted or escaped ampersands", () => {
+		expect(classifyBashCommand('echo "A & B"')).toBeNull()
+		expect(classifyBashCommand("echo A \\& B")).toBeNull()
 	})
 
 	it("does not flag `> /dev/null` redirect without backgrounding", () => {

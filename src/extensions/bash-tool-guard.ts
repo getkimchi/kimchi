@@ -53,6 +53,8 @@
  *     never stalls a session if the replacement tool is unavailable.
  *   - Per-category counters: a `cat` doesn't burn the budget for `sed -i`.
  *   - Per-category thresholds: read/edit/write can have different budgets.
+ *   - Warn-only mode queues at most one steer per assistant turn, so parallel
+ *     bash calls cannot build a backlog of identical continuation turns.
  *   - Reset on `session_start` and on each user `input` event so a fresh
  *     turn starts with a clean slate.
  *   - Disabled in plan-mode permission context (inspection, not
@@ -308,11 +310,16 @@ function detectBackgrounding(command: string): BashClassification | null {
 		}
 	}
 
-	// Any standalone `&` (not `&&` logical AND). Use negative lookbehind/
-	// lookahead to catch all backgrounding patterns regardless of what
-	// follows: `cmd &`, `cmd &)`, `cmd & echo PID`, `cmd & # comment`, etc.
-	// JavaScript supports lookbehind in modern engines (Node 16+).
-	if (/(?<!&)&(?!&)/.test(command)) {
+	// `parseCommandSegments` emits `&` only for a shell operator. Combined
+	// redirects (`&>` / `&>>`) are the one exception: shell-quote emits them
+	// as adjacent `&` and `>` / `>>` operators.
+	const hasBackgroundOperator = segments.some((segment) =>
+		segment.ops.some(
+			(operator, index) =>
+				operator.op === "&" && segment.ops[index + 1]?.op !== ">" && segment.ops[index + 1]?.op !== ">>",
+		),
+	)
+	if (hasBackgroundOperator) {
 		return {
 			category: "background",
 			suggestion: BACKGROUND_SUGGESTION,
@@ -352,6 +359,7 @@ function isInPlaceEditTool(tool: string, tokens: string[]): boolean {
 }
 
 const READER_TOOLS = new Set(["cat", "head", "tail", "less", "more", "bat", "batcat"])
+const HEAD_TAIL_VALUE_OPTIONS = new Set(["-n", "--lines", "-c", "--bytes"])
 
 function isFileReader(tool: string, tokens: string[]): boolean {
 	if (!READER_TOOLS.has(tool)) {
@@ -369,10 +377,18 @@ function isFileReader(tool: string, tokens: string[]): boolean {
 			return false
 		}
 	}
-	// Every guarded reader takes a file path. Bare `cat` / `head` reading
-	// stdin has no positional file arg and is harmless — don't flag it.
-	const positional = tokens.slice(1).filter((t) => !t.startsWith("-"))
-	return positional.length > 0
+	// Every guarded reader takes a file path. Bare readers and option values
+	// such as the `5` in `head -n 5` operate on stdin and are harmless.
+	const args = tokens.slice(1)
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index]
+		if ((tool === "head" || tool === "tail") && HEAD_TAIL_VALUE_OPTIONS.has(arg)) {
+			index++
+			continue
+		}
+		if (!arg.startsWith("-")) return true
+	}
+	return false
 }
 
 function escapeRegex(s: string): string {
@@ -587,6 +603,7 @@ export class BashToolGuard {
 
 export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashGuardOptions): void {
 	let ctx: ExtensionContext | undefined
+	let warnOnlySteerSentThisTurn = false
 
 	const guard = new BashToolGuard({
 		...options,
@@ -619,6 +636,7 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 	pi.on("session_start", (_event, sessionCtx) => {
 		ctx = sessionCtx
 		guard.reset()
+		warnOnlySteerSentThisTurn = false
 
 		// Re-register the bash tool with the overridden description.
 		// `registerTool()` writes into the real tool-definition registry
@@ -630,6 +648,10 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 		// cwd across resumes/forks, and so a fresh bash tool object is
 		// registered even if a previous session already registered one.
 		pi.registerTool(applyDescriptionOverride(createBashToolDefinition(sessionCtx.cwd)))
+	})
+
+	pi.on("turn_start", () => {
+		warnOnlySteerSentThisTurn = false
 	})
 
 	pi.on("input", (event: InputEvent) => {
@@ -692,6 +714,16 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 			count: result.count,
 		}
 		emitGuardEvent(BASH_TOOL_GUARD_EVENTS.WARN, payload)
+
+		// Warn-only mode must not enqueue one steer per parallel bash call.
+		// Upstream drains queued steers one per turn, so duplicates can keep
+		// the agent running long after the task is complete. Hard-block mode
+		// keeps its existing per-category warn/block behavior. Telemetry above
+		// still records every warn decision, including coalesced steers.
+		if (!options?.blockOnThreshold) {
+			if (warnOnlySteerSentThisTurn) return { block: false }
+			warnOnlySteerSentThisTurn = true
+		}
 		pi.sendMessage(
 			{
 				customType: STEER_MESSAGE_TYPE,
