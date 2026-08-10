@@ -200,34 +200,6 @@ describe("evaluateCompactHint", () => {
 			expect(result.shouldHint).toBe(false)
 		})
 
-		it("counts the first line of a tail that starts exactly at a line boundary (tailStartsMidLine: false)", () => {
-			// The slice begins at a real line boundary, so the first line is a
-			// complete entry: a compaction marker there must still suppress, and
-			// message counting must include it.
-			const result = evaluateCompactHint({
-				sessionTail: [COMPACTION, ...manyMessages(2)].join("\n"),
-				tailIsWholeFile: false,
-				tailStartsMidLine: false,
-				estimatedTokens: BIG_TOKENS,
-				now: NOW,
-				config: makeConfig(),
-			})
-			expect(result.decided).toBe(true)
-			expect(result.shouldHint).toBe(false)
-			expect(result.messagesSinceLastCompaction).toBe(2)
-		})
-
-		it("still skips the first line of a boundary-start tail by default (conservative)", () => {
-			const result = evaluateCompactHint({
-				sessionTail: [COMPACTION, ...manyMessages(2)].join("\n"),
-				tailIsWholeFile: false,
-				estimatedTokens: BIG_TOKENS,
-				now: NOW,
-				config: makeConfig(),
-			})
-			expect(result.decided).toBe(false)
-		})
-
 		it("skips the first line of an incomplete tail (may be a fragment)", () => {
 			// First line is a malformed fragment of a real entry; only the second
 			// complete line should be parsed.

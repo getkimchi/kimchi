@@ -110,7 +110,13 @@ vi.mock("../ui/progress.js", () => ({
 
 import type { TeleportContext } from "../types.js"
 import { TeleportRefusal } from "./errors.js"
-import { runTeleport, SESSION_CREATE_TIMEOUT_MS } from "./teleport.js"
+import {
+	readSessionTail,
+	runTeleport,
+	SESSION_CREATE_TIMEOUT_MS,
+	SESSION_TAIL_BYTES,
+	SESSION_WIDEN_MAX_BYTES,
+} from "./teleport.js"
 
 const CREDS = {
 	connectToken: "tok-1",
@@ -793,5 +799,80 @@ describe("runTeleport", () => {
 
 			expect(authMock).toHaveBeenCalledOnce()
 		})
+
+		/**
+		 * 25 fresh head messages (enough to hint if the whole file is evaluated),
+		 * followed by one giant message line of `padBytes` that swallows the tail
+		 * slice — the tail evaluation sees only a fragment of that line and can't
+		 * decide, forcing the widen-to-whole-file fallback.
+		 */
+		function writeGiantSessionJsonl(padBytes: number): string {
+			const sessionFile = join(tempDir, "session.jsonl")
+			const timestamp = new Date().toISOString()
+			const head = Array.from({ length: 25 }, () =>
+				JSON.stringify({
+					type: "message",
+					timestamp,
+					message: { role: "user", content: [{ type: "text", text: "hello" }] },
+				}),
+			)
+			const giant = JSON.stringify({
+				type: "message",
+				timestamp,
+				message: { role: "assistant", content: [{ type: "text", text: "x".repeat(padBytes) }] },
+			})
+			writeFileSync(sessionFile, `${[...head, giant].join("\n")}\n`)
+			return sessionFile
+		}
+
+		it("skips the hint silently when an undecidable session file exceeds the widen cap", async () => {
+			// The tail slice lies entirely inside the giant line, so the tail
+			// evaluation can't decide — and at over SESSION_WIDEN_MAX_BYTES the
+			// whole-file fallback is refused: the non-critical hint is skipped.
+			const sessionFile = writeGiantSessionJsonl(SESSION_WIDEN_MAX_BYTES + 1024)
+			const { ctx, ui } = makeCtx({ sessionFile, getContextUsage: usageOf(BIG_TOKENS) })
+
+			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx)
+
+			expect(authMock).toHaveBeenCalledOnce()
+			expect(ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("--no-compact-hint"), "error")
+		})
+
+		it("widens an undecidable file under the cap and still refuses a big fresh session", async () => {
+			const sessionFile = writeGiantSessionJsonl(1024 * 1024)
+			const { ctx, ui } = makeCtx({ sessionFile, getContextUsage: usageOf(BIG_TOKENS) })
+
+			await expect(
+				runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx),
+			).rejects.toBeInstanceOf(TeleportRefusal)
+			expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("--no-compact-hint"), "error")
+		})
+	})
+})
+
+describe("readSessionTail", () => {
+	it("reads a file that fits the tail budget whole and marks it as such", async () => {
+		const sessionFile = join(tempDir, "small.jsonl")
+		const content = '{"type":"message","message":{"role":"user"}}\n{"type":"compaction"}\n'
+		writeFileSync(sessionFile, content)
+
+		const info = await readSessionTail(sessionFile)
+
+		expect(info.tail).toBe(content)
+		expect(info.tailIsWholeFile).toBe(true)
+		expect(info.fileSizeBytes).toBe(Buffer.byteLength(content))
+		expect(info.fileMtimeMs).toBeGreaterThan(0)
+	})
+
+	it("reads exactly the last SESSION_TAIL_BYTES when the file is larger", async () => {
+		const sessionFile = join(tempDir, "large.jsonl")
+		const body = "x".repeat(SESSION_TAIL_BYTES + 1000)
+		writeFileSync(sessionFile, body)
+
+		const info = await readSessionTail(sessionFile)
+
+		expect(info.tailIsWholeFile).toBe(false)
+		expect(info.tail).toBe("x".repeat(SESSION_TAIL_BYTES))
+		expect(info.fileSizeBytes).toBe(SESSION_TAIL_BYTES + 1000)
 	})
 })

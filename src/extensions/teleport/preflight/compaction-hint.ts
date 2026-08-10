@@ -77,13 +77,6 @@ export interface EvaluateCompactHintInput {
 	sessionTail: string
 	/** True when sessionTail covers the file from its start, making an exhausted scan's message count exact. */
 	tailIsWholeFile: boolean
-	/**
-	 * True when the tail slice begins mid-line, making its first line a
-	 * fragment that must be skipped. Defaults to true for non-whole-file
-	 * slices; the caller should pass false explicitly when it knows the slice
-	 * starts exactly at a line boundary, so a valid first entry isn't dropped.
-	 */
-	tailStartsMidLine?: boolean
 	/** Live token count for the session (e.g. ctx.getContextUsage().tokens). */
 	estimatedTokens: number
 	now: number
@@ -152,11 +145,10 @@ export function evaluateCompactHint(input: EvaluateCompactHintInput): CompactHin
 	})
 
 	const lines = input.sessionTail.split("\n")
-	// A tail that doesn't start at offset 0 may begin mid-line; a leading
-	// fragment is not a complete entry, so skip it — but only when the caller
-	// confirms the slice truly begins mid-line.
+	// A tail that doesn't start at offset 0 may begin mid-line; the first
+	// fragment is not a complete entry, so skip it.
 	let startIdx = 0
-	if (!input.tailIsWholeFile && (input.tailStartsMidLine ?? true)) startIdx = 1
+	if (!input.tailIsWholeFile) startIdx = 1
 
 	let lastActivityAt: number | undefined
 	let messagesSinceLastCompaction = 0

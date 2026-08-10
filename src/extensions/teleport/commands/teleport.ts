@@ -442,17 +442,16 @@ async function maybeRefuseTeleportForLongSession(
 	const sessionFile = ctx.sessionFile
 	if (!sessionFile || !existsSync(sessionFile)) return
 
-	let tailInfo: Awaited<ReturnType<typeof readSessionTail>>
+	let tailInfo: SessionTail
 	try {
 		tailInfo = await readSessionTail(sessionFile)
 	} catch {
 		return
 	}
-	const { tail, tailIsWholeFile, tailStartsMidLine, fileMtimeMs } = tailInfo
+	const { tail, tailIsWholeFile, fileMtimeMs } = tailInfo
 	let evaluation = evaluateCompactHint({
 		sessionTail: tail,
 		tailIsWholeFile,
-		tailStartsMidLine,
 		estimatedTokens: tokens,
 		now: Date.now(),
 		config,
@@ -460,8 +459,8 @@ async function maybeRefuseTeleportForLongSession(
 	})
 	if (!evaluation.decided) {
 		// Cap the widening re-read: the hint is a non-critical nudge, so loading
-		// a pathologically large session file (blocking memory + event loop)
-		// just to decide suppression is not worth it — skip the hint instead.
+		// a pathologically large session file fully into memory just to decide
+		// suppression is not worth it — skip the hint instead.
 		if (tailInfo.fileSizeBytes > SESSION_WIDEN_MAX_BYTES) return
 		// The tail slice ran out before either stop condition (e.g. fewer than
 		// the lookback window of very large messages, compaction just beyond
@@ -492,51 +491,41 @@ async function maybeRefuseTeleportForLongSession(
  * well beyond the lookback window; pathological single messages bigger than
  * this simply trigger the widen-to-whole-file path.
  */
-const SESSION_TAIL_BYTES = 512 * 1024
+export const SESSION_TAIL_BYTES = 512 * 1024
 
 /**
- * Maximum file size for the widen-to-whole-file fallback. Sessions over the
- * hint threshold are usually a few MB; anything far beyond this is too large
- * to justify a full synchronous-within-the-gate load for a non-critical hint.
+ * Maximum file size for the widen-to-whole-file fallback. Real sessions over
+ * the hint threshold are a few MB at most, so 6MB covers them with headroom;
+ * anything beyond is too large to justify loading fully into memory for a
+ * non-critical hint.
  */
-const SESSION_WIDEN_MAX_BYTES = 64 * 1024 * 1024
+export const SESSION_WIDEN_MAX_BYTES = 6 * 1024 * 1024
 
 interface SessionTail {
 	tail: string
 	tailIsWholeFile: boolean
-	/**
-	 * True when the tail slice begins mid-entry (the byte before the slice is
-	 * not a newline): the first line of `tail` is a partial entry and must be
-	 * skipped by the evaluator. False when the slice happens to start exactly
-	 * at a line boundary, in which case the first line is a complete entry.
-	 */
-	tailStartsMidLine: boolean
 	fileMtimeMs: number
 	fileSizeBytes: number
 }
 
 /** Read the last SESSION_TAIL_BYTES of the session file as UTF-8 (whole file when smaller). */
-async function readSessionTail(path: string): Promise<SessionTail> {
+export async function readSessionTail(path: string): Promise<SessionTail> {
 	const { size, mtimeMs } = await stat(path)
 	if (size <= SESSION_TAIL_BYTES) {
 		return {
 			tail: await readFile(path, "utf-8"),
 			tailIsWholeFile: true,
-			tailStartsMidLine: false,
 			fileMtimeMs: mtimeMs,
 			fileSizeBytes: size,
 		}
 	}
 	const handle = await open(path, "r")
 	try {
-		// Read one extra byte BEFORE the slice to know whether the slice starts
-		// mid-line or exactly at a line boundary.
-		const buffer = Buffer.alloc(SESSION_TAIL_BYTES + 1)
-		const { bytesRead } = await handle.read(buffer, 0, buffer.length, size - SESSION_TAIL_BYTES - 1)
+		const buffer = Buffer.alloc(SESSION_TAIL_BYTES)
+		const { bytesRead } = await handle.read(buffer, 0, buffer.length, size - SESSION_TAIL_BYTES)
 		return {
-			tail: buffer.subarray(1, bytesRead).toString("utf-8"),
+			tail: buffer.subarray(0, bytesRead).toString("utf-8"),
 			tailIsWholeFile: false,
-			tailStartsMidLine: buffer[0] !== 0x0a,
 			fileMtimeMs: mtimeMs,
 			fileSizeBytes: size,
 		}
