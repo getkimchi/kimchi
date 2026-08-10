@@ -114,8 +114,8 @@ vi.mock("../orchestration/model-roles.js", () => ({
 }))
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { getMultiModelEnabled } from "../multi-model.js"
 import { createContext } from "../__mocks__/context.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { getAllowedMultiModelRefs, getModelRoles } from "../orchestration/model-roles.js"
 import agentsExtension from "./index.js"
 import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
