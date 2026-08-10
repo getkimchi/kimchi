@@ -8,6 +8,7 @@ import { SCOPING_DISCOVERY_GUIDANCE, SCOPING_EXPLORE_TOKEN_BUDGET } from "./cons
 import { formatDecisionsAndMemories, formatScopingContext } from "./format.js"
 import type { FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
+import { formatNextActionHint } from "./tool-helpers.js"
 import { CREATE_FERMENT_REDIRECT_MESSAGE } from "./tool-names.js"
 
 /** Pull the first line of an agent's description (typically a one-sentence role
@@ -164,6 +165,40 @@ ${delegationRules}
 `
 }
 
+/**
+ * Renders a short, state-aware prelude for a planned/running ferment.
+ *
+ * Why: the planner supplement below is lifecycle-agnostic — it describes both
+ * the planning and implementation toolsets uniformly and never states the
+ * ferment's current position. After "Start as ferment" handoffs, /ferment
+ * resume, or post-compaction continuations, the model could not tell that
+ * scoping was already complete and wasted turns re-running discovery
+ * (`list_ferments`) and re-drafting the scope (`scope_ferment`), which the
+ * FSM then rejected. Naming the current state, the no-re-planning rule, and
+ * the immediate next lifecycle action prevents that restart loop.
+ */
+function buildCurrentStateSection(f: Ferment, multiModelEnabled: boolean): string {
+	const active = f.phases.find((p) => p.status === "active")
+	const progress = active
+		? `${active.steps.filter((s) => s.status === "done" || s.status === "verified" || s.status === "skipped").length}/${active.steps.length} steps terminal in phase "${active.id}"`
+		: undefined
+	const stateLine = [
+		`ferment status "${f.status}"`,
+		active ? `active phase "${active.id}" ("${active.name}")` : undefined,
+		progress,
+	]
+		.filter(Boolean)
+		.join(", ")
+	const nextActionHint = formatNextActionHint(f, multiModelEnabled)
+	return [
+		"## Current lifecycle state",
+		`- Scoping is COMPLETE (${stateLine}). Do NOT call \`list_ferments\`, \`scope_ferment\`, \`propose_ferment_scoping\`, \`confirm_ferment_completion_criteria\`, or \`ask_user\` to re-plan — the state machine rejects scoping calls in this state. Do not re-run any orient, interview, or planning steps.`,
+		nextActionHint ? `- ${nextActionHint} Execute it immediately.` : undefined,
+	]
+		.filter(Boolean)
+		.join("\n")
+}
+
 function buildPausedWarning(f: Ferment): string {
 	return `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_ferment_phase, start_ferment_step, complete_ferment_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /ferment resume.`
 }
@@ -200,7 +235,8 @@ export function buildFermentPromptBlock(
 	if (!f) return undefined
 
 	const oneshot = pi.getFlag("ferment-oneshot") === true
-	const delegationMode: "strict" | "relaxed" = getMultiModelEnabled(ctx.sessionManager) ? "strict" : "relaxed"
+	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+	const delegationMode: "strict" | "relaxed" = multiModelEnabled ? "strict" : "relaxed"
 
 	switch (f.status) {
 		case "draft":
@@ -208,7 +244,7 @@ export function buildFermentPromptBlock(
 			return undefined
 		case "planned":
 		case "running":
-			return buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot, delegationMode).trim()
+			return `${buildCurrentStateSection(f, multiModelEnabled)}\n${buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot, delegationMode).trim()}`
 		case "paused":
 			return buildPausedWarning(f).trim()
 		case "complete":

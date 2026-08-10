@@ -713,6 +713,44 @@ describe("plan mode assumption detection", () => {
 	// the session with implementation tools visible but no active ferment, no
 	// session ref, no creation event, and no initialized runtime state. The fix
 	// is fail-closed: stay in plan mode, do NOT apply implementation tools.
+	// Regression: previously the only post-approval signal was the hidden
+	// ferment_reference entry, so the model "started over" — it re-ran discovery
+	// (list_ferments) and re-drafted the scope via scope_ferment, which the FSM
+	// rejected (already PHASE_ACTIVE). The ferment_handoff message must tell the
+	// model the ferment is already scoped/active and name the next action.
+	it("Start as ferment sends a ferment_handoff message with no-re-planning and next-action guidance", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const tmpDir = mkdtempSync(join(tmpdir(), "handoff-"))
+		try {
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+
+			const handoffCall = vi
+				.mocked(harness.pi.sendMessage)
+				.mock.calls.map((call) => call[0] as { customType?: string; content?: Array<{ type: string; text: string }> })
+				.find((msg) => msg.customType === "ferment_handoff")
+			expect(handoffCall).toBeDefined()
+			const text = handoffCall?.content?.map((c) => c.text).join("\n") ?? ""
+			expect(text).toContain('approved by the user ("Start as ferment")')
+			expect(text).toContain("ALREADY scoped")
+			expect(text).toContain('phase "phase-1"')
+			expect(text).toContain("is ACTIVE")
+			for (const forbidden of ["list_ferments", "scope_ferment", "propose_ferment_scoping"]) {
+				expect(text).toContain(forbidden)
+			}
+			expect(text).toContain("will reject")
+			expect(text).toContain("start_ferment_step")
+			expect(text).toContain('phase_id "phase-1", step_id "step-1"')
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
+			defaultFermentRuntime.setActive(undefined)
+		}
+	})
+
 	it("Start as ferment fails closed when runtime creation throws — stays in plan mode, no implementation tools", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))

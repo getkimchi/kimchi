@@ -23,10 +23,12 @@ import { createFerment } from "../ferment/create.js"
 import { emitFermentCreated } from "../ferment/domain-events-emitter.js"
 import { appendRefEntry } from "../ferment/nudge.js"
 import { defaultFermentRuntime } from "../ferment/runtime.js"
+import { safeSendMessage } from "../ferment/safe-send.js"
 import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
-import { createApplyAndPersist } from "../ferment/tool-helpers.js"
+import { createApplyAndPersist, formatNextActionHint } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
 import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
@@ -660,6 +662,34 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				defaultFermentRuntime.setActive(activated.ferment)
 				setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)
 				appendRefEntry(pi, activated.ferment.id)
+				// Explicit model-visible handoff. Without this, the only post-approval
+				// signal was the hidden `ferment_reference` entry above, and the model
+				// started "from scratch": it re-ran discovery (`list_ferments`) and
+				// re-drafted the whole scope via `scope_ferment`, which the FSM then
+				// rejected (already PHASE_ACTIVE). Tell the model the ferment is
+				// already scoped/active and what the immediate next action is, so "Start
+				// as ferment" goes straight to execution.
+				const activePhase = activated.ferment.phases.find((p) => p.status === "active")
+				const nextActionHint = formatNextActionHint(activated.ferment, getMultiModelEnabled(ctx.sessionManager))
+				safeSendMessage(pi, {
+					customType: "ferment_handoff",
+					content: [
+						{
+							type: "text",
+							text: [
+								`Handoff from plan mode: the plan you just presented was approved by the user ("Start as ferment") and converted into ferment "${activated.ferment.name}" (${activated.ferment.id}).`,
+								`The ferment is ALREADY scoped — goal, success criteria, and constraints are set — and ${activePhase ? `phase "${activePhase.id}" (${activePhase.steps.length} steps) is ACTIVE` : "its first phase is ACTIVE"}.`,
+								"Do NOT call list_ferments, scope_ferment, propose_ferment_scoping, confirm_ferment_completion_criteria, or ask_user to re-plan — scoping is complete and the state machine will reject those calls. Do not re-run any orient, interview, or planning steps.",
+								nextActionHint,
+								"Go straight to execution.",
+							]
+								.filter(Boolean)
+								.join("\n"),
+						},
+					],
+					display: false,
+					details: { fermentId: activated.ferment.id, origin: "plan_mode_start_as_ferment" },
+				})
 				changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" })
 			} catch (err) {
 				// Promotion failed before activation. Keep the planning profile, clear
