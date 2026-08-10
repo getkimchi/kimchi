@@ -67,11 +67,13 @@ function makeFakeSession(basePrompt: string) {
 
 describe("upstream system-prompt preservation patch", () => {
 	it("is present in the installed dist (setActiveToolsByName + resource reload)", () => {
+		// Pin the stable "kimchi-dev" marker comment each hunk carries, not an
+		// internal local variable name (which a future patch revision might rename).
 		const setActiveSource = String(sessionProto.setActiveToolsByName)
-		expect(setActiveSource).toContain("systemPromptOverride")
+		expect(setActiveSource).toContain("kimchi-dev: preserve an extension-installed system prompt")
 
 		const reloadSource = String(sessionProto.extendResourcesFromExtensions)
-		expect(reloadSource).toContain("systemPromptOverride")
+		expect(reloadSource).toContain("kimchi-dev: same override preservation")
 	})
 
 	it("setActiveToolsByName preserves an extension-installed prompt while rebuilding tools and base", () => {
@@ -115,6 +117,15 @@ describe("upstream system-prompt preservation patch", () => {
 
 		expect(fake.agent.state.systemPrompt).toBe("KIMCHI OVERRIDE PROMPT")
 		expect(fake._baseSystemPrompt).not.toBe("PI BASE PROMPT")
+	})
+
+	it("extendResourcesFromExtensions resets to the rebuilt base prompt when no override is active", async () => {
+		const fake = makeFakeSession("PI BASE PROMPT")
+		// state.systemPrompt === _baseSystemPrompt (same reference): no extension override.
+		await sessionProto.extendResourcesFromExtensions.call(fake, "startup")
+
+		expect(fake.agent.state.systemPrompt).toBe(fake._baseSystemPrompt)
+		expect(fake.agent.state.systemPrompt).not.toBe("PI BASE PROMPT")
 	})
 })
 
