@@ -7,7 +7,7 @@ import type { Ferment } from "../../ferment/types.js"
 import * as sharedStatusLine from "../shared-status-line.js"
 import { clearAllLifecycleGuards, deriveObligation, evaluateLifecycleStop } from "./lifecycle-obligation-guard.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
-import { createApplyAndPersist } from "./tool-helpers.js"
+import { createApplyAndPersist, formatNoReplanningGuidance } from "./tool-helpers.js"
 
 function createRuntime(): { runtime: FermentRuntime; storage: FermentEventStore; setActive: ReturnType<typeof vi.fn> } {
 	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-apply-test-")))
@@ -31,6 +31,28 @@ function scopeDraft(applyAndPersist: ReturnType<typeof createApplyAndPersist>, f
 	if (!outcome.ok) throw new Error(outcome.error.message)
 	return outcome.ferment
 }
+
+describe("formatNoReplanningGuidance", () => {
+	const EXPECTED_TOOLS = [
+		"list_ferments",
+		"scope_ferment",
+		"propose_ferment_scoping",
+		"confirm_ferment_completion_criteria",
+		"ask_user",
+	]
+
+	it("lists every forbidden scoping tool in a plain-text rendering", () => {
+		const out = formatNoReplanningGuidance()
+		expect(out).toMatch(/^Do NOT call .+ to re-plan$/)
+		for (const tool of EXPECTED_TOOLS) expect(out).toContain(tool)
+		expect(out).toContain("confirm_ferment_completion_criteria, or ask_user")
+	})
+
+	it("backticks tool names for markdown system-prompt surfaces", () => {
+		const out = formatNoReplanningGuidance({ backticks: true })
+		for (const tool of EXPECTED_TOOLS) expect(out).toContain(`\`${tool}\``)
+	})
+})
 
 describe("createApplyAndPersist", () => {
 	beforeEach(() => {

@@ -25,7 +25,7 @@ import { appendRefEntry } from "../ferment/nudge.js"
 import { defaultFermentRuntime } from "../ferment/runtime.js"
 import { safeSendMessage } from "../ferment/safe-send.js"
 import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
-import { createApplyAndPersist, formatNextActionHint } from "../ferment/tool-helpers.js"
+import { createApplyAndPersist, formatNextActionHint, formatNoReplanningGuidance } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -679,7 +679,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 							text: [
 								`Handoff from plan mode: the plan you just presented was approved by the user ("Start as ferment") and converted into ferment "${activated.ferment.name}" (${activated.ferment.id}).`,
 								`The ferment is ALREADY scoped — goal, success criteria, and constraints are set — and ${activePhase ? `phase "${activePhase.id}" (${activePhase.steps.length} steps) is ACTIVE` : "its first phase is ACTIVE"}.`,
-								"Do NOT call list_ferments, scope_ferment, propose_ferment_scoping, confirm_ferment_completion_criteria, or ask_user to re-plan — scoping is complete and the state machine will reject those calls. Do not re-run any orient, interview, or planning steps.",
+								`${formatNoReplanningGuidance()} — scoping is complete and the state machine will reject those calls. Do not re-run any orient, interview, or planning steps.`,
 								nextActionHint,
 								"Go straight to execution.",
 							]

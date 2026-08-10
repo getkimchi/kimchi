@@ -17,6 +17,32 @@ import { publicToolNameForActionKind } from "./action-tool-names.js"
 import { emitFermentDomainEvent } from "./domain-events-emitter.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 
+// ─── Shared guidance strings ────────────────────────────────────────────────
+// The "do not re-plan" instructions appear in two model-facing surfaces: the
+// plan-mode → ferment handoff message (permissions/index.ts) and the planner
+// prompt block's Current lifecycle state section (prompt-block.ts). Keep the
+// forbidden tool list in ONE place so a rename or policy change can't drift.
+
+/** Tools the model must not call to re-plan a scoped ferment — the FSM rejects them. */
+const REPLANNING_FORBIDDEN_TOOLS = [
+	"list_ferments",
+	"scope_ferment",
+	"propose_ferment_scoping",
+	"confirm_ferment_completion_criteria",
+	"ask_user",
+] as const
+
+/**
+ * Renders the "Do NOT call <tools> to re-plan" sentence shared by the
+ * handoff message and the prompt block. Pass `backticks: true` when the
+ * surrounding text is a markdown system prompt section.
+ */
+export function formatNoReplanningGuidance(opts: { backticks?: boolean } = {}): string {
+	const names = REPLANNING_FORBIDDEN_TOOLS.map((name) => (opts.backticks ? `\`${name}\`` : name))
+	const list = `${names.slice(0, -1).join(", ")}, or ${names[names.length - 1]}`
+	return `Do NOT call ${list} to re-plan`
+}
+
 // ─── Tool result builders ─────────────────────────────────────────────────────
 // Every tool execute returns the same { details, content, isError? } shape;
 // these helpers cut the visual noise.

@@ -8,7 +8,7 @@ import { SCOPING_DISCOVERY_GUIDANCE, SCOPING_EXPLORE_TOKEN_BUDGET } from "./cons
 import { formatDecisionsAndMemories, formatScopingContext } from "./format.js"
 import type { FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
-import { formatNextActionHint } from "./tool-helpers.js"
+import { formatNextActionHint, formatNoReplanningGuidance } from "./tool-helpers.js"
 import { CREATE_FERMENT_REDIRECT_MESSAGE } from "./tool-names.js"
 
 /** Pull the first line of an agent's description (typically a one-sentence role
@@ -192,7 +192,7 @@ function buildCurrentStateSection(f: Ferment, multiModelEnabled: boolean): strin
 	const nextActionHint = formatNextActionHint(f, multiModelEnabled)
 	return [
 		"## Current lifecycle state",
-		`- Scoping is COMPLETE (${stateLine}). Do NOT call \`list_ferments\`, \`scope_ferment\`, \`propose_ferment_scoping\`, \`confirm_ferment_completion_criteria\`, or \`ask_user\` to re-plan — the state machine rejects scoping calls in this state. Do not re-run any orient, interview, or planning steps.`,
+		`- Scoping is COMPLETE (${stateLine}). ${formatNoReplanningGuidance({ backticks: true })} — the state machine rejects scoping calls in this state. Do not re-run any orient, interview, or planning steps.`,
 		nextActionHint ? `- ${nextActionHint} Execute it immediately.` : undefined,
 	]
 		.filter(Boolean)
