@@ -475,7 +475,12 @@ describe("system prompt stability contract", () => {
 			setActive(undefined)
 			engine = new TriggerEngine([behaviour])
 			todosExtension(harness.pi)
-			createSystemPromptBlocks(harness.pi, "behaviours").register({
+			const behaviourBlocks = createSystemPromptBlocks(harness.pi, "behaviours")
+			behaviourBlocks.register({
+				id: "rules",
+				render: () => "## Rules\nUse gh for GitHub operations.",
+			})
+			behaviourBlocks.register({
 				id: `triggered:${behaviour.name}`,
 				render: () => (engine.isLoaded(behaviour.name) ? behaviour.body : undefined),
 			})
@@ -508,6 +513,21 @@ describe("system prompt stability contract", () => {
 
 			engine.evaluateToolTriggers({ toolName: "bash", input: { command: "gh pr list" } }, 0)
 			expect(await harness.buildFinalSystemPrompt()).toContain(behaviour.body)
+		})
+
+		it("keeps the static rules section byte-identical when a triggered behaviour loads", async () => {
+			const promptBefore = await harness.buildFinalSystemPrompt()
+			expect(promptBefore).toContain("## Rules")
+			expect(promptBefore).not.toContain(behaviour.body)
+
+			engine.evaluateToolTriggers({ toolName: "bash", input: { command: "gh pr list" } }, 0)
+
+			const promptAfter = await harness.buildFinalSystemPrompt()
+			expect(promptAfter).toContain(behaviour.body)
+			// The rules block is untouched; the triggered block is inserted after
+			// it by alphabetical id order, so removing the triggered body plus the
+			// inter-block delimiter restores the exact prior prompt.
+			expect(promptAfter.replace(`${behaviour.body}\n\n`, "")).toBe(promptBefore)
 		})
 	})
 })

@@ -66,11 +66,13 @@ const KNOWN_REGISTRARS: BlockRegistrar[] = [
 		reason: "plan mode supplement is intentionally shown only when plan permission mode is active",
 	},
 	{
-		file: "src/extensions/behaviours/wiring.ts",
+		file: "src/extensions/behaviours/rules-block.ts",
 		owner: "behaviours",
 		blockId: "rules",
 		expectedStability: "static",
-		reason: "baseline behaviour rules are loaded once per session from the behaviour manifest",
+		reason:
+			"baseline behaviour rules are a constant computed once from the behaviour manifest; " +
+			"kept separate from the dynamic triggered:* registrar so the file can be held to zero volatile symbols",
 	},
 	{
 		file: "src/extensions/behaviours/wiring.ts",
@@ -106,6 +108,15 @@ const VOLATILE_STORE_MODULES = [
 	"../ferment/todo-sync",
 	"./todo-sync",
 	"src/extensions/ferment/todo-sync",
+]
+
+const VOLATILE_SYMBOLS = [
+	"getActive(",
+	"isLoaded(",
+	"getRuntimePermissionMode(",
+	"Date.now(",
+	"Math.random(",
+	"randomUUID(",
 ]
 
 function hasBlockRegistration(source: string, owner: string, blockId: string): boolean {
@@ -186,6 +197,13 @@ describe("system-prompt block cache contract (source)", () => {
 					for (const modulePath of VOLATILE_STORE_MODULES) {
 						if (allowed.has(modulePath)) continue
 						expect(hasImport(source, modulePath), `static block should not import from ${modulePath}`).toBe(false)
+					}
+				})
+
+				it("does not call volatile runtime symbols", () => {
+					const source = readSource(registrar.file)
+					for (const symbol of VOLATILE_SYMBOLS) {
+						expect(source, `static block should not call ${symbol}`).not.toContain(symbol)
 					}
 				})
 			}
