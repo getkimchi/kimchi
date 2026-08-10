@@ -252,14 +252,10 @@ function resolveCompactorModel(ctx: ExtensionContext): CompactorModelResolution 
 	}
 }
 
-/** Build the custom instructions string passed to compaction. */
-export function buildCustomInstructions(ferment: Ferment, pending: PendingCompaction): string {
-	const completedPhase = findCompletedPhase(ferment, pending)
-	const completedStep = findCompletedStep(ferment, pending)
-	const nextAction = buildNextActionDescription(ferment)
-
-	const lines: string[] = ["Preserve ferment plan details in the summary:"]
-
+/** Append the plan-anchor lines every ferment compaction prompt must preserve
+ *  (identity, success criteria, intent charter, open concerns). One home for
+ *  the block so the two instruction builders cannot drift apart. */
+function appendPlanAnchorLines(lines: string[], ferment: Ferment): void {
 	lines.push(`- Ferment: ${ferment.name}${ferment.goal ? ` — ${ferment.goal}` : ""}`)
 
 	if (ferment.successCriteria && ferment.successCriteria.length > 0) {
@@ -274,6 +270,17 @@ export function buildCustomInstructions(ferment: Ferment, pending: PendingCompac
 	lines.push(
 		"- Open concerns: preserve any open concerns, known gaps, deferred fixes, or quality worries (things noticed but unresolved) — they must survive compaction alongside the plan. Do not drop one merely because it has no owner or fix yet.",
 	)
+}
+
+/** Build the custom instructions string passed to compaction. */
+export function buildCustomInstructions(ferment: Ferment, pending: PendingCompaction): string {
+	const completedPhase = findCompletedPhase(ferment, pending)
+	const completedStep = findCompletedStep(ferment, pending)
+	const nextAction = buildNextActionDescription(ferment)
+
+	const lines: string[] = ["Preserve ferment plan details in the summary:"]
+
+	appendPlanAnchorLines(lines, ferment)
 
 	// For step completions: show the phase that is still active.
 	// For phase completions: show the just-completed phase as "completed", then
@@ -324,20 +331,7 @@ export function buildMidTurnCustomInstructions(
 		"The context filled while a ferment step was in progress. Preserve the plan and resume the step:",
 	]
 
-	lines.push(`- Ferment: ${ferment.name}${ferment.goal ? ` — ${ferment.goal}` : ""}`)
-
-	if (ferment.successCriteria && ferment.successCriteria.length > 0) {
-		lines.push(`- Success criteria: ${ferment.successCriteria.join("; ")}`)
-	}
-
-	if (ferment.charter) {
-		lines.push("- Intent charter (preserve verbatim — it is the grading anchor for this ferment):")
-		for (const line of renderCharterCompact(ferment.charter).split("\n")) lines.push(`  ${line}`)
-	}
-
-	lines.push(
-		"- Open concerns: preserve any open concerns, known gaps, deferred fixes, or quality worries (things noticed but unresolved) — they must survive compaction alongside the plan. Do not drop one merely because it has no owner or fix yet.",
-	)
+	appendPlanAnchorLines(lines, ferment)
 
 	if (phase) {
 		lines.push(`- Active phase: ${phase.name} — ${phase.goal}`)
