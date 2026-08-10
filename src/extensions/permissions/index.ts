@@ -789,8 +789,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			if (BUILTIN_ALLOW_TOOL_NAMES.includes(toolName)) return undefined
 
 			// IDE approval deferral: when the ide-adapter extension has an active
-			// IDE connection, write/edit approvals are handled via the IDE diff viewer.
-			if ((toolName === "write" || toolName === "edit") && isIdeConnected()) {
+			// IDE connection AND we're in default mode, write/edit approvals are
+			// handled via the IDE diff viewer. In auto/yolo the user has opted out
+			// of per-file approval, so don't defer.
+			if ((toolName === "write" || toolName === "edit") && mode === "default" && isIdeConnected()) {
 				// Skip the terminal prompt so the user isn't asked twice.
 				return undefined
 			}

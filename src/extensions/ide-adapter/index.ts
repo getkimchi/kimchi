@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { getPermissionMode } from "../permissions/mode-controller.js"
 import { setIdeSelectionIndicator } from "../ui.js"
 import { formatAtMention } from "./at-mentions.js"
 import { applyEditInput } from "./edit-apply.js"
@@ -375,6 +376,14 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 	pi.on("tool_call", async (event, ctx) => {
 		const toolName = event.toolName
 		if (!toolName || !APPROVAL_GATED_TOOLS.has(toolName)) return undefined
+
+		// IDE diff approval only applies in default mode. In auto/yolo the user
+		// has explicitly opted out of per-file approval, and in plan mode
+		// write/edit are already blocked by the permissions extension.
+		const mode = ctx.sessionManager ? getPermissionMode(ctx.sessionManager.getSessionId())?.mode : undefined
+		if (mode !== "default") {
+			return undefined
+		}
 
 		// When an IDE session is active, the permissions extension skips its
 		// terminal approval prompt for write/edit, deferring to the IDE diff

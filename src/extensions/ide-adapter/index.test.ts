@@ -10,6 +10,10 @@ vi.mock("../ui.js", () => ({
 	setIdeSelectionIndicator: vi.fn(),
 }))
 
+vi.mock("../permissions/mode-controller.js", () => ({
+	getPermissionMode: vi.fn(() => ({ mode: "default", source: "config", initiatedBy: "user" })),
+}))
+
 vi.mock("./mcp-client.js", () => ({
 	connectToIde: vi.fn(),
 }))
@@ -107,6 +111,7 @@ describe("ide-adapter extension", () => {
 		hasUI: boolean
 		ui: { pasteToEditor: ReturnType<typeof vi.fn>; setStatus: ReturnType<typeof vi.fn> }
 		cwd: string
+		sessionManager: { getSessionId: () => string }
 	} {
 		return {
 			hasUI: options.hasUI ?? true,
@@ -115,6 +120,7 @@ describe("ide-adapter extension", () => {
 				setStatus: options.setStatus ?? vi.fn(),
 			},
 			cwd: "/tmp",
+			sessionManager: { getSessionId: () => "test-session" },
 		}
 	}
 
