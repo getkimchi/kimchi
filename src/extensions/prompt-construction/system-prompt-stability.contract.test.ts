@@ -6,7 +6,170 @@ function readSource(relativePath: string): string {
 	return readFileSync(resolve(process.cwd(), relativePath), "utf8")
 }
 
-describe("todo system prompt cache contract (source)", () => {
+interface BlockRegistrar {
+	file: string
+	owner: string
+	blockId: string
+	expectedStability: "static" | "dynamic"
+	reason: string
+	/** Volatile-store imports that are allowed in a static block's file.
+	 *  Use sparingly and document why the imported code is not used by the
+	 *  block's render path. */
+	allowedVolatileImports?: { modulePath: string; reason: string }[]
+}
+
+/** Canonical registry of every system-prompt block in src/extensions.
+ *
+ *  Adding a new block requires an entry here. The test fails if the source
+ *  contains a `createSystemPromptBlocks(` call for a block not listed, so
+ *  authors must consciously classify their block as static (cache-friendly)
+ *  or dynamic (expected to change during a session).
+ */
+const KNOWN_REGISTRARS: BlockRegistrar[] = [
+	{
+		file: "src/extensions/todos/prompt-block.ts",
+		owner: "todos",
+		blockId: "todo-guidance",
+		expectedStability: "static",
+		reason: "todo guidance is constant; live todo state lives in the transient context event",
+		allowedVolatileImports: [
+			{
+				modulePath: "./store",
+				reason:
+					"renderTodoStateMarkdown lives in this file for co-location but is only used by the transient context-state path, not by the todo-guidance block",
+			},
+		],
+	},
+	{
+		file: "src/extensions/ferment/index.ts",
+		owner: "ferment",
+		blockId: "ferment-planning-block",
+		expectedStability: "dynamic",
+		reason: "ferment planner supplement legitimately changes with ferment lifecycle status",
+	},
+	{
+		file: "src/extensions/permissions/index.ts",
+		owner: "permissions",
+		blockId: "plan-mode-supplement",
+		expectedStability: "dynamic",
+		reason: "plan mode supplement is intentionally shown only when plan permission mode is active",
+	},
+	{
+		file: "src/extensions/behaviours/wiring.ts",
+		owner: "behaviours",
+		blockId: "rules",
+		expectedStability: "static",
+		reason: "baseline behaviour rules are loaded once per session from the behaviour manifest",
+	},
+	{
+		file: "src/extensions/behaviours/wiring.ts",
+		owner: "behaviours",
+		blockId: "triggered:*",
+		expectedStability: "dynamic",
+		reason: "triggered behaviour bodies are loaded/unloaded based on runtime signals",
+	},
+	{
+		file: "src/extensions/lsp.ts",
+		owner: "lsp",
+		blockId: "lsp-tools",
+		expectedStability: "dynamic",
+		reason: "LSP block reflects the detected servers for the current working directory",
+	},
+]
+
+/** Modules that hold per-turn or per-action mutable session state.
+ *
+ *  Static system-prompt blocks must not import from these modules. Dynamic
+ *  blocks may import from them only when the resulting variability is
+ *  intentional and bounded (e.g. ferment lifecycle, permission mode).
+ */
+const VOLATILE_STORE_MODULES = ["../todos/store", "./store", "src/extensions/todos/store"]
+
+function hasBlockRegistration(source: string, owner: string, blockId: string): boolean {
+	// Match createSystemPromptBlocks(pi, "owner").register(...) or similar.
+	const ownerPattern = new RegExp(`createSystemPromptBlocks\\([^)]+,\\s*["']${owner}["']\\s*\\)`)
+	if (!ownerPattern.test(source)) return false
+
+	if (blockId.includes("*")) {
+		// Wildcard prefix match, e.g. triggered:* — the source may use a
+		// template literal (`triggered:${b.name}`) instead of a quoted string.
+		const prefix = blockId.replace("*", "")
+		return source.includes(`id: "${prefix}`) || source.includes(`id: \`${prefix}`)
+	}
+
+	return source.includes(`id: "${blockId}"`)
+}
+
+function hasImport(source: string, modulePath: string): boolean {
+	// Import statements in this repo use explicit `.js` extensions; match the
+	// base path with an optional `.js` suffix.
+	const escaped = modulePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+	return new RegExp(`from\\s+["']${escaped}(?:\\.js)?["']`).test(source)
+}
+
+function fileExists(relativePath: string): boolean {
+	try {
+		readSource(relativePath)
+		return true
+	} catch {
+		return false
+	}
+}
+
+/** Return every call site of createSystemPromptBlocks in src/extensions. */
+function scanForUnregisteredRegistrars(): { file: string; owner: string }[] {
+	// Vitest runs in Node, so we can use the real file system via a shell call.
+	// execSync is allowed here because this is a test-time diagnostic, not a
+	// source-code dependency.
+	const { execSync } = require("node:child_process")
+	const raw = execSync(
+		`grep -R "createSystemPromptBlocks(" src/extensions --include="*.ts" -l | grep -v ".test.ts" | sort`,
+		{ encoding: "utf8", cwd: process.cwd() },
+	)
+	const files = raw.split("\n").filter(Boolean)
+	const unregistered: { file: string; owner: string }[] = []
+	for (const file of files) {
+		const source = readSource(file)
+		// Extract owner strings: createSystemPromptBlocks(pi, "owner")
+		const matches = source.matchAll(/createSystemPromptBlocks\([^)]+,\s*["']([^"']+)["']\s*\)/g)
+		for (const match of matches) {
+			const owner = match[1]
+			const known = KNOWN_REGISTRARS.some((r) => r.file === file && r.owner === owner)
+			if (!known) {
+				unregistered.push({ file, owner })
+			}
+		}
+	}
+	return unregistered
+}
+
+describe("system-prompt block cache contract (source)", () => {
+	it("has an entry for every createSystemPromptBlocks registrar", () => {
+		const unregistered = scanForUnregisteredRegistrars()
+		expect(unregistered).toEqual([])
+	})
+
+	for (const registrar of KNOWN_REGISTRARS) {
+		describe(`${registrar.file} → ${registrar.owner}/${registrar.blockId}`, () => {
+			it("is still registered", () => {
+				expect(fileExists(registrar.file)).toBe(true)
+				const source = readSource(registrar.file)
+				expect(hasBlockRegistration(source, registrar.owner, registrar.blockId)).toBe(true)
+			})
+
+			if (registrar.expectedStability === "static") {
+				it("does not import volatile session stores", () => {
+					const source = readSource(registrar.file)
+					const allowed = new Map((registrar.allowedVolatileImports ?? []).map((a) => [a.modulePath, a.reason]))
+					for (const modulePath of VOLATILE_STORE_MODULES) {
+						if (allowed.has(modulePath)) continue
+						expect(hasImport(source, modulePath), `static block should not import from ${modulePath}`).toBe(false)
+					}
+				})
+			}
+		})
+	}
+
 	it("keeps the todos system-prompt block static and reintroducing todo-state impossible by omission", () => {
 		const promptBlock = readSource("src/extensions/todos/prompt-block.ts")
 		const index = readSource("src/extensions/todos/index.ts")

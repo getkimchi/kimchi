@@ -4,10 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
 import { emitFermentDomainEvent } from "../ferment/domain-events-emitter.js"
+import { buildFermentPromptBlock } from "../ferment/prompt-block.js"
+import { createDefaultFermentRuntime } from "../ferment/runtime.js"
 import { setActive } from "../ferment/state.js"
 import { registerFermentTodoSync } from "../ferment/todo-sync.js"
 import todosExtension from "../todos/index.js"
 import { __resetTodoStore, applyWriteTodos } from "../todos/store.js"
+import { createSystemPromptBlocks } from "./index.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "./system-prompt.js"
 
 type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>
@@ -72,8 +75,24 @@ function extractTodoContextText(result: ContextResult): string {
 		.join("\n")
 }
 
-describe("system prompt stability contract", () => {
+type WorkflowSurface = "non-ferment" | "ferment-interactive" | "ferment-oneshot"
+
+interface TestHarness {
+	surface: WorkflowSurface
+	ctx: ExtensionContext
+	pi: ExtensionAPI
+	handlers: Map<string, ExtensionHandler[]>
+	fire(event: string, payload: unknown): Promise<unknown>
+	buildFinalSystemPrompt(): Promise<string>
+	buildContextText(): Promise<string>
+}
+
+function createHarness(surface: WorkflowSurface): TestHarness {
 	const handlers = new Map<string, ExtensionHandler[]>()
+	const isOneshot = surface === "ferment-oneshot"
+	const activeFerment = surface === "non-ferment" ? undefined : makeFerment()
+
+	const runtime = createDefaultFermentRuntime()
 
 	const pi = {
 		events: createEventBus(),
@@ -86,7 +105,7 @@ describe("system prompt stability contract", () => {
 		sendUserMessage: vi.fn(),
 		getActiveTools: vi.fn(() => []),
 		getAllTools: vi.fn(() => []),
-		getFlag: vi.fn(),
+		getFlag: vi.fn((name: string) => (name === "ferment-oneshot" ? isOneshot : undefined)),
 		setFlag: vi.fn(),
 		on: vi.fn((event: string, handler: ExtensionHandler) => {
 			const list = handlers.get(event) ?? []
@@ -103,7 +122,13 @@ describe("system prompt stability contract", () => {
 		},
 	})
 
-	let unsubscribeTodoSync: (() => void) | undefined
+	if (activeFerment) {
+		createSystemPromptBlocks(pi, "ferment").register({
+			id: "ferment-planning-block",
+			suppress: () => new Set(),
+			render: () => buildFermentPromptBlock(ctx, pi, runtime),
+		})
+	}
 
 	async function fire(event: string, payload: unknown): Promise<unknown> {
 		let result: unknown
@@ -136,132 +161,184 @@ describe("system prompt stability contract", () => {
 		return extractTodoContextText(result)
 	}
 
-	beforeEach(async () => {
-		handlers.clear()
-		__resetTodoStore()
-		setActive(undefined)
+	return {
+		surface,
+		ctx,
+		pi,
+		handlers,
+		fire,
+		buildFinalSystemPrompt,
+		buildContextText,
+	}
+}
 
-		todosExtension(pi)
-		unsubscribeTodoSync = registerFermentTodoSync(pi, SESSION_ID)
-		await fire("session_start", { reason: "new" })
-	})
+async function resetHarness(harness: TestHarness): Promise<void> {
+	harness.handlers.clear()
+	__resetTodoStore()
+}
 
-	afterEach(async () => {
-		await fire("session_shutdown", {})
-		unsubscribeTodoSync?.()
-		unsubscribeTodoSync = undefined
-		setActive(undefined)
-		__resetTodoStore()
-	})
+describe("system prompt stability contract", () => {
+	describe("global todo volatility across all workflows", () => {
+		for (const surface of ["non-ferment", "ferment-interactive", "ferment-oneshot"] as WorkflowSurface[]) {
+			describe(`workflow: ${surface}`, () => {
+				const harness = createHarness(surface)
+				let unsubscribeTodoSync: (() => void) | undefined
 
-	it("keeps the assembled system prompt stable while todo and ferment todo state changes", async () => {
-		const ferment = makeFerment()
-		setActive(ferment)
-		emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
-		emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
-		applyWriteTodos({ todos: [{ content: "write parser", status: "in_progress" }] }, SESSION_ID)
+				beforeEach(async () => {
+					await resetHarness(harness)
+					setActive(surface === "non-ferment" ? undefined : makeFerment())
+					todosExtension(harness.pi)
+					unsubscribeTodoSync = registerFermentTodoSync(harness.pi, SESSION_ID)
+					await harness.fire("session_start", { reason: "new" })
+				})
 
-		const promptBefore = await buildFinalSystemPrompt()
-		const contextBefore = await buildContextText()
-		expect(promptBefore).toContain("## Todos")
-		expect(contextBefore).toContain("## Current Todos")
-		expect(contextBefore).toContain("write parser")
+				afterEach(async () => {
+					await harness.fire("session_shutdown", {})
+					unsubscribeTodoSync?.()
+					unsubscribeTodoSync = undefined
+					setActive(undefined)
+					__resetTodoStore()
+				})
 
-		applyWriteTodos({ todos: [{ id: 1, content: "write parser", status: "completed" }] }, SESSION_ID)
-		applyWriteTodos(
-			{
-				scope: { kind: "global" },
-				todos: [{ content: "review parser", status: "pending" }],
-			},
-			SESSION_ID,
-		)
+				it("keeps the assembled system prompt stable when todos are added, updated, and cleared", async () => {
+					const promptBefore = await harness.buildFinalSystemPrompt()
+					const contextBefore = await harness.buildContextText()
+					expect(promptBefore).toContain("## Todos")
+					expect(contextBefore).toBe("")
 
-		const completedStepFerment: Ferment = {
-			...ferment,
-			phases: ferment.phases.map((phase) => ({
-				...phase,
-				steps: phase.steps.map((step) => (step.id === "step-1" ? { ...step, status: "done" as const } : step)),
-			})),
+					applyWriteTodos({ todos: [{ content: "initial task", status: "pending" }] }, SESSION_ID)
+					const promptAfterAdd = await harness.buildFinalSystemPrompt()
+					const contextAfterAdd = await harness.buildContextText()
+					expect(promptAfterAdd).toBe(promptBefore)
+					expect(contextAfterAdd).not.toBe(contextBefore)
+					expect(contextAfterAdd).toContain("initial task")
+
+					applyWriteTodos({ todos: [{ id: 1, content: "updated task", status: "in_progress" }] }, SESSION_ID)
+					const promptAfterUpdate = await harness.buildFinalSystemPrompt()
+					const contextAfterUpdate = await harness.buildContextText()
+					expect(promptAfterUpdate).toBe(promptBefore)
+					expect(contextAfterUpdate).not.toBe(contextAfterAdd)
+					expect(contextAfterUpdate).toContain("updated task")
+
+					applyWriteTodos({ todos: [] }, SESSION_ID)
+					const promptAfterClear = await harness.buildFinalSystemPrompt()
+					const contextAfterClear = await harness.buildContextText()
+					expect(promptAfterClear).toBe(promptBefore)
+					expect(contextAfterClear).toBe("")
+				})
+			})
 		}
-		emitFermentDomainEvent(
-			pi.events,
-			{ type: "complete_step", phaseId: "phase-1", stepId: "step-1" },
-			completedStepFerment,
-		)
-
-		const promptAfter = await buildFinalSystemPrompt()
-		const contextAfter = await buildContextText()
-
-		expect(promptAfter).toBe(promptBefore)
-		expect(contextAfter).not.toBe(contextBefore)
-		expect(contextAfter).toContain("review parser")
 	})
 
-	it("keeps the assembled system prompt stable when ferment phase lifecycle completes", async () => {
-		const ferment = makeFerment()
-		setActive(ferment)
-		emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
-		emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
-		applyWriteTodos({ todos: [{ content: "ship change", status: "pending" }] }, SESSION_ID)
+	describe("ferment todo-sync volatility", () => {
+		for (const surface of ["ferment-interactive", "ferment-oneshot"] as WorkflowSurface[]) {
+			describe(`workflow: ${surface}`, () => {
+				const harness = createHarness(surface)
+				let unsubscribeTodoSync: (() => void) | undefined
+				let ferment = makeFerment()
 
-		const promptBefore = await buildFinalSystemPrompt()
-		const contextBefore = await buildContextText()
+				beforeEach(async () => {
+					await resetHarness(harness)
+					ferment = makeFerment()
+					setActive(ferment)
+					todosExtension(harness.pi)
+					unsubscribeTodoSync = registerFermentTodoSync(harness.pi, SESSION_ID)
+					await harness.fire("session_start", { reason: "new" })
+				})
 
-		const completedStepFerment: Ferment = {
-			...ferment,
-			phases: ferment.phases.map((phase) => ({
-				...phase,
-				steps: phase.steps.map((step) => (step.id === "step-1" ? { ...step, status: "done" as const } : step)),
-			})),
+				afterEach(async () => {
+					await harness.fire("session_shutdown", {})
+					unsubscribeTodoSync?.()
+					unsubscribeTodoSync = undefined
+					setActive(undefined)
+					__resetTodoStore()
+				})
+
+				it("keeps the assembled system prompt stable while ferment-scoped todo state changes", async () => {
+					emitFermentDomainEvent(harness.pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
+					emitFermentDomainEvent(
+						harness.pi.events,
+						{ type: "start_step", phaseId: "phase-1", stepId: "step-1" },
+						ferment,
+					)
+
+					applyWriteTodos({ todos: [{ content: "write parser", status: "in_progress" }] }, SESSION_ID)
+
+					const promptBefore = await harness.buildFinalSystemPrompt()
+					const contextBefore = await harness.buildContextText()
+					expect(promptBefore).toContain("## Todos")
+					expect(contextBefore).toContain("## Current Todos")
+					expect(contextBefore).toContain("write parser")
+
+					const completedStepFerment: Ferment = {
+						...ferment,
+						phases: ferment.phases.map((phase) => ({
+							...phase,
+							steps: phase.steps.map((step) => (step.id === "step-1" ? { ...step, status: "done" as const } : step)),
+						})),
+					}
+					setActive(completedStepFerment)
+					emitFermentDomainEvent(
+						harness.pi.events,
+						{ type: "complete_step", phaseId: "phase-1", stepId: "step-1" },
+						completedStepFerment,
+					)
+
+					const promptAfter = await harness.buildFinalSystemPrompt()
+					const contextAfter = await harness.buildContextText()
+
+					expect(promptAfter).toBe(promptBefore)
+					expect(contextAfter).not.toBe(contextBefore)
+				})
+
+				it("keeps the assembled system prompt stable when a ferment phase completes", async () => {
+					emitFermentDomainEvent(harness.pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
+					emitFermentDomainEvent(
+						harness.pi.events,
+						{ type: "start_step", phaseId: "phase-1", stepId: "step-1" },
+						ferment,
+					)
+					applyWriteTodos({ todos: [{ content: "ship change", status: "pending" }] }, SESSION_ID)
+
+					const promptBefore = await harness.buildFinalSystemPrompt()
+					const contextBefore = await harness.buildContextText()
+
+					const completedStepFerment: Ferment = {
+						...ferment,
+						phases: ferment.phases.map((phase) => ({
+							...phase,
+							steps: phase.steps.map((step) => (step.id === "step-1" ? { ...step, status: "done" as const } : step)),
+						})),
+					}
+					setActive(completedStepFerment)
+					emitFermentDomainEvent(
+						harness.pi.events,
+						{ type: "complete_step", phaseId: "phase-1", stepId: "step-1" },
+						completedStepFerment,
+					)
+
+					const completedPhaseFerment: Ferment = {
+						...completedStepFerment,
+						phases: completedStepFerment.phases.map((phase) => ({
+							...phase,
+							status: "completed" as const,
+						})),
+					}
+					setActive(completedPhaseFerment)
+					emitFermentDomainEvent(
+						harness.pi.events,
+						{ type: "complete_phase", phaseId: "phase-1", summary: "done" },
+						completedPhaseFerment,
+					)
+
+					const promptAfter = await harness.buildFinalSystemPrompt()
+					const contextAfter = await harness.buildContextText()
+
+					expect(promptAfter).toBe(promptBefore)
+					expect(contextAfter).not.toBe(contextBefore)
+					expect(contextAfter).not.toContain("ship change")
+				})
+			})
 		}
-		emitFermentDomainEvent(
-			pi.events,
-			{ type: "complete_step", phaseId: "phase-1", stepId: "step-1" },
-			completedStepFerment,
-		)
-
-		const completedPhaseFerment: Ferment = {
-			...completedStepFerment,
-			phases: completedStepFerment.phases.map((phase) => ({ ...phase, status: "completed" as const })),
-		}
-		emitFermentDomainEvent(
-			pi.events,
-			{ type: "complete_phase", phaseId: "phase-1", summary: "done" },
-			completedPhaseFerment,
-		)
-
-		const promptAfter = await buildFinalSystemPrompt()
-		const contextAfter = await buildContextText()
-
-		expect(promptAfter).toBe(promptBefore)
-		expect(contextAfter).not.toBe(contextBefore)
-		expect(contextAfter).not.toContain("ship change")
-	})
-
-	it("keeps the assembled system prompt stable when todos are added, updated, and cleared", async () => {
-		const promptBefore = await buildFinalSystemPrompt()
-		const contextBefore = await buildContextText()
-		expect(promptBefore).toContain("## Todos")
-		expect(contextBefore).toBe("")
-
-		applyWriteTodos({ todos: [{ content: "initial task", status: "pending" }] }, SESSION_ID)
-		const promptAfterAdd = await buildFinalSystemPrompt()
-		const contextAfterAdd = await buildContextText()
-		expect(promptAfterAdd).toBe(promptBefore)
-		expect(contextAfterAdd).not.toBe(contextBefore)
-		expect(contextAfterAdd).toContain("initial task")
-
-		applyWriteTodos({ todos: [{ id: 1, content: "updated task", status: "in_progress" }] }, SESSION_ID)
-		const promptAfterUpdate = await buildFinalSystemPrompt()
-		const contextAfterUpdate = await buildContextText()
-		expect(promptAfterUpdate).toBe(promptBefore)
-		expect(contextAfterUpdate).not.toBe(contextAfterAdd)
-		expect(contextAfterUpdate).toContain("updated task")
-
-		applyWriteTodos({ todos: [] }, SESSION_ID)
-		const promptAfterClear = await buildFinalSystemPrompt()
-		const contextAfterClear = await buildContextText()
-		expect(promptAfterClear).toBe(promptBefore)
-		expect(contextAfterClear).toBe("")
 	})
 })
