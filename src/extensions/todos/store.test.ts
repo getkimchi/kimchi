@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { runAsAgentWorker } from "../agent-worker-context.js"
 import {
 	__resetTodoStore,
 	applyWriteTodos,
@@ -8,6 +9,7 @@ import {
 	getTodoState,
 	getTodosForScope,
 	registerActiveTodoScopeProvider,
+	resolveTodoScope,
 	restoreTodoStoreFromDetails,
 	subscribeTodoStore,
 } from "./store.js"
@@ -122,6 +124,46 @@ describe("todo store", () => {
 		applyWriteTodos({ scope: { kind: "global" }, todos: [{ content: "explicit", status: "pending" }] }, TEST_SESSION_ID)
 		expect(first).not.toHaveBeenCalled()
 		expect(second).not.toHaveBeenCalled()
+	})
+
+	it("treats empty scope placeholders as omitted and lets providers auto-scope", () => {
+		const fermentScope = { kind: "ferment-step" as const, phaseId: "phase-1", stepId: "step-1" }
+		const unregister = registerActiveTodoScopeProvider(() => fermentScope)
+		try {
+			// Omission resolves through the provider — baseline behaviour.
+			expect(resolveTodoScope()).toEqual(fermentScope)
+			// Empty string resolves through providers as if omitted.
+			expect(resolveTodoScope("")).toEqual(fermentScope)
+			// GLM-style literal "{}" resolves through providers as if omitted.
+			expect(resolveTodoScope("{}")).toEqual(fermentScope)
+			// Empty object resolves through providers as if omitted.
+			expect(resolveTodoScope({})).toEqual(fermentScope)
+			// A real scope argument is still honoured verbatim.
+			expect(resolveTodoScope("global")).toEqual(GLOBAL_TODO_SCOPE)
+		} finally {
+			unregister()
+		}
+	})
+
+	it("falls back to global in subagent workers regardless of registered providers", async () => {
+		const fermentScope = {
+			kind: "ferment-step" as const,
+			phaseId: "phase-1",
+			stepId: "step-1",
+		}
+		const unregister = registerActiveTodoScopeProvider(() => fermentScope)
+		try {
+			// Parent (non-worker) still resolves to the provider's scope.
+			expect(resolveTodoScope()).toEqual(fermentScope)
+
+			// Inside the AsyncLocalStorage worker context the provider is
+			// skipped — scope-less resolution must stay global.
+			await runAsAgentWorker(async () => {
+				expect(resolveTodoScope()).toEqual(GLOBAL_TODO_SCOPE)
+			})
+		} finally {
+			unregister()
+		}
 	})
 
 	it("unregisters active scope providers", () => {

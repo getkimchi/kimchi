@@ -2,7 +2,8 @@ import type { ExtensionAPI, ExtensionContext, SessionEntry, SessionManager } fro
 import { isAgentWorker } from "../agent-worker-context.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
-import { appendTodoPromptBlockIfMissing, registerTodoPromptBlock, registerTodoStateBlock } from "./prompt-block.js"
+import { registerTodoContextState } from "./context-state.js"
+import { appendTodoPromptBlockIfMissing, registerTodoPromptBlock } from "./prompt-block.js"
 import {
 	bumpToolCallsSinceTodoWrite,
 	bumpWorkToolCalls,
@@ -92,6 +93,8 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	registerTodosTool(pi)
 	registerTodoPromptBlock(pi)
 
+	registerTodoContextState(pi)
+
 	pi.on("before_agent_start", (event) => {
 		const systemPrompt = appendTodoPromptBlockIfMissing(event.systemPrompt)
 		return systemPrompt ? { systemPrompt } : undefined
@@ -128,11 +131,6 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId()
 		setSessionContext(sessionId, ctx)
-
-		// Headless (one-shot) runs have no widget; the todo-state prompt block
-		// renders the same content as markdown so the orchestrator agent can see
-		// it. It receives the session context and self-gates on ctx.hasUI.
-		registerTodoStateBlock(pi, ctx)
 
 		resetTodoWidgetState(ctx)
 		ensureTodoWidget(ctx)
