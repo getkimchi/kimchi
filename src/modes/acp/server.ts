@@ -328,7 +328,13 @@ export class KimchiAcpAgent implements Agent {
 
 		// Run the browser OAuth flow: starts a local callback server, opens the
 		// user's browser to the Kimchi web app, and awaits the resulting token.
-		const { token } = await authenticateViaBrowser()
+		let token: string
+		try {
+			;({ token } = await authenticateViaBrowser())
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error)
+			throw RequestError.internalError(undefined, `Browser authentication failed: ${detail}`)
+		}
 		if (!token) {
 			throw RequestError.internalError(undefined, "Browser authentication did not return a token")
 		}
