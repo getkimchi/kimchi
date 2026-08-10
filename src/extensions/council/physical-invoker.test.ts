@@ -1,6 +1,11 @@
 import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai"
 import { describe, expect, it, vi } from "vitest"
-import { type CompletePhysicalModel, PhysicalModelInvoker } from "./physical-invoker.js"
+import {
+	type CompletePhysicalModel,
+	isCouncilVirtualModel,
+	isCouncilVirtualModelRef,
+	PhysicalModelInvoker,
+} from "./physical-invoker.js"
 import { CouncilRunContext, type RunBudgetLimits } from "./run-context.js"
 
 const limits: RunBudgetLimits = {
@@ -532,5 +537,34 @@ describe("PhysicalModelInvoker", () => {
 		expect(registry.getApiKeyAndHeaders).not.toHaveBeenCalled()
 		expect(completeModel).not.toHaveBeenCalled()
 		run.close()
+	})
+})
+
+describe("Council virtual model identity", () => {
+	it.each([
+		"council-fast",
+		"council",
+		"council-deep",
+		"kimchi/council-fast",
+		"kimchi/council",
+		"kimchi/council-deep",
+		"kimchi-council",
+		"kimchi-council/council",
+	])("recognizes %s", (modelRef) => {
+		expect(isCouncilVirtualModelRef(modelRef)).toBe(true)
+	})
+
+	it.each([
+		"council-ai/model",
+		"kimchi/councilor",
+		"kimchi/council-extra",
+		"other/council",
+	])("does not overmatch %s", (modelRef) => {
+		expect(isCouncilVirtualModelRef(modelRef)).toBe(false)
+	})
+
+	it("uses exact model metadata", () => {
+		expect(isCouncilVirtualModel({ api: "custom", provider: "council-ai", id: "model" })).toBe(false)
+		expect(isCouncilVirtualModel({ api: "kimchi-council", provider: "custom", id: "model" })).toBe(true)
 	})
 })

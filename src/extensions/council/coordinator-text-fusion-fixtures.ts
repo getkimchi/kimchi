@@ -3,7 +3,7 @@ import { vi } from "vitest"
 import { createCouncilStream } from "./coordinator.js"
 import { config, councilModel, modelRegistry, response } from "./coordinator-transaction-fixtures.js"
 import { stageInput } from "./council-test-harness.js"
-import type { CouncilConfig, CouncilRunRecord } from "./types.js"
+import type { CouncilConfig, CouncilRunRecord } from "./schemas.js"
 
 export { config, councilModel, modelRegistry, response, stageInput }
 

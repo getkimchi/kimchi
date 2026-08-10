@@ -6,10 +6,8 @@ import { afterEach, vi } from "vitest"
 import { DEFAULT_COUNCIL_CONFIG } from "./config.js"
 import { createCouncilStream } from "./coordinator.js"
 import { councilModel, createModelRegistryMock, physicalModel, response } from "./council-test-harness.js"
-import type { CouncilPromotionRequest } from "./transaction-runtime.js"
-import { CouncilTransactionRuntime } from "./transaction-runtime.js"
-import { COUNCIL_CHECK_TOOL } from "./transaction-tools.js"
-import type { CouncilConfig, CouncilRunRecord } from "./types.js"
+import type { CouncilConfig, CouncilRunRecord } from "./schemas.js"
+import { COUNCIL_CHECK_TOOL, type CouncilPromotionRequest, CouncilTransactionRuntime } from "./transaction.js"
 import type { ValidationCheck } from "./validation.js"
 
 // A plain `import {...}; export {...}` pair for names re-exported from `council-test-harness.js` comes

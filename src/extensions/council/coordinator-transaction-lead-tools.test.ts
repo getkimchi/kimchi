@@ -10,8 +10,8 @@ import {
 	toolResponse,
 	transactionRuntime,
 } from "./coordinator-transaction-fixtures.js"
-import { COUNCIL_APPLY_TOOL, COUNCIL_CHECK_TOOL } from "./transaction-tools.js"
-import type { CouncilConfig } from "./types.js"
+import type { CouncilConfig } from "./schemas.js"
+import { COUNCIL_APPLY_TOOL, COUNCIL_CHECK_TOOL } from "./transaction.js"
 
 describe("coordinator-transaction-lead-tools", () => {
 	it.skip("enforces one cumulative call budget across successive tool rounds", async () => {

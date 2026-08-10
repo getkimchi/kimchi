@@ -13,7 +13,7 @@ import {
 	response,
 	TEST_COUNCIL_CONFIG,
 } from "./runtime-test-harness.js"
-import type { CouncilRunRecord } from "./types.js"
+import type { CouncilRunRecord } from "./schemas.js"
 
 async function stagedTransaction() {
 	const { root } = await fixture()

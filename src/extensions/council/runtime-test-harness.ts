@@ -4,7 +4,7 @@ import { applyCouncilPreset, DEFAULT_COUNCIL_CONFIG } from "./config.js"
 import { type CouncilRuntimeDependencies, createCouncilStream as createCouncilRuntimeStream } from "./coordinator.js"
 import { createModelRegistryMock, physicalModel } from "./council-test-harness.js"
 import type { CompletePhysicalModel } from "./physical-invoker.js"
-import type { CouncilConfig, CouncilProgressEvent } from "./types.js"
+import type { CouncilConfig, CouncilProgressEvent } from "./schemas.js"
 
 // A plain `import {...}; export {...}` pair for names re-exported from `council-test-harness.js` comes
 // back `undefined` in this file: with a `vi.mock` present, Vitest's hoisting transform captures the

@@ -11,7 +11,7 @@ import {
 	substantialAnswer,
 } from "./coordinator-text-fusion-fixtures.js"
 import { RunFailure } from "./run-context.js"
-import type { CouncilRunRecord } from "./types.js"
+import type { CouncilRunRecord } from "./schemas.js"
 
 const SOLVER_PROMPT = "You are a Council solver. Answer the objective"
 const ANALYST_PROMPT = "You are the Council analyst. Compare the independently generated answers"

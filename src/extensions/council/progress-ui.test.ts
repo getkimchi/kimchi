@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { COUNCIL_PROGRESS_WIDGET_KEY, CouncilProgressUI, createCouncilProgressEmitter } from "./progress-ui.js"
-import type { CouncilProgressEvent } from "./types.js"
+import type { CouncilProgressEvent } from "./schemas.js"
 
 type WidgetFactory = (
 	tui: { requestRender(): void },

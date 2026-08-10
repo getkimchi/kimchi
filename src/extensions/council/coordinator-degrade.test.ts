@@ -15,8 +15,8 @@ import {
 	transactionRuntime,
 } from "./coordinator-transaction-fixtures.js"
 import { RunFailure } from "./run-context.js"
-import { COUNCIL_APPLY_TOOL } from "./transaction-tools.js"
-import type { CouncilRunRecord } from "./types.js"
+import type { CouncilRunRecord } from "./schemas.js"
+import { COUNCIL_APPLY_TOOL } from "./transaction.js"
 
 async function stageLeadCandidate(root: string) {
 	const runtime = transactionRuntime(root)

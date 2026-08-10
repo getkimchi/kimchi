@@ -1,7 +1,6 @@
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai"
 import { describe, expect, it, vi } from "vitest"
-import { CouncilSessionCache } from "./cache.js"
-import type { CouncilRunContext } from "./run-context.js"
+import { type CouncilRunContext, CouncilSessionCache } from "./run-context.js"
 import { type CouncilStageRuntime, RepairBudget, runStructuredStage } from "./stage-runner.js"
 
 const ZERO_USAGE: Usage = {

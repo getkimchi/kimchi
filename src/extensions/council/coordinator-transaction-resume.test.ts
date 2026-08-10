@@ -9,9 +9,13 @@ import {
 	runCouncil,
 	transactionRuntime,
 } from "./coordinator-transaction-fixtures.js"
-import { CouncilTransactionRuntime, MAX_TRANSACTION_REEMISSIONS } from "./transaction-runtime.js"
-import { COUNCIL_APPLY_TOOL, COUNCIL_SETTLE_TOOL } from "./transaction-tools.js"
-import type { CouncilRunRecord } from "./types.js"
+import type { CouncilRunRecord } from "./schemas.js"
+import {
+	COUNCIL_APPLY_TOOL,
+	COUNCIL_SETTLE_TOOL,
+	CouncilTransactionRuntime,
+	MAX_TRANSACTION_REEMISSIONS,
+} from "./transaction.js"
 
 describe("coordinator-transaction-resume", () => {
 	it("clamps deterministic validation to the remaining whole-run deadline", async () => {

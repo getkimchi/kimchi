@@ -2,8 +2,8 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import { AuthStorage, type ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import councilExtension, { sanitizeCouncilSessionRecord } from "./index.js"
-import { CouncilTransactionRuntime } from "./transaction-runtime.js"
-import type { CouncilRunRecord } from "./types.js"
+import type { CouncilRunRecord } from "./schemas.js"
+import { CouncilTransactionRuntime } from "./transaction.js"
 
 type ProviderConfig = Parameters<ModelRegistry["registerProvider"]>[1]
 

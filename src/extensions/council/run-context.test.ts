@@ -1,5 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { CouncilRunContext, type RunBudgetLimits, type RunFailure } from "./run-context.js"
+import {
+	addUsage,
+	type CouncilCacheKey,
+	CouncilRunContext,
+	CouncilSessionCache,
+	hashCouncilCacheValue,
+	type RunBudgetLimits,
+	type RunFailure,
+	sanitizeRunRecord,
+	toCouncilBudgetUsage,
+	ZERO_USAGE,
+} from "./run-context.js"
+import { type CouncilTransactionSnapshot, FusionAnalysisSchema } from "./schemas.js"
 
 const limits: RunBudgetLimits = {
 	overallTimeoutMs: 1_000,
@@ -179,5 +191,158 @@ describe("CouncilRunContext", () => {
 
 		expect(() => run.throwIfAborted()).toThrowError(expect.objectContaining<Partial<RunFailure>>({ code: "aborted" }))
 		run.close()
+	})
+})
+
+const cacheKey: CouncilCacheKey = {
+	patchHash: "patch",
+	baseSnapshotHash: "base",
+	objectiveHash: "objective",
+	constraintsHash: "constraints",
+	evidenceHash: "evidence",
+	role: "solver",
+	modelId: "physical/model",
+	promptVersion: "prompt",
+	schemaVersion: "schema",
+}
+
+describe("CouncilSessionCache", () => {
+	it("invalidates on every required key component", () => {
+		for (const field of Object.keys(cacheKey) as Array<keyof CouncilCacheKey>) {
+			const cache = new CouncilSessionCache()
+			cache.setResult(cacheKey, { schema_version: 1 }, () => true)
+			expect(cache.getResult({ ...cacheKey, [field]: `${cacheKey[field]}-changed` })).toBeUndefined()
+		}
+	})
+
+	it("separates packets from validated results and clones values", () => {
+		const cache = new CouncilSessionCache()
+		const value = { schema_version: 1, findings: [] as string[] }
+		cache.setResult(cacheKey, value, () => true)
+		value.findings.push("mutated")
+
+		expect(cache.getPacket(cacheKey)).toBeUndefined()
+		expect(cache.getResult(cacheKey)).toEqual({ schema_version: 1, findings: [] })
+		expect(cache.snapshot()).toMatchObject({ hits: 1, misses: 1, entries: 1 })
+	})
+
+	it("bounds entry count and byte size", () => {
+		const cache = new CouncilSessionCache(2, 80, 60)
+		expect(cache.setResult(cacheKey, { value: "a".repeat(20) }, () => true)).toBe(true)
+		expect(cache.setResult({ ...cacheKey, role: "analyst" }, { value: "b".repeat(20) }, () => true)).toBe(true)
+		expect(cache.setResult({ ...cacheKey, role: "synthesis" }, { value: "c".repeat(20) }, () => true)).toBe(true)
+		expect(cache.snapshot().entries).toBeLessThanOrEqual(2)
+		expect(cache.snapshot().bytes).toBeLessThanOrEqual(80)
+		expect(
+			cache.setResult({ ...cacheKey, modelId: "physical/oversized" }, { value: "x".repeat(100) }, () => true),
+		).toBe(false)
+	})
+
+	it("never caches a schema-invalid structured result", () => {
+		const cache = new CouncilSessionCache()
+		expect(
+			cache.setResult(
+				cacheKey,
+				{ consensus: "not-an-array", raw_reasoning: "private" },
+				(value) => FusionAnalysisSchema.safeParse(value).success,
+			),
+		).toBe(false)
+		expect(cache.getResult(cacheKey)).toBeUndefined()
+	})
+
+	it("hashes exact packet contents", () => {
+		expect(hashCouncilCacheValue({ objective: "a" })).not.toBe(hashCouncilCacheValue({ objective: "b" }))
+		expect(hashCouncilCacheValue({ objective: "a" })).toBe(hashCouncilCacheValue({ objective: "a" }))
+	})
+})
+
+describe("Council telemetry", () => {
+	it("aggregates usage and emits only bounded structured stage data", () => {
+		const usage = addUsage(ZERO_USAGE, {
+			input: 2,
+			output: 3,
+			cacheRead: 4,
+			cacheWrite: 5,
+			totalTokens: 14,
+			cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 },
+		})
+		const budget = toCouncilBudgetUsage(
+			{
+				logicalCalls: 2,
+				physicalAttempts: 3,
+				activeCalls: 0,
+				peakConcurrentCalls: 2,
+				inputTokens: 2,
+				outputTokens: 3,
+				evidenceBytes: 10,
+				structuredBytes: 20,
+			},
+			{ hits: 2, misses: 3 },
+		)
+		const transaction = Object.assign(
+			{
+				transactionId: "transaction",
+				state: "applied",
+				outcome: "applied",
+				patchSha256: "patch",
+				stats: { files: 1, addedLines: 1, removedLines: 0, patchBytes: 10 },
+				baseVerification: "passed",
+				selectedValidationCheckIds: ["package.test"],
+				postApplyChecks: [
+					{
+						id: "package.test",
+						kind: "test",
+						toolName: "bash",
+						command: "node verify.mjs --token castai_v1_abcdefgh123456",
+						ok: true,
+						exitCode: 0,
+						durationMs: 10,
+						beforeSha256: "a".repeat(64),
+						afterSha256: "a".repeat(64),
+						mutationPolicy: "read-only",
+						mutation: "none",
+					},
+				],
+				rollbackState: "not_available",
+				hardRecoveryRequired: false,
+			} satisfies CouncilTransactionSnapshot,
+			{ token: "server-secret", internalReasoning: "private chain" },
+		)
+		const record = sanitizeRunRecord({
+			runId: "run",
+			virtualModel: "kimchi/council",
+			outcome: "error",
+			degradedReason: "panel_unavailable",
+			durationMs: 1,
+			usage,
+			budget,
+			transaction,
+			stages: [
+				{
+					stage: "lead",
+					modelRef: "provider/model",
+					status: "error",
+					durationMs: 1,
+					attempts: 1,
+					error: "secret message with spaces",
+					schemaErrorCode: "private-schema-secret" as never,
+					truncated: true,
+					retry: true,
+				},
+			],
+		})
+
+		expect(record.usage).toEqual(usage)
+		expect(record.budget).toEqual(budget)
+		expect(record.budget).toMatchObject({ cacheHits: 2, cacheMisses: 3 })
+		expect(record.stages[0]?.error).toBe("unknown")
+		expect(record.stages[0]?.schemaErrorCode).toBeUndefined()
+		expect(record).toMatchObject({ degradedReason: "panel_unavailable" })
+		expect(record.stages[0]).toMatchObject({ truncated: true, retry: true })
+		expect(record.transaction).toMatchObject({ transactionId: "transaction", patchSha256: "patch" })
+		expect(record.transaction?.postApplyChecks[0]?.command).toMatch(/^sha256:[a-f0-9]{64}$/)
+		expect(JSON.stringify(record)).not.toMatch(
+			/server-secret|private chain|private-schema-secret|castai_v1_abcdefgh123456|token|internalReasoning/,
+		)
 	})
 })
