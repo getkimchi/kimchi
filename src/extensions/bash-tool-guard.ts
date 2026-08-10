@@ -53,10 +53,9 @@
  *     never stalls a session if the replacement tool is unavailable.
  *   - Per-category counters: a `cat` doesn't burn the budget for `sed -i`.
  *   - Per-category thresholds: read/edit/write can have different budgets.
- *   - Warn-only mode queues at most one steer per assistant turn, so parallel
- *     bash calls cannot build a backlog of identical continuation turns.
- *   - Reset on `session_start` and on each user `input` event so a fresh
- *     turn starts with a clean slate.
+ *   - Per-category counters reset on `session_start` and each user `input`.
+ *   - Warn-only steer coalescing resets on `session_start` and each assistant
+ *     `turn_start`, so parallel bash calls cannot build a steer backlog.
  *   - Disabled in plan-mode permission context (inspection, not
  *     enforcement — same rationale as `exploration-guard`).
  *   - Explicit user request override: detects both tool names ("cat",
