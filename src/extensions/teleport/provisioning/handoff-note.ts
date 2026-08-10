@@ -185,5 +185,5 @@ export function addHandoffNoteToSessionJsonl(sessionJsonl: string, note: string)
 	// Drop a trailing empty line (from a trailing newline) so the appended
 	// line stays properly delimited, then re-add the trailing newline.
 	const base = lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines
-	return [...base, noteLine].join("\n") + "\n"
+	return `${[...base, noteLine].join("\n")}\n`
 }

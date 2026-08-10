@@ -152,25 +152,26 @@ describe("copySessionFileAndAddHandoffNote", () => {
 	})
 
 	it("writes an annotated copy without mutating the original", () => {
-		const original = msgEntry("u1", "root", userMsg("hello")) + "\n"
+		const original = `${msgEntry("u1", "root", userMsg("hello"))}\n`
 		const sessionFile = join(dir, "session.jsonl")
 		writeFileSync(sessionFile, original)
 
 		const copy = copySessionFileAndAddHandoffNote(sessionFile, "NOTE TEXT")
 		expect(copy).toBeDefined()
 		expect(copy).not.toBe(sessionFile)
+		if (!copy) throw new Error("expected copy to be defined")
 
 		// Original untouched.
 		expect(readFileSync(sessionFile, "utf8")).toBe(original)
 		// Copy contains original content plus the note.
-		const copyText = readFileSync(copy!, "utf8")
+		const copyText = readFileSync(copy, "utf8")
 		expect(copyText).toContain("hello")
 		expect(copyText).toContain("NOTE TEXT")
 
 		// The copy sits at the root of its own temp dir; removeTempDir on its
 		// parent fully cleans it up.
-		removeTempDir(dirname(copy!))
-		expect(existsSync(copy!)).toBe(false)
+		removeTempDir(dirname(copy))
+		expect(existsSync(copy)).toBe(false)
 	})
 
 	it("returns undefined for a missing file", () => {
