@@ -374,6 +374,12 @@ describe("judgeJourneyGrade", () => {
 			)
 		const result = await judgeJourneyGrade(makeInput({ charter: { intent: "recreate Tahoe" } }), apiCall)
 		expect(apiCall).toHaveBeenCalledTimes(2)
+		// The retry names the omission so the judge knows what to fix — a bare
+		// repeated prompt tends to repeat the same failure mode (PR #989 review).
+		const messages = apiCall.mock.calls.map((call) => call[1])
+		expect(messages[0]).not.toContain("REMINDER")
+		expect(messages[1]).toContain("REMINDER")
+		expect(messages[1]).toContain("charter_verdicts")
 		expect(result.ok).toBe(true)
 		if (!result.ok) return
 		expect(result.charterVerdicts).toEqual([{ clause: "recreate Tahoe", status: "met", evidence: "shell recreated" }])

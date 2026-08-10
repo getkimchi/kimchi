@@ -424,8 +424,15 @@ export async function judgeJourneyGrade(
 	input: JudgeJourneyGradeInput,
 	apiCall: (sys: string, msg: string, maxTokens?: number) => Promise<JudgeApiResult> = judgeApiCall,
 ): Promise<JudgeJourneyGradeResult> {
-	const userMsg = buildJourneyGradeUserMsg(input)
+	const baseMsg = buildJourneyGradeUserMsg(input)
+	let missingVerdicts = false
 	for (let attempt = 1; attempt <= JOURNEY_GRADE_MAX_ATTEMPTS; attempt++) {
+		// After a charter-verdict miss the retry barely differs from the prompt
+		// that already produced one miss. Name exactly what was omitted so the
+		// judge knows what to fix rather than re-rolling the same failure mode.
+		const userMsg = missingVerdicts
+			? `${baseMsg}\n\nREMINDER: your previous response omitted \`charter_verdicts\`. Include it as required by the contract above — one entry per charter clause, each with status met/waived/unmet and the evidence behind the verdict.`
+			: baseMsg
 		const api = await apiCall(JOURNEY_GRADE_SYSTEM, userMsg)
 		if (!api.ok) {
 			const failure: JudgeJourneyGradeFailure = { ok: false, reason: api.reason, detail: api.detail }
@@ -452,6 +459,7 @@ export async function judgeJourneyGrade(
 			// Charter audit is required when a charter exists: retry (soft — the
 			// final attempt may proceed without verdicts; complete_ferment renders
 			// an honest omission breadcrumb in that case).
+			missingVerdicts = true
 			continue
 		}
 		return {
