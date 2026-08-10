@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -86,6 +87,140 @@ describe("redactText — per-category PII redaction", () => {
 		const result = await redactText(SAMPLES.githubToken)
 		expect(result).not.toContain("1234567890abcdef1234567890abcdef12")
 		expect(result).toContain(`[REDACTED-${MARKERS.githubToken}]`)
+	})
+
+	it("keeps default crypto secret detection for high-entropy hex", async () => {
+		const secret = "a2c47e26cddd8b80fe32a1a8742916f9503e18eaf765df5bc2bc4d45b1ff09bf"
+		const result = await redactText(secret)
+
+		expect(result).not.toBe(secret)
+		expect(result).toContain("[REDACTED-CRYPTO]")
+	})
+
+	it("preserves candidate SHA-256 metadata only when requested", async () => {
+		const hash = "a2c47e26cddd8b80fe32a1a8742916f9503e18eaf765df5bc2bc4d45b1ff09bf"
+		const redacted = await redactObjectStrings(
+			{
+				patch_sha256: hash,
+				operations: [{ kind: "update", base_sha256: hash }],
+				patch: `# update src/a.ts base=${hash} mode=644\n+${hash}\n`,
+			},
+			{ preserveSha256: true },
+		)
+
+		expect(redacted.patch_sha256).toBe(hash)
+		expect(redacted.operations[0].base_sha256).toBe(hash)
+		expect(redacted.patch).toContain(`base=${hash}`)
+		expect(redacted.patch).not.toContain(`+${hash}`)
+		expect(redacted.patch).toContain("[REDACTED-CRYPTO]")
+	})
+
+	it("round-trips create, update, delete, and rename headers byte-identical with preserveSha256", async () => {
+		const h = (seed: string) => createHash("sha256").update(seed).digest("hex")
+		const updateHash = h("update-base")
+		const deleteHash = h("delete-base")
+		const renameHash = h("rename-base")
+		const patchSha256 = h("patch")
+
+		const patch = `${[
+			"# kimchi-change-set v1",
+			"# create helpers.js mode=644",
+			"--- /dev/null",
+			"+++ b/helpers.js",
+			"@@ -0,0 +1,2 @@",
+			"+function add(a, b) { return a + b }",
+			"+module.exports = { add }",
+			`# update src/a.ts base=${updateHash} mode=644`,
+			"--- a/src/a.ts",
+			"+++ b/src/a.ts",
+			"@@ -1 +1 @@",
+			"-old",
+			"+new",
+			`# delete old.txt base=${deleteHash}`,
+			"--- a/old.txt",
+			"+++ /dev/null",
+			"@@ -1 +0,0 @@",
+			"-content",
+			`# rename foo.txt -> bar.txt base=${renameHash} mode=644`,
+			"--- a/foo.txt",
+			"+++ /dev/null",
+			"@@ -1 +0,0 @@",
+			"-hi",
+			"--- /dev/null",
+			"+++ b/bar.txt",
+			"@@ -0,0 +1 @@",
+			"+hi",
+		].join("\n")}\n`
+
+		const candidate = {
+			transaction_id: "tx1",
+			patch_sha256: patchSha256,
+			operations: [
+				{ kind: "create", path: "helpers.js" },
+				{ kind: "update", path: "src/a.ts", base_sha256: updateHash },
+				{ kind: "delete", path: "old.txt", base_sha256: deleteHash },
+				{ kind: "rename", path: "bar.txt", from_path: "foo.txt", base_sha256: renameHash },
+			],
+			patch,
+		}
+
+		const redacted = await redactObjectStrings(candidate, { failClosed: true, preserveSha256: true })
+
+		expect(redacted).toEqual(candidate)
+	})
+
+	it("restores both header forms a rename operation emits", async () => {
+		const h = (seed: string) => createHash("sha256").update(seed).digest("hex")
+		const renameHash = h("rename-base")
+		const patch = [
+			`# rename src/old-name.ts -> src/new-name.ts base=${renameHash} mode=644`,
+			"--- a/src/old-name.ts",
+			"+++ /dev/null",
+			"@@ -1 +0,0 @@",
+			"-export const value = 1",
+			"--- /dev/null",
+			"+++ b/src/new-name.ts",
+			"@@ -0,0 +1 @@",
+			"+export const value = 1",
+		].join("\n")
+
+		const redacted = await redactText(patch, { preserveSha256: true })
+
+		expect(redacted).toBe(patch)
+	})
+
+	it("still fails the round trip when candidate content contains a genuine secret", async () => {
+		const h = (seed: string) => createHash("sha256").update(seed).digest("hex")
+		const updateHash = h("update-base")
+		const patch = [
+			`# update src/a.ts base=${updateHash} mode=644`,
+			"--- a/src/a.ts",
+			"+++ b/src/a.ts",
+			"@@ -1 +1 @@",
+			"-old",
+			'+const key = "castai_v1_abcdefgh123456"',
+		].join("\n")
+
+		const candidate = { patch_sha256: updateHash, patch }
+		const redacted = await redactObjectStrings(candidate, { failClosed: true, preserveSha256: true })
+
+		// The hash header still round-trips, but the leaked secret in the content does not —
+		// the fail-closed guard in compileCouncilContext relies on this inequality to abort.
+		expect(redacted).not.toEqual(candidate)
+		expect(redacted.patch).toContain(`base=${updateHash}`)
+		expect(redacted.patch).toContain("[REDACTED-CASTAI_API_KEY]")
+	})
+
+	it("redacts header hashes normally when preserveSha256 is not requested", async () => {
+		const h = (seed: string) => createHash("sha256").update(seed).digest("hex")
+		const updateHash = h("update-base")
+		const patch = `# update src/a.ts base=${updateHash} mode=644\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n`
+
+		const withoutOption = await redactText(patch)
+		const withOptionFalse = await redactText(patch, { preserveSha256: false })
+
+		expect(withoutOption).not.toContain(updateHash)
+		expect(withOptionFalse).not.toContain(updateHash)
 	})
 
 	it("returns original text when no PII is present", async () => {

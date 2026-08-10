@@ -45,6 +45,8 @@ import {
 	type AgentSession,
 	AuthStorage,
 	createAgentSession,
+	createAgentSessionFromServices,
+	createAgentSessionServices,
 	DefaultResourceLoader,
 	type ExtensionFactory,
 	initTheme,
@@ -1527,6 +1529,58 @@ async function createSessionSettings(cwd: string, options: RunAcpOptions) {
 	return { settingsManager, resourceLoader }
 }
 
+/**
+ * Resume-path session setup: builds the same trust-resolved settings as
+ * {@link createSessionSettings}, but registers extension-provided model
+ * providers (e.g. Council's kimchi/council) into the modelRegistry BEFORE
+ * the session's persisted model is restored.
+ *
+ * Why createAgentSession() alone can't do this on resume: pi only flushes an
+ * extension's queued provider registrations (resourceLoader.getExtensions()
+ * .runtime.pendingProviderRegistrations) into the modelRegistry from inside
+ * AgentSession's own construction (ExtensionRunner.bindCore, called via
+ * `new AgentSession(...)` in pi's sdk.js). But createAgentSession() resolves
+ * the persisted model (`modelRegistry.find(existingSession.model.provider,
+ * existingSession.model.modelId)`) BEFORE constructing the AgentSession — so
+ * on a plain createAgentSession({ resourceLoader, sessionManager, ... }) call,
+ * that lookup always runs against a modelRegistry that hasn't seen the
+ * extension's providers yet, and a persisted `kimchi/council` model silently
+ * falls back to a default model. createAgentSessionServices() flushes
+ * pendingProviderRegistrations into the modelRegistry itself, synchronously,
+ * before returning — so running it first (and feeding its modelRegistry into
+ * createAgentSessionFromServices) makes the providers visible in time for
+ * restoration. New sessions don't hit this: there's no persisted model to
+ * restore, so master's createSessionSettings + createAgentSession is correct
+ * for defaultSessionFactory below.
+ */
+async function createResumedAcpSession(
+	cwd: string,
+	options: RunAcpOptions,
+	sessionManager: SessionManager,
+): Promise<AgentSession> {
+	// Same trust handling as createSessionSettings: construct untrusted first,
+	// then resolve trust the way pi's own no-UI path does, before anything
+	// (extensions, HTTP idle timeout) can observe project settings.
+	const settingsManager = SettingsManager.create(cwd, options.agentDir, { projectTrusted: false })
+	settingsManager.setProjectTrusted(
+		resolveHeadlessProjectTrust(cwd, options.agentDir, settingsManager.getDefaultProjectTrust()),
+	)
+	initializeHeadlessTheme(settingsManager)
+	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
+	const services = await createAgentSessionServices({
+		cwd,
+		agentDir: options.agentDir,
+		settingsManager,
+		resourceLoaderOptions: { extensionFactories: options.extensionFactories },
+	})
+	const errors = services.diagnostics.filter((diagnostic) => diagnostic.type === "error")
+	if (errors.length > 0) {
+		throw new Error(`Failed to initialize ACP extensions: ${errors.map((error) => error.message).join("; ")}`)
+	}
+	const { session } = await createAgentSessionFromServices({ services, sessionManager })
+	return session
+}
+
 function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 	return async (params: LoadSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd
@@ -1602,15 +1656,7 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			const msg = err instanceof Error ? err.message : String(err)
 			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
 		}
-		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options)
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir: options.agentDir,
-			settingsManager,
-			resourceLoader,
-			sessionManager,
-		})
-		return session
+		return createResumedAcpSession(cwd, options, sessionManager)
 	}
 }
 

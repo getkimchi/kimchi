@@ -155,15 +155,67 @@ function applyCustomPatterns(text: string): string {
  * Bearer tokens, OAuth tokens) as a second pass.
  *
  * If scanning fails (engine error, unexpected input), the original text is
- * returned unchanged — redaction must never break the prompt pipeline.
- * The error is logged per the code-review-lessons rule: no empty catch blocks.
+ * returned unchanged by default. Callers crossing a trust boundary can set
+ * `failClosed` to throw instead. Fail-open errors are logged.
  */
-export async function redactText(text: string): Promise<string> {
+export interface RedactionOptions {
+	failClosed?: boolean
+	preserveSha256?: boolean
+}
+
+/**
+ * Matches a candidate-patch operation header's content hash, e.g.
+ * `# update src/a.ts base=<64 hex> mode=644` or `# delete old.txt base=<64 hex>`. The verb is
+ * matched as any single token rather than an enumerated list, so a future operation kind can't
+ * silently fall outside this pattern. Anchored to the start of the line: diff body lines always
+ * carry a leading ` `/`+`/`-` before any file content, so this can never match a header forged
+ * inside a diff hunk.
+ */
+const CANDIDATE_HASH_HEADER_PATTERN = /^# \S+ .+ base=([a-f0-9]{64})(?=\s|$)/gim
+const SHA256_PLACEHOLDER_PATTERN = /KIMCHI_COUNCIL_SHA256_PLACEHOLDER_(\d+)_END/g
+
+function sha256PlaceholderToken(index: number): string {
+	return `KIMCHI_COUNCIL_SHA256_PLACEHOLDER_${index}_END`
+}
+
+/**
+ * Swap every candidate-patch header hash for an opaque, low-entropy placeholder before the text
+ * reaches the redaction engine. A bare 64-hex hash is dense enough that the PII and secret guards
+ * both flag it (a Bitcoin-address-shaped match and a generic high-entropy token match), and when
+ * their spans disagree the engine can consume characters past the hash — including the line break
+ * that follows it, merging the header with the next diff line. Hiding the hash from the guards
+ * entirely avoids that class of match instead of trying to repair it after the fact. The matched
+ * hashes are returned in match order, keyed by placeholder index, for `restoreSha256Placeholders`.
+ */
+function protectSha256Headers(text: string): { text: string; hashes: string[] } {
+	const hashes: string[] = []
+	const protectedText = text.replace(CANDIDATE_HASH_HEADER_PATTERN, (header, hash: string) => {
+		const token = sha256PlaceholderToken(hashes.length)
+		hashes.push(hash)
+		return header.replace(hash, token)
+	})
+	return { text: protectedText, hashes }
+}
+
+function restoreSha256Placeholders(text: string, hashes: readonly string[]): string {
+	return text.replace(SHA256_PLACEHOLDER_PATTERN, (token, indexText: string) => hashes[Number(indexText)] ?? token)
+}
+
+function isSha256Key(key: string, value: string): boolean {
+	return /(?:^|_)sha256$/i.test(key) && /^[a-f0-9]{64}$/i.test(value)
+}
+
+export async function redactText(text: string, options: RedactionOptions = {}): Promise<string> {
 	try {
-		const result = await getEngine().scan(text)
-		const afterEngine = result.redactedText ?? text
-		return applyCustomPatterns(afterEngine)
+		const { text: scanText, hashes } = options.preserveSha256
+			? protectSha256Headers(text)
+			: { text, hashes: [] as string[] }
+		const result = await getEngine().scan(scanText)
+		const afterEngine = result.redactedText ?? scanText
+		const afterCustomPatterns = applyCustomPatterns(afterEngine)
+		return options.preserveSha256 ? restoreSha256Placeholders(afterCustomPatterns, hashes) : afterCustomPatterns
 	} catch (err) {
+		if (options.failClosed) throw err
 		console.error("PII redaction scan failed, returning original text:", err)
 		return text
 	}
@@ -183,15 +235,16 @@ export async function redactText(text: string): Promise<string> {
  *
  * Returns a **new** structure; the input is never mutated.
  *
- * @param obj  Any JSON-serializable value (object, array, primitive)
- * @returns     Deep clone with all string values redacted
+ * @param obj      Any JSON-serializable value (object, array, primitive)
+ * @param options  Set `failClosed` when unredacted data must not escape
+ * @returns        Deep clone with all string values redacted
  */
-export async function redactObjectStrings<T>(obj: T): Promise<T> {
+export async function redactObjectStrings<T>(obj: T, options: RedactionOptions = {}): Promise<T> {
 	if (typeof obj === "string") {
-		return (await redactText(obj)) as T
+		return (await redactText(obj, options)) as T
 	}
 	if (Array.isArray(obj)) {
-		return Promise.all(obj.map((item) => redactObjectStrings(item))) as Promise<T>
+		return Promise.all(obj.map((item) => redactObjectStrings(item, options))) as Promise<T>
 	}
 	if (obj !== null && typeof obj === "object") {
 		const entries = Object.entries(obj as Record<string, unknown>)
@@ -202,11 +255,14 @@ export async function redactObjectStrings<T>(obj: T): Promise<T> {
 				if (isPreservedKey(key)) {
 					return Promise.resolve(value)
 				}
+				if (options.preserveSha256 && typeof value === "string" && isSha256Key(key, value)) {
+					return Promise.resolve(value)
+				}
 				// Redact any string value stored under a sensitive key name.
 				if (typeof value === "string" && isSensitiveKey(key)) {
 					return Promise.resolve("[REDACTED-SECRET_FIELD]")
 				}
-				return redactObjectStrings(value)
+				return redactObjectStrings(value, options)
 			}),
 		)
 		const result: Record<string, unknown> = {}

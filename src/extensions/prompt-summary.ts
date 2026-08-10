@@ -155,8 +155,10 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 	const countedAgentUsage = new Map<string, UsageTotals>()
 	const subagentModelTotals = new Map<string, UsageTotals>()
 	let startedAt = Date.now()
+	let turnGeneration = 0
 
 	pi.on("agent_start", () => {
+		turnGeneration++
 		Object.assign(orchestrator, emptyTotals())
 		Object.assign(subagents, emptyTotals())
 		countedAgentUsage.clear()
@@ -205,6 +207,7 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 	})
 
 	pi.on("agent_end", async (_event, ctx) => {
+		const endedGeneration = turnGeneration
 		const grandTotal: UsageTotals = {
 			input: orchestrator.input + subagents.input,
 			output: orchestrator.output + subagents.output,
@@ -243,8 +246,9 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 		const MAX_ATTEMPTS = 100 // 5s max
 		const trySend = () => {
 			try {
-				if (ctx?.isIdle() === false && attempts++ < MAX_ATTEMPTS) {
-					setTimeout(trySend, 50)
+				if (turnGeneration !== endedGeneration) return
+				if (ctx?.isIdle() === false) {
+					if (attempts++ < MAX_ATTEMPTS) setTimeout(trySend, 50)
 					return
 				}
 				pi.sendMessage(
