@@ -35,6 +35,15 @@
 #                                   resource reload no longer clobber a non-base
 #                                   systemPrompt, or upstream adds a prompt
 #                                   re-resolution hook we adopt instead.
+#                                   Also fire before_agent_start in sendCustomMessage's
+#                                   triggerTurn branch (mirroring prompt()), so
+#                                   extensions that install the system prompt only in
+#                                   that hook run for sessions driven entirely by
+#                                   extension-triggered turns (kimchi ferment / one-shot
+#                                   flows) instead of staying on the default base prompt.
+#                                   Removal criteria: upstream emits before_agent_start
+#                                   for extension-triggered turns (or moves prompt
+#                                   resolution out of prompt()).
 #   5. dist/modes/interactive/  — miscellaneous upstream UI fixes bundled in this patch
 #   6. dist/modes/interactive/interactive-mode.js — add previewTheme(name) and
 #      dist/core/extensions/types.d.ts              showError(message) to createExtensionUIContext,
@@ -86,10 +95,10 @@ index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..63ca4495adc5dc3428d45f3a8bfaa3b7
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
    ANT_LING_API_KEY                 - Ant Ling API key
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 3b2c24d1b52869e351ea488f0c535c34eaedf127..33868c61b384b6a2db74cf10045040705ae15d92 100644
+index 3b2c24d1b52869e351ea488f0c535c34eaedf127..e6edc22b7401eb09cdce866db89ffaace7fe87ae 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
-@@ -60,7 +60,7 @@ function estimateMessagesTokens(messages) {
+@@ -60,7 +60,7 @@
  // Constants
  // ============================================================================
  /** Standard thinking levels */
@@ -98,7 +107,7 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..33868c61b384b6a2db74cf1004504070
  // ============================================================================
  // AgentSession Class
  // ============================================================================
-@@ -203,6 +203,20 @@ export class AgentSession {
+@@ -203,6 +203,20 @@
                  throw new Error(`Extension failed, blocking execution: ${String(err)}`);
              }
          };
@@ -119,7 +128,7 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..33868c61b384b6a2db74cf1004504070
          this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
              const runner = this._extensionRunner;
              if (!runner.hasHandlers("tool_result")) {
-@@ -558,9 +572,17 @@ export class AgentSession {
+@@ -558,9 +572,17 @@
              }
          }
          this.agent.state.tools = tools;
@@ -139,7 +148,46 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..33868c61b384b6a2db74cf1004504070
      }
      /** Whether compaction or branch summarization is currently running */
      get isCompacting() {
-@@ -1270,8 +1292,9 @@ export class AgentSession {
+@@ -1001,7 +1023,37 @@
+             }
+         }
+         else if (options?.triggerTurn) {
+-            await this._runAgentPrompt(appMessage);
++            // kimchi-dev: fire before_agent_start for extension-triggered turns,
++            // mirroring prompt(). Extensions that install the system prompt (or
++            // inject context messages) only in that hook otherwise never run when
++            // a session is driven entirely by sendCustomMessage(..., { triggerTurn:
++            // true }) or followUp delivery (kimchi ferment/one-shot flows), leaving
++            // the agent on the default base prompt for the whole run.
++            const triggerMessages = [appMessage];
++            const triggerText = appMessage.content
++                .filter((part) => part.type === "text")
++                .map((part) => part.text)
++                .join("\n");
++            const beforeResult = await this._extensionRunner.emitBeforeAgentStart(triggerText, undefined, this._baseSystemPrompt, this._baseSystemPromptOptions);
++            if (beforeResult?.messages) {
++                for (const msg of beforeResult.messages) {
++                    triggerMessages.unshift({
++                        role: "custom",
++                        customType: msg.customType,
++                        content: msg.content,
++                        display: msg.display,
++                        details: msg.details,
++                        timestamp: Date.now(),
++                    });
++                }
++            }
++            if (beforeResult?.systemPrompt) {
++                this.agent.state.systemPrompt = beforeResult.systemPrompt;
++            }
++            else {
++                this.agent.state.systemPrompt = this._baseSystemPrompt;
++            }
++            await this._runAgentPrompt(triggerMessages);
+         }
+         else {
+             this.agent.state.messages.push(appMessage);
+@@ -1270,8 +1322,9 @@
       * Manually compact the session context.
       * Aborts current agent operation first.
       * @param customInstructions Optional instructions for the compaction summary
@@ -150,7 +198,7 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..33868c61b384b6a2db74cf1004504070
          this._disconnectFromAgent();
          await this.abort();
          this._compactionAbortController = new AbortController();
-@@ -1283,14 +1306,21 @@ export class AgentSession {
+@@ -1283,14 +1336,21 @@
              const { apiKey, headers, env } = await this._getCompactionRequestAuth(this.model);
              const pathEntries = this.sessionManager.getBranch();
              const settings = this.settingsManager.getCompactionSettings();
@@ -174,7 +222,7 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..33868c61b384b6a2db74cf1004504070
              }
              let extensionCompaction;
              let fromExtension = false;
-@@ -1678,8 +1708,13 @@ export class AgentSession {
+@@ -1678,8 +1738,13 @@
              themePaths: this.buildExtensionResourcePaths(themePaths),
          };
          this._resourceLoader.extendResources(extensionPaths);
@@ -189,7 +237,7 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..33868c61b384b6a2db74cf1004504070
      }
      buildExtensionResourcePaths(entries) {
          return entries.map((entry) => {
-@@ -1809,7 +1844,7 @@ export class AgentSession {
+@@ -1809,7 +1874,7 @@
              compact: (options) => {
                  void (async () => {
                      try {

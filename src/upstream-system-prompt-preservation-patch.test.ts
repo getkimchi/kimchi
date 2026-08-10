@@ -117,3 +117,48 @@ describe("upstream system-prompt preservation patch", () => {
 		expect(fake._baseSystemPrompt).not.toBe("PI BASE PROMPT")
 	})
 })
+
+describe("upstream before_agent_start on extension-triggered turns patch", () => {
+	function makeTriggerTurnSession(beforeResult: unknown) {
+		const fake = makeFakeSession("PI BASE PROMPT")
+		fake._runAgentPrompt = vi.fn(async () => {})
+		fake._extensionRunner = {
+			emitBeforeAgentStart: vi.fn(async () => beforeResult),
+		}
+		return fake
+	}
+
+	const customMessage = {
+		customType: "ferment_continuation_nudge",
+		content: [{ type: "text", text: "continue the ferment" }],
+		display: false,
+		details: undefined,
+	}
+
+	it("is present in the installed dist (sendCustomMessage triggerTurn)", () => {
+		const source = String(sessionProto.sendCustomMessage)
+		expect(source).toContain("emitBeforeAgentStart")
+	})
+
+	it("triggerTurn applies an extension-installed prompt and prepends extension messages", async () => {
+		const fake = makeTriggerTurnSession({
+			systemPrompt: "KIMCHI OVERRIDE PROMPT",
+			messages: [{ customType: "injected", content: [{ type: "text", text: "ctx" }], display: false }],
+		})
+
+		await sessionProto.sendCustomMessage.call(fake, customMessage, { triggerTurn: true })
+
+		expect(fake.agent.state.systemPrompt).toBe("KIMCHI OVERRIDE PROMPT")
+		const runMessages = fake._runAgentPrompt.mock.calls[0][0] as Array<{ role: string; customType: string }>
+		expect(runMessages.map((m) => m.customType)).toEqual(["injected", "ferment_continuation_nudge"])
+	})
+
+	it("triggerTurn resets to the base prompt when no extension overrides it", async () => {
+		const fake = makeTriggerTurnSession(undefined)
+		fake.agent.state.systemPrompt = "STALE OVERRIDE"
+
+		await sessionProto.sendCustomMessage.call(fake, customMessage, { triggerTurn: true })
+
+		expect(fake.agent.state.systemPrompt).toBe("PI BASE PROMPT")
+	})
+})
