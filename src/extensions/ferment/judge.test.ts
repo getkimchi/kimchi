@@ -1,5 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
-import { describe, expect, it, vi } from "vitest"
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
 	describeJudgeModel,
 	type GraderSubagentResult,
@@ -891,8 +892,27 @@ describe("judge renders intent charter", () => {
 })
 
 describe("describeJudgeModel", () => {
-	it("returns provider/id from the captured session model", () => {
-		captureJudgeContext({ provider: "kimchi-dev", id: "glm-5.2-fp8" } as unknown as Model<Api>)
+	const judgeModel = { provider: "kimchi-dev", id: "judge-x" } as unknown as Model<Api>
+	const sessionModel = { provider: "kimchi-dev", id: "glm-5.2-fp8" } as unknown as Model<Api>
+	const roleResolvingRegistry = { find: () => judgeModel } as unknown as ModelRegistry
+
+	afterEach(() => {
+		// Leave single-model mode behind so sibling describes keep their defaults.
+		captureJudgeContext(undefined, undefined, false)
+	})
+
+	it("returns the captured session model in single-model mode, ignoring the role", () => {
+		captureJudgeContext(sessionModel, roleResolvingRegistry, false)
+		expect(describeJudgeModel()).toBe("kimchi-dev/glm-5.2-fp8")
+	})
+
+	it("returns the judge-role model in multi-model mode when the role resolves", () => {
+		captureJudgeContext(sessionModel, roleResolvingRegistry, true)
+		expect(describeJudgeModel()).toBe("kimchi-dev/judge-x")
+	})
+
+	it("falls back to the captured session model in multi-model mode when the role does not resolve", () => {
+		captureJudgeContext(sessionModel, { find: () => undefined } as unknown as ModelRegistry, true)
 		expect(describeJudgeModel()).toBe("kimchi-dev/glm-5.2-fp8")
 	})
 })

@@ -274,7 +274,7 @@ export async function completePhase(
 	services: PhaseHandlerServices = defaultPhaseHandlerServices,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
-	runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry)
+	runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry, getMultiModelEnabled(ctx?.sessionManager ?? null))
 
 	// Step 1: resolve the phase (host concern — fuzzy lookup).
 	const f = runtime.getStorage().get(params.ferment_id)

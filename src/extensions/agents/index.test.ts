@@ -546,9 +546,13 @@ describe("spawnGraderAgent", () => {
 	const baseRoles = getModelRoles()
 	const rolesWithJudge = { ...baseRoles, judge: ["kimchi-dev/judge-model"] } as ReturnType<typeof getModelRoles>
 
-	beforeEach(() => vi.mocked(getModelRoles).mockReturnValue(rolesWithJudge))
+	beforeEach(() => {
+		vi.mocked(getModelRoles).mockReturnValue(rolesWithJudge)
+		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
+	})
 	afterEach(() => {
 		vi.mocked(getModelRoles).mockReturnValue(baseRoles)
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
 		setActiveManagerForTest(undefined)
 	})
 
@@ -608,6 +612,34 @@ describe("spawnGraderAgent", () => {
 		const options = spawnAndWait.mock.calls[0]?.[4] as { model?: unknown }
 		// Undefined lets the agent runner fall back to the parent session model —
 		// the same fallback describeJudgeModel reports.
+		expect(options.model).toBeUndefined()
+	})
+
+	it("omits the model in single-model mode — the judge IS the session model", async () => {
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		const registry = {
+			find: (provider: string, modelId: string) =>
+				[JUDGE_MODEL, PARENT_MODEL].find((m) => m.provider === provider && m.id === modelId),
+			getAvailable: () => [JUDGE_MODEL, PARENT_MODEL],
+		}
+		const ctx = createContext({ model: { id: "parent-model" }, modelRegistry: registry })
+		const spawnAndWait = vi.fn(
+			async (
+				_pi: unknown,
+				_ctx: unknown,
+				_type: string,
+				_prompt: string,
+				_options: { model?: unknown },
+			): Promise<{ result: string; status: string }> => ({ result: "", status: "completed" }),
+		)
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+
+		const pi = makeMockPi()
+		await spawnGraderAgent(pi, ctx, "grade this ferment")
+
+		expect(spawnAndWait).toHaveBeenCalledTimes(1)
+		const options = spawnAndWait.mock.calls[0]?.[4] as { model?: unknown }
+		// Even though the judge role resolves, single-model mode must not use it.
 		expect(options.model).toBeUndefined()
 	})
 })

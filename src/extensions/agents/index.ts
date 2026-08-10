@@ -540,10 +540,13 @@ export async function runWithOverlay<T>(description: string, fn: () => Promise<T
 /** Resolve the model the Grader subagent should grade with: the configured
  *  `modelRoles.judge` ref resolved against the session registry — the same
  *  resolution the ferment judge uses for single-shot grades and for its
- *  `gradedBy` provenance label. Returns undefined when no judge role is
- *  configured or it does not resolve; the agent runner then falls back to the
- *  parent session model, which is the same fallback the judge reports. */
+ *  `gradedBy` provenance label. Only applies in multi-model mode: in
+ *  single-model mode the judge IS the current session model, so this returns
+ *  undefined and the agent runner falls back to ctx.model. Also undefined
+ *  when the role does not resolve in the registry, which matches the judge's
+ *  own session-model fallback. */
 function resolveGraderModel(ctx: ExtensionContext): typeof ctx.model | undefined {
+	if (!getMultiModelEnabled(ctx.sessionManager)) return undefined
 	const judgeAssignment = getModelRoles().judge
 	const judgeModelStr = Array.isArray(judgeAssignment) ? judgeAssignment[0] : judgeAssignment
 	if (!judgeModelStr) return undefined
