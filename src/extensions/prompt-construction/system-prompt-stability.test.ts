@@ -130,12 +130,10 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 		},
 	})
 
-	// Register the ferment planning block per test (from beforeEach), NOT here
-	// at construction time: createSystemPromptBlocks installs its pi-level
-	// session_start binding listener only on the first call, and resetHarness
-	// clears the handler map between tests. Registering here would consume the
-	// binding once, leaving later tests with no session binding and silently
-	// empty blocks.
+	// Register the ferment planning block per test (from beforeEach), NOT at
+	// construction time: createSystemPromptBlocks installs its pi-level
+	// session_start binding listener only on the first call, so block
+	// registration must follow a defined order after todosExtension.
 	function registerPlanningBlock(): void {
 		if (!activeFerment) return
 		createSystemPromptBlocks(pi, "ferment").register({
@@ -154,6 +152,11 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 	}
 
 	async function buildFinalSystemPrompt(): Promise<string> {
+		// Intentionally bypasses prompt-enrichment.ts: production rebuilds this
+		// same prompt through buildSystemPrompt with dynamic env fields (date,
+		// git state) and the appendSystemPrompt path. The contract under test is
+		// block-layer determinism, not end-to-end assembly of env-sensitive
+		// content — env fields are fixed via testEnv by design.
 		let prompt = buildSystemPrompt({ tools, env: testEnv, mode: "single", sessionId: SESSION_ID })
 		for (const handler of handlers.get("before_agent_start") ?? []) {
 			const result = (await handler(
@@ -188,20 +191,19 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 	}
 }
 
-async function resetHarness(harness: TestHarness): Promise<void> {
-	harness.handlers.clear()
-	__resetTodoStore()
-}
-
+/** A fresh harness per test: new event bus, new vi.fn mocks, new handler map.
+ *  Module-global block registries are cleaned via the session_shutdown fired
+ *  in each afterEach, so no state can leak between tests. */
 describe("system prompt stability contract", () => {
 	describe("global todo volatility across all workflows", () => {
 		for (const surface of ["non-ferment", "ferment-interactive", "ferment-oneshot"] as WorkflowSurface[]) {
 			describe(`workflow: ${surface}`, () => {
-				const harness = createHarness(surface)
+				let harness: TestHarness
 				let unsubscribeTodoSync: (() => void) | undefined
 
 				beforeEach(async () => {
-					await resetHarness(harness)
+					harness = createHarness(surface)
+					__resetTodoStore()
 					setActive(surface === "non-ferment" ? undefined : makeFerment())
 					todosExtension(harness.pi)
 					harness.registerPlanningBlock()
@@ -250,12 +252,13 @@ describe("system prompt stability contract", () => {
 	describe("ferment todo-sync volatility", () => {
 		for (const surface of ["ferment-interactive", "ferment-oneshot"] as WorkflowSurface[]) {
 			describe(`workflow: ${surface}`, () => {
-				const harness = createHarness(surface)
+				let harness: TestHarness
 				let unsubscribeTodoSync: (() => void) | undefined
-				let ferment = makeFerment()
+				let ferment: Ferment
 
 				beforeEach(async () => {
-					await resetHarness(harness)
+					harness = createHarness(surface)
+					__resetTodoStore()
 					ferment = makeFerment()
 					setActive(ferment)
 					todosExtension(harness.pi)
@@ -361,10 +364,11 @@ describe("system prompt stability contract", () => {
 	})
 
 	describe("todo-guidance vs ferment supplement split", () => {
-		const harness = createHarness("non-ferment")
+		let harness: TestHarness
 
 		beforeEach(async () => {
-			await resetHarness(harness)
+			harness = createHarness("non-ferment")
+			__resetTodoStore()
 			setActive(undefined)
 			todosExtension(harness.pi)
 			await harness.fire("session_start", { reason: "new" })
@@ -410,11 +414,12 @@ describe("system prompt stability contract", () => {
 	})
 
 	describe("permissions plan-mode-supplement bounded dynamism", () => {
-		const harness = createHarness("non-ferment")
+		let harness: TestHarness
 		let mode: PermissionModeState
 
 		beforeEach(async () => {
-			await resetHarness(harness)
+			harness = createHarness("non-ferment")
+			__resetTodoStore()
 			setActive(undefined)
 			mode = { mode: "plan", initiatedBy: "user", source: "runtime" }
 			todosExtension(harness.pi)
@@ -454,7 +459,7 @@ describe("system prompt stability contract", () => {
 	})
 
 	describe("behaviours triggered:* bounded dynamism", () => {
-		const harness = createHarness("non-ferment")
+		let harness: TestHarness
 		let engine: TriggerEngine
 		const behaviour: TriggeredBehaviour = {
 			kind: "triggered",
@@ -465,7 +470,8 @@ describe("system prompt stability contract", () => {
 		}
 
 		beforeEach(async () => {
-			await resetHarness(harness)
+			harness = createHarness("non-ferment")
+			__resetTodoStore()
 			setActive(undefined)
 			engine = new TriggerEngine([behaviour])
 			todosExtension(harness.pi)
