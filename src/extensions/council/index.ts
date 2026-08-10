@@ -2,18 +2,23 @@ import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOpti
 import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { applyCouncilPreset, type CouncilPreset, DEFAULT_COUNCIL_CONFIG, readCouncilConfig } from "./config.js"
 import { createCouncilStream } from "./coordinator.js"
-import { debugLog } from "./debug.js"
-import { COUNCIL_API, COUNCIL_MODEL_IDS, COUNCIL_PROVIDER, isCouncilVirtualModel } from "./model.js"
+import {
+	COUNCIL_API,
+	COUNCIL_MODEL_IDS,
+	COUNCIL_PROVIDER,
+	debugLog,
+	isCouncilVirtualModel,
+} from "./physical-invoker.js"
 import { CouncilProgressUI } from "./progress-ui.js"
 import { isMutatingCouncilToolCall } from "./review-policy.js"
-import { sanitizeCouncilTransactionSnapshot } from "./telemetry.js"
-import { CouncilTransactionRuntime } from "./transaction-runtime.js"
+import { sanitizeCouncilTransactionSnapshot } from "./run-context.js"
+import type { CouncilProgressEvent, CouncilRunRecord } from "./schemas.js"
 import {
+	CouncilTransactionRuntime,
 	installCouncilMutationGuard,
 	registerCouncilTransactionTools,
 	syncCouncilTransactionToolVisibility,
-} from "./transaction-tools.js"
-import type { CouncilProgressEvent, CouncilRunRecord } from "./types.js"
+} from "./transaction.js"
 import { buildValidationCatalog } from "./validation.js"
 
 const COUNCIL_MODEL_NAMES: Record<(typeof COUNCIL_MODEL_IDS)[number], string> = {

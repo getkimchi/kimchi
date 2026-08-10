@@ -1,5 +1,5 @@
-import { isCouncilVirtualModelRef } from "./model.js"
-import { type CouncilConfig, type CouncilModelPool, MAX_COUNCIL_PANEL_SIZE } from "./types.js"
+import { isCouncilVirtualModelRef } from "./physical-invoker.js"
+import { type CouncilConfig, type CouncilModelPool, MAX_COUNCIL_PANEL_SIZE } from "./schemas.js"
 
 export type CouncilPreset = "fast" | "normal" | "deep"
 

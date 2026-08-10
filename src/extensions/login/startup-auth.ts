@@ -5,7 +5,7 @@ import type {
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
-import { isCouncilVirtualModel } from "../council/model.js"
+import { isCouncilVirtualModel } from "../council/physical-invoker.js"
 import {
 	createLoginChoiceSelector,
 	isKimchiProvider,

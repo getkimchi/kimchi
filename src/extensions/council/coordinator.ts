@@ -7,54 +7,29 @@ import {
 	createAssistantMessageEventStream,
 	type Model,
 	type SimpleStreamOptions,
+	type TextContent,
+	type ToolCall,
 } from "@earendil-works/pi-ai"
 import type { ChangeSet } from "../../agent-patch/index.js"
-import {
-	ANALYST_PROMPT_VERSION,
-	ANALYST_SCHEMA_VERSION,
-	type AnalystInput,
-	dropUnrenderableCandidates,
-	runAnalystStage,
-	runTextAnalystStage,
-	TEXT_ANALYST_PROMPT_VERSION,
-	TEXT_ANALYST_SCHEMA_VERSION,
-	type TextAnalystInput,
-} from "./adjudicator.js"
-import { type CouncilCacheKey, CouncilSessionCache, cacheStatsDelta } from "./cache.js"
 import { validateCouncilConfig } from "./config.js"
-import { ContextCompilerError, compileCouncilContext, councilConstraints } from "./context-compiler.js"
 import {
-	assistantTextMessage,
-	boundedStructuredText,
-	cacheKeyForContext,
-	councilPreset,
-	internalToolUse,
-	raceAbort,
-	structuredStageMaxTokens,
-	textFromAssistant,
-} from "./coordinator-support.js"
-import { debugLog } from "./debug.js"
-import {
-	hasInvalidToolCalls,
-	hasSerializedToolCallMarkup,
-	LEAD_OUTPUT_SYSTEM_PROMPT,
-	LEAD_RETRY_SYSTEM_PROMPT,
-	LEAD_VERIFY_STAGED_SYSTEM_PROMPT,
-	publicContent,
-} from "./finalizer.js"
+	type CompiledCouncilContext,
+	ContextCompilerError,
+	compileCouncilContext,
+	councilConstraints,
+} from "./context-compiler.js"
 import { runFusionPipeline } from "./fusion-pipeline.js"
-import { runSolverStage, runTextSolverStage, solverSystemPrompt, textSolverSystemPrompt } from "./panel.js"
 import { type CandidatePatch, stagePatch } from "./patch.js"
 import {
 	type CompletePhysicalModel,
 	type CouncilModelRegistry,
 	canResolvePhysicalModel,
+	debugLog,
 	PhysicalInvocationError,
 	PhysicalModelInvoker,
 	validatePhysicalModelPools,
 } from "./physical-invoker.js"
 import { createCouncilProgressEmitter } from "./progress-ui.js"
-import { candidatePatchFromChangeSet, resolveNoOpPublicMessage, resolvePublicMessage } from "./public-message.js"
 import { dispatchResumedTransaction } from "./resume-dispatch.js"
 import {
 	mayDeliberateCouncilAnswer,
@@ -62,41 +37,334 @@ import {
 	shouldReviewCouncilCandidate,
 	shouldReviewCouncilTurn,
 } from "./review-policy.js"
-import { CouncilRunContext, type RunBudgetLimits, RunFailure } from "./run-context.js"
-import { CouncilSchemaError } from "./schemas.js"
-import { MAX_REPAIRS_PER_RUN, RepairBudget } from "./stage-runner.js"
-import { CouncilStreamWriter, virtualizePublicMessage as virtualize } from "./stream.js"
-import {
-	runCombinedStage,
-	runSynthesisStage,
-	runTextSynthesisStage,
-	SYNTHESIS_PROMPT_VERSION,
-	SYNTHESIS_SCHEMA_VERSION,
-	synthesisSystemPrompt,
-	TEXT_SYNTHESIS_PROMPT_VERSION,
-	TEXT_SYNTHESIS_SCHEMA_VERSION,
-	textSynthesisSystemPrompt,
-} from "./synthesis.js"
 import {
 	addUsage,
+	type CouncilCacheKey,
+	CouncilRunContext,
+	CouncilSessionCache,
+	cacheStatsDelta,
+	hashCouncilCacheValue,
+	type RunBudgetLimits,
+	RunFailure,
 	safeDegradedReason,
 	safeFailureReason,
 	sanitizeRunRecord,
 	toCouncilBudgetUsage,
 	ZERO_USAGE,
-} from "./telemetry.js"
-import type { CouncilTransactionRuntime } from "./transaction-runtime.js"
-import { COUNCIL_APPLY_TOOL, COUNCIL_CHECK_TOOL, withoutInternalCouncilTools } from "./transaction-tools.js"
-import type {
-	CouncilConfig,
-	CouncilDegradedReason,
-	CouncilModelPool,
-	CouncilProgressEvent,
-	CouncilRunRecord,
-	CouncilStage,
-	CouncilStageRecord,
-	SafeCouncilFailureReason,
-} from "./types.js"
+} from "./run-context.js"
+import {
+	type CouncilConfig,
+	type CouncilDegradedReason,
+	type CouncilModelPool,
+	type CouncilProgressEvent,
+	type CouncilRunRecord,
+	CouncilSchemaError,
+	type CouncilStage,
+	type CouncilStageRecord,
+	type SafeCouncilFailureReason,
+} from "./schemas.js"
+import { MAX_REPAIRS_PER_RUN, RepairBudget } from "./stage-runner.js"
+import {
+	ANALYST_PROMPT_VERSION,
+	ANALYST_SCHEMA_VERSION,
+	type AnalystInput,
+	dropUnrenderableCandidates,
+	runAnalystStage,
+	runCombinedStage,
+	runSolverStage,
+	runSynthesisStage,
+	runTextAnalystStage,
+	runTextSolverStage,
+	runTextSynthesisStage,
+	SYNTHESIS_PROMPT_VERSION,
+	SYNTHESIS_SCHEMA_VERSION,
+	solverSystemPrompt,
+	synthesisSystemPrompt,
+	TEXT_ANALYST_PROMPT_VERSION,
+	TEXT_ANALYST_SCHEMA_VERSION,
+	TEXT_SYNTHESIS_PROMPT_VERSION,
+	TEXT_SYNTHESIS_SCHEMA_VERSION,
+	type TextAnalystInput,
+	textSolverSystemPrompt,
+	textSynthesisSystemPrompt,
+} from "./stages.js"
+import { CouncilStreamWriter, virtualizePublicMessage as virtualize } from "./stream.js"
+import {
+	COUNCIL_APPLY_TOOL,
+	COUNCIL_CHECK_TOOL,
+	type CouncilTransactionRuntime,
+	withoutInternalCouncilTools,
+} from "./transaction.js"
+
+export const LEAD_OUTPUT_SYSTEM_PROMPT =
+	"Finish this turn with either a normal user-facing answer or a valid tool call. Do not return only internal reasoning."
+export const LEAD_RETRY_SYSTEM_PROMPT =
+	"The previous attempt ended without a user-facing answer or tool call. Correct that now."
+export const LEAD_VERIFY_STAGED_SYSTEM_PROMPT =
+	"Before finishing this turn, verify your staged changes: call council_check_candidate with a catalog check id. " +
+	"If the check fails, fix the staged files and check again."
+const SERIALIZED_TOOL_CALL_MARKERS = [
+	"<|tool_calls_section_begin|>",
+	"<|tool_call_begin|>",
+	"<|tool_call_argument_begin|>",
+] as const
+
+export function publicContent(message: AssistantMessage): (TextContent | ToolCall)[] {
+	return message.content.filter((block): block is TextContent | ToolCall => block.type !== "thinking")
+}
+
+export function hasInvalidToolCalls(blocks: readonly (TextContent | ToolCall)[], context: Context): boolean {
+	const ids = new Set<string>()
+	const allowedNames = new Set(context.tools?.map((tool) => tool.name) ?? [])
+	for (const block of blocks) {
+		if (block.type !== "toolCall") continue
+		if (
+			typeof block.id !== "string" ||
+			!block.id.trim() ||
+			typeof block.name !== "string" ||
+			!block.name.trim() ||
+			!allowedNames.has(block.name) ||
+			block.arguments === null ||
+			typeof block.arguments !== "object" ||
+			Array.isArray(block.arguments)
+		) {
+			return true
+		}
+		if (ids.has(block.id)) return true
+		ids.add(block.id)
+	}
+	return false
+}
+
+export function hasSerializedToolCallMarkup(text: string): boolean {
+	return SERIALIZED_TOOL_CALL_MARKERS.some((marker) => text.includes(marker))
+}
+
+const CHANGE_OPERATION_KIND_ORDER = ["create", "update", "delete", "rename"] as const
+type ChangeOperationKind = (typeof CHANGE_OPERATION_KIND_ORDER)[number]
+const CHANGE_OPERATION_VERB: Record<ChangeOperationKind, string> = {
+	create: "created",
+	update: "updated",
+	delete: "deleted",
+	rename: "renamed",
+}
+const MAX_LISTED_CHANGED_FILES = 3
+const GENERIC_CHANGE_SET_MESSAGE = "Applied the staged change."
+
+function changedFileName(path: string): string {
+	const segments = path.split("/")
+	return segments[segments.length - 1] || path
+}
+
+function describeChangeGroup(kind: ChangeOperationKind, paths: readonly string[]): string {
+	if (paths.length === 0) return ""
+	const verb = CHANGE_OPERATION_VERB[kind]
+	if (paths.length > MAX_LISTED_CHANGED_FILES) return `${verb} ${paths.length} files`
+	if (paths.length === 1) return `${verb} ${changedFileName(paths[0])}`
+	return `${verb} ${paths.map(changedFileName).join(", ")}`
+}
+
+function joinChangeGroupPhrases(phrases: readonly string[]): string {
+	if (phrases.length === 0) return ""
+	if (phrases.length === 1) return phrases[0]
+	return `${phrases.slice(0, -1).join(", ")} and ${phrases[phrases.length - 1]}`
+}
+
+export function describeChangeSet(changeSet: ChangeSet): string {
+	const grouped = new Map<ChangeOperationKind, string[]>()
+	for (const operation of changeSet.operations) {
+		const paths = grouped.get(operation.kind) ?? []
+		paths.push(operation.path)
+		grouped.set(operation.kind, paths)
+	}
+	const phrases = CHANGE_OPERATION_KIND_ORDER.map((kind) => describeChangeGroup(kind, grouped.get(kind) ?? [])).filter(
+		Boolean,
+	)
+	if (phrases.length === 0) {
+		const fileCount = changeSet.stats.files
+		return fileCount > 0 ? `Updated ${fileCount} file${fileCount === 1 ? "" : "s"}.` : GENERIC_CHANGE_SET_MESSAGE
+	}
+	const sentence = joinChangeGroupPhrases(phrases)
+	return `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}.`
+}
+
+function safeDescribeChangeSet(changeSet: ChangeSet): string {
+	try {
+		const description = describeChangeSet(changeSet)
+		return description.trim() ? description : GENERIC_CHANGE_SET_MESSAGE
+	} catch {
+		return GENERIC_CHANGE_SET_MESSAGE
+	}
+}
+
+export function resolvePublicMessage(
+	leadProse: string | undefined,
+	synthesisSummary: string | undefined,
+	changeSet: ChangeSet,
+): string {
+	if (leadProse?.trim()) return leadProse
+	if (synthesisSummary?.trim()) return synthesisSummary
+	return safeDescribeChangeSet(changeSet)
+}
+
+const NO_CHANGES_NEEDED_MESSAGE = "No changes were needed."
+
+function resolveNoOpPublicMessage(leadProse: string | undefined, synthesisSummary: string | undefined): string {
+	if (leadProse?.trim()) return leadProse
+	if (synthesisSummary?.trim()) return synthesisSummary
+	return NO_CHANGES_NEEDED_MESSAGE
+}
+
+function candidatePatchFromChangeSet(candidate: ChangeSet): CandidatePatch {
+	return {
+		operations: candidate.operations.map((operation) => {
+			switch (operation.kind) {
+				case "create":
+					return { op: "create", path: operation.path, content: operation.content }
+				case "update":
+					return { op: "update", path: operation.path, content: operation.content }
+				case "delete":
+					return { op: "delete", path: operation.path }
+				case "rename":
+					return { op: "rename", path: operation.fromPath, new_path: operation.path }
+				default:
+					throw new Error("Council candidate contains an unsupported operation")
+			}
+		}),
+	}
+}
+
+const STRUCTURED_STAGE_MAX_TOKENS: Record<Exclude<CouncilStage, "lead">, number> = {
+	solver: 6_000,
+	analyst: 8_000,
+	synthesis: 8_000,
+	combined: 12_000,
+	repair: 8_000,
+}
+
+function structuredStageMaxTokens(stage: Exclude<CouncilStage, "lead">, configuredMaximum: number): number {
+	return Math.min(configuredMaximum, STRUCTURED_STAGE_MAX_TOKENS[stage])
+}
+
+function textFromAssistant(message: AssistantMessage): string {
+	return message.content
+		.filter((block): block is TextContent => block.type === "text")
+		.map((block) => block.text)
+		.join("")
+}
+
+function withoutEphemeralRunId(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(withoutEphemeralRunId)
+	if (!value || typeof value !== "object") return value
+	return Object.fromEntries(
+		Object.entries(value)
+			.filter(([key]) => key !== "run_id")
+			.map(([key, item]) => [key, withoutEphemeralRunId(item)]),
+	)
+}
+
+function councilCacheKey({
+	context,
+	candidate,
+	draft,
+	packet,
+	role,
+	modelId,
+	prompt,
+	schema,
+}: {
+	context: CompiledCouncilContext
+	candidate?: ChangeSet
+	draft: string
+	packet: unknown
+	role: string
+	modelId: string
+	prompt: string
+	schema: string
+}): CouncilCacheKey {
+	const baseIdentity = candidate
+		? [...candidate.base]
+				.sort((left, right) => left.path.localeCompare(right.path))
+				.map(({ path, exists, sha256, mode }) => ({ path, exists, sha256, mode }))
+		: context.artifacts.filter(({ kind }) => kind !== "assistant_text" && kind !== "candidate_patch")
+	return {
+		patchHash: candidate?.patchSha256 ?? hashCouncilCacheValue(draft),
+		baseSnapshotHash: hashCouncilCacheValue(baseIdentity),
+		objectiveHash: hashCouncilCacheValue(context.objective.text),
+		constraintsHash: hashCouncilCacheValue(councilConstraints(context)),
+		evidenceHash: hashCouncilCacheValue(withoutEphemeralRunId(packet)),
+		role,
+		modelId,
+		promptVersion: hashCouncilCacheValue(prompt),
+		schemaVersion: hashCouncilCacheValue(schema),
+	}
+}
+
+/** Binds a run's context/candidate/draft once, returning a factory for per-stage cache-key builders. */
+function cacheKeyForContext(
+	context: CompiledCouncilContext,
+	candidate: ChangeSet | undefined,
+	draft: string,
+): (role: string, packet: unknown, prompt: string, schema: string) => (modelId: string) => CouncilCacheKey {
+	return (role, packet, prompt, schema) => (modelId) =>
+		councilCacheKey({ context, candidate, draft, packet, role, modelId, prompt, schema })
+}
+
+function internalToolUse(
+	virtualModel: Model<Api>,
+	usage: AssistantMessage["usage"],
+	name: string,
+	arguments_: Record<string, unknown>,
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "toolCall", id: `council_tool_${randomUUID()}`, name, arguments: arguments_ }],
+		api: virtualModel.api,
+		provider: virtualModel.provider,
+		model: virtualModel.id,
+		usage: structuredClone(usage),
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	}
+}
+
+function assistantTextMessage(virtualModel: Model<Api>, text: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: virtualModel.api,
+		provider: virtualModel.provider,
+		model: virtualModel.id,
+		usage: structuredClone(ZERO_USAGE),
+		stopReason: "stop",
+		timestamp: Date.now(),
+	}
+}
+
+function boundedStructuredText(message: AssistantMessage, maxBytes: number): string {
+	if (message.stopReason !== "stop" || message.content.some((block) => block.type === "toolCall")) {
+		throw new Error("Council stage returned non-final structured output")
+	}
+	const text = textFromAssistant(message)
+	if (!text.trim()) throw new Error("Council stage returned no structured output")
+	if (Buffer.byteLength(text) > maxBytes) throw new Error("Council structured output exceeds its byte limit")
+	return text
+}
+
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal, label: string): Promise<T> {
+	if (signal.aborted) return Promise.reject(new Error(`${label} aborted`))
+	return new Promise((resolve, reject) => {
+		const onAbort = () => reject(new Error(`${label} aborted`))
+		signal.addEventListener("abort", onAbort, { once: true })
+		promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort))
+	})
+}
+
+function councilPreset(modelId: string): "fast" | "normal" | "deep" {
+	if (modelId === "council-fast") return "fast"
+	if (modelId === "council-deep") return "deep"
+	return "normal"
+}
 
 export interface CouncilRuntimeDependencies {
 	config: CouncilConfig

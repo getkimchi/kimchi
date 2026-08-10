@@ -1,9 +1,8 @@
 import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai"
-import { debugLog } from "./debug.js"
+import { debugLog } from "./physical-invoker.js"
 import type { CouncilRunContext } from "./run-context.js"
-import type { CouncilTransactionRuntime } from "./transaction-runtime.js"
-import { COUNCIL_APPLY_TOOL, COUNCIL_SETTLE_TOOL } from "./transaction-tools.js"
-import type { CouncilDegradedReason } from "./types.js"
+import type { CouncilDegradedReason } from "./schemas.js"
+import { COUNCIL_APPLY_TOOL, COUNCIL_SETTLE_TOOL, type CouncilTransactionRuntime } from "./transaction.js"
 
 export interface ResumeDispatchContext {
 	transaction: CouncilTransactionRuntime | undefined
@@ -19,7 +18,7 @@ export interface ResumeDispatchContext {
 		errorMessage: string,
 		aborted?: boolean,
 		reason?: CouncilDegradedReason,
-		progressReason?: import("./types.js").SafeCouncilFailureReason,
+		progressReason?: import("./schemas.js").SafeCouncilFailureReason,
 	) => void
 	internalToolUse: (
 		virtualModel: Model<Api>,

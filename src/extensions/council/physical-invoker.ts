@@ -10,12 +10,57 @@ import {
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { splitModelRef } from "../model-catalog/ref-utils.js"
 import { ContextCompilerError, contextInputByteBudget, fitContextToModel } from "./context-compiler.js"
-import { isCouncilVirtualModel, isCouncilVirtualModelRef } from "./model.js"
 import { type CouncilRunContext, RunFailure } from "./run-context.js"
-import type { CouncilModelPool, CouncilStage, CouncilStageRecord } from "./types.js"
+import type { CouncilModelPool, CouncilStage, CouncilStageRecord } from "./schemas.js"
+
+/**
+ * Minimal debug logging for otherwise-swallowed best-effort failures (telemetry, progress
+ * events, workspace-restore fallbacks). Disabled by default so normal runs stay silent; set
+ * KIMCHI_COUNCIL_DEBUG=1 to see these on stderr while investigating a field report.
+ */
+export function debugLog(message: string, error?: unknown): void {
+	if (!process.env.KIMCHI_COUNCIL_DEBUG) return
+	if (error === undefined) {
+		console.error(`[council] ${message}`)
+	} else {
+		console.error(`[council] ${message}`, error)
+	}
+}
+
+export function truncateUtf8(value: string, maximumBytes: number): string {
+	if (maximumBytes <= 0) return ""
+	const bytes = Buffer.from(value)
+	if (bytes.length <= maximumBytes) return value
+	let end = maximumBytes
+	while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--
+	return bytes.subarray(0, end).toString("utf8")
+}
+
+export const COUNCIL_PROVIDER = "kimchi"
+export const COUNCIL_API = "kimchi-council"
+export const COUNCIL_MODEL_IDS = ["council-fast", "council", "council-deep"] as const
+const COUNCIL_MODEL_ID_SET = new Set<string>(COUNCIL_MODEL_IDS)
+
+export function isCouncilVirtualModelRef(modelRef: string): boolean {
+	const normalized = modelRef.trim().toLowerCase()
+	if (normalized === COUNCIL_API || normalized.startsWith(`${COUNCIL_API}/`)) return true
+	const separator = normalized.indexOf("/")
+	if (separator < 0) return COUNCIL_MODEL_ID_SET.has(normalized)
+	return (
+		normalized.slice(0, separator) === COUNCIL_PROVIDER && COUNCIL_MODEL_ID_SET.has(normalized.slice(separator + 1))
+	)
+}
+
+export function isCouncilVirtualModel(model: Pick<Model<Api>, "api" | "id" | "provider">): boolean {
+	return (
+		model.api === COUNCIL_API ||
+		(model.provider === COUNCIL_PROVIDER && COUNCIL_MODEL_ID_SET.has(model.id)) ||
+		isCouncilVirtualModelRef(`${model.provider}/${model.id}`)
+	)
+}
 
 export type CouncilModelRegistry = Pick<ModelRegistry, "find" | "getApiKeyAndHeaders">
-export type PhysicalTextDelta = (delta: string, fullText: string) => void
+type PhysicalTextDelta = (delta: string, fullText: string) => void
 export type CompletePhysicalModel = (
 	model: Model<Api>,
 	context: Context,
@@ -23,7 +68,7 @@ export type CompletePhysicalModel = (
 	onTextDelta?: PhysicalTextDelta,
 ) => Promise<AssistantMessage>
 
-export type PhysicalFailureCode =
+type PhysicalFailureCode =
 	| "aborted"
 	| "auth_failed"
 	| "budget_exceeded"
@@ -46,7 +91,7 @@ export class PhysicalInvocationError extends Error {
 	}
 }
 
-export interface PhysicalInvocationRequest {
+interface PhysicalInvocationRequest {
 	run: CouncilRunContext
 	runId: string
 	virtualModelRef: string
@@ -78,7 +123,7 @@ export interface PhysicalInvocationResult {
 	attempts: number
 }
 
-export interface PhysicalInvokerOptions {
+interface PhysicalInvokerOptions {
 	registry: CouncilModelRegistry
 	completeModel?: CompletePhysicalModel
 	maxRetriesPerCall: number

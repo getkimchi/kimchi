@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from "node:util"
 import type { Api, Context, Model } from "@earendil-works/pi-ai"
 import type { ChangeSet } from "../../agent-patch/index.js"
 import { redactObjectStrings } from "../pii-redaction/redactor.js"
-import { truncateUtf8 } from "./bytes.js"
+import { truncateUtf8 } from "./physical-invoker.js"
 import type {
 	AssistantTextArtifact,
 	CandidatePatchArtifact,

@@ -1,4 +1,17 @@
-export type RunFailureCode = "aborted" | "budget_exceeded" | "deadline_exceeded"
+import { createHash } from "node:crypto"
+import type { Usage } from "@earendil-works/pi-ai"
+import { PhysicalInvocationError } from "./physical-invoker.js"
+import type {
+	CouncilBudgetUsage,
+	CouncilDegradedReason,
+	CouncilRole,
+	CouncilRunRecord,
+	CouncilSchemaErrorCode,
+	CouncilTransactionSnapshot,
+	SafeCouncilFailureReason,
+} from "./schemas.js"
+
+type RunFailureCode = "aborted" | "budget_exceeded" | "deadline_exceeded"
 
 export interface RunBudgetLimits {
 	overallTimeoutMs: number
@@ -11,7 +24,7 @@ export interface RunBudgetLimits {
 	maxStructuredBytes: number
 }
 
-export interface AttemptEstimate {
+interface AttemptEstimate {
 	inputTokens: number
 	outputTokens: number
 }
@@ -27,7 +40,7 @@ export interface RunBudgetSnapshot {
 	structuredBytes: number
 }
 
-export interface RunBudgetAvailable {
+interface RunBudgetAvailable {
 	inputTokens: number
 	outputTokens: number
 }
@@ -43,7 +56,7 @@ export class RunFailure extends Error {
 	}
 }
 
-export interface AttemptReservation {
+interface AttemptReservation {
 	reconcile(actual: AttemptEstimate): void
 	release(): void
 }
@@ -233,5 +246,250 @@ export class CouncilRunContext {
 		if (this.failure) return
 		this.failure = failure
 		this.controller.abort(failure)
+	}
+}
+
+export interface CouncilCacheKey {
+	patchHash: string
+	baseSnapshotHash: string
+	objectiveHash: string
+	constraintsHash: string
+	evidenceHash: string
+	role: string
+	modelId: string
+	promptVersion: string
+	schemaVersion: string
+}
+
+interface CouncilCacheStats {
+	hits: number
+	misses: number
+	entries: number
+	bytes: number
+}
+
+type CacheKind = "packet" | "result"
+
+interface CacheEntry {
+	value: unknown
+	bytes: number
+}
+
+const DEFAULT_MAX_ENTRIES = 24
+const DEFAULT_MAX_BYTES = 1024 * 1024
+const DEFAULT_MAX_ENTRY_BYTES = 256 * 1024
+
+export function hashCouncilCacheValue(value: unknown): string {
+	return createHash("sha256").update(JSON.stringify(value)).digest("hex")
+}
+
+function cacheId(kind: CacheKind, key: CouncilCacheKey): string {
+	return JSON.stringify([
+		kind,
+		key.patchHash,
+		key.baseSnapshotHash,
+		key.objectiveHash,
+		key.constraintsHash,
+		key.evidenceHash,
+		key.role,
+		key.modelId,
+		key.promptVersion,
+		key.schemaVersion,
+	])
+}
+
+export class CouncilSessionCache {
+	private readonly entries = new Map<string, CacheEntry>()
+	private hits = 0
+	private misses = 0
+	private bytes = 0
+
+	constructor(
+		private readonly maxEntries = DEFAULT_MAX_ENTRIES,
+		private readonly maxBytes = DEFAULT_MAX_BYTES,
+		private readonly maxEntryBytes = DEFAULT_MAX_ENTRY_BYTES,
+	) {}
+
+	getPacket<T>(key: CouncilCacheKey): T | undefined {
+		return this.get("packet", key)
+	}
+
+	getResult<T>(key: CouncilCacheKey): T | undefined {
+		return this.get("result", key)
+	}
+
+	setPacket(key: CouncilCacheKey, value: unknown): boolean {
+		return this.set("packet", key, value)
+	}
+
+	setResult<T>(key: CouncilCacheKey, value: T, validate: (value: unknown) => boolean): boolean {
+		if (!validate(value)) return false
+		return this.set("result", key, value)
+	}
+
+	private get<T>(kind: CacheKind, key: CouncilCacheKey): T | undefined {
+		const id = cacheId(kind, key)
+		const entry = this.entries.get(id)
+		if (!entry) {
+			this.misses++
+			return undefined
+		}
+		this.hits++
+		this.entries.delete(id)
+		this.entries.set(id, entry)
+		return structuredClone(entry.value) as T
+	}
+
+	private set(kind: CacheKind, key: CouncilCacheKey, value: unknown): boolean {
+		const serialized = JSON.stringify(value)
+		const bytes = Buffer.byteLength(serialized)
+		if (bytes > this.maxEntryBytes || bytes > this.maxBytes) return false
+		const id = cacheId(kind, key)
+		const previous = this.entries.get(id)
+		if (previous) {
+			this.bytes -= previous.bytes
+			this.entries.delete(id)
+		}
+		while (this.entries.size >= this.maxEntries || this.bytes + bytes > this.maxBytes) {
+			const oldest = this.entries.keys().next().value
+			if (typeof oldest !== "string") break
+			const evicted = this.entries.get(oldest)
+			if (evicted) this.bytes -= evicted.bytes
+			this.entries.delete(oldest)
+		}
+		this.entries.set(id, { value: JSON.parse(serialized), bytes })
+		this.bytes += bytes
+		return true
+	}
+
+	snapshot(): CouncilCacheStats {
+		return { hits: this.hits, misses: this.misses, entries: this.entries.size, bytes: this.bytes }
+	}
+}
+
+export function cacheStatsDelta(before: CouncilCacheStats, after: CouncilCacheStats): CouncilCacheStats {
+	return {
+		hits: Math.max(0, after.hits - before.hits),
+		misses: Math.max(0, after.misses - before.misses),
+		entries: after.entries,
+		bytes: after.bytes,
+	}
+}
+
+export const ZERO_USAGE: Usage = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+}
+
+const SAFE_STAGE_ERRORS = new Set([
+	"aborted",
+	"auth_failed",
+	"budget_exceeded",
+	"deadline_exceeded",
+	"invalid_output",
+	"model_incompatible",
+	"model_not_found",
+	"output_limit",
+	"provider_error",
+	"timeout",
+])
+const SAFE_SCHEMA_ERROR_CODES: ReadonlySet<CouncilSchemaErrorCode> = new Set([
+	"missing_json",
+	"ambiguous_json",
+	"invalid_json",
+	"invalid_shape",
+	"unsupported_reference",
+])
+
+export function addUsage(total: Usage, next: Usage): Usage {
+	return {
+		input: total.input + next.input,
+		output: total.output + next.output,
+		cacheRead: total.cacheRead + next.cacheRead,
+		cacheWrite: total.cacheWrite + next.cacheWrite,
+		cacheWrite1h: (total.cacheWrite1h ?? 0) + (next.cacheWrite1h ?? 0),
+		totalTokens: total.totalTokens + next.totalTokens,
+		cost: {
+			input: total.cost.input + next.cost.input,
+			output: total.cost.output + next.cost.output,
+			cacheRead: total.cost.cacheRead + next.cost.cacheRead,
+			cacheWrite: total.cost.cacheWrite + next.cost.cacheWrite,
+			total: total.cost.total + next.cost.total,
+		},
+	}
+}
+
+export function toCouncilBudgetUsage(
+	snapshot: RunBudgetSnapshot,
+	cache: Pick<CouncilCacheStats, "hits" | "misses"> = { hits: 0, misses: 0 },
+): CouncilBudgetUsage {
+	return {
+		logicalCalls: snapshot.logicalCalls,
+		physicalAttempts: snapshot.physicalAttempts,
+		maxObservedConcurrency: snapshot.peakConcurrentCalls,
+		aggregateInputTokens: snapshot.inputTokens,
+		aggregateOutputTokens: snapshot.outputTokens,
+		evidenceBytes: snapshot.evidenceBytes,
+		structuredBytes: snapshot.structuredBytes,
+		cacheHits: cache.hits,
+		cacheMisses: cache.misses,
+	}
+}
+
+export function sanitizeRunRecord(record: CouncilRunRecord): CouncilRunRecord {
+	return {
+		...record,
+		stages: record.stages.map((stage) => ({
+			...stage,
+			...(stage.error ? { error: SAFE_STAGE_ERRORS.has(stage.error) ? stage.error : "unknown" } : {}),
+			...(stage.schemaErrorCode
+				? { schemaErrorCode: SAFE_SCHEMA_ERROR_CODES.has(stage.schemaErrorCode) ? stage.schemaErrorCode : undefined }
+				: {}),
+		})),
+		transaction: record.transaction ? sanitizeCouncilTransactionSnapshot(record.transaction) : undefined,
+	}
+}
+
+export function safeFailureReason(error: unknown, role?: CouncilRole): SafeCouncilFailureReason {
+	const code = error instanceof RunFailure || error instanceof PhysicalInvocationError ? error.code : undefined
+	if (code === "aborted") return "cancelled"
+	if (code === "timeout" || code === "deadline_exceeded") return "timed_out"
+	if (code === "budget_exceeded") return "limit_reached"
+	if (role === "solver" || role === "analyst" || role === "repair") {
+		return "panel_unavailable"
+	}
+	return "validation_failed"
+}
+
+export function safeDegradedReason(reason: CouncilDegradedReason | undefined): SafeCouncilFailureReason {
+	if (reason === "deadline_exceeded") return "timed_out"
+	if (reason === "budget_exhausted" || reason === "budget_exceeded") return "limit_reached"
+	if (reason === "panel_unavailable" || reason === "analyst_failed") {
+		return "panel_unavailable"
+	}
+	return "validation_failed"
+}
+
+export function sanitizeCouncilTransactionSnapshot(
+	transaction: CouncilTransactionSnapshot,
+): CouncilTransactionSnapshot {
+	return {
+		transactionId: transaction.transactionId,
+		state: transaction.state,
+		outcome: transaction.outcome,
+		patchSha256: transaction.patchSha256,
+		stats: transaction.stats ? { ...transaction.stats } : undefined,
+		baseVerification: transaction.baseVerification,
+		selectedValidationCheckIds: [...transaction.selectedValidationCheckIds],
+		postApplyChecks: transaction.postApplyChecks.map((check) => ({
+			...check,
+			command: `sha256:${createHash("sha256").update(check.command).digest("hex")}`,
+		})),
+		rollbackState: transaction.rollbackState,
+		hardRecoveryRequired: transaction.hardRecoveryRequired,
 	}
 }

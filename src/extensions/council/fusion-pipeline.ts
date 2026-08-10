@@ -1,14 +1,13 @@
-import { debugLog } from "./debug.js"
-import type { CouncilRunContext, RunFailure } from "./run-context.js"
-import type { FusionAnalysis } from "./schemas.js"
-import type { CouncilStageRuntime, StructuredStageResult } from "./stage-runner.js"
-import { safeFailureReason } from "./telemetry.js"
+import { debugLog } from "./physical-invoker.js"
+import { type CouncilRunContext, type RunFailure, safeFailureReason } from "./run-context.js"
 import type {
 	CouncilDegradedReason,
 	CouncilModelPool,
 	CouncilTransactionProgressPhase,
+	FusionAnalysis,
 	SafeCouncilFailureReason,
-} from "./types.js"
+} from "./schemas.js"
+import type { CouncilStageRuntime, StructuredStageResult } from "./stage-runner.js"
 
 export interface FusionSolverAssignment {
 	index: number

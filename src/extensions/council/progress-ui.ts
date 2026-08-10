@@ -5,7 +5,7 @@ import type {
 	CouncilRole,
 	CouncilTransactionProgressPhase,
 	SafeCouncilFailureReason,
-} from "./types.js"
+} from "./schemas.js"
 
 export const COUNCIL_PROGRESS_WIDGET_KEY = "council-progress"
 
