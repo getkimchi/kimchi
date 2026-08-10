@@ -22,13 +22,22 @@ export interface OrchestratorWriteGuardOptions {
 	 * before a hard block fires. Default: 6.
 	 */
 	buildPhaseTriageBlockThreshold?: number
+	/**
+	 * Number of implementation edits the orchestrator may make directly during review
+	 * phase (the "trivial fix exception" from the orchestration instructions) before
+	 * a one-time steer fires reminding it to delegate instead. Default: 2.
+	 */
+	reviewPhaseAllowance?: number
 }
 
 export const STEER_MESSAGE_TYPE = "review-write-guard-steer"
 
-const REVIEW_BLOCK_REASON =
-	"BLOCKED: You are in the review phase. The orchestrator must not edit implementation files during review. " +
-	"Delegate fixes to a build agent instead — spawn an Agent with the fix task and the list of issues."
+const REVIEW_STEER_MESSAGE =
+	"Delegation guard: you are editing implementation files during the review phase. " +
+	"Direct edits are fine only for a single trivial fix (a typo, missing import, one-line config change). " +
+	"If this fix is growing beyond that scope — multiple files, test expectations, iteration loops — stop and " +
+	"delegate the remaining fixes to a build/fix agent instead: spawn an Agent with the fix task and the list of issues. " +
+	"Do not flip to build phase just for this."
 
 const BUILD_STEER_MESSAGE =
 	"Delegation guard: you are editing files that a subagent produced. " +
@@ -75,11 +84,14 @@ export class OrchestratorWriteGuard {
 	private readonly buildPhaseBlockThreshold: number
 	private readonly buildPhaseTriageThreshold: number
 	private readonly buildPhaseTriageBlockThreshold: number
+	private readonly reviewPhaseAllowance: number
 
 	private subagentReturnedInBuild = false
 	private lastSubagentSuccessful = false
 	private buildWriteCount = 0
 	private buildSteered = false
+	private reviewWriteCount = 0
+	private reviewSteered = false
 
 	constructor(ctx: ExtensionContext, options: OrchestratorWriteGuardOptions = {}) {
 		this.ctx = ctx
@@ -89,7 +101,11 @@ export class OrchestratorWriteGuard {
 		this.buildPhaseBlockThreshold = options.buildPhaseBlockThreshold ?? 5
 		this.buildPhaseTriageThreshold = options.buildPhaseTriageThreshold ?? 3
 		this.buildPhaseTriageBlockThreshold = options.buildPhaseTriageBlockThreshold ?? 6
+		this.reviewPhaseAllowance = options.reviewPhaseAllowance ?? 2
 
+		if (this.reviewPhaseAllowance < 0) {
+			throw new Error("reviewPhaseAllowance must be >= 0")
+		}
 		if (this.buildPhaseThreshold >= this.buildPhaseBlockThreshold) {
 			throw new Error("buildPhaseBlockThreshold must be greater than buildPhaseThreshold")
 		}
@@ -109,13 +125,25 @@ export class OrchestratorWriteGuard {
 		this.lastSubagentSuccessful = false
 		this.buildWriteCount = 0
 		this.buildSteered = false
+		this.reviewWriteCount = 0
+		this.reviewSteered = false
 	}
 
 	checkToolCall(toolName: string): { block: true; reason: string } | { steer: string } | undefined {
 		const phase = getCurrentPhase(this.ctx.sessionManager.getSessionId())
 
 		if (phase === "review" && this.implementationTools.has(toolName)) {
-			return { block: true, reason: REVIEW_BLOCK_REASON }
+			// Trivial fix exception: the orchestration instructions allow direct edits
+			// for a single obvious issue after NEEDS_FIXES. Edit count is a weak proxy
+			// for scope (a small fix may need several iteration rounds), so we steer
+			// once past the allowance instead of hard-blocking — a hard block here
+			// either forces overkill delegation for truly trivial fixes or strands a
+			// half-applied fix mid-iteration.
+			this.reviewWriteCount++
+			if (this.reviewWriteCount <= this.reviewPhaseAllowance) return undefined
+			if (this.reviewSteered) return undefined
+			this.reviewSteered = true
+			return { steer: REVIEW_STEER_MESSAGE }
 		}
 
 		if (phase === "build" && this.implementationTools.has(toolName)) {

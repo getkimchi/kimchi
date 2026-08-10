@@ -59,6 +59,13 @@ describe("reviewWriteGuardExtension wiring", () => {
 		const pi = createMockPI()
 		reviewWriteGuardExtension(pi as unknown as PI)
 
+		// Exhaust the review trivial-fix allowance and trigger the steer.
+		mockPhase = "review"
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+
 		// Move to build phase and record a subagent return
 		mockPhase = "build"
 		emit(pi, "tool_result", { toolName: "Agent" })
@@ -66,10 +73,16 @@ describe("reviewWriteGuardExtension wiring", () => {
 		// session_start should reset — emit it
 		emit(pi, "session_start", {})
 
-		// After reset, tool_call in review should still block (not affected by prior state)
+		// After reset, the review trivial-fix allowance is fresh again and the
+		// steer fires anew once the fresh allowance is exhausted.
 		mockPhase = "review"
+		pi.sendMessage.mockClear()
 		emit(pi, "tool_call", { toolName: "edit" })
-		expect(pi._blockResult).toMatchObject({ block: true, reason: expect.stringContaining("BLOCKED") })
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi._blockResult).toBeUndefined()
 	})
 
 	it("tool_call for Agent in review phase does NOT block", () => {
@@ -80,20 +93,43 @@ describe("reviewWriteGuardExtension wiring", () => {
 		expect(pi._blockResult).toBeUndefined()
 	})
 
-	it("tool_call for edit during review phase blocks", () => {
+	it("tool_call for edit during review phase allows the first edits (trivial fix exception)", () => {
 		const pi = createMockPI()
 		reviewWriteGuardExtension(pi as unknown as PI)
 		mockPhase = "review"
 		emit(pi, "tool_call", { toolName: "edit" })
-		expect(pi._blockResult).toMatchObject({ block: true, reason: expect.stringContaining("BLOCKED") })
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi._blockResult).toBeUndefined()
+		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("tool_call for write during review phase blocks", () => {
+	it("tool_call for edit during review phase steers once the trivial-fix allowance is exhausted, but never blocks", () => {
+		const pi = createMockPI()
+		reviewWriteGuardExtension(pi as unknown as PI)
+		mockPhase = "review"
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: STEER_MESSAGE_TYPE }), {
+			deliverAs: "steer",
+		})
+		// Further edits are not blocked and do not steer again.
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi._blockResult).toBeUndefined()
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("tool_call for write during review phase steers once the trivial-fix allowance is exhausted", () => {
 		const pi = createMockPI()
 		reviewWriteGuardExtension(pi as unknown as PI)
 		mockPhase = "review"
 		emit(pi, "tool_call", { toolName: "write" })
-		expect(pi._blockResult).toMatchObject({ block: true, reason: expect.stringContaining("BLOCKED") })
+		emit(pi, "tool_call", { toolName: "write" })
+		emit(pi, "tool_call", { toolName: "write" })
+		expect(pi._blockResult).toBeUndefined()
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 	})
 
 	it("tool_result for Agent in build phase records subagent return", () => {
@@ -341,7 +377,14 @@ describe("reviewWriteGuardExtension wiring", () => {
 		// the old instance is gone — assert by re-checking sessionStart behavior.
 		emit(pi, "session_start", {}, ctx)
 		mockPhase = "review"
+		// First two review edits are allowed; the third steers on a fresh guard.
+		pi.sendMessage.mockClear()
 		emit(pi, "tool_call", { toolName: "edit" }, ctx)
-		expect(pi._blockResult).toMatchObject({ block: true, reason: expect.stringContaining("BLOCKED") })
+		emit(pi, "tool_call", { toolName: "edit" }, ctx)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi._blockResult).toBeUndefined()
+		emit(pi, "tool_call", { toolName: "edit" }, ctx)
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi._blockResult).toBeUndefined()
 	})
 })

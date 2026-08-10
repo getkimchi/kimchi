@@ -13,16 +13,45 @@ afterEach(() => {
 })
 
 describe("OrchestratorWriteGuard — review phase", () => {
-	it("blocks edit during review phase", () => {
+	it("allows the first edits during review phase (trivial fix exception)", () => {
 		const guard = new OrchestratorWriteGuard(createContext())
-		const result = guard.checkToolCall("edit")
-		expect(result).toEqual({ block: true, reason: expect.stringContaining("BLOCKED") })
+		expect(guard.checkToolCall("edit")).toBeUndefined()
+		expect(guard.checkToolCall("write")).toBeUndefined()
 	})
 
-	it("blocks write during review phase", () => {
+	it("steers once the trivial-fix allowance is exhausted", () => {
 		const guard = new OrchestratorWriteGuard(createContext())
-		const result = guard.checkToolCall("write")
-		expect(result).toEqual({ block: true, reason: expect.stringContaining("BLOCKED") })
+		guard.checkToolCall("edit")
+		guard.checkToolCall("edit")
+		expect(guard.checkToolCall("edit")).toEqual({ steer: expect.stringContaining("Delegation guard") })
+		expect(guard.checkToolCall("write")).toBeUndefined()
+	})
+
+	it("never blocks implementation edits in review phase", () => {
+		const guard = new OrchestratorWriteGuard(createContext())
+		guard.checkToolCall("write")
+		guard.checkToolCall("write")
+		expect(guard.checkToolCall("write")).toEqual({ steer: expect.stringContaining("Delegation guard") })
+		expect(guard.checkToolCall("write")).toBeUndefined()
+		expect(guard.checkToolCall("edit")).toBeUndefined()
+	})
+
+	it("respects a custom reviewPhaseAllowance", () => {
+		const guard = new OrchestratorWriteGuard(createContext(), { reviewPhaseAllowance: 0 })
+		expect(guard.checkToolCall("edit")).toEqual({ steer: expect.stringContaining("Delegation guard") })
+	})
+
+	it("resets the trivial-fix allowance and steer state when the review phase is left", () => {
+		const guard = new OrchestratorWriteGuard(createContext())
+		guard.checkToolCall("edit")
+		guard.checkToolCall("edit")
+		guard.checkToolCall("edit")
+		mockPhase = "plan"
+		guard.checkToolCall("edit")
+		mockPhase = "review"
+		expect(guard.checkToolCall("edit")).toBeUndefined()
+		expect(guard.checkToolCall("edit")).toBeUndefined()
+		expect(guard.checkToolCall("edit")).toEqual({ steer: expect.stringContaining("Delegation guard") })
 	})
 
 	it("does not block read-only tools during review phase", () => {
@@ -39,11 +68,13 @@ describe("OrchestratorWriteGuard — review phase", () => {
 		expect(guard.checkToolCall("Agent")).toBeUndefined()
 	})
 
-	it("blocks every edit attempt, not just the first", () => {
+	it("steers only once per review phase", () => {
 		const guard = new OrchestratorWriteGuard(createContext())
-		expect(guard.checkToolCall("edit")).toEqual({ block: true, reason: expect.stringContaining("BLOCKED") })
-		expect(guard.checkToolCall("edit")).toEqual({ block: true, reason: expect.stringContaining("BLOCKED") })
-		expect(guard.checkToolCall("write")).toEqual({ block: true, reason: expect.stringContaining("BLOCKED") })
+		guard.checkToolCall("edit")
+		guard.checkToolCall("edit")
+		expect(guard.checkToolCall("edit")).toEqual({ steer: expect.stringContaining("Delegation guard") })
+		expect(guard.checkToolCall("edit")).toBeUndefined()
+		expect(guard.checkToolCall("write")).toBeUndefined()
 	})
 })
 
@@ -246,6 +277,12 @@ describe("OrchestratorWriteGuard — other phases", () => {
 })
 
 describe("OrchestratorWriteGuard — threshold order assertions", () => {
+	it("throws when reviewPhaseAllowance is negative", () => {
+		expect(() => new OrchestratorWriteGuard(createContext(), { reviewPhaseAllowance: -1 })).toThrow(
+			/reviewPhaseAllowance/,
+		)
+	})
+
 	it("throws when block threshold is not greater than steer threshold", () => {
 		expect(
 			() =>
