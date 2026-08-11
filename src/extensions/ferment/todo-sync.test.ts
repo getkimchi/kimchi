@@ -1268,3 +1268,145 @@ describe("scope bleed prevention", () => {
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toHaveLength(1)
 	})
 })
+
+describe("sweepTerminalPhaseScopes", () => {
+	let unsubscribe: (() => void) | undefined
+
+	beforeEach(() => {
+		__resetTodoStore()
+		setActive(undefined)
+	})
+
+	afterEach(() => {
+		if (unsubscribe) {
+			unsubscribe()
+			unsubscribe = undefined
+		}
+		__resetTodoStore()
+		setActive(undefined)
+	})
+
+	/** Build a ferment with multiple phases, some terminal, some active. */
+	function createMultiPhaseFerment(): Ferment {
+		return {
+			id: "ferment-multi",
+			name: "Multi Phase Ferment",
+			status: "running",
+			worktree: { path: "/tmp" },
+			scoping: {},
+			phases: [
+				{
+					id: "phase-1",
+					index: 1,
+					name: "Phase One",
+					goal: "Goal 1",
+					status: "completed",
+					steps: [{ id: "step-1", index: 1, description: "Step 1", status: "done" }],
+				},
+				{
+					id: "phase-2",
+					index: 2,
+					name: "Phase Two",
+					goal: "Goal 2",
+					status: "active",
+					steps: [{ id: "step-1", index: 1, description: "Step 1", status: "pending" }],
+				},
+			],
+			decisions: [],
+			memories: [],
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString(),
+		}
+	}
+
+	it("clears ferment scope for a terminal phase when a new phase starts", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createMultiPhaseFerment()
+		setActive(ferment)
+
+		// Simulate a missed PHASE_COMPLETED: phase-1 has a leftover ferment scope.
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment", phaseId: "phase-1" },
+				todos: [{ content: "[Phase 1] Stale", status: "in_progress" }],
+			},
+			TEST_SESSION_ID,
+		)
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" }, TEST_SESSION_ID)).toHaveLength(1)
+
+		unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-2",
+			phaseIndex: 2,
+			phaseName: "Phase Two",
+		})
+
+		// Stale phase-1 scope should be swept.
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" }, TEST_SESSION_ID)).toHaveLength(0)
+		// New phase-2 scope should be populated.
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-2" }, TEST_SESSION_ID)).toHaveLength(2)
+	})
+
+	it("clears stale ferment-step scope for a terminal phase", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createMultiPhaseFerment()
+		setActive(ferment)
+
+		// Simulate a leftover step scope from phase-1.
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+				todos: [{ content: "sub-task", status: "pending" }],
+			},
+			TEST_SESSION_ID,
+		)
+		expect(
+			getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }, TEST_SESSION_ID),
+		).toHaveLength(1)
+
+		unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-2",
+			phaseIndex: 2,
+			phaseName: "Phase Two",
+		})
+
+		expect(
+			getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }, TEST_SESSION_ID),
+		).toHaveLength(0)
+	})
+
+	it("preserves scopes for phases in the same parallel group", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createMultiPhaseFerment()
+		// Mark both phases as in group 1 (parallel).
+		ferment.phases[0].groupIndex = 1
+		ferment.phases[1].groupIndex = 1
+		// phase-1 is completed but in the same group as phase-2.
+		setActive(ferment)
+
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment", phaseId: "phase-1" },
+				todos: [{ content: "[Phase 1] Parallel", status: "completed" }],
+			},
+			TEST_SESSION_ID,
+		)
+
+		unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-2",
+			phaseIndex: 2,
+			phaseName: "Phase Two",
+		})
+
+		// phase-1 scope should survive — same parallel group.
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" }, TEST_SESSION_ID)).toHaveLength(1)
+	})
+})

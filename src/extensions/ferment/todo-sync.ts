@@ -60,6 +60,13 @@ import { getActive } from "./state.js"
 // legitimately cleared at runtime (step completed, phase completed, suspend).
 // This helper wraps applyWriteTodos and appends a hidden TODO_CUSTOM_ENTRY_TYPE
 // entry so replay converges to the same state.
+//
+// Divergence risk: if appendEntry fails (e.g. disk full, session closed), the
+// in-memory store is correct but the persisted session log is not. A later
+// restore from entries will replay a stale state. This is best-effort — the
+// error is logged but not propagated, because failing the bridge write would
+// lose the live state the model is working against. The staleness prompt
+// block warnings surface this indirectly if the restored list is old.
 
 type AppendEntryFn = (customType: string, data: unknown) => void
 
@@ -248,7 +255,12 @@ function syncTodoIds(fermentId: string, phaseId: string, sessionId: string, writ
  *  or failed. This defends against missed PHASE_COMPLETED events (the stale
  *  phase-3 scope that persists alongside phase-4/5). Phases in the same
  *  parallel group as the starting phase are left alone — they legitimately
- *  coexist. */
+ *  coexist.
+ *
+ *  Scopes to clear are collected in a first pass, then mutated in a second
+ *  pass. This avoids iterating `state.byScope` while `applyAndPersist`
+ *  replaces the store state (which could skip entries if the underlying
+ *  state object is swapped mid-iteration). */
 function sweepTerminalPhaseScopes(
 	ferment: { id: string; phases: Phase[] },
 	currentPhaseId: string,
@@ -258,31 +270,49 @@ function sweepTerminalPhaseScopes(
 	const currentPhase = ferment.phases.find((p) => p.id === currentPhaseId)
 	const currentGroupIndex = currentPhase?.groupIndex
 	const terminalStatuses = new Set(["completed", "skipped", "failed"])
+
+	// First pass: collect all scopes to clear without mutating the store.
+	const scopesToClear: TodoScope[] = []
 	for (const phase of ferment.phases) {
 		if (phase.id === currentPhaseId) continue
 		if (!terminalStatuses.has(phase.status)) continue
 		// Skip phases in the same parallel group — they run alongside this one.
 		if (currentGroupIndex !== undefined && phase.groupIndex === currentGroupIndex) continue
-		// Clear the phase's ferment scope if it still has todos.
+		// Check the phase's ferment scope.
 		const phaseScope: TodoScope = { kind: "ferment", phaseId: phase.id }
 		if (getTodosForScope(phaseScope, sessionId).length > 0) {
-			applyAndPersist({ scope: phaseScope, todos: [] }, sessionId, appendEntry)
+			scopesToClear.push(phaseScope)
 		}
-		// Clear any ferment-step scopes for this phase.
-		const state = getTodoState(sessionId)
-		for (const scopeKey of Object.keys(state.byScope)) {
-			let scope: TodoScope
-			try {
-				scope = parseTodoScopeKey(scopeKey)
-			} catch {
-				continue
-			}
-			if (scope.kind !== "ferment-step") continue
-			const sp = scope as { phaseId: string; stepId: string }
-			if (sp.phaseId !== phase.id) continue
-			if (state.byScope[scopeKey].todos.length === 0) continue
-			applyAndPersist({ scope, todos: [] }, sessionId, appendEntry)
+	}
+
+	// Also collect stale ferment-step scopes for terminal phases.
+	// Snapshot the keys from the current state — this is safe because
+	// Object.keys returns a new array, and we don't mutate until the second pass.
+	const state = getTodoState(sessionId)
+	const terminalPhaseIds = new Set(
+		ferment.phases
+			.filter((p) => terminalStatuses.has(p.status) && p.id !== currentPhaseId)
+			.filter((p) => currentGroupIndex === undefined || p.groupIndex !== currentGroupIndex)
+			.map((p) => p.id),
+	)
+	for (const scopeKey of Object.keys(state.byScope)) {
+		let scope: TodoScope
+		try {
+			scope = parseTodoScopeKey(scopeKey)
+		} catch {
+			continue
 		}
+		if (scope.kind !== "ferment-step") continue
+		const sp = scope as { phaseId: string; stepId: string }
+		if (!terminalPhaseIds.has(sp.phaseId)) continue
+		if (state.byScope[scopeKey].todos.length === 0) continue
+		scopesToClear.push(scope)
+	}
+
+	// Second pass: mutate. Each call replaces the store state, but we're
+	// iterating our own array, not the store's keys.
+	for (const scope of scopesToClear) {
+		applyAndPersist({ scope, todos: [] }, sessionId, appendEntry)
 	}
 }
 
