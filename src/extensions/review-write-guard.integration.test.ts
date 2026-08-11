@@ -132,6 +132,25 @@ describe("reviewWriteGuardExtension wiring", () => {
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 	})
 
+	it("does not renew the review allowance when an Agent returns", () => {
+		const pi = createMockPI()
+		reviewWriteGuardExtension(pi as unknown as PI)
+		mockPhase = "review"
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_result", { toolName: "Agent" })
+
+		emit(pi, "tool_call", { toolName: "edit" })
+
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: [expect.objectContaining({ text: expect.stringContaining("up to two small edit/write calls") })],
+			}),
+			{ deliverAs: "steer" },
+		)
+	})
+
 	it("tool_result for Agent in build phase records subagent return", () => {
 		const pi = createMockPI()
 		reviewWriteGuardExtension(pi as unknown as PI)
