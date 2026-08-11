@@ -34,6 +34,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { resolve } from "node:path"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import { resolveFermentsDir } from "../../ferment/store.js"
+import type { FermentCharter } from "../../ferment/types.js"
 
 export const PENDING_PROPOSAL_SCHEMA_VERSION = 1
 
@@ -45,6 +46,9 @@ export interface PendingProposalData {
 	successCriteria: string[]
 	constraints: string[]
 	assumptions: string
+	/** Intent charter proposed with this scope; restored when the review is
+	 *  re-armed after a session restart. Optional (proposals predate charters). */
+	charter?: FermentCharter
 	phases: ScopePhaseInput[]
 	planMarkdown: string
 	proposeIterations: number

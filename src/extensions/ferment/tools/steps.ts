@@ -388,6 +388,7 @@ Do NOT call start_ferment_step again without user input.`,
 	const planFirstPreamble = `📋 Plan first (every start of this step):
 • Write a brief 2-4 bullet inline plan for this step's work.
 • Include a verification sub-task that checks exact expected output, not just substring grep. Match the verify command's precision.
+• If the artifact has behavior no script can decide (rendered output, interactive behavior), include an inspection sub-task: exercise the artifact in its native medium and record what you observed (S2 'inspected' class).
 • If the step compiles or builds artifacts, include a cleanup sub-task to remove intermediate files from output directories.
 • Embed the plan in the worker Agent's prompt at dispatch time.${priorContext}`
 
@@ -408,7 +409,7 @@ export async function completeStep(
 	services: StepHandlerServices = defaultStepHandlerServices,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
-	runtime.captureJudgeContext(ctx.model, ctx.modelRegistry)
+	runtime.captureJudgeContext(ctx.model, ctx.modelRegistry, getMultiModelEnabled(ctx.sessionManager))
 
 	const f = runtime.getStorage().get(params.ferment_id)
 	if (!f) return toolErr("Ferment not found.")

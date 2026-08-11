@@ -475,6 +475,12 @@ function buildNotificationDetails(
 }
 
 let activeManager: AgentManager | undefined
+
+/** Test seam: inject a fake manager so spawnGraderAgent can be unit-tested
+ *  without booting the agents extension. */
+export function setActiveManagerForTest(manager: AgentManager | undefined): void {
+	activeManager = manager
+}
 let activeWidget: { ensureTimer: () => void; update: () => void; markFinished: (id: string) => void } | undefined
 let budgetRetryBlock: BudgetRetryBlock | undefined
 const budgetRetryCandidates = new Map<string, BudgetRetryCandidate>()
@@ -531,6 +537,26 @@ export async function runWithOverlay<T>(description: string, fn: () => Promise<T
 	}
 }
 
+/** Resolve the model the Grader subagent should grade with: the configured
+ *  `modelRoles.judge` ref resolved against the session registry — the same
+ *  resolution the ferment judge uses for single-shot grades and for its
+ *  `gradedBy` provenance label. Only applies in multi-model mode: in
+ *  single-model mode the judge IS the current session model, so this returns
+ *  undefined and the agent runner falls back to ctx.model. Also undefined
+ *  when the role does not resolve in the registry, which matches the judge's
+ *  own session-model fallback. */
+function resolveGraderModel(ctx: ExtensionContext): typeof ctx.model | undefined {
+	if (!getMultiModelEnabled(ctx.sessionManager)) return undefined
+	const judgeAssignment = getModelRoles().judge
+	const judgeModelStr = Array.isArray(judgeAssignment) ? judgeAssignment[0] : judgeAssignment
+	if (!judgeModelStr) return undefined
+	const resolved = resolveModel(judgeModelStr, ctx.modelRegistry as ModelRegistry)
+	// resolveModel returns `unknown | string` (string is an error message) —
+	// same casting pattern as the Agent-tool model resolution below.
+	if (typeof resolved === "string") return undefined
+	return resolved as typeof ctx.model
+}
+
 /** Spawn a Grader subagent (read-only + bash, bounded turns) and wait for its
  *  result. Returns the agent's final text response and status. Used by the
  *  ferment grader to independently verify agent claims with tool access.
@@ -565,12 +591,19 @@ export async function spawnGraderAgent(
 	// Allow the grader to be cancelled when the parent session shuts down.
 	const abortController = new AbortController()
 
+	// Resolve and pass the judge-role model so this grader runs on the same
+	// model the ferment judge labels its grades with (describeJudgeModel).
+	// Without it the runner silently falls back to the parent session model,
+	// making persisted `gradedBy` provenance wrong whenever the roles differ.
+	const graderModel = resolveGraderModel(ctx)
+
 	const record = await activeManager.spawnAndWait(pi, ctx, AGENT_GRADER_TYPE, prompt, {
 		description: "Ferment grader",
 		visibility: "system",
 		sessionFile,
 		sessionDir,
 		signal: abortController.signal,
+		...(graderModel ? { model: graderModel } : {}),
 	})
 	// Collect all assistant text from the session — the grade JSON may appear
 	// in an earlier turn, not just the final response.

@@ -23,6 +23,27 @@
 #                                   Also add "xhigh" and "max" to the THINKING_LEVELS
 #                                   fallback constant so getAvailableThinkingLevels()
 #                                   returns them when no model is set.
+#                                   Also make setActiveToolsByName() and the
+#                                   resources-discovered reload path preserve an
+#                                   extension-installed system prompt (any prompt that
+#                                   differs from _baseSystemPrompt, e.g. a
+#                                   before_agent_start override) instead of resetting
+#                                   to the default prompt. Upstream tracking:
+#                                   https://github.com/earendil-works/pi-mono/issues/new
+#                                   (file alongside PR; see .kimchi/docs/pi-default-prompt-investigation.md).
+#                                   Removal criteria: upstream setActiveToolsByName /
+#                                   resource reload no longer clobber a non-base
+#                                   systemPrompt, or upstream adds a prompt
+#                                   re-resolution hook we adopt instead.
+#                                   Also fire before_agent_start in sendCustomMessage's
+#                                   triggerTurn branch (mirroring prompt()), so
+#                                   extensions that install the system prompt only in
+#                                   that hook run for sessions driven entirely by
+#                                   extension-triggered turns (kimchi ferment / one-shot
+#                                   flows) instead of staying on the default base prompt.
+#                                   Removal criteria: upstream emits before_agent_start
+#                                   for extension-triggered turns (or moves prompt
+#                                   resolution out of prompt()).
 #   5. dist/modes/interactive/  — miscellaneous upstream UI fixes bundled in this patch
 #   6. dist/modes/interactive/interactive-mode.js — add previewTheme(name) and
 #      dist/core/extensions/types.d.ts              showError(message) to createExtensionUIContext,
@@ -35,69 +56,16 @@
 #                                 the public ui.setTheme() includes.
 #
 #                                 Why a patch is required: the public ExtensionUIContext conflates
-#                                 "change the rendered theme" and "persist to settingsManager" — the
-#                                 public ui.setTheme() always does both. Theme preview already exists
+#                                 "change the rendered theme" and "persist to settingsManager" —
+#                                 the public ui.setTheme() always does both. Theme preview already exists
 #                                 inside InteractiveMode (used by /settings via the private
 #                                 themeController.preview()); the patch simply promotes it to the
 #                                 extension API surface. There is no public-API-only workaround: the
 #                                 only alternative is ui.setTheme() on each arrow-key press, which
 #                                 writes to disk every keystroke and leaves a dirty settings state
 #                                 if the user cancels.
-#
-#                                 showError delegates to the inherited SessionMode.showError so
-#                                 extensions can surface error overlays (not toasts).
-#   7. dist/modes/interactive/components/model-selector.js — accept sessionId constructor
-#      dist/modes/interactive/interactive-mode.js            parameter and key all reads/writes
-#                                                            to process.__kimchiMultiModelEnabled
-#                                                            and process.__kimchiOrchestratorRef
-#                                                            through Map<sessionId, value> instead
-#                                                            of plain globals, so multi-model state
-#                                                            is per-session.
-#   8. dist/core/tools/bash.js — (a) destroy child stdio streams 500ms after a timeout kill
-#      so the tool call returns even when setsid'd grandchildren (e.g. bubblewrap used
-#      by opam install on Linux) escape the process group SIGKILL and keep the stdout
-#      pipe open, which would otherwise cause waitForChildProcess to hang indefinitely.
-#      (b) call killProcessTree in the finally block on normal completion, not just on
-#      timeout/abort. Without this, processes backgrounded with `&` / `nohup` / `disown`
-#      inside a bash command are orphaned when the shell exits, accumulating until the
-#      container OOMs. Upstream tracking: TBD.
-#      Removal criteria: upstream merges a fix that kills the process group on
-#      normal completion in the bash tool.
-#   9. package.json — add "./dist/core/tools/output-accumulator.js" to the package's
-#      exports map (with types + import conditions) so deep imports of OutputAccumulator
-#      resolve correctly at runtime and type-check time. Needed by the background-bash
-#      extension's process registry, which uses OutputAccumulator directly instead of
-#      a local wrapper.
-#
-# Tracking: open an upstream PR against pi-mono to ship before_provider_headers as
-# a first-class extension hook in ExtensionRunner and ExtensionAPI. Also track a
-# separate PR to add previewTheme + showError to ExtensionUIContext.
-# Issue: TODO — file against https://github.com/earendil-works/pi-mono once the
-# API design is confirmed stable.
-#
-# Removal criteria:
-#   - Items 1-3 (before_provider_headers): upstream pi-mono ships BeforeProviderHeadersEvent
-#     and ExtensionAPI.on("before_provider_headers", ...) as a first-class hook, and
-#     the fixed version is pinned in package.json.
-#   - Item 4 (prepareNextTurn + THINKING_LEVELS): upstream pi-mono wires
-#     agent.prepareNextTurn in AgentSession._installAgentToolHooks() so context.tools
-#     refreshes after each tool batch without a patch, AND upstream pi-coding-agent
-#     includes "xhigh" and "max" in the THINKING_LEVELS constant. Both must be
-#     fixed and the version pinned in package.json.
-#   - Item 5: individual fixes land upstream and the patched version is updated.
-#   - Item 6 (previewTheme + showError): upstream pi-coding-agent ships previewTheme
-#     and showError on ExtensionUIContext and the fixed version is pinned in package.json.
-#   - Item 7: Kimchi-specific multi-model settings.
-#   - Item 8 (bash timeout stream destroy): upstream pi-coding-agent's
-#     createLocalBashOperations destroys child stdio after a timeout kill (or
-#     waitForChildProcess gains a max-wait that forces resolution), and the
-#     fixed version is pinned in package.json.
-#   - Item 9 (output-accumulator exports): upstream pi-coding-agent exports
-#     OutputAccumulator from the package root (or adds the deep path to exports),
-#     and the fixed version is pinned in package.json.
-#
 diff --git a/dist/cli/args.js b/dist/cli/args.js
-index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..ad705421fb9087efd8ad2cfbfe8709d198245751 100644
+index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..63ca4495adc5dc3428d45f3a8bfaa3b7cc6a1d65 100644
 --- a/dist/cli/args.js
 +++ b/dist/cli/args.js
 @@ -3,7 +3,7 @@
@@ -109,9 +77,15 @@ index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..ad705421fb9087efd8ad2cfbfe8709d1
  export function isValidThinkingLevel(level) {
      return VALID_THINKING_LEVELS.includes(level);
  }
-@@ -248,1 +248,1 @@
+@@ -246,7 +246,7 @@ ${chalk.bold("Options:")}
+                                  Applies to built-in, extension, and custom tools
+   --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable
+                                  Applies to built-in, extension, and custom tools
 -  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh
 +  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max
+   --extension, -e <path>         Load an extension file (can be used multiple times)
+   --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)
+   --skill <path>                 Load a skill file or directory (can be used multiple times)
 @@ -321,6 +321,7 @@ ${chalk.bold("Examples:")}
    ${APP_NAME} --export session.jsonl output.html
  
@@ -121,7 +95,7 @@ index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..ad705421fb9087efd8ad2cfbfe8709d1
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
    ANT_LING_API_KEY                 - Ant Ling API key
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 3b2c24d1b52869e351ea488f0c535c34eaedf127..7302cc4df1e25be2e38489afb7c8ea8364695542 100644
+index 3b2c24d1b52869e351ea488f0c535c34eaedf127..2006918a17488764ffc7fd7cf4aee973e98d6e5d 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
 @@ -60,7 +60,7 @@
@@ -133,7 +107,7 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..7302cc4df1e25be2e38489afb7c8ea83
  // ============================================================================
  // AgentSession Class
  // ============================================================================
-@@ -203,6 +203,20 @@ export class AgentSession {
+@@ -203,6 +203,20 @@
                  throw new Error(`Extension failed, blocking execution: ${String(err)}`);
              }
          };
@@ -154,7 +128,71 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..7302cc4df1e25be2e38489afb7c8ea83
          this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
              const runner = this._extensionRunner;
              if (!runner.hasHandlers("tool_result")) {
-@@ -1270,8 +1284,9 @@ export class AgentSession {
+@@ -558,9 +572,17 @@
+             }
+         }
+         this.agent.state.tools = tools;
+-        // Rebuild base system prompt with new tool set
++        // Rebuild base system prompt with new tool set.
++        // kimchi-dev: preserve an extension-installed system prompt (e.g. a
++        // before_agent_start override). This method's contract is to change the
++        // tool set; unconditionally resetting state.systemPrompt would discard
++        // extension-built prompts mid-run, degrading the model to the default
++        // prompt until the next user prompt re-fires before_agent_start.
++        const systemPromptOverride = this.agent.state.systemPrompt !== this._baseSystemPrompt
++            ? this.agent.state.systemPrompt
++            : undefined;
+         this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
+-        this.agent.state.systemPrompt = this._baseSystemPrompt;
++        this.agent.state.systemPrompt = systemPromptOverride ?? this._baseSystemPrompt;
+     }
+     /** Whether compaction or branch summarization is currently running */
+     get isCompacting() {
+@@ -1001,7 +1023,42 @@
+             }
+         }
+         else if (options?.triggerTurn) {
+-            await this._runAgentPrompt(appMessage);
++            // kimchi-dev: fire before_agent_start for extension-triggered turns,
++            // mirroring prompt(). Extensions that install the system prompt (or
++            // inject context messages) only in that hook otherwise never run when
++            // a session is driven entirely by sendCustomMessage(..., { triggerTurn:
++            // true }) or followUp delivery (kimchi ferment/one-shot flows), leaving
++            // the agent on the default base prompt for the whole run.
++            const triggerMessages = [appMessage];
++            // content may be a plain string (agent-completion notifications,
++            // feedback nudges) or ContentPart[] — normalize before extracting text.
++            const triggerParts = Array.isArray(appMessage.content)
++                ? appMessage.content
++                : [{ type: "text", text: String(appMessage.content) }];
++            const triggerText = triggerParts
++                .filter((part) => part.type === "text")
++                .map((part) => part.text)
++                .join("\n");
++            const beforeResult = await this._extensionRunner.emitBeforeAgentStart(triggerText, undefined, this._baseSystemPrompt, this._baseSystemPromptOptions);
++            if (beforeResult?.messages) {
++                for (const msg of beforeResult.messages) {
++                    triggerMessages.unshift({
++                        role: "custom",
++                        customType: msg.customType,
++                        content: msg.content,
++                        display: msg.display,
++                        details: msg.details,
++                        timestamp: Date.now(),
++                    });
++                }
++            }
++            if (beforeResult?.systemPrompt) {
++                this.agent.state.systemPrompt = beforeResult.systemPrompt;
++            }
++            else {
++                this.agent.state.systemPrompt = this._baseSystemPrompt;
++            }
++            await this._runAgentPrompt(triggerMessages);
+         }
+         else {
+             this.agent.state.messages.push(appMessage);
+@@ -1270,8 +1327,9 @@
       * Manually compact the session context.
       * Aborts current agent operation first.
       * @param customInstructions Optional instructions for the compaction summary
@@ -165,7 +203,7 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..7302cc4df1e25be2e38489afb7c8ea83
          this._disconnectFromAgent();
          await this.abort();
          this._compactionAbortController = new AbortController();
-@@ -1283,14 +1298,21 @@ export class AgentSession {
+@@ -1283,14 +1341,21 @@
              const { apiKey, headers, env } = await this._getCompactionRequestAuth(this.model);
              const pathEntries = this.sessionManager.getBranch();
              const settings = this.settingsManager.getCompactionSettings();
@@ -189,7 +227,22 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..7302cc4df1e25be2e38489afb7c8ea83
              }
              let extensionCompaction;
              let fromExtension = false;
-@@ -1809,7 +1831,7 @@ export class AgentSession {
+@@ -1678,8 +1743,13 @@
+             themePaths: this.buildExtensionResourcePaths(themePaths),
+         };
+         this._resourceLoader.extendResources(extensionPaths);
++        // kimchi-dev: same override preservation as setActiveToolsByName — newly
++        // discovered resources must not discard an extension-installed prompt.
++        const systemPromptOverride = this.agent.state.systemPrompt !== this._baseSystemPrompt
++            ? this.agent.state.systemPrompt
++            : undefined;
+         this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+-        this.agent.state.systemPrompt = this._baseSystemPrompt;
++        this.agent.state.systemPrompt = systemPromptOverride ?? this._baseSystemPrompt;
+     }
+     buildExtensionResourcePaths(entries) {
+         return entries.map((entry) => {
+@@ -1809,7 +1879,7 @@
              compact: (options) => {
                  void (async () => {
                      try {
@@ -317,7 +370,7 @@ index e386db6d62622a8c77c7d7e9844e63020d8af39a..f2f9e0161b47f7111df88f429c36feb7
          },
          onPayload: async (payload, _model) => {
 diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
-index 98b69bb9ccf6464dfaec7b2271cf78677cb73ce9..8a3e5f7b2c1d4e8f9a2b0c3d4e5f6a7b8c9d0e1f 100644
+index 98b69bb9ccf6464dfaec7b2271cf78677cb73ce9..e746c2c99edd7fb9da866b60f80fb8b8de8ed630 100644
 --- a/dist/core/tools/bash.js
 +++ b/dist/core/tools/bash.js
 @@ -62,6 +62,16 @@ export function createLocalBashOperations(options) {
@@ -337,12 +390,10 @@ index 98b69bb9ccf6464dfaec7b2271cf78677cb73ce9..8a3e5f7b2c1d4e8f9a2b0c3d4e5f6a7b
                      }, timeout * 1000);
                  }
                  // Stream stdout and stderr.
-@@ -95,12 +105,22 @@ export function createLocalBashOperations(options) {
+@@ -86,6 +96,16 @@ export function createLocalBashOperations(options) {
                  return { exitCode };
              }
              finally {
--                if (child.pid)
--                    untrackDetachedChildPid(child.pid);
 +                // Kill the process group on normal completion too, not just
 +                // on timeout/abort. Without this, processes backgrounded with
 +                // `&` / `nohup` / `disown` inside the bash command are
@@ -353,15 +404,9 @@ index 98b69bb9ccf6464dfaec7b2271cf78677cb73ce9..8a3e5f7b2c1d4e8f9a2b0c3d4e5f6a7b
 +                if (child.pid && child.exitCode === null) {
 +                    killProcessTree(child.pid);
 +                }
-+                if (child.pid)
-+                    untrackDetachedChildPid(child.pid);
+                 if (child.pid)
+                     untrackDetachedChildPid(child.pid);
                  if (timeoutHandle)
-                     clearTimeout(timeoutHandle);
-                 if (signal)
-                     signal.removeEventListener("abort", onAbort);
-             }
-         },
-     };
 diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
 index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5d97aa84c 100644
 --- a/dist/core/tools/edit.js

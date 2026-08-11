@@ -314,6 +314,7 @@ export function markHumanInput(): void {
 
 let judgeModel: Model<Api> | undefined
 let judgeModelRegistry: ModelRegistry | undefined
+let judgeMultiModelEnabled = false
 
 export function getJudgeModel(): Model<Api> | undefined {
 	return judgeModel
@@ -323,9 +324,17 @@ export function getJudgeModelRegistry(): ModelRegistry | undefined {
 	return judgeModelRegistry
 }
 
-export function captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry): void {
+/** Whether the judge may use the configured modelRoles.judge assignment.
+ *  Single-model sessions grade with the current session model; roles only
+ *  apply when multi-model mode is on. */
+export function isJudgeMultiModelEnabled(): boolean {
+	return judgeMultiModelEnabled
+}
+
+export function captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry, multiModelEnabled?: boolean): void {
 	if (model) judgeModel = model
 	if (registry) judgeModelRegistry = registry
+	if (multiModelEnabled !== undefined) judgeMultiModelEnabled = multiModelEnabled
 }
 
 // ─── Counter abstraction ──────────────────────────────────────────────────────

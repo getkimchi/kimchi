@@ -38,6 +38,7 @@ import {
 	handleSessionStart,
 } from "./handlers/session.js"
 import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/tools.js"
+import { handleWorkflowEvent } from "./handlers/workflows.js"
 import { type TelemetryAttributes, TelemetryContext } from "./session-context.js"
 import { startSettingsChangeWatcher } from "./settings-change-emitter.js"
 import {
@@ -48,6 +49,7 @@ import {
 	type SurveyDismissedTelemetry,
 	type SurveyShownTelemetry,
 } from "./survey.js"
+import { WORKFLOW_TELEMETRY_CHANNEL } from "./workflow-events.js"
 
 // ---------------------------------------------------------------------------
 // Module-level state for ferment lifecycle tracking
@@ -632,6 +634,17 @@ function onLoopGuardSubagentAbort(raw: unknown): void {
 }
 
 // ---------------------------------------------------------------------------
+// Workflow domain event handler (subscribed via pi.events)
+// ---------------------------------------------------------------------------
+
+function onWorkflowTelemetry(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _telemetryCtx
+	if (!ctx) return
+	handleWorkflowEvent(ctx, raw)
+}
+
+// ---------------------------------------------------------------------------
 // Extension factory
 // ---------------------------------------------------------------------------
 
@@ -676,6 +689,9 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		// telemetry translates them into OTLP records for analytics.
 		pi.events.on(LOOP_GUARD_EVENTS.WARN, onLoopGuardWarn)
 		pi.events.on(LOOP_GUARD_EVENTS.SUBAGENT_ABORT, onLoopGuardSubagentAbort)
+
+		// Workflow domain events (kimchi-workflows): one envelope channel covers the whole contract.
+		pi.events.on(WORKFLOW_TELEMETRY_CHANNEL, onWorkflowTelemetry)
 
 		pi.on("session_start", async (_event, ctx) => {
 			resetBashGuardCounts()

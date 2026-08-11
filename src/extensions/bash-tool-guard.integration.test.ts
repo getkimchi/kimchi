@@ -1,6 +1,6 @@
 /**
  * Integration tests for the bashToolGuardExtension wiring.
- * Tests the event handler registration (session_start, input, tool_call)
+ * Tests the event handler registration (session_start, input, turn_start, tool_call)
  * using a mock ExtensionAPI.
  */
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -124,11 +124,12 @@ function fireSessionStart(pi: MockExtensionAPI, ctx: ReturnType<typeof fakeCtx> 
 }
 
 describe("bashToolGuardExtension wiring", () => {
-	it("registers session_start, input, and tool_call handlers", () => {
+	it("registers session_start, input, turn_start, and tool_call handlers", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		expect(pi.handlers.session_start?.length).toBeGreaterThan(0)
 		expect(pi.handlers.input?.length).toBeGreaterThan(0)
+		expect(pi.handlers.turn_start?.length).toBeGreaterThan(0)
 		expect(pi.handlers.tool_call?.length).toBeGreaterThan(0)
 	})
 
@@ -147,6 +148,23 @@ describe("bashToolGuardExtension wiring", () => {
 		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: STEER_MESSAGE_TYPE }), {
 			deliverAs: "steer",
 		})
+	})
+
+	it("coalesces warn-only steers within a turn and rearms on the next turn", () => {
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI)
+		fireSessionStart(pi)
+
+		emit(pi, "turn_start")
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sed -i 's/a/b/' a.ts" } })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi._emittedEvents.filter(({ channel }) => channel === BASH_TOOL_GUARD_EVENTS.WARN)).toHaveLength(3)
+
+		emit(pi, "turn_start")
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat c.ts" } })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
 	})
 
 	it("second matching bash call blocks", () => {

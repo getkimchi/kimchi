@@ -239,18 +239,20 @@ describe("passive staleness counter", () => {
 		__resetTodoStore()
 	})
 
-	it("does not inject context checkpoints after non-todo work", async () => {
+	it("injects todo state into the context on every LLM call", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
 		applyWriteTodos({ todos: [{ content: "check work", status: "in_progress" }] }, "session")
-		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
 
-		// No context event messages should be injected — the old checkpoint
-		// mechanism has been removed in favor of passive state rendering.
-		const result = await harness.fire("context", { messages: [] }, ctx)
-		expect(result).toBeUndefined()
+		const result = (await harness.fire("context", { messages: [] }, ctx)) as
+			| { messages: Array<{ role?: string; content?: string }> }
+			| undefined
+		expect(result).toBeDefined()
+		expect(result?.messages).toHaveLength(1)
+		expect(result?.messages[0]?.content).toContain("## Current Todos")
+		expect(result?.messages[0]?.content).toContain("check work")
 	})
 
 	it("does not send reconciliation follow-ups after terminal turns", async () => {

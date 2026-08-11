@@ -10,6 +10,7 @@ import {
 	AgentSideConnection,
 	type AuthenticateRequest,
 	type AuthenticateResponse,
+	type AuthMethod,
 	type CancelNotification,
 	type ClientCapabilities,
 	type CloseSessionRequest,
@@ -21,6 +22,8 @@ import {
 	type ListSessionsResponse,
 	type LoadSessionRequest,
 	type LoadSessionResponse,
+	type LogoutRequest,
+	type LogoutResponse,
 	type NewSessionRequest,
 	type NewSessionResponse,
 	ndJsonStream,
@@ -54,6 +57,9 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import { authenticateViaBrowser } from "../../cli-auth/index.js"
+import { clearApiKey, writeApiKey } from "../../config.js"
+import { KIMCHI_PROVIDER_ID } from "../../extensions/login/flow.js"
 import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
 import type { ProbeResult } from "../../extensions/mcp-adapter/types.js"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
@@ -79,6 +85,7 @@ import {
 } from "../../extensions/permissions/mode-controller-registry.js"
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
+import { updateModelsConfig } from "../../models.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
@@ -90,6 +97,10 @@ import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompte
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
 import { asString, truncate } from "./utils.js"
+
+/** Auth method ID for Agent Auth (browser-based OAuth). Used in both
+ * initialize() declaration and authenticate() validation to avoid typo drift. */
+const KIMCHI_AGENT_AUTH_METHOD_ID = "kimchi-agent"
 
 /**
  * Produces an unbound AgentSession for a newSession request. The ACP agent owns
@@ -229,10 +240,37 @@ export class KimchiAcpAgent implements Agent {
 		const authStorage = AuthStorage.create(join(this.agentDir, "auth.json"))
 		const modelRegistry = ModelRegistry.create(authStorage, join(this.agentDir, "models.json"))
 		const supportsImages = modelRegistry.getAvailable().some((m) => m.input?.includes("image"))
+
+		// ACP Registry compliance: advertise at least one auth method. Agent Auth
+		// (browser-based OAuth via local callback server) is always declared.
+		// Terminal Auth (interactive `kimchi login`) is declared only when the
+		// client advertises the terminal capability, per the auth-methods RFD:
+		// "An Agent may advertise a terminal authentication method only when the
+		// Client advertised the corresponding capability."
+		const authMethods: AuthMethod[] = [
+			{
+				id: KIMCHI_AGENT_AUTH_METHOD_ID,
+				name: "Kimchi Login",
+				description: "Authenticate via browser to Kimchi",
+			},
+		]
+		if (request.clientCapabilities?.auth?.terminal === true) {
+			authMethods.push({
+				id: "kimchi-terminal",
+				name: "Log in from terminal",
+				description: "Run Kimchi's interactive login flow",
+				type: "terminal",
+				args: ["login"],
+			})
+		}
+
 		return {
 			protocolVersion: PROTOCOL_VERSION,
 			agentCapabilities: {
 				loadSession: true,
+				// Advertise logout support so clients know they can call
+				// `unstable_logout` to clear stored credentials.
+				auth: { logout: {} },
 				// `list: {}` advertises support for session/list per spec
 				// (SessionListCapabilities is `{ _meta? }` — empty object means
 				// "supported"). loadSession remains the top-level flag because
@@ -247,7 +285,7 @@ export class KimchiAcpAgent implements Agent {
 					},
 				},
 			},
-			authMethods: [],
+			authMethods,
 		}
 	}
 
@@ -279,7 +317,50 @@ export class KimchiAcpAgent implements Agent {
 		return { sessions, nextCursor: null }
 	}
 
-	async authenticate(_: AuthenticateRequest): Promise<AuthenticateResponse> {
+	async authenticate(params: AuthenticateRequest): Promise<AuthenticateResponse> {
+		// Only the Agent Auth method ("kimchi-agent") is handled here. Terminal
+		// Auth ("kimchi-terminal") is resolved out-of-band: the client launches
+		// `kimchi login` as a separate process, so this method is never called
+		// for it.
+		if (params.methodId !== "kimchi-agent") {
+			throw RequestError.invalidParams(undefined, `unknown auth method: ${params.methodId}`)
+		}
+
+		// Run the browser OAuth flow: starts a local callback server, opens the
+		// user's browser to the Kimchi web app, and awaits the resulting token.
+		let token: string
+		try {
+			;({ token } = await authenticateViaBrowser())
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error)
+			throw RequestError.internalError(undefined, `Browser authentication failed: ${detail}`)
+		}
+		if (!token) {
+			throw RequestError.internalError(undefined, "Browser authentication did not return a token")
+		}
+
+		// Persist the key so new sessions pick it up via the login extension's
+		// session_start handler (which reads loadConfig().apiKey).
+		writeApiKey(token)
+
+		// Eagerly refresh the model cache so the subsequent newSession() call
+		// finds available models without another round-trip.
+		await updateModelsConfig(join(this.agentDir, "models.json"), token)
+
+		return {}
+	}
+
+	async unstable_logout(_params: LogoutRequest): Promise<LogoutResponse> {
+		// Clear the persisted API key from config (loadConfig().apiKey), so
+		// new sessions no longer pick it up via the login extension.
+		clearApiKey()
+
+		// Clear stored OAuth credentials (refresh tokens etc.) for the
+		// kimchi-dev provider from auth.json. AuthStorage.create is cheap —
+		// it reads auth.json lazily on access.
+		const authStorage = AuthStorage.create(join(this.agentDir, "auth.json"))
+		authStorage.logout(KIMCHI_PROVIDER_ID)
+
 		return {}
 	}
 

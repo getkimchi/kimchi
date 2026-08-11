@@ -52,6 +52,7 @@ import customizeStatusLineExtension from "./extensions/customize-status-line-com
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
+import hiddenToolGuidanceExtension from "./extensions/hidden-tool-guidance.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import ideAdapterExtension from "./extensions/ide-adapter/index.js"
 import infrastructureBreakerExtension from "./extensions/infrastructure-breaker.js"
@@ -556,10 +557,13 @@ try {
 			// Background mode is opt-in via `checkin_interval`; without it, bash
 			// runs synchronously as before.
 			bashBackgroundExtension,
-			// bash_control companion tool + visibility gating for background processes.
+			// bash_control companion tool. While a background process awaits a
+			// continue/stop decision, other tool calls are hard-blocked with a
+			// steering reason; natural process exit releases the gate.
 			bashControlExtension,
 			bashToolGuardExtension,
 			bashTimeoutGuidanceExtension,
+			hiddenToolGuidanceExtension,
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 			] satisfies ManagedExtensionFactory[]),

@@ -94,6 +94,12 @@ Sent when the cursor/selection moves. The IDE should debounce this (e.g. ~150 ms
 }
 ```
 
+**Harness behaviour on receipt:**
+
+The selection is rendered as a live input-box chip (`@file:range`) and auto-attached to the next prompt on send. The selection is **sticky** — it re-attaches on every send until a new `selection_changed` overwrites it (unlike `at_mentioned`, which is drained on send). If the user explicitly at-mentions the same range, the selection prefix is suppressed to avoid duplication.
+
+**Note:** the harness does not auto-clear the selection — it relies on the plugin's next notification to overwrite it. Plugins that want a collapsed selection to clear the chip should send a `selection_changed` with `lineStart: 0, lineEnd: 0`.
+
 ## Environment Variables
 
 | Variable | Description |
@@ -110,7 +116,7 @@ IDE opens project
 Kimchi discovers and connects
    └─> scans lockfile directory
    └─> matches workspace folder (or any alive lockfile)
-   └─> connects WebSocket (x-secret-key + ?token=)
+   └─> connects WebSocket (?token=)
    └─> MCP initialize / initialized handshake
    └─> calls tools/list
    └─> registers tools as ide_<name>
@@ -126,4 +132,4 @@ IDE closes project
 ## Design Notes
 
 - **No IDE-specific logic** in the harness. Any IDE supporting the lockfile + WebSocket MCP protocol can integrate without harness changes.
-- The harness uses a **custom WebSocket transport** (wrapping the `ws` package) because the official `@modelcontextprotocol/sdk` WebSocket transport does not support custom auth headers.
+- The harness uses a **custom WebSocket transport** (wrapping the `ws` package) because the official `@modelcontextprotocol/sdk` WebSocket transport does not support custom auth via query parameters on the WebSocket URL.

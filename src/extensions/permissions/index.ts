@@ -27,6 +27,7 @@ import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "..
 import { createApplyAndPersist } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
+import { isIdeConnected } from "../ide-adapter/index.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
 import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
@@ -786,6 +787,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			}
 
 			if (BUILTIN_ALLOW_TOOL_NAMES.includes(toolName)) return undefined
+
+			// IDE approval deferral: when the ide-adapter extension has an active
+			// IDE connection AND we're in default mode, write/edit approvals are
+			// handled via the IDE diff viewer. In auto/yolo the user has opted out
+			// of per-file approval, so don't defer.
+			if ((toolName === "write" || toolName === "edit") && mode === "default" && isIdeConnected()) {
+				// Skip the terminal prompt so the user isn't asked twice.
+				return undefined
+			}
 
 			// Ferment tools are internal state-management operations; bypass user rules and classifier prompts.
 			// User-facing ferment tools (`ask_user`) are listed in USER_FACING_FERMENT_TOOL_NAMES and skip this bypass.

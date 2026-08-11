@@ -107,6 +107,7 @@ function normalizeGateVerdict(v: { id: string; verdict: string }, turn: OwnerTur
 	switch (v.verdict) {
 		case "smoke":
 		case "test":
+		case "inspected":
 		case "syntactic":
 			v.verdict = "pass"
 			return
