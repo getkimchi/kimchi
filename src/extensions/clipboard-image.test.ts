@@ -222,6 +222,27 @@ describe("clipboard-image extension", () => {
 
 		afterEach(() => {
 			Object.defineProperty(process, "platform", { value: realPlatform })
+			vi.unstubAllEnvs()
+		})
+
+		it("does not poll the clipboard on Linux", () => {
+			Object.defineProperty(process, "platform", { value: "linux" })
+			vi.stubEnv("WAYLAND_DISPLAY", "")
+			vi.stubEnv("DISPLAY", ":0")
+			const hasImage = vi.fn(() => false)
+			const availableFormats = vi.fn(() => [])
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage, availableFormats },
+				error: null,
+			})
+
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+			vi.advanceTimersByTime(2000)
+
+			expect(availableFormats).not.toHaveBeenCalled()
+			expect(hasImage).not.toHaveBeenCalled()
 		})
 
 		it("shows hint when clipboard contains an image", () => {
