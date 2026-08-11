@@ -25,7 +25,6 @@ testOnLinux("does not invoke wl-paste while idle on Wayland", async ({ terminal 
 					chmodSync(helperPath, 0o755)
 				}
 				return {
-					data: { logPath },
 					env: {
 						DISPLAY: "",
 						PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
@@ -36,7 +35,7 @@ testOnLinux("does not invoke wl-paste while idle on Wayland", async ({ terminal 
 		},
 		async (fixture, trace) => {
 			await new Promise((resolve) => setTimeout(resolve, 2200))
-			const { logPath } = fixture.seedResult as { logPath: string }
+			const logPath = join(fixture.homeDir, "clipboard-helper.log")
 			expect(readFileSync(logPath, "utf8")).toBe("")
 			trace.step("no background clipboard helper invocation after two polling intervals")
 		},
