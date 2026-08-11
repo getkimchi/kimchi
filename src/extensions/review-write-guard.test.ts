@@ -13,15 +13,13 @@ afterEach(() => {
 })
 
 describe("OrchestratorWriteGuard — review phase", () => {
-	it("allows the first edits during review phase (trivial fix exception)", () => {
+	it("allows the first edit during review phase (trivial fix exception)", () => {
 		const guard = new OrchestratorWriteGuard(createContext())
 		expect(guard.checkToolCall("edit")).toBeUndefined()
-		expect(guard.checkToolCall("write")).toBeUndefined()
 	})
 
-	it("steers once the trivial-fix allowance is exhausted", () => {
+	it("steers after two edits", () => {
 		const guard = new OrchestratorWriteGuard(createContext())
-		guard.checkToolCall("edit")
 		guard.checkToolCall("edit")
 		expect(guard.checkToolCall("edit")).toEqual({ steer: expect.stringContaining("Delegation guard") })
 		expect(guard.checkToolCall("write")).toBeUndefined()
@@ -29,7 +27,6 @@ describe("OrchestratorWriteGuard — review phase", () => {
 
 	it("never blocks implementation edits in review phase", () => {
 		const guard = new OrchestratorWriteGuard(createContext())
-		guard.checkToolCall("write")
 		guard.checkToolCall("write")
 		expect(guard.checkToolCall("write")).toEqual({ steer: expect.stringContaining("Delegation guard") })
 		expect(guard.checkToolCall("write")).toBeUndefined()
@@ -40,18 +37,15 @@ describe("OrchestratorWriteGuard — review phase", () => {
 		const guard = new OrchestratorWriteGuard(createContext())
 		guard.checkToolCall("edit")
 		guard.checkToolCall("edit")
-		guard.checkToolCall("edit")
 		mockPhase = "build"
 		guard.checkToolCall("read")
 		mockPhase = "review"
-		expect(guard.checkToolCall("edit")).toBeUndefined()
 		expect(guard.checkToolCall("edit")).toBeUndefined()
 		expect(guard.checkToolCall("edit")).toEqual({ steer: expect.stringContaining("Delegation guard") })
 	})
 
 	it("does not renew the trivial-fix allowance when an Agent returns during review", () => {
 		const guard = new OrchestratorWriteGuard(createContext())
-		guard.checkToolCall("edit")
 		guard.checkToolCall("edit")
 		guard.recordSubagentReturn()
 		expect(guard.checkToolCall("edit")).toEqual({
@@ -75,7 +69,6 @@ describe("OrchestratorWriteGuard — review phase", () => {
 
 	it("steers only once per review phase", () => {
 		const guard = new OrchestratorWriteGuard(createContext())
-		guard.checkToolCall("edit")
 		guard.checkToolCall("edit")
 		expect(guard.checkToolCall("edit")).toEqual({ steer: expect.stringContaining("Delegation guard") })
 		expect(guard.checkToolCall("edit")).toBeUndefined()

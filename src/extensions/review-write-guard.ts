@@ -143,14 +143,15 @@ export class OrchestratorWriteGuard {
 			// Trivial fix exception: the orchestration instructions allow direct edits
 			// for a single obvious issue after NEEDS_FIXES. Edit count is a weak proxy
 			// for scope (a small fix may need several iteration rounds), so we steer
-			// once past the allowance instead of hard-blocking — a hard block here
+			// once the allowance is reached instead of hard-blocking — a hard block here
 			// either forces overkill delegation for truly trivial fixes or strands a
 			// half-applied fix mid-iteration.
 			this.reviewWriteCount++
-			if (this.reviewWriteCount <= REVIEW_PHASE_ALLOWANCE) return undefined
-			if (this.reviewSteered) return undefined
-			this.reviewSteered = true
-			return { steer: REVIEW_STEER_MESSAGE }
+			if (this.reviewWriteCount >= REVIEW_PHASE_ALLOWANCE && !this.reviewSteered) {
+				this.reviewSteered = true
+				return { steer: REVIEW_STEER_MESSAGE }
+			}
+			return undefined
 		}
 
 		if (phase === "build" && this.implementationTools.has(toolName)) {

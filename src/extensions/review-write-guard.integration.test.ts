@@ -48,7 +48,6 @@ describe("reviewWriteGuardExtension wiring", () => {
 		mockPhase = "review"
 		emit(pi, "tool_call", { toolName: "edit" })
 		emit(pi, "tool_call", { toolName: "edit" })
-		emit(pi, "tool_call", { toolName: "edit" })
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 
 		// Move to build phase and record a subagent return
@@ -63,7 +62,6 @@ describe("reviewWriteGuardExtension wiring", () => {
 		mockPhase = "review"
 		pi.sendMessage.mockClear()
 		emit(pi, "tool_call", { toolName: "edit" })
-		emit(pi, "tool_call", { toolName: "edit" })
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		emit(pi, "tool_call", { toolName: "edit" })
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
@@ -77,19 +75,17 @@ describe("reviewWriteGuardExtension wiring", () => {
 		expect(pi.blockResult).toBeUndefined()
 	})
 
-	it("tool_call for edit during review phase allows the first edits (trivial fix exception)", () => {
+	it("tool_call for edit during review phase allows the first edit (trivial fix exception)", () => {
 		const pi = createMockPI()
 		mockPhase = "review"
-		emit(pi, "tool_call", { toolName: "edit" })
 		emit(pi, "tool_call", { toolName: "edit" })
 		expect(pi.blockResult).toBeUndefined()
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("tool_call for edit during review phase steers once the trivial-fix allowance is exhausted, but never blocks", () => {
+	it("tool_call for edit during review phase steers after two edits, but never blocks", () => {
 		const pi = createMockPI()
 		mockPhase = "review"
-		emit(pi, "tool_call", { toolName: "edit" })
 		emit(pi, "tool_call", { toolName: "edit" })
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		emit(pi, "tool_call", { toolName: "edit" })
@@ -103,10 +99,9 @@ describe("reviewWriteGuardExtension wiring", () => {
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 	})
 
-	it("tool_call for write during review phase steers once the trivial-fix allowance is exhausted", () => {
+	it("tool_call for write during review phase steers after two writes", () => {
 		const pi = createMockPI()
 		mockPhase = "review"
-		emit(pi, "tool_call", { toolName: "write" })
 		emit(pi, "tool_call", { toolName: "write" })
 		emit(pi, "tool_call", { toolName: "write" })
 		expect(pi.blockResult).toBeUndefined()
@@ -116,7 +111,6 @@ describe("reviewWriteGuardExtension wiring", () => {
 	it("does not renew the review allowance when an Agent returns", () => {
 		const pi = createMockPI()
 		mockPhase = "review"
-		emit(pi, "tool_call", { toolName: "edit" })
 		emit(pi, "tool_call", { toolName: "edit" })
 		emit(pi, "tool_result", { toolName: "Agent" })
 
@@ -366,9 +360,8 @@ describe("reviewWriteGuardExtension wiring", () => {
 		// the old instance is gone — assert by re-checking sessionStart behavior.
 		emit(pi, "session_start", {}, ctx)
 		mockPhase = "review"
-		// First two review edits are allowed; the third steers on a fresh guard.
+		// The first review edit is silent; the second steers on a fresh guard.
 		pi.sendMessage.mockClear()
-		emit(pi, "tool_call", { toolName: "edit" }, ctx)
 		emit(pi, "tool_call", { toolName: "edit" }, ctx)
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		expect(pi.blockResult).toBeUndefined()
