@@ -346,8 +346,10 @@ describe("todo widget helpers", () => {
 		}
 	})
 
-	it("detects ferment todos by content prefix even in global scope", () => {
-		// Edge case: ferment-formatted todos accidentally written to global scope
+	it("renders global-scope items with standard styling regardless of content prefix", () => {
+		// Edge case: ferment-formatted todos accidentally written to global scope.
+		// These should get standard global styling, NOT ferment-specific styling
+		// (the old content-prefix heuristic is removed; styling is scope-based).
 		applyWriteTodos(
 			{
 				scope: { kind: "global" },
@@ -361,10 +363,10 @@ describe("todo widget helpers", () => {
 
 		const lines = __test_buildTodoLines(theme, TEST_SESSION_ID)
 
-		// Even in global scope, ferment-formatted content gets detected
 		expect(lines[0]).toBe("Todos · Global")
-		expect(lines.some((line) => line.includes("Test"))).toBe(true) // Bold phase header
-		expect(lines.some((line) => line.includes("↳ Step 1"))).toBe(true) // Step with prefix
+		// Content appears but with standard global styling (not ferment accent/bold)
+		expect(lines.some((line) => line.includes("Test"))).toBe(true)
+		expect(lines.some((line) => line.includes("↳ Step 1"))).toBe(true)
 	})
 
 	it("shows all scopes together: ferment phase, step sub-tasks, and global", () => {

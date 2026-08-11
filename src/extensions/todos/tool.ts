@@ -1,7 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { validateExplicitTodoScope } from "./scope.js"
 import { applyWriteTodos, getTodosForScope, resolveTodoScope } from "./store.js"
-import { TODO_STATUSES, type TodoDraft, type TodoItem, type TodoStatus, type WriteTodosParams } from "./types.js"
+import { TODO_STATUSES, type TodoDraft, type TodoScope, type TodoStatus, type WriteTodosParams } from "./types.js"
 
 export const UPDATE_TODOS_TOOL_NAME = "update_todos"
 export const CREATE_TODOS_TOOL_NAME = "create_todos"
@@ -23,38 +24,47 @@ const TODO_STATUS_PARAMETER = Type.Union([
 	Type.Literal("completed"),
 ])
 
+const SCOPE_DESCRIPTION =
+	'Which todo list to target. Omit for auto-routing: while exactly one ferment step is running, writes go to that step\'s list; otherwise they go to the global list. To target a specific list, pass {kind:"global"}, {kind:"ferment-step",phaseId:"...",stepId:"..."}. The ferment phase scope ({kind:"ferment",phaseId}) is managed by the ferment lifecycle and cannot be written directly.'
+
+const ACTIVE_FORM_DESCRIPTION =
+	"Present-continuous label shown while the item is in progress, e.g. 'Writing auth tests'. Not a category tag like 'task' or 'step'."
+
 const TODO_TOOL_PARAMETERS = Type.Object({
-	scope: Type.Optional(Type.Any()),
+	scope: Type.Optional(Type.Any({ description: SCOPE_DESCRIPTION })),
 	todos: Type.Array(
 		Type.Object({
 			id: Type.Optional(Type.Number()),
 			content: Type.String(),
 			status: TODO_STATUS_PARAMETER,
-			activeForm: Type.Optional(Type.String()),
+			activeForm: Type.Optional(Type.String({ description: ACTIVE_FORM_DESCRIPTION })),
 			note: Type.Optional(Type.String()),
 		}),
 	),
 })
 
 const ADD_TODO_PARAMETERS = Type.Object({
-	scope: Type.Optional(Type.Any()),
+	scope: Type.Optional(Type.Any({ description: SCOPE_DESCRIPTION })),
 	content: Type.String(),
 	status: Type.Optional(TODO_STATUS_PARAMETER),
-	activeForm: Type.Optional(Type.String()),
+	activeForm: Type.Optional(Type.String({ description: ACTIVE_FORM_DESCRIPTION })),
 	note: Type.Optional(Type.String()),
 })
 
 const MARK_TODO_PARAMETERS = Type.Object({
-	scope: Type.Optional(Type.Any()),
+	scope: Type.Optional(Type.Any({ description: SCOPE_DESCRIPTION })),
 	id: Type.Number(),
 	status: TODO_STATUS_PARAMETER,
-	activeForm: Type.Optional(Type.String()),
+	activeForm: Type.Optional(Type.String({ description: ACTIVE_FORM_DESCRIPTION })),
 	note: Type.Optional(Type.String()),
 })
 
 const CLEAR_TODOS_PARAMETERS = Type.Object({
-	scope: Type.Optional(Type.Any()),
+	scope: Type.Optional(Type.Any({ description: SCOPE_DESCRIPTION })),
 })
+
+const FERMENT_SCOPE_ERROR =
+	"Phase todo lists are managed by the ferment lifecycle; write your tasks to the step scope (omit scope while a step runs) or to global."
 
 interface AddTodoParams {
 	scope?: unknown
@@ -94,12 +104,28 @@ function normalizeTodoStatus(value: unknown, fallback: TodoStatus = "pending"): 
 	throw new Error(`Invalid todo status '${String(value)}'`)
 }
 
-function scopedTodos(
-	scopeInput: unknown,
-	sessionId: string,
-): { scope: ReturnType<typeof resolveTodoScope>; todos: TodoItem[] } {
+/** Human-readable label for a resolved scope, used in tool output. */
+function formatScopeLabel(scope: TodoScope): string {
+	if (scope.kind === "global") return "global"
+	if (scope.kind === "ferment") return `phase ${scope.phaseId}`
+	if (scope.kind === "ferment-step") return `step ${scope.phaseId}/${scope.stepId}`
+	return "global"
+}
+
+/** Validate an explicit scope, then auto-route if omitted. Rejects malformed
+ *  scopes (instead of silently collapsing to global) and rejects writes to
+ *  the ferment phase scope (managed by the bridge). */
+function resolveToolScope(scopeInput: unknown): { scope: TodoScope } | { error: string } {
+	const validated = validateExplicitTodoScope(scopeInput)
+	if (validated.error) return { error: validated.error }
+	if (validated.scope) {
+		if (validated.scope.kind === "ferment") return { error: FERMENT_SCOPE_ERROR }
+		return { scope: validated.scope }
+	}
+	// Empty/omitted scope — auto-route via providers.
 	const scope = resolveTodoScope(scopeInput)
-	return { scope, todos: getTodosForScope(scope, sessionId) }
+	if (scope.kind === "ferment") return { error: FERMENT_SCOPE_ERROR }
+	return { scope }
 }
 
 function todoDraftWithOptionalFields(params: AddTodoParams): TodoDraft {
@@ -122,9 +148,14 @@ async function executeWriteTodos(
 ) {
 	const sessionId = ctx.sessionManager.getSessionId()
 	try {
-		const details = applyWriteTodos(params, sessionId)
+		const resolved = resolveToolScope(params.scope)
+		if ("error" in resolved) {
+			return { content: [{ type: "text" as const, text: resolved.error }], details: null }
+		}
+		const details = applyWriteTodos({ scope: resolved.scope, todos: params.todos }, sessionId)
+		const label = formatScopeLabel(details.scope)
 		return {
-			content: [{ type: "text" as const, text: `Updated ${details.todos.length} todos.` }],
+			content: [{ type: "text" as const, text: `Updated ${details.todos.length} todos in ${label}.` }],
 			details,
 		}
 	} catch (error) {
@@ -144,13 +175,20 @@ async function executeAddTodo(
 ) {
 	const sessionId = ctx.sessionManager.getSessionId()
 	try {
-		const { scope, todos } = scopedTodos(params.scope, sessionId)
+		const resolved = resolveToolScope(params.scope)
+		if ("error" in resolved) {
+			return { content: [{ type: "text" as const, text: resolved.error }], details: null }
+		}
+		const scope = resolved.scope
+		const todos = getTodosForScope(scope, sessionId)
 		const knownIds = new Set(todos.map((todo) => todo.id))
 		const details = applyWriteTodos({ scope, todos: [...todos, todoDraftWithOptionalFields(params)] }, sessionId)
-		// Storage order is id-based; identify the new item by id rather than position.
 		const added = details.todos.find((todo) => !knownIds.has(todo.id))
+		const label = formatScopeLabel(details.scope)
 		return {
-			content: [{ type: "text" as const, text: added ? `Added todo #${added.id}.` : "Added todo." }],
+			content: [
+				{ type: "text" as const, text: added ? `Added todo #${added.id} in ${label}.` : `Added todo in ${label}.` },
+			],
 			details,
 		}
 	} catch (error) {
@@ -172,7 +210,12 @@ async function executeMarkTodo(
 	try {
 		const id = normalizeTodoId(params.id)
 		const status = normalizeTodoStatus(params.status)
-		const { scope, todos } = scopedTodos(params.scope, sessionId)
+		const resolved = resolveToolScope(params.scope)
+		if ("error" in resolved) {
+			return { content: [{ type: "text" as const, text: resolved.error }], details: null }
+		}
+		const scope = resolved.scope
+		const todos = getTodosForScope(scope, sessionId)
 		let found = false
 		const nextTodos = todos.map((todo) => {
 			if (todo.id !== id) return todo
@@ -184,11 +227,15 @@ async function executeMarkTodo(
 				...(params.note !== undefined ? { note: params.note } : {}),
 			}
 		})
-		if (!found) throw new Error(`Todo #${id} not found`)
+		if (!found) {
+			const label = formatScopeLabel(scope)
+			throw new Error(`Todo #${id} not found in ${label}`)
+		}
 
 		const details = applyWriteTodos({ scope, todos: nextTodos }, sessionId)
+		const label = formatScopeLabel(details.scope)
 		return {
-			content: [{ type: "text" as const, text: `Marked todo #${id} ${status}.` }],
+			content: [{ type: "text" as const, text: `Marked todo #${id} ${status} in ${label}.` }],
 			details,
 		}
 	} catch (error) {
@@ -208,10 +255,14 @@ async function executeClearTodos(
 ) {
 	const sessionId = ctx.sessionManager.getSessionId()
 	try {
-		const scope = resolveTodoScope(params.scope)
-		const details = applyWriteTodos({ scope, todos: [] }, sessionId)
+		const resolved = resolveToolScope(params.scope)
+		if ("error" in resolved) {
+			return { content: [{ type: "text" as const, text: resolved.error }], details: null }
+		}
+		const details = applyWriteTodos({ scope: resolved.scope, todos: [] }, sessionId)
+		const label = formatScopeLabel(details.scope)
 		return {
-			content: [{ type: "text" as const, text: "Cleared todos." }],
+			content: [{ type: "text" as const, text: `Cleared todos in ${label}.` }],
 			details,
 		}
 	} catch (error) {

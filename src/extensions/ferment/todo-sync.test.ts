@@ -1079,14 +1079,15 @@ describe("scope bleed prevention", () => {
 		setActive(undefined)
 	})
 
-	it("clears global-scope todos on PHASE_STARTED", () => {
+	it("preserves global-scope todos on PHASE_STARTED", () => {
 		const { pi, emit } = createFakePI()
 		const ferment = createTestFerment("phase-1", 2)
 		setActive(ferment)
 
 		unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
 
-		// Write some global todos that should be cleared when a new phase starts
+		// Write some global todos that should persist when a new phase starts.
+		// Global todos are user/model-owned and survive phase/step boundaries.
 		applyWriteTodos(
 			{ scope: { kind: "global" }, todos: [{ content: "stale global todo", status: "pending" }] },
 			TEST_SESSION_ID,
@@ -1100,15 +1101,15 @@ describe("scope bleed prevention", () => {
 			phaseName: "Test Phase",
 		})
 
-		// Global todos should be cleared
-		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toHaveLength(0)
+		// Global todos should persist — they are not wiped by phase boundaries.
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toHaveLength(1)
 
 		// Ferment-scoped phase todos should be populated
 		const phaseTodos = getTodosForScope({ kind: "ferment", phaseId: "phase-1" }, TEST_SESSION_ID)
 		expect(phaseTodos).toHaveLength(3) // header + 2 steps
 	})
 
-	it("clears global-scope todos on STEP_STARTED", () => {
+	it("preserves global-scope todos on STEP_STARTED", () => {
 		const { pi, emit } = createFakePI()
 		const ferment = createTestFerment("phase-1", 2)
 		setActive(ferment)
@@ -1136,8 +1137,8 @@ describe("scope bleed prevention", () => {
 			stepIndex: 1,
 		})
 
-		// Global todos should be cleared when step starts
-		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toHaveLength(0)
+		// Global todos should persist — they are not wiped by step boundaries.
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toHaveLength(1)
 	})
 
 	it("seeds the step scope with an in_progress anchor on STEP_STARTED", () => {
