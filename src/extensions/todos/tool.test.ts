@@ -84,7 +84,7 @@ describe("todo tools", () => {
 			fakeCtx("session"),
 		)
 
-		expect(result.content).toEqual([{ type: "text", text: "Updated 1 todos." }])
+		expect(result.content).toEqual([{ type: "text", text: "Updated 1 todos in global." }])
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session").map((todo) => todo.content)).toEqual(["inspect trace"])
 	})
 

@@ -23,9 +23,26 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+// Mock the browser auth flow so authenticate() can be tested without
+// starting a real callback server or opening a browser.
+vi.mock("../../cli-auth/index.js", () => ({
+	authenticateViaBrowser: vi.fn(),
+}))
+// Mock config writes so tests don't touch the real config file.
+vi.mock("../../config.js", () => ({
+	writeApiKey: vi.fn(),
+	clearApiKey: vi.fn(),
+}))
+// Mock the model cache refresh so tests don't hit the network.
+vi.mock("../../models.js", () => ({
+	updateModelsConfig: vi.fn(),
+}))
+
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
+import { authenticateViaBrowser } from "../../cli-auth/index.js"
+import { clearApiKey, writeApiKey } from "../../config.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
@@ -36,6 +53,7 @@ import {
 	getSessionPermissionFlagController,
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
+import { updateModelsConfig } from "../../models.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
 	type AcpSessionFactory,
@@ -321,6 +339,206 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			const info = getAcpClientInfo()
 			expect(info?.name).toBe("kimchi-vscode")
 			expect(info?.version).toBe("1.0.0")
+		})
+
+		// ACP Registry compliance: initialize() must advertise auth methods so
+		// kimchi can be listed in the ACP registry (requires at least one of
+		// Agent Auth or Terminal Auth). See:
+		// https://github.com/agentclientprotocol/registry/blob/main/AUTHENTICATION.md
+		it("declares agent auth method in initialize response", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.authMethods).toHaveLength(1)
+			expect(response.authMethods?.[0]).toMatchObject({
+				id: "kimchi-agent",
+				name: "Kimchi Login",
+			})
+			// Agent Auth is the default: the descriptor omits `type` (the
+			// registry treats an absent type as "agent"). AuthMethodAgent has no
+			// `type` field, so we verify absence rather than equality.
+			const method = response.authMethods?.[0]
+			expect("type" in (method ?? {})).toBe(false)
+		})
+
+		it("declares terminal auth method when client supports terminal capability", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({
+				protocolVersion: 1,
+				clientCapabilities: { auth: { terminal: true } },
+			})
+			expect(response.authMethods).toHaveLength(2)
+			const terminalMethod = response.authMethods?.find((m) => "type" in m && m.type === "terminal")
+			expect(terminalMethod).toMatchObject({
+				id: "kimchi-terminal",
+				name: "Log in from terminal",
+				type: "terminal",
+				args: ["login"],
+			})
+		})
+
+		it("omits terminal auth method when client does not support terminal capability", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			// No clientCapabilities at all
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.authMethods).toHaveLength(1)
+			expect(response.authMethods?.some((m) => "type" in m && m.type === "terminal")).toBe(false)
+
+			// clientCapabilities present but auth.terminal is false/omitted
+			const response2 = await testAgent.initialize({
+				protocolVersion: 1,
+				clientCapabilities: { auth: { terminal: false } },
+			})
+			expect(response2.authMethods).toHaveLength(1)
+			expect(response2.authMethods?.some((m) => "type" in m && m.type === "terminal")).toBe(false)
+		})
+
+		it("advertises logout capability in agentCapabilities.auth", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.agentCapabilities?.auth?.logout).toEqual({})
+		})
+	})
+
+	describe("authenticate", () => {
+		const tempAgentDir = "/tmp/kimchi-acp-test-agent-dir-auth"
+
+		beforeEach(() => {
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+			mkdirSync(tempAgentDir, { recursive: true })
+			vi.mocked(authenticateViaBrowser).mockReset()
+			vi.mocked(writeApiKey).mockReset()
+			vi.mocked(updateModelsConfig).mockReset()
+		})
+
+		afterEach(() => {
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+		})
+
+		it("authenticates with kimchi-agent methodId: runs browser login and persists token", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_test-token" })
+
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const result = await testAgent.authenticate({ methodId: "kimchi-agent" })
+
+			expect(result).toEqual({})
+			expect(authenticateViaBrowser).toHaveBeenCalledOnce()
+			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_test-token")
+			expect(updateModelsConfig).toHaveBeenCalledWith(join(tempAgentDir, "models.json"), "castai_v1_test-token")
+		})
+
+		it("throws invalidParams for unknown methodId", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.authenticate({ methodId: "unknown" })).rejects.toThrow(/unknown auth method/)
+			expect(authenticateViaBrowser).not.toHaveBeenCalled()
+		})
+
+		it("throws when browser auth returns no token", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "" })
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.authenticate({ methodId: "kimchi-agent" })).rejects.toThrow(/did not return a token/)
+			expect(writeApiKey).not.toHaveBeenCalled()
+		})
+
+		it("wraps browser auth errors as RequestError.internalError", async () => {
+			vi.mocked(authenticateViaBrowser).mockRejectedValue(new Error("User cancelled"))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.authenticate({ methodId: "kimchi-agent" })).rejects.toThrow(
+				/Browser authentication failed/,
+			)
+			expect(writeApiKey).not.toHaveBeenCalled()
+		})
+	})
+
+	describe("unstable_logout", () => {
+		const tempAgentDir = "/tmp/kimchi-acp-test-agent-dir-logout"
+
+		beforeEach(() => {
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+			mkdirSync(tempAgentDir, { recursive: true })
+			vi.mocked(clearApiKey).mockReset()
+		})
+
+		afterEach(() => {
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+		})
+
+		it("clears API key from config and OAuth credentials from auth storage", async () => {
+			// Seed auth.json with a kimchi-dev OAuth entry so we can verify
+			// logout actually removes it.
+			writeFileSync(
+				join(tempAgentDir, "auth.json"),
+				JSON.stringify({
+					"kimchi-dev": { type: "oauth", accessToken: "old-token", refreshToken: "old-refresh" },
+				}),
+			)
+
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const result = await testAgent.unstable_logout({})
+
+			expect(result).toEqual({})
+			// clearApiKey is mocked — verify it was called to clear the config file.
+			expect(clearApiKey).toHaveBeenCalledOnce()
+
+			// AuthStorage.logout("kimchi-dev") should have removed the entry
+			// from auth.json. Read it back and verify.
+			const authJson = JSON.parse(
+				// eslint-disable-next-line no-restricted-syntax
+				await import("node:fs").then((fs) => fs.readFileSync(join(tempAgentDir, "auth.json"), "utf-8")),
+			)
+			expect(authJson["kimchi-dev"]).toBeUndefined()
 		})
 	})
 
