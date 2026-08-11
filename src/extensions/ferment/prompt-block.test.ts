@@ -211,7 +211,8 @@ describe("buildFermentPromptBlock", () => {
 			]) {
 				expect(out).toContain(`\`${forbidden}\``)
 			}
-			expect(out).toContain("state machine rejects scoping calls")
+			expect(out).toContain("Scope mutations will be rejected in this lifecycle state")
+			expect(out).toContain("`ask_user` remains available for genuine execution blockers or recovery")
 		})
 
 		it("names the immediate next lifecycle action for a pending step", () => {
@@ -221,13 +222,67 @@ describe("buildFermentPromptBlock", () => {
 		})
 
 		it("planned ferment points at activate_ferment_phase as the next action", () => {
+			const activePhase = runningWithActivePhase.phases?.[0]
+			if (!activePhase) throw new Error("expected active phase fixture")
+			const plannedPhase = {
+				...activePhase,
+				status: "planned" as const,
+			}
+			const out =
+				buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "planned", phases: [plannedPhase] })) ??
+				""
+			expect(out).toContain("## Current lifecycle state")
+			expect(out).toContain("Next action: call `activate_ferment_phase`")
+			expect(out).toContain('phase_id "phase-1"')
+		})
+
+		it("counts failed steps as terminal in active-phase progress", () => {
+			const activePhase = runningWithActivePhase.phases?.[0]
+			if (!activePhase) throw new Error("expected active phase fixture")
 			const out =
 				buildFermentPromptBlock(
 					makeMockCtx(),
 					PI_NORMAL,
-					makeRuntime({ ...runningWithActivePhase, status: "planned" }),
+					makeRuntime({
+						status: "running",
+						phases: [
+							{
+								...activePhase,
+								steps: [{ id: "step-1", index: 1, description: "Broken step", status: "failed" }],
+							},
+						],
+					}),
 				) ?? ""
-			expect(out).toContain("## Current lifecycle state")
+
+			expect(out).toContain('1/1 steps terminal in phase "phase-1"')
+		})
+
+		it("reports progress for every active phase in a parallel group", () => {
+			const activePhase = runningWithActivePhase.phases?.[0]
+			if (!activePhase) throw new Error("expected active phase fixture")
+			const out =
+				buildFermentPromptBlock(
+					makeMockCtx(),
+					PI_NORMAL,
+					makeRuntime({
+						status: "running",
+						phases: [
+							{ ...activePhase, parallel: true, groupIndex: 1 },
+							{
+								...activePhase,
+								id: "phase-2",
+								index: 2,
+								name: "Test the feature",
+								parallel: true,
+								groupIndex: 1,
+								steps: [{ id: "step-3", index: 1, description: "Test it", status: "pending" }],
+							},
+						],
+					}),
+				) ?? ""
+
+			expect(out).toContain('1/2 steps terminal in phase "phase-1"')
+			expect(out).toContain('0/1 steps terminal in phase "phase-2"')
 		})
 
 		it("still prepends the section before the planner supplement", () => {

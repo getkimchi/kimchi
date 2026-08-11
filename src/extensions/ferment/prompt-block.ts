@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { TERMINAL_STEP_STATUSES } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getAgentConfig, getDefaultAgentNames } from "../agents/personas/agent-types.js"
@@ -178,21 +179,17 @@ ${delegationRules}
  * the immediate next lifecycle action prevents that restart loop.
  */
 function buildCurrentStateSection(f: Ferment, multiModelEnabled: boolean): string {
-	const active = f.phases.find((p) => p.status === "active")
-	const progress = active
-		? `${active.steps.filter((s) => s.status === "done" || s.status === "verified" || s.status === "skipped").length}/${active.steps.length} steps terminal in phase "${active.id}"`
-		: undefined
-	const stateLine = [
-		`ferment status "${f.status}"`,
-		active ? `active phase "${active.id}" ("${active.name}")` : undefined,
-		progress,
-	]
-		.filter(Boolean)
-		.join(", ")
+	const activePhaseStates = f.phases
+		.filter((phase) => phase.status === "active")
+		.map((phase) => {
+			const terminalSteps = phase.steps.filter((step) => TERMINAL_STEP_STATUSES.includes(step.status)).length
+			return `active phase "${phase.id}" ("${phase.name}"), ${terminalSteps}/${phase.steps.length} steps terminal in phase "${phase.id}"`
+		})
+	const stateLine = [`ferment status "${f.status}"`, ...activePhaseStates].join("; ")
 	const nextActionHint = formatNextActionHint(f, multiModelEnabled)
 	return [
 		"## Current lifecycle state",
-		`- Scoping is COMPLETE (${stateLine}). ${formatNoReplanningGuidance({ backticks: true })} — the state machine rejects scoping calls in this state. Do not re-run any orient, interview, or planning steps.`,
+		`- Scoping is COMPLETE (${stateLine}). ${formatNoReplanningGuidance({ backticks: true })} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
 		nextActionHint ? `- ${nextActionHint} Execute it immediately.` : undefined,
 	]
 		.filter(Boolean)

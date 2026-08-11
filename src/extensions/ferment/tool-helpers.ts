@@ -23,24 +23,25 @@ import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 // prompt block's Current lifecycle state section (prompt-block.ts). Keep the
 // forbidden tool list in ONE place so a rename or policy change can't drift.
 
-/** Tools the model must not call to re-plan a scoped ferment — the FSM rejects them. */
+/** Discovery/scoping tools the model must not revisit after scoping is complete. */
 const REPLANNING_FORBIDDEN_TOOLS = [
 	"list_ferments",
 	"scope_ferment",
 	"propose_ferment_scoping",
 	"confirm_ferment_completion_criteria",
-	"ask_user",
 ] as const
 
 /**
- * Renders the "Do NOT call <tools> to re-plan" sentence shared by the
- * handoff message and the prompt block. Pass `backticks: true` when the
- * surrounding text is a markdown system prompt section.
+ * Renders the no-replanning guidance shared by the handoff message and prompt
+ * block. It explicitly keeps ask_user available for real execution blockers
+ * and recovery. Pass `backticks: true` for markdown system-prompt surfaces.
  */
 export function formatNoReplanningGuidance(opts: { backticks?: boolean } = {}): string {
-	const names = REPLANNING_FORBIDDEN_TOOLS.map((name) => (opts.backticks ? `\`${name}\`` : name))
+	const renderName = (name: string) => (opts.backticks ? `\`${name}\`` : name)
+	const names = REPLANNING_FORBIDDEN_TOOLS.map(renderName)
 	const list = `${names.slice(0, -1).join(", ")}, or ${names[names.length - 1]}`
-	return `Do NOT call ${list} to re-plan`
+	const askUser = renderName("ask_user")
+	return `Do NOT restart discovery or scoping by calling ${list}. Do not use ${askUser} to repeat the scoping interview; ${askUser} remains available for genuine execution blockers or recovery.`
 }
 
 // ─── Tool result builders ─────────────────────────────────────────────────────

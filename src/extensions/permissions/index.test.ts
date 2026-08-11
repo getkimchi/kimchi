@@ -730,10 +730,15 @@ describe("plan mode assumption detection", () => {
 
 			const handoffCall = vi
 				.mocked(harness.pi.sendMessage)
-				.mock.calls.map((call) => call[0] as { customType?: string; content?: Array<{ type: string; text: string }> })
-				.find((msg) => msg.customType === "ferment_handoff")
+				.mock.calls.find(([message]) => message.customType === "ferment_handoff")
 			expect(handoffCall).toBeDefined()
-			const text = handoffCall?.content?.map((c) => c.text).join("\n") ?? ""
+			const [handoffMessage, handoffOptions] = handoffCall ?? []
+			const text = Array.isArray(handoffMessage?.content)
+				? handoffMessage.content
+						.filter((content) => content.type === "text")
+						.map((content) => content.text)
+						.join("\n")
+				: String(handoffMessage?.content ?? "")
 			expect(text).toContain('approved by the user ("Start as ferment")')
 			expect(text).toContain("ALREADY scoped")
 			expect(text).toContain('phase "phase-1"')
@@ -741,9 +746,11 @@ describe("plan mode assumption detection", () => {
 			for (const forbidden of ["list_ferments", "scope_ferment", "propose_ferment_scoping"]) {
 				expect(text).toContain(forbidden)
 			}
-			expect(text).toContain("will reject")
+			expect(text).toContain("Scope mutations will be rejected")
+			expect(text).toContain("ask_user remains available for genuine execution blockers or recovery")
 			expect(text).toContain("start_ferment_step")
 			expect(text).toContain('phase_id "phase-1", step_id "step-1"')
+			expect(handoffOptions).toMatchObject({ triggerTurn: true })
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true })
 			const { defaultFermentRuntime } = await import("../ferment/runtime.js")

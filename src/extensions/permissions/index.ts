@@ -671,25 +671,29 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// as ferment" goes straight to execution.
 				const activePhase = activated.ferment.phases.find((p) => p.status === "active")
 				const nextActionHint = formatNextActionHint(activated.ferment, getMultiModelEnabled(ctx.sessionManager))
-				safeSendMessage(pi, {
-					customType: "ferment_handoff",
-					content: [
-						{
-							type: "text",
-							text: [
-								`Handoff from plan mode: the plan you just presented was approved by the user ("Start as ferment") and converted into ferment "${activated.ferment.name}" (${activated.ferment.id}).`,
-								`The ferment is ALREADY scoped — goal, success criteria, and constraints are set — and ${activePhase ? `phase "${activePhase.id}" (${activePhase.steps.length} steps) is ACTIVE` : "its first phase is ACTIVE"}.`,
-								`${formatNoReplanningGuidance()} — scoping is complete and the state machine will reject those calls. Do not re-run any orient, interview, or planning steps.`,
-								nextActionHint,
-								"Go straight to execution.",
-							]
-								.filter(Boolean)
-								.join("\n"),
-						},
-					],
-					display: false,
-					details: { fermentId: activated.ferment.id, origin: "plan_mode_start_as_ferment" },
-				})
+				safeSendMessage(
+					pi,
+					{
+						customType: "ferment_handoff",
+						content: [
+							{
+								type: "text",
+								text: [
+									`Handoff from plan mode: the plan you just presented was approved by the user ("Start as ferment") and converted into ferment "${activated.ferment.name}" (${activated.ferment.id}).`,
+									`The ferment is ALREADY scoped — goal, success criteria, and constraints are set — and ${activePhase ? `phase "${activePhase.id}" (${activePhase.steps.length} steps) is ACTIVE` : "its first phase is ACTIVE"}.`,
+									`${formatNoReplanningGuidance()} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
+									nextActionHint,
+									"Go straight to execution.",
+								]
+									.filter(Boolean)
+									.join("\n"),
+							},
+						],
+						display: false,
+						details: { fermentId: activated.ferment.id, origin: "plan_mode_start_as_ferment" },
+					},
+					{ triggerTurn: true },
+				)
 				changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" })
 			} catch (err) {
 				// Promotion failed before activation. Keep the planning profile, clear

@@ -33,24 +33,24 @@ function scopeDraft(applyAndPersist: ReturnType<typeof createApplyAndPersist>, f
 }
 
 describe("formatNoReplanningGuidance", () => {
-	const EXPECTED_TOOLS = [
+	const SCOPING_TOOLS = [
 		"list_ferments",
 		"scope_ferment",
 		"propose_ferment_scoping",
 		"confirm_ferment_completion_criteria",
-		"ask_user",
 	]
 
-	it("lists every forbidden scoping tool in a plain-text rendering", () => {
+	it("distinguishes forbidden replanning from legitimate user interaction", () => {
 		const out = formatNoReplanningGuidance()
-		expect(out).toMatch(/^Do NOT call .+ to re-plan$/)
-		for (const tool of EXPECTED_TOOLS) expect(out).toContain(tool)
-		expect(out).toContain("confirm_ferment_completion_criteria, or ask_user")
+		for (const tool of SCOPING_TOOLS) expect(out).toContain(tool)
+		expect(out).toContain("Do NOT restart discovery or scoping")
+		expect(out).toContain("Do not use ask_user to repeat the scoping interview")
+		expect(out).toContain("ask_user remains available for genuine execution blockers or recovery")
 	})
 
 	it("backticks tool names for markdown system-prompt surfaces", () => {
 		const out = formatNoReplanningGuidance({ backticks: true })
-		for (const tool of EXPECTED_TOOLS) expect(out).toContain(`\`${tool}\``)
+		for (const tool of [...SCOPING_TOOLS, "ask_user"]) expect(out).toContain(`\`${tool}\``)
 	})
 })
 
