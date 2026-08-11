@@ -2,6 +2,7 @@
 .harbor/
 .ruff_cache/
 jobs/
+learning/
 __pycache__/
 *.egg-info/
 dist/

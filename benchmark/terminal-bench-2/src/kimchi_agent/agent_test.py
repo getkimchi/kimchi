@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,10 +11,20 @@ from harbor.models.agent.context import AgentContext
 from kimchi_agent.agent import (
     CONTAINER_AGENT_PGID_FILE,
     CONTAINER_HARNESS_SKILLS_DIR,
+    CONTAINER_OPENVIKING_STATUS,
     KIMCHI_EXIT_OUTPUT_TAIL_LINES,
     KIMCHI_INFRA_BREAKER_THRESHOLD_ENV,
+    OPENVIKING_CREATE_SESSION_REPLACEMENT,
+    OPENVIKING_DISCONNECTED_EXIT_CODE,
+    OPENVIKING_ENSURE_SESSION_REPLACEMENT,
+    OPENVIKING_ENTRYPOINT,
+    OPENVIKING_INSTALL_DIR,
+    OPENVIKING_LEARNING_CONFIG,
+    OPENVIKING_UPLOAD_STAGE_DIR,
+    UPLOAD_STAGE_DIR,
     Kimchi,
     KimchiExitError,
+    KimchiOpenViking,
 )
 
 
@@ -40,6 +51,18 @@ def kimchi_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("KIMCHI_TAGS", raising=False)
     monkeypatch.delenv("RUN_ID", raising=False)
     monkeypatch.delenv(KIMCHI_INFRA_BREAKER_THRESHOLD_ENV, raising=False)
+    monkeypatch.delenv("OPENVIKING_EXTENSION_DIR", raising=False)
+    monkeypatch.delenv("OPENVIKING_URL", raising=False)
+    monkeypatch.delenv("OPENVIKING_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENVIKING_API_KEY", raising=False)
+
+
+def make_openviking_extension(tmp_path: Path) -> Path:
+    extension_dir = tmp_path / "openviking"
+    extension_dir.mkdir()
+    (extension_dir / "index.ts").write_text("export default function () {}\n")
+    (extension_dir / "config.json").write_text("{}\n")
+    return extension_dir
 
 
 async def test_run_uses_shell_process_group_cleanup_on_cancellation(tmp_path: Path) -> None:
@@ -225,6 +248,104 @@ async def test_run_preserves_existing_infra_breaker_threshold(tmp_path: Path) ->
         await agent.run("hello", object(), AgentContext())
 
     assert agent.agent_envs[0][KIMCHI_INFRA_BREAKER_THRESHOLD_ENV] == "5"
+
+
+def test_openviking_agent_requires_extension_source(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="OPENVIKING_EXTENSION_DIR is required"):
+        KimchiOpenViking(
+            logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+            model_name="kimchi-dev/kimi-k2.7",
+        )
+
+
+async def test_openviking_run_loads_extension_and_forwards_isolated_identity(tmp_path: Path) -> None:
+    extension_dir = make_openviking_extension(tmp_path)
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "fix-git__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.7",
+        extra_env={
+            "OPENVIKING_EXTENSION_DIR": str(extension_dir),
+            "OPENVIKING_URL": "https://openviking.example.test",
+            "OPENVIKING_API_KEY": "ov-test-key",
+        },
+        openviking=True,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("solve it", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    env = agent.agent_envs[0]
+    assert f"--extension {OPENVIKING_ENTRYPOINT}" in command
+    assert f"agent_status={OPENVIKING_DISCONNECTED_EXIT_CODE}" in command
+    assert env["OPENVIKING_URL"] == "https://openviking.example.test"
+    assert env["OPENVIKING_API_KEY"] == "ov-test-key"
+    assert env["OPENVIKING_CREDENTIAL_SOURCE"] == "env"
+    assert env["OPENVIKING_WORKSPACE_PEER"] == "0"
+    assert env["OPENVIKING_RECALL_PEER_SCOPE"] == "actor"
+    assert env["OPENVIKING_PEER_ID"] == "tb-fix-git"
+
+
+async def test_openviking_install_uploads_official_extension_and_learning_config(
+    tmp_path: Path,
+) -> None:
+    extension_dir = make_openviking_extension(tmp_path)
+    stage_dir = tmp_path / "kimchi-stage"
+    stage_dir.mkdir()
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "fix-git__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.7",
+        extra_env={
+            "OPENVIKING_EXTENSION_DIR": str(extension_dir),
+            "OPENVIKING_URL": "https://openviking.example.test",
+        },
+        openviking=True,
+    )
+
+    class UploadEnvironment:
+        def __init__(self) -> None:
+            self.uploads: list[tuple[Path, str]] = []
+
+        async def upload_dir(self, source_dir: Path, target_dir: str) -> None:
+            self.uploads.append((source_dir, target_dir))
+
+    environment = UploadEnvironment()
+    with patch.object(agent, "_resolve_host_stage_dir", return_value=stage_dir):
+        await agent.install(environment)
+
+    assert environment.uploads == [
+        (stage_dir, UPLOAD_STAGE_DIR),
+        (extension_dir, OPENVIKING_UPLOAD_STAGE_DIR),
+    ]
+    install_command = agent.root_commands[0]
+    assert OPENVIKING_INSTALL_DIR in install_command
+    assert json.dumps(OPENVIKING_LEARNING_CONFIG, separators=(",", ":")) in install_command
+    assert OPENVIKING_CREATE_SESSION_REPLACEMENT in install_command
+    assert OPENVIKING_ENSURE_SESSION_REPLACEMENT in install_command
+    assert "createSession adapter point missing" in install_command
+    assert "ensureSession adapter point missing" in install_command
+    assert "ensureSession adapter failed" in install_command
+
+
+def test_openviking_status_is_added_to_agent_metadata(tmp_path: Path) -> None:
+    extension_dir = make_openviking_extension(tmp_path)
+    logs_dir = tmp_path / "jobs" / "run-1" / "fix-git__trial" / "agent"
+    logs_dir.mkdir(parents=True)
+    status = {"connected": True, "extension_sha256": "abc123"}
+    (logs_dir / Path(CONTAINER_OPENVIKING_STATUS).name).write_text(json.dumps(status))
+    agent = KimchiOpenViking(
+        logs_dir=logs_dir,
+        model_name="kimchi-dev/kimi-k2.7",
+        extra_env={
+            "OPENVIKING_EXTENSION_DIR": str(extension_dir),
+            "OPENVIKING_URL": "https://openviking.example.test",
+        },
+    )
+    context = AgentContext()
+
+    agent.populate_context_post_run(context)
+
+    assert context.metadata == {"openviking": status}
 
 
 async def test_run_rejects_invalid_infra_breaker_threshold(tmp_path: Path) -> None:

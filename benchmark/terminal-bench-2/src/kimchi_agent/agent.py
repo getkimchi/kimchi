@@ -1,5 +1,7 @@
 import asyncio
+import hashlib
 import json
+import re
 import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -30,12 +32,26 @@ INSTALL_DIR = "/installed-agent"
 BINARY_PATH = f"{INSTALL_DIR}/{BINARY_RELPATH.as_posix()}"
 PI_PACKAGE_DIR = f"{INSTALL_DIR}/{SHARE_RELPATH.as_posix()}"
 UPLOAD_STAGE_DIR = "/tmp/kimchi-stage"
+OPENVIKING_UPLOAD_STAGE_DIR = "/tmp/openviking-stage"
+OPENVIKING_INSTALL_DIR = f"{INSTALL_DIR}/openviking"
+OPENVIKING_ENTRYPOINT = f"{OPENVIKING_INSTALL_DIR}/index.ts"
+OPENVIKING_CLIENT_PATH = f"{OPENVIKING_INSTALL_DIR}/client.ts"
+OPENVIKING_SYNC_PATH = f"{OPENVIKING_INSTALL_DIR}/sync.ts"
+OPENVIKING_CREATE_SESSION_SOURCE = "JSON.stringify({ session_id: sessionId })"
+OPENVIKING_CREATE_SESSION_REPLACEMENT = (
+    "JSON.stringify({ session_id: sessionId, memory_policy: { memory_types: [], "
+    "working_memory: { enabled: false } } })"
+)
+OPENVIKING_SESSION_ASSIGN_SOURCE = "this.ovSessionId = id;"
+OPENVIKING_ENSURE_SESSION_REPLACEMENT = "return this.client.createSession(id);"
 
 # In-container paths. /logs/agent is bind-mounted to self.logs_dir on the host.
 CONTAINER_LOGS_DIR = "/logs/agent"
 CONTAINER_SESSIONS_DIR = f"{CONTAINER_LOGS_DIR}/sessions"
 CONTAINER_MAIN_SESSION = f"{CONTAINER_SESSIONS_DIR}/main.jsonl"
 CONTAINER_AGENT_PGID_FILE = f"{CONTAINER_LOGS_DIR}/kimchi-agent.pgid"
+CONTAINER_OPENVIKING_DEBUG_LOG = f"{CONTAINER_LOGS_DIR}/openviking-debug.log"
+CONTAINER_OPENVIKING_STATUS = f"{CONTAINER_LOGS_DIR}/openviking-status.json"
 CONTAINER_HARNESS_SETTINGS_DIR = "~/.config/kimchi/harness"
 CONTAINER_HARNESS_SETTINGS = f"{CONTAINER_HARNESS_SETTINGS_DIR}/settings.json"
 CONTAINER_HARNESS_SKILLS_DIR = f"{CONTAINER_HARNESS_SETTINGS_DIR}/skills"
@@ -44,6 +60,30 @@ MULTI_MODEL = "multi-model"
 KIMCHI_INFRA_BREAKER_THRESHOLD_ENV = "KIMCHI_INFRA_BREAKER_THRESHOLD"
 KIMCHI_BENCHMARK_INFRA_BREAKER_DEFAULT_ATTEMPTS = "3"
 KIMCHI_EXIT_OUTPUT_TAIL_LINES = 20
+OPENVIKING_DISCONNECTED_EXIT_CODE = 78
+OPENVIKING_ENV_KEYS = (
+    "OPENVIKING_URL",
+    "OPENVIKING_BASE_URL",
+    "OPENVIKING_API_KEY",
+    "OPENVIKING_BEARER_TOKEN",
+    "OPENVIKING_ACCOUNT",
+    "OPENVIKING_USER",
+    "OPENVIKING_PEER_ID",
+    "OPENVIKING_WORKSPACE_PEER",
+    "OPENVIKING_RECALL_PEER_SCOPE",
+    "OPENVIKING_RECALL_LIMIT",
+    "OPENVIKING_RECALL_QUERY_EXPANSION",
+)
+OPENVIKING_LEARNING_CONFIG = {
+    "enabled": True,
+    "syncTurns": True,
+    "captureAssistantTurns": True,
+    "captureToolResults": True,
+    "captureToolMaxChars": 4000,
+    "commitKeepRecentCount": 0,
+    "takeover": {"enabled": False},
+    "logLevel": "info",
+}
 
 
 def _coerce_bool_kwarg(value: object, name: str) -> bool:
@@ -101,6 +141,24 @@ def _tail_output(text: str | None, max_lines: int = KIMCHI_EXIT_OUTPUT_TAIL_LINE
     return "\n".join([f"... [showing last {max_lines} lines]", *lines[-max_lines:]])
 
 
+def _hash_directory(path: Path) -> str:
+    digest = hashlib.sha256()
+    for file_path in sorted(candidate for candidate in path.rglob("*") if candidate.is_file()):
+        relative_path = file_path.relative_to(path).as_posix()
+        digest.update(relative_path.encode())
+        digest.update(b"\0")
+        with file_path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _safe_openviking_peer_id(value: str) -> str:
+    peer_id = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-._")
+    return (peer_id or "terminal-bench")[:120]
+
+
 class KimchiExitError(NonZeroAgentExitCodeError):
     """Raised when the kimchi process exits non-zero."""
 
@@ -147,6 +205,7 @@ class Kimchi(BaseInstalledAgent):
     ]
 
     def __init__(self, *args, **kwargs):
+        self._openviking_enabled = _coerce_bool_kwarg(kwargs.pop("openviking", False), "openviking")
         multi_model_kwarg = kwargs.pop("multi-model", None)
         disable_multi_model = _coerce_bool_kwarg(
             kwargs.pop("disable-multi-model", False), "disable-multi-model"
@@ -175,7 +234,20 @@ class Kimchi(BaseInstalledAgent):
         api_key = self._get_env(KIMCHI_API_KEY_ENV)
         if api_key is not None:
             config_kwargs[KIMCHI_API_KEY_ENV] = api_key
+        openviking_extension_dir = self._get_env("OPENVIKING_EXTENSION_DIR")
+        if openviking_extension_dir is not None:
+            config_kwargs["OPENVIKING_EXTENSION_DIR"] = openviking_extension_dir
         self._config = KimchiAgentConfig(**config_kwargs)
+        if self._openviking_enabled and self._config.openviking_extension_dir is None:
+            raise ValueError(
+                "OPENVIKING_EXTENSION_DIR is required when openviking=true; "
+                "point it at the official Pi extension directory containing index.ts"
+            )
+        self._openviking_extension_sha256 = (
+            _hash_directory(self._config.openviking_extension_dir)
+            if self._openviking_enabled and self._config.openviking_extension_dir is not None
+            else None
+        )
 
     @staticmethod
     def name() -> str:
@@ -212,14 +284,72 @@ class Kimchi(BaseInstalledAgent):
         # Upload the stage dir verbatim. It contains bin/kimchi and
         # share/kimchi/{package.json, theme/, export-html/} — resolved at runtime via PI_PACKAGE_DIR.
         await environment.upload_dir(source_dir=host_stage_dir, target_dir=UPLOAD_STAGE_DIR)
+        if self._openviking_enabled:
+            assert self._config.openviking_extension_dir is not None
+            await environment.upload_dir(
+                source_dir=self._config.openviking_extension_dir,
+                target_dir=OPENVIKING_UPLOAD_STAGE_DIR,
+            )
+        install_parts = [
+            f"mkdir -p {INSTALL_DIR}",
+            f"cp -a {shlex.quote(UPLOAD_STAGE_DIR)}/. {shlex.quote(INSTALL_DIR)}/",
+            f"chmod 0755 {shlex.quote(BINARY_PATH)}",
+            f"rm -rf {shlex.quote(UPLOAD_STAGE_DIR)}",
+        ]
+        if self._openviking_enabled:
+            config_json = json.dumps(OPENVIKING_LEARNING_CONFIG, separators=(",", ":"))
+            create_session_adapter = (
+                f"s|{OPENVIKING_CREATE_SESSION_SOURCE}|{OPENVIKING_CREATE_SESSION_REPLACEMENT}|"
+            )
+            ensure_session_adapter = (
+                f"/{re.escape(OPENVIKING_SESSION_ASSIGN_SOURCE)}/"
+                f"{{n;s|return true;|{OPENVIKING_ENSURE_SESSION_REPLACEMENT}|;}}"
+            )
+            install_parts.extend(
+                [
+                    f"rm -rf {shlex.quote(OPENVIKING_INSTALL_DIR)}",
+                    f"mkdir -p {shlex.quote(OPENVIKING_INSTALL_DIR)}",
+                    (
+                        f"cp -a {shlex.quote(OPENVIKING_UPLOAD_STAGE_DIR)}/. "
+                        f"{shlex.quote(OPENVIKING_INSTALL_DIR)}/"
+                    ),
+                    (
+                        f"printf '%s\\n' {shlex.quote(config_json)} > "
+                        f"{shlex.quote(f'{OPENVIKING_INSTALL_DIR}/config.json')}"
+                    ),
+                    (
+                        f"grep -Fq {shlex.quote(OPENVIKING_CREATE_SESSION_SOURCE)} "
+                        f"{shlex.quote(OPENVIKING_CLIENT_PATH)} || "
+                        "{ echo 'Unsupported OpenViking extension: createSession adapter point missing' >&2; "
+                        "exit 2; }"
+                    ),
+                    (
+                        f"sed -i {shlex.quote(create_session_adapter)} "
+                        f"{shlex.quote(OPENVIKING_CLIENT_PATH)}"
+                    ),
+                    (
+                        f"grep -Fq {shlex.quote(OPENVIKING_SESSION_ASSIGN_SOURCE)} "
+                        f"{shlex.quote(OPENVIKING_SYNC_PATH)} || "
+                        "{ echo 'Unsupported OpenViking extension: ensureSession adapter point missing' >&2; "
+                        "exit 2; }"
+                    ),
+                    (
+                        f"sed -i {shlex.quote(ensure_session_adapter)} "
+                        f"{shlex.quote(OPENVIKING_SYNC_PATH)}"
+                    ),
+                    (
+                        f"grep -Fq {shlex.quote(OPENVIKING_ENSURE_SESSION_REPLACEMENT)} "
+                        f"{shlex.quote(OPENVIKING_SYNC_PATH)} || "
+                        "{ echo 'Unsupported OpenViking extension: ensureSession adapter failed' >&2; "
+                        "exit 2; }"
+                    ),
+                    f"chmod -R a+rX {shlex.quote(OPENVIKING_INSTALL_DIR)}",
+                    f"rm -rf {shlex.quote(OPENVIKING_UPLOAD_STAGE_DIR)}",
+                ]
+            )
         await self.exec_as_root(
             environment,
-            command=(
-                f"mkdir -p {INSTALL_DIR} && "
-                f"cp -a {shlex.quote(UPLOAD_STAGE_DIR)}/. {shlex.quote(INSTALL_DIR)}/ && "
-                f"chmod 0755 {shlex.quote(BINARY_PATH)} && "
-                f"rm -rf {shlex.quote(UPLOAD_STAGE_DIR)}"
-            ),
+            command=" && ".join(install_parts),
         )
 
     async def _resolve_host_stage_dir(self, environment: BaseEnvironment) -> Path:
@@ -307,6 +437,21 @@ class Kimchi(BaseInstalledAgent):
             "PI_PACKAGE_DIR": PI_PACKAGE_DIR,
             **ferment_env,
         }
+        if self._openviking_enabled:
+            openviking_url = self._get_env("OPENVIKING_URL") or self._get_env("OPENVIKING_BASE_URL")
+            if not openviking_url:
+                raise ValueError(
+                    "OPENVIKING_URL (or OPENVIKING_BASE_URL) is required for the OpenViking benchmark agent"
+                )
+            for key in OPENVIKING_ENV_KEYS:
+                value = self._get_env(key)
+                if value is not None:
+                    env[key] = value
+            env.setdefault("OPENVIKING_CREDENTIAL_SOURCE", "env")
+            env.setdefault("OPENVIKING_WORKSPACE_PEER", "0")
+            env.setdefault("OPENVIKING_RECALL_PEER_SCOPE", "actor")
+            env.setdefault("OPENVIKING_PEER_ID", self._default_openviking_peer_id())
+            env["OV_DEBUG_LOG"] = CONTAINER_OPENVIKING_DEBUG_LOG
 
         # Pipe the prompt via stdin instead of as a positional arg: pi-coding-agent's
         # parseArgs treats any token starting with `-` as a flag (no `--` end-of-options
@@ -337,6 +482,11 @@ class Kimchi(BaseInstalledAgent):
             # mounted logs directory.
             f"rm -f {shlex.quote(CONTAINER_AGENT_PGID_FILE)}",
         ]
+        if self._openviking_enabled:
+            parts.append(
+                f"rm -f {shlex.quote(CONTAINER_OPENVIKING_DEBUG_LOG)} "
+                f"{shlex.quote(CONTAINER_OPENVIKING_STATUS)}"
+            )
         harness_settings = self._harness_settings_command()
         if harness_settings:
             parts.append(harness_settings)
@@ -365,6 +515,7 @@ class Kimchi(BaseInstalledAgent):
             # Wait for kimchi and preserve its real exit status for Harbor.
             'wait "$agent_pid"; '
             "agent_status=$?; "
+            f"{self._openviking_post_run_shell()}"
             # Normal completion should not leave stale cleanup state behind.
             f"rm -f {shlex.quote(CONTAINER_AGENT_PGID_FILE)}; "
             'exit "$agent_status"; '
@@ -407,11 +558,50 @@ class Kimchi(BaseInstalledAgent):
         if not self._multi_model_enabled:
             model_flag = f"--model {shlex.quote(self.model_name or '')} "
 
+        extension_flag = ""
+        if self._openviking_enabled:
+            extension_flag = f"--extension {shlex.quote(OPENVIKING_ENTRYPOINT)} "
+
         return (
             f"{shlex.quote(BINARY_PATH)} "
             f"--print --session {shlex.quote(CONTAINER_MAIN_SESSION)} "
             f"{model_flag}"
+            f"{extension_flag}"
             f"{cli_flags}"
+        )
+
+    def _default_openviking_peer_id(self) -> str:
+        task = self._auto_tags().get("task", "terminal-bench")
+        return _safe_openviking_peer_id(f"tb-{task}")
+
+    def _openviking_post_run_shell(self) -> str:
+        if not self._openviking_enabled:
+            return ""
+        extension_sha = self._openviking_extension_sha256 or "unknown"
+        connected_status = json.dumps(
+            {
+                "connected": True,
+                "extension_sha256": extension_sha,
+                "config": OPENVIKING_LEARNING_CONFIG,
+            },
+            separators=(",", ":"),
+        )
+        disconnected_status = json.dumps(
+            {
+                "connected": False,
+                "extension_sha256": extension_sha,
+                "config": OPENVIKING_LEARNING_CONFIG,
+                "error": "No OpenViking turn capture was recorded",
+            },
+            separators=(",", ":"),
+        )
+        return (
+            f"if [ -s {shlex.quote(CONTAINER_OPENVIKING_DEBUG_LOG)} ]; then "
+            f"printf '%s\\n' {shlex.quote(connected_status)} > {shlex.quote(CONTAINER_OPENVIKING_STATUS)}; "
+            "else "
+            f"printf '%s\\n' {shlex.quote(disconnected_status)} > {shlex.quote(CONTAINER_OPENVIKING_STATUS)}; "
+            f"if [ \"$agent_status\" -eq 0 ]; then agent_status={OPENVIKING_DISCONNECTED_EXIT_CODE}; fi; "
+            "fi; "
         )
 
     async def _terminate_kimchi_process_group(self, environment: BaseEnvironment) -> None:
@@ -486,9 +676,6 @@ class Kimchi(BaseInstalledAgent):
 
     def populate_context_post_run(self, context: AgentContext) -> None:
         sessions_dir = self.logs_dir / "sessions"
-        if not sessions_dir.is_dir():
-            return
-
         total_input_tokens = 0
         total_output_tokens = 0
         total_cache_read_tokens = 0
@@ -497,7 +684,8 @@ class Kimchi(BaseInstalledAgent):
 
         # Aggregate main.jsonl + Agent child <timestamp>_<uuid>.jsonl siblings.
         # Agent runs are separate sessions, so their usage isn't reflected in main.jsonl.
-        for session_file in sorted(sessions_dir.glob("*.jsonl")):
+        session_files = sorted(sessions_dir.glob("*.jsonl")) if sessions_dir.is_dir() else []
+        for session_file in session_files:
             try:
                 lines = session_file.read_text().splitlines()
             except OSError as exc:
@@ -530,3 +718,27 @@ class Kimchi(BaseInstalledAgent):
         context.n_output_tokens = total_output_tokens
         context.n_cache_tokens = total_cache_read_tokens
         context.cost_usd = total_cost if total_cost > 0 else None
+        if self._openviking_enabled:
+            metadata = dict(context.metadata or {})
+            status_path = self.logs_dir / Path(CONTAINER_OPENVIKING_STATUS).name
+            try:
+                metadata["openviking"] = json.loads(status_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                metadata["openviking"] = {
+                    "connected": False,
+                    "extension_sha256": self._openviking_extension_sha256,
+                    "error": "OpenViking status artifact is missing or invalid",
+                }
+            context.metadata = metadata
+
+
+class KimchiOpenViking(Kimchi):
+    """Kimchi benchmark agent with the official OpenViking Pi extension enabled."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("openviking", True)
+        super().__init__(*args, **kwargs)
+
+    @staticmethod
+    def name() -> str:
+        return "kimchi-openviking"

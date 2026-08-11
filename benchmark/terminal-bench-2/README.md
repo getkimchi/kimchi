@@ -2,7 +2,7 @@
 
 Run [terminal-bench](https://www.harborframework.com/) against kimchi.
 
-The package ships a single harbor agent, `kimchi_agent:Kimchi`, that installs the `kimchi` binary inside each task container and runs it non-interactively (`--print --session /logs/agent/sessions/main.jsonl`). Token and cost counters are parsed from session JSONL files and fed back into harbor's trial context.
+The package ships `kimchi_agent:Kimchi` and an opt-in `kimchi_agent:KimchiOpenViking` variant. Both install the `kimchi` binary inside each task container and run it non-interactively (`--print --session /logs/agent/sessions/main.jsonl`). Token and cost counters are parsed from session JSONL files and fed back into harbor's trial context.
 
 The agent starts `kimchi` in its own process group and records the process-group id at `/logs/agent/kimchi-agent.pgid`. If Harbor cancels the agent phase on timeout, the cleanup path terminates that recorded process group before the verifier starts; on normal exit, the pgid file is removed.
 
@@ -37,12 +37,81 @@ You will hit one of two failure modes:
 | Script | Binary source |
 | --- | --- |
 | `./scripts/run-local.sh` | Cross-builds `kimchi` for linux-amd64 from the current working tree (`pnpm run build:binary-linux-x64`) |
+| `./scripts/run-openviking-learning.sh` | Runs sequential Terminal-Bench 2.1 attempts with the official OpenViking Pi extension and verified-result feedback |
 | `./scripts/run-release.sh` | Downloads the latest release from `castai/kimchi` |
 | `./scripts/run-opencode-kimchi.sh` | Installs OpenCode in the task container and configures it to use the Kimchi gateway |
 | `./scripts/run-claude-code-kimchi.sh` | Installs Claude Code in the task container and configures it to use the Kimchi gateway |
 | `./scripts/run-gsd-kimchi.sh` | Installs GSD in the task container and configures it to use one selected Kimchi model |
 
-All helper scripts target the `terminal-bench/terminal-bench-2` dataset. Extra arguments are forwarded to `harbor run`, so everything below works for any script.
+The standard helper scripts target `terminal-bench/terminal-bench-2`; the OpenViking learning runner targets `terminal-bench/terminal-bench-2-1`. Extra arguments are forwarded to `harbor run`.
+
+## OpenViking learning experiment
+
+Use `run-openviking-learning.sh` to test whether memory from verified attempts improves later attempts on the same Terminal-Bench 2.1 task. The runner deliberately launches one fresh task container at a time. The warm condition gives every attempt the same task-scoped OpenViking peer; the cold condition gives each attempt a new peer.
+
+This is a learning experiment, not a standard leaderboard run. Later warm attempts receive information derived from earlier verifier output, so compare warm and cold curves rather than submitting the warm score as an independent Terminal-Bench result.
+
+### Prerequisites
+
+- Install the official OpenViking Pi extension and set `OPENVIKING_EXTENSION_DIR` to its directory containing `index.ts`. Kimchi's package installation commonly places it at `~/.config/kimchi/harness/packages/openviking`.
+- Run an OpenViking server at an authenticated URL reachable from Docker task containers. `localhost` and `127.0.0.1` are rejected because they refer to the task container itself.
+- Enable Agent Evolution for the experiment account. For a self-hosted server, set `server.agent_evolution.enabled` to `true` in `ov.conf` (or enable the account override through the OpenViking admin API). Session capture still works without it, but OpenViking will skip the case, experience, and trajectory memories this experiment measures.
+- Use an experiment-only OpenViking account/user, or a separate server, if pre-existing global memories could contaminate the comparison.
+
+```bash
+export KIMCHI_API_KEY=...
+export OPENVIKING_URL=https://openviking.example.test
+export OPENVIKING_API_KEY=...
+export OPENVIKING_ACCOUNT=tb21-experiment
+export OPENVIKING_USER=kimchi
+export OPENVIKING_EXTENSION_DIR="$HOME/.config/kimchi/harness/packages/openviking"
+# Optional when the OpenViking server uses Ollama on this host:
+export OPENVIKING_OLLAMA_URL=http://127.0.0.1:11434
+```
+
+When `OPENVIKING_OLLAMA_URL` is set, the shell runner starts warming `qwen3-embedding:4b` in parallel with the Kimchi Linux build. The Python runner verifies that warm-up before its first memory query and warms the model again after memory extraction. Override the model with `OPENVIKING_OLLAMA_EMBEDDING_MODEL`. For a local server that uses a separate generation model for memory extraction, configure Ollama to retain two models concurrently (`OLLAMA_MAX_LOADED_MODELS=2`) when VRAM permits. On a smaller GPU, extraction can still evict the embedding model; the second warm-up keeps the following recall query fast.
+
+For faster extraction, OpenViking can use the same Kimi gateway as Kimchi while Ollama serves only embeddings. Configure its VLM as LiteLLM model `openai/kimi-k2.7` with API base `https://llm.kimchi.dev/openai/v1` and API key `${KIMCHI_API_KEY}`. If OpenViking runs as a user service, pass the key through a protected environment file or import it into the user service manager before restarting OpenViking. This uses additional Kimi tokens beyond the benchmark agent itself.
+
+For a fully local alternative, OpenViking extraction prompts require more than Ollama's default 4,096-token context. Set `OLLAMA_CONTEXT_LENGTH=16384` on the Ollama service. When the local extraction model supports tool calls, use Ollama's OpenAI-compatible route in `ov.conf` (for example, model `openai/qwen3.5:9b` with `api_base` `http://localhost:11434/v1`); the native Ollama generate route can return prose instead of the structured memory operations OpenViking expects. A CPU-offloaded 9B model can still take several minutes to extract a trajectory, so the runner allows 30 minutes for each background memory task by default.
+
+The benchmark adapter copies the extension into each task container, loads it explicitly with `--extension`, disables OpenViking context takeover, enables bounded tool-result capture, and commits the complete trajectory instead of retaining an unarchived live tail. It decorates the extension's capture session with an empty memory policy, so an unverified rollout is archived but cannot become learning memory. It fails the agent phase if no OpenViking turn was captured.
+
+After Harbor verification, the runner replays the archived rollout into a separate OpenViking batch-training session. A structured CaseSpec and OutcomeEvaluation carry the verifier reward and output; that session enables only `cases`, `trajectories`, and `experiences`. This avoids unrelated profile/preference extraction, prevents failed and successful attempts from being learned without their verifier outcome, and removes competing Ollama generation jobs on single-slot local servers. The runner polls each background task before the next attempt. The exact upstream extension directory hash is recorded in trial metadata.
+
+### Run warm and cold chains
+
+Use distinct chain IDs and keep the task, model, attempt count, server configuration, and initial memory state equivalent between conditions:
+
+```bash
+./scripts/run-openviking-learning.sh \
+  --task terminal-bench/fix-git \
+  --attempts 5 \
+  --condition warm \
+  --chain-id fix-git-warm-01
+
+./scripts/run-openviking-learning.sh \
+  --task terminal-bench/fix-git \
+  --attempts 5 \
+  --condition cold \
+  --chain-id fix-git-cold-01
+```
+
+The defaults are dataset `terminal-bench/terminal-bench-2-1` and model `kimchi-dev/kimi-k2.7`. Repeat `--task` to run more tasks. Arguments after `--` are forwarded to each `harbor run`, for example:
+
+```bash
+./scripts/run-openviking-learning.sh \
+  --task terminal-bench/fix-git \
+  --attempts 3 \
+  --condition warm \
+  -- --timeout-multiplier 0.5
+```
+
+Do not use Harbor's `-k` for this experiment. The runner controls repetition so that attempt N finishes verification and commits its lesson before attempt N+1 starts.
+
+Results are written under `learning/<task>/<chain-id>/<condition>/`. Each Harbor trial contains `agent/openviking-learning/recall-before.json`, `capture-commit.json`, `lesson-submitted.json`, `memories-after.json`, and `memory-diff.md`; the condition directory's `summary.json` records the reward curve and artifact paths. Verifier output stored in memory is bounded to its last 4,000 characters by default.
+
+Actor-peer scoping prevents one task chain from recalling another chain's peer memories. OpenViking global memory can still be visible, which is why a clean experiment account/user or separate server is the strongest control.
 
 ### Running a task
 
