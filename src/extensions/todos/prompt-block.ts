@@ -14,7 +14,7 @@ Create a list for tasks with multiple non-trivial steps: code changes, debugging
 Using todo tools is for tracking your work in the session; it is different from leaving TODO comments/placeholders in code, which you must not do unless explicitly requested. Use mark_todo as the default for status changes — it is lightweight and pairs naturally with a work tool call. Mark the current item completed and the next one in_progress in the same turn you run the next command. Use create_todos for the initial list, add_todo for one missing item, update_todos only when the plan changes significantly (adding/removing/reordering items), and clear_todos when the work is done. Update the list at natural break points: when a step completes, when the plan changes, or when switching focus. **Always pair todo updates with the next work tool call in the same turn** — never make a turn that is only a todo update. Keep at most one item in_progress at a time; when a current list is visible, continue the in_progress item before starting pending work. When updating an existing list, preserve user-created todos and existing ids unless the user asked to remove or rewrite them; append new todos after existing todos. If you see a staleness warning in your todo state ("⚠ N changes since last update"), update your list alongside your next tool call — do not make a dedicated turn for it.`
 
 const FERMENT_TODO_GUIDANCE =
-	"\n\nWhen working inside a ferment step, break the step into concrete sub-tasks using add_todo before writing code. Each sub-task should be a specific verifiable action (run a command, write a file, check an output). Mark each sub-task as you complete it rather than batch-replacing the entire list at the end."
+	"\n\nWhen working inside a ferment step, break the step into concrete sub-tasks using add_todo before writing code. The step scope already contains the step's own title as a header item — add your sub-tasks beneath it, and keep the header as-is. Each sub-task should be a specific verifiable action (run a command, write a file, check an output). Do not restate the phase plan as sub-tasks: the remaining steps of the phase are already tracked by the phase-level todo list. Mark each sub-task as you complete it rather than batch-replacing the entire list at the end."
 
 export function renderTodoPromptBlock(): string {
 	const ferment = getActive()
@@ -23,8 +23,9 @@ export function renderTodoPromptBlock(): string {
 }
 
 export function appendTodoPromptBlockIfMissing(systemPrompt: string): string | undefined {
-	if (/(^|\n)## Todos(\n|$)/.test(systemPrompt)) return undefined
-	return `${systemPrompt.trimEnd()}\n\n${renderTodoPromptBlock()}`
+	const base = systemPrompt.trimEnd()
+	if (/(^|\n)## Todos(\n|$)/.test(base)) return undefined
+	return `${base}\n\n${renderTodoPromptBlock()}`
 }
 
 export function registerTodoPromptBlock(pi: ExtensionAPI): void {
@@ -193,22 +194,10 @@ export function renderTodoStateMarkdown(sessionId: string): string | undefined {
  *
  *  Returns `undefined` when the store is empty, letting the prompt-block
  *  pipeline skip cleanly. */
-export function registerTodoStateBlock(pi: ExtensionAPI, ctx: ExtensionContext): void {
-	createSystemPromptBlocks(pi, "todos").register({
-		id: "todo-state",
-		render: () => {
-			const sessionId = ctx.sessionManager.getSessionId()
-			return renderTodoStateMarkdown(sessionId)
-		},
-	})
-}
-
-/** Renders the todo state block exactly as the registered system-prompt block
- *  does. Use this in tests to validate the complete path rather than calling
- *  the raw renderer directly. */
+/** Renders the todo state block markdown directly. Use this in tests to
+ *  validate the complete path rather than calling the renderer directly. */
 export function renderTodoStateBlock(ctx: ExtensionContext): string | undefined {
-	const sessionId = ctx.sessionManager.getSessionId()
-	return renderTodoStateMarkdown(sessionId)
+	return renderTodoStateMarkdown(ctx.sessionManager.getSessionId())
 }
 
 export {

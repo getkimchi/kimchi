@@ -28,6 +28,13 @@ const PACKAGE_LIST_LIMIT_DEFAULT = 40
 const PACKAGE_LIST_LIMIT_FULL = 120
 const MAX_VALUE_BYTES = 256
 const MAX_ROOT_MARKERS = 32
+/**
+ * Consecutive same-shape files whose names differ only inside a single
+ * digit group (data shards, numbered dumps, frame sequences) render as one
+ * collapsed `{first..last}` line once a run reaches this length. Shorter
+ * runs render individually because the collapse notation saves nothing.
+ */
+const COLLAPSE_RUN_MIN = 5
 
 export const ENVIRONMENT_SNAPSHOT_SESSION_ENTRY = "kimchi:environment-snapshot"
 
@@ -86,6 +93,9 @@ const ROOT_MARKER_NAMES = new Set([
 	"Gemfile",
 	"Package.swift",
 	"mix.exs",
+	"DESCRIPTION",
+	"renv.lock",
+	"dune-project",
 ])
 
 interface TreeEntry {
@@ -345,6 +355,12 @@ interface CollectionFacts {
 	ecosystems: string[]
 	probes: ProbeFact[]
 	/**
+	 * Requested version probes that produced no fact (timeout, error, or
+	 * unparseable output). Rendered as an explicit notice so budget-driven
+	 * absence is never mistaken for "unavailable on PATH".
+	 */
+	incompleteProbes?: number
+	/**
 	 * True while only the highest-priority facts (cwd, enclosing Git root)
 	 * have been published. Partial facts render uncollected sections as
 	 * explicit not-collected notices so budget exhaustion is never presented
@@ -361,10 +377,17 @@ function buildDiagnostics(
 	snapshot?: string,
 	tree?: TreeScan,
 ): Omit<EnvironmentSnapshotDiagnostics, "renderedSnapshotCache"> {
-	const includedEntryCount =
-		snapshot && tree
-			? tree.entries.slice(0, MAX_TREE_ENTRIES).filter((entry) => snapshot.includes(formatTreeEntry(entry))).length
-			: 0
+	let includedEntryCount = 0
+	if (snapshot && tree) {
+		let renderedLines = 0
+		for (const unit of collapseTreeEntries(tree.entries)) {
+			if (renderedLines >= MAX_TREE_ENTRIES) break
+			const line = unit.kind === "single" ? formatTreeEntry(unit.entry) : formatCollapsedRun(unit.run)
+			if (!snapshot.includes(line)) break
+			renderedLines++
+			includedEntryCount += unit.kind === "single" ? 1 : unit.run.members.length
+		}
+	}
 	return {
 		collectionDurationMs: Date.now() - start,
 		stableFactCacheHits: probeMetrics.stableFactCacheHits,
@@ -935,11 +958,7 @@ async function listEnclosingRootMarkers(
 	if (!gitRoot || resolve(gitRoot) === resolve(cwd)) return []
 	try {
 		const candidates = (await fs.readdir(gitRoot))
-			.filter(
-				(entry) =>
-					entry.isFile() &&
-					(ROOT_MARKER_NAMES.has(entry.name) || entry.name.endsWith(".sln") || entry.name.endsWith(".csproj")),
-			)
+			.filter((entry) => entry.isFile() && isRootMarkerName(entry.name))
 			.map<TreeEntry>((entry) => ({ path: entry.name, kind: "file", potentiallySensitive: false }))
 		const visible = await filterGitIgnored(gitRoot, gitRoot, candidates, runCommand, timeoutMs)
 		return visible
@@ -956,9 +975,19 @@ function markersFromTree(tree: TreeScan, rootMarkers: readonly string[]): string
 	for (const entry of tree.entries) {
 		if (entry.kind === "directory") continue
 		const name = basename(entry.path)
-		if (ROOT_MARKER_NAMES.has(name) || name.endsWith(".sln") || name.endsWith(".csproj")) markers.add(name)
+		if (isRootMarkerName(name)) markers.add(name)
 	}
 	return [...markers].sort(compareNames).slice(0, MAX_ROOT_MARKERS)
+}
+
+function isRootMarkerName(name: string): boolean {
+	return (
+		ROOT_MARKER_NAMES.has(name) ||
+		name.endsWith(".sln") ||
+		name.endsWith(".csproj") ||
+		name.endsWith(".opam") ||
+		name.endsWith(".Rproj")
+	)
 }
 
 interface EcosystemDefinition {
@@ -1059,6 +1088,18 @@ const ECOSYSTEMS: readonly EcosystemDefinition[] = [
 	{ name: "PHP", matches: (m) => m.has("composer.json"), probes: [probe("PHP", "php"), probe("Composer", "composer")] },
 	{ name: "Swift", matches: (m) => m.has("Package.swift"), probes: [probe("Swift", "swift")] },
 	{
+		name: "R",
+		matches: (m) => [...m].some((name) => name === "DESCRIPTION" || name === "renv.lock" || name.endsWith(".Rproj")),
+		probes: [probe("R"), probe("Rscript", "Rscript")],
+		sourceFileMatches: (fileNames) => [...fileNames].some((name) => /\.r(?:md)?$/iu.test(name)),
+	},
+	{
+		name: "OCaml",
+		matches: (m) => [...m].some((name) => name === "dune-project" || name.endsWith(".opam")),
+		probes: [probe("OCaml", "ocaml", ["-version"]), probe("Dune", "dune"), probe("opam")],
+		sourceFileMatches: (fileNames) => [...fileNames].some((name) => /\.mli?$/u.test(name)),
+	},
+	{
 		name: "Elixir",
 		matches: (m) => m.has("mix.exs"),
 		// Elixir/Mix banners lead with the Erlang/OTP erts version (e.g.
@@ -1103,6 +1144,9 @@ const GENERIC_FALLBACK_PROBES: readonly Probe[] = [
 	probe("GCC", "gcc"),
 	probe("Make", "make"),
 	probe("Node", "node"),
+	// Scripting runtimes common in marker-less task/data environments whose
+	// absence agents otherwise burn early rounds rediscovering (which R …).
+	probe("Rscript", "Rscript"),
 ]
 
 /**
@@ -1123,6 +1167,7 @@ const UTILITY_PROBES: readonly Probe[] = [
 	probe("ffmpeg", "ffmpeg", ["-version"]),
 	probe("Docker", "docker"),
 	probe("Podman", "podman"),
+	probe("qemu-img", "qemu-img"),
 ]
 
 function shouldProbe(candidate: Probe, markers: ReadonlySet<string>): boolean {
@@ -1332,6 +1377,128 @@ function fileTypeLabel(path: string): string | undefined {
 	return FILE_TYPE_LABELS[name.slice(dot)]
 }
 
+/** Digit-group split used to recognize same-shape numbered file sequences. */
+function numericShape(name: string): { text: string[]; digits: string[] } | undefined {
+	const digits = [...name.matchAll(/\d+/gu)].map((match) => match[0])
+	if (digits.length === 0) return undefined
+	return { text: name.split(/\d+/u), digits }
+}
+
+function parentDirOf(path: string): string {
+	const index = path.lastIndexOf("/")
+	return index < 0 ? "" : path.slice(0, index)
+}
+
+interface CollapsedRun {
+	parentDir: string
+	/** Static text segments (identical across members). */
+	text: string[]
+	/** Constant digit-group values; the varying group keeps the first member's (unused) slot. */
+	digits: string[]
+	varyIndex: number
+	minValue: string
+	maxValue: string
+	// (values are the first and last member's digit-group values; the run is
+	// verified contiguous at construction time)
+	label?: string
+	sizeRange?: [min: number, max: number]
+	members: TreeEntry[]
+}
+
+type TreeRenderUnit = { kind: "single"; entry: TreeEntry } | { kind: "run"; run: CollapsedRun }
+
+/**
+ * Fold consecutive same-directory files whose names differ only inside one
+ * digit group into a single collapsed run. Collapse is consecutive-only —
+ * any structural break (directory, symlink, sensitive file) ends a run —
+ * and never hides individual files: runs shorter than COLLAPSE_RUN_MIN
+ * render as ordinary entries.
+ */
+function collapseTreeEntries(entries: readonly TreeEntry[]): TreeRenderUnit[] {
+	const units: TreeRenderUnit[] = []
+	let index = 0
+	while (index < entries.length) {
+		const entry = entries[index]
+		const baseline =
+			entry.kind === "file" && !entry.potentiallySensitive ? numericShape(basename(entry.path)) : undefined
+		if (!baseline) {
+			units.push({ kind: "single", entry })
+			index++
+			continue
+		}
+		const parentDir = parentDirOf(entry.path)
+		const members: TreeEntry[] = [entry]
+		let lastDigits = baseline.digits
+		let varyIndex = -1
+		// Fixed positive step between consecutive members — a {first..last}
+		// pattern must describe a real contiguous sequence, not a handful of
+		// scattered matches disguised as a range.
+		let step = 0
+		let next = index + 1
+		while (next < entries.length) {
+			const candidate = entries[next]
+			if (candidate.kind !== "file" || candidate.potentiallySensitive || parentDirOf(candidate.path) !== parentDir)
+				break
+			const shape = numericShape(basename(candidate.path))
+			if (
+				!shape ||
+				shape.text.length !== baseline.text.length ||
+				!shape.text.every((segment, i) => segment === baseline.text[i]) ||
+				shape.digits.length !== baseline.digits.length
+			)
+				break
+			const differing = shape.digits.flatMap((value, i) => (value !== baseline.digits[i] ? [i] : []))
+			if (differing.length !== 1 || (varyIndex !== -1 && differing[0] !== varyIndex)) break
+			const value = Number.parseInt(shape.digits[differing[0]], 10)
+			const previous = Number.parseInt(lastDigits[differing[0]], 10)
+			if (step === 0) {
+				step = value - previous
+				if (step <= 0) break
+			} else if (value !== previous + step) break
+			varyIndex = differing[0]
+			lastDigits = shape.digits
+			members.push(candidate)
+			next++
+		}
+		if (members.length < COLLAPSE_RUN_MIN) {
+			for (const member of members) units.push({ kind: "single", entry: member })
+		} else {
+			const labels = new Set(members.map((member) => fileTypeLabel(member.path)))
+			const sizes = members.map((member) => member.sizeBytes)
+			const hasAllSizes = sizes.every((size): size is number => size !== undefined)
+			units.push({
+				kind: "run",
+				run: {
+					parentDir,
+					text: baseline.text,
+					digits: baseline.digits,
+					varyIndex,
+					minValue: baseline.digits[varyIndex],
+					maxValue: lastDigits[varyIndex],
+					label: labels.size === 1 ? [...labels][0] : undefined,
+					sizeRange: hasAllSizes ? [Math.min(...(sizes as number[])), Math.max(...(sizes as number[]))] : undefined,
+					members,
+				},
+			})
+		}
+		index = next
+	}
+	return units
+}
+
+function formatCollapsedRun(run: CollapsedRun): string {
+	const fixed: string[] = [run.text[0]]
+	for (let i = 0; i < run.digits.length; i++) {
+		fixed.push(i === run.varyIndex ? `{${run.minValue}..${run.maxValue}}` : run.digits[i])
+		fixed.push(run.text[i + 1])
+	}
+	const path = `${run.parentDir ? `${run.parentDir}/` : ""}${fixed.join("")}`
+	const annotations = [`${run.members.length} files`]
+	if (run.sizeRange) annotations.push(`${formatSize(run.sizeRange[0])}–${formatSize(run.sizeRange[1])} each`)
+	if (run.label) annotations.push(run.label)
+	return `- ${quote(path)} [${annotations.join("; ")}]`
+}
+
 function formatTreeEntry(entry: TreeEntry): string {
 	const path = entry.kind === "directory" ? `${entry.path}/` : entry.path
 	const annotations: string[] = []
@@ -1351,7 +1518,7 @@ const GUIDANCE_LINES = [
 	"",
 	"The facts below were probed and verified at session startup. Do not rerun commands solely to rediscover or verify them — treat them as current unless you have since changed the environment, or the task explicitly depends on real-time accuracy.",
 	"",
-	`The project map is bounded to depth ${TREE_DEPTH} (depth ${SPARSE_TREE_DEPTH} in sparse workspaces). It excludes deeper paths, Git-ignored paths except encountered execution-context files, dependency/vendor directories, generated build output, caches, and symlink targets. File sizes come from metadata and type hints from file names; contents were not inspected. Absence from this map — or from the tool and package lists — does not prove that a path, tool, or package does not exist.`,
+	`The project map is bounded to depth ${TREE_DEPTH} (depth ${SPARSE_TREE_DEPTH} in sparse workspaces). It excludes deeper paths, Git-ignored paths except encountered execution-context files, dependency/vendor directories, generated build output, caches, and symlink targets. Runs of files whose names differ only in one numeric group (data shards, frame sequences) collapse into a single "{first..last}" pattern line with a member count. File sizes come from metadata and type hints from file names; contents were not inspected. Absence from this map — or from the tool and package lists — does not prove that a path, tool, or package does not exist.`,
 	"",
 ] as const
 
@@ -1384,16 +1551,31 @@ function formatPartialSnapshot(
 	maxBytes: number = MAX_SNAPSHOT_BYTES,
 ): string | undefined {
 	const notCollected = "- (not collected: collection budget elapsed before scanning completed)"
+	// Render whatever sections are already known so a budget-elapsed partial
+	// snapshot is still useful orientation; only genuinely uncollected
+	// sections carry the notice.
+	const systemLines = facts.system ? formatSystemLines(facts.system) : []
+	const probeLines = facts.probes.map((fact) => `- ${quote(fact.name)}: ${quote(fact.value)}`)
+	const utilityLines = (facts.utilities ?? [])
+		.filter((fact) => fact.value !== "unavailable on PATH")
+		.map((fact) => `- ${quote(fact.name)}: ${quote(fact.value)}`)
 	const output = [
 		...snapshotPreamble(hostRuntime),
 		`Working directory: ${quote(facts.cwd)}`,
 		...(facts.gitRoot ? [`Enclosing Git root: ${quote(facts.gitRoot)}`] : []),
+		...(facts.gitStatus ? [formatGitStatusLine(facts.gitStatus)] : []),
+		...(systemLines.length > 0 ? ["", "System:", ...systemLines] : []),
+		...(facts.gitLog.length > 0 ? ["", "Recent commits:", ...facts.gitLog.map((entry) => `- ${quote(entry)}`)] : []),
 		"",
 		"Project markers:",
-		notCollected,
+		...(facts.rootMarkers.length > 0 ? facts.rootMarkers.map((marker) => `- ${quote(marker)}`) : [notCollected]),
 		"",
 		"Detected ecosystems:",
-		notCollected,
+		...(facts.ecosystems.length > 0 ? facts.ecosystems.map((name) => `- ${quote(name)}`) : [notCollected]),
+		"",
+		"Detected tools:",
+		...(probeLines.length > 0 ? probeLines : [notCollected]),
+		...(utilityLines.length > 0 ? ["", "CLI tools:", ...utilityLines] : []),
 		"",
 		"Project map:",
 		notCollected,
@@ -1479,6 +1661,11 @@ function formatSnapshot(
 		"",
 		"Detected tools:",
 		...probeLines,
+		...(facts.incompleteProbes
+			? [
+					`- (${facts.incompleteProbes} tool version probes did not complete within the startup collection budget; their entries are absent)`,
+				]
+			: []),
 		...(utilityLines.length > 0 ? ["", "CLI tools:", ...utilityLines] : []),
 		...(pythonLines.length > 0 ? ["", "Python environment:", ...pythonLines] : []),
 		"",
@@ -1577,23 +1764,30 @@ function formatSnapshot(
 
 	const beforeTree = buildBeforeTree(markerLines, gitLogLines, probeLines, pythonLines)
 	const treeLines: string[] = []
-	const candidates = facts.tree.entries.slice(0, MAX_TREE_ENTRIES)
-	for (const entry of candidates) {
-		const candidateLine = formatTreeEntry(entry)
+	// Render units: same-shape numbered sequences (data shards, frame dumps)
+	// collapse into one line, so the 200-line cap is spent on structure
+	// rather than repetition. Covered-entry accounting keeps the truncation
+	// notice honest regardless of collapse.
+	const units = collapseTreeEntries(facts.tree.entries)
+	let coveredEntryCount = 0
+	for (const unit of units) {
+		if (treeLines.length >= MAX_TREE_ENTRIES) break
+		const candidateLine = unit.kind === "single" ? formatTreeEntry(unit.entry) : formatCollapsedRun(unit.run)
 		const prospective = [...beforeTree, ...treeLines, candidateLine, ...afterTree].join("\n")
 		if (byteLength(prospective) > maxBytes) break
 		treeLines.push(candidateLine)
+		coveredEntryCount += unit.kind === "single" ? 1 : unit.run.members.length
 	}
 	if (facts.tree.entries.length === 0) {
 		const emptyDirectoryLine = "- (empty directory)"
 		const prospective = [...beforeTree, emptyDirectoryLine, ...afterTree].join("\n")
 		if (byteLength(prospective) <= maxBytes) treeLines.push(emptyDirectoryLine)
 	}
-	const truncated = treeLines.length < facts.tree.entries.length
+	const truncated = coveredEntryCount < facts.tree.entries.length
 	if (truncated) {
 		const notice = facts.tree.totalKnown
-			? `- Tree truncated: showing ${treeLines.length} of ${facts.tree.entries.length} eligible entries.`
-			: `- Tree truncated: showing ${treeLines.length} entries; additional eligible entries were omitted.`
+			? `- Tree truncated: showing ${coveredEntryCount} of ${facts.tree.entries.length} eligible entries.`
+			: `- Tree truncated: showing ${coveredEntryCount} entries; additional eligible entries were omitted.`
 		const prospective = [...beforeTree, ...treeLines, notice, ...afterTree].join("\n")
 		if (byteLength(prospective) <= maxBytes) treeLines.push(notice)
 	}
@@ -1850,7 +2044,8 @@ export class EnvironmentSnapshotService {
 			// The installed-package list is the single most re-probed fact in
 			// practice; start it concurrently with the version probes since a
 			// cold `pip list` can dominate the remaining budget.
-			const wantsPythonEnv = detected.names.includes("Python") || findActivatedVenv(cwd, this.filesystem)
+			const wantsPythonEnv =
+				detected.names.includes("Python") || detected.names.length === 0 || findActivatedVenv(cwd, this.filesystem)
 			const pythonEnvPromise =
 				verbosity !== "minimal" && wantsPythonEnv && Date.now() < deadline
 					? collectPythonEnv(cwd, this.filesystem, this.runCommand, deadline)
@@ -1879,6 +2074,7 @@ export class EnvironmentSnapshotService {
 				},
 			)
 			collectedFacts.probes = probes
+			collectedFacts.incompleteProbes = requestedProbes.length - probes.length
 			onFacts(collectedFacts)
 			// CLI utilities run after ecosystem probes so version facts
 			// essential to the project always win the shared budget. Absent
@@ -1893,6 +2089,7 @@ export class EnvironmentSnapshotService {
 					this.stableFacts,
 					probeMetrics,
 				)
+				collectedFacts.incompleteProbes += UTILITY_PROBES.length - collectedFacts.utilities.length
 				onFacts(collectedFacts)
 			}
 			collectedFacts.pythonEnv = await pythonEnvPromise

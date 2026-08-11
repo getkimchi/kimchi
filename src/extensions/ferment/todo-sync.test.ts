@@ -8,7 +8,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { Ferment, Phase } from "../../ferment/types.js"
-import { __resetTodoStore, applyWriteTodos, getTodosForScope } from "../todos/store.js"
+import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "../todos/store.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import { setActive } from "./state.js"
 import {
@@ -232,22 +232,10 @@ describe("todo-sync bridge", () => {
 		expect(todos[3].status).toBe("pending")
 	})
 
-	it("manually-added todos are unaffected by ferment sync", () => {
+	it("global todos created during a phase persist until the next phase starts", () => {
 		const { pi, emit } = createFakePI()
 		const ferment = createTestFerment("phase-1", 2)
 		setActive(ferment)
-
-		// Add a manual global todo before registering the sync
-		applyWriteTodos(
-			{
-				scope: { kind: "global" },
-				todos: [
-					{ content: "Manual global todo", status: "pending" },
-					{ content: "Another manual todo", status: "in_progress" },
-				],
-			},
-			TEST_SESSION_ID,
-		)
 
 		unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
 
@@ -259,7 +247,19 @@ describe("todo-sync bridge", () => {
 			phaseName: "Test Phase",
 		})
 
-		// Assert: global scope should still have the manual todos
+		// Add manual global todos during the phase (model-created)
+		applyWriteTodos(
+			{
+				scope: { kind: "global" },
+				todos: [
+					{ content: "Manual global todo", status: "pending" },
+					{ content: "Another manual todo", status: "in_progress" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+
+		// Global todos persist during the phase
 		const globalTodos = getTodosForScope({ kind: "global" }, TEST_SESSION_ID)
 		expect(globalTodos).toHaveLength(2)
 		expect(globalTodos[0].content).toBe("Manual global todo")
@@ -275,7 +275,7 @@ describe("todo-sync bridge", () => {
 		expect(fermentTodos[2].content).toBe("↳ Step 2")
 	})
 
-	it("phase completion marks remaining todos as completed", () => {
+	it("phase completion clears ferment-scoped todos entirely", () => {
 		const { pi, emit } = createFakePI()
 		const ferment = createTestFerment("phase-1", 3)
 		setActive(ferment)
@@ -321,19 +321,12 @@ describe("todo-sync bridge", () => {
 			blockRetries: 0,
 		})
 
+		// Ferment-scoped todos should be fully cleared after phase completion.
+		// Previously they were marked completed and left in the store, which
+		// added noise to the model's ## Current Todos block and could confuse
+		// the model if a new phase reused the same phaseId.
 		const todos = getTodosForScope({ kind: "ferment", phaseId: "phase-1" }, TEST_SESSION_ID)
-
-		// Phase header should be completed
-		expect(todos[0].status).toBe("completed")
-
-		// Step 1 should still be completed (was already completed)
-		expect(todos[1].status).toBe("completed")
-
-		// Step 2 should still be blocked (was failed, not auto-completed)
-		expect(todos[2].status).toBe("blocked")
-
-		// Step 3 should now be completed (was pending, marked completed by PHASE_COMPLETED)
-		expect(todos[3].status).toBe("completed")
+		expect(todos).toHaveLength(0)
 	})
 
 	it("unsubscribe removes all event listeners", () => {
@@ -608,15 +601,6 @@ describe("todo-sync bridge", () => {
 		const ferment = createTestFerment("phase-1", 2)
 		setActive(ferment)
 
-		// Mix global and ferment todos before suspension
-		applyWriteTodos(
-			{
-				scope: { kind: "global" },
-				todos: [{ content: "User todo", status: "pending" }],
-			},
-			TEST_SESSION_ID,
-		)
-
 		unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
 
 		emit(FERMENT_EVENTS.PHASE_STARTED, {
@@ -625,6 +609,15 @@ describe("todo-sync bridge", () => {
 			phaseIndex: 1,
 			phaseName: "Test Phase",
 		})
+
+		// Add global + ferment-step todos after phase starts (model-created during work)
+		applyWriteTodos(
+			{
+				scope: { kind: "global" },
+				todos: [{ content: "User todo", status: "pending" }],
+			},
+			TEST_SESSION_ID,
+		)
 		// Add a ferment-step scoped todo (agent-written plan bullet)
 		applyWriteTodos(
 			{
@@ -716,14 +709,6 @@ describe("todo-sync bridge", () => {
 		const ferment = createTestFerment("phase-1", 2)
 		setActive(ferment)
 
-		applyWriteTodos(
-			{
-				scope: { kind: "global" },
-				todos: [{ content: "User todo", status: "pending" }],
-			},
-			TEST_SESSION_ID,
-		)
-
 		unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
 
 		emit(FERMENT_EVENTS.PHASE_STARTED, {
@@ -732,6 +717,16 @@ describe("todo-sync bridge", () => {
 			phaseIndex: 1,
 			phaseName: "Test Phase",
 		})
+
+		// Add a global todo after phase starts (model-created during work)
+		applyWriteTodos(
+			{
+				scope: { kind: "global" },
+				todos: [{ content: "User todo", status: "pending" }],
+			},
+			TEST_SESSION_ID,
+		)
+
 		emit(FERMENT_EVENTS.SUSPENDED, { fermentId: ferment.id })
 		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" }, TEST_SESSION_ID)).toHaveLength(0)
 
@@ -1064,5 +1059,211 @@ describe("todo-sync bridge", () => {
 			unsubA()
 			unsubB()
 		})
+	})
+})
+
+describe("scope bleed prevention", () => {
+	let unsubscribe: (() => void) | undefined
+
+	beforeEach(() => {
+		__resetTodoStore()
+		setActive(undefined)
+	})
+
+	afterEach(() => {
+		if (unsubscribe) {
+			unsubscribe()
+			unsubscribe = undefined
+		}
+		__resetTodoStore()
+		setActive(undefined)
+	})
+
+	it("clears global-scope todos on PHASE_STARTED", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 2)
+		setActive(ferment)
+
+		unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
+
+		// Write some global todos that should be cleared when a new phase starts
+		applyWriteTodos(
+			{ scope: { kind: "global" }, todos: [{ content: "stale global todo", status: "pending" }] },
+			TEST_SESSION_ID,
+		)
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toHaveLength(1)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+
+		// Global todos should be cleared
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toHaveLength(0)
+
+		// Ferment-scoped phase todos should be populated
+		const phaseTodos = getTodosForScope({ kind: "ferment", phaseId: "phase-1" }, TEST_SESSION_ID)
+		expect(phaseTodos).toHaveLength(3) // header + 2 steps
+	})
+
+	it("clears global-scope todos on STEP_STARTED", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 2)
+		setActive(ferment)
+
+		unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+
+		// Write some global todos after phase started
+		applyWriteTodos(
+			{ scope: { kind: "global" }, todos: [{ content: "stale global todo", status: "pending" }] },
+			TEST_SESSION_ID,
+		)
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toHaveLength(1)
+
+		emit(FERMENT_EVENTS.STEP_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			stepId: "step-1",
+			stepIndex: 1,
+		})
+
+		// Global todos should be cleared when step starts
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toHaveLength(0)
+	})
+
+	it("seeds the step scope with an in_progress anchor on STEP_STARTED", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 2)
+		setActive(ferment)
+
+		unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+		emit(FERMENT_EVENTS.STEP_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			stepId: "step-1",
+			stepIndex: 1,
+		})
+
+		// The step scope starts with a single anchor: the step's own title as
+		// an in_progress header. The model is expected to append sub-tasks
+		// beneath it — not to restate the phase plan (observed behaviour).
+		const stepTodos = getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }, TEST_SESSION_ID)
+		expect(stepTodos).toHaveLength(1)
+		expect(stepTodos[0].content).toBe("[Step 1] Step 1")
+		expect(stepTodos[0].status).toBe("in_progress")
+	})
+
+	it("does not reseed the step scope when a restarted step already has todos", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 2)
+		setActive(ferment)
+
+		unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+		// Model wrote its own sub-tasks before the step was (re)started.
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+				todos: [{ content: "run pnpm install", status: "in_progress" }],
+			},
+			TEST_SESSION_ID,
+		)
+
+		emit(FERMENT_EVENTS.STEP_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			stepId: "step-1",
+			stepIndex: 1,
+		})
+
+		const stepTodos = getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }, TEST_SESSION_ID)
+		expect(stepTodos).toHaveLength(1)
+		expect(stepTodos[0].content).toBe("run pnpm install")
+	})
+
+	it("clears ferment-scoped todos on PHASE_COMPLETED", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 2)
+		setActive(ferment)
+
+		unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+
+		const phaseScope = { kind: "ferment" as const, phaseId: "phase-1" }
+		expect(getTodosForScope(phaseScope, TEST_SESSION_ID)).toHaveLength(3)
+
+		// Complete the phase with updated ferment state (steps done)
+		const completedFerment: Ferment = {
+			...ferment,
+			phases: ferment.phases.map((p) => ({
+				...p,
+				steps: p.steps.map((s) => ({ ...s, status: "done" as const })),
+			})),
+		}
+		setActive(completedFerment)
+		emit(FERMENT_EVENTS.PHASE_COMPLETED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+		})
+
+		// Ferment-scoped todos should be fully cleared, not just marked completed
+		expect(getTodosForScope(phaseScope, TEST_SESSION_ID)).toHaveLength(0)
+	})
+
+	it("does not clear global todos mid-step (only at transition boundaries)", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 2)
+		setActive(ferment)
+
+		unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+		emit(FERMENT_EVENTS.STEP_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			stepId: "step-1",
+			stepIndex: 1,
+		})
+
+		// Model creates global todos during the step — should persist until next transition
+		applyWriteTodos(
+			{ scope: { kind: "global" }, todos: [{ content: "active global todo", status: "pending" }] },
+			TEST_SESSION_ID,
+		)
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toHaveLength(1)
 	})
 })

@@ -227,8 +227,10 @@ describe("environment-snapshot", () => {
 
 	describe("truncation", () => {
 		it("truncates at 200 tree entries with best-effort total when totalKnown", async () => {
+			// Alphabetic suffixes never form a numeric run, so the 200-line cap
+			// is exercised without the collapse path.
 			const entries: FsDirent[] = Array.from({ length: 201 }, (_, i) =>
-				dirent(`f${String(i).padStart(4, "0")}.ts`, "file"),
+				dirent(`f${String.fromCharCode(97 + Math.floor(i / 26))}${String.fromCharCode(97 + (i % 26))}.ts`, "file"),
 			)
 			const fs = fakeFs(new Map([[ROOT, entries]]))
 			const svc = makeService({ filesystem: fs })
@@ -238,12 +240,88 @@ describe("environment-snapshot", () => {
 
 		it("uses unknown-total wording when scan was capped at MAX_SCAN_ENTRIES", async () => {
 			const entries: FsDirent[] = Array.from({ length: 2100 }, (_, i) =>
-				dirent(`f${String(i).padStart(5, "0")}.ts`, "file"),
+				dirent(
+					`f${String.fromCharCode(97 + Math.floor(i / 676))}${String.fromCharCode(97 + (Math.floor(i / 26) % 26))}${String.fromCharCode(97 + (i % 26))}.ts`,
+					"file",
+				),
 			)
 			const fs = fakeFs(new Map([[ROOT, entries]]))
 			const svc = makeService({ filesystem: fs })
 			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
 			expect(snapshot).toContain("Tree truncated: showing 200 entries; additional eligible entries were omitted")
+		})
+
+		it("collapses same-shape numeric file runs into a single pattern line", async () => {
+			// One variable digit group across ≥5 same-dir files renders as a
+			// {first..last} pattern with a member count, freeing the line cap.
+			const shards = Array.from({ length: 148 }, (_, i) =>
+				dirent(`c4-mini-${String(i).padStart(5, "0")}-of-00148.jsonl`, "file"),
+			)
+			const fs = fakeFs(new Map([[ROOT, [dirent("worker.py", "file"), ...shards]]]))
+			const svc = makeService({ filesystem: fs })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('"c4-mini-{00000..00147}-of-00148.jsonl"')
+			expect(snapshot).toMatch(/\[148 files;[^\]]*JSON Lines data\]/u)
+			expect(snapshot).not.toContain("c4-mini-00042")
+			expect(snapshot).not.toContain("Tree truncated")
+		})
+
+		it("does not collapse numeric runs shorter than five files", async () => {
+			const shards = Array.from({ length: 4 }, (_, i) => dirent(`shard-0${i}.bin`, "file"))
+			const fs = fakeFs(new Map([[ROOT, shards]]))
+			const svc = makeService({ filesystem: fs })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).not.toMatch(/\{\d/u)
+			expect(snapshot).toContain('"shard-00.bin"')
+			expect(snapshot).toContain('"shard-03.bin"')
+		})
+
+		it("does not collapse names differing in more than one digit group", async () => {
+			// Interleaved two-digit-group names never form a valid contiguous
+			// run; every file renders individually.
+			const files = [
+				"chunk-1-01.dat",
+				"chunk-2-01.dat",
+				"chunk-1-02.dat",
+				"chunk-2-02.dat",
+				"chunk-1-03.dat",
+				"chunk-2-03.dat",
+				"chunk-1-04.dat",
+				"chunk-2-04.dat",
+			].map((name) => dirent(name, "file"))
+			const fs = fakeFs(new Map([[ROOT, files]]))
+			const svc = makeService({ filesystem: fs })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).not.toMatch(/\{\d/u)
+			expect(snapshot).toContain('"chunk-1-01.dat"')
+		})
+
+		it("does not collapse numeric runs with gaps", async () => {
+			const files = [1, 2, 3, 4, 5, 6, 8, 9, 10].map((i) => dirent(`seq-0${i}.csv`, "file"))
+			const fs = fakeFs(new Map([[ROOT, files]]))
+			const svc = makeService({ filesystem: fs })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			// The gap at 07 breaks contiguity; no pattern line may span the gap.
+			expect(snapshot).not.toContain("{01..10}")
+		})
+
+		it("keeps sensitive files out of collapsed runs", async () => {
+			// Numeric sequence interrupted by a sensitive credential file: the
+			// pre-sensitive run collapses, the credential entry renders
+			// individually, and the short tail below the minimum also stays.
+			const entries = [
+				...Array.from({ length: 6 }, (_, i) => dirent(`notes-backup-0${i}.txt`, "file")),
+				dirent("secret-notes.txt", "file"),
+				...Array.from({ length: 3 }, (_, i) => dirent(`notes-backup-3${i}.txt`, "file")),
+			]
+			const fs = fakeFs(new Map([[ROOT, entries]]))
+			const svc = makeService({ filesystem: fs })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('"notes-backup-{00..05}.txt"')
+			expect(snapshot).toContain('"secret-notes.txt"')
+			expect(snapshot).toMatch(/"secret-notes\.txt" \[may contain sensitive data/u)
+			expect(snapshot).toContain('"notes-backup-30.txt"')
+			expect(snapshot).not.toMatch(/secret.*\{\d/u)
 		})
 
 		it("never exceeds 12 KiB", async () => {
@@ -1643,6 +1721,120 @@ describe("environment-snapshot", () => {
 			expect(runner.calls.some((c) => c.command === "pip3")).toBe(false)
 			expect(runner.calls.some((c) => c.command === "gcc")).toBe(false)
 			expect(runner.calls.some((c) => c.command === "make")).toBe(false)
+		})
+
+		it("includes Rscript in the generic fallback toolbox", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("data.csv", "file")]]]))
+			const runner = scriptedRunner({
+				Rscript: { status: "ok", stdout: "R scripting front-end version 4.3.1 (2023-06-16)" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('"Rscript": "4.3.1"')
+		})
+
+		it("lists the installed package set of a bare marker-less workspace", async () => {
+			// Bare task/data directories match no ecosystem; the agent still
+			// faces a Python environment whose package list it would otherwise
+			// probe with pip list early on.
+			const fs = fakeFs(new Map([[ROOT, [dirent("data.csv", "file")]]]))
+			const runner = scriptedRunner({
+				python3: { status: "ok", stdout: "numpy==2.1.0\npandas==2.2.3\n" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain("Python environment:")
+			expect(snapshot).toContain('"numpy==2.1.0"')
+			expect(snapshot).toContain('"pandas==2.2.3"')
+		})
+	})
+
+	describe("R and OCaml ecosystems", () => {
+		it("detects R from an .Rproj marker and probes R/Rscript", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("analysis.Rproj", "file")]]]))
+			const runner = scriptedRunner({
+				R: { status: "ok", stdout: 'R version 4.3.1 (2023-06-16) -- "Beagle Scouts"' },
+				Rscript: { status: "ok", stdout: "R scripting front-end version 4.3.1 (2023-06-16)" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('"R"')
+			expect(snapshot).toContain('"R": "4.3.1"')
+			expect(snapshot).toContain('"Rscript": "4.3.1"')
+			expect(snapshot).toContain('"analysis.Rproj"')
+		})
+
+		it("detects R from bare .R source files", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("solve.R", "file")]]]))
+			const runner = scriptedRunner({
+				Rscript: { status: "ok", stdout: "R scripting front-end version 4.4.2 (2024-10-31)" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('"R"')
+			expect(snapshot).toContain('"Rscript": "4.4.2"')
+		})
+
+		it("detects OCaml from dune-project and probes ocaml/dune/opam", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("dune-project", "file")]]]))
+			const runner = scriptedRunner({
+				ocaml: { status: "ok", stdout: "The OCaml toplevel, version 4.14.1" },
+				dune: { status: "ok", stdout: "3.14.2" },
+				opam: { status: "ok", stdout: "2.1.5" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('"OCaml"')
+			expect(snapshot).toContain('"OCaml": "4.14.1"')
+			expect(snapshot).toContain('"Dune": "3.14.2"')
+			expect(snapshot).toContain('"opam": "2.1.5"')
+			expect(snapshot).toContain('"dune-project"')
+		})
+	})
+
+	describe("probe completion accounting", () => {
+		it("reports version probes that produced no fact", async () => {
+			// A probe that errors is neither "unavailable on PATH" nor a version
+			// — its absence must be stated explicitly rather than looking like a
+			// deterministic non-installation.
+			const fs = fakeFs(new Map([[ROOT, [dirent("data.csv", "file")]]]))
+			const runner = scriptedRunner({
+				gcc: { status: "error" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).not.toContain('"GCC"')
+			expect(snapshot).toMatch(/\d+ tool version probes did not complete within the startup collection budget/u)
+		})
+	})
+
+	describe("host provenance labels", () => {
+		it("labels the kernel and omits host disk capacity inside containers", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("main.py", "file")]]]))
+			const svc = makeService({
+				filesystem: fs,
+				systemFacts: {
+					osName: "Ubuntu 24.04.2 LTS",
+					kernel: "6.12.73+deb13-amd64",
+					diskFreeBytes: 1.8 * 1024 ** 4,
+					container: true,
+				},
+			})
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('kernel "6.12.73+deb13-amd64" (host)')
+			expect(snapshot).not.toContain("free disk")
+		})
+
+		it("leaves kernel and disk unlabeled on bare-metal hosts", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("main.py", "file")]]]))
+			const svc = makeService({
+				filesystem: fs,
+				systemFacts: { osName: "macOS", kernel: "25.5.0", diskFreeBytes: 100 * 1024 ** 3 },
+			})
+			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
+			expect(snapshot).toContain('kernel "25.5.0"')
+			expect(snapshot).not.toContain("(host)")
+			expect(snapshot).not.toContain("(host filesystem)")
 		})
 	})
 
