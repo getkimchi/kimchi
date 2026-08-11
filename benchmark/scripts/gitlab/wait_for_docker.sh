@@ -23,9 +23,9 @@ set -euo pipefail
 log_info() { echo "[INFO] $*"; }
 log_error() { echo "[ERROR] $*" >&2; }
 
-max_attempts="${WAIT_FOR_DOCKER_MAX_ATTEMPTS:-60}"
+max_attempts="${WAIT_FOR_DOCKER_MAX_ATTEMPTS:-120}"
 info_sleep="${WAIT_FOR_DOCKER_INFO_SLEEP:-1}"
-probe_max_attempts="${WAIT_FOR_DOCKER_PROBE_MAX_ATTEMPTS:-15}"
+probe_max_attempts="${WAIT_FOR_DOCKER_PROBE_MAX_ATTEMPTS:-30}"
 probe_sleep="${WAIT_FOR_DOCKER_PROBE_SLEEP:-2}"
 probe_image="${WAIT_FOR_DOCKER_PROBE_IMAGE:-mirror.gcr.io/library/hello-world}"
 
