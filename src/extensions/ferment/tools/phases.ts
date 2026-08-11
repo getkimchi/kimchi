@@ -22,6 +22,7 @@ import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { flaggedVerdicts, renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
 import {
+	describeJudgeModel,
 	type GraderSpawner,
 	type JudgeFlag,
 	type JudgePhaseGradeResult,
@@ -273,7 +274,7 @@ export async function completePhase(
 	services: PhaseHandlerServices = defaultPhaseHandlerServices,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
-	runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry)
+	runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry, getMultiModelEnabled(ctx?.sessionManager ?? null))
 
 	// Step 1: resolve the phase (host concern — fuzzy lookup).
 	const f = runtime.getStorage().get(params.ferment_id)
@@ -458,6 +459,7 @@ export async function completePhase(
 		fermentName: f.name,
 		phaseName: phase.name,
 		phaseGoal: phase.goal,
+		charter: f.charter,
 		phaseSummary: params.summary ?? "",
 		stepSummaries: stepSummariesText,
 		gateVerdicts: (params.gates ?? []).map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
@@ -518,6 +520,7 @@ export async function completePhase(
 
 	// Step 5: advance phase to completed with the final grade + recommendations.
 	const blockRetriesForTelemetry = reviewAttemptForLog - 1
+	const gradedBy = describeJudgeModel()
 	const completeOutcome = applyAndPersist(params.ferment_id, {
 		type: "complete_phase",
 		phaseId: phase.id,
@@ -527,6 +530,7 @@ export async function completePhase(
 			rationale: finalRationale,
 			gradedAt: runtime.nowIso(),
 			...(finalRecommendations.length > 0 ? { recommendations: finalRecommendations } : {}),
+			...(gradedBy ? { gradedBy } : {}),
 		},
 		blockRetries: blockRetriesForTelemetry,
 	})

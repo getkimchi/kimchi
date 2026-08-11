@@ -64,16 +64,16 @@ export function summarizeTodos(sessionId: string): string {
 	return summarizeTodoCounts(getTodoCountsForScope(GLOBAL_TODO_SCOPE, sessionId))
 }
 
-function isFermentTodo(todo: TodoItem): boolean {
-	return todo.content.startsWith("↳ ") || todo.content.startsWith("[Phase ")
-}
-
+/** Render a single todo line. Uses a per-scope sequential position (not the
+ *  stored todo id) so numbers restart at 1 within each scope group. Styling is
+ *  determined by `scope.kind` (not content prefixes) so a model-written global
+ *  item that starts with "[Phase " gets normal global styling. */
 function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: TodoScope): string {
 	const index = `${displayIndex + 1}`.padStart(2)
 	const symbol = TODO_SYMBOL[todo.status]
-	const isFerment = scope.kind === "ferment" || isFermentTodo(todo)
+	const isFerment = scope.kind === "ferment"
 
-	// Phase header — bold accent
+	// Phase header — bold accent (bridge-written: "[Phase N] Name")
 	if (isFerment && todo.content.startsWith("[Phase ")) {
 		if (todo.status === "completed") {
 			return ` ${index}.  ${theme.fg("success", symbol)} ${theme.fg("dim", todo.content)}`
@@ -81,7 +81,7 @@ function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: Tod
 		return ` ${index}.  ${theme.fg("accent", symbol)} ${theme.fg("accent", theme.bold(todo.activeForm ?? todo.content))}`
 	}
 
-	// Ferment step — dim the prefix arrow, normal for rest
+	// Ferment step item — dim the prefix arrow (bridge-written: "↳ description")
 	if (isFerment && todo.content.startsWith("↳ ")) {
 		const arrow = "↳ "
 		const text = todo.content.slice(arrow.length)
@@ -97,7 +97,7 @@ function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: Tod
 		return ` ${index}.  ${theme.fg("dim", symbol)} ${theme.fg("dim", arrow)}${text}`
 	}
 
-	// Global todos — original behavior
+	// All other todos (global, ferment-step sub-tasks) — standard rendering
 	if (todo.status === "completed") return ` ${index}.  ${theme.fg("success", symbol)} ${theme.fg("dim", todo.content)}`
 	if (todo.status === "blocked")
 		return ` ${index}.  ${theme.fg("warning", symbol)} ${theme.fg("warning", todo.content)}`
@@ -238,7 +238,6 @@ export function buildTodoLines(theme: Theme, sessionId: string): string[] {
 	}
 
 	const lines: string[] = []
-	let displayIndex = 0
 
 	for (const group of groups) {
 		const summary = summarizeTodoCounts(getTodoCountsForScope(group.scope, sessionId))
@@ -246,9 +245,10 @@ export function buildTodoLines(theme: Theme, sessionId: string): string[] {
 		lines.push("")
 		lines.push(theme.fg("dim", summary))
 		lines.push("")
+		let groupIndex = 0
 		for (const todo of group.todos) {
-			lines.push(todoLine(todo, displayIndex, theme, group.scope))
-			displayIndex++
+			lines.push(todoLine(todo, groupIndex, theme, group.scope))
+			groupIndex++
 		}
 		lines.push("")
 	}
@@ -274,45 +274,53 @@ function buildTodoWidgetLines(theme: Theme, expanded: boolean, sessionId: string
 	const beforeText = todoWindowBeforeText(window.hiddenBefore)
 	const afterText = todoWindowAfterText(window.hiddenAfter)
 
-	// Rebuild the capped view: show headers for each scope, then the
-	// windowed portion of the combined todo list.
-	const headerLines: string[] = []
+	// Single pass: for each group, if it contributes ≥1 windowed row, emit
+	// header + summary immediately followed by that group's windowed rows.
+	// Groups with zero windowed rows are skipped entirely (no orphan headers).
+	const result: string[] = []
 	let displayIndex = 0
-	let windowStartReached = false
-	const windowedTodoLines: string[] = []
+	let beforeInserted = false
 
 	for (const group of groups) {
 		const groupTodos = group.todos
 		const groupStartIndex = displayIndex
 		const groupEndIndex = displayIndex + groupTodos.length
 
-		// Only include scope header if this group has todos in the window
+		// Skip groups entirely outside the window
 		if (groupEndIndex <= window.hiddenBefore || groupStartIndex >= window.hiddenBefore + window.todos.length) {
 			displayIndex = groupEndIndex
 			continue
 		}
 
-		headerLines.push(theme.fg("accent", formatScopeHeader(group.scope)))
-		headerLines.push("")
-		headerLines.push(theme.fg("dim", summarizeTodoCounts(getTodoCountsForScope(group.scope, sessionId))))
-		headerLines.push("")
+		// Emit header + summary for this group
+		result.push(theme.fg("accent", formatScopeHeader(group.scope)))
+		result.push("")
+		result.push(theme.fg("dim", summarizeTodoCounts(getTodoCountsForScope(group.scope, sessionId))))
+		result.push("")
 
+		// Emit windowed rows for this group, inserting before-marker before the first visible row
+		let groupDisplayIndex = 0
 		for (const todo of groupTodos) {
 			if (displayIndex >= window.hiddenBefore && displayIndex < window.hiddenBefore + window.todos.length) {
-				windowStartReached = true
-				windowedTodoLines.push(todoLine(todo, displayIndex, theme, group.scope))
+				if (beforeText && !beforeInserted) {
+					result.push(theme.fg("dim", beforeText))
+					beforeInserted = true
+				}
+				result.push(todoLine(todo, groupDisplayIndex, theme, group.scope))
 			}
 			displayIndex++
+			groupDisplayIndex++
 		}
+		result.push("")
 	}
 
-	return [
-		...headerLines,
-		...(beforeText && !windowStartReached ? [theme.fg("dim", beforeText)] : []),
-		...(beforeText && windowStartReached ? [theme.fg("dim", beforeText)] : []),
-		...windowedTodoLines,
-		...(afterText ? [theme.fg("dim", afterText)] : []),
-	]
+	// Emit after-marker after the last visible row
+	if (afterText) {
+		while (result.length > 0 && result[result.length - 1] === "") result.pop()
+		result.push(theme.fg("dim", afterText))
+	}
+
+	return result
 }
 
 export function resetTodoWidgetState(ctx: ExtensionContext): void {

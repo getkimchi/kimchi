@@ -19,10 +19,12 @@
  * failures into JudgeFlag for a uniform on-disk audit trail.
  */
 
-import { complete } from "@earendil-works/pi-ai"
-import type { Grade } from "../../ferment/types.js"
+import { type Api, complete, type Model } from "@earendil-works/pi-ai"
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
+import type { CharterClauseVerdict, FermentCharter, Grade } from "../../ferment/types.js"
 import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
-import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
+import { renderCharterFull } from "./charter.js"
+import { getJudgeModel, getJudgeModelRegistry, isJudgeMultiModelEnabled } from "./state.js"
 
 const GRADES: Grade[] = ["A", "B", "C", "D", "F"]
 const JOURNEY_GRADE_MAX_ATTEMPTS = 3
@@ -40,14 +42,35 @@ export type JudgeUnavailableReason = "no_registry" | "no_model" | "no_auth" | "a
 
 export type JudgeApiResult = { ok: true; text: string } | { ok: false; reason: JudgeUnavailableReason; detail?: string }
 
+/** Resolve the model the judge grades with: in multi-model mode the configured
+ *  `modelRoles.judge` assignment (falling back to the captured session model
+ *  when it doesn't resolve); in single-model mode the captured session model —
+ *  roles never apply there. */
+function resolveJudgeModel(registry: ModelRegistry | undefined): Model<Api> | undefined {
+	if (!isJudgeMultiModelEnabled()) return getJudgeModel()
+	const judgeAssignment = getModelRoles().judge
+	const judgeModelStr = Array.isArray(judgeAssignment) ? judgeAssignment[0] : judgeAssignment
+	const judgeRef = judgeModelStr ? splitModelRef(judgeModelStr) : undefined
+	return (judgeRef && registry ? registry.find(judgeRef.provider, judgeRef.modelId) : undefined) ?? getJudgeModel()
+}
+
+/**
+ * Resolve the judge model's display ref for observability (mirrors
+ * judgeApiCall's resolution — both go through resolveJudgeModel). Returns
+ * `provider/id`, or undefined when neither side is known (unit tests that
+ * inject apiCall hit this).
+ */
+export function describeJudgeModel(): string | undefined {
+	const model = resolveJudgeModel(getJudgeModelRegistry())
+	if (!model) return undefined
+	return `${model.provider}/${model.id}`
+}
+
 export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTokens?: number): Promise<JudgeApiResult> {
 	const registry = getJudgeModelRegistry()
 	if (!registry) return { ok: false, reason: "no_registry" }
 
-	const judgeAssignment = getModelRoles().judge
-	const judgeModelStr = Array.isArray(judgeAssignment) ? judgeAssignment[0] : judgeAssignment
-	const judgeRef = judgeModelStr ? splitModelRef(judgeModelStr) : undefined
-	const model = (judgeRef ? registry.find(judgeRef.provider, judgeRef.modelId) : undefined) ?? getJudgeModel()
+	const model = resolveJudgeModel(registry)
 	if (!model) return { ok: false, reason: "no_model" }
 
 	const auth = await registry.getApiKeyAndHeaders(model)
@@ -243,6 +266,9 @@ export interface JourneyDiff {
 export interface JudgeJourneyGradeInput {
 	fermentName: string
 	goal: string
+	/** Intent charter rendered into the grading prompt when present — the
+	 *  original, un-narrowed user intent the grade answers to. */
+	charter?: FermentCharter
 	successCriteria: string
 	finalSummary: string
 	phases: ReadonlyArray<JourneyPhaseInput>
@@ -259,6 +285,9 @@ export interface JudgeJourneyGradeOk {
 	rationale: string
 	/** Concrete fix bullets the grader recommends to reach A. Empty for A grades. */
 	recommendations: string[]
+	/** Ship-level charter audit: per-clause met/waived/unmet verdicts, present
+	 *  only when the ferment has an intent charter and the grader returned them. */
+	charterVerdicts?: CharterClauseVerdict[]
 }
 
 export interface JudgeJourneyGradeFailure {
@@ -281,6 +310,8 @@ function withJourneyGradeAttemptDetail(failure: JudgeJourneyGradeFailure, attemp
 const JOURNEY_GRADE_SYSTEM = `You are a strict production-readiness review council compressed into one reviewer, acting as the final reviewer for an autonomous coding ferment. The agent has completed all phases and the ferment-scope gates (C1/C2/C3) all passed — so shipping is allowed. Your job is NOT to decide whether to ship. Your job is to evaluate the completed result against the stated goal, implementation, tests, and evidence, and assign a letter grade A–F that describes HOW WELL the work was done.
 
 Your bias is PESSIMISTIC. Most work is B or C, not A. A is reserved for ferments that delivered cleanly without retries, with concrete real-execution verification at every phase, and where every gate verdict was substantiated with specific evidence.
+
+When an intent charter is provided below, grade how well the result fulfills the user's ORIGINAL INTENT recorded there — the plan and criteria only refine it. A result faithful to narrowed criteria but missing the intent is at best C.
 
 ## Hard constraints
 
@@ -340,12 +371,21 @@ Respond with EXACTLY one JSON object, no markdown:
 {"grade":"A"|"B"|"C"|"D"|"F","rationale":"<2-3 sentences citing specific phases, gates, or diff regions>","recommendations":["<bullet>",...]}
 
 If grade is A, recommendations MUST be an empty array [].
-If grade is B–F, each recommendation must include: what is wrong, why it matters, what must change, and what evidence would prove the fix. Do not include vague advice or "nice to have" items.`
+If grade is B–F, each recommendation must include: what is wrong, why it matters, what must change, and what evidence would prove the fix. Do not include vague advice or "nice to have" items.
+
+If an intent charter was provided above, also return per-clause verdicts — one entry per charter clause (the intent itself, wow factor, confirmed scope, acceptance demo when present):
+{"grade":"A","rationale":"...","recommendations":[],"charter_verdicts":[{"clause":"<clause text, shortened>","status":"met"|"waived"|"unmet","evidence":"<what demonstrates it>"}]}
+Use "unmet" when the finished artifact does not deliver what that clause asks, and "waived" only when the deviation was explicitly accepted (e.g. recorded in constraints with a named cost). Unmet clauses are strong downgrade signals under the rubric but do not gate ship by themselves.
+charter_verdicts is REQUIRED when an intent charter was provided; omit it ONLY when no charter was provided.`
 
 function buildJourneyGradeUserMsg(input: JudgeJourneyGradeInput): string {
 	const parts: string[] = []
 	parts.push(`Ferment: "${input.fermentName}"`)
 	parts.push(`Goal: ${input.goal || "(none specified)"}`)
+	if (input.charter) {
+		parts.push("")
+		parts.push(renderCharterFull(input.charter))
+	}
 	parts.push(`Success criteria: ${input.successCriteria || "(none specified)"}`)
 	parts.push(`Final summary: ${input.finalSummary || "(none)"}`)
 	parts.push("")
@@ -388,8 +428,15 @@ export async function judgeJourneyGrade(
 	input: JudgeJourneyGradeInput,
 	apiCall: (sys: string, msg: string, maxTokens?: number) => Promise<JudgeApiResult> = judgeApiCall,
 ): Promise<JudgeJourneyGradeResult> {
-	const userMsg = buildJourneyGradeUserMsg(input)
+	const baseMsg = buildJourneyGradeUserMsg(input)
+	let missingVerdicts = false
 	for (let attempt = 1; attempt <= JOURNEY_GRADE_MAX_ATTEMPTS; attempt++) {
+		// After a charter-verdict miss the retry barely differs from the prompt
+		// that already produced one miss. Name exactly what was omitted so the
+		// judge knows what to fix rather than re-rolling the same failure mode.
+		const userMsg = missingVerdicts
+			? `${baseMsg}\n\nREMINDER: your previous response omitted \`charter_verdicts\`. Include it as required by the contract above — one entry per charter clause, each with status met/waived/unmet and the evidence behind the verdict.`
+			: baseMsg
 		const api = await apiCall(JOURNEY_GRADE_SYSTEM, userMsg)
 		if (!api.ok) {
 			const failure: JudgeJourneyGradeFailure = { ok: false, reason: api.reason, detail: api.detail }
@@ -397,7 +444,12 @@ export async function judgeJourneyGrade(
 			return withJourneyGradeAttemptDetail(failure, attempt)
 		}
 
-		const parsed = tryParseJson<{ grade?: string; rationale?: string; recommendations?: unknown }>(api.text)
+		const parsed = tryParseJson<{
+			grade?: string
+			rationale?: string
+			recommendations?: unknown
+			charter_verdicts?: unknown
+		}>(api.text)
 		if (parsed === undefined) {
 			return { ok: false, reason: "unparseable", detail: api.text.slice(0, 200) }
 		}
@@ -406,7 +458,21 @@ export async function judgeJourneyGrade(
 		}
 		const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
 		const recommendations = normalizeRecommendations(parsed.recommendations)
-		return { ok: true, grade: parsed.grade, rationale, recommendations }
+		const charterVerdicts = normalizeCharterVerdicts(parsed.charter_verdicts)
+		if (input.charter && !charterVerdicts && attempt < JOURNEY_GRADE_MAX_ATTEMPTS) {
+			// Charter audit is required when a charter exists: retry (soft — the
+			// final attempt may proceed without verdicts; complete_ferment renders
+			// an honest omission breadcrumb in that case).
+			missingVerdicts = true
+			continue
+		}
+		return {
+			ok: true,
+			grade: parsed.grade,
+			rationale,
+			recommendations,
+			...(charterVerdicts ? { charterVerdicts } : {}),
+		}
 	}
 
 	throw new Error("unreachable: journey grade retry loop exited without a result")
@@ -431,6 +497,9 @@ export interface JudgePhaseInput {
 	fermentName: string
 	phaseName: string
 	phaseGoal: string
+	/** Intent charter rendered into the grading prompt when present — the
+	 *  original, un-narrowed user intent this phase should serve. */
+	charter?: FermentCharter
 	/** The agent's complete_ferment_phase summary. */
 	phaseSummary: string
 	/** Step summaries rendered as a single text block (one bullet per step). */
@@ -465,6 +534,8 @@ export type JudgePhaseGradeResult = JudgePhaseGradeOk | JudgePhaseGradeFailure
 const PHASE_GRADE_SYSTEM = `You are a strict production-readiness review council compressed into one reviewer, acting as the per-phase reviewer for an autonomous coding ferment. The agent has completed a single phase and the phase-scope gates (F1/F2/F3) all passed — so phase advancement is allowed by the gates. Your job is NOT to decide whether the phase advances. Your job is to evaluate the phase result against its stated goal, implementation, tests, and evidence, and assign a letter grade A–F that describes HOW WELL the phase was done.
 
 Your bias is PESSIMISTIC. Most phase work is B or C, not A. A is reserved for phases that delivered cleanly without retries, with concrete real-execution verification, and where every gate verdict was substantiated with specific evidence.
+
+When an intent charter is provided below, grade this phase's contribution toward the user's ORIGINAL INTENT recorded there, not only toward the enumerated step outputs.
 
 ## Hard constraints
 
@@ -525,6 +596,10 @@ function buildPhaseGradeUserMsg(input: JudgePhaseInput): string {
 	parts.push(`Ferment: "${input.fermentName}"`)
 	parts.push(`Phase: "${input.phaseName}"`)
 	parts.push(`Phase goal: ${input.phaseGoal || "(none specified)"}`)
+	if (input.charter) {
+		parts.push("")
+		parts.push(renderCharterFull(input.charter))
+	}
 	parts.push(`Phase summary: ${input.phaseSummary || "(none)"}`)
 	if (input.stepSummaries && input.stepSummaries.trim().length > 0) {
 		parts.push("")
@@ -633,17 +708,52 @@ function parseGraderResponse(text: string): GradedResult | undefined {
 	return undefined
 }
 
-/** Shape of the grader's JSON output. */
-type GradeJson = { grade?: string; rationale?: string; recommendations?: unknown }
+/** Shape of the grader's JSON output. charter_verdicts is journey-only: the
+ *  ship-level charter audit the completion grader emits when an intent
+ *  charter was provided. */
+type GradeJson = { grade?: string; rationale?: string; recommendations?: unknown; charter_verdicts?: unknown }
 
 /** Shared result type for both phase and journey grade parsing. */
-type GradedResult = { ok: true; grade: Grade; rationale: string; recommendations: string[] }
+type GradedResult = {
+	ok: true
+	grade: Grade
+	rationale: string
+	recommendations: string[]
+	charterVerdicts?: CharterClauseVerdict[]
+}
+
+/** Coerce the model's `charter_verdicts` field into clean verdict rows.
+ *  Accepts only well-formed {clause, status, evidence} objects with a real
+ *  status; silently drops everything else (judge output is unreliable JSON).
+ *  Caps 12 entries to bound the persisted payload. */
+function normalizeCharterVerdicts(raw: unknown): CharterClauseVerdict[] | undefined {
+	if (!Array.isArray(raw)) return undefined
+	const rows: CharterClauseVerdict[] = []
+	for (const item of raw) {
+		if (!item || typeof item !== "object") continue
+		const o = item as Record<string, unknown>
+		const clause = typeof o.clause === "string" ? o.clause.trim() : ""
+		const evidence = typeof o.evidence === "string" ? o.evidence.trim() : ""
+		const status = o.status === "met" || o.status === "waived" || o.status === "unmet" ? o.status : undefined
+		if (!clause || !evidence || !status) continue
+		rows.push({ clause: clause.slice(0, 200), status, evidence: evidence.slice(0, 400) })
+		if (rows.length >= 12) break
+	}
+	return rows.length > 0 ? rows : undefined
+}
 
 /** Build a GradedResult from parsed JSON. */
 function buildGradedResult(parsed: GradeJson): GradedResult {
 	const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
 	const recommendations = normalizeRecommendations(parsed.recommendations)
-	return { ok: true, grade: parsed.grade as Grade, rationale, recommendations }
+	const charterVerdicts = normalizeCharterVerdicts(parsed.charter_verdicts)
+	return {
+		ok: true,
+		grade: parsed.grade as Grade,
+		rationale,
+		recommendations,
+		...(charterVerdicts ? { charterVerdicts } : {}),
+	}
 }
 
 /** Extract all top-level JSON objects from a text string using a
@@ -731,7 +841,13 @@ export async function judgeJourneyGradeViaSubagent(
 			const result = await spawn(prompt)
 			if (result.status === "completed") {
 				const parsed = parseGraderResponse(result.text)
-				if (parsed) return parsed
+				if (parsed) {
+					if (input.charter && !parsed.charterVerdicts) {
+						// Charter audit required but the subagent omitted it — fall
+						// through to the single-shot fallback, which retries for it
+						// (soft degrade after attempts are exhausted).
+					} else return parsed
+				}
 				// Subagent completed but output wasn't parseable — fall through to single-shot.
 			}
 			// Subagent aborted/errored — fall through to single-shot.
@@ -755,6 +871,10 @@ function buildPhaseGraderPrompt(input: JudgePhaseInput): string {
 	parts.push(`Ferment: "${input.fermentName}"`)
 	parts.push(`Phase: "${input.phaseName}"`)
 	parts.push(`Phase goal: ${input.phaseGoal || "(none specified)"}`)
+	if (input.charter) {
+		parts.push("")
+		parts.push(renderCharterFull(input.charter))
+	}
 	parts.push(`Phase summary: ${input.phaseSummary || "(none)"}`)
 	if (input.stepSummaries && input.stepSummaries.trim().length > 0) {
 		parts.push("")
@@ -806,6 +926,10 @@ function buildJourneyGraderPrompt(input: JudgeJourneyGradeInput): string {
 	parts.push("")
 	parts.push(`Ferment: "${input.fermentName}"`)
 	parts.push(`Goal: ${input.goal || "(none specified)"}`)
+	if (input.charter) {
+		parts.push("")
+		parts.push(renderCharterFull(input.charter))
+	}
 	parts.push(`Success criteria: ${input.successCriteria || "(none specified)"}`)
 	parts.push(`Final summary: ${input.finalSummary || "(none)"}`)
 	parts.push("")
@@ -847,5 +971,18 @@ function buildJourneyGraderPrompt(input: JudgeJourneyGradeInput): string {
 		"Verify the agent's claims by reading files and running commands. Then respond with EXACTLY one JSON object:",
 	)
 	parts.push('{"grade":"A"|"B"|"C"|"D"|"F","rationale":"...","recommendations":[...]}')
+	if (input.charter) {
+		// Ship-level audit: this contract used to omit charter_verdicts entirely,
+		// so subagent graders never emitted it (replay rule-4 miss). REQUIRED
+		// whenever a charter is in play; both paths now enforce it.
+		parts.push("")
+		parts.push("An intent charter is in play above — also return charter_verdicts, one entry per charter clause:")
+		parts.push(
+			'"charter_verdicts":[{"clause":"<clause text, shortened>","status":"met"|"waived"|"unmet","evidence":"<what demonstrates it>"}]',
+		)
+		parts.push(
+			'"unmet" = the finished artifact does not deliver that clause; "waived" = the deviation was explicitly accepted. REQUIRED — this is the ship-level charter audit.',
+		)
+	}
 	return parts.join("\n")
 }

@@ -59,6 +59,10 @@ function cleanPermissionEnv(): void {
 beforeEach(cleanPermissionEnv)
 afterEach(cleanPermissionEnv)
 
+vi.mock("../ide-adapter/index.js", () => ({
+	isIdeConnected: vi.fn(() => false),
+}))
+
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
 	rawPlatform: "linux",

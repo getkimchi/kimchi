@@ -1,16 +1,21 @@
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { createContext } from "../../__mocks__/context.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
+import { captureJudgeContext } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
 import { FERMENT_TOOLS } from "../tool-names.js"
 import {
 	buildFreeformScopingFeedbackMessage,
+	buildPlanMarkdown,
 	completeFerment,
+	normalizeCharter,
+	normalizeScopingAdvisories,
 	registerLifecycleTools,
 	scopeFerment,
 } from "./lifecycle.js"
@@ -1257,6 +1262,101 @@ describe("completeFerment", () => {
 		expect(h.storage.get(h.fermentId)?.grade?.unavailable).toBeUndefined()
 	})
 
+	it("renders the charter audit and persists per-clause verdicts", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "A",
+			rationale: "Shell is faithful and complete per the acceptance demo.",
+			recommendations: [],
+			charterVerdicts: [
+				{
+					clause: "recreate the Tahoe desktop",
+					status: "unmet",
+					evidence: "only a bootable shell replica exists",
+				},
+				{
+					clause: "feels like the real OS",
+					status: "met",
+					evidence: "window chrome and menus match references",
+				},
+			],
+		})
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("Charter audit")
+		expect(okText(result)).toContain("2 clause(s) — 1 met, 0 waived, 1 unmet")
+		expect(okText(result)).toContain("⚠ unmet: recreate the Tahoe desktop — only a bootable shell replica exists")
+		const persisted = h.storage.get(h.fermentId)?.grade?.charterVerdicts
+		expect(persisted).toHaveLength(2)
+		expect(persisted?.[0]?.status).toBe("unmet")
+		expect(persisted?.[1]?.status).toBe("met")
+	})
+
+	it("renders an omission breadcrumb when the grader never emits charter verdicts", async () => {
+		const h = createHarness()
+		const applyAndPersist = createApplyAndPersist(h.runtime)
+		const scoped = applyAndPersist(h.fermentId, {
+			type: "scope",
+			goal: "Ship the feature",
+			successCriteria: ["Done"],
+			constraints: [],
+			phases: [{ name: "Build", goal: "Implement", steps: [] }],
+			charter: { intent: "recreate the Tahoe desktop" },
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const activated = applyAndPersist(h.fermentId, { type: "activate_phase", phaseId: "phase-1" })
+		if (!activated.ok) throw new Error(activated.error.message)
+		const completed = applyAndPersist(h.fermentId, {
+			type: "complete_phase",
+			phaseId: "phase-1",
+			summary: "phase done",
+		})
+		if (!completed.ok) throw new Error(completed.error.message)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "A",
+			rationale: "Ships cleanly.",
+			recommendations: [],
+		})
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("**Charter audit:** not emitted by the grader after retries")
+		expect(h.storage.get(h.fermentId)?.grade?.charterVerdicts).toBeUndefined()
+	})
+
+	it("stamps and renders the judge model when resolvable", async () => {
+		captureJudgeContext({ provider: "kimchi-dev", id: "glm-5.2-fp8" } as unknown as Model<Api>)
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "A",
+			rationale: "Ships cleanly.",
+			recommendations: [],
+		})
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("judge: kimchi-dev/glm-5.2-fp8")
+		expect(h.storage.get(h.fermentId)?.grade?.gradedBy).toBe("kimchi-dev/glm-5.2-fp8")
+	})
+
 	it("judge unavailable ships without a persisted grade", async () => {
 		const h = createHarness()
 		createTerminalFerment(h)
@@ -1553,5 +1653,118 @@ describe("interactive ferment tool visibility (registerLifecycleTools)", () => {
 
 		// No disable writes — UI is attached, tools work normally.
 		expect(pi.setActiveCalls).toEqual([])
+	})
+})
+
+describe("normalizeCharter", () => {
+	it("passes through an absent charter", () => {
+		expect(normalizeCharter(undefined)).toBeUndefined()
+	})
+
+	it("converts snake_case schema fields to the camelCase FermentCharter", () => {
+		expect(
+			normalizeCharter({
+				intent: "  Recreate the Tahoe desktop  ",
+				wow_factor: "Looks like the real OS",
+				confirmed_scope: "All apps; no backend.",
+				demo_script: "Boot; Finder opens",
+			}),
+		).toEqual({
+			intent: "Recreate the Tahoe desktop",
+			wowFactor: "Looks like the real OS",
+			confirmedScope: "All apps; no backend.",
+			demoScript: "Boot; Finder opens",
+		})
+	})
+
+	it("drops empty optional fields instead of persisting blanks", () => {
+		expect(normalizeCharter({ intent: "Do the thing", wow_factor: "   " })).toEqual({ intent: "Do the thing" })
+	})
+
+	it("returns an actionable error when intent is missing or blank", () => {
+		expect(normalizeCharter({ intent: "   " })).toMatch(/charter\.intent is required/)
+		expect(normalizeCharter({ wow_factor: "x" })).toMatch(/charter\.intent is required/)
+	})
+
+	it("rejects non-object charters with an actionable error", () => {
+		expect(normalizeCharter("a string")).toMatch(/charter must be an object/)
+	})
+})
+
+describe("normalizeScopingAdvisories", () => {
+	it("returns undefined when no advisory signal is present", () => {
+		expect(normalizeScopingAdvisories({})).toBeUndefined()
+		expect(normalizeScopingAdvisories({ self_critique: "   ", scope_deltas: [] })).toBeUndefined()
+	})
+
+	it("trims and drops blank entries", () => {
+		expect(
+			normalizeScopingAdvisories({
+				self_critique: "  tone uncovered, deliberate  ",
+				scope_deltas: [" every app → 12 ", "  "],
+				quality_dimensions: ["visual coherence"],
+			}),
+		).toEqual({
+			selfCritique: "tone uncovered, deliberate",
+			scopeDeltas: ["every app → 12"],
+			qualityDimensions: ["visual coherence"],
+		})
+	})
+
+	it("returns an actionable error for malformed constraint_costs items", () => {
+		expect(normalizeScopingAdvisories({ constraint_costs: [{ constraint: "mock", cost: "" }] })).toMatch(
+			/constraint_costs\[0\] requires non-empty/,
+		)
+	})
+
+	it("keeps well-formed constraint_costs", () => {
+		expect(
+			normalizeScopingAdvisories({ constraint_costs: [{ constraint: "mock weather", cost: "no real conditions" }] }),
+		).toEqual({ constraintCosts: [{ constraint: "mock weather", cost: "no real conditions" }] })
+	})
+})
+
+describe("buildPlanMarkdown", () => {
+	const baseArgs = {
+		title: "Tahoe Replica",
+		goal: "recreate the Tahoe desktop",
+		success_criteria: ["apps work"],
+		constraints: ["mock weather data"],
+		assumptions: "desktop browser only",
+		phases: [{ name: "Shell", goal: "desktop shell", steps: [] }],
+		questions: [],
+		gates: [
+			{ id: "P1", verdict: "pass" as const, rationale: "verify per phase", evidence: "pnpm test" },
+			{ id: "P2", verdict: "omitted" as const, rationale: "single phase", evidence: "n/a" },
+			{ id: "P3", verdict: "pass" as const, rationale: "ship checklist", evidence: "criteria" },
+		],
+	}
+
+	it("renders advisory sections when present", () => {
+		const md = buildPlanMarkdown({
+			...baseArgs,
+			advisories: {
+				scopeDeltas: ["every app → the 12 most-used apps"],
+				constraintCosts: [{ constraint: "mock weather", cost: "no real conditions" }],
+				qualityDimensions: ["global visual coherence — shell phase owns it"],
+				selfCritique: "visual tone uncovered; deliberate until grading",
+			},
+		})
+		expect(md).toContain("## Scope decisions (vs the literal request)")
+		expect(md).toContain("- every app → the 12 most-used apps")
+		expect(md).toContain("## Constraint costs")
+		expect(md).toContain("- mock weather — costs: no real conditions")
+		expect(md).toContain("## Quality dimensions")
+		expect(md).toContain("- global visual coherence — shell phase owns it")
+		expect(md).toContain("## Self-critique (meh-test)")
+		expect(md).toContain("visual tone uncovered; deliberate until grading")
+	})
+
+	it("renders no advisory sections when absent", () => {
+		const md = buildPlanMarkdown({ ...baseArgs })
+		expect(md).not.toContain("## Scope decisions")
+		expect(md).not.toContain("## Constraint costs")
+		expect(md).not.toContain("## Quality dimensions")
+		expect(md).not.toContain("## Self-critique")
 	})
 })

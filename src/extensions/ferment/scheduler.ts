@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { DeclarativeAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
+import { renderCharterCompact } from "./charter.js"
 import { decideContinuation } from "./continuation.js"
 import type { FermentRuntime } from "./runtime.js"
 import { safeSendMessage, tryPiAction } from "./safe-send.js"
@@ -147,6 +148,15 @@ function freshFerment(runtime: FermentRuntime, fermentId?: string): Ferment | un
 	return fresh
 }
 
+/** Append the compact intent-charter anchor to a nudge message. Hot path:
+ *  every continuation/wake-up nudge carries it so long runs cannot drift from
+ *  the original intent. No-op when the ferment has no charter (all ferments
+ *  scoped before charters existed). */
+function withCharterLine(ferment: Ferment, text: string): string {
+	if (!ferment.charter) return text
+	return `${text}\n\n${renderCharterCompact(ferment.charter)}`
+}
+
 /**
  * Whether the given action's hidden continuation nudge should be suppressed.
  *
@@ -209,7 +219,7 @@ export function scheduleNextFermentAction(
 			? `RESUMING ferment "${ferment.name}" — the previous session was interrupted. Pick up the work immediately. Do NOT explain or summarize — execute the next action below.\n\n`
 			: ""
 	const messagePrefix = opts.messagePrefix ? `${opts.messagePrefix}\n\n` : ""
-	const messageText = `${interruptedPrefix}${messagePrefix}${baseMsg}`
+	const messageText = withCharterLine(ferment, `${interruptedPrefix}${messagePrefix}${baseMsg}`)
 
 	tryPiAction(() => {
 		pi.appendEntry("ferment_breadcrumb", {
@@ -256,7 +266,7 @@ export function scheduleFermentWakeUp(
 			pi,
 			{
 				customType: "ferment_continuation_nudge",
-				content: [{ type: "text", text: `${prefix}${baseNudge}` }],
+				content: [{ type: "text", text: `${prefix}${withCharterLine(ferment, baseNudge)}` }],
 				display: false,
 				details: { action: "wake_up", expectedAction: decision.action.kind },
 			},

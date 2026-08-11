@@ -110,8 +110,10 @@ test("model sees ## Current Todos injected in context after writing todos (TUI m
 /**
  * The TUI widget should show all non-empty scopes together — not just one
  * resolved scope. When multiple scopes have todos, all should be visible
- * in one view: ferment scope (phase header + steps), step sub-tasks, and
- * global todos.
+ * in one view: step sub-tasks and global todos.
+ *
+ * Uses ferment-step scope (model-writable) rather than ferment phase scope
+ * (bridge-managed, read-only to tools).
  */
 test("widget shows multiple scopes together", async ({ terminal }) => {
 	await runKimchiSession(
@@ -136,7 +138,7 @@ test("widget shows multiple scopes together", async ({ terminal }) => {
 						},
 					],
 				},
-				// Turn 2: model writes scoped todos with explicit scope
+				// Turn 2: model writes scoped todos with explicit step scope
 				{
 					stream: ["Adding scoped todos."],
 					toolCalls: [
@@ -144,11 +146,10 @@ test("widget shows multiple scopes together", async ({ terminal }) => {
 							function: {
 								name: "update_todos",
 								arguments: JSON.stringify({
-									scope: { kind: "ferment", phaseId: "phase-1" },
+									scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
 									todos: [
-										{ content: "[Phase 1] Build", status: "in_progress" },
-										{ content: "↳ Write code", status: "completed" },
-										{ content: "↳ Run tests", status: "pending" },
+										{ content: "Write code", status: "completed" },
+										{ content: "Run tests", status: "pending" },
 									],
 								}),
 							},
@@ -175,22 +176,20 @@ test("widget shows multiple scopes together", async ({ terminal }) => {
 			terminal.submit("Add more todos")
 			trace.step("submitted second prompt")
 
-			// Wait for the ferment scope to also appear
-			await waitForText(terminal, "Todos · Ferment", { timeoutMs: STREAM_TIMEOUT_MS })
-			await waitForText(terminal, "Build", { timeoutMs: INPUT_TIMEOUT_MS })
+			// Wait for the step scope to also appear
+			await waitForText(terminal, "Todos · Step", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForText(terminal, "Write code", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "Run tests", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("ferment scope visible")
+			trace.step("step scope visible")
 
 			// Both scopes should be visible simultaneously in the terminal
 			const text = viewText(terminal)
 			expect(text).toContain("Todos · Global")
-			expect(text).toContain("Todos · Ferment")
+			expect(text).toContain("Todos · Step")
 			expect(text).toContain("global task A")
 			expect(text).toContain("global task B")
-			expect(text).toContain("[Phase 1] Build")
-			expect(text).toContain("↳ Write code")
-			expect(text).toContain("↳ Run tests")
+			expect(text).toContain("Write code")
+			expect(text).toContain("Run tests")
 			trace.step("multi-scope widget verified: all scopes visible together")
 		},
 	)

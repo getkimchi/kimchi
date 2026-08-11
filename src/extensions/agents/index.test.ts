@@ -3,6 +3,8 @@ import {
 	AGENT_MODEL_PARAMETER_DESCRIPTION,
 	AGENT_TOOL_GUIDELINES,
 	resolveRoleModelRef,
+	setActiveManagerForTest,
+	spawnGraderAgent,
 	summaryForStatus,
 } from "./index.js"
 
@@ -112,8 +114,9 @@ vi.mock("../orchestration/model-roles.js", () => ({
 }))
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { createContext } from "../__mocks__/context.js"
 import { getMultiModelEnabled } from "../multi-model.js"
-import { getAllowedMultiModelRefs } from "../orchestration/model-roles.js"
+import { getAllowedMultiModelRefs, getModelRoles } from "../orchestration/model-roles.js"
 import agentsExtension from "./index.js"
 import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
 
@@ -532,5 +535,111 @@ describe("resolveRoleModelRef", () => {
 
 	it("returns undefined for unknown agent types", () => {
 		expect(resolveRoleModelRef("Unknown")).toBeUndefined()
+	})
+})
+
+describe("spawnGraderAgent", () => {
+	// The file mocks model-roles.js; control the judge role explicitly through
+	// the mock rather than relying on the real settings.json/defaults.
+	const JUDGE_MODEL = { provider: "kimchi-dev", id: "judge-model", name: "judge-model" }
+	const PARENT_MODEL = { provider: "kimchi-dev", id: "parent-model", name: "Parent" }
+	const baseRoles = getModelRoles()
+	const rolesWithJudge = { ...baseRoles, judge: ["kimchi-dev/judge-model"] } as ReturnType<typeof getModelRoles>
+
+	beforeEach(() => {
+		vi.mocked(getModelRoles).mockReturnValue(rolesWithJudge)
+		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
+	})
+	afterEach(() => {
+		vi.mocked(getModelRoles).mockReturnValue(baseRoles)
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		setActiveManagerForTest(undefined)
+	})
+
+	it("spawns the Grader with the configured judge model, not the parent session model", async () => {
+		const registry = {
+			find: (provider: string, modelId: string) =>
+				[JUDGE_MODEL, PARENT_MODEL].find((m) => m.provider === provider && m.id === modelId),
+			// resolveModel prefers getAvailable; the Model<Api> mock type requires
+			// full models under getAll, so keep it shape-minimal via getAvailable.
+			getAvailable: () => [JUDGE_MODEL, PARENT_MODEL],
+		}
+		const ctx = createContext({ model: { id: "parent-model" }, modelRegistry: registry })
+		const spawnAndWait = vi.fn(
+			async (
+				_pi: unknown,
+				_ctx: unknown,
+				_type: string,
+				_prompt: string,
+				_options: { model?: unknown },
+			): Promise<{ result: string; status: string }> => ({ result: '{"grade":"A"}', status: "completed" }),
+		)
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+
+		const pi = makeMockPi()
+		await spawnGraderAgent(pi, ctx, "grade this ferment")
+
+		expect(spawnAndWait).toHaveBeenCalledTimes(1)
+		const [, , type, prompt, options] = spawnAndWait.mock.calls[0] as unknown[]
+		expect(type).toBe("Grader")
+		expect(prompt).toBe("grade this ferment")
+		// Provenance fix: the grader subagent must run on the judge-role model so
+		// the grade label (describeJudgeModel) matches the model that graded.
+		expect((options as { model?: unknown }).model).toBe(JUDGE_MODEL)
+	})
+
+	it("omits the model option when the judge role does not resolve in the registry", async () => {
+		const registry = {
+			find: () => undefined,
+			getAvailable: () => [],
+		}
+		const ctx = createContext({ modelRegistry: registry })
+		const spawnAndWait = vi.fn(
+			async (
+				_pi: unknown,
+				_ctx: unknown,
+				_type: string,
+				_prompt: string,
+				_options: { model?: unknown },
+			): Promise<{ result: string; status: string }> => ({ result: "", status: "completed" }),
+		)
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+
+		const pi = makeMockPi()
+		await spawnGraderAgent(pi, ctx, "grade this ferment")
+
+		expect(spawnAndWait).toHaveBeenCalledTimes(1)
+		const options = spawnAndWait.mock.calls[0]?.[4] as { model?: unknown }
+		// Undefined lets the agent runner fall back to the parent session model —
+		// the same fallback describeJudgeModel reports.
+		expect(options.model).toBeUndefined()
+	})
+
+	it("omits the model in single-model mode — the judge IS the session model", async () => {
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		const registry = {
+			find: (provider: string, modelId: string) =>
+				[JUDGE_MODEL, PARENT_MODEL].find((m) => m.provider === provider && m.id === modelId),
+			getAvailable: () => [JUDGE_MODEL, PARENT_MODEL],
+		}
+		const ctx = createContext({ model: { id: "parent-model" }, modelRegistry: registry })
+		const spawnAndWait = vi.fn(
+			async (
+				_pi: unknown,
+				_ctx: unknown,
+				_type: string,
+				_prompt: string,
+				_options: { model?: unknown },
+			): Promise<{ result: string; status: string }> => ({ result: "", status: "completed" }),
+		)
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+
+		const pi = makeMockPi()
+		await spawnGraderAgent(pi, ctx, "grade this ferment")
+
+		expect(spawnAndWait).toHaveBeenCalledTimes(1)
+		const options = spawnAndWait.mock.calls[0]?.[4] as { model?: unknown }
+		// Even though the judge role resolves, single-model mode must not use it.
+		expect(options.model).toBeUndefined()
 	})
 })

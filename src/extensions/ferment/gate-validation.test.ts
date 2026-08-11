@@ -61,6 +61,24 @@ describe("validateGatesOrErr", () => {
 		expect(gates[1].verdict).toBe("pass")
 	})
 
+	it("normalizes inspected S2 label to pass so native-medium observation counts as verification", () => {
+		const gates = [
+			{ id: "S1", verdict: "pass", rationale: "summary matches diff", evidence: "file.ts:1" },
+			{
+				id: "S2",
+				verdict: "inspected",
+				rationale: "opened the rendered page and recorded what rendered",
+				evidence: "browser screenshot notes",
+			},
+			{ id: "S3", verdict: "pass", rationale: "edge case covered", evidence: "empty input" },
+		]
+
+		const result = validateGatesOrErr(gates, { turn: "complete_ferment_step", flagPolicy: "block-on-flag" })
+
+		expect(result).toBeNull()
+		expect(gates[1].verdict).toBe("pass")
+	})
+
 	it("normalizes proxy/sentinel S2 labels to flag so weak verification blocks", () => {
 		const gates = [
 			{ id: "S1", verdict: "pass", rationale: "summary matches diff", evidence: "file.ts:1" },

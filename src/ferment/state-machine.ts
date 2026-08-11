@@ -68,6 +68,9 @@ export type Command =
 			phases: ScopePhaseInput[]
 			/** Number of scoping proposal iterations before confirmation. Passed through to the scoping_complete event. */
 			proposeIterations?: number
+			/** Intent charter drafted at scoping time. Persisted once; re-scoping
+			 *  draft ferments may replace it wholesale. */
+			charter?: Ferment["charter"]
 	  }
 	| {
 			type: "update_scope_field"
@@ -405,6 +408,7 @@ function handleScope(
 			goal: cmd.goal,
 			successCriteria,
 			constraints: cmd.constraints,
+			...(cmd.charter ? { charter: cmd.charter } : {}),
 			scoping,
 			phases,
 			status: "planned",

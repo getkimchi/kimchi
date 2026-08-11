@@ -27,7 +27,9 @@ When the agent calls a proxied IDE tool (`ide_<name>`), the harness forwards it 
 
 ### `selection_changed`
 
-The harness stores the latest selection in memory. Other IDE tools (or future harness logic) can retrieve it via `getLatestSelection`.
+The harness renders the current IDE selection as a live input-box chip (`@file:range`) and auto-attaches it to the next prompt on send. The selection is **sticky** — it stays attached on every send until a new `selection_changed` overwrites it (unlike `at_mentioned`, which is drained on send). If the user explicitly at-mentions the same range they have selected, the selection prefix is suppressed to avoid duplication.
+
+**Note:** the harness does not auto-clear the selection on its own — it relies on the plugin's next notification to overwrite it. The indicator is only explicitly cleared on `session_shutdown`.
 
 ## Lockfile Matching
 
@@ -63,6 +65,15 @@ User selects code and clicks "Send to Kimchi"
    └─> IDE sends at_mentioned notification
    └─> harness pastes immediately if UI active, else queues
    └─> on next user input, any queued mentions are prepended as @file:range
+
+IDE cursor/selection moves
+   └─> IDE sends selection_changed notification (plugin-side ~150 ms debounce)
+   └─> harness renders @file:range as an input-box indicator chip
+   └─> harness stores selection as sticky _latestSelection
+
+User submits a prompt
+   └─> pi.on('input') prepends @file:range from _latestSelection (sticky, not consumed)
+   └─> dedups against any explicitly queued at-mention of the same range
 
 IDE closes project
    └─> deletes lockfile
