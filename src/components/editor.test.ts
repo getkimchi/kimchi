@@ -181,4 +181,137 @@ describe("PromptEditor", () => {
 			expect(lines[1].startsWith("❯ ")).toBe(true)
 		})
 	})
+
+	describe("handleInput — macOS Cmd (super) shortcuts", () => {
+		// Kitty protocol sequences for super-modified keys.
+		// Modifier value is bitmask+1; super=8, so modifier param = 9.
+		const SUPER_BACKSPACE = "\x1b[127;9u" // Kitty CSI-u: backspace + super
+		const SUPER_DELETE = "\x1b[3;9~" // Legacy func: delete + super
+		const SUPER_LEFT = "\x1b[1;9D" // Arrow: left + super
+		const SUPER_RIGHT = "\x1b[1;9C" // Arrow: right + super
+
+		it("super+backspace deletes to beginning of line", () => {
+			const { editor } = makeEditor()
+			editor.setText("hello world")
+			// setText places cursor at end; move it left 5 times to land at col 6
+			for (let i = 0; i < 5; i++) editor.handleInput("\x1b[D")
+			expect(editor.getCursor().col).toBe(6)
+
+			editor.handleInput(SUPER_BACKSPACE)
+
+			// Everything before the cursor ("hello ") should be deleted
+			expect(editor.getText()).toBe("world")
+			expect(editor.getCursor().col).toBe(0)
+		})
+
+		it("super+delete deletes to end of line", () => {
+			const { editor } = makeEditor()
+			editor.setText("hello world")
+			// Move cursor to position 5 (after "hello")
+			for (let i = 0; i < 6; i++) editor.handleInput("\x1b[D")
+			expect(editor.getCursor().col).toBe(5)
+
+			editor.handleInput(SUPER_DELETE)
+
+			// Everything from cursor to end (" world") should be deleted
+			expect(editor.getText()).toBe("hello")
+			expect(editor.getCursor().col).toBe(5)
+		})
+
+		it("super+left moves cursor to beginning of line", () => {
+			const { editor } = makeEditor()
+			editor.setText("hello world")
+			// Cursor starts at end (col 11)
+			expect(editor.getCursor().col).toBe(11)
+
+			editor.handleInput(SUPER_LEFT)
+
+			expect(editor.getCursor().col).toBe(0)
+			// Text is unchanged
+			expect(editor.getText()).toBe("hello world")
+		})
+
+		it("super+right moves cursor to end of line", () => {
+			const { editor } = makeEditor()
+			editor.setText("hello world")
+			// Move cursor to beginning first
+			for (let i = 0; i < 11; i++) editor.handleInput("\x1b[D")
+			expect(editor.getCursor().col).toBe(0)
+
+			editor.handleInput(SUPER_RIGHT)
+
+			expect(editor.getCursor().col).toBe(11)
+			// Text is unchanged
+			expect(editor.getText()).toBe("hello world")
+		})
+
+		it("does not interfere with regular key input", () => {
+			const { editor } = makeEditor()
+			editor.handleInput("a")
+			editor.handleInput("b")
+			editor.handleInput("c")
+			expect(editor.getText()).toBe("abc")
+		})
+
+		it("super+backspace on empty editor is a no-op", () => {
+			const { editor } = makeEditor()
+			editor.handleInput(SUPER_BACKSPACE)
+			expect(editor.getText()).toBe("")
+		})
+
+		it("super+delete at end of line is a no-op", () => {
+			const { editor } = makeEditor()
+			editor.setText("hello")
+			// Cursor is at end (col 5)
+			editor.handleInput(SUPER_DELETE)
+			expect(editor.getText()).toBe("hello")
+		})
+
+		describe("Ghostty cmd+backspace translation", () => {
+			// Ghostty translates cmd+backspace to alt+w (Kitty CSI-u with
+			// modifier 3 = alt). We intercept alt+w ONLY when TERM_PROGRAM
+			// is "ghostty" so real alt+w on other terminals is unaffected.
+			const GHOSTTY_ALT_W = "\x1b[119;3:1u" // Kitty CSI-u: 'w' + alt
+
+			beforeEach(() => {
+				process.env.TERM_PROGRAM = "ghostty"
+			})
+
+			afterEach(() => {
+				delete process.env.TERM_PROGRAM
+			})
+
+			it("Ghostty: alt+w (cmd+backspace) deletes to beginning of line", () => {
+				const { editor } = makeEditor()
+				editor.setText("hello world")
+				// Move cursor to col 6 (between "hello " and "world")
+				for (let i = 0; i < 5; i++) editor.handleInput("\x1b[D")
+				expect(editor.getCursor().col).toBe(6)
+
+				editor.handleInput(GHOSTTY_ALT_W)
+
+				expect(editor.getText()).toBe("world")
+				expect(editor.getCursor().col).toBe(0)
+			})
+
+			it("non-Ghostty: alt+w is NOT intercepted (passes through to editor)", () => {
+				process.env.TERM_PROGRAM = "iTerm.app"
+				const { editor } = makeEditor()
+				editor.setText("hello")
+				// Move cursor to col 2
+				for (let i = 0; i < 3; i++) editor.handleInput("\x1b[D")
+				expect(editor.getCursor().col).toBe(2)
+
+				editor.handleInput(GHOSTTY_ALT_W)
+
+				// alt+w is not a known keybinding, so it falls through to
+				// the editor's printable-char handler which inserts 'w'
+				// (the Kitty sequence decodes to 'w' with alt modifier, but
+				// since alt+w has no binding it gets treated as a character
+				// insertion by the editor's fallback).
+				// The key assertion: text is NOT deleted to line start.
+				expect(editor.getText()).not.toBe("llo")
+			})
+		})
+	})
 })
