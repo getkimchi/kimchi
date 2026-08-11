@@ -81,15 +81,21 @@ describe("clipboard-image extension", () => {
 		// Reset module-level state (clipboardHasImage) before each test.
 		// session_shutdown no longer clears it, so we drive a session_start with an
 		// empty-clipboard mock which causes checkClipboard to set clipboardHasImage=false.
+		const platform = process.platform
+		Object.defineProperty(process, "platform", { value: "darwin" })
 		mockGetAvailableModels.mockReturnValue([{ slug: "glm-4", input_modalities: ["text", "image"] }])
 		mockGetNativeClipboard.mockReturnValue({
 			clipboard: { hasImage: () => false, availableFormats: () => [] },
 			error: null,
 		})
-		const resetPi = makeMockPi()
-		clipboardImageExtension(resetPi)
-		;(resetPi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
-		;(resetPi._handlers.session_shutdown as () => void)()
+		try {
+			const resetPi = makeMockPi()
+			clipboardImageExtension(resetPi)
+			;(resetPi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+			;(resetPi._handlers.session_shutdown as () => void)()
+		} finally {
+			Object.defineProperty(process, "platform", { value: platform })
+		}
 		vi.clearAllMocks()
 		vi.useFakeTimers()
 	})
