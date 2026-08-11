@@ -489,6 +489,13 @@ def scan_session_file(path: Path, warnings: list[str]) -> SessionScan:
             continue
 
         provider, model = resolve_message_model(message, current_model)
+        # claude-code emits assistant messages with model="<synthetic>" for
+        # display-only content that never went to the LLM API: REPL tool-call
+        # wrappers (isVirtual) and agent crash/error messages (isApiErrorMessage).
+        # Skip them to avoid polluting the per-trial models[] breakdown.
+        # Mirrors claude-code's own stats.ts: if (model === SYNTHETIC_MODEL) continue
+        if model == "<synthetic>":
+            continue
         stats = model_stats(scan.models, provider, model)
 
         usage = message.get("usage")
