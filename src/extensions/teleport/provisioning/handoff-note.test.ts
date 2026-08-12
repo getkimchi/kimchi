@@ -29,12 +29,35 @@ describe("buildHandoffNote", () => {
 	it("rsync: uncommitted changes carried, gitignored not; .kimchi synced when in the include list", () => {
 		const note = buildHandoffNote({
 			...base,
+			git: { headSha: "a1b2c3d", dirty: true },
 			workspace: { kind: "rsync", fileCount: 42, syncedDotKimchi: true },
 		})
 		expect(note).toContain("rsync of the working tree (42 files)")
 		expect(note).toContain("uncommitted local changes were carried over")
 		expect(note).toContain("Gitignored content")
 		expect(note).toContain("(.kimchi/ — ferment plans & runtime, transient docs) was synced")
+	})
+
+	it("rsync: states the tree was clean instead of claiming carried-over changes", () => {
+		const note = buildHandoffNote({
+			...base,
+			git: { headSha: "a1b2c3d", dirty: false },
+			workspace: { kind: "rsync", fileCount: 42, syncedDotKimchi: true },
+		})
+		expect(note).toContain("rsync of the working tree (42 files)")
+		expect(note).toContain("the working tree was clean — no uncommitted changes existed to carry over")
+		expect(note).not.toContain("uncommitted local changes were carried over")
+	})
+
+	it("rsync: omits the carried-over claim when the local git state is unknown", () => {
+		const note = buildHandoffNote({
+			...base,
+			workspace: { kind: "rsync", fileCount: 42, syncedDotKimchi: true },
+		})
+		expect(note).toContain("rsync of the working tree (42 files)")
+		expect(note).not.toContain("uncommitted local changes were carried over")
+		expect(note).not.toContain("the working tree was clean")
+		expect(note).toContain("Gitignored content")
 	})
 
 	it("rsync: warns explicitly when .kimchi was not synced", () => {

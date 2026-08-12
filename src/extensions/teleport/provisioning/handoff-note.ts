@@ -103,12 +103,23 @@ export function buildHandoffNote(input: HandoffNoteInput): string {
 			break
 		}
 		case "rsync": {
+			// The carried-over claim depends on what we actually know about the
+			// local tree: assert it only for a confirmed dirty tree, state
+			// cleanliness when confirmed clean, and stay silent when the local
+			// git state is unknown (no anchor) — claiming carry-over we can't
+			// verify mislabeled clean teleports.
+			const carriedOver =
+				input.git === undefined
+					? ""
+					: input.git.dirty
+						? "uncommitted local changes were carried over. "
+						: "the working tree was clean — no uncommitted changes existed to carry over. "
 			const dotKimchi = input.workspace.syncedDotKimchi
 				? "The project working state (.kimchi/ — ferment plans & runtime, transient docs) was synced."
 				: "The project working state (.kimchi/ — ferment plans & runtime, transient docs) was NOT synced; do not expect ferment state or prior working documents to exist here."
 			lines.push(
 				"",
-				`Workspace provisioning: rsync of the working tree (${input.workspace.fileCount} files) — uncommitted local changes were carried over. Gitignored content (dependencies such as node_modules, build outputs, caches) was NOT. ${dotKimchi}`,
+				`Workspace provisioning: rsync of the working tree (${input.workspace.fileCount} files) — ${carriedOver}Gitignored content (dependencies such as node_modules, build outputs, caches) was NOT. ${dotKimchi}`,
 			)
 			break
 		}
