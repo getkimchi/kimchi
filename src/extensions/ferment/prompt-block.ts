@@ -112,9 +112,9 @@ After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation al
 			? `- NEVER write, edit, or read files yourself during step execution
 - NEVER implement a step inline — always delegate to a subagent worker
 - Spawn a subagent for every step regardless of whether you already know the answer — the subagent exists to produce verifiable evidence, not just to do work. No-op or trivially-known steps still require a subagent run.`
-			: `- You may execute steps directly (using bash, edit, write) OR delegate to a subagent — choose whichever is more efficient for the task at hand.
-- Prefer direct execution for narrow fixes, single-file edits, verification runs, and when a prior subagent already laid the groundwork you can build on.
-- Prefer delegation for parallel work, long-running builds, or when isolating a complex multi-file change into a clean context would help.
+			: `- Delegate steps to a subagent worker by default — the worker executes in an isolated context and returns evidence; its reasoning residue never lands in this session. Direct execution is for exceptions, not preference.
+- Execute directly only for: narrow patches to work a subagent just completed (you already hold its context), verification-only runs, and orchestration steps (gates, transitions, refinement).
+- Measured cost rationale: an inline step's file reads and build/test output are re-read by every later call in this session — measured runs put ~90% of spend into exactly that residue. Delegation keeps the orchestrator small; the deterministic verify gate and the graders supply the trust.
 - If a subagent aborts on a step, consider whether you can finish the remaining work directly rather than spawning another subagent that will re-discover the same context.`
 
 	return `

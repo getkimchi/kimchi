@@ -603,13 +603,14 @@ describe("buildFermentPromptBlock", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
 			expect(out).not.toContain("NEVER implement a step inline")
 			expect(out).not.toContain("NEVER write, edit, or read files yourself")
-			expect(out).toContain("may execute steps directly")
+			expect(out).toContain("Delegate steps to a subagent worker by default")
+			expect(out).toContain("Direct execution is for exceptions, not preference")
 		})
 
 		it("contains delegation guidance for when to delegate vs work directly", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
-			expect(out).toContain("Prefer direct execution for narrow fixes")
-			expect(out).toContain("Prefer delegation for parallel work")
+			expect(out).toContain("Execute directly only for: narrow patches")
+			expect(out).toContain("Measured cost rationale")
 			expect(out).toContain("If a subagent aborts on a step")
 		})
 
