@@ -98,6 +98,7 @@ interface TestHarness {
 	registerPlanningBlock(): void
 	buildFinalSystemPrompt(): Promise<string>
 	buildContextText(): Promise<string>
+	buildModelVisiblePrefix(): Promise<string>
 	getSentMessages(): SendMessageCall[]
 }
 
@@ -185,6 +186,21 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 		return extractTodoContextText(result)
 	}
 
+	/* The provider's cache key is the model-visible prefix of the whole
+	 * request: the system prompt plus the role/customType/content sequence of
+	 * injected transient messages. The projection deliberately strips
+	 * per-message timestamps — those are session metadata the model never
+	 * sees, so excluding them is correctness-preserving, not a codified
+	 * carve-out. */
+	async function buildModelVisiblePrefix(): Promise<string> {
+		const result = (await fire("context", { type: "context", messages: [] })) as ContextResult
+		const messages = (result?.messages ?? []).map((message) => {
+			const projected = message as { role?: string; customType?: string; content?: unknown }
+			return { role: projected.role, customType: projected.customType, content: projected.content }
+		})
+		return JSON.stringify({ systemPrompt: await buildFinalSystemPrompt(), messages })
+	}
+
 	function getSentMessages(): SendMessageCall[] {
 		const mock = pi.sendMessage as ReturnType<typeof vi.fn>
 		return mock.mock.calls.map(([message, options]) => ({ message, options }))
@@ -199,6 +215,7 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 		registerPlanningBlock,
 		buildFinalSystemPrompt,
 		buildContextText,
+		buildModelVisiblePrefix,
 		getSentMessages,
 	}
 }
@@ -320,6 +337,70 @@ describe("system prompt stability contract", () => {
 
 					applyWriteTodos({ todos: [{ id: 1, content: "restore task", status: "pending" }] }, SESSION_ID)
 					expect(await harness.buildContextText()).toBe(baseline)
+				})
+			})
+		}
+	})
+
+	describe("multi-turn request prefix identity", () => {
+		for (const surface of ["non-ferment", "ferment-interactive", "ferment-oneshot"] as WorkflowSurface[]) {
+			describe(`workflow: ${surface}`, () => {
+				let harness: TestHarness
+				let unsubscribeTodoSync: (() => void) | undefined
+
+				beforeEach(async () => {
+					harness = createHarness(surface)
+					__resetTodoStore()
+					setActive(surface === "non-ferment" ? undefined : makeFerment())
+					todosExtension(harness.pi)
+					harness.registerPlanningBlock()
+					unsubscribeTodoSync = registerFermentTodoSync(harness.pi, SESSION_ID)
+					await harness.fire("session_start", { reason: "new" })
+				})
+
+				afterEach(async () => {
+					await harness.fire("session_shutdown", {})
+					unsubscribeTodoSync?.()
+					unsubscribeTodoSync = undefined
+					setActive(undefined)
+					__resetTodoStore()
+				})
+
+				/* A later turn in the same session reuses the provider's cached
+				 * prefix only if the whole model-visible prefix (system prompt +
+				 * transient context messages) is byte-identical. Restoring volatile
+				 * state must restore that combined prefix — this is the integration
+				 * guarantee that the per-channel suites prove separately. */
+
+				it("restores the full model-visible prefix when todo state returns to a prior snapshot", async () => {
+					applyWriteTodos({ todos: [{ id: 1, content: "prefix task", status: "pending" }] }, SESSION_ID)
+					const baseline = await harness.buildModelVisiblePrefix()
+
+					applyWriteTodos(
+						{
+							todos: [
+								{ id: 1, content: "prefix task", status: "completed" },
+								{ id: 2, content: "second task", status: "pending", note: "note" },
+							],
+						},
+						SESSION_ID,
+					)
+					const mutated = await harness.buildModelVisiblePrefix()
+					expect(mutated).not.toBe(baseline)
+
+					applyWriteTodos({ todos: [{ id: 1, content: "prefix task", status: "pending" }] }, SESSION_ID)
+					const restored = await harness.buildModelVisiblePrefix()
+					expect(restored).toBe(baseline)
+				})
+
+				it("keeps the full prefix byte-identical across consecutive turns with no state change", async () => {
+					applyWriteTodos(
+						{ todos: [{ id: 1, content: "steady task", status: "in_progress", note: "keep working" }] },
+						SESSION_ID,
+					)
+					const turnA = await harness.buildModelVisiblePrefix()
+					const turnB = await harness.buildModelVisiblePrefix()
+					expect(turnB).toBe(turnA)
 				})
 			})
 		}
