@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { waitForText } from "./support/assertions.js"
+import { INPUT_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -183,7 +183,17 @@ test("shows caller budget in the footer and command, then refreshes a budget war
 			await waitForText(terminal, "Credits: $18.40", { full: true })
 			await waitForText(terminal, "Budget: 13.73% ($274.59/$2k)", { full: true })
 
-			terminal.submit("/budget")
+			// Write + submit separately — one-shot `terminal.submit("/budget\r")`
+			// can garble the command. An incomplete terminal escape sequence that
+			// is still in flight can coalesce with the `/budget\r` bytes in a
+			// single pty read, so the leading `/` is consumed as part of that
+			// sequence and the editor receives `udget` instead of the command.
+			// Typing the command, confirming it echoed, then pressing Enter on
+			// its own keeps the two apart. Same workaround as the theme-selector
+			// tests.
+			terminal.write("/budget")
+			await waitForText(terminal, "/budget", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
 			await waitForText(terminal, "Budget  Jul 1–Aug 1 UTC", { full: true })
 			await waitForText(terminal, "Personal", { full: true })
 			await waitForText(terminal, "Organization per-user hard", { full: true })
