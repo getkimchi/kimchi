@@ -4,8 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
 import { TriggerEngine } from "../behaviours/engine.js"
+import type { ResolverIO } from "../behaviours/session-context.js"
 import { tool } from "../behaviours/triggers.js"
 import type { TriggeredBehaviour } from "../behaviours/types.js"
+import { BEHAVIOUR_BODY_TYPE, wireBehaviours } from "../behaviours/wiring.js"
 import { emitFermentDomainEvent } from "../ferment/domain-events-emitter.js"
 import { buildFermentPromptBlock } from "../ferment/prompt-block.js"
 import { createDefaultFermentRuntime } from "../ferment/runtime.js"
@@ -13,6 +15,7 @@ import { setActive } from "../ferment/state.js"
 import { registerFermentTodoSync } from "../ferment/todo-sync.js"
 import { buildPlanModeSupplementBlock } from "../permissions/index.js"
 import type { PermissionModeState } from "../permissions/types.js"
+import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
 import { FERMENT_TODO_GUIDANCE } from "../todos/ferment-prompt-block.js"
 import todosExtension from "../todos/index.js"
 import { __resetTodoStore, applyWriteTodos } from "../todos/store.js"
@@ -25,6 +28,8 @@ type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Pro
 type BeforeAgentStartResult = { systemPrompt?: string } | undefined
 
 type ContextResult = { messages?: Array<{ content?: unknown }> } | undefined
+
+type SendMessageCall = { message: unknown; options?: { deliverAs?: string } }
 
 const SESSION_ID = "system-prompt-stability-session"
 
@@ -93,6 +98,7 @@ interface TestHarness {
 	registerPlanningBlock(): void
 	buildFinalSystemPrompt(): Promise<string>
 	buildContextText(): Promise<string>
+	getSentMessages(): SendMessageCall[]
 }
 
 function createHarness(surface: WorkflowSurface): TestHarness {
@@ -179,6 +185,11 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 		return extractTodoContextText(result)
 	}
 
+	function getSentMessages(): SendMessageCall[] {
+		const mock = pi.sendMessage as ReturnType<typeof vi.fn>
+		return mock.mock.calls.map(([message, options]) => ({ message, options }))
+	}
+
 	return {
 		surface,
 		ctx,
@@ -188,6 +199,7 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 		registerPlanningBlock,
 		buildFinalSystemPrompt,
 		buildContextText,
+		getSentMessages,
 	}
 }
 
@@ -244,6 +256,70 @@ describe("system prompt stability contract", () => {
 					const contextAfterClear = await harness.buildContextText()
 					expect(promptAfterClear).toBe(promptBefore)
 					expect(contextAfterClear).toBe("")
+				})
+			})
+		}
+	})
+
+	describe("context message determinism", () => {
+		for (const surface of ["non-ferment", "ferment-interactive", "ferment-oneshot"] as WorkflowSurface[]) {
+			describe(`workflow: ${surface}`, () => {
+				let harness: TestHarness
+				let unsubscribeTodoSync: (() => void) | undefined
+
+				beforeEach(async () => {
+					harness = createHarness(surface)
+					__resetTodoStore()
+					setActive(surface === "non-ferment" ? undefined : makeFerment())
+					todosExtension(harness.pi)
+					harness.registerPlanningBlock()
+					unsubscribeTodoSync = registerFermentTodoSync(harness.pi, SESSION_ID)
+					await harness.fire("session_start", { reason: "new" })
+				})
+
+				afterEach(async () => {
+					await harness.fire("session_shutdown", {})
+					unsubscribeTodoSync?.()
+					unsubscribeTodoSync = undefined
+					setActive(undefined)
+					__resetTodoStore()
+				})
+
+				/* Prefix caching cares about the whole request, not just the system
+				 * prompt. The transient `context` message is the other channel that
+				 * volatile state flows through, so it must be *deterministic*: the
+				 * same state must render the same bytes on every call, and restoring
+				 * a prior state must restore the exact prior bytes. */
+
+				it("renders byte-identical context for identical state", async () => {
+					applyWriteTodos({ todos: [{ content: "determinism task", status: "pending" }] }, SESSION_ID)
+
+					const first = await harness.buildContextText()
+					const second = await harness.buildContextText()
+
+					expect(first).toContain("determinism task")
+					expect(second).toBe(first)
+				})
+
+				it("restores byte-identical context when todos are cleared back to baseline", async () => {
+					const baseline = await harness.buildContextText()
+
+					applyWriteTodos({ todos: [{ content: "clear task", status: "pending" }] }, SESSION_ID)
+					expect(await harness.buildContextText()).not.toBe(baseline)
+
+					applyWriteTodos({ todos: [] }, SESSION_ID)
+					expect(await harness.buildContextText()).toBe(baseline)
+				})
+
+				it("restores byte-identical context when a mutated list is restored to its prior contents", async () => {
+					applyWriteTodos({ todos: [{ id: 1, content: "restore task", status: "pending" }] }, SESSION_ID)
+					const baseline = await harness.buildContextText()
+
+					applyWriteTodos({ todos: [{ id: 1, content: "restore task mutated", status: "in_progress" }] }, SESSION_ID)
+					expect(await harness.buildContextText()).not.toBe(baseline)
+
+					applyWriteTodos({ todos: [{ id: 1, content: "restore task", status: "pending" }] }, SESSION_ID)
+					expect(await harness.buildContextText()).toBe(baseline)
 				})
 			})
 		}
@@ -410,6 +486,161 @@ describe("system prompt stability contract", () => {
 			// Full byte-identity restored: ferment activation leaves no residue in
 			// the prompt a cached prefix would see.
 			expect(await harness.buildFinalSystemPrompt()).toBe(promptBefore)
+		})
+	})
+
+	describe("todo early-nudge trigger boundary", () => {
+		let harness: TestHarness
+
+		beforeEach(async () => {
+			harness = createHarness("non-ferment")
+			__resetTodoStore()
+			setActive(undefined)
+			todosExtension(harness.pi)
+			await harness.fire("session_start", { reason: "new" })
+		})
+
+		afterEach(async () => {
+			await harness.fire("session_shutdown", {})
+			setActive(undefined)
+			__resetTodoStore()
+		})
+
+		async function fireToolExecutionEnd(toolName: string): Promise<void> {
+			await harness.fire("tool_execution_end", {
+				type: "tool_execution_end",
+				toolName,
+				toolCallId: `call-${toolName}`,
+				input: {},
+				isError: false,
+				result: { content: [], details: {} },
+			})
+		}
+
+		function earlyNudgeCalls(): SendMessageCall[] {
+			return harness.getSentMessages().filter((call) => {
+				const details = (call.message as { details?: { reason?: string } } | undefined)?.details
+				return call.options?.deliverAs === "steer" && details?.reason === "early_nudge"
+			})
+		}
+
+		/* Steer messages are transient injections into the current request's
+		 * prefix. Every steer that fires without its declared trigger is a cache
+		 * invalidation, so these tests pin the boundary: only work-tool-call
+		 * threshold crossings on todo-less sessions may emit the early nudge. */
+
+		it("does not fire below the work-tool threshold", async () => {
+			for (let i = 0; i < 4; i++) await fireToolExecutionEnd("bash")
+			expect(earlyNudgeCalls()).toHaveLength(0)
+		})
+
+		it("fires exactly once when the threshold is crossed and never recurs", async () => {
+			for (let i = 0; i < 5; i++) await fireToolExecutionEnd("bash")
+
+			const firstPass = earlyNudgeCalls()
+			expect(firstPass).toHaveLength(1)
+			expect((firstPass[0]?.message as { customType?: string }).customType).toBe(TODO_CUSTOM_ENTRY_TYPE)
+
+			// Further work tool calls must not emit another nudge — the prefix
+			// stabilises after the single steer.
+			for (let i = 0; i < 3; i++) await fireToolExecutionEnd("bash")
+			expect(earlyNudgeCalls()).toHaveLength(1)
+		})
+
+		it("never fires once the session has had a todo list", async () => {
+			applyWriteTodos({ todos: [{ content: "planned task", status: "pending" }] }, SESSION_ID)
+			applyWriteTodos({ todos: [] }, SESSION_ID)
+
+			for (let i = 0; i < 8; i++) await fireToolExecutionEnd("bash")
+			expect(earlyNudgeCalls()).toHaveLength(0)
+		})
+
+		it("does not count todo tool calls toward the threshold", async () => {
+			for (let i = 0; i < 3; i++) await fireToolExecutionEnd("bash")
+			for (let i = 0; i < 3; i++) await fireToolExecutionEnd("write_todos")
+			expect(earlyNudgeCalls()).toHaveLength(0)
+
+			await fireToolExecutionEnd("read")
+			expect(earlyNudgeCalls()).toHaveLength(0)
+
+			// Fourth work tool call plus this one reaches the threshold.
+			await fireToolExecutionEnd("read")
+			expect(earlyNudgeCalls()).toHaveLength(1)
+		})
+	})
+
+	describe("behaviours steer trigger boundary", () => {
+		/* Tool-triggered behaviour bodies are delivered as steer messages at
+		 * tool_result time (wiring.ts). Each steer injects a transient message
+		 * into the current request's prefix, so the boundary matters: a steer
+		 * must follow its declared trigger, and no unrelated state mutation may
+		 * flush or re-emit it. */
+		const glabBehaviour: TriggeredBehaviour = {
+			kind: "triggered",
+			name: "glab-cli",
+			description: "glab CLI guidance",
+			body: "Use glab for GitLab.",
+			triggers: { tool: tool("bash", (i) => String(i.command).startsWith("glab ")) },
+		}
+
+		const stubResolverIO: ResolverIO = {
+			hasCli: () => false,
+			readGitRemoteHost: () => undefined,
+			isGitRepo: () => false,
+			walkPaths: () => new Set<string>(),
+		}
+
+		let harness: TestHarness
+
+		beforeEach(async () => {
+			harness = createHarness("non-ferment")
+			__resetTodoStore()
+			setActive(undefined)
+			todosExtension(harness.pi)
+			wireBehaviours(harness.pi, [glabBehaviour], { resolverIO: stubResolverIO })
+			await harness.fire("session_start", { reason: "new", fork: false, resumed: false, version: "0" })
+		})
+
+		afterEach(async () => {
+			await harness.fire("session_shutdown", {})
+			setActive(undefined)
+			__resetTodoStore()
+		})
+
+		function behaviourSteers(): unknown[] {
+			return harness.getSentMessages().filter((call) => {
+				const message = call.message as { customType?: string } | undefined
+				return call.options?.deliverAs === "steer" && message?.customType === BEHAVIOUR_BODY_TYPE
+			})
+		}
+
+		it("emits no steer for non-matching tool calls or unrelated state mutations", async () => {
+			await harness.fire("turn_start", { turnIndex: 1 })
+			await harness.fire("tool_call", { toolName: "bash", input: { command: "curl https://x" } })
+			await harness.fire("tool_result", { toolName: "bash", input: { command: "curl https://x" } })
+
+			applyWriteTodos({ todos: [{ content: "unrelated task", status: "pending" }] }, SESSION_ID)
+			await harness.buildContextText()
+			await harness.fire("tool_result", { toolName: "bash", input: { command: "echo hi" } })
+
+			expect(behaviourSteers()).toHaveLength(0)
+		})
+
+		it("steers exactly once on the matching trigger and is not re-flushed by unrelated mutations", async () => {
+			await harness.fire("turn_start", { turnIndex: 1 })
+			await harness.fire("tool_call", { toolName: "bash", input: { command: "glab mr list" } })
+			await harness.fire("tool_result", { toolName: "bash", input: { command: "glab mr list" } })
+
+			const firstPass = behaviourSteers()
+			expect(firstPass).toHaveLength(1)
+			expect((firstPass[0] as { message?: { content?: string } })?.message?.content).toContain("Use glab for GitLab.")
+
+			// Unrelated volatile-state mutations must not re-emit the pending body.
+			applyWriteTodos({ todos: [{ content: "another task", status: "pending" }] }, SESSION_ID)
+			await harness.buildContextText()
+			await harness.fire("tool_result", { toolName: "bash", input: { command: "echo next" } })
+
+			expect(behaviourSteers()).toHaveLength(1)
 		})
 	})
 
