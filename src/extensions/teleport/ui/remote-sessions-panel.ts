@@ -41,6 +41,14 @@ interface PickerTui {
 	terminal: { rows: number; cols?: number }
 }
 
+function formatAbsoluteTime(d: Date): string {
+	// Stable, locale-independent representation for the details view.
+	return d
+		.toISOString()
+		.replace("T", " ")
+		.replace(/\.\d{3}Z$/, " UTC")
+}
+
 function dim(s: string): string {
 	return `\x1b[2m${s}\x1b[22m`
 }
@@ -120,6 +128,8 @@ export class RemoteSessionsPanel implements Component {
 	private selectedIndex = 0
 	private readonly now = new Date()
 	private readonly entries: Entry[]
+	/** Details overlay for the selected entry, toggled with `i`. */
+	private showDetails = false
 
 	constructor(
 		readonly nodes: RemoteWorkspaceNode[],
@@ -137,6 +147,20 @@ export class RemoteSessionsPanel implements Component {
 	}
 
 	handleInput(data: string): void {
+		if (matchesKey(data, "i")) {
+			if (this.entries.length === 0) return
+			this.showDetails = !this.showDetails
+			this.tui.requestRender()
+			return
+		}
+		if (this.showDetails) {
+			// While the details view is open, only close keys act.
+			if (matchesKey(data, "escape") || matchesKey(data, "q") || matchesKey(data, "x")) {
+				this.showDetails = false
+				this.tui.requestRender()
+			}
+			return
+		}
 		if (matchesKey(data, "up") || matchesKey(data, "k")) {
 			this.selectedIndex = Math.max(0, this.selectedIndex - 1)
 			this.tui.requestRender()
@@ -178,6 +202,35 @@ export class RemoteSessionsPanel implements Component {
 		if (matchesKey(data, "escape") || matchesKey(data, "q") || matchesKey(data, "x")) {
 			this.done(undefined)
 		}
+	}
+
+	private detailsFields(entry: Entry): [string, string][] {
+		const rel = (d?: Date) => (d ? formatRelativeTime(d, this.now) : "-")
+		const abs = (d?: Date) => (d ? formatAbsoluteTime(d) : "-")
+		if (entry.kind === "workspace") {
+			const { row } = entry.node
+			return [
+				["Type", "workspace"],
+				["Name", row.name || "-"],
+				["ID", row.id],
+				["Host", row.host || "-"],
+				["Status", entry.node.unreachable ? "unreachable" : row.status],
+				["Sessions", String(row.sessionCount)],
+				["Created", abs(row.createdAt)],
+				["Last activity", `${rel(row.lastActivityAt)} (${abs(row.lastActivityAt)})`],
+			]
+		}
+		const parent = this.nodes.find((n) => n.sessions.includes(entry.node))
+		return [
+			["Type", "session"],
+			["Session", entry.node.sessionName || "-"],
+			["Workspace", entry.node.workspaceName || "-"],
+			["Workspace ID", entry.node.workspaceId],
+			["Workspace Host", parent?.row.host || "-"],
+			["Status", entry.node.status],
+			["Client connected", entry.node.clientConnected ? "yes" : "no"],
+			["Last activity", `${rel(entry.node.lastActivityAt)} (${abs(entry.node.lastActivityAt)})`],
+		]
 	}
 
 	render(width: number): string[] {
@@ -231,7 +284,14 @@ export class RemoteSessionsPanel implements Component {
 		const rightB = borderLen - leftB
 		lines.push(`${b(`╭${"─".repeat(leftB)}`)}${dim(titleText)}${b(`${"─".repeat(rightB)}╮`)}`)
 
-		lines.push(ansiRow(dim(`  ${headerLine}`), headerLine.length + 2))
+		if (this.showDetails) {
+			const entry = entries[this.selectedIndex]
+			const detailTitle = entry ? `  ${entry.kind}: ${entryNameText(entry).replace(/^[├└]─ /, "")}` : ""
+			const titleClipped = truncate(detailTitle, contentW)
+			lines.push(ansiRow(dim(titleClipped), titleClipped.length))
+		} else {
+			lines.push(ansiRow(dim(`  ${headerLine}`), headerLine.length + 2))
+		}
 		lines.push(b(`├${"─".repeat(innerW)}┤`))
 
 		// Viewport height derived from MAX_HEIGHT_PCT so the panel always emits
@@ -241,7 +301,22 @@ export class RemoteSessionsPanel implements Component {
 		const overlayMaxRows = Math.floor(this.tui.terminal.rows * MAX_HEIGHT_PCT)
 		const viewportRows = Math.max(1, overlayMaxRows - CHROME_LINES)
 
-		if (entries.length === 0) {
+		if (this.showDetails) {
+			const entry = entries[this.selectedIndex]
+			if (entry) {
+				const fields = this.detailsFields(entry)
+				const labelW = Math.max(...fields.map(([k]) => k.length))
+				const rowText = (k: string, v: string) => `  ${pad(k, labelW)}  ${truncate(v, contentW - labelW - 4)}`
+				lines.push(emptyRow())
+				const shown = fields.slice(0, viewportRows)
+				for (const [k, v] of shown) {
+					const text = rowText(k, v)
+					lines.push(ansiRow(dim(text), text.length))
+				}
+				for (let i = shown.length; i < viewportRows; i++) lines.push(emptyRow())
+				lines.push(emptyRow())
+			}
+		} else if (entries.length === 0) {
 			lines.push(emptyRow())
 			const text = "  (no workspaces)"
 			lines.push(ansiRow(dim(text), text.length))
@@ -279,7 +354,9 @@ export class RemoteSessionsPanel implements Component {
 		}
 
 		lines.push(emptyRow())
-		const hint = "↑/↓ j/k: navigate  enter: open  d: delete  r: rename  esc: close"
+		const hint = this.showDetails
+			? "i: back  esc/q/x: close details"
+			: "↑/↓ j/k: navigate  enter: open  d: delete  r: rename  i: details  esc: close"
 		lines.push(ansiRow(dim(`  ${hint}`), hint.length + 2))
 		lines.push(b(`╰${"─".repeat(innerW)}╯`))
 
