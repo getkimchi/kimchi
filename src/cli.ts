@@ -135,6 +135,7 @@ import {
 	readOllamaModelsFromConfig,
 	resolveOllamaHost,
 } from "./ollama.js"
+import { syncPiAuth } from "./pi-auth.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
@@ -363,6 +364,7 @@ try {
 				throw err
 			}
 		}
+		await syncPiAuth(resolve(agentDir, "auth.json"), modelsJsonPath, currentApiKey)
 
 		// Must run before main() so the keybindings file is loaded with the
 		// override in place.

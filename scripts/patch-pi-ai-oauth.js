@@ -17,7 +17,7 @@
  * Remove when upstream supports configurable OAuth page templates.
  * Tracking: TODO - open upstream issue against pi-mono for OAuth page customization.
  */
-import { writeFileSync } from "node:fs"
+import { existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 const target = join(process.cwd(), "node_modules", "@earendil-works", "pi-ai", "dist", "auth", "oauth", "oauth-page.js")
@@ -92,6 +92,7 @@ export function oauthErrorHtml(message, details) {
 `
 
 try {
+	if (!existsSync(target)) throw new Error(`Expected upstream file not found: ${target}`)
 	writeFileSync(target, patched)
 	console.log("[patch-pi-ai-oauth] Patched pi-ai OAuth page templates.")
 } catch (err) {

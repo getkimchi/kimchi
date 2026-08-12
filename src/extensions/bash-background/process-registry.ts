@@ -32,7 +32,7 @@
  */
 
 import { randomBytes, randomUUID } from "node:crypto"
-import { createWriteStream, type WriteStream } from "node:fs"
+import { createWriteStream, mkdirSync, type WriteStream } from "node:fs"
 import { rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -74,7 +74,7 @@ export interface FinalSnapshot {
 	content: string
 	/** Truncation info (matches upstream TruncationResult). */
 	truncation?: TruncationResult
-	/** Path to a temp file with the complete output, when spilled. */
+	/** Path to the complete spilled output; await remove() or shutdown() before reading it. */
 	fullOutputPath?: string
 	state: ProcessState
 	exitCode: number | null
@@ -242,6 +242,7 @@ class OutputAccumulator {
 	private ensureTempFile(): void {
 		if (this.tempFilePath) return
 		this.tempFilePath = defaultTempFilePath(this.tempFilePrefix)
+		mkdirSync(tmpdir(), { recursive: true })
 		this.tempFileStream = createWriteStream(this.tempFilePath)
 		this.tempFileStream.on("error", (error) => {
 			this.tempFileError ??= error

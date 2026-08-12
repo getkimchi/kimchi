@@ -505,6 +505,7 @@ ${skillLines}`
 
 	const settingsManager = SettingsManager.create(effectiveCwd, agentDir)
 	const modelRuntime = (ctx.modelRegistry as unknown as ModelRegistryWithRuntime).runtime
+	if (!modelRuntime) throw new Error("Pi model registry runtime is unavailable")
 
 	const sessionOpts: CreateAgentSessionOptions = {
 		cwd: effectiveCwd,
@@ -515,7 +516,7 @@ ${skillLines}`
 		settingsManager,
 		model,
 		resourceLoader: loader,
-		...(modelRuntime ? { modelRuntime } : {}),
+		modelRuntime,
 	}
 	if (effectiveExtensions === false) {
 		sessionOpts.tools = toolNames
