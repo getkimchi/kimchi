@@ -33,6 +33,7 @@ import { FERMENT_EVENTS, type UserUnblockedPayload } from "./domain-events.js"
 import { type JudgeApiResult, judgeApiCall } from "./judge.js"
 import { promptForm } from "./prompt-ui.js"
 import type { FermentRuntime } from "./runtime.js"
+import { createApplyAndPersist } from "./tool-helpers.js"
 
 export interface AskUserOption {
 	/** Stable id the agent (or judge) returns. */
@@ -109,6 +110,31 @@ export interface AskUserContext {
 	 *  on user-answered responses so downstream signals (nudge throttling,
 	 *  prompt-block freshness) reflect the interaction. */
 	runtime?: Pick<FermentRuntime, "markHumanInput">
+	/** Optional audit sink: invoked once per judge-answered question (one-shot
+	 *  mode). Call sites with runtime access should pass
+	 *  `createJudgeDecisionRecorder(runtime)` — without it, judge choices made
+	 *  on the user's behalf leave no trace in ferment artifacts. */
+	recordJudgeDecision?: (fermentId: string, prompt: string, answerLabel: string, rationale: string | undefined) => void
+}
+
+/** Build a recorder that writes each judge-answered question onto the
+ *  ferment as an auditable Decision (title = question, description = choice
+ *  + rationale). Best-effort: a failed write logs but never fails the
+ *  question flow. */
+export function createJudgeDecisionRecorder(
+	runtime: FermentRuntime,
+): (fermentId: string, prompt: string, answerLabel: string, rationale: string | undefined) => void {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	return (fermentId, prompt, answerLabel, rationale) => {
+		const outcome = applyAndPersist(fermentId, {
+			type: "add_decision",
+			title: `Judge answered on behalf of the user: ${prompt.slice(0, 80)}`,
+			description: `Chose "${answerLabel.slice(0, 200)}". Rationale: ${(rationale ?? "(none provided)").slice(0, 400)}`,
+		})
+		if (!outcome.ok) {
+			console.error(`[ask-user] failed to record judge decision for ferment ${fermentId}:`, outcome.error)
+		}
+	}
 }
 
 /** True when the current PI session is the one-shot planner — no human is
@@ -542,7 +568,23 @@ export async function askUserForm(
 
 	const oneShot = isOneShotSession(context.pi)
 	if (oneShot) {
-		return askJudgeForm(title, description, questions, context.ferment)
+		const response = await askJudgeForm(title, description, questions, context.ferment)
+		if (!response.failed && response.answered_by === "judge" && context.recordJudgeDecision) {
+			for (const answer of response.answers ?? []) {
+				const question = questions.find((q) => q.id === answer.id)
+				try {
+					context.recordJudgeDecision(
+						context.ferment.id,
+						question?.prompt ?? answer.id,
+						answer.label,
+						response.rationale,
+					)
+				} catch (err) {
+					console.error("[ask-user] judge decision recorder threw:", err)
+				}
+			}
+		}
+		return response
 	}
 
 	const ui = context.ctx?.ui
