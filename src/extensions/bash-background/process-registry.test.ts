@@ -7,6 +7,9 @@
  * can be asserted without spawning real shells.
  */
 
+import { existsSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { BashOperations } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createProcessRegistry, OutputRingBuffer, type TailSnapshot } from "./process-registry.js"
@@ -82,6 +85,7 @@ function createFakeOps(_exitCode: number | null = 0): FakeOps {
 
 afterEach(() => {
 	vi.useRealTimers()
+	vi.unstubAllEnvs()
 })
 
 describe("OutputRingBuffer", () => {
@@ -211,9 +215,29 @@ describe("createProcessRegistry — snapshotTail", () => {
 		expect(snap?.truncation?.truncated).toBe(true)
 		expect(snap?.content).toHaveLength(50_000)
 		expect(snap?.fullOutputPath).toContain("pi-bash-")
+		const spillPath = snap?.fullOutputPath
+		if (!spillPath) throw new Error("expected spill path")
 
 		await registry.remove(handle)
+		expect(existsSync(spillPath)).toBe(true)
 		await registry.shutdown()
+		expect(existsSync(spillPath)).toBe(false)
+	})
+
+	it("captures temp-file errors instead of emitting them unhandled", async () => {
+		vi.stubEnv("TMPDIR", join(tmpdir(), `missing-kimchi-dir-${Date.now()}`))
+		const ops = createFakeOps(0)
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "yes", "/tmp", undefined, {
+			intervalSeconds: 15,
+			deadlineMs: Date.now() + 60_000,
+		})
+
+		ops.emit(Buffer.alloc(60_000, "x".charCodeAt(0)))
+		await new Promise((resolve) => setImmediate(resolve))
+
+		await expect(registry.getEntry(handle)?.accumulator.closeTempFile()).rejects.toThrow("ENOENT")
+		await registry.remove(handle)
 	})
 })
 
@@ -384,5 +408,21 @@ describe("createProcessRegistry — remove & shutdown", () => {
 		await registry.shutdown()
 		expect(registry.size).toBe(0)
 		expect(ops.aborted).toBe(true)
+	})
+
+	it("shutdown deletes spill files for entries that were not removed", async () => {
+		const ops = createFakeOps(0)
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "yes", "/tmp", undefined, {
+			intervalSeconds: 15,
+			deadlineMs: Date.now() + 60_000,
+		})
+		ops.emit(Buffer.alloc(60_000, "x".charCodeAt(0)))
+		const spillPath = registry.finalSnapshot(handle)?.fullOutputPath
+		if (!spillPath) throw new Error("expected spill path")
+
+		await registry.shutdown()
+
+		expect(existsSync(spillPath)).toBe(false)
 	})
 })

@@ -113,6 +113,7 @@ class OutputAccumulator {
 	private finished = false
 	private tempFilePath: string | undefined
 	private tempFileStream: WriteStream | undefined
+	private tempFileError: Error | undefined
 
 	constructor(options: { maxLines?: number; maxBytes?: number; tempFilePrefix?: string } = {}) {
 		this.maxLines = options.maxLines ?? 2000
@@ -127,7 +128,7 @@ class OutputAccumulator {
 		this.appendDecodedText(this.decoder.decode(data, { stream: true }))
 		if (this.tempFileStream || this.shouldUseTempFile()) {
 			this.ensureTempFile()
-			this.tempFileStream?.write(data)
+			this.writeTempFile(data)
 			return
 		}
 		if (data.length > 0) this.rawChunks.push(data)
@@ -163,9 +164,16 @@ class OutputAccumulator {
 	}
 
 	async closeTempFile(): Promise<void> {
-		if (!this.tempFileStream) return
+		if (!this.tempFileStream) {
+			if (this.tempFileError) throw this.tempFileError
+			return
+		}
 		const stream = this.tempFileStream
 		this.tempFileStream = undefined
+		if (this.tempFileError) {
+			stream.destroy()
+			throw this.tempFileError
+		}
 		await new Promise<void>((resolve, reject) => {
 			const onError = (error: Error) => {
 				stream.off("finish", onFinish)
@@ -179,6 +187,7 @@ class OutputAccumulator {
 			stream.once("finish", onFinish)
 			stream.end()
 		})
+		if (this.tempFileError) throw this.tempFileError
 	}
 
 	private appendDecodedText(text: string): void {
@@ -234,8 +243,15 @@ class OutputAccumulator {
 		if (this.tempFilePath) return
 		this.tempFilePath = defaultTempFilePath(this.tempFilePrefix)
 		this.tempFileStream = createWriteStream(this.tempFilePath)
-		for (const chunk of this.rawChunks) this.tempFileStream.write(chunk)
+		this.tempFileStream.on("error", (error) => {
+			this.tempFileError ??= error
+		})
+		for (const chunk of this.rawChunks) this.writeTempFile(chunk)
 		this.rawChunks = []
+	}
+
+	private writeTempFile(data: Buffer): void {
+		if (!this.tempFileError) this.tempFileStream?.write(data)
 	}
 }
 
@@ -344,7 +360,7 @@ export interface ProcessRegistry {
 	whenExited(handle: string): Promise<{ exitCode: number | null }>
 	/** Read-only entry state, or undefined if unknown. */
 	getEntry(handle: string): Readonly<ProcessEntry> | undefined
-	/** Remove an entry from the registry, killing it first if still running. */
+	/** Remove an entry, keeping any reported spill file readable until shutdown. */
 	remove(handle: string): Promise<void>
 	/** Kill every still-running entry and clear the registry. */
 	shutdown(): Promise<void>
@@ -516,19 +532,24 @@ export function createProcessRegistry(): ProcessRegistry {
 		}
 	}
 
+	async function closeOutput(entry: ProcessEntry): Promise<void> {
+		await entry.accumulator.closeTempFile().catch(() => {})
+		const path = entry.accumulator.snapshot().fullOutputPath
+		if (path) spillPaths.add(path)
+	}
+
 	async function remove(handle: string): Promise<void> {
 		const entry = entries.get(handle)
 		if (!entry) return
 		await kill(handle)
-		await entry.accumulator.closeTempFile().catch(() => {})
-		const snap = entry.accumulator.snapshot()
-		if (snap.fullOutputPath) spillPaths.add(snap.fullOutputPath)
+		await closeOutput(entry)
 		entries.delete(handle)
 	}
 
 	async function shutdown(): Promise<void> {
-		const pending = [...entries.values()].map((entry) => kill(entry.handle))
-		await Promise.all(pending)
+		const activeEntries = [...entries.values()]
+		await Promise.all(activeEntries.map((entry) => kill(entry.handle)))
+		await Promise.all(activeEntries.map(closeOutput))
 		entries.clear()
 		await Promise.allSettled([...spillPaths].map((p) => rm(p, { force: true })))
 		spillPaths.clear()
