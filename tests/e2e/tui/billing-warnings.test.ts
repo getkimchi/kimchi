@@ -183,14 +183,10 @@ test("shows caller budget in the footer and command, then refreshes a budget war
 			await waitForText(terminal, "Credits: $18.40", { full: true })
 			await waitForText(terminal, "Budget: 13.73% ($274.59/$2k)", { full: true })
 
-			// Write + submit separately — one-shot `terminal.submit("/budget\r")`
-			// can garble the command. An incomplete terminal escape sequence that
-			// is still in flight can coalesce with the `/budget\r` bytes in a
-			// single pty read, so the leading `/` is consumed as part of that
-			// sequence and the editor receives `udget` instead of the command.
-			// Typing the command, confirming it echoed, then pressing Enter on
-			// its own keeps the two apart. Same workaround as the theme-selector
-			// tests.
+			// Type the command and wait for it to echo, then press Enter on its own.
+			// A one-shot submit can drop the command's leading `/`, which appears to
+			// happen when the Enter bytes merge with the command text in one pty read.
+			// Same approach as the theme-selector and todo-overlay tests.
 			terminal.write("/budget")
 			await waitForText(terminal, "/budget", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
