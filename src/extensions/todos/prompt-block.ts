@@ -11,10 +11,10 @@ For non-trivial work, maintain a todo list — it is a contract with the user, n
 
 Create a list for tasks with multiple non-trivial steps: code changes, debugging, reviews, investigations, multi-file work. Start short (2-3 items) and grow it as the task structure emerges — a long list at turn one signals false confidence about the shape of the work. Skip todos for single-step answers, trivial two-step tasks, or purely conversational exchanges.
 
-Using todo tools is for tracking your work in the session; it is different from leaving TODO comments/placeholders in code, which you must not do unless explicitly requested. Use mark_todo as the default for status changes — it is lightweight and pairs naturally with a work tool call. Mark the current item completed and the next one in_progress in the same turn you run the next command. Use create_todos for the initial list, add_todo for one missing item, update_todos only when the plan changes significantly (adding/removing/reordering items), and clear_todos when the work is done. Update the list at natural break points: when a step completes, when the plan changes, or when switching focus. **Always pair todo updates with the next work tool call in the same turn** — never make a turn that is only a todo update. Keep at most one item in_progress at a time; when a current list is visible, continue the in_progress item before starting pending work. When updating an existing list, preserve user-created todos and existing ids unless the user asked to remove or rewrite them; append new todos after existing todos. If you see a staleness warning in your todo state ("⚠ N changes since last update"), update your list alongside your next tool call — do not make a dedicated turn for it.`
+Using todo tools is for tracking your work in the session; it is different from leaving TODO comments/placeholders in code, which you must not do unless explicitly requested. Use mark_todo as the default for status changes — it is lightweight and pairs naturally with a work tool call. Mark the current item completed and the next one in_progress in the same turn you run the next command. Use create_todos for the initial list, add_todo for one missing item, update_todos only when the plan changes significantly (adding/removing/reordering items), and clear_todos when the work is done. Update the list at natural break points: when a step completes, when the plan changes, or when switching focus. **Always pair todo updates with the next work tool call in the same turn** — never make a turn that is only a todo update. Keep at most one item in_progress at a time; when a current list is visible, continue the in_progress item before starting pending work. When updating an existing list, preserve user-created todos and existing ids unless the user asked to remove or rewrite them; append new todos after existing todos. If you see a staleness warning in your todo state ("⚠ N changes since last update"), update your list at the next natural breakpoint alongside a work tool call — do not make a dedicated turn for it, and do not treat the warning as a demand to update on every call.`
 
 const FERMENT_TODO_GUIDANCE =
-	"\n\nWhen working inside a ferment step, break the step into concrete sub-tasks using add_todo before writing code. Todo scope is auto-routed: while exactly one step is running, writes without a scope target that step's list; otherwise they go to the global list, which persists for the whole session. The step list is cleared when the step completes — record durable follow-ups in your step summary, not in todos. The step scope starts with the step title as its first item; update_todos replaces the entire list, so re-include that item first if you replace. IDs are per-scope — use the number shown under a scope header with mark_todo. Each sub-task should be a specific verifiable action (run a command, write a file, check an output). Do not restate the phase plan as sub-tasks: the remaining steps of the phase are already tracked by the phase-level todo list. Mark each sub-task as you complete it — but batch the edits into a single update_todos call and always pair it with your next work tool call in the same turn; never spend a whole turn only updating todos."
+	"\n\nWhen working inside a ferment step, a sub-task todo list is OPTIONAL — the running step itself is the state of record. Create one only when the step spans multiple distinct sub-actions (roughly 5+ tool calls: scaffold + implement + wire + test). For focused steps (one file, one command, one fix), skip the list and just do the work. When you do keep one: todo scope is auto-routed — while exactly one step is running, writes without a scope target that step's list; otherwise they go to the global list, which persists for the whole session. The step list is cleared when the step completes — record durable follow-ups in your step summary, not in todos. The step scope starts with the step title as its first item; update_todos replaces the entire list, so re-include that item first if you replace. IDs are per-scope — use the number shown under a scope header with mark_todo. Each sub-task should be a specific verifiable action (run a command, write a file, check an output). Do not restate the phase plan as sub-tasks: the remaining steps of the phase are already tracked by the phase-level todo list. Check off sub-tasks in one batched update_todos call when the step's verification passes or the step completes — never spend a whole turn only updating todos."
 
 export function renderTodoPromptBlock(): string {
 	const ferment = getActive()
@@ -76,10 +76,10 @@ function formatProgressSummary(todos: TodoItem[]): string {
  * reads, and can choose to act on it at the next natural break point.
  */
 function stalenessIndicator(changes: number): string | undefined {
-	if (changes <= 2) return undefined
-	if (changes <= 6) return `${changes} changes since last update — update alongside your next tool call`
-	if (changes <= 11) return `⚠ ${changes} changes since last update — update alongside your next tool call now`
-	return `⚠ ${changes} changes — list is significantly stale, update alongside your next tool call`
+	if (changes <= 8) return undefined
+	if (changes <= 16) return `${changes} changes since last update — refresh the list at the next natural breakpoint`
+	if (changes <= 24) return `⚠ ${changes} changes since last update — update at the next natural breakpoint`
+	return `⚠ ${changes} changes — list is significantly stale, update at the next natural breakpoint`
 }
 
 /** Render the current todo store as a markdown section suitable for injection
@@ -170,8 +170,12 @@ export function renderTodoStateMarkdown(sessionId: string): string | undefined {
 
 	// Ferment stall detection: if a ferment step is running and the step-scope
 	// todos haven't been updated in several turns, add a staleness warning.
+	// Step-list staleness health check. Now that sub-task lists are optional,
+	// nagging at a few turns manufactures todo churn exactly where we told the
+	// model to skip lists — one threshold at roughly one long step means the
+	// warning fires only on genuine iteration thrash.
 	const staleTurns = getTurnsSinceStepTodoWrite(sessionId)
-	if (staleTurns >= 5) {
+	if (staleTurns >= 12) {
 		stalenessWarnings.push(
 			`⚠ Step todos have not been updated for ${staleTurns} turns. If you are iterating without progress, step back and reassess your approach. Update your todo plan with what you have tried and what to try next.`,
 		)
