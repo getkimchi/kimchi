@@ -8,12 +8,20 @@ import {
 	type JudgeApiResult,
 	type JudgeJourneyGradeInput,
 	type JudgePhaseInput,
+	judgeApiCall,
 	judgeJourneyGrade,
 	judgeJourneyGradeViaSubagent,
 	judgePhaseGrade,
 	judgePhaseGradeViaSubagent,
 } from "./judge.js"
 import { captureJudgeContext } from "./state.js"
+
+const completeMock = vi.hoisted(() => vi.fn())
+
+vi.mock("@earendil-works/pi-ai/compat", async () => {
+	const actual = await vi.importActual<typeof import("@earendil-works/pi-ai/compat")>("@earendil-works/pi-ai/compat")
+	return { ...actual, complete: (...args: unknown[]) => completeMock(...args) }
+})
 
 describe("isGrade", () => {
 	it("accepts the five valid letters", () => {
@@ -914,5 +922,34 @@ describe("describeJudgeModel", () => {
 	it("falls back to the captured session model in multi-model mode when the role does not resolve", () => {
 		captureJudgeContext(sessionModel, { find: () => undefined } as unknown as ModelRegistry, true)
 		expect(describeJudgeModel()).toBe("kimchi-dev/glm-5.2-fp8")
+	})
+})
+
+describe("judgeApiCall", () => {
+	afterEach(() => {
+		completeMock.mockReset()
+		captureJudgeContext(undefined, undefined, false)
+	})
+
+	it("omits Pi token limits for a Kimchi judge request", async () => {
+		const model = {
+			provider: "kimchi-dev",
+			id: "judge-x",
+			api: "openai-completions",
+		} as unknown as Model<Api>
+		const registry = {
+			getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey: "test-key", headers: {} }),
+		} as unknown as ModelRegistry
+		let sentPayload: unknown
+		completeMock.mockImplementation((_model: unknown, _context: unknown, options: unknown) => {
+			const { onPayload } = options as { onPayload: (payload: unknown) => unknown }
+			sentPayload = onPayload({ max_completion_tokens: 100, max_tokens: 100, messages: [] })
+			return { content: [{ type: "text", text: "ok" }], stopReason: "stop" }
+		})
+		captureJudgeContext(model, registry, false)
+
+		await judgeApiCall("system", "user", 100)
+
+		expect(sentPayload).toEqual({ messages: [] })
 	})
 })

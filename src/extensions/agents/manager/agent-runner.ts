@@ -21,6 +21,7 @@ import { runAsAgentWorker } from "../../agent-worker-context.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
+import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
@@ -472,6 +473,7 @@ ${skillLines}`
 		telemetryExtension(readTelemetryConfig()),
 		bashExtension,
 		infrastructureBreakerExtension,
+		omitKimchiMaxTokensExtension,
 	]
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
