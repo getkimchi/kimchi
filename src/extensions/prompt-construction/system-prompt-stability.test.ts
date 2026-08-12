@@ -17,7 +17,7 @@ import { buildPlanModeSupplementBlock } from "../permissions/index.js"
 import type { PermissionModeState } from "../permissions/types.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
 import { FERMENT_TODO_GUIDANCE } from "../todos/ferment-prompt-block.js"
-import todosExtension from "../todos/index.js"
+import todosExtension, { TODO_EARLY_NUDGE_THRESHOLD } from "../todos/index.js"
 import { __resetTodoStore, applyWriteTodos } from "../todos/store.js"
 import { createSystemPromptBlocks } from "./index.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "./system-prompt.js"
@@ -611,12 +611,12 @@ describe("system prompt stability contract", () => {
 		 * threshold crossings on todo-less sessions may emit the early nudge. */
 
 		it("does not fire below the work-tool threshold", async () => {
-			for (let i = 0; i < 4; i++) await fireToolExecutionEnd("bash")
+			for (let i = 0; i < TODO_EARLY_NUDGE_THRESHOLD - 1; i++) await fireToolExecutionEnd("bash")
 			expect(earlyNudgeCalls()).toHaveLength(0)
 		})
 
 		it("fires exactly once when the threshold is crossed and never recurs", async () => {
-			for (let i = 0; i < 5; i++) await fireToolExecutionEnd("bash")
+			for (let i = 0; i < TODO_EARLY_NUDGE_THRESHOLD; i++) await fireToolExecutionEnd("bash")
 
 			const firstPass = earlyNudgeCalls()
 			expect(firstPass).toHaveLength(1)
@@ -632,19 +632,19 @@ describe("system prompt stability contract", () => {
 			applyWriteTodos({ todos: [{ content: "planned task", status: "pending" }] }, SESSION_ID)
 			applyWriteTodos({ todos: [] }, SESSION_ID)
 
-			for (let i = 0; i < 8; i++) await fireToolExecutionEnd("bash")
+			for (let i = 0; i < TODO_EARLY_NUDGE_THRESHOLD + 3; i++) await fireToolExecutionEnd("bash")
 			expect(earlyNudgeCalls()).toHaveLength(0)
 		})
 
 		it("does not count todo tool calls toward the threshold", async () => {
-			for (let i = 0; i < 3; i++) await fireToolExecutionEnd("bash")
+			for (let i = 0; i < TODO_EARLY_NUDGE_THRESHOLD - 2; i++) await fireToolExecutionEnd("bash")
 			for (let i = 0; i < 3; i++) await fireToolExecutionEnd("write_todos")
 			expect(earlyNudgeCalls()).toHaveLength(0)
 
 			await fireToolExecutionEnd("read")
 			expect(earlyNudgeCalls()).toHaveLength(0)
 
-			// Fourth work tool call plus this one reaches the threshold.
+			// Second-to-last work tool call plus this one reaches the threshold.
 			await fireToolExecutionEnd("read")
 			expect(earlyNudgeCalls()).toHaveLength(1)
 		})
@@ -679,7 +679,7 @@ describe("system prompt stability contract", () => {
 			setActive(undefined)
 			todosExtension(harness.pi)
 			wireBehaviours(harness.pi, [glabBehaviour], { resolverIO: stubResolverIO })
-			await harness.fire("session_start", { reason: "new", fork: false, resumed: false, version: "0" })
+			await harness.fire("session_start", { reason: "new" })
 		})
 
 		afterEach(async () => {

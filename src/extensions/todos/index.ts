@@ -78,7 +78,7 @@ function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager,
 	)
 }
 
-const TODO_EARLY_NUDGE_THRESHOLD = 5
+export const TODO_EARLY_NUDGE_THRESHOLD = 5
 
 const TODO_EARLY_NUDGE_MESSAGE =
 	"You are working on a multi-step task without a todo list. Consider creating one to plan your approach — pair the create_todos call with your next work tool call in the same turn."
