@@ -89,8 +89,9 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 				apiKey: auth.apiKey,
 				headers: auth.headers,
 				signal: AbortSignal.timeout(45_000),
-				...(maxTokens === undefined ? {} : { maxTokens }),
-				onPayload: (payload) => omitKimchiMaxTokensFromPayload(payload, model.provider),
+				...(maxTokens === undefined
+					? { onPayload: (payload: unknown) => omitKimchiMaxTokensFromPayload(payload, model.provider) }
+					: { maxTokens }),
 			},
 		)
 

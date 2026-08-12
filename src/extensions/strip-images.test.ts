@@ -121,14 +121,13 @@ describe("strip-images extension", () => {
 			expect(mockNotify).toHaveBeenCalledWith(expect.stringContaining("no API key available"), "error")
 		})
 
-		it("omits Pi token limits from image-analysis requests", async () => {
-			let sentPayload: unknown
+		it("preserves the explicit image-analysis token limit", async () => {
+			let sentOptions: unknown
 			vi.mocked(getLatestMessages).mockReturnValue([
 				{ role: "user", content: [{ type: "image", data: "image-data", mimeType: "image/png" }] },
 			] as never)
 			completeMock.mockImplementation((_model: unknown, _context: unknown, options: unknown) => {
-				const { onPayload } = options as { onPayload: (payload: unknown) => unknown }
-				sentPayload = onPayload({ max_completion_tokens: 200, max_tokens: 200, messages: [] })
+				sentOptions = options
 				return { content: [{ type: "text", text: "description" }], stopReason: "stop" }
 			})
 			stripImagesExtension(mockPi as never)
@@ -136,7 +135,8 @@ describe("strip-images extension", () => {
 			const handler = mockPi.getHandler("strip-images") as (args: string[], ctx: unknown) => Promise<void>
 			await handler([], createMockCtx())
 
-			expect(sentPayload).toEqual({ messages: [] })
+			expect(sentOptions).toMatchObject({ maxTokens: 200 })
+			expect(sentOptions).not.toHaveProperty("onPayload")
 		})
 	})
 })

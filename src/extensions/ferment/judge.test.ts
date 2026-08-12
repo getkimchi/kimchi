@@ -931,7 +931,7 @@ describe("judgeApiCall", () => {
 		captureJudgeContext(undefined, undefined, false)
 	})
 
-	it("omits Pi token limits for a Kimchi judge request", async () => {
+	it("omits Pi defaults but preserves an explicit Kimchi judge token limit", async () => {
 		const model = {
 			provider: "kimchi-dev",
 			id: "judge-x",
@@ -940,16 +940,20 @@ describe("judgeApiCall", () => {
 		const registry = {
 			getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey: "test-key", headers: {} }),
 		} as unknown as ModelRegistry
-		let sentPayload: unknown
+		const requests: Array<{ maxTokens?: number; onPayload?: (payload: unknown) => unknown }> = []
 		completeMock.mockImplementation((_model: unknown, _context: unknown, options: unknown) => {
-			const { onPayload } = options as { onPayload: (payload: unknown) => unknown }
-			sentPayload = onPayload({ max_completion_tokens: 100, max_tokens: 100, messages: [] })
+			requests.push(options as (typeof requests)[number])
 			return { content: [{ type: "text", text: "ok" }], stopReason: "stop" }
 		})
 		captureJudgeContext(model, registry, false)
 
+		await judgeApiCall("system", "user")
 		await judgeApiCall("system", "user", 100)
 
-		expect(sentPayload).toEqual({ messages: [] })
+		expect(requests[0].onPayload?.({ max_completion_tokens: 100, max_tokens: 100, messages: [] })).toEqual({
+			messages: [],
+		})
+		expect(requests[1]).toMatchObject({ maxTokens: 100 })
+		expect(requests[1].onPayload).toBeUndefined()
 	})
 })

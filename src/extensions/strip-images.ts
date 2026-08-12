@@ -9,7 +9,6 @@ import {
 	sessionHasImages,
 	storeImageDescription,
 } from "./model-guard.js"
-import { omitKimchiMaxTokensFromPayload } from "./omit-kimchi-max-tokens.js"
 
 const IMAGE_DESCRIPTION_PROMPT = "Describe this image concisely. Include key visual details, text, layout."
 
@@ -124,7 +123,6 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 							headers: auth.headers,
 							signal: AbortSignal.timeout(45_000),
 							maxTokens: 200,
-							onPayload: (payload) => omitKimchiMaxTokensFromPayload(payload, visionModel.provider),
 						},
 					)
 
