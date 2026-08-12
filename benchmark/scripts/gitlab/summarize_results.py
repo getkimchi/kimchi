@@ -523,19 +523,30 @@ def scan_trajectory_file(path: Path, warnings: list[str]) -> SessionScan:
     """Parse an ATIF trajectory.json file into a SessionScan.
 
     Used for opencode and cursor-cli agents.  Both write ``agent/trajectory.json``
-    (schema ATIF-v1.x) instead of the JSONL session format used by kimchi/claude-code.
-    Opencode writes per-step ``metrics`` with token counts; cursor-cli writes
-    token totals only in ``final_metrics`` (no per-step metrics).  This function
-    extracts token and tool-call data from each step, falling back to
-    ``final_metrics.extra.usage_totals`` when per-step metrics are absent.
+    (schema ATIF-v1.x) instead of the JSONL session format used by
+    kimchi/claude-code.  Opencode writes per-step ``metrics`` with token
+    counts; cursor-cli does not write per-step metrics.
+
+    Token data for cursor-cli is intentionally **not** extracted.
+    cursor-cli only emits cumulative usage in its final result event
+    (``final_metrics.extra.usage_totals``), which is lost when the process
+    is killed before completion.  In the terminal-bench-2-1 benchmark run,
+    17% of cursor trials (78/453) had zero tokens because the process was
+    killed before the final event fired, making the aggregate unreliable.
+    Rather than reporting incomplete and misleading token counts, token
+    fields are left at zero for cursor-cli runs.  Tool-call counts and
+    llm_rounds (from per-step ``llm_call_count``) are still collected.
+    To recover token counts and costs, use the Cursor dashboard usage events instead.
     """
     data = load_json(path, warnings)
     scan = SessionScan()
     if not data:
         return scan
 
+    agent_name: str | None = None
     agent_block = data.get("agent")
     if isinstance(agent_block, dict):
+        agent_name = string_or_none(agent_block.get("name"))
         model_name = string_or_none(agent_block.get("model_name"))
         if model_name:
             provider, model = split_model_ref(model_name)
@@ -590,8 +601,27 @@ def scan_trajectory_file(path: Path, warnings: list[str]) -> SessionScan:
                 # both input_tokens and cache_read_tokens, inflating cost.
                 non_cached_input = max(0, prompt_tokens - cached_tokens)
                 stats.input_tokens += non_cached_input
-                stats.output_tokens += completion_tokens
+                # Opencode's harbor adapter splits reasoning tokens out of
+                # completion_tokens into extra.reasoning_tokens, while
+                # providers bill output and reasoning together (OpenAI
+                # convention: completion_tokens includes reasoning).
+                # Verified against raw opencode sessions where
+                # total = input + output + reasoning + cache.read.
+                # Fold reasoning back into output so costs are comparable
+                # with other agents.
+                reasoning_tokens = 0
+                if agent_name == "opencode":
+                    extra = metrics.get("extra")
+                    if isinstance(extra, dict):
+                        reasoning_tokens = int_value(extra.get("reasoning_tokens"))
+                stats.output_tokens += completion_tokens + reasoning_tokens
                 stats.cache_read_tokens += cached_tokens
+        elif int_value(step.get("llm_call_count")):
+            # Cursor-cli steps have no per-step metrics but do record
+            # llm_call_count.  Count LLM rounds so usage metadata is
+            # preserved even though token data is intentionally omitted
+            # (see docstring).
+            stats.llm_rounds += int_value(step.get("llm_call_count"))
 
         # Tool calls in ATIF format use ``function_name`` instead of ``name``.
         tool_calls = step.get("tool_calls")
@@ -600,38 +630,6 @@ def scan_trajectory_file(path: Path, warnings: list[str]) -> SessionScan:
                 if isinstance(tc, dict):
                     name = tc.get("function_name") or tc.get("name")
                     stats.tool_calls[str(name) if name else "unknown"] += 1
-
-    # Cursor-cli writes token totals only in final_metrics, not per-step.
-    # Fall back to final_metrics.extra.usage_totals when no per-step metrics
-    # were found so cursor runs get the same token attribution as other agents.
-    total_tokens = sum(
-        s.input_tokens + s.cache_read_tokens + s.cache_write_tokens + s.output_tokens
-        for s in scan.models.values()
-    )
-    if total_tokens == 0:
-        final_metrics = data.get("final_metrics")
-        if isinstance(final_metrics, dict):
-            extra = final_metrics.get("extra")
-            usage_totals = extra.get("usage_totals") if isinstance(extra, dict) else None
-            if isinstance(usage_totals, dict):
-                stats = model_stats(scan.models, provider, model)
-                stats.input_tokens += int_from_keys(
-                    usage_totals, "inputTokens", "input_tokens",
-                )
-                stats.output_tokens += int_from_keys(
-                    usage_totals, "outputTokens", "output_tokens",
-                )
-                stats.cache_read_tokens += int_from_keys(
-                    usage_totals, "cacheReadTokens", "cache_read_tokens",
-                )
-                stats.cache_write_tokens += int_from_keys(
-                    usage_totals, "cacheWriteTokens", "cache_write_tokens",
-                )
-                stats.llm_rounds += sum(
-                    int_value(s.get("llm_call_count"))
-                    for s in steps
-                    if isinstance(s, dict) and s.get("llm_call_count")
-                )
 
     return scan
 

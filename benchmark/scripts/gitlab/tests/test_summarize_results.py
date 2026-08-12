@@ -1425,6 +1425,7 @@ class ScanTrajectoryFileTest(unittest.TestCase):
         prompt: int = 0,
         completion: int = 0,
         cached: int = 0,
+        reasoning: int = 0,
         tools: list[str] | None = None,
         model: str | None = None,
     ) -> dict:
@@ -1439,6 +1440,8 @@ class ScanTrajectoryFileTest(unittest.TestCase):
         }
         if cached:
             step["metrics"]["cached_tokens"] = cached
+        if reasoning:
+            step["metrics"]["extra"] = {"reasoning_tokens": reasoning}
         if tools:
             step["tool_calls"] = [{"tool_call_id": f"call-{i}", "function_name": t} for i, t in enumerate(tools)]
         return step
@@ -1636,12 +1639,36 @@ class ScanTrajectoryFileTest(unittest.TestCase):
             self.assertEqual(stats.output_tokens, 2 + 2385)
             self.assertEqual(stats.llm_rounds, 2)
 
-    def test_final_metrics_fallback_for_cursor_trajectory(self):
-        """Cursor-cli writes token totals only in final_metrics, not per-step.
+    def test_opencode_reasoning_tokens_included_in_output(self):
+        """Opencode's harbor adapter splits reasoning tokens out of
+        completion_tokens into extra.reasoning_tokens.  Providers bill output
+        and reasoning together, so scan_trajectory_file must fold reasoning
+        back into output_tokens for opencode trajectories.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "task__abc"
+            trial_dir.mkdir()
+            self._write_trajectory(trial_dir, self._trajectory(steps=[
+                self._step(prompt=100, completion=54, reasoning=49, cached=64),
+                self._step(prompt=200, completion=30, reasoning=0),
+            ]))
 
-        scan_trajectory_file must fall back to final_metrics.extra.usage_totals
-        when per-step metrics are absent so cursor runs get the same token
-        attribution as kimchi/opencode agents.
+            warnings: list[str] = []
+            scan = summarize_results.scan_trajectory_file(
+                trial_dir / "agent" / "trajectory.json", warnings
+            )
+            stats = next(iter(scan.models.values()))
+            # output = (54 + 49) + 30 — reasoning folded into output
+            self.assertEqual(stats.output_tokens, 54 + 49 + 30)
+            self.assertEqual(stats.input_tokens, (100 - 64) + 200)
+            self.assertEqual(stats.cache_read_tokens, 64)
+
+    def test_cursor_trajectory_no_token_data(self):
+        """cursor-cli token data is intentionally not extracted.
+
+        cursor-cli only emits cumulative usage in its final result event,
+        which is lost when the process is killed.  Token fields must be
+        zero, but llm_rounds and tool_calls are still collected.
         """
         with tempfile.TemporaryDirectory() as tmp:
             trial_dir = Path(tmp) / "task__abc"
@@ -1710,16 +1737,18 @@ class ScanTrajectoryFileTest(unittest.TestCase):
             self.assertEqual(warnings, [])
             self.assertEqual(len(scan.models), 1)
             stats = scan.models[("cursor", "glm-5.2")]
+            # llm_rounds and tool_calls are still counted from per-step data
             self.assertEqual(stats.llm_rounds, 2)
-            self.assertEqual(stats.input_tokens, 5874)
-            self.assertEqual(stats.output_tokens, 1953)
-            self.assertEqual(stats.cache_read_tokens, 164544)
-            self.assertEqual(stats.cache_write_tokens, 0)
             self.assertEqual(stats.tool_calls["shellToolCall"], 1)
             self.assertEqual(stats.tool_calls["editToolCall"], 1)
+            # Token data is intentionally zero — cursor-cli usage is unreliable
+            self.assertEqual(stats.input_tokens, 0)
+            self.assertEqual(stats.output_tokens, 0)
+            self.assertEqual(stats.cache_read_tokens, 0)
+            self.assertEqual(stats.cache_write_tokens, 0)
 
-    def test_final_metrics_fallback_skipped_when_per_step_metrics_exist(self):
-        """Per-step metrics take precedence over final_metrics fallback."""
+    def test_per_step_metrics_used_when_present(self):
+        """Per-step metrics are the only token source (no final_metrics fallback)."""
         with tempfile.TemporaryDirectory() as tmp:
             trial_dir = Path(tmp) / "task__abc"
             trial_dir.mkdir()
@@ -1757,8 +1786,8 @@ class ScanTrajectoryFileTest(unittest.TestCase):
             self.assertEqual(stats.cache_read_tokens, 50)
             self.assertEqual(stats.cache_write_tokens, 0)
 
-    def test_final_metrics_fallback_no_usage_totals(self):
-        """When final_metrics has no usage_totals, fallback is a no-op."""
+    def test_no_metrics_no_tokens(self):
+        """When no per-step metrics exist, tokens are zero but llm_rounds is counted."""
         with tempfile.TemporaryDirectory() as tmp:
             trial_dir = Path(tmp) / "task__abc"
             trial_dir.mkdir()
@@ -1784,7 +1813,7 @@ class ScanTrajectoryFileTest(unittest.TestCase):
             stats = next(iter(scan.models.values()))
             self.assertEqual(stats.input_tokens, 0)
             self.assertEqual(stats.output_tokens, 0)
-            self.assertEqual(stats.llm_rounds, 0)
+            self.assertEqual(stats.llm_rounds, 1)
 
 
 if __name__ == "__main__":
