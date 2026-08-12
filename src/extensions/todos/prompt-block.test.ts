@@ -499,7 +499,18 @@ describe("ferment-conditional todo guidance", () => {
 		expect(supplement).toBe(FERMENT_TODO_GUIDANCE)
 		expect(supplement).toContain("When working inside a ferment step")
 		expect(supplement).toContain("break the step into concrete sub-tasks")
+	})
 
+	it("ferment step guidance requires batched, paired todo updates (regression: pure todo turns wasted full-context calls)", () => {
+		setActive(makeFerment())
+		const supplement = renderFermentTodoPromptBlock()
+		expect(supplement).toContain("batch the edits into a single update_todos call")
+		expect(supplement).toContain("never spend a whole turn only updating todos")
+		// Per-completion marking stays — the freshness requirement is unchanged.
+		expect(supplement).toContain("Mark each sub-task as you complete it")
+	})
+
+	it("ferment supplement block is absent once the ferment is cleared", () => {
 		setActive(undefined)
 		expect(renderFermentTodoPromptBlock()).toBeUndefined()
 	})

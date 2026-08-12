@@ -1,8 +1,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
 import { askJudgeForm, askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "./ask-user.js"
+import { judgeApiCall } from "./judge.js"
+
+vi.mock("./judge.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./judge.js")>()
+	return { ...actual, judgeApiCall: vi.fn() }
+})
+const mockedJudgeApiCall = vi.mocked(judgeApiCall)
 
 function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 	return {
@@ -266,6 +273,79 @@ describe("normalizeAskUserQuestions", () => {
 		expect(result.ok).toBe(false)
 		if (result.ok) return
 		expect(result.error).toContain('Question id "dup" is duplicated')
+	})
+})
+
+describe("one-shot judge decision audit", () => {
+	type Recorder = (fermentId: string, prompt: string, answerLabel: string, rationale: string | undefined) => void
+
+	beforeEach(() => {
+		mockedJudgeApiCall.mockReset()
+	})
+
+	const scopeQuestion = [
+		{ id: "choice", type: "single" as const, prompt: "Broad or narrow?", options: [{ id: "broad", label: "Broad" }] },
+	]
+
+	it("records each judge-answered question with prompt, choice label and rationale", async () => {
+		mockedJudgeApiCall.mockResolvedValue({
+			ok: true,
+			text: '{"answers":[{"id":"choice","value":"broad"}],"rationale":"Faster to ship"}',
+		})
+		const recordJudgeDecision = vi.fn<Recorder>()
+		const result = await askUserForm("Scope check", undefined, scopeQuestion, {
+			ferment: makeFerment(),
+			pi: makePi({ "ferment-oneshot": true }),
+			ctx: createContext(),
+			recordJudgeDecision,
+		})
+		expect(result.failed).toBeFalsy()
+		expect(recordJudgeDecision).toHaveBeenCalledTimes(1)
+		expect(recordJudgeDecision).toHaveBeenCalledWith("ferment-1", "Broad or narrow?", "Broad", "Faster to ship")
+	})
+
+	it("records judge-unavailable fallback defaults with their rationale", async () => {
+		mockedJudgeApiCall.mockResolvedValue({ ok: false, reason: "no_registry" })
+		const recordJudgeDecision = vi.fn<Recorder>()
+		const result = await askUserForm("Scope check", undefined, scopeQuestion, {
+			ferment: makeFerment(),
+			pi: makePi({ "ferment-oneshot": true }),
+			ctx: createContext(),
+			recordJudgeDecision,
+		})
+		expect(result.failed).toBeFalsy()
+		expect(recordJudgeDecision).toHaveBeenCalledTimes(1)
+		const rationale = recordJudgeDecision.mock.calls[0]?.[3]
+		expect(rationale).toContain("Judge was unavailable")
+	})
+
+	it("does not record interactive user answers", async () => {
+		const recordJudgeDecision = vi.fn<Recorder>()
+		const ctx = createContext({ ui: { select: vi.fn(async () => "broad"), input: vi.fn(async () => "") } })
+		const result = await askUserForm("Scope check", undefined, scopeQuestion, {
+			ferment: makeFerment(),
+			pi: makePi(),
+			ctx,
+			recordJudgeDecision,
+		})
+		expect(result.failed).toBeFalsy()
+		expect(recordJudgeDecision).not.toHaveBeenCalled()
+		expect(mockedJudgeApiCall).not.toHaveBeenCalled()
+	})
+
+	it("works without a recorder (backwards compatible)", async () => {
+		mockedJudgeApiCall.mockResolvedValue({
+			ok: true,
+			text: '{"answers":[{"id":"choice","value":"broad"}],"rationale":"x"}',
+		})
+		const result = await askUserForm("Scope check", undefined, scopeQuestion, {
+			ferment: makeFerment(),
+			pi: makePi({ "ferment-oneshot": true }),
+			ctx: createContext(),
+		})
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answers?.[0]?.value).toBe("broad")
 	})
 })
 
