@@ -1500,6 +1500,37 @@ describe("completeFerment", () => {
 		expect(h.runtime.getBlockRetry(h.fermentId, "__ferment__")).toBe(1)
 	})
 
+	it("fallback_single_shot journey grade is advisory-only and ships, with provenance persisted", async () => {
+		// Regression: a blind fallback letter (grader subagent unusable) used to be
+		// able to refuse ship even though it had no independent verification.
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "F",
+			rationale: "Blind fallback could not verify anything.",
+			recommendations: ["Everything looks broken."],
+			graderSource: "fallback_single_shot",
+		})
+		await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		// No retry bump — the grade never blocks.
+		expect(h.runtime.getBlockRetry(h.fermentId, "__ferment__")).toBe(0)
+		const stored = h.storage.get(h.fermentId)
+		expect(stored?.status).toBe("complete")
+		expect(stored?.grade?.grade).toBe("F")
+		expect(stored?.grade?.rationale).toContain("advisory-only")
+		expect(stored?.grade?.graderSource).toBe("fallback_single_shot")
+	})
+
 	it("C-grade repeated exhausts budget and ships with the grade", async () => {
 		const h = createHarness()
 		createTerminalFerment(h)

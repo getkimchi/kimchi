@@ -10,6 +10,7 @@ import {
 	type PendingPlanReview,
 	setPendingPlanReview,
 } from "./plan-review.js"
+import type { PersistedPhaseRefusal } from "./runtime-state-store.js"
 import type { AttachPendingProposalPartial, PendingScope } from "./scoping.js"
 import {
 	attachPendingProposal,
@@ -42,6 +43,7 @@ import {
 	getBlockRetry,
 	getContinuationPolicy,
 	getLastHumanInputAt,
+	getLastPhaseRefusal,
 	getPendingCompaction,
 	getPhaseStartRef,
 	getStepStartRef,
@@ -60,6 +62,7 @@ import {
 	setActive,
 	setAutomatedContinuationEnabled,
 	setContinuationPolicy,
+	setLastPhaseRefusal,
 	setPendingCompaction,
 	setPhaseStartRef,
 	setStepStartRef,
@@ -113,6 +116,9 @@ export interface FermentRuntime {
 	getBlockRetry(fermentId: string, phaseId: string): number
 	clearBlockRetry(fermentId: string, phaseId: string): void
 	recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string, hash: string): boolean
+	/** Delta-grading memory: the latest LLM-grader refusal of this phase. */
+	setLastPhaseRefusal(fermentId: string, phaseId: string, refusal: PersistedPhaseRefusal): void
+	getLastPhaseRefusal(fermentId: string, phaseId: string): PersistedPhaseRefusal | undefined
 	bumpStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): number
 	clearStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): void
 	clearFermentState(fermentId: string): void
@@ -191,6 +197,8 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		getBlockRetry,
 		clearBlockRetry,
 		recordBlockHashAndCheckRepeat,
+		setLastPhaseRefusal,
+		getLastPhaseRefusal,
 		bumpStepCompleteAttempt,
 		clearStepCompleteAttempt,
 		clearFermentState,

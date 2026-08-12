@@ -8,11 +8,14 @@ import {
 	bumpStepStart,
 	clearAllScopingGates,
 	clearAllStepStarts,
+	clearBlockRetry,
 	clearFermentState,
 	getBlockRetry,
+	getLastPhaseRefusal,
 	getPhaseStartRef,
 	getStepStartRef,
 	recordBlockHashAndCheckRepeat,
+	setLastPhaseRefusal,
 	setPhaseStartRef,
 	setRuntimeStatePersistRoot,
 	setStepStartRef,
@@ -66,6 +69,27 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 
 		expect(getBlockRetry(fId, "phase-1")).toBe(2)
 		expect(bumpBlockRetry(fId, "phase-1")).toBe(3)
+	})
+
+	it("persists lastPhaseRefusals across a restart and clears them with the retry budget", () => {
+		const fId = "ferment-refusal-persist"
+		setLastPhaseRefusal(fId, "phase-1", {
+			grade: "C",
+			recommendations: ["Add edge-case test for empty input."],
+			at: "2026-08-11T12:00:00Z",
+		})
+		expect(getLastPhaseRefusal(fId, "phase-1")?.recommendations).toEqual(["Add edge-case test for empty input."])
+
+		simulateRestart()
+
+		const restored = getLastPhaseRefusal(fId, "phase-1")
+		expect(restored?.grade).toBe("C")
+		expect(restored?.recommendations).toEqual(["Add edge-case test for empty input."])
+
+		// Acceptance clears both the retry budget AND the refusal record.
+		clearBlockRetry(fId, "phase-1")
+		simulateRestart()
+		expect(getLastPhaseRefusal(fId, "phase-1")).toBeUndefined()
 	})
 
 	it("persists lastBlockHashes and detects repeats after restart", () => {

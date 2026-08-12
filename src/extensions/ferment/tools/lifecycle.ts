@@ -31,7 +31,12 @@ import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
-import { askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
+import {
+	askUserForm,
+	createJudgeDecisionRecorder,
+	normalizeAskUserQuestions,
+	toScopingQuestionType,
+} from "../ask-user.js"
 import { renderCharterFull } from "../charter.js"
 import { pr_bold, pr_dim } from "../colors.js"
 import { createFerment } from "../create.js"
@@ -681,6 +686,7 @@ async function confirmCompletionCriteria(
 		pi,
 		ctx,
 		runtime,
+		recordJudgeDecision: createJudgeDecisionRecorder(runtime),
 	}
 
 	const response = await askUserForm(
@@ -954,9 +960,16 @@ export async function completeFerment(
 		}
 		gradeRationale = journeyResult.rationale
 
-		// Below minimum grade — give the agent a bounded number of retries to fix
-		// the recommendations, then accept the grade and ship.
-		if (fermentGradeOrder[journeyResult.grade] < fermentGradeOrder[minimumAcceptableFermentGrade]) {
+		if (journeyResult.graderSource === "fallback_single_shot") {
+			// The tool-equipped grader subagent was unusable — the blind fallback
+			// grade has no independent verification behind it, so it is
+			// advisory-only (same policy as judge-unavailable): the letter is
+			// persisted for the record, but it never refuses ship.
+			gradeRationale = `${gradeRationale} (advisory-only grade: grader subagent unusable — blind fallback judge without tool access)`
+			resolvedGrade.rationale = gradeRationale
+			// Below minimum grade — give the agent a bounded number of retries to
+			// fix the recommendations, then accept the grade and ship.
+		} else if (fermentGradeOrder[journeyResult.grade] < fermentGradeOrder[minimumAcceptableFermentGrade]) {
 			const recsText = journeyResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
 			const retry = runtime.bumpBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
 
@@ -992,6 +1005,7 @@ export async function completeFerment(
 						? { recommendations: resolvedGrade.recommendations }
 						: {}),
 					...(resolvedGrade.charterVerdicts ? { charterVerdicts: resolvedGrade.charterVerdicts } : {}),
+					...(journeyResult.ok && journeyResult.graderSource ? { graderSource: journeyResult.graderSource } : {}),
 					...(gradedBy ? { gradedBy } : {}),
 				}
 			: undefined,
@@ -1517,6 +1531,7 @@ Returns structured answer fields on success, or a tool error if no audience can 
 				pi,
 				ctx,
 				runtime,
+				recordJudgeDecision: createJudgeDecisionRecorder(runtime),
 			}
 			const normalizeResult = normalizeAskUserQuestions(params.questions)
 			if (!normalizeResult.ok) return toolErr(normalizeResult.error)

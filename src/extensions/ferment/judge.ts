@@ -31,6 +31,18 @@ import { getJudgeModel, getJudgeModelRegistry, isJudgeMultiModelEnabled } from "
 const GRADES: Grade[] = ["A", "B", "C", "D", "F"]
 const JOURNEY_GRADE_MAX_ATTEMPTS = 3
 
+/** Recommendation contract shared by every grader prompt (council system
+ *  prompts and subagent user prompts). Graders run in a headless session —
+ *  asks for evidence the environment cannot produce (screenshots, recordings,
+ *  live demos) turn remediation loops into superstition. Keep demands
+ *  producible, few, and severity-ordered. */
+const RECOMMENDATION_CONTRACT = `Recommendation contract (applies whenever the grade is not A):
+- At most 3 recommendations, ordered by severity (highest impact first).
+- Each must include: what is wrong, why it matters, what must change, and what evidence would prove the fix.
+- Request ONLY evidence this headless environment can produce: command output (builds, tests, linters), file contents, and diffs. NEVER request screenshots, screen recordings, GIFs, live demos, or manual UI walkthroughs — they cannot be satisfied here.
+- If a concern genuinely needs human eyes (visual polish, UX feel), mark it "manual review needed". Manual-review items are advisory only and MUST NOT be the reason for a downgrade or refusal.
+- No vague advice or "nice to have" items.`
+
 export function isGrade(value: unknown): value is Grade {
 	return typeof value === "string" && (GRADES as string[]).includes(value)
 }
@@ -292,6 +304,9 @@ export interface JudgeJourneyGradeOk {
 	/** Ship-level charter audit: per-clause met/waived/unmet verdicts, present
 	 *  only when the ferment has an intent charter and the grader returned them. */
 	charterVerdicts?: CharterClauseVerdict[]
+	/** Provenance — set by the ViaSubagent wrappers. Undefined when the
+	 *  single-shot path was called directly (e.g. no agent system active). */
+	graderSource?: GraderSource
 }
 
 export interface JudgeJourneyGradeFailure {
@@ -375,7 +390,9 @@ Respond with EXACTLY one JSON object, no markdown:
 {"grade":"A"|"B"|"C"|"D"|"F","rationale":"<2-3 sentences citing specific phases, gates, or diff regions>","recommendations":["<bullet>",...]}
 
 If grade is A, recommendations MUST be an empty array [].
-If grade is B–F, each recommendation must include: what is wrong, why it matters, what must change, and what evidence would prove the fix. Do not include vague advice or "nice to have" items.
+If grade is B–F, follow the recommendation contract below.
+
+${RECOMMENDATION_CONTRACT}
 
 If an intent charter was provided above, also return per-clause verdicts — one entry per charter clause (the intent itself, wow factor, confirmed scope, acceptance demo when present):
 {"grade":"A","rationale":"...","recommendations":[],"charter_verdicts":[{"clause":"<clause text, shortened>","status":"met"|"waived"|"unmet","evidence":"<what demonstrates it>"}]}
@@ -517,7 +534,37 @@ export interface JudgePhaseInput {
 	/** Agent-pasted execution evidence (command outputs, verification results,
 	 *  file contents). Primary proof source when no git diff is available. */
 	evidence?: string
+	/** Harness-executed step verify runs (command, exit code, output tails).
+	 *  Deterministic — not agent-written, so the grader gets "what actually
+	 *  ran" for free instead of having to demand pasted terminal output. */
+	stepVerificationRuns?: string
+	/** The latest grader refusal of this phase (present on retry attempts).
+	 *  Lets the re-grader delta-grade: verify the refused items are now fixed
+	 *  and scan for new breakage, instead of a whole-phase re-sweep. */
+	priorRefusal?: { grade: string; recommendations: string[]; at: string }
 }
+
+/** Render the delta-grading section when a phase was previously refused.
+ *  Shared by both phase prompt builders (single-shot and subagent). */
+function renderPriorRefusalSection(input: JudgePhaseInput): string[] {
+	if (!input.priorRefusal) return []
+	const lines = [
+		"--- PRIOR REFUSAL — DELTA-GRADE INSTRUCTIONS ---",
+		`A previous grader refused this phase at grade ${input.priorRefusal.grade} (${input.priorRefusal.at}) with these recommendations:`,
+	]
+	for (const [i, rec] of input.priorRefusal.recommendations.entries()) {
+		lines.push(`  ${i + 1}. ${rec}`)
+	}
+	lines.push(
+		"First verify each item above is now addressed, citing the evidence per item. Then scan ONLY for new issues introduced by the fix wave — do not re-litigate previously accepted aspects unless the fix broke them. Still return a full fresh grade.",
+	)
+	return lines
+}
+
+/** Where a grade came from: the tool-equipped grader subagent, or the blind
+ *  single-shot fallback engaged when the subagent was unusable (spawn failed /
+ *  aborted / unparseable). Fallback grades are advisory-only — never refuse. */
+export type GraderSource = "subagent" | "fallback_single_shot"
 
 export interface JudgePhaseGradeOk {
 	ok: true
@@ -525,6 +572,9 @@ export interface JudgePhaseGradeOk {
 	rationale: string
 	/** Concrete fix bullets the grader recommends to reach A. Empty for A grades. */
 	recommendations: string[]
+	/** Provenance — set by the ViaSubagent wrappers. Undefined when the
+	 *  single-shot path was called directly (e.g. no agent system active). */
+	graderSource?: GraderSource
 }
 
 export interface JudgePhaseGradeFailure {
@@ -593,10 +643,14 @@ Respond with EXACTLY one JSON object, no markdown:
 {"grade":"A"|"B"|"C"|"D"|"F","rationale":"<2-3 sentences citing specific gates, steps, or diff regions>","recommendations":["<bullet>",...]}
 
 If grade is A, recommendations MUST be an empty array [].
-If grade is B–F, each recommendation must include: what is wrong, why it matters, what must change, and what evidence would prove the fix. Do not include vague advice or "nice to have" items.`
+If grade is B–F, follow the recommendation contract below.
+
+${RECOMMENDATION_CONTRACT}`
 
 function buildPhaseGradeUserMsg(input: JudgePhaseInput): string {
 	const parts: string[] = []
+	for (const line of renderPriorRefusalSection(input)) parts.push(line)
+	if (input.priorRefusal) parts.push("")
 	parts.push(`Ferment: "${input.fermentName}"`)
 	parts.push(`Phase: "${input.phaseName}"`)
 	parts.push(`Phase goal: ${input.phaseGoal || "(none specified)"}`)
@@ -635,6 +689,11 @@ function buildPhaseGradeUserMsg(input: JudgePhaseInput): string {
 		parts.push("")
 		parts.push("--- EXECUTION EVIDENCE (agent-provided) ---")
 		parts.push(input.evidence.slice(0, 4000))
+	}
+	if (input.stepVerificationRuns && input.stepVerificationRuns.trim().length > 0) {
+		parts.push("")
+		parts.push("--- STEP VERIFICATION RUNS (executed by the harness) ---")
+		parts.push(input.stepVerificationRuns)
 	}
 	return parts.join("\n")
 }
@@ -678,7 +737,9 @@ export async function judgePhaseGrade(
 export interface GraderSubagentResult {
 	/** The full text output from the subagent (may contain multiple assistant turns). */
 	text: string
-	/** "completed" = finished normally; anything else = aborted/errored. */
+	/** "completed" = finished normally; "steered" = hit the soft turn cap but
+	 *  wrapped up in time (a success — see agent-manager classifyAgentOutcome);
+	 *  anything else = aborted/errored and unusable. */
 	status: string
 }
 
@@ -816,9 +877,13 @@ export async function judgePhaseGradeViaSubagent(
 		try {
 			const prompt = buildPhaseGraderPrompt(input)
 			const result = await spawn(prompt)
-			if (result.status === "completed") {
+			// "steered" is a designed success state: the grader hit its soft turn
+			// cap but wrapped up in time — exactly what thorough graders (which
+			// re-run the whole verification matrix) do. Rejecting it used to
+			// silently discard the best-evidenced verdicts in the run.
+			if (result.status === "completed" || result.status === "steered") {
 				const parsed = parseGraderResponse(result.text)
-				if (parsed) return parsed
+				if (parsed) return { ...parsed, graderSource: "subagent" as const }
 				// Subagent completed but output wasn't parseable — fall through to single-shot.
 			}
 			// Subagent aborted/errored — fall through to single-shot.
@@ -828,7 +893,8 @@ export async function judgePhaseGradeViaSubagent(
 	}
 
 	// Fallback: single-shot LLM call.
-	return judgePhaseGrade(input, apiCall)
+	const fallback = await judgePhaseGrade(input, apiCall)
+	return fallback.ok ? { ...fallback, graderSource: "fallback_single_shot" as const } : fallback
 }
 
 /** Grade a ferment (journey) using a subagent with tool access. Falls back to
@@ -843,14 +909,15 @@ export async function judgeJourneyGradeViaSubagent(
 		try {
 			const prompt = buildJourneyGraderPrompt(input)
 			const result = await spawn(prompt)
-			if (result.status === "completed") {
+			// "steered" is a designed success state — see judgePhaseGradeViaSubagent.
+			if (result.status === "completed" || result.status === "steered") {
 				const parsed = parseGraderResponse(result.text)
 				if (parsed) {
 					if (input.charter && !parsed.charterVerdicts) {
 						// Charter audit required but the subagent omitted it — fall
 						// through to the single-shot fallback, which retries for it
 						// (soft degrade after attempts are exhausted).
-					} else return parsed
+					} else return { ...parsed, graderSource: "subagent" as const }
 				}
 				// Subagent completed but output wasn't parseable — fall through to single-shot.
 			}
@@ -861,7 +928,8 @@ export async function judgeJourneyGradeViaSubagent(
 	}
 
 	// Fallback: single-shot LLM call.
-	return judgeJourneyGrade(input, apiCall)
+	const fallback = await judgeJourneyGrade(input, apiCall)
+	return fallback.ok ? { ...fallback, graderSource: "fallback_single_shot" as const } : fallback
 }
 
 /** Build the user-message prompt for the phase grader subagent. This is the
@@ -871,6 +939,10 @@ function buildPhaseGraderPrompt(input: JudgePhaseInput): string {
 	const parts: string[] = []
 	parts.push("You are grading a completed phase of an autonomous coding ferment.")
 	parts.push("Verify the agent's claims independently using your tools, then produce a grade as JSON.")
+	if (input.priorRefusal) {
+		parts.push("")
+		for (const line of renderPriorRefusalSection(input)) parts.push(line)
+	}
 	parts.push("")
 	parts.push(`Ferment: "${input.fermentName}"`)
 	parts.push(`Phase: "${input.phaseName}"`)
@@ -913,6 +985,13 @@ function buildPhaseGraderPrompt(input: JudgePhaseInput): string {
 	}
 	parts.push("")
 	parts.push(`Working directory: ${process.cwd()}`)
+	parts.push("")
+	parts.push(RECOMMENDATION_CONTRACT)
+	if (input.stepVerificationRuns && input.stepVerificationRuns.trim().length > 0) {
+		parts.push("")
+		parts.push("--- STEP VERIFICATION RUNS (executed by the harness) ---")
+		parts.push(input.stepVerificationRuns)
+	}
 	parts.push("")
 	parts.push(
 		"Verify the agent's claims by reading files and running commands. Then respond with EXACTLY one JSON object:",
@@ -970,6 +1049,8 @@ function buildJourneyGraderPrompt(input: JudgeJourneyGradeInput): string {
 	}
 	parts.push("")
 	parts.push(`Working directory: ${process.cwd()}`)
+	parts.push("")
+	parts.push(RECOMMENDATION_CONTRACT)
 	parts.push("")
 	parts.push(
 		"Verify the agent's claims by reading files and running commands. Then respond with EXACTLY one JSON object:",
