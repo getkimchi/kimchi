@@ -26,16 +26,34 @@ Kimchi connects to a fleet of LLMs and automatically delegates each task to the 
 
 ### Install
 
+**npm (macOS / Linux / Windows):**
+
+```bash
+npm install -g @getkimchi/kimchi
+```
+
+Or use without installing:
+
+```bash
+npx @getkimchi/kimchi
+```
+
 **Homebrew (macOS / Linux):**
 
 ```bash
 brew install getkimchi/tap/kimchi
 ```
 
-**Install script:**
+**Install script (macOS / Linux):**
 
 ```bash
 curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
+```
+
+**PowerShell (Windows):**
+
+```powershell
+irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | iex
 ```
 
 ### Configure & run
