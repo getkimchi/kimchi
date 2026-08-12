@@ -8,7 +8,7 @@
 # or Kimchi no longer needs the branded behavior.
 #
 diff --git a/dist/cli/args.js b/dist/cli/args.js
-index e66b528fe676bd24ee5ad95abaa6201418850678..faa37b84e4012b8dfa77d423f892bc4adc6bd170 100644
+index e66b528fe676bd24ee5ad95abaa6201418850678..a15fe8267bfe863a8becaadc0f894ace5db70767 100644
 --- a/dist/cli/args.js
 +++ b/dist/cli/args.js
 @@ -346,6 +346,7 @@ ${chalk.bold("Examples:")}
@@ -20,7 +20,7 @@ index e66b528fe676bd24ee5ad95abaa6201418850678..faa37b84e4012b8dfa77d423f892bc4a
    ANTHROPIC_API_KEY                - Anthropic Claude API key
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index ce8a9a2a613c08de483a6c94ef4f6341efff0457..11e86cc8908e665139fa02dd4b26386d827d2388 100644
+index ce8a9a2a613c08de483a6c94ef4f6341efff0457..a544673865fbe886ae36b03f755b16b923a61e8f 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
 @@ -1087,7 +1087,37 @@ export class AgentSession {
@@ -158,7 +158,7 @@ index 6b2143e141ad2865616e42ae60b2f382fe443544..556e46322e8cb9ecbc17bc134b52c1cf
      "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
      "qwen-token-plan": "qwen3.7-max",
 diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
-index 7d93ba62bdb5d47e129751e8075cbb34620322ad..a51d97671745a4156f1e4c5c589f4fa60e64a40d 100644
+index 7d93ba62bdb5d47e129751e8075cbb34620322ad..89c8147bdfcd8ce91ea6a51ea4822c81cdddaaf9 100644
 --- a/dist/core/model-runtime.js
 +++ b/dist/core/model-runtime.js
 @@ -82,6 +82,7 @@ export class ModelRuntime {
@@ -169,6 +169,23 @@ index 7d93ba62bdb5d47e129751e8075cbb34620322ad..a51d97671745a4156f1e4c5c589f4fa6
              .map((provider) => provider.id === "radius"
              ? provider
              : withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt));
+diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
+index f274908793624a5870008ab738fa19ac6758165c..320acfb56155b8d9711b423824350b7630b8e8cb 100644
+--- a/dist/core/tools/bash.js
++++ b/dist/core/tools/bash.js
+@@ -81,6 +81,12 @@ export function createLocalBashOperations(options) {
+                         timedOut = true;
+                         if (child.pid)
+                             killProcessTree(child.pid);
++                        // Close inherited pipes after a short grace so detached
++                        // descendants cannot keep waitForChildProcess pending.
++                        setTimeout(() => {
++                            child.stdout?.destroy();
++                            child.stderr?.destroy();
++                        }, 500);
+                     }, timeoutMs);
+                 }
+                 // Stream stdout and stderr.
 diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
 index 9e83601e93c81b87d52448b429f4817e6cf25bd5..a124622278d37c6372466b990a2240dae094e9c5 100644
 --- a/dist/core/tools/edit.js
@@ -271,7 +288,7 @@ index 8220e06bc1e2b136c4b84c4af3cd29fd21b98a9f..b213a26c7ac002776850a59d7cafce4c
      dispose() {
          this.countdown?.dispose();
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
-index afdb7896d9c55cb04ca529d25f1d3e21ae707757..db3bbdbdefafb360ec0d9073867bd43a8b72d465 100644
+index afdb7896d9c55cb04ca529d25f1d3e21ae707757..1c87b9030bc72e31587e37b3ecc0cddd103430d9 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
 @@ -33,6 +33,7 @@ export class ModelSelectorComponent extends Container {
@@ -403,7 +420,7 @@ index 3f93cc6c5665f603d29b3d6ac3dabfa560d6bb32..a0b9d9a89b5f2e6384d4b909a949794e
          this.hideComponent = false;
          if (this.hasRendererDefinition()) {
 diff --git a/dist/modes/interactive/components/user-message.js b/dist/modes/interactive/components/user-message.js
-index 2e0490362d3396995b587f502ff3e69a7cad9a43..e46354c26012a5b98dd0bb540c872ded7f5e579a 100644
+index 2e0490362d3396995b587f502ff3e69a7cad9a43..0cb75bb6a9fd0c0a9bdb5eba7cf2eeb8e3eae896 100644
 --- a/dist/modes/interactive/components/user-message.js
 +++ b/dist/modes/interactive/components/user-message.js
 @@ -11,6 +11,7 @@ export class UserMessageComponent extends Container {
@@ -434,7 +451,7 @@ index 2e0490362d3396995b587f502ff3e69a7cad9a43..e46354c26012a5b98dd0bb540c872ded
      render(width) {
          const lines = super.render(width);
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 42e655de0fee8081a31cb588426edd30992d893c..b717f037ed4b3ad36e4191633dcbd5838a7e3036 100644
+index 42e655de0fee8081a31cb588426edd30992d893c..4f33b15d036dd0f24f5e03f3712d3e9bec63d9e3 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -1844,6 +1844,7 @@ export class InteractiveMode {

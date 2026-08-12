@@ -9,7 +9,7 @@ patchedDependencies:
     hash: 833908f0ccb469da56b0e90c4b49c47df1048cfa0e3fdfd07fa312d2e7b2765f
     path: patches/@earendil-works__pi-ai@0.84.1.patch
   '@earendil-works/pi-coding-agent@0.84.1':
-    hash: 1fb0bab44aa10756ace7620ca67104bd1db18890e83bf6b81cb4355480b489cd
+    hash: f92d211957a65c677811b0de4e41ed03808a091a8681d1e5c26ba84969167c85
     path: patches/@earendil-works__pi-coding-agent@0.84.1.patch
   '@earendil-works/pi-tui@0.84.1':
     hash: 311ed17d2e9bd3f47057a281306fb7466c18b26940fcc5b534e0a4d252171ce5
@@ -33,7 +33,7 @@ importers:
         version: 1.3.0
       '@earendil-works/pi-coding-agent':
         specifier: 0.84.1
-        version: 0.84.1(patch_hash=1fb0bab44aa10756ace7620ca67104bd1db18890e83bf6b81cb4355480b489cd)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
+        version: 0.84.1(patch_hash=f92d211957a65c677811b0de4e41ed03808a091a8681d1e5c26ba84969167c85)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-tui':
         specifier: 0.84.1
         version: 0.84.1(patch_hash=311ed17d2e9bd3f47057a281306fb7466c18b26940fcc5b534e0a4d252171ce5)
@@ -2853,7 +2853,7 @@ snapshots:
     dependencies:
       '@earendil-works/pi-protocol': 0.84.1
 
-  '@earendil-works/pi-coding-agent@0.84.1(patch_hash=1fb0bab44aa10756ace7620ca67104bd1db18890e83bf6b81cb4355480b489cd)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)':
+  '@earendil-works/pi-coding-agent@0.84.1(patch_hash=f92d211957a65c677811b0de4e41ed03808a091a8681d1e5c26ba84969167c85)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)':
     dependencies:
       '@earendil-works/pi-agent-core': 0.84.1(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-ai': 0.84.1(patch_hash=833908f0ccb469da56b0e90c4b49c47df1048cfa0e3fdfd07fa312d2e7b2765f)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
