@@ -664,4 +664,39 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("never delegate to a different model")
 		})
 	})
+
+	describe("lean benchmark profile", () => {
+		it("drops the orientation directive and phase management in single mode", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "single", benchmarkLean: true })
+
+			// Headless runs have no user to orient — the directive only costs tokens.
+			expect(result).not.toContain("orients the user")
+			expect(result).not.toContain("## Phase Management")
+			expect(result).not.toContain("set_phase")
+			// The rest of the single-model contract stays.
+			expect(result).toContain("single-model mode")
+			expect(result).toContain("Handle tasks directly yourself.")
+			expect(result).toContain("Do not spawn subagents")
+		})
+
+		it("keeps orientation and phase management by default", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "single" })
+
+			expect(result).toContain("orients the user")
+			expect(result).toContain("## Phase Management")
+		})
+
+		it("skips the orchestration chapter in orchestrator mode", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "orchestrator", benchmarkLean: true })
+
+			expect(result).not.toContain("## Orchestration")
+			expect(result).not.toContain("## Phase Management")
+		})
+
+		it("keeps the orchestration chapter in orchestrator mode by default", () => {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode: "orchestrator" })
+
+			expect(result).toContain("## Orchestration")
+		})
+	})
 })

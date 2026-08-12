@@ -42,6 +42,7 @@ import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
+import benchmarkProfileExtension from "./extensions/benchmark-profile.js"
 import budgetCommandExtension from "./extensions/billing/command.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import branchCommandExtension from "./extensions/branch-command.js"
@@ -105,6 +106,7 @@ import terminalColorsExtension from "./extensions/terminal-colors.js"
 import { probeKittyKeyboardSupport } from "./extensions/terminal-compat/keyboard-capability.js"
 import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-warning.js"
 import themeSelectorExtension from "./extensions/theme-selector.js"
+import thinkingBudgetGuardExtension from "./extensions/thinking-budget-guard.js"
 import thinkingStepsExtension from "./extensions/thinking-steps/index.js"
 import tipsExtension from "./extensions/tips/index.js"
 import todosExtension from "./extensions/todos/index.js"
@@ -545,6 +547,8 @@ try {
 			startupAuthGate,
 			loopGuardExtension,
 			explorationGuardExtension,
+			thinkingBudgetGuardExtension,
+			benchmarkProfileExtension,
 			reviewWriteGuardExtension,
 			lspExtension,
 			// Always registered — the tool_call handler checks isResourceEnabled

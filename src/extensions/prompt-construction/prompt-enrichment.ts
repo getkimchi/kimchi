@@ -42,6 +42,7 @@ import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
+import { isLeanBenchmarkProfile } from "../benchmark-profile.js"
 import {
 	CLAUDE_CODE_SKILLS_RESOURCE_ID,
 	getClaudeCodeSkillResourcePaths,
@@ -528,6 +529,8 @@ export default function (skillPaths: string[]) {
 			const roles = mode === "orchestrator" ? getModelRoles() : undefined
 			const customConfigs = mode === "orchestrator" && roles ? extractCustomConfigs(roles) : undefined
 
+			const benchmarkLean = isLeanBenchmarkProfile()
+
 			let systemPrompt = buildSystemPrompt({
 				tools: tools as readonly ToolInfo[],
 				env,
@@ -539,6 +542,7 @@ export default function (skillPaths: string[]) {
 				roles,
 				customConfigs,
 				sessionId: ctx.sessionManager.getSessionId(),
+				benchmarkLean,
 			})
 
 			// The rebuilt prompt replaces pi's base prompt entirely, which would

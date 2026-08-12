@@ -40,6 +40,10 @@ CONTAINER_HARNESS_SETTINGS_DIR = "~/.config/kimchi/harness"
 CONTAINER_HARNESS_SETTINGS = f"{CONTAINER_HARNESS_SETTINGS_DIR}/settings.json"
 CONTAINER_HARNESS_SKILLS_DIR = f"{CONTAINER_HARNESS_SETTINGS_DIR}/skills"
 KIMCHI_API_KEY_ENV = "KIMCHI_API_KEY"
+# Selects a prompt/tooling profile inside kimchi for the run (e.g. "lean").
+# Passed as a container env var; record the choice via the 'benchmark-profile'
+# agent kwarg so it lands in run metadata, or via plain extra-env passthrough.
+KIMCHI_BENCHMARK_PROFILE_ENV = "KIMCHI_BENCHMARK_PROFILE"
 MULTI_MODEL = "multi-model"
 KIMCHI_INFRA_BREAKER_THRESHOLD_ENV = "KIMCHI_INFRA_BREAKER_THRESHOLD"
 KIMCHI_BENCHMARK_INFRA_BREAKER_DEFAULT_ATTEMPTS = "3"
@@ -148,6 +152,7 @@ class Kimchi(BaseInstalledAgent):
 
     def __init__(self, *args, **kwargs):
         multi_model_kwarg = kwargs.pop("multi-model", None)
+        benchmark_profile_kwarg = kwargs.pop("benchmark-profile", None)
         disable_multi_model = _coerce_bool_kwarg(
             kwargs.pop("disable-multi-model", False), "disable-multi-model"
         )
@@ -171,6 +176,18 @@ class Kimchi(BaseInstalledAgent):
             )
         self._multi_model_enabled = selected_multi_model
         self._disable_compaction = disable_compaction
+        # The kwarg wins over plain env passthrough so the recorded parameter
+        # always reflects reality.
+        profile = benchmark_profile_kwarg
+        if profile is None:
+            profile = self._get_env(KIMCHI_BENCHMARK_PROFILE_ENV)
+        if profile is not None:
+            profile = str(profile).strip()
+            if not profile:
+                raise ValueError(
+                    "'benchmark-profile' must be a non-empty profile name (e.g. 'lean')"
+                )
+        self._benchmark_profile = profile
         config_kwargs = {}
         api_key = self._get_env(KIMCHI_API_KEY_ENV)
         if api_key is not None:
@@ -296,6 +313,10 @@ class Kimchi(BaseInstalledAgent):
         if self._resolved_flags.get("ferment-oneshot"):
             ferment_env["KIMCHI_FERMENTS_DIR"] = f"{CONTAINER_LOGS_DIR}/ferments"
 
+        profile_env: dict[str, str] = {}
+        if self._benchmark_profile:
+            profile_env[KIMCHI_BENCHMARK_PROFILE_ENV] = self._benchmark_profile
+
         env = {
             "KIMCHI_API_KEY": self._config.api_key,
             # Configure Kimchi's own harness-level breaker for benchmark runs.
@@ -306,6 +327,7 @@ class Kimchi(BaseInstalledAgent):
             "KIMCHI_TAGS": kimchi_tags,
             "PI_PACKAGE_DIR": PI_PACKAGE_DIR,
             **ferment_env,
+            **profile_env,
         }
 
         # Pipe the prompt via stdin instead of as a positional arg: pi-coding-agent's

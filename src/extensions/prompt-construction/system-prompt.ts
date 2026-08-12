@@ -59,6 +59,11 @@ export interface SystemPromptBuildOptions {
 	 *  to this session so an in-process subagent's blocks don't leak into the parent's
 	 *  prompt and vice versa. Omit only in unit tests or before any session has started. */
 	sessionId?: string
+	/** Lean benchmark profile (KIMCHI_BENCHMARK_PROFILE=lean): drops the
+	 *  Orchestration chapter, the user-orientation directive, and the Phase
+	 *  Management scaffolding — process bookkeeping that headless benchmark
+	 *  runs pay output tokens for but get no value from. Default: off. */
+	benchmarkLean?: boolean
 }
 
 export const DELEGATION_TOOL_NAMES = new Set(["Agent", "resume_subagent", "get_subagent_result", "steer_subagent"])
@@ -79,6 +84,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		registry,
 		roles,
 		customConfigs: options.customConfigs,
+		benchmarkLean: options.benchmarkLean,
 	})
 
 	const blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode }) : []
@@ -100,6 +106,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		currentModelId,
 		registry,
 		roles,
+		benchmarkLean: options.benchmarkLean,
 	})
 }
 
@@ -120,6 +127,7 @@ interface PromptParts {
 	currentModelId?: string
 	registry?: ModelRegistry
 	roles?: ModelRoles
+	benchmarkLean?: boolean
 }
 
 const BASE_INSTRUCTIONS =
@@ -143,8 +151,12 @@ function resolveModeInstructions(args: {
 	registry?: ModelRegistry
 	roles?: ModelRoles
 	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
+	benchmarkLean?: boolean
 }): string {
 	if (args.mode === "orchestrator") {
+		// Lean profile: the whole orchestration chapter is process scaffolding
+		// that a benchmark run in this profile never uses.
+		if (args.benchmarkLean) return ""
 		return resolveOrchestrationInstructions({
 			currentModelId: args.currentModelId,
 			registry: args.registry,
@@ -155,7 +167,7 @@ function resolveModeInstructions(args: {
 	if (args.mode === "subagent") {
 		return SUBAGENT_INSTRUCTIONS
 	}
-	return buildSingleModelInstructions(args.currentModelId)
+	return buildSingleModelInstructions(args.currentModelId, args.benchmarkLean)
 }
 
 // ---------------------------------------------------------------------------
@@ -179,13 +191,17 @@ Write all substantive output (plans, specs, research notes, findings) to files i
 // Single-model instructions
 // ---------------------------------------------------------------------------
 
-function buildSingleModelInstructions(currentModelId?: string): string {
+function buildSingleModelInstructions(currentModelId?: string, benchmarkLean = false): string {
 	const modelClause = currentModelId ? ` Your model ID is \`${currentModelId}\`.` : ""
+	// Lean profile: no interactive user to orient in a headless benchmark
+	// run — the orientation/phase-naming paragraph only invites narration
+	// tokens, so it drops out.
+	const orientation = benchmarkLean
+		? ""
+		: "Your first response to a complex task MUST include visible text (not just internal thinking) that orients the user: state what you intend to do and why in one or two sentences. For complex tasks, name the phases you will work through (for example: \"I'll start by mapping the handlers, then propose fixes, then implement\"). This is the user's window to interrupt if your approach is wrong. After the orientation, proceed quietly and do not narrate meta-process in subsequent turns.\n\n"
 	return `## Single-Model Mode
 
-Your first response to a complex task MUST include visible text (not just internal thinking) that orients the user: state what you intend to do and why in one or two sentences. For complex tasks, name the phases you will work through (for example: "I'll start by mapping the handlers, then propose fixes, then implement"). This is the user's window to interrupt if your approach is wrong. After the orientation, proceed quietly and do not narrate meta-process in subsequent turns.
-
-You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. Handle tasks directly yourself.
+${orientation}You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. Handle tasks directly yourself.
 
 Do not spawn subagents with the \`Agent\` tool by default — only do so when the user explicitly asks for delegation. When you do spawn a subagent, pass your own model ID in the \`model\` parameter by default; only use a different model if the user explicitly instructs it.`
 }
@@ -401,15 +417,19 @@ function buildPrompt(parts: PromptParts): string {
 	// 6. Consolidated core sections: output, tool selection, phase, consent
 	sections.push(buildOutputAndTruncationSection(parts.toolNames))
 	sections.push(buildToolSelectionSection(parts.toolNames))
-	sections.push(
-		buildPhaseManagementSection(
-			parts.currentModelId,
-			parts.registry,
-			parts.toolNames.has("set_phase"),
-			parts.mode,
-			parts.roles,
-		),
-	)
+	// Lean profile: set_phase is hidden and phase bookkeeping is process
+	// overhead, so the whole Phase Management section goes.
+	if (!parts.benchmarkLean) {
+		sections.push(
+			buildPhaseManagementSection(
+				parts.currentModelId,
+				parts.registry,
+				parts.toolNames.has("set_phase"),
+				parts.mode,
+				parts.roles,
+			),
+		)
+	}
 	sections.push(CONSENT_AND_IRREVERSIBLE_ACTIONS)
 
 	// 7. Rest: system prompt blocks, tools, skills, environment, project context
