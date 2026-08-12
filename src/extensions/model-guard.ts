@@ -1,5 +1,10 @@
 import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
-import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import {
+	buildSessionContext,
+	type ContextEvent,
+	type ExtensionAPI,
+	type ExtensionContext,
+} from "@earendil-works/pi-coding-agent"
 import { getCompactionEnabled } from "../settings-watcher.js"
 import { COMPACTION_RESERVE_TOKENS } from "./compaction-thresholds.js"
 import { hasActiveFerment } from "./ferment/state.js"
@@ -289,6 +294,24 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 	// afterwards with a fresh ctx, so we notify from there instead of from
 	// the stale onComplete/onError closures.
 	_pi.on("session_compact", (event, ctx: ExtensionContext) => {
+		// Refresh cached state so model-switch guards see post-compaction reality
+		// immediately, rather than waiting for the next context event (which only
+		// fires on the next LLM call). Without this, latestMessages still holds
+		// pre-compaction messages (inflated token count) and imagesDetected stays
+		// true even though the compaction summary is text-only.
+		try {
+			const branch = ctx.sessionManager.getBranch()
+			const postCompactMessages = buildSessionContext(branch).messages
+			latestMessages = postCompactMessages
+			latestMessagesTimestamp = Date.now()
+			imagesDetected = hasImages(postCompactMessages)
+			imagesStripped = false
+			imageDescriptions.clear()
+		} catch {
+			// If we can't refresh (e.g. sessionManager not fully available),
+			// the next context event will correct the state.
+		}
+
 		// Only consume the flag for compactions triggered by this guard's
 		// ctx.compact() call — not for /compact or threshold-triggered ones.
 		if (!pendingMidTurnCompaction || !event.fromExtension) return

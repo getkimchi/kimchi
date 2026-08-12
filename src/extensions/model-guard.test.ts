@@ -8,6 +8,8 @@ import { clearActiveFermentId, setActive as setActiveFerment } from "./ferment/s
 import modelGuardExtension, {
 	__resetImagesDetectedForTest,
 	estimateTokens,
+	getLatestMessages,
+	getLatestMessagesTimestamp,
 	hasImages,
 	markImagesAsStripped,
 	resolveContextTokens,
@@ -21,6 +23,16 @@ import modelGuardExtension, {
 vi.mock("../settings-watcher.js", () => ({
 	getCompactionEnabled: vi.fn(() => true),
 }))
+
+// Mock buildSessionContext so tests can control post-compaction messages.
+const mockBuildSessionContext = vi.fn()
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()
+	return {
+		...actual,
+		buildSessionContext: (...args: unknown[]) => mockBuildSessionContext(...args),
+	}
+})
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -918,5 +930,153 @@ describe("markImagesAsStripped", () => {
 		// After reset, triggering context with images should detect them again
 		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
 		expect(sessionHasImages()).toBe(true)
+	})
+})
+
+// ── session_compact state refresh ─────────────────────────────────────────────
+
+describe("session_compact state refresh", () => {
+	beforeEach(() => {
+		__resetImagesDetectedForTest()
+		mockBuildSessionContext.mockReset()
+	})
+
+	it("refreshes latestMessages from post-compaction session", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+
+		// Simulate pre-compaction context with large messages
+		const bigMessages: ContextEvent["messages"] = [makeAssistant(50_000), makeUser("x".repeat(200_000))]
+		const ctx = makeMockCtx({
+			model: { id: "claude", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
+		})
+		await trigger("context", { messages: bigMessages }, ctx)
+		expect(getLatestMessages()).toBe(bigMessages)
+		expect(getLatestMessagesTimestamp()).toBeGreaterThan(0)
+
+		// Simulate compaction: post-compaction messages are small (just a summary)
+		const postCompactMessages: ContextEvent["messages"] = [makeUser("Summary of previous conversation.")]
+		mockBuildSessionContext.mockReturnValue({ messages: postCompactMessages })
+
+		const compactCtx = makeMockCtx({
+			sessionManager: {
+				getBranch: () => [],
+			} as unknown as ExtensionContext["sessionManager"],
+		})
+
+		await trigger(
+			"session_compact",
+			{
+				type: "session_compact",
+				compactionEntry: { tokensBefore: 50_000 },
+				fromExtension: false,
+				reason: "threshold",
+				willRetry: false,
+			},
+			compactCtx,
+		)
+
+		// latestMessages should now reflect post-compaction state
+		expect(getLatestMessages()).toBe(postCompactMessages)
+		expect(getLatestMessagesTimestamp()).toBeGreaterThan(0)
+	})
+
+	it("clears imagesDetected when post-compaction messages have no images", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+
+		// Pre-compaction: session has images
+		const ctx = makeMockCtx({
+			model: { id: "claude", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
+		})
+		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
+		expect(sessionHasImages()).toBe(true)
+
+		// Compaction replaces session with text-only summary
+		const postCompactMessages: ContextEvent["messages"] = [makeUser("Summary of previous conversation.")]
+		mockBuildSessionContext.mockReturnValue({ messages: postCompactMessages })
+
+		const compactCtx = makeMockCtx({
+			sessionManager: {
+				getBranch: () => [],
+			} as unknown as ExtensionContext["sessionManager"],
+		})
+
+		await trigger(
+			"session_compact",
+			{
+				type: "session_compact",
+				compactionEntry: { tokensBefore: 1_000 },
+				fromExtension: false,
+				reason: "threshold",
+				willRetry: false,
+			},
+			compactCtx,
+		)
+
+		// Images should no longer be detected — compaction summary is text-only
+		expect(sessionHasImages()).toBe(false)
+	})
+
+	it("resets imagesStripped flag after compaction", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+
+		// Pre-compaction: session has images, mark them stripped
+		const ctx = makeMockCtx({
+			model: { id: "claude", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
+		})
+		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
+		markImagesAsStripped()
+		expect(sessionHasImages()).toBe(false) // stripped
+
+		// Compaction replaces session with text-only summary
+		mockBuildSessionContext.mockReturnValue({ messages: [makeUser("Summary.")] })
+
+		const compactCtx = makeMockCtx({
+			sessionManager: {
+				getBranch: () => [],
+			} as unknown as ExtensionContext["sessionManager"],
+		})
+
+		await trigger(
+			"session_compact",
+			{
+				type: "session_compact",
+				compactionEntry: { tokensBefore: 1_000 },
+				fromExtension: false,
+				reason: "threshold",
+				willRetry: false,
+			},
+			compactCtx,
+		)
+
+		// imagesStripped should be reset; with no images in post-compaction messages,
+		// sessionHasImages() should be false
+		expect(sessionHasImages()).toBe(false)
+	})
+
+	it("does not crash when sessionManager.getBranch is unavailable", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+
+		// sessionManager without getBranch — should not throw
+		const compactCtx = makeMockCtx({
+			sessionManager: {} as ExtensionContext["sessionManager"],
+		})
+
+		await expect(
+			trigger(
+				"session_compact",
+				{
+					type: "session_compact",
+					compactionEntry: { tokensBefore: 1_000 },
+					fromExtension: false,
+					reason: "threshold",
+					willRetry: false,
+				},
+				compactCtx,
+			),
+		).resolves.toBeUndefined()
 	})
 })
