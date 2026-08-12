@@ -58,9 +58,9 @@ Verification contract for every step "verify" command you write:
     grading, and the grader sees exactly what ran (with output tails). Proxy verifies on
     runtime-claim steps lower the phase grade — put the real check in the plan.
 
-Step shape contract: describe every step as a self-contained delegation unit — one
-  cohesive change a worker with no session context can complete from its work order
-  alone (a component + its test, an API slice, a config + its verify). Avoid
-  app-wide assembly steps that stitch many files in one wave; order scaffolding
-  first so later steps integrate against a stable surface.
+Step shape contract: describe every step as one cohesive, verifiable change (a
+  component + its test, an API slice, a config + its verify) that stands on its own
+  regardless of who executes it. Avoid app-wide assembly steps that stitch many files
+  in one wave; order scaffolding first so later steps integrate against a stable
+  surface.
 </scoping_sequence>`

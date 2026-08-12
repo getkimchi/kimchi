@@ -1075,7 +1075,11 @@ describe("start_ferment_step plan-first preamble", () => {
 		expect(text).toContain("single update_todos call per turn")
 	})
 
-	it("start response makes delegation the default with narrow exceptions (measured run 019ff530: 0/28 steps delegated)", async () => {
+	it("start response makes direct execution the default with residue-based delegation triggers (measured runs 019ff530/019ff6c1)", async () => {
+		// Run 019ff530 (direct): 28 steps in 109 min at A/B. Runs 019ff5cc/019ff6c1
+		// (forced delegation): slower per step at bench scale — workers re-established
+		// context and hit budget caps on real builds. Direct is the default again;
+		// delegation stays for residue-heavy steps only.
 		const h = createHarness()
 		const services = createServices()
 
@@ -1087,9 +1091,9 @@ describe("start_ferment_step plan-first preamble", () => {
 		)
 
 		const text = okText(result)
-		expect(text).toContain("Delegate this step to a subagent worker")
-		expect(text).toContain("Delegation is the default")
-		expect(text).toContain("stitching two completed workers' outputs together")
+		expect(text).toContain("Execute this step directly")
+		expect(text).toContain("ONLY when the step would dump heavy residue")
+		expect(text).not.toContain("Delegation is the default")
 	})
 
 	it.each([1, 2])("preamble appears on call %i without completion", async (callNumber) => {
