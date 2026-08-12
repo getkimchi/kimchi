@@ -21,6 +21,7 @@ import { deriveDraftFermentTitle, normalizeFermentTitle } from "../../../ferment
 import {
 	type CharterClauseVerdict,
 	DEFAULT_SCOPING_QUESTION_TYPE,
+	type Ferment,
 	type FermentCharter,
 	type Grade,
 	SCOPING_QUESTION_TYPES,
@@ -49,7 +50,7 @@ import { describeJudgeModel, type GraderSpawner, judgeJourneyGradeViaSubagent } 
 import { clearLifecycleGuard } from "../lifecycle-obligation-guard.js"
 import { appendRefEntry } from "../nudge.js"
 import { PENDING_PROPOSAL_SCHEMA_VERSION, savePendingProposal } from "../pending-proposal-store.js"
-import { gatherPhaseEvidence } from "../phase-evidence.js"
+import { gatherPhaseEvidence, gatherStepVerifyEvidence } from "../phase-evidence.js"
 import { promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
@@ -861,6 +862,21 @@ export function renderCharterAudit(verdicts: CharterClauseVerdict[]): string {
 	return lines.join("\n")
 }
 
+/** Quality-momentum input for the first journey grading attempt: the most
+ *  recent phase refusal, so the journey grader verifies those items stayed
+ *  fixed. Journey retries instead carry the journey's own refusal. */
+function latestPhaseRefusal(
+	runtime: FermentRuntime,
+	ferment: Ferment,
+): { grade: string; recommendations: string[]; at: string } | undefined {
+	let latest: { grade: string; recommendations: string[]; at: string } | undefined
+	for (const phase of ferment.phases) {
+		const refusal = runtime.getLastPhaseRefusal(ferment.id, phase.id)
+		if (refusal && (!latest || refusal.at > latest.at)) latest = refusal
+	}
+	return latest
+}
+
 export async function completeFerment(
 	runtime: FermentRuntime,
 	params: CompleteFermentArgs,
@@ -906,6 +922,9 @@ export async function completeFerment(
 	const ferment = fSnapshot
 	const phaseReviews = readLatestPhaseReviews(ferment.id)
 	const totalDiff = ferment.worktree.commit ? gatherPhaseEvidence(ferment.worktree.commit) : undefined
+	// Hoisted before the judge input so the grader call below can include the
+	// journey's own prior refusal (retries carry it as delta context).
+	const FERMENT_GRADE_KEY = "__ferment__"
 	const journeyResult = await runWithOverlay(`Grading ferment "${ferment.name}"…`, () =>
 		judgeJourneyGradeViaSubagent(
 			{
@@ -925,6 +944,7 @@ export async function completeFerment(
 							verdict: v.verdict,
 							rationale: v.rationale,
 						})),
+						...(p.grade ? { grade: { grade: p.grade.grade, recommendations: p.grade.recommendations } } : {}),
 					}
 				}),
 				fermentGates: gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
@@ -932,6 +952,9 @@ export async function completeFerment(
 					? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
 					: { available: false },
 				evidence: params.evidence,
+				priorRefusal:
+					runtime.getLastPhaseRefusal(params.ferment_id, FERMENT_GRADE_KEY) ?? latestPhaseRefusal(runtime, ferment),
+				stepVerificationRuns: gatherStepVerifyEvidence(ferment.phases.flatMap((p) => p.steps)),
 			},
 			spawner,
 		),
@@ -942,7 +965,6 @@ export async function completeFerment(
 	// block-retry / escalation loop used at the phase level. A/B ships with
 	// recommendations persisted. Judge-unavailable outcomes remain advisory
 	// (do NOT refuse ship) — judge outages must not block the user.
-	const FERMENT_GRADE_KEY = "__ferment__"
 	// First attempt requires A; after rework B is also acceptable.
 	const priorFermentRetries = runtime.getBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
 	const minimumAcceptableFermentGrade = priorFermentRetries === 0 ? "A" : "B"
@@ -979,6 +1001,13 @@ export async function completeFerment(
 				runtime.clearBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
 				// Fall through to the ship path below with the judge's grade + recs.
 			} else {
+				// Persist so the retry's grader receives the refusal as delta
+				// context instead of re-sweeping the whole ferment.
+				runtime.setLastPhaseRefusal(params.ferment_id, FERMENT_GRADE_KEY, {
+					grade: journeyResult.grade,
+					recommendations: journeyResult.recommendations,
+					at: runtime.nowIso(),
+				})
 				return toolErr(
 					`**Ferment "${ferment.name}"** cannot complete — final LLM grader assigned grade ${journeyResult.grade}, minimum required is ${minimumAcceptableFermentGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}\n\nAddress the recommendations above and call complete_ferment again with an updated summary.`,
 				)

@@ -265,6 +265,10 @@ export interface JourneyPhaseInput {
 	 *  legacy ferments may lack the sidecar — judge sees "(no verdicts on
 	 *  file)" in that case. */
 	gateVerdicts?: Array<{ id: string; verdict: string; rationale: string }>
+	/** Certified phase grade (letter + refusal recommendations) from the phase
+	 *  grader — passed through so the journey grader can delta-scope its audit:
+	 *  verify integration + charter, don't re-audit each phase line-by-line. */
+	grade?: { grade: string; recommendations?: string[] }
 }
 
 export interface JourneyGateVerdict {
@@ -293,6 +297,16 @@ export interface JudgeJourneyGradeInput {
 	/** Agent-pasted execution evidence (command outputs, verification results,
 	 *  file contents). Primary proof source when no git diff is available. */
 	evidence?: string
+	/** The previous journey refusal (grade + recommendations + timestamp) on a
+	 *  retry after an LLM refusal — or the most recent phase refusal ahead of
+	 *  the first journey attempt (quality momentum: verify those items stayed
+	 *  fixed). Absent on a first-ever attempt with no prior refusals. */
+	priorRefusal?: { grade: string; recommendations: string[]; at: string }
+	/** Harness-verbatim summary of deterministic step verification executions
+	 *  across all phases (commands, exit codes, trimmed outputs), gathered by
+	 *  gatherStepVerifyEvidence. Attached when present so the journey grader
+	 *  does not have to re-run the verification matrix blind. */
+	stepVerificationRuns?: string
 }
 
 export interface JudgeJourneyGradeOk {
@@ -412,7 +426,9 @@ function buildJourneyGradeUserMsg(input: JudgeJourneyGradeInput): string {
 	parts.push("")
 	parts.push("Per-phase trail:")
 	for (const p of input.phases) {
-		parts.push(`  - Phase "${p.name}" [${p.status}] — ${p.goal}`)
+		parts.push(
+			`  - Phase "${p.name}" [${p.status}] — ${p.goal}${p.grade ? ` — graded ${p.grade.grade} by phase grader` : ""}`,
+		)
 		if (!p.gateVerdicts || p.gateVerdicts.length === 0) {
 			parts.push("    (no verdicts on file)")
 		} else {
@@ -422,6 +438,12 @@ function buildJourneyGradeUserMsg(input: JudgeJourneyGradeInput): string {
 		}
 	}
 	parts.push("")
+	if (input.phases.some((p) => p.grade)) {
+		parts.push(
+			"Phases marked 'graded X by phase grader' carry certified phase-level verdicts; do not re-litigate them.",
+		)
+		parts.push("")
+	}
 	parts.push("Ferment-scope gate verdicts:")
 	for (const v of input.fermentGates) {
 		parts.push(`  ${v.id} (${v.verdict}): ${v.rationale}`)
@@ -436,6 +458,14 @@ function buildJourneyGradeUserMsg(input: JudgeJourneyGradeInput): string {
 	} else {
 		parts.push("")
 		parts.push("(No diff available — judge on verdicts + summary only.)")
+	}
+	if (input.stepVerificationRuns) {
+		parts.push("")
+		parts.push("--- HARNESS-EXECUTED VERIFICATION (deterministic re-run) ---")
+		parts.push(
+			"Each declared step verification was executed by the harness with its exit code and trimmed output. ✓ = exit 0. Attached verbatim; missing entries are marked (no verify command declared / declared, never executed).",
+		)
+		parts.push(input.stepVerificationRuns)
 	}
 	if (input.evidence && input.evidence.trim().length > 0) {
 		parts.push("")
@@ -544,21 +574,43 @@ export interface JudgePhaseInput {
 	priorRefusal?: { grade: string; recommendations: string[]; at: string }
 }
 
-/** Render the delta-grading section when a phase was previously refused.
- *  Shared by both phase prompt builders (single-shot and subagent). */
-function renderPriorRefusalSection(input: JudgePhaseInput): string[] {
-	if (!input.priorRefusal) return []
+/** Render the delta-grading section when a phase or journey was previously
+ *  refused. Shared by the phase and journey prompt builders. `subject` reads
+ *  as "this phase" or "the ferment" in the emitted sentences. */
+function renderPriorRefusalSection(
+	refusal: { grade: string; recommendations: string[]; at: string } | undefined,
+	subject: "this phase" | "the ferment",
+): string[] {
+	if (!refusal) return []
 	const lines = [
 		"--- PRIOR REFUSAL — DELTA-GRADE INSTRUCTIONS ---",
-		`A previous grader refused this phase at grade ${input.priorRefusal.grade} (${input.priorRefusal.at}) with these recommendations:`,
+		`A previous grader refused ${subject} at grade ${refusal.grade} (${refusal.at}) with these recommendations:`,
 	]
-	for (const [i, rec] of input.priorRefusal.recommendations.entries()) {
+	for (const [i, rec] of refusal.recommendations.entries()) {
 		lines.push(`  ${i + 1}. ${rec}`)
 	}
 	lines.push(
 		"First verify each item above is now addressed, citing the evidence per item. Then scan ONLY for new issues introduced by the fix wave — do not re-litigate previously accepted aspects unless the fix broke them. Still return a full fresh grade.",
 	)
 	return lines
+}
+
+/** When every attached step-verification execution is green, instruct the
+ *  grader to spend its budget on code inspection + spot checks instead of
+ *  re-running the verification matrix the harness already re-ran
+ *  deterministically. Absent when evidence is missing or any run failed — a
+ *  grader facing red or absent evidence must verify everything itself. */
+function renderEvidenceTrustPolicy(stepVerificationRuns: string | undefined): string[] {
+	if (!stepVerificationRuns) return []
+	if (!stepVerificationRuns.includes("✓") || stepVerificationRuns.includes("✗")) return []
+	return [
+		"--- VERIFICATION EVIDENCE POLICY ---",
+		"The attached step verification block below was produced by deterministic harness re-runs (not agent self-attestation) and every exit is green. Treat it as THE record of the verification matrix's most recent run.",
+		"Graders have been observed rationalizing full re-runs ('to be sure', 'to catch anything not covered', 'it's part of the grade process'). Those excuses re-run everything and are explicitly invalid here:",
+		"1. Do not re-run a suite the evidence covers. Full stop.",
+		"2. You may run a command only if you can name the specific uncovered claim it proves (file:symbol:behavior) before running it — or the evidence is stale (executions older than ~10 minutes and code changed since).",
+		"3. Spend your budget reading code and probing behavior the matrix does not cover — targeted regions (grep + focused reads), not whole files end-to-end.",
+	]
 }
 
 /** Where a grade came from: the tool-equipped grader subagent, or the blind
@@ -649,7 +701,7 @@ ${RECOMMENDATION_CONTRACT}`
 
 function buildPhaseGradeUserMsg(input: JudgePhaseInput): string {
 	const parts: string[] = []
-	for (const line of renderPriorRefusalSection(input)) parts.push(line)
+	for (const line of renderPriorRefusalSection(input.priorRefusal, "this phase")) parts.push(line)
 	if (input.priorRefusal) parts.push("")
 	parts.push(`Ferment: "${input.fermentName}"`)
 	parts.push(`Phase: "${input.phaseName}"`)
@@ -941,7 +993,7 @@ function buildPhaseGraderPrompt(input: JudgePhaseInput): string {
 	parts.push("Verify the agent's claims independently using your tools, then produce a grade as JSON.")
 	if (input.priorRefusal) {
 		parts.push("")
-		for (const line of renderPriorRefusalSection(input)) parts.push(line)
+		for (const line of renderPriorRefusalSection(input.priorRefusal, "this phase")) parts.push(line)
 	}
 	parts.push("")
 	parts.push(`Ferment: "${input.fermentName}"`)
@@ -992,6 +1044,7 @@ function buildPhaseGraderPrompt(input: JudgePhaseInput): string {
 		parts.push("--- STEP VERIFICATION RUNS (executed by the harness) ---")
 		parts.push(input.stepVerificationRuns)
 	}
+	parts.push(...renderEvidenceTrustPolicy(input.stepVerificationRuns))
 	parts.push("")
 	parts.push(
 		"Verify the agent's claims by reading files and running commands. Then respond with EXACTLY one JSON object:",
@@ -1006,6 +1059,10 @@ function buildJourneyGraderPrompt(input: JudgeJourneyGradeInput): string {
 	parts.push(
 		"You are grading a completed ferment (all phases done). Verify the agent's claims independently using your tools, then produce a grade as JSON.",
 	)
+	if (input.priorRefusal) {
+		parts.push("")
+		for (const line of renderPriorRefusalSection(input.priorRefusal, "the ferment")) parts.push(line)
+	}
 	parts.push("")
 	parts.push(`Ferment: "${input.fermentName}"`)
 	parts.push(`Goal: ${input.goal || "(none specified)"}`)
@@ -1018,7 +1075,9 @@ function buildJourneyGraderPrompt(input: JudgeJourneyGradeInput): string {
 	parts.push("")
 	parts.push("Per-phase trail:")
 	for (const p of input.phases) {
-		parts.push(`  - Phase "${p.name}" [${p.status}] — ${p.goal}`)
+		parts.push(
+			`  - Phase "${p.name}" [${p.status}] — ${p.goal}${p.grade ? ` — graded ${p.grade.grade} by phase grader` : ""}`,
+		)
 		if (!p.gateVerdicts || p.gateVerdicts.length === 0) {
 			parts.push("    (no verdicts on file)")
 		} else {
@@ -1026,6 +1085,14 @@ function buildJourneyGraderPrompt(input: JudgeJourneyGradeInput): string {
 				parts.push(`    ${v.id} (${v.verdict}): ${v.rationale}`)
 			}
 		}
+	}
+	const certifiedPhases = input.phases.filter((p) => p.grade)
+	if (certifiedPhases.length > 0) {
+		parts.push("")
+		parts.push("--- CERTIFIED PHASE VERDICTS — YOUR DELTA SCOPE ---")
+		parts.push(
+			"Every graded phase above was audited independently by a phase grader with tools (grades shown in the trail). Treat those verdicts as certified — do NOT re-audit phases line-by-line. Your ship-level job is what phase graders could not see: cross-phase integration, whole-ferment charter fulfillment, and breakage introduced between phases. Open a file only for a specific claim your charter audit cannot attest from the verdicts and evidence above.",
+		)
 	}
 	parts.push("")
 	parts.push("Ferment-scope gate verdicts (agent self-reported — verify independently):")
@@ -1042,12 +1109,18 @@ function buildJourneyGraderPrompt(input: JudgeJourneyGradeInput): string {
 	} else {
 		parts.push("(No diff available — use your tools to inspect files directly.)")
 	}
+	if (input.stepVerificationRuns) {
+		parts.push("")
+		parts.push("--- HARNESS-EXECUTED VERIFICATION (deterministic re-run) ---")
+		parts.push(input.stepVerificationRuns)
+	}
 	if (input.evidence && input.evidence.trim().length > 0) {
 		parts.push("")
 		parts.push("--- EXECUTION EVIDENCE (agent-provided) ---")
 		parts.push(input.evidence.slice(0, 4000))
 	}
 	parts.push("")
+	parts.push(...renderEvidenceTrustPolicy(input.stepVerificationRuns))
 	parts.push(`Working directory: ${process.cwd()}`)
 	parts.push("")
 	parts.push(RECOMMENDATION_CONTRACT)
