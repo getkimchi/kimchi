@@ -1,0 +1,22 @@
+{
+  "darwin-arm64": {
+    "asset": "kimchi_darwin_arm64.tar.gz",
+    "archiveType": "tar.gz"
+  },
+  "darwin-x64": {
+    "asset": "kimchi_darwin_amd64.tar.gz",
+    "archiveType": "tar.gz"
+  },
+  "linux-arm64": {
+    "asset": "kimchi_linux_arm64.tar.gz",
+    "archiveType": "tar.gz"
+  },
+  "linux-x64": {
+    "asset": "kimchi_linux_amd64.tar.gz",
+    "archiveType": "tar.gz"
+  },
+  "win32-x64": {
+    "asset": "kimchi_windows_amd64.zip",
+    "archiveType": "zip"
+  }
+}

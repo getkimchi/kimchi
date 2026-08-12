@@ -60,3 +60,7 @@ __pycache__/
 
 # LLM tools
 .codegraph/
+
+# npm package (generated from package.npm.json by release workflow)
+npm/package.json
+npm/package.json
