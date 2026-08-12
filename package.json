@@ -101,7 +101,7 @@
 		"ws": "^8.20.1"
 	},
 	"engines": {
-		"node": ">=22.0.0"
+		"node": ">=22.19.0"
 	},
 	"packageManager": "pnpm@10.8.1",
 	"pnpm": {
