@@ -16,6 +16,7 @@ inputs:
       - opencode
       - claude-code
       - claude-code-standard
+      - cursor
       - pi
       - kimchi-workflow
       - pi-workflow
@@ -69,6 +70,10 @@ inputs:
       # Native Anthropic API (claude-code-standard only)
       - anthropic/claude-sonnet-5
       - anthropic/claude-opus-4-8
+      # Cursor-hosted models (require CURSOR_API_KEY, not KIMCHI_API_KEY)
+      - cursor/composer-2.5
+      - cursor/glm-5.2
+      - cursor/kimi-k2.7-code
   kimchi_ferment_oneshot:
     description: "Run each task through Kimchi ferment one-shot workflow. Ignored unless agent is kimchi."
     type: boolean

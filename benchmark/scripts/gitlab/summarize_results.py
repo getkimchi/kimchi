@@ -520,13 +520,14 @@ def scan_session_file(path: Path, warnings: list[str]) -> SessionScan:
 
 
 def scan_trajectory_file(path: Path, warnings: list[str]) -> SessionScan:
-    """Parse an opencode ATIF trajectory.json file into a SessionScan.
+    """Parse an ATIF trajectory.json file into a SessionScan.
 
-    Opencode writes ``agent/trajectory.json`` (schema ATIF-v1.x) instead of
-    the JSONL session format used by kimchi/claude-code agents.  The file
-    contains ``final_metrics`` for totals and per-step ``metrics`` with token
-    counts.  This function extracts token and tool-call data from each step,
-    matching the fields produced by ``scan_session_file``.
+    Used for opencode and cursor-cli agents.  Both write ``agent/trajectory.json``
+    (schema ATIF-v1.x) instead of the JSONL session format used by kimchi/claude-code.
+    Opencode writes per-step ``metrics`` with token counts; cursor-cli writes
+    token totals only in ``final_metrics`` (no per-step metrics).  This function
+    extracts token and tool-call data from each step, falling back to
+    ``final_metrics.extra.usage_totals`` when per-step metrics are absent.
     """
     data = load_json(path, warnings)
     scan = SessionScan()
@@ -580,7 +581,15 @@ def scan_trajectory_file(path: Path, warnings: list[str]) -> SessionScan:
             if prompt_tokens or completion_tokens or cached_tokens:
                 rounds = int_value(step.get("llm_call_count"))
                 stats.llm_rounds += rounds or (1 if prompt_tokens or completion_tokens else 0)
-                stats.input_tokens += prompt_tokens
+                # Opencode's harbor adapter sets prompt_tokens = input_tok +
+                # cache_read (OpenAI convention where prompt_tokens is inclusive
+                # of cached tokens).  Subtract the cached subset so input_tokens
+                # reflects only non-cached input, matching the convention used
+                # by kimchi (pi-ai "input") and claude-code (Anthropic
+                # "input_tokens").  Without this, cache tokens are counted in
+                # both input_tokens and cache_read_tokens, inflating cost.
+                non_cached_input = max(0, prompt_tokens - cached_tokens)
+                stats.input_tokens += non_cached_input
                 stats.output_tokens += completion_tokens
                 stats.cache_read_tokens += cached_tokens
 
@@ -591,6 +600,38 @@ def scan_trajectory_file(path: Path, warnings: list[str]) -> SessionScan:
                 if isinstance(tc, dict):
                     name = tc.get("function_name") or tc.get("name")
                     stats.tool_calls[str(name) if name else "unknown"] += 1
+
+    # Cursor-cli writes token totals only in final_metrics, not per-step.
+    # Fall back to final_metrics.extra.usage_totals when no per-step metrics
+    # were found so cursor runs get the same token attribution as other agents.
+    total_tokens = sum(
+        s.input_tokens + s.cache_read_tokens + s.cache_write_tokens + s.output_tokens
+        for s in scan.models.values()
+    )
+    if total_tokens == 0:
+        final_metrics = data.get("final_metrics")
+        if isinstance(final_metrics, dict):
+            extra = final_metrics.get("extra")
+            usage_totals = extra.get("usage_totals") if isinstance(extra, dict) else None
+            if isinstance(usage_totals, dict):
+                stats = model_stats(scan.models, provider, model)
+                stats.input_tokens += int_from_keys(
+                    usage_totals, "inputTokens", "input_tokens",
+                )
+                stats.output_tokens += int_from_keys(
+                    usage_totals, "outputTokens", "output_tokens",
+                )
+                stats.cache_read_tokens += int_from_keys(
+                    usage_totals, "cacheReadTokens", "cache_read_tokens",
+                )
+                stats.cache_write_tokens += int_from_keys(
+                    usage_totals, "cacheWriteTokens", "cache_write_tokens",
+                )
+                stats.llm_rounds += sum(
+                    int_value(s.get("llm_call_count"))
+                    for s in steps
+                    if isinstance(s, dict) and s.get("llm_call_count")
+                )
 
     return scan
 

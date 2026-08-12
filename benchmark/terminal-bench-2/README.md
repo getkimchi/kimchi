@@ -41,6 +41,7 @@ You will hit one of two failure modes:
 | `./scripts/run-opencode-kimchi.sh` | Installs OpenCode in the task container and configures it to use the Kimchi gateway |
 | `./scripts/run-claude-code-kimchi.sh` | Installs Claude Code in the task container and configures it to use the Kimchi gateway |
 | `./scripts/run-claude-code.sh` | Installs Claude Code in the task container and uses the standard Anthropic API (no gateway) |
+| `./scripts/run-cursor.sh` | Installs Cursor Agent CLI (`cursor-agent`) in the task container, uses Cursor's own cloud backend (no gateway) |
 | `./scripts/run-gsd-kimchi.sh` | Installs GSD in the task container and configures it to use one selected Kimchi model |
 | `./scripts/run-pi-kimchi.sh` | Installs the bare `pi` CLI (upstream `@earendil-works/pi-coding-agent`) in the task container, with the `pi-kimchi-provider` extension routing model calls through the Kimchi gateway |
 | `./scripts/run-workflow.sh` | Cross-builds `kimchi` and runs one named `kimchi-workflows` workflow through it (default `ferment-oneshot`) instead of kimchi's chat loop |
@@ -218,6 +219,27 @@ CLAUDE_CODE_VERSION=2.1.144 ./scripts/run-claude-code.sh -i terminal-bench/fix-g
 
 The retry config (`config/retry.yaml`) is included by default so transient Anthropic API errors (429, 500, 502, 503, 504, 524) are retried with exponential backoff. Override the max retry count with `CLAUDE_CODE_API_MAX_RETRIES`.
 
+### Cursor Agent CLI
+
+Use `run-cursor.sh` when the benchmark should evaluate the Cursor Agent CLI scaffold. The `cursor-agent` CLI talks to Cursor's own cloud backend — it does **not** route through the Kimchi gateway. This means a `CURSOR_API_KEY` from a Cursor account is required instead of `KIMCHI_API_KEY`.
+
+```bash
+export CURSOR_API_KEY=...
+./scripts/run-cursor.sh -i terminal-bench/fix-git
+```
+
+Cursor's hosted catalog includes both proprietary models (Composer 2.5, Grok 4.5) and OSS models (GLM 5.2, Kimi K2.7 Code). Model names use the `cursor/` prefix:
+
+```bash
+MODEL=cursor/glm-5.2 ./scripts/run-cursor.sh -i terminal-bench/fix-git
+MODEL=cursor/kimi-k2.7-code ./scripts/run-cursor.sh -i terminal-bench/fix-git
+MODEL=cursor/composer-2.5 ./scripts/run-cursor.sh -i terminal-bench/fix-git
+```
+
+The adapter is a thin subclass of Harbor's upstream `CursorCli` — it adds git install + baseline commit and install retry, then delegates to the base class for model selection, run, output parsing, and cost computation. The `cursor/` prefix is stripped automatically and the slug is passed to `--model=<slug>`.
+
+**Routing asymmetry:** Unlike the Kimchi-gateway agents, which route model calls directly to `llm.kimchi.dev`, `cursor-agent` always talks to Cursor's own backend. Cross-scaffold comparison with Cursor is at the model level (the same model family, e.g. GLM 5.2), not at the inference-path level.
+
 ### GSD with the Kimchi gateway
 
 Use `run-gsd-kimchi.sh` when the benchmark should evaluate the GSD scaffold while routing model calls through `llm.kimchi.dev`.
@@ -332,6 +354,7 @@ Tag format is `key:value`, comma-separated; keys and values are alphanumeric plu
 | `OPENCODE_VERSION` | no | Pins the OpenCode version used by `run-opencode-kimchi.sh` |
 | `CLAUDE_CODE_VERSION` | no | Pins the Claude Code version used by `run-claude-code-kimchi.sh` and `run-claude-code.sh` |
 | `ANTHROPIC_API_KEY` | for `run-claude-code.sh` | Anthropic API key for the standard Claude Code release; forwarded to the agent via `--ae` |
+| `CURSOR_API_KEY` | for `run-cursor.sh` | Cursor API key for the Cursor Agent CLI; forwarded to the agent via `--ae` |
 | `GSD_VERSION` | no | Overrides the GSD package version used by `run-gsd-kimchi.sh`; default install target is `gsd-pi@latest` |
 | `PI_VERSION` | no | Pins the `@earendil-works/pi-coding-agent` version used by `run-pi-kimchi.sh`; default is `@latest` |
 | `WORKFLOW` | no | The workflow's declared **name** (not a filename) for `run-workflow.sh` / `run-pi-workflow.sh`. Defaults: `ferment-oneshot` and `deep-solve` respectively |

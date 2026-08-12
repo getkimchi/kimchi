@@ -679,6 +679,8 @@ def _agent_import_path(coding_agent: str) -> str:
             return "kimchi_agent:WorkflowAgent"
         case "pi-workflow":
             return "kimchi_agent:PiWorkflowAgent"
+        case "cursor":
+            return "kimchi_agent:CursorAgent"
         case _:
             raise SystemExit(f"Unknown CODING_AGENT: {coding_agent}")
 
@@ -1290,14 +1292,20 @@ def main() -> int:
     dataset = os.environ.get("DATASET", "terminal-bench/terminal-bench-2")
     # anthropic/* models use the native Anthropic API, so ANTHROPIC_API_KEY
     # is required instead of KIMCHI_API_KEY. claude-code-standard always uses
-    # the native Anthropic API regardless of model. All other agents route
-    # through the Kimchi gateway and need KIMCHI_API_KEY.
+    # the native Anthropic API regardless of model. cursor uses Cursor's own
+    # cloud backend, so CURSOR_API_KEY is required instead. All other agents
+    # route through the Kimchi gateway and need KIMCHI_API_KEY.
     is_anthropic_model = model.startswith(f"{ANTHROPIC_PROVIDER}/")
     if coding_agent == "claude-code-standard" or is_anthropic_model:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             label = "claude-code-standard" if coding_agent == "claude-code-standard" else f"MODEL={model}"
             print(f"ANTHROPIC_API_KEY is required for {label}", file=sys.stderr)
+            return 1
+    elif coding_agent == "cursor":
+        api_key = os.environ.get("CURSOR_API_KEY")
+        if not api_key:
+            print("CURSOR_API_KEY is required for cursor", file=sys.stderr)
             return 1
     else:
         api_key = os.environ.get("KIMCHI_API_KEY")
@@ -1311,7 +1319,11 @@ def main() -> int:
     if model == MULTI_MODEL and coding_agent != "kimchi":
         print("MODEL=multi-model is only supported when CODING_AGENT=kimchi", file=sys.stderr)
         return 1
-    if not api_key and not is_anthropic_model and coding_agent != "claude-code-standard":
+    if (
+        not api_key
+        and not is_anthropic_model
+        and coding_agent not in ("claude-code-standard", "cursor")
+    ):
         print("KIMCHI_API_KEY is required", file=sys.stderr)
         return 1
     openrouter_error = _openrouter_config_error(model, coding_agent)

@@ -1461,7 +1461,9 @@ class ScanTrajectoryFileTest(unittest.TestCase):
             self.assertEqual(len(scan.models), 1)
             stats = scan.models[("openrouter", "@preset/glm-5-2-zai")]
             self.assertEqual(stats.llm_rounds, 3)
-            self.assertEqual(stats.input_tokens, 7632 + 7707 + 7814)
+            # prompt_tokens is inclusive of cached_tokens (opencode convention):
+            # non-cached input = (7632 - 7040) + 7707 + (7814 - 7680)
+            self.assertEqual(stats.input_tokens, (7632 - 7040) + 7707 + (7814 - 7680))
             self.assertEqual(stats.output_tokens, 24 + 38 + 33)
             self.assertEqual(stats.cache_read_tokens, 7040 + 7680)
             self.assertEqual(stats.cache_write_tokens, 0)
@@ -1498,7 +1500,7 @@ class ScanTrajectoryFileTest(unittest.TestCase):
             model = data["models"][0]
             self.assertEqual(model["model"], "@preset/glm-5-2-zai")
             self.assertEqual(model["llm_rounds"], 2)
-            self.assertEqual(model["tokens"]["input"], 3000)
+            self.assertEqual(model["tokens"]["input"], (1000 - 500) + 2000)
             self.assertEqual(model["tokens"]["output"], 150)
             self.assertEqual(model["tokens"]["cache_read"], 500)
 
@@ -1605,8 +1607,184 @@ class ScanTrajectoryFileTest(unittest.TestCase):
             )
             stats = next(iter(scan.models.values()))
             self.assertEqual(stats.llm_rounds, 2)
-            self.assertEqual(stats.input_tokens, 300)
+            self.assertEqual(stats.input_tokens, 100 + 200)
             self.assertEqual(stats.output_tokens, 30)
+
+    def test_opencode_prompt_tokens_excludes_cached(self):
+        """Opencode's harbor adapter sets prompt_tokens = input_tok + cache_read.
+
+        scan_trajectory_file must subtract cached_tokens from prompt_tokens so
+        cache tokens are not counted in both input_tokens and cache_read_tokens.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "task__abc"
+            trial_dir.mkdir()
+            # Simulate opencode trajectory: prompt_tokens includes cache_read
+            self._write_trajectory(trial_dir, self._trajectory(steps=[
+                self._step(prompt=14672, completion=2, cached=7040, tools=["bash"]),
+                self._step(prompt=321610, completion=2385, cached=155904, tools=["edit"]),
+            ]))
+
+            warnings: list[str] = []
+            scan = summarize_results.scan_trajectory_file(
+                trial_dir / "agent" / "trajectory.json", warnings
+            )
+            stats = next(iter(scan.models.values()))
+            # Non-cached input = (14672 - 7040) + (321610 - 155904) = 7632 + 165706
+            self.assertEqual(stats.input_tokens, 7632 + 165706)
+            self.assertEqual(stats.cache_read_tokens, 7040 + 155904)
+            self.assertEqual(stats.output_tokens, 2 + 2385)
+            self.assertEqual(stats.llm_rounds, 2)
+
+    def test_final_metrics_fallback_for_cursor_trajectory(self):
+        """Cursor-cli writes token totals only in final_metrics, not per-step.
+
+        scan_trajectory_file must fall back to final_metrics.extra.usage_totals
+        when per-step metrics are absent so cursor runs get the same token
+        attribution as kimchi/opencode agents.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "task__abc"
+            trial_dir.mkdir()
+            self._write_trajectory(trial_dir, {
+                "schema_version": "ATIF-v1.7",
+                "session_id": "ses_cursor",
+                "agent": {
+                    "name": "cursor-cli",
+                    "version": "2026.08.04-aaa8809",
+                    "model_name": "cursor/glm-5.2",
+                },
+                "final_metrics": {
+                    "total_prompt_tokens": 170418,
+                    "total_completion_tokens": 1953,
+                    "total_cached_tokens": 164544,
+                    "total_steps": 10,
+                    "extra": {
+                        "duration_ms": 27526,
+                        "duration_api_ms": 27526,
+                        "request_id": "req-123",
+                        "usage_totals": {
+                            "inputTokens": 5874,
+                            "outputTokens": 1953,
+                            "cacheReadTokens": 164544,
+                            "cacheWriteTokens": 0,
+                        },
+                    },
+                },
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "source": "user",
+                        "message": "Fix the git repo.",
+                    },
+                    {
+                        "step_id": 2,
+                        "timestamp": "2026-08-11T15:39:10Z",
+                        "source": "agent",
+                        "model_name": "cursor/glm-5.2",
+                        "message": "",
+                        "reasoning_content": "Let me investigate.",
+                        "llm_call_count": 1,
+                        "tool_calls": [
+                            {"tool_call_id": "call-1", "function_name": "shellToolCall"},
+                        ],
+                    },
+                    {
+                        "step_id": 3,
+                        "timestamp": "2026-08-11T15:39:30Z",
+                        "source": "agent",
+                        "model_name": "cursor/glm-5.2",
+                        "message": "",
+                        "llm_call_count": 1,
+                        "tool_calls": [
+                            {"tool_call_id": "call-2", "function_name": "editToolCall"},
+                        ],
+                    },
+                ],
+            })
+
+            warnings: list[str] = []
+            scan = summarize_results.scan_trajectory_file(
+                trial_dir / "agent" / "trajectory.json", warnings
+            )
+            self.assertEqual(warnings, [])
+            self.assertEqual(len(scan.models), 1)
+            stats = scan.models[("cursor", "glm-5.2")]
+            self.assertEqual(stats.llm_rounds, 2)
+            self.assertEqual(stats.input_tokens, 5874)
+            self.assertEqual(stats.output_tokens, 1953)
+            self.assertEqual(stats.cache_read_tokens, 164544)
+            self.assertEqual(stats.cache_write_tokens, 0)
+            self.assertEqual(stats.tool_calls["shellToolCall"], 1)
+            self.assertEqual(stats.tool_calls["editToolCall"], 1)
+
+    def test_final_metrics_fallback_skipped_when_per_step_metrics_exist(self):
+        """Per-step metrics take precedence over final_metrics fallback."""
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "task__abc"
+            trial_dir.mkdir()
+            # Build a trajectory with per-step metrics AND final_metrics.usage_totals.
+            # The per-step values must win.
+            self._write_trajectory(trial_dir, {
+                "schema_version": "ATIF-v1.7",
+                "session_id": "ses_mixed",
+                "agent": {"name": "test", "model_name": "cursor/glm-5.2"},
+                "final_metrics": {
+                    "total_prompt_tokens": 999,
+                    "extra": {
+                        "usage_totals": {
+                            "inputTokens": 999,
+                            "outputTokens": 999,
+                            "cacheReadTokens": 999,
+                            "cacheWriteTokens": 999,
+                        },
+                    },
+                },
+                "steps": [
+                    self._step(prompt=100, completion=10, cached=50, tools=["bash"]),
+                ],
+            })
+
+            warnings: list[str] = []
+            scan = summarize_results.scan_trajectory_file(
+                trial_dir / "agent" / "trajectory.json", warnings
+            )
+            stats = next(iter(scan.models.values()))
+            # Per-step values, not final_metrics. prompt_tokens=100 includes cached=50,
+            # so non-cached input = 100 - 50 = 50.
+            self.assertEqual(stats.input_tokens, 50)
+            self.assertEqual(stats.output_tokens, 10)
+            self.assertEqual(stats.cache_read_tokens, 50)
+            self.assertEqual(stats.cache_write_tokens, 0)
+
+    def test_final_metrics_fallback_no_usage_totals(self):
+        """When final_metrics has no usage_totals, fallback is a no-op."""
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "task__abc"
+            trial_dir.mkdir()
+            self._write_trajectory(trial_dir, {
+                "schema_version": "ATIF-v1.7",
+                "agent": {"name": "test", "model_name": "cursor/glm-5.2"},
+                "final_metrics": {"total_steps": 2},
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "source": "agent",
+                        "model_name": "cursor/glm-5.2",
+                        "llm_call_count": 1,
+                    },
+                ],
+            })
+
+            warnings: list[str] = []
+            scan = summarize_results.scan_trajectory_file(
+                trial_dir / "agent" / "trajectory.json", warnings
+            )
+            # No tokens recorded at all
+            stats = next(iter(scan.models.values()))
+            self.assertEqual(stats.input_tokens, 0)
+            self.assertEqual(stats.output_tokens, 0)
+            self.assertEqual(stats.llm_rounds, 0)
 
 
 if __name__ == "__main__":
