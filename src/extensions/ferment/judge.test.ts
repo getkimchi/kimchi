@@ -1,5 +1,8 @@
-import { describe, expect, it, vi } from "vitest"
+import type { Api, Model } from "@earendil-works/pi-ai"
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
+	describeJudgeModel,
 	type GraderSubagentResult,
 	isGrade,
 	type JudgeApiResult,
@@ -10,6 +13,7 @@ import {
 	judgePhaseGrade,
 	judgePhaseGradeViaSubagent,
 } from "./judge.js"
+import { captureJudgeContext } from "./state.js"
 
 describe("isGrade", () => {
 	it("accepts the five valid letters", () => {
@@ -142,6 +146,38 @@ describe("judgeJourneyGrade", () => {
 		expect(captured).toContain("F1 (pass): step-1 used smoke")
 		expect(captured).toContain("F2 (pass): feature.ts:1-40 delivers retry")
 		expect(captured).toContain("C3 (pass): smoke test exercised the retry path")
+	})
+
+	it("renders the intent charter into the prompt above the criteria", async () => {
+		let captured = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			captured = msg
+			return ok('{"grade":"A","rationale":"x"}')
+		})
+		await judgeJourneyGrade(
+			makeInput({
+				charter: {
+					intent: "Recreate the Tahoe desktop",
+					wowFactor: "Feels like the real OS",
+					demoScript: "Boot the page; Finder opens",
+				},
+			}),
+			apiCall,
+		)
+		expect(captured).toContain("INTENT CHARTER")
+		expect(captured).toContain("Recreate the Tahoe desktop")
+		expect(captured).toContain("Feels like the real OS")
+		expect(captured).toContain("Boot the page; Finder opens")
+	})
+
+	it("omits the charter section when the ferment predates charters", async () => {
+		let captured = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			captured = msg
+			return ok('{"grade":"A","rationale":"x"}')
+		})
+		await judgeJourneyGrade(makeInput(), apiCall)
+		expect(captured).not.toContain("INTENT CHARTER")
 	})
 
 	it("renders '(no verdicts on file)' for phases missing review-evidence", async () => {
@@ -283,6 +319,87 @@ describe("judgeJourneyGrade", () => {
 		if (!result.ok) return
 		expect(result.recommendations).toHaveLength(20)
 		expect(result.recommendations[0].length).toBe(600)
+	})
+
+	it("returns normalized charter verdicts when the grader provides them", async () => {
+		const apiCall = vi.fn(async () =>
+			ok(
+				'{"grade":"B","rationale":"shell works","recommendations":[],"charter_verdicts":[' +
+					'{"clause":"recreate the Tahoe desktop","status":"unmet","evidence":"only a bootable shell replica exists"},' +
+					'{"clause":"feels real","status":"met","evidence":"window chrome matches references"},' +
+					'{"clause":"x","status":"bogus","evidence":"y"},' +
+					'{"clause":"","status":"met","evidence":"y"},' +
+					"42 ]}",
+			),
+		)
+		const result = await judgeJourneyGrade(makeInput(), apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.charterVerdicts).toEqual([
+			{ clause: "recreate the Tahoe desktop", status: "unmet", evidence: "only a bootable shell replica exists" },
+			{ clause: "feels real", status: "met", evidence: "window chrome matches references" },
+		])
+	})
+
+	it("omits charterVerdicts when the grader provides none", async () => {
+		const apiCall = vi.fn(async () => ok('{"grade":"A","rationale":"clean"}'))
+		const result = await judgeJourneyGrade(makeInput(), apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.charterVerdicts).toBeUndefined()
+	})
+
+	it("caps charter verdict arrays and sizes to bound the persisted payload", async () => {
+		const many = Array.from({ length: 30 }, (_, i) => ({
+			clause: `clause ${i} ${"x".repeat(500)}`,
+			status: "met",
+			evidence: `evidence ${i} ${"y".repeat(800)}`,
+		}))
+		const apiCall = vi.fn(async () => ok(`{"grade":"A","rationale":"x","charter_verdicts":${JSON.stringify(many)}}`))
+		const result = await judgeJourneyGrade(makeInput(), apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.charterVerdicts).toHaveLength(12)
+		expect(result.charterVerdicts?.[0]?.clause.length).toBe(200)
+		expect(result.charterVerdicts?.[0]?.evidence.length).toBe(400)
+	})
+
+	it("retries when a charter exists but charter_verdicts are missing, then accepts them", async () => {
+		const apiCall = vi
+			.fn()
+			.mockResolvedValueOnce(ok('{"grade":"A","rationale":"clean"}'))
+			.mockResolvedValueOnce(
+				ok(
+					'{"grade":"A","rationale":"clean","charter_verdicts":[{"clause":"recreate Tahoe","status":"met","evidence":"shell recreated"}]}',
+				),
+			)
+		const result = await judgeJourneyGrade(makeInput({ charter: { intent: "recreate Tahoe" } }), apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(2)
+		// The retry names the omission so the judge knows what to fix — a bare
+		// repeated prompt tends to repeat the same failure mode (PR #989 review).
+		const messages = apiCall.mock.calls.map((call) => call[1])
+		expect(messages[0]).not.toContain("REMINDER")
+		expect(messages[1]).toContain("REMINDER")
+		expect(messages[1]).toContain("charter_verdicts")
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.charterVerdicts).toEqual([{ clause: "recreate Tahoe", status: "met", evidence: "shell recreated" }])
+	})
+
+	it("soft-degrades after max attempts when verdicts never arrive (grade still lands)", async () => {
+		const apiCall = vi.fn(async () => ok('{"grade":"A","rationale":"clean"}'))
+		const result = await judgeJourneyGrade(makeInput({ charter: { intent: "recreate Tahoe" } }), apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(3)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.charterVerdicts).toBeUndefined()
+	})
+
+	it("does not retry for missing verdicts when no charter exists", async () => {
+		const apiCall = vi.fn(async () => ok('{"grade":"A","rationale":"clean"}'))
+		const result = await judgeJourneyGrade(makeInput(), apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(true)
 	})
 })
 
@@ -605,6 +722,61 @@ describe("judgeJourneyGradeViaSubagent", () => {
 		expect(apiCall).not.toHaveBeenCalled()
 	})
 
+	it("surfaces the subagent's charter verdicts", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: '{"grade":"B","rationale":"near miss","recommendations":[],"charter_verdicts":[{"clause":"recreate the Tahoe desktop","status":"unmet","evidence":"only a shell replica"}]}',
+				status: "completed",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"C","rationale":"x"}'))
+		const result = await judgeJourneyGradeViaSubagent(makeInput(), spawn, apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.charterVerdicts).toEqual([
+			{ clause: "recreate the Tahoe desktop", status: "unmet", evidence: "only a shell replica" },
+		])
+	})
+
+	it("falls back to the single-shot judge when the subagent omits required charter verdicts", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: '{"grade":"A","rationale":"fine","recommendations":[]}',
+				status: "completed",
+			}),
+		)
+		const apiCall = vi.fn(async () =>
+			ok(
+				'{"grade":"A","rationale":"ok","charter_verdicts":[{"clause":"recreate Tahoe","status":"met","evidence":"yes"}]}',
+			),
+		)
+		const result = await judgeJourneyGradeViaSubagent(
+			makeInput({ charter: { intent: "recreate Tahoe" } }),
+			spawn,
+			apiCall,
+		)
+		expect(spawn).toHaveBeenCalledTimes(1)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.charterVerdicts).toHaveLength(1)
+	})
+
+	it("keeps the subagent result when no charter exists (no audit required)", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: '{"grade":"B","rationale":"fine","recommendations":[]}',
+				status: "completed",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"A","rationale":"x"}'))
+		const result = await judgeJourneyGradeViaSubagent(makeInput(), spawn, apiCall)
+		expect(apiCall).not.toHaveBeenCalled()
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("B")
+	})
+
 	it("falls back to single-shot when subagent returns unparseable text", async () => {
 		const spawn = vi.fn(
 			async (): Promise<GraderSubagentResult> => ({
@@ -667,5 +839,80 @@ describe("judgeJourneyGradeViaSubagent", () => {
 		expect(result.grade).toBe("B")
 		expect(result.rationale).toContain("coverage thin")
 		expect(apiCall).not.toHaveBeenCalled()
+	})
+})
+
+describe("judge renders intent charter", () => {
+	function ok(text: string): JudgeApiResult {
+		return { ok: true, text }
+	}
+
+	it("phase prompt includes the charter when provided", async () => {
+		let captured = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			captured = msg
+			return ok('{"grade":"B","rationale":"x"}')
+		})
+		await judgePhaseGrade(
+			{
+				fermentName: "F",
+				phaseName: "P1",
+				phaseGoal: "g",
+				charter: { intent: "Recreate the Tahoe desktop" },
+				phaseSummary: "done",
+				gateVerdicts: [],
+			},
+			apiCall,
+		)
+		expect(captured).toContain("INTENT CHARTER")
+		expect(captured).toContain("Recreate the Tahoe desktop")
+	})
+
+	it("subagent grader prompt includes the charter when provided", async () => {
+		let captured = ""
+		const spawn = vi.fn(async (prompt: string): Promise<GraderSubagentResult> => {
+			captured = prompt
+			return { text: '{"grade":"A","rationale":"x"}', status: "completed" }
+		})
+		await judgePhaseGradeViaSubagent(
+			{
+				fermentName: "F",
+				phaseName: "P1",
+				phaseGoal: "g",
+				charter: { intent: "Recreate the Tahoe desktop", demoScript: "Boot; look" },
+				phaseSummary: "done",
+				gateVerdicts: [],
+			},
+			spawn,
+		)
+		expect(captured).toContain("INTENT CHARTER")
+		expect(captured).toContain("Boot; look")
+		expect(spawn).toHaveBeenCalled()
+	})
+})
+
+describe("describeJudgeModel", () => {
+	const judgeModel = { provider: "kimchi-dev", id: "judge-x" } as unknown as Model<Api>
+	const sessionModel = { provider: "kimchi-dev", id: "glm-5.2-fp8" } as unknown as Model<Api>
+	const roleResolvingRegistry = { find: () => judgeModel } as unknown as ModelRegistry
+
+	afterEach(() => {
+		// Leave single-model mode behind so sibling describes keep their defaults.
+		captureJudgeContext(undefined, undefined, false)
+	})
+
+	it("returns the captured session model in single-model mode, ignoring the role", () => {
+		captureJudgeContext(sessionModel, roleResolvingRegistry, false)
+		expect(describeJudgeModel()).toBe("kimchi-dev/glm-5.2-fp8")
+	})
+
+	it("returns the judge-role model in multi-model mode when the role resolves", () => {
+		captureJudgeContext(sessionModel, roleResolvingRegistry, true)
+		expect(describeJudgeModel()).toBe("kimchi-dev/judge-x")
+	})
+
+	it("falls back to the captured session model in multi-model mode when the role does not resolve", () => {
+		captureJudgeContext(sessionModel, { find: () => undefined } as unknown as ModelRegistry, true)
+		expect(describeJudgeModel()).toBe("kimchi-dev/glm-5.2-fp8")
 	})
 })

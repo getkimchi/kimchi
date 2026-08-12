@@ -1,5 +1,5 @@
 import { initTheme, type Theme, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent"
-import { visibleWidth } from "@earendil-works/pi-tui"
+import { Text, visibleWidth } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it } from "vitest"
 import toolRenderingExtension, {
 	formatToolTimer,
@@ -166,6 +166,42 @@ describe("hidden tool block rendering", () => {
 		)
 
 		expect(component.render(80)).toEqual([])
+	})
+
+	it("uses Agent's custom call renderer for streamed arguments", () => {
+		const component = new ToolExecutionComponent(
+			"Agent",
+			"tc-agent",
+			{ subagent_type: "Explore" },
+			{},
+			{
+				renderCall: (args: { subagent_type?: string }) => new Text(`custom Agent ${args.subagent_type}`, 0, 0),
+			} as never,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+
+		expect(component.render(80).map(stripSgr).join("\n")).toContain("custom Agent Explore")
+	})
+
+	it("keeps generic call rendering for non-Agent tools with custom renderers", () => {
+		const component = new ToolExecutionComponent(
+			"CustomTool",
+			"tc-custom",
+			{ value: "streamed" },
+			{},
+			{
+				renderCall: () => new Text("custom non-Agent renderer", 0, 0),
+			} as never,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+
+		const rendered = component.render(80).map(stripSgr).join("\n")
+		expect(rendered).toContain("Custom Tool")
+		expect(rendered).not.toContain("custom non-Agent renderer")
 	})
 })
 

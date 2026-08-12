@@ -223,7 +223,9 @@ describe("connectToIde", () => {
 		const conn = await connectToIde(lockfile)
 		const result = await conn.callTool("saveFile", { path: "/a.txt" })
 		expect(result).toEqual({ content: [{ type: "text", text: "done" }] })
-		expect(mockCallTool).toHaveBeenCalledWith({ name: "saveFile", arguments: { path: "/a.txt" } })
+		expect(mockCallTool).toHaveBeenCalledWith({ name: "saveFile", arguments: { path: "/a.txt" } }, undefined, {
+			signal: undefined,
+		})
 	})
 
 	it("routes notifications through setNotificationHandler", async () => {

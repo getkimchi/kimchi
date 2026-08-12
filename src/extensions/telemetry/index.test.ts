@@ -9,6 +9,7 @@ import telemetryExtension, {
 	trackSurveyDismissed,
 	trackSurveyShown,
 } from "./index.js"
+import { logEvents } from "./otlp-test-utils.js"
 import { _resetSharedAccumulators } from "./session-context.js"
 
 vi.mock("../ferment/index.js", () => ({
@@ -1513,6 +1514,90 @@ describe("loop-guard telemetry via pi.events", () => {
 			detector: "edit_run",
 			count: 1,
 			is_subagent: false,
+		})
+		expect(fetchMock).not.toHaveBeenCalled()
+	})
+})
+
+describe("workflow telemetry via pi.events", () => {
+	let fetchMock: ReturnType<typeof vi.fn>
+	let originalFetch: typeof globalThis.fetch
+
+	beforeEach(() => {
+		fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" })
+		originalFetch = globalThis.fetch
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		globalThis.fetch = fetchMock as any
+	})
+
+	afterEach(async () => {
+		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
+		const { _resetFermentTrackingState } = await import("./index.js")
+		_resetFermentTrackingState()
+		vi.restoreAllMocks()
+	})
+
+	async function setup() {
+		const { handlers, events, api, ctx } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+		return { handlers, events }
+	}
+
+	/** One record's attributes, looked up by its OTLP event name. */
+	function attrsOf(eventName: string): Record<string, string> | undefined {
+		return logEvents(fetchMock).find((record) => record.eventName === eventName)?.attrs
+	}
+
+	/** Flush buffered OTLP log records by triggering session_shutdown. */
+	async function flushTelemetry(handlers: Map<string, Handler[]>) {
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+	}
+
+	it("one envelope subscription: every workflow event arrives through workflow:telemetry", async () => {
+		const { handlers, events } = await setup()
+		const { WORKFLOW_TELEMETRY_CHANNEL } = await import("./workflow-events.js")
+
+		events.emit(WORKFLOW_TELEMETRY_CHANNEL, {
+			event: "run_started",
+			run_id: "workflow-demo-1a2b3c4d",
+			workflow_name: "demo",
+			at: "2026-01-01T00:00:00.000Z",
+		})
+		events.emit(WORKFLOW_TELEMETRY_CHANNEL, {
+			event: "step_failed",
+			run_id: "workflow-demo-1a2b3c4d",
+			workflow_name: "demo",
+			at: "2026-01-01T00:00:05.000Z",
+			step_name: "gate",
+			error: { message: "gate did not pass" },
+			duration_ms: 5000,
+		})
+		await flushTelemetry(handlers)
+
+		const started = attrsOf("workflow.run.started")
+		expect(started?.run_id).toBe("workflow-demo-1a2b3c4d")
+		expect(started?.workflow_name).toBe("demo")
+		expect(started?.["session.id"]).toBeDefined()
+
+		const failed = attrsOf("workflow.step.failed")
+		expect(failed?.step_name).toBe("gate")
+		expect(failed?.["error.message"]).toBe("gate did not pass")
+		expect(failed?.duration_ms).toBe("5000")
+	})
+
+	it("does NOT emit OTLP records when telemetry is disabled", async () => {
+		const { events } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig({ enabled: false }))({ on: vi.fn(), events } as unknown as ExtensionAPI)
+		const { WORKFLOW_TELEMETRY_CHANNEL } = await import("./workflow-events.js")
+		events.emit(WORKFLOW_TELEMETRY_CHANNEL, {
+			event: "run_started",
+			run_id: "workflow-demo-1a2b3c4d",
+			workflow_name: "demo",
+			at: "2026-01-01T00:00:00.000Z",
 		})
 		expect(fetchMock).not.toHaveBeenCalled()
 	})

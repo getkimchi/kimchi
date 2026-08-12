@@ -3,6 +3,7 @@ import type { AgentOutcomeKind, AgentRecord, SubagentType } from "./agents/perso
 import { getCurrentPhase } from "./tags.js"
 
 const IMPLEMENTATION_TOOLS = new Set(["edit", "write"])
+const REVIEW_PHASE_ALLOWANCE = 2
 
 export interface OrchestratorWriteGuardOptions {
 	/** Tools that count as implementation work. Default: edit, write. */
@@ -26,9 +27,13 @@ export interface OrchestratorWriteGuardOptions {
 
 export const STEER_MESSAGE_TYPE = "review-write-guard-steer"
 
-const REVIEW_BLOCK_REASON =
-	"BLOCKED: You are in the review phase. The orchestrator must not edit implementation files during review. " +
-	"Delegate fixes to a build agent instead — spawn an Agent with the fix task and the list of issues."
+const REVIEW_STEER_MESSAGE =
+	"Delegation guard: you are editing implementation files during the review phase. " +
+	"The direct-edit allowance is only for one trivial fix requiring up to two small edit/write calls " +
+	"(a typo, missing import, or one-line config change). " +
+	"If this fix is growing beyond that scope — multiple files, test expectations, iteration loops — stop and " +
+	"delegate the remaining fixes to a build/fix agent instead: spawn an Agent with the fix task and the list of issues. " +
+	"Do not flip to build phase just for this."
 
 const BUILD_STEER_MESSAGE =
 	"Delegation guard: you are editing files that a subagent produced. " +
@@ -75,11 +80,13 @@ export class OrchestratorWriteGuard {
 	private readonly buildPhaseBlockThreshold: number
 	private readonly buildPhaseTriageThreshold: number
 	private readonly buildPhaseTriageBlockThreshold: number
-
 	private subagentReturnedInBuild = false
 	private lastSubagentSuccessful = false
 	private buildWriteCount = 0
 	private buildSteered = false
+	private reviewWriteCount = 0
+	private reviewSteered = false
+	private lastPhase: ReturnType<typeof getCurrentPhase>
 
 	constructor(ctx: ExtensionContext, options: OrchestratorWriteGuardOptions = {}) {
 		this.ctx = ctx
@@ -89,7 +96,6 @@ export class OrchestratorWriteGuard {
 		this.buildPhaseBlockThreshold = options.buildPhaseBlockThreshold ?? 5
 		this.buildPhaseTriageThreshold = options.buildPhaseTriageThreshold ?? 3
 		this.buildPhaseTriageBlockThreshold = options.buildPhaseTriageBlockThreshold ?? 6
-
 		if (this.buildPhaseThreshold >= this.buildPhaseBlockThreshold) {
 			throw new Error("buildPhaseBlockThreshold must be greater than buildPhaseThreshold")
 		}
@@ -105,17 +111,47 @@ export class OrchestratorWriteGuard {
 	}
 
 	reset(): void {
+		this.resetBuildState()
+		this.resetReviewState()
+		this.lastPhase = undefined
+	}
+
+	private resetBuildState(): void {
 		this.subagentReturnedInBuild = false
 		this.lastSubagentSuccessful = false
 		this.buildWriteCount = 0
 		this.buildSteered = false
 	}
 
+	private resetReviewState(): void {
+		this.reviewWriteCount = 0
+		this.reviewSteered = false
+	}
+
+	private syncPhase(phase: ReturnType<typeof getCurrentPhase>): void {
+		if (phase === this.lastPhase) return
+		if (this.lastPhase === "review") this.resetReviewState()
+		if (this.lastPhase === "build") this.resetBuildState()
+		this.lastPhase = phase
+	}
+
 	checkToolCall(toolName: string): { block: true; reason: string } | { steer: string } | undefined {
 		const phase = getCurrentPhase(this.ctx.sessionManager.getSessionId())
+		this.syncPhase(phase)
 
 		if (phase === "review" && this.implementationTools.has(toolName)) {
-			return { block: true, reason: REVIEW_BLOCK_REASON }
+			// Trivial fix exception: the orchestration instructions allow direct edits
+			// for a single obvious issue after NEEDS_FIXES. Edit count is a weak proxy
+			// for scope (a small fix may need several iteration rounds), so we steer
+			// once the allowance is reached instead of hard-blocking — a hard block here
+			// either forces overkill delegation for truly trivial fixes or strands a
+			// half-applied fix mid-iteration.
+			this.reviewWriteCount++
+			if (this.reviewWriteCount >= REVIEW_PHASE_ALLOWANCE && !this.reviewSteered) {
+				this.reviewSteered = true
+				return { steer: REVIEW_STEER_MESSAGE }
+			}
+			return undefined
 		}
 
 		if (phase === "build" && this.implementationTools.has(toolName)) {
@@ -133,19 +169,17 @@ export class OrchestratorWriteGuard {
 			}
 		}
 
-		if (phase !== "review" && phase !== "build") {
-			this.reset()
-		}
-
 		return undefined
 	}
 
 	recordSubagentReturn(outcome?: AgentOutcomeSummary): void {
 		const phase = getCurrentPhase(this.ctx.sessionManager.getSessionId())
+		this.syncPhase(phase)
 		if (phase !== "build") {
 			// A subagent return in a non-build phase should not arm the guard for a
-			// later build phase; clear any stale build-phase state.
-			this.reset()
+			// later build phase. Preserve review-phase state so Agent returns cannot
+			// renew the direct-edit allowance within the same review phase.
+			this.resetBuildState()
 			return
 		}
 

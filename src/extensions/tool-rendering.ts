@@ -632,6 +632,11 @@ function patchToolExecutionRenderers(): void {
 			return (args: unknown, theme: Theme, ctx: ToolRenderContext) =>
 				renderApplyPatchCall(args, theme, ctx, (path: string) => shortPath(ctx.cwd ?? process.cwd(), path))
 		}
+		// Agent renders a dynamic persona header that the generic renderer cannot produce.
+		if (toolName === "Agent" && typeof originalGetCallRenderer === "function") {
+			const renderer = originalGetCallRenderer.call(this)
+			if (renderer) return renderer
+		}
 		if (shouldUseGenericToolRenderer(toolName)) {
 			return (args: unknown, theme: Theme, ctx: ToolRenderContext) => renderGenericToolCall(toolName, args, theme, ctx)
 		}

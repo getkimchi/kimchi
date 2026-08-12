@@ -24,8 +24,8 @@ export interface IdeConnection {
 	close(): Promise<void>
 	/** List tools exposed by this IDE */
 	listTools(): Promise<IdeTool[]>
-	/** Call a tool by name */
-	callTool(name: string, args: unknown): Promise<unknown>
+	/** Call a tool by name. Pass `signal` to abort an in-flight request. */
+	callTool(name: string, args: unknown, signal?: AbortSignal): Promise<unknown>
 	/** Register a callback for JSON-RPC notifications from the IDE */
 	setNotificationHandler(handler: (msg: unknown) => void): void
 	/** Optional callback invoked when the transport closes unexpectedly */

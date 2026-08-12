@@ -1,7 +1,15 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const { authMock, waitReadyMock, listSessionsMock, overlayMock, progressMock, progressInstances } = vi.hoisted(() => ({
+const {
+	authMock,
+	waitReadyMock,
+	listSessionsMock,
+	overlayMock,
+	progressMock,
+	progressInstances,
+	provisionHarnessConfigMock,
+} = vi.hoisted(() => ({
 	authMock: vi.fn(),
 	waitReadyMock: vi.fn(),
 	listSessionsMock: vi.fn(),
@@ -14,6 +22,7 @@ const { authMock, waitReadyMock, listSessionsMock, overlayMock, progressMock, pr
 		stop: ReturnType<typeof vi.fn>
 		promptGitToken: ReturnType<typeof vi.fn>
 	}>,
+	provisionHarnessConfigMock: vi.fn(),
 }))
 
 vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMock }))
@@ -21,6 +30,9 @@ vi.mock("../../../sandbox/cloud/readiness.js", () => ({ waitForWorkspaceReady: w
 vi.mock("../../../sandbox/worker/client.js", () => ({ WorkerClient: class {} }))
 vi.mock("../../../sandbox/worker/sessions.js", () => ({ listSessions: listSessionsMock }))
 vi.mock("../overlay/overlay-component.js", () => ({ createTabsOverlay: overlayMock }))
+vi.mock("../provisioning/harness-config.js", () => ({
+	provisionHarnessConfig: provisionHarnessConfigMock,
+}))
 vi.mock("../ui/progress.js", () => ({
 	createTeleportProgress: (...args: unknown[]) => {
 		progressMock(...args)
@@ -115,6 +127,7 @@ beforeEach(() => {
 	}))
 	progressMock.mockReset()
 	progressInstances.length = 0
+	provisionHarnessConfigMock.mockReset().mockResolvedValue({ ok: true })
 })
 
 describe("runAttachSession", () => {
@@ -204,6 +217,16 @@ describe("runAttachSession", () => {
 
 		await runAttachSession({ workspaceId: "w-1", sessionName: "x" }, ctx)
 
+		expect(overlayMock).toHaveBeenCalledOnce()
+	})
+
+	it("does not sync harness config (config sync is teleport-only)", async () => {
+		listSessionsMock.mockResolvedValue([{ name: "x", agentMode: "PTY" }])
+		const { ctx } = makeCtx()
+
+		await runAttachSession({ workspaceId: "w-1", sessionName: "x" }, ctx)
+
+		expect(provisionHarnessConfigMock).not.toHaveBeenCalled()
 		expect(overlayMock).toHaveBeenCalledOnce()
 	})
 })

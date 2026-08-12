@@ -60,6 +60,7 @@ export function confirmPendingScope(
 		successCriteria: pending.successCriteria,
 		constraints: pending.constraints,
 		assumptions: pending.assumptions,
+		charter: pending.charter,
 		phases: scopedPhases,
 		proposeIterations: pending.proposeIterations,
 	})

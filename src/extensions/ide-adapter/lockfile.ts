@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs"
+import { readdirSync, readFileSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { LockfileData } from "./types.js"
@@ -65,18 +65,31 @@ export function isProcessAlive(pid: number): boolean {
 	}
 }
 
-/** Find a lockfile whose workspaceFolders contains the given cwd.
+/** Canonicalize a path (resolve symlinks).
  *
- * Falls back to any alive lockfile when none matches the cwd.
- */
+ * IntelliJ's VFS returns real paths while the CLI's `cwd` and lockfile `workspaceFolders` may
+ * be in symlink form — comparing across these without canonicalization produces broken results.
+ *
+ * Falls back to the original path if `realpathSync` fails (e.g. missing path, stale lockfile). */
+export function realpathSafe(p: string): string {
+	try {
+		return realpathSync(p)
+	} catch {
+		return p
+	}
+}
+
+/** Find the lockfile whose `workspaceFolders` contains cwd. Both sides are
+ * canonicalized via `realpathSafe` so symlinked project roots match.
+ * Returns `undefined` when no alive lockfile matches — the CLI will not
+ * connect to an IDE whose workspace doesn't contain the current project. */
 export function findMatchingLockfile(lockfiles: LockfileData[], cwd: string): LockfileData | undefined {
 	const alive = lockfiles.filter((l) => isProcessAlive(l.pid))
-	const exactMatch = alive.find((l) =>
+	const cwdReal = realpathSafe(cwd).replace(/\\/g, "/")
+	return alive.find((l) =>
 		l.workspaceFolders.some((wf) => {
-			const normalized = wf.replace(/\\/g, "/")
-			const cwdNormalized = cwd.replace(/\\/g, "/")
-			return normalized === cwdNormalized || cwdNormalized.startsWith(`${normalized}/`)
+			const wfReal = realpathSafe(wf).replace(/\\/g, "/")
+			return wfReal === cwdReal || cwdReal.startsWith(`${wfReal}/`)
 		}),
 	)
-	return exactMatch ?? alive[0]
 }

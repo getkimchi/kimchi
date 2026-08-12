@@ -6,7 +6,8 @@ import type { IdeConnection, LockfileData } from "./types.js"
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10000
 
-/** Minimal custom WebSocket transport that sends an auth header on handshake. */
+/** Minimal custom WebSocket transport that authenticates via a `?token=`
+ * query parameter on the WebSocket URL during the upgrade handshake. */
 class IdeWebSocketTransport implements Transport {
 	private ws: WebSocket | null = null
 	onclose?: () => void
@@ -181,8 +182,10 @@ export async function connectToIde(lockfile: LockfileData): Promise<IdeConnectio
 				inputSchema: t.inputSchema,
 			}))
 		},
-		callTool: async (name, args) => {
-			const res = await client.callTool({ name, arguments: args as Record<string, unknown> | undefined })
+		callTool: async (name, args, signal) => {
+			const res = await client.callTool({ name, arguments: args as Record<string, unknown> | undefined }, undefined, {
+				signal,
+			})
 			return res
 		},
 		setNotificationHandler: (handler: (msg: unknown) => void) => {
