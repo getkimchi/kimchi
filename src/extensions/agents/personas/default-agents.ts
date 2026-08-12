@@ -356,7 +356,11 @@ Your verification file MUST contain:
 				// so at 15 every rigorous grader wrapped up "steered" at the soft cap.
 				maxTurns: 25,
 				tokenBudget: 60_000,
-				maxDuration: 180,
+				// 600 (not 180): run 019ff5cc showed graders that read 20–30 files
+				// and re-run the verification matrix are still mid-investigation at
+				// 180s — 3 of 6 grader sessions were killed at exactly ~180s, which
+				// silently swapped in the blind single-shot fallback judge.
+				maxDuration: 600,
 				systemPrompt: `# Ferment Grader Agent
 
 You are a strict production-readiness review council compressed into one reviewer, acting as the final LLM grader for an autonomous coding ferment. Your job is to evaluate the completed result against the stated goal, implementation, tests, and evidence, and assign a letter grade A-F that describes HOW WELL the work was done.

@@ -924,23 +924,35 @@ export async function judgePhaseGradeViaSubagent(
 	spawn: GraderSpawner | undefined,
 	apiCall: (sys: string, msg: string, maxTokens?: number) => Promise<JudgeApiResult> = judgeApiCall,
 ): Promise<JudgePhaseGradeResult> {
-	// Try the subagent first if a spawner was provided.
+	// Try the subagent first if a spawner was provided. Retry once on
+	// abort/error before going blind — run 019ff5cc had phases 2 and 4 accept
+	// blind fallback grades (B and C) that a tool-equipped grader would likely
+	// have refused, because a single killed grader spawn short-circuited to
+	// the fallback on the first try.
 	if (spawn) {
-		try {
-			const prompt = buildPhaseGraderPrompt(input)
-			const result = await spawn(prompt)
-			// "steered" is a designed success state: the grader hit its soft turn
-			// cap but wrapped up in time — exactly what thorough graders (which
-			// re-run the whole verification matrix) do. Rejecting it used to
-			// silently discard the best-evidenced verdicts in the run.
-			if (result.status === "completed" || result.status === "steered") {
-				const parsed = parseGraderResponse(result.text)
-				if (parsed) return { ...parsed, graderSource: "subagent" as const }
-				// Subagent completed but output wasn't parseable — fall through to single-shot.
+		const prompt = buildPhaseGraderPrompt(input)
+		for (let attempt = 1; attempt <= 2; attempt++) {
+			let retryableFailure = false
+			try {
+				const result = await spawn(prompt)
+				// "steered" is a designed success state: the grader hit its soft turn
+				// cap but wrapped up in time — exactly what thorough graders (which
+				// re-run the whole verification matrix) do. Rejecting it used to
+				// silently discard the best-evidenced verdicts in the run.
+				if (result.status === "completed" || result.status === "steered") {
+					const parsed = parseGraderResponse(result.text)
+					if (parsed) return { ...parsed, graderSource: "subagent" as const }
+					// Completed but output wasn't parseable — single-shot fallback,
+					// no retry (a liveness retry wouldn't fix a parse issue).
+				} else {
+					// Aborted/errored — retry once with a fresh spawn.
+					retryableFailure = true
+				}
+			} catch {
+				// Subagent threw — retry once with a fresh spawn.
+				retryableFailure = true
 			}
-			// Subagent aborted/errored — fall through to single-shot.
-		} catch {
-			// Subagent threw — fall through to single-shot.
+			if (!retryableFailure) break
 		}
 	}
 
@@ -950,32 +962,47 @@ export async function judgePhaseGradeViaSubagent(
 }
 
 /** Grade a ferment (journey) using a subagent with tool access. Falls back to
- *  the single-shot judgeApiCall() when the subagent is unavailable or fails. */
+ *  the single-shot judgeApiCall() when the subagent is unavailable or fails.
+ *
+ *  Retries the subagent ONCE on abort/error before going blind: measured run
+ *  019ff5cc completed a flagship benchmark with journey grade=None because the
+ *  single journey grader was killed by its duration cap mid-investigation and
+ *  the fallback judge (no tools, charter-unverified) still said gates pass —
+ *  silently voiding the ferment's most important quality checkpoint. A fresh
+ *  spawn is cheap relative to a wrong ship verdict; the single-shot fallback
+ *  remains as the last resort. */
 export async function judgeJourneyGradeViaSubagent(
 	input: JudgeJourneyGradeInput,
 	spawn: GraderSpawner | undefined,
 	apiCall: (sys: string, msg: string, maxTokens?: number) => Promise<JudgeApiResult> = judgeApiCall,
 ): Promise<JudgeJourneyGradeResult> {
-	// Try the subagent first if a spawner was provided.
 	if (spawn) {
-		try {
-			const prompt = buildJourneyGraderPrompt(input)
-			const result = await spawn(prompt)
-			// "steered" is a designed success state — see judgePhaseGradeViaSubagent.
-			if (result.status === "completed" || result.status === "steered") {
-				const parsed = parseGraderResponse(result.text)
-				if (parsed) {
-					if (input.charter && !parsed.charterVerdicts) {
-						// Charter audit required but the subagent omitted it — fall
-						// through to the single-shot fallback, which retries for it
-						// (soft degrade after attempts are exhausted).
-					} else return { ...parsed, graderSource: "subagent" as const }
+		const prompt = buildJourneyGraderPrompt(input)
+		for (let attempt = 1; attempt <= 2; attempt++) {
+			let retryableFailure = false
+			try {
+				const result = await spawn(prompt)
+				// "steered" is a designed success state — see judgePhaseGradeViaSubagent.
+				if (result.status === "completed" || result.status === "steered") {
+					const parsed = parseGraderResponse(result.text)
+					if (parsed) {
+						if (input.charter && !parsed.charterVerdicts) {
+							// Charter audit required but the subagent omitted it — fall
+							// through to the single-shot fallback, which retries for it
+							// (soft degrade after attempts are exhausted).
+						} else return { ...parsed, graderSource: "subagent" as const }
+					}
+					// Completed but output wasn't parseable — single-shot fallback,
+					// no retry (a liveness retry wouldn't fix a parse issue).
+				} else {
+					// Aborted/errored — retry once with a fresh spawn.
+					retryableFailure = true
 				}
-				// Subagent completed but output wasn't parseable — fall through to single-shot.
+			} catch {
+				// Subagent threw — retry once with a fresh spawn.
+				retryableFailure = true
 			}
-			// Subagent aborted/errored — fall through to single-shot.
-		} catch {
-			// Subagent threw — fall through to single-shot.
+			if (!retryableFailure) break
 		}
 	}
 
