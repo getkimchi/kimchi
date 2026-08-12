@@ -38,7 +38,7 @@ interface ModelLike {
 
 interface ModelRegistry {
 	authStorage: AuthStorage
-	refresh(): void
+	refresh(): Promise<unknown>
 	getAll(): ModelLike[]
 	getAvailable(): ModelLike[]
 	getModelById(id: string): ModelLike | undefined
@@ -107,6 +107,11 @@ export const oauthDelegate = {
 	original: imProto.showOAuthSelector as (this: any, mode: "login" | "logout") => Promise<void>,
 }
 
+export const loginDelegate = {
+	// biome-ignore lint/suspicious/noExplicitAny: `this` context type for upstream prototype method is unknown
+	original: imProto.handleLoginCommand as (this: any, providerRef?: string) => Promise<void>,
+}
+
 export const warningDelegate = {
 	// biome-ignore lint/suspicious/noExplicitAny: `this` context type for upstream prototype method is unknown
 	original: imProto.showWarning as (this: any, warningMessage: string) => void,
@@ -114,6 +119,7 @@ export const warningDelegate = {
 
 /** Exported for testing: applies the prototype patch (idempotent re-apply is safe). */
 export function applyLoginCommandPatch(): void {
+	imProto.handleLoginCommand = patchedHandleLoginCommand
 	imProto.showOAuthSelector = patchedShowOAuthSelector
 	imProto.showWarning = patchedShowWarning
 }
@@ -222,7 +228,7 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 					const registry = modeLike.session?.modelRegistry
 					if (registry && typeof registry.refresh === "function") {
 						try {
-							registry.refresh()
+							await registry.refresh()
 						} catch {
 							// Silent — the next manual /reload or restart will pick up the models.
 						}
@@ -276,6 +282,14 @@ async function patchedShowOAuthSelector(this: InteractiveMode, mode: "login" | "
 		return
 	}
 	return oauthDelegate.original.call(this, mode)
+}
+
+async function patchedHandleLoginCommand(this: InteractiveMode, providerRef?: string) {
+	if (!providerRef) {
+		showLoginChoiceSelector(this)
+		return
+	}
+	return loginDelegate.original.call(this, providerRef)
 }
 
 function patchedShowWarning(this: InteractiveMode, warningMessage: string): void {

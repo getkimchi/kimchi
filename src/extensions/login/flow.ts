@@ -103,7 +103,7 @@ interface ProviderModelLike {
 
 interface ModelRegistryLike<TModel extends ProviderModelLike = ProviderModelLike> {
 	authStorage?: AuthStorageLike
-	refresh(): unknown
+	refresh(): Promise<unknown>
 	getAll(): TModel[]
 	getAvailable(): TModel[]
 	getProviderAuthStatus(providerId: string): AuthStatus
@@ -198,26 +198,23 @@ export function setKimchiAuthToken(
 			? { type: "oauth" as const, access: token, refresh: "", expires: Number.MAX_SAFE_INTEGER }
 			: { type: "api_key" as const, key: token }
 
-	if (modelRegistry.authStorage) {
-		modelRegistry.authStorage.set(KIMCHI_PROVIDER_ID, credential)
-	} else {
-		registerProviderApiKey(modelRegistry, KIMCHI_PROVIDER_ID, token)
-	}
-
-	// Set auth on all kimchi-dev/* sub-providers currently in the registry
-	const subProviders = new Set(
-		modelRegistry
-			.getAll()
-			.map((m) => m.provider)
-			.filter((p) => p.startsWith("kimchi-dev") && p !== KIMCHI_PROVIDER_ID),
-	)
-	for (const providerId of subProviders) {
+	for (const providerId of getKimchiProviderIds(modelRegistry)) {
 		if (modelRegistry.authStorage) {
 			modelRegistry.authStorage.set(providerId, credential)
 		} else {
 			registerProviderApiKey(modelRegistry, providerId, token)
 		}
 	}
+}
+
+function getKimchiProviderIds(modelRegistry: ModelRegistryLike): Set<string> {
+	return new Set([
+		KIMCHI_PROVIDER_ID,
+		...modelRegistry
+			.getAll()
+			.map((model) => model.provider)
+			.filter((providerId) => providerId.startsWith(`${KIMCHI_PROVIDER_ID}/`)),
+	])
 }
 
 function registerProviderApiKey(modelRegistry: ModelRegistryLike, providerId: string, token: string): void {
@@ -249,20 +246,22 @@ export interface KimchiApiKeyLoginOptions {
 	endpoint: string
 }
 
-function restoreKimchiAuth(modelRegistry: ModelRegistryLike, previousCredential: unknown): void {
-	if (!modelRegistry.authStorage) {
-		if (previousCredential) {
-			modelRegistry.registerProvider?.(KIMCHI_PROVIDER_ID, previousCredential as ProviderConfigInput)
-		} else {
-			modelRegistry.unregisterProvider?.(KIMCHI_PROVIDER_ID)
+function restoreKimchiAuth(modelRegistry: ModelRegistryLike, previousCredentials: Map<string, unknown>): void {
+	for (const [providerId, previousCredential] of previousCredentials) {
+		if (!modelRegistry.authStorage) {
+			if (previousCredential) {
+				modelRegistry.registerProvider?.(providerId, previousCredential as ProviderConfigInput)
+			} else {
+				modelRegistry.unregisterProvider?.(providerId)
+			}
+			continue
 		}
-		return
+		if (previousCredential !== undefined) {
+			modelRegistry.authStorage.set(providerId, previousCredential)
+		} else {
+			modelRegistry.authStorage.remove?.(providerId)
+		}
 	}
-	if (previousCredential !== undefined) {
-		modelRegistry.authStorage.set(KIMCHI_PROVIDER_ID, previousCredential)
-		return
-	}
-	modelRegistry.authStorage.remove?.(KIMCHI_PROVIDER_ID)
 }
 
 function formatKimchiTokenError(error: unknown, options: { saved: boolean }): string {
@@ -299,16 +298,21 @@ async function configureKimchiToken(
 		return false
 	}
 
-	const previousCredential =
-		host.modelRegistry.authStorage?.get(KIMCHI_PROVIDER_ID) ??
-		host.modelRegistry.getRegisteredProviderConfig?.(KIMCHI_PROVIDER_ID)
+	const previousCredentials = new Map(
+		[...getKimchiProviderIds(host.modelRegistry)].map((providerId) => [
+			providerId,
+			host.modelRegistry.authStorage
+				? host.modelRegistry.authStorage.get(providerId)
+				: host.modelRegistry.getRegisteredProviderConfig?.(providerId),
+		]),
+	)
 	setKimchiAuthToken(host.modelRegistry, token)
 	try {
-		host.modelRegistry.refresh()
+		await host.modelRegistry.refresh()
 	} catch (error) {
 		refreshError ??= error
 		if (options.strictFreshDiscovery) {
-			restoreKimchiAuth(host.modelRegistry, previousCredential)
+			restoreKimchiAuth(host.modelRegistry, previousCredentials)
 			host.showError?.(formatKimchiTokenError(error, { saved: false }))
 			return false
 		}
@@ -330,7 +334,7 @@ async function configureKimchiToken(
 	}
 
 	if (options.strictFreshDiscovery) {
-		restoreKimchiAuth(host.modelRegistry, previousCredential)
+		restoreKimchiAuth(host.modelRegistry, previousCredentials)
 		host.showError?.("Kimchi API-key login found no available Kimchi models. No changes were saved.")
 		return false
 	}
@@ -697,7 +701,7 @@ export async function showSubscriptionLoginWithExtensionUI(
 		const success = await showOAuthLoginDialogWithExtensionUI(ctx, providerOption.id, providerOption.name)
 		if (!success) return false
 
-		ctx.modelRegistry.refresh()
+		await ctx.modelRegistry.refresh()
 		const providerModels = ctx.modelRegistry.getAvailable().filter((model) => model.provider === providerOption.id)
 		const selectedModel = providerModels[0]
 		if (selectedModel) {
