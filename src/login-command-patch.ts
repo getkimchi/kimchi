@@ -6,7 +6,11 @@
  * `InteractiveMode` instance is constructed so the prototype patch takes effect.
  */
 
-import { type AuthStatus, InteractiveMode, OAuthSelectorComponent } from "@earendil-works/pi-coding-agent"
+import {
+	InteractiveMode,
+	OAuthSelectorComponent,
+	type ModelRegistry as PiModelRegistry,
+} from "@earendil-works/pi-coding-agent"
 import { Spacer, Text } from "@earendil-works/pi-tui"
 import {
 	createLoginChoiceSelector,
@@ -56,8 +60,8 @@ type UiLike = {
 
 type SelectorResult = { component: unknown; focus?: unknown }
 type ShowSelector = (build: (done: () => void) => SelectorResult) => void
-type AuthSelectorProvider = ConstructorParameters<typeof OAuthSelectorComponent>[2][number]
-type OAuthSelectorAuthStorage = ConstructorParameters<typeof OAuthSelectorComponent>[1]
+type AuthSelectorProvider = ConstructorParameters<typeof OAuthSelectorComponent>[1][number]
+type AuthStatus = ReturnType<PiModelRegistry["getProviderAuthStatus"]>
 
 type LoginModeLike = {
 	showSelector?: ShowSelector
@@ -188,7 +192,6 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 		return
 	}
 
-	const registry = modeLike.session.modelRegistry
 	const providerOptions = modeLike
 		.getLoginProviderOptions("oauth")
 		.filter((provider) => provider.id !== KIMCHI_PROVIDER_ID)
@@ -200,7 +203,6 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 	modeLike.showSelector((done) => {
 		const selector = new OAuthSelectorComponent(
 			"login",
-			registry.authStorage as OAuthSelectorAuthStorage,
 			providerOptions,
 			async (providerId) => {
 				done()
@@ -233,7 +235,6 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 				done()
 				showLoginChoiceSelector(im)
 			},
-			(providerId) => registry.getProviderAuthStatus(providerId),
 		)
 		return { component: selector, focus: selector }
 	})

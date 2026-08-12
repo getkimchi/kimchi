@@ -13,7 +13,6 @@ import type {
 	AgentSession,
 	AgentSessionEvent,
 	AgentSessionEventListener,
-	AuthStorage,
 	ExtensionContext,
 	ExtensionUIContext,
 	ModelRegistry,
@@ -3832,7 +3831,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 				} as unknown as Theme,
 			} as unknown as ExtensionUIContext,
 			modelRegistry: {
-				authStorage: {} as AuthStorage,
+				authStorage: {},
 				getApiKeyAndHeaders: vi.fn().mockReturnValue({ ok: true, apiKey: "test" }),
 				getAvailable: vi.fn().mockReturnValue([
 					{

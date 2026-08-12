@@ -1,5 +1,5 @@
 /**
- * Regression test for the bash timeout stdio-destroy patch.
+ * Regression test for Pi's bash timeout stdio cleanup.
  *
  * Problem: when a bash command's timeout fires, `killProcessTree` sends
  * SIGKILL to the process group. But on Linux, commands like `opam install`
@@ -9,9 +9,8 @@
  * `waitForChildProcess`'s grace timer indefinitely, causing `ops.exec()`
  * to never resolve and the tool call to hang forever.
  *
- * Fix (patch item 7 in patches/@earendil-works__pi-coding-agent@0.79.10.patch):
- * destroy the child's stdout/stderr streams 500ms after the timeout kill,
- * forcing `waitForChildProcess` to resolve so the timeout error propagates.
+ * Pi now closes the child's inherited stdio after the timeout kill, forcing
+ * `waitForChildProcess` to resolve so the timeout error propagates.
  *
  * This test is Linux-only because `setsid` is required to create a child
  * that escapes the process group. On macOS, backgrounded children remain in

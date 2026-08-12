@@ -29,7 +29,7 @@ type PatchableSession = Pick<AgentSession, "abort" | "sessionManager" | "setting
 	_compactionAbortController?: AbortController
 	_autoCompactionAbortController?: AbortController
 	_kimchiInlineCompactInFlight?: boolean
-	_disconnectFromAgent: () => void
+	_disconnectFromAgent?: () => void
 	inlineCompact?(options?: InlineCompactOptions): Promise<CompactionResult>
 }
 
@@ -38,11 +38,7 @@ type UpstreamCompact = AgentSession["compact"]
 type PatchableSessionPrototype = {
 	_kimchiInlineCompactPatch?: boolean
 	inlineCompact?: (this: PatchableSession, options?: InlineCompactOptions) => Promise<CompactionResult>
-	compact?: (
-		this: PatchableSession,
-		customInstructions?: Parameters<UpstreamCompact>[0],
-		force?: boolean,
-	) => ReturnType<UpstreamCompact>
+	compact?: (this: PatchableSession, customInstructions?: Parameters<UpstreamCompact>[0]) => ReturnType<UpstreamCompact>
 	_bindExtensionCore?: (this: PatchableSession, runner: PatchableRunnerInstance) => unknown
 }
 
@@ -97,10 +93,10 @@ function shadowProperty(target: object, key: string, value: unknown): () => void
 /** Fail fast if upstream compact internals no longer match the inline patch. */
 function assertCompactInternalsCompatible(sessionProto: PatchableSessionPrototype): void {
 	const compactSource = typeof sessionProto.compact === "function" ? String(sessionProto.compact) : ""
-	if (!compactSource.includes("_disconnectFromAgent") || !compactSource.includes("abort")) {
+	if (!compactSource.includes("this.abort") || !compactSource.includes("_compactionAbortController")) {
 		throw new Error(
 			"pi-coding-agent AgentSession.compact() is incompatible with Kimchi inline compaction " +
-				"(expected it to quiesce via _disconnectFromAgent/abort — upstream internals changed)",
+				"(expected manual compaction to abort first and use _compactionAbortController - upstream internals changed)",
 		)
 	}
 }
@@ -133,20 +129,24 @@ async function runInlineCompact(
 	const restores: Array<() => void> = []
 
 	try {
-		// One-shot suppression of the quiesce pair. Any later abort() during
+		// One-shot suppression of manual compaction's quiesce calls. Any later abort() during
 		// summarization is a genuine cancellation request.
 		const realDisconnect = session._disconnectFromAgent
 		const realAbort = session.abort
 		let disconnectSuppressed = false
 		let abortSuppressed = false
+		if (realDisconnect) {
+			restores.push(
+				shadowProperty(session, "_disconnectFromAgent", function inlineShadowedDisconnect(this: PatchableSession) {
+					if (!disconnectSuppressed) {
+						disconnectSuppressed = true
+						return
+					}
+					return realDisconnect.call(this)
+				}),
+			)
+		}
 		restores.push(
-			shadowProperty(session, "_disconnectFromAgent", function inlineShadowedDisconnect(this: PatchableSession) {
-				if (!disconnectSuppressed) {
-					disconnectSuppressed = true
-					return
-				}
-				return realDisconnect.call(this)
-			}),
 			shadowProperty(session, "abort", async function inlineShadowedAbort(this: PatchableSession) {
 				if (!abortSuppressed) {
 					abortSuppressed = true
@@ -177,7 +177,7 @@ async function runInlineCompact(
 			restores.push(shadowProperty(session, "thinkingLevel", options.thinkingLevel))
 		}
 
-		return await originalCompact.call(session, options.customInstructions, options.force ?? false)
+		return await originalCompact.call(session, options.customInstructions)
 	} finally {
 		session._kimchiInlineCompactInFlight = false
 		for (const restore of restores.reverse()) {

@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import { afterEach, beforeEach, expect, it } from "vitest"
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
-const patchedFile = resolve(projectRoot, "node_modules/@earendil-works/pi-ai/dist/utils/oauth/oauth-page.js")
+const patchedFile = resolve(projectRoot, "node_modules/@earendil-works/pi-ai/dist/auth/oauth/oauth-page.js")
 const patchedFileUrl = pathToFileURL(patchedFile).href
 const templateDir = resolve(projectRoot, "resources/oauth")
 

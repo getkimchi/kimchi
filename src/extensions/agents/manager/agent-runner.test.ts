@@ -111,6 +111,7 @@ import {
 	type CreateAgentSessionResult,
 	createAgentSession,
 	DefaultResourceLoader,
+	type InlineExtension,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../bash-default-timeout.js"
@@ -139,6 +140,11 @@ const mockSetCurrentPhase = vi.mocked(setCurrentPhase)
 
 type SessionEvent = { type: string; [k: string]: unknown }
 type Subscriber = (event: SessionEvent) => void
+
+function runInlineExtension(extension: InlineExtension | undefined, pi: never): void | Promise<void> {
+	const factory = typeof extension === "function" ? extension : extension?.factory
+	return factory?.(pi)
+}
 
 const DEFAULT_REGISTERED_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 
@@ -357,7 +363,7 @@ describe("runAgent — telemetry extension", () => {
 		const workerFactories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
 		const toolCallHandlers: Array<(event: unknown) => void> = []
 		for (const factory of workerFactories) {
-			factory({
+			runInlineExtension(factory, {
 				on: (event: string, handler: (event: unknown) => void) => {
 					if (event === "tool_call") toolCallHandlers.push(handler)
 				},
@@ -417,7 +423,7 @@ describe("runAgent — telemetry extension", () => {
 			promptAction: async (emit) => {
 				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[3]
 				const registerTool = vi.fn()
-				factory?.({ registerTool } as never)
+				runInlineExtension(factory, { registerTool } as never)
 				const tool = registerTool.mock.calls[0]?.[0]
 				await tool.execute(
 					"report-1",

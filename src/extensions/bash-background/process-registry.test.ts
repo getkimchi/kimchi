@@ -195,6 +195,26 @@ describe("createProcessRegistry — snapshotTail", () => {
 		expect(snap.reason).toBe("unknown")
 		expect(snap.text).toBe("")
 	})
+
+	it("returns a truncated final snapshot with a spill path", async () => {
+		const ops = createFakeOps(0)
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "yes", "/tmp", undefined, {
+			intervalSeconds: 15,
+			deadlineMs: Date.now() + 60_000,
+		})
+		ops.emit(Buffer.alloc(60_000, "x".charCodeAt(0)))
+		await ops.exit(0)
+		await registry.whenExited(handle)
+
+		const snap = registry.finalSnapshot(handle)
+		expect(snap?.truncation?.truncated).toBe(true)
+		expect(snap?.content).toHaveLength(50_000)
+		expect(snap?.fullOutputPath).toContain("pi-bash-")
+
+		await registry.remove(handle)
+		await registry.shutdown()
+	})
 })
 
 describe("createProcessRegistry — kill", () => {

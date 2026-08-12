@@ -28,9 +28,7 @@ test("extension before_provider_headers hook injects custom headers into LLM req
 		// is the extension factory the runtime expects.
 		`module.exports = function (pi) {
 \tpi.on("before_provider_headers", function (event) {
-\t\treturn Object.assign({}, event.headers, {
-\t\t\t"X-Kimchi-Tui-Test-Marker": ${JSON.stringify(marker)},
-\t\t});
+\t\tevent.headers["X-Kimchi-Tui-Test-Marker"] = ${JSON.stringify(marker)};
 \t});
 };
 `,

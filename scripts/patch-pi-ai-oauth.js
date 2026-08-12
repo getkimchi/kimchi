@@ -20,16 +20,7 @@
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 
-const target = join(
-	process.cwd(),
-	"node_modules",
-	"@earendil-works",
-	"pi-ai",
-	"dist",
-	"utils",
-	"oauth",
-	"oauth-page.js",
-)
+const target = join(process.cwd(), "node_modules", "@earendil-works", "pi-ai", "dist", "auth", "oauth", "oauth-page.js")
 
 const patched = `import { readFileSync } from "node:fs";
 function escapeHtml(value) {

@@ -189,8 +189,8 @@ describe("installInlineCompactPatch", () => {
 	})
 
 	it("installs against the real AgentSession/ExtensionRunner internals", () => {
-		// The drift canary: fails when upstream renames compact()'s quiesce
-		// internals (_disconnectFromAgent / this.abort) or the patched members.
+		// The drift canary: fails when upstream renames compact()'s abort/controller
+		// internals or the patched members.
 		expect(() => installInlineCompactPatch()).not.toThrow()
 		expect(typeof (AgentSession.prototype as { inlineCompact?: unknown }).inlineCompact).toBe("function")
 		expect(
@@ -198,7 +198,7 @@ describe("installInlineCompactPatch", () => {
 		).toBe(true)
 	})
 
-	it("rejects a session class whose compact() lacks the quiesce internals", () => {
+	it("rejects a session class whose compact() lacks the abort/controller internals", () => {
 		class DriftedSession {
 			async compact(): Promise<void> {}
 			_bindExtensionCore(): void {}
@@ -208,7 +208,7 @@ describe("installInlineCompactPatch", () => {
 				sessionClass: DriftedSession as unknown as NonNullable<InlineCompactPatchOptions["sessionClass"]>,
 				runnerClass: FakeRunner as unknown as NonNullable<InlineCompactPatchOptions["runnerClass"]>,
 			}),
-		).toThrow("expected it to quiesce via _disconnectFromAgent/abort")
+		).toThrow("expected manual compaction to abort first and use _compactionAbortController")
 	})
 
 	it("identifies missing AgentSession prototype methods", () => {

@@ -59,7 +59,7 @@ export const PLANNING_TOOL_NAMES: ReadonlySet<string> = new Set([
 	// start_ferment_step and the rest of the implementation lifecycle tools are
 	// NOT listed here — they become available on the turn after activation via
 	// agent.prepareNextTurn refreshing context.tools from state.tools
-	// (see patches/@earendil-works__pi-coding-agent.patch).
+	// (see the pinned pi-coding-agent patch).
 	FERMENT_TOOLS.ACTIVATE_PHASE,
 ])
 

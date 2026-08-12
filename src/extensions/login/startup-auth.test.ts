@@ -228,8 +228,8 @@ describe("startup auth gate", () => {
 			options?.onBrowserUrl?.(loginUrl)
 			return { token: "kimchi-token" }
 		})
-		// The URL is shown via the reused LoginDialogComponent's showInfo, not notify.
-		const showInfoSpy = vi.spyOn(LoginDialogComponent.prototype, "showInfo")
+		// The URL is shown via the reused LoginDialogComponent's details area, not notify.
+		const showDetailsSpy = vi.spyOn(LoginDialogComponent.prototype, "showDetails")
 
 		try {
 			const harness = createHarness()
@@ -240,7 +240,7 @@ describe("startup auth gate", () => {
 			await started
 
 			expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
-			const lines = showInfoSpy.mock.calls.flatMap((call) => call[0] as string[])
+			const lines = showDetailsSpy.mock.calls.flatMap((call) => call[0])
 			// Intact BEL-terminated OSC 8 hyperlink target so "Copy Link" yields the full
 			// URL even when the visible text wraps (a raw wrapped URL would get a newline
 			// injected at the wrap point, corrupting the state param on paste). The `id=`
@@ -248,7 +248,7 @@ describe("startup auth gate", () => {
 			expect(lines.some((line) => line.includes(`;${loginUrl}\x07`))).toBe(true)
 			expect(lines.some((line) => line.includes("\x1b]8;id=kimchi-login-"))).toBe(true)
 		} finally {
-			showInfoSpy.mockRestore()
+			showDetailsSpy.mockRestore()
 		}
 	})
 

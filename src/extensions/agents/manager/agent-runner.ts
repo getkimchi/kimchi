@@ -5,10 +5,13 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
 	type AgentSessionEvent,
+	type CreateAgentSessionOptions,
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionAPI,
 	getAgentDir,
+	type InlineExtension,
+	type ModelRuntime,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
@@ -252,6 +255,10 @@ export interface RunResult {
 	maxTurns?: number
 }
 
+type ModelRegistryWithRuntime = {
+	runtime?: ModelRuntime
+}
+
 function collectResponseText(session: AgentSession) {
 	let text = ""
 	const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
@@ -461,7 +468,11 @@ ${skillLines}`
 			: bashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
 	// successes must close the shared infrastructure breaker just like the parent's.
-	const extensionFactories = [telemetryExtension(readTelemetryConfig()), bashExtension, infrastructureBreakerExtension]
+	const extensionFactories: InlineExtension[] = [
+		telemetryExtension(readTelemetryConfig()),
+		bashExtension,
+		infrastructureBreakerExtension,
+	]
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}
@@ -493,17 +504,18 @@ ${skillLines}`
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
 	const settingsManager = SettingsManager.create(effectiveCwd, agentDir)
+	const modelRuntime = (ctx.modelRegistry as unknown as ModelRegistryWithRuntime).runtime
 
-	const sessionOpts: Parameters<typeof createAgentSession>[0] = {
+	const sessionOpts: CreateAgentSessionOptions = {
 		cwd: effectiveCwd,
 		agentDir,
 		sessionManager: options.sessionFile
 			? SessionManager.open(options.sessionFile, options.sessionDir, effectiveCwd)
 			: SessionManager.inMemory(effectiveCwd),
 		settingsManager,
-		modelRegistry: ctx.modelRegistry,
 		model,
 		resourceLoader: loader,
+		...(modelRuntime ? { modelRuntime } : {}),
 	}
 	if (effectiveExtensions === false) {
 		sessionOpts.tools = toolNames
