@@ -4,9 +4,33 @@ import {
 	AGENT_TOOL_GUIDELINES,
 	resolveRoleModelRef,
 	setActiveManagerForTest,
+	shouldAutoResumeFermentWorker,
 	spawnGraderAgent,
 	summaryForStatus,
 } from "./index.js"
+
+describe("shouldAutoResumeFermentWorker", () => {
+	const base = {
+		status: "aborted",
+		abortReason: "max_turns" as const,
+		session: {},
+		taskRef: { kind: "ferment_step" },
+		resumeAttempts: [],
+	}
+	it("fires for a ferment step worker killed by turns or duration on first attempt", () => {
+		expect(shouldAutoResumeFermentWorker({ ...base })).toBe(true)
+		expect(shouldAutoResumeFermentWorker({ ...base, abortReason: "max_duration" as const })).toBe(true)
+	})
+	it("does NOT fire on second exhaustion, non-ferment agents, or non-budget aborts", () => {
+		expect(shouldAutoResumeFermentWorker({ ...base, resumeAttempts: [{}] })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, taskRef: { kind: "other" } })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, taskRef: undefined })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, abortReason: "token_budget" as const })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, abortReason: "inactivity" as const })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, status: "completed" })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, session: null })).toBe(false)
+	})
+})
 
 describe("summaryForStatus", () => {
 	it("labels token-budget aborts distinctly from max-turn aborts", () => {

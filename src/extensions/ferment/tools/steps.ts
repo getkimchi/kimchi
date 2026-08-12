@@ -75,9 +75,25 @@ type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
  * will act upon — if it says complete_phase, the phase IS complete and the
  * phase-compaction path WILL fire.
  */
-function maybeRecordStepCompaction(runtime: FermentRuntime, ferment: Ferment, phase: Phase, step: Step): void {
+function maybeRecordStepCompaction(
+	runtime: FermentRuntime,
+	ferment: Ferment,
+	phase: Phase,
+	step: Step,
+	workerDelegated?: boolean,
+): void {
 	const next = determineNextAction(ferment)
 	if (next?.kind === "complete_phase" && next.phaseId === phase.id) return
+	// Worker-delegated steps keep their tool-call residue (file reads, build
+	// output, test logs) inside the worker session — the main thread only gains
+	// the worker's report summary. Forced per-step compaction was built for the
+	// direct-execution era, where the residue landed HERE; firing it after a
+	// delegated step mostly costs a summarization call and collapses the
+	// orchestrator's own reasoning (work-order designs, verdicts) — the spine
+	// workers depend on. Measured run 019ff5cc: main context held 55–85K with
+	// delegation, far below any pressure threshold. Phase-boundary compaction
+	// and the mid-turn pressure path remain the safety nets.
+	if (workerDelegated) return
 	runtime.setPendingCompaction(ferment.id, {
 		kind: "step",
 		fermentId: ferment.id,
@@ -396,7 +412,7 @@ Do NOT call start_ferment_step again without user input.`,
 	const isMultiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 	return toolOk(
 		withNextActionHint(
-			`${planFirstPreamble}\n\nStep ${step.index}: "${step.description}" started. ${isMultiModelEnabled ? `Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.` : `Either spawn a subagent with the persona that matches this step's intent (pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits; the worker will receive its Agent ID and must call submit_agent_report before its final answer), or execute the step directly using bash/edit/write. When a subagent returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary. If you executed directly, call complete_ferment_step with just the summary and gates (worker_agent_id is optional).`}${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
+			`${planFirstPreamble}\n\nStep ${step.index}: "${step.description}" started. ${isMultiModelEnabled ? `Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.` : `Delegate this step to a subagent worker — spawn the persona matching this step's intent (pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits; the worker receives its Agent ID and must call submit_agent_report before its final answer). Delegation is the default: the worker's file reads, build output, and test logs stay out of this session, and the deterministic verify gate supplies the trust. Execute directly ONLY as the narrow exception: a small patch to work a subagent just completed (you already hold the context), a verification-only run, or stitching two completed workers' outputs together. When a subagent returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary. If you executed directly under an exception, call complete_ferment_step with just the summary and gates (worker_agent_id is optional).`}${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
 			outcome.ferment,
 			multiModelEnabled,
 		),
@@ -546,7 +562,7 @@ export async function completeStep(
 		if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f, multiModelEnabled)
 		runtime.clearStepStart(f.id, phase.id, step.id)
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
-		maybeRecordStepCompaction(runtime, completeOutcome.ferment, phase, step)
+		maybeRecordStepCompaction(runtime, completeOutcome.ferment, phase, step, params.worker_agent_id != null)
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓ ${step.description}`)
 		return toolOk(
@@ -585,7 +601,7 @@ export async function completeStep(
 	if (exitCode === 0) {
 		// Verification passed + all gates pass → silent advance. No LLM call.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
-		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step)
+		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step, params.worker_agent_id != null)
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓ verified - ${step.description}`)
 		return toolOk(
@@ -612,7 +628,7 @@ export async function completeStep(
 		// is acceptable (e.g. linter noise on an unrelated file). Gate
 		// verdicts already passed above, so advance.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
-		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step)
+		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step, params.worker_agent_id != null)
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓  Judge passed: ${judgeVerdict.reason}`)
 		return toolOk(

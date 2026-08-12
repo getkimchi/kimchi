@@ -178,9 +178,9 @@ describe("startStep", () => {
 		expect(text).toContain('task_ref: {"kind":"ferment_step"')
 		expect(text).toContain('"budget_tier":"standard"')
 		expect(text).toContain("budget_tier=standard")
-		expect(text).toContain("max_turns=25")
-		expect(text).toContain("max_duration=300s")
-		expect(text).toContain("token_budget=100000")
+		expect(text).toContain("max_turns=35")
+		expect(text).toContain("max_duration=600s")
+		expect(text).toContain("token_budget=150000")
 		expect(text).toContain("submit_agent_report")
 		expect(text).toContain("Do not complete the step from an exhausted worker")
 		expect(text).not.toContain("call complete_ferment_step with whatever it produced")
@@ -215,10 +215,10 @@ describe("startStep", () => {
 
 		const text = okText(result)
 		expect(text).toContain('"budget_tier":"complex"')
-		expect(text).toContain("max_turns=30")
-		expect(text).toContain("max_duration=600s")
-		expect(text).toContain("token_budget=150000")
-		expect(text).toContain("cumulative_token_budget=375000")
+		expect(text).toContain("max_turns=45")
+		expect(text).toContain("max_duration=900s")
+		expect(text).toContain("token_budget=200000")
+		expect(text).toContain("cumulative_token_budget=500000")
 	})
 
 	it("includes fixed output paths from scoping in the worker prompt handoff", async () => {
@@ -791,7 +791,39 @@ describe("completeStep", () => {
 		clearPendingCompaction("ferment-steps-test")
 	})
 
-	it("records a step-level pending compaction for a mid-phase step", async () => {
+	it("records a step-level pending compaction for a mid-phase step executed directly", async () => {
+		const h = createHarness()
+		const services = createServices()
+		const start = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+		if (!start.ok) throw new Error(start.error.message)
+
+		const result = await completeStep(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-1",
+				// No worker_agent_id → direct execution: residue lands in the main
+				// session, so the forced per-step compaction still fires.
+				summary: "done",
+				gates: passingStepGates(),
+			},
+			{ pi: h.pi, ctx: createContext() },
+			services,
+		)
+
+		expect(okText(result)).toContain("done")
+		// step-1 is NOT the last step (step-2 remains) → step compaction recorded.
+		const pending = getPendingCompaction(h.fermentId)
+		expect(pending).toBeDefined()
+		expect(pending?.kind).toBe("step")
+		expect(pending?.stepId).toBe("step-1")
+	})
+
+	it("skips the step-level pending compaction for a worker-delegated step (measured run 019ff5cc)", async () => {
+		// Delegated workers keep their residue inside the worker session; forcing
+		// a compaction here costs a summarization call and collapses the
+		// orchestrator's own reasoning spine for no context-pressure benefit.
 		const h = createHarness()
 		const services = createServices()
 		const start = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
@@ -812,11 +844,8 @@ describe("completeStep", () => {
 		)
 
 		expect(okText(result)).toContain("done")
-		// step-1 is NOT the last step (step-2 remains) → step compaction recorded.
-		const pending = getPendingCompaction(h.fermentId)
-		expect(pending).toBeDefined()
-		expect(pending?.kind).toBe("step")
-		expect(pending?.stepId).toBe("step-1")
+		// Mid-phase + worker-delegated → no step-level compaction recorded.
+		expect(getPendingCompaction(h.fermentId)).toBeUndefined()
 	})
 
 	it("skips the step-level pending compaction on the last step of a phase", async () => {
@@ -831,7 +860,8 @@ describe("completeStep", () => {
 				ferment_id: h.fermentId,
 				phase_id: "phase-1",
 				step_id: "step-1",
-				worker_agent_id: linkedWorker(h.fermentId),
+				// Direct execution (no worker) — this test exercises the
+				// phase-boundary dedup, not the worker-delegation skip.
 				summary: "done",
 				gates: passingStepGates(),
 			},
@@ -851,7 +881,6 @@ describe("completeStep", () => {
 				ferment_id: h.fermentId,
 				phase_id: "phase-1",
 				step_id: "step-2",
-				worker_agent_id: linkedWorker(h.fermentId, "phase-1", "step-2"),
 				summary: "done",
 				gates: passingStepGates(),
 			},
@@ -991,33 +1020,36 @@ describe("completeStep subsumed", () => {
 })
 
 describe("suggestWorkerLimits", () => {
+	// Standard tier values calibrated from measured run 019ff5cc: 300s/25 turns
+	// starved real multi-file builds (8/17 Builder workers aborted at exactly
+	// the cap); 600s/35 turns gives a single app + tests the measured headroom.
 	it("returns the standard Ferment step budget by default", () => {
 		const limits = suggestWorkerLimits("Implement the auth middleware")
 		expect(limits).toEqual({
-			maxTurns: 25,
-			maxDuration: 300,
-			tokenBudget: 100_000,
-			cumulativeTokenBudget: 250_000,
+			maxTurns: 35,
+			maxDuration: 600,
+			tokenBudget: 150_000,
+			cumulativeTokenBudget: 375_000,
 		})
 	})
 
 	it("does not inflate budgets from model-authored keywords", () => {
 		const limits = suggestWorkerLimits("Compile the MIPS binary and link dependencies")
 		expect(limits).toEqual({
-			maxTurns: 25,
-			maxDuration: 300,
-			tokenBudget: 100_000,
-			cumulativeTokenBudget: 250_000,
+			maxTurns: 35,
+			maxDuration: 600,
+			tokenBudget: 150_000,
+			cumulativeTokenBudget: 375_000,
 		})
 	})
 
 	it("does not inflate budgets from verification commands", () => {
 		const limits = suggestWorkerLimits("Run the build", "make -j4 && ./run_tests.sh")
 		expect(limits).toEqual({
-			maxTurns: 25,
-			maxDuration: 300,
-			tokenBudget: 100_000,
-			cumulativeTokenBudget: 250_000,
+			maxTurns: 35,
+			maxDuration: 600,
+			tokenBudget: 150_000,
+			cumulativeTokenBudget: 375_000,
 		})
 	})
 })
@@ -1041,6 +1073,23 @@ describe("start_ferment_step plan-first preamble", () => {
 		// Batching rule: step-todo edits must not become standalone turns
 		// (pure todo turns cost a full context read each).
 		expect(text).toContain("single update_todos call per turn")
+	})
+
+	it("start response makes delegation the default with narrow exceptions (measured run 019ff530: 0/28 steps delegated)", async () => {
+		const h = createHarness()
+		const services = createServices()
+
+		const result = await startStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+			{ pi: h.pi, ctx: createContext() },
+			services,
+		)
+
+		const text = okText(result)
+		expect(text).toContain("Delegate this step to a subagent worker")
+		expect(text).toContain("Delegation is the default")
+		expect(text).toContain("stitching two completed workers' outputs together")
 	})
 
 	it.each([1, 2])("preamble appears on call %i without completion", async (callNumber) => {

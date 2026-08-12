@@ -744,6 +744,35 @@ describe("judgePhaseGradeViaSubagent", () => {
 		expect(result.graderSource).toBe("fallback_single_shot")
 	})
 
+	it("retries the grader subagent once on abort before going blind (measured run 019ff5cc)", async () => {
+		// A single killed grader spawn used to short-circuit to the blind
+		// fallback, letting phases accept grades an equipped grader would refuse.
+		const spawn = vi.fn(async (): Promise<GraderSubagentResult> => ({ text: "", status: "aborted" }))
+		await judgePhaseGradeViaSubagent(
+			makePhaseInput(),
+			spawn,
+			vi.fn(async () => ok('{"grade":"B","rationale":"x"}')),
+		)
+		expect(spawn).toHaveBeenCalledTimes(2)
+	})
+
+	it("accepts the grade when the retried grader subagent succeeds", async () => {
+		const spawn = vi
+			.fn()
+			.mockResolvedValueOnce({ text: "", status: "aborted" } as GraderSubagentResult)
+			.mockResolvedValueOnce({
+				text: '{"grade":"A","rationale":"verified","recommendations":[]}',
+				status: "completed",
+			} as GraderSubagentResult)
+		const apiCall = vi.fn(async () => ok('{"grade":"C","rationale":"blind"}'))
+		const result = await judgePhaseGradeViaSubagent(makePhaseInput(), spawn, apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.graderSource).toBe("subagent")
+		expect(result.grade).toBe("A")
+		expect(apiCall).not.toHaveBeenCalled()
+	})
+
 	it("prepends delta-grade instructions to the grader prompt when priorRefusal is present", async () => {
 		let prompt = ""
 		const spawn = vi.fn(async (p: string): Promise<GraderSubagentResult> => {
@@ -786,6 +815,26 @@ describe("judgeJourneyGradeViaSubagent", () => {
 		expect(result.ok).toBe(true)
 		if (!result.ok) return
 		expect(result.grade).toBe("A")
+		expect(apiCall).not.toHaveBeenCalled()
+	})
+
+	it("retries the journey grader once on abort before going blind (measured run 019ff5cc)", async () => {
+		// The flagship benchmark completed with journey grade=None because one
+		// killed grader spawn short-circuited to the blind fallback judge.
+		const spawn = vi
+			.fn()
+			.mockResolvedValueOnce({ text: "", status: "aborted" } as GraderSubagentResult)
+			.mockResolvedValueOnce({
+				text: '{"grade":"A","rationale":"verified","recommendations":[]}',
+				status: "completed",
+			} as GraderSubagentResult)
+		const apiCall = vi.fn(async () => ok('{"grade":"C","rationale":"blind"}'))
+		const result = await judgeJourneyGradeViaSubagent(makeInput(), spawn, apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.graderSource).toBe("subagent")
+		expect(result.grade).toBe("A")
+		expect(spawn).toHaveBeenCalledTimes(2)
 		expect(apiCall).not.toHaveBeenCalled()
 	})
 

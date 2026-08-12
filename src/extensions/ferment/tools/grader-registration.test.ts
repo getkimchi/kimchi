@@ -28,7 +28,7 @@ describe("Grader agent registration", () => {
 		// soft turn cap starts steering wrap-up.
 		expect(cfg.maxTurns).toBe(25)
 		expect(cfg.tokenBudget).toBe(60_000)
-		expect(cfg.maxDuration).toBe(180)
+		expect(cfg.maxDuration).toBe(600)
 
 		// No extensions or skills — purely built-in tools
 		expect(cfg.extensions).toBe(false)
