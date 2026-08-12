@@ -45,7 +45,9 @@ function errText(result: { content: { text: string }[]; isError?: boolean }): st
 	return result.content.map((c) => c.text).join("\n")
 }
 
-function createHarness(options: { verification?: string; goal?: string; successCriteria?: string[] } = {}) {
+function createHarness(
+	options: { verification?: string; secondVerification?: string; goal?: string; successCriteria?: string[] } = {},
+) {
 	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-steps-test-")))
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
 	const applyAndPersist = createApplyAndPersist(runtime)
@@ -81,7 +83,7 @@ function createHarness(options: { verification?: string; goal?: string; successC
 						description: "First step",
 						verify: options.verification,
 					},
-					{ description: "Second step" },
+					{ description: "Second step", verify: options.secondVerification },
 				],
 			},
 		],
@@ -362,6 +364,7 @@ describe("completeStep", () => {
 
 		expect(okText(result)).toContain("done")
 		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("done")
+		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].summary).toBe("done")
 		expect(services.onStepCompleted).toHaveBeenCalled()
 	})
 
@@ -863,6 +866,130 @@ describe("completeStep", () => {
 	})
 })
 
+describe("completeStep subsumed", () => {
+	/** Start + complete step-1 as verified, then start step-2 (leaves it running). */
+	function reachRunningStep2(h: ReturnType<typeof createHarness>) {
+		const start1 = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+		if (!start1.ok) throw new Error(start1.error.message)
+		const verify1 = h.applyAndPersist(h.fermentId, {
+			type: "verify_step",
+			phaseId: "phase-1",
+			stepId: "step-1",
+			result: { success: true, exitCode: 0, stdout: "ok", stderr: "", completedAt: "2026-05-11T00:00:00.000Z" },
+			summary: "step-1 done",
+		})
+		if (!verify1.ok) throw new Error(verify1.error.message)
+		const start2 = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-2" })
+		if (!start2.ok) throw new Error(start2.error.message)
+	}
+
+	it("accepts an honest subsumption: skips worker linking + gates, re-runs verification, marks verified", async () => {
+		const h = createHarness({ verification: "pnpm test", secondVerification: "pnpm test:second" })
+		reachRunningStep2(h)
+		const runVerification = vi.fn(async () => ({ exitCode: 0, stdout: "pass", stderr: "" }))
+		const services = createServices({ runVerification })
+
+		const result = await completeStep(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-2",
+				subsumed: true,
+				absorbed_by: "step-1",
+				summary: "already covered by step-1 implementation",
+				gates: passingStepGates(),
+			},
+			{ pi: h.pi, ctx: createContext() },
+			services,
+		)
+
+		const text = okText(result)
+		expect(text).toContain("Subsumed by step 1")
+		expect(runVerification).toHaveBeenCalledWith(expect.objectContaining({ command: "pnpm test:second" }))
+		expect(services.judgeStepVerification).not.toHaveBeenCalled()
+		expect(services.onStepCompleted).toHaveBeenCalled()
+		const step2 = h.storage.get(h.fermentId)?.phases[0].steps[1]
+		expect(step2?.status).toBe("verified")
+		expect(step2?.summary).toContain('Subsumed by step 1: "First step"')
+	})
+
+	it("refuses subsumption without absorbed_by", async () => {
+		const h = createHarness({ verification: "pnpm test", secondVerification: "pnpm test:second" })
+		reachRunningStep2(h)
+		const result = await completeStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-2", subsumed: true, gates: passingStepGates() },
+			{ pi: h.pi, ctx: createContext() },
+			createServices(),
+		)
+		expect(errText(result)).toContain("requires absorbed_by")
+	})
+
+	it("refuses self-absorption", async () => {
+		const h = createHarness({ verification: "pnpm test" })
+		const start1 = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+		if (!start1.ok) throw new Error(start1.error.message)
+		const result = await completeStep(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-1",
+				subsumed: true,
+				absorbed_by: "step-1",
+				gates: passingStepGates(),
+			},
+			{ pi: h.pi, ctx: createContext() },
+			createServices(),
+		)
+		expect(errText(result)).toContain("different step")
+	})
+
+	it("refuses when the verify re-run fails and keeps the step running", async () => {
+		const h = createHarness({ verification: "pnpm test", secondVerification: "pnpm test:second" })
+		reachRunningStep2(h)
+		const services = createServices({
+			runVerification: vi.fn(async () => ({ exitCode: 1, stdout: "", stderr: "boom" })),
+		})
+		const result = await completeStep(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-2",
+				subsumed: true,
+				absorbed_by: "step-1",
+				gates: passingStepGates(),
+			},
+			{ pi: h.pi, ctx: createContext() },
+			services,
+		)
+		expect(errText(result)).toContain("Subsumption not verified")
+		expect(h.storage.get(h.fermentId)?.phases[0].steps[1].status).toBe("running")
+	})
+
+	it("refuses when the subsumed step declares no verification command", async () => {
+		const h = createHarness({ verification: "pnpm test" })
+		reachRunningStep2(h)
+		const result = await completeStep(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-2",
+				subsumed: true,
+				absorbed_by: "step-1",
+				gates: passingStepGates(),
+			},
+			{ pi: h.pi, ctx: createContext() },
+			createServices(),
+		)
+		expect(errText(result)).toContain("verification command")
+		expect(errText(result)).toContain("complete it normally")
+	})
+})
+
 describe("suggestWorkerLimits", () => {
 	it("returns the standard Ferment step budget by default", () => {
 		const limits = suggestWorkerLimits("Implement the auth middleware")
@@ -911,6 +1038,9 @@ describe("start_ferment_step plan-first preamble", () => {
 		expect(text).toContain("Plan first")
 		expect(text).toContain("verification sub-task")
 		expect(text).toContain("cleanup sub-task")
+		// Batching rule: step-todo edits must not become standalone turns
+		// (pure todo turns cost a full context read each).
+		expect(text).toContain("single update_todos call per turn")
 	})
 
 	it.each([1, 2])("preamble appears on call %i without completion", async (callNumber) => {

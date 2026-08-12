@@ -3,7 +3,77 @@ import { existsSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { gatherPhaseEvidence } from "./phase-evidence.js"
+import type { Step } from "../../ferment/types.js"
+import { gatherPhaseEvidence, gatherStepVerifyEvidence } from "./phase-evidence.js"
+
+function makeStep(overrides: Partial<Step> = {}): Step {
+	return {
+		id: "step-1",
+		index: 1,
+		description: "Do the thing",
+		status: "verified",
+		verification: { command: "npm run test" },
+		result: {
+			success: true,
+			exitCode: 0,
+			stdout: "All tests passed (42)",
+			stderr: "",
+			completedAt: "2026-08-11T12:00:00Z",
+		},
+		...overrides,
+	}
+}
+
+describe("gatherStepVerifyEvidence", () => {
+	it("returns undefined for an empty step list", () => {
+		expect(gatherStepVerifyEvidence([])).toBeUndefined()
+	})
+
+	it("renders command, exit code, and output tails for executed verifies", () => {
+		const block = gatherStepVerifyEvidence([
+			makeStep(),
+			makeStep({
+				id: "step-2",
+				index: 2,
+				description: "Build",
+				verification: { command: "npm run build" },
+				result: { success: false, exitCode: 1, stdout: "ok so far", stderr: "ERROR: tsc failed", completedAt: "t" },
+			}),
+		])
+		expect(block).toContain('step-1 "Do the thing": `npm run test` → exit 0 ✓')
+		expect(block).toContain("All tests passed (42)")
+		expect(block).toContain('step-2 "Build": `npm run build` → exit 1 ✗')
+		expect(block).toContain("ERROR: tsc failed")
+	})
+
+	it("marks verify-less steps and declared-but-never-executed commands", () => {
+		const block = gatherStepVerifyEvidence([
+			makeStep({ verification: undefined, result: undefined, status: "done" }),
+			makeStep({ id: "step-2", index: 2, result: undefined, status: "pending" }),
+		])
+		expect(block).toContain('step-1 "Do the thing": (no verify command declared)')
+		expect(block).toContain("`npm run test` — declared, never executed")
+	})
+
+	it("renders steps in plan (index) order regardless of input order", () => {
+		const block = gatherStepVerifyEvidence([
+			makeStep({ id: "step-2", index: 2, description: "Second" }),
+			makeStep({ id: "step-1", index: 1, description: "First" }),
+		])
+		expect(block).toBeDefined()
+		if (!block) return
+		expect(block.indexOf("step-1")).toBeLessThan(block.indexOf("step-2"))
+	})
+
+	it("truncates long stdout to its tail", () => {
+		const longOut = `${"x".repeat(2000)}TAIL_MARKER`
+		const block = gatherStepVerifyEvidence([
+			makeStep({ result: { success: true, exitCode: 0, stdout: longOut, stderr: "", completedAt: "t" } }),
+		])
+		expect(block).toContain("TAIL_MARKER")
+		expect(block?.length ?? 0).toBeLessThan(1500)
+	})
+})
 
 function makeRepo(): string {
 	const dir = mkdtempSync(join(tmpdir(), "phase-evidence-"))

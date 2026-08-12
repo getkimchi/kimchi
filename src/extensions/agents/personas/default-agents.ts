@@ -351,7 +351,10 @@ Your verification file MUST contain:
 				skills: false,
 				roles: ["review"],
 				thinking: "medium",
-				maxTurns: 15,
+				// 25 (not 15): a thorough grader re-runs the full verification matrix
+				// (build+lint+test+e2e+inspection) — that alone costs ~15 tool turns,
+				// so at 15 every rigorous grader wrapped up "steered" at the soft cap.
+				maxTurns: 25,
 				tokenBudget: 60_000,
 				maxDuration: 180,
 				systemPrompt: `# Ferment Grader Agent

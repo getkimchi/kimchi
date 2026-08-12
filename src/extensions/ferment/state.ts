@@ -20,6 +20,7 @@ import {
 	deleteRuntimeState,
 	emptyState,
 	loadRuntimeState,
+	type PersistedPhaseRefusal,
 	type PersistedRuntimeState,
 	saveRuntimeState,
 } from "./runtime-state-store.js"
@@ -532,6 +533,8 @@ export function clearMidTurnOneshotWarnings(): void {
 
 const blockRetryCounts = new CounterMap()
 const lastBlockHash = new Map<string, string>()
+/** Delta-grading memory: latest LLM-grader refusal (grade + recs) per phase. */
+const lastPhaseRefusals = new Map<string, PersistedPhaseRefusal>()
 
 export const MAX_BLOCK_RETRIES = 3
 
@@ -551,6 +554,7 @@ export function clearBlockRetry(fermentId: string, phaseId: string): void {
 	hydrateIfNeeded(fermentId)
 	blockRetryCounts.clear(`${fermentId}:${phaseId}`)
 	lastBlockHash.delete(`${fermentId}:${phaseId}`)
+	lastPhaseRefusals.delete(`${fermentId}:${phaseId}`)
 	persistFerment(fermentId)
 }
 
@@ -564,6 +568,21 @@ export function recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string
 	lastBlockHash.set(key, hash)
 	persistFerment(fermentId)
 	return prev !== undefined && prev === hash
+}
+
+/** Record the latest LLM-grader refusal of a phase (grade + recommendations)
+ *  so the NEXT grader of the same phase can delta-grade: verify the refused
+ *  items are now fixed, and look primarily at what changed since. Overwrites
+ *  the previous refusal; cleared with the retry budget on completion. */
+export function setLastPhaseRefusal(fermentId: string, phaseId: string, refusal: PersistedPhaseRefusal): void {
+	hydrateIfNeeded(fermentId)
+	lastPhaseRefusals.set(`${fermentId}:${phaseId}`, refusal)
+	persistFerment(fermentId)
+}
+
+export function getLastPhaseRefusal(fermentId: string, phaseId: string): PersistedPhaseRefusal | undefined {
+	hydrateIfNeeded(fermentId)
+	return lastPhaseRefusals.get(`${fermentId}:${phaseId}`)
 }
 
 // ─── Step failure / completion counter (per step) ────────────────────────────
@@ -670,6 +689,9 @@ function snapshotForFerment(fermentId: string): PersistedRuntimeState {
 	for (const [k, v] of lastBlockHash.entries()) {
 		if (k.startsWith(prefix)) snap.lastBlockHashes[stripPrefix(k)] = v
 	}
+	for (const [k, v] of lastPhaseRefusals.entries()) {
+		if (k.startsWith(prefix)) snap.lastPhaseRefusals[stripPrefix(k)] = v
+	}
 	for (const [k, v] of stepCompleteAttempts.entries()) {
 		if (k.startsWith(prefix)) snap.stepCompleteAttempts[stripPrefix(k)] = v
 	}
@@ -693,6 +715,7 @@ function hydrateIfNeeded(fermentId: string): void {
 	for (const [k, v] of Object.entries(state.stepStartCounts)) stepStartCounts.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.blockRetries)) blockRetryCounts.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.lastBlockHashes)) lastBlockHash.set(`${prefix}${k}`, v)
+	for (const [k, v] of Object.entries(state.lastPhaseRefusals)) lastPhaseRefusals.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.stepCompleteAttempts)) stepCompleteAttempts.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.phaseStartRefs)) phaseStartRefs.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.stepStartRefs)) stepStartRefs.set(`${prefix}${k}`, v)
@@ -753,6 +776,9 @@ export function clearFermentState(fermentId: string): void {
 	stepCompleteAttempts.clearByPrefix(prefix)
 	for (const key of lastBlockHash.keys()) {
 		if (key.startsWith(prefix)) lastBlockHash.delete(key)
+	}
+	for (const key of lastPhaseRefusals.keys()) {
+		if (key.startsWith(prefix)) lastPhaseRefusals.delete(key)
 	}
 	for (const key of phaseStartRefs.keys()) {
 		if (key.startsWith(prefix)) phaseStartRefs.delete(key)
