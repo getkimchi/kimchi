@@ -269,16 +269,29 @@ describe("thinking preempt (trigger B)", () => {
 	}
 
 	describe("env parsing", () => {
-		it.each(["1", "true", "yes"])("isThinkingPreemptEnabled is true for %s", (value) => {
+		it("isThinkingPreemptEnabled is true when the flag is missing (default-on)", () => {
+			expect(isThinkingPreemptEnabled({})).toBe(true)
+		})
+
+		it("isThinkingPreemptEnabled is true when the flag is empty or whitespace-only", () => {
+			expect(isThinkingPreemptEnabled({ [KIMCHI_THINKING_PREEMPT_ENV]: "" })).toBe(true)
+			expect(isThinkingPreemptEnabled({ [KIMCHI_THINKING_PREEMPT_ENV]: "   " })).toBe(true)
+		})
+
+		it.each([
+			"1",
+			"true",
+			"yes",
+			" TRUE ",
+			"Yes",
+			"2",
+			"garbage",
+		])("isThinkingPreemptEnabled is true for %s", (value) => {
 			expect(isThinkingPreemptEnabled({ [KIMCHI_THINKING_PREEMPT_ENV]: value })).toBe(true)
 		})
 
-		it.each(["0", "no", "false", "2"])("isThinkingPreemptEnabled is false for %s", (value) => {
+		it.each(["0", "no", "false", " FALSE ", "No", " 0 "])("isThinkingPreemptEnabled is false for %s", (value) => {
 			expect(isThinkingPreemptEnabled({ [KIMCHI_THINKING_PREEMPT_ENV]: value })).toBe(false)
-		})
-
-		it("isThinkingPreemptEnabled is false when the flag is missing", () => {
-			expect(isThinkingPreemptEnabled({})).toBe(false)
 		})
 
 		it("resolveThinkingBudgetChars returns the override for a valid positive int", () => {
@@ -296,8 +309,18 @@ describe("thinking preempt (trigger B)", () => {
 		})
 	})
 
-	it("does not register preempt handlers when the flag is off (default)", () => {
+	it("registers message_update/agent_end/turn_start handlers by default when the flag is unset", () => {
 		delete process.env[KIMCHI_THINKING_PREEMPT_ENV]
+		const { api, getHandlers } = createExtensionApi()
+		thinkingBudgetGuardExtension(api)
+
+		expect(getHandlers("message_update")).toHaveLength(1)
+		expect(getHandlers("agent_end")).toHaveLength(1)
+		expect(getHandlers("turn_start")).toHaveLength(1)
+	})
+
+	it("does not register preempt handlers when the flag is explicitly disabled", () => {
+		process.env[KIMCHI_THINKING_PREEMPT_ENV] = "0"
 		const { api, getHandlers } = createExtensionApi()
 		thinkingBudgetGuardExtension(api)
 

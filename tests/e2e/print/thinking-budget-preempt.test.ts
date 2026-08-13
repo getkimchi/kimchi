@@ -2,6 +2,9 @@
  * Print-mode E2E for the thinking-budget guard's mid-stream preempt
  * (trigger B, KIMCHI_THINKING_PREEMPT).
  *
+ * The preempt is on by default in headless mode — this test deliberately
+ * does NOT set KIMCHI_THINKING_PREEMPT, proving the default-on behaviour.
+ *
  * The fake provider's first response streams ~45K thinking chars over ~2s.
  * With KIMCHI_THINKING_BUDGET_CHARS=20000 the guard must abort the in-flight
  * request once accumulated thinking crosses 20K chars (~chunk 47, ~1s in),
@@ -103,7 +106,6 @@ function runKimchiPrint(homeDir: string, workDir: string): Promise<PrintRun> {
 				PI_PACKAGE_DIR: PACKAGE_DIR,
 				KIMCHI_PERMISSIONS: "yolo",
 				TERM: "xterm-256color",
-				KIMCHI_THINKING_PREEMPT: "1",
 				KIMCHI_THINKING_BUDGET_CHARS: String(BUDGET_CHARS),
 			},
 			stdio: ["pipe", "pipe", "pipe"],

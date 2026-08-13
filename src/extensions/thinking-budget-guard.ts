@@ -16,9 +16,12 @@ import type { ExtensionAPI, InputEvent, TurnEndEvent } from "@earendil-works/pi-
  *           baseline: talk-only turns average 14.6K chars; the pathological
  *           tail starts at ≥66K) — again with zero tool calls.
  *      Both fire at `turn_end`. A third, mid-stream variant (trigger B)
- *      aborts the provider request while the thinking is still streaming;
- *      it ships behind `KIMCHI_THINKING_PREEMPT` (default off) and is
- *      headless-only — see `registerPreempt` below.
+ *      aborts the provider request while the thinking is still streaming.
+ *      It is active by default in headless sessions and never wired in
+ *      interactive/TUI contexts (ctx.abort() is a no-op there);
+ *      `KIMCHI_THINKING_PREEMPT=0` (or false/no) disables it, and the
+ *      budget can be overridden via `KIMCHI_THINKING_BUDGET_CHARS` — see
+ *      `registerPreempt` below.
  *
  *   2. Failure-state grinding — several consecutive rounds each spending real
  *      reasoning effort ({@link DEFAULT_STREAK_MIN_THINKING_CHARS}+ chars)
@@ -57,14 +60,22 @@ export const DEFAULT_MUTATING_TOOLS: ReadonlySet<string> = new Set(["edit", "wri
 
 export const STEER_MESSAGE_TYPE = "thinking-budget-guard-steer"
 
-/** Env flag for the mid-stream preempt (trigger B). Off by default. */
+/**
+ * Env flag for the mid-stream preempt (trigger B). On by default in
+ * headless sessions; set to 0/false/no to disable.
+ */
 export const KIMCHI_THINKING_PREEMPT_ENV = "KIMCHI_THINKING_PREEMPT"
 /** One-shot calibration override for the per-turn thinking budget, in chars. */
 export const KIMCHI_THINKING_BUDGET_CHARS_ENV = "KIMCHI_THINKING_BUDGET_CHARS"
 
+/**
+ * Default-on: only an explicit falsy value ("0"/"false"/"no", trimmed and
+ * case-insensitive) disables the preempt — the A/B kill switch. Unset,
+ * empty, or any other value leaves it enabled.
+ */
 export function isThinkingPreemptEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 	const raw = env[KIMCHI_THINKING_PREEMPT_ENV]?.trim().toLowerCase()
-	return raw === "1" || raw === "true" || raw === "yes"
+	return raw !== "0" && raw !== "false" && raw !== "no"
 }
 
 export function resolveThinkingBudgetChars(env: NodeJS.ProcessEnv = process.env): number {
@@ -205,7 +216,8 @@ export default function thinkingBudgetGuardExtension(pi: ExtensionAPI): void {
 }
 
 /**
- * Trigger B: mid-stream preempt. Opt-in via `KIMCHI_THINKING_PREEMPT`.
+ * Trigger B: mid-stream preempt. On by default in headless sessions;
+ * `KIMCHI_THINKING_PREEMPT=0` (or false/no) opts out.
  *
  * Watches the streaming partial message and aborts the provider request as
  * soon as accumulated thinking crosses the per-turn budget while no tool
