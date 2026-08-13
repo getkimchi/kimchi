@@ -114,10 +114,7 @@ async def test_single_model_run_passes_model_without_multi_model_cli_flag(tmp_pa
     # kimchi subprocesses whose argv carries no --model, and would otherwise
     # resolve multi-model=true and a different model from the global defaults.
     assert "~/.config/kimchi/harness/settings.json" in command
-    assert (
-        '{"multiModel":false,"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6"}'
-        in command
-    )
+    assert '{"multiModel":false,"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6"}' in command
 
 
 async def test_disable_compaction_writes_harness_setting(tmp_path: Path) -> None:
@@ -358,9 +355,7 @@ def test_populate_context_skips_unreadable_session_files(tmp_path: Path) -> None
     readable.write_text(
         '{"type":"message","message":{"role":"assistant","usage":{"input":10,"output":3,"cacheRead":2,"cacheWrite":1,"cost":{"total":0.5}}}}\n'
     )
-    unreadable.write_text(
-        '{"type":"message","message":{"role":"assistant","usage":{"input":999,"output":999}}}\n'
-    )
+    unreadable.write_text('{"type":"message","message":{"role":"assistant","usage":{"input":999,"output":999}}}\n')
 
     original_read_text = Path.read_text
 
@@ -553,8 +548,7 @@ async def test_extension_paths_override_adds_quoted_e_flags_after_binary_path(
 
     command = agent.agent_commands[0]
     assert (
-        "/installed-agent/bin/kimchi -e /installed-agent/kimchi-workflows "
-        "-e '/path with spaces/ext' --print --session"
+        "/installed-agent/bin/kimchi -e /installed-agent/kimchi-workflows -e '/path with spaces/ext' --print --session"
     ) in command
 
 
@@ -592,9 +586,7 @@ async def test_stdin_payload_override_replaces_instruction_on_stdin(tmp_path: Pa
         await agent.run("the secret task instruction", object(), AgentContext())
 
     command = agent.agent_commands[0]
-    assert (
-        "printf '%s' '/workflow run tb-solver --input @/logs/agent/workflow-input.json' |"
-    ) in command
+    assert ("printf '%s' '/workflow run tb-solver --input @/logs/agent/workflow-input.json' |") in command
     assert "the secret task instruction" not in command
 
 
@@ -707,9 +699,7 @@ async def test_openrouter_endpoint_override_is_resolved_on_host(
     assert "KIMCHI_OPENROUTER_ENDPOINT" not in (agent.agent_envs[0] or {})
 
 
-async def test_openrouter_model_without_api_key_raises(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_openrouter_model_without_api_key_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A missing OPENROUTER_API_KEY raises a clear error for openrouter/* models."""
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     agent = RecordingKimchi(
@@ -734,6 +724,87 @@ async def test_kimchi_dev_model_does_not_write_openrouter_config(tmp_path: Path)
     command = agent.agent_commands[0]
     assert "harness/models.json" not in command
     assert "OPENROUTER_API_KEY" not in (agent.agent_envs[0] or {})
+    assert "ZAI_API_KEY" not in (agent.agent_envs[0] or {})
+
+
+# ─── Z.AI model support ──────────────────────────────────────────────────────
+
+
+async def test_zai_model_writes_models_config_before_kimchi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A zai/* model writes the static Z.AI provider block to models.json."""
+    monkeypatch.setenv("ZAI_API_KEY", "zai-test")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="zai/glm-5.2",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert "node " not in command
+    assert '"id":"glm-5.2"' in command
+    assert '"baseUrl":"https://api.z.ai/api/paas/v4"' in command
+    assert '"apiKey":"$ZAI_API_KEY"' in command
+    assert "~/.config/kimchi/harness/models.json" in command
+    assert "--model zai/glm-5.2" in command
+
+
+async def test_zai_model_forwards_api_key_into_container_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ZAI_API_KEY is forwarded into the container env for zai/* models."""
+    monkeypatch.setenv("ZAI_API_KEY", "zai-test")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="zai/glm-5.2",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    env = agent.agent_envs[0]
+    assert env is not None
+    assert env.get("ZAI_API_KEY") == "zai-test"
+
+
+async def test_zai_endpoint_override_is_resolved_on_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ZAI_API_KEY", "zai-test")
+    monkeypatch.setenv("KIMCHI_ZAI_ENDPOINT", "https://zai.example.test/v4")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="zai/glm-5.2",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert '"baseUrl":"https://zai.example.test/v4"' in command
+    assert "KIMCHI_ZAI_ENDPOINT" not in (agent.agent_envs[0] or {})
+
+
+async def test_zai_model_without_api_key_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing ZAI_API_KEY raises a clear error for zai/* models."""
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="zai/glm-5.2",
+    )
+
+    with pytest.raises(RuntimeError, match="ZAI_API_KEY is required"):
+        await agent.run("hello", object(), AgentContext())
+
+
+async def test_zai_model_rejects_clamped_thinking_level(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GLM-5.2 only exposes high/max efforts; medium must fail before launch."""
+    monkeypatch.setenv("ZAI_API_KEY", "zai-test")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="zai/glm-5.2",
+        thinking="medium",
+    )
+
+    with pytest.raises(ValueError, match="silently clamp"):
+        await agent.run("hello", object(), AgentContext())
 
 
 async def test_anthropic_model_writes_models_config_before_kimchi(
@@ -780,9 +851,7 @@ async def test_anthropic_model_forwards_api_key_into_container_env(
     assert env.get("KIMCHI_API_KEY") is None
 
 
-async def test_anthropic_model_without_api_key_raises(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_anthropic_model_without_api_key_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A missing ANTHROPIC_API_KEY raises a clear error for anthropic/* models."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     agent = RecordingKimchi(
@@ -794,9 +863,7 @@ async def test_anthropic_model_without_api_key_raises(
         await agent.run("hello", object(), AgentContext())
 
 
-async def test_anthropic_unknown_model_raises(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_anthropic_unknown_model_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """An unknown anthropic/* model id raises a clear error."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     agent = RecordingKimchi(

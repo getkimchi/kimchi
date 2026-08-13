@@ -21,6 +21,8 @@ from kimchi_agent.opencode_kimchi import (
     KIMCHI_PROVIDER,
     OPENROUTER_BASE_URL,
     OPENROUTER_PROVIDER_NAME,
+    ZAI_BASE_URL,
+    ZAI_PROVIDER_NAME,
     OpenCodeKimchi,
 )
 
@@ -135,6 +137,64 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
                 with self.assertRaisesRegex(ValueError, "only supports kimchi-dev"):
                     await agent.run("solve it", object(), AgentContext())
+
+    async def test_zai_model_registers_provider_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingOpenCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="zai/glm-5.2",
+            )
+            agent._extra_env["ZAI_API_KEY"] = "zai-test-key"
+
+            await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(len(agent.agent_commands), 3)
+        config = extract_echo_json(agent.agent_commands[1])
+        # Provider should be zai, not kimchi-dev
+        self.assertNotIn(KIMCHI_PROVIDER, config["provider"])
+        self.assertIn(ZAI_PROVIDER_NAME, config["provider"])
+        zai_config = config["provider"][ZAI_PROVIDER_NAME]
+        self.assertEqual(zai_config["options"]["baseURL"], ZAI_BASE_URL)
+        self.assertEqual(zai_config["options"]["apiKey"], "{env:ZAI_API_KEY}")
+        self.assertNotIn("litellmProxy", zai_config["options"])
+        # Model metadata from the static table (docs.z.ai: 1M/128K, thinking)
+        model_cfg = zai_config["models"]["glm-5.2"]
+        self.assertTrue(model_cfg["tool_call"])
+        self.assertTrue(model_cfg["reasoning"])
+        self.assertEqual(model_cfg["limit"]["context"], 1_000_000)
+        self.assertEqual(model_cfg["limit"]["output"], 131_072)
+        # opencode --model should use the full zai/ prefix
+        run_command = agent.agent_commands[2]
+        self.assertIn("opencode --model=zai/glm-5.2", run_command)
+        self.assertIn("--thinking", run_command)
+        # Environment should have ZAI_API_KEY, not KIMCHI_API_KEY
+        self.assertNotIn("KIMCHI_API_KEY", agent.agent_envs[0])
+        self.assertEqual(agent.agent_envs[0]["ZAI_API_KEY"], "zai-test-key")
+        # Should not fetch Kimchi metadata
+        self.assertEqual(agent.metadata_fetch_count, 0)
+
+    async def test_zai_unknown_model_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingOpenCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="zai/glm-5.1",
+            )
+            agent._extra_env["ZAI_API_KEY"] = "zai-test-key"
+
+            with self.assertRaisesRegex(ValueError, "not in the static metadata table"):
+                await agent.run("solve it", object(), AgentContext())
+
+    async def test_zai_missing_api_key_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingOpenCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="zai/glm-5.2",
+            )
+
+            with self.assertRaisesRegex(ValueError, "ZAI_API_KEY is required"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
 
     async def test_openrouter_model_registers_provider_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -366,15 +426,17 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
                 logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
                 model_name="kimchi-dev/kimi-k2.5",
             )
-            response = FakeMetadataResponse({
-                "models": [
-                    {
-                        "slug": "kimi-k2.5",
-                        "reasoning": "true",
-                        "limits": {"context_window": "262144", "max_output_tokens": 262144},
-                    }
-                ]
-            })
+            response = FakeMetadataResponse(
+                {
+                    "models": [
+                        {
+                            "slug": "kimi-k2.5",
+                            "reasoning": "true",
+                            "limits": {"context_window": "262144", "max_output_tokens": 262144},
+                        }
+                    ]
+                }
+            )
 
             with (
                 patch("kimchi_agent.gateway.httpx.get", return_value=response) as http_get,

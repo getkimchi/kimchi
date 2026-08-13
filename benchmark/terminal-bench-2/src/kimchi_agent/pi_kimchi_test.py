@@ -188,8 +188,8 @@ class PiKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(CONTAINER_AGENT_PGID_FILE, run_command)
         self.assertIn('wait "$agent_pid"', run_command)
         # nvm sourced at the start of the launch command so npm/pi are on PATH
-        self.assertIn('NVM_DIR', run_command)
-        self.assertIn('nvm.sh', run_command)
+        self.assertIn("NVM_DIR", run_command)
+        self.assertIn("nvm.sh", run_command)
         # Git baseline — should use $PWD (captured as TASK_WORKDIR) not
         # hardcoded /app, since some tasks use a different workdir.
         self.assertIn("TASK_WORKDIR=$PWD", run_command)
@@ -293,7 +293,7 @@ class PiKimchiTest(unittest.IsolatedAsyncioTestCase):
 
             command = agent.get_version_command()
 
-        self.assertIn('NVM_DIR', command)
+        self.assertIn("NVM_DIR", command)
         self.assertIn("pi --version", command)
 
     def test_version_command_also_finds_a_bundled_pi(self) -> None:
@@ -481,6 +481,75 @@ class PiKimchiBundleTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("|| echo", package_command)
 
 
+class PiKimchiZaiTest(unittest.IsolatedAsyncioTestCase):
+    """zai/* models bypass the Kimchi gateway and use Z.AI's static metadata."""
+
+    def setUp(self) -> None:
+        self._env_patch = patch.dict(os.environ, {"ZAI_API_KEY": "zai-test"})
+        self._env_patch.start()
+        os.environ.pop("KIMCHI_API_KEY", None)
+
+    def tearDown(self) -> None:
+        self._env_patch.stop()
+
+    async def _run_agent(self, model_name: str, **kwargs: object) -> RecordingPiKimchi:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingPiKimchi(logs_dir=Path(tmp), model_name=model_name, **kwargs)
+            await agent.run("solve it", object(), AgentContext())
+        return agent
+
+    async def test_zai_model_writes_models_json_and_forwards_key(self) -> None:
+        agent = await self._run_agent("zai/glm-5.2")
+
+        command = agent.agent_commands[0]
+        self.assertIn(CONTAINER_PI_MODELS_JSON, command)
+        self.assertIn('"id":"glm-5.2"', command)
+        self.assertIn('"baseUrl":"https://api.z.ai/api/paas/v4"', command)
+        # pi has no built-in zai provider, so the config names the env var —
+        # the placeholder, not the key, lands in the bind-mounted artifacts.
+        self.assertIn('"apiKey":"$ZAI_API_KEY"', command)
+        self.assertNotIn("zai-test", command)
+        self.assertIn("--model zai/glm-5.2", command)
+        env = agent.agent_envs[0]
+        self.assertEqual(env["ZAI_API_KEY"], "zai-test")
+        self.assertNotIn("KIMCHI_API_KEY", env)
+        # No HTTP metadata fetch: the static table needs no network.
+        self.assertEqual(agent.metadata_fetch_count, 0)
+
+    async def test_unknown_zai_model_fails_before_container_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingPiKimchi(logs_dir=Path(tmp), model_name="zai/glm-9")
+            with self.assertRaisesRegex(ValueError, "not in the static metadata table"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
+
+    async def test_missing_zai_key_fails_before_container_work(self) -> None:
+        os.environ.pop("ZAI_API_KEY", None)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingPiKimchi(logs_dir=Path(tmp), model_name="zai/glm-5.2")
+            with self.assertRaisesRegex(ValueError, "ZAI_API_KEY is required"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
+
+    async def test_zai_model_rejects_clamped_thinking_level(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingPiKimchi(logs_dir=Path(tmp), model_name="zai/glm-5.2", thinking="medium")
+            with self.assertRaisesRegex(ValueError, "silently clamp"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
+
+    def test_provider_label_in_agent_info(self) -> None:
+        from kimchi_agent.pi_kimchi import _model_provider_label
+
+        self.assertEqual(_model_provider_label("openrouter/z-ai/glm-5.2"), "openrouter")
+        self.assertEqual(_model_provider_label("zai/glm-5.2"), "zai")
+        self.assertEqual(_model_provider_label("kimchi-dev/kimi-k2.6"), "kimchi")
+
+
 class PiKimchiOpenRouterTest(unittest.IsolatedAsyncioTestCase):
     """openrouter/* models bypass the Kimchi gateway and the kimchi-dev provider."""
 
@@ -521,9 +590,7 @@ class PiKimchiOpenRouterTest(unittest.IsolatedAsyncioTestCase):
         agent = await self._run_agent("openrouter/@preset/glm-5-1-zai", build_config)
 
         # The client carries the key and endpoint; the call carries the model.
-        build_config.assert_awaited_once_with(
-            "@preset/glm-5-1-zai", include_api_key=False, thinking_level=None
-        )
+        build_config.assert_awaited_once_with("@preset/glm-5-1-zai", include_api_key=False, thinking_level=None)
         command = agent.agent_commands[0]
         self.assertIn(CONTAINER_PI_MODELS_JSON, command)
         self.assertIn('"@preset/glm-5-1-zai"', command)

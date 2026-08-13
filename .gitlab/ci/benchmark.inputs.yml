@@ -45,7 +45,7 @@ inputs:
     type: array
     default: [hf-model-inference, fix-code-vulnerability, build-cython-ext, bn-fit-modify, fix-git, mteb-leaderboard, cobol-modernization, merge-diff-arc-agi-task, extract-elf, pytorch-model-recovery]
   model:
-    description: "Model or execution mode. kimchi-dev/* routes via the Kimchi gateway; openrouter/* routes via OpenRouter (kimchi, pi, workflow, claude-code, and opencode agents); anthropic/* uses the native Anthropic API (works with kimchi and claude-code-standard agents). Select multi-model to use the target ref's default role configuration."
+    description: "Model or execution mode. kimchi-dev/* routes via the Kimchi gateway; openrouter/* routes via OpenRouter (kimchi, pi, workflow, claude-code, and opencode agents); zai/* routes directly via Z.AI's API using ZAI_API_KEY (same agents as openrouter); anthropic/* uses the native Anthropic API (works with kimchi and claude-code-standard agents). Select multi-model to use the target ref's default role configuration."
     type: string
     default: "kimchi-dev/minimax-m3"
     options:
@@ -67,6 +67,9 @@ inputs:
       # ~20 endpoints of differing quantization. Use these for recorded scores.
       - openrouter/@preset/glm-5-1-zai
       - openrouter/@preset/glm-5-2-zai
+      # Direct Z.AI fp8 endpoint (no OpenRouter, no preset needed). Requires
+      # ZAI_API_KEY. Only high/max thinking levels are accepted.
+      - zai/glm-5.2
       # Native Anthropic API (claude-code-standard only)
       - anthropic/claude-sonnet-5
       - anthropic/claude-opus-4-8

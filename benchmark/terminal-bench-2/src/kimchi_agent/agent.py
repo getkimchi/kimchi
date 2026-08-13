@@ -31,6 +31,14 @@ from kimchi_agent.openrouter import (
     is_openrouter_model,
 )
 from kimchi_agent.release import BINARY_RELPATH, SHARE_RELPATH, GitHubClient
+from kimchi_agent.zai import (
+    ZAI_API_KEY_ENV,
+    ZAI_ENDPOINT_ENV,
+    is_zai_model,
+)
+from kimchi_agent.zai import (
+    build_models_config as build_zai_models_config,
+)
 
 if TYPE_CHECKING:
     from harbor.environments.base import BaseEnvironment
@@ -133,9 +141,7 @@ def _coerce_bool_kwarg(value: object, name: str) -> bool:
                 return True
             case "false" | "0" | "no":
                 return False
-    raise ValueError(
-        f"Invalid value for '{name}': expected true/false/1/0/yes/no, got {value!r}"
-    )
+    raise ValueError(f"Invalid value for '{name}': expected true/false/1/0/yes/no, got {value!r}")
 
 
 def _validate_model_name(model_name: str | None) -> None:
@@ -187,9 +193,7 @@ class KimchiExitError(NonZeroAgentExitCodeError):
         self.stdout = _tail_output(stdout)
         self.stderr = _tail_output(stderr)
         super().__init__(
-            f"Kimchi exited with code {self.exit_code}: {self.command}\n"
-            f"stdout:\n{self.stdout}\n"
-            f"stderr:\n{self.stderr}"
+            f"Kimchi exited with code {self.exit_code}: {self.command}\nstdout:\n{self.stdout}\nstderr:\n{self.stderr}"
         )
 
 
@@ -229,13 +233,9 @@ class Kimchi(BaseInstalledAgent):
 
     def __init__(self, *args, **kwargs):
         multi_model_kwarg = kwargs.pop("multi-model", None)
-        disable_multi_model = _coerce_bool_kwarg(
-            kwargs.pop("disable-multi-model", False), "disable-multi-model"
-        )
+        disable_multi_model = _coerce_bool_kwarg(kwargs.pop("disable-multi-model", False), "disable-multi-model")
         # Compaction follows kimchi's default (on) unless explicitly disabled.
-        disable_compaction = _coerce_bool_kwarg(
-            kwargs.pop("disable-compaction", False), "disable-compaction"
-        )
+        disable_compaction = _coerce_bool_kwarg(kwargs.pop("disable-compaction", False), "disable-compaction")
 
         llm_params = _decode_agent_kwarg(kwargs.pop("llm-params", None))
         llm_per_model_params = _decode_agent_kwarg(kwargs.pop("llm-per-model-params", None))
@@ -243,16 +243,12 @@ class Kimchi(BaseInstalledAgent):
         super().__init__(*args, **kwargs)
         selected_multi_model = self.model_name == MULTI_MODEL
         legacy_multi_model = (
-            _coerce_bool_kwarg(multi_model_kwarg, "multi-model")
-            if multi_model_kwarg is not None
-            else False
+            _coerce_bool_kwarg(multi_model_kwarg, "multi-model") if multi_model_kwarg is not None else False
         )
         if multi_model_kwarg is not None and legacy_multi_model != selected_multi_model:
             raise ValueError("the 'multi-model' agent kwarg must match model_name='multi-model'")
         if selected_multi_model and disable_multi_model:
-            raise ValueError(
-                "multi-model selection conflicts with legacy 'disable-multi-model=true'"
-            )
+            raise ValueError("multi-model selection conflicts with legacy 'disable-multi-model=true'")
         self._multi_model_enabled = selected_multi_model
         self._disable_compaction = disable_compaction
         self._llm_params = llm_params
@@ -391,11 +387,15 @@ class Kimchi(BaseInstalledAgent):
             # endpoint at launch time, not against the Kimchi LLM gateway — so
             # skip the gateway metadata fetch here.
             self._is_openrouter = is_openrouter_model(self.model_name)
+            # zai/* models route directly through Z.AI's OpenAI-compatible API —
+            # no Kimchi gateway, and metadata is static so no catalogue fetch.
+            self._is_zai = is_zai_model(self.model_name)
             # anthropic/* models use the native Anthropic API via pi-ai's built-in
             # provider — no Kimchi gateway involvement.
             self._is_anthropic = is_anthropic_model(self.model_name)
         else:
             self._is_openrouter = False
+            self._is_zai = False
             self._is_anthropic = False
 
         cli_flags = self.build_cli_flags()
@@ -467,6 +467,26 @@ class Kimchi(BaseInstalledAgent):
             )
         else:
             openrouter_models_config = None
+        # Same forwarding contract as the OpenRouter key: kimchi's
+        # openai-completions provider resolves $ZAI_API_KEY from the container
+        # environment at request time.
+        if self._is_zai:
+            zai_key = self._get_env(ZAI_API_KEY_ENV)
+            if not zai_key:
+                raise RuntimeError(
+                    f"{ZAI_API_KEY_ENV} is required to run zai/* models. "
+                    f"Export it on the host and forward it with "
+                    f"`--ae {ZAI_API_KEY_ENV}=${ZAI_API_KEY_ENV}`."
+                )
+            env[ZAI_API_KEY_ENV] = zai_key
+            _, zai_model_id = self.model_name.split("/", 1)
+            zai_models_config = build_zai_models_config(
+                zai_model_id,
+                thinking_level=self._resolved_flags.get("thinking"),
+                endpoint=self._get_env(ZAI_ENDPOINT_ENV),
+            )
+        else:
+            zai_models_config = None
         if self._llm_params:
             env["KIMCHI_LLM_PARAMS_JSON"] = json.dumps(self._llm_params)
         if self._llm_per_model_params:
@@ -488,6 +508,7 @@ class Kimchi(BaseInstalledAgent):
                     instruction,
                     cli_flags,
                     openrouter_models_config=openrouter_models_config,
+                    zai_models_config=zai_models_config,
                     anthropic_models_config=anthropic_models_config,
                 ),
                 env=env,
@@ -522,6 +543,7 @@ class Kimchi(BaseInstalledAgent):
         cli_flags: str,
         *,
         openrouter_models_config: dict[str, Any] | None = None,
+        zai_models_config: dict[str, Any] | None = None,
         anthropic_models_config: dict[str, Any] | None = None,
     ) -> str:
         runner = self._kimchi_command(cli_flags)
@@ -554,6 +576,11 @@ class Kimchi(BaseInstalledAgent):
             parts.append(harness_settings)
         if openrouter_models_config is not None:
             parts.append(self._openrouter_models_command(openrouter_models_config))
+        if zai_models_config is not None:
+            # _openrouter_models_command writes an arbitrary pi models.json
+            # provider block; the file contents, not the method name, are
+            # provider-specific.
+            parts.append(self._openrouter_models_command(zai_models_config))
         if anthropic_models_config is not None:
             parts.append(self._anthropic_models_command(anthropic_models_config))
         skills_registration = self._skills_registration_command()

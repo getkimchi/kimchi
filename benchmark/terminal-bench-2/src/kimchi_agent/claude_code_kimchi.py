@@ -35,6 +35,14 @@ from kimchi_agent.openrouter import (
     is_openrouter_model,
     resolve_openrouter_anthropic_base_url,
 )
+from kimchi_agent.zai import (
+    ZAI_ANTHROPIC_ENDPOINT_ENV,
+    ZAI_API_KEY_ENV,
+    ZAI_PROVIDER,
+    is_zai_model,
+    resolve_zai_anthropic_base_url,
+    zai_model,
+)
 
 CLAUDE_CODE_AUTO_COMPACT_PERCENT = 85
 CLAUDE_CODE_OUTPUT_RESERVE_TOKENS = 32_768
@@ -116,7 +124,9 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
     ``kimchi-dev/*`` models route through the Kimchi gateway using
     ``KIMCHI_API_KEY``. ``openrouter/*`` models route through OpenRouter's
     Anthropic-compatible surface (``https://openrouter.ai/api``) using
-    ``OPENROUTER_API_KEY``; both speak Claude Code's native protocol, so only
+    ``OPENROUTER_API_KEY``; ``zai/*`` models route through Z.AI's
+    Anthropic-compatible surface (``https://api.z.ai/api/anthropic``) using
+    ``ZAI_API_KEY``. All three speak Claude Code's native protocol, so only
     the base URL, the auth token, and the model-metadata source differ.
     """
 
@@ -197,6 +207,34 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
             )
         return api_key
 
+    def _required_zai_api_key(self) -> str:
+        api_key = self._get_env(ZAI_API_KEY_ENV)
+        if not api_key:
+            raise ValueError(
+                f"{ZAI_API_KEY_ENV} is required for {ZAI_PROVIDER}/* models. "
+                f"Export it on the host and forward it with "
+                f"`--ae {ZAI_API_KEY_ENV}=${ZAI_API_KEY_ENV}`."
+            )
+        return api_key
+
+    def _zai_model_metadata(self) -> KimchiModelMetadata:
+        """Model metadata for a ``zai/*`` model, from the static table.
+
+        Z.AI exposes no OpenRouter-style catalogue, so no network fetch — an
+        unknown id raises locally instead of after the container install.
+        """
+        model_id = self.model_name.split("/", 1)[1]
+        if not model_id:
+            raise ValueError(f"--model must include a model id after {ZAI_PROVIDER}/")
+        meta = zai_model(model_id)
+        return KimchiModelMetadata(
+            slug=model_id,
+            limits=KimchiModelLimits(
+                context_window=meta.context_window,
+                max_output_tokens=meta.max_output_tokens,
+            ),
+        )
+
     async def _openrouter_model_metadata(self, api_key: str) -> KimchiModelMetadata:
         """Model metadata for an ``openrouter/*`` model, from OpenRouter's catalogue.
 
@@ -207,9 +245,7 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
         model_id = self.model_name.split("/", 1)[1]
         if not model_id:
             raise ValueError(f"--model must include a model id after {OPENROUTER_PROVIDER}/")
-        client = OpenRouterClient(
-            api_key=api_key, endpoint=self._get_env(OPENROUTER_ENDPOINT_ENV)
-        )
+        client = OpenRouterClient(api_key=api_key, endpoint=self._get_env(OPENROUTER_ENDPOINT_ENV))
         limits = await client.limits_for(await client.resolve(model_id))
         return KimchiModelMetadata(
             slug=model_id,
@@ -228,6 +264,14 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
                 await self._openrouter_model_metadata(api_key),
                 api_key,
                 resolve_openrouter_anthropic_base_url(self._get_env(OPENROUTER_ENDPOINT_ENV)),
+            )
+
+        if is_zai_model(self.model_name):
+            api_key = self._required_zai_api_key()
+            return (
+                self._zai_model_metadata(),
+                api_key,
+                resolve_zai_anthropic_base_url(self._get_env(ZAI_ANTHROPIC_ENDPOINT_ENV)),
             )
 
         api_key = self._required_kimchi_api_key()
@@ -250,25 +294,27 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
                 if key not in blocked_env_keys and not key.startswith(BLOCKED_ENV_PREFIXES)
             }
         )
-        env.update({
-            "ANTHROPIC_API_KEY": "",
-            "ANTHROPIC_AUTH_TOKEN": api_key,
-            "ANTHROPIC_BASE_URL": anthropic_base_url,
-            "ANTHROPIC_MODEL": model_id,
-            "ANTHROPIC_DEFAULT_SONNET_MODEL": model_id,
-            "ANTHROPIC_DEFAULT_OPUS_MODEL": model_id,
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL": model_id,
-            "ANTHROPIC_SMALL_FAST_MODEL": model_id,
-            "ANTHROPIC_CUSTOM_MODEL_OPTION": model_id,
-            "CLAUDE_CODE_SUBAGENT_MODEL": model_id,
-            "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": self._auto_compact_window(model),
-            "CLAUDE_CONFIG_DIR": (EnvironmentPaths.agent_dir / "sessions").as_posix(),
-            "ENABLE_BACKGROUND_TASKS": "1",
-            "FORCE_AUTO_BACKGROUND_TASKS": "1",
-            "IS_SANDBOX": "1",
-        })
+        env.update(
+            {
+                "ANTHROPIC_API_KEY": "",
+                "ANTHROPIC_AUTH_TOKEN": api_key,
+                "ANTHROPIC_BASE_URL": anthropic_base_url,
+                "ANTHROPIC_MODEL": model_id,
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": model_id,
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": model_id,
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": model_id,
+                "ANTHROPIC_SMALL_FAST_MODEL": model_id,
+                "ANTHROPIC_CUSTOM_MODEL_OPTION": model_id,
+                "CLAUDE_CODE_SUBAGENT_MODEL": model_id,
+                "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                "CLAUDE_CODE_AUTO_COMPACT_WINDOW": self._auto_compact_window(model),
+                "CLAUDE_CONFIG_DIR": (EnvironmentPaths.agent_dir / "sessions").as_posix(),
+                "ENABLE_BACKGROUND_TASKS": "1",
+                "FORCE_AUTO_BACKGROUND_TASKS": "1",
+                "IS_SANDBOX": "1",
+            }
+        )
         # Default API_TIMEOUT_MS only if the caller did not pass one through
         # (via API_TIMEOUT_MS in the passthrough env). A long timeout prevents
         # Claude Code from aborting on slow first-token responses from the

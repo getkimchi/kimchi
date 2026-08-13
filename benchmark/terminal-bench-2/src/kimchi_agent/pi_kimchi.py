@@ -49,6 +49,25 @@ from kimchi_agent.openrouter import (
     OpenRouterClient,
     is_openrouter_model,
 )
+from kimchi_agent.zai import (
+    ZAI_API_KEY_ENV,
+    ZAI_ENDPOINT_ENV,
+    ZAI_PROVIDER,
+    is_zai_model,
+)
+from kimchi_agent.zai import (
+    build_models_config as build_zai_models_config,
+)
+
+
+def _model_provider_label(model_name: str | None) -> str:
+    """Provider name recorded in run metadata."""
+    if is_openrouter_model(model_name):
+        return OPENROUTER_PROVIDER
+    if is_zai_model(model_name):
+        return ZAI_PROVIDER
+    return "kimchi"
+
 
 if TYPE_CHECKING:
     from harbor.environments.base import BaseEnvironment
@@ -106,9 +125,7 @@ class PiExitError(NonZeroAgentExitCodeError):
         self.stdout = _tail_output(stdout)
         self.stderr = _tail_output(stderr)
         super().__init__(
-            f"pi exited with code {self.exit_code}: {self.command}\n"
-            f"stdout:\n{self.stdout}\n"
-            f"stderr:\n{self.stderr}"
+            f"pi exited with code {self.exit_code}: {self.command}\nstdout:\n{self.stdout}\nstderr:\n{self.stderr}"
         )
 
 
@@ -170,7 +187,7 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
             version=self.version() or "unknown",
             model_info=ModelInfo(
                 name=self.model_name or "unknown",
-                provider=OPENROUTER_PROVIDER if is_openrouter_model(self.model_name) else "kimchi",
+                provider=_model_provider_label(self.model_name),
             ),
         )
 
@@ -238,9 +255,7 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
             timeout=60,
         )
         if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to clone pi-kimchi-provider from GitHub: {result.stderr.strip()}"
-            )
+            raise RuntimeError(f"Failed to clone pi-kimchi-provider from GitHub: {result.stderr.strip()}")
         return ext_dir
 
     async def install(self, environment: BaseEnvironment) -> None:
@@ -305,16 +320,14 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
         await self.exec_as_root(
             environment,
             command=(
-                f"chmod -R a+rwX {shlex.quote(CONTAINER_INSTALL_DIR)} "
-                f"{shlex.quote(CONTAINER_EXTENSION_STAGE_DIR)}"
+                f"chmod -R a+rwX {shlex.quote(CONTAINER_INSTALL_DIR)} {shlex.quote(CONTAINER_EXTENSION_STAGE_DIR)}"
             ),
         )
 
         probe = await environment.exec(command=f"{self._path_setup()}; node --version && pi --version")
         if probe.return_code != 0:
             self.logger.warning(
-                "pi offline bundle does not run in this task image (musl libc?); "
-                "falling back to the network install",
+                "pi offline bundle does not run in this task image (musl libc?); falling back to the network install",
                 extra={"error": _tail_output(probe.stderr or probe.stdout, max_lines=5)},
             )
             await self.exec_as_root(
@@ -386,18 +399,31 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
             key_env = {OPENROUTER_API_KEY_ENV: api_key}
             # Raises if the model (or the model a preset wraps) is not offered
             # by OpenRouter.
-            openrouter_client = OpenRouterClient(
-                api_key=api_key, endpoint=self._get_env(OPENROUTER_ENDPOINT_ENV)
-            )
-            openrouter_models_config = await openrouter_client.build_models_config(
+            openrouter_client = OpenRouterClient(api_key=api_key, endpoint=self._get_env(OPENROUTER_ENDPOINT_ENV))
+            direct_models_config = await openrouter_client.build_models_config(
                 self.model_name.split("/", 1)[1],
                 include_api_key=False,
                 thinking_level=self._resolved_flags.get("thinking"),
             )
+        elif is_zai_model(self.model_name):
+            api_key = self._required_zai_api_key()
+            key_env = {ZAI_API_KEY_ENV: api_key}
+            # Metadata is static — no network fetch, unknown ids raise locally.
+            # Unlike the openrouter branch the apiKey placeholder is kept: pi
+            # maps the openrouter provider to OPENROUTER_API_KEY itself, but
+            # has no built-in zai provider, so the config must name the env
+            # var. "$ZAI_API_KEY" is a reference, not the key, so the
+            # bind-mounted file stays artifact-safe.
+            direct_models_config = build_zai_models_config(
+                self.model_name.split("/", 1)[1],
+                include_api_key=True,
+                thinking_level=self._resolved_flags.get("thinking"),
+                endpoint=self._get_env(ZAI_ENDPOINT_ENV),
+            )
         else:
             self._split_model(self.model_name)
             key_env = {KIMCHI_API_KEY_ENV: self._required_kimchi_api_key()}
-            openrouter_models_config = None
+            direct_models_config = None
 
         cli_flags = self.build_cli_flags()
         if cli_flags:
@@ -417,7 +443,7 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
                 command=self._pi_launch_command(
                     instruction,
                     cli_flags,
-                    openrouter_models_config=openrouter_models_config,
+                    direct_models_config=direct_models_config,
                 ),
                 env=env,
             )
@@ -457,6 +483,16 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
             )
         return api_key
 
+    def _required_zai_api_key(self) -> str:
+        api_key = self._get_env(ZAI_API_KEY_ENV)
+        if not api_key:
+            raise ValueError(
+                f"{ZAI_API_KEY_ENV} is required for {ZAI_PROVIDER}/* models. "
+                f"Export it on the host and forward it with "
+                f"`--ae {ZAI_API_KEY_ENV}=${ZAI_API_KEY_ENV}`."
+            )
+        return api_key
+
     @staticmethod
     def _openrouter_models_command(models_config: dict[str, Any]) -> str:
         """Declare the selected OpenRouter model to pi before it starts.
@@ -484,7 +520,7 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
         instruction: str,
         cli_flags: str,
         *,
-        openrouter_models_config: dict[str, Any] | None = None,
+        direct_models_config: dict[str, Any] | None = None,
     ) -> str:
         runner = self._pi_command(cli_flags)
         parts = [
@@ -507,8 +543,10 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
             # tree with node_modules already in it, and running npm over it
             # would need the network the bundle exists to avoid.
             parts.append(f"cd {shlex.quote(CONTAINER_EXTENSION_INSTALL_DIR)} && npm install --production")
-        if openrouter_models_config is not None:
-            parts.append(self._openrouter_models_command(openrouter_models_config))
+        if direct_models_config is not None:
+            # The models.json writer is provider-agnostic; the openrouter in
+            # its name reflects which direct provider arrived here first.
+            parts.append(self._openrouter_models_command(direct_models_config))
         # Ensure a git repo exists with a committed baseline, but never clobber
         # one the task image ships with (e.g. fix-git).  Harbor sets the
         # working directory via ``docker exec -w``, so ``$PWD`` is the task

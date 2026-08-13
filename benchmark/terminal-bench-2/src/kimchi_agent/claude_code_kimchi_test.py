@@ -11,6 +11,7 @@ from harbor.environments.base import ExecResult
 from harbor.models.agent.context import AgentContext
 
 from kimchi_agent.claude_code_kimchi import (
+    CLAUDE_CODE_AUTO_COMPACT_PERCENT,
     CLAUDE_CODE_CONTEXT_SAFETY_MARGIN_TOKENS,
     CLAUDE_CODE_DEFAULT_API_TIMEOUT_MS,
     CLAUDE_CODE_INSTALL_RETRY_DELAYS_SEC,
@@ -156,9 +157,9 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         return NonZeroAgentExitCodeError(
             "Command failed (exit 137): set -euo pipefail; "
             "curl -fsSL https://downloads.claude.ai/claude-code-releases/bootstrap.sh | bash -s -- && "
-            "export PATH=\"$HOME/.local/bin:$PATH\" && claude --version\n"
+            'export PATH="$HOME/.local/bin:$PATH" && claude --version\n'
             "stdout: Installing Claude Code native build latest..."
-            "bash: line 158: 235 Killed \"$binary_path\" install\n"
+            'bash: line 158: 235 Killed "$binary_path" install\n'
             "stderr: None"
         )
 
@@ -183,7 +184,7 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_non_installer_exit_137_is_not_retried(self) -> None:
         original_error = NonZeroAgentExitCodeError(
-            "Command failed (exit 137): export PATH=\"$HOME/.local/bin:$PATH\"; "
+            'Command failed (exit 137): export PATH="$HOME/.local/bin:$PATH"; '
             "claude --verbose --output-format=stream-json --print -- 'solve it'"
         )
         with tempfile.TemporaryDirectory() as tmp:
@@ -299,7 +300,7 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(int(CLAUDE_CODE_DEFAULT_API_TIMEOUT_MS), 600_000)
 
     async def test_rejects_non_kimchi_provider(self) -> None:
-        for model_name in ("anthropic/claude-opus-4-6", "zai/glm-5.1"):
+        for model_name in ("anthropic/claude-opus-4-6",):
             with self.subTest(model_name=model_name), tempfile.TemporaryDirectory() as tmp:
                 agent = RecordingClaudeCodeKimchi(
                     logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
@@ -337,15 +338,19 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent.agent_commands, [])
 
     async def test_retryable_api_status_is_reclassified_for_harbor_retry(self) -> None:
-        stream = "\n".join([
-            json.dumps({"type": "system", "subtype": "init"}),
-            json.dumps({
-                "type": "result",
-                "is_error": True,
-                "api_error_status": 524,
-                "result": "API Error: 524 origin_response_timeout",
-            }),
-        ])
+        stream = "\n".join(
+            [
+                json.dumps({"type": "system", "subtype": "init"}),
+                json.dumps(
+                    {
+                        "type": "result",
+                        "is_error": True,
+                        "api_error_status": 524,
+                        "result": "API Error: 524 origin_response_timeout",
+                    }
+                ),
+            ]
+        )
         with tempfile.TemporaryDirectory() as tmp:
             agent = FailingClaudeCodeKimchi(
                 logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
@@ -362,12 +367,14 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("cat /logs/agent/claude-code.txt", environment.commands)
 
     async def test_nonretryable_api_status_remains_nonzero_exit(self) -> None:
-        stream = json.dumps({
-            "type": "result",
-            "is_error": True,
-            "api_error_status": 401,
-            "result": "API Error: 401 unauthorized",
-        })
+        stream = json.dumps(
+            {
+                "type": "result",
+                "is_error": True,
+                "api_error_status": 401,
+                "result": "API Error: 401 unauthorized",
+            }
+        )
         original_error = NonZeroAgentExitCodeError("claude exited 1")
         with tempfile.TemporaryDirectory() as tmp:
             agent = FailingClaudeCodeKimchi(
@@ -389,15 +396,19 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         verifies that run() re-reads the full stream and raises a typed exception
         so classify.py can match on the exception type.
         """
-        stream = "\n".join([
-            json.dumps({"type": "system", "subtype": "init", "cwd": "/app"}),
-            json.dumps({
-                "type": "result",
-                "is_error": True,
-                "api_error_status": 403,
-                "result": "403 Key limit exceeded (total limit). Manage it using https://openrouter.ai/workspaces/default/keys/abc123",
-            }),
-        ])
+        stream = "\n".join(
+            [
+                json.dumps({"type": "system", "subtype": "init", "cwd": "/app"}),
+                json.dumps(
+                    {
+                        "type": "result",
+                        "is_error": True,
+                        "api_error_status": 403,
+                        "result": "403 Key limit exceeded (total limit). Manage it using https://openrouter.ai/workspaces/default/keys/abc123",
+                    }
+                ),
+            ]
+        )
         original_error = NonZeroAgentExitCodeError("claude exited 1")
         with tempfile.TemporaryDirectory() as tmp:
             agent = FailingClaudeCodeKimchi(
@@ -418,18 +429,22 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         The full error text allows classify.py to match on 'may not exist' /
         'may not have access' markers for the model_access_error subcategory.
         """
-        stream = "\n".join([
-            json.dumps({"type": "system", "subtype": "init", "cwd": "/app"}),
-            json.dumps({
-                "type": "result",
-                "is_error": True,
-                "api_error_status": 404,
-                "result": (
-                    "There's an issue with the selected model (@preset/glm-5-1-zai)."
-                    " It may not exist or you may not have access to it."
+        stream = "\n".join(
+            [
+                json.dumps({"type": "system", "subtype": "init", "cwd": "/app"}),
+                json.dumps(
+                    {
+                        "type": "result",
+                        "is_error": True,
+                        "api_error_status": 404,
+                        "result": (
+                            "There's an issue with the selected model (@preset/glm-5-1-zai)."
+                            " It may not exist or you may not have access to it."
+                        ),
+                    }
                 ),
-            }),
-        ])
+            ]
+        )
         original_error = NonZeroAgentExitCodeError("claude exited 1")
         with tempfile.TemporaryDirectory() as tmp:
             agent = FailingClaudeCodeKimchi(
@@ -520,13 +535,15 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
                 logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
                 model_name="kimchi-dev/kimi-k2.5",
             )
-            agent._resolved_env_vars.update({
-                "ANTHROPIC_MODEL": "claude-opus-4-6",
-                "CLAUDE_CODE_OAUTH_TOKEN": "oauth-token",
-                "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "999999",
-                "CLAUDE_CODE_USE_BEDROCK": "1",
-                "MAX_THINKING_TOKENS": "2048",
-            })
+            agent._resolved_env_vars.update(
+                {
+                    "ANTHROPIC_MODEL": "claude-opus-4-6",
+                    "CLAUDE_CODE_OAUTH_TOKEN": "oauth-token",
+                    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "999999",
+                    "CLAUDE_CODE_USE_BEDROCK": "1",
+                    "MAX_THINKING_TOKENS": "2048",
+                }
+            )
 
             await agent.run("solve it", object(), AgentContext())
 
@@ -572,15 +589,17 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
                 logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
                 model_name="kimchi-dev/kimi-k2.5",
             )
-            response = FakeMetadataResponse({
-                "models": [
-                    {
-                        "slug": "kimi-k2.5",
-                        "reasoning": "true",
-                        "limits": {"context_window": "262144", "max_output_tokens": 262144},
-                    }
-                ]
-            })
+            response = FakeMetadataResponse(
+                {
+                    "models": [
+                        {
+                            "slug": "kimi-k2.5",
+                            "reasoning": "true",
+                            "limits": {"context_window": "262144", "max_output_tokens": 262144},
+                        }
+                    ]
+                }
+            )
 
             with (
                 patch("kimchi_agent.gateway.httpx.get", return_value=response) as http_get,
@@ -658,9 +677,7 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requested, [])
 
     async def test_openrouter_api_key_can_come_from_agent_extra_env(self) -> None:
-        routes, _requested = _openrouter_routes(
-            models=[{"id": "z-ai/glm-5.1", "context_length": 200_000}]
-        )
+        routes, _requested = _openrouter_routes(models=[{"id": "z-ai/glm-5.1", "context_length": 200_000}])
         with (
             patch.dict(os.environ, {}, clear=False),
             patch("kimchi_agent.openrouter.OpenRouterClient._get", routes),
@@ -738,6 +755,71 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
             )
 
             with self.assertRaisesRegex(ValueError, "was not returned"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
+
+    async def test_runs_claude_code_against_zai_model(self) -> None:
+        """No HTTP: Z.AI metadata is static; only env routing is exercised."""
+        with (
+            patch.dict(os.environ, {"ZAI_API_KEY": "zai-test"}),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="zai/glm-5.2",
+            )
+
+            await agent.run("solve it", object(), AgentContext())
+
+        env = agent.agent_envs[0]
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.z.ai/api/anthropic")
+        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "zai-test")
+        self.assertEqual(env["ANTHROPIC_API_KEY"], "")
+        for key in (
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_SMALL_FAST_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ):
+            self.assertEqual(env[key], "glm-5.2")
+        # 1M context: the 85% window (850_000) beats the reserve-based window.
+        self.assertEqual(
+            int(env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]),
+            1_000_000 * CLAUDE_CODE_AUTO_COMPACT_PERCENT // 100,
+        )
+        # The Kimchi gateway is not consulted for zai/* models.
+        self.assertEqual(agent.metadata_fetch_count, 0)
+
+    async def test_zai_model_requires_zai_api_key(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            os.environ.pop("ZAI_API_KEY", None)
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="zai/glm-5.2",
+            )
+
+            with self.assertRaisesRegex(ValueError, "ZAI_API_KEY is required"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
+
+    async def test_zai_unknown_model_fails_before_commands(self) -> None:
+        with (
+            patch.dict(os.environ, {"ZAI_API_KEY": "zai-test"}),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="zai/glm-5.1",
+            )
+
+            with self.assertRaisesRegex(ValueError, "not in the static metadata table"):
                 await agent.run("solve it", object(), AgentContext())
 
         self.assertEqual(agent.agent_commands, [])
