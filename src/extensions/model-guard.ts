@@ -307,9 +307,10 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 			imagesDetected = hasImages(postCompactMessages)
 			imagesStripped = false
 			imageDescriptions.clear()
-		} catch {
+		} catch (err) {
 			// If we can't refresh (e.g. sessionManager not fully available),
 			// the next context event will correct the state.
+			console.warn("[model-guard] session_compact state refresh failed:", err)
 		}
 
 		// Only consume the flag for compactions triggered by this guard's

@@ -1057,26 +1057,37 @@ describe("session_compact state refresh", () => {
 	})
 
 	it("does not crash when sessionManager.getBranch is unavailable", async () => {
-		const { pi, trigger } = makeMockPI()
-		modelGuardExtension(pi)
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			const { pi, trigger } = makeMockPI()
+			modelGuardExtension(pi)
 
-		// sessionManager without getBranch — should not throw
-		const compactCtx = makeMockCtx({
-			sessionManager: {} as ExtensionContext["sessionManager"],
-		})
+			// sessionManager without getBranch — should not throw
+			const compactCtx = makeMockCtx({
+				sessionManager: {} as ExtensionContext["sessionManager"],
+			})
 
-		await expect(
-			trigger(
-				"session_compact",
-				{
-					type: "session_compact",
-					compactionEntry: { tokensBefore: 1_000 },
-					fromExtension: false,
-					reason: "threshold",
-					willRetry: false,
-				},
-				compactCtx,
-			),
-		).resolves.toBeUndefined()
+			await expect(
+				trigger(
+					"session_compact",
+					{
+						type: "session_compact",
+						compactionEntry: { tokensBefore: 1_000 },
+						fromExtension: false,
+						reason: "threshold",
+						willRetry: false,
+					},
+					compactCtx,
+				),
+			).resolves.toBeUndefined()
+
+			// Should emit a diagnostic warning
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("session_compact state refresh failed"),
+				expect.anything(),
+			)
+		} finally {
+			warn.mockRestore()
+		}
 	})
 })
