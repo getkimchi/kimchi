@@ -1,7 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
-import { refFromModel } from "./model-catalog/ref-utils.js"
+import { findModelByRef, refFromModel, splitModelRef } from "./model-catalog/ref-utils.js"
 import {
 	contextFitsModel,
 	getLatestMessages,
@@ -95,8 +95,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 				}
 			}
 
-			const parts = model.split("/")
-			if (parts.length !== 2 || !parts[0] || !parts[1]) {
+			if (!splitModelRef(model)) {
 				const available = ctx.modelRegistry
 					.getAvailable()
 					.map((m) => refFromModel(m))
@@ -112,8 +111,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 				}
 			}
 
-			const [provider, modelId] = parts
-			const target = ctx.modelRegistry.find(provider, modelId)
+			const target = findModelByRef(ctx.modelRegistry, model)
 			if (!target) {
 				const available = ctx.modelRegistry
 					.getAvailable()
@@ -123,7 +121,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text" as const,
-							text: `Model not found: ${provider}/${modelId}\n\nAvailable models:\n${available.join("\n")}`,
+							text: `Model not found: ${model}\n\nAvailable models:\n${available.join("\n")}`,
 						},
 					],
 					details: null,
