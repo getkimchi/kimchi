@@ -18,7 +18,7 @@ vi.mock("../multi-model.js", (importOriginal) => {
 })
 
 import { createContext } from "../__mocks__/context.js"
-import { buildFermentContextState, buildFermentPromptBlock } from "./prompt-block.js"
+import { buildFermentPromptBlock } from "./prompt-block.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
 
@@ -174,7 +174,7 @@ describe("buildFermentPromptBlock", () => {
 		})
 	})
 
-	describe("current lifecycle transient context", () => {
+	describe("current lifecycle state section", () => {
 		const runningWithActivePhase: Partial<Ferment> = {
 			status: "running",
 			phases: [
@@ -197,12 +197,16 @@ describe("buildFermentPromptBlock", () => {
 		// ferment's current position, so the model wasted turns re-running
 		// discovery (list_ferments) and re-drafting the scope (scope_ferment),
 		// which the FSM rejected (already PHASE_ACTIVE).
+		//
+		// The static anti-replanning guidance stays in the system prompt; the
+		// volatile details (active phase, step progress, next-action hint) are
+		// injected via the transient context event by lifecycle-context.ts.
 		it("running ferment states that scoping is complete and scoping calls will be rejected", () => {
-			const out = buildFermentContextState(makeMockCtx(), makeRuntime(runningWithActivePhase)) ?? ""
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime(runningWithActivePhase)) ?? ""
 			expect(out).toContain("## Current lifecycle state")
 			expect(out).toContain("Scoping is COMPLETE")
-			expect(out).toContain('active phase "phase-1"')
-			expect(out).toContain("1/2 steps terminal")
+			expect(out).not.toContain("active phase")
+			expect(out).not.toContain("steps terminal")
 			for (const forbidden of [
 				"list_ferments",
 				"scope_ferment",
@@ -215,13 +219,16 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("`ask_user` remains available for genuine execution blockers or recovery")
 		})
 
-		it("names the immediate next lifecycle action for a pending step", () => {
-			const out = buildFermentContextState(makeMockCtx(), makeRuntime(runningWithActivePhase)) ?? ""
-			expect(out).toContain("Next action: call `start_ferment_step`")
-			expect(out).toContain('phase_id "phase-1", step_id "step-2"')
+		it("does not include volatile next-action hint in the system prompt", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime(runningWithActivePhase)) ?? ""
+			// The planner supplement mentions "Next action:" as an instruction, but the
+			// volatile hint line ("- Next action: call `start_ferment_step`...") must
+			// not appear in the static system prompt.
+			expect(out).not.toContain("- Next action: call")
+			expect(out).not.toContain('step_id "step-2"')
 		})
 
-		it("planned ferment points at activate_ferment_phase as the next action", () => {
+		it("planned ferment still shows the static lifecycle state section", () => {
 			const activePhase = runningWithActivePhase.phases?.[0]
 			if (!activePhase) throw new Error("expected active phase fixture")
 			const plannedPhase = {
@@ -229,63 +236,16 @@ describe("buildFermentPromptBlock", () => {
 				status: "planned" as const,
 			}
 			const out =
-				buildFermentContextState(makeMockCtx(), makeRuntime({ status: "planned", phases: [plannedPhase] })) ?? ""
+				buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "planned", phases: [plannedPhase] })) ??
+				""
 			expect(out).toContain("## Current lifecycle state")
-			expect(out).toContain("Next action: call `activate_ferment_phase`")
-			expect(out).toContain('phase_id "phase-1"')
+			expect(out).not.toContain("- Next action: call")
 		})
 
-		it("counts failed steps as terminal in active-phase progress", () => {
-			const activePhase = runningWithActivePhase.phases?.[0]
-			if (!activePhase) throw new Error("expected active phase fixture")
-			const out =
-				buildFermentContextState(
-					makeMockCtx(),
-					makeRuntime({
-						status: "running",
-						phases: [
-							{
-								...activePhase,
-								steps: [{ id: "step-1", index: 1, description: "Broken step", status: "failed" }],
-							},
-						],
-					}),
-				) ?? ""
-
-			expect(out).toContain('1/1 steps terminal in phase "phase-1"')
-		})
-
-		it("reports progress for every active phase in a parallel group", () => {
-			const activePhase = runningWithActivePhase.phases?.[0]
-			if (!activePhase) throw new Error("expected active phase fixture")
-			const out =
-				buildFermentContextState(
-					makeMockCtx(),
-					makeRuntime({
-						status: "running",
-						phases: [
-							{ ...activePhase, parallel: true, groupIndex: 1 },
-							{
-								...activePhase,
-								id: "phase-2",
-								index: 2,
-								name: "Test the feature",
-								parallel: true,
-								groupIndex: 1,
-								steps: [{ id: "step-3", index: 1, description: "Test it", status: "pending" }],
-							},
-						],
-					}),
-				) ?? ""
-
-			expect(out).toContain('1/2 steps terminal in phase "phase-1"')
-			expect(out).toContain('0/1 steps terminal in phase "phase-2"')
-		})
-
-		it("keeps lifecycle state out of the cached planner supplement", () => {
+		it("still prepends the section before the planner supplement", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime(runningWithActivePhase)) ?? ""
-			expect(out).not.toContain("## Current lifecycle state")
-			expect(out).toContain(STATE_MACHINE_HEADER)
+			expect(out.indexOf("## Current lifecycle state")).toBeGreaterThanOrEqual(0)
+			expect(out.indexOf("## Current lifecycle state")).toBeLessThan(out.indexOf(STATE_MACHINE_HEADER))
 		})
 	})
 
