@@ -74,6 +74,7 @@ import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
 import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-sanitizer.js"
+import packageInstallGuardExtension from "./extensions/package-install-guard.js"
 import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
@@ -535,6 +536,7 @@ try {
 			settingsTrustSyncExtension,
 			autoUpdateSettingsExtension,
 			startupUpdateExtension,
+			packageInstallGuardExtension,
 			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
