@@ -18,9 +18,11 @@ test("tool validation error hides raw arguments until tools are expanded", async
 							id: "call_invalid_edit",
 							function: {
 								name: "edit",
+								// Missing required `newText` (plus an unknown key) — a validation failure that
+								// does not rely on upstream schemas forbidding additional properties.
 								arguments: JSON.stringify({
 									path: "example.ts",
-									edits: [{ oldText: "before", newText: "after", unexpected: RAW_ARGS_SENTINEL }],
+									edits: [{ oldText: "before", unexpected: RAW_ARGS_SENTINEL }],
 								}),
 							},
 						},
