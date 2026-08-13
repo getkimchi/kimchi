@@ -485,6 +485,28 @@ describe("validation error display truncation", () => {
 		expect(rendered).toContain("ctrl+o to expand")
 	})
 
+	it("drops the args dump for conversion-failure errors (the second pi-ai throw site)", () => {
+		const conversionError = [
+			`Validation failed for tool "edit": argument conversion failed: edits: expected array`,
+			"",
+			"Received arguments:",
+			JSON.stringify({ path: "a.py", edits: "oops" }, null, 2),
+		].join("\n")
+		const errorCtx = makeErrorCtx()
+		const renderer = createErrorTruncatingResultRenderer("edit", () => new Text(conversionError, 0, 0))
+		const component = renderer(
+			errorResult(conversionError),
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			errorCtx,
+		)
+		const rendered = renderToString(component)
+
+		expect(rendered).toContain(`Validation failed for tool "edit": argument conversion failed`)
+		expect(rendered).not.toContain("Received arguments")
+		expect(rendered).toContain("ctrl+o to expand")
+	})
+
 	it("defers to the upstream renderer when expanded, showing the full error", () => {
 		let called = 0
 		const errorCtx = makeErrorCtx()
