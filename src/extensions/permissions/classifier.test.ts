@@ -18,8 +18,8 @@ vi.mock("@earendil-works/pi-ai/compat", async () => {
 	}
 })
 
-function fakeModel(id = "test-model"): Model<Api> {
-	return { provider: "openai", id, api: "openai-completions" } as Model<Api>
+function fakeModel(id = "test-model", provider = "openai"): Model<Api> {
+	return { provider, id, api: "openai-completions" } as Model<Api>
 }
 
 function fakeRegistry(
@@ -66,6 +66,23 @@ describe("classifyToolCall", () => {
 		expect(result.riskScore).toBe("low")
 		expect(result.ok).toBe(true)
 		expect(completeMock).toHaveBeenCalledTimes(1)
+	})
+
+	it("keeps classifier tags while omitting Pi token limits for Kimchi", async () => {
+		let sentPayload: unknown
+		completeMock.mockImplementation((_model: unknown, _context: unknown, options: unknown) => {
+			const { onPayload } = options as { onPayload: (payload: unknown) => unknown }
+			sentPayload = onPayload({ max_completion_tokens: 100, max_tokens: 100, tags: ["existing"] })
+			return fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' })
+		})
+
+		await classifyToolCall(
+			fakeRegistry([fakeModel(CLASSIFIER_PRIMARY_MODEL_ID, "kimchi-dev")]),
+			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
+			{ timeoutMs: 5000 },
+		)
+
+		expect(sentPayload).toEqual({ tags: ["source:classifier", "existing"] })
 	})
 
 	it("retries up to 3 times on abort before giving up", async () => {
