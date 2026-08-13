@@ -52,8 +52,17 @@ describe("isRtkPassthrough", () => {
 		"cd '/tmp/project with spaces' && npm install",
 		"git status || bunx tsx script.ts",
 		"(pnpm run lint)",
+		"$(pnpm run lint)",
+		"echo $(pnpm run lint)",
+		"cat <(pnpm run lint)",
+		"{ pnpm run lint; }",
+		"if true; then pnpm test; fi",
+		"echo ready\npnpm test",
 		// leading environment assignments still invoke pnpm directly
 		"CI=1 pnpm test",
+		// Parse failures bypass the optional RTK optimization rather than risk
+		// changing the command's semantics.
+		"git status ${BROKEN",
 	])("returns true for %s", (cmd) => {
 		expect(isRtkPassthrough(cmd)).toBe(true)
 	})
@@ -63,6 +72,7 @@ describe("isRtkPassthrough", () => {
 		"cargo test",
 		"echo pnpm run lint", // pnpm not at start
 		'echo "cd /tmp && pnpm exec vitest --version"',
+		"echo '$(pnpm test)'", // single-quoted command substitution is literal text
 		"echo ready && echo pnpm exec vitest --version",
 		"bash -c 'pnpm exec vitest --version'",
 	])("returns false for %s", (cmd) => {

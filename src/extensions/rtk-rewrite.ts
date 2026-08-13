@@ -73,15 +73,24 @@ export function detectRtk(): Promise<boolean> {
  */
 const RTK_PASSTHROUGH_COMMANDS = new Set(["pnpm", "npm", "yarn", "bun", "npx", "bunx"])
 
-// Common shell separators that begin another executable command. shell-quote
+// Shell operators that begin another executable command context. shell-quote
 // keeps quoted operators inside string tokens, avoiding substring matches such
-// as `echo "pnpm test"`. This deliberately is not a complete Bash parser.
-const COMMAND_SEPARATORS = new Set(["||", "&&", "|&", "&", ";", "|"])
+// as `echo "pnpm test"`. Opening subshell/process-substitution operators are
+// included so nested commands such as `$(pnpm test)` and `<(pnpm test)` are
+// checked independently from their outer command. Quoted source passed to a
+// nested shell, such as `bash -c 'pnpm test'`, remains outside this policy.
+const COMMAND_SEPARATORS = new Set(["||", "&&", "|&", "&", ";", "|", "(", "<("])
 const LEADING_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/
+const COMMAND_PREFIXES = new Set(["!", "{", "if", "then", "elif", "else", "while", "until", "do", "time"])
 
 function segmentInvokesPassthroughCommand(tokens: string[]): boolean {
 	let commandIndex = 0
-	while (commandIndex < tokens.length && LEADING_ASSIGNMENT_RE.test(tokens[commandIndex] ?? "")) commandIndex++
+	while (commandIndex < tokens.length) {
+		const token = tokens[commandIndex]
+		if (token === undefined) return false
+		if (!LEADING_ASSIGNMENT_RE.test(token) && !COMMAND_PREFIXES.has(token)) break
+		commandIndex++
+	}
 
 	const command = tokens[commandIndex]
 	if (command === undefined) return false
@@ -93,7 +102,10 @@ function segmentInvokesPassthroughCommand(tokens: string[]): boolean {
  */
 export function isRtkPassthrough(command: string): boolean {
 	try {
-		const entries = parseShell(command)
+		// shell-quote treats newlines as whitespace rather than command
+		// boundaries. Normalize them to semicolons; semicolons inside quotes
+		// remain string content, while escaped newlines remain escaped.
+		const entries = parseShell(command.replace(/\r?\n/g, ";"))
 		let segment: string[] = []
 
 		for (const entry of entries) {
@@ -110,7 +122,10 @@ export function isRtkPassthrough(command: string): boolean {
 
 		return segmentInvokesPassthroughCommand(segment)
 	} catch {
-		return false
+		// RTK is an optional optimization. If we cannot safely classify a shell
+		// command, preserve its original semantics instead of asking RTK to
+		// reinterpret malformed or unsupported syntax.
+		return true
 	}
 }
 
