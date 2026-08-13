@@ -1176,7 +1176,17 @@ describe("recommendation contract (producible-evidence whitelist)", () => {
 		return { ok: true, text }
 	}
 
-	const CONTRACT_FRAGMENTS = ["At most 3 recommendations", "headless", "manual review needed"]
+	const CONTRACT_FRAGMENTS = [
+		"At most 3 recommendations",
+		"headless",
+		"manual review needed",
+		// Run-6 fix-wave failure: grader demanded a computed-CSS assertion the
+		// main agent could only satisfy by swapping test environments (jsdom →
+		// happy-dom). Recommendations must now name a source-level fix-check
+		// the executor can evaluate in this environment.
+		"fix-check",
+		"jsdom/happy-dom cannot evaluate",
+	]
 
 	function expectContract(text: string) {
 		for (const fragment of CONTRACT_FRAGMENTS) {

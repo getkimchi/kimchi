@@ -525,6 +525,10 @@ describe("registerPhaseTools", () => {
 		expect(text).toContain("retry 1/3")
 		expect(text).toContain("Fix the N+1 query in listUsers.")
 		expect(text).toContain("Add cancellation to the fetch loop.")
+		// Fix protocol: executor must apply the fix to the artifact and verify
+		// with the grader's named check, not by weakening tests (run-6 failure).
+		expect(text).toContain("How to fix this correctly")
+		expect(text).toContain("Fix the artifact, not the test")
 		// Phase must NOT be completed.
 		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("active")
 		// Retry counter must have been bumped.

@@ -538,6 +538,17 @@ const lastPhaseRefusals = new Map<string, PersistedPhaseRefusal>()
 
 export const MAX_BLOCK_RETRIES = 3
 
+/** How-to-fix protocol appended to LLM-grader refusal errors. Graders name a
+ *  per-recommendation fix-check; the main agent must run those checks before
+ *  re-calling, must not weaken tests or swap test tooling to make assertions
+ *  pass (that was the real run-6 failure: jsdom → happy-dom churn instead of
+ *  removing the offending inline style), and must fix the artifact itself. */
+export const FIX_PROTOCOL =
+	"How to fix this correctly:\n" +
+	"- Each recommendation names a fix you can verify in this environment. Apply the fix to the source (the behavior the grader flagged), then run its check before re-calling — the check must now pass.\n" +
+	"- Fix the artifact, not the test: do NOT modify test files, assertions, test runners, or test configuration to make a failing check pass, unless the recommendation explicitly asks for that test change. If the asserted behavior cannot be evaluated in this environment (e.g. browser-rendered CSS in jsdom), verify at the source level instead and say so in your summary.\n" +
+	"- If the same recommendation repeats across retries, your last fix missed the real defect — re-read the flagged file first instead of editing more tests."
+
 export function bumpBlockRetry(fermentId: string, phaseId: string): number {
 	hydrateIfNeeded(fermentId)
 	const next = blockRetryCounts.bump(`${fermentId}:${phaseId}`)

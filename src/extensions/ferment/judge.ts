@@ -39,6 +39,8 @@ const JOURNEY_GRADE_MAX_ATTEMPTS = 3
 const RECOMMENDATION_CONTRACT = `Recommendation contract (applies whenever the grade is not A):
 - At most 3 recommendations, ordered by severity (highest impact first).
 - Each must include: what is wrong, why it matters, what must change, and what evidence would prove the fix.
+- Each recommendation MUST end with a fix-check the executing agent can run in this environment to evaluate its own fix before re-calling: a command, a file inspection, or a grep that unambiguously passes only once the defect is gone. Template: "Check: <command or inspection> must now show <expected result>".
+- The fix-check must be sound in a headless test environment: do NOT demand browser-rendered properties (computed CSS from stylesheets, focus halos, z-order paint, real timers) that jsdom/happy-dom cannot evaluate; instead name a check on the source itself (e.g. token defined in index.css, no inline style overriding the CSS rule, dependency array contains X) plus the existing test suite still passing.
 - Request ONLY evidence this headless environment can produce: command output (builds, tests, linters), file contents, and diffs. NEVER request screenshots, screen recordings, GIFs, live demos, or manual UI walkthroughs — they cannot be satisfied here.
 - If a concern genuinely needs human eyes (visual polish, UX feel), mark it "manual review needed". Manual-review items are advisory only and MUST NOT be the reason for a downgrade or refusal.
 - No vague advice or "nice to have" items.`

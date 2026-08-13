@@ -35,7 +35,7 @@ import { type ProjectCheckResult, runProjectChecks, summarizeProjectChecks } fro
 import { hashFlags, writeEscalationArtifact, writeReviewEvidence } from "../review-evidence.js"
 import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { safeSendMessage } from "../safe-send.js"
-import { MAX_BLOCK_RETRIES } from "../state.js"
+import { FIX_PROTOCOL, MAX_BLOCK_RETRIES } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -591,7 +591,7 @@ export async function completePhase(
 				})
 			}
 			return toolErr(
-				`**Phase "${phase.name}"** cannot complete — LLM grader assigned grade ${phaseJudgeResult.ok ? phaseJudgeResult.grade : "?"}, minimum required is ${minimumAcceptableGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).${projectChecksNote}\n\nRecommendations:\n${judgeRecsText}${warnLines}\n\nAddress the recommendations above and call complete_ferment_phase again with an updated summary.`,
+				`**Phase "${phase.name}"** cannot complete — LLM grader assigned grade ${phaseJudgeResult.ok ? phaseJudgeResult.grade : "?"}, minimum required is ${minimumAcceptableGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).${projectChecksNote}\n\nRecommendations:\n${judgeRecsText}${warnLines}\n\n${FIX_PROTOCOL}\n\nAddress the recommendations above and call complete_ferment_phase again with an updated summary.`,
 			)
 		}
 	}

@@ -57,7 +57,7 @@ import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { safeSendMessage } from "../safe-send.js"
 import type { PendingScope } from "../scoping.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
-import { MAX_BLOCK_RETRIES } from "../state.js"
+import { FIX_PROTOCOL, MAX_BLOCK_RETRIES } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -1009,7 +1009,7 @@ export async function completeFerment(
 					at: runtime.nowIso(),
 				})
 				return toolErr(
-					`**Ferment "${ferment.name}"** cannot complete — final LLM grader assigned grade ${journeyResult.grade}, minimum required is ${minimumAcceptableFermentGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}\n\nAddress the recommendations above and call complete_ferment again with an updated summary.`,
+					`**Ferment "${ferment.name}"** cannot complete — final LLM grader assigned grade ${journeyResult.grade}, minimum required is ${minimumAcceptableFermentGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}\n\n${FIX_PROTOCOL}\n\nAddress the recommendations above and call complete_ferment again with an updated summary.`,
 				)
 			}
 		}

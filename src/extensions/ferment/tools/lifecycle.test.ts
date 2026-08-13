@@ -1487,6 +1487,8 @@ describe("completeFerment", () => {
 			{ ctx: createContext() },
 		)
 		expect(errText(first)).toContain("final LLM grader assigned grade C")
+		expect(errText(first)).toContain("How to fix this correctly")
+		expect(errText(first)).toContain("do NOT modify test files, assertions, test runners")
 
 		const second = await completeFerment(
 			h.runtime,
