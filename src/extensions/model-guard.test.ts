@@ -1,5 +1,5 @@
 import type { ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
-import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ContextEvent, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../ferment/types.js"
 import { getCompactionEnabled } from "../settings-watcher.js"
@@ -24,16 +24,6 @@ import modelSwitchExtension, { __resetModelSwitchStateForTest } from "./model-sw
 vi.mock("../settings-watcher.js", () => ({
 	getCompactionEnabled: vi.fn(() => true),
 }))
-
-// Mock buildSessionContext so tests can control post-compaction messages.
-const mockBuildSessionContext = vi.fn()
-vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()
-	return {
-		...actual,
-		buildSessionContext: (...args: unknown[]) => mockBuildSessionContext(...args),
-	}
-})
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -939,8 +929,34 @@ describe("markImagesAsStripped", () => {
 describe("session_compact state refresh", () => {
 	beforeEach(() => {
 		__resetImagesDetectedForTest()
-		mockBuildSessionContext.mockReset()
 	})
+
+	// Build real SessionEntry[] simulating a post-compaction session.
+	// The real buildSessionContext will emit the summary as a text-only message.
+	function makeCompactedEntries(summary: string): SessionEntry[] {
+		return [
+			{
+				type: "compaction",
+				id: "compaction-1",
+				parentId: null,
+				timestamp: new Date().toISOString(),
+				summary,
+				firstKeptEntryId: "msg-1",
+				tokensBefore: 50_000,
+			},
+			{
+				type: "message",
+				id: "msg-1",
+				parentId: "compaction-1",
+				timestamp: new Date().toISOString(),
+				message: {
+					role: "user",
+					content: [{ type: "text", text: "Continue after compaction." }],
+					timestamp: 0,
+				},
+			},
+		]
+	}
 
 	it("refreshes latestMessages from post-compaction session", async () => {
 		const { pi, trigger } = makeMockPI()
@@ -955,13 +971,11 @@ describe("session_compact state refresh", () => {
 		expect(getLatestMessages()).toBe(bigMessages)
 		expect(getLatestMessagesTimestamp()).toBeGreaterThan(0)
 
-		// Simulate compaction: post-compaction messages are small (just a summary)
-		const postCompactMessages: ContextEvent["messages"] = [makeUser("Summary of previous conversation.")]
-		mockBuildSessionContext.mockReturnValue({ messages: postCompactMessages })
-
+		// Simulate compaction: buildSessionContext resolves real entries into
+		// text-only summary + kept messages (much smaller than bigMessages).
 		const compactCtx = makeMockCtx({
 			sessionManager: {
-				getBranch: () => [],
+				getBranch: () => makeCompactedEntries("Summary of previous conversation."),
 			} as unknown as ExtensionContext["sessionManager"],
 		})
 
@@ -977,8 +991,9 @@ describe("session_compact state refresh", () => {
 			compactCtx,
 		)
 
-		// latestMessages should now reflect post-compaction state
-		expect(getLatestMessages()).toBe(postCompactMessages)
+		// latestMessages should now reflect post-compaction state (not bigMessages)
+		expect(getLatestMessages()).not.toBe(bigMessages)
+		expect(hasImages(getLatestMessages())).toBe(false)
 		expect(getLatestMessagesTimestamp()).toBeGreaterThan(0)
 	})
 
@@ -994,12 +1009,9 @@ describe("session_compact state refresh", () => {
 		expect(sessionHasImages()).toBe(true)
 
 		// Compaction replaces session with text-only summary
-		const postCompactMessages: ContextEvent["messages"] = [makeUser("Summary of previous conversation.")]
-		mockBuildSessionContext.mockReturnValue({ messages: postCompactMessages })
-
 		const compactCtx = makeMockCtx({
 			sessionManager: {
-				getBranch: () => [],
+				getBranch: () => makeCompactedEntries("Summary of previous conversation."),
 			} as unknown as ExtensionContext["sessionManager"],
 		})
 
@@ -1032,11 +1044,9 @@ describe("session_compact state refresh", () => {
 		expect(sessionHasImages()).toBe(false) // stripped
 
 		// Compaction replaces session with text-only summary
-		mockBuildSessionContext.mockReturnValue({ messages: [makeUser("Summary.")] })
-
 		const compactCtx = makeMockCtx({
 			sessionManager: {
-				getBranch: () => [],
+				getBranch: () => makeCompactedEntries("Summary."),
 			} as unknown as ExtensionContext["sessionManager"],
 		})
 
@@ -1100,12 +1110,15 @@ describe("session_compact state refresh", () => {
 // They verify end-to-end that the session_compact handler refreshes the
 // cached state that model_select guards read. Without the fix, these tests
 // fail because session_compact doesn't refresh latestMessages/imagesDetected.
+//
+// These tests use the REAL buildSessionContext from upstream — no mock.
+// Post-compaction messages are produced by constructing real SessionEntry[]
+// with a compaction entry and letting buildSessionContext resolve them.
 
 describe("session_compact → model_select integration", () => {
 	beforeEach(() => {
 		__resetImagesDetectedForTest()
 		__resetModelSwitchStateForTest()
-		mockBuildSessionContext.mockReset()
 	})
 
 	// A pi that supports both on() (for extensions) and registerTool (for model-switch)
@@ -1128,6 +1141,35 @@ describe("session_compact → model_select integration", () => {
 		return { pi, trigger, setModel }
 	}
 
+	// Build real SessionEntry[] simulating a post-compaction session:
+	// [compaction(summary, firstKeptEntryId) → kept message → new message]
+	// buildSessionContext will walk from the leaf to root, find the compaction
+	// entry, emit the summary as a text-only message, then the kept messages.
+	function makeCompactedEntries(summary: string): SessionEntry[] {
+		return [
+			{
+				type: "compaction",
+				id: "compaction-1",
+				parentId: null,
+				timestamp: new Date().toISOString(),
+				summary,
+				firstKeptEntryId: "msg-1",
+				tokensBefore: 175_000,
+			},
+			{
+				type: "message",
+				id: "msg-1",
+				parentId: "compaction-1",
+				timestamp: new Date().toISOString(),
+				message: {
+					role: "user",
+					content: [{ type: "text", text: "Continue after compaction." }],
+					timestamp: 0,
+				},
+			},
+		]
+	}
+
 	it("allows switch to smaller-context model after compaction refreshes latestMessages", async () => {
 		const { pi, trigger, setModel } = makeSharedPI()
 		modelGuardExtension(pi)
@@ -1145,11 +1187,13 @@ describe("session_compact → model_select integration", () => {
 		})
 		await trigger("context", { messages: bigMessages }, ctx)
 
-		// Fire session_compact — the handler should refresh latestMessages
-		const smallMessages: ContextEvent["messages"] = [makeUser("Summary of conversation.")]
-		mockBuildSessionContext.mockReturnValue({ messages: smallMessages })
+		// Fire session_compact — the handler calls the real buildSessionContext
+		// with the entries from ctx.sessionManager.getBranch().
+		const compactEntries = makeCompactedEntries("Summary of previous conversation.")
 		const compactCtx = makeMockCtx({
-			sessionManager: { getBranch: () => [] } as unknown as ExtensionContext["sessionManager"],
+			sessionManager: {
+				getBranch: () => compactEntries,
+			} as unknown as ExtensionContext["sessionManager"],
 		})
 		await trigger(
 			"session_compact",
@@ -1163,10 +1207,15 @@ describe("session_compact → model_select integration", () => {
 			compactCtx,
 		)
 
-		// Verify state was refreshed
-		expect(getLatestMessages()).toBe(smallMessages)
+		// Verify state was refreshed — latestMessages should now be the small
+		// post-compaction messages produced by the real buildSessionContext.
+		const refreshed = getLatestMessages()
+		expect(refreshed).not.toBe(bigMessages)
+		expect(refreshed.length).toBeLessThan(bigMessages.length)
+		// The real buildSessionContext produces a compaction summary message + kept messages
+		expect(hasImages(refreshed)).toBe(false)
 
-		// Now model_select to a 100k model should succeed (post-compaction tokens ~5)
+		// Now model_select to a 100k model should succeed (post-compaction tokens are tiny)
 		await trigger(
 			"model_select",
 			{
@@ -1200,10 +1249,13 @@ describe("session_compact → model_select integration", () => {
 		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
 		expect(sessionHasImages()).toBe(true)
 
-		// Fire session_compact — post-compaction messages are text-only
-		mockBuildSessionContext.mockReturnValue({ messages: [makeUser("Summary.")] })
+		// Fire session_compact — the real buildSessionContext produces text-only
+		// messages from the compaction entry (summary is text, no images).
+		const compactEntries = makeCompactedEntries("Summary of previous conversation with images.")
 		const compactCtx = makeMockCtx({
-			sessionManager: { getBranch: () => [] } as unknown as ExtensionContext["sessionManager"],
+			sessionManager: {
+				getBranch: () => compactEntries,
+			} as unknown as ExtensionContext["sessionManager"],
 		})
 		await trigger(
 			"session_compact",
@@ -1217,7 +1269,7 @@ describe("session_compact → model_select integration", () => {
 			compactCtx,
 		)
 
-		// Verify imagesDetected was cleared
+		// Verify imagesDetected was cleared — compaction summary is text-only
 		expect(sessionHasImages()).toBe(false)
 
 		// Now model_select to a non-vision model should succeed
