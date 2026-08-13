@@ -1179,7 +1179,7 @@ describe("session_compact → model_select integration", () => {
 				model: { id: "kimi-k2.6", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
 				getContextUsage: () => ({ tokens: null, contextWindow: 200_000, percent: null }),
 				sessionManager: { getSessionId: () => "test-session" } as unknown as ExtensionContext["sessionManager"],
-				ui: { notify: vi.fn() } as ExtensionContext["ui"],
+				ui: { notify: vi.fn() } as unknown as ExtensionContext["ui"],
 			}),
 		)
 
@@ -1233,7 +1233,7 @@ describe("session_compact → model_select integration", () => {
 				model: { id: "kimi-k2.6", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
 				getContextUsage: () => ({ tokens: 1_000, contextWindow: 200_000, percent: 1 }),
 				sessionManager: { getSessionId: () => "test-session" } as unknown as ExtensionContext["sessionManager"],
-				ui: { notify: vi.fn() } as ExtensionContext["ui"],
+				ui: { notify: vi.fn() } as unknown as ExtensionContext["ui"],
 			}),
 		)
 
