@@ -185,6 +185,9 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
                 await agent.run("solve it", object(), AgentContext())
 
     async def test_zai_missing_api_key_fails(self) -> None:
+        # CI injects ZAI_API_KEY as a project variable for zai benchmark runs;
+        # the missing-key assertion must not see it.
+        os.environ.pop("ZAI_API_KEY", None)
         with tempfile.TemporaryDirectory() as tmp:
             agent = RecordingOpenCodeKimchi(
                 logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",

@@ -87,10 +87,13 @@ class ClaudeCodeStandardTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._old_key = os.environ.get("ANTHROPIC_API_KEY")
         os.environ["ANTHROPIC_API_KEY"] = "test-anthropic-key"
-        # Clear env vars that could trigger Bedrock / OAuth paths in the base.
+        # Clear env vars that could trigger Bedrock / OAuth paths in the base,
+        # or the custom-base-URL path (harbor keeps the provider prefix on the
+        # model when ANTHROPIC_BASE_URL is set — it is a Kimchi dev-shell var).
         self._old_bedrock = os.environ.pop("CLAUDE_CODE_USE_BEDROCK", None)
         self._old_oauth = os.environ.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
         self._old_force_oauth = os.environ.pop("CLAUDE_FORCE_OAUTH", None)
+        self._old_base_url = os.environ.pop("ANTHROPIC_BASE_URL", None)
 
     def tearDown(self) -> None:
         for key, old in [
@@ -98,6 +101,7 @@ class ClaudeCodeStandardTest(unittest.IsolatedAsyncioTestCase):
             ("CLAUDE_CODE_USE_BEDROCK", self._old_bedrock),
             ("CLAUDE_CODE_OAUTH_TOKEN", self._old_oauth),
             ("CLAUDE_FORCE_OAUTH", self._old_force_oauth),
+            ("ANTHROPIC_BASE_URL", self._old_base_url),
         ]:
             if old is None:
                 os.environ.pop(key, None)
