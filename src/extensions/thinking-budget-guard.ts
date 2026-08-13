@@ -11,10 +11,8 @@ import type { ExtensionAPI, InputEvent, TurnEndEvent } from "@earendil-works/pi-
  *      tool call. Two post-hoc triggers:
  *        a. `stopReason === "length"` with zero tool-call blocks (the output
  *           cap cut the thinking off mid-deliberation), or
- *        b. thinking characters exceed the per-turn budget
- *           (~20K tokens ≈ 80K chars, p90-calibrated from the baseline:
- *           talk-only turns average 14.6K chars; the pathological tail starts
- *           at ≥66K) — again with zero tool calls.
+ *        b. thinking characters exceed the per-turn budget — again with
+ *           zero tool calls.
  *      Both fire at `turn_end`. A third, mid-stream variant (trigger B)
  *      aborts the provider request while the thinking is still streaming.
  *      It is active by default in headless sessions and never wired in
@@ -24,9 +22,9 @@ import type { ExtensionAPI, InputEvent, TurnEndEvent } from "@earendil-works/pi-
  *      `registerPreempt` below.
  *
  *   2. Failure-state grinding — several consecutive rounds each spending real
- *      reasoning effort ({@link DEFAULT_STREAK_MIN_THINKING_CHARS}+ chars)
+ *      reasoning effort (DEFAULT_STREAK_MIN_THINKING_CHARS+ chars)
  *      without a mutating tool call (edit/write/bash). After
- *      {@link DEFAULT_STREAK_THRESHOLD} such rounds the guard steers once:
+ *      DEFAULT_STREAK_THRESHOLD such rounds the guard steers once:
  *      run the candidate you have. The streak resets on any mutating call
  *      (and on any light-thinking round), and v1 counts any bash call as
  *      action, consistent with the exploration guard's rationale that bash is
@@ -43,11 +41,11 @@ export interface ThinkingBudgetSteer {
 }
 
 export interface ThinkingBudgetGuardOptions {
-	/** Per-turn thinking budget in characters (~4 chars/token). Default: {@link DEFAULT_THINKING_BUDGET_CHARS}. */
+	/** Per-turn thinking budget in characters (~4 chars/token). Default: DEFAULT_THINKING_BUDGET_CHARS. */
 	thinkingBudgetChars?: number
-	/** Minimum thinking chars for a round to count toward the no-action streak. Default: {@link DEFAULT_STREAK_MIN_THINKING_CHARS}. */
+	/** Minimum thinking chars for a round to count toward the no-action streak. Default: DEFAULT_STREAK_MIN_THINKING_CHARS. */
 	streakMinThinkingChars?: number
-	/** Consecutive heavy-think no-mutation rounds before the streak steer fires. Default: {@link DEFAULT_STREAK_THRESHOLD}. */
+	/** Consecutive heavy-think no-mutation rounds before the streak steer fires. Default: DEFAULT_STREAK_THRESHOLD. */
 	streakThreshold?: number
 	/** Tool names that count as mutating action. Default: edit/write/bash. */
 	mutatingTools?: ReadonlySet<string>
