@@ -17,6 +17,7 @@ import modelGuardExtension, {
 	stripImages,
 	truncateMessages,
 } from "./model-guard.js"
+import modelSwitchExtension, { __resetModelSwitchStateForTest } from "./model-switch.js"
 
 // Mock the settings-watcher so the /settings Auto-compact toggle can be
 // controlled per test without touching the real settings files.
@@ -1089,5 +1090,154 @@ describe("session_compact state refresh", () => {
 		} finally {
 			warn.mockRestore()
 		}
+	})
+})
+
+// ── integration: session_compact → model_select ────────────────────────────────
+//
+// These tests wire both modelGuardExtension and modelSwitchExtension on the
+// same pi instance, then fire context → session_compact → model_select.
+// They verify end-to-end that the session_compact handler refreshes the
+// cached state that model_select guards read. Without the fix, these tests
+// fail because session_compact doesn't refresh latestMessages/imagesDetected.
+
+describe("session_compact → model_select integration", () => {
+	beforeEach(() => {
+		__resetImagesDetectedForTest()
+		__resetModelSwitchStateForTest()
+		mockBuildSessionContext.mockReset()
+	})
+
+	// A pi that supports both on() (for extensions) and registerTool (for model-switch)
+	function makeSharedPI() {
+		const handlers = new Map<string, Set<(data: unknown, ctx: ExtensionContext) => unknown>>()
+		const setModel = vi.fn(async () => true)
+		const pi = {
+			on(event: string, handler: (data: unknown, ctx: ExtensionContext) => unknown) {
+				if (!handlers.has(event)) handlers.set(event, new Set())
+				handlers.get(event)?.add(handler)
+			},
+			registerTool: vi.fn(),
+			registerCommand: vi.fn(),
+			setModel,
+		} as unknown as ExtensionAPI
+		const trigger = async (event: string, data: unknown, ctx: ExtensionContext) => {
+			const set = handlers.get(event)
+			if (set) for (const h of set) await h(data, ctx)
+		}
+		return { pi, trigger, setModel }
+	}
+
+	it("allows switch to smaller-context model after compaction refreshes latestMessages", async () => {
+		const { pi, trigger, setModel } = makeSharedPI()
+		modelGuardExtension(pi)
+		modelSwitchExtension(pi)
+
+		// Pre-compaction: fire context with large messages (125k tokens estimated)
+		const bigMessages: ContextEvent["messages"] = [
+			makeAssistant(50_000),
+			...Array.from({ length: 50 }, () => makeUser("x".repeat(10_000))),
+		]
+		// 50 * ceil(10000/4) = 125_000; + 50_000 baseline from assistant = 175_000
+		const ctx = makeMockCtx({
+			model: { id: "kimi-k2.6", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
+			getContextUsage: () => ({ tokens: null, contextWindow: 200_000, percent: null }),
+		})
+		await trigger("context", { messages: bigMessages }, ctx)
+
+		// Fire session_compact — the handler should refresh latestMessages
+		const smallMessages: ContextEvent["messages"] = [makeUser("Summary of conversation.")]
+		mockBuildSessionContext.mockReturnValue({ messages: smallMessages })
+		const compactCtx = makeMockCtx({
+			sessionManager: { getBranch: () => [] } as unknown as ExtensionContext["sessionManager"],
+		})
+		await trigger(
+			"session_compact",
+			{
+				type: "session_compact",
+				compactionEntry: { tokensBefore: 175_000 },
+				fromExtension: false,
+				reason: "threshold",
+				willRetry: false,
+			},
+			compactCtx,
+		)
+
+		// Verify state was refreshed
+		expect(getLatestMessages()).toBe(smallMessages)
+
+		// Now model_select to a 100k model should succeed (post-compaction tokens ~5)
+		await trigger(
+			"model_select",
+			{
+				type: "model_select",
+				model: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"], contextWindow: 100_000 },
+				previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+				source: "set",
+			},
+			makeMockCtx({
+				model: { id: "kimi-k2.6", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
+				getContextUsage: () => ({ tokens: null, contextWindow: 200_000, percent: null }),
+				sessionManager: { getSessionId: () => "test-session" } as unknown as ExtensionContext["sessionManager"],
+				ui: { notify: vi.fn() } as ExtensionContext["ui"],
+			}),
+		)
+
+		// setModel should NOT have been called for revert (switch accepted)
+		expect(setModel).not.toHaveBeenCalledWith(expect.objectContaining({ id: "kimi-k2.6" }))
+	})
+
+	it("allows switch to non-vision model after compaction clears imagesDetected", async () => {
+		const { pi, trigger, setModel } = makeSharedPI()
+		modelGuardExtension(pi)
+		modelSwitchExtension(pi)
+
+		// Pre-compaction: fire context with images
+		const ctx = makeMockCtx({
+			model: { id: "kimi-k2.6", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
+			getContextUsage: () => ({ tokens: 1_000, contextWindow: 200_000, percent: 1 }),
+		})
+		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
+		expect(sessionHasImages()).toBe(true)
+
+		// Fire session_compact — post-compaction messages are text-only
+		mockBuildSessionContext.mockReturnValue({ messages: [makeUser("Summary.")] })
+		const compactCtx = makeMockCtx({
+			sessionManager: { getBranch: () => [] } as unknown as ExtensionContext["sessionManager"],
+		})
+		await trigger(
+			"session_compact",
+			{
+				type: "session_compact",
+				compactionEntry: { tokensBefore: 1_000 },
+				fromExtension: false,
+				reason: "threshold",
+				willRetry: false,
+			},
+			compactCtx,
+		)
+
+		// Verify imagesDetected was cleared
+		expect(sessionHasImages()).toBe(false)
+
+		// Now model_select to a non-vision model should succeed
+		await trigger(
+			"model_select",
+			{
+				type: "model_select",
+				model: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"], contextWindow: 100_000 },
+				previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+				source: "set",
+			},
+			makeMockCtx({
+				model: { id: "kimi-k2.6", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
+				getContextUsage: () => ({ tokens: 1_000, contextWindow: 200_000, percent: 1 }),
+				sessionManager: { getSessionId: () => "test-session" } as unknown as ExtensionContext["sessionManager"],
+				ui: { notify: vi.fn() } as ExtensionContext["ui"],
+			}),
+		)
+
+		// setModel should NOT have been called for revert (switch accepted)
+		expect(setModel).not.toHaveBeenCalledWith(expect.objectContaining({ id: "kimi-k2.6" }))
 	})
 })
