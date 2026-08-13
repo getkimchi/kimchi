@@ -160,6 +160,15 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 		req.on("aborted", () => {
 			recorded.aborted = true
 		})
+		// On modern Node (>=17) the request "aborted" event no longer fires once
+		// the request body has been fully consumed; a client abort mid-response
+		// instead surfaces as a premature response "close" (writableEnded false).
+		// Record that as an abort too, so tests can observe cancellations of
+		// in-flight streaming requests. Completed responses and keep-alive
+		// sockets close with writableEnded true and are unaffected.
+		res.on("close", () => {
+			if (!res.writableEnded) recorded.aborted = true
+		})
 		requests.push(recorded)
 
 		try {

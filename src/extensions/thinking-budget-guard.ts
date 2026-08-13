@@ -15,9 +15,10 @@ import type { ExtensionAPI, InputEvent, TurnEndEvent } from "@earendil-works/pi-
  *           (~20K tokens ≈ 80K chars, p90-calibrated from the token-analysis
  *           baseline: talk-only turns average 14.6K chars; the pathological
  *           tail starts at ≥66K) — again with zero tool calls.
- *      Both fire at `turn_end`. A mid-stream abort trigger (interrupting the
- *      thinking while it streams) is a deliberate follow-up: it needs a loop
- *      interruption hook and ships behind its own flag.
+ *      Both fire at `turn_end`. A third, mid-stream variant (trigger B)
+ *      aborts the provider request while the thinking is still streaming;
+ *      it ships behind `KIMCHI_THINKING_PREEMPT` (default off) and is
+ *      headless-only — see `registerPreempt` below.
  *
  *   2. Failure-state grinding — several consecutive rounds each spending real
  *      reasoning effort ({@link DEFAULT_STREAK_MIN_THINKING_CHARS}+ chars)
@@ -55,6 +56,27 @@ export const DEFAULT_STREAK_THRESHOLD = 3
 export const DEFAULT_MUTATING_TOOLS: ReadonlySet<string> = new Set(["edit", "write", "bash"])
 
 export const STEER_MESSAGE_TYPE = "thinking-budget-guard-steer"
+
+/** Env flag for the mid-stream preempt (trigger B). Off by default. */
+export const KIMCHI_THINKING_PREEMPT_ENV = "KIMCHI_THINKING_PREEMPT"
+/** One-shot calibration override for the per-turn thinking budget, in chars. */
+export const KIMCHI_THINKING_BUDGET_CHARS_ENV = "KIMCHI_THINKING_BUDGET_CHARS"
+
+export function isThinkingPreemptEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	const raw = env[KIMCHI_THINKING_PREEMPT_ENV]?.trim().toLowerCase()
+	return raw === "1" || raw === "true" || raw === "yes"
+}
+
+export function resolveThinkingBudgetChars(env: NodeJS.ProcessEnv = process.env): number {
+	const raw = env[KIMCHI_THINKING_BUDGET_CHARS_ENV]?.trim()
+	if (!raw) return DEFAULT_THINKING_BUDGET_CHARS
+	const parsed = Number.parseInt(raw, 10)
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_THINKING_BUDGET_CHARS
+}
+
+const PREEMPT_STEER_BASE =
+	"Thinking budget guard: your reasoning was cut off at %d characters because it showed no sign of reaching a tool call. " +
+	"Stop deliberating and act on what you already have — emit your best tool call now, even if your analysis is incomplete."
 
 const LENGTH_TRUNCATION_STEER =
 	"Thinking budget guard: your last response hit the output token limit while still reasoning and never reached a tool call. " +
@@ -154,7 +176,7 @@ export class ThinkingBudgetGuard {
 }
 
 export default function thinkingBudgetGuardExtension(pi: ExtensionAPI): void {
-	const guard = new ThinkingBudgetGuard()
+	const guard = new ThinkingBudgetGuard({ thinkingBudgetChars: resolveThinkingBudgetChars() })
 
 	pi.on("session_start", () => {
 		guard.reset()
@@ -173,6 +195,93 @@ export default function thinkingBudgetGuardExtension(pi: ExtensionAPI): void {
 			{
 				customType: STEER_MESSAGE_TYPE,
 				content: [{ type: "text", text: steer.text }],
+				display: false,
+			},
+			{ deliverAs: "steer" },
+		)
+	})
+
+	registerPreempt(pi)
+}
+
+/**
+ * Trigger B: mid-stream preempt. Opt-in via `KIMCHI_THINKING_PREEMPT`.
+ *
+ * Watches the streaming partial message and aborts the provider request as
+ * soon as accumulated thinking crosses the per-turn budget while no tool
+ * call has started — the talk-only mega-think shape caught mid-bleed instead
+ * of at turn_end. The abort ends the run; the steer is then queued from
+ * `agent_end` with `deliverAs: "steer"` so the session's post-run
+ * continuation (`_handlePostAgentRun` → `agent.continue()`) feeds it to the
+ * model inside the same prompt await. The aborted turn lands with
+ * `stopReason: "aborted"`, which `observeTurn` already skips — no double
+ * steer from the post-hoc triggers.
+ *
+ * Not wired in TUI contexts: interactive mode rebinds ctx.abort() to an
+ * editor-restore no-op, so the abort would never fire and the steer would
+ * dangle. The post-hoc turn_end trigger covers interactive sessions.
+ */
+function registerPreempt(pi: ExtensionAPI): void {
+	if (!isThinkingPreemptEnabled()) return
+
+	const budgetChars = resolveThinkingBudgetChars()
+	let isTui = false
+	let thinkingChars = 0
+	let sawToolCall = false
+	let latched = false
+	let pendingSteer = false
+
+	function resetTurn(): void {
+		thinkingChars = 0
+		sawToolCall = false
+		latched = false
+	}
+
+	pi.on("session_start", (_event, ctx) => {
+		isTui = ctx.mode === "tui"
+		pendingSteer = false
+		resetTurn()
+	})
+
+	pi.on("input", (event: InputEvent) => {
+		if (event.source === "extension") return
+		pendingSteer = false
+		resetTurn()
+	})
+
+	pi.on("turn_start", () => {
+		resetTurn()
+	})
+
+	pi.on("message_update", (event, ctx) => {
+		// Runs on every delta — keep it to a cheap accumulation + compare.
+		if (isTui || latched || pendingSteer || sawToolCall) return
+		const message = event.message
+		if (message.role !== "assistant") return
+		for (const block of message.content) {
+			if (block.type === "thinking") {
+				thinkingChars += block.thinking.length
+			} else if (block.type === "toolCall") {
+				sawToolCall = true
+				return
+			}
+		}
+		if (thinkingChars <= budgetChars) return
+		latched = true
+		pendingSteer = true
+		ctx.abort()
+	})
+
+	pi.on("agent_end", () => {
+		if (!pendingSteer) return
+		pendingSteer = false
+		latched = false
+		// Queue (not triggerTurn): the session detects messages queued from
+		// agent_end handlers and continues the run with this steer as input.
+		pi.sendMessage(
+			{
+				customType: STEER_MESSAGE_TYPE,
+				content: [{ type: "text", text: PREEMPT_STEER_BASE.replace("%d", String(thinkingChars)) }],
 				display: false,
 			},
 			{ deliverAs: "steer" },

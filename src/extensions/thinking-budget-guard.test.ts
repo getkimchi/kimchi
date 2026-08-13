@@ -1,11 +1,15 @@
 import type { TurnEndEvent } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import thinkingBudgetGuardExtension, {
 	DEFAULT_STREAK_MIN_THINKING_CHARS,
 	DEFAULT_STREAK_THRESHOLD,
 	DEFAULT_THINKING_BUDGET_CHARS,
+	isThinkingPreemptEnabled,
+	KIMCHI_THINKING_BUDGET_CHARS_ENV,
+	KIMCHI_THINKING_PREEMPT_ENV,
+	resolveThinkingBudgetChars,
 	STEER_MESSAGE_TYPE,
 	ThinkingBudgetGuard,
 } from "./thinking-budget-guard.js"
@@ -233,5 +237,148 @@ describe("thinkingBudgetGuardExtension", () => {
 		handler(turnEnd(assistantMessage({ thinkingChars: HEAVY })), ctx)
 
 		expect(sendMessage).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("thinking preempt (trigger B)", () => {
+	const BUDGET = 1_000
+
+	afterEach(() => {
+		delete process.env[KIMCHI_THINKING_PREEMPT_ENV]
+		delete process.env[KIMCHI_THINKING_BUDGET_CHARS_ENV]
+	})
+
+	/** Register the extension with the preempt flag on and a small budget, in a fresh print/tui ctx. */
+	function setup(mode: "print" | "tui" = "print") {
+		process.env[KIMCHI_THINKING_PREEMPT_ENV] = "1"
+		process.env[KIMCHI_THINKING_BUDGET_CHARS_ENV] = String(BUDGET)
+		const { api, getHandlers, sendMessage } = createExtensionApi()
+		thinkingBudgetGuardExtension(api)
+		const abort = vi.fn()
+		const ctx = createContext({ mode, abort })
+		/** Fire every handler registered for an event — the guard and the preempt each register some. */
+		const fire = (event: string, payload: unknown = {}) => {
+			for (const handler of getHandlers(event)) {
+				handler(payload, ctx)
+			}
+		}
+		const update = (message: AssistantMsg) => fire("message_update", { type: "message_update", message })
+		fire("session_start")
+		fire("turn_start")
+		return { abort, sendMessage, fire, update }
+	}
+
+	describe("env parsing", () => {
+		it.each(["1", "true", "yes"])("isThinkingPreemptEnabled is true for %s", (value) => {
+			expect(isThinkingPreemptEnabled({ [KIMCHI_THINKING_PREEMPT_ENV]: value })).toBe(true)
+		})
+
+		it.each(["0", "no", "false", "2"])("isThinkingPreemptEnabled is false for %s", (value) => {
+			expect(isThinkingPreemptEnabled({ [KIMCHI_THINKING_PREEMPT_ENV]: value })).toBe(false)
+		})
+
+		it("isThinkingPreemptEnabled is false when the flag is missing", () => {
+			expect(isThinkingPreemptEnabled({})).toBe(false)
+		})
+
+		it("resolveThinkingBudgetChars returns the override for a valid positive int", () => {
+			expect(resolveThinkingBudgetChars({ [KIMCHI_THINKING_BUDGET_CHARS_ENV]: "20000" })).toBe(20_000)
+		})
+
+		it.each(["", "garbage", "-5", "0"])("resolveThinkingBudgetChars falls back to the default for %s", (value) => {
+			expect(resolveThinkingBudgetChars({ [KIMCHI_THINKING_BUDGET_CHARS_ENV]: value })).toBe(
+				DEFAULT_THINKING_BUDGET_CHARS,
+			)
+		})
+
+		it("resolveThinkingBudgetChars returns the default when the override is missing", () => {
+			expect(resolveThinkingBudgetChars({})).toBe(DEFAULT_THINKING_BUDGET_CHARS)
+		})
+	})
+
+	it("does not register preempt handlers when the flag is off (default)", () => {
+		delete process.env[KIMCHI_THINKING_PREEMPT_ENV]
+		const { api, getHandlers } = createExtensionApi()
+		thinkingBudgetGuardExtension(api)
+
+		expect(getHandlers("message_update")).toHaveLength(0)
+		expect(getHandlers("agent_end")).toHaveLength(0)
+		expect(getHandlers("turn_start")).toHaveLength(0)
+	})
+
+	it("aborts exactly once when streaming thinking crosses the budget", () => {
+		const { abort, update } = setup()
+
+		update(assistantMessage({ thinkingChars: 400 }))
+		update(assistantMessage({ thinkingChars: 400 }))
+		expect(abort).not.toHaveBeenCalled()
+		// 1200 > 1000: budget crossed on the third delta.
+		update(assistantMessage({ thinkingChars: 400 }))
+		expect(abort).toHaveBeenCalledTimes(1)
+
+		// Latch: further over-budget deltas in the same turn do not re-abort.
+		update(assistantMessage({ thinkingChars: 2_000 }))
+		expect(abort).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not abort when the streaming message already contains a tool call", () => {
+		const { abort, update } = setup()
+
+		update(assistantMessage({ thinkingChars: BUDGET + 1, toolCalls: ["bash"] }))
+		update(assistantMessage({ thinkingChars: BUDGET }))
+
+		expect(abort).not.toHaveBeenCalled()
+	})
+
+	it("never aborts in TUI mode, even above budget", () => {
+		const { abort, update } = setup("tui")
+
+		update(assistantMessage({ thinkingChars: BUDGET + 1 }))
+		update(assistantMessage({ thinkingChars: BUDGET * 10 }))
+
+		expect(abort).not.toHaveBeenCalled()
+	})
+
+	it("sends exactly one steer at agent_end after aborting, and nothing on repeat agent_end", () => {
+		const { sendMessage, fire, update } = setup()
+
+		update(assistantMessage({ thinkingChars: BUDGET + 500 }))
+		fire("agent_end")
+
+		expect(sendMessage).toHaveBeenCalledTimes(1)
+		const [message, options] = sendMessage.mock.calls[0] as unknown as [
+			{ customType: string; display: boolean; content: Array<{ type: "text"; text: string }> },
+			{ deliverAs: string },
+		]
+		expect(options.deliverAs).toBe("steer")
+		expect(message.customType).toBe(STEER_MESSAGE_TYPE)
+		expect(message.display).toBe(false)
+		expect(message.content[0]?.text).toContain("cut off")
+		expect(message.content[0]?.text).toContain(String(BUDGET + 500))
+
+		fire("agent_end")
+		expect(sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("can re-abort on the continuation turn after the steer is consumed", () => {
+		const { abort, fire, update } = setup()
+
+		update(assistantMessage({ thinkingChars: BUDGET + 500 }))
+		expect(abort).toHaveBeenCalledTimes(1)
+		fire("agent_end") // steer queued and consumed by the session
+
+		fire("turn_start")
+		update(assistantMessage({ thinkingChars: BUDGET + 500 }))
+		expect(abort).toHaveBeenCalledTimes(2)
+	})
+
+	it("clears the pending steer when the user types after the abort", () => {
+		const { sendMessage, fire, update } = setup()
+
+		update(assistantMessage({ thinkingChars: BUDGET + 500 }))
+		fire("input", { type: "input", source: "user" })
+		fire("agent_end")
+
+		expect(sendMessage).not.toHaveBeenCalled()
 	})
 })
