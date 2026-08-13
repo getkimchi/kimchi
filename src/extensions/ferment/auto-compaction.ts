@@ -57,6 +57,10 @@ export interface StageCompactionOptions {
 	minKeepRecentTokens: number
 	/** Fraction of the model's context window kept as recent tokens (before the floor). */
 	keepRecentWindowFraction: number
+	/** Step-boundary compactions only fire when the context exceeds this fraction
+	 *  of the model's context window; below it they are skipped (phase
+	 *  boundaries always compact regardless). 0 disables the gate. */
+	stepContextGateFraction: number
 	/** Thinking level for the summarization call. */
 	thinkingLevel: ModelThinkingLevel
 }
@@ -69,6 +73,12 @@ export const DEFAULT_STAGE_COMPACTION_OPTIONS: Readonly<StageCompactionOptions> 
 	minContextTokens: 50_000,
 	minKeepRecentTokens: 20_000,
 	keepRecentWindowFraction: 0.05,
+	// Measured run 019ffa0b: 28 step compactions ≈ 34.5 min of 126-min wall
+	// (~74s each), one per step, mostly on 60–80K contexts far below any
+	// pressure level. Phase boundaries (7 in that run) carry the coherence
+	// value; steps compact only once the context actually stresses the window.
+	// The mid-turn pressure path remains the hard safety net above this gate.
+	stepContextGateFraction: 0.6,
 	// Compaction is pure summarization and never benefits from extended thinking.
 	thinkingLevel: "off",
 }
@@ -626,6 +636,23 @@ async function triggerCompactionForPending(
 				pi.appendEntry("ferment_breadcrumb", { text: `Stage compaction skipped: ${skipReason}` })
 			})
 			return true
+		}
+
+		// Step-only pressure gate: steps compact only once the context exceeds
+		// the configured fraction of the window; phase boundaries always compact
+		// (subject to the minimum-size gate above). Unknown window → gate off.
+		if (pending.kind === "step" && options.stepContextGateFraction > 0) {
+			const contextWindow = ctx.model?.contextWindow ?? 0
+			const stepGate = Math.floor(contextWindow * options.stepContextGateFraction)
+			if (contextWindow > 0 && contextTokens < stepGate) {
+				runtime.clearCompactionInFlight(fermentId)
+				const skipReason = `context ~${contextTokens.toLocaleString()} tokens is below the step-compaction threshold (${stepGate.toLocaleString()} tokens, ${options.stepContextGateFraction * 100}% of the ${contextWindow.toLocaleString()}-token window)`
+				appendHandoffEntry(undefined, skipReason)
+				tryPiAction(() => {
+					pi.appendEntry("ferment_breadcrumb", { text: `Stage compaction skipped: ${skipReason}` })
+				})
+				return true
+			}
 		}
 
 		// Append the handoff BEFORE compacting. At a stage boundary the session

@@ -965,6 +965,87 @@ describe("maybeTriggerFermentCompaction", () => {
 		})
 	})
 
+	it("skips step compaction below the 60%-of-window gate but still delivers the handoff", async () => {
+		// Run 019ffa0b measured ~74s per step compaction at 50–80K contexts,
+		// far below any pressure level. Steps now need real window pressure.
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+		ctx = makeCtx(ABOVE_GATE_TOKENS) // 60k < 60% of 200k window
+		ctx.model = { contextWindow: 200_000 } as ExtensionContext["model"]
+		ctx.inlineCompact = vi.fn()
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(ctx.inlineCompact).not.toHaveBeenCalled()
+		expect(runtime.getPendingCompaction(ferment.id)).toBeUndefined()
+		expect(pi.appendEntry).toHaveBeenCalledWith("ferment_breadcrumb", {
+			text: expect.stringContaining(
+				"below the step-compaction threshold (120,000 tokens, 60% of the 200,000-token window)",
+			),
+		})
+	})
+
+	it("fires step compaction at or above the 60%-of-window gate", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+		ctx = makeCtx(130_000) // ≥ 120k = 60% of 200k window
+		ctx.model = { contextWindow: 200_000 } as ExtensionContext["model"]
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 130_000,
+		}))
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(ctx.inlineCompact).toHaveBeenCalled()
+	})
+
+	it("always fires phase compaction below the step gate (phase boundaries are exempt)", async () => {
+		const ferment = makeFermentWithPhase({ id: "phase-1", name: "Phase", goal: "Goal" })
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingPhase(ferment.id, "phase-1"))
+		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+		ctx = makeCtx(ABOVE_GATE_TOKENS) // 60k < 120k step gate — but kind is phase
+		ctx.model = { contextWindow: 200_000 } as ExtensionContext["model"]
+		ctx.inlineCompact = vi.fn(async () => ({ summary: "compacted", firstKeptEntryId: "entry-1", tokensBefore: 60_000 }))
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(ctx.inlineCompact).toHaveBeenCalled()
+	})
+
+	it("falls back to firing when the context window is unknown", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+		ctx = makeCtx(ABOVE_GATE_TOKENS)
+		// No ctx.model → gate cannot be computed → fire (previous behaviour).
+		ctx.inlineCompact = vi.fn(async () => ({ summary: "compacted", firstKeptEntryId: "entry-1", tokensBefore: 60_000 }))
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(ctx.inlineCompact).toHaveBeenCalled()
+	})
+
 	it("treats a session with no assistant usage as below the minimum-size gate", async () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },
@@ -1004,6 +1085,9 @@ describe("maybeTriggerFermentCompaction", () => {
 			minContextTokens: 10_000,
 			minKeepRecentTokens: 1_000,
 			keepRecentWindowFraction: 0.5,
+			// Gate opt-out so this test (30k context, 100k window) exercises the
+			// keepRecent/thinking plumbing rather than the fraction gate.
+			stepContextGateFraction: 0,
 			thinkingLevel: "low",
 		})
 
@@ -1023,7 +1107,9 @@ describe("maybeTriggerFermentCompaction", () => {
 		)
 		storageMap.set(ferment.id, ferment)
 		runtime.setActive(ferment)
-		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		// Phase-kind pending so the 60%-of-window step gate (which would skip
+		// this 60k-on-a-1M-window context) does not shadow the keepRecent math.
+		setPendingCompaction(ferment.id, makePendingPhase(ferment.id, "phase-1"))
 		applyRoleAugmentation((roles) => ({ ...roles, compactor: undefined }))
 		ctx.model = { contextWindow: 1_000_000 } as ExtensionContext["model"]
 		ctx.inlineCompact = vi.fn(async () => ({
