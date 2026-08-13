@@ -7,6 +7,9 @@
  * can be asserted without spawning real shells.
  */
 
+import { existsSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { BashOperations } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createProcessRegistry, OutputRingBuffer, type TailSnapshot } from "./process-registry.js"
@@ -82,6 +85,7 @@ function createFakeOps(_exitCode: number | null = 0): FakeOps {
 
 afterEach(() => {
 	vi.useRealTimers()
+	vi.unstubAllEnvs()
 })
 
 describe("OutputRingBuffer", () => {
@@ -194,6 +198,51 @@ describe("createProcessRegistry — snapshotTail", () => {
 		expect(snap.state).toBe("stopped")
 		expect(snap.reason).toBe("unknown")
 		expect(snap.text).toBe("")
+	})
+
+	it("returns a truncated final snapshot with a spill path", async () => {
+		const ops = createFakeOps(0)
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "yes", "/tmp", undefined, {
+			intervalSeconds: 15,
+			deadlineMs: Date.now() + 60_000,
+		})
+		ops.emit(Buffer.alloc(60_000, "x".charCodeAt(0)))
+		await ops.exit(0)
+		await registry.whenExited(handle)
+
+		const snap = registry.finalSnapshot(handle)
+		expect(snap?.truncation?.truncated).toBe(true)
+		expect(snap?.content).toHaveLength(50_000)
+		expect(snap?.fullOutputPath).toContain("pi-bash-")
+		const spillPath = snap?.fullOutputPath
+		if (!spillPath) throw new Error("expected spill path")
+
+		await registry.remove(handle)
+		expect(existsSync(spillPath)).toBe(true)
+		await registry.shutdown()
+		expect(existsSync(spillPath)).toBe(false)
+	})
+
+	it("creates a missing temp directory before spilling output", async () => {
+		const missingTmpDir = join(tmpdir(), `missing-kimchi-dir-${Date.now()}`)
+		vi.stubEnv("TMPDIR", missingTmpDir)
+		const ops = createFakeOps(0)
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "yes", "/tmp", undefined, {
+			intervalSeconds: 15,
+			deadlineMs: Date.now() + 60_000,
+		})
+
+		ops.emit(Buffer.alloc(60_000, "x".charCodeAt(0)))
+		await new Promise((resolve) => setImmediate(resolve))
+
+		const spillPath = registry.finalSnapshot(handle)?.fullOutputPath
+		expect(spillPath).toContain(missingTmpDir)
+		await registry.remove(handle)
+		expect(existsSync(spillPath ?? "")).toBe(true)
+		await registry.shutdown()
+		rmSync(missingTmpDir, { recursive: true, force: true })
 	})
 })
 
@@ -364,5 +413,21 @@ describe("createProcessRegistry — remove & shutdown", () => {
 		await registry.shutdown()
 		expect(registry.size).toBe(0)
 		expect(ops.aborted).toBe(true)
+	})
+
+	it("shutdown deletes spill files for entries that were not removed", async () => {
+		const ops = createFakeOps(0)
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "yes", "/tmp", undefined, {
+			intervalSeconds: 15,
+			deadlineMs: Date.now() + 60_000,
+		})
+		ops.emit(Buffer.alloc(60_000, "x".charCodeAt(0)))
+		const spillPath = registry.finalSnapshot(handle)?.fullOutputPath
+		if (!spillPath) throw new Error("expected spill path")
+
+		await registry.shutdown()
+
+		expect(existsSync(spillPath)).toBe(false)
 	})
 })

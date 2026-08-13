@@ -1,10 +1,16 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 
 /**
  * Combines model provider and id into a ref string.
  */
 export function refFromModel(model: Model<Api>): string {
 	return `${model.provider}/${model.id}`
+}
+
+/** Resolve the exact canonical ref without assuming providers or model IDs contain no slashes. */
+export function findModelByRef(modelRegistry: ModelRegistry, ref: string): Model<Api> | undefined {
+	return modelRegistry.getAvailable().find((model) => refFromModel(model) === ref)
 }
 
 /**

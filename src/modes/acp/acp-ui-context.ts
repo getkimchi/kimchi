@@ -289,6 +289,10 @@ export function createAcpUIContext(
 			notify({ method: "notify", message, notifyType: type })
 		},
 
+		showError(message) {
+			notify({ method: "notify", message, notifyType: "error" })
+		},
+
 		setEditorText(text) {
 			notify({ method: "set_editor_text", text })
 		},
@@ -318,10 +322,6 @@ export function createAcpUIContext(
 					widgetPlacement: options?.placement,
 				})
 			}
-		},
-
-		showError(message) {
-			notify({ method: "notify", message, notifyType: "error" })
 		},
 
 		// TUI-only stubs below — extensions probe these in conditional branches.

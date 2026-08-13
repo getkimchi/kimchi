@@ -1,16 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 // All mock functions must be vi.hoisted
-const { mockNotify, mockRegisterCommand } = vi.hoisted(() => ({
+const { completeMock, mockNotify, mockRegisterCommand } = vi.hoisted(() => ({
+	completeMock: vi.fn(),
 	mockNotify: vi.fn(),
 	mockRegisterCommand: vi.fn(),
 }))
 
+vi.mock("@earendil-works/pi-ai/compat", async () => {
+	const actual = await vi.importActual<typeof import("@earendil-works/pi-ai/compat")>("@earendil-works/pi-ai/compat")
+	return { ...actual, complete: (...args: unknown[]) => completeMock(...args) }
+})
+
 // Mock the ExtensionAPI interface
 const createMockCtx = (overrides: Record<string, unknown> = {}) => ({
-	model: overrides.model ?? { id: "test-model", input: ["text", "image"] },
+	model: overrides.model ?? { provider: "kimchi-dev", id: "test-model", input: ["text", "image"] },
 	modelRegistry: overrides.modelRegistry ?? {
-		getAvailable: () => [{ id: "vision-model", input: ["text", "image"] }],
+		getAvailable: () => [{ provider: "kimchi-dev", id: "vision-model", input: ["text", "image"] }],
 		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: {} }),
 	},
 	ui: { notify: mockNotify },
@@ -42,7 +48,7 @@ vi.mock("./model-guard.js", async () => {
 	}
 })
 
-import { markImagesAsStripped, sessionHasImages } from "./model-guard.js"
+import { getLatestMessages, markImagesAsStripped, sessionHasImages } from "./model-guard.js"
 // Import the extension after mocks are set up
 import stripImagesExtension from "./strip-images.js"
 
@@ -51,6 +57,7 @@ describe("strip-images extension", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
+		completeMock.mockReset()
 		mockNotify.mockClear()
 		mockRegisterCommand.mockClear()
 		markImagesAsStripped()
@@ -112,6 +119,24 @@ describe("strip-images extension", () => {
 			await handler([], ctx)
 
 			expect(mockNotify).toHaveBeenCalledWith(expect.stringContaining("no API key available"), "error")
+		})
+
+		it("preserves the explicit image-analysis token limit", async () => {
+			let sentOptions: unknown
+			vi.mocked(getLatestMessages).mockReturnValue([
+				{ role: "user", content: [{ type: "image", data: "image-data", mimeType: "image/png" }] },
+			] as never)
+			completeMock.mockImplementation((_model: unknown, _context: unknown, options: unknown) => {
+				sentOptions = options
+				return { content: [{ type: "text", text: "description" }], stopReason: "stop" }
+			})
+			stripImagesExtension(mockPi as never)
+
+			const handler = mockPi.getHandler("strip-images") as (args: string[], ctx: unknown) => Promise<void>
+			await handler([], createMockCtx())
+
+			expect(sentOptions).toMatchObject({ maxTokens: 200 })
+			expect(sentOptions).not.toHaveProperty("onPayload")
 		})
 	})
 })

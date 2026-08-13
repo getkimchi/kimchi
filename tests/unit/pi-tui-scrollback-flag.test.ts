@@ -1,4 +1,4 @@
-import { TUI } from "@earendil-works/pi-tui"
+import { TuiMainScreen } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 /**
@@ -60,7 +60,7 @@ afterEach(() => {
 
 it("does not emit ESC[3J when PI_TUI_NO_CLEAR_SCROLLBACK=1", async () => {
 	const { writes, terminal } = makeMockTerminal()
-	const tui = new TUI(terminal, false)
+	const tui = new TuiMainScreen(terminal, false)
 
 	// Render enough lines to exceed the 24-row mock terminal so the render
 	// path exercises scrolling and full redraw logic.
@@ -85,7 +85,7 @@ it("emits ESC[3J by default", async () => {
 	vi.stubEnv("PI_TUI_NO_CLEAR_SCROLLBACK", undefined)
 
 	const { writes, terminal } = makeMockTerminal()
-	const tui = new TUI(terminal, false)
+	const tui = new TuiMainScreen(terminal, false)
 
 	tui.addChild({
 		render: () => Array.from({ length: 50 }, (_, i) => `line-${i}`),

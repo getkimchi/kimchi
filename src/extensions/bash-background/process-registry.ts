@@ -31,10 +31,12 @@
  * `session_shutdown` → `shutdown()`.
  */
 
-import { randomUUID } from "node:crypto"
+import { randomBytes, randomUUID } from "node:crypto"
+import { createWriteStream, mkdirSync, type WriteStream } from "node:fs"
 import { rm } from "node:fs/promises"
-import type { BashOperations, TruncationResult } from "@earendil-works/pi-coding-agent"
-import { OutputAccumulator } from "@earendil-works/pi-coding-agent/dist/core/tools/output-accumulator.js"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { type BashOperations, type TruncationResult, truncateTail } from "@earendil-works/pi-coding-agent"
 
 /** Default ring-buffer capacity (bytes) kept per running process. */
 export const DEFAULT_MAX_BUFFER_BYTES = 65_536
@@ -72,12 +74,188 @@ export interface FinalSnapshot {
 	content: string
 	/** Truncation info (matches upstream TruncationResult). */
 	truncation?: TruncationResult
-	/** Path to a temp file with the complete output, when spilled. */
+	/** Path to the complete spilled output; await remove() or shutdown() before reading it. */
 	fullOutputPath?: string
 	state: ProcessState
 	exitCode: number | null
 	reason: string | null
 }
+
+interface OutputSnapshot {
+	content: string
+	truncation: TruncationResult
+	fullOutputPath?: string
+}
+
+function defaultTempFilePath(prefix: string): string {
+	return join(tmpdir(), `${prefix}-${randomBytes(8).toString("hex")}.log`)
+}
+
+function byteLength(text: string): number {
+	return Buffer.byteLength(text, "utf-8")
+}
+
+class OutputAccumulator {
+	private readonly maxLines: number
+	private readonly maxBytes: number
+	private readonly maxRollingBytes: number
+	private readonly tempFilePrefix: string
+	private readonly decoder = new TextDecoder()
+	private rawChunks: Buffer[] = []
+	private tailText = ""
+	private tailBytes = 0
+	private tailStartsAtLineBoundary = true
+	private totalRawBytes = 0
+	private totalDecodedBytes = 0
+	private completedLines = 0
+	private totalLines = 0
+	private hasOpenLine = false
+	private finished = false
+	private tempFilePath: string | undefined
+	private tempFileStream: WriteStream | undefined
+	private tempFileError: Error | undefined
+
+	constructor(options: { maxLines?: number; maxBytes?: number; tempFilePrefix?: string } = {}) {
+		this.maxLines = options.maxLines ?? 2000
+		this.maxBytes = options.maxBytes ?? 50 * 1024
+		this.maxRollingBytes = Math.max(this.maxBytes * 2, 1)
+		this.tempFilePrefix = options.tempFilePrefix ?? "pi-output"
+	}
+
+	append(data: Buffer): void {
+		if (this.finished) throw new Error("Cannot append to a finished output accumulator")
+		this.totalRawBytes += data.length
+		this.appendDecodedText(this.decoder.decode(data, { stream: true }))
+		if (this.tempFileStream || this.shouldUseTempFile()) {
+			this.ensureTempFile()
+			this.writeTempFile(data)
+			return
+		}
+		if (data.length > 0) this.rawChunks.push(data)
+	}
+
+	finish(): void {
+		if (this.finished) return
+		this.finished = true
+		this.appendDecodedText(this.decoder.decode())
+		if (this.shouldUseTempFile()) this.ensureTempFile()
+	}
+
+	snapshot(options: { persistIfTruncated?: boolean } = {}): OutputSnapshot {
+		const tailTruncation = truncateTail(this.getSnapshotText(), {
+			maxLines: this.maxLines,
+			maxBytes: this.maxBytes,
+		})
+		const truncated = this.totalLines > this.maxLines || this.totalDecodedBytes > this.maxBytes
+		const truncatedBy = truncated
+			? (tailTruncation.truncatedBy ?? (this.totalDecodedBytes > this.maxBytes ? "bytes" : "lines"))
+			: null
+		const truncation = {
+			...tailTruncation,
+			truncated,
+			truncatedBy,
+			totalLines: this.totalLines,
+			totalBytes: this.totalDecodedBytes,
+			maxLines: this.maxLines,
+			maxBytes: this.maxBytes,
+		}
+		if (options.persistIfTruncated && truncation.truncated) this.ensureTempFile()
+		return { content: truncation.content, truncation, fullOutputPath: this.tempFilePath }
+	}
+
+	async closeTempFile(): Promise<void> {
+		if (!this.tempFileStream) {
+			if (this.tempFileError) throw this.tempFileError
+			return
+		}
+		const stream = this.tempFileStream
+		this.tempFileStream = undefined
+		if (this.tempFileError) {
+			stream.destroy()
+			throw this.tempFileError
+		}
+		await new Promise<void>((resolve, reject) => {
+			const onError = (error: Error) => {
+				stream.off("finish", onFinish)
+				reject(error)
+			}
+			const onFinish = () => {
+				stream.off("error", onError)
+				resolve()
+			}
+			stream.once("error", onError)
+			stream.once("finish", onFinish)
+			stream.end()
+		})
+		if (this.tempFileError) throw this.tempFileError
+	}
+
+	private appendDecodedText(text: string): void {
+		if (text.length === 0) return
+		const bytes = byteLength(text)
+		this.totalDecodedBytes += bytes
+		this.tailText += text
+		this.tailBytes += bytes
+		if (this.tailBytes > this.maxRollingBytes * 2) this.trimTail()
+
+		let newlines = 0
+		let lastNewline = -1
+		for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) {
+			newlines++
+			lastNewline = i
+		}
+		if (newlines === 0) {
+			this.hasOpenLine = true
+		} else {
+			this.completedLines += newlines
+			const tail = text.slice(lastNewline + 1)
+			this.hasOpenLine = tail.length > 0
+		}
+		this.totalLines = this.completedLines + (this.hasOpenLine ? 1 : 0)
+	}
+
+	private trimTail(): void {
+		const buffer = Buffer.from(this.tailText, "utf-8")
+		if (buffer.length <= this.maxRollingBytes) {
+			this.tailBytes = buffer.length
+			return
+		}
+		let start = buffer.length - this.maxRollingBytes
+		while (start < buffer.length && (buffer[start] & 0xc0) === 0x80) start++
+		this.tailStartsAtLineBoundary = start === 0 ? this.tailStartsAtLineBoundary : buffer[start - 1] === 0x0a
+		this.tailText = buffer.subarray(start).toString("utf-8")
+		this.tailBytes = byteLength(this.tailText)
+	}
+
+	private getSnapshotText(): string {
+		if (this.tailStartsAtLineBoundary) return this.tailText
+		const firstNewline = this.tailText.indexOf("\n")
+		return firstNewline === -1 ? this.tailText : this.tailText.slice(firstNewline + 1)
+	}
+
+	private shouldUseTempFile(): boolean {
+		return (
+			this.totalRawBytes > this.maxBytes || this.totalDecodedBytes > this.maxBytes || this.totalLines > this.maxLines
+		)
+	}
+
+	private ensureTempFile(): void {
+		if (this.tempFilePath) return
+		this.tempFilePath = defaultTempFilePath(this.tempFilePrefix)
+		mkdirSync(tmpdir(), { recursive: true })
+		this.tempFileStream = createWriteStream(this.tempFilePath)
+		this.tempFileStream.on("error", (error) => {
+			this.tempFileError ??= error
+		})
+		for (const chunk of this.rawChunks) this.writeTempFile(chunk)
+		this.rawChunks = []
+	}
+
+	private writeTempFile(data: Buffer): void {
+		if (!this.tempFileError) this.tempFileStream?.write(data)
+	}
+}
+
 export interface ProcessEntry {
 	readonly handle: string
 	state: ProcessState
@@ -183,7 +361,7 @@ export interface ProcessRegistry {
 	whenExited(handle: string): Promise<{ exitCode: number | null }>
 	/** Read-only entry state, or undefined if unknown. */
 	getEntry(handle: string): Readonly<ProcessEntry> | undefined
-	/** Remove an entry from the registry, killing it first if still running. */
+	/** Remove an entry, keeping any reported spill file readable until shutdown. */
 	remove(handle: string): Promise<void>
 	/** Kill every still-running entry and clear the registry. */
 	shutdown(): Promise<void>
@@ -355,19 +533,24 @@ export function createProcessRegistry(): ProcessRegistry {
 		}
 	}
 
+	async function closeOutput(entry: ProcessEntry): Promise<void> {
+		await entry.accumulator.closeTempFile().catch(() => {})
+		const path = entry.accumulator.snapshot().fullOutputPath
+		if (path) spillPaths.add(path)
+	}
+
 	async function remove(handle: string): Promise<void> {
 		const entry = entries.get(handle)
 		if (!entry) return
 		await kill(handle)
-		await entry.accumulator.closeTempFile().catch(() => {})
-		const snap = entry.accumulator.snapshot()
-		if (snap.fullOutputPath) spillPaths.add(snap.fullOutputPath)
+		await closeOutput(entry)
 		entries.delete(handle)
 	}
 
 	async function shutdown(): Promise<void> {
-		const pending = [...entries.values()].map((entry) => kill(entry.handle))
-		await Promise.all(pending)
+		const activeEntries = [...entries.values()]
+		await Promise.all(activeEntries.map((entry) => kill(entry.handle)))
+		await Promise.all(activeEntries.map(closeOutput))
 		entries.clear()
 		await Promise.allSettled([...spillPaths].map((p) => rm(p, { force: true })))
 		spillPaths.clear()
