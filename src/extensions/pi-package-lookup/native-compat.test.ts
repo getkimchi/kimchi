@@ -211,7 +211,6 @@ describe("robust installParsedSource", () => {
 		const failures = consumePackageInstallFailures()
 		expect(failures).toHaveLength(1)
 		expect(failures[0].source).toBe("npm:@kimchi-dev/kimchi-workflows")
-		expect(failures[0].reason).toBe("npm install failed with code 1")
 	})
 
 	it("swallows ENOENT error in robust mode", async () => {
@@ -226,7 +225,6 @@ describe("robust installParsedSource", () => {
 		const failures = consumePackageInstallFailures()
 		expect(failures).toHaveLength(1)
 		expect(failures[0].source).toBe("npm:some-package")
-		expect(failures[0].reason).toBe("spawn npm ENOENT")
 	})
 
 	it("propagates errors when not in robust mode (CLI path)", async () => {

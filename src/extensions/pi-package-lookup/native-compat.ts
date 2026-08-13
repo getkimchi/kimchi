@@ -39,7 +39,6 @@ type ResourceLoaderWithOriginal = DefaultResourceLoader & {
 }
 export interface PackageInstallFailure {
 	source: string
-	reason: string
 }
 
 /**
@@ -139,10 +138,9 @@ export function installPiNativeCompatibilityShim(): void {
 		}
 		try {
 			return await original.call(this, parsed, scope)
-		} catch (err) {
+		} catch {
 			recordFailure({
 				source: reconstructSourceFromParsed(parsed),
-				reason: err instanceof Error ? err.message : String(err),
 			})
 		}
 	}

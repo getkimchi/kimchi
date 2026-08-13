@@ -58,9 +58,7 @@ describe("package-install-guard extension", () => {
 	})
 
 	it("notifies with a single failure message", async () => {
-		vi.mocked(consumePackageInstallFailures).mockReturnValue([
-			{ source: "npm:@kimchi-dev/kimchi-workflows", reason: "npm install failed with code 1" },
-		])
+		vi.mocked(consumePackageInstallFailures).mockReturnValue([{ source: "npm:@kimchi-dev/kimchi-workflows" }])
 		const { pi, handlers } = createMockPi()
 		packageInstallGuardExtension(pi)
 
@@ -76,8 +74,8 @@ describe("package-install-guard extension", () => {
 
 	it("notifies with a list when multiple failures", async () => {
 		vi.mocked(consumePackageInstallFailures).mockReturnValue([
-			{ source: "npm:@kimchi-dev/kimchi-workflows", reason: "npm install failed with code 1" },
-			{ source: "npm:other-package", reason: "spawn npm ENOENT" },
+			{ source: "npm:@kimchi-dev/kimchi-workflows" },
+			{ source: "npm:other-package" },
 		])
 		const { pi, handlers } = createMockPi()
 		packageInstallGuardExtension(pi)
@@ -93,9 +91,7 @@ describe("package-install-guard extension", () => {
 	})
 
 	it("does not notify when hasUI is false", async () => {
-		vi.mocked(consumePackageInstallFailures).mockReturnValue([
-			{ source: "npm:@kimchi-dev/kimchi-workflows", reason: "npm install failed with code 1" },
-		])
+		vi.mocked(consumePackageInstallFailures).mockReturnValue([{ source: "npm:@kimchi-dev/kimchi-workflows" }])
 		const { pi, handlers } = createMockPi()
 		packageInstallGuardExtension(pi)
 
