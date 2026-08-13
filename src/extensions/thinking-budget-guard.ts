@@ -4,7 +4,7 @@ import type { ExtensionAPI, InputEvent, TurnEndEvent } from "@earendil-works/pi-
  * Thinking budget guard.
  *
  * Steers the agent out of two token-wasting deliberation shapes observed in
- * terminal-bench trajectories (see .kimchi/docs/token-analysis):
+ * terminal-bench trajectories:
  *
  *   1. Talk-only mega-think turns — a single assistant turn whose entire
  *      output budget is consumed by reasoning and which ends without a single
@@ -12,9 +12,9 @@ import type { ExtensionAPI, InputEvent, TurnEndEvent } from "@earendil-works/pi-
  *        a. `stopReason === "length"` with zero tool-call blocks (the output
  *           cap cut the thinking off mid-deliberation), or
  *        b. thinking characters exceed the per-turn budget
- *           (~20K tokens ≈ 80K chars, p90-calibrated from the token-analysis
- *           baseline: talk-only turns average 14.6K chars; the pathological
- *           tail starts at ≥66K) — again with zero tool calls.
+ *           (~20K tokens ≈ 80K chars, p90-calibrated from the baseline:
+ *           talk-only turns average 14.6K chars; the pathological tail starts
+ *           at ≥66K) — again with zero tool calls.
  *      Both fire at `turn_end`. A third, mid-stream variant (trigger B)
  *      aborts the provider request while the thinking is still streaming.
  *      It is active by default in headless sessions and never wired in
