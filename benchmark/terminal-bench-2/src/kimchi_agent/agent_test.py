@@ -10,7 +10,6 @@ from harbor.models.agent.context import AgentContext
 from kimchi_agent.agent import (
     CONTAINER_AGENT_PGID_FILE,
     CONTAINER_HARNESS_SKILLS_DIR,
-    KIMCHI_BENCHMARK_PROFILE_ENV,
     KIMCHI_EXIT_OUTPUT_TAIL_LINES,
     KIMCHI_INFRA_BREAKER_THRESHOLD_ENV,
     Kimchi,
@@ -41,7 +40,6 @@ def kimchi_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("KIMCHI_TAGS", raising=False)
     monkeypatch.delenv("RUN_ID", raising=False)
     monkeypatch.delenv(KIMCHI_INFRA_BREAKER_THRESHOLD_ENV, raising=False)
-    monkeypatch.delenv(KIMCHI_BENCHMARK_PROFILE_ENV, raising=False)
 
 
 async def test_run_uses_shell_process_group_cleanup_on_cancellation(tmp_path: Path) -> None:
@@ -240,67 +238,6 @@ async def test_run_rejects_invalid_infra_breaker_threshold(tmp_path: Path) -> No
         await agent.run("hello", object(), AgentContext())
 
     assert agent.agent_commands == []
-
-
-async def test_benchmark_profile_kwarg_is_passed_as_container_env(tmp_path: Path) -> None:
-    agent = RecordingKimchi(
-        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
-        model_name="kimchi-dev/kimi-k2.6",
-        **{"benchmark-profile": "lean"},
-    )
-
-    with pytest.raises(asyncio.CancelledError):
-        await agent.run("hello", object(), AgentContext())
-
-    assert agent.agent_envs[0][KIMCHI_BENCHMARK_PROFILE_ENV] == "lean"
-
-
-async def test_benchmark_profile_defaults_to_absent(tmp_path: Path) -> None:
-    agent = RecordingKimchi(
-        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
-        model_name="kimchi-dev/kimi-k2.6",
-    )
-
-    with pytest.raises(asyncio.CancelledError):
-        await agent.run("hello", object(), AgentContext())
-
-    assert KIMCHI_BENCHMARK_PROFILE_ENV not in agent.agent_envs[0]
-
-
-async def test_benchmark_profile_can_come_from_extra_env(tmp_path: Path) -> None:
-    agent = RecordingKimchi(
-        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
-        model_name="kimchi-dev/kimi-k2.6",
-        extra_env={KIMCHI_BENCHMARK_PROFILE_ENV: "lean"},
-    )
-
-    with pytest.raises(asyncio.CancelledError):
-        await agent.run("hello", object(), AgentContext())
-
-    assert agent.agent_envs[0][KIMCHI_BENCHMARK_PROFILE_ENV] == "lean"
-
-
-async def test_benchmark_profile_kwarg_wins_over_extra_env(tmp_path: Path) -> None:
-    agent = RecordingKimchi(
-        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
-        model_name="kimchi-dev/kimi-k2.6",
-        extra_env={KIMCHI_BENCHMARK_PROFILE_ENV: "default"},
-        **{"benchmark-profile": "lean"},
-    )
-
-    with pytest.raises(asyncio.CancelledError):
-        await agent.run("hello", object(), AgentContext())
-
-    assert agent.agent_envs[0][KIMCHI_BENCHMARK_PROFILE_ENV] == "lean"
-
-
-def test_benchmark_profile_rejects_empty_value(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="benchmark-profile"):
-        RecordingKimchi(
-            logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
-            model_name="kimchi-dev/kimi-k2.6",
-            **{"benchmark-profile": "  "},
-        )
 
 
 async def test_run_passes_merged_tags_in_exec_env(tmp_path: Path) -> None:

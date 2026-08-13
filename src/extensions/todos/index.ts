@@ -1,6 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { isLeanBenchmarkProfile } from "../benchmark-profile.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { registerTodoContextState } from "./context-state.js"
@@ -94,10 +93,6 @@ function hiddenTodoMessage(text: string) {
 }
 
 export default function todosExtension(pi: ExtensionAPI): void {
-	// Lean benchmark profile: todo bookkeeping pays thinking tokens in headless
-	// runs without helping pass rates — the profile leaves the tools
-	// unregistered entirely (tools, prompt blocks, widget, nudges).
-	if (isLeanBenchmarkProfile()) return
 	registerTodosTool(pi)
 	registerTodoPromptBlock(pi)
 	registerFermentTodoPromptBlock(pi)

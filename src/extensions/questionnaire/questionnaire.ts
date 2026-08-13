@@ -19,7 +19,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text, truncateToWidth } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 
-import { isLeanBenchmarkProfile } from "../benchmark-profile.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { withWorkingHidden } from "../ui.js"
 import { promptQuestionnaireFallback, type QuestionnaireResult } from "./questionnaire-fallback.js"
@@ -169,9 +168,6 @@ export function formatAnswerText(questions: Question[], answers: Answer[]): stri
 // ─── Extension ────────────────────────────────────────────────────────────────
 
 export default function questionnaireExtension(pi: ExtensionAPI): void {
-	// Lean benchmark profile: headless runs have no user to ask, so the tool
-	// is left unregistered instead of merely hidden.
-	if (isLeanBenchmarkProfile()) return
 	// The questionnaire tool drives a multi-question TUI form. When no UI is
 	// attached the execute body would return an error — worse, the model can
 	// retry the same call because the tool stays visible. Hide it from the
