@@ -1,0 +1,50 @@
+{
+  "name": "@getkimchi/kimchi",
+  "version": "0.0.0",
+  "description": "Kimchi — a coding agent CLI powered by Cast AI",
+  "license": "Apache-2.0",
+  "author": "CAST AI Group, Inc.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/getkimchi/kimchi"
+  },
+  "homepage": "https://github.com/getkimchi/kimchi#readme",
+  "bugs": {
+    "url": "https://github.com/getkimchi/kimchi/issues"
+  },
+  "keywords": [
+    "kimchi",
+    "ai",
+    "cli",
+    "coding-agent",
+    "llm",
+    "code-review",
+    "mcp",
+    "multi-model"
+  ],
+  "bin": {
+    "kimchi": "bin/kimchi.js"
+  },
+  "scripts": {
+    "postinstall": "node bin/postinstall.js",
+    "test": "node --test test/test_platforms.js test/test_postinstall.js test/test_wrapper.js"
+  },
+  "files": [
+    "bin/kimchi.js",
+    "bin/postinstall.js",
+    "bin/platforms.json"
+  ],
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "preferGlobal": true
+}

@@ -1,0 +1,161 @@
+name: npm package tests
+
+on:
+  pull_request:
+    paths:
+      - "npm/**"
+      - ".github/workflows/test-npm.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        node-version: [18, 20, 22]
+        exclude:
+          - os: ubuntu-24.04-arm
+            node-version: 18
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Show platform info
+        shell: bash
+        run: |
+          echo "OS: $(uname -s 2>/dev/null || ver)"
+          echo "Arch: $(uname -m 2>/dev/null || echo $PROCESSOR_ARCHITECTURE)"
+          echo "Node: $(node --version)"
+          echo "npm: $(npm --version)"
+
+      - name: Run unit tests
+        shell: bash
+        working-directory: npm
+        run: |
+          cp package.npm.json package.json
+          node --test test/test_platforms.js test/test_postinstall.js test/test_wrapper.js
+
+      - name: Build tarball
+        shell: bash
+        working-directory: npm
+        run: npm pack
+
+      - name: Install from tarball
+        shell: bash
+        run: |
+          # The package version is 0.0.0 in dev, so postinstall resolves to
+          # 'latest' and downloads the real binary from GitHub Releases.
+          # This tests the wrapper mechanics (install, download, resolve, spawn)
+          # against a real release. Building the binary from source in CI would
+          # require the full Kimchi build toolchain (Bun, Go, submodules).
+          TARBALL="$(ls npm/getkimchi-kimchi-*.tgz | head -1)"
+          if [ -z "$TARBALL" ]; then echo "No tarball found"; exit 1; fi
+          echo "Installing $TARBALL"
+          npm install -g "$TARBALL"
+
+      - name: Verify binary downloaded
+        shell: bash
+        run: |
+          VENDOR_DIR="$(npm root -g)/@getkimchi/kimchi/vendor"
+          if [ ! -d "$VENDOR_DIR" ]; then
+            echo "✗ Vendor directory NOT found!"
+            exit 1
+          fi
+          echo "✓ Vendor directory exists: $VENDOR_DIR"
+          BINARY="$(find "$VENDOR_DIR" -type f \( -name kimchi -o -name kimchi.exe \) | head -1)"
+          if [ -z "$BINARY" ]; then
+            echo "✗ No kimchi binary found in vendor dir!"
+            exit 1
+          fi
+          echo "✓ Binary found: $BINARY"
+
+      - name: Resolve kimchi binary path
+        shell: bash
+        run: |
+          # Resolve the absolute path to the globally installed kimchi wrapper
+          KIMCHI_BIN="$(npm root -g)/@getkimchi/kimchi/bin/kimchi.js"
+          echo "KIMCHI_BIN=$KIMCHI_BIN" >> "$GITHUB_ENV"
+
+      - name: TEST - kimchi --version
+        shell: bash
+        run: node "$KIMCHI_BIN" --version
+
+      - name: TEST - kimchi version
+        shell: bash
+        run: node "$KIMCHI_BIN" version
+
+      - name: TEST - kimchi --help
+        shell: bash
+        run: node "$KIMCHI_BIN" --help 2>&1 | head -15
+
+      - name: TEST - kimchi --print (no API key, should fail gracefully)
+        shell: bash
+        env:
+          KIMCHI_API_KEY: ""
+        run: |
+          set +e
+          OUTPUT=$(node "$KIMCHI_BIN" --print 'Reply with exactly: hello world' 2>&1)
+          CODE=$?
+          echo "$OUTPUT"
+          # Expected: non-zero exit with API-key-related message
+          if [ $CODE -eq 0 ]; then
+            echo "✗ Expected non-zero exit code, got 0"
+            exit 1
+          fi
+          echo "✓ Exited with code $CODE (expected non-zero)"
+
+      - name: TEST - kimchi --invalid-flag (should exit 1)
+        shell: bash
+        run: |
+          set +e
+          node "$KIMCHI_BIN" --nonexistent-flag-xyz 2>&1
+          CODE=$?
+          if [ $CODE -ne 1 ]; then
+            echo "✗ Expected exit code 1, got $CODE"
+            exit 1
+          fi
+          echo "✓ Correctly exited with code 1"
+
+      - name: TEST - .bin/kimchi symlink (simulates npx)
+        shell: bash
+        run: |
+          mkdir -p /tmp/npx-test && cd /tmp/npx-test
+          npm init -y
+          npm install "$GITHUB_WORKSPACE"/npm/getkimchi-kimchi-*.tgz
+          # Use node to invoke the wrapper directly for cross-platform consistency
+          node node_modules/@getkimchi/kimchi/bin/kimchi.js --version
+
+      - name: TEST - --ignore-scripts + npm rebuild
+        shell: bash
+        run: |
+          mkdir -p /tmp/ignore-test && cd /tmp/ignore-test
+          npm init -y
+          npm install --ignore-scripts "$GITHUB_WORKSPACE"/npm/getkimchi-kimchi-*.tgz
+
+          if [ -d "node_modules/@getkimchi/kimchi/vendor" ]; then
+            echo "✗ Vendor dir should not exist after --ignore-scripts"
+            exit 1
+          fi
+          echo "✓ Vendor dir correctly absent after --ignore-scripts"
+
+          npm rebuild @getkimchi/kimchi
+          if [ -d "node_modules/@getkimchi/kimchi/vendor" ]; then
+            echo "✓ Vendor dir present after rebuild"
+          else
+            echo "✗ Vendor dir missing after rebuild"
+            exit 1
+          fi
+
+          node node_modules/@getkimchi/kimchi/bin/kimchi.js --version
+          echo "✓ Works after rebuild"
