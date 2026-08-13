@@ -23,9 +23,6 @@ const TREE_DEPTH = 2
  */
 const SPARSE_TREE_DEPTH = 3
 const SPARSE_RESCAN_THRESHOLD = 40
-/** Package lists render up to this many entries per detail tier, plus an "…and N more" notice. */
-const PACKAGE_LIST_LIMIT_DEFAULT = 40
-const PACKAGE_LIST_LIMIT_FULL = 120
 const MAX_VALUE_BYTES = 256
 const MAX_ROOT_MARKERS = 32
 /**
@@ -323,26 +320,11 @@ export interface GitStatusFacts {
 	behind?: number
 }
 
-/** Activated Python environment and its installed packages (name==version, project-scoped). */
-export interface PythonEnvFacts {
-	environmentPath?: string
-	packages: string[]
-	totalCount: number
-	/**
-	 * Subset of `packages` pip classifies as not required by any other
-	 * installed package (`pip list --not-required`). Optional classification
-	 * enrichment — absent when the classification probe was skipped or
-	 * failed, in which case packages render in the plain single-list order.
-	 */
-	topLevel?: string[]
-}
-
 interface CollectionFacts {
 	cwd: string
 	gitRoot?: string
 	gitStatus?: GitStatusFacts
 	system?: SystemFacts
-	pythonEnv?: PythonEnvFacts
 	utilities?: ProbeFact[]
 	/**
 	 * Latest `git log --oneline` entries for the enclosing worktree. Commit
@@ -658,115 +640,6 @@ async function collectGitStatus(
 		}
 	}
 	return sawBranchHeader ? facts : undefined
-}
-
-const VENV_CANDIDATES = [".venv", "venv"] as const
-
-function findActivatedVenv(cwd: string, fs: FilesystemAdapter): string | undefined {
-	for (const candidate of VENV_CANDIDATES) {
-		const interpreter = join(cwd, candidate, "bin", "python")
-		if (fs.exists(interpreter)) return join(cwd, candidate)
-	}
-	return undefined
-}
-
-/**
- * Installed packages for the Python environment the agent will actually
- * use: the project venv when one exists in the working directory,
- * otherwise the interpreter on PATH. `pip list --format=freeze` output is
- * deterministic machine text; the render layer caps the entry count.
- *
- * Two commands run concurrently against the same absolute deadline, each
- * acquiring its own probe-limiter slot: the complete list is authoritative,
- * while `--not-required` is optional classification enrichment that lets the
- * render tier task-critical packages ahead of transitive dependencies.
- */
-async function collectPythonEnv(
-	cwd: string,
-	fs: FilesystemAdapter,
-	runCommand: CommandRunner,
-	deadlineMs: number,
-): Promise<PythonEnvFacts | undefined> {
-	const venv = findActivatedVenv(cwd, fs)
-	const command = venv ? join(venv, "bin", "python") : "python3"
-	// The authoritative command queues for its limiter slot first.
-	const completePromise = runPipList(command, cwd, deadlineMs, runCommand, [], 0)
-	// Classification is skipped when it cannot start with useful time
-	// remaining; a skipped classification is a successful fallback, not a
-	// Python collection failure.
-	const classificationPromise =
-		deadlineMs - Date.now() > CLASSIFICATION_MIN_REMAINING_MS
-			? runPipList(command, cwd, deadlineMs, runCommand, ["--not-required"], CLASSIFICATION_MIN_REMAINING_MS)
-			: Promise.resolve(undefined)
-	const [complete, classification] = await Promise.all([completePromise, classificationPromise])
-	if (complete.status !== "ok") return undefined
-	const packages = parsePipFreeze(complete.stdout)
-	let topLevel: string[] | undefined
-	if (classification?.status === "ok") {
-		// Intersect against the complete set (never trust classification
-		// metadata alone) and preserve complete-list spelling for display.
-		const topNames = new Set(
-			parsePipFreeze(classification.stdout).map((entry) => normalizeDistributionName(packageName(entry))),
-		)
-		topLevel = packages.filter((entry) => topNames.has(normalizeDistributionName(packageName(entry))))
-	}
-	return { environmentPath: venv, packages, totalCount: packages.length, topLevel }
-}
-
-/** Below this much remaining budget, a second pip probe cannot do useful work. */
-const CLASSIFICATION_MIN_REMAINING_MS = 50
-
-async function runPipList(
-	command: string,
-	cwd: string,
-	deadlineMs: number,
-	runCommand: CommandRunner,
-	extraArgs: readonly string[],
-	minimumRemainingMs: number,
-): Promise<CommandResult> {
-	// Shares the global probe concurrency budget with the version probes —
-	// a cold `pip list` must never run as a fifth concurrent subprocess.
-	const releaseProbeSlot = await acquireProbeSlot()
-	try {
-		// Limiter-queue time counts against the shared absolute deadline. The
-		// optional classifier also rechecks that useful time remains after
-		// acquiring its slot; the authoritative command runs with any time left.
-		const remainingMs = deadlineMs - Date.now()
-		if (remainingMs <= minimumRemainingMs) return { status: "timeout" }
-		return await runCommand({
-			command,
-			args: ["-m", "pip", "list", "--format=freeze", "--disable-pip-version-check", ...extraArgs],
-			cwd,
-			env: minimalProcessEnv(),
-			timeoutMs: remainingMs,
-			maxOutputBytes: 64 * 1024,
-		})
-	} finally {
-		releaseProbeSlot()
-	}
-}
-
-function parsePipFreeze(stdout: string): string[] {
-	const entries = stdout
-		.split("\n")
-		.map((line) => line.trim())
-		.filter((line) => /^[A-Za-z0-9][\w.-]*==[\w.+!-]+$/u.test(line))
-	const seenNames = new Set<string>()
-	return entries.filter((entry) => {
-		const normalizedName = normalizeDistributionName(packageName(entry))
-		if (seenNames.has(normalizedName)) return false
-		seenNames.add(normalizedName)
-		return true
-	})
-}
-
-function packageName(entry: string): string {
-	return entry.split("==", 1)[0] ?? entry
-}
-
-/** PEP 503-style distribution name equivalence: lowercase, runs of `-`/`_`/`.` collapse to `-`. */
-function normalizeDistributionName(name: string): string {
-	return name.toLowerCase().replace(/[-_.]+/gu, "-")
 }
 
 async function collectGitLog(cwd: string, runCommand: CommandRunner, timeoutMs: number): Promise<string[]> {
@@ -1518,7 +1391,7 @@ const GUIDANCE_LINES = [
 	"",
 	"The facts below were probed and verified at session startup. Do not rerun commands solely to rediscover or verify them — treat them as current unless you have since changed the environment, or the task explicitly depends on real-time accuracy.",
 	"",
-	`The project map is bounded to depth ${TREE_DEPTH} (depth ${SPARSE_TREE_DEPTH} in sparse workspaces). It excludes deeper paths, Git-ignored paths except encountered execution-context files, dependency/vendor directories, generated build output, caches, and symlink targets. Runs of files whose names differ only in one numeric group (data shards, frame sequences) collapse into a single "{first..last}" pattern line with a member count. File sizes come from metadata and type hints from file names; contents were not inspected. Absence from this map — or from the tool and package lists — does not prove that a path, tool, or package does not exist.`,
+	`The project map is bounded to depth ${TREE_DEPTH} (depth ${SPARSE_TREE_DEPTH} in sparse workspaces). It excludes deeper paths, Git-ignored paths except encountered execution-context files, dependency/vendor directories, generated build output, caches, and symlink targets. Runs of files whose names differ only in one numeric group (data shards, frame sequences) collapse into a single "{first..last}" pattern line with a member count. File sizes come from metadata and type hints from file names; contents were not inspected. Absence from this map — or from the tool lists — does not prove that a path or tool does not exist.`,
 	"",
 ] as const
 
@@ -1644,7 +1517,6 @@ function formatSnapshot(
 		markerLines: readonly string[],
 		gitLogLines: readonly string[],
 		probeLines: readonly string[],
-		pythonLines: readonly string[],
 	) => [
 		...snapshotPreamble(hostRuntime),
 		`Working directory: ${quote(facts.cwd)}`,
@@ -1667,7 +1539,6 @@ function formatSnapshot(
 				]
 			: []),
 		...(utilityLines.length > 0 ? ["", "CLI tools:", ...utilityLines] : []),
-		...(pythonLines.length > 0 ? ["", "Python environment:", ...pythonLines] : []),
 		"",
 		"Project map:",
 	]
@@ -1675,10 +1546,7 @@ function formatSnapshot(
 		markerLines: readonly string[],
 		gitLogLines: readonly string[],
 		probeLines: readonly string[],
-		pythonLines: readonly string[] = [],
-	) =>
-		byteLength([...buildBeforeTree(markerLines, gitLogLines, probeLines, pythonLines), ...afterTree].join("\n")) <=
-		maxBytes
+	) => byteLength([...buildBeforeTree(markerLines, gitLogLines, probeLines), ...afterTree].join("\n")) <= maxBytes
 	// Fit higher-priority marker facts before optional version probes and tree
 	// entries. A pathological set of long .sln/.csproj names must not suppress
 	// the cwd, ecosystem, and other essential orientation facts entirely.
@@ -1714,55 +1582,7 @@ function formatSnapshot(
 		if (fitsFixedFacts(markerLines, gitLogLines, [...probeLines, notice])) probeLines.push(notice)
 	}
 
-	// Installed Python packages fit after tool facts: capped per verbosity
-	// tier and truncated byte-wise under pressure without evicting tool
-	// facts. The leading line names the environment the list belongs to.
-	const pythonLines: string[] = []
-	if (facts.pythonEnv) {
-		const environmentLabel = facts.pythonEnv.environmentPath
-			? `- environment: ${quote(facts.pythonEnv.environmentPath)}`
-			: "- environment: system interpreter (python3 on PATH)"
-		if (fitsFixedFacts(markerLines, gitLogLines, probeLines, [environmentLabel])) pythonLines.push(environmentLabel)
-		const packageCap = verbosity === "full" ? PACKAGE_LIST_LIMIT_FULL : PACKAGE_LIST_LIMIT_DEFAULT
-		let orderedPackages = facts.pythonEnv.packages
-		let packageCapNote: string
-		if (facts.pythonEnv.topLevel !== undefined) {
-			// Two-tier relevance ranking: pip's top-level classification first,
-			// then the remaining (transitive) packages. One cap spans both
-			// tiers, so task-critical top-level names survive truncation even
-			// when they sort late in the raw pip output.
-			const topSet = new Set(facts.pythonEnv.topLevel)
-			const comparePackageNamesCaseInsensitively = (a: string, b: string) => {
-				const lower = compareNames(a.toLowerCase(), b.toLowerCase())
-				return lower !== 0 ? lower : compareNames(a, b)
-			}
-			const topTier = [...facts.pythonEnv.topLevel].sort(comparePackageNamesCaseInsensitively)
-			const restTier = facts.pythonEnv.packages
-				.filter((pkg) => !topSet.has(pkg))
-				.sort(comparePackageNamesCaseInsensitively)
-			orderedPackages = [...topTier, ...restTier]
-			packageCapNote =
-				facts.pythonEnv.totalCount > packageCap
-					? `${facts.pythonEnv.totalCount} installed (${facts.pythonEnv.topLevel.length} top-level); showing top-level first`
-					: `${facts.pythonEnv.totalCount} installed (${facts.pythonEnv.topLevel.length} top-level)`
-		} else {
-			packageCapNote =
-				facts.pythonEnv.totalCount > packageCap
-					? `${facts.pythonEnv.totalCount} installed; showing first ${packageCap}`
-					: `${facts.pythonEnv.totalCount} installed`
-		}
-		for (const pkg of orderedPackages.slice(0, packageCap)) {
-			const line = `- ${quote(pkg)}`
-			if (!fitsFixedFacts(markerLines, gitLogLines, probeLines, [...pythonLines, line])) break
-			pythonLines.push(line)
-		}
-		if (pythonLines.length > 0) {
-			const notice = `- packages: ${packageCapNote}`
-			if (fitsFixedFacts(markerLines, gitLogLines, probeLines, [...pythonLines, notice])) pythonLines.push(notice)
-		}
-	}
-
-	const beforeTree = buildBeforeTree(markerLines, gitLogLines, probeLines, pythonLines)
+	const beforeTree = buildBeforeTree(markerLines, gitLogLines, probeLines)
 	const treeLines: string[] = []
 	// Render units: same-shape numbered sequences (data shards, frame dumps)
 	// collapse into one line, so the 200-line cap is spent on structure
@@ -1810,7 +1630,7 @@ export type SnapshotVerbosity = "minimal" | "default" | "full"
  * Detail tier from KIMCHI_ENV_SNAPSHOT: unset/1/true → "default"; "minimal"
  * renders only the original sections (cwd, Git root, commits, markers,
  * ecosystems, tools, project map); "full" additionally lists unavailable
- * CLI utilities and raises package-list caps.
+ * CLI utilities.
  */
 function snapshotVerbosity(): SnapshotVerbosity {
 	const value = process.env.KIMCHI_ENV_SNAPSHOT?.trim().toLowerCase() ?? ""
@@ -2041,15 +1861,6 @@ export class EnvironmentSnapshotService {
 				probes: [],
 			}
 			onFacts(collectedFacts)
-			// The installed-package list is the single most re-probed fact in
-			// practice; start it concurrently with the version probes since a
-			// cold `pip list` can dominate the remaining budget.
-			const wantsPythonEnv =
-				detected.names.includes("Python") || detected.names.length === 0 || findActivatedVenv(cwd, this.filesystem)
-			const pythonEnvPromise =
-				verbosity !== "minimal" && wantsPythonEnv && Date.now() < deadline
-					? collectPythonEnv(cwd, this.filesystem, this.runCommand, deadline)
-					: Promise.resolve(undefined)
 			const alwaysProbes: Probe[] = [
 				probe("Git", "git", ["--version"], true),
 				probe("ripgrep", "rg", ["--version"], true),
@@ -2059,10 +1870,18 @@ export class EnvironmentSnapshotService {
 			// Bare task/data directories match no ecosystem even via source
 			// files; probe a small generic toolbox in their place.
 			const fallbackProbes = detected.names.length === 0 ? GENERIC_FALLBACK_PROBES : []
-			const requestedProbes = [...alwaysProbes, ...detected.probes, ...fallbackProbes]
-			probeMetrics.requestedProbeCount = requestedProbes.length
-			const probes = await runProbes(
-				requestedProbes,
+			const ecosystemProbes = [...detected.probes, ...fallbackProbes]
+			const utilityProbes = verbosity === "minimal" ? [] : UTILITY_PROBES
+			probeMetrics.requestedProbeCount = alwaysProbes.length + utilityProbes.length + ecosystemProbes.length
+			let completedFactCount = 0
+			// The universal core runs first: git/ripgrep/shell and the
+			// ecosystem-independent CLI utilities are the facts agents re-probe
+			// earliest in every workspace shape, so they must always win the
+			// shared budget over a stalling ecosystem toolchain probe. Absent
+			// executables resolve quickly (ENOENT), so the priority order only
+			// matters when the budget is genuinely tight.
+			const coreFacts = await runProbes(
+				alwaysProbes,
 				this.runCommand,
 				deadline,
 				this.probeTimeoutMs,
@@ -2073,26 +1892,40 @@ export class EnvironmentSnapshotService {
 					onFacts(collectedFacts)
 				},
 			)
-			collectedFacts.probes = probes
-			collectedFacts.incompleteProbes = requestedProbes.length - probes.length
+			collectedFacts.probes = coreFacts
+			completedFactCount += coreFacts.length
 			onFacts(collectedFacts)
-			// CLI utilities run after ecosystem probes so version facts
-			// essential to the project always win the shared budget. Absent
-			// executables resolve quickly (ENOENT), so this stays cheap on
-			// minimal hosts.
-			if (verbosity !== "minimal" && Date.now() < deadline) {
+			if (utilityProbes.length > 0 && Date.now() < deadline) {
 				collectedFacts.utilities = await runProbes(
-					UTILITY_PROBES,
+					utilityProbes,
 					this.runCommand,
 					deadline,
 					this.probeTimeoutMs,
 					this.stableFacts,
 					probeMetrics,
 				)
-				collectedFacts.incompleteProbes += UTILITY_PROBES.length - collectedFacts.utilities.length
+				completedFactCount += collectedFacts.utilities.length
 				onFacts(collectedFacts)
 			}
-			collectedFacts.pythonEnv = await pythonEnvPromise
+			if (ecosystemProbes.length > 0 && Date.now() < deadline) {
+				const ecosystemFacts = await runProbes(
+					ecosystemProbes,
+					this.runCommand,
+					deadline,
+					this.probeTimeoutMs,
+					this.stableFacts,
+					probeMetrics,
+					(probes) => {
+						collectedFacts.probes = [...coreFacts, ...probes]
+						onFacts(collectedFacts)
+					},
+				)
+				collectedFacts.probes = [...coreFacts, ...ecosystemFacts]
+				completedFactCount += ecosystemFacts.length
+				onFacts(collectedFacts)
+			}
+			collectedFacts.incompleteProbes =
+				alwaysProbes.length + utilityProbes.length + ecosystemProbes.length - completedFactCount
 			onFacts(collectedFacts)
 			const snapshot = formatSnapshot(collectedFacts, this.hostRuntime, verbosity, this.maxSnapshotBytes)
 			if (!this.diagnostics.get(key)?.timedOut)

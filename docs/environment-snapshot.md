@@ -68,21 +68,15 @@ recent commits, and the project map, the snapshot includes at the default tier:
   (`/.dockerenv`, `/run/.containerenv`), and root/non-root user. Collected from
   node:os and fixed system files — no child processes.
 - **CLI tools** — presence/version of ecosystem-independent utilities (curl, wget,
-  jq, sqlite3, tar, OpenSSL, tmux, ffmpeg, Docker, Podman). Only present tools are
-  listed; the `full` verbosity tier also lists utilities unavailable on PATH.
-- **Python environment** — when a Python ecosystem is detected or a project venv
-  exists: the active environment (project `.venv`/`venv` preferred over the PATH
-  interpreter) and its installed packages from `pip list --format=freeze`, capped
-  at 40 entries (default) / 120 (`full`) with an `N installed; showing first M`
-  notice.
+  jq, sqlite3, tar, OpenSSL, tmux, ffmpeg, Docker, Podman, qemu-img). Only present
+  tools are listed; the `full` verbosity tier also lists utilities unavailable on PATH.
 
 ## Verbosity tiers
 
 `KIMCHI_ENV_SNAPSHOT` selects the detail tier: unset/`1`/`true` → `default`,
 `minimal` renders only the original sections (no Git status, System, CLI tools,
-Python environment, or sparse depth expansion), `full` additionally lists
-unavailable CLI utilities and raises the package-list cap. `0`/`false`/`no`/`off`
-disable the block entirely.
+or sparse depth expansion), `full` additionally lists unavailable CLI utilities.
+`0`/`false`/`no`/`off` disable the block entirely.
 
 ## Map boundaries
 
@@ -139,9 +133,12 @@ manager, Python and its matching environment/package tool, Rust/Cargo, Go,
 Java/Maven/Gradle, C/C++ compilers and matching build tools, .NET, Ruby, PHP,
 Swift, and Elixir. Project wrappers such as `gradlew` are never executed.
 
-The four-process concurrency ceiling is shared across concurrent agent-context
-collections. A context waiting for a probe slot still observes its own 750 ms
-collection deadline.
+Probes run in priority order: the universal core first (Git, ripgrep, active
+shell, then the CLI utilities), then ecosystem-specific version probes, and
+finally — in marker-less workspaces only — the generic fallback toolbox
+(Python, pip, GCC, Make, Node, Rscript). The four-process concurrency ceiling
+is shared across concurrent agent-context collections. A context waiting for a
+probe slot still observes its own 1500 ms collection deadline.
 
 **No OS package-manager probes.** Probes use fixed direct command args, a neutral
 temporary cwd, and a minimal environment. Max 4 probes run concurrently. Versions
@@ -149,10 +146,10 @@ are normalized (strips `v` prefix: `v22.18.0` → `22.18.0`). Tools whose banner
 with another component's version use banner-specific extraction (`go version go1.22.5`
 → `1.22.5`; Elixir/Mix banners skip the Erlang/OTP erts version).
 
-## 750 ms ceiling + silent fallback
+## 1500 ms ceiling + silent fallback
 
-- **Cold-prompt ceiling**: 750 ms. Collection is bounded by per-probe and global
-  timeouts.
+- **Cold-prompt ceiling**: 1500 ms. Collection is bounded by per-probe (350 ms)
+  and global timeouts.
 - **Silent failure**: If collection fails before producing useful facts, the snapshot
   block is omitted. If the deadline expires after workspace facts were collected,
   those completed facts are preserved and unfinished probes are omitted.

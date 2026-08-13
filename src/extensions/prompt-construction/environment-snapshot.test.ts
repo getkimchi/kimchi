@@ -336,10 +336,10 @@ describe("environment-snapshot", () => {
 
 		it("retains essential facts when long root markers exhaust the byte budget", async () => {
 			const entries = Array.from({ length: 32 }, (_, index) =>
-				dirent(`${String(index).padStart(2, "0")}-${"x".repeat(230)}.csproj`, "file"),
+				dirent(`${String(index).padStart(2, "0")}-${"x".repeat(240)}.csproj`, "file"),
 			)
 			const fs = fakeFs(new Map([[ROOT, entries]]))
-			// 32 markers x ~240 B exceed a shrunken 8 KiB budget; the production
+			// 32 markers x ~250 B exceed a shrunken 8 KiB budget; the production
 			// 12 KiB budget admits them all, so the test exercises the path with
 			// an explicit override.
 			const svc = makeService({ filesystem: fs, hostRuntime: "R".repeat(500), maxSnapshotBytes: 8 * 1024 })
@@ -1022,6 +1022,43 @@ describe("environment-snapshot", () => {
 			} finally {
 				vi.useRealTimers()
 			}
+		})
+
+		it("utility facts win a contended budget over a stalled ecosystem probe", async () => {
+			// The universal core (git/ripgrep/shell + CLI utilities) must complete
+			// before ecosystem probes get budget: an ecosystem probe that stalls
+			// past the deadline must not starve the utilities agents re-probe
+			// earliest (`which curl …`).
+			const fs = fakeFs(new Map([[ROOT, [dirent("package.json", "file")]]]))
+			const calls: CommandRequest[] = []
+			const runner: CommandRunner & { calls: CommandRequest[] } = Object.assign(
+				async (request: CommandRequest) => {
+					calls.push(request)
+					if (request.command === "node") {
+						// Stall until the deadline-clamped timeout — never resolves in
+						// time to produce a fact.
+						await new Promise((resolveTimer) => setTimeout(resolveTimer, request.timeoutMs))
+						return { status: "timeout" as const }
+					}
+					if (request.command === "curl") return { status: "ok" as const, stdout: "curl 8.5.0" }
+					return { status: "missing" as const }
+				},
+				{ calls },
+			)
+			const svc = makeService({ filesystem: fs, runCommand: runner, budgetMs: 200 })
+			const snapshot = await svc.get({ contextId: "ctx-utility-priority", cwd: ROOT })
+			expect(snapshot).toBeDefined()
+			// The utility fact renders even though the Node probe never completed…
+			expect(snapshot).toContain("CLI tools:")
+			expect(snapshot).toContain('"curl": "8.5.0"')
+			expect(snapshot).not.toContain('"Node":')
+			// …and the priority order is visible in invocation order: utilities
+			// run before the ecosystem probe batch.
+			const curlIndex = calls.findIndex((call) => call.command === "curl")
+			const nodeIndex = calls.findIndex((call) => call.command === "node")
+			expect(curlIndex).toBeGreaterThanOrEqual(0)
+			expect(nodeIndex).toBeGreaterThanOrEqual(0)
+			expect(curlIndex).toBeLessThan(nodeIndex)
 		})
 	})
 
@@ -1732,21 +1769,6 @@ describe("environment-snapshot", () => {
 			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
 			expect(snapshot).toContain('"Rscript": "4.3.1"')
 		})
-
-		it("lists the installed package set of a bare marker-less workspace", async () => {
-			// Bare task/data directories match no ecosystem; the agent still
-			// faces a Python environment whose package list it would otherwise
-			// probe with pip list early on.
-			const fs = fakeFs(new Map([[ROOT, [dirent("data.csv", "file")]]]))
-			const runner = scriptedRunner({
-				python3: { status: "ok", stdout: "numpy==2.1.0\npandas==2.2.3\n" },
-			})
-			const svc = makeService({ filesystem: fs, runCommand: runner })
-			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
-			expect(snapshot).toContain("Python environment:")
-			expect(snapshot).toContain('"numpy==2.1.0"')
-			expect(snapshot).toContain('"pandas==2.2.3"')
-		})
 	})
 
 	describe("R and OCaml ecosystems", () => {
@@ -2089,61 +2111,6 @@ describe("environment-snapshot (startup enrichment)", () => {
 		})
 	})
 
-	describe("Python environment", () => {
-		const pipList = {
-			status: "ok",
-			stdout: "numpy==2.1.0\npandas==2.2.2\n\nWARNING: something\ntorch==2.4.0\n",
-		} as const
-
-		it("lists installed packages from the system interpreter", async () => {
-			const fs = fakeFs(new Map([[ROOT, [dirent("pyproject.toml", "file")]]]))
-			const runner = scriptedRunner({ python3: pipList })
-			const svc = makeService({ filesystem: fs, runCommand: runner })
-			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
-			expect(snapshot).toContain("Python environment:")
-			expect(snapshot).toContain("system interpreter")
-			expect(snapshot).toContain('"numpy==2.1.0"')
-			expect(snapshot).toContain('"torch==2.4.0"')
-			expect(snapshot).toContain("3 installed")
-		})
-
-		it("prefers the project venv interpreter and names the environment", async () => {
-			const fs = fakeFs(
-				new Map([
-					[ROOT, [dirent("pyproject.toml", "file"), dirent(".venv", "directory")]],
-					[join(ROOT, ".venv"), [dirent("bin", "directory")]],
-					[join(ROOT, ".venv", "bin"), [dirent("python", "file")]],
-				]),
-			)
-			const venvPython = join(ROOT, ".venv", "bin", "python")
-			const runner = scriptedRunner({ [venvPython]: pipList })
-			const svc = makeService({ filesystem: fs, runCommand: runner })
-			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
-			expect(snapshot).toContain('- environment: "/fake/project/.venv"')
-			expect(snapshot).toContain('"torch==2.4.0"')
-		})
-
-		it("caps the package list with a visible notice", async () => {
-			const many = Array.from({ length: 60 }, (_, i) => `pkg${i}==1.${i}`).join("\n")
-			const fs = fakeFs(new Map([[ROOT, [dirent("pyproject.toml", "file")]]]))
-			const runner = scriptedRunner({ python3: { status: "ok", stdout: many } })
-			const svc = makeService({ filesystem: fs, runCommand: runner })
-			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
-			// The scripted runner answers both pip lists identically, so every
-			// package classifies as top-level and the cap spans the single tier.
-			expect(snapshot).toContain("60 installed (60 top-level); showing top-level first")
-			expect(snapshot).not.toContain('"pkg59==')
-		})
-
-		it("renders no Python environment section when collection fails", async () => {
-			const fs = fakeFs(new Map([[ROOT, [dirent("pyproject.toml", "file")]]]))
-			const runner = scriptedRunner({ python3: { status: "missing" } })
-			const svc = makeService({ filesystem: fs, runCommand: runner })
-			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
-			expect(snapshot).not.toContain("Python environment:")
-		})
-	})
-
 	describe("sparse-workspace depth expansion", () => {
 		it("descends to depth 3 when the depth-2 scan stays sparse", async () => {
 			const fs = fakeFs(
@@ -2167,7 +2134,6 @@ describe("environment-snapshot (startup enrichment)", () => {
 			const runner = scriptedRunner({
 				"git status": { status: "ok", stdout: "# branch.oid abc\n# branch.head main\n" },
 				curl: { status: "ok", stdout: "curl 8.5.0" },
-				python3: { status: "ok", stdout: "numpy==2.1.0\n" },
 			})
 			const svc = makeService({
 				filesystem: fs,
@@ -2178,38 +2144,11 @@ describe("environment-snapshot (startup enrichment)", () => {
 			expect(snapshot).toContain("Project map:")
 			expect(snapshot).not.toContain("System:")
 			expect(snapshot).not.toContain("CLI tools:")
-			expect(snapshot).not.toContain("Python environment:")
 			expect(snapshot).not.toContain("on branch")
 		})
 	})
 
 	describe("collection budget (1500 ms default)", () => {
-		it("misses Python packages under a 750 ms budget but includes them under the default", async () => {
-			const fs = pythonProjectFs()
-			const slowPip: CommandRunner = async (request) => {
-				if (request.command === "python3") {
-					await new Promise((resolveTimer) => setTimeout(resolveTimer, 1100))
-					return { status: "ok", stdout: "torch==2.4.0\n" }
-				}
-				return { status: "missing" }
-			}
-			const legacyMs = await (async () => {
-				const svc = makeService({ filesystem: fs, runCommand: slowPip, budgetMs: 750 })
-				return svc.get({ contextId: "ctx-750", cwd: ROOT })
-			})()
-			expect(legacyMs).toBeDefined()
-			expect(legacyMs).not.toContain("Python environment:")
-
-			const svc = new EnvironmentSnapshotService({
-				runCommand: slowPip,
-				filesystem: fs,
-				systemFactsProvider: async () => ({}),
-			})
-			const snapshot = await svc.get({ contextId: "ctx-default", cwd: ROOT })
-			expect(snapshot).toContain("Python environment:")
-			expect(snapshot).toContain('"torch==2.4.0"')
-		})
-
 		it("keeps collection bounded near 1500 ms when probes stall", async () => {
 			const fs = pythonProjectFs()
 			// Stall until the caller's own timeout kills the probe: never resolving
@@ -2233,206 +2172,34 @@ describe("environment-snapshot (startup enrichment)", () => {
 		})
 	})
 
-	describe("two-tier Python package ranking", () => {
-		const pythonRunner = (
-			complete: string,
-			notRequired: string | CommandResult,
-		): CommandRunner & { calls: CommandRequest[] } => {
-			const calls: CommandRequest[] = []
-			const runner: CommandRunner = async (request) => {
-				calls.push(request)
-				if (request.command === "python3") {
-					if (request.args.includes("--not-required")) {
-						return typeof notRequired === "string" ? { status: "ok", stdout: notRequired } : notRequired
-					}
-					return { status: "ok", stdout: complete }
-				}
-				return { status: "missing" }
+	describe("installed-package enumeration", () => {
+		// The snapshot keeps the Python interpreter version probe but never
+		// enumerates installed packages — the inventory is a task-scoped
+		// lookup the agent answers on demand (requirements.txt, pyproject.toml,
+		// or an import check).
+		const workspaceShapes: Array<[string, FilesystemAdapter]> = [
+			["bare data directory", fakeFs(new Map([[ROOT, [dirent("data.csv", "file")]]]))],
+			["Python project", pythonProjectFs()],
+			[
+				"Python project with venv",
+				fakeFs(
+					new Map([
+						[ROOT, [dirent("pyproject.toml", "file"), dirent(".venv", "directory")]],
+						[join(ROOT, ".venv"), [dirent("bin", "directory")]],
+						[join(ROOT, ".venv", "bin"), [dirent("python", "file")]],
+					]),
+				),
+			],
+		]
+
+		it("never spawns pip package enumeration and renders no Python environment section", async () => {
+			for (const [name, fs] of workspaceShapes) {
+				const runner = scriptedRunner({})
+				const svc = makeService({ filesystem: fs, runCommand: runner })
+				const snapshot = await svc.get({ contextId: `ctx-no-pip-${name}`, cwd: ROOT })
+				expect(snapshot).not.toContain("Python environment:")
+				expect(runner.calls.some((call) => call.args.includes("list"))).toBe(false)
 			}
-			return Object.assign(runner, { calls })
-		}
-
-		it("keeps a top-level task-critical package that sorts past the raw cap", async () => {
-			const deps = Array.from({ length: 59 }, (_, i) => `dep${String(i).padStart(2, "0")}==1.0`)
-			const runner = pythonRunner([...deps, "torch==2.4.0"].join("\n"), "torch==2.4.0\n")
-			const fs = pythonProjectFs()
-			const svc = makeService({ filesystem: fs, runCommand: runner })
-			const snapshot = await svc.get({ contextId: "ctx-tier-cap", cwd: ROOT })
-			expect(snapshot).toContain('"torch==2.4.0"')
-			expect(snapshot).toContain("60 installed (1 top-level); showing top-level first")
-		})
-
-		it("renders the top-level tier first with each tier sorted case-insensitively", async () => {
-			const runner = pythonRunner("zebra==1.0\nNumpy==2.0\napple==1.0\n", "zebra==1.0\nNumpy==2.0\n")
-			const fs = pythonProjectFs()
-			const svc = makeService({ filesystem: fs, runCommand: runner })
-			const snapshot = await svc.get({ contextId: "ctx-tier-order", cwd: ROOT })
-			const envStart = snapshot?.indexOf("Python environment:") ?? -1
-			const numpy = snapshot?.indexOf('"Numpy==2.0"', envStart) ?? -1
-			const zebra = snapshot?.indexOf('"zebra==1.0"', envStart) ?? -1
-			const apple = snapshot?.indexOf('"apple==1.0"', envStart) ?? -1
-			expect(numpy).toBeGreaterThanOrEqual(0)
-			expect(numpy).toBeLessThan(zebra)
-			expect(zebra).toBeLessThan(apple)
-			expect(snapshot).toContain("3 installed (2 top-level)")
-		})
-
-		it("skips the classification probe when no useful time remains", async () => {
-			const runner = pythonRunner("torch==2.4.0\n", "torch==2.4.0\n")
-			const fs = pythonProjectFs()
-			// Budget too small for classification to do useful work.
-			const svc = makeService({ filesystem: fs, runCommand: runner, budgetMs: 40 })
-			const snapshot = await svc.get({ contextId: "ctx-skip-class", cwd: ROOT })
-			expect(snapshot).toContain('"torch==2.4.0"')
-			expect(runner.calls.some((call) => call.args.includes("--not-required"))).toBe(false)
-		})
-
-		it("rechecks useful classification time after waiting for a limiter slot", async () => {
-			const previousShell = process.env.SHELL
-			delete process.env.SHELL
-			const blockerReleases: Array<(result: CommandResult) => void> = []
-			let blockerCallCount = 0
-			const blockerRunner: CommandRunner = async () => {
-				blockerCallCount++
-				if (blockerCallCount > 4) return { status: "missing" }
-				return new Promise<CommandResult>((resolveResult) => blockerReleases.push(resolveResult))
-			}
-			const blockerFs = fakeFs(new Map([[ROOT, [dirent("Cargo.toml", "file")]]]))
-			const blockerService = makeService({ filesystem: blockerFs, runCommand: blockerRunner, budgetMs: 1000 })
-			const blockerSnapshot = blockerService.get({ contextId: "ctx-classification-blocker", cwd: ROOT })
-
-			try {
-				await vi.waitFor(() => expect(blockerReleases).toHaveLength(4))
-				const runner = pythonRunner("torch==2.4.0\n", "torch==2.4.0\n")
-				const svc = makeService({ filesystem: pythonProjectFs(), runCommand: runner, budgetMs: 200 })
-				const snapshotPromise = svc.get({ contextId: "ctx-classification-queued", cwd: ROOT })
-
-				await new Promise((resolveTimer) => setTimeout(resolveTimer, 170))
-				for (const release of blockerReleases.splice(0, 2)) release({ status: "missing" })
-				await snapshotPromise
-
-				const pipCalls = runner.calls.filter((call) => call.command === "python3" && call.args.includes("list"))
-				expect(pipCalls).toHaveLength(1)
-				expect(pipCalls[0]?.args).not.toContain("--not-required")
-			} finally {
-				for (const release of blockerReleases.splice(0)) release({ status: "missing" })
-				await blockerSnapshot
-				if (previousShell === undefined) delete process.env.SHELL
-				else process.env.SHELL = previousShell
-			}
-		})
-
-		it("falls back to single-list rendering when the classification probe errors", async () => {
-			const many = Array.from({ length: 60 }, (_, i) => `pkg${i}==1.${i}`).join("\n")
-			const runner = pythonRunner(many, { status: "error" })
-			const fs = pythonProjectFs()
-			const svc = makeService({ filesystem: fs, runCommand: runner })
-			const snapshot = await svc.get({ contextId: "ctx-class-error", cwd: ROOT })
-			expect(snapshot).toContain("60 installed; showing first 40")
-			expect(snapshot).not.toContain("top-level")
-		})
-
-		it("falls back to single-list rendering when the classification probe times out", async () => {
-			const runner = pythonRunner("torch==2.4.0\n", { status: "timeout" })
-			const fs = pythonProjectFs()
-			const svc = makeService({ filesystem: fs, runCommand: runner })
-			const snapshot = await svc.get({ contextId: "ctx-class-timeout", cwd: ROOT })
-			expect(snapshot).toContain('"torch==2.4.0"')
-			expect(snapshot).toContain("1 installed")
-			expect(snapshot).not.toContain("top-level")
-		})
-
-		it("omits the Python section when the complete list fails, even if classification succeeds", async () => {
-			const calls: CommandRequest[] = []
-			const runner: CommandRunner = async (request) => {
-				calls.push(request)
-				if (request.command === "python3") {
-					return request.args.includes("--not-required")
-						? { status: "ok", stdout: "torch==2.4.0\n" }
-						: { status: "error" }
-				}
-				return { status: "missing" }
-			}
-			const fs = pythonProjectFs()
-			const svc = makeService({ filesystem: fs, runCommand: runner })
-			const snapshot = await svc.get({ contextId: "ctx-complete-fails", cwd: ROOT })
-			expect(snapshot).not.toContain("Python environment:")
-		})
-
-		it("normalizes distribution names across separators and case", async () => {
-			const runner = pythonRunner(
-				"typing_extensions==4.12.2\nzope.interface==7.0\nFlask==3.0.3\nother-dep==1.0\n",
-				"typing-extensions==4.12.2\nzope-interface==7.0\nflask==3.0.3\n",
-			)
-			const fs = pythonProjectFs()
-			const svc = makeService({ filesystem: fs, runCommand: runner })
-			const snapshot = await svc.get({ contextId: "ctx-normalize", cwd: ROOT })
-			expect(snapshot).toContain("4 installed (3 top-level)")
-			// Complete-list spelling is preserved for display.
-			expect(snapshot).toContain('"typing_extensions==4.12.2"')
-			expect(snapshot).toContain('"zope.interface==7.0"')
-			expect(snapshot).toContain('"Flask==3.0.3"')
-			// The unclassified package renders after the whole top-level tier.
-			const envStart = snapshot?.indexOf("Python environment:") ?? -1
-			const flask = snapshot?.indexOf('"Flask==3.0.3"', envStart) ?? -1
-			const other = snapshot?.indexOf('"other-dep==1.0"', envStart) ?? -1
-			expect(flask).toBeLessThan(other)
-		})
-
-		it("deduplicates authoritative packages by normalized distribution name", async () => {
-			const runner = pythonRunner(
-				"Flask==3.0.3\nflask==3.0.2\ntyping_extensions==4.12.2\ntyping-extensions==4.11.0\n",
-				"FLASK==3.0.3\ntyping.extensions==4.12.2\n",
-			)
-			const svc = makeService({ filesystem: pythonProjectFs(), runCommand: runner })
-			const snapshot = await svc.get({ contextId: "ctx-normalized-dedup", cwd: ROOT })
-
-			expect(snapshot).toContain("2 installed (2 top-level)")
-			expect(snapshot).toContain('"Flask==3.0.3"')
-			expect(snapshot).toContain('"typing_extensions==4.12.2"')
-			expect(snapshot).not.toContain("flask==3.0.2")
-			expect(snapshot).not.toContain("typing-extensions==4.11.0")
-		})
-
-		it("ignores classification entries missing from the complete list", async () => {
-			const runner = pythonRunner("torch==2.4.0\nnumpy==2.0\n", "torch==2.4.0\nghost==9.9\n")
-			const fs = pythonProjectFs()
-			const svc = makeService({ filesystem: fs, runCommand: runner })
-			const snapshot = await svc.get({ contextId: "ctx-ghost", cwd: ROOT })
-			expect(snapshot).toContain("2 installed (1 top-level)")
-			expect(snapshot).not.toContain("ghost")
-		})
-
-		it("still truncates when the top-level tier alone exceeds the cap", async () => {
-			const many = Array.from({ length: 50 }, (_, i) => `pkg${String(i).padStart(2, "0")}==1.0`)
-			const runner = pythonRunner(many.join("\n"), many.join("\n"))
-			const fs = pythonProjectFs()
-			const svc = makeService({ filesystem: fs, runCommand: runner })
-			const snapshot = await svc.get({ contextId: "ctx-big-tier", cwd: ROOT })
-			expect(snapshot).toContain("50 installed (50 top-level); showing top-level first")
-			expect(snapshot).not.toContain('"pkg49==')
-		})
-
-		it("runs both pip probes against one shared absolute deadline", async () => {
-			const pipCalls: CommandRequest[] = []
-			const runner: CommandRunner = async (request) => {
-				if (request.command === "python3" && request.args.includes("list")) {
-					pipCalls.push(request)
-					await new Promise((resolveTimer) => setTimeout(resolveTimer, request.timeoutMs))
-					return { status: "timeout" }
-				}
-				return { status: "missing" }
-			}
-			const fs = pythonProjectFs()
-			const svc = makeService({ filesystem: fs, runCommand: runner, budgetMs: 200 })
-			const started = Date.now()
-			const snapshot = await svc.get({ contextId: "ctx-shared-deadline", cwd: ROOT })
-			const elapsed = Date.now() - started
-			// Both pip list probes share one absolute deadline — no sequential budgets.
-			expect(elapsed).toBeLessThan(400)
-			expect(pipCalls.length).toBe(2)
-			for (const call of pipCalls) expect(call.timeoutMs).toBeLessThanOrEqual(200)
-			expect(snapshot).not.toContain("Python environment:")
 		})
 	})
 
