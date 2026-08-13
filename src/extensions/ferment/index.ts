@@ -28,7 +28,7 @@ import { registerFermentEvents } from "./events.js"
 import { deletePendingProposal } from "./pending-proposal-store.js"
 import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
 import { setPendingPlanReviewTrigger } from "./plan-review-trigger.js"
-import { buildFermentPromptBlock } from "./prompt-block.js"
+import { buildFermentPromptBlock, registerFermentContextState } from "./prompt-block.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
@@ -321,6 +321,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		modes: ["ferment"],
 	})
 	createSystemPromptBlocks(pi, "ferment").register(fermentPlanningBlock)
+	registerFermentContextState(pi, runtime)
 
 	// ─── Entry triggers (planning mode routing) ───────────────────────────
 	// The actual ferment-creation logic lives in commands.ts (slash command

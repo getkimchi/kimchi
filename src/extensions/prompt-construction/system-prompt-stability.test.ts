@@ -9,7 +9,7 @@ import { tool } from "../behaviours/triggers.js"
 import type { TriggeredBehaviour } from "../behaviours/types.js"
 import { BEHAVIOUR_BODY_TYPE, wireBehaviours } from "../behaviours/wiring.js"
 import { emitFermentDomainEvent } from "../ferment/domain-events-emitter.js"
-import { buildFermentPromptBlock } from "../ferment/prompt-block.js"
+import { buildFermentPromptBlock, registerFermentContextState } from "../ferment/prompt-block.js"
 import { createDefaultFermentRuntime } from "../ferment/runtime.js"
 import { setActive } from "../ferment/state.js"
 import { registerFermentTodoSync } from "../ferment/todo-sync.js"
@@ -148,12 +148,18 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 			suppress: () => new Set(),
 			render: () => buildFermentPromptBlock(ctx, pi, runtime),
 		})
+		registerFermentContextState(pi, runtime)
 	}
 
 	async function fire(event: string, payload: unknown): Promise<unknown> {
 		let result: unknown
+		let currentPayload = payload
 		for (const handler of handlers.get(event) ?? []) {
-			result = await handler(payload, ctx)
+			result = await handler(currentPayload, ctx)
+			const contextResult = result as ContextResult
+			if (event === "context" && contextResult?.messages) {
+				currentPayload = { type: "context", messages: contextResult.messages }
+			}
 		}
 		return result
 	}
@@ -252,7 +258,11 @@ describe("system prompt stability contract", () => {
 					const promptBefore = await harness.buildFinalSystemPrompt()
 					const contextBefore = await harness.buildContextText()
 					expect(promptBefore).toContain("## Todos")
-					expect(contextBefore).toBe("")
+					if (surface === "non-ferment") {
+						expect(contextBefore).toBe("")
+					} else {
+						expect(contextBefore).toContain("## Current lifecycle state")
+					}
 
 					applyWriteTodos({ todos: [{ content: "initial task", status: "pending" }] }, SESSION_ID)
 					const promptAfterAdd = await harness.buildFinalSystemPrompt()
@@ -272,7 +282,7 @@ describe("system prompt stability contract", () => {
 					const promptAfterClear = await harness.buildFinalSystemPrompt()
 					const contextAfterClear = await harness.buildContextText()
 					expect(promptAfterClear).toBe(promptBefore)
-					expect(contextAfterClear).toBe("")
+					expect(contextAfterClear).toBe(contextBefore)
 				})
 			})
 		}
@@ -446,6 +456,7 @@ describe("system prompt stability contract", () => {
 					const contextBefore = await harness.buildContextText()
 					expect(promptBefore).toContain("## Todos")
 					expect(contextBefore).toContain("## Current Todos")
+					expect(contextBefore).toContain("## Current lifecycle state")
 					expect(contextBefore).toContain("write parser")
 
 					const completedStepFerment: Ferment = {

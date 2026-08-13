@@ -1,4 +1,4 @@
-import { getModels } from "@earendil-works/pi-ai"
+import { getModels } from "@earendil-works/pi-ai/compat"
 import { InteractiveMode, initTheme } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest"
@@ -8,8 +8,8 @@ import * as modelsModule from "./models.js"
 
 const { oauthDelegate, warningDelegate } = loginPatch
 
-vi.mock("@earendil-works/pi-ai", async () => {
-	const actual = await vi.importActual("@earendil-works/pi-ai")
+vi.mock("@earendil-works/pi-ai/compat", async () => {
+	const actual = await vi.importActual("@earendil-works/pi-ai/compat")
 	return {
 		...(actual as object),
 		getModels: vi.fn().mockReturnValue([]),
@@ -125,18 +125,23 @@ async function selectSubscriptionLoginOption(fakeIm: FakeIm): Promise<void> {
 	await Promise.resolve()
 }
 
-it("intercepts showOAuthSelector('login') and runs Kimchi browser auth", async () => {
+it("intercepts the user-facing /login command and runs Kimchi browser auth", async () => {
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-login-test")
 	const cliAuthModule = await import("./cli-auth/index.js")
 	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "test-token-123" })
 
 	const registry = makeFakeModelRegistry()
-	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+	let refreshed = false
+	registry.refresh.mockImplementation(async () => {
+		await Promise.resolve()
+		refreshed = true
+	})
+	registry.getAvailable.mockImplementation(() => (refreshed ? [{ id: "kimi-k2.6", provider: "kimchi-dev" }] : []))
 
 	const fakeIm = makeFakeInteractiveMode(registry)
 	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	const patched = (InteractiveMode.prototype as any).handleLoginCommand
+	await patched.call(fakeIm)
 	await selectCurrentLoginOption(fakeIm)
 
 	expect(fakeIm.showSelector).toHaveBeenCalledOnce()
@@ -405,6 +410,41 @@ it("does not persist API-key login when the endpoint is unreachable", async () =
 	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
 })
 
+it("rolls back every Kimchi provider credential when registry refresh rejects", async () => {
+	const previousRootCredential = { type: "api_key", key: "previous-root-key" }
+	const previousSubProviderCredential = { type: "api_key", key: "previous-sub-provider-key" }
+	const registry = makeFakeModelRegistry()
+	registry.getAll.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev/castai" }])
+	registry.authStorage.get.mockImplementation((providerId: string) =>
+		providerId === "kimchi-dev" ? previousRootCredential : previousSubProviderCredential,
+	)
+	registry.refresh.mockRejectedValue(new Error("registry refresh failed"))
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce("api-key-123").mockResolvedValueOnce("https://llm.kimchi.dev")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm)
+	await waitForMockCall(fakeIm.showError)
+
+	expect(fakeIm.showError).toHaveBeenCalledWith(
+		"Kimchi model refresh failed: registry refresh failed. No changes were saved.",
+	)
+	expect(registry.authStorage.set).toHaveBeenNthCalledWith(1, "kimchi-dev", {
+		type: "api_key",
+		key: "api-key-123",
+	})
+	expect(registry.authStorage.set).toHaveBeenNthCalledWith(2, "kimchi-dev/castai", {
+		type: "api_key",
+		key: "api-key-123",
+	})
+	expect(registry.authStorage.set).toHaveBeenNthCalledWith(3, "kimchi-dev", previousRootCredential)
+	expect(registry.authStorage.set).toHaveBeenNthCalledWith(4, "kimchi-dev/castai", previousSubProviderCredential)
+	expect(configModule.writeApiKey).not.toHaveBeenCalled()
+})
+
 it("rolls back API-key auth when fresh discovery succeeds but no Kimchi models become available", async () => {
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
 
@@ -454,7 +494,7 @@ it("routes the subscription option to upstream OAuth providers without showing K
 })
 
 it("pre-populates subscription provider models in models.json before upstream login", async () => {
-	const piAi = await import("@earendil-works/pi-ai")
+	const piAi = await import("@earendil-works/pi-ai/compat")
 	const getModelsMock = vi.mocked(piAi.getModels)
 	getModelsMock.mockReturnValue([
 		{

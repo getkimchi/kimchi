@@ -67,10 +67,10 @@ function seedKimchiAuthFromConfigAndReturnKey(ctx: ExtensionContext): string {
 	return configKey
 }
 
-export function hasUsableAuth(ctx: ExtensionContext): boolean {
+export async function hasUsableAuth(ctx: ExtensionContext): Promise<boolean> {
 	const configKey = seedKimchiAuthFromConfigAndReturnKey(ctx)
 	try {
-		ctx.modelRegistry.refresh()
+		await ctx.modelRegistry.refresh()
 	} catch {
 		// Broken models.json is reported by upstream startup warnings. Treat it
 		// as unauthenticated here so the user gets a login path instead of Ferment.
@@ -172,7 +172,7 @@ async function runStartupAuthGate(
 
 		if (result === "cancelled") continue
 
-		if (result === "success" && hasUsableAuth(ctx)) {
+		if (result === "success" && (await hasUsableAuth(ctx))) {
 			state.authenticated = true
 			return
 		}
@@ -186,6 +186,7 @@ export function createStartupAuthGate(options: StartupAuthGateOptions): Extensio
 
 	return (pi: ExtensionAPI) => {
 		pi.on("session_start", async (event, ctx) => {
+			const usableAuth = await hasUsableAuth(ctx)
 			if (
 				!shouldShowStartupAuthGate({
 					hasUI: ctx.hasUI,
@@ -193,7 +194,7 @@ export function createStartupAuthGate(options: StartupAuthGateOptions): Extensio
 					stdoutIsTTY: options.stdoutIsTTY,
 					nonInteractiveMode: options.nonInteractiveMode,
 					sessionStartReason: event.reason,
-					hasUsableAuth: hasUsableAuth(ctx),
+					hasUsableAuth: usableAuth,
 				})
 			) {
 				return

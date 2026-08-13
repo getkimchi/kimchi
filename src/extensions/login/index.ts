@@ -13,8 +13,6 @@ export default function loginExtension(pi: ExtensionAPI): void {
 	const modelsJsonPath = resolve(agentDir, "models.json")
 
 	pi.on("session_start", (_event, ctx) => {
-		const authStorage = ctx.modelRegistry.authStorage
-
 		// Re-read config every session start (not once at load): the API key can change mid-process
 		// after a `/login` writes it, and each new session must pick up the latest key. This is a
 		// separate read from the load-time customLlmEndpoint lookup below — do not dedupe them.
@@ -24,6 +22,8 @@ export default function loginExtension(pi: ExtensionAPI): void {
 			void refreshBillingStatusFromConfig({ mode: "forced" })
 		}
 
+		const authStorage = (ctx.modelRegistry as { authStorage?: { logout(provider: string): void } }).authStorage
+		if (!authStorage) return
 		const patchedAuthStorage = authStorage as typeof authStorage & { [KIMCHI_LOGOUT_PATCHED]?: boolean }
 		if (patchedAuthStorage[KIMCHI_LOGOUT_PATCHED]) return
 

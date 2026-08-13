@@ -295,8 +295,9 @@ describe("telemetryExtension integration", () => {
 		await getHandler(handlers, "turn_start")({ turnIndex: 3 })
 
 		// Verify via before_provider_headers which exposes ctx.turnIndex
-		const result = getHandler(handlers, "before_provider_headers")({ headers: {} })
-		expect((result as unknown as Record<string, string>)["X-Turn-Index"]).toBe("3")
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+		expect(event.headers["X-Turn-Index"]).toBe("3")
 	})
 
 	it("before_provider_headers injects X-Session-Id and X-Turn-Index", async () => {
@@ -307,8 +308,9 @@ describe("telemetryExtension integration", () => {
 		// Set a known turn index via the turn_start handler
 		await getHandler(handlers, "turn_start")({ turnIndex: 4 })
 
-		const result = getHandler(handlers, "before_provider_headers")({ headers: { "User-Agent": "kimchi/1.0" } })
-		const headers = result as unknown as Record<string, string>
+		const event = { headers: { "User-Agent": "kimchi/1.0" } as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+		const { headers } = event
 
 		expect(headers["User-Agent"]).toBe("kimchi/1.0")
 		expect(typeof headers["X-Session-Id"]).toBe("string")

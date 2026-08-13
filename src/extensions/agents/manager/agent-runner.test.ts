@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
 	return {
@@ -111,6 +112,8 @@ import {
 	type CreateAgentSessionResult,
 	createAgentSession,
 	DefaultResourceLoader,
+	type ExtensionAPI,
+	type InlineExtension,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../bash-default-timeout.js"
@@ -139,6 +142,11 @@ const mockSetCurrentPhase = vi.mocked(setCurrentPhase)
 
 type SessionEvent = { type: string; [k: string]: unknown }
 type Subscriber = (event: SessionEvent) => void
+
+function runInlineExtension(extension: InlineExtension | undefined, pi: ExtensionAPI): void | Promise<void> {
+	const factory = typeof extension === "function" ? extension : extension?.factory
+	return factory?.(pi)
+}
 
 const DEFAULT_REGISTERED_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 
@@ -251,6 +259,7 @@ function makeFakeCtx() {
 		modelRegistry: {
 			find: vi.fn().mockReturnValue(undefined),
 			getAvailable: vi.fn().mockReturnValue([]),
+			runtime: {},
 		},
 		getSystemPrompt: vi.fn().mockReturnValue(""),
 		sessionManager: {
@@ -319,7 +328,7 @@ describe("runAgent — telemetry extension", () => {
 		vi.clearAllMocks()
 	})
 
-	it("passes telemetryExtension as extensionFactories to DefaultResourceLoader", async () => {
+	it("passes required Kimchi extensions to DefaultResourceLoader", async () => {
 		const session = makeFakeSession({})
 		mockCreateAgentSession.mockResolvedValue({
 			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
@@ -336,9 +345,21 @@ describe("runAgent — telemetry extension", () => {
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
-		expect(ctorArg?.extensionFactories).toHaveLength(3)
+		expect(ctorArg?.extensionFactories).toHaveLength(4)
+		expect(ctorArg?.extensionFactories).toContain(omitKimchiMaxTokensExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+	})
+
+	it("fails before creating a child session when Pi's model runtime is unavailable", async () => {
+		Reflect.deleteProperty(ctx.modelRegistry, "runtime")
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow("Pi model registry runtime is unavailable")
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
 	})
 
 	it("applies Kimchi's default bash timeout to subagent tool calls", async () => {
@@ -357,11 +378,11 @@ describe("runAgent — telemetry extension", () => {
 		const workerFactories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
 		const toolCallHandlers: Array<(event: unknown) => void> = []
 		for (const factory of workerFactories) {
-			factory({
+			runInlineExtension(factory, {
 				on: (event: string, handler: (event: unknown) => void) => {
 					if (event === "tool_call") toolCallHandlers.push(handler)
 				},
-			} as never)
+			} as unknown as ExtensionAPI)
 		}
 
 		const event = { toolName: "bash", input: { command: "sleep 480" } }
@@ -398,8 +419,8 @@ describe("runAgent — telemetry extension", () => {
 
 		const linkedLoaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		const ordinaryLoaderOptions = mockDefaultResourceLoader.mock.calls[1]?.[0]
-		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(4)
-		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(3)
+		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(5)
+		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(4)
 		expect(linkedSession.setActiveToolsByName).toHaveBeenCalledWith(["submit_agent_report"])
 		expect(ordinarySession.setActiveToolsByName).toHaveBeenCalledWith([])
 	})
@@ -415,9 +436,9 @@ describe("runAgent — telemetry extension", () => {
 			abortSpy,
 			emitUsage: false,
 			promptAction: async (emit) => {
-				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[3]
+				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[4]
 				const registerTool = vi.fn()
-				factory?.({ registerTool } as never)
+				runInlineExtension(factory, { registerTool } as unknown as ExtensionAPI)
 				const tool = registerTool.mock.calls[0]?.[0]
 				await tool.execute(
 					"report-1",

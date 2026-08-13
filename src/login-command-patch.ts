@@ -6,7 +6,11 @@
  * `InteractiveMode` instance is constructed so the prototype patch takes effect.
  */
 
-import { type AuthStatus, InteractiveMode, OAuthSelectorComponent } from "@earendil-works/pi-coding-agent"
+import {
+	InteractiveMode,
+	OAuthSelectorComponent,
+	type ModelRegistry as PiModelRegistry,
+} from "@earendil-works/pi-coding-agent"
 import { Spacer, Text } from "@earendil-works/pi-tui"
 import {
 	createLoginChoiceSelector,
@@ -34,7 +38,7 @@ interface ModelLike {
 
 interface ModelRegistry {
 	authStorage: AuthStorage
-	refresh(): void
+	refresh(): Promise<unknown>
 	getAll(): ModelLike[]
 	getAvailable(): ModelLike[]
 	getModelById(id: string): ModelLike | undefined
@@ -56,8 +60,8 @@ type UiLike = {
 
 type SelectorResult = { component: unknown; focus?: unknown }
 type ShowSelector = (build: (done: () => void) => SelectorResult) => void
-type AuthSelectorProvider = ConstructorParameters<typeof OAuthSelectorComponent>[2][number]
-type OAuthSelectorAuthStorage = ConstructorParameters<typeof OAuthSelectorComponent>[1]
+type AuthSelectorProvider = ConstructorParameters<typeof OAuthSelectorComponent>[1][number]
+type AuthStatus = ReturnType<PiModelRegistry["getProviderAuthStatus"]>
 
 type LoginModeLike = {
 	showSelector?: ShowSelector
@@ -103,6 +107,11 @@ export const oauthDelegate = {
 	original: imProto.showOAuthSelector as (this: any, mode: "login" | "logout") => Promise<void>,
 }
 
+export const loginDelegate = {
+	// biome-ignore lint/suspicious/noExplicitAny: `this` context type for upstream prototype method is unknown
+	original: imProto.handleLoginCommand as (this: any, providerRef?: string) => Promise<void>,
+}
+
 export const warningDelegate = {
 	// biome-ignore lint/suspicious/noExplicitAny: `this` context type for upstream prototype method is unknown
 	original: imProto.showWarning as (this: any, warningMessage: string) => void,
@@ -110,6 +119,7 @@ export const warningDelegate = {
 
 /** Exported for testing: applies the prototype patch (idempotent re-apply is safe). */
 export function applyLoginCommandPatch(): void {
+	imProto.handleLoginCommand = patchedHandleLoginCommand
 	imProto.showOAuthSelector = patchedShowOAuthSelector
 	imProto.showWarning = patchedShowWarning
 }
@@ -188,7 +198,6 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 		return
 	}
 
-	const registry = modeLike.session.modelRegistry
 	const providerOptions = modeLike
 		.getLoginProviderOptions("oauth")
 		.filter((provider) => provider.id !== KIMCHI_PROVIDER_ID)
@@ -200,7 +209,6 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 	modeLike.showSelector((done) => {
 		const selector = new OAuthSelectorComponent(
 			"login",
-			registry.authStorage as OAuthSelectorAuthStorage,
 			providerOptions,
 			async (providerId) => {
 				done()
@@ -220,7 +228,7 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 					const registry = modeLike.session?.modelRegistry
 					if (registry && typeof registry.refresh === "function") {
 						try {
-							registry.refresh()
+							await registry.refresh()
 						} catch {
 							// Silent — the next manual /reload or restart will pick up the models.
 						}
@@ -233,7 +241,6 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 				done()
 				showLoginChoiceSelector(im)
 			},
-			(providerId) => registry.getProviderAuthStatus(providerId),
 		)
 		return { component: selector, focus: selector }
 	})
@@ -275,6 +282,14 @@ async function patchedShowOAuthSelector(this: InteractiveMode, mode: "login" | "
 		return
 	}
 	return oauthDelegate.original.call(this, mode)
+}
+
+async function patchedHandleLoginCommand(this: InteractiveMode, providerRef?: string) {
+	if (!providerRef) {
+		showLoginChoiceSelector(this)
+		return
+	}
+	return loginDelegate.original.call(this, providerRef)
 }
 
 function patchedShowWarning(this: InteractiveMode, warningMessage: string): void {
