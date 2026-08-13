@@ -58,6 +58,8 @@ describe("isRtkPassthrough", () => {
 		"{ pnpm run lint; }",
 		"if true; then pnpm test; fi",
 		"echo ready\npnpm test",
+		"# run tests\npnpm test",
+		"  # run tests\npnpm test",
 		// leading environment assignments still invoke pnpm directly
 		"CI=1 pnpm test",
 		// Parse failures bypass the optional RTK optimization rather than risk

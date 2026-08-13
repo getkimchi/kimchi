@@ -82,6 +82,7 @@ const RTK_PASSTHROUGH_COMMANDS = new Set(["pnpm", "npm", "yarn", "bun", "npx", "
 const COMMAND_SEPARATORS = new Set(["||", "&&", "|&", "&", ";", "|", "(", "<("])
 const LEADING_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/
 const COMMAND_PREFIXES = new Set(["!", "{", "if", "then", "elif", "else", "while", "until", "do", "time"])
+const FULL_LINE_COMMENT_RE = /^[\t ]*#[^\r\n]*(?:\r?\n|$)/gm
 
 function segmentInvokesPassthroughCommand(tokens: string[]): boolean {
 	let commandIndex = 0
@@ -102,10 +103,10 @@ function segmentInvokesPassthroughCommand(tokens: string[]): boolean {
  */
 export function isRtkPassthrough(command: string): boolean {
 	try {
-		// shell-quote treats newlines as whitespace rather than command
-		// boundaries. Normalize them to semicolons; semicolons inside quotes
-		// remain string content, while escaped newlines remain escaped.
-		const entries = parseShell(command.replace(/\r?\n/g, ";"))
+		// shell-quote treats a comment as extending to the end of its input and
+		// newlines as whitespace. Remove full-line comments before normalizing
+		// newlines so a following command is still parsed as its own segment.
+		const entries = parseShell(command.replace(FULL_LINE_COMMENT_RE, "").replace(/\r?\n/g, ";"))
 		let segment: string[] = []
 
 		for (const entry of entries) {
