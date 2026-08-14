@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs"
-import { basename } from "node:path"
+import { platform } from "node:os"
+import { basename, dirname } from "node:path"
 import { readGitToken, readTeleportHelpSeenAt, writeGitToken, writeTeleportHelpSeenAt } from "../../../config.js"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
@@ -10,12 +11,13 @@ import { createSession, listSessions } from "../../../sandbox/worker/sessions.js
 import type { CreateSessionRequest, Session } from "../../../sandbox/worker/types.js"
 import { createTabsOverlay } from "../overlay/overlay-component.js"
 import { generateSessionName } from "../overlay/tab-manager.js"
-import { isGitRepo } from "../preflight/git.js"
+import { getGitHeadSha, gitWorkingTreeDirty, isGitRepo } from "../preflight/git.js"
 import { runPreflight } from "../preflight/index.js"
 import { SIZE_REFUSE_BYTES, SIZE_WARN_BYTES } from "../preflight/workspace-size.js"
 import { SANDBOX_USER } from "../provisioning/constants.js"
 import { sumIncludeListBytes } from "../provisioning/estimate-bytes.js"
 import { provisionGitCredential, provisionGitIdentity } from "../provisioning/git-provision.js"
+import { buildHandoffNote, copySessionFileAndAddHandoffNote, removeTempDir } from "../provisioning/handoff-note.js"
 import { provisionHarnessConfig } from "../provisioning/harness-config.js"
 import { buildIncludeList } from "../provisioning/include-list.js"
 import { deriveSandboxDest, deriveSandboxDestFromRepoUrl, repoBasename } from "../provisioning/paths.js"
@@ -278,8 +280,39 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			: shouldRsyncWorkspace
 				? deriveSandboxDest(ctx.cwd)
 				: undefined
-		const sessionFileToUpload =
-			!args.skipSession && ctx.sessionFile && existsSync(ctx.sessionFile) ? ctx.sessionFile : undefined
+		// Upload an annotated copy of the local session file: append a handoff
+		// note (visible in the remote transcript) explaining the environment
+		// change, provisioning provenance, and any heuristics (rsync include
+		// list / fresh clone) so the resumed agent doesn't trust stale paths
+		// or artifacts. The user's local session file is never mutated.
+		let sessionFileToUpload: string | undefined
+		let sessionFileWithHandoffNote: string | undefined
+		if (!args.skipSession && ctx.sessionFile && existsSync(ctx.sessionFile)) {
+			// Git anchor for the note (HEAD sha + tree dirtiness): one-time
+			// provenance facts about where the history was generated.
+			const gitAnchor = isGitRepo(ctx.cwd)
+				? { headSha: getGitHeadSha(ctx.cwd), dirty: gitWorkingTreeDirty(ctx.cwd) }
+				: undefined
+			const note = buildHandoffNote({
+				fromPlatform: platform(),
+				fromCwd: ctx.cwd,
+				toCwd: sessionCwd,
+				git: gitAnchor,
+				workspace: args.gitRepo
+					? { kind: "git-clone", repo: args.gitRepo, branch: args.branch }
+					: shouldRsyncWorkspace
+						? {
+								kind: "rsync",
+								fileCount: filesFrom.length,
+								syncedDotKimchi: filesFrom.some((f) => f === ".kimchi" || f.startsWith(".kimchi/")),
+							}
+						: { kind: "none" },
+				gitIdentityProvisioned: Boolean(localGitConfig.name || localGitConfig.email),
+				gitCredential: gitHost && gitToken ? { host: gitHost } : undefined,
+			})
+			sessionFileWithHandoffNote = copySessionFileAndAddHandoffNote(ctx.sessionFile, note)
+			sessionFileToUpload = sessionFileWithHandoffNote ?? ctx.sessionFile
+		}
 		const req: CreateSessionRequest = { agentMode: "PTY", cwd: sessionCwd }
 		if (args.gitRepo) {
 			req.details = {
@@ -299,6 +332,8 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		} catch (err) {
 			if (signal.aborted) throw err
 			refuse(ctx, `Could not create session: ${err instanceof Error ? err.message : String(err)}`)
+		} finally {
+			if (sessionFileWithHandoffNote) removeTempDir(dirname(sessionFileWithHandoffNote))
 		}
 		progress.complete("Session ready")
 

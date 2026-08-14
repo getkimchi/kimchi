@@ -25,9 +25,17 @@ export function gitWorkingTreeDirty(cwd: string, options?: GitPreflightOptions):
 }
 
 export function getGitRemoteUrl(cwd: string, options?: GitPreflightOptions): string | undefined {
+	return runGit(cwd, ["remote", "get-url", "origin"], options)
+}
+
+export function getGitHeadSha(cwd: string, options?: GitPreflightOptions): string | undefined {
+	return runGit(cwd, ["rev-parse", "--short", "HEAD"], options)
+}
+
+function runGit(cwd: string, args: string[], options?: GitPreflightOptions): string | undefined {
 	const execImpl = options?.execFile ?? execFileSync
 	try {
-		const stdout = execImpl("git", ["-C", cwd, "remote", "get-url", "origin"], {
+		const stdout = execImpl("git", ["-C", cwd, ...args], {
 			encoding: "utf-8",
 			stdio: ["ignore", "pipe", "ignore"],
 			timeout: 5_000,

@@ -11,6 +11,7 @@ import type {
 	GrepToolDetails,
 	ReadToolDetails,
 	Theme,
+	ToolDefinition,
 	ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent"
 import {
@@ -661,10 +662,88 @@ function patchToolExecutionRenderers(): void {
 				ctx: ToolRenderContext,
 			) => renderGenericToolResult(toolName, result, options, theme, ctx)
 		}
+		if (CORE_ERROR_TRUNCATING_TOOLS.has(toolName) && typeof originalGetResultRenderer === "function") {
+			// Only wrap when a renderer actually resolved: returning our wrapper for a
+			// tool with no renderer would make upstream render `addChild(undefined)`
+			// instead of its fallback text.
+			const upstreamResultRenderer = originalGetResultRenderer.call(this)
+			return upstreamResultRenderer ? createErrorTruncatingResultRenderer(toolName, upstreamResultRenderer) : undefined
+		}
 		return typeof originalGetResultRenderer === "function" ? originalGetResultRenderer.call(this) : undefined
 	}
 
 	proto[TOOL_EXECUTION_PATCH_FLAG] = true
+}
+
+/** Upstream core tools whose error rendering needs the validation-dump truncation. */
+const CORE_ERROR_TRUNCATING_TOOLS = new Set(["edit", "write", "read"])
+
+/** Marker that both upstream and our patched pi-ai validation errors append before the raw args JSON dump. */
+const RECEIVED_ARGS_MARKER = "\n\nReceived arguments:\n"
+
+/**
+ * pi-ai validation/conversion errors end with a full JSON dump of the received
+ * arguments. The model needs that dump to self-correct, but rendering it
+ * floods the TUI. The collapsed view keeps the first line plus the schema
+ * error bullets (everything before the dump); the expanded view (ctrl+o)
+ * shows the complete message.
+ */
+export function truncateValidationErrorForDisplay(
+	raw: string,
+	expanded: boolean,
+	toolName: string,
+): { text: string; truncated: boolean } {
+	if (expanded) return { text: raw, truncated: false }
+	if (!raw.startsWith(`Validation failed for tool "${toolName}":`)) {
+		return { text: raw, truncated: false }
+	}
+	const idx = raw.indexOf(RECEIVED_ARGS_MARKER)
+	if (idx === -1) return { text: raw, truncated: false }
+	return { text: raw.slice(0, idx).trimEnd(), truncated: true }
+}
+
+type UpstreamResultRenderer = NonNullable<ToolDefinition["renderResult"]>
+
+/**
+ * Components rendered by the truncation wrapper. Ownership is tracked on the
+ * component itself (not per wrapper instance) because upstream calls
+ * `getResultRenderer()` on every render, creating a fresh wrapper each time.
+ */
+const truncatedErrorComponents = new WeakSet<Component>()
+
+/**
+ * Wraps an upstream edit/write/read result renderer so validation errors that
+ * embed the received-arguments dump render as a compact summary (headline +
+ * schema bullets) with a ctrl+o hint. Everything else — short errors, success
+ * results, the expanded view — defers to upstream unchanged. When taking over,
+ * the upstream renderer is still invoked (best-effort) because edit's renderer
+ * performs call-header side effects (settledError, diff preview). Upstream
+ * never receives our component as its `lastComponent` (a shape mismatch would
+ * make it throw or lose content): components we render are tracked, and a
+ * tracked `lastComponent` is cleared before any upstream call.
+ */
+export function createErrorTruncatingResultRenderer(
+	toolName: string,
+	upstream: UpstreamResultRenderer,
+): UpstreamResultRenderer {
+	return (result, options, theme, ctx) => {
+		const raw = ctx.isError ? getTextContent(result).trim() : ""
+		const { text, truncated } = truncateValidationErrorForDisplay(raw, options.expanded, toolName)
+		// Keep ours for reuse below, but never hand it to upstream.
+		const ours = ctx.lastComponent && truncatedErrorComponents.has(ctx.lastComponent) ? ctx.lastComponent : undefined
+		if (ours) ctx.lastComponent = undefined
+		if (!truncated) return upstream(result, options, theme, ctx)
+		try {
+			upstream(result, options, theme, ctx)
+		} catch {
+			/* noop — side effects only */
+		}
+		const hint = `\n${theme.fg("muted", " • ctrl+o to expand")}`
+		// text is never empty here: raw is trimmed, so the marker can only match after a non-empty headline.
+		const component = makeText(ours, theme.fg("error", text) + hint)
+		truncatedErrorComponents.add(component)
+		return component
+	}
 }
 
 function shortPath(cwd: string, filePath: string): string {

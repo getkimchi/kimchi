@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
@@ -611,7 +611,7 @@ describe("runTeleport", () => {
 	})
 
 	describe("session upload", () => {
-		it("uploads the local session file when one is present", async () => {
+		it("uploads an annotated temp copy of the session file and deletes it afterwards", async () => {
 			const sessionFile = join(tempDir, "session.jsonl")
 			writeFileSync(sessionFile, '{"type":"session"}\n')
 			const { ctx } = makeCtx({ sessionFile })
@@ -619,7 +619,44 @@ describe("runTeleport", () => {
 			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx)
 
 			expect(createSessionMock).toHaveBeenCalledOnce()
-			expect(createSessionMock.mock.calls[0][3]).toMatchObject({ sessionFile })
+			const { sessionFile: uploaded } = createSessionMock.mock.calls[0][3]
+			// The uploaded file is an annotated copy of the original — not the
+			// original path — and the copy is cleaned up after upload.
+			expect(uploaded).not.toBe(sessionFile)
+			// The temp copy is removed again once the upload finished — otherwise
+			// session JSONLs would pile up in the OS temp dir.
+			expect(existsSync(uploaded)).toBe(false)
+		})
+
+		it("appends a [Teleport] handoff note as a user message to the uploaded session", async () => {
+			const sessionFile = join(tempDir, "session.jsonl")
+			const originalContent = '{"type":"session"}\n'
+			writeFileSync(sessionFile, originalContent)
+			const { ctx } = makeCtx({ sessionFile })
+
+			// Read the uploaded file contents inside the createSession mock — the
+			// temp copy is deleted right after upload, so we must capture it here.
+			let capturedUpload = ""
+			createSessionMock.mockImplementationOnce(async (_client, _name, _req, opts) => {
+				capturedUpload = readFileSync(opts.sessionFile, "utf8")
+				return { name: "mysession" }
+			})
+
+			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx)
+
+			// Original session file is never mutated by the upload.
+			expect(readFileSync(sessionFile, "utf8")).toBe(originalContent)
+
+			// Original content survives the copy…
+			expect(capturedUpload).toContain(originalContent.trimEnd())
+			// …and the handoff note got appended as a parseable user-message entry,
+			// so the resumed remote agent sees the environment change in context
+			// (and the user sees it in the transcript).
+			const noteLine = capturedUpload.split("\n").find((l) => l.includes("[Teleport]"))
+			if (noteLine === undefined) throw new Error("handoff note line missing from uploaded JSONL")
+			const parsed = JSON.parse(noteLine)
+			expect(parsed.message.role).toBe("user")
+			expect(parsed.message.content[0].text).toContain("Environment handoff")
 		})
 
 		it("--skip-session opts out even when a local session file exists", async () => {
