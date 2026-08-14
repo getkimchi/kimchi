@@ -18,6 +18,7 @@ import {
 	clearPendingCompaction,
 	getActive,
 	getActiveFermentId,
+	getPendingCompaction,
 	isAutomatedContinuationEnabled,
 	setActive,
 	setContinuationPolicy,
@@ -1438,6 +1439,72 @@ Does this plan look right?`,
 					customInstructions: expect.stringContaining("Compaction Trigger Test"),
 				}),
 			)
+
+			clearPendingCompaction(draft.id)
+		})
+
+		it("does NOT drain from turn_end — mid-run stage compaction is a proven wire no-op", async () => {
+			// The pi-agent-core run loop snapshots messages at run start, so a
+			// compaction fired from turn_end replaces state.messages where the live
+			// loop never looks. Pending entries must stay in the map for agent_end.
+			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-no-turn-end-drain-")))
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getStorage: () => storage,
+			}
+			const draft = storage.create("Turn End No Drain Test")
+			const applyAndPersist = createApplyAndPersist(runtime)
+			// Scope + activate so the ferment is "running": the turn_end handler
+			// then reaches the exact site where the mid-run drain used to fire,
+			// instead of taking the draft-scoping early return.
+			const scoped = applyAndPersist(draft.id, {
+				type: "scope",
+				title: "Turn End No Drain Test",
+				goal: "g",
+				successCriteria: ["c"],
+				constraints: [],
+				assumptions: "a",
+				phases: [{ name: "P1", goal: "g1", steps: [{ description: "s1" }] }],
+			})
+			if (!scoped.ok) throw new Error(scoped.error.message)
+			const activated = applyAndPersist(draft.id, {
+				type: "activate_phase",
+				phaseId: scoped.ferment.phases[0].id,
+			})
+			if (!activated.ok) throw new Error(activated.error.message)
+			runtime.setActive(activated.ferment)
+			setPendingCompaction(draft.id, {
+				kind: "step",
+				fermentId: draft.id,
+				phaseId: "phase-1",
+				stepId: "step-1",
+				completedAt: NOW,
+			})
+
+			const { handlers } = registerFermentExtension(runtime)
+			const turnEnd = handlers.get("turn_end")
+			if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+			const compact = vi.fn()
+			const inlineCompact = vi.fn()
+			const ctx = createContext({ compact, inlineCompact, ui: { notify: vi.fn() } })
+
+			await turnEnd(
+				{
+					type: "turn_end",
+					message: {
+						role: "assistant",
+						stopReason: "toolUse",
+						content: [{ type: "toolCall", name: "read", id: "tc-1", arguments: {} }],
+						usage: { totalTokens: 0 },
+					},
+				},
+				ctx,
+			)
+
+			expect(compact).not.toHaveBeenCalled()
+			expect(inlineCompact).not.toHaveBeenCalled()
+			expect(getPendingCompaction(draft.id)).toBeDefined()
 
 			clearPendingCompaction(draft.id)
 		})

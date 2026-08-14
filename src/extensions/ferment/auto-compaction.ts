@@ -3,7 +3,8 @@
  *
  * After every successful `complete_ferment_step` or `complete_ferment_phase`,
  * the tool handler records a pending compaction request in `state.ts`.
- * The `turn_end` and `agent_end` hooks call `maybeTriggerFermentCompaction` to:
+ * The `agent_end` hook calls `maybeTriggerFermentCompaction` to:
+ * (`turn_end` intentionally does not — see below.)
  *   1. Drain ready (non-in-flight) pending entries from the map.
  *   2. Build custom instructions highlighting the ferment plan and stage.
  *      On the inline path, skip compaction (but still deliver the handoff)
@@ -475,10 +476,15 @@ async function invokeInlineCompaction(
 /**
  * Check for pending compaction requests and fire compaction for each ready one.
  *
- * Called from both `turn_end` (between phases in automated-continuation runs)
- * and `agent_end` (catch-all after the run finishes). The in-flight guard in
- * `runtime` prevents double-fire for ferments whose previous compaction is still
- * running — their pending entry is left in the map and retried on the next tick.
+ * Called from `agent_end` only. The pi-agent-core run loop snapshots the
+ * message array at run start, so a compaction fired from `turn_end` (mid-run)
+ * replaces `state.messages` where the live loop never looks — a wire no-op
+ * (proven across benchmark sessions). Draining only at `agent_end` — a real
+ * run boundary — means every fire takes effect on the next run's snapshot.
+ * Pending entries stay in the map between turn ticks and are drained here.
+ * The in-flight guard in `runtime` prevents double-fire for ferments whose
+ * previous compaction is still running — their pending entry is left in the
+ * map and retried at the next `agent_end`.
  *
  * @param pi      - ExtensionAPI (for sendMessage and events)
  * @param ctx     - ExtensionContext (for compact, ui.notify)
