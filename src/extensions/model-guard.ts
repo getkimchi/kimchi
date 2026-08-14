@@ -19,18 +19,37 @@ export function contextFitsModel(tokens: number, contextWindow: number): boolean
 
 /**
  * Returns the best available token count for the current context.
- * Prefers the upstream getContextUsage().tokens (provider-accurate);
- * falls back to the local estimateTokens() heuristic when upstream
- * returns null (e.g. post-compaction, pre-first-response, fresh session).
+ * Uses upstream getContextUsage().tokens as the provider-accurate baseline,
+ * then estimates messages appended after that provider response. Falls back
+ * to the local estimateTokens() heuristic when upstream returns null
+ * (e.g. post-compaction, pre-first-response, fresh session).
  * Returns null when no data is available at all.
  */
 export function resolveContextTokens(
 	usage: { tokens: number | null } | undefined,
 	messages: ContextEvent["messages"],
 ): number | null {
-	if (usage?.tokens != null) return usage.tokens
-	if (messages.length === 0) return null
-	return estimateTokens(messages)
+	if (messages.length === 0) return usage?.tokens ?? null
+
+	const estimatedTokens = estimateTokens(messages)
+	if (usage?.tokens == null) return estimatedTokens
+
+	const lastAssistantUsage = findLastAssistantUsage(messages)
+	if (!lastAssistantUsage) return usage.tokens
+
+	return usage.tokens + estimatedTokens - lastAssistantUsage.totalTokens
+}
+
+function findLastAssistantUsage(
+	messages: ContextEvent["messages"],
+): { index: number; totalTokens: number } | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i]
+		if (message.role === "assistant" && "usage" in message && message.usage?.totalTokens) {
+			return { index: i, totalTokens: message.usage.totalTokens }
+		}
+	}
+	return undefined
 }
 
 /** Module-level flag tracking whether the current session contains image blocks. */
@@ -123,21 +142,10 @@ export const __resetImagesDetectedForTest = resetSessionState
  * Accumulates from assistant message usage when available for higher accuracy.
  */
 export function estimateTokens(messages: ContextEvent["messages"]): number {
-	let lastAssistantIdx = -1
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i]
-		if (msg.role === "assistant" && "usage" in msg && msg.usage?.totalTokens) {
-			lastAssistantIdx = i
-			break
-		}
-	}
+	const lastAssistantUsage = findLastAssistantUsage(messages)
+	const lastAssistantIdx = lastAssistantUsage?.index ?? -1
 
-	let tokens = 0
-
-	if (lastAssistantIdx >= 0) {
-		const lastAssistant = messages[lastAssistantIdx]
-		tokens = (lastAssistant as AssistantMessage).usage?.totalTokens ?? 0
-	}
+	let tokens = lastAssistantUsage?.totalTokens ?? 0
 
 	for (let i = lastAssistantIdx >= 0 ? lastAssistantIdx + 1 : 0; i < messages.length; i++) {
 		const msg = messages[i]
