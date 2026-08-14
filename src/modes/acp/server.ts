@@ -688,6 +688,11 @@ export class KimchiAcpAgent implements Agent {
 			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
 			this.sessions.set(sid, record)
 			this.startPlanTracker(record, sid)
+			// A resumed session mid-ferment never re-fires PHASE_STARTED for the
+			// already-active phase, so the tracker also snapshots from the
+			// restored todo store (gated on an active ferment — emits nothing
+			// when there is none or only global-scope todos survived).
+			record.planTracker?.emitRestoredSnapshot()
 
 			// Seed the block counter from the persisted branch so replay emits the
 			// same messageIds the live turn would have — and so any new block the

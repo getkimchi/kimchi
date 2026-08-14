@@ -229,7 +229,7 @@ describe("AcpPlanTracker", () => {
 		}
 	})
 
-	it("maps blocked todos to ACP in_progress", () => {
+	it("maps blocked todos to pending with a [blocked] marker", () => {
 		const ferment = makeFerment()
 		setActive(ferment)
 		const { bus, emitted, tracker } = makeHarness()
@@ -245,7 +245,106 @@ describe("AcpPlanTracker", () => {
 				{ content: "↳ Run the tests", status: "pending" },
 			])
 			const entries = planEntries(emitted, 1)
-			expect(entries[1].status).toBe("in_progress")
+			expect(entries[1].status).toBe("pending")
+			expect(entries[1].content).toBe("[blocked] ↳ Write the code")
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("appends the todo note to the [blocked] marker", () => {
+		const ferment = makeFerment()
+		setActive(ferment)
+		const { bus, emitted, tracker } = makeHarness()
+		tracker.start()
+		try {
+			simulateBridgePhaseWrite("phase-1")
+			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
+
+			writePhaseTodos("phase-1", [
+				{ content: "[Phase 1] Implementation", status: "in_progress" },
+				{ content: "↳ deploy", status: "blocked", note: "waiting on ops" },
+				{ content: "↳ Run the tests", status: "pending" },
+			])
+			const entries = planEntries(emitted, 1)
+			expect(entries[1].status).toBe("pending")
+			expect(entries[1].content).toBe("[blocked] ↳ deploy — waiting on ops")
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("uses activeForm for in_progress entries, falling back to content", () => {
+		const ferment = makeFerment()
+		setActive(ferment)
+		const { bus, emitted, tracker } = makeHarness()
+		tracker.start()
+		try {
+			simulateBridgePhaseWrite("phase-1")
+			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
+
+			writePhaseTodos("phase-1", [
+				{ content: "[Phase 1] Implementation", status: "in_progress", activeForm: "Implementing" },
+				{ content: "↳ write tests", status: "in_progress" },
+				{ content: "↳ Run the tests", status: "pending" },
+			])
+			const entries = planEntries(emitted, 1)
+			expect(entries[0].content).toBe("Implementing")
+			expect(entries[1].content).toBe("↳ write tests")
+			// activeForm must not leak into non-in_progress statuses.
+			expect(entries[2].content).toBe("↳ Run the tests")
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("emits a resume snapshot from restored ferment-scoped todos", () => {
+		const ferment = makeFerment()
+		setActive(ferment)
+		// Session restarted mid-ferment: the store is restored from the
+		// persisted branch BEFORE the session's tracker starts, and no
+		// PHASE_STARTED fires for the already-active phase.
+		writePhaseTodos("phase-1", [
+			{ content: "[Phase 1] Implementation", status: "in_progress" },
+			{ content: "↳ Write the code", status: "completed" },
+			{ content: "↳ Run the tests", status: "pending" },
+		])
+		const { emitted, planChanges, tracker } = makeHarness()
+		tracker.start()
+		try {
+			tracker.emitRestoredSnapshot()
+			expect(emitted).toHaveLength(1)
+			const entries = planEntries(emitted, 0)
+			expect(entries.map((e) => e.status)).toEqual(["in_progress", "completed", "pending"])
+			expect(planChanges[0]?.planId).toBe("ferment-1")
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("resume snapshot emits nothing without an active ferment", () => {
+		writePhaseTodos("phase-1", [{ content: "stale todo", status: "pending" }])
+		const { emitted, tracker } = makeHarness()
+		tracker.start()
+		try {
+			tracker.emitRestoredSnapshot()
+			expect(emitted).toHaveLength(0)
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("resume snapshot emits nothing when only global-scope todos exist", () => {
+		setActive(makeFerment())
+		applyWriteTodos(
+			{ scope: { kind: "global" }, todos: [{ content: "user todo", status: "pending" }] },
+			TEST_SESSION_ID,
+		)
+		const { emitted, tracker } = makeHarness()
+		tracker.start()
+		try {
+			tracker.emitRestoredSnapshot()
+			expect(emitted).toHaveLength(0)
 		} finally {
 			tracker.stop()
 		}

@@ -47,16 +47,25 @@ export interface AcpPlanTrackerOptions {
 	onActivePlanChanged?: (plan: ActivePlan | undefined) => void
 }
 
-/** ACP v1 has no "blocked" status. A blocked todo was started but cannot
- *  proceed, so it maps to "in_progress" (revisit for v2, which adds
- *  "cancelled"). */
+/** ACP v1 has no "blocked" status. Rather than silently showing a blocked
+ *  item as in-progress (misleading — the user can't tell why it stalled),
+ *  blocked items map to "pending" with a `[blocked]` content marker; the todo
+ *  note (typically the blocker reason) is appended when present. Revisit
+ *  for v2, which adds "cancelled". */
 export function todoStatusToPlanEntryStatus(status: TodoStatus): PlanEntryStatus {
-	if (status === "blocked") return "in_progress"
+	if (status === "blocked") return "pending"
 	return status
 }
 
 function todoToPlanEntry(todo: TodoItem): PlanEntry {
-	return { content: todo.content, priority: "medium", status: todoStatusToPlanEntryStatus(todo.status) }
+	if (todo.status === "blocked") {
+		const note = todo.note ? ` — ${todo.note}` : ""
+		return { content: `[blocked] ${todo.content}${note}`, priority: "medium", status: "pending" }
+	}
+	// In-progress entries prefer the present-continuous activeForm
+	// ("writing tests") over the static content ("write tests").
+	const content = todo.status === "in_progress" ? (todo.activeForm ?? todo.content) : todo.content
+	return { content, priority: "medium", status: todoStatusToPlanEntryStatus(todo.status) }
 }
 
 /** Initial plan for a ferment: one entry per phase (header) plus one per
@@ -164,6 +173,26 @@ export class AcpPlanTracker {
 		} catch (err) {
 			console.error("[acp-plan] onActivePlanChanged callback failed:", err)
 		}
+	}
+
+	/**
+	 * Emit one plan snapshot from restored ferment-scoped todos. Called after
+	 * a session resume (ACP `loadSession`): the todo store has been restored
+	 * from the persisted session branch, but no PHASE_STARTED will fire again
+	 * for the already-active phase, so without this the client sees no plan
+	 * until the next todo store change.
+	 *
+	 * Gated on an ACTIVE FERMENT — not just any todos — so global-scope todos
+	 * or a session without a ferment produce no plan.
+	 */
+	emitRestoredSnapshot(): void {
+		const ferment = this.getActiveFerment()
+		if (!ferment) return
+		const entries = todoStoreToPlanEntries(getTodoState(this.options.sessionId), ferment)
+		if (entries.length === 0) return
+		const plan: ActivePlan = { planId: ferment.id, entries }
+		this.setActivePlan(plan)
+		this.emit(plan.entries)
 	}
 
 	private onPhaseStarted(raw: unknown): void {
