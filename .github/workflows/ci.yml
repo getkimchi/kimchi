@@ -4,6 +4,8 @@ on:
   push:
     branches: [master]
   pull_request:
+  # merge_group: run on the merge queue's validation builds so the queue
+  # can gate merges on "CI / master-checks" (armed in #1023).
   merge_group:
 
 jobs:
