@@ -23,7 +23,7 @@ import type { EventBus } from "@earendil-works/pi-coding-agent"
 import { FERMENT_EVENTS, type FermentPhaseStartedPayload } from "../../extensions/ferment/domain-events.js"
 import { getActive } from "../../extensions/ferment/state.js"
 import { getTodoScopeKey } from "../../extensions/todos/scope.js"
-import { getTodoState, subscribeTodoStore } from "../../extensions/todos/store.js"
+import { getTodoState, getTodosForScope, subscribeTodoStore } from "../../extensions/todos/store.js"
 import type { TodoItem, TodoStatus, TodosSliceState } from "../../extensions/todos/types.js"
 import type { Ferment } from "../../ferment/types.js"
 
@@ -77,7 +77,16 @@ export function createInitialPlanEntries(ferment: Ferment): PlanEntry[] {
 /** Flatten ferment-scoped todos into plan entries, ordered by phase then
  *  step following the ferment's own ordering. Global-scope todos belong to
  *  the user, not the ferment, and are excluded — as are scopes of any other
- *  ferment. */
+ *  ferment.
+ *
+ *  Phases whose scopes currently have no todos drop out of the flattened
+ *  plan: not-yet-started phases never populated their scope, and completed
+ *  phases get cleared by the bridge. The next PHASE_STARTED re-emits an
+ *  initial all-pending plan built from the ferment, so pending entries for
+ *  later phases reappear when their phase becomes current. Deferred product
+ *  decision (PR #1034 review, finding 2): merging placeholders for future
+ *  phases from the previously emitted plan is possible if clients want
+ *  forward-looking visibility. */
 export function todoStoreToPlanEntries(state: TodosSliceState, ferment: Ferment): PlanEntry[] {
 	const entries: PlanEntry[] = []
 	for (const phase of ferment.phases) {
@@ -132,6 +141,9 @@ export class AcpPlanTracker {
 		this.unsubscribeEvents = undefined
 		this.unsubscribeTodos?.()
 		this.unsubscribeTodos = undefined
+		// Reset the dedupe cache so a tracker accidentally restarted emits the
+		// current state instead of being suppressed by the stale key.
+		this.lastEmittedKey = ""
 		this.setActivePlan(undefined)
 	}
 
@@ -146,6 +158,18 @@ export class AcpPlanTracker {
 		// Guard mirrors the todo-sync bridge: ignore events for a ferment that
 		// isn't the currently active one.
 		if (!ferment || ferment.id !== payload.fermentId) return
+		// Session correlation: the ferment is process-global (getActive) and the
+		// events bus can be shared across ACP sessions bound later in the same
+		// process, so ferment identity alone does not prove ownership. The
+		// todo-sync bridge, however, writes the phase's scope todos into the
+		// OWNING session's bucket — and it subscribes at session_start, before
+		// this tracker starts, so for the owning session those todos are already
+		// in the store when this handler runs. If this session's bucket has no
+		// todos for the started phase, the ferment belongs to another session:
+		// don't advertise its plan here.
+		if (getTodosForScope({ kind: "ferment", phaseId: payload.phaseId }, this.options.sessionId).length === 0) {
+			return
+		}
 		const plan: ActivePlan = { planId: ferment.id, entries: createInitialPlanEntries(ferment) }
 		this.setActivePlan(plan)
 		this.emit(plan.entries)

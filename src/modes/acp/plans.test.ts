@@ -89,6 +89,15 @@ function writePhaseTodos(phaseId: string, todos: TodoDraft[], sessionId = TEST_S
 	applyWriteTodos({ scope: { kind: "ferment", phaseId }, todos }, sessionId)
 }
 
+/** Simulate the todo-sync bridge's PHASE_STARTED write. The bridge subscribes
+ *  at session_start — before any ACP tracker — so the owning session already
+ *  has the phase's scope todos in its bucket when the tracker's bus handler
+ *  runs. The tracker uses this to correlate the process-global ferment event
+ *  with the session that owns it. Content is irrelevant; length > 0 matters. */
+function simulateBridgePhaseWrite(phaseId: string, sessionId = TEST_SESSION_ID): void {
+	writePhaseTodos(phaseId, [{ content: `[bridge] ${phaseId}`, status: "in_progress" }], sessionId)
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("AcpPlanTracker", () => {
@@ -108,6 +117,7 @@ describe("AcpPlanTracker", () => {
 		const { bus, emitted, planChanges, tracker } = makeHarness()
 		tracker.start()
 		try {
+			simulateBridgePhaseWrite("phase-1")
 			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
 
 			expect(emitted).toHaveLength(1)
@@ -150,6 +160,23 @@ describe("AcpPlanTracker", () => {
 		}
 	})
 
+	it("skips the initial plan when the ferment belongs to another session", () => {
+		// The bridge wrote phase todos into a DIFFERENT session's bucket, so
+		// this session did not receive the ferment-binding write: the process-
+		// global PHASE_STARTED must not produce a plan here.
+		const ferment = makeFerment()
+		setActive(ferment)
+		const { bus, emitted, tracker } = makeHarness()
+		tracker.start()
+		try {
+			simulateBridgePhaseWrite("phase-1", "other-session")
+			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
+			expect(emitted).toHaveLength(0)
+		} finally {
+			tracker.stop()
+		}
+	})
+
 	it("emits nothing on PHASE_STARTED when no ferment is active", () => {
 		const { bus, emitted, tracker } = makeHarness()
 		tracker.start()
@@ -172,6 +199,7 @@ describe("AcpPlanTracker", () => {
 		const { bus, emitted, tracker } = makeHarness()
 		tracker.start()
 		try {
+			simulateBridgePhaseWrite("phase-1")
 			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
 			expect(emitted).toHaveLength(1)
 
@@ -207,6 +235,7 @@ describe("AcpPlanTracker", () => {
 		const { bus, emitted, tracker } = makeHarness()
 		tracker.start()
 		try {
+			simulateBridgePhaseWrite("phase-1")
 			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
 
 			// STEP_FAILED → the bridge marks the step todo blocked.
@@ -228,6 +257,7 @@ describe("AcpPlanTracker", () => {
 		const { bus, emitted, tracker } = makeHarness()
 		tracker.start()
 		try {
+			simulateBridgePhaseWrite("phase-1")
 			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
 
 			// Model-written global todos (execute-style) must not leak in.
@@ -253,6 +283,7 @@ describe("AcpPlanTracker", () => {
 		const { bus, emitted, tracker } = makeHarness()
 		tracker.start()
 		try {
+			simulateBridgePhaseWrite("phase-1")
 			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
 
 			writePhaseTodos("phase-1", [
@@ -303,6 +334,7 @@ describe("AcpPlanTracker", () => {
 		const { bus, emitted, tracker } = makeHarness()
 		tracker.start()
 		try {
+			simulateBridgePhaseWrite("phase-1")
 			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
 			expect(emitted).toHaveLength(1)
 
@@ -319,6 +351,7 @@ describe("AcpPlanTracker", () => {
 		const { bus, emitted, tracker } = makeHarness()
 		tracker.start()
 		try {
+			simulateBridgePhaseWrite("phase-1")
 			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
 			expect(emitted).toHaveLength(1)
 
@@ -342,6 +375,7 @@ describe("AcpPlanTracker", () => {
 		setActive(ferment)
 		const { bus, emitted, planChanges, tracker } = makeHarness()
 		tracker.start()
+		simulateBridgePhaseWrite("phase-1")
 		bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
 		expect(emitted).toHaveLength(1)
 
@@ -384,6 +418,7 @@ describe("AcpPlanTracker", () => {
 		setActive(ferment)
 		tracker.start()
 		try {
+			simulateBridgePhaseWrite("phase-1")
 			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
 			expect(emitted).toHaveLength(1)
 			expect(getterCalled).toBeGreaterThan(0)
