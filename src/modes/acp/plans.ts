@@ -115,6 +115,7 @@ export class AcpPlanTracker {
 	private unsubscribeEvents: (() => void) | undefined
 	private unsubscribeTodos: (() => void) | undefined
 	private lastEmittedKey = ""
+	private started = false
 	private readonly getActiveFerment: () => Ferment | undefined
 
 	constructor(private readonly options: AcpPlanTrackerOptions) {
@@ -122,6 +123,10 @@ export class AcpPlanTracker {
 	}
 
 	start(): void {
+		// Idempotent: a second start() would overwrite the unsubscribers
+		// without calling the old ones, leaking subscriptions.
+		if (this.started) return
+		this.started = true
 		// The todo-sync bridge subscribes to the bus at session_start (inside
 		// bindExtensions), so by the time the server starts the tracker its
 		// PHASE_STARTED handler runs *before* this one for the same event —
@@ -137,6 +142,8 @@ export class AcpPlanTracker {
 	}
 
 	stop(): void {
+		if (!this.started) return
+		this.started = false
 		this.unsubscribeEvents?.()
 		this.unsubscribeEvents = undefined
 		this.unsubscribeTodos?.()
@@ -149,7 +156,14 @@ export class AcpPlanTracker {
 
 	private setActivePlan(plan: ActivePlan | undefined): void {
 		this.activePlan = plan
-		this.options.onActivePlanChanged?.(plan)
+		// The mirror callback mutates server-owned state; a failure here must
+		// not escape into the EventBus/todo-store notify loops and break the
+		// subscribers that run after us.
+		try {
+			this.options.onActivePlanChanged?.(plan)
+		} catch (err) {
+			console.error("[acp-plan] onActivePlanChanged callback failed:", err)
+		}
 	}
 
 	private onPhaseStarted(raw: unknown): void {
@@ -194,11 +208,19 @@ export class AcpPlanTracker {
 		// flooding the client with no-op updates.
 		const key = JSON.stringify(entries)
 		if (key === this.lastEmittedKey) return
+		// Set the dedupe key only after a successful send: if send throws, the
+		// client never saw this plan and the next (possibly identical) update
+		// must not be swallowed by the stale key.
+		try {
+			this.send({
+				sessionId: this.options.sessionId,
+				update: { sessionUpdate: "plan", entries },
+			})
+		} catch (err) {
+			console.error("[acp-plan] plan sessionUpdate send failed:", err)
+			return
+		}
 		this.lastEmittedKey = key
-		this.send({
-			sessionId: this.options.sessionId,
-			update: { sessionUpdate: "plan", entries },
-		})
 	}
 
 	private send(notification: SessionNotification): void {

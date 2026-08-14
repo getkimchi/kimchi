@@ -401,6 +401,84 @@ describe("AcpPlanTracker", () => {
 		tracker.stop()
 	})
 
+	it("does not poison the dedupe key when send() throws", () => {
+		const ferment = makeFerment()
+		setActive(ferment)
+		const bus = createEventBus()
+		const emitted: SessionNotification[] = []
+		let sendCalls = 0
+		const tracker = new AcpPlanTracker({
+			sessionId: TEST_SESSION_ID,
+			events: bus,
+			send: (n) => {
+				sendCalls++
+				if (sendCalls === 1) throw new Error("transient send failure")
+				emitted.push(n)
+			},
+		})
+		tracker.start()
+		try {
+			simulateBridgePhaseWrite("phase-1")
+			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
+			// The initial emission failed inside send(); the tracker must not
+			// treat the plan as emitted.
+			expect(emitted).toHaveLength(0)
+
+			// The next store update rebuilds the plan and sends it again — the
+			// failed send must not have latched the dedupe key.
+			writePhaseTodos("phase-1", [
+				{ content: "[Phase 1] Implementation", status: "completed" },
+				{ content: "↳ Write the code", status: "completed" },
+			])
+			expect(sendCalls).toBe(2)
+			expect(emitted).toHaveLength(1)
+			const entries = planEntries(emitted, 0)
+			expect(entries[0].status).toBe("completed")
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("start() is idempotent — a second start() does not double-subscribe", () => {
+		const ferment = makeFerment()
+		setActive(ferment)
+		const { bus, emitted, tracker } = makeHarness()
+		tracker.start()
+		tracker.start()
+		try {
+			simulateBridgePhaseWrite("phase-1")
+			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
+			expect(emitted).toHaveLength(1)
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("a throwing onActivePlanChanged callback does not break emission", () => {
+		const ferment = makeFerment()
+		setActive(ferment)
+		const bus = createEventBus()
+		const emitted: SessionNotification[] = []
+		const tracker = new AcpPlanTracker({
+			sessionId: TEST_SESSION_ID,
+			events: bus,
+			send: (n) => emitted.push(n),
+			onActivePlanChanged: () => {
+				throw new Error("mirror callback failure")
+			},
+		})
+		tracker.start()
+		try {
+			simulateBridgePhaseWrite("phase-1")
+			// bus.emit must not propagate the callback failure, and the plan
+			// sessionUpdate must still reach the client.
+			expect(() => bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))).not.toThrow()
+			expect(emitted).toHaveLength(1)
+		} finally {
+			tracker.stop()
+		}
+	})
+
 	it("reads the active ferment via the injected getter when provided", () => {
 		const ferment = makeFerment()
 		const bus = createEventBus()
