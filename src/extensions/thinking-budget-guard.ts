@@ -231,20 +231,67 @@ export default function thinkingBudgetGuardExtension(pi: ExtensionAPI): void {
  * editor-restore no-op, so the abort would never fire and the steer would
  * dangle. The post-hoc turn_end trigger covers interactive sessions.
  */
+export class ThinkingPreemptWatcher {
+	private readonly budgetChars: number
+	private sawToolCall = false
+	private latched = false
+	private lastThinkingChars = 0
+
+	constructor(budgetChars: number) {
+		this.budgetChars = budgetChars
+	}
+
+	/** Clears per-turn state. */
+	resetTurn(): void {
+		this.sawToolCall = false
+		this.latched = false
+		this.lastThinkingChars = 0
+	}
+
+	/**
+	 * Returns "abort" once on the first event whose cumulative thinking
+	 * exceeds budget while no tool call has started. Returns undefined
+	 * thereafter (latched) and if a tool call is present.
+	 *
+	 * Each call receives the full accumulated partial message (upstream
+	 * behavior in message_update) — we snapshot the current total per event,
+	 * never accumulate across events.
+	 */
+	observePartial(message: TurnEndEvent["message"]): "abort" | undefined {
+		if (this.latched || this.sawToolCall) return undefined
+		if (message.role !== "assistant") return undefined
+
+		let streamThinkingChars = 0
+		for (const block of message.content) {
+			if (block.type === "thinking") {
+				streamThinkingChars += block.thinking.length
+			} else if (block.type === "toolCall") {
+				this.sawToolCall = true
+				return undefined
+			}
+		}
+
+		this.lastThinkingChars = streamThinkingChars
+		if (streamThinkingChars <= this.budgetChars) return undefined
+
+		this.latched = true
+		return "abort"
+	}
+
+	getThinkingChars(): number {
+		return this.lastThinkingChars
+	}
+}
+
 function registerPreempt(pi: ExtensionAPI): void {
 	if (!isThinkingPreemptEnabled()) return
 
-	const budgetChars = resolveThinkingBudgetChars()
+	const watcher = new ThinkingPreemptWatcher(resolveThinkingBudgetChars())
 	let isTui = false
-	let thinkingChars = 0
-	let sawToolCall = false
-	let latched = false
 	let pendingSteer = false
 
 	function resetTurn(): void {
-		thinkingChars = 0
-		sawToolCall = false
-		latched = false
+		watcher.resetTurn()
 	}
 
 	pi.on("session_start", (_event, ctx) => {
@@ -264,34 +311,23 @@ function registerPreempt(pi: ExtensionAPI): void {
 	})
 
 	pi.on("message_update", (event, ctx) => {
-		// Runs on every delta — keep it to a cheap accumulation + compare.
-		if (isTui || latched || pendingSteer || sawToolCall) return
-		const message = event.message
-		if (message.role !== "assistant") return
-		for (const block of message.content) {
-			if (block.type === "thinking") {
-				thinkingChars += block.thinking.length
-			} else if (block.type === "toolCall") {
-				sawToolCall = true
-				return
-			}
+		if (isTui || pendingSteer) return
+		const result = watcher.observePartial(event.message)
+		if (result === "abort") {
+			pendingSteer = true
+			ctx.abort()
 		}
-		if (thinkingChars <= budgetChars) return
-		latched = true
-		pendingSteer = true
-		ctx.abort()
 	})
 
 	pi.on("agent_end", () => {
 		if (!pendingSteer) return
 		pendingSteer = false
-		latched = false
 		// Queue (not triggerTurn): the session detects messages queued from
 		// agent_end handlers and continues the run with this steer as input.
 		pi.sendMessage(
 			{
 				customType: STEER_MESSAGE_TYPE,
-				content: [{ type: "text", text: PREEMPT_STEER_BASE.replace("%d", String(thinkingChars)) }],
+				content: [{ type: "text", text: PREEMPT_STEER_BASE.replace("%d", String(watcher.getThinkingChars())) }],
 				display: false,
 			},
 			{ deliverAs: "steer" },

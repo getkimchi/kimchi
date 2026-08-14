@@ -12,6 +12,7 @@ import thinkingBudgetGuardExtension, {
 	resolveThinkingBudgetChars,
 	STEER_MESSAGE_TYPE,
 	ThinkingBudgetGuard,
+	ThinkingPreemptWatcher,
 } from "./thinking-budget-guard.js"
 
 type AssistantMsg = TurnEndEvent["message"]
@@ -240,6 +241,73 @@ describe("thinkingBudgetGuardExtension", () => {
 	})
 })
 
+describe("ThinkingPreemptWatcher", () => {
+	const BUDGET = 1_000
+
+	function partial(thinkingChars: number, opts?: { toolCalls?: string[] }): TurnEndEvent["message"] {
+		return assistantMessage({ thinkingChars, toolCalls: opts?.toolCalls })
+	}
+
+	it("aborts when cumulative thinking crosses the budget, not before", () => {
+		const w = new ThinkingPreemptWatcher(BUDGET)
+		expect(w.observePartial(partial(400))).toBeUndefined()
+		expect(w.observePartial(partial(800))).toBeUndefined()
+		expect(w.observePartial(partial(1200))).toBe("abort")
+	})
+
+	it("does not abort when partials stay under budget", () => {
+		const w = new ThinkingPreemptWatcher(BUDGET)
+		expect(w.observePartial(partial(300))).toBeUndefined()
+		expect(w.observePartial(partial(600))).toBeUndefined()
+		expect(w.observePartial(partial(900))).toBeUndefined()
+	})
+
+	it("sums thinking across multiple thinking blocks in one message", () => {
+		const w = new ThinkingPreemptWatcher(BUDGET)
+		// Two thinking blocks of 600 each = 1200 total > 1000.
+		const msg = {
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "x".repeat(600) },
+				{ type: "thinking", thinking: "y".repeat(600) },
+			],
+			stopReason: "stop",
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } },
+			timestamp: 0,
+		} as unknown as TurnEndEvent["message"]
+		expect(w.observePartial(msg)).toBe("abort")
+	})
+
+	it("does not abort when a tool call is present in the partial", () => {
+		const w = new ThinkingPreemptWatcher(BUDGET)
+		expect(w.observePartial(partial(BUDGET + 1, { toolCalls: ["bash"] }))).toBeUndefined()
+		// sawToolCall is now set; even a subsequent over-budget partial won't abort.
+		expect(w.observePartial(partial(BUDGET * 3))).toBeUndefined()
+	})
+
+	it("latches: abort fires once, not again on subsequent over-budget partials", () => {
+		const w = new ThinkingPreemptWatcher(BUDGET)
+		expect(w.observePartial(partial(1200))).toBe("abort")
+		expect(w.observePartial(partial(5000))).toBeUndefined()
+		expect(w.observePartial(partial(9999))).toBeUndefined()
+	})
+
+	it("resetTurn re-arms the watcher for a new turn", () => {
+		const w = new ThinkingPreemptWatcher(BUDGET)
+		expect(w.observePartial(partial(1200))).toBe("abort")
+		w.resetTurn()
+		expect(w.observePartial(partial(1200))).toBe("abort")
+	})
+
+	it("getThinkingChars returns the char count from the crossing event", () => {
+		const w = new ThinkingPreemptWatcher(BUDGET)
+		w.observePartial(partial(400))
+		expect(w.getThinkingChars()).toBe(400)
+		w.observePartial(partial(1200))
+		expect(w.getThinkingChars()).toBe(1200)
+	})
+})
+
 describe("thinking preempt (trigger B)", () => {
 	const BUDGET = 1_000
 
@@ -329,18 +397,20 @@ describe("thinking preempt (trigger B)", () => {
 		expect(getHandlers("turn_start")).toHaveLength(0)
 	})
 
-	it("aborts exactly once when streaming thinking crosses the budget", () => {
+	it("aborts exactly once when cumulative thinking crosses the budget", () => {
 		const { abort, update } = setup()
 
+		// Each message_update carries the full accumulated partial (upstream
+		// behavior), so thinking grows: 400 → 800 → 1200.
 		update(assistantMessage({ thinkingChars: 400 }))
-		update(assistantMessage({ thinkingChars: 400 }))
+		update(assistantMessage({ thinkingChars: 800 }))
 		expect(abort).not.toHaveBeenCalled()
-		// 1200 > 1000: budget crossed on the third delta.
-		update(assistantMessage({ thinkingChars: 400 }))
+		// 1200 > 1000: budget crossed.
+		update(assistantMessage({ thinkingChars: 1200 }))
 		expect(abort).toHaveBeenCalledTimes(1)
 
 		// Latch: further over-budget deltas in the same turn do not re-abort.
-		update(assistantMessage({ thinkingChars: 2_000 }))
+		update(assistantMessage({ thinkingChars: 5_000 }))
 		expect(abort).toHaveBeenCalledTimes(1)
 	})
 
@@ -365,7 +435,8 @@ describe("thinking preempt (trigger B)", () => {
 	it("sends exactly one steer at agent_end after aborting, and nothing on repeat agent_end", () => {
 		const { sendMessage, fire, update } = setup()
 
-		update(assistantMessage({ thinkingChars: BUDGET + 500 }))
+		const crossingChars = BUDGET + 500
+		update(assistantMessage({ thinkingChars: crossingChars }))
 		fire("agent_end")
 
 		expect(sendMessage).toHaveBeenCalledTimes(1)
@@ -377,7 +448,7 @@ describe("thinking preempt (trigger B)", () => {
 		expect(message.customType).toBe(STEER_MESSAGE_TYPE)
 		expect(message.display).toBe(false)
 		expect(message.content[0]?.text).toContain("cut off")
-		expect(message.content[0]?.text).toContain(String(BUDGET + 500))
+		expect(message.content[0]?.text).toContain(String(crossingChars))
 
 		fire("agent_end")
 		expect(sendMessage).toHaveBeenCalledTimes(1)
