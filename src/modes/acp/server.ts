@@ -1883,12 +1883,17 @@ function resolveToolPath(input: string, cwd: string): string {
 }
 
 // Reads the pre-write content for a `write` tool call. Returns null when the
-// file doesn't exist yet (new-file add) or can't be read — either way the
-// diff simply omits oldText rather than breaking the tool_call_update.
+// file doesn't exist yet (new-file add). Other read errors are logged — the
+// diff still omits oldText rather than breaking the tool_call_update, but a
+// swallowed EACCES/ETOOLARGE would otherwise be indistinguishable from
+// "file did not exist".
 function readPreWriteContent(toolPath: string, cwd: string): string | null {
 	try {
 		return readFileSync(resolveToolPath(toolPath, cwd), "utf-8")
-	} catch {
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+			process.stderr.write(`acp per-turn-diff: pre-write read failed for ${toolPath}: ${String(err)}\n`)
+		}
 		return null
 	}
 }
