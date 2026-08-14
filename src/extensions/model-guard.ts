@@ -31,13 +31,12 @@ export function resolveContextTokens(
 ): number | null {
 	if (messages.length === 0) return usage?.tokens ?? null
 
-	const estimatedTokens = estimateTokens(messages)
-	if (usage?.tokens == null) return estimatedTokens
+	if (usage?.tokens == null) return estimateTokens(messages)
 
 	const lastAssistantUsage = findLastAssistantUsage(messages)
 	if (!lastAssistantUsage) return usage.tokens
 
-	return usage.tokens + estimatedTokens - lastAssistantUsage.totalTokens
+	return usage.tokens + estimateTokensAfter(messages, lastAssistantUsage.index)
 }
 
 function findLastAssistantUsage(
@@ -45,11 +44,17 @@ function findLastAssistantUsage(
 ): { index: number; totalTokens: number } | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i]
-		if (message.role === "assistant" && "usage" in message && message.usage?.totalTokens) {
+		if (message.role === "assistant" && "usage" in message && typeof message.usage?.totalTokens === "number") {
 			return { index: i, totalTokens: message.usage.totalTokens }
 		}
 	}
 	return undefined
+}
+
+function estimateTokensAfter(messages: ContextEvent["messages"], index: number): number {
+	let tokens = 0
+	for (let i = index + 1; i < messages.length; i++) tokens += estimateMessageTokens(messages[i])
+	return tokens
 }
 
 /** Module-level flag tracking whether the current session contains image blocks. */
@@ -143,28 +148,7 @@ export const __resetImagesDetectedForTest = resetSessionState
  */
 export function estimateTokens(messages: ContextEvent["messages"]): number {
 	const lastAssistantUsage = findLastAssistantUsage(messages)
-	const lastAssistantIdx = lastAssistantUsage?.index ?? -1
-
-	let tokens = lastAssistantUsage?.totalTokens ?? 0
-
-	for (let i = lastAssistantIdx >= 0 ? lastAssistantIdx + 1 : 0; i < messages.length; i++) {
-		const msg = messages[i]
-		if (msg.role === "assistant" && "usage" in msg && msg.usage?.totalTokens) continue
-		if (!("content" in msg)) continue
-		const content = (msg as ContentMessage).content
-		if (typeof content === "string") {
-			tokens += Math.ceil(content.length / 4)
-		} else if (Array.isArray(content)) {
-			for (const block of content) {
-				if (block.type === "text") {
-					tokens += Math.ceil(block.text.length / 4)
-				} else if (block.type === "image") {
-					tokens += 1000
-				}
-			}
-		}
-	}
-	return tokens
+	return (lastAssistantUsage?.totalTokens ?? 0) + estimateTokensAfter(messages, lastAssistantUsage?.index ?? -1)
 }
 
 /**
@@ -242,7 +226,7 @@ const TRUNCATE_NOTICE = "⚠️ Context truncated to fit model context window.\n
  * Returns the original reference when nothing is truncated.
  */
 export function estimateMessageTokens(msg: ContextEvent["messages"][number]): number {
-	if (msg.role === "assistant" && "usage" in msg && msg.usage?.totalTokens) {
+	if (msg.role === "assistant" && "usage" in msg && typeof msg.usage?.totalTokens === "number") {
 		return msg.usage.totalTokens
 	}
 	if (!("content" in msg)) return 0

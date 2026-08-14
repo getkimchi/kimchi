@@ -152,6 +152,18 @@ describe("resolveContextTokens", () => {
 		expect(resolveContextTokens(usage, msgs)).toBe(275_000)
 	})
 
+	it("recognizes zero-token assistant usage before appended messages", () => {
+		const msgs: ContextEvent["messages"] = [makeAssistant(0), makeToolResult("x".repeat(400))]
+
+		expect(resolveContextTokens({ tokens: 0 }, msgs)).toBe(100)
+	})
+
+	it("adds the appended suffix to a refreshed provider baseline", () => {
+		const msgs: ContextEvent["messages"] = [makeAssistant(200), makeToolResult("x".repeat(400))]
+
+		expect(resolveContextTokens({ tokens: 50 }, msgs)).toBe(150)
+	})
+
 	it("falls back to estimateTokens(messages) when usage.tokens is null", () => {
 		const usage = { tokens: null }
 		// 30 msgs × 2000 chars each → ceil(2000/4)=500 tokens each → 15,000 total
