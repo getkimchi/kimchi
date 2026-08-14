@@ -113,9 +113,35 @@ export interface RunAcpOptions {
 	sessionLoader?: AcpSessionLoader
 }
 
+/**
+ * Per-turn usage accumulator. pi-mono chains multiple agent.prompt /
+ * agent.continue calls per turn, each producing an AssistantMessage with its
+ * own pi-ai `usage`; ACP's (v1/experimental) PromptResponse.usage expects a
+ * single summary, so message_end events fold their usage into this record and
+ * finalizeTurn emits the summed totals. `messages` counts the assistant
+ * usage records folded in — it gates the optional PromptResponse.usage field
+ * (omitted when no usage data was collected, e.g. a cancel before the first
+ * message).
+ */
+type TurnUsage = {
+	input: number
+	output: number
+	cacheRead: number
+	cacheWrite: number
+	reasoning: number
+	/** true once any provider actually reported a reasoning/thought count. */
+	sawReasoning: boolean
+	messages: number
+}
+
+function emptyTurnUsage(): TurnUsage {
+	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, sawReasoning: false, messages: 0 }
+}
+
 type TurnContext = {
 	cancelled: boolean
 	hiddenToolCallIds: Set<string>
+	usage: TurnUsage
 	resolve: (res: PromptResponse) => void
 	reject: (err: unknown) => void
 }
@@ -527,6 +553,7 @@ export class KimchiAcpAgent implements Agent {
 		entry.turn = {
 			cancelled: false,
 			hiddenToolCallIds: new Set(),
+			usage: emptyTurnUsage(),
 			resolve: turnResolve,
 			reject: turnReject,
 		}
@@ -664,6 +691,33 @@ export class KimchiAcpAgent implements Agent {
 						},
 					})
 				}
+				return
+			}
+			case "message_end": {
+				if (!turn) return
+				const msg = event.message
+				if (msg.role !== "assistant") return
+				const usage = msg.usage
+				if (usage) {
+					turn.usage.input += usage.input
+					turn.usage.output += usage.output
+					turn.usage.cacheRead += usage.cacheRead
+					turn.usage.cacheWrite += usage.cacheWrite
+					// pi-ai's Usage (0.78.x) has no `reasoning` field, but some
+					// providers report one ahead of the type — fold it in defensively
+					// so thoughtTokens is populated as soon as the pinned pi-ai
+					// exposes it.
+					const reasoning = (usage as { reasoning?: unknown }).reasoning
+					if (typeof reasoning === "number" && Number.isFinite(reasoning)) {
+						turn.usage.reasoning += reasoning
+						turn.usage.sawReasoning = true
+					}
+					turn.usage.messages++
+				}
+				// The assistant message_end is the turn event that carries usage;
+				// pair it with a live context-window usage_update. Never emitted
+				// from message_update — streaming deltas must not spam usage.
+				this.sendUsageUpdate(sessionId, entry)
 				return
 			}
 			case "tool_execution_start": {
@@ -951,6 +1005,26 @@ export class KimchiAcpAgent implements Agent {
 		return buildSessionModelState(session)
 	}
 
+	/**
+	 * Emits a usage_update sessionUpdate mapped from
+	 * `session.getContextUsage()` → ACP UsageUpdate { size, used }. Skipped
+	 * when the session reports no estimate (undefined) or an unknown token
+	 * count (tokens: null, e.g. right after compaction) — ACP requires both
+	 * fields, so there is no null-safe emission.
+	 */
+	private sendUsageUpdate(sessionId: string, entry: SessionRecord): void {
+		const ctx = entry.session.getContextUsage()
+		if (!ctx || ctx.tokens === null) return
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "usage_update",
+				size: ctx.contextWindow,
+				used: ctx.tokens,
+			},
+		})
+	}
+
 	private send(params: SessionNotification): void {
 		// Fire-and-forget is safe here because the ACP SDK chains every outbound
 		// message onto a shared writeQueue Promise (see @agentclientprotocol/sdk
@@ -980,7 +1054,24 @@ export class KimchiAcpAgent implements Agent {
 		const turn = entry.turn
 		if (!turn) return
 		entry.turn = undefined
-		turn.resolve({ stopReason })
+		const response: PromptResponse = { stopReason }
+		// usage is v1/experimental-only on PromptResponse (v2 drops it in favor
+		// of usage_update session events) and is omitted when the turn produced
+		// no usage data (e.g. cancelled before the first assistant message).
+		// totalTokens is emitted because the pinned ACP SDK's experimental Usage
+		// type marks it required, even though the ticket's v1 field table drops it.
+		if (turn.usage.messages > 0) {
+			const u = turn.usage
+			response.usage = {
+				inputTokens: u.input,
+				outputTokens: u.output,
+				cachedReadTokens: u.cacheRead,
+				cachedWriteTokens: u.cacheWrite,
+				...(u.sawReasoning ? { thoughtTokens: u.reasoning } : {}),
+				totalTokens: u.input + u.output + u.cacheRead + u.cacheWrite + u.reasoning,
+			}
+		}
+		turn.resolve(response)
 	}
 
 	private failTurn(entry: SessionRecord, err: unknown): void {
