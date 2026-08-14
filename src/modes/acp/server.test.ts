@@ -52,6 +52,8 @@ import {
 	getSessionPermissionFlagController,
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
+import { __resetTodoStore, applyWriteTodos, restoreTodoStoreFromDetails } from "../../extensions/todos/store.js"
+import { TODO_TOOL_RESULT_SCHEMA_VERSION } from "../../extensions/todos/types.js"
 import { updateModelsConfig } from "../../models.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
@@ -6107,5 +6109,154 @@ describe("userMessageText", () => {
 	it("returns empty string for null / non-array user content", () => {
 		expect(userMessageText(null)).toBe("")
 		expect(userMessageText(42)).toBe("")
+	})
+})
+
+describe("ACP plan updates from todo writes", () => {
+	beforeEach(() => __resetTodoStore())
+	afterEach(() => __resetTodoStore())
+
+	function makeRecordingAgent(overrides?: { sessionLoader?: AcpSessionLoader }): {
+		agent: KimchiAcpAgent
+		updates: SessionNotification[]
+	} {
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			...(overrides?.sessionLoader ? { sessionLoader: overrides.sessionLoader } : {}),
+		})
+		return { agent, updates }
+	}
+
+	function planNotifications(updates: SessionNotification[]): SessionNotification[] {
+		return updates.filter((u) => u.update.sessionUpdate === "plan")
+	}
+
+	it("emits a plan snapshot when todos are written in the session", async () => {
+		const { agent, updates } = makeRecordingAgent()
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		applyWriteTodos(
+			{
+				todos: [
+					{ content: "write tests", status: "pending" },
+					{ content: "wire emission", status: "in_progress", activeForm: "wiring emission" },
+				],
+			},
+			res.sessionId,
+		)
+
+		const plans = planNotifications(updates)
+		expect(plans).toHaveLength(1)
+		expect(plans[0].update).toEqual({
+			sessionUpdate: "plan",
+			entries: [
+				{ content: "write tests", priority: "medium", status: "pending" },
+				{ content: "wiring emission", priority: "medium", status: "in_progress" },
+			],
+			_meta: { "kimchi.dev": { scope: { kind: "global" } } },
+		})
+	})
+
+	it("ignores todo writes belonging to other sessions", async () => {
+		const { agent, updates } = makeRecordingAgent()
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		applyWriteTodos({ todos: [{ content: "foreign", status: "pending" }] }, "some-other-session")
+
+		expect(planNotifications(updates)).toHaveLength(0)
+	})
+
+	it("stops emitting after the session is closed", async () => {
+		const { agent, updates } = makeRecordingAgent()
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		await agent.unstable_closeSession({ sessionId: res.sessionId })
+
+		applyWriteTodos({ todos: [{ content: "after close", status: "pending" }] }, res.sessionId)
+
+		expect(planNotifications(updates)).toHaveLength(0)
+	})
+
+	it("emits one initial plan snapshot on loadSession when todos were restored", async () => {
+		restoreTodoStoreFromDetails(
+			[
+				{
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+					scope: { kind: "global" },
+					todos: [
+						{ id: 1, content: "resumed task", status: "in_progress", activeForm: "resuming task" },
+						{ id: 2, content: "blocked task", status: "blocked", note: "waiting on ops" },
+					],
+					updatedAt: "2026-08-14T00:00:00.000Z",
+				},
+			],
+			"loaded-plan-todos",
+		)
+		const fake = new FakeAgentSession("loaded-plan-todos")
+		const { agent, updates } = makeRecordingAgent({ sessionLoader: async () => asSession(fake) })
+
+		await agent.loadSession({ sessionId: "loaded-plan-todos", cwd: "/tmp", mcpServers: [] })
+
+		const plans = planNotifications(updates)
+		expect(plans).toHaveLength(1)
+		expect(plans[0].update).toEqual({
+			sessionUpdate: "plan",
+			entries: [
+				{ content: "resuming task", priority: "medium", status: "in_progress" },
+				{ content: "[blocked] blocked task — waiting on ops", priority: "medium", status: "pending" },
+			],
+			_meta: { "kimchi.dev": { scope: { kind: "global" } } },
+		})
+	})
+
+	it("prefers the most specific non-empty scope for the initial snapshot", async () => {
+		restoreTodoStoreFromDetails(
+			[
+				{
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+					scope: { kind: "global" },
+					todos: [{ id: 1, content: "global task", status: "pending" }],
+					updatedAt: "2026-08-14T00:00:00.000Z",
+				},
+				{
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+					scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-2" },
+					todos: [{ id: 1, content: "step task", status: "in_progress", activeForm: "doing step task" }],
+					updatedAt: "2026-08-14T00:00:01.000Z",
+				},
+			],
+			"loaded-plan-scopes",
+		)
+		const fake = new FakeAgentSession("loaded-plan-scopes")
+		const { agent, updates } = makeRecordingAgent({ sessionLoader: async () => asSession(fake) })
+
+		await agent.loadSession({ sessionId: "loaded-plan-scopes", cwd: "/tmp", mcpServers: [] })
+
+		const plans = planNotifications(updates)
+		expect(plans).toHaveLength(1)
+		expect(plans[0].update).toEqual({
+			sessionUpdate: "plan",
+			entries: [{ content: "doing step task", priority: "medium", status: "in_progress" }],
+			_meta: { "kimchi.dev": { scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-2" } } },
+		})
+	})
+
+	it("emits no plan notifications when no todos are written", async () => {
+		const { agent, updates } = makeRecordingAgent()
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		expect(planNotifications(updates)).toHaveLength(0)
+	})
+
+	it("unsubscribes the plan listener on agent shutdown", async () => {
+		const { agent, updates } = makeRecordingAgent()
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		await agent.shutdown()
+
+		applyWriteTodos({ todos: [{ content: "after shutdown", status: "pending" }] }, res.sessionId)
+
+		expect(planNotifications(updates)).toHaveLength(0)
 	})
 })
