@@ -1631,7 +1631,8 @@ async function createSessionSettings(cwd: string, options: RunAcpOptions, params
 	return { settingsManager, resourceLoader }
 }
 
-function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
+/** Exported for tests: the production session loader used by {@link KimchiAcpAgent}. */
+export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 	return async (params: LoadSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd
 		// Mirror defaultSessionLister: encode cwd inline because pi doesn't
@@ -1744,7 +1745,8 @@ export function resolveAcpAppendSystemPrompt(
 	return combined.length > 0 ? combined : undefined
 }
 
-function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
+/** Exported for tests: the production session factory used by {@link KimchiAcpAgent}. */
+export function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 	return async (params: NewSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
 		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
