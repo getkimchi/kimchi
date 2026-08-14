@@ -39,6 +39,7 @@ import {
 	assertSessionHasModel,
 	buildSessionModelState,
 	describeToolCall,
+	fileChangeToDiffContent,
 	initializeHeadlessTheme,
 	isHiddenToolCall,
 	shouldEmitThinking,
@@ -1549,6 +1550,270 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		expect(res.stopReason).toBe("end_turn")
 		expect(updates.some((u) => u.update.sessionUpdate === "tool_call")).toBe(false)
 		expect(updates.some((u) => u.update.sessionUpdate === "tool_call_update")).toBe(false)
+	})
+})
+
+// Ticket #04 — Per-Turn Diffs. The edit and write tools carry the diff data in
+// their own arguments (edit: args.edits[]; write: args.content + pre-write file
+// content read at tool_execution_start). tool_execution_end for those tools
+// must attach ACP `diff` content blocks to the terminal tool_call_update — in
+// addition to the existing text/image content, never replacing it. Read-only
+// tools emit no diffs. Args only travel on tool_execution_start, so the server
+// captures FileChange data there and emits it at tool_execution_end.
+describe("KimchiAcpAgent per-turn diffs", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+	let tmpDir: string
+
+	beforeEach(async () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "kimchi-acp-diff-"))
+		fake = new FakeAgentSession("session-diff")
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const rec = makeRecordingConn()
+		updates = rec.updates
+		agent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+		const res = await agent.newSession({ cwd: tmpDir, mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true })
+	})
+
+	const terminalContent = (toolCallId: string): unknown[] => {
+		const terminal = updates.find(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { toolCallId?: string }).toolCallId === toolCallId &&
+				((u.update as { status?: string }).status === "completed" ||
+					(u.update as { status?: string }).status === "failed"),
+		)
+		expect(terminal).toBeDefined()
+		return (terminal?.update as { content: unknown[] }).content
+	}
+
+	it("emits one diff content block for an edit tool call with a single edit", async () => {
+		const target = join(tmpDir, "a.txt")
+		writeFileSync(target, "hello world")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-edit-1",
+				toolName: "edit",
+				args: { path: target, edits: [{ oldText: "hello", newText: "goodbye" }] },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-edit-1",
+				toolName: "edit",
+				result: { content: [{ type: "text", text: "Edited a.txt" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		// Existing text content preserved; the diff block is additional content.
+		expect(terminalContent("tc-edit-1")).toEqual([
+			{ type: "content", content: { type: "text", text: "Edited a.txt" } },
+			{ type: "diff", path: target, oldText: "hello", newText: "goodbye" },
+		])
+	})
+
+	it("emits one diff content block per edit for an edit tool call with multiple edits", async () => {
+		const target = join(tmpDir, "multi.txt")
+		writeFileSync(target, "one two")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-edit-2",
+				toolName: "edit",
+				args: {
+					path: target,
+					edits: [
+						{ oldText: "one", newText: "1" },
+						{ oldText: "two", newText: "2" },
+					],
+				},
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-edit-2",
+				toolName: "edit",
+				result: { content: [{ type: "text", text: "Edited multi.txt" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const content = terminalContent("tc-edit-2") as Array<{ type: string }>
+		const diffs = content.filter((b) => b.type === "diff")
+		expect(diffs).toEqual([
+			{ type: "diff", path: target, oldText: "one", newText: "1" },
+			{ type: "diff", path: target, oldText: "two", newText: "2" },
+		])
+		// Text content preserved alongside the diffs.
+		expect(content.some((b) => b.type === "content")).toBe(true)
+	})
+
+	// Relative path exercises the server-side cwd resolution for the pre-write
+	// read; the emitted diff path stays verbatim from args.path.
+	it("emits a diff with oldText null for a write tool call creating a new file", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-new",
+				toolName: "write",
+				args: { path: "brand-new.txt", content: "fresh content" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-new",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote brand-new.txt" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const content = terminalContent("tc-write-new") as Array<{ type: string }>
+		const diffs = content.filter((b) => b.type === "diff")
+		expect(diffs).toEqual([{ type: "diff", path: "brand-new.txt", newText: "fresh content", oldText: null }])
+	})
+
+	// Overwrite: tool_execution_start must read the existing file into
+	// TurnContext.preWriteContents so the diff carries it as oldText.
+	it("emits a diff with the previous content as oldText for a write tool call overwriting a file", async () => {
+		const target = join(tmpDir, "existing.txt")
+		writeFileSync(target, "before content")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-over",
+				toolName: "write",
+				args: { path: target, content: "after content" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-over",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote existing.txt" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const content = terminalContent("tc-write-over") as Array<{ type: string }>
+		const diffs = content.filter((b) => b.type === "diff")
+		expect(diffs).toEqual([{ type: "diff", path: target, oldText: "before content", newText: "after content" }])
+	})
+
+	it("emits no diff content blocks for read-only tool calls", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			for (const [toolCallId, toolName, args] of [
+				["tc-bash", "bash", { command: "true" }],
+				["tc-read", "read", { path: join(tmpDir, "a.txt") }],
+				["tc-grep", "grep", { pattern: "foo" }],
+			] as const) {
+				fake.emit({ type: "tool_execution_start", toolCallId, toolName, args })
+				fake.emit({
+					type: "tool_execution_end",
+					toolCallId,
+					toolName,
+					result: { content: [{ type: "text", text: "ok" }] },
+					isError: false,
+				})
+			}
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		for (const toolCallId of ["tc-bash", "tc-read", "tc-grep"]) {
+			const content = terminalContent(toolCallId) as Array<{ type: string }>
+			expect(content.some((b) => b.type === "diff")).toBe(false)
+		}
+	})
+
+	// A failed mutation must not surface a diff — the client would otherwise
+	// render a change that never landed.
+	it("emits no diff content blocks when the edit/write tool call failed", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-edit-fail",
+				toolName: "edit",
+				args: { path: join(tmpDir, "a.txt"), edits: [{ oldText: "x", newText: "y" }] },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-edit-fail",
+				toolName: "edit",
+				result: { content: [{ type: "text", text: "boom" }] },
+				isError: true,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const content = terminalContent("tc-edit-fail") as Array<{ type: string }>
+		expect(content.some((b) => b.type === "diff")).toBe(false)
+	})
+})
+
+// Pure adapter coverage for the FileChange → v1 Diff mapping, including the
+// delete branch the edit/write tools never produce today.
+describe("fileChangeToDiffContent", () => {
+	it("maps add to a diff with oldText null", () => {
+		expect(fileChangeToDiffContent({ operation: "add", path: "/a.txt", newText: "new" })).toEqual({
+			type: "diff",
+			path: "/a.txt",
+			newText: "new",
+			oldText: null,
+		})
+	})
+
+	it("maps modify to a diff carrying both texts", () => {
+		expect(fileChangeToDiffContent({ operation: "modify", path: "/a.txt", oldText: "old", newText: "new" })).toEqual({
+			type: "diff",
+			path: "/a.txt",
+			oldText: "old",
+			newText: "new",
+		})
+	})
+
+	it("maps delete to a diff omitting newText", () => {
+		expect(fileChangeToDiffContent({ operation: "delete", path: "/a.txt", oldText: "gone" })).toEqual({
+			type: "diff",
+			path: "/a.txt",
+			oldText: "gone",
+		})
 	})
 })
 

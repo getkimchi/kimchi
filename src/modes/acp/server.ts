@@ -2,7 +2,7 @@
 // @agentclientprotocol/sdk. Lets IDE extensions, Zed, openclaw drive kimchi in-process.
 
 import { closeSync, openSync, readFileSync, readSync, readdirSync } from "node:fs"
-import { join } from "node:path"
+import { isAbsolute, join, resolve } from "node:path"
 import { Readable, Writable } from "node:stream"
 import {
 	type SessionInfo as AcpSessionInfo,
@@ -116,13 +116,48 @@ export interface RunAcpOptions {
 type TurnContext = {
 	cancelled: boolean
 	hiddenToolCallIds: Set<string>
+	/**
+	 * Pre-write file contents read at tool_execution_start for `write` tool
+	 * calls: the original file content if the file existed (later surfaced as
+	 * the diff's oldText), null for a new file. Keyed by toolCallId; the entry
+	 * is consumed and cleared at tool_execution_end. Args travel only on
+	 * tool_execution_start (ToolExecutionEndEvent carries none), so everything
+	 * the end event needs must be captured here.
+	 */
+	preWriteContents: Map<string, string | null>
+	/**
+	 * File changes derived from tool args at tool_execution_start for the
+	 * mutation tools (edit, write). Emitted as ACP `diff` content blocks at
+	 * tool_execution_end; key removed once consumed. Read-only tools never
+	 * appear here.
+	 */
+	pendingFileChanges: Map<string, FileChange[]>
 	resolve: (res: PromptResponse) => void
 	reject: (err: unknown) => void
+}
+
+/**
+ * Internal file-mutation abstraction shared by the v1 and (future) v2 ACP
+ * diff adapters. Populated from tool args at tool_execution_start so the v1
+ * emission ({@link fileChangeToDiffContent}) is a pure adapter over data
+ * already known before the tool ran — v2 migration is a pure adapter swap.
+ */
+export interface FileChange {
+	path: string
+	operation: "add" | "modify" | "delete"
+	/** undefined for "add" */
+	oldText?: string
+	/** undefined for "delete" */
+	newText?: string
 }
 
 type SessionRecord = {
 	session: AgentSession
 	unsubscribe: () => void
+	// Session cwd, captured at newSession/loadSession time. AgentSession keeps
+	// its cwd private, but the ACP server needs it to resolve relative tool
+	// paths (pre-write reads for per-turn diffs).
+	cwd: string
 	turn?: TurnContext
 	/**
 	 * Session-wide monotonic counter for ACP messageIds. Every distinct
@@ -273,6 +308,7 @@ export class KimchiAcpAgent implements Agent {
 			this.sessions.set(sessionId, {
 				session,
 				unsubscribe,
+				cwd,
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
 			})
@@ -441,6 +477,9 @@ export class KimchiAcpAgent implements Agent {
 			const record: SessionRecord = {
 				session,
 				unsubscribe,
+				// loadSessionFresh validated params.cwd against the on-disk session
+				// header above, so this is the session's true cwd.
+				cwd,
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
 			}
@@ -527,6 +566,8 @@ export class KimchiAcpAgent implements Agent {
 		entry.turn = {
 			cancelled: false,
 			hiddenToolCallIds: new Set(),
+			preWriteContents: new Map(),
+			pendingFileChanges: new Map(),
 			resolve: turnResolve,
 			reject: turnReject,
 		}
@@ -676,6 +717,13 @@ export class KimchiAcpAgent implements Agent {
 					turn.hiddenToolCallIds.add(event.toolCallId)
 					return
 				}
+				// Capture the diff data now — tool_execution_end carries no args.
+				// For `write` the pre-existing content must be read before the tool
+				// runs; afterwards the file already holds the new content.
+				const fileChanges = fileChangesForToolCall(event.toolName, event.args, entry.cwd, turn, event.toolCallId)
+				if (fileChanges.length > 0) {
+					turn.pendingFileChanges.set(event.toolCallId, fileChanges)
+				}
 				const { title, kind, locations } = describeToolCall(event.toolName, event.args)
 				this.send({
 					sessionId,
@@ -716,13 +764,22 @@ export class KimchiAcpAgent implements Agent {
 					turn.hiddenToolCallIds.delete(event.toolCallId)
 					return
 				}
+				// Consume the per-call capture so a later turn reusing the id (or a
+				// retried call) can't leak stale diff data across tool calls.
+				const fileChanges = turn.pendingFileChanges.get(event.toolCallId) ?? []
+				turn.pendingFileChanges.delete(event.toolCallId)
+				turn.preWriteContents.delete(event.toolCallId)
+				// Diffs are additional content blocks, appended after the existing
+				// text/image content. Failed mutations emit no diff: the client
+				// would otherwise render a change that never landed.
+				const diffs = event.isError ? [] : fileChanges.map(fileChangeToDiffContent)
 				this.send({
 					sessionId,
 					update: {
 						sessionUpdate: "tool_call_update",
 						toolCallId: event.toolCallId,
 						status: event.isError ? "failed" : "completed",
-						content: toolResultContent(event.result),
+						content: [...toolResultContent(event.result), ...diffs],
 						rawOutput: event.result,
 					},
 				})
@@ -1432,6 +1489,76 @@ export function buildToolCallUpdate(
 		locations,
 		rawInput: args,
 	}
+}
+
+// ACP v1 Diff = { path, newText, oldText? }. The v1 adapter maps one
+// FileChange to one ToolCallContent with type "diff": add carries
+// oldText: null, modify carries both texts, delete omits newText (no tool
+// produces deletes today; the branch exists so the adapter is total over
+// FileChange and the v2 migration stays a pure adapter swap).
+export function fileChangeToDiffContent(change: FileChange): ToolCallContent {
+	switch (change.operation) {
+		case "add":
+			return { type: "diff", path: change.path, newText: change.newText ?? "", oldText: null }
+		case "modify":
+			return { type: "diff", path: change.path, newText: change.newText ?? "", oldText: change.oldText ?? null }
+		case "delete":
+			// The SDK's v1 Diff type marks newText required, but the protocol
+			// treats it as absent for deletions (oldText is the "None for new
+			// files" mirror). Cast keeps the wire shape per the v1 mapping.
+			return { type: "diff", path: change.path, oldText: change.oldText ?? null } as ToolCallContent
+	}
+}
+
+// Reads the pre-write content for a `write` tool call. Returns null when the
+// file doesn't exist yet (new-file add) or can't be read — either way the
+// diff simply omits oldText rather than breaking the tool_call_update.
+function readPreWriteContent(toolPath: string, cwd: string): string | null {
+	// pi's write tool resolves args.path via resolveToCwd (absolute paths pass
+	// through; relative paths join cwd). resolveToCwd isn't exported from the
+	// package index, so replicate the two cases args actually produce.
+	const absolute = isAbsolute(toolPath) ? toolPath : resolve(cwd, toolPath)
+	try {
+		return readFileSync(absolute, "utf-8")
+	} catch {
+		return null
+	}
+}
+
+// Derives FileChange entries from a tool's arguments. Only the mutation tools
+// (edit, write) produce changes; everything else returns [] so read-only
+// tools never attach diffs. For `write`, the pre-existing file content is
+// also recorded into TurnContext.preWriteContents (per the ticket's
+// TurnContext contract) and doubles as the diff's oldText.
+function fileChangesForToolCall(
+	toolName: string,
+	args: unknown,
+	cwd: string,
+	turn: { preWriteContents: Map<string, string | null> },
+	toolCallId: string,
+): FileChange[] {
+	const a = (args ?? {}) as Record<string, unknown>
+	const path = typeof a.path === "string" ? a.path : undefined
+	if (toolName === "edit") {
+		if (!path || !Array.isArray(a.edits)) return []
+		const changes: FileChange[] = []
+		for (const e of a.edits) {
+			if (!e || typeof e !== "object") continue
+			const edit = e as { oldText?: unknown; newText?: unknown }
+			if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") continue
+			changes.push({ operation: "modify", path, oldText: edit.oldText, newText: edit.newText })
+		}
+		return changes
+	}
+	if (toolName === "write") {
+		if (!path || typeof a.content !== "string") return []
+		const previous = readPreWriteContent(path, cwd)
+		turn.preWriteContents.set(toolCallId, previous)
+		return previous === null
+			? [{ operation: "add", path, newText: a.content }]
+			: [{ operation: "modify", path, oldText: previous, newText: a.content }]
+	}
+	return []
 }
 
 // UserMessage.content is `string | (TextContent | ImageContent)[]` per pi-ai
