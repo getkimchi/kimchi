@@ -83,10 +83,10 @@ CONTAINER_HARNESS_MODELS_JSON = f"{CONTAINER_HARNESS_SETTINGS_DIR}/models.json"
 
 # Static metadata for native Anthropic models that bypass the Kimchi gateway.
 # The Kimchi metadata API only describes gateway-served models, so native
-# anthropic/* models are listed here. pi-ai has a built-in anthropic provider
-# that reads ANTHROPIC_API_KEY, so no provider config needs to be injected
-# into models.json — only the model metadata (context window, output limits,
-# reasoning capability).
+# anthropic/* models are listed here (context window, output limits, reasoning
+# capability). The provider block built from this table must be self-contained —
+# see _build_anthropic_models_config.
+ANTHROPIC_API_BASE_URL = "https://api.anthropic.com"
 _ANTHROPIC_MODEL_METADATA: dict[str, dict[str, Any]] = {
     "claude-sonnet-5": {
         "reasoning": True,
@@ -753,10 +753,14 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
     def _build_anthropic_models_config(self) -> dict[str, Any]:
         """Build a pi models.json provider block for a native anthropic/* model.
 
-        pi-ai has a built-in ``anthropic`` provider that reads
-        ``ANTHROPIC_API_KEY`` from the environment. The provider entry here
-        declares the model's metadata (context window, output limits, reasoning)
-        so pi's model resolver has accurate limits without a metadata API call.
+        pi-ai parses a models.json provider entry as a self-contained custom
+        provider — it does not merge the entry with the built-in anthropic
+        provider. A block without ``api`` is dropped at parse time (``no "api"
+        specified``) and a block without ``apiKey`` never resolves auth from
+        the environment; either way the registry ends up empty and pi exits
+        with ``No models available ... add models to models.json``, classified
+        downstream as ``agent_model_catalog_unavailable``. So the block must
+        carry api/baseUrl/apiKey alongside the model metadata.
         """
         _, _, model_id = (self.model_name or "").partition("/")
         meta = _ANTHROPIC_MODEL_METADATA.get(model_id)
@@ -768,6 +772,12 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         return {
             "providers": {
                 ANTHROPIC_PROVIDER: {
+                    "api": "anthropic-messages",
+                    "baseUrl": ANTHROPIC_API_BASE_URL,
+                    # "$ANTHROPIC_API_KEY" is an env reference resolved by pi
+                    # at request time, not the key itself, so the bind-mounted
+                    # file stays artifact-safe — same contract as zai/*.
+                    "apiKey": f"${ANTHROPIC_API_KEY_ENV}",
                     "models": [
                         {
                             "id": model_id,

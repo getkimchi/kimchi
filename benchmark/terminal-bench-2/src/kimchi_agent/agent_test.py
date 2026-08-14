@@ -827,6 +827,15 @@ async def test_anthropic_model_writes_models_config_before_kimchi(
     assert '"maxTokens":128000' in command
     assert '"reasoning":true' in command
     assert '"forceAdaptiveThinking":true' in command
+    # pi-ai parses the models.json block as a self-contained provider: without
+    # api/baseUrl/apiKey the model is dropped and pi exits "No models
+    # available" (classified as agent_model_catalog_unavailable).
+    assert '"api":"anthropic-messages"' in command
+    assert '"baseUrl":"https://api.anthropic.com"' in command
+    # The config names the env var resolved at request time; the key value
+    # itself must never land in the bind-mounted artifacts.
+    assert '"apiKey":"$ANTHROPIC_API_KEY"' in command
+    assert "sk-ant-test" not in command
     assert "~/.config/kimchi/harness/models.json" in command
     assert "--model anthropic/claude-sonnet-5" in command
 
