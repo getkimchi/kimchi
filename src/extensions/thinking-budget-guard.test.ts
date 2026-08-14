@@ -43,14 +43,14 @@ function assistantMessage(opts: {
 const HEAVY = DEFAULT_STREAK_MIN_THINKING_CHARS + 1
 
 describe("ThinkingBudgetGuard — talk-only triggers", () => {
-	it("steers when a turn is length-truncated with zero tool calls", () => {
+	it("steers when a length-truncated turn has no mutating tool call", () => {
 		const guard = new ThinkingBudgetGuard()
 		const steer = guard.observeTurn(assistantMessage({ thinkingChars: 50_000, stopReason: "length" }))
 		expect(steer?.trigger).toBe("length_truncation")
 		expect(steer?.text).toContain("output token limit")
 	})
 
-	it("steers when thinking exceeds the per-turn budget with zero tool calls", () => {
+	it("steers when thinking exceeds the per-turn budget with no mutating tool call", () => {
 		const guard = new ThinkingBudgetGuard()
 		const chars = DEFAULT_THINKING_BUDGET_CHARS + 1
 		const steer = guard.observeTurn(assistantMessage({ thinkingChars: chars }))
@@ -63,10 +63,49 @@ describe("ThinkingBudgetGuard — talk-only triggers", () => {
 		expect(guard.observeTurn(assistantMessage({ thinkingChars: DEFAULT_THINKING_BUDGET_CHARS }))).toBeUndefined()
 	})
 
-	it("does not steer when the length-truncated turn contained tool calls", () => {
+	it("does not steer when the length-truncated turn contained a mutating tool call", () => {
 		const guard = new ThinkingBudgetGuard()
 		expect(
 			guard.observeTurn(assistantMessage({ thinkingChars: 90_000, stopReason: "length", toolCalls: ["edit"] })),
+		).toBeUndefined()
+	})
+
+	it("steers on length-truncated turn with only read-only tool calls", () => {
+		const guard = new ThinkingBudgetGuard()
+		const steer = guard.observeTurn(
+			assistantMessage({ thinkingChars: 90_000, stopReason: "length", toolCalls: ["read"] }),
+		)
+		expect(steer?.trigger).toBe("length_truncation")
+	})
+
+	it("steers on length-truncated turn with only bookkeeping tool calls", () => {
+		const guard = new ThinkingBudgetGuard()
+		const steer = guard.observeTurn(
+			assistantMessage({ thinkingChars: 90_000, stopReason: "length", toolCalls: ["create_todos"] }),
+		)
+		expect(steer?.trigger).toBe("length_truncation")
+	})
+
+	it("steers on overrun with only read-only tool calls", () => {
+		const guard = new ThinkingBudgetGuard()
+		const steer = guard.observeTurn(
+			assistantMessage({ thinkingChars: DEFAULT_THINKING_BUDGET_CHARS + 1, toolCalls: ["read", "ls"] }),
+		)
+		expect(steer?.trigger).toBe("thinking_overrun")
+	})
+
+	it("steers on overrun with only bookkeeping tool calls", () => {
+		const guard = new ThinkingBudgetGuard()
+		const steer = guard.observeTurn(
+			assistantMessage({ thinkingChars: DEFAULT_THINKING_BUDGET_CHARS + 1, toolCalls: ["create_todos"] }),
+		)
+		expect(steer?.trigger).toBe("thinking_overrun")
+	})
+
+	it("does not steer on overrun when a mutating tool call is present", () => {
+		const guard = new ThinkingBudgetGuard()
+		expect(
+			guard.observeTurn(assistantMessage({ thinkingChars: DEFAULT_THINKING_BUDGET_CHARS + 1, toolCalls: ["write"] })),
 		).toBeUndefined()
 	})
 

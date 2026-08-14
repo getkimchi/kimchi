@@ -84,16 +84,16 @@ export function resolveThinkingBudgetChars(env: NodeJS.ProcessEnv = process.env)
 }
 
 const PREEMPT_STEER_BASE =
-	"Thinking budget guard: your reasoning was cut off at %d characters because it showed no sign of reaching a tool call. " +
+	"Thinking budget guard: your reasoning was cut off at %d characters. " +
 	"Stop deliberating and act on what you already have — emit your best tool call now, even if your analysis is incomplete."
 
 const LENGTH_TRUNCATION_STEER =
-	"Thinking budget guard: your last response hit the output token limit while still reasoning and never reached a tool call. " +
+	"Thinking budget guard: your last response hit the output token limit while still reasoning and never reached a file-changing action. " +
 	"Stop deliberating: act on the plan you already have and emit your single best tool call now, even if your analysis is incomplete. " +
 	"A concrete attempt produces information; unbounded thinking only burns the output budget."
 
 const THINK_OVERRUN_STEER_BASE =
-	"Thinking budget guard: this turn spent %d characters reasoning without making a single tool call. " +
+	"Thinking budget guard: this turn spent %d characters reasoning without making a file-changing action. " +
 	"Stop deliberating and act on what you already have — emit your best tool call now, even if your analysis is incomplete."
 
 const THINK_ONLY_STREAK_STEER =
@@ -157,12 +157,12 @@ export class ThinkingBudgetGuard {
 			this.thinkOnlyStreak = 0
 		}
 
-		if (toolCalls === 0 && message.stopReason === "length") {
+		if (!hasMutatingToolCall && message.stopReason === "length") {
 			this.thinkOnlyStreak = 0
 			return { trigger: "length_truncation", text: LENGTH_TRUNCATION_STEER }
 		}
 
-		if (toolCalls === 0 && thinkingChars > this.thinkingBudgetChars) {
+		if (!hasMutatingToolCall && thinkingChars > this.thinkingBudgetChars) {
 			this.thinkOnlyStreak = 0
 			return {
 				trigger: "thinking_overrun",
