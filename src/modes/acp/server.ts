@@ -2,8 +2,10 @@
 // @agentclientprotocol/sdk. Lets IDE extensions, Zed, openclaw drive kimchi in-process.
 
 import { closeSync, openSync, readFileSync, readSync, readdirSync } from "node:fs"
+import { homedir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
 import { Readable, Writable } from "node:stream"
+import { fileURLToPath } from "node:url"
 import {
 	type SessionInfo as AcpSessionInfo,
 	type Agent,
@@ -129,9 +131,10 @@ type TurnContext = {
 	 * File changes derived from tool args at tool_execution_start for the
 	 * mutation tools (edit, write). Emitted as ACP `diff` content blocks at
 	 * tool_execution_end; key removed once consumed. Read-only tools never
-	 * appear here.
+	 * appear here. Write entries keep their operation undecided until the end
+	 * event resolves add-vs-modify from preWriteContents.
 	 */
-	pendingFileChanges: Map<string, FileChange[]>
+	pendingFileChanges: Map<string, PendingFileChange[]>
 	resolve: (res: PromptResponse) => void
 	reject: (err: unknown) => void
 }
@@ -150,6 +153,16 @@ export interface FileChange {
 	/** undefined for "delete" */
 	newText?: string
 }
+
+/**
+ * Captured-at-start representation of a pending diff. Edit calls resolve to
+ * FileChange immediately (args carry both texts). Write calls carry the
+ * "write" sentinel: whether the change is an add or a modify depends on
+ * TurnContext.preWriteContents, which is only consulted at tool_execution_end
+ * ({@link resolveFileChange}) — that is what keeps preWriteContents the
+ * single source of truth for the write oldText.
+ */
+type PendingFileChange = FileChange | { operation: "write"; path: string; newText: string }
 
 type SessionRecord = {
 	session: AgentSession
@@ -720,7 +733,7 @@ export class KimchiAcpAgent implements Agent {
 				// Capture the diff data now — tool_execution_end carries no args.
 				// For `write` the pre-existing content must be read before the tool
 				// runs; afterwards the file already holds the new content.
-				const fileChanges = fileChangesForToolCall(event.toolName, event.args, entry.cwd, turn, event.toolCallId)
+				const fileChanges = collectFileChanges(event.toolName, event.args, entry.cwd, turn, event.toolCallId)
 				if (fileChanges.length > 0) {
 					turn.pendingFileChanges.set(event.toolCallId, fileChanges)
 				}
@@ -766,13 +779,14 @@ export class KimchiAcpAgent implements Agent {
 				}
 				// Consume the per-call capture so a later turn reusing the id (or a
 				// retried call) can't leak stale diff data across tool calls.
-				const fileChanges = turn.pendingFileChanges.get(event.toolCallId) ?? []
+				const pending = turn.pendingFileChanges.get(event.toolCallId) ?? []
 				turn.pendingFileChanges.delete(event.toolCallId)
+				const preWrite = turn.preWriteContents.get(event.toolCallId)
 				turn.preWriteContents.delete(event.toolCallId)
 				// Diffs are additional content blocks, appended after the existing
 				// text/image content. Failed mutations emit no diff: the client
 				// would otherwise render a change that never landed.
-				const diffs = event.isError ? [] : fileChanges.map(fileChangeToDiffContent)
+				const diffs = event.isError ? [] : pending.map((p) => fileChangeToDiffContent(resolveFileChange(p, preWrite)))
 				this.send({
 					sessionId,
 					update: {
@@ -1510,39 +1524,62 @@ export function fileChangeToDiffContent(change: FileChange): ToolCallContent {
 	}
 }
 
+// Faithful replication of pi's resolveToCwd (dist/core/tools/path-utils.js →
+// resolvePath with normalizeUnicodeSpaces + stripAtPrefix): the write tool
+// resolves args.path this way, so the pre-write read must match or a path
+// like "@notes.txt" or "~/file (with NBSP).md" would be misclassified as a
+// new file. pi-coding-agent only exports "." and "./hooks", so the helper
+// can't be imported — replicated here. Drift surfaces as an 'add' diff on an
+// overwritten file, not corruption.
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g
+function resolveToolPath(input: string, cwd: string): string {
+	let p = input.replace(UNICODE_SPACES, " ")
+	if (p.startsWith("@")) p = p.slice(1)
+	if (p === "~") {
+		p = homedir()
+	} else if (p.startsWith("~/") || (process.platform === "win32" && p.startsWith("~\\"))) {
+		p = join(homedir(), p.slice(2))
+	}
+	if (/^file:\/\//.test(p)) p = fileURLToPath(p)
+	return isAbsolute(p) ? resolve(p) : resolve(cwd, p)
+}
+
 // Reads the pre-write content for a `write` tool call. Returns null when the
 // file doesn't exist yet (new-file add) or can't be read — either way the
 // diff simply omits oldText rather than breaking the tool_call_update.
 function readPreWriteContent(toolPath: string, cwd: string): string | null {
-	// pi's write tool resolves args.path via resolveToCwd (absolute paths pass
-	// through; relative paths join cwd). resolveToCwd isn't exported from the
-	// package index, so replicate the two cases args actually produce.
-	const absolute = isAbsolute(toolPath) ? toolPath : resolve(cwd, toolPath)
 	try {
-		return readFileSync(absolute, "utf-8")
+		return readFileSync(resolveToolPath(toolPath, cwd), "utf-8")
 	} catch {
 		return null
 	}
 }
 
-// Derives FileChange entries from a tool's arguments. Only the mutation tools
-// (edit, write) produce changes; everything else returns [] so read-only
-// tools never attach diffs. For `write`, the pre-existing file content is
-// also recorded into TurnContext.preWriteContents (per the ticket's
-// TurnContext contract) and doubles as the diff's oldText.
-function fileChangesForToolCall(
+// Derives pending file-change entries from a tool's arguments. Only the
+// mutation tools (edit, write) produce changes; everything else returns []
+// so read-only tools never attach diffs.
+function collectFileChanges(
 	toolName: string,
 	args: unknown,
 	cwd: string,
 	turn: { preWriteContents: Map<string, string | null> },
 	toolCallId: string,
-): FileChange[] {
+): PendingFileChange[] {
 	const a = (args ?? {}) as Record<string, unknown>
 	const path = typeof a.path === "string" ? a.path : undefined
 	if (toolName === "edit") {
-		if (!path || !Array.isArray(a.edits)) return []
+		if (!path) return []
+		// pi's edit tool accepts the multi-edit shape {path, edits: [...]} and
+		// normalizes a legacy single-edit shape {path, oldText, newText}
+		// internally. Mirror that normalization so legacy-shape calls still
+		// emit a diff instead of silently producing none.
+		const editsInput: unknown[] = Array.isArray(a.edits)
+			? a.edits
+			: typeof a.oldText === "string" && typeof a.newText === "string"
+				? [{ oldText: a.oldText, newText: a.newText }]
+				: []
 		const changes: FileChange[] = []
-		for (const e of a.edits) {
+		for (const e of editsInput) {
 			if (!e || typeof e !== "object") continue
 			const edit = e as { oldText?: unknown; newText?: unknown }
 			if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") continue
@@ -1552,13 +1589,25 @@ function fileChangesForToolCall(
 	}
 	if (toolName === "write") {
 		if (!path || typeof a.content !== "string") return []
-		const previous = readPreWriteContent(path, cwd)
-		turn.preWriteContents.set(toolCallId, previous)
-		return previous === null
-			? [{ operation: "add", path, newText: a.content }]
-			: [{ operation: "modify", path, oldText: previous, newText: a.content }]
+		// Capture the pre-existing content now (before the tool overwrites it).
+		// The entry is stored with its operation undecided; tool_execution_end
+		// resolves add-vs-modify from preWriteContents via resolveFileChange,
+		// keeping that map the single source of truth for the write oldText.
+		turn.preWriteContents.set(toolCallId, readPreWriteContent(path, cwd))
+		return [{ operation: "write", path, newText: a.content }]
 	}
 	return []
+}
+
+// Resolves a captured-at-start entry to a concrete FileChange for the v1
+// adapter. "write" entries become "add" when the file didn't exist (or the
+// pre-write read failed, or no pre-write content was captured) and "modify"
+// with the recorded oldText otherwise.
+function resolveFileChange(pending: PendingFileChange, preWrite: string | null | undefined): FileChange {
+	if (pending.operation !== "write") return pending
+	return preWrite === null || preWrite === undefined
+		? { operation: "add", path: pending.path, newText: pending.newText }
+		: { operation: "modify", path: pending.path, oldText: preWrite, newText: pending.newText }
 }
 
 // UserMessage.content is `string | (TextContent | ImageContent)[]` per pi-ai

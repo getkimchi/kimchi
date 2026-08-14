@@ -1629,6 +1629,38 @@ describe("KimchiAcpAgent per-turn diffs", () => {
 		])
 	})
 
+	// pi's edit tool accepts a legacy single-edit arg shape {path, oldText,
+	// newText} (no edits array) and normalizes it internally. A legacy-shape
+	// call must still emit its diff rather than silently producing none.
+	it("emits a diff for an edit tool call using the legacy single-edit arg shape", async () => {
+		const target = join(tmpDir, "legacy.txt")
+		writeFileSync(target, "old text")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-edit-legacy",
+				toolName: "edit",
+				args: { path: target, oldText: "old text", newText: "new text" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-edit-legacy",
+				toolName: "edit",
+				result: { content: [{ type: "text", text: "Edited legacy.txt" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const content = terminalContent("tc-edit-legacy") as Array<{ type: string }>
+		const diffs = content.filter((b) => b.type === "diff")
+		expect(diffs).toEqual([{ type: "diff", path: target, oldText: "old text", newText: "new text" }])
+	})
+
 	it("emits one diff content block per edit for an edit tool call with multiple edits", async () => {
 		const target = join(tmpDir, "multi.txt")
 		writeFileSync(target, "one two")
@@ -1727,6 +1759,60 @@ describe("KimchiAcpAgent per-turn diffs", () => {
 		const content = terminalContent("tc-write-over") as Array<{ type: string }>
 		const diffs = content.filter((b) => b.type === "diff")
 		expect(diffs).toEqual([{ type: "diff", path: target, oldText: "before content", newText: "after content" }])
+	})
+
+	// pi's write tool resolves args.path with stripAtPrefix +
+	// normalizeUnicodeSpaces before touching disk. The pre-write read must
+	// match that resolution or an overwrite of "@notes.txt" / "a b.txt" (typed
+	// as "a\u00A0b.txt") would be misclassified as a new-file 'add'.
+	it("resolves @-prefixed and unicode-space write paths for the pre-write read", async () => {
+		const atTarget = join(tmpDir, "notes.txt")
+		writeFileSync(atTarget, "at before")
+		const spaceTarget = join(tmpDir, "my file.txt")
+		writeFileSync(spaceTarget, "space before")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-at",
+				toolName: "write",
+				args: { path: "@notes.txt", content: "at after" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-at",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "ok" }] },
+				isError: false,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-nbsp",
+				toolName: "write",
+				// No-break space as typed by an LLM mimicking the on-disk name.
+				args: { path: "my\u00A0file.txt", content: "space after" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-nbsp",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "ok" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		// Emitted diff paths stay verbatim from args.path; only the pre-write
+		// READ uses the normalized path.
+		const atDiffs = (terminalContent("tc-write-at") as Array<{ type: string }>).filter((b) => b.type === "diff")
+		expect(atDiffs).toEqual([{ type: "diff", path: "@notes.txt", oldText: "at before", newText: "at after" }])
+		const nbspDiffs = (terminalContent("tc-write-nbsp") as Array<{ type: string }>).filter((b) => b.type === "diff")
+		expect(nbspDiffs).toEqual([
+			{ type: "diff", path: "my\u00A0file.txt", oldText: "space before", newText: "space after" },
+		])
 	})
 
 	it("emits no diff content blocks for read-only tool calls", async () => {
