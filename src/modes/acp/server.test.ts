@@ -13,7 +13,6 @@ import type {
 	AgentSession,
 	AgentSessionEvent,
 	AgentSessionEventListener,
-	AuthStorage,
 	ContextUsage,
 	ExtensionContext,
 	ExtensionUIContext,
@@ -1418,9 +1417,9 @@ describe("KimchiAcpAgent usage reporting", () => {
 	const usageUpdates = () => updates.filter((u) => u.update.sessionUpdate === "usage_update")
 
 	// Builds the assistant message_end event pi-mono emits after an LLM
-	// response. `reasoning` is modelled as an untyped extra because pi-ai's
-	// Usage type (0.78.x) doesn't declare it yet — the server folds it in
-	// defensively when a provider reports it.
+	// response. totalTokens is computed the way providers do (pi-ai 0.84
+	// Usage docs): input + output + cacheRead + cacheWrite, where `reasoning`
+	// is a subset of `output` and must never be re-added.
 	function assistantUsageEvent(usage: {
 		input: number
 		output: number
@@ -1428,25 +1427,27 @@ describe("KimchiAcpAgent usage reporting", () => {
 		cacheWrite?: number
 		reasoning?: number
 	}): AgentSessionEvent {
-		const { reasoning, ...rest } = usage
-		const message = {
+		const cacheRead = usage.cacheRead ?? 0
+		const cacheWrite = usage.cacheWrite ?? 0
+		const message: AssistantMessage = {
 			role: "assistant",
 			content: [{ type: "text", text: "reply" }],
 			api: "anthropic-messages",
 			provider: "anthropic",
 			model: "claude",
 			usage: {
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
+				input: usage.input,
+				output: usage.output,
+				cacheRead,
+				cacheWrite,
+				...(usage.reasoning !== undefined ? { reasoning: usage.reasoning } : {}),
+				totalTokens: usage.input + usage.output + cacheRead + cacheWrite,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				...rest,
-				...(reasoning !== undefined ? { reasoning } : {}),
 			},
 			stopReason: "stop",
 			timestamp: 0,
 		}
-		return { type: "message_end", message } as unknown as AgentSessionEvent
+		return { type: "message_end", message }
 	}
 
 	it("sums pi-ai usage across chained assistant messages into PromptResponse.usage", async () => {
@@ -1467,7 +1468,9 @@ describe("KimchiAcpAgent usage reporting", () => {
 			cachedReadTokens: 7,
 			cachedWriteTokens: 4,
 			thoughtTokens: 10,
-			totalTokens: 201,
+			// msg1: 100+20+5+3=128, msg2: 50+10+2+1=63 — reasoning (7, 3) is a
+			// subset of output and must not be double-counted.
+			totalTokens: 191,
 		})
 	})
 

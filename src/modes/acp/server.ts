@@ -157,13 +157,24 @@ type TurnUsage = {
 	cacheRead: number
 	cacheWrite: number
 	reasoning: number
+	/** Sum of the provider-computed usage.totalTokens across the chain. */
+	total: number
 	/** true once any provider actually reported a reasoning/thought count. */
 	sawReasoning: boolean
 	messages: number
 }
 
 function emptyTurnUsage(): TurnUsage {
-	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, sawReasoning: false, messages: 0 }
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		reasoning: 0,
+		total: 0,
+		sawReasoning: false,
+		messages: 0,
+	}
 }
 
 type TurnContext = {
@@ -989,21 +1000,20 @@ export class KimchiAcpAgent implements Agent {
 					turn.usage.output += usage.output
 					turn.usage.cacheRead += usage.cacheRead
 					turn.usage.cacheWrite += usage.cacheWrite
-					// pi-ai's Usage (0.78.x) has no `reasoning` field, but some
-					// providers report one ahead of the type — fold it in defensively
-					// so thoughtTokens is populated as soon as the pinned pi-ai
-					// exposes it.
-					const reasoning = (usage as { reasoning?: unknown }).reasoning
-					if (typeof reasoning === "number" && Number.isFinite(reasoning)) {
-						turn.usage.reasoning += reasoning
+					turn.usage.total += usage.totalTokens
+					// reasoning is a SUBSET of output (pi-ai 0.84 Usage docs) — summed
+					// separately for thoughtTokens only, never re-added to totals.
+					if (typeof usage.reasoning === "number") {
+						turn.usage.reasoning += usage.reasoning
 						turn.usage.sawReasoning = true
 					}
 					turn.usage.messages++
+					// The assistant message_end is the turn event that carries
+					// usage; pair it with a live context-window usage_update. Never
+					// emitted from message_update — streaming deltas must not spam
+					// usage.
+					this.sendUsageUpdate(sessionId, entry)
 				}
-				// The assistant message_end is the turn event that carries usage;
-				// pair it with a live context-window usage_update. Never emitted
-				// from message_update — streaming deltas must not spam usage.
-				this.sendUsageUpdate(sessionId, entry)
 				return
 			}
 			case "tool_execution_start": {
@@ -1311,10 +1321,6 @@ export class KimchiAcpAgent implements Agent {
 		flushText()
 	}
 
-	private modelStateForSession(session: AgentSession): SessionModelState | null {
-		return buildSessionModelState(session)
-	}
-
 	/**
 	 * Emits a usage_update sessionUpdate mapped from
 	 * `session.getContextUsage()` → ACP UsageUpdate { size, used }. Skipped
@@ -1424,7 +1430,7 @@ export class KimchiAcpAgent implements Agent {
 				cachedReadTokens: u.cacheRead,
 				cachedWriteTokens: u.cacheWrite,
 				...(u.sawReasoning ? { thoughtTokens: u.reasoning } : {}),
-				totalTokens: u.input + u.output + u.cacheRead + u.cacheWrite + u.reasoning,
+				totalTokens: u.total,
 			}
 		}
 		turn.resolve(response)
