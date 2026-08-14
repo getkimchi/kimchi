@@ -27,12 +27,13 @@ async function sendCallback(port: number, path: string, state: string, code: str
 	expect(response.ok).toBe(true)
 }
 
-async function loadAuthFlowForPort(port: number) {
+async function loadAuthFlowForPort(port: number, options: { connectGate?: Promise<void> } = {}) {
 	const authDir = mkdtempSync(join(tmpdir(), "kimchi-mcp-oauth-test-"))
 	vi.resetModules()
 	vi.stubEnv("MCP_OAUTH_CALLBACK_PORT", String(port))
 	vi.stubEnv("MCP_OAUTH_DIR", authDir)
 	const openBrowser = vi.fn(async () => {})
+	const connectStarted = vi.fn()
 	vi.doMock("open", () => ({ default: openBrowser }))
 
 	vi.doMock("@modelcontextprotocol/sdk/client/auth.js", () => {
@@ -64,6 +65,8 @@ async function loadAuthFlowForPort(port: number) {
 
 		class Client {
 			async connect(transport: { authProvider?: { redirectToAuthorization?: (url: URL) => void | Promise<void> } }) {
+				connectStarted()
+				await options.connectGate
 				await transport.authProvider?.redirectToAuthorization?.(new URL("https://auth.example.test/authorize"))
 				throw new UnauthorizedError("authorization required")
 			}
@@ -81,7 +84,7 @@ async function loadAuthFlowForPort(port: number) {
 		import("./mcp-oauth-provider.js"),
 	])
 
-	return { authDir, authStore, callbackServer, flow, oauthProvider, openBrowser }
+	return { authDir, authStore, callbackServer, connectStarted, flow, oauthProvider, openBrowser }
 }
 
 afterEach(() => {
@@ -155,6 +158,39 @@ describe("MCP OAuth callback lifecycle", () => {
 			expect(callbackServer.isCallbackServerRunning()).toBe(false)
 		} finally {
 			await flow.shutdownOAuth()
+			rmSync(authDir, { recursive: true, force: true })
+		}
+	})
+
+	it("cancels authentication when shutdown follows callback server startup", async () => {
+		const port = await getFreePort()
+		let resumeConnect = () => {}
+		const connectGate = new Promise<void>((resolve) => {
+			resumeConnect = resolve
+		})
+		const { authDir, callbackServer, connectStarted, flow } = await loadAuthFlowForPort(port, { connectGate })
+		const authenticating = flow.authenticate("rovo", "https://rovo.example.test/mcp")
+
+		try {
+			await vi.waitFor(() => expect(connectStarted).toHaveBeenCalledOnce())
+			expect(callbackServer.isCallbackServerRunning()).toBe(true)
+
+			await flow.shutdownOAuth()
+			resumeConnect()
+
+			const outcome = await Promise.race([
+				authenticating.then(
+					() => "authenticated",
+					(error: unknown) => (error instanceof Error ? error.message : String(error)),
+				),
+				new Promise<string>((resolve) => setTimeout(() => resolve("still pending"), 1_000)),
+			])
+			expect(outcome).toBe("OAuth callback server stopped")
+			expect(callbackServer.isCallbackServerRunning()).toBe(false)
+		} finally {
+			resumeConnect()
+			await flow.shutdownOAuth()
+			await authenticating.catch(() => {})
 			rmSync(authDir, { recursive: true, force: true })
 		}
 	})

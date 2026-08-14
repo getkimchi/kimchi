@@ -227,6 +227,19 @@ export function ensureCallbackServer(options: EnsureCallbackServerOptions = {}):
 	return serializeServerLifecycle(() => ensureCallbackServerLocked(options))
 }
 
+export async function prepareCallback(
+	oauthState: string,
+	options: EnsureCallbackServerOptions = {},
+): Promise<{ callbackPromise: Promise<string> }> {
+	let callbackPromise: Promise<string> | undefined
+	await serializeServerLifecycle(async () => {
+		await ensureCallbackServerLocked(options)
+		callbackPromise = waitForCallback(oauthState)
+	})
+	if (!callbackPromise) throw new Error("OAuth callback registration failed")
+	return { callbackPromise }
+}
+
 /**
  * Wait for a callback with the given OAuth state.
  * Returns a promise that resolves with the authorization code.
