@@ -79,6 +79,7 @@ const testEnv: EnvironmentInfo = {
 }
 
 const TEST_SESSION_ID = "test-session"
+const WORKFLOW_OUTPUT_TOOLS = ["workflow_submit_result", "workflow_submit_questions"]
 
 // Helper to create mock ExtensionContext with ui.select
 // When an AbortSignal is passed and aborted=true, returns undefined to trigger "aborted" outcome
@@ -265,6 +266,17 @@ describe("permissions plan-mode tool visibility", () => {
 					createMockContext([]),
 				),
 			).resolves.toBeUndefined()
+		}
+	})
+
+	it("keeps workflow output tools visible and allowed under explicit --plan", async () => {
+		const harness = createPermissionsHarness(["read", ...WORKFLOW_OUTPUT_TOOLS], { plan: true })
+
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(harness.activeTools().sort()).toEqual(["read", ...WORKFLOW_OUTPUT_TOOLS].sort())
+		for (const toolName of WORKFLOW_OUTPUT_TOOLS) {
+			await expect(harness.fire("tool_call", { toolName, input: {} }, createMockContext([]))).resolves.toBeUndefined()
 		}
 	})
 
@@ -982,6 +994,41 @@ describe("permissions ferment tool classification", () => {
 
 		expect(readResult).toBeUndefined()
 		expect(bashResult).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+})
+
+describe("permissions workflow output tool classification", () => {
+	beforeEach(() => {
+		vi.mocked(classifyToolCall).mockClear()
+	})
+
+	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
+		vi.unstubAllEnvs()
+	})
+
+	it("allows workflow output tools in auto mode without invoking the classifier", async () => {
+		const harness = createPermissionsHarness(WORKFLOW_OUTPUT_TOOLS, { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		for (const toolName of WORKFLOW_OUTPUT_TOOLS) {
+			await expect(harness.fire("tool_call", { toolName, input: {} }, ctx)).resolves.toBeUndefined()
+		}
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("allows workflow output tools in default mode without prompting", async () => {
+		const harness = createPermissionsHarness(WORKFLOW_OUTPUT_TOOLS)
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+
+		for (const toolName of WORKFLOW_OUTPUT_TOOLS) {
+			await expect(harness.fire("tool_call", { toolName, input: {} }, ctx)).resolves.toBeUndefined()
+		}
+		expect(ctx.ui.select).not.toHaveBeenCalled()
 		expect(classifyToolCall).not.toHaveBeenCalled()
 	})
 })
