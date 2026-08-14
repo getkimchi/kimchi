@@ -721,6 +721,15 @@ async function triggerCompactionForPending(
  * mid-turn: an overrun there is a planning-quality signal, so it is recorded as
  * a planning failure instead of papered over.
  *
+ * Effect validation: suppress-abort inline compaction rewrites session state
+ * that the running agent loop (context snapshotted at run start) never reads,
+ * so a "successful" inline fire can leave the live context untouched — the
+ * 019ffb83 storm signature (6 consecutive fires, tokensBefore climbing past
+ * the model window). Each inline fire records usage at fire time; if the next
+ * trigger arrives before any below-threshold turn, the previous fire provably
+ * never shrank the wire, so the inline path is suppressed for that ferment and
+ * the aborting fallback (guaranteed effective on the new run) takes over.
+ *
  * @param totalTokens - Current session token count from the assistant usage event.
  */
 export async function maybeTriggerMidTurnFermentCompaction(
@@ -753,9 +762,21 @@ export async function maybeTriggerMidTurnFermentCompaction(
 
 	const model = ctx.model
 	if (!model) return
-	if (totalTokens <= compactionThreshold(model.contextWindow)) return
 
 	const activeFerment = runtime.getActive()
+	const threshold = compactionThreshold(model.contextWindow)
+
+	// Effect validation (run 019ffb83 storm): suppress-abort inline compaction
+	// replaces `agent.state.messages`, which the running agent loop never reads
+	// — a "successful" mid-turn fire can leave the wire context untouched.
+	// A fire's marker is cleared once a turn lands at/below the trigger
+	// threshold; a new trigger while the marker survives proves the previous
+	// fire never shrank the live context, so switch to the abort fallback.
+	if (activeFerment && totalTokens <= threshold) {
+		runtime.clearLastMidTurnFireTokens(activeFerment.id)
+	}
+	if (totalTokens <= threshold) return
+
 	if (!activeFerment) return
 	if (activeFerment.status !== "running") return
 
@@ -771,6 +792,22 @@ export async function maybeTriggerMidTurnFermentCompaction(
 	// toolResult appended after compaction. Defer — the context may be large,
 	// but emitting an orphan is worse; phase 1 still catches any that slip past.
 	if (isToolCallInFlightInSession(ctx)) return
+
+	// No-op detection: the previous inline fire's marker survived to a fresh
+	// trigger without an intervening below-threshold turn — the wire context
+	// never shrank. Suppress the inline path for this ferment and fall through
+	// to the aborting path, which is guaranteed to take effect (the aborted
+	// run restarts from the compacted session state).
+	const lastFireTokens = runtime.getLastMidTurnFireTokens(fermentId)
+	if (lastFireTokens !== undefined && !runtime.isMidTurnInlineSuppressed(fermentId)) {
+		runtime.markMidTurnInlineSuppressed(fermentId)
+		const suppressed = totalTokens > lastFireTokens ? "never dropped" : "still above threshold"
+		tryPiAction(() => {
+			pi.appendEntry("ferment_breadcrumb", {
+				text: `Mid-turn inline compaction no-op: previous fire at ${lastFireTokens.toLocaleString()} tokens ${suppressed} (still ~${totalTokens.toLocaleString()}) — suppressing inline path, using abort fallback`,
+			})
+		})
+	}
 
 	runtime.markCompactionInFlight(fermentId)
 
@@ -816,12 +853,16 @@ export async function maybeTriggerMidTurnFermentCompaction(
 	// Preferred path: transparent inline compaction (no run abort). Mirrors the
 	// stage-boundary path's invocation via the shared helper so the two cannot
 	// drift; the only differences are the mid-turn instructions and the
-	// step-resume continuation below.
-	if (typeof ctx.inlineCompact === "function") {
+	// step-resume continuation below. Skipped once the no-op detector has
+	// proven the inline path ineffectual for this ferment.
+	if (typeof ctx.inlineCompact === "function" && !runtime.isMidTurnInlineSuppressed(fermentId)) {
 		const { result, error } = await invokeInlineCompaction(pi, ctx, customInstructions, options)
 		if (result) {
 			runtime.clearCompactionInFlight(fermentId)
 			reportDegenerateSummaryIfAny(pi, activeFerment, result)
+			// Record fire-time usage so the next trigger can tell a real shrink
+			// (marker cleared below threshold) from a wiring no-op (marker survives).
+			runtime.setLastMidTurnFireTokens(fermentId, totalTokens)
 			resumeInProgressStep(result)
 		} else {
 			handleCompactionFailure(error)

@@ -30,7 +30,9 @@ import {
 	clearAllStepStarts,
 	clearBlockRetry,
 	clearCompactionInFlight,
+	clearLastMidTurnFireTokens,
 	clearLifecycleGuardRetryState,
+	clearMidTurnCompactionTracking,
 	clearMidTurnOneshotWarnings,
 	clearPendingCompaction,
 	clearFermentState as clearStateForFerment,
@@ -43,6 +45,7 @@ import {
 	getBlockRetry,
 	getContinuationPolicy,
 	getLastHumanInputAt,
+	getLastMidTurnFireTokens,
 	getLastPhaseRefusal,
 	getPendingCompaction,
 	getPhaseStartRef,
@@ -51,10 +54,12 @@ import {
 	hasMidTurnOneshotWarning,
 	isAutomatedContinuationEnabled,
 	isCompactionInFlight,
+	isMidTurnInlineSuppressed,
 	isScopingConfirmed,
 	isScopingInteractive,
 	markCompactionInFlight,
 	markHumanInput,
+	markMidTurnInlineSuppressed,
 	markMidTurnOneshotWarning,
 	markScopingConfirmed,
 	markScopingInteractive,
@@ -62,6 +67,7 @@ import {
 	setActive,
 	setAutomatedContinuationEnabled,
 	setContinuationPolicy,
+	setLastMidTurnFireTokens,
 	setLastPhaseRefusal,
 	setPendingCompaction,
 	setPhaseStartRef,
@@ -134,6 +140,14 @@ export interface FermentRuntime {
 	markMidTurnOneshotWarning(fermentId: string): void
 	hasMidTurnOneshotWarning(fermentId: string): boolean
 	clearMidTurnOneshotWarnings(): void
+	/** Record totalTokens at the last mid-turn inline-compaction fire. */
+	setLastMidTurnFireTokens(fermentId: string, tokens: number): void
+	getLastMidTurnFireTokens(fermentId: string): number | undefined
+	clearLastMidTurnFireTokens(fermentId: string): void
+	/** Proven no-op inline path — use the aborting fallback from now on. */
+	markMidTurnInlineSuppressed(fermentId: string): void
+	isMidTurnInlineSuppressed(fermentId: string): boolean
+	clearMidTurnCompactionTracking(): void
 }
 
 function getCurrentPendingPlanReview(): PendingPlanReview | undefined {
@@ -213,6 +227,12 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		markMidTurnOneshotWarning,
 		hasMidTurnOneshotWarning,
 		clearMidTurnOneshotWarnings,
+		setLastMidTurnFireTokens,
+		getLastMidTurnFireTokens,
+		clearLastMidTurnFireTokens,
+		markMidTurnInlineSuppressed,
+		isMidTurnInlineSuppressed,
+		clearMidTurnCompactionTracking,
 	}
 	return runtime
 }

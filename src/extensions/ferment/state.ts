@@ -520,6 +520,44 @@ export function clearMidTurnOneshotWarnings(): void {
 	midTurnOneshotWarnings.clear()
 }
 
+// ─── Mid-turn inline-compaction effect validation (per session) ──────────────
+// Suppress-abort inline compaction rewrites `agent.state.messages`, which the
+// running agent loop (context snapshotted at run start) never reads — a
+// "successful" mid-turn inline compaction can leave the live context untouched,
+// and the next over-threshold turn_end fires again (run 019ffb83 storm: 6
+// consecutive no-op fires, ~1.5M uncached summarization tokens, 10+ min).
+// Detection: record usage at fire time; the next turn_end below the compaction
+// threshold proves the wire shrank and clears the marker. A new mid-turn
+// trigger while the marker is still set proves the previous fire never took
+// effect — suppress the inline path and use the abort fallback from then on.
+const lastMidTurnFireTokens = new Map<string, number>()
+const midTurnInlineSuppressed = new Set<string>()
+
+export function setLastMidTurnFireTokens(fermentId: string, tokens: number): void {
+	lastMidTurnFireTokens.set(fermentId, tokens)
+}
+
+export function getLastMidTurnFireTokens(fermentId: string): number | undefined {
+	return lastMidTurnFireTokens.get(fermentId)
+}
+
+export function clearLastMidTurnFireTokens(fermentId: string): void {
+	lastMidTurnFireTokens.delete(fermentId)
+}
+
+export function markMidTurnInlineSuppressed(fermentId: string): void {
+	midTurnInlineSuppressed.add(fermentId)
+}
+
+export function isMidTurnInlineSuppressed(fermentId: string): boolean {
+	return midTurnInlineSuppressed.has(fermentId)
+}
+
+export function clearMidTurnCompactionTracking(): void {
+	lastMidTurnFireTokens.clear()
+	midTurnInlineSuppressed.clear()
+}
+
 // ─── Block-retry counter (per phase) ─────────────────────────────────────────
 // Key: `${fermentId}:${phaseId}`. Incremented every time complete_ferment_phase is
 // called and the reviewer emits at least one `block` flag. After
@@ -804,6 +842,8 @@ export function clearFermentState(fermentId: string): void {
 	// for the same id (key collisions are vanishingly unlikely but cheap to avoid).
 	pendingCompactions.delete(fermentId)
 	compactionInFlight.delete(fermentId)
+	lastMidTurnFireTokens.delete(fermentId)
+	midTurnInlineSuppressed.delete(fermentId)
 	deleteRuntimeState(fermentId, runtimeStatePersistRoot)
 }
 

@@ -32,7 +32,13 @@ import {
 } from "./auto-compaction.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
-import { clearPendingCompaction, type PendingCompaction, setPendingCompaction } from "./state.js"
+import {
+	clearCompactionInFlight,
+	clearMidTurnCompactionTracking,
+	clearPendingCompaction,
+	type PendingCompaction,
+	setPendingCompaction,
+} from "./state.js"
 
 // Mock the settings-watcher so the /settings Auto-compact toggle can be
 // controlled per-test. Default factory returns `true` so every existing test
@@ -1314,6 +1320,14 @@ describe("buildMidTurnCustomInstructions", () => {
 describe("maybeTriggerMidTurnFermentCompaction", () => {
 	const CONTEXT_WINDOW = 100_000
 
+	// The no-op detection tracker and the in-flight flag are module-scoped and
+	// keyed by ferment id; every test here uses "ferment-1", and mocked
+	// compaction paths don't always invoke their completion callbacks.
+	afterEach(() => {
+		clearMidTurnCompactionTracking()
+		clearCompactionInFlight("ferment-1")
+	})
+
 	it("no-ops when total tokens are below the threshold", () => {
 		const ferment = makeFermentWithPhase()
 		ferment.phases[0].status = "active"
@@ -1531,21 +1545,89 @@ describe("maybeTriggerMidTurnFermentCompaction", () => {
 		expect(ctx.ui?.notify).toHaveBeenCalledWith(expect.stringContaining("disk full"), "warning")
 	})
 
-	it("clears in-flight without notifying when inlineCompact rejects with an expected error", async () => {
+	it("falls back to the aborting path when a successful inline fire never shrinks the context", async () => {
+		// Regression: run 019ffb83 storm — suppress-abort inlineCompaction returns
+		// success but the running loop keeps the snapshot captured at run start,
+		// so the next over-threshold trigger would fire another no-op.
 		const ferment = makeFermentWithPhase()
 		ferment.phases[0].status = "active"
 		ferment.phases[0].steps[0].status = "running"
 		const runtime = makeMidTurnRuntime(ferment)
 		const pi = makePi()
 		const ctx = makeMidTurnCtx()
-		ctx.inlineCompact = vi.fn(async () => {
-			throw new Error("no summarizable messages")
-		})
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: CONTEXT_WINDOW - 1,
+		}))
+
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+		expect(ctx.inlineCompact).toHaveBeenCalledTimes(1)
+
+		// Next turn still over threshold, no below-threshold turn in between →
+		// no-op proven; suppress inline and use the aborting ctx.compact path.
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+
+		expect(ctx.inlineCompact).toHaveBeenCalledTimes(1)
+		expect(ctx.compact).toHaveBeenCalledTimes(1)
+		expect(runtime.isMidTurnInlineSuppressed(ferment.id)).toBe(true)
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			"ferment_breadcrumb",
+			expect.objectContaining({ text: expect.stringContaining("Mid-turn inline compaction no-op") }),
+		)
+	})
+
+	it("does not fire inline again while suppressed, even after the in-flight flag clears", async () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: CONTEXT_WINDOW - 1,
+		}))
+
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+		// Simulate the abort-fallback compaction completing.
+		runtime.clearCompactionInFlight(ferment.id)
 
 		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
 
-		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
-		expect(ctx.ui?.notify).not.toHaveBeenCalled()
+		expect(ctx.inlineCompact).toHaveBeenCalledTimes(1)
+		expect(ctx.compact).toHaveBeenCalledTimes(2)
+	})
+
+	it("re-enables the inline path once a below-threshold turn proves a real shrink", async () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: CONTEXT_WINDOW - 1,
+		}))
+
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+		expect(ctx.inlineCompact).toHaveBeenCalledTimes(1)
+		expect(runtime.getLastMidTurnFireTokens(ferment.id)).toBe(CONTEXT_WINDOW - 1)
+
+		// A turn at/below the trigger threshold means the compacted wire context
+		// reached the model — the inline path works; clear the fire marker.
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, 1000)
+		expect(runtime.getLastMidTurnFireTokens(ferment.id)).toBeUndefined()
+
+		// A later legit re-crossing uses the inline path again.
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+		expect(ctx.inlineCompact).toHaveBeenCalledTimes(2)
+		expect(ctx.compact).not.toHaveBeenCalled()
+		expect(runtime.isMidTurnInlineSuppressed(ferment.id)).toBe(false)
 	})
 })
 
