@@ -93,6 +93,7 @@ import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from
 import { AVAILABLE_COMMANDS } from "./commands.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
+import { handleSteering } from "./ext-methods/steering.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
@@ -791,6 +792,12 @@ export class KimchiAcpAgent implements Agent {
 			}
 			case AVAILABLE_EXT_METHODS.set_session_title:
 				return handleSetSessionTitle((sessionId) => this.sessions.get(sessionId)?.session, params)
+			case AVAILABLE_EXT_METHODS.steering:
+				return handleSteering((sessionId) => {
+					const entry = this.sessions.get(sessionId)
+					if (!entry) return undefined
+					return { session: entry.session, turnActive: entry.turn !== undefined }
+				}, params)
 			default:
 				throw RequestError.methodNotFound(method)
 		}
