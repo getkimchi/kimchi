@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest"
-import { ExplorationGuard, type ExplorationGuardOptions, STEER_MESSAGE_TYPE } from "./exploration-guard.js"
+import explorationGuardExtension, {
+	ExplorationGuard,
+	type ExplorationGuardOptions,
+	STEER_MESSAGE_TYPE,
+} from "./exploration-guard.js"
 
 function createGuard(options?: ExplorationGuardOptions): ExplorationGuard {
 	return new ExplorationGuard(options)
@@ -559,6 +563,51 @@ describe("STEER_MESSAGE_TYPE", () => {
 	})
 })
 
+describe("Provider error suppression", () => {
+	// Provider errors (e.g. content_filter, budget exhausted) produce empty
+	// responses with no tool calls. Without this guard the no-tool counter
+	// increments on every error response, triggering steer messages that
+	// re-queue into the agent loop and cause infinite retries until budget
+	// is exhausted.
+
+	it("does not increment no-tool counter on an error turn", () => {
+		const guard = createGuard()
+		guard.turnStart()
+		guard.turnEnd(() => {}, true) // isError = true
+		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
+	})
+
+	it("does not fire steers on consecutive error turns", () => {
+		const guard = createGuard()
+		const steers: string[] = []
+		for (let i = 0; i < 10; i++) {
+			guard.turnStart()
+			guard.turnEnd((text) => steers.push(text), true)
+		}
+		expect(steers).toHaveLength(0)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
+	})
+
+	it("does not reset the no-tool counter on error turns", () => {
+		// An error turn should be neutral — it should not reset an existing
+		// no-tool streak (that would hide real stalls) nor increment it.
+		const guard = createGuard()
+		simulateNoToolTurn(guard)
+		simulateNoToolTurn(guard)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(2)
+		guard.turnStart()
+		guard.turnEnd(() => {}, true)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(2)
+	})
+
+	it("defaults to non-error when isError is omitted", () => {
+		const guard = createGuard()
+		guard.turnStart()
+		guard.turnEnd(() => {})
+		expect(guard.getConsecutiveNoToolTurns()).toBe(1)
+	})
+})
+
 describe("Subagent terminate behavior", () => {
 	// When a subagent hits the no-tool mandatory threshold:
 	//   1. It receives a steer asking for a plain-text summary.
@@ -642,5 +691,58 @@ describe("Subagent terminate behavior", () => {
 		expect(mainSteers[1]).toContain("5 consecutive turns with no tool calls")
 		expect(mainSteers[1]).toContain("You must use a tool this turn")
 		expect(mainSteers[1]).not.toContain("terminated")
+	})
+})
+
+describe("explorationGuardExtension turn_end", () => {
+	function createHarness(options?: ExplorationGuardOptions) {
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>()
+		const sendMessage = vi.fn()
+		const abort = vi.fn()
+		const pi = {
+			on: (event: string, handler: (e: unknown, ctx: unknown) => unknown) => {
+				handlers.set(event, handler)
+			},
+			sendMessage,
+		}
+		explorationGuardExtension(pi as never, options)
+		// The extension gates itself on a session id resolved from the context captured here.
+		handlers.get("session_start")?.({}, { abort, sessionManager: { getSessionId: () => "session-under-test" } })
+
+		function turn(stopReason: "stop" | "error" = "stop") {
+			handlers.get("turn_start")?.({}, {})
+			handlers.get("turn_end")?.({ message: { role: "assistant", stopReason } }, {})
+		}
+
+		return { sendMessage, abort, turn }
+	}
+
+	it("does not count a failed request toward the no-tool streak", () => {
+		const { sendMessage, turn } = createHarness()
+
+		for (let i = 0; i < 5; i++) turn("error")
+		expect(sendMessage).not.toHaveBeenCalled()
+
+		// The warning fires on the third turn the model actually took.
+		turn()
+		turn()
+		expect(sendMessage).not.toHaveBeenCalled()
+		turn()
+		expect(sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	// The errored turn is retried upstream, and the retried turn produces the summary the
+	// orchestrator consumes — aborting on the failure itself would hand it nothing.
+	it("defers a pending subagent abort past a failed request", () => {
+		const { abort, turn } = createHarness({ isSubagent: () => true })
+
+		for (let i = 0; i < 5; i++) turn()
+		expect(abort).not.toHaveBeenCalled()
+
+		turn("error")
+		expect(abort).not.toHaveBeenCalled()
+
+		turn()
+		expect(abort).toHaveBeenCalledTimes(1)
 	})
 })

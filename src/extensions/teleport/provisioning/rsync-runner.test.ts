@@ -4,15 +4,15 @@ import { Readable } from "node:stream"
 import { describe, expect, it } from "vitest"
 import {
 	BASE_EXCLUDE_GLOBS,
-	type CumulativeState,
-	RsyncError,
-	type RsyncStats,
 	buildExcludeList,
 	buildMkdirArgv,
 	buildRsyncArgv,
 	buildSshOption,
+	type CumulativeState,
 	formatRsyncFailure,
 	handleLine,
+	RsyncError,
+	type RsyncStats,
 	resolveGitIgnored,
 	runRsync,
 	trackCumulative,

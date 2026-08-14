@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 
 export interface DirectToolVisibilityController {
 	markPermanent(names: readonly string[], dynamicToolNames?: Set<string>): void

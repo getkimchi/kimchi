@@ -4,13 +4,7 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { formatCount } from "../format.js"
-import type {
-	DimensionValue,
-	GenerateAnalyticsResponse,
-	GetProductivityMetricsResponse,
-	MetricSummary,
-	ProviderProductivityMetrics,
-} from "./types.js"
+import type { GenerateAnalyticsResponse, GetProductivityMetricsResponse, ProviderProductivityMetrics } from "./types.js"
 
 export function formatCurrency(amount: string | number): string {
 	const num = typeof amount === "string" ? Number.parseFloat(amount) : amount
@@ -141,7 +135,7 @@ export function sortFn(a: SortStats, b: SortStats, sortBy: SortBy): number {
 export function formatAnalyticsVisual(
 	data: GenerateAnalyticsResponse,
 	theme: Theme,
-	termWidth = 100,
+	_termWidth = 100,
 	days = 30,
 	sortBy: SortBy = "cost",
 ): string[] {
@@ -267,7 +261,7 @@ export function formatAnalyticsVisual(
 export function formatProductivityVisual(
 	data: GetProductivityMetricsResponse,
 	theme: Theme,
-	termWidth = 100,
+	_termWidth = 100,
 	days = 30,
 ): string[] {
 	const lines: string[] = []

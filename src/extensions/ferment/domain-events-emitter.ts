@@ -17,6 +17,8 @@ import {
 	type FermentPhaseCompletedPayload,
 	type FermentPhaseStartedPayload,
 	type FermentResumedPayload,
+	type FermentScopingCompletedPayload,
+	type FermentScopingResumedPayload,
 	type FermentStartedPayload,
 	type FermentStepCompletedPayload,
 	type FermentStepFailedPayload,
@@ -39,6 +41,15 @@ export function emitFermentCreated(events: EventBus, ferment: Ferment): void {
 		phaseCount: ferment.phases.length,
 	}
 	events.emit(FERMENT_EVENTS.STARTED, payload)
+}
+
+export function emitFermentScopingResumed(events: EventBus, ferment: Ferment): void {
+	const createdAtMs = Date.parse(ferment.createdAt)
+	const payload: FermentScopingResumedPayload = {
+		fermentId: ferment.id,
+		startedAtMs: Number.isFinite(createdAtMs) ? createdAtMs : Date.now(),
+	}
+	events.emit(FERMENT_EVENTS.SCOPING_RESUMED, payload)
 }
 
 export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Ferment): void {
@@ -247,8 +258,18 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 			return
 		}
 
+		case "scope": {
+			const payload: FermentScopingCompletedPayload = {
+				fermentId: post.id,
+				name: post.name,
+				proposeIterations: cmd.proposeIterations ?? 0,
+			}
+			events.emit(FERMENT_EVENTS.SCOPING_COMPLETE, payload)
+			return
+		}
+
 		default:
-			// Other commands (refine, scope, etc.) don't need domain events —
+			// Other commands (refine, etc.) don't need domain events —
 			// they don't represent lifecycle transitions.
 			return
 	}

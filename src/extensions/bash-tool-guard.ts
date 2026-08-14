@@ -8,14 +8,27 @@
  *
  * Two layers of nudging:
  *
- *   1. **Preference (upstream).** A "Tool Preferences" block in the
- *      system prompt (rendered right before "## Available Tools") plus an
- *      override of the bash tool's description. The upstream snippet
+ *   1. **Preference (upstream).** The consolidated `## Tool Selection`
+ *      section in the core system prompt plus an override of the bash
+ *      tool's description. The upstream snippet
  *      "Execute bash commands (ls, grep, find, etc.)" tells the model
  *      bash can do those things — exactly the substitution we steer
- *      against. The override fixes the snippet, and the block makes
- *      the substitution rules explicit. Goal: the model picks the
- *      dedicated tool the first time, not after being told.
+ *      against. The override fixes the snippet, and the consolidated
+ *      section makes the substitution rules explicit. Goal: the model
+ *      picks the dedicated tool the first time, not after being told.
+ *      The resource toggle controls the runtime guard below, not Kimchi's
+ *      core tool-selection preference. If the extension was loaded for the
+ *      current session, its bash description override also remains registered
+ *      until the session restarts.
+ *
+ *      The description override is delivered via `pi.registerTool()` on
+ *      `session_start`, re-registering the bash tool with an overridden
+ *      `description` but the same `execute`/`renderCall`/`renderResult`.
+ *      This writes into the real tool-definition registry, which every
+ *      later `pi.getAllTools()` call reads from — unlike mutating a
+ *      `pi.getAllTools()` result in place, which returns a fresh,
+ *      disposable array of fresh objects on every call and never reaches
+ *      the prompt builder's own later call.
  *
  *   2. **Guard (downstream).** Inspects each bash call. If the command
  *      is a file-reading / in-place-edit / file-writing pattern that
@@ -40,8 +53,9 @@
  *     never stalls a session if the replacement tool is unavailable.
  *   - Per-category counters: a `cat` doesn't burn the budget for `sed -i`.
  *   - Per-category thresholds: read/edit/write can have different budgets.
- *   - Reset on `session_start` and on each user `input` event so a fresh
- *     turn starts with a clean slate.
+ *   - Per-category counters reset on `session_start` and each user `input`.
+ *   - Warn-only steer coalescing resets on `session_start` and each assistant
+ *     `turn_start`, so parallel bash calls cannot build a steer backlog.
  *   - Disabled in plan-mode permission context (inspection, not
  *     enforcement — same rationale as `exploration-guard`).
  *   - Explicit user request override: detects both tool names ("cat",
@@ -55,6 +69,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
+import { createBashToolDefinition } from "@earendil-works/pi-coding-agent"
 import { isResourceEnabled } from "../resources/store.js"
 import {
 	BASH_TOOL_GUARD_EVENTS,
@@ -63,14 +78,13 @@ import {
 	type BashToolGuardWarnPayload,
 } from "./bash-tool-guard-events.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
-import { parseCommandSegments } from "./permissions/taxonomy.js"
-import { createSystemPromptBlocks } from "./prompt-construction/system-prompt-blocks.js"
+import { parseCommandSegments, stripRtk } from "./permissions/taxonomy.js"
 
 const RESOURCE_ID = "extensions.bash-tool-guard"
 
 export const STEER_MESSAGE_TYPE = "bash-tool-guard-steer"
 
-export type BashCategory = "read" | "edit" | "write"
+export type BashCategory = "read" | "edit" | "write" | "background"
 
 export interface BashClassification {
 	category: BashCategory
@@ -85,6 +99,7 @@ export interface PerCategoryThresholds {
 	read?: number
 	edit?: number
 	write?: number
+	background?: number
 }
 
 export interface BashGuardOptions {
@@ -142,42 +157,30 @@ const BLOCK_REASON_BASE =
 const READ_SUGGESTION = "Use the read tool with the file path (and offset/limit for head/tail)."
 const EDIT_SUGGESTION = "Use the edit tool with old_string/new_string."
 const WRITE_SUGGESTION = "Use the edit tool for targeted changes or the write tool for full-file replacements."
-
-/**
- * Markdown block injected into the system prompt immediately before the
- * "## Available Tools" section. Uses inline-code backticks so the model
- * can easily match the substitutions. Lists what bash IS for so the
- * model doesn't think bash is now useless — it just shouldn't be used
- * for the operations with dedicated tools.
- */
-export const TOOL_PREFERENCES_BLOCK = `
-## Tool Preferences
-
-Prefer dedicated tools over bash when possible:
-
-- Reading a file → use \`read\` (not \`cat\`, \`head\`, \`tail\`, \`sed -n\`)
-- Editing a file → use \`edit\` (not \`sed -i\`, \`perl -i\`)
-- Writing a file → use \`write\` (not \`>\`, \`>>\`, \`tee\`, heredoc)
-- Searching file contents → use \`grep\` (respects .gitignore, faster)
-- Finding files by pattern → use \`find\` (respects .gitignore)
-- Listing a directory → use \`ls\`
-
-Use bash only for: build commands, test runners, git, package managers, shell scripting, or system administration.
-`.trim()
+const BACKGROUND_SUGGESTION =
+	"Use the bash tool with a long timeout (e.g. timeout=1800) and checkin_interval (e.g. 60) for long-running commands, then drive them via bash_control. " +
+	"Do not background processes with `&`, `nohup`, or `disown` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs."
 
 /**
  * Replacement description for the bash tool. Keeps the original output
  * truncation behaviour from upstream but explicitly excludes the
- * file-operation substitutions and lists what bash IS for. Mutated
- * onto the upstream tool object on `session_start` so the kimchi prompt
- * builder picks up the new description when it renders the tool list.
+ * file-operation substitutions and lists what bash IS for. Delivered via
+ * `pi.registerTool()` on `session_start` (see `bashToolGuardExtension`)
+ * rather than by mutating a `pi.getAllTools()` result — the registry
+ * write is what actually reaches the rendered system prompt.
  */
 export const BASH_TOOL_DESCRIPTION = `
 Execute a bash command for operations without a dedicated tool: build commands, test runners, git, package managers, system administration, shell scripting.
 
 DO NOT use bash for: reading files (use \`read\`), editing files (use \`edit\`), writing files (use \`write\`), searching file contents (use \`grep\`), finding files by pattern (use \`find\`), or listing directories (use \`ls\`) — dedicated tools are faster and unlock LSP context.
 
+DO NOT pipe output through \`tail\` or \`head\` to hide it — this buffers all output until the process ends, preventing real-time progress monitoring. Instead, let the bash tool stream output directly and set a realistic timeout. For long-running commands (builds, tests, training), set a long timeout (e.g. timeout=1800) and checkin_interval (e.g. 60), then drive the process via bash_control.
+
+DO NOT background processes with \`&\`, \`nohup\`, or \`disown\` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs. Instead, set a long timeout on the bash command so it runs in the bash tool's background mode with proper process management.
+
 Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.
+
+Each command runs in a fresh shell rooted at the session working directory; \`cd\` does NOT persist between bash tool calls. Use absolute paths, or chain \`cd <dir> && <command>\` within a single call.
 `.trim()
 
 /**
@@ -215,6 +218,12 @@ export function applyDescriptionOverride<T extends { name: string; description: 
  */
 export function classifyBashCommand(command: string): BashClassification | null {
 	const segments = parseCommandSegments(command)
+
+	// Category 0: background — detect shell backgrounding operators that
+	// orphan processes. Checked before segment-level categories because
+	// these are shell-level constructs, not command-level tools.
+	const bg = detectBackgrounding(command)
+	if (bg) return bg
 
 	for (const segment of segments) {
 		// Drop the leading tool name and any RTK wrapper to inspect args.
@@ -254,6 +263,96 @@ export function classifyBashCommand(command: string): BashClassification | null 
 	return null
 }
 
+/**
+ * Detect shell-level backgrounding patterns that orphan processes from
+ * the bash tool's process lifecycle. When the bash command completes
+ * normally, the shell exits — but processes launched with `&`, `nohup &`,
+ * or `& disown` survive in the child's process group and are never
+ * cleaned up (killProcessTree is only called on timeout/abort, not on
+ * normal completion — see patch item 8b).
+ *
+ * Patterns detected:
+ *   - `nohup` as a command token (not inside quoted strings)
+ *   - `disown` as a command token (not inside quoted strings)
+ *   - Any standalone `&` (not `&&` logical AND)
+ *
+ * Returns a BashClassification with category "background" or null.
+ */
+function detectBackgrounding(command: string): BashClassification | null {
+	// Check nohup/disown via parsed token segments to avoid false positives
+	// on quoted text (e.g. `echo "do not use nohup"`).
+	const segments = parseCommandSegments(command)
+	for (const segment of segments) {
+		const tokens = stripRtk(segment.tokens)
+		const tool = tokens[0]
+		if (!tool) continue
+
+		// `nohup` as the first token of any segment — always backgrounds/detaches
+		if (tool === "nohup") {
+			return {
+				category: "background",
+				suggestion: BACKGROUND_SUGGESTION,
+				matchedSegment: tokens.join(" "),
+				tool: "nohup",
+			}
+		}
+
+		// `disown` as the first token of any segment — removes a job from
+		// shell job control, deliberately orphaning it.
+		if (tool === "disown") {
+			return {
+				category: "background",
+				suggestion: BACKGROUND_SUGGESTION,
+				matchedSegment: tokens.join(" "),
+				tool: "disown",
+			}
+		}
+	}
+
+	const hasBackgroundOperator =
+		segments.some((segment) => segment.ops.some(({ op }) => op === "&")) && hasStandaloneBackgroundOperator(command)
+	if (hasBackgroundOperator) {
+		return {
+			category: "background",
+			suggestion: BACKGROUND_SUGGESTION,
+			matchedSegment: "& (background)",
+			tool: "&",
+		}
+	}
+
+	return null
+}
+
+function hasStandaloneBackgroundOperator(command: string): boolean {
+	let quote: "'" | '"' | undefined
+	for (let index = 0; index < command.length; index++) {
+		const char = command[index]
+		if (quote) {
+			if (quote === '"' && char === "\\") index++
+			else if (char === quote) quote = undefined
+			continue
+		}
+		if (char === "\\") {
+			index++
+			continue
+		}
+		if (char === "'" || char === '"') {
+			quote = char
+			continue
+		}
+		if (
+			char === "&" &&
+			command[index - 1] !== "&" &&
+			command[index - 1] !== ">" &&
+			command[index + 1] !== "&" &&
+			command[index + 1] !== ">"
+		) {
+			return true
+		}
+	}
+	return false
+}
+
 const STREAM_REDIRECT_TARGETS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr"])
 
 function isStreamRedirectTarget(target: string): boolean {
@@ -282,6 +381,7 @@ function isInPlaceEditTool(tool: string, tokens: string[]): boolean {
 }
 
 const READER_TOOLS = new Set(["cat", "head", "tail", "less", "more", "bat", "batcat"])
+const HEAD_TAIL_VALUE_OPTIONS = new Set(["-n", "--lines", "-c", "--bytes"])
 
 function isFileReader(tool: string, tokens: string[]): boolean {
 	if (!READER_TOOLS.has(tool)) {
@@ -299,14 +399,18 @@ function isFileReader(tool: string, tokens: string[]): boolean {
 			return false
 		}
 	}
-	// Every guarded reader takes a file path. Bare `cat` / `head` reading
-	// stdin has no positional file arg and is harmless — don't flag it.
-	const positional = tokens.slice(1).filter((t) => !t.startsWith("-"))
-	return positional.length > 0
-}
-
-function stripRtk(tokens: string[]): string[] {
-	return tokens[0] === "rtk" ? tokens.slice(1) : tokens
+	// Every guarded reader takes a file path. Bare readers and option values
+	// such as the `5` in `head -n 5` operate on stdin and are harmless.
+	const args = tokens.slice(1)
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index]
+		if ((tool === "head" || tool === "tail") && HEAD_TAIL_VALUE_OPTIONS.has(arg)) {
+			index++
+			continue
+		}
+		if (!arg.startsWith("-")) return true
+	}
+	return false
 }
 
 function escapeRegex(s: string): string {
@@ -367,6 +471,14 @@ const SEMANTIC_INTENT_PATTERNS: Record<BashCategory, RegExp[]> = {
 		// "redirect to foo.ts", "redirect output to foo.ts"
 		/\bredirect\b.*\bto\b/,
 	],
+	background: [
+		// "run in the background", "run this in background"
+		/\brun\b.*\bbackground\b/,
+		// "run it detached", "launch detached"
+		/\bdetached\b/,
+		// "use nohup", "run with nohup"
+		/\bnohup\b/,
+	],
 }
 
 export class BashToolGuard {
@@ -385,6 +497,7 @@ export class BashToolGuard {
 			read: options.warnThresholds?.read ?? defaultThreshold,
 			edit: options.warnThresholds?.edit ?? defaultThreshold,
 			write: options.warnThresholds?.write ?? defaultThreshold,
+			background: options.warnThresholds?.background ?? defaultThreshold,
 		}
 		this.isEnabled = options.isEnabled ?? (() => true)
 		this.blockOnThreshold = options.blockOnThreshold ?? false
@@ -512,6 +625,7 @@ export class BashToolGuard {
 
 export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashGuardOptions): void {
 	let ctx: ExtensionContext | undefined
+	let warnOnlySteerSentThisTurn = false
 
 	const guard = new BashToolGuard({
 		...options,
@@ -541,30 +655,25 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 		}
 	}
 
-	// Preference (upstream of the guard): a system prompt block with
-	// explicit substitution rules. The block lands immediately before
-	// "## Available Tools" in the rendered prompt, so the model reads
-	// the preferences right when it sees the tool list.
-	const blocks = createSystemPromptBlocks(pi, "bash-tool-guard")
-	blocks.register({
-		id: "tool-preferences",
-		render: () => TOOL_PREFERENCES_BLOCK,
+	pi.on("session_start", (_event, sessionCtx) => {
+		ctx = sessionCtx
+		guard.reset()
+		warnOnlySteerSentThisTurn = false
+
+		// Re-register the bash tool with the overridden description.
+		// `registerTool()` writes into the real tool-definition registry
+		// (upstream's documented way to override a built-in tool), so it
+		// is visible to every later `pi.getAllTools()` call — including
+		// the one the kimchi prompt-enrichment handler makes to build the
+		// system prompt. Re-created on every `session_start` (not once at
+		// factory-load time) so `cwd` tracks the actual resolved session
+		// cwd across resumes/forks, and so a fresh bash tool object is
+		// registered even if a previous session already registered one.
+		pi.registerTool(applyDescriptionOverride(createBashToolDefinition(sessionCtx.cwd)))
 	})
 
-	pi.on("session_start", (_event, _ctx) => {
-		ctx = _ctx
-		guard.reset()
-
-		// Override the bash tool's description in place. The kimchi
-		// prompt-enrichment handler reads pi.getAllTools() and passes
-		// the same object references to buildSystemPrompt, so the
-		// mutation propagates to the rendered prompt. If the tool
-		// objects are cloned elsewhere (e.g. tool discovery UI), the
-		// worst case is they show a more accurate description there too.
-		const bashTool = pi.getAllTools().find((t) => t.name === "bash")
-		if (bashTool) {
-			bashTool.description = BASH_TOOL_DESCRIPTION
-		}
+	pi.on("turn_start", () => {
+		warnOnlySteerSentThisTurn = false
 	})
 
 	pi.on("input", (event: InputEvent) => {
@@ -627,6 +736,16 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 			count: result.count,
 		}
 		emitGuardEvent(BASH_TOOL_GUARD_EVENTS.WARN, payload)
+
+		// Warn-only mode must not enqueue one steer per parallel bash call.
+		// Upstream drains queued steers one per turn, so duplicates can keep
+		// the agent running long after the task is complete. Hard-block mode
+		// keeps its existing per-category warn/block behavior. Telemetry above
+		// still records every warn decision, including coalesced steers.
+		if (!options?.blockOnThreshold) {
+			if (warnOnlySteerSentThisTurn) return { block: false }
+			warnOnlySteerSentThisTurn = true
+		}
 		pi.sendMessage(
 			{
 				customType: STEER_MESSAGE_TYPE,

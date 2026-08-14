@@ -3,9 +3,9 @@ import type { Phase } from "../types.js"
 export const DEFAULT_EXPLORE_GUIDELINES = `During **explore** phase:
 - Goal: build a mental map, not a solution. Do NOT modify files. Do NOT write a plan yet.
 - **Skip explore for greenfield projects** (empty directory, no existing code). There is nothing to explore — proceed directly to plan. A trivial 1-turn explore that only runs \`ls\` on an empty directory wastes a turn and adds no value.
-- Start broad with \`grep\`/\`find\`/\`ls\`; then \`read\` the 3–5 most relevant files in full.
+- Start broad with \`grep\`/\`find\`/\`ls\`; then \`read\` the 3–5 most relevant files in full. When you need to read multiple files, issue all \`read\` calls in the same turn — do not make a separate turn for each file.
 - Trace imports and call chains across module boundaries — note the actual entry points and seams, not every file you saw.
-- Batch independent reads in a single turn to minimise round-trips.
+- Batch independent tool calls: issue multiple \`read\`, \`grep\`, or \`ls\` calls together when they don't depend on each other's results.
 - **Hypothesis testing**: After 5 consecutive read-only turns without a concrete hypothesis, state your hypothesis and run ONE targeted command to test it. Exploration without a hypothesis wastes tokens.
 - Stop as soon as you have enough context to plan. Over-exploring wastes tokens.
 - Output: a tight summary (paths, key types, integration points) — what matters, not everything you saw.`
@@ -33,7 +33,7 @@ export const KIMCHI_COAUTHOR = "Co-Authored-By: Kimchi <noreply@kimchi.dev>"
 
 export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
 - Read each file BEFORE modifying it. Never edit blind.
-- Batch independent tool calls in a single turn — fewer turns = less context accumulation.
+- **Batch tool calls**: Issue independent tool calls together in the same turn. If a call doesn't depend on the result of a previous one, it belongs in the same turn. Read files in parallel, run independent bash commands together, and pair todo updates with work tool calls. Every extra turn adds to the context window and wastes tokens.
 - Prefer \`edit\` over \`write\` for files >30 lines. Reserve \`write\` for new files or full rewrites.
 - Stay in scope: do NOT add features, refactors, or "improvements" beyond what the spec asks for.
 - If the same code pattern is needed >2 times, extract an abstraction first instead of duplicating.

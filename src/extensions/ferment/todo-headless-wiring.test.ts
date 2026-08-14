@@ -18,12 +18,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { createEventBus } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
-import {
-	__test_renderTodoStateMarkdown,
-	currentSessionHasUI,
-	renderTodoStateBlock,
-	setCurrentSessionHasUI,
-} from "../todos/prompt-block.js"
+import { createContext } from "../__mocks__/context.js"
+import { __test_renderTodoStateMarkdown, renderTodoStateBlock } from "../todos/state-markdown.js"
 import { __resetTodoStore, applyWriteTodos, getTodosForScope, resolveTodoScope } from "../todos/store.js"
 import { emitFermentDomainEvent } from "./domain-events-emitter.js"
 import { setActive } from "./state.js"
@@ -33,6 +29,8 @@ import {
 	getTurnsSinceStepTodoWrite,
 	registerFermentTodoSync,
 } from "./todo-sync.js"
+
+const TEST_SESSION_ID = "test-session"
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -68,7 +66,7 @@ function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 function makePiWithRealEventBus(): { pi: ExtensionAPI; unsubscribe: () => void } {
 	const bus = createEventBus()
 	const pi = { events: bus } as unknown as ExtensionAPI
-	const unsubscribe = registerFermentTodoSync(pi)
+	const unsubscribe = registerFermentTodoSync(pi, TEST_SESSION_ID)
 	return { pi, unsubscribe }
 }
 
@@ -78,22 +76,27 @@ describe("ferment → todo → headless prompt wiring", () => {
 	beforeEach(() => {
 		__resetTodoStore()
 		setActive(undefined)
-		setCurrentSessionHasUI(false) // simulate headless / one-shot mode
 	})
 
 	afterEach(() => {
 		setActive(undefined)
 		__resetTodoStore()
-		setCurrentSessionHasUI(true) // reset to safe interactive default
 	})
 
-	it("currentSessionHasUI starts as false in headless mode (setCurrentSessionHasUI wires correctly)", () => {
-		expect(currentSessionHasUI).toBe(false)
+	it("renderTodoStateBlock returns undefined when store is empty (TUI mode)", () => {
+		const ctx = createContext({ hasUI: true, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+		expect(renderTodoStateBlock(ctx)).toBeUndefined()
+	})
+
+	it("renderTodoStateBlock returns undefined when store is empty (headless mode)", () => {
+		const ctx = createContext({ hasUI: false, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+		expect(renderTodoStateBlock(ctx)).toBeUndefined() // store still empty
 	})
 
 	it("renderTodoStateBlock returns undefined when no todos exist yet", () => {
 		// Before any phase starts, store is empty → block should not inject anything.
-		expect(renderTodoStateBlock()).toBeUndefined()
+		const ctx = createContext({ hasUI: false, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+		expect(renderTodoStateBlock(ctx)).toBeUndefined()
 	})
 
 	it("activate_phase event populates the todo store via the bridge", () => {
@@ -106,7 +109,7 @@ describe("ferment → todo → headless prompt wiring", () => {
 			// applyAndPersist({ type: "activate_phase", phaseId: "phase-1" }).
 			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
 
-			const todos = getTodosForScope({ kind: "ferment", phaseId: "phase-1" })
+			const todos = getTodosForScope({ kind: "ferment", phaseId: "phase-1" }, TEST_SESSION_ID)
 			// Phase header + 2 steps
 			expect(todos).toHaveLength(3)
 			expect(todos[0].content).toBe("[Phase 1] Implementation")
@@ -128,18 +131,19 @@ describe("ferment → todo → headless prompt wiring", () => {
 		try {
 			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
 
-			const md = renderTodoStateBlock()
+			const ctx = createContext({ hasUI: false, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+			const md = renderTodoStateBlock(ctx)
 			expect(md).toBeDefined()
 			expect(md).toContain("## Current Todos")
 			expect(md).toContain("**[Phase 1] Implementation**")
-			expect(md).toContain("- [ ] ↳ Write the code")
-			expect(md).toContain("- [ ] ↳ Run the tests")
+			expect(md).toContain("- ○ ↳ Write the code")
+			expect(md).toContain("- ○ ↳ Run the tests")
 		} finally {
 			unsubscribe()
 		}
 	})
 
-	it("renderTodoStateBlock returns undefined when UI is present (widget handles it)", () => {
+	it("renderTodoStateBlock renders ferment todos in TUI mode (model sees them alongside the widget)", () => {
 		const ferment = makeFerment()
 		setActive(ferment)
 		const { pi, unsubscribe } = makePiWithRealEventBus()
@@ -148,11 +152,15 @@ describe("ferment → todo → headless prompt wiring", () => {
 			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
 
 			// Store is populated.
-			expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" })).toHaveLength(3)
+			expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" }, TEST_SESSION_ID)).toHaveLength(3)
 
-			// Switching to interactive mode: renderTodoStateBlock gates on currentSessionHasUI.
-			setCurrentSessionHasUI(true)
-			expect(renderTodoStateBlock()).toBeUndefined()
+			// In TUI mode the model should ALSO see the todo state block — the
+			// widget is for the user, the prompt block is for the model.
+			const ctx = createContext({ hasUI: true, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+			const md = renderTodoStateBlock(ctx)
+			expect(md).toBeDefined()
+			expect(md).toContain("## Current Todos")
+			expect(md).toContain("**[Phase 1] Implementation**")
 		} finally {
 			unsubscribe()
 		}
@@ -186,9 +194,11 @@ describe("ferment → todo → headless prompt wiring", () => {
 			expect(resolved).toEqual({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })
 
 			// Writing without explicit scope should go to ferment-step
-			applyWriteTodos({ todos: [{ content: "do something", status: "pending" }] })
-			expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(1)
-			expect(getTodosForScope({ kind: "global" })).toHaveLength(0)
+			applyWriteTodos({ todos: [{ content: "do something", status: "pending" }] }, TEST_SESSION_ID)
+			expect(
+				getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }, TEST_SESSION_ID),
+			).toHaveLength(1)
+			expect(getTodosForScope({ kind: "global" }, TEST_SESSION_ID)).toHaveLength(0)
 		} finally {
 			unsubscribe()
 		}
@@ -197,7 +207,7 @@ describe("ferment → todo → headless prompt wiring", () => {
 	it("scope resolves to global when no step is running", () => {
 		const ferment = makeFerment()
 		setActive(ferment)
-		const { pi, unsubscribe } = makePiWithRealEventBus()
+		const { unsubscribe } = makePiWithRealEventBus()
 
 		try {
 			// No step started — should resolve to global
@@ -232,8 +242,10 @@ describe("ferment → todo → headless prompt wiring", () => {
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
 
 			// Simulate model writing todos (without scope — auto-scoped)
-			applyWriteTodos({ todos: [{ content: "plan item", status: "in_progress" }] })
-			expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(1)
+			applyWriteTodos({ todos: [{ content: "plan item", status: "in_progress" }] }, TEST_SESSION_ID)
+			expect(
+				getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }, TEST_SESSION_ID),
+			).toHaveLength(1)
 
 			// Complete the step
 			const completedFerment: Ferment = {
@@ -251,7 +263,9 @@ describe("ferment → todo → headless prompt wiring", () => {
 			)
 
 			// Step-level todos should be cleared
-			expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(0)
+			expect(
+				getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }, TEST_SESSION_ID),
+			).toHaveLength(0)
 			// Scope should revert to global
 			expect(resolveTodoScope(undefined)).toEqual({ kind: "global" })
 		} finally {
@@ -282,8 +296,10 @@ describe("ferment → todo → headless prompt wiring", () => {
 			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
 
-			applyWriteTodos({ todos: [{ content: "plan item", status: "in_progress" }] })
-			expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(1)
+			applyWriteTodos({ todos: [{ content: "plan item", status: "in_progress" }] }, TEST_SESSION_ID)
+			expect(
+				getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }, TEST_SESSION_ID),
+			).toHaveLength(1)
 
 			const failedFerment: Ferment = {
 				...ferment,
@@ -299,7 +315,9 @@ describe("ferment → todo → headless prompt wiring", () => {
 				failedFerment,
 			)
 
-			expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(0)
+			expect(
+				getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }, TEST_SESSION_ID),
+			).toHaveLength(0)
 			expect(resolveTodoScope(undefined)).toEqual({ kind: "global" })
 		} finally {
 			unsubscribe()
@@ -329,9 +347,10 @@ describe("ferment → todo → headless prompt wiring", () => {
 				completedFerment,
 			)
 
-			const md = renderTodoStateBlock()
-			expect(md).toContain("- [x] ↳ Write the code")
-			expect(md).toContain("- [ ] ↳ Run the tests")
+			const ctx = createContext({ hasUI: false, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+			const md = renderTodoStateBlock(ctx)
+			expect(md).toContain("- ✓ ↳ Write the code")
+			expect(md).toContain("- ○ ↳ Run the tests")
 		} finally {
 			unsubscribe()
 		}
@@ -344,14 +363,15 @@ describe("ferment → todo → headless prompt wiring", () => {
 
 		try {
 			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
-			expect(renderTodoStateBlock()).toContain("## Current Todos")
+			const ctx = createContext({ hasUI: false, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+			expect(renderTodoStateBlock(ctx)).toContain("## Current Todos")
 
 			const completedFerment: Ferment = { ...ferment, status: "complete" }
 			setActive(completedFerment)
 			emitFermentDomainEvent(pi.events, { type: "complete_ferment" }, completedFerment)
 
 			// All ferment-scoped todos cleared → block returns undefined.
-			expect(renderTodoStateBlock()).toBeUndefined()
+			expect(renderTodoStateBlock(ctx)).toBeUndefined()
 		} finally {
 			unsubscribe()
 		}
@@ -364,15 +384,16 @@ describe("ferment → todo → headless prompt wiring", () => {
 
 		try {
 			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
-			expect(renderTodoStateBlock()).toContain("## Current Todos")
+			const ctx = createContext({ hasUI: false, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
+			expect(renderTodoStateBlock(ctx)).toContain("## Current Todos")
 
 			// Pause clears todos from the store (but snapshots internally).
 			emitFermentDomainEvent(pi.events, { type: "pause" }, ferment)
-			expect(renderTodoStateBlock()).toBeUndefined()
+			expect(renderTodoStateBlock(ctx)).toBeUndefined()
 
 			// Resume restores the snapshot.
 			emitFermentDomainEvent(pi.events, { type: "resume" }, ferment)
-			const md = renderTodoStateBlock()
+			const md = renderTodoStateBlock(ctx)
 			expect(md).toContain("## Current Todos")
 			expect(md).toContain("**[Phase 1] Implementation**")
 		} finally {
@@ -385,13 +406,11 @@ describe("stall detection via step todo write tracking", () => {
 	beforeEach(() => {
 		__resetTodoStore()
 		setActive(undefined)
-		setCurrentSessionHasUI(false)
 	})
 
 	afterEach(() => {
 		setActive(undefined)
 		__resetTodoStore()
-		setCurrentSessionHasUI(true)
 	})
 
 	it("stall counter starts at 0 and increments with bumpStallCounter", () => {
@@ -414,12 +433,12 @@ describe("stall detection via step todo write tracking", () => {
 			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
 
-			expect(getTurnsSinceStepTodoWrite()).toBe(0)
-			bumpStallCounter()
-			expect(getTurnsSinceStepTodoWrite()).toBe(1)
-			bumpStallCounter()
-			bumpStallCounter()
-			expect(getTurnsSinceStepTodoWrite()).toBe(3)
+			expect(getTurnsSinceStepTodoWrite(TEST_SESSION_ID)).toBe(0)
+			bumpStallCounter(TEST_SESSION_ID)
+			expect(getTurnsSinceStepTodoWrite(TEST_SESSION_ID)).toBe(1)
+			bumpStallCounter(TEST_SESSION_ID)
+			bumpStallCounter(TEST_SESSION_ID)
+			expect(getTurnsSinceStepTodoWrite(TEST_SESSION_ID)).toBe(3)
 		} finally {
 			unsubscribe()
 		}
@@ -445,17 +464,20 @@ describe("stall detection via step todo write tracking", () => {
 			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
 
-			bumpStallCounter()
-			bumpStallCounter()
-			bumpStallCounter()
-			expect(getTurnsSinceStepTodoWrite()).toBe(3)
+			bumpStallCounter(TEST_SESSION_ID)
+			bumpStallCounter(TEST_SESSION_ID)
+			bumpStallCounter(TEST_SESSION_ID)
+			expect(getTurnsSinceStepTodoWrite(TEST_SESSION_ID)).toBe(3)
 
 			// Writing to the step scope resets the counter
-			applyWriteTodos({
-				scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
-				todos: [{ content: "plan item", status: "pending" }],
-			})
-			expect(getTurnsSinceStepTodoWrite()).toBe(0)
+			applyWriteTodos(
+				{
+					scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+					todos: [{ content: "plan item", status: "pending" }],
+				},
+				TEST_SESSION_ID,
+			)
+			expect(getTurnsSinceStepTodoWrite(TEST_SESSION_ID)).toBe(0)
 		} finally {
 			unsubscribe()
 		}
@@ -482,15 +504,18 @@ describe("stall detection via step todo write tracking", () => {
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
 
 			// Populate step todos so markdown renders
-			applyWriteTodos({
-				scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
-				todos: [{ content: "plan item", status: "in_progress" }],
-			})
+			applyWriteTodos(
+				{
+					scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+					todos: [{ content: "plan item", status: "in_progress" }],
+				},
+				TEST_SESSION_ID,
+			)
 
 			// Bump past threshold (5 turns)
-			for (let i = 0; i < 6; i++) bumpStallCounter()
+			for (let i = 0; i < 6; i++) bumpStallCounter(TEST_SESSION_ID)
 
-			const md = __test_renderTodoStateMarkdown()
+			const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
 			expect(md).toContain("\u26a0 Step todos have not been updated for 6 turns")
 			expect(md).toContain("reassess your approach")
 		} finally {
@@ -518,15 +543,18 @@ describe("stall detection via step todo write tracking", () => {
 			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
 
-			applyWriteTodos({
-				scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
-				todos: [{ content: "plan item", status: "in_progress" }],
-			})
+			applyWriteTodos(
+				{
+					scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+					todos: [{ content: "plan item", status: "in_progress" }],
+				},
+				TEST_SESSION_ID,
+			)
 
 			// Only 3 turns — below threshold
-			for (let i = 0; i < 3; i++) bumpStallCounter()
+			for (let i = 0; i < 3; i++) bumpStallCounter(TEST_SESSION_ID)
 
-			const md = __test_renderTodoStateMarkdown()
+			const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
 			expect(md).not.toContain("\u26a0 Step todos have not been updated")
 		} finally {
 			unsubscribe()
@@ -535,9 +563,9 @@ describe("stall detection via step todo write tracking", () => {
 
 	it("stall counter returns 0 when no step is running", () => {
 		// No step started — bumping should have no effect
-		bumpStallCounter()
-		bumpStallCounter()
-		expect(getTurnsSinceStepTodoWrite()).toBe(0)
+		bumpStallCounter(TEST_SESSION_ID)
+		bumpStallCounter(TEST_SESSION_ID)
+		expect(getTurnsSinceStepTodoWrite(TEST_SESSION_ID)).toBe(0)
 	})
 })
 
@@ -545,13 +573,11 @@ describe("parallel step tracking", () => {
 	beforeEach(() => {
 		__resetTodoStore()
 		setActive(undefined)
-		setCurrentSessionHasUI(false)
 	})
 
 	afterEach(() => {
 		setActive(undefined)
 		__resetTodoStore()
-		setCurrentSessionHasUI(true)
 	})
 
 	function makeParallelFerment(): Ferment {
@@ -591,7 +617,7 @@ describe("parallel step tracking", () => {
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-a" }, ferment)
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-b" }, ferment)
 
-			const running = __getRunningSteps()
+			const running = __getRunningSteps(TEST_SESSION_ID)
 			expect(running.size).toBe(2)
 			expect(running.has("phase-1/step-a")).toBe(true)
 			expect(running.has("phase-1/step-b")).toBe(true)
@@ -613,7 +639,7 @@ describe("parallel step tracking", () => {
 			// Complete step-a only
 			emitFermentDomainEvent(pi.events, { type: "complete_step", phaseId: "phase-1", stepId: "step-a" }, ferment)
 
-			const running = __getRunningSteps()
+			const running = __getRunningSteps(TEST_SESSION_ID)
 			expect(running.size).toBe(1)
 			expect(running.has("phase-1/step-a")).toBe(false)
 			expect(running.has("phase-1/step-b")).toBe(true)

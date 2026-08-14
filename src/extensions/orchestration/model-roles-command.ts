@@ -7,33 +7,32 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
-import { Key, type TUI, matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import type { Component } from "@earendil-works/pi-tui"
+import { Key, matchesKey, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { getAvailableModels } from "../../startup-context.js"
 import { setProcessOrchestratorRef } from "../kimchi-process.js"
 import { withSuppressedModelSelectGuard } from "../model-switch.js"
-import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
-import { type Question, type QuestionFormResult, YES_NO_OPTIONS, createQuestionForm } from "../questionnaire/index.js"
+import { getMultiModelEnabled } from "../multi-model.js"
+import { createQuestionForm, type Question, type QuestionFormResult, YES_NO_OPTIONS } from "../questionnaire/index.js"
 import {
-	type ModelCustomMetadata,
 	deleteModelMetadata,
 	getModelMetadata,
+	type ModelCustomMetadata,
 	resolveModelMetadata,
 	saveModelMetadata,
 } from "./model-metadata.js"
 import {
 	DEFAULT_MODEL_ROLES,
-	type ModelRoles,
-	type RoleModelAssignment,
 	getModelRoles,
-	modelIdFromRef,
+	type ModelRoles,
 	normalizeRoleModels,
+	type RoleModelAssignment,
 	saveModelRoles,
 	splitModelRef,
 } from "./model-roles.js"
 
-function syncOrchestratorRef(roles: ModelRoles): void {
-	setProcessOrchestratorRef(roles.orchestrator)
+function syncOrchestratorRef(sessionId: string, roles: ModelRoles): void {
+	setProcessOrchestratorRef(sessionId, roles.orchestrator)
 }
 
 const ROLE_LABELS: Record<keyof ModelRoles, { label: string; description: string }> = {
@@ -44,11 +43,24 @@ const ROLE_LABELS: Record<keyof ModelRoles, { label: string; description: string
 	explorer: { label: "Explorer", description: "codebase exploration" },
 	researcher: { label: "Researcher", description: "research beyond codebase, web search" },
 	judge: { label: "Judge", description: "ferment verification and grading" },
+	// Not surfaced in this interactive picker (ROLE_KEYS below omits it) — config-file only for now.
+	compactor: { label: "Compactor", description: "summarizes ferment stage-boundary handoffs" },
 }
 
-const DELEGABLE_KEYS: (keyof ModelRoles)[] = ["planner", "builder", "reviewer", "explorer", "researcher", "judge"]
+// "compactor" is excluded here (not just from the arrays): it's optional and
+// config-file only — this interactive picker doesn't surface it, and indexing
+// roles[key]/DEFAULT_MODEL_ROLES[key] for key in these arrays must stay
+// narrowed away from compactor's `string | undefined` type.
+const DELEGABLE_KEYS: (keyof Omit<ModelRoles, "orchestrator" | "compactor">)[] = [
+	"planner",
+	"builder",
+	"reviewer",
+	"explorer",
+	"researcher",
+	"judge",
+]
 
-const ROLE_KEYS: (keyof ModelRoles)[] = ["orchestrator", ...DELEGABLE_KEYS]
+const ROLE_KEYS: (keyof Omit<ModelRoles, "compactor">)[] = ["orchestrator", ...DELEGABLE_KEYS]
 
 /**
  * Whether `collectModelMetadata()` produced something worth persisting.
@@ -72,7 +84,7 @@ export function isEqualAssignment(a: RoleModelAssignment, b: RoleModelAssignment
 	return arrA.length === arrB.length && arrA.every((v, i) => v === arrB[i])
 }
 
-export function formatRoleSummaryBlock(role: keyof ModelRoles, value: RoleModelAssignment): string {
+export function formatRoleSummaryBlock(role: keyof Omit<ModelRoles, "compactor">, value: RoleModelAssignment): string {
 	const info = ROLE_LABELS[role]
 	const models = normalizeRoleModels(value)
 	const isDefault = isEqualAssignment(value, DEFAULT_MODEL_ROLES[role])
@@ -86,7 +98,7 @@ export function formatRoleSummaryBlock(role: keyof ModelRoles, value: RoleModelA
 	return `${info.label}:\n${modelLines.join("\n")}`
 }
 
-export function formatRoleDisplay(role: keyof ModelRoles, value: RoleModelAssignment): string {
+export function formatRoleDisplay(role: keyof Omit<ModelRoles, "compactor">, value: RoleModelAssignment): string {
 	const info = ROLE_LABELS[role]
 	const isDefault = isEqualAssignment(value, DEFAULT_MODEL_ROLES[role])
 	const suffix = isDefault ? " (default)" : ""
@@ -259,7 +271,7 @@ function createToggleSelect(
 		add(theme.fg("accent", "\u2500".repeat(width)))
 		// The title embeds the current selection count, so it must be built
 		// inside render() rather than interpolated at call-time. Otherwise
-		// Space toggles update the footer count but leave the title frozen
+		// Space toggles update the selection count but leave the title frozen
 		// at the initial value (a confusing cosmetic mismatch).
 		const title = `${label} — toggle models (${selected.size} selected)`
 		add(` ${theme.fg("text", theme.bold(title))}`)
@@ -302,11 +314,12 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("multi-model", {
 		description: "Configure model roles (orchestrator, planner, builder, reviewer, explorer, researcher, judge)",
 		async handler(_args, ctx) {
-			if (!ctx.hasUI) {
-				ctx.ui.notify("Model roles configuration requires an interactive session.", "warning")
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("Model roles configuration requires a TUI session.", "warning")
 				return
 			}
 
+			const sessionId = ctx.sessionManager.getSessionId()
 			const roles = { ...getModelRoles() }
 
 			const apiModels = getAvailableModels()
@@ -334,14 +347,14 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					Object.assign(roles, DEFAULT_MODEL_ROLES)
 					try {
 						saveModelRoles(roles)
-						syncOrchestratorRef(roles)
+						syncOrchestratorRef(sessionId, roles)
 					} catch (err) {
 						ctx.ui.notify(`Failed to save model roles: ${err instanceof Error ? err.message : err}`, "error")
 						return
 					}
 					ctx.ui.notify("Model roles reset to defaults.", "info")
 
-					if (getMultiModelEnabled()) {
+					if (getMultiModelEnabled(ctx.sessionManager)) {
 						const parsed = splitModelRef(DEFAULT_MODEL_ROLES.orchestrator)
 						if (parsed) {
 							const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
@@ -379,7 +392,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				await showMainMenu()
 			}
 
-			const showSingleModelEditor = async (roleKey: keyof ModelRoles): Promise<void> => {
+			const showSingleModelEditor = async (roleKey: keyof Omit<ModelRoles, "compactor">): Promise<void> => {
 				const info = ROLE_LABELS[roleKey]
 				const currentModels = normalizeRoleModels(roles[roleKey])
 
@@ -402,14 +415,14 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				roles[roleKey] = newRef
 				try {
 					saveModelRoles(roles)
-					syncOrchestratorRef(roles)
+					syncOrchestratorRef(sessionId, roles)
 				} catch (err) {
 					ctx.ui.notify(`Failed to save model roles: ${err instanceof Error ? err.message : err}`, "error")
 					return
 				}
 				ctx.ui.notify(`${info.label} set to ${newRef}`, "info")
 
-				if (roleKey === "orchestrator" && getMultiModelEnabled()) {
+				if (roleKey === "orchestrator" && getMultiModelEnabled(ctx.sessionManager)) {
 					const parsed = splitModelRef(newRef)
 					if (parsed) {
 						const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
@@ -424,7 +437,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				}
 			}
 
-			const showMultiModelEditor = async (roleKey: keyof ModelRoles): Promise<void> => {
+			const showMultiModelEditor = async (roleKey: keyof Omit<ModelRoles, "compactor">): Promise<void> => {
 				const info = ROLE_LABELS[roleKey]
 				const selected = new Set(normalizeRoleModels(roles[roleKey]))
 

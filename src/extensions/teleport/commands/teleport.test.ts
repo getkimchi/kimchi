@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
@@ -24,6 +24,7 @@ const {
 	readLocalGitConfigMock,
 	provisionGitIdentityMock,
 	provisionGitCredentialMock,
+	provisionHarnessConfigMock,
 } = vi.hoisted(() => ({
 	authMock: vi.fn(),
 	waitReadyMock: vi.fn(),
@@ -52,6 +53,7 @@ const {
 	readLocalGitConfigMock: vi.fn(),
 	provisionGitIdentityMock: vi.fn(),
 	provisionGitCredentialMock: vi.fn(),
+	provisionHarnessConfigMock: vi.fn(),
 }))
 
 vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMock }))
@@ -81,6 +83,9 @@ vi.mock("../provisioning/git-provision.js", () => ({
 	provisionGitIdentity: provisionGitIdentityMock,
 	provisionGitCredential: provisionGitCredentialMock,
 }))
+vi.mock("../provisioning/harness-config.js", () => ({
+	provisionHarnessConfig: provisionHarnessConfigMock,
+}))
 vi.mock("../ui/progress.js", () => ({
 	createTeleportProgress: (...args: unknown[]) => {
 		progressMock(...args)
@@ -102,7 +107,7 @@ vi.mock("../ui/progress.js", () => ({
 
 import type { TeleportContext } from "../types.js"
 import { TeleportRefusal } from "./errors.js"
-import { runTeleport } from "./teleport.js"
+import { runTeleport, SESSION_CREATE_TIMEOUT_MS } from "./teleport.js"
 
 const CREDS = {
 	connectToken: "tok-1",
@@ -195,6 +200,7 @@ beforeEach(() => {
 	readLocalGitConfigMock.mockReset().mockResolvedValue({})
 	provisionGitIdentityMock.mockReset().mockResolvedValue(undefined)
 	provisionGitCredentialMock.mockReset().mockResolvedValue(undefined)
+	provisionHarnessConfigMock.mockReset().mockResolvedValue({ ok: true })
 })
 
 afterEach(() => {
@@ -202,7 +208,7 @@ afterEach(() => {
 })
 
 describe("runTeleport", () => {
-	it("shows an inline footer status while resolving the workspace, and clears it before the overlay opens", async () => {
+	it("shows an inline status line message while resolving the workspace, and clears it before the overlay opens", async () => {
 		const { ctx, ui } = makeCtx()
 		const setStatusMock = ui.setStatus as unknown as ReturnType<typeof vi.fn>
 
@@ -261,6 +267,12 @@ describe("runTeleport", () => {
 		expect(createSessionMock).toHaveBeenCalledOnce()
 		expect(createSessionMock.mock.calls[0][1]).toBe("mysession")
 		expect(createSessionMock.mock.calls[0][2]).toEqual({ agentMode: "PTY" })
+		// Large repos take longer than the 30s WorkerClient default;
+		// teleport must pass a per-call timeout that outlasts them.
+		expect(createSessionMock.mock.calls[0][3]).toMatchObject({ timeoutMs: SESSION_CREATE_TIMEOUT_MS })
+		// Must outlast the 30s WorkerClient default — large repos
+		// exceed it and the session would otherwise abort mid-flight.
+		expect(SESSION_CREATE_TIMEOUT_MS).toBeGreaterThan(30_000)
 		expect(ui.custom).toHaveBeenCalledOnce()
 	})
 
@@ -420,6 +432,52 @@ describe("runTeleport", () => {
 		expect(sessionName).toMatch(/^pty-[0-9a-f]{8}$/)
 	})
 
+	describe("harness config sync", () => {
+		it("calls provisionHarnessConfig with the resolved creds and completes the teleport", async () => {
+			const { ctx, ui } = makeCtx()
+
+			await runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
+
+			expect(provisionHarnessConfigMock).toHaveBeenCalledOnce()
+			expect(provisionHarnessConfigMock.mock.calls[0][0]).toMatchObject({
+				remoteHost: CREDS.host,
+				authToken: CREDS.connectToken,
+			})
+			// Teleport still completes — overlay opens, no warning emitted.
+			expect(ui.custom).toHaveBeenCalledOnce()
+			expect(ui.notify).not.toHaveBeenCalledWith(expect.stringMatching(/Could not sync harness config/), "warning")
+		})
+
+		it("syncs harness config even when workspace rsync is skipped (non-git cwd)", async () => {
+			// cwd /work/proj is not a git repo, so shouldRsyncWorkspace is false
+			// and the workspace runRsync is never invoked — but config sync must
+			// still run. Pins the invariant that config sync is not gated behind
+			// shouldRsyncWorkspace.
+			const { ctx, ui } = makeCtx()
+
+			await runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
+
+			expect(provisionHarnessConfigMock).toHaveBeenCalledOnce()
+			expect(ui.custom).toHaveBeenCalledOnce()
+		})
+
+		it("warns but continues when config sync fails", async () => {
+			provisionHarnessConfigMock.mockResolvedValueOnce({ ok: false, error: "boom" })
+			const { ctx, ui } = makeCtx()
+
+			await runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
+
+			expect(provisionHarnessConfigMock).toHaveBeenCalledOnce()
+			expect(ui.notify).toHaveBeenCalledWith(
+				expect.stringContaining("Could not sync harness config to sandbox: boom"),
+				"warning",
+			)
+			// Teleport still completes — overlay opens, session created.
+			expect(createSessionMock).toHaveBeenCalledOnce()
+			expect(ui.custom).toHaveBeenCalledOnce()
+		})
+	})
+
 	describe("git provisioning", () => {
 		it("--git-repo: identity → credentials run in order before createSession with details.git", async () => {
 			readGitTokenMock.mockReturnValue("ghp_cached")
@@ -553,7 +611,7 @@ describe("runTeleport", () => {
 	})
 
 	describe("session upload", () => {
-		it("uploads the local session file when one is present", async () => {
+		it("uploads an annotated temp copy of the session file and deletes it afterwards", async () => {
 			const sessionFile = join(tempDir, "session.jsonl")
 			writeFileSync(sessionFile, '{"type":"session"}\n')
 			const { ctx } = makeCtx({ sessionFile })
@@ -561,7 +619,44 @@ describe("runTeleport", () => {
 			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx)
 
 			expect(createSessionMock).toHaveBeenCalledOnce()
-			expect(createSessionMock.mock.calls[0][3]).toMatchObject({ sessionFile })
+			const { sessionFile: uploaded } = createSessionMock.mock.calls[0][3]
+			// The uploaded file is an annotated copy of the original — not the
+			// original path — and the copy is cleaned up after upload.
+			expect(uploaded).not.toBe(sessionFile)
+			// The temp copy is removed again once the upload finished — otherwise
+			// session JSONLs would pile up in the OS temp dir.
+			expect(existsSync(uploaded)).toBe(false)
+		})
+
+		it("appends a [Teleport] handoff note as a user message to the uploaded session", async () => {
+			const sessionFile = join(tempDir, "session.jsonl")
+			const originalContent = '{"type":"session"}\n'
+			writeFileSync(sessionFile, originalContent)
+			const { ctx } = makeCtx({ sessionFile })
+
+			// Read the uploaded file contents inside the createSession mock — the
+			// temp copy is deleted right after upload, so we must capture it here.
+			let capturedUpload = ""
+			createSessionMock.mockImplementationOnce(async (_client, _name, _req, opts) => {
+				capturedUpload = readFileSync(opts.sessionFile, "utf8")
+				return { name: "mysession" }
+			})
+
+			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx)
+
+			// Original session file is never mutated by the upload.
+			expect(readFileSync(sessionFile, "utf8")).toBe(originalContent)
+
+			// Original content survives the copy…
+			expect(capturedUpload).toContain(originalContent.trimEnd())
+			// …and the handoff note got appended as a parseable user-message entry,
+			// so the resumed remote agent sees the environment change in context
+			// (and the user sees it in the transcript).
+			const noteLine = capturedUpload.split("\n").find((l) => l.includes("[Teleport]"))
+			if (noteLine === undefined) throw new Error("handoff note line missing from uploaded JSONL")
+			const parsed = JSON.parse(noteLine)
+			expect(parsed.message.role).toBe("user")
+			expect(parsed.message.content[0].text).toContain("Environment handoff")
 		})
 
 		it("--skip-session opts out even when a local session file exists", async () => {

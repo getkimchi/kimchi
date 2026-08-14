@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type {
@@ -9,25 +9,22 @@ import type {
 	ToolInfo,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
-import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
+import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
-import permissionsExtension, {
-	checkCompoundCommand,
-	handleCompoundConfirm,
-	isLaunchedWithYolo,
-	notifyFermentActive,
-} from "./index.js"
-import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
+import permissionsExtension, { checkCompoundCommand, handleCompoundConfirm, notifyFermentActive } from "./index.js"
+import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "./mode.js"
 import { getPermissionMode } from "./mode-controller.js"
+import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { SessionMemory } from "./session-memory.js"
-import type { Rule } from "./types.js"
+import type { PermissionModeState, Rule } from "./types.js"
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>()
@@ -40,8 +37,30 @@ vi.mock("node:fs", async (importOriginal) => {
 	}
 })
 
-vi.mock("./classifier.js", () => ({
-	classifyToolCall: vi.fn(async () => ({ verdict: "safe", reason: "mock safe" })),
+vi.mock("./classifier.js", async () => {
+	const actual = await vi.importActual<typeof import("./classifier.js")>("./classifier.js")
+	return {
+		...actual,
+		classifyToolCall: vi.fn(async () => ({ verdict: "safe", riskScore: "low", reason: "mock safe" })),
+	}
+})
+
+function cleanPermissionEnv(): void {
+	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
+	Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
+	for (const key of Object.keys(process.env)) {
+		if (key.startsWith(`${PERMISSIONS_ENV_KEY}_`)) {
+			Reflect.deleteProperty(process.env, key)
+		}
+	}
+	unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+}
+
+beforeEach(cleanPermissionEnv)
+afterEach(cleanPermissionEnv)
+
+vi.mock("../ide-adapter/index.js", () => ({
+	isIdeConnected: vi.fn(() => false),
 }))
 
 const testEnv: EnvironmentInfo = {
@@ -66,14 +85,24 @@ const TEST_SESSION_ID = "test-session"
 function createMockContext(
 	selectResults: (string | undefined)[] = [],
 	sessionId = TEST_SESSION_ID,
-	opts?: { uiContext?: Partial<ExtensionUIContext>; abortOnFirstSelect?: boolean },
+	opts?: {
+		uiContext?: Partial<ExtensionUIContext>
+		abortOnFirstSelect?: boolean
+		sessionEntries?: unknown[]
+	},
 ): ExtensionContext {
 	let selectCallIndex = 0
+	// Use the supplied array by reference so tests can simulate the session log
+	// being updated after pi.appendEntry calls.
+	const sessionEntries = opts?.sessionEntries ?? []
 	return {
 		hasUI: true,
 		mode: "tui",
 		cwd: "/test",
-		sessionManager: { getSessionId: () => sessionId },
+		sessionManager: {
+			getSessionId: () => sessionId,
+			getEntries: () => sessionEntries,
+		},
 		ui: {
 			select: vi.fn(async (_: string, __: string[], selectOpts?: { signal?: AbortSignal }) => {
 				if (selectOpts?.signal?.aborted) {
@@ -89,6 +118,7 @@ function createMockContext(
 			setWorkingVisible: vi.fn(),
 			theme: {
 				fg: vi.fn((_, s) => s),
+				bold: vi.fn((s) => s),
 				getFgAnsi: vi.fn(() => ""),
 			},
 			onTerminalInput: vi.fn(() => () => {}),
@@ -98,15 +128,19 @@ function createMockContext(
 }
 
 function createClassifierContext(): ExtensionContext {
-	const model = { provider: "test-provider", id: "test-model" }
+	// Expose the deterministic classifier models so resolveClassifierModels
+	// finds both primary (deepseek-v4-flash) and fallback (minimax-m3).
+	const primaryModel = { provider: "test-provider", id: "deepseek-v4-flash" }
+	const fallbackModel = { provider: "test-provider", id: "minimax-m3" }
+	const model = primaryModel
 	return {
 		...createMockContext([]),
 		hasUI: false,
 		cwd: "/test",
 		model,
 		modelRegistry: {
-			getAvailable: vi.fn(() => [model]),
-			find: vi.fn(() => model),
+			getAvailable: vi.fn(() => [primaryModel, fallbackModel]),
+			find: vi.fn(() => primaryModel),
 		},
 	} as unknown as ExtensionContext
 }
@@ -155,6 +189,8 @@ function createPermissionsHarness(
 			activeTools = names.filter((name) => known.has(name))
 		}),
 		sendMessage: vi.fn(),
+		appendEntry: vi.fn(),
+		events: { emit: vi.fn() },
 	} as unknown as ExtensionAPI
 
 	permissionsExtension(pi)
@@ -173,130 +209,6 @@ function createPermissionsHarness(
 	}
 }
 
-describe("isLaunchedWithYolo", () => {
-	afterEach(() => {
-		notifyFermentActive(false)
-		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
-		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
-		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
-		vi.unstubAllEnvs()
-	})
-
-	it("is true when yolo comes from the launch env", () => {
-		vi.stubEnv(PERMISSIONS_ENV_KEY, "yolo")
-		createPermissionsHarness(["bash"])
-
-		expect(isLaunchedWithYolo()).toBe(true)
-	})
-
-	it("is true when yolo comes from the launch CLI flag", async () => {
-		const harness = createPermissionsHarness(["bash"], { yolo: true })
-
-		await harness.fire("session_start", {}, createMockContext([]))
-
-		expect(isLaunchedWithYolo()).toBe(true)
-	})
-
-	it("is true after the user switches to yolo with the permissions command", async () => {
-		const harness = createPermissionsHarness(["bash"])
-		const command = harness.commands.get("permissions")
-		const ctx = createMockContext([])
-
-		expect(command).toBeDefined()
-		await command?.handler("mode yolo", ctx)
-
-		await harness.fire("session_start", {}, ctx)
-
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "user" })
-		expect(isLaunchedWithYolo()).toBe(true)
-	})
-
-	it("is true after the user cycles to yolo with shift+tab", async () => {
-		const harness = createPermissionsHarness(["bash"])
-		const ctx = createMockContext([])
-		let terminalHandler: ((data: string) => unknown) | undefined
-		ctx.ui.onTerminalInput = vi.fn((handler: (data: string) => unknown) => {
-			terminalHandler = handler
-			return () => {}
-		})
-
-		await harness.fire("session_start", {}, ctx)
-		expect(terminalHandler).toBeDefined()
-		terminalHandler?.("\x1b[Z")
-		terminalHandler?.("\x1b[Z")
-		terminalHandler?.("\x1b[Z")
-
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "user" })
-		expect(isLaunchedWithYolo()).toBe(true)
-	})
-
-	it("is false when yolo is only a runtime elevation (e.g. an active ferment)", async () => {
-		// No user-chosen yolo source: env unset, no CLI flag, default config.
-		const harness = createPermissionsHarness(["bash"])
-		// Fire session_start so sessionContext is set (required by onActiveFermentChange).
-		await harness.fire("session_start", {}, createMockContext([]))
-
-		// A ferment becoming active elevates runtimeMode to yolo and propagates it
-		// to the per-session env — the exact condition that previously let the
-		// start gate be bypassed silently.
-		notifyFermentActive(true)
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "ferment" })
-
-		// But runtime elevation must not count as user consent.
-		expect(isLaunchedWithYolo()).toBe(false)
-	})
-
-	it("keeps user-selected runtime yolo when ferment clears", async () => {
-		const harness = createPermissionsHarness(["bash"])
-		const command = harness.commands.get("permissions")
-		const ctx = createMockContext([])
-		await command?.handler("mode yolo", ctx)
-		await harness.fire("session_start", {}, ctx)
-
-		notifyFermentActive(true)
-		notifyFermentActive(false)
-
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "user" })
-		expect(isLaunchedWithYolo()).toBe(true)
-	})
-
-	it("keeps user-selected runtime yolo even during multiple ferment change callbacks", async () => {
-		const harness = createPermissionsHarness(["bash"])
-		const command = harness.commands.get("permissions")
-		const ctx = createMockContext([])
-		await command?.handler("mode auto", ctx)
-		await harness.fire("session_start", {}, ctx)
-
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "user" })
-
-		notifyFermentActive(true)
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "ferment" })
-
-		notifyFermentActive(true)
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "ferment" })
-
-		notifyFermentActive(true)
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "ferment" })
-
-		notifyFermentActive(false)
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "user" })
-	})
-
-	it("clears ferment-owned runtime yolo when ferment clears", async () => {
-		const harness = createPermissionsHarness(["bash"])
-		const ctx = createMockContext([])
-		await harness.fire("session_start", {}, ctx)
-
-		notifyFermentActive(true)
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "ferment" })
-		expect(isLaunchedWithYolo()).toBe(false)
-
-		notifyFermentActive(false)
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "default", source: "user" })
-		expect(isLaunchedWithYolo()).toBe(false)
-	})
-})
-
 describe("permissions plan-mode tool visibility", () => {
 	afterEach(() => {
 		notifyFermentActive(false)
@@ -309,17 +221,17 @@ describe("permissions plan-mode tool visibility", () => {
 		vi.stubEnv(PERMISSIONS_ENV_KEY, "plan")
 		const harness = createPermissionsHarness(["read", "agent", "bash", "write", "grep"])
 		await harness.fire("session_start", {}, createMockContext([]))
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "env", initiatedBy: "user" })
 		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
 
 		notifyFermentActive(true)
 
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "ferment" })
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "runtime", initiatedBy: "ferment" })
 		expect(harness.activeTools().sort()).toEqual(["agent", "bash", "grep", "read", "write"])
 
 		notifyFermentActive(false)
 
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "env", initiatedBy: "user" })
 		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
 	})
 
@@ -601,7 +513,7 @@ describe("plan mode assumption detection", () => {
 			"Start as ferment",
 		])
 		expect(harness.pi.sendMessage).not.toHaveBeenCalled()
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "flag", initiatedBy: "user" })
 	})
 
 	it("oneshot sessions skip the plan-complete dropdown entirely", async () => {
@@ -788,8 +700,11 @@ describe("plan mode assumption detection", () => {
 			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
 
 			// appendRefEntry calls pi.sendMessage with customType 'ferment_reference'.
-			// It uses void pi.sendMessage(msg) with no second arg.
-			expect(harness.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "ferment_reference" }))
+			// safeSendMessage passes (message, options) — options may be undefined.
+			expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "ferment_reference" }),
+				undefined,
+			)
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true })
 			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
@@ -802,6 +717,51 @@ describe("plan mode assumption detection", () => {
 	// the session with implementation tools visible but no active ferment, no
 	// session ref, no creation event, and no initialized runtime state. The fix
 	// is fail-closed: stay in plan mode, do NOT apply implementation tools.
+	// Regression: previously the only post-approval signal was the hidden
+	// ferment_reference entry, so the model "started over" — it re-ran discovery
+	// (list_ferments) and re-drafted the scope via scope_ferment, which the FSM
+	// rejected (already PHASE_ACTIVE). The ferment_handoff message must tell the
+	// model the ferment is already scoped/active and name the next action.
+	it("Start as ferment sends a ferment_handoff message with no-re-planning and next-action guidance", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const tmpDir = mkdtempSync(join(tmpdir(), "handoff-"))
+		try {
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+
+			const handoffCall = vi
+				.mocked(harness.pi.sendMessage)
+				.mock.calls.find(([message]) => message.customType === "ferment_handoff")
+			expect(handoffCall).toBeDefined()
+			const [handoffMessage, handoffOptions] = handoffCall ?? []
+			const text = Array.isArray(handoffMessage?.content)
+				? handoffMessage.content
+						.filter((content) => content.type === "text")
+						.map((content) => content.text)
+						.join("\n")
+				: String(handoffMessage?.content ?? "")
+			expect(text).toContain('approved by the user ("Start as ferment")')
+			expect(text).toContain("ALREADY scoped")
+			expect(text).toContain('phase "phase-1"')
+			expect(text).toContain("is ACTIVE")
+			for (const forbidden of ["list_ferments", "scope_ferment", "propose_ferment_scoping"]) {
+				expect(text).toContain(forbidden)
+			}
+			expect(text).toContain("Scope mutations will be rejected")
+			expect(text).toContain("ask_user remains available for genuine execution blockers or recovery")
+			expect(text).toContain("start_ferment_step")
+			expect(text).toContain('phase_id "phase-1", step_id "step-1"')
+			expect(handoffOptions).toMatchObject({ triggerTurn: true })
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
+			defaultFermentRuntime.setActive(undefined)
+		}
+	})
+
 	it("Start as ferment fails closed when runtime creation throws — stays in plan mode, no implementation tools", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
@@ -826,7 +786,7 @@ describe("plan mode assumption detection", () => {
 
 		// 2) Mode must remain plan — the user is still in a plan-mode session
 		//    with a failed promotion. They can retry or rework.
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "flag", initiatedBy: "user" })
 
 		// 3) Runtime active state must NOT be set to a half-initialized ferment.
 		const { defaultFermentRuntime } = await import("../ferment/runtime.js")
@@ -834,6 +794,33 @@ describe("plan mode assumption detection", () => {
 
 		// Reset runtime state in case prior tests in this describe block left it set.
 		defaultFermentRuntime.setActive(undefined)
+	})
+
+	it("Start as ferment keeps planning tools when scoping fails after draft creation", async () => {
+		const mutationSpy = vi.spyOn(FermentEventStore.prototype, "mutateWithEvents").mockImplementationOnce(() => ({
+			ok: false,
+			error: { code: "FERMENT_NOT_FOUND", message: "simulated scope failure" },
+		}))
+		const harness = createPermissionsHarness(["read", "questionnaire", "ask_user"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const planningTools = harness.activeTools()
+
+		const tmpDir = mkdtempSync(join(tmpdir(), "post-create-failure-"))
+		try {
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+
+			expect(harness.activeTools()).toEqual(planningTools)
+			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "flag", initiatedBy: "user" })
+			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
+			expect(defaultFermentRuntime.getActive()).toBeUndefined()
+		} finally {
+			mutationSpy.mockRestore()
+			rmSync(tmpDir, { recursive: true, force: true })
+			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
+			defaultFermentRuntime.setActive(undefined)
+		}
 	})
 
 	// Regression (PR #683 comment 3473746281): when the plan lacks a `## Chunks`
@@ -978,7 +965,7 @@ describe("permissions ferment tool classification", () => {
 
 		expect(result).toBeUndefined()
 		expect(classifyToolCall).toHaveBeenCalledTimes(1)
-		expect(vi.mocked(classifyToolCall).mock.calls[0]?.[3]).toMatchObject({
+		expect(vi.mocked(classifyToolCall).mock.calls[0]?.[1]).toMatchObject({
 			toolName: "unknown_tool",
 			input: { value: 1 },
 			cwd: "/test",
@@ -999,6 +986,34 @@ describe("permissions ferment tool classification", () => {
 	})
 })
 
+describe("permissions notification emission", () => {
+	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+	})
+
+	it("emits permission_prompt notification before showing dialog", async () => {
+		const harness = createPermissionsHarness(["write"])
+		const ctx = createMockContext([undefined]) // user denies
+		await harness.fire("session_start", {}, ctx)
+
+		const event = {
+			toolName: "write",
+			toolCallId: "tc-write-1",
+			input: { path: "foo.txt", content: "bar" },
+		}
+		await harness.fire("tool_call", event, ctx)
+
+		expect((harness.pi as unknown as { events: { emit: ReturnType<typeof vi.fn> } }).events.emit).toHaveBeenCalledWith(
+			"notification",
+			{
+				notification_type: "permission_prompt",
+				tool_name: "write",
+				tool_use_id: "tc-write-1",
+			},
+		)
+	})
+})
+
 describe("permissions TUI allow-remember", () => {
 	afterEach(() => {
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
@@ -1013,14 +1028,14 @@ describe("permissions TUI allow-remember", () => {
 		return {
 			hasUI: true,
 			cwd: "/test",
-			sessionManager: { getSessionId: () => TEST_SESSION_ID },
+			sessionManager: { getSessionId: () => TEST_SESSION_ID, getEntries: () => [] },
 			ui: {
 				select,
 				input: vi.fn(async () => ""),
 				notify: vi.fn(),
 				setStatus: vi.fn(),
 				setWorkingVisible: vi.fn(),
-				theme: { fg: vi.fn((_, s) => s), getFgAnsi: vi.fn(() => "") },
+				theme: { fg: vi.fn((_, s) => s), bold: vi.fn((s) => s), getFgAnsi: vi.fn(() => "") },
 				onTerminalInput: vi.fn(() => () => {}),
 			},
 		} as unknown as ExtensionContext
@@ -1181,7 +1196,7 @@ describe("permissions ACP prompter", () => {
 			request: async (req) => {
 				requests.push(req.toolCallId)
 				const remember = req.choices.find((choice) => choice.kind === "allow-remember")
-				if (!remember || remember.kind !== "allow-remember") throw new Error("missing remember choice")
+				if (remember?.kind !== "allow-remember") throw new Error("missing remember choice")
 				return { kind: "allow-remember", rule: remember.rule }
 			},
 		})
@@ -1206,6 +1221,7 @@ describe("permissions ACP prompter", () => {
 		const requests: string[] = []
 		vi.mocked(classifyToolCall).mockResolvedValueOnce({
 			verdict: "requires-confirmation",
+			riskScore: "medium",
 			reason: "needs a human",
 			ok: true,
 		})
@@ -1744,6 +1760,7 @@ describe("subagent inherits parent session permission mode", () => {
 	afterEach(() => {
 		notifyFermentActive(false)
 		unregisterSessionPermissionFlagController(CHILD_SESSION_ID)
+		Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
 		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${PARENT_SESSION_ID}`)
 		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${CHILD_SESSION_ID}`)
 		Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
@@ -1763,12 +1780,12 @@ describe("subagent inherits parent session permission mode", () => {
 		// Fire session_start with the CHILD's own session ID (different from parent).
 		const childCtx = {
 			...createMockContext([]),
-			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+			sessionManager: { getSessionId: () => CHILD_SESSION_ID, getEntries: () => [] },
 		} as unknown as ExtensionContext
 		await harness.fire("session_start", {}, childCtx)
 
 		// The child's runtime mode should be "plan", inherited from the parent session.
-		expect(getPermissionMode(CHILD_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
+		expect(getPermissionMode(CHILD_SESSION_ID)).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
 	})
 
 	it("parent session key takes precedence over base KIMCHI_PERMISSIONS", async () => {
@@ -1780,12 +1797,12 @@ describe("subagent inherits parent session permission mode", () => {
 
 		const childCtx = {
 			...createMockContext([]),
-			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+			sessionManager: { getSessionId: () => CHILD_SESSION_ID, getEntries: () => [] },
 		} as unknown as ExtensionContext
 		await harness.fire("session_start", {}, childCtx)
 
 		// Parent session key takes precedence.
-		expect(getPermissionMode(CHILD_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
+		expect(getPermissionMode(CHILD_SESSION_ID)).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
 	})
 
 	it("falls back to config default when neither KIMCHI_PERMISSIONS nor parent session key is set", async () => {
@@ -1796,11 +1813,11 @@ describe("subagent inherits parent session permission mode", () => {
 
 		const childCtx = {
 			...createMockContext([]),
-			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+			sessionManager: { getSessionId: () => CHILD_SESSION_ID, getEntries: () => [] },
 		} as unknown as ExtensionContext
 		await harness.fire("session_start", {}, childCtx)
 
-		expect(getPermissionMode(CHILD_SESSION_ID)).toEqual({ mode: "default", source: "user" })
+		expect(getPermissionMode(CHILD_SESSION_ID)).toEqual({ mode: "default", source: "config", initiatedBy: "user" })
 	})
 
 	it("child applies plan-mode tool gating when inheriting plan from parent", async () => {
@@ -1812,11 +1829,465 @@ describe("subagent inherits parent session permission mode", () => {
 
 		const childCtx = {
 			...createMockContext([]),
-			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+			sessionManager: { getSessionId: () => CHILD_SESSION_ID, getEntries: () => [] },
 		} as unknown as ExtensionContext
 		await harness.fire("session_start", {}, childCtx)
 
 		// Plan mode should hide write-capable tools.
 		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
+	})
+
+	it("parent per-session env key takes precedence over child's own session log", async () => {
+		process.env[`${PERMISSIONS_ENV_KEY}_${PARENT_SESSION_ID}`] = "yolo"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = PARENT_SESSION_ID
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const harness = createPermissionsHarness(["read", "write", "bash"])
+
+		// The child session has its own persisted "plan" entry, but it must inherit
+		// the parent's current mode via the per-session env key.
+		const childCtx = {
+			...createMockContext([]),
+			sessionManager: {
+				getSessionId: () => CHILD_SESSION_ID,
+				getEntries: () =>
+					[{ type: "custom", customType: PERMISSION_MODE_SESSION_ENTRY_TYPE, data: { mode: "plan" } }] as unknown[],
+			},
+		} as unknown as ExtensionContext
+		await harness.fire("session_start", {}, childCtx)
+
+		expect(getPermissionMode(CHILD_SESSION_ID)).toEqual({ mode: "yolo", source: "runtime", initiatedBy: "user" })
+	})
+})
+
+describe("permission mode session-log persistence", () => {
+	afterEach(() => {
+		notifyFermentActive(false)
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
+		vi.unstubAllEnvs()
+	})
+
+	function makeSessionEntries(modes: string[]): unknown[] {
+		return modes.map((mode) => ({
+			type: "custom",
+			customType: PERMISSION_MODE_SESSION_ENTRY_TYPE,
+			data: { mode, source: "runtime", initiatedBy: "user" },
+		}))
+	}
+
+	it("resumes a session from the last persisted permission_mode entry", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+		const ctx = createMockContext([], TEST_SESSION_ID, {
+			sessionEntries: makeSessionEntries(["default", "plan"]),
+		})
+
+		await harness.fire("session_start", {}, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
+		expect(harness.activeTools().sort()).toEqual(["bash", "read"])
+	})
+
+	it("CLI flag overrides persisted session-log mode", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"], { yolo: true })
+		const ctx = createMockContext([], TEST_SESSION_ID, {
+			sessionEntries: makeSessionEntries(["plan"]),
+		})
+
+		await harness.fire("session_start", {}, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "flag", initiatedBy: "user" })
+	})
+
+	it("does not persist a config-sourced initial mode", async () => {
+		const harness = createPermissionsHarness(["read", "bash"])
+		const ctx = createMockContext([], TEST_SESSION_ID, { sessionEntries: [] })
+
+		await harness.fire("session_start", {}, ctx)
+
+		const calls = (harness.pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls as [string, PermissionModeState][]
+		const modeEntries = calls.filter(([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE)
+		expect(modeEntries).toHaveLength(0)
+	})
+
+	it("does not persist an env-sourced initial mode", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "plan")
+		const harness = createPermissionsHarness(["read", "bash"])
+		const ctx = createMockContext([], TEST_SESSION_ID, { sessionEntries: [] })
+
+		await harness.fire("session_start", {}, ctx)
+
+		const calls = (harness.pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls as [string, PermissionModeState][]
+		const modeEntries = calls.filter(([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE)
+		expect(modeEntries).toHaveLength(0)
+	})
+
+	it("does not persist an initial mode that came from a CLI flag", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { yolo: true })
+		const ctx = createMockContext([], TEST_SESSION_ID, { sessionEntries: [] })
+
+		await harness.fire("session_start", {}, ctx)
+
+		const calls = (harness.pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls as [string, PermissionModeState][]
+		const modeEntries = calls.filter(([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE)
+		expect(modeEntries).toHaveLength(0)
+	})
+
+	it("persists a user mode change before the next turn", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+		const ctx = createMockContext([], TEST_SESSION_ID, { sessionEntries: [] })
+
+		await harness.fire("session_start", {}, ctx)
+		// Reset to ignore the session_start persistence.
+		;(harness.pi.appendEntry as ReturnType<typeof vi.fn>).mockClear()
+
+		const command = harness.commands.get("permissions")
+		expect(command).toBeDefined()
+		await command?.handler("mode plan", ctx)
+
+		// No persistence happens yet — only the runtime controller changes.
+		expect(harness.pi.appendEntry).not.toHaveBeenCalled()
+
+		await harness.fire("before_agent_start", { prompt: "hello" }, ctx)
+
+		const calls = (harness.pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls as [string, PermissionModeState][]
+		const modeEntries = calls.filter(([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE)
+		expect(modeEntries).toHaveLength(1)
+		expect(modeEntries[0]).toEqual([
+			PERMISSION_MODE_SESSION_ENTRY_TYPE,
+			{ mode: "plan", source: "runtime", initiatedBy: "user" },
+		])
+	})
+
+	it("does not write duplicate permission_mode entries", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+		const ctx = createMockContext([], TEST_SESSION_ID, { sessionEntries: [] })
+
+		await harness.fire("session_start", {}, ctx)
+		;(harness.pi.appendEntry as ReturnType<typeof vi.fn>).mockClear()
+
+		const command = harness.commands.get("permissions")
+		expect(command).toBeDefined()
+		await command?.handler("mode plan", ctx)
+		await harness.fire("before_agent_start", { prompt: "hello" }, ctx)
+		// Simulate the session log now containing the persisted plan entry.
+		;(ctx.sessionManager.getEntries() as unknown[]).push({
+			type: "custom",
+			customType: PERMISSION_MODE_SESSION_ENTRY_TYPE,
+			data: { mode: "plan", source: "runtime", initiatedBy: "user" },
+		})
+		await command?.handler("mode plan", ctx)
+		await harness.fire("before_agent_start", { prompt: "hello again" }, ctx)
+
+		const calls = (harness.pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls as [string, PermissionModeState][]
+		const modeEntries = calls.filter(([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE)
+		expect(modeEntries).toEqual([
+			[PERMISSION_MODE_SESSION_ENTRY_TYPE, { mode: "plan", source: "runtime", initiatedBy: "user" }],
+		])
+	})
+
+	it("persists ferment auto-yolo elevation", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+		const ctx = createMockContext([], TEST_SESSION_ID, { sessionEntries: [] })
+
+		await harness.fire("session_start", {}, ctx)
+		;(harness.pi.appendEntry as ReturnType<typeof vi.fn>).mockClear()
+
+		notifyFermentActive(true)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "runtime", initiatedBy: "ferment" })
+
+		await harness.fire("before_agent_start", { prompt: "hello" }, ctx)
+
+		const calls = (harness.pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls as [string, PermissionModeState][]
+		const modeEntries = calls.filter(([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE)
+		expect(modeEntries).toHaveLength(1)
+		expect(modeEntries[0]).toEqual([
+			PERMISSION_MODE_SESSION_ENTRY_TYPE,
+			{ mode: "yolo", source: "runtime", initiatedBy: "ferment" },
+		])
+	})
+
+	it("resumes to the previous user mode when the session log ends in ferment yolo", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+		const ctx = createMockContext([], TEST_SESSION_ID, {
+			sessionEntries: [
+				{
+					type: "custom",
+					customType: PERMISSION_MODE_SESSION_ENTRY_TYPE,
+					data: { mode: "plan", source: "runtime", initiatedBy: "user" },
+				},
+				{
+					type: "custom",
+					customType: PERMISSION_MODE_SESSION_ENTRY_TYPE,
+					data: { mode: "yolo", source: "runtime", initiatedBy: "ferment" },
+				},
+			],
+		})
+
+		await harness.fire("session_start", {}, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
+	})
+
+	it("resume plan mode activates plan-mode tool gating", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+		const ctx = createMockContext([], TEST_SESSION_ID, {
+			sessionEntries: makeSessionEntries(["plan"]),
+		})
+
+		await harness.fire("session_start", {}, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
+		expect(harness.activeTools().sort()).toEqual(["bash", "read"])
+	})
+
+	it("resume yolo mode skips permission checks", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+		const ctx = createMockContext([], TEST_SESSION_ID, {
+			sessionEntries: makeSessionEntries(["yolo"]),
+		})
+
+		await harness.fire("session_start", {}, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "runtime", initiatedBy: "user" })
+		expect(harness.activeTools().sort()).toEqual(["bash", "read", "write"])
+	})
+
+	it("shift+tab cycle persists the new mode at before_agent_start", async () => {
+		let terminalHandler: ((data: string) => { consume?: boolean } | undefined) | undefined
+		const ctx = createMockContext([], TEST_SESSION_ID, {
+			sessionEntries: [],
+			uiContext: {
+				onTerminalInput: vi.fn((handler) => {
+					terminalHandler = handler as typeof terminalHandler
+					return () => {
+						terminalHandler = undefined
+					}
+				}),
+			},
+		})
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+
+		await harness.fire("session_start", {}, ctx)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "default", source: "config", initiatedBy: "user" })
+
+		// Cycle default -> plan -> auto -> yolo
+		terminalHandler?.("\x1b[Z")
+		terminalHandler?.("\x1b[Z")
+		terminalHandler?.("\x1b[Z")
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "runtime", initiatedBy: "user" })
+
+		// No persistence yet
+		expect(harness.pi.appendEntry).not.toHaveBeenCalled()
+
+		await harness.fire("before_agent_start", { prompt: "hello" }, ctx)
+
+		const calls = (harness.pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls as [string, PermissionModeState][]
+		const modeEntries = calls.filter(([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE)
+		expect(modeEntries).toHaveLength(1)
+		expect(modeEntries[0]).toEqual([
+			PERMISSION_MODE_SESSION_ENTRY_TYPE,
+			{ mode: "yolo", source: "runtime", initiatedBy: "user" },
+		])
+	})
+
+	it("shift+tab cycle without a turn does not write to the session log", async () => {
+		let terminalHandler: ((data: string) => { consume?: boolean } | undefined) | undefined
+		const ctx = createMockContext([], TEST_SESSION_ID, {
+			sessionEntries: [],
+			uiContext: {
+				onTerminalInput: vi.fn((handler) => {
+					terminalHandler = handler as typeof terminalHandler
+					return () => {
+						terminalHandler = undefined
+					}
+				}),
+			},
+		})
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+
+		await harness.fire("session_start", {}, ctx)
+		terminalHandler?.("\x1b[Z")
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
+
+		const calls = (harness.pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls as [string, PermissionModeState][]
+		const modeEntries = calls.filter(([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE)
+		expect(modeEntries).toHaveLength(0)
+	})
+
+	it("ferment activation persists yolo at before_agent_start", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+		const ctx = createMockContext([], TEST_SESSION_ID, { sessionEntries: [] })
+
+		await harness.fire("session_start", {}, ctx)
+		notifyFermentActive(true)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "runtime", initiatedBy: "ferment" })
+
+		await harness.fire("before_agent_start", { prompt: "hello" }, ctx)
+
+		const calls = (harness.pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls as [string, PermissionModeState][]
+		const modeEntries = calls.filter(([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE)
+		expect(modeEntries).toHaveLength(1)
+		expect(modeEntries[0]).toEqual([
+			PERMISSION_MODE_SESSION_ENTRY_TYPE,
+			{ mode: "yolo", source: "runtime", initiatedBy: "ferment" },
+		])
+	})
+
+	it("mid-conversation mode change applies immediately to subsequent tool gating", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+		const ctx = createMockContext([], TEST_SESSION_ID, { sessionEntries: [] })
+
+		await harness.fire("session_start", {}, ctx)
+		expect(harness.activeTools().sort()).toEqual(["bash", "read", "write"])
+
+		const command = harness.commands.get("permissions")
+		expect(command).toBeDefined()
+		await command?.handler("mode plan", ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
+		expect(harness.activeTools().sort()).toEqual(["bash", "read"])
+	})
+
+	it("env var beats persisted session log on fresh load", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "yolo")
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+		const ctx = createMockContext([], TEST_SESSION_ID, {
+			sessionEntries: makeSessionEntries(["plan"]),
+		})
+
+		await harness.fire("session_start", {}, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "env", initiatedBy: "user" })
+		expect(harness.activeTools().sort()).toEqual(["bash", "read", "write"])
+	})
+
+	it("persists the resolved initial mode after before_agent_start on launch", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+		const ctx = createMockContext([], TEST_SESSION_ID, { sessionEntries: [] })
+
+		await harness.fire("session_start", {}, ctx)
+		expect(harness.pi.appendEntry).not.toHaveBeenCalled()
+
+		await harness.fire("before_agent_start", { prompt: "hello" }, ctx)
+
+		const calls = (harness.pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls as [string, PermissionModeState][]
+		const modeEntries = calls.filter(([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE)
+		expect(modeEntries).toHaveLength(1)
+		expect(modeEntries[0]).toEqual([
+			PERMISSION_MODE_SESSION_ENTRY_TYPE,
+			{ mode: "default", source: "config", initiatedBy: "user" },
+		])
+	})
+
+	it("subagent inherits parent mode even when child has a CLI flag", async () => {
+		const childSessionId = "child-with-flag"
+		const parentHarness = createPermissionsHarness(["read", "bash", "write"])
+		const parentCtx = createMockContext([], TEST_SESSION_ID, { sessionEntries: [] })
+		await parentHarness.fire("session_start", {}, parentCtx)
+		const command = parentHarness.commands.get("permissions")
+		expect(command).toBeDefined()
+		await command?.handler("mode plan", parentCtx)
+
+		process.env[PARENT_SESSION_ID_ENV_KEY] = TEST_SESSION_ID
+		process.env[`${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`] = "plan"
+
+		try {
+			const childHarness = createPermissionsHarness(["read", "bash", "write"], { yolo: true })
+			const childCtx = createMockContext([], childSessionId, { sessionEntries: [] })
+
+			await childHarness.fire("session_start", {}, childCtx)
+
+			expect(getPermissionMode(childSessionId)).toEqual({
+				mode: "plan",
+				source: "runtime",
+				initiatedBy: "user",
+			})
+		} finally {
+			Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
+			Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
+			unregisterSessionPermissionFlagController(childSessionId)
+		}
+	})
+
+	it("does not write duplicate ferment yolo entries on subsequent turns", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+		const sessionEntries: unknown[] = []
+		const ctx = createMockContext([], TEST_SESSION_ID, { sessionEntries })
+		await harness.fire("session_start", {}, ctx)
+
+		// Mirror production: appended entries become visible to subsequent readers,
+		// so the next before_agent_start sees the entry the previous one wrote.
+		const appendMock = harness.pi.appendEntry as ReturnType<typeof vi.fn>
+		appendMock.mockImplementation((customType: string, data: PermissionModeState) => {
+			sessionEntries.push({ type: "custom", customType, data })
+		})
+		const modeEntries = () =>
+			(appendMock.mock.calls as [string, PermissionModeState][]).filter(
+				([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE,
+			)
+
+		notifyFermentActive(true)
+		await harness.fire("before_agent_start", { prompt: "turn 1" }, ctx)
+		await harness.fire("before_agent_start", { prompt: "turn 2" }, ctx)
+		await harness.fire("before_agent_start", { prompt: "turn 3" }, ctx)
+
+		// The elevation is written exactly once, not on every turn.
+		expect(modeEntries()).toEqual([
+			[PERMISSION_MODE_SESSION_ENTRY_TYPE, { mode: "yolo", source: "runtime", initiatedBy: "ferment" }],
+		])
+
+		// When the ferment clears, the restored user mode diverges from the last
+		// logged entry and is written once, preserving its original source.
+		notifyFermentActive(false)
+		await harness.fire("before_agent_start", { prompt: "turn 4" }, ctx)
+
+		expect(modeEntries()).toEqual([
+			[PERMISSION_MODE_SESSION_ENTRY_TYPE, { mode: "yolo", source: "runtime", initiatedBy: "ferment" }],
+			[PERMISSION_MODE_SESSION_ENTRY_TYPE, { mode: "default", source: "config", initiatedBy: "user" }],
+		])
+	})
+
+	it("keeps a manual mode change made mid-ferment when the ferment clears", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+		const ctx = createMockContext([], TEST_SESSION_ID, { sessionEntries: [] })
+		await harness.fire("session_start", {}, ctx)
+
+		notifyFermentActive(true)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "runtime", initiatedBy: "ferment" })
+
+		// The user explicitly overrides the ferment elevation.
+		const command = harness.commands.get("permissions")
+		expect(command).toBeDefined()
+		await command?.handler("mode auto", ctx)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "runtime", initiatedBy: "user" })
+
+		// Clearing the ferment must not snap back to the pre-ferment mode.
+		notifyFermentActive(false)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "runtime", initiatedBy: "user" })
+	})
+
+	it("a new session does not inherit the previous session's persisted mode", async () => {
+		const previousSessionId = "session-ended-in-plan"
+		const newSessionId = "session-new-after-plan"
+		const harnessA = createPermissionsHarness(["read", "bash", "write"])
+		const ctxA = createMockContext([], previousSessionId, {
+			sessionEntries: makeSessionEntries(["plan"]),
+		})
+		await harnessA.fire("session_start", {}, ctxA)
+		expect(getPermissionMode(previousSessionId)).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
+
+		try {
+			// A different session id means a different controller and session log:
+			// the new session resolves from config/env/defaults only.
+			const harnessB = createPermissionsHarness(["read", "bash", "write"])
+			const ctxB = createMockContext([], newSessionId, { sessionEntries: [] })
+			await harnessB.fire("session_start", {}, ctxB)
+			expect(getPermissionMode(newSessionId)).toEqual({ mode: "default", source: "config", initiatedBy: "user" })
+		} finally {
+			unregisterSessionPermissionFlagController(previousSessionId)
+			unregisterSessionPermissionFlagController(newSessionId)
+		}
 	})
 })

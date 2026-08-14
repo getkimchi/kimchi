@@ -7,6 +7,8 @@ description: Use the GitLab CLI (`glab`) for merge request review (as reviewer o
 
 `glab` is the canonical CLI for GitLab. Prefer it over scraping web URLs or guessing API paths. Discover flags with `glab <cmd> --help` rather than enumerating here.
 
+See `## Output & Truncation` and `## Consent & Irreversible Actions` for general rules.
+
 Auth: `glab auth status`. If logged out, ask the user to run `glab auth login`.
 
 Project: inferred from cwd. Pass `-R OWNER/REPO` (or `GROUP/SUBGROUP/REPO`) when outside.
@@ -72,24 +74,3 @@ Bare `glab ci trace` (no args) is also interactive — avoid.
 - `--paginate` — follow all pages
 - `--jq '.field'` — filter response
 - placeholders: `:fullpath`, `:repo`, `:group`, `:namespace`, `:branch`, `:user`, `:username`, `:id`
-
-## Never without explicit consent
-
-Anything that publishes, mutates, or notifies needs an explicit in-conversation request. Do **not** run these unprompted:
-
-- Posting to an MR/issue: `glab mr note` (top-level or replies), `glab mr note resolve`/`reopen`, `glab issue note`, posts via `glab api .../discussions` or `.../notes`.
-- State changes on MRs: `glab mr merge`, `glab mr rebase`, `glab mr close`, `glab mr reopen`, `glab mr update` (any flag, esp. `--ready`/`--draft`), `glab mr approve`, `glab mr revoke`.
-- CI: `glab ci retry`, `glab ci cancel`, `glab ci run`.
-- Issues: `glab issue close`, `glab issue reopen`, `glab issue update`, `glab issue delete`.
-- Releases: `glab release create`, `glab release update`, `glab release delete`.
-- Any `glab api -X POST/PUT/PATCH/DELETE` that mutates state.
-- Git remote ops: pushing branches, force-push, deleting branches/tags.
-
-Read-only commands (`list`, `view`, `diff`, `status`, `trace` with explicit args, `glab api` GETs) are fine. When in doubt, surface the command and wait.
-
-## Output discipline
-
-- `glab ci view` — TUI; never headless. Use `glab ci trace` or `glab api`.
-- `glab api .../trace` — full job logs; always `| tail -N`.
-- `--paginate` on busy projects is huge — combine with `--jq`.
-- `glab mr diff` on big MRs — file list via `glab api projects/:fullpath/merge_requests/123/changes --jq '.changes[].new_path'`, then targeted reads.

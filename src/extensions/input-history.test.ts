@@ -88,7 +88,6 @@ describe("inputHistoryExtension", () => {
 
 	it("calls setEditorComponent with a factory when past sessions contain user prompts", async () => {
 		const { SessionManager } = await import("@earendil-works/pi-coding-agent")
-		const { CustomEditor } = await import("@earendil-works/pi-coding-agent")
 
 		vi.mocked(SessionManager.list).mockResolvedValue([
 			{
@@ -188,7 +187,6 @@ describe("inputHistoryExtension", () => {
 
 	it("skips assistant messages and empty user content", async () => {
 		const { SessionManager } = await import("@earendil-works/pi-coding-agent")
-		const { CustomEditor } = await import("@earendil-works/pi-coding-agent")
 
 		vi.mocked(SessionManager.list).mockResolvedValue([
 			{

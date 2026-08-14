@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import type { FermentRuntime } from "./runtime.js"
 import { FERMENT_TOOLS } from "./tool-names.js"
 
@@ -57,8 +58,7 @@ export const PLANNING_TOOL_NAMES: ReadonlySet<string> = new Set([
 	// activate_ferment_phase fires the planning → implementation transition.
 	// start_ferment_step and the rest of the implementation lifecycle tools are
 	// NOT listed here — they become available on the turn after activation via
-	// agent.prepareNextTurn refreshing context.tools from state.tools
-	// (see patches/@earendil-works__pi-coding-agent.patch).
+	// Pi refreshing context.tools from state.tools in prepareNextTurn.
 	FERMENT_TOOLS.ACTIVATE_PHASE,
 ])
 
@@ -173,4 +173,9 @@ export function setActiveFermentAndApplyProfile(
 ): void {
 	runtime.setActive(ferment)
 	applyFermentToolProfile(pi, profileForFerment(ferment))
+	// setActive is called from session_start resume paths (resumeFerment /
+	// loadFermentSilently) which run as deferred actions outside any natural
+	// render cycle. Request a status-line render so it picks up the
+	// newly-active (or newly-cleared) ferment immediately.
+	requestSharedStatusLineRender()
 }

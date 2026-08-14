@@ -5,9 +5,9 @@ import {
 	existsSync,
 	mkdirSync,
 	openSync,
+	readdirSync,
 	readFileSync,
 	readSync,
-	readdirSync,
 	realpathSync,
 	renameSync,
 	statSync,
@@ -20,6 +20,7 @@ const CACHE_VERSION = 1
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 let _cachePath: string | undefined
 function getCachePath(): string {
+	// biome-ignore lint/suspicious/noAssignInExpressions: result is cached
 	return (_cachePath ??= join(getAgentDir(), "mcp-npx-cache.json"))
 }
 

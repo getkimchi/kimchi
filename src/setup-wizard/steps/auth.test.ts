@@ -50,7 +50,6 @@ describe("runAuthStep", () => {
 	afterEach(() => {
 		vi.restoreAllMocks()
 		if (savedApiKey !== undefined) process.env.KIMCHI_API_KEY = savedApiKey
-		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
 		else delete process.env.KIMCHI_API_KEY
 	})
 

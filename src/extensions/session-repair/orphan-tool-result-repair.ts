@@ -31,12 +31,6 @@ import { findOrphanedToolResults } from "../orphan-tool-result-sanitizer.js"
 /** A function that detects orphaned toolCallIds in a message array. */
 export type OrphanDetector = (messages: ReadonlyArray<unknown>) => string[]
 
-/** Shape of a parsed session JSONL message entry (the relevant subset). */
-interface ParsedMessageEntry {
-	type: "message"
-	message: { role?: string; toolCallId?: string; content?: unknown }
-}
-
 /** Shape of any parsed session JSONL line. */
 interface ParsedLine {
 	type?: string
@@ -98,7 +92,7 @@ export function rewriteSessionJsonl(
 
 	for (const { raw, value } of parsed) {
 		// Malformed or non-message lines are always kept.
-		if (!value || value.type !== "message") {
+		if (value?.type !== "message") {
 			rewritten.push(raw)
 			continue
 		}

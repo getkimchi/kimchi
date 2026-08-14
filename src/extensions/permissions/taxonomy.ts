@@ -5,6 +5,7 @@ export const FILE_TOOLS = new Set(["read", "write", "edit", "ls", "grep", "find"
 
 const STATIC_CATEGORIES: Record<string, ToolCategory> = {
 	read: "readOnly",
+	skill: "readOnly",
 	grep: "readOnly",
 	find: "readOnly",
 	ls: "readOnly",
@@ -307,9 +308,16 @@ const HARD_BLOCK_PROGRAMS = new Set(["sudo", "su", "shutdown", "reboot", "halt",
 // Operators we never want to see in a read-only command.
 //   - `>` / `>>`: writes (except `/dev/null|stdout|stderr` targets, handled
 //      separately in isReadOnlyBashCommand)
+//   - `>&`: fd/file redirect — safe when target is a pure digit (fd-to-fd
+//      duplication like `2>&1`), handled separately in isReadOnlyBashCommand.
+//      File-target redirects (`>& /tmp/evil`) remain blocked.
 //   - `<`: input redirect — also appears twice in a row for heredocs (<<EOF)
 //   - `<(` / `(`: process substitution / subshell — can hide arbitrary code
 //   - `&`: backgrounding
+//   - `&>` (combined stdout+stderr redirect-to-file): shell-quote decomposes
+//      this into `&` + `>`, so it is blocked transitively via the `&` rule.
+//      This safety is incidental — if `&` were ever relaxed, `&>` would need
+//      explicit handling.
 const DANGEROUS_OPS = new Set<ControlOperator>([">", ">>", ">&", "<", "<(", "(", ")", "&"])
 
 // `>` / `>>` targets that are allowed because they discard or duplicate
@@ -325,7 +333,7 @@ export function isHardBlockedBash(command: string): boolean {
 
 	for (const segment of parseCommandSegments(command)) {
 		// See through RTK wrapper so `rtk rm -rf /` is still caught.
-		const tokens = segment.tokens[0] === "rtk" ? segment.tokens.slice(1) : segment.tokens
+		const tokens = stripRtk(segment.tokens)
 		const program = tokens[0]
 		if (!program) continue
 		if (HARD_BLOCK_PROGRAMS.has(program)) return true
@@ -394,11 +402,11 @@ export function splitCompoundCommand(command: string): string[] | null {
 				currentTokens.push(entry.op)
 				continue
 			}
-			if ((op === ">" || op === ">>") && typeof entries[i + 1] === "string") {
-				// Consume the redirect target.
-				// NOTE: We intentionally handle only > and >>. Other redirects (<, >&, <<)
-				// are intentionally not supported — they would not change the program
-				// classification outcome for permission evaluation.
+			if ((op === ">" || op === ">>" || op === ">&") && typeof entries[i + 1] === "string") {
+				// Consume the redirect target (also covers `>&1` fd-to-fd redirects).
+				// NOTE: Other redirects (<, <<) are intentionally not supported —
+				// they would not change the program classification outcome for
+				// permission evaluation.
 				currentTokens.push(entry.op)
 				currentTokens.push(entries[i + 1] as string)
 				i++
@@ -413,7 +421,7 @@ export function splitCompoundCommand(command: string): string[] | null {
 	return segments.filter((s) => s.length > 0)
 }
 
-// Canonical first-segment tokens with the rtk wrapper removed. parseCommandSegments
+// Canonical first-segment tokens with rtk wrappers removed. parseCommandSegments
 // already strips leading FOO=bar assignments, shell-tokenizes (dropping quotes), and
 // collapses whitespace; we additionally see through the rtk wrapper. Env-STRIPPING:
 // used by extractBashProgram and the hard-block / read-only / bare-rule-auto-rewrite
@@ -421,7 +429,13 @@ export function splitCompoundCommand(command: string): string[] | null {
 // uses rememberedScopeTokens instead, which PRESERVES env.
 export function bashCommandTokens(command: string): string[] {
 	const raw = firstSegmentTokens(command)
-	return raw[0] === "rtk" ? raw.slice(1) : raw
+	return stripRtk(raw)
+}
+
+export function stripRtk(tokens: string[]): string[] {
+	let first = 0
+	while (tokens[first] === "rtk") first++
+	return first === 0 ? tokens : tokens.slice(first)
 }
 
 export function extractBashProgram(command: string): { program: string; subcommand: string | undefined } {
@@ -458,7 +472,7 @@ export function splitLeadingEnv(command: string): { env: string[]; rest: string 
 export function rememberedScopeTokens(command: string): string[] {
 	const { env, rest } = splitLeadingEnv(command)
 	const tokens = parseCommandSegments(rest)[0]?.tokens ?? []
-	const prog = tokens[0] === "rtk" ? tokens.slice(1) : tokens
+	const prog = stripRtk(tokens)
 	if (prog.length === 0) return []
 	return [...env, ...prog]
 }
@@ -475,9 +489,7 @@ export function rememberedScopeTokens(command: string): string[] {
 export function bashSegmentForms(command: string): string[] {
 	return parseCommandSegments(command)
 		.map((seg) => {
-			let tokens = seg.tokens
-			while (tokens[0] === "rtk") tokens = tokens.slice(1)
-			return tokens.join(" ")
+			return stripRtk(seg.tokens).join(" ")
 		})
 		.filter((form) => form.length > 0)
 }
@@ -492,6 +504,9 @@ export function isReadOnlyBashCommand(command: string): boolean {
 		for (const op of segment.ops) {
 			if (!DANGEROUS_OPS.has(op.op)) continue
 			if ((op.op === ">" || op.op === ">>") && op.target && READ_ONLY_REDIRECT_TARGETS.has(op.target)) continue
+			// `>&` with a pure-digit target is fd-to-fd duplication (e.g. `2>&1`), which cannot read or write files.
+			// File-target `>& /tmp/evil` stays blocked because the target is not a digit.
+			if (op.op === ">&" && op.target && /^[0-9]+$/.test(op.target)) continue
 			return false
 		}
 		if (!isSegmentReadOnly(segment.tokens)) return false
@@ -599,7 +614,7 @@ export function parseCommandSegments(command: string): Segment[] {
 				current = { tokens: [], ops: [] }
 				continue
 			}
-			if ((op === ">" || op === ">>") && typeof entries[i + 1] === "string") {
+			if ((op === ">" || op === ">>" || op === ">&") && typeof entries[i + 1] === "string") {
 				current.ops.push({ op, target: entries[i + 1] as string })
 				i++ // consume the redirect target
 				continue

@@ -1,5 +1,4 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
-import { dirname } from "node:path"
 import type { Workspace } from "../../../sandbox/cloud/types.js"
 import { warn } from "../commands/errors.js"
 import type { TeleportContext } from "../types.js"

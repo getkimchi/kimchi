@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -82,6 +83,12 @@ describe("reportBugExtension", () => {
 		getVersionMock.mockReturnValue("9.9.9-test")
 		execFileSyncMock.mockClear()
 		vi.spyOn(console, "log").mockImplementation(() => {})
+		// Create the mock session file so createSessionGist can read it.
+		writeFileSync(
+			"/tmp/test-session.jsonl",
+			`${JSON.stringify({ type: "message", message: { role: "user", content: "test" } })}\n`,
+			"utf-8",
+		)
 	})
 
 	afterEach(() => {

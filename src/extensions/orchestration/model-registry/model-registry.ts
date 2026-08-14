@@ -28,6 +28,7 @@ export const KIMCHI_DEV_PROVIDER = "kimchi-dev"
 
 const GENERIC_CAPABILITIES: ModelCapabilities = {
 	vision: false,
+	reasoning: false,
 	tier: "standard",
 	description: "No capability information available for this model.",
 }
@@ -80,14 +81,14 @@ export class ModelRegistry {
 					id: m.slug,
 					provider: KIMCHI_DEV_PROVIDER,
 					name: deriveName(m),
-					capabilities: GENERIC_CAPABILITIES,
+					capabilities: { ...GENERIC_CAPABILITIES, reasoning: m.reasoning },
 				})
 			} else {
 				allModels.push({
 					id: m.slug,
 					provider: KIMCHI_DEV_PROVIDER,
 					name: deriveName(m),
-					capabilities: entry,
+					capabilities: { ...entry, reasoning: m.reasoning },
 				})
 			}
 		}

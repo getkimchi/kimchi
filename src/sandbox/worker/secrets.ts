@@ -13,7 +13,7 @@ export interface PutSecretOptions {
  */
 export async function putSecret(client: WorkerClient, opts: PutSecretOptions, signal?: AbortSignal): Promise<void> {
 	await client.putVoid(
-		"/secrets",
+		"/api/secrets",
 		{
 			name: opts.name,
 			value: Buffer.from(opts.value, "utf-8").toString("base64"),
@@ -24,5 +24,5 @@ export async function putSecret(client: WorkerClient, opts: PutSecretOptions, si
 }
 
 export async function deleteSecret(client: WorkerClient, name: string, signal?: AbortSignal): Promise<void> {
-	await client.del(`/secrets/${encodeURIComponent(name)}`, signal)
+	await client.del(`/api/secrets/${encodeURIComponent(name)}`, signal)
 }

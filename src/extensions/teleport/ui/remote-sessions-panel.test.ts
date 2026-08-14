@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
-import { RemoteSessionsPanel, createRemoteSessionsPanel } from "./remote-sessions-panel.js"
 import type { RemoteSessionNode, RemoteWorkspaceNode } from "./remote-sessions-panel.js"
+import { createRemoteSessionsPanel, RemoteSessionsPanel } from "./remote-sessions-panel.js"
 
 const NOW = new Date("2026-05-17T12:00:00Z")
 
@@ -184,6 +184,77 @@ describe("RemoteSessionsPanel", () => {
 			panel.handleInput("\r")
 			panel.handleInput("d")
 			expect(done).not.toHaveBeenCalled()
+		})
+	})
+
+	describe("details overlay", () => {
+		it("'i' shows workspace details including host, id and status", () => {
+			const { panel } = makePanel()
+			panel.handleInput("i")
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).toContain("Type")
+			expect(text).toContain("workspace")
+			expect(text).toContain("Host")
+			expect(text).toContain("host.example")
+			expect(text).toContain("ws-aaaaaaaa-1")
+			expect(text).toContain("active")
+			expect(text).not.toContain("NAME / SESSION")
+		})
+
+		it("'i' on a session shows session details including workspace host", () => {
+			const { panel } = makePanel()
+			panel.handleInput("j")
+			panel.handleInput("i")
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).toContain("session")
+			expect(text).toContain("pty-abc12")
+			expect(text).toContain("Workspace Host")
+			expect(text).toContain("host.example")
+			expect(text).toContain("Client connected")
+			expect(text).toContain("yes")
+		})
+
+		it("'i' toggles back to the table", () => {
+			const { panel } = makePanel()
+			panel.handleInput("i")
+			panel.handleInput("i")
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).toContain("NAME / SESSION")
+			expect(text).not.toContain("Workspace Host")
+		})
+
+		it("esc closes details instead of the panel", () => {
+			const { panel, done } = makePanel()
+			panel.handleInput("i")
+			panel.handleInput("\x1b")
+			expect(done).not.toHaveBeenCalled()
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).toContain("NAME / SESSION")
+		})
+
+		it("navigation and action keys are inert while details are open", () => {
+			const { panel, done } = makePanel()
+			panel.handleInput("i")
+			panel.handleInput("j")
+			panel.handleInput("\r")
+			panel.handleInput("d")
+			panel.handleInput("r")
+			expect(done).not.toHaveBeenCalled()
+		})
+
+		it("'i' is a no-op when the tree is empty", () => {
+			const { panel, done } = makePanel([])
+			panel.handleInput("i")
+			expect(done).not.toHaveBeenCalled()
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).toContain("(no workspaces)")
+		})
+
+		it("emits the same line count with details open as with the table", () => {
+			const { panel } = makePanel(treeNodes, { termRows: 20 })
+			const baseline = panel.render(120).length
+			panel.handleInput("i")
+			expect(panel.render(120).length).toBe(baseline)
 		})
 	})
 

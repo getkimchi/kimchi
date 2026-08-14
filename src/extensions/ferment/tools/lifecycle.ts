@@ -8,41 +8,50 @@
  *   4. Format result text — host concern
  */
 
-import { type ExtensionAPI, getMarkdownTheme } from "@earendil-works/pi-coding-agent"
+import { type ExtensionAPI, type ExtensionContext, getMarkdownTheme } from "@earendil-works/pi-coding-agent"
 import { Markdown } from "@earendil-works/pi-tui"
-import { type Static, Type } from "typebox"
+import type { Static } from "typebox"
 import type { Command, ScopePhaseInput } from "../../../ferment/state-machine.js"
 import {
-	type SuccessCriteria,
 	normalizeSuccessCriteriaInput,
 	renderSuccessCriteria,
+	type SuccessCriteria,
 } from "../../../ferment/success-criteria.js"
 import { deriveDraftFermentTitle, normalizeFermentTitle } from "../../../ferment/title.js"
 import {
+	type CharterClauseVerdict,
 	DEFAULT_SCOPING_QUESTION_TYPE,
+	type FermentCharter,
 	type Grade,
 	SCOPING_QUESTION_TYPES,
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
+import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
+import { getMultiModelEnabled } from "../../multi-model.js"
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
-import { type AskUserQuestion, askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
+import { askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
+import { renderCharterFull } from "../charter.js"
 import { pr_bold, pr_dim } from "../colors.js"
+import { createFerment } from "../create.js"
 import { emitFermentCreated } from "../domain-events-emitter.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
 import { ensureGitRepo } from "../git-init.js"
-import { judgeJourneyGrade } from "../judge.js"
-import { appendRefEntry, resetReactiveContinuationNudgeCount } from "../nudge.js"
+import { describeJudgeModel, type GraderSpawner, judgeJourneyGradeViaSubagent } from "../judge.js"
+import { clearLifecycleGuard } from "../lifecycle-obligation-guard.js"
+import { appendRefEntry } from "../nudge.js"
 import { PENDING_PROPOSAL_SCHEMA_VERSION, savePendingProposal } from "../pending-proposal-store.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
-import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
+import { promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
-import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
-import { confirmPendingScope } from "../scoping-confirmation.js"
+import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
+import { safeSendMessage } from "../safe-send.js"
 import type { PendingScope } from "../scoping.js"
+import { confirmPendingScope } from "../scoping-confirmation.js"
+import { MAX_BLOCK_RETRIES } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -62,19 +71,39 @@ import {
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
 import { setActiveFermentAndApplyProfile } from "../tool-scope.js"
-import type { FermentUi } from "../ui.js"
 
 type ScopeArgs = Static<typeof ScopeParams>
 type ProposeScopingArgs = Static<typeof ProposeScopingParams>
 type NormalizedProposeScopingArgs = Omit<
 	ProposeScopingArgs,
-	"constraints" | "phases" | "questions" | "assumptions" | "success_criteria"
+	| "constraints"
+	| "phases"
+	| "questions"
+	| "assumptions"
+	| "success_criteria"
+	| "charter"
+	| "self_critique"
+	| "scope_deltas"
+	| "constraint_costs"
+	| "quality_dimensions"
 > & {
 	constraints?: string[]
 	assumptions?: string
 	success_criteria?: SuccessCriteria
 	phases: ScopePhaseInput[]
 	questions?: ScopingQuestion[]
+	charter?: FermentCharter
+	advisories?: ScopingAdvisories
+}
+
+/** Advisory scoping quality signals. Not persisted on the Ferment — rendered
+ *  into the plan review and tool output so narrowings and substitutions
+ *  become visible, named decisions at the one checkpoint that exists. */
+export interface ScopingAdvisories {
+	selfCritique?: string
+	scopeDeltas?: string[]
+	constraintCosts?: { constraint: string; cost: string }[]
+	qualityDimensions?: string[]
 }
 type NormalizeProposeScopingResult =
 	| { ok: true; params: NormalizedProposeScopingArgs }
@@ -94,7 +123,7 @@ const TITLE_REQUIRED_ERROR =
 	'Field "title" must be a non-empty concise 3-5 word title. Retry with the full payload including title.'
 
 export interface LifecycleExecutionContext {
-	pi: ExtensionAPI
+	ctx: ExtensionContext
 }
 
 function clearScopingStatus(ctx: unknown): void {
@@ -189,7 +218,7 @@ function renderBullets(label: string, items: string[]): string {
 	return [renderedLabel, ...lines].join("\n")
 }
 
-function renderStep(index: number, description: string): string {
+function renderStep(_index: number, description: string): string {
 	const lines = wrapText(description, 84)
 	if (lines.length === 0) return "- —"
 	return lines.map((line, lineIndex) => (lineIndex === 0 ? `- ${line}` : `  ${line}`)).join("\n")
@@ -353,6 +382,113 @@ function normalizeScopingQuestionType(
 	return { ok: true, ...toScopingQuestionType(value) }
 }
 
+/** Normalize the optional intent charter. Schema fields are snake_case
+ *  (wow_factor etc.); the persisted FermentCharter is camelCase. Returns an
+ *  error string when a provided charter has no usable intent — the charter
+ *  exists to hold the verbatim anchor, so an empty intent is never worth
+ *  persisting. An absent charter is always valid (undefined).
+ *
+ *  Exported for unit tests — the schema→domain conversion edge cases are
+ *  easier to pin here than through the full tool harness. */
+export function normalizeCharter(value: unknown): FermentCharter | undefined | string {
+	if (value === undefined || value === null) return undefined
+	if (typeof value !== "object" || Array.isArray(value)) {
+		return 'charter must be an object with at least an "intent" string; omit the field entirely when no charter is being drafted.'
+	}
+	const raw = value as Record<string, unknown>
+	const intent = typeof raw.intent === "string" ? raw.intent.trim() : ""
+	if (!intent) {
+		return 'charter.intent is required when charter is provided — capture the user\'s original request verbatim (trimmed of boilerplate). Omit "charter" entirely only if there is no intent to anchor.'
+	}
+	const opt = (v: unknown): string | undefined => (typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined)
+	const wow = opt(raw.wow_factor)
+	const scope = opt(raw.confirmed_scope)
+	const demo = opt(raw.demo_script)
+	return {
+		intent,
+		...(wow ? { wowFactor: wow } : {}),
+		...(scope ? { confirmedScope: scope } : {}),
+		...(demo ? { demoScript: demo } : {}),
+	}
+}
+
+/** Normalize the four advisory scoping signals. All optional; blank entries
+ *  are dropped. Returns undefined when nothing meaningful was provided so
+ *  renderers can skip the sections entirely. Returns an error string for
+ *  malformed constraint_costs items — the object shape is the one that
+ *  breaks silently when the model fumbles it. Exported for unit tests. */
+export function normalizeScopingAdvisories(params: {
+	self_critique?: string
+	scope_deltas?: string[]
+	constraint_costs?: { constraint: string; cost: string }[]
+	quality_dimensions?: string[]
+}): ScopingAdvisories | undefined | string {
+	const trimList = (list: string[] | undefined): string[] | undefined => {
+		if (!Array.isArray(list)) return undefined
+		const cleaned = list.map((s) => (typeof s === "string" ? s.trim() : "")).filter((s) => s.length > 0)
+		return cleaned.length > 0 ? cleaned : undefined
+	}
+	const scopeDeltas = trimList(params.scope_deltas)
+	const qualityDimensions = trimList(params.quality_dimensions)
+	const selfCritique =
+		typeof params.self_critique === "string" && params.self_critique.trim().length > 0
+			? params.self_critique.trim()
+			: undefined
+
+	let constraintCosts: { constraint: string; cost: string }[] | undefined
+	if (Array.isArray(params.constraint_costs)) {
+		constraintCosts = []
+		for (const [i, item] of params.constraint_costs.entries()) {
+			if (!item || typeof item !== "object") {
+				return `constraint_costs[${i}] must be an object {constraint, cost}.`
+			}
+			const constraint = typeof item.constraint === "string" ? item.constraint.trim() : ""
+			const cost = typeof item.cost === "string" ? item.cost.trim() : ""
+			if (!constraint || !cost) {
+				return `constraint_costs[${i}] requires non-empty "constraint" and "cost" — name the constraint as it appears in constraints[] and the visible cost of the substitution. Omit the field entirely if no constraint substitutes or approximates the literal request.`
+			}
+			constraintCosts.push({ constraint, cost })
+		}
+		if (constraintCosts.length === 0) constraintCosts = undefined
+	}
+
+	if (!selfCritique && !scopeDeltas && !qualityDimensions && !constraintCosts) return undefined
+	return {
+		...(selfCritique ? { selfCritique } : {}),
+		...(scopeDeltas ? { scopeDeltas } : {}),
+		...(qualityDimensions ? { qualityDimensions } : {}),
+		...(constraintCosts ? { constraintCosts } : {}),
+	}
+}
+
+/** Render the advisory scoping signals as markdown sections for the plan
+ *  review and the scopeFerment tool output. Absent fields produce no section. */
+function renderAdvisorySections(advisories: ScopingAdvisories | undefined): string[] {
+	if (!advisories) return []
+	const sections: string[] = []
+	if (advisories.scopeDeltas && advisories.scopeDeltas.length > 0) {
+		sections.push("## Scope decisions (vs the literal request)")
+		sections.push(...advisories.scopeDeltas.map((d) => `- ${d}`))
+		sections.push("")
+	}
+	if (advisories.constraintCosts && advisories.constraintCosts.length > 0) {
+		sections.push("## Constraint costs")
+		sections.push(...advisories.constraintCosts.map((c) => `- ${c.constraint} — costs: ${c.cost}`))
+		sections.push("")
+	}
+	if (advisories.qualityDimensions && advisories.qualityDimensions.length > 0) {
+		sections.push("## Quality dimensions")
+		sections.push(...advisories.qualityDimensions.map((d) => `- ${d}`))
+		sections.push("")
+	}
+	if (advisories.selfCritique) {
+		sections.push("## Self-critique (meh-test)")
+		sections.push(advisories.selfCritique)
+		sections.push("")
+	}
+	return sections
+}
+
 function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizeProposeScopingResult {
 	const title = normalizeFermentTitle(params.title)
 	if (!title) return { ok: false, error: toolErr(TITLE_REQUIRED_ERROR) }
@@ -364,6 +500,10 @@ function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizePro
 	if (typeof phases === "string") return { ok: false, error: toolErr(phases) }
 	const questions = normalizeQuestions(params.questions)
 	if (typeof questions === "string") return { ok: false, error: toolErr(questions) }
+	const charter = normalizeCharter(params.charter)
+	if (typeof charter === "string") return { ok: false, error: toolErr(charter) }
+	const advisories = normalizeScopingAdvisories(params)
+	if (typeof advisories === "string") return { ok: false, error: toolErr(advisories) }
 	return {
 		ok: true,
 		params: {
@@ -374,6 +514,8 @@ function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizePro
 			assumptions: normalizeAssumptions(params.assumptions),
 			phases,
 			questions,
+			charter,
+			advisories,
 		},
 	}
 }
@@ -422,12 +564,14 @@ export function buildPlanMarkdown(params: NormalizedProposeScopingArgs): string 
 		"",
 		renderWrapped("## Goal", params.goal),
 		"",
+		...(params.charter ? [renderCharterFull(params.charter), ""] : []),
 		renderBullets("## Success criteria", params.success_criteria ?? []),
 		"",
 		renderBullets("## Constraints", params.constraints ?? []),
 		"",
 		renderBullets("## Assumptions", splitListText(params.assumptions)),
 		"",
+		...renderAdvisorySections(params.advisories),
 		"## Phases",
 		"---",
 		"",
@@ -477,7 +621,7 @@ type ResolveProposeTargetResult =
 async function resolveProposeFermentTarget(
 	runtime: FermentRuntime,
 	pi: ExtensionAPI,
-	ctx: unknown,
+	ctx: ExtensionContext,
 	rawId: string | undefined,
 	title: string,
 	goal: string,
@@ -496,10 +640,14 @@ async function resolveProposeFermentTarget(
 	if (active) return { ok: true, fermentId: active.id, created: false }
 
 	// Bootstrap a new draft ferment from the proposal, mirroring /ferment new.
-	const ui = (ctx as { ui?: FermentUi } | undefined)?.ui
-	await ensureGitRepo({ ui })
+	await ensureGitRepo({ ui: ctx.ui })
 	const shortName = deriveDraftFermentTitle(title)
-	const f = storage.create(shortName, goal)
+	const f = createFerment(runtime, {
+		name: shortName,
+		goal,
+		hasUI: ctx.hasUI,
+		isOneShot: pi.getFlag("ferment-oneshot") === true,
+	})
 	setActiveFermentAndApplyProfile(pi, runtime, f)
 	if (pi.events) {
 		emitFermentCreated(pi.events, f)
@@ -520,7 +668,7 @@ async function confirmCompletionCriteria(
 	runtime: FermentRuntime,
 	pi: ExtensionAPI,
 	params: ConfirmCompletionCriteriaArgs,
-	ctx: unknown,
+	ctx: ExtensionContext,
 ): Promise<ToolResult> {
 	const ferment = runtime.getStorage().get(params.ferment_id)
 	if (!ferment) return toolErr("Ferment not found.")
@@ -531,7 +679,7 @@ async function confirmCompletionCriteria(
 	const askContext = {
 		ferment,
 		pi,
-		ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
+		ctx,
 		runtime,
 	}
 
@@ -596,13 +744,17 @@ async function confirmCompletionCriteria(
 export async function scopeFerment(
 	runtime: FermentRuntime,
 	params: ScopeArgs,
-	{ pi }: LifecycleExecutionContext,
+	{ ctx }: LifecycleExecutionContext,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const title = normalizeFermentTitle(params.title)
 	if (!title) return toolErr(TITLE_REQUIRED_ERROR)
 	const successCriteria = normalizeSuccessCriteriaInput(params.success_criteria)
 	if (!successCriteria.ok) return toolErr(successCriteria.error)
+	const charter = normalizeCharter(params.charter)
+	if (typeof charter === "string") return toolErr(charter)
+	const advisories = normalizeScopingAdvisories(params)
+	if (typeof advisories === "string") return toolErr(advisories)
 
 	// Plan-scope gate validation runs BEFORE any state mutation. The agent
 	// must declare verifiable success signals (P1), composition (P2), and
@@ -637,9 +789,11 @@ export async function scopeFerment(
 	}
 	runtime.consumeScopingGate(params.ferment_id)
 
+	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+
 	// FSM validation: ensure the scope transition is allowed before applying it.
 	const fsmError = validateFsmTransition(fGate, "SCOPE_FERMENT")
-	if (fsmError) return toolErrWithNextAction(fsmError, fGate)
+	if (fsmError) return toolErrWithNextAction(fsmError, fGate, multiModelEnabled)
 
 	const cmd: Command = {
 		type: "scope",
@@ -648,6 +802,7 @@ export async function scopeFerment(
 		successCriteria: successCriteria.value,
 		constraints: params.constraints,
 		assumptions: normalizeAssumptions(params.assumptions),
+		charter,
 		phases: params.phases ?? [],
 	}
 	const outcome = applyAndPersist(params.ferment_id, cmd)
@@ -659,10 +814,11 @@ export async function scopeFerment(
 				withNextActionHint(
 					`Ferment is already ${outcome.error.actual}. Use update_ferment_scope_field to revise individual fields.`,
 					fGate,
+					multiModelEnabled,
 				),
 			)
 		}
-		return failedToolResult(outcome.error, fGate)
+		return failedToolResult(outcome.error, fGate, multiModelEnabled)
 	}
 	// Discard any stale pending-scope buffer — its phases were either applied
 	// here or are no longer relevant (the ferment is now planned).
@@ -670,25 +826,47 @@ export async function scopeFerment(
 
 	const fresh = outcome.ferment
 	const phaseList = fresh.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
+	const advisoryBlock = advisories ? `\n\n${renderAdvisorySections(advisories).join("\n").trimEnd()}` : ""
 
 	runtime.setActive(fresh)
 
 	return toolOk(
 		withNextActionHint(
-			`**Ferment "${fresh.name}"** scoped and ready.\n\n- **ferment_id:** ${fresh.id}\n- **Goal:** ${params.goal}\n\n**Phases:**\n${phaseList}`,
+			`**Ferment "${fresh.name}"** scoped and ready.\n\n- **ferment_id:** ${fresh.id}\n- **Goal:** ${params.goal}\n\n**Phases:**\n${phaseList}${advisoryBlock}`,
 			fresh,
+			multiModelEnabled,
 		),
 	)
 }
 
-export async function completeFerment(runtime: FermentRuntime, params: CompleteFermentArgs): Promise<ToolResult> {
+/** Advisory ship-level charter audit block for the complete_ferment result.
+ *  Counts met/waived/unmet, then lists the non-met rows (unmet first — that
+ *  is the signal the user most needs to see). Met clauses stay as a count.
+ *  Never gates ship: this is a report, not a gate. */
+export function renderCharterAudit(verdicts: CharterClauseVerdict[]): string {
+	const met = verdicts.filter((v) => v.status === "met").length
+	const waived = verdicts.filter((v) => v.status === "waived")
+	const unmet = verdicts.filter((v) => v.status === "unmet")
+	const lines = [
+		`**Charter audit:** ${verdicts.length} clause(s) — ${met} met, ${waived.length} waived, ${unmet.length} unmet`,
+	]
+	for (const v of unmet) lines.push(`- ⚠ unmet: ${v.clause} — ${v.evidence}`)
+	for (const v of waived) lines.push(`- ↷ waived: ${v.clause} — ${v.evidence}`)
+	return lines.join("\n")
+}
+
+export async function completeFerment(
+	runtime: FermentRuntime,
+	params: CompleteFermentArgs,
+	{ ctx, spawner }: LifecycleExecutionContext & { spawner?: GraderSpawner },
+): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 
 	const fSnapshot = runtime.getStorage().get(params.ferment_id)
 	if (!fSnapshot) return toolErr("Ferment not found.")
 	if (fSnapshot.status === "complete") {
 		runtime.clearFermentState(params.ferment_id)
-		resetReactiveContinuationNudgeCount(params.ferment_id)
+		clearLifecycleGuard(params.ferment_id)
 		runtime.setActive(undefined)
 		return toolOk(
 			`Ferment "${fSnapshot.name}" is already complete. No further lifecycle action is available. Do not act on this ferment again without clear user consent.`,
@@ -696,7 +874,7 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 	}
 	if (fSnapshot.status === "abandoned") {
 		runtime.clearFermentState(params.ferment_id)
-		resetReactiveContinuationNudgeCount(params.ferment_id)
+		clearLifecycleGuard(params.ferment_id)
 		runtime.setActive(undefined)
 		return toolErr(`Ferment "${fSnapshot.name}" is abandoned and cannot be completed.`)
 	}
@@ -722,44 +900,86 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 	const ferment = fSnapshot
 	const phaseReviews = readLatestPhaseReviews(ferment.id)
 	const totalDiff = ferment.worktree.commit ? gatherPhaseEvidence(ferment.worktree.commit) : undefined
-	const journeyResult = await judgeJourneyGrade({
-		fermentName: ferment.name,
-		goal: ferment.goal ?? "",
-		successCriteria: renderSuccessCriteria(ferment.successCriteria, ""),
-		finalSummary: params.final_summary ?? "",
-		phases: ferment.phases.map((p) => {
-			const review = phaseReviews.get(p.id)
-			return {
-				name: p.name,
-				goal: p.goal,
-				status: p.status,
-				gateVerdicts: review?.gateVerdicts?.map((v) => ({
-					id: v.id,
-					verdict: v.verdict,
-					rationale: v.rationale,
-				})),
-			}
-		}),
-		fermentGates: gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
-		totalDiff: totalDiff
-			? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
-			: { available: false },
-	})
+	const journeyResult = await runWithOverlay(`Grading ferment "${ferment.name}"…`, () =>
+		judgeJourneyGradeViaSubagent(
+			{
+				fermentName: ferment.name,
+				goal: ferment.goal ?? "",
+				charter: ferment.charter,
+				successCriteria: renderSuccessCriteria(ferment.successCriteria, ""),
+				finalSummary: params.final_summary ?? "",
+				phases: ferment.phases.map((p) => {
+					const review = phaseReviews.get(p.id)
+					return {
+						name: p.name,
+						goal: p.goal,
+						status: p.status,
+						gateVerdicts: review?.gateVerdicts?.map((v) => ({
+							id: v.id,
+							verdict: v.verdict,
+							rationale: v.rationale,
+						})),
+					}
+				}),
+				fermentGates: gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
+				totalDiff: totalDiff
+					? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
+					: { available: false },
+				evidence: params.evidence,
+			},
+			spawner,
+		),
+	)
 
-	// Resolve the grade. The final judge is advisory; completion gates have
-	// already decided whether shipping is allowed, so judge outages must not
-	// block the user.
-	let resolvedGrade: { grade: Grade; rationale: string } | undefined
+	// Resolve the grade. C-gates already decided ship/refuse. The judge now
+	// ENFORCES quality: a C/D/F grade refuses ship and routes through the same
+	// block-retry / escalation loop used at the phase level. A/B ships with
+	// recommendations persisted. Judge-unavailable outcomes remain advisory
+	// (do NOT refuse ship) — judge outages must not block the user.
+	const FERMENT_GRADE_KEY = "__ferment__"
+	// First attempt requires A; after rework B is also acceptable.
+	const priorFermentRetries = runtime.getBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
+	const minimumAcceptableFermentGrade = priorFermentRetries === 0 ? "A" : "B"
+	const fermentGradeOrder: Record<Grade, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 }
+	let resolvedGrade:
+		| { grade: Grade; rationale: string; recommendations?: string[]; charterVerdicts?: CharterClauseVerdict[] }
+		| undefined
 	let gradeRationale: string
 	if (journeyResult.ok) {
-		resolvedGrade = { grade: journeyResult.grade, rationale: journeyResult.rationale }
+		resolvedGrade = {
+			grade: journeyResult.grade,
+			rationale: journeyResult.rationale,
+			recommendations: journeyResult.recommendations,
+			...(journeyResult.charterVerdicts ? { charterVerdicts: journeyResult.charterVerdicts } : {}),
+		}
 		gradeRationale = journeyResult.rationale
+
+		// Below minimum grade — give the agent a bounded number of retries to fix
+		// the recommendations, then accept the grade and ship.
+		if (fermentGradeOrder[journeyResult.grade] < fermentGradeOrder[minimumAcceptableFermentGrade]) {
+			const recsText = journeyResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
+			const retry = runtime.bumpBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
+
+			if (retry > MAX_BLOCK_RETRIES) {
+				// Budget exhausted — accept the grade and ship with recommendations persisted.
+				// The agent had its retries; we don't block continuation indefinitely.
+				runtime.clearBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
+				// Fall through to the ship path below with the judge's grade + recs.
+			} else {
+				return toolErr(
+					`**Ferment "${ferment.name}"** cannot complete — final LLM grader assigned grade ${journeyResult.grade}, minimum required is ${minimumAcceptableFermentGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}\n\nAddress the recommendations above and call complete_ferment again with an updated summary.`,
+				)
+			}
+		}
 	} else {
 		const failureDetail = `${journeyResult.reason}${journeyResult.detail ? `: ${journeyResult.detail}` : ""}`
 		gradeRationale = `Judge unreachable (${failureDetail}); completion proceeded without a graded review.`
 	}
 
-	// Persist completion and grade together when the advisory judge returns one.
+	const gradedBy = describeJudgeModel()
+	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+
+	// Persist completion and grade together.
 	const completeOutcome = applyAndPersist(params.ferment_id, {
 		type: "complete_ferment",
 		finalSummary: params.final_summary,
@@ -768,14 +988,22 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 					grade: resolvedGrade.grade,
 					rationale: resolvedGrade.rationale,
 					gradedAt: runtime.nowIso(),
+					...(resolvedGrade.recommendations && resolvedGrade.recommendations.length > 0
+						? { recommendations: resolvedGrade.recommendations }
+						: {}),
+					...(resolvedGrade.charterVerdicts ? { charterVerdicts: resolvedGrade.charterVerdicts } : {}),
+					...(gradedBy ? { gradedBy } : {}),
 				}
 			: undefined,
 	})
-	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, ferment)
+	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, ferment, multiModelEnabled)
+
+	// Clear the ferment-level block-retry counter — ship succeeded.
+	runtime.clearBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
 
 	// Cleanup in-memory state.
 	runtime.clearFermentState(params.ferment_id)
-	resetReactiveContinuationNudgeCount(params.ferment_id)
+	clearLifecycleGuard(params.ferment_id)
 	runtime.setActive(undefined)
 
 	const fresh = completeOutcome.ferment
@@ -783,10 +1011,15 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 	const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
 	const gateLines = gates.map((g) => `  ${g.id} (${g.verdict}): ${g.rationale}`).join("\n")
 	const gradeLabel = resolvedGrade?.grade ?? "unavailable"
+	const charterAudit = resolvedGrade?.charterVerdicts?.length
+		? renderCharterAudit(resolvedGrade.charterVerdicts)
+		: fresh.charter && resolvedGrade
+			? "**Charter audit:** not emitted by the grader after retries — completion recorded without per-clause verdicts."
+			: ""
 	const terminalNotice = `This ferment is complete and terminal. Do not call bash/read/list_ferments or any ferment tools for this ferment again without clear user consent. If the user wants a new ferment, tell them to run \`/ferment new "..."\` or \`/ferment one-shot "..."\` — do not search MCP tools or invent a tool.`
 
 	return toolOk(
-		`**Ferment "${fresh.name}"** complete${failedNote}.\n\n---\n\n**Final gates:**\n${gateLines}\n\n**Final grade:** ${gradeLabel} — ${gradeRationale}\n\n${params.final_summary ?? ""}\n\n---\n\n${terminalNotice}`,
+		`**Ferment "${fresh.name}"** complete${failedNote}.\n\n---\n\n**Final gates:**\n${gateLines}\n\n**Final grade:** ${gradeLabel} — ${gradeRationale}${gradedBy ? ` · judge: ${gradedBy}` : ""}\n\n${params.final_summary ?? ""}${charterAudit ? `\n\n${charterAudit}` : ""}\n\n---\n\n${terminalNotice}`,
 	)
 }
 
@@ -796,7 +1029,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: FERMENT_TOOLS.PROPOSE_SCOPING,
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: title, goal, success_criteria (array of acceptance criteria), constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. ferment_id is optional; omit it when no ferment is active and the host will create a new draft ferment from this proposal. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one multi question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: title, goal, success_criteria (array of acceptance criteria), constraints, assumptions, 1-7 phases, questions, gates, and the advisory signals (self_critique, scope_deltas, constraint_costs, quality_dimensions) when they apply. title is required and must be a concise 3-5 word Ferment name. ferment_id is optional; omit it when no ferment is active and the host will create a new draft ferment from this proposal. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one multi question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
@@ -810,6 +1043,8 @@ ${renderGateGuidance("scope_ferment")}`,
 			const normalized = normalizeProposeScopingParams(rawParams)
 			if (!normalized.ok) return normalized.error
 			const params = normalized.params
+
+			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 
 			// 1. Validate P-gates (same as scopeFerment).
 			const gateError = validateGatesOrErr(params.gates, {
@@ -836,7 +1071,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				params.goal,
 			)
 			if (!resolveResult.ok) return resolveResult.error
-			const { fermentId, created: createdFerment } = resolveResult
+			const { fermentId } = resolveResult
 
 			// 4. Replace pending buffer wholesale.
 			const ferment = runtime.getStorage().get(fermentId)
@@ -848,6 +1083,7 @@ ${renderGateGuidance("scope_ferment")}`,
 					withNextActionHint(
 						`Ferment "${ferment.name}" is already ${ferment.status}; ignore this duplicate propose_ferment_scoping call and ${nextAction}.`,
 						ferment,
+						multiModelEnabled,
 					),
 				)
 			}
@@ -879,6 +1115,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				constraints: params.constraints,
 				assumptions: params.assumptions,
 				phases: params.phases,
+				charter: params.charter,
 				proposeIterations: nextIterations,
 			})
 
@@ -887,14 +1124,15 @@ ${renderGateGuidance("scope_ferment")}`,
 			const formatPlanEntry = (suffix?: string): string => (suffix ? `${planEntry}\n\n${suffix}` : planEntry)
 			const planToolOk = (message: string, options: { includePlan?: boolean; suffix?: string } = {}) =>
 				toolOk(options.includePlan ? `${formatPlanEntry(options.suffix)}\n\n${message}` : message)
-			const promptUi = getPromptUi(ctx)
 
 			// 5. Headless path.
-			if (!promptUi?.select && !promptUi?.custom) {
+			if (!ctx.hasUI) {
 				if (questions.length === 0) {
 					const scopeOutcome = confirmPendingScope(runtime, fermentId, params.phases, "propose_ferment_scoping", pi)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
-					return planToolOk(withNextActionHint("Plan saved.", scopeOutcome.outcome.ferment), { includePlan: true })
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment, multiModelEnabled)
+					return planToolOk(withNextActionHint("Plan saved.", scopeOutcome.outcome.ferment, multiModelEnabled), {
+						includePlan: true,
+					})
 				}
 				const recSummary = questions
 					.map((q) => {
@@ -912,14 +1150,15 @@ ${renderGateGuidance("scope_ferment")}`,
 			// agent turn ends, so terminal scrollback is not fighting active-turn
 			// progress writes.
 			if (questions.length === 0) {
-				if (!promptUi?.custom) {
+				if (ctx.mode !== "tui") {
 					// Some hosts expose select/input without custom components; keep them on the pre-review confirmation path.
 					const scopeOutcome = confirmPendingScope(runtime, fermentId, params.phases, "propose_ferment_scoping", pi)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment, multiModelEnabled)
 					return planToolOk(
 						withNextActionHint(
 							`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
 							scopeOutcome.outcome.ferment,
+							multiModelEnabled,
 						),
 						{ includePlan: true },
 					)
@@ -940,6 +1179,7 @@ ${renderGateGuidance("scope_ferment")}`,
 					constraints: params.constraints ?? [],
 					assumptions: params.assumptions ?? "",
 					phases: params.phases,
+					charter: params.charter,
 					planMarkdown: planEntry,
 					proposeIterations: nextIterations,
 					savedAt: new Date().toISOString(),
@@ -950,7 +1190,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			// 7. Tabbed question form + review loop.
 			const runQuestions = async (): Promise<ScopingAnswer[] | "cancelled" | { kind: "dismiss"; qn: number }> => {
 				if (
-					!getPromptUi(ctx)?.custom &&
+					ctx.mode !== "tui" &&
 					questions.every((q) => {
 						const type = getScopingQuestionType(q)
 						return type === "single" || type === "confirm"
@@ -1058,9 +1298,10 @@ ${renderGateGuidance("scope_ferment")}`,
 				const answers = answersResult
 
 				const answersEntry = buildAnswersEntry(questions, answers)
-				if (getPromptUi(ctx)?.custom) {
+				if (ctx.mode === "tui") {
 					const content = buildScopingIterationMessage(questions, answers)
-					void pi.sendMessage(
+					safeSendMessage(
+						pi,
 						{ content, customType: "ferment_scoping_iteration", display: false },
 						{ triggerTurn: true },
 					)
@@ -1087,7 +1328,8 @@ ${renderGateGuidance("scope_ferment")}`,
 						return planToolOk(`${answersEntry}\n\nNo changes made. Waiting for your next instruction.`)
 					}
 					const sayMoreContent = buildFreeformScopingFeedbackMessage(fermentId, userText)
-					void pi.sendMessage(
+					safeSendMessage(
+						pi,
 						{ content: sayMoreContent, customType: "ferment_scoping_iteration", display: false },
 						{ triggerTurn: true },
 					)
@@ -1095,7 +1337,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				}
 
 				const content = buildScopingIterationMessage(questions, answers)
-				void pi.sendMessage({ content, customType: "ferment_scoping_iteration", display: false }, { triggerTurn: true })
+				safeSendMessage(pi, { content, customType: "ferment_scoping_iteration", display: false }, { triggerTurn: true })
 				return planToolOk(`${answersEntry}\n\nAnswers recorded. Updating the plan with your choices...`)
 			}
 		},
@@ -1140,8 +1382,8 @@ ${renderGateGuidance("scope_ferment")}`,
 			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
-		async execute(_, params) {
-			return scopeFerment(runtime, params, { pi })
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			return scopeFerment(runtime, params, { ctx })
 		},
 	})
 
@@ -1151,7 +1393,7 @@ ${renderGateGuidance("scope_ferment")}`,
 		description:
 			"Revise a single scoping field (goal, criteria, constraints, assumptions) on an already-planned ferment.",
 		parameters: UpdateScopeFieldParams,
-		async execute(_, params) {
+		async execute(_, params, _signal, _onUpdate, ctx) {
 			if (
 				params.field !== "goal" &&
 				params.field !== "criteria" &&
@@ -1160,14 +1402,19 @@ ${renderGateGuidance("scope_ferment")}`,
 			) {
 				return toolErr(`Unknown field: ${params.field}. Use goal, criteria, constraints, or assumptions.`)
 			}
+			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "update_scope_field",
 				field: params.field,
 				value: params.value,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error)
+			if (!outcome.ok) return failedToolResult(outcome.error, undefined, multiModelEnabled)
 			return toolOk(
-				withNextActionHint(`Field "${params.field}" updated for "${outcome.ferment.name}".`, outcome.ferment),
+				withNextActionHint(
+					`Field "${params.field}" updated for "${outcome.ferment.name}".`,
+					outcome.ferment,
+					multiModelEnabled,
+				),
 			)
 		},
 	})
@@ -1184,8 +1431,13 @@ ${renderGateGuidance("complete_ferment")}`,
 			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
-		async execute(_, params) {
-			return completeFerment(runtime, params)
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			const spawner = async (prompt: string) => {
+				const result = await spawnGraderAgent(pi, ctx, prompt)
+				if (!result) return { text: "", status: "unavailable" }
+				return result
+			}
+			return completeFerment(runtime, params, { ctx, spawner })
 		},
 	})
 
@@ -1263,7 +1515,7 @@ Returns structured answer fields on success, or a tool error if no audience can 
 			const askContext = {
 				ferment,
 				pi,
-				ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
+				ctx,
 				runtime,
 			}
 			const normalizeResult = normalizeAskUserQuestions(params.questions)

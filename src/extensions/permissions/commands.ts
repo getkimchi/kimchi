@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { type LoadedConfig, appendToConfig, projectConfigPath, userConfigPath } from "./config.js"
+import { appendToConfig, type LoadedConfig, projectConfigPath, userConfigPath } from "./config.js"
 import { parseModeString } from "./mode.js"
 import { parseRule, stringifyRule } from "./rules.js"
 import { numberedChoices, stripChoiceNumber } from "./select-utils.js"

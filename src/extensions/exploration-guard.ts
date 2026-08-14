@@ -133,7 +133,7 @@ export class ExplorationGuard {
 		}
 	}
 
-	turnEnd(sendSteer: (text: string) => void): void {
+	turnEnd(sendSteer: (text: string) => void, isError = false): void {
 		if (!this.isEnabled()) {
 			// Reset both streaks while the guard is suppressed so they don't
 			// fire immediately when it becomes re-enabled (e.g. after scoping).
@@ -141,6 +141,13 @@ export class ExplorationGuard {
 			this.consecutiveNoToolTurns = 0
 			return
 		}
+
+		// Provider errors (e.g. content_filter, budget exhausted) produce empty
+		// responses with no tool calls. Without this guard the no-tool counter
+		// increments on every error response, triggering steer messages that
+		// re-queue into the agent loop and cause infinite retries until budget
+		// is exhausted.
+		if (isError) return
 
 		// No-tool turn: the model produced a response without calling any tools.
 		// Track separately from the read-only streak. Do NOT reset
@@ -270,7 +277,13 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 		return { block: false }
 	})
 
-	pi.on("turn_end", () => {
+	pi.on("turn_end", (event) => {
+		// A failed request produces a turn with no tool calls, but the model never got to act — count
+		// it and the guard steers a turn that was never lazy, re-sending the request that just failed.
+		// This also defers a pending subagent abort: the failed turn is retried upstream, and the
+		// retried turn is the one that produces the summary the orchestrator receives.
+		if (event.message.role === "assistant" && event.message.stopReason === "error") return
+
 		// If a subagent abort is pending, fire it NOW before processing the
 		// steer. The subagent already received the summary-request steer last
 		// turn; whatever it produced this turn becomes the orchestrator output.

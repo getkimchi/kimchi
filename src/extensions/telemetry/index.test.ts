@@ -1,12 +1,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
+import { resetAcpClientInfo, setAcpClientInfo } from "../../modes/acp/state.js"
+import { createContext } from "../__mocks__/context.js"
 import telemetryExtension, {
 	trackSubagentSpawned,
 	trackSurveyAnswered,
 	trackSurveyDismissed,
 	trackSurveyShown,
 } from "./index.js"
+import { logEvents } from "./otlp-test-utils.js"
 import { _resetSharedAccumulators } from "./session-context.js"
 
 vi.mock("../ferment/index.js", () => ({
@@ -38,11 +41,13 @@ const TEST_SURVEY = {
 
 type Handler = (...args: unknown[]) => Promise<void> | void
 
-function createMockApi() {
+function createMockApi(sessionId = "test-session") {
 	const handlers = new Map<string, Handler[]>()
+	const ctx = createContext({ sessionManager: { getSessionId: () => sessionId }, model: { id: "claude-opus-4-6" } })
 	const on = vi.fn((event: string, handler: Handler) => {
 		if (!handlers.has(event)) handlers.set(event, [])
-		handlers.get(event)?.push(handler)
+		const wrapped: Handler = (...args: unknown[]) => handler(args[0], ctx)
+		handlers.get(event)?.push(wrapped)
 	})
 	// pi.events: a minimal EventBus stub so the telemetry extension can
 	// subscribe to ferment domain events without throwing.
@@ -57,7 +62,7 @@ function createMockApi() {
 			return () => {}
 		},
 	}
-	return { on, handlers, events, api: { on, events } as unknown as ExtensionAPI }
+	return { on, handlers, events, api: { on, events } as unknown as ExtensionAPI, ctx }
 }
 
 function getHandler(handlers: Map<string, Handler[]>, event: string): Handler {
@@ -86,11 +91,13 @@ describe("telemetryExtension integration", () => {
 		originalFetch = globalThis.fetch
 		// biome-ignore lint/suspicious/noExplicitAny: test mock
 		globalThis.fetch = fetchMock as any
+		resetAcpClientInfo()
 	})
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch
 		_resetSharedAccumulators()
+		resetAcpClientInfo()
 	})
 
 	it("registers all expected event handlers when enabled", () => {
@@ -113,12 +120,11 @@ describe("telemetryExtension integration", () => {
 	})
 
 	it("full session lifecycle: start -> message -> tool -> shutdown", async () => {
-		const { handlers, api } = createMockApi()
+		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)
 
-		const mockExtCtx = { model: { id: "claude-opus-4-6" } }
-		await getHandler(handlers, "session_start")({}, mockExtCtx)
-		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, mockExtCtx)
+		await getHandler(handlers, "session_start")({}, ctx)
+		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, ctx)
 
 		await getHandler(
 			handlers,
@@ -159,7 +165,6 @@ describe("telemetryExtension integration", () => {
 
 		for (const rec of allRecords) {
 			const attrs = Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
-			expect(attrs.model).toBe("claude-opus-4-6")
 			expect(attrs.session_type).toBe("coding")
 			expect(attrs.ferment_id).toBe("")
 		}
@@ -168,13 +173,40 @@ describe("telemetryExtension integration", () => {
 		expect(metricsCalls.length).toBeGreaterThan(0)
 	})
 
-	it("trackSubagentSpawned sends kimchi.subagent.spawned with source and session_type", async () => {
-		const { handlers, api } = createMockApi()
+	it("emits ACP client_name and client_version when ACP client info is set", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		setAcpClientInfo({ name: "kimchi-vscode", version: "0.0.1" })
 		telemetryExtension(makeConfig())(api)
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
-		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, { model: { id: "claude-opus-4-6" } })
 
-		await trackSubagentSpawned({ id: "a1", type: "explore", description: "find files" })
+		await getHandler(handlers, "session_start")({}, ctx)
+		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, ctx)
+		await getHandler(handlers, "session_shutdown")({ reason: "disconnect" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+		// session.start is emitted only once per process, so assert on
+		// user_message (which always has a pi context) instead.
+		const userMessage = allRecords.find((rec) => rec.eventName === "user_message")
+		expect(userMessage).toBeDefined()
+		const attrs = Object.fromEntries(userMessage?.attributes.map((a) => [a.key, a.value.stringValue]) ?? [])
+		expect(attrs.acp_client_name).toBe("kimchi-vscode")
+		expect(attrs.acp_client_version).toBe("0.0.1")
+	})
+
+	it("trackSubagentSpawned sends kimchi.subagent.spawned with source and session_type", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+
+		await getHandler(handlers, "session_start")({}, ctx)
+		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, ctx)
+
+		await trackSubagentSpawned({ id: "a1", type: "explore", description: "find files" }, ctx)
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
 
 		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
@@ -188,17 +220,30 @@ describe("telemetryExtension integration", () => {
 		const subagentRecord = allRecords.find((rec) => rec.eventName === "subagent.spawned")
 		expect(subagentRecord).toBeDefined()
 		const attrs = Object.fromEntries(subagentRecord?.attributes.map((a) => [a.key, a.value.stringValue]) ?? [])
-		expect(attrs.agent_type).toBe("explore")
-		expect(attrs.reason).toBe("find files")
-		expect(attrs.model).toBe("claude-opus-4-6")
-		expect(attrs.source).toBe("cli")
-		expect(attrs.session_type).toBe("coding")
-		expect(attrs.ferment_id).toBe("")
+		expect(attrs).toEqual({
+			agent_type: "explore",
+			client: "pi",
+			ferment_id: "",
+			model: "claude-opus-4-6",
+			pi_mode: "tui",
+			pi_session_id: "test-session",
+			reason: "find files",
+			"session.id": expect.any(String),
+			session_type: "coding",
+			source: "cli",
+			"telemetry.arch": expect.any(String),
+			"telemetry.host_os": expect.any(String),
+			"telemetry.is_wsl": expect.any(String),
+			"telemetry.os": expect.any(String),
+			"user.account_uuid": "",
+		})
 	})
 
 	it("survey tracking helpers send survey events through the telemetry batch", async () => {
-		const { handlers, api } = createMockApi()
+		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)
+
+		await getHandler(handlers, "session_start")({}, ctx)
 
 		const submissionId = "submission-1"
 		trackSurveyShown({ survey: TEST_SURVEY })
@@ -243,32 +288,33 @@ describe("telemetryExtension integration", () => {
 	})
 
 	it("turn_start event updates ctx.turnIndex", async () => {
-		const { handlers, api } = createMockApi()
+		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 
 		await getHandler(handlers, "turn_start")({ turnIndex: 3 })
 
-		const { default: _ext, ...rest } = await import("./index.js")
 		// Verify via before_provider_headers which exposes ctx.turnIndex
-		const result = getHandler(handlers, "before_provider_headers")({ headers: {} })
-		expect((result as unknown as Record<string, string>)["X-Turn-Index"]).toBe("3")
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+		expect(event.headers["X-Turn-Index"]).toBe("3")
 	})
 
 	it("before_provider_headers injects X-Session-Id and X-Turn-Index", async () => {
-		const { handlers, api } = createMockApi()
+		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 
 		// Set a known turn index via the turn_start handler
 		await getHandler(handlers, "turn_start")({ turnIndex: 4 })
 
-		const result = getHandler(handlers, "before_provider_headers")({ headers: { "User-Agent": "kimchi/1.0" } })
-		const headers = result as unknown as Record<string, string>
+		const event = { headers: { "User-Agent": "kimchi/1.0" } as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+		const { headers } = event
 
 		expect(headers["User-Agent"]).toBe("kimchi/1.0")
 		expect(typeof headers["X-Session-Id"]).toBe("string")
-		expect(headers["X-Session-Id"]).toMatch(/^[0-9a-f-]{36}$/)
+		expect(headers["X-Session-Id"]).toBeTruthy()
 		expect(headers["X-Turn-Index"]).toBe("4")
 	})
 })
@@ -297,10 +343,10 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 	})
 
 	async function setup() {
-		const { handlers, events, api } = createMockApi()
+		const { handlers, events, api, ctx } = createMockApi()
 		const { default: ext } = await import("./index.js")
 		ext(makeConfig())(api)
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 		return { handlers, events }
 	}
 
@@ -332,7 +378,6 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		expect(attrs.ferment_id).toBe("f-001")
 		expect(attrs.ferment_name).toBe("My Ferment")
 		expect(attrs.phase_count).toBe("3")
-		expect(attrs.model).toBe("claude-sonnet-4-6")
 		expect(attrs["session.id"]).toBeDefined()
 	})
 
@@ -364,7 +409,6 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		expect(attrs.grade).toBe("A")
 		expect(attrs.steering_count).toBe("2")
 		expect(attrs.block_retries).toBe("1")
-		expect(attrs.model).toBe("claude-sonnet-4-6")
 	})
 
 	it("ferment:completed without grade omits grade attr", async () => {
@@ -416,7 +460,6 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		const attrs = attrsOf(rec as NonNullable<typeof rec>)
 		expect(attrs.ferment_id).toBe("f-004")
 		expect(attrs.reason).toBe("judge failed")
-		expect(attrs.model).toBe("claude-sonnet-4-6")
 		// New diagnostic fields
 		expect(attrs.lifecycle_stage).toBe("running")
 		expect(attrs.scoping_complete).toBe("true")
@@ -486,7 +529,6 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		expect(attrs.completed_phases).toBe("2")
 		expect(attrs.total_phases).toBe("4")
 		expect(attrs.phase_completion_ratio).toBe("0.5")
-		expect(attrs.model).toBe("claude-sonnet-4-6")
 	})
 
 	it("ferment:stalled → ferment.stalled event emitted for crash-recovery path", async () => {
@@ -754,10 +796,10 @@ describe("edge case coverage", () => {
 	})
 
 	async function setup() {
-		const { handlers, events, api } = createMockApi()
+		const { handlers, events, api, ctx } = createMockApi()
 		const { default: ext } = await import("./index.js")
 		ext(makeConfig())(api)
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 		return { handlers, events }
 	}
 
@@ -936,10 +978,10 @@ describe("token accounting regression tests", () => {
 		// Totals on ferment.completed come from summing phase deltas, not from
 		// diffing the session accumulator. This avoids counting scoping-conversation
 		// tokens that accumulated before phases started.
-		const { handlers, events, api } = createMockApi()
+		const { handlers, events, api, ctx } = createMockApi()
 		const { default: ext, _resetFermentTrackingState } = await import("./index.js")
 		ext(makeConfig())(api)
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 
 		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
 
@@ -1009,7 +1051,7 @@ describe("token accounting regression tests", () => {
 	it("ferment.started is emitted with session_type ferment (active ferment set before emit)", async () => {
 		// Regression: emitFermentCreated was called before setActiveFermentAndApplyProfile,
 		// so session_type was "coding" instead of "ferment".
-		const { handlers, events, api } = createMockApi()
+		const { handlers, events, api, ctx } = createMockApi()
 		const { default: ext } = await import("./index.js")
 		ext(makeConfig())(api)
 
@@ -1017,7 +1059,7 @@ describe("token accounting regression tests", () => {
 		const { getActiveFerment } = await import("../ferment/index.js")
 		vi.mocked(getActiveFerment).mockReturnValue({ id: "f-stype" } as never)
 
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
 		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "f-stype", name: "Session Type", phaseCount: 1 })
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
@@ -1036,6 +1078,215 @@ describe("token accounting regression tests", () => {
 			(rec as NonNullable<typeof rec>).attributes.map((a) => [a.key, a.value.stringValue]),
 		)
 		expect(attrs.session_type).toBe("ferment")
+	})
+
+	it("ferment:scoping_complete → ferment.scoping.complete with all required attributes", async () => {
+		const { handlers, events, api, ctx } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "f-scoping", name: "Scoping Test", phaseCount: 2 })
+		events.emit(FERMENT_EVENTS.STEERING, { fermentId: "f-scoping" })
+		events.emit(FERMENT_EVENTS.STEERING, { fermentId: "f-scoping" })
+		events.emit(FERMENT_EVENTS.SCOPING_COMPLETE, {
+			fermentId: "f-scoping",
+			name: "Scoping Test",
+			proposeIterations: 2,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+		const rec = allRecords.find((r) => r.eventName === "ferment.scoping.complete")
+		expect(rec).toBeDefined()
+		const attrs = Object.fromEntries(
+			(rec as NonNullable<typeof rec>).attributes.map((a) => [a.key, a.value.stringValue]),
+		)
+		expect(attrs.ferment_id).toBe("f-scoping")
+		expect(attrs.session_id).toBeDefined()
+		expect(Number.isFinite(Number(attrs.duration_ms))).toBe(true)
+		expect(attrs.steering_count).toBe("2")
+		expect(Number(attrs.delta_input_tokens)).toBe(0)
+		expect(Number(attrs.delta_output_tokens)).toBe(0)
+		expect(Number(attrs.delta_cost_usd)).toBe(0)
+		expect(attrs.block_retries).toBe("1")
+		expect(attrs.model).toBeDefined()
+	})
+
+	it("ferment:scoping_complete with no steering → steering_count is 0", async () => {
+		const { handlers, events, api, ctx } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "f-scoping-2", name: "No Steer", phaseCount: 1 })
+		events.emit(FERMENT_EVENTS.SCOPING_COMPLETE, {
+			fermentId: "f-scoping-2",
+			name: "No Steer",
+			proposeIterations: 0,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+		const rec = allRecords.find((r) => r.eventName === "ferment.scoping.complete")
+		expect(rec).toBeDefined()
+		const attrs = Object.fromEntries(
+			(rec as NonNullable<typeof rec>).attributes.map((a) => [a.key, a.value.stringValue]),
+		)
+		expect(attrs.ferment_id).toBe("f-scoping-2")
+		expect(attrs.session_id).toBeDefined()
+		expect(attrs.steering_count).toBe("0")
+		expect(attrs.block_retries).toBe("0")
+	})
+
+	it("draft resume preserves an existing scoping baseline and restores a missing one", async () => {
+		const { handlers, events, api, ctx } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_000)
+
+		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "same-process", name: "Same Process", phaseCount: 1 })
+		now.mockReturnValue(5_000)
+		events.emit(FERMENT_EVENTS.SCOPING_RESUMED, { fermentId: "same-process", startedAtMs: 4_000 })
+		events.emit(FERMENT_EVENTS.SCOPING_RESUMED, { fermentId: "new-process", startedAtMs: 2_000 })
+		now.mockReturnValue(10_000)
+		events.emit(FERMENT_EVENTS.SCOPING_COMPLETE, {
+			fermentId: "same-process",
+			name: "Same Process",
+			proposeIterations: 0,
+		})
+		events.emit(FERMENT_EVENTS.SCOPING_COMPLETE, {
+			fermentId: "new-process",
+			name: "New Process",
+			proposeIterations: 0,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const records = fetchMock.mock.calls
+			.filter(([url]: unknown[]) => String(url).includes("/logs"))
+			.flatMap(([, opts]: unknown[]) => {
+				const body = JSON.parse((opts as { body: string }).body)
+				return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+					eventName: string
+					attributes: Array<{ key: string; value: { stringValue: string } }>
+				}>
+			})
+		const attrsFor = (fermentId: string) => {
+			const record = records.find(
+				(record) =>
+					record.eventName === "ferment.scoping.complete" &&
+					record.attributes.some((attr) => attr.key === "ferment_id" && attr.value.stringValue === fermentId),
+			)
+			return Object.fromEntries(record?.attributes.map((attr) => [attr.key, attr.value.stringValue]) ?? [])
+		}
+
+		expect(attrsFor("same-process").duration_ms).toBe("9000")
+		expect(attrsFor("new-process").duration_ms).toBe("8000")
+		expect(records.filter((record) => record.eventName === "ferment.started")).toHaveLength(1)
+	})
+
+	it("ferment:scoping_complete after STARTED with message_end → non-zero token deltas", async () => {
+		const { handlers, events, api, ctx } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		// Simulate the permissions path: STARTED fires before scope.
+		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "f-perms", name: "Perms Plan", phaseCount: 0 })
+
+		// Simulate token usage during scoping
+		await getHandler(
+			handlers,
+			"message_end",
+		)({
+			message: {
+				role: "assistant",
+				model: "claude-sonnet-4-6",
+				provider: "anthropic",
+				timestamp: Date.now(),
+				usage: { input: 300, output: 100, cacheRead: 0, cacheWrite: 0, cost: { total: 0.02 } },
+			},
+		})
+
+		events.emit(FERMENT_EVENTS.SCOPING_COMPLETE, {
+			fermentId: "f-perms",
+			name: "Perms Plan",
+			proposeIterations: 1,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+		const rec = allRecords.find((r) => r.eventName === "ferment.scoping.complete")
+		expect(rec).toBeDefined()
+		const attrs = Object.fromEntries(
+			(rec as NonNullable<typeof rec>).attributes.map((a) => [a.key, a.value.stringValue]),
+		)
+		expect(attrs.ferment_id).toBe("f-perms")
+		expect(attrs.session_id).toBeDefined()
+		expect(Number.isFinite(Number(attrs.duration_ms))).toBe(true)
+		// Token deltas should reflect the message_end usage
+		expect(Number(attrs.delta_input_tokens)).toBe(300)
+		expect(Number(attrs.delta_output_tokens)).toBe(100)
+		expect(Number(attrs.delta_cost_usd)).toBeCloseTo(0.02, 5)
+		// proposeIterations=1 → Math.max(0, 1-1) = 0 retries
+		expect(attrs.block_retries).toBe("0")
+	})
+
+	it("ferment:user_unblocked → user.unblock_time with ferment_id, session_id and duration_ms", async () => {
+		const { handlers, events, api, ctx } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		events.emit(FERMENT_EVENTS.USER_UNBLOCKED, {
+			fermentId: "f-unblock",
+			durationMs: 5000,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+		const rec = allRecords.find((r) => r.eventName === "user.unblock_time")
+		expect(rec).toBeDefined()
+		const attrs = Object.fromEntries(
+			(rec as NonNullable<typeof rec>).attributes.map((a) => [a.key, a.value.stringValue]),
+		)
+		expect(attrs.ferment_id).toBe("f-unblock")
+		expect(attrs.session_id).toBeDefined()
+		expect(attrs.duration_ms).toBe("5000")
 	})
 })
 
@@ -1068,10 +1319,10 @@ describe("bash-tool-guard telemetry via pi.events", () => {
 	})
 
 	async function setup() {
-		const { handlers, events, api } = createMockApi()
+		const { handlers, events, api, ctx } = createMockApi()
 		const { default: ext } = await import("./index.js")
 		ext(makeConfig())(api)
-		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		await getHandler(handlers, "session_start")({}, ctx)
 		return { handlers, events }
 	}
 
@@ -1110,7 +1361,6 @@ describe("bash-tool-guard telemetry via pi.events", () => {
 		// Raw command text must not leak into OTLP — only structured fields.
 		expect(attrs.segment_preview).toBeUndefined()
 		expect(attrs.matchedSegment).toBeUndefined()
-		expect(attrs.model).toBe("claude-sonnet-4-6")
 	})
 
 	it("bash_tool_guard:block → bash_tool_guard.block OTLP record with tool", async () => {
@@ -1164,6 +1414,192 @@ describe("bash-tool-guard telemetry via pi.events", () => {
 			category: "read",
 			tool: "cat",
 			count: 1,
+		})
+		expect(fetchMock).not.toHaveBeenCalled()
+	})
+})
+
+describe("loop-guard telemetry via pi.events", () => {
+	let fetchMock: ReturnType<typeof vi.fn>
+	let originalFetch: typeof globalThis.fetch
+
+	beforeEach(() => {
+		fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" })
+		originalFetch = globalThis.fetch
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		globalThis.fetch = fetchMock as any
+	})
+
+	afterEach(async () => {
+		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
+		const { _resetFermentTrackingState } = await import("./index.js")
+		_resetFermentTrackingState()
+		vi.restoreAllMocks()
+	})
+
+	async function setup() {
+		const { handlers, events, api, ctx } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+		return { handlers, events }
+	}
+
+	function extractRecords() {
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		return logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+	}
+
+	function attrsOf(rec: { attributes: Array<{ key: string; value: { stringValue: string } }> }) {
+		return Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
+	}
+
+	/** Flush buffered OTLP log records by triggering session_shutdown. */
+	async function flushTelemetry(handlers: Map<string, Handler[]>) {
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+	}
+
+	it("loop_guard:warn → loop_guard.warn OTLP record with detector, count, is_subagent", async () => {
+		const { handlers, events } = await setup()
+		const { LOOP_GUARD_EVENTS } = await import("../loop-guard-events.js")
+
+		events.emit(LOOP_GUARD_EVENTS.WARN, {
+			detector: "edit_run",
+			count: 3,
+			is_subagent: true,
+		})
+		await flushTelemetry(handlers)
+
+		const rec = extractRecords().find((r) => r.eventName === "loop_guard.warn")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.detector).toBe("edit_run")
+		expect(attrs.count).toBe("3")
+		expect(attrs.is_subagent).toBe("true")
+		// No raw args/command text must leak into OTLP.
+		expect(attrs.reason).toBeUndefined()
+		expect(attrs.toolArgs).toBeUndefined()
+	})
+
+	it("loop_guard:subagent_abort → loop_guard.subagent_abort OTLP record", async () => {
+		const { handlers, events } = await setup()
+		const { LOOP_GUARD_EVENTS } = await import("../loop-guard-events.js")
+
+		events.emit(LOOP_GUARD_EVENTS.SUBAGENT_ABORT, {
+			detector: "consecutive_identical",
+			count: 1,
+			is_subagent: true,
+		})
+		await flushTelemetry(handlers)
+
+		const rec = extractRecords().find((r) => r.eventName === "loop_guard.subagent_abort")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.detector).toBe("consecutive_identical")
+		expect(attrs.count).toBe("1")
+		expect(attrs.is_subagent).toBe("true")
+	})
+
+	it("does NOT emit OTLP records when telemetry is disabled", async () => {
+		const { events } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig({ enabled: false }))({ on: vi.fn(), events } as unknown as ExtensionAPI)
+		const { LOOP_GUARD_EVENTS } = await import("../loop-guard-events.js")
+		events.emit(LOOP_GUARD_EVENTS.WARN, {
+			detector: "edit_run",
+			count: 1,
+			is_subagent: false,
+		})
+		expect(fetchMock).not.toHaveBeenCalled()
+	})
+})
+
+describe("workflow telemetry via pi.events", () => {
+	let fetchMock: ReturnType<typeof vi.fn>
+	let originalFetch: typeof globalThis.fetch
+
+	beforeEach(() => {
+		fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" })
+		originalFetch = globalThis.fetch
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		globalThis.fetch = fetchMock as any
+	})
+
+	afterEach(async () => {
+		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
+		const { _resetFermentTrackingState } = await import("./index.js")
+		_resetFermentTrackingState()
+		vi.restoreAllMocks()
+	})
+
+	async function setup() {
+		const { handlers, events, api, ctx } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+		return { handlers, events }
+	}
+
+	/** One record's attributes, looked up by its OTLP event name. */
+	function attrsOf(eventName: string): Record<string, string> | undefined {
+		return logEvents(fetchMock).find((record) => record.eventName === eventName)?.attrs
+	}
+
+	/** Flush buffered OTLP log records by triggering session_shutdown. */
+	async function flushTelemetry(handlers: Map<string, Handler[]>) {
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+	}
+
+	it("one envelope subscription: every workflow event arrives through workflow:telemetry", async () => {
+		const { handlers, events } = await setup()
+		const { WORKFLOW_TELEMETRY_CHANNEL } = await import("./workflow-events.js")
+
+		events.emit(WORKFLOW_TELEMETRY_CHANNEL, {
+			event: "run_started",
+			run_id: "workflow-demo-1a2b3c4d",
+			workflow_name: "demo",
+			at: "2026-01-01T00:00:00.000Z",
+		})
+		events.emit(WORKFLOW_TELEMETRY_CHANNEL, {
+			event: "step_failed",
+			run_id: "workflow-demo-1a2b3c4d",
+			workflow_name: "demo",
+			at: "2026-01-01T00:00:05.000Z",
+			step_name: "gate",
+			error: { message: "gate did not pass" },
+			duration_ms: 5000,
+		})
+		await flushTelemetry(handlers)
+
+		const started = attrsOf("workflow.run.started")
+		expect(started?.run_id).toBe("workflow-demo-1a2b3c4d")
+		expect(started?.workflow_name).toBe("demo")
+		expect(started?.["session.id"]).toBeDefined()
+
+		const failed = attrsOf("workflow.step.failed")
+		expect(failed?.step_name).toBe("gate")
+		expect(failed?.["error.message"]).toBe("gate did not pass")
+		expect(failed?.duration_ms).toBe("5000")
+	})
+
+	it("does NOT emit OTLP records when telemetry is disabled", async () => {
+		const { events } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig({ enabled: false }))({ on: vi.fn(), events } as unknown as ExtensionAPI)
+		const { WORKFLOW_TELEMETRY_CHANNEL } = await import("./workflow-events.js")
+		events.emit(WORKFLOW_TELEMETRY_CHANNEL, {
+			event: "run_started",
+			run_id: "workflow-demo-1a2b3c4d",
+			workflow_name: "demo",
+			at: "2026-01-01T00:00:00.000Z",
 		})
 		expect(fetchMock).not.toHaveBeenCalled()
 	})

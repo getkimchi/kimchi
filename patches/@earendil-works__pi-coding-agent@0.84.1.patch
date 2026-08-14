@@ -1,0 +1,550 @@
+# Patch: Kimchi runtime and UI integrations for pi-coding-agent 0.84.1
+#
+# Tracking: LLM-2564. No matching upstream issue exists yet; report remaining
+# generic changes to https://github.com/earendil-works/pi before the next upgrade.
+# Retains Kimchi CLI/provider defaults, extension-triggered prompt handling,
+# forced compaction, model selection, extension UI helpers, and compact visuals.
+# Removal: delete each hunk once the pinned Pi release exposes equivalent APIs
+# or Kimchi no longer needs the branded behavior.
+#
+diff --git a/dist/cli/args.js b/dist/cli/args.js
+index e66b528fe676bd24ee5ad95abaa6201418850678..a15fe8267bfe863a8becaadc0f894ace5db70767 100644
+--- a/dist/cli/args.js
++++ b/dist/cli/args.js
+@@ -346,6 +346,7 @@ ${chalk.bold("Examples:")}
+   ${APP_NAME} --export session.jsonl output.html
+ 
+ ${chalk.bold("Environment Variables:")}
++  KIMCHI_API_KEY                   - Kimchi API key (auto-login when not already configured)
+   ANTHROPIC_AUTH_TOKEN             - Anthropic bearer auth token
+   ANTHROPIC_API_KEY                - Anthropic Claude API key
+   ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
+diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
+index ce8a9a2a613c08de483a6c94ef4f6341efff0457..a544673865fbe886ae36b03f755b16b923a61e8f 100644
+--- a/dist/core/agent-session.js
++++ b/dist/core/agent-session.js
+@@ -1087,7 +1087,37 @@ export class AgentSession {
+             }
+         }
+         else if (options?.triggerTurn) {
+-            await this._runAgentPrompt(appMessage);
++            // kimchi-dev: mirror prompt() for extension-triggered turns.
++            const triggerMessages = [appMessage];
++            const triggerParts = Array.isArray(appMessage.content)
++                ? appMessage.content
++                : [{ type: "text", text: String(appMessage.content) }];
++            const triggerText = triggerParts
++                .filter((part) => part.type === "text")
++                .map((part) => part.text)
++                .join("\n");
++            const beforeResult = await this._extensionRunner.emitBeforeAgentStart(triggerText, undefined, this._baseSystemPrompt, this._baseSystemPromptOptions);
++            if (beforeResult?.messages) {
++                for (const msg of beforeResult.messages) {
++                    triggerMessages.unshift({
++                        role: "custom",
++                        customType: msg.customType,
++                        content: msg.content ?? [],
++                        display: msg.display,
++                        details: msg.details,
++                        timestamp: Date.now(),
++                    });
++                }
++            }
++            if (beforeResult?.systemPrompt !== undefined) {
++                this._systemPromptOverride = beforeResult.systemPrompt;
++                this.agent.state.systemPrompt = beforeResult.systemPrompt;
++            }
++            else {
++                this._systemPromptOverride = undefined;
++                this.agent.state.systemPrompt = this._baseSystemPrompt;
++            }
++            await this._runAgentPrompt(triggerMessages);
+         }
+         else {
+             this.agent.state.messages.push(appMessage);
+@@ -1364,7 +1394,7 @@ export class AgentSession {
+      * Aborts current agent operation first.
+      * @param customInstructions Optional instructions for the compaction summary
+      */
+-    async compact(customInstructions) {
++    async compact(customInstructions, force = false) {
+         await this.abort();
+         this._compactionAbortController = new AbortController();
+         this._emit({ type: "compaction_start", reason: "manual" });
+@@ -1375,14 +1405,21 @@ export class AgentSession {
+             const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
+             const pathEntries = this.sessionManager.getBranch();
+             const settings = this.settingsManager.getCompactionSettings();
+-            const preparation = prepareCompaction(pathEntries, settings);
++            let preparation = prepareCompaction(pathEntries, settings);
+             if (!preparation) {
+                 // Check why we can't compact
+                 const lastEntry = pathEntries[pathEntries.length - 1];
+                 if (lastEntry?.type === "compaction") {
+                     throw new Error("Already compacted");
+                 }
+-                throw new Error("Nothing to compact (session too small)");
++                if (!force) {
++                    throw new Error("Nothing to compact (session too small)");
++                }
++                // force=true: retry with keepRecentTokens=0 so even small sessions compact.
++                preparation = prepareCompaction(pathEntries, { ...settings, keepRecentTokens: 0 });
++                if (!preparation) {
++                    throw new Error("Nothing to compact (no valid cut point)");
++                }
+             }
+             let extensionCompaction;
+             let fromExtension = false;
+@@ -1776,7 +1813,8 @@ export class AgentSession {
+         };
+         this._resourceLoader.extendResources(extensionPaths);
+         this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+-        this.agent.state.systemPrompt = this._baseSystemPrompt;
++        // kimchi-dev: preserve a before_agent_start prompt across resource reloads.
++        this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+     }
+     buildExtensionResourcePaths(entries) {
+         return entries.map((entry) => {
+@@ -1911,7 +1949,7 @@ export class AgentSession {
+             compact: (options) => {
+                 void (async () => {
+                     try {
+-                        const result = await this.compact(options?.customInstructions);
++                        const result = await this.compact(options?.customInstructions, options?.force ?? false);
+                         options?.onComplete?.(result);
+                     }
+                     catch (error) {
+diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
+index cb7b8e7cfb9d1fb07f4f8c3161d25927b3186e94..7ee0096f0bfc71534b34a17015525acd1bc45316 100644
+--- a/dist/core/extensions/types.d.ts
++++ b/dist/core/extensions/types.d.ts
+@@ -189,6 +189,16 @@ export interface ExtensionUIContext {
+     getToolsExpanded(): boolean;
+     /** Set tool output expansion state. */
+     setToolsExpanded(expanded: boolean): void;
++    /**
++     * Apply a theme live without persisting to settingsManager.
++     * Exposed by the kimchi-dev patch; matches the internal onThemePreview callback used by /settings.
++     */
++    previewTheme(name: string): { success: boolean; error?: string };
++    /**
++     * Show an error overlay (same surface as /settings failures).
++     * Exposed by the kimchi-dev patch; delegates to SessionMode.showError.
++     */
++    showError(errorMessage: string): void;
+ }
+ export interface ContextUsage {
+     /** Estimated context tokens, or null if unknown (e.g. right after compaction, before next LLM response). */
+@@ -199,6 +209,9 @@ export interface ContextUsage {
+ }
+ export interface CompactOptions {
+     customInstructions?: string;
++    /** When true, compact even if the session is below the normal size threshold.
++     *  Uses keepRecentTokens=0 so all history is eligible to be summarised. */
++    force?: boolean;
+     onComplete?: (result: CompactionResult) => void;
+     onError?: (error: Error) => void;
+ }
+diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
+index 6b2143e141ad2865616e42ae60b2f382fe443544..556e46322e8cb9ecbc17bc134b52c1cfa761cedf 100644
+--- a/dist/core/model-resolver.js
++++ b/dist/core/model-resolver.js
+@@ -39,6 +39,7 @@ export const defaultModelPerProvider = {
+     opencode: "kimi-k2.6",
+     "opencode-go": "kimi-k2.6",
+     "kimi-coding": "kimi-for-coding",
++    "kimchi-dev": "minimax-m3",
+     "cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
+     "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
+     "qwen-token-plan": "qwen3.7-max",
+diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
+index 7d93ba62bdb5d47e129751e8075cbb34620322ad..89c8147bdfcd8ce91ea6a51ea4822c81cdddaaf9 100644
+--- a/dist/core/model-runtime.js
++++ b/dist/core/model-runtime.js
+@@ -82,6 +82,7 @@ export class ModelRuntime {
+         const builtinModelDataGeneratedAt = builtinProviderCatalog.getBuiltinModelDataGeneratedAt();
+         const providers = builtinProviderCatalog
+             .builtinProviders()
++            .filter((provider) => !process.env.KIMCHI_DISABLE_BUILTIN_PROVIDERS || provider.id === "kimchi-dev")
+             .map((provider) => provider.id === "radius"
+             ? provider
+             : withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt));
+diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
+index f274908793624a5870008ab738fa19ac6758165c..320acfb56155b8d9711b423824350b7630b8e8cb 100644
+--- a/dist/core/tools/bash.js
++++ b/dist/core/tools/bash.js
+@@ -81,6 +81,12 @@ export function createLocalBashOperations(options) {
+                         timedOut = true;
+                         if (child.pid)
+                             killProcessTree(child.pid);
++                        // Close inherited pipes after a short grace so detached
++                        // descendants cannot keep waitForChildProcess pending.
++                        setTimeout(() => {
++                            child.stdout?.destroy();
++                            child.stderr?.destroy();
++                        }, 500);
+                     }, timeoutMs);
+                 }
+                 // Stream stdout and stderr.
+diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
+index 9e83601e93c81b87d52448b429f4817e6cf25bd5..a124622278d37c6372466b990a2240dae094e9c5 100644
+--- a/dist/core/tools/edit.js
++++ b/dist/core/tools/edit.js
+@@ -64,7 +64,7 @@ function validateEditInput(input) {
+     return { path: input.path, edits: input.edits };
+ }
+ function createEditCallRenderComponent() {
+-    return Object.assign(new Box(1, 1, (text) => text), {
++    return Object.assign(new Box(1, 1), {
+         preview: undefined,
+         previewArgsKey: undefined,
+         previewPending: false,
+@@ -129,14 +129,14 @@ function formatEditResult(args, preview, result, theme, isError) {
+ function getEditHeaderBg(preview, settledError, theme) {
+     if (preview) {
+         if ("error" in preview) {
+-            return (text) => theme.bg("toolErrorBg", text);
++            return (text) => theme.fg("error", text);
+         }
+-        return (text) => theme.bg("toolSuccessBg", text);
++        return (text) => theme.fg("success", text);
+     }
+     if (settledError) {
+-        return (text) => theme.bg("toolErrorBg", text);
++        return (text) => theme.fg("error", text);
+     }
+-    return (text) => theme.bg("toolPendingBg", text);
++    return (text) => theme.fg("accent", text);
+ }
+ function buildEditCallComponent(component, args, theme, cwd) {
+     component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
+diff --git a/dist/modes/interactive/components/branch-summary-message.js b/dist/modes/interactive/components/branch-summary-message.js
+index e23ca6db02a29814112dd4945bd868604eb6676f..d0f6fd7aeb79c6a20655805152a30970f1b4cc2a 100644
+--- a/dist/modes/interactive/components/branch-summary-message.js
++++ b/dist/modes/interactive/components/branch-summary-message.js
+@@ -10,7 +10,7 @@ export class BranchSummaryMessageComponent extends Box {
+     message;
+     markdownTheme;
+     constructor(message, markdownTheme = getMarkdownTheme()) {
+-        super(1, 1, (t) => theme.bg("customMessageBg", t));
++        super(1, 1, (t) => theme.fg("accent", t));
+         this.message = message;
+         this.markdownTheme = markdownTheme;
+         this.updateDisplay();
+diff --git a/dist/modes/interactive/components/compaction-summary-message.js b/dist/modes/interactive/components/compaction-summary-message.js
+index 48c22718e1dff7cf4faa4cc09b8a917301b0d892..93b59defc4ecc9caf7faf907230260a1a3f7c477 100644
+--- a/dist/modes/interactive/components/compaction-summary-message.js
++++ b/dist/modes/interactive/components/compaction-summary-message.js
+@@ -10,7 +10,7 @@ export class CompactionSummaryMessageComponent extends Box {
+     message;
+     markdownTheme;
+     constructor(message, markdownTheme = getMarkdownTheme()) {
+-        super(1, 1, (t) => theme.bg("customMessageBg", t));
++        super(1, 1, (t) => theme.fg("accent", t));
+         this.message = message;
+         this.markdownTheme = markdownTheme;
+         this.updateDisplay();
+diff --git a/dist/modes/interactive/components/custom-message.js b/dist/modes/interactive/components/custom-message.js
+index 7c6fb37daea606e59d1616d24fb18d689fed6023..918f1027fa6014595cf399c456da967ff5d7d1a1 100644
+--- a/dist/modes/interactive/components/custom-message.js
++++ b/dist/modes/interactive/components/custom-message.js
+@@ -20,7 +20,7 @@ export class CustomMessageComponent extends Container {
+         this.outputPad = outputPad;
+         this.addChild(new Spacer(1));
+         // Create box with purple background (used for default rendering)
+-        this.box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
++        this.box = new Box(1, 1, (t) => theme.fg("accent", t));
+         this.rebuild();
+     }
+     setExpanded(expanded) {
+diff --git a/dist/modes/interactive/components/extension-selector.js b/dist/modes/interactive/components/extension-selector.js
+index 8220e06bc1e2b136c4b84c4af3cd29fd21b98a9f..b213a26c7ac002776850a59d7cafce4ce1379683 100644
+--- a/dist/modes/interactive/components/extension-selector.js
++++ b/dist/modes/interactive/components/extension-selector.js
+@@ -2,7 +2,7 @@
+  * Generic selector component for extensions.
+  * Displays a list of string options with keyboard navigation.
+  */
+-import { Container, getKeybindings, Spacer, Text } from "@earendil-works/pi-tui";
++import { Container, getKeybindings, matchesKey, Spacer, Text } from "@earendil-works/pi-tui";
+ import { theme } from "../theme/theme.js";
+ import { CountdownTimer } from "./countdown-timer.js";
+ import { DynamicBorder } from "./dynamic-border.js";
+@@ -75,6 +75,16 @@ export class ExtensionSelectorComponent extends Container {
+         else if (kb.matches(keyData, "tui.select.cancel")) {
+             this.onCancelCallback();
+         }
++        else {
++            for (let n = 1; n <= 9; n++) {
++                if (matchesKey(keyData, String(n))) {
++                    const selected = this.options[n - 1];
++                    if (selected)
++                        this.onSelectCallback(selected);
++                    break;
++                }
++            }
++        }
+     }
+     dispose() {
+         this.countdown?.dispose();
+diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
+index afdb7896d9c55cb04ca529d25f1d3e21ae707757..1c87b9030bc72e31587e37b3ecc0cddd103430d9 100644
+--- a/dist/modes/interactive/components/model-selector.js
++++ b/dist/modes/interactive/components/model-selector.js
+@@ -33,6 +33,7 @@ export class ModelSelectorComponent extends Container {
+     refreshStatusMessage = "Refreshing model catalogs…";
+     refreshStatusSuccess = false;
+     tui;
++    sessionId;
+     scopedModels;
+     scope = "all";
+     scopeText;
+@@ -40,9 +41,10 @@ export class ModelSelectorComponent extends Container {
+     refreshAbortController = new AbortController();
+     refreshTimeout;
+     closed = false;
+-    constructor(tui, currentModel, settingsManager, modelRuntime, scopedModels, onSelect, onCancel, initialSearchInput) {
++    constructor(tui, currentModel, settingsManager, modelRuntime, scopedModels, onSelect, onCancel, initialSearchInput, sessionId) {
+         super();
+         this.tui = tui;
++        this.sessionId = sessionId;
+         this.currentModel = currentModel;
+         this.settingsManager = settingsManager;
+         this.modelRuntime = modelRuntime;
+@@ -100,6 +102,14 @@ export class ModelSelectorComponent extends Container {
+             model,
+         }));
+         this.allModels = this.sortModels(models);
++        const orchRef = process.__kimchiOrchestratorRef instanceof Map ? process.__kimchiOrchestratorRef.get(this.sessionId) : undefined;
++        if (orchRef) {
++            const orchId = orchRef.split('/').pop();
++            const orchEntry = this.allModels.find(m => m.id === orchId);
++            if (orchEntry) {
++                this.allModels.unshift({ provider: 'orchestration', id: 'multi-model', model: orchEntry.model, _isMultiModel: true });
++            }
++        }
+         this.scopedModels = this.scopedModels.map((scoped) => {
+             const refreshed = this.modelRuntime.getModel(scoped.model.provider, scoped.model.id);
+             return refreshed ? { ...scoped, model: refreshed } : scoped;
+@@ -109,6 +119,13 @@ export class ModelSelectorComponent extends Container {
+             id: scoped.model.id,
+             model: scoped.model,
+         }));
++        if (orchRef) {
++            const orchIdScoped = orchRef.split('/').pop();
++            const orchScopedEntry = this.scopedModelItems.find(m => m.id === orchIdScoped);
++            if (orchScopedEntry) {
++                this.scopedModelItems.unshift({ provider: 'orchestration', id: 'multi-model', model: orchScopedEntry.model, _isMultiModel: true });
++            }
++        }
+         this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
+         this.filteredModels = this.activeModels;
+         const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
+@@ -225,17 +242,21 @@ export class ModelSelectorComponent extends Container {
+             if (!item)
+                 continue;
+             const isSelected = i === this.selectedIndex;
+-            const isCurrent = modelsAreEqual(this.currentModel, item.model);
++            const isMultiModelEnabled = process.__kimchiMultiModelEnabled instanceof Map ? !!process.__kimchiMultiModelEnabled.get(this.sessionId) : false;
++            const isCurrent = item._isMultiModel
++                ? isMultiModelEnabled
++                : !isMultiModelEnabled && modelsAreEqual(this.currentModel, item.model);
++            const displayId = item._isMultiModel ? 'multi-model' : item.id;
+             let line = "";
+             if (isSelected) {
+                 const prefix = theme.fg("accent", "→ ");
+-                const modelText = `${item.id}`;
++                const modelText = `${displayId}`;
+                 const providerBadge = theme.fg("muted", `[${item.provider}]`);
+                 const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
+                 line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${checkmark}`;
+             }
+             else {
+-                const modelText = `  ${item.id}`;
++                const modelText = `  ${displayId}`;
+                 const providerBadge = theme.fg("muted", `[${item.provider}]`);
+                 const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
+                 line = `${modelText} ${providerBadge}${checkmark}`;
+@@ -314,6 +335,11 @@ export class ModelSelectorComponent extends Container {
+     }
+     handleSelect(model) {
+         this.dispose();
++        const selectedItem = this.filteredModels[this.selectedIndex];
++        if (!(process.__kimchiMultiModelEnabled instanceof Map)) {
++            process.__kimchiMultiModelEnabled = new Map();
++        }
++        process.__kimchiMultiModelEnabled.set(this.sessionId, !!selectedItem?._isMultiModel);
+         // Save as new default
+         this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+         this.onSelectCallback(model);
+diff --git a/dist/modes/interactive/components/skill-invocation-message.js b/dist/modes/interactive/components/skill-invocation-message.js
+index 561f3d2540db0a8d934bc2bbecb097aaa7c88458..da4601b0aa0ea1145505300ba77485cfc5c48bb0 100644
+--- a/dist/modes/interactive/components/skill-invocation-message.js
++++ b/dist/modes/interactive/components/skill-invocation-message.js
+@@ -11,7 +11,7 @@ export class SkillInvocationMessageComponent extends Box {
+     skillBlock;
+     markdownTheme;
+     constructor(skillBlock, markdownTheme = getMarkdownTheme()) {
+-        super(1, 1, (t) => theme.bg("customMessageBg", t));
++        super(1, 1, (t) => theme.fg("accent", t));
+         this.skillBlock = skillBlock;
+         this.markdownTheme = markdownTheme;
+         this.updateDisplay();
+diff --git a/dist/modes/interactive/components/tool-execution.js b/dist/modes/interactive/components/tool-execution.js
+index 3f93cc6c5665f603d29b3d6ac3dabfa560d6bb32..a0b9d9a89b5f2e6384d4b909a949794e20587ae4 100644
+--- a/dist/modes/interactive/components/tool-execution.js
++++ b/dist/modes/interactive/components/tool-execution.js
+@@ -43,8 +43,8 @@ export class ToolExecutionComponent extends Container {
+         // Always create all shell variants. contentBox is used for default renderer-based composition.
+         // selfRenderContainer is used when the tool renders its own framing.
+         // contentText is reserved for generic fallback rendering when no tool definition exists.
+-        this.contentBox = new Box(1, 1, (text) => theme.bg("toolPendingBg", text));
+-        this.contentText = new Text("", 1, 1, (text) => theme.bg("toolPendingBg", text));
++        this.contentBox = new Box(1, 1, (text) => theme.fg("accent", text));
++        this.contentText = new Text("", 1, 1, (text) => theme.fg("accent", text));
+         this.selfRenderContainer = new Container();
+         if (this.hasRendererDefinition()) {
+             this.addChild(this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox);
+@@ -204,10 +204,10 @@ export class ToolExecutionComponent extends Container {
+     }
+     updateDisplay() {
+         const bgFn = this.isPartial
+-            ? (text) => theme.bg("toolPendingBg", text)
++            ? (text) => theme.fg("accent", text)
+             : this.result?.isError
+-                ? (text) => theme.bg("toolErrorBg", text)
+-                : (text) => theme.bg("toolSuccessBg", text);
++                ? (text) => theme.fg("error", text)
++                : (text) => theme.fg("success", text);
+         let hasContent = false;
+         this.hideComponent = false;
+         if (this.hasRendererDefinition()) {
+diff --git a/dist/modes/interactive/components/user-message.js b/dist/modes/interactive/components/user-message.js
+index 2e0490362d3396995b587f502ff3e69a7cad9a43..0cb75bb6a9fd0c0a9bdb5eba7cf2eeb8e3eae896 100644
+--- a/dist/modes/interactive/components/user-message.js
++++ b/dist/modes/interactive/components/user-message.js
+@@ -11,6 +11,7 @@ export class UserMessageComponent extends Container {
+     text;
+     markdownTheme;
+     outputPad;
++    contentBox;
+     markdownTransformers;
+     constructor(text, markdownTheme = getMarkdownTheme(), outputPad = 1, markdownTransformers = []) {
+         super();
+@@ -26,15 +27,15 @@ export class UserMessageComponent extends Container {
+     }
+     rebuild() {
+         this.clear();
+-        const contentBox = new Box(this.outputPad, 1, (content) => theme.bg("userMessageBg", content));
+-        contentBox.addChild(new Markdown(this.text, 0, 0, this.markdownTheme, {
++        this.contentBox = new Box(this.outputPad, 1, (content) => theme.fg("accent", content));
++        this.contentBox.addChild(new Markdown(this.text, 0, 0, this.markdownTheme, {
+             color: (content) => theme.fg("userMessageText", content),
+         }, {
+             preserveOrderedListMarkers: true,
+             preserveBackslashEscapes: true,
+             transform: createMarkdownTransform("user", false, this.markdownTransformers),
+         }));
+-        this.addChild(contentBox);
++        this.addChild(this.contentBox);
+     }
+     render(width) {
+         const lines = super.render(width);
+diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
+index 42e655de0fee8081a31cb588426edd30992d893c..4f33b15d036dd0f24f5e03f3712d3e9bec63d9e3 100644
+--- a/dist/modes/interactive/interactive-mode.js
++++ b/dist/modes/interactive/interactive-mode.js
+@@ -1844,6 +1844,7 @@ export class InteractiveMode {
+             confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
+             input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
+             notify: (message, type) => this.showExtensionNotify(message, type),
++            showError: (errorMessage) => this.showError(errorMessage),
+             onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
+             setStatus: (key, text) => this.setExtensionStatus(key, text),
+             setWorkingMessage: (message) => {
+@@ -1860,7 +1861,7 @@ export class InteractiveMode {
+             setHeader: (factory) => this.setExtensionHeader(factory),
+             setTitle: (title) => this.ui.terminal.setTitle(title),
+             custom: (factory, options) => this.showExtensionCustom(factory, options),
+-            pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
++            pasteToEditor: (text) => this.ui.handleInput(`\x1b[200~${text}\x1b[201~`),
+             setEditorText: (text) => this.editor.setText(text),
+             getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
+             editor: (title, prefill) => this.showExtensionEditor(title, prefill),
+@@ -1889,6 +1890,16 @@ export class InteractiveMode {
+             },
+             getToolsExpanded: () => this.toolOutputExpanded,
+             setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
++            previewTheme: (themeName) => {
++                // Delegates to the same controller path as the internal
++                // onThemePreview callback used by /settings; preview() applies
++                // the theme live without persisting or touching auto-sync.
++                if (!getThemeByName(themeName)) {
++                    return { success: false, error: `Unknown theme: ${themeName}` };
++                }
++                this.themeController.preview(themeName);
++                return { success: true };
++            },
+         };
+     }
+     /**
+@@ -3815,6 +3826,33 @@ export class InteractiveMode {
+             this.showModelSelector();
+             return;
+         }
++        // Handle "multi-model" as a virtual model selection
++        if (searchTerm === 'multi-model') {
++            const sessionId = this.sessionManager.getSessionId();
++            const orchRef = process.__kimchiOrchestratorRef instanceof Map ? process.__kimchiOrchestratorRef.get(sessionId) : undefined;
++            const orchParts = orchRef ? orchRef.split('/') : [];
++            const orchProvider = orchParts.length >= 2 ? orchParts.slice(0, -1).join('/') : undefined;
++            const orchModelId = orchParts.length >= 2 ? orchParts[orchParts.length - 1] : undefined;
++            const orchestratorModel = orchProvider && orchModelId ? this.session.modelRegistry.find(orchProvider, orchModelId) : undefined;
++            if (orchestratorModel) {
++                if (!(process.__kimchiMultiModelEnabled instanceof Map)) {
++                    process.__kimchiMultiModelEnabled = new Map();
++                }
++                process.__kimchiMultiModelEnabled.set(sessionId, true);
++                try {
++                    await this.session.setModel(orchestratorModel);
++                    this.footer.invalidate();
++                    this.updateEditorBorderColor();
++                    this.showStatus('Model: multi-model');
++                } catch (error) {
++                    process.__kimchiMultiModelEnabled.set(sessionId, false);
++                    this.showError(error instanceof Error ? error.message : String(error));
++                }
++            } else {
++                this.showError('Multi-model orchestrator is not available.');
++            }
++            return;
++        }
+         const model = await this.findExactModelMatch(searchTerm);
+         if (model) {
+             try {
+@@ -3947,6 +3985,7 @@ export class InteractiveMode {
+     }
+     showModelSelector(initialSearchInput) {
+         this.showSelector((done) => {
++            const sessionId = this.sessionManager.getSessionId();
+             const selector = new ModelSelectorComponent(this.ui, this.session.model, this.settingsManager, this.session.modelRuntime, this.session.scopedModels, async (model) => {
+                 try {
+                     await this.session.setModel(model);
+@@ -3964,7 +4003,7 @@ export class InteractiveMode {
+             }, () => {
+                 done();
+                 this.ui.requestRender();
+-            }, initialSearchInput);
++            }, initialSearchInput, sessionId);
+             return { component: selector, focus: selector, dispose: () => selector.dispose() };
+         });
+     }
+@@ -4823,7 +4862,7 @@ export class InteractiveMode {
+         const outputPath = this.getPathCommandArgument(text, "/export");
+         try {
+             if (outputPath?.endsWith(".jsonl")) {
+-                const filePath = this.session.exportToJsonl(outputPath);
++                const filePath = await this.session.exportToJsonl(outputPath);
+                 this.showStatus(`Session exported to: ${filePath}`);
+             }
+             else {

@@ -42,7 +42,7 @@ export const NEMOTRON_FAMILY_ORCHESTRATION = `When orchestrating (Nemotron famil
 /** Nemotron 3 Ultra explore: leverage the 1M context window for efficient codebase reading. */
 export const NEMOTRON_3_ULTRA_EXPLORE = `During **explore** phase (nemotron-3-ultra-fp4 specific):
 - Your 1M token context window is your main advantage — read files in full rather than skimming.
-- Batch independent reads in a single turn to minimise round-trips.
+- Batch independent reads: issue multiple \`read\` calls in the same turn when they don't depend on each other's results.
 - Produce a concise summary of paths, key types, and integration points — not a transcript of everything you read.`
 
 /** Nemotron 3 Ultra research: leverage 1M context for long external docs and pages. */

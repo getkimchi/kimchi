@@ -14,13 +14,13 @@ const CREDS: WorkspaceCredentials = {
 const BASE = "https://ws-1.remote.kimchi.dev"
 
 describe("putSecret", () => {
-	it("PUTs /secrets with a base64-encoded value", async () => {
+	it("PUTs /api/secrets with a base64-encoded value", async () => {
 		const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
 		const client = new WorkerClient(CREDS, { fetch: mockFetch })
 
 		await putSecret(client, { name: "git-token-github-com", value: "ghp_secret" })
 
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/secrets`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/api/secrets`)
 		const init = mockFetch.mock.calls[0][1] as RequestInit
 		expect(init.method).toBe("PUT")
 		const body = JSON.parse(init.body as string)
@@ -49,13 +49,13 @@ describe("putSecret", () => {
 })
 
 describe("deleteSecret", () => {
-	it("DELETEs /secrets/{name} URL-encoded", async () => {
+	it("DELETEs /api/secrets/{name} URL-encoded", async () => {
 		const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
 		const client = new WorkerClient(CREDS, { fetch: mockFetch })
 
 		await deleteSecret(client, "git-token-github-com")
 
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/secrets/git-token-github-com`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/api/secrets/git-token-github-com`)
 		expect(mockFetch.mock.calls[0][1]).toMatchObject({ method: "DELETE" })
 	})
 })

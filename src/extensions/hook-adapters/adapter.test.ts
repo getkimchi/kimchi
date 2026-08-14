@@ -5,8 +5,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { setResourceOverride } from "../../resources/store.js"
 import claudeCodeHooksAdapter from "../claude-code-hook-adapter/index.js"
-import { createCommandHookAdapter } from "./adapter.js"
-import { parseCommandHookOutput, runCommandHook } from "./adapter.js"
+import { createCommandHookAdapter, parseCommandHookOutput, runCommandHook } from "./adapter.js"
 
 vi.mock("node:child_process", () => ({
 	spawn: vi.fn(),
@@ -33,13 +32,11 @@ describe("hook adapter command execution", () => {
 	afterEach(() => {
 		vi.useRealTimers()
 		if (oldHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.HOME
 		} else {
 			process.env.HOME = oldHome
 		}
 		if (oldAgentDir === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.KIMCHI_CODING_AGENT_DIR
 		} else {
 			process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir
@@ -704,6 +701,40 @@ describe("hook adapter command execution", () => {
 		expect(mockSpawn).not.toHaveBeenCalled()
 	})
 
+	it("runs Notification hooks from notification bus events", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				Notification: [{ hooks: [{ type: "command", command: "notification-observer" }] }],
+			},
+		})
+		const child = mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.turn_start[0]({ type: "turn_start", turnIndex: 1 }, fakeCtx())
+		await pi.eventHandlers.notification[0]({ notification_type: "permission_prompt" })
+
+		expect(mockSpawn).toHaveBeenCalledTimes(1)
+		expect(hookPayload(child)).toMatchObject({
+			hook_event_name: "Notification",
+			notification_type: "permission_prompt",
+		})
+	})
+
+	it("skips Notification hooks before any extension context is captured", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				Notification: [{ hooks: [{ type: "command", command: "notification-observer" }] }],
+			},
+		})
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.eventHandlers.notification[0]({ notification_type: "permission_prompt" })
+
+		expect(mockSpawn).not.toHaveBeenCalled()
+	})
+
 	it("runs observer hooks for TurnStart, MessageEnd, ModelSelect, and UserBash", async () => {
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {
@@ -1032,7 +1063,11 @@ function mockBlockingHook({
 	stdout = "",
 	stderr = "",
 	code = 0,
-}: { stdout?: string; stderr?: string; code?: number } = {}): ReturnType<typeof fakeChild> {
+}: {
+	stdout?: string
+	stderr?: string
+	code?: number
+} = {}): ReturnType<typeof fakeChild> {
 	const child = fakeChild()
 	mockSpawn.mockReturnValueOnce(child)
 	child.stdin.end.mockImplementationOnce(() => {

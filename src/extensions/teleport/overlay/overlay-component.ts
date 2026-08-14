@@ -1,6 +1,6 @@
 import { basename } from "node:path"
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
-import { type Component, Key, type KeybindingsManager, type TUI, matchesKey } from "@earendil-works/pi-tui"
+import { type Component, Key, type KeybindingsManager, matchesKey, type TUI } from "@earendil-works/pi-tui"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"

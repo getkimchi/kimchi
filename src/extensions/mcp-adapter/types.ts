@@ -12,6 +12,30 @@ export type Transport = StdioClientTransport | SSEClientTransport | StreamableHT
 // Import sources for config
 export type ImportKind = "cursor" | "claude-code" | "claude-desktop" | "codex" | "windsurf" | "vscode"
 
+/**
+ * A tool discovered during a probe (transient connection).
+ * Mirrors McpTool but is a standalone type so the ACP wire format is stable
+ * regardless of future McpTool changes.
+ */
+export interface ProbeMcpTool {
+	name: string
+	title?: string
+	description?: string
+	inputSchema?: unknown
+	annotations?: ToolAnnotations
+}
+
+/**
+ * Result of probing an MCP server for available tools.
+ * Returned by McpServerManager.probeTools() and the _kimchi.dev/probe_mcp_server
+ * ACP extMethod handler.
+ */
+export interface ProbeResult {
+	tools: ProbeMcpTool[]
+	needsAuth: boolean
+	error: string | null
+}
+
 // Tool definition from MCP server
 export interface McpTool {
 	name: string
@@ -104,32 +128,32 @@ export type UiDisplayMode = "inline" | "fullscreen" | "pip"
 // Re-export stream types from the shared lightweight module.
 // This allows the example package to import stream schemas without pulling the full types.ts dependency graph.
 export {
+	getUiStreamHostContext,
+	getVisualizationStreamEnvelope,
+	SERVER_STREAM_RESULT_PATCH_METHOD,
+	type ServerStreamResultPatchNotification,
+	serverStreamResultPatchNotificationSchema,
 	UI_STREAM_HOST_CONTEXT_KEY,
 	UI_STREAM_REQUEST_META_KEY,
 	UI_STREAM_RESULT_PATCH_METHOD,
-	SERVER_STREAM_RESULT_PATCH_METHOD,
 	UI_STREAM_STRUCTURED_CONTENT_KEY,
-	uiStreamModeSchema,
-	visualizationStreamPhaseSchema,
-	visualizationStreamFrameTypeSchema,
-	visualizationStreamStatusSchema,
-	uiStreamHostContextSchema,
-	visualizationStreamEnvelopeSchema,
-	uiStreamCallToolResultSchema,
-	uiStreamResultPatchNotificationSchema,
-	serverStreamResultPatchNotificationSchema,
-	getUiStreamHostContext,
-	getVisualizationStreamEnvelope,
-	type UiStreamMode,
-	type VisualizationStreamPhase,
-	type VisualizationStreamFrameType,
-	type VisualizationStreamStatus,
-	type UiStreamHostContext,
-	type VisualizationStreamEnvelope,
 	type UiStreamCallToolResult,
+	type UiStreamHostContext,
+	type UiStreamMode,
 	type UiStreamResultPatchNotification,
-	type ServerStreamResultPatchNotification,
 	type UiStreamSummary,
+	uiStreamCallToolResultSchema,
+	uiStreamHostContextSchema,
+	uiStreamModeSchema,
+	uiStreamResultPatchNotificationSchema,
+	type VisualizationStreamEnvelope,
+	type VisualizationStreamFrameType,
+	type VisualizationStreamPhase,
+	type VisualizationStreamStatus,
+	visualizationStreamEnvelopeSchema,
+	visualizationStreamFrameTypeSchema,
+	visualizationStreamPhaseSchema,
+	visualizationStreamStatusSchema,
 } from "./ui-stream-types.js"
 
 export interface UiMessageParams {

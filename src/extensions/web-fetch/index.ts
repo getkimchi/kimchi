@@ -10,10 +10,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Container, Spacer, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { formatCount } from "../format.js"
-import { type SpinnerState, clearSpinner, spinnerFrame, tickSpinner } from "../spinner.js"
+import { clearSpinner, type SpinnerState, spinnerFrame, tickSpinner } from "../spinner.js"
 import { shutdownBrowserPool } from "./browser-pool.js"
 import { cacheClear } from "./cache.js"
-import { type WebFetchDetails, executeWebFetch } from "./execute-handler.js"
+import { executeWebFetch, type WebFetchDetails } from "./execute-handler.js"
 
 type WebFetchState = SpinnerState
 

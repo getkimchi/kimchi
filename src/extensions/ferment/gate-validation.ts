@@ -19,11 +19,11 @@
  */
 
 import {
-	GateCoverageError,
-	type OwnerTurn,
 	assertGateCoverage,
 	flaggedVerdicts,
+	GateCoverageError,
 	hasBlockingFlag,
+	type OwnerTurn,
 	validateGateVerdict,
 } from "./gate-registry.js"
 import { toolErr, type toolOk } from "./tool-helpers.js"
@@ -107,6 +107,7 @@ function normalizeGateVerdict(v: { id: string; verdict: string }, turn: OwnerTur
 	switch (v.verdict) {
 		case "smoke":
 		case "test":
+		case "inspected":
 		case "syntactic":
 			v.verdict = "pass"
 			return

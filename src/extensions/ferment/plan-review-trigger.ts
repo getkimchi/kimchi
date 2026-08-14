@@ -16,7 +16,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 
-type PlanReviewTrigger = (ctx: Pick<ExtensionContext, "ui"> | undefined) => void
+type PlanReviewTrigger = (ctx: ExtensionContext) => void
 
 let trigger: PlanReviewTrigger | undefined
 
@@ -29,6 +29,6 @@ export function clearPendingPlanReviewTrigger(): void {
 	trigger = undefined
 }
 
-export function triggerPendingPlanReview(ctx: Pick<ExtensionContext, "ui"> | undefined): void {
+export function triggerPendingPlanReview(ctx: ExtensionContext): void {
 	trigger?.(ctx)
 }

@@ -25,14 +25,14 @@
  * session-level, whereas a Ferment can outlive the session that created it.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { renderLabeledSuccessCriteria } from "../../ferment/success-criteria.js"
 import type { Ferment, ScopingQuestionType } from "../../ferment/types.js"
-import { YES_NO_OPTIONS, normalizeQuestionType } from "../questionnaire/index.js"
+import { normalizeQuestionType, YES_NO_OPTIONS } from "../questionnaire/index.js"
+import { FERMENT_EVENTS, type UserUnblockedPayload } from "./domain-events.js"
 import { type JudgeApiResult, judgeApiCall } from "./judge.js"
 import { promptForm } from "./prompt-ui.js"
 import type { FermentRuntime } from "./runtime.js"
-import type { FermentUi } from "./ui.js"
 
 export interface AskUserOption {
 	/** Stable id the agent (or judge) returns. */
@@ -104,9 +104,7 @@ export type AskUserResponse = AskUserSuccess | AskUserFailure
 export interface AskUserContext {
 	ferment: Ferment
 	pi: ExtensionAPI
-	/** TUI hook. Accepts `Partial<FermentUi>` (matches `StepUiContext` /
-	 *  `PhaseUiContext`) — the only method we actually read is `select`. */
-	ctx?: { ui?: Partial<FermentUi> }
+	ctx: ExtensionContext
 	/** Optional. When provided, `askUser` calls `runtime.markHumanInput()`
 	 *  on user-answered responses so downstream signals (nudge throttling,
 	 *  prompt-block freshness) reflect the interaction. */
@@ -158,7 +156,7 @@ export function normalizeAskUserQuestions(questions: ReadonlyArray<RawAskUserQue
 	const normalized: AskUserQuestion[] = []
 	const seen = new Set<string>()
 	for (const q of questions) {
-		if (!q.id || !q.id.trim()) {
+		if (!q.id?.trim()) {
 			return {
 				ok: false,
 				error: 'Question is missing required field "id" — a stable identifier returned with the answer.',
@@ -171,7 +169,7 @@ export function normalizeAskUserQuestions(questions: ReadonlyArray<RawAskUserQue
 			}
 		}
 		seen.add(q.id)
-		if (!q.prompt || !q.prompt.trim()) {
+		if (!q.prompt?.trim()) {
 			return {
 				ok: false,
 				error: `Question "${q.id}" is missing required field "prompt" — the question text shown to the user.`,
@@ -180,7 +178,7 @@ export function normalizeAskUserQuestions(questions: ReadonlyArray<RawAskUserQue
 		let normalizedType: NormalizedScopingType
 		try {
 			normalizedType = toScopingQuestionType(q.type)
-		} catch (error) {
+		} catch {
 			return {
 				ok: false,
 				error: `Question "${q.id}" has unknown type "${q.type}" — must be one of: single, multi, text, confirm.`,
@@ -549,10 +547,15 @@ export async function askUserForm(
 
 	const ui = context.ctx?.ui
 	if (ui) {
+		const promptedAtMs = Date.now()
 		const result = await promptForm(context.ctx, { title, description, questions })
 		if (!result || result.cancelled) {
 			return { failed: true, reason: "user_cancelled", detail: "User cancelled the prompt." }
 		}
+		context.pi.events.emit(FERMENT_EVENTS.USER_UNBLOCKED, {
+			fermentId: context.ferment.id,
+			durationMs: Date.now() - promptedAtMs,
+		} satisfies UserUnblockedPayload)
 		context.runtime?.markHumanInput()
 		return {
 			response_type: "form",

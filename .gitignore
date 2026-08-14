@@ -52,5 +52,11 @@ kimchi-session-*.html
 .memory
 bin
 
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
 # LLM tools
 .codegraph/

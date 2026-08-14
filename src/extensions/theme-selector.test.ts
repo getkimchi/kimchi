@@ -29,7 +29,7 @@ class MockContainer {
 	addChild(child: unknown) {
 		this.children.push(child)
 	}
-	render(width: number): string[] {
+	render(_width: number): string[] {
 		return []
 	}
 	invalidate(): void {}
@@ -127,7 +127,7 @@ function makeCtx(
 }
 
 async function runCommandAndCaptureFactory(
-	pi: ExtensionAPI,
+	_pi: ExtensionAPI,
 	commands: Map<string, RegisteredCommand>,
 	ctx: ExtensionCommandContext,
 	ui: UiMocks,

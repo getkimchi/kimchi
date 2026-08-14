@@ -10,7 +10,7 @@
  * functionality using the harness's native clipboard addon loader.
  */
 
-import { execFileSync, spawnSync } from "node:child_process"
+import { spawnSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { readFileSync, unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"

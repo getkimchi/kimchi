@@ -4,14 +4,14 @@ import { formatCount } from "../format.js"
 import { getTimeRange } from "./api.js"
 import { formatAnalyticsSummary } from "./display.js"
 import { parseStatsArgs } from "./index.js"
-import type { GenerateAnalyticsResponse } from "./types.js"
+import type { GenerateAnalyticsResponse, ModelCost, ModelTokenStat } from "./types.js"
 import {
-	type SortBy,
 	aggregateTokens,
 	formatAnalyticsVisual,
 	formatCurrency,
 	getProviderDisplayName,
 	getSourceName,
+	type SortBy,
 	sortFn,
 } from "./visual.js"
 
@@ -261,9 +261,7 @@ describe("sortFn", () => {
 	})
 })
 
-function makeModelTokenStat(
-	overrides: Partial<import("./types.js").ModelTokenStat> = {},
-): import("./types.js").ModelTokenStat {
+function makeModelTokenStat(overrides: Partial<ModelTokenStat> = {}): ModelTokenStat {
 	return {
 		model: "gpt-4",
 		provider: "openai",
@@ -279,7 +277,7 @@ function makeModelTokenStat(
 	}
 }
 
-function makeModelCost(overrides: Partial<import("./types.js").ModelCost> = {}): import("./types.js").ModelCost {
+function _makeModelCost(overrides: Partial<ModelCost> = {}): ModelCost {
 	return {
 		model: "gpt-4",
 		provider: "openai",

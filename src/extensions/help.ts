@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { Key, isKeyRelease, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
+import { isKeyRelease, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
 import { SLASH_COMMANDS } from "./slash-commands.js"
 
 type HelpRow = { kind: "heading"; text: string } | { kind: "entry"; key: string; desc: string } | { kind: "spacer" }
@@ -27,7 +27,7 @@ const HELP_ROWS: HelpRow[] = [
 const MAX_HEIGHT_PCT = 0.9
 
 // Lines outside the scrollable viewport:
-//   top border (1) + footer empty row (1) + footer hint (1) + bottom border (1)
+//   top border (1) + bottom row (1) + hint row (1) + bottom border (1)
 const CHROME_LINES = 4
 
 export default function helpExtension(pi: ExtensionAPI) {

@@ -8,7 +8,16 @@ import { logger } from "./logger.js"
 import { supportsOAuth } from "./mcp-auth-flow.js"
 import { McpOAuthProvider } from "./mcp-oauth-provider.js"
 import { resolveNpxBinary } from "./npx-resolver.js"
-import type { McpResource, McpTool, ServerDefinition, ServerStreamResultPatchNotification, Transport } from "./types.js"
+import type {
+	McpResource,
+	McpTool,
+	ProbeMcpTool,
+	ProbeResult,
+	ServerDefinition,
+	ServerEntry,
+	ServerStreamResultPatchNotification,
+	Transport,
+} from "./types.js"
 import { serverStreamResultPatchNotificationSchema } from "./types.js"
 
 interface ServerConnection {
@@ -32,6 +41,7 @@ export class McpServerManager {
 	async connect(name: string, definition: ServerDefinition): Promise<ServerConnection> {
 		// Dedupe concurrent connection attempts
 		if (this.connectPromises.has(name)) {
+			// biome-ignore lint/style/noNonNullAssertion: asserted above
 			return this.connectPromises.get(name)!
 		}
 
@@ -54,11 +64,12 @@ export class McpServerManager {
 		}
 	}
 
-	private async createConnection(name: string, definition: ServerDefinition): Promise<ServerConnection> {
-		const client = new Client({ name: `pi-mcp-${name}`, version: "1.0.0" })
-
-		let transport: Transport
-
+	/**
+	 * Create the transport (stdio or HTTP) for a server definition. Shared by
+	 * createConnection() and probeTools() so npx resolution, env interpolation,
+	 * and OAuth/bearer setup live in exactly one place.
+	 */
+	private async createTransport(name: string, definition: ServerDefinition): Promise<Transport> {
 		if (definition.command) {
 			let command = definition.command
 			let args = definition.args ?? []
@@ -72,19 +83,23 @@ export class McpServerManager {
 				}
 			}
 
-			transport = new StdioClientTransport({
+			return new StdioClientTransport({
 				command,
 				args,
 				env: resolveEnv(definition.env),
 				cwd: definition.cwd,
 				stderr: definition.debug ? "inherit" : "ignore",
 			})
-		} else if (definition.url) {
-			// HTTP transport with fallback
-			transport = await this.createHttpTransport(definition, name)
-		} else {
-			throw new Error(`Server ${name} has no command or url`)
 		}
+		if (definition.url) {
+			return this.createHttpTransport(definition as ServerEntry & { url: string }, name)
+		}
+		throw new Error(`Server ${name} has no command or url`)
+	}
+
+	private async createConnection(name: string, definition: ServerDefinition): Promise<ServerConnection> {
+		const client = new Client({ name: `pi-mcp-${name}`, version: "1.0.0" })
+		const transport = await this.createTransport(name, definition)
 
 		try {
 			await client.connect(transport)
@@ -129,8 +144,11 @@ export class McpServerManager {
 		}
 	}
 
-	private async createHttpTransport(definition: ServerDefinition, serverName: string): Promise<Transport> {
-		const url = new URL(definition.url!)
+	private async createHttpTransport(
+		definition: ServerDefinition & { url: string },
+		serverName: string,
+	): Promise<Transport> {
+		const url = new URL(definition.url)
 
 		// Build headers first (including any bearer token)
 		const headers = resolveHeaders(definition.headers) ?? {}
@@ -140,7 +158,7 @@ export class McpServerManager {
 			const token =
 				definition.bearerToken ?? (definition.bearerTokenEnv ? process.env[definition.bearerTokenEnv] : undefined)
 			if (token) {
-				headers["Authorization"] = `Bearer ${token}`
+				headers.Authorization = `Bearer ${token}`
 			}
 		}
 
@@ -160,7 +178,7 @@ export class McpServerManager {
 							clientSecret: definition.oauth?.clientSecret,
 							scope: definition.oauth?.scope,
 						}
-			authProvider = new McpOAuthProvider(serverName, definition.url!, oauthConfig, {
+			authProvider = new McpOAuthProvider(serverName, definition.url, oauthConfig, {
 				onRedirect: async (_authUrl) => {
 					// URL is captured by startAuth, no need to log
 				},
@@ -246,7 +264,7 @@ export class McpServerManager {
 
 	async readResource(name: string, uri: string): Promise<ReadResourceResult> {
 		const connection = this.connections.get(name)
-		if (!connection || connection.status !== "connected") {
+		if (connection?.status !== "connected") {
 			throw new Error(`Server "${name}" is not connected`)
 		}
 
@@ -302,16 +320,108 @@ export class McpServerManager {
 
 	decrementInFlight(name: string): void {
 		const connection = this.connections.get(name)
-		if (connection && connection.inFlight) {
+		if (connection?.inFlight) {
 			connection.inFlight--
 		}
 	}
 
 	isIdle(name: string, timeoutMs: number): boolean {
 		const connection = this.connections.get(name)
-		if (!connection || connection.status !== "connected") return false
+		if (connection?.status !== "connected") return false
 		if (connection.inFlight > 0) return false
 		return Date.now() - connection.lastUsedAt > timeoutMs
+	}
+
+	/**
+	 * Probe an MCP server for available tools without persisting a connection.
+	 *
+	 * Creates a transient connection via the shared createTransport() helper,
+	 * calls tools/list, handles OAuth flow if needed, closes the connection, and
+	 * returns the tool list.
+	 *
+	 * - OAuth servers: 60s timeout (allows browser-based auth flow)
+	 * - Non-OAuth servers: 15s timeout
+	 *
+	 * The transient connection is never registered in `this.connections`, so it
+	 * doesn't interfere with the normal connection lifecycle. Both client and
+	 * transport are closed in a finally block regardless of outcome.
+	 */
+	async probeTools(name: string, definition: ServerDefinition): Promise<ProbeResult> {
+		const isOAuth = supportsOAuth(definition)
+		const totalBudgetMs = isOAuth ? 60_000 : 15_000
+		// Single deadline for the entire probe operation (connect + tools/list),
+		// not per-operation, so an OAuth probe can't run 120s (60s connect + 60s
+		// tools/list) — it gets a single 60s budget from start to finish.
+		const deadline = Date.now() + totalBudgetMs
+
+		const client = new Client({ name: `pi-mcp-probe-${name}`, version: "1.0.0" })
+		let transport: Transport
+
+		try {
+			transport = await this.createTransport(name, definition)
+		} catch (error) {
+			if (error instanceof UnauthorizedError) {
+				return { tools: [], needsAuth: true, error: null }
+			}
+			return {
+				tools: [],
+				needsAuth: false,
+				error: error instanceof Error ? error.message : String(error),
+			}
+		}
+
+		try {
+			await withTimeout(client.connect(transport), deadline)
+			this.attachAdapterNotificationHandlers(name, client)
+
+			const tools = await withTimeout(this.fetchAllTools(client), deadline)
+			const probeTools: ProbeMcpTool[] = tools.map((t) => ({
+				name: t.name,
+				title: t.title,
+				description: t.description,
+				inputSchema: t.inputSchema,
+				annotations: t.annotations,
+			}))
+
+			return { tools: probeTools, needsAuth: false, error: null }
+		} catch (error) {
+			if (error instanceof UnauthorizedError) {
+				return { tools: [], needsAuth: true, error: null }
+			}
+			return {
+				tools: [],
+				needsAuth: false,
+				error: error instanceof Error ? error.message : String(error),
+			}
+		} finally {
+			await client.close().catch(() => {})
+			await transport.close().catch(() => {})
+		}
+	}
+}
+
+/**
+ * Wrap a promise with a timeout. The `deadline` parameter is an absolute
+ * timestamp (Date.now() + budgetMs). Rejects with an Error if the promise
+ * doesn't settle before the deadline.
+ *
+ * The losing side of Promise.race is caught to prevent unhandled rejection
+ * warnings if the original promise rejects after the timeout fires.
+ */
+async function withTimeout<T>(promise: Promise<T>, deadline: number): Promise<T> {
+	const remaining = Math.max(0, deadline - Date.now())
+	let timer: ReturnType<typeof setTimeout> | undefined
+	try {
+		const timeout = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => reject(new Error(`Operation timed out after ${remaining}ms`)), remaining)
+			timer.unref?.()
+		})
+		// Prevent unhandled rejection if the original promise rejects after
+		// the timeout wins the race.
+		promise.catch(() => {})
+		return await Promise.race([promise, timeout])
+	} finally {
+		if (timer) clearTimeout(timer)
 	}
 }
 

@@ -41,13 +41,11 @@ describe("ResourceManagerComponent", () => {
 	afterEach(() => {
 		process.chdir(oldCwd)
 		if (oldAgentDir === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset.
 			delete process.env.KIMCHI_CODING_AGENT_DIR
 		} else {
 			process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir
 		}
 		if (oldHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset.
 			delete process.env.HOME
 		} else {
 			process.env.HOME = oldHome

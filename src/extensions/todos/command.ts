@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
-import { applyWriteTodos, getTodosForScope } from "./store.js"
+import { applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "./store.js"
 import type { TodoStatus, WriteTodosDetails, WriteTodosParams } from "./types.js"
 import {
 	buildTodoLines,
@@ -136,19 +136,20 @@ function targetStatus(action: TodoAction, currentStatus: TodoStatus): TodoStatus
 
 interface ApplyTodoActionOptions {
 	onWrite?: (details: WriteTodosDetails) => void
+	sessionId: string
 }
 
 function writeTodos(params: WriteTodosParams, options: ApplyTodoActionOptions): WriteTodosDetails {
-	const details = applyWriteTodos(params)
+	const details = applyWriteTodos(params, options.sessionId)
 	options.onWrite?.(details)
 	return details
 }
 
 function applyTodoAction(
 	parsed: TodoUiLine,
-	options: ApplyTodoActionOptions = {},
+	options: ApplyTodoActionOptions,
 ): { message: string; level: "info" | "error" } | null {
-	const todos = getTodosForScope()
+	const todos = getTodosForScope(GLOBAL_TODO_SCOPE, options.sessionId)
 
 	if (parsed.action === "add") {
 		const content = parsed.text.trim().replace(/\s+/g, " ")
@@ -219,26 +220,40 @@ async function handleTodosCommand(args: string, ctx: ExtensionCommandContext, pi
 		return
 	}
 	if (parsed.action === "list") {
-		const lines = ctx.hasUI
-			? buildTodoLines(ctx.ui.theme)
-			: getTodosForScope().map((todo, index) => `${index + 1}. [${todo.status}] ${todo.content}`)
-		if (ctx.hasUI) ctx.ui.notify(lines.join("\n"), "info")
-		else console.log(lines.join("\n"))
+		const sessionId = ctx.sessionManager.getSessionId()
+		if (ctx.hasUI) {
+			const lines = buildTodoLines(ctx.ui.theme, sessionId)
+			ctx.ui.notify(lines.join("\n"), "info")
+		} else {
+			const lines = getTodosForScope(GLOBAL_TODO_SCOPE, sessionId).map(
+				(todo, index) => `${index + 1}. [${todo.status}] ${todo.content}`,
+			)
+			console.log(lines.join("\n"))
+		}
 		return
 	}
 	if (parsed.action === "help") {
-		const lines = notifyUsage(ctx.hasUI ? ctx.ui.theme : plainTheme())
-		if (ctx.hasUI) ctx.ui.notify(lines.join("\n"), "info")
-		else console.log(lines.join("\n"))
+		if (ctx.hasUI) {
+			const lines = notifyUsage(ctx.ui.theme)
+			ctx.ui.notify(lines.join("\n"), "info")
+		} else {
+			const lines = notifyUsage(plainTheme())
+			console.log(lines.join("\n"))
+		}
 		return
 	}
 
+	const sessionId = ctx.sessionManager.getSessionId()
 	const outcome = applyTodoAction(parsed, {
+		sessionId,
 		onWrite: (details) => pi.appendEntry(TODO_CUSTOM_ENTRY_TYPE, details),
 	})
 	if (outcome) {
-		if (ctx.hasUI) ctx.ui.notify(outcome.message, outcome.level)
-		else console.log(outcome.message)
+		if (ctx.hasUI) {
+			ctx.ui.notify(outcome.message, outcome.level)
+		} else {
+			console.log(outcome.message)
+		}
 	}
 	syncTodoWidget(ctx)
 }

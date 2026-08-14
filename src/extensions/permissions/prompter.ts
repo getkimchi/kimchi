@@ -1,5 +1,5 @@
 import type { ApprovalOutcome } from "./prompts.js"
-import type { Rule } from "./types.js"
+import type { RiskScore, Rule } from "./types.js"
 
 export type PermissionChoice =
 	| { kind: "allow-once"; label: string }
@@ -12,6 +12,8 @@ export interface PermissionRequest {
 	toolName: string
 	input: Record<string, unknown>
 	subtitle?: string
+	/** Risk score from the classifier LLM, for display in the prompt. */
+	riskScore?: RiskScore
 	choices: PermissionChoice[]
 	signal?: AbortSignal
 }

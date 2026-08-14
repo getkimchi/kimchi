@@ -1,44 +1,55 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { clearFermentCache } from "../../ferment/store.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
-import type { Ferment } from "../../ferment/types.js"
+import { formatSanitizedErrorMessage, isRetryableErrorStillPending } from "../../sanitized-error-message.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
+import { createFerment } from "./create.js"
+import { FERMENT_EVENTS } from "./domain-events.js"
 import { emitFermentCreated } from "./domain-events-emitter.js"
-import { FERMENT_EVENTS, type FermentStalledPayload } from "./domain-events.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
+import {
+	clearAllLifecycleGuards,
+	clearLifecycleGuard,
+	maybeInjectLifecycleObligationGuard,
+} from "./lifecycle-obligation-guard.js"
 import {
 	appendRefEntry,
 	maybeInjectFermentStopNudge,
-	maybeInjectReactiveContinuationNudge,
 	maybeInjectScopingProgressNudge,
 	maybeInjectScopingStopNudge,
 	onFermentToolCallSeen,
-	resetReactiveContinuationNudgeCount,
+	resetAllScopingStopNudgeCounts,
+	resetFermentStopNudgeCount,
+	resetScopingStopNudgeCount,
 } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import { editPhaseProposal } from "./phase-editor.js"
 import { promptEditor, promptSelect } from "./prompt-ui.js"
 import { loadFermentSilently, resumeFerment } from "./resume.js"
-import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
-import { scheduleFermentWakeUp } from "./scheduler.js"
+import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
+import { safeSendMessage } from "./safe-send.js"
+import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
-import { clearActiveFermentId, getActiveFermentId, isFermentLockedByLiveProcess, removeFermentLock } from "./state.js"
-import { createApplyAndPersist } from "./tool-helpers.js"
+import { buildStalledPayload } from "./stalled-payload.js"
 import {
-	applyFermentRuntimeToolProfile,
-	applyFermentToolProfile,
-	hasPendingPlanReview,
-	setActiveFermentAndApplyProfile,
-} from "./tool-scope.js"
+	clearActiveFermentId,
+	getActiveFermentId,
+	isFermentLockedByLiveProcess,
+	isInactiveOrPaused,
+	removeFermentLock,
+	resetScopingExploreTurns,
+} from "./state.js"
+import { createApplyAndPersist } from "./tool-helpers.js"
+import { applyFermentRuntimeToolProfile, hasPendingPlanReview, setActiveFermentAndApplyProfile } from "./tool-scope.js"
 
 type AssistantContentPart = { type: string; text?: string; name?: string }
-type TurnEndContext = Partial<Pick<ExtensionContext, "ui">>
 
 function isAssistantContentPart(value: unknown): value is AssistantContentPart {
 	return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string"
@@ -58,6 +69,16 @@ function hasAnyToolCall(content: AssistantContentPart[]): boolean {
 
 function getToolCallNames(content: AssistantContentPart[]): string[] {
 	return content.filter((c) => c.type === "toolCall" && c.name).map((c) => c.name as string)
+}
+
+/** Safely extract a string field from an assistant message of unknown shape.
+ *  The turn_end event's `message` is typed loosely upstream, so casting
+ *  `{ errorMessage?: string }` directly would bypass compile-time safety if
+ *  the upstream shape changes. This narrows at runtime instead. */
+function getMessageStringField(message: unknown, field: string): string | undefined {
+	if (typeof message !== "object" || message === null) return undefined
+	const value = (message as Record<string, unknown>)[field]
+	return typeof value === "string" ? value : undefined
 }
 
 function extractPromptTextAfterLastToolCall(content: AssistantContentPart[]): string {
@@ -105,14 +126,14 @@ function findUserInputPrompt(
 
 async function maybeRunManualBoundaryDropdown(
 	pi: ExtensionAPI,
-	ctx: TurnEndContext | undefined,
+	ctx: ExtensionContext,
 	prompt: UserInputPrompt,
 	f: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
 	runtime: FermentRuntime,
 ): Promise<boolean> {
 	const decision = decideContinuation(f, runtime.getContinuationPolicy())
 	if (decision.type !== "wait_manual_boundary") return false
-	if (!ctx?.ui?.select) return true
+	if (!ctx.hasUI) return true
 
 	const nextPhase = f.phases.find((phase) => phase.id === decision.action.phaseId)
 	const nextPhaseName = nextPhase?.name ?? decision.action.phaseId
@@ -145,31 +166,9 @@ async function maybeRunManualBoundaryDropdown(
 	return true
 }
 
-/**
- * Build the `FermentStalledPayload` for telemetry emission. Shared by
- * the crash-recovery and user-decline stall paths so the two sites
- * stay in sync as the payload evolves.
- */
-function buildStalledPayload(ferment: Ferment, now: number): FermentStalledPayload {
-	const completedPhases = ferment.phases.filter((p) => p.status === "completed").length
-	const totalPhases = ferment.phases.length
-	const phaseCompletionRatio = totalPhases > 0 ? completedPhases / totalPhases : 0
-	const lastActiveMs = ferment.lastActiveAt ? Date.parse(ferment.lastActiveAt) : Number.NaN
-	const idleDurationMs = Number.isFinite(lastActiveMs) ? now - lastActiveMs : 0
-	return {
-		fermentId: ferment.id,
-		name: ferment.name,
-		lifecycleStage: ferment.status,
-		idleDurationMs,
-		completedPhases,
-		totalPhases,
-		phaseCompletionRatio,
-	}
-}
-
 async function maybeRunUserInputDropdown(
 	pi: ExtensionAPI,
-	ctx: TurnEndContext | undefined,
+	ctx: ExtensionContext,
 	content: AssistantContentPart[],
 	f: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
 	runtime: FermentRuntime,
@@ -178,7 +177,10 @@ async function maybeRunUserInputDropdown(
 	if (!prompt) return false
 	const boundaryHandled = await maybeRunManualBoundaryDropdown(pi, ctx, prompt, f, runtime)
 	if (boundaryHandled) return true
-	if (!ctx?.ui?.select || (!ctx.ui.editor && !ctx.ui.input)) return true
+	// In automated mode (no UI) there is no user to answer a question.
+	// Let the turn fall through to the lifecycle obligation guard, which
+	// will re-nudge the model toward the required lifecycle tool call.
+	if (!ctx.hasUI) return false
 
 	const choice = await promptSelect(ctx, prompt.title, prompt.options)
 	if (!choice) return true
@@ -264,11 +266,12 @@ export function registerFermentEvents(
 		description: "When the ferment cwd is not a git repo, run `git init` instead of skipping.",
 	})
 
-	function recoverStuckFerments(): void {
+	function recoverStuckFerments(): string[] {
 		// On a fresh start with no active ferment marker, any ferment in
 		// "running" or "planned" must be stale — the previous process died
 		// without graceful shutdown. Pause them so their orphaned steps are
 		// reset to "pending" by handlePause and the engineer can restart them.
+		const recoveredNames: string[] = []
 		const applyAndPersist = createApplyAndPersist(runtime)
 		for (const f of runtime.getStorage().list()) {
 			if (f.status === "running" || f.status === "planned") {
@@ -281,6 +284,7 @@ export function registerFermentEvents(
 						// eslint-disable-next-line no-console
 						console.error("RECOVER FAILED for", f.id, outcome.error)
 					} else {
+						recoveredNames.push(outcome.ferment.name)
 						// Emit stalled telemetry for crash-recovered ferments.
 						// Load the full Ferment to access phases and lastActiveAt.
 						const full = runtime.getStorage().get(f.id)
@@ -294,24 +298,33 @@ export function registerFermentEvents(
 				}
 			}
 		}
+		return recoveredNames
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (isAgentWorker()) {
 			return
 		}
+		clearAllLifecycleGuards()
 		runtime.setContinuationPolicy(ctx?.hasUI ? "manual" : "automated")
 		runtime.clearAllStepStarts()
 		runtime.clearAllScopingGates()
 		runtime.clearAllPendingScopes()
 		runtime.clearAllPendingPlanReviews()
 		runtime.clearAllPendingCompactions()
+		resetAllScopingStopNudgeCounts()
 		clearFermentCache()
 
 		const envId = getActiveFermentId()
 		if (!envId) {
 			try {
-				recoverStuckFerments()
+				const recovered = recoverStuckFerments()
+				if (recovered.length > 0 && ctx?.hasUI) {
+					const names = recovered.map((n) => `"${n}"`).join(", ")
+					ctx.ui?.notify?.(
+						`Recovered ${recovered.length === 1 ? "1 ferment" : `${recovered.length} ferments`} interrupted in a previous session: ${names}. Run /ferment resume to continue.`,
+					)
+				}
 			} catch {
 				// Best-effort recovery. If storage is unavailable during startup,
 				// we can't pause anything — the next clean start will retry.
@@ -329,7 +342,7 @@ export function registerFermentEvents(
 				return
 			}
 
-			if (ctx?.hasUI && ctx.ui?.select) {
+			if (ctx?.hasUI) {
 				// F27: ask user before auto-resuming so the planner doesn't
 				// hijack the session before they're ready.
 				const activePhase = ferment.phases.find((p) => p.id === ferment.activePhaseId)
@@ -343,7 +356,7 @@ export function registerFermentEvents(
 				const choice = await ctx.ui.select(banner, ["Resume", "Leave paused"])
 				runtime.markHumanInput()
 				if (choice === "Resume") {
-					deferExtensionAction(() => resumeFerment(pi, envId, ctx, runtime))
+					deferExtensionAction(() => resumeFerment(pi, envId, ctx, runtime, { allowManualPhaseBoundary: true }))
 				} else {
 					// User explicitly declined to resume — emit stalled telemetry.
 					pi.events.emit(FERMENT_EVENTS.STALLED, buildStalledPayload(ferment, runtime.now().getTime()))
@@ -372,12 +385,17 @@ export function registerFermentEvents(
 
 	pi.on("session_shutdown", async () => {
 		if (isAgentWorker()) return
+		clearAllLifecycleGuards()
 		runtime.clearAllPendingPlanReviews()
 		const f = runtime.getActive()
 		if (!f) return
 		if (f.status === "running" || f.status === "planned") {
 			try {
-				applyAndPersist(f.id, { type: "pause" })
+				// The continuation policy is the source of truth — the ferment-oneshot
+				// flag is only set by the CLI --ferment-oneshot argument, not by the TUI
+				// /ferment one-shot slash command.
+				const isAutomated = runtime.isAutomatedContinuationEnabled()
+				applyAndPersist(f.id, { type: isAutomated ? "abandon" : "pause" })
 			} catch {
 				// If persistence fails during shutdown, we can't fix it here.
 				// The startup scanner will recover the stale state on next launch.
@@ -388,7 +406,7 @@ export function registerFermentEvents(
 		removeFermentLock(f.id)
 	})
 
-	pi.on("input", async (event) => {
+	pi.on("input", async (event, handler) => {
 		if (event.source === "interactive") {
 			runtime.markHumanInput()
 		}
@@ -402,19 +420,23 @@ export function registerFermentEvents(
 		try {
 			// Bootstrap path: no UI available yet, so only auto-init when the user
 			// opted in via --init-git or KIMCHI_AUTO_GIT_INIT=1.
-			runtime.setContinuationPolicy("automated")
 			await ensureGitRepo({
 				autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 			})
-			const storage = runtime.getStorage()
 			const shortName = deriveDraftFermentTitle(intent)
-			const f = storage.create(shortName, intent)
+			const f = createFerment(runtime, {
+				name: shortName,
+				goal: intent,
+				hasUI: false,
+				isOneShot: true,
+			})
 			const updated = f
 			runtime.setActive(updated)
 			emitFermentCreated(pi.events, updated)
 			appendRefEntry(pi, updated.id)
 			const ackText = `One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nPolicy: automated`
-			void pi.sendMessage(
+			safeSendMessage(
+				pi,
 				{
 					customType: "ferment_ack",
 					content: [{ type: "text", text: ackText }],
@@ -423,10 +445,15 @@ export function registerFermentEvents(
 				},
 				{ triggerTurn: false },
 			)
-			return { action: "transform" as const, text: buildOneshotNudge(updated, intent), images: event.images }
+			return {
+				action: "transform" as const,
+				text: buildOneshotNudge(updated, intent, getMultiModelEnabled(handler.sessionManager)),
+				images: event.images,
+			}
 		} catch (err) {
 			const failText = `One-shot ferment bootstrap failed: ${err instanceof Error ? err.message : String(err)}`
-			void pi.sendMessage(
+			safeSendMessage(
+				pi,
 				{
 					customType: "ferment_oneshot_failed",
 					content: [{ type: "text", text: failText }],
@@ -450,16 +477,10 @@ export function registerFermentEvents(
 			// strip all tools from the subagent on the first turn.
 			return {}
 		}
-		// Only apply a ferment profile when a ferment is active. In normal chat
-		// mode (no active ferment) leave the toolset untouched so the user gets
-		// the full tool set. The idle profile (discovery-only) is applied by
-		// command handlers when entering/exiting ferment mode, not here.
-		if (!runtime.getActive()) {
-			return {}
-		}
-		// One-shot and interactive flows share the unified profile model: derive
-		// the profile from the active ferment's lifecycle state (planning vs.
-		// implementation). Both modes drive off the same runtime.
+		// One-shot, interactive, and normal chat share the unified profile model:
+		// derive the profile from runtime state. With no active ferment this
+		// resolves to the idle profile, which preserves normal tools and
+		// list_ferments while hiding ferment workflow tools.
 		applyFermentRuntimeToolProfile(pi, runtime)
 		return {}
 	})
@@ -476,8 +497,107 @@ export function registerFermentEvents(
 		const activeId = runtime.getActiveId()
 		const toolCallSeen = hasAnyToolCall(content)
 		const stopReason = (event.message as { stopReason?: string }).stopReason
+
+		// User abort (Esc/Ctrl+C): pause the active ferment and reset all
+		// nudge counters so the agent loop actually stops. Mirrors the
+		// abort guard in orchestration/continuation-nudge.ts.
+		if (stopReason === "aborted") {
+			const abortedFerment = runtime.getActive()
+			if (abortedFerment && (abortedFerment.status === "running" || abortedFerment.status === "planned")) {
+				const outcome = applyAndPersist(abortedFerment.id, { type: "pause" })
+				if (outcome.ok) {
+					setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
+					ctx.ui.notify?.(`Paused "${outcome.ferment.name}". Run /ferment resume to continue.`)
+				} else {
+					ctx.ui.notify?.(
+						`Failed to pause "${abortedFerment.name}": ${outcome.error.message}. Run /ferment pause manually if needed.`,
+					)
+				}
+			}
+			if (activeId) {
+				clearLifecycleGuard(activeId)
+				resetFermentStopNudgeCount(activeId)
+				resetScopingStopNudgeCount(activeId)
+				resetScopingExploreTurns(activeId)
+			}
+			return
+		}
+
+		// Connection / provider / gateway failure: the model's turn ended with
+		// stopReason "error" after retries were exhausted (or the error was
+		// non-retryable). Under manual policy, pause the ferment so its state
+		// stays valid and surface a clear message to the user. Under automated
+		// policy, keep the ferment running and inject a continuation nudge so the
+		// orchestrator retries on the next turn — there is no user to resume.
+		if (stopReason === "error") {
+			// The continuation policy is the source of truth — the ferment-oneshot
+			// flag is only set by the CLI --ferment-oneshot argument, not by the TUI
+			// /ferment one-shot slash command.
+			const isAutomated = runtime.isAutomatedContinuationEnabled()
+
+			if (!isAutomated) {
+				const errorMessage = getMessageStringField(event.message, "errorMessage")
+				const errorFerment = runtime.getActive()
+				// `turn_end` fires after the upstream retry loop has already exhausted
+				// (or the error was non-retryable). If a retryable error were somehow
+				// still pending, suppress the pause+notify so the retry spinner keeps
+				// the stage — the next turn_end will surface the final outcome.
+				if (errorMessage && isRetryableErrorStillPending(errorMessage, {})) {
+					return
+				}
+				if (errorFerment && (errorFerment.status === "running" || errorFerment.status === "planned")) {
+					const outcome = applyAndPersist(errorFerment.id, { type: "pause" })
+					if (outcome.ok) {
+						setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
+						const detail = errorMessage ? formatSanitizedErrorMessage(errorMessage, "ferment", { exhausted: true }) : ""
+						ctx.ui.notify?.(`Interrupted: "${outcome.ferment.name}" was paused due to an error. ${detail}`)
+					} else {
+						ctx.ui.notify?.(
+							`Connection error during "${errorFerment.name}" but pause failed: ${outcome.error.message}. Run /ferment pause manually.`,
+						)
+					}
+				}
+			}
+
+			if (activeId) {
+				clearLifecycleGuard(activeId)
+				resetFermentStopNudgeCount(activeId)
+				resetScopingStopNudgeCount(activeId)
+				resetScopingExploreTurns(activeId)
+			}
+
+			// Automated error recovery: schedule a continuation turn directly via
+			// the scheduler. This is a transport/provider failure, not a model-chosen
+			// bare stop. Error recovery deliberately clears the lifecycle-stop retry
+			// budget above, then schedules the next action independently. This gives
+			// the unchanged obligation a fresh two-retry budget after transport recovers.
+			if (isAutomated) {
+				const errorFerment = runtime.getActive()
+				// One-shot error recovery fires only when the ferment is still live —
+				// paused/complete/abandoned ferments must not be auto-continued.
+				if (errorFerment && !isInactiveOrPaused(errorFerment)) {
+					if (!hasPendingPlanReview(runtime)) {
+						scheduleNextFermentAction(pi, errorFerment, runtime, {
+							tag: "Error recovery",
+							deliverAs: "steer",
+							treatCompleteFermentAsContinue: true,
+						})
+					}
+				}
+			}
+
+			return
+		}
+
 		if (toolCallSeen && activeId) {
-			resetReactiveContinuationNudgeCount(activeId)
+			// An unrelated tool call is not lifecycle progress. Preserve the guard
+			// budget while the concrete obligation is unchanged; state advancement
+			// receives a fresh budget automatically through its new obligation key.
+			// Only terminal/paused state needs eager cleanup here.
+			const freshAfterTool = runtime.getStorage().get(activeId)
+			if (isInactiveOrPaused(freshAfterTool)) {
+				clearLifecycleGuard(activeId)
+			}
 			// A normal tool-use turn means the model is still progressing, so reset
 			// the stop-nudge budget. A tool-use turn that ended with "stop" is exactly
 			// what the stop-nudge counter is tracking, so do not reset it here.
@@ -489,10 +609,32 @@ export function registerFermentEvents(
 		const f = runtime.getActive()
 		if (!f) return
 
+		// When a pending plan review exists (propose_ferment_scoping returned
+		// "Plan ready for review"), skip ALL nudge/dropdown/compaction logic.
+		// The review dialog is shown by the agent_end handler via setTimeout(0).
+		// If we inject continuation nudges here, they trigger new turns which
+		// prevent agent_end from firing — the review dialog never appears and
+		// the ferment is stuck in draft. Similarly, maybeRunUserInputDropdown
+		// can show a competing dropdown that prematurely confirms the scope
+		// via confirmPendingScope, which then causes the plan review's
+		// confirm to fail with MISSING_PENDING_SCOPE.
+		//
+		// Apply the tool profile suppression (pi.setActiveTools([])) and return
+		// immediately so the turn ends naturally and agent_end fires.
+		//
+		// This suppression must happen in turn_end, not turn_start: pi-mono's
+		// prepareNextTurn builds the next turn's tool snapshot after turn_end
+		// but before turn_start, so turn_start is too late.
+		if (hasPendingPlanReview(runtime)) {
+			applyFermentRuntimeToolProfile(pi, runtime)
+			return
+		}
+
 		// During draft scoping, detect when the model is stuck exploring
 		// without progressing through the scoping steps. Fires for both
 		// interactive and one-shot scoping — consistency across modes is
 		// important so the model gets the same kick regardless of entry point.
+		let scopingClaimed = false
 		if (f.status === "draft" && toolCallSeen) {
 			const toolNames = getToolCallNames(content)
 			const interactive = runtime.isScopingInteractive(f.id)
@@ -501,16 +643,34 @@ export function registerFermentEvents(
 
 			// Stop-without-scoping: the model made tool calls but ended with
 			// stopReason "stop" without calling any scoping-completion tool.
+			// `scheduled` (a nudge was sent) owns the turn immediately. `claimed`
+			// (the scoping budget is exhausted) retains ownership of the draft-
+			// scoping obligation so generic Ferment stop recovery cannot start a
+			// second budget for it — but it must not bypass interactive user-input
+			// handling, so it falls through to the dropdown below and only
+			// suppresses generic recovery afterwards.
 			if (stopReason === "stop") {
-				const stopNudged = maybeInjectScopingStopNudge(pi, f.id, toolNames, stopReason, { interactive })
-				if (stopNudged) return
+				const outcome = maybeInjectScopingStopNudge(pi, f.id, toolNames, stopReason, { interactive })
+				if (outcome.kind === "scheduled") return
+				if (outcome.kind === "claimed") scopingClaimed = true
 			}
 		}
 
 		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
 		if (userInputHandled) return
+		// Scoping recovery claimed this turn (budget exhausted). Interactive
+		// handling already had its chance above; suppress generic Ferment stop
+		// recovery so it cannot start a second budget for the same obligation.
+		if (scopingClaimed) return
 		if (!toolCallSeen) {
-			maybeInjectReactiveContinuationNudge(pi, runtime)
+			if (!hasPendingPlanReview(runtime)) {
+				// Zero-tool stop while a lifecycle obligation may be pending. The guard
+				// is automated-only; in interactive mode the user is present to steer.
+				// Returning here prevents the generic scoping/tool-using nudge paths
+				// below from sending a second message for the same turn.
+				const guarded = maybeInjectLifecycleObligationGuard(pi, runtime, callbacks)
+				if (guarded) return
+			}
 		} else if (stopReason === "stop") {
 			// The model made tool calls this turn but ended with stopReason "stop"
 			// while the ferment still requires action (e.g. completed a step then
@@ -533,35 +693,20 @@ export function registerFermentEvents(
 		// Trigger compaction after any turn that completed a step or phase.
 		// Fires between turns in automated-continuation mode, so the next
 		// phase starts with a fresh compacted session.
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 		// Mid-turn guard: if the context crossed the auto-compaction threshold
 		// while a step is still in progress, compact now and resume the step.
 		// Only acts on tool-use turns; stop/error/aborted are handled elsewhere.
+		// Awaited so the compacted session and step-resume nudge are in place
+		// before pi-mono builds the next turn's context (see note below); wrapped
+		// because this handler has no outer catch and must never reject out.
 		if (event.message.role === "assistant" && event.message.stopReason === "toolUse") {
-			maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, event.message.usage?.totalTokens ?? 0)
-		}
-
-		// After a turn ends, `prepareNextTurn` in pi-mono builds the next turn's
-		// context using `this.activeToolNames` (the snapshot set by
-		// `pi.setActiveTools`). This happens AFTER `turn_end` fires but BEFORE
-		// the next `turn_start`. So to suppress tools for the next LLM call (e.g.
-		// after `propose_ferment_scoping` sets a pending plan review), we must
-		// apply the tool profile here in `turn_end` — not `turn_start`, which
-		// fires too late (the context is already built).
-		//
-		// When `propose_ferment_scoping` sets a pending review mid-turn,
-		// `applyFermentRuntimeToolProfile` suppresses all tools via
-		// `pi.setActiveTools([])`. The next LLM call sees an empty toolset,
-		// produces text-only output (stopReason: "stop"), ending the turn and
-		// firing `agent_end` which triggers the review dialog.
-		//
-		// This is placed at the end of the handler so that the nudge/dropdown
-		// logic above runs first. Those early-return paths still suppress tools
-		// when a pending review exists, which is correct — the model should not
-		// have tools until the review is resolved.
-		if (hasPendingPlanReview(runtime)) {
-			applyFermentRuntimeToolProfile(pi, runtime)
+			try {
+				await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, event.message.usage?.totalTokens ?? 0)
+			} catch (err) {
+				ctx.ui?.notify?.(`Mid-turn compaction error: ${err instanceof Error ? err.message : String(err)}`, "warning")
+			}
 		}
 	})
 }

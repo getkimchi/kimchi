@@ -199,6 +199,54 @@ describe("TerminalComponent handleInput", () => {
 	})
 })
 
+describe("TerminalComponent CJK wide-char rendering", () => {
+	it("renders hangul syllables without spaces between them", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, createXtermCore())
+		// Each hangul syllable is wide (width=2) and occupies 2 cells in xterm:
+		// lead cell holds the codepoint, continuation cell has width=0.
+		// Before the fix, continuation cells emitted a space (0x20), producing
+		// "안 녕" instead of "안녕".
+		await component.writeRemoteData("안녕")
+		const lines = component.render(80)
+		expect(stripAnsi(lines[0]).trimEnd()).toBe("안녕")
+	})
+
+	it("renders mixed ASCII and hangul without spurious spaces", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, createXtermCore())
+		await component.writeRemoteData("hi 안녕 bye")
+		const lines = component.render(80)
+		expect(stripAnsi(lines[0]).trimEnd()).toBe("hi 안녕 bye")
+	})
+
+	it("renders CJK ideographs (Chinese) without spurious spaces", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, createXtermCore())
+		await component.writeRemoteData("你好世界")
+		const lines = component.render(80)
+		expect(stripAnsi(lines[0]).trimEnd()).toBe("你好世界")
+	})
+
+	it("renders Japanese kana + kanji without spurious spaces", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, createXtermCore())
+		await component.writeRemoteData("こんにちは")
+		const lines = component.render(80)
+		expect(stripAnsi(lines[0]).trimEnd()).toBe("こんにちは")
+	})
+
+	it("preserves styling across wide chars", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, createXtermCore())
+		await component.writeRemoteData("\x1b[31m안녕\x1b[0m")
+		const lines = component.render(80)
+		expect(stripAnsi(lines[0]).trimEnd()).toBe("안녕")
+		expect(lines[0]).toContain("\x1b[31m")
+		expect(lines[0]).toContain("\x1b[0m")
+	})
+})
+
 describe("TerminalComponent writeRemoteData", () => {
 	it("processes remote data", async () => {
 		const session = mockSession()

@@ -14,7 +14,7 @@
  *   Used by callers that need the full coaching message.
  */
 
-import { type Ferment, type FermentAction, type Phase, type Step, inSameParallelCohort } from "./types.js"
+import { type Ferment, type FermentAction, inSameParallelCohort, type Phase, type Step } from "./types.js"
 
 // ─── Declarative Action Types ─────────────────────────────────────────────────
 
@@ -283,16 +283,6 @@ export function findFirstPlannedPhase(f: Ferment): Phase | undefined {
 
 export function isScopingComplete(f: Ferment): boolean {
 	return !!(f.scoping.goal && f.scoping.criteria && f.scoping.constraints && f.scoping.phases)
-}
-
-export function getScopingProgress(f: Ferment): { answered: number; total: number } {
-	const s = f.scoping
-	let answered = 0
-	if (s.goal) answered++
-	if (s.criteria) answered++
-	if (s.constraints) answered++
-	if (s.phases) answered++
-	return { answered, total: 4 }
 }
 
 function findActivePhase(f: Ferment): Phase | undefined {

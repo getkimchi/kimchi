@@ -164,6 +164,22 @@ describe("LogoHeader", () => {
 		expect(rightSection).toContain("\x1b[36m/ferment exit\x1b[0m")
 	})
 
+	it("shows a right-column account notice instead of the secondary ferment tip", () => {
+		const theme = createMockTheme()
+		const header = new LogoHeader(theme, {
+			getRightColumnNotice: () =>
+				"You are using Community tier. For faster performance, upgrade to Coder at app.kimchi.dev/pricing",
+		})
+		const lines = header.render(120)
+		const rightText = lines.slice(1, -1).map(stripAnsi).join(" ")
+
+		expect(rightText).toContain("Kimchi's special:")
+		expect(rightText).toContain("/ferment")
+		expect(rightText).toContain("You are using Community tier")
+		expect(rightText).toContain("app.kimchi.dev/pricing")
+		expect(rightText).not.toContain("ferment exit")
+	})
+
 	it("centers the logo and info lines vertically as a unit", () => {
 		const theme = createMockTheme()
 		const header = new LogoHeader(theme)

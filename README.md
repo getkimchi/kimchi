@@ -43,7 +43,7 @@ The supported model list is fetched at startup from the kimchi metadata service.
 
 Kimchi operates in one of two modes:
 
-| Mode | Footer indicator | Behavior |
+| Mode | Status line indicator | Behavior |
 |------|-----------------|----------|
 | **Multi-model** | `multi-model (orchestrator-id)` | The orchestrator delegates each task to the model assigned for that role |
 | **Single-model** | model name | All work runs on the selected model directly |
@@ -121,9 +121,13 @@ With the metadata above, the orchestrator will use minimax for simple build chun
 
 Metadata can also be managed interactively via `/multi-model` → "Edit model metadata" — this is the only in-app path for configuring or overriding metadata, so model selection stays uninterrupted. Custom overrides can be reset to defaults from the same menu. Metadata for builtin models can be overridden the same way.
 
+#### Completion token limits
+
+Kimchi omits Pi's estimated `max_completion_tokens` and `max_tokens` fields from requests to managed Kimchi providers. The gateway determines how much output fits using the model's actual tokenizer; output-budget enforcement belongs at the gateway rather than in Pi's approximate client-side context calculation.
+
 ### Phase tracking
 
-Kimchi tags every LLM request with a `phase:{name}` label for usage analytics and cost attribution. The orchestrator sets the phase as work progresses and it is displayed in the footer.
+Kimchi tags every LLM request with a `phase:{name}` label for usage analytics and cost attribution. The orchestrator sets the phase as work progresses and it is displayed in the status line.
 
 | Phase | Description |
 |-------|-------------|
@@ -137,7 +141,7 @@ Subagents inherit the current phase from the orchestrator but cannot change it.
 
 ## Tags
 
-Kimchi supports tagging LLM requests for usage tracking and cost attribution. Tags are included with every request and displayed in the footer, grouped by key with color coding.
+Kimchi supports tagging LLM requests for usage tracking and cost attribution. Tags are included with every request and displayed in the status line, grouped by key with color coding.
 
 ### Commands
 
@@ -295,25 +299,41 @@ The agent is prompted to prefer LSP tools over text-based alternatives (e.g., `l
 
 When LSP servers are active, the status bar shows the server name(s) and current diagnostic error count (e.g., `LSP: typescript-language-server (3 diags)`).
 
-## Remote teleport (preview)
+## Remote Sessions
 
-Launch with `kimchi --teleport` to enable session-multiplex commands. The local TUI stays the home base; remote workers are spawned, detached, and re-attached without restarting kimchi.
+Hand off an in-progress session to a cloud sandbox with `/teleport` — the agent keeps running when you close your laptop, switch machines, or hand off to a teammate. Resume from the CLI, the Kimchi console, or VS Code.
+
+> **Requires Kimchi CLI v0.1.52+.** Check with `kimchi --version`, update with `kimchi update`. Not available on Windows.
 
 ```bash
-kimchi --teleport
+/teleport
 ```
-
-Slash commands available inside the TUI:
+### Commands
 
 | Command | Description |
 |---------|-------------|
-| `/teleport [name] [flags]` | Rsync the working tree to a fresh remote sandbox and foreground it. Flags: `--allow-dirty`, `--exclude <glob>`, `--include-ignored`, `--abandon-pending`, `--force` |
-| `/detach [--abandon-pending]` | Drop the WebSocket to the foreground remote and return to the local home base. The server keeps the session running. |
-| `/attach <name-or-id>` | Re-attach to a previously detached remote |
-| `/sessions` | List everything: foreground remote, detached remotes, server-side sessions |
-| `/connect [name-or-id]` | Open an interactive SSH shell on the sandbox via the teleport proxy |
+| `/teleport [name] [flags]` | Rsync working tree to a cloud sandbox and foreground it |
+| `/remote-sessions` | Browse all workspaces and sessions; reattach with Enter |
+| `/sync up\|down --workspace <name> --source <path> --target <path>` | Push or pull files without restarting the session |
+| `/terminal [name-or-id]` | Open a raw SSH shell on the sandbox |
 
-`--teleport` and `--remote` are mutually exclusive. Use `--remote --session <id>` to attach to a single remote at startup; use `--teleport` to multiplex from a local home base.
+
+### `/teleport` flags
+
+| Flag | Description |
+|------|-------------|
+| `--workspace <id\|name>` | Reuse an existing workspace instead of creating a new one |
+| `--git-repo <url>` | Clone from a git URL instead of rsyncing local files |
+| `--branch <branch>` | Branch to check out after cloning (requires `--git-repo`) |
+| `--allow-dirty` | Proceed with uncommitted changes |
+| `--force` | Override the 5 GB workspace size limit |
+| `--no-git-token` | Skip git credentials prompt |
+| `--skip-session` | Start remote agent fresh (don't upload current session history) |
+
+
+Once teleported, you're in the **PTY overlay** — a fullscreen tabbed terminal. Use `Ctrl+B c` / `n` / `p` to open and switch tabs. Press `Ctrl+D` to drop back to local kimchi; the sandbox and agent keep running.
+
+For full documentation see [docs.kimchi.dev/docs/coding-remote-sessions](https://docs.kimchi.dev/docs/coding-remote-sessions).
 
 ## Configuration
 
@@ -370,10 +390,13 @@ kimchi resources disable extensions.pi-package-lookup
 Update packages with:
 
 ```bash
-kimchi update                  # update installed packages, then Kimchi itself
-kimchi update --extensions     # update installed packages only
-kimchi update context-mode     # update one package by source or display name
-kimchi update self             # update Kimchi itself only
+kimchi update                       # update installed packages, then Kimchi itself
+kimchi update --extensions          # update installed packages only
+kimchi update context-mode          # update one package by source or display name
+kimchi update self                  # update Kimchi itself only
+kimchi update v1.2.3                # install a specific Kimchi release (downgrades work too)
+kimchi update v1.2.3-rc.1           # install a release candidate
+kimchi update --canary              # install the latest canary build from master
 ```
 
 ### HTTP proxy
@@ -469,6 +492,7 @@ This script checks and installs node, pnpm, and bun if missing, initializes git 
 ```bash
 git clone git@github.com:getkimchi/kimchi.git
 cd kimchi
+# Currently a no-op (no submodules after superpowers removal); kept for future use
 git submodule update --init --recursive
 corepack enable
 pnpm install

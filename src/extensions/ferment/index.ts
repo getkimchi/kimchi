@@ -7,7 +7,7 @@
  * - Slash command (/ferment)
  * - All ferment tools (registered via tools/ submodules)
  *
- * Public exports re-export from ./state.ts for cli.ts and components/footer.ts.
+ * Public exports re-export from ./state.ts for cli.ts and components/status-line.ts.
  */
 
 import type { ExtensionAPI, ExtensionContext, MessageRenderer } from "@earendil-works/pi-coding-agent"
@@ -17,7 +17,7 @@ import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-regis
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
-import { requestSharedFooterRender } from "../shared-footer.js"
+import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { registerTipProvider } from "../tips/registry.js"
 import { registerAgentSpawnGuard } from "./agent-spawn-guard.js"
 import { maybeTriggerFermentCompaction } from "./auto-compaction.js"
@@ -25,16 +25,18 @@ import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
 import { decideContinuation } from "./continuation.js"
 import { registerFermentEvents } from "./events.js"
-import { FERMENT_STOP_POLICY_SHORTCUT, canToggleFermentStopPolicy } from "./footer-status.js"
+import { registerFermentLifecycleContext } from "./lifecycle-context.js"
 import { deletePendingProposal } from "./pending-proposal-store.js"
-import { setPendingPlanReviewTrigger } from "./plan-review-trigger.js"
 import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
+import { setPendingPlanReviewTrigger } from "./plan-review-trigger.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
-import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
+import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
-import { confirmPendingScope } from "./scoping-confirmation.js"
 import { FERMENT_REQUEST_MESSAGE_TYPE, type FermentRequestMessageDetails } from "./scoping.js"
+import { confirmPendingScope } from "./scoping-confirmation.js"
 import { getActive, getActiveId, getContinuationPolicy } from "./state.js"
+import { canToggleFermentStopPolicy, FERMENT_STOP_POLICY_SHORTCUT } from "./status-line.js"
 import { createFermentTipProvider } from "./tips.js"
 import { registerFermentTodoSync } from "./todo-sync.js"
 import { applyFermentRuntimeToolProfile } from "./tool-scope.js"
@@ -43,7 +45,7 @@ import { buildFreeformScopingFeedbackMessage, registerLifecycleTools } from "./t
 import { registerPhaseTools } from "./tools/phases.js"
 import { registerStepTools } from "./tools/steps.js"
 
-// ─── Public exports for cli.ts and components/footer.ts ──────────────────────
+// ─── Public exports for cli.ts and components/status-line.ts ───────────────────────
 // Keep the existing signatures so external imports don't break.
 
 export function getActiveFerment() {
@@ -57,7 +59,7 @@ export function getFermentContinuationPolicy() {
 /** 1-based phase index or undefined */
 export function getCurrentPhaseIndex(): number | undefined {
 	const f = getActive()
-	if (!f || !f.activePhaseId) return undefined
+	if (!f?.activePhaseId) return undefined
 	const idx = f.phases.findIndex((p) => p.id === f.activePhaseId)
 	return idx >= 0 ? idx + 1 : undefined
 }
@@ -65,7 +67,7 @@ export function getCurrentPhaseIndex(): number | undefined {
 /** Active phase name or undefined */
 export function getCurrentPhaseName(): string | undefined {
 	const f = getActive()
-	if (!f || !f.activePhaseId) return undefined
+	if (!f?.activePhaseId) return undefined
 	return f.phases.find((p) => p.id === f.activePhaseId)?.name
 }
 
@@ -96,7 +98,7 @@ function registerFermentStopPolicyShortcut(pi: ExtensionAPI, runtime: FermentRun
 			const next = runtime.getContinuationPolicy() === "manual" ? "automated" : "manual"
 			runtime.setContinuationPolicy(next)
 			applyFermentRuntimeToolProfile(pi, runtime)
-			requestSharedFooterRender()
+			requestSharedStatusLineRender()
 		},
 	})
 }
@@ -127,11 +129,10 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	// events for every state mutation without importing from telemetry.
 	runtime.events = pi.events
 
+	registerFermentLifecycleContext(pi, runtime)
+
 	const unregisterFermentTips = registerTipProvider(createFermentTipProvider(runtime))
 	let unregisterFermentTodoSync: (() => void) | undefined
-	if (!isAgentWorker()) {
-		unregisterFermentTodoSync = registerFermentTodoSync(pi)
-	}
 	let planReviewTimer: ReturnType<typeof setTimeout> | undefined
 	let planReviewRunning = false
 	let finalCompletionNudgedThisRun = false
@@ -148,7 +149,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	const isCurrentPendingReview = (review: PendingPlanReview): boolean =>
 		runtime.getPendingPlanReview(review.fermentId) === review
 
-	const runPendingPlanReview = async (ctx: Pick<ExtensionContext, "ui"> | undefined, review: PendingPlanReview) => {
+	const runPendingPlanReview = async (ctx: ExtensionContext, review: PendingPlanReview) => {
 		if (planReviewRunning) return
 		if (!isCurrentPendingReview(review)) return
 
@@ -186,7 +187,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				}
 				if (outcome.kind === "start_auto") {
 					runtime.setContinuationPolicy("automated")
-					requestSharedFooterRender()
+					requestSharedStatusLineRender()
 				}
 				runtime.clearPendingPlanReview(review.fermentId)
 				applyFermentRuntimeToolProfile(pi, runtime)
@@ -206,7 +207,8 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 			// `propose_ferment_scoping` again once the revision is complete.
 			runtime.clearPendingPlanReview(review.fermentId)
 			applyFermentRuntimeToolProfile(pi, runtime)
-			void pi.sendMessage(
+			safeSendMessage(
+				pi,
 				{
 					content: buildFreeformScopingFeedbackMessage(review.fermentId, outcome.text),
 					customType: "ferment_scoping_iteration",
@@ -236,6 +238,16 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	pi.on("session_start", (_event, _ctx) => {
 		ctx = _ctx
 		runtime.clearMidTurnOneshotWarnings()
+
+		// (Re)wire the ferment todo bridge to the current session id. The
+		// session-scoped todo store requires every store call to target a
+		// specific session; the bridge captures the id at subscribe time so its
+		// internal handlers stay pure.
+		unregisterFermentTodoSync?.()
+		unregisterFermentTodoSync = undefined
+		if (!isAgentWorker()) {
+			unregisterFermentTodoSync = registerFermentTodoSync(pi, ctx.sessionManager.getSessionId())
+		}
 	})
 
 	pi.on("session_shutdown", () => {
@@ -243,9 +255,10 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		runtime.clearAllPendingPlanReviews()
 		unregisterFermentTips()
 		unregisterFermentTodoSync?.()
+		unregisterFermentTodoSync = undefined
 	})
 
-	pi.on("agent_end", (_event, ctx) => {
+	pi.on("agent_end", async (_event, ctx) => {
 		const review = runtime.getCurrentPendingPlanReview()
 		if (!planReviewRunning && review) {
 			clearPlanReviewTimer()
@@ -258,7 +271,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		// Drain any remaining pending compactions at agent_end (catches the case
 		// where the ferment completes within a single agent run and the turn_end
 		// handler already cleared most pending entries).
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 		// Completing the final phase does not complete the ferment: complete_ferment
 		// still has to run its C-gates and journey grading. If the model ends its run

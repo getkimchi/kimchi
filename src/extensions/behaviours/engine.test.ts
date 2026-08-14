@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { TriggerEngine } from "./engine.js"
 import type { SessionContext } from "./session-context.js"
-import { type ToolCallEvent, any, cli, gitRemote, tool } from "./triggers.js"
+import { any, cli, gitRemote, type ToolCallEvent, tool } from "./triggers.js"
 import type { Behaviour, BehaviourEvals, BehaviourTriggers } from "./types.js"
 
 type MakeArgs =

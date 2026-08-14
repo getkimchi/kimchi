@@ -1,6 +1,5 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
-import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionManager, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
@@ -10,47 +9,54 @@ import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
 import {
-	PLAN_MODE_STOP_NUDGE,
 	contentHasToolCall,
 	extractTextFromContent,
 	hasPlanCompletionSignal,
 	isNudgeSuppressed,
+	PLAN_MODE_STOP_NUDGE,
 	shouldNudge,
 } from "../../shared/planning/planning-stop-nudge.js"
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { createFerment } from "../ferment/create.js"
 import { emitFermentCreated } from "../ferment/domain-events-emitter.js"
 import { appendRefEntry } from "../ferment/nudge.js"
 import { defaultFermentRuntime } from "../ferment/runtime.js"
+import { safeSendMessage } from "../ferment/safe-send.js"
 import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
-import { createApplyAndPersist } from "../ferment/tool-helpers.js"
+import { createApplyAndPersist, formatNextActionHint, formatNoReplanningGuidance } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
+import { isIdeConnected } from "../ide-adapter/index.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
-import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
-import { resolveClassifierModels } from "./classifier-model.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
-import { PERMISSIONS_ENV_KEY } from "./constants.js"
-import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
-import { getPermissionMode, getSessionPermissionsEnvKey, setPermissionMode } from "./mode-controller.js"
+import { BUILTIN_DENY, DEFAULT_CONFIG, PERMISSION_MODES_WITH_META as MODES, PERMISSIONS_ENV_KEY } from "./constants.js"
 import { resolveMode } from "./mode.js"
+import {
+	getPermissionMode,
+	persistPermissionModeIfChanged,
+	resolveInitialPermissionMode,
+	setPermissionMode,
+} from "./mode-controller.js"
+import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { saveApprovedPlan } from "./plan-persistence.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
+import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import {
-	type CompoundSubcommand,
 	buildPermissionChoices,
+	type CompoundSubcommand,
 	promptForCompoundApproval,
 	terminalPrompter,
 	withWorkingHidden,
 } from "./prompts.js"
-import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import { evaluateRules, parseRules, stringifyRule } from "./rules.js"
 import { SessionMemory } from "./session-memory.js"
 import {
@@ -60,13 +66,7 @@ import {
 	isReadOnlyTool,
 	splitCompoundCommand,
 } from "./taxonomy.js"
-import {
-	BUILTIN_DENY,
-	DEFAULT_CONFIG,
-	type PermissionMode,
-	type PermissionModeRuntimeSource,
-	type Rule,
-} from "./types.js"
+import type { PermissionMode, PermissionModeState, RiskScore, Rule } from "./types.js"
 
 /**
  * Check whether a file path is within .kimchi/plans/ relative to cwd.
@@ -89,8 +89,6 @@ export function isWithinKimchiPlans(filePath: string, cwd: string): boolean {
  * For throwaway/sandboxed environments ONLY.
  */
 const DANGEROUS_BYPASS_FLAG = "dangerously-skip-permissions"
-
-type RuntimeModeSource = "user" | "ferment"
 
 // Safe default so any event that fires before session_start (and therefore
 // before doLoadConfig) doesn't crash reading `loaded.config.*`.
@@ -125,30 +123,6 @@ const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
 const BUILTIN_ALLOW_TOOL_NAMES = ["set_phase", "agent", "get_subagent_result", "steer_subagent", ...TODO_TOOL_NAMES]
 
-const MODES: Array<{
-	mode: PermissionMode
-	label: string
-	color: "success" | "warning" | "error"
-}> = [
-	{ mode: "default", label: "default", color: "success" },
-	{ mode: "plan", label: "plan", color: "warning" },
-	{ mode: "auto", label: "auto", color: "warning" },
-	{ mode: "yolo", label: "yolo", color: "error" },
-]
-
-let _isLaunchedWithYolo: () => boolean = () => process.env[PERMISSIONS_ENV_KEY] === "yolo"
-
-export function isLaunchedWithYolo(): boolean {
-	return _isLaunchedWithYolo()
-}
-
-let _displayPermissionMode: PermissionMode
-
-/** Returns current permission mode to be displayed in the TUI. */
-export function getDisplayPermissionMode(): string {
-	return _displayPermissionMode
-}
-
 export { notifyFermentActive }
 
 function canPrompt(ctx: ExtensionContext): boolean {
@@ -169,6 +143,22 @@ function resolvePrompter(ctx: ExtensionContext): ToolPermissionPrompter | undefi
 
 	if (ctx.hasUI) return terminalPrompter(ctx)
 	return undefined
+}
+
+/**
+ * Build the plan-mode prompt supplement system-prompt block. The mode
+ * resolver is injected so tests can drive the block deterministically
+ * without booting the full extension — the block's ONLY declared input
+ * is the runtime permission mode (see system-prompt-stability tests).
+ */
+export function buildPlanModeSupplementBlock(getMode: () => PermissionModeState): SystemPromptBlock {
+	return {
+		id: "plan-mode-supplement",
+		render: () => {
+			if (getMode().mode !== "plan") return undefined
+			return planModeSupplement.trim()
+		},
+	}
 }
 
 export default function permissionsExtension(pi: ExtensionAPI): void {
@@ -208,17 +198,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 	const session = new SessionMemory()
 	const builtinRules: Rule[] = parseRules(BUILTIN_DENY, "deny", "builtin")
-	// When a subagent is spawned, the parent stores its per-session mode under
-	// KIMCHI_PERMISSIONS_<sessionId> and advertises the session ID via
-	// KIMCHI_PARENT_SESSION_ID. If this variable is absent, we fall back to the
-	// base key.
-	const permissionsEnvFlag = process.env[PARENT_SESSION_ID_ENV_KEY]
-		? process.env[getSessionPermissionsEnvKey(process.env[PARENT_SESSION_ID_ENV_KEY])]
-		: process.env[PERMISSIONS_ENV_KEY]
+	// Base KIMCHI_PERMISSIONS env var used as a launch-time default. Subagent
+	// inheritance is handled separately in session_start via the parent session's
+	// per-session env key.
+	const permissionsEnvFlag = process.env[PERMISSIONS_ENV_KEY]
 	let loaded: LoadedConfig = EMPTY_LOADED_CONFIG
 	let configRules: Rule[] = []
 	let currentCtx: ExtensionContext | undefined
-	let preFermentMode: PermissionMode | undefined
+	let preFermentMode: PermissionModeState | undefined
 	let cliMode: PermissionMode | undefined
 	let planModeApplied = false
 	let planModeHiddenTools: string[] = []
@@ -242,50 +229,39 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		]
 	}
 
-	_isLaunchedWithYolo = () => {
-		const runtimeMode = currentCtx && getPermissionMode(currentCtx.sessionManager.getSessionId())
-		if (runtimeMode?.mode === "yolo" && runtimeMode.source === "user") {
-			return true
-		}
-		return (
-			resolveMode({
-				flag: cliMode,
-				env: permissionsEnvFlag,
-				config: loaded.config.defaultMode,
-			}).mode === "yolo"
-		)
+	function getInitialPermissionMode(
+		sessionManager: Pick<SessionManager, "getSessionId" | "getEntries">,
+	): PermissionModeState {
+		return resolveInitialPermissionMode(sessionManager, permissionsEnvFlag, cliMode, loaded)
 	}
 
 	/**
 	 * Returns the current permission mode flag or falls back to a user default.
 	 */
-	function getRuntimePermissionMode(): { mode: PermissionMode; source: PermissionModeRuntimeSource } {
+	function getRuntimePermissionMode(): PermissionModeState {
 		const runtimeMode = currentCtx && getPermissionMode(currentCtx.sessionManager.getSessionId())
-		if (runtimeMode) {
-			return runtimeMode
-		}
-		return {
-			mode: resolveMode({
-				flag: cliMode,
-				env: permissionsEnvFlag,
-				config: loaded.config.defaultMode,
-			}).mode,
-			source: "user",
-		}
+		return resolveMode({
+			runtime: runtimeMode,
+			flag: cliMode,
+			env: permissionsEnvFlag,
+			config: loaded.config.defaultMode,
+		})
 	}
 
 	/**
 	 * Set current permission mode, keeps the controller in sync, and
 	 * persists the env key for sub-agents.
 	 */
-	function setRuntimePermissionMode(
-		ctx: ExtensionContext,
-		mode: PermissionMode,
-		source: PermissionModeRuntimeSource,
-		skipNotify?: boolean,
-	): void {
-		_displayPermissionMode = mode
-		setPermissionMode(ctx.sessionManager.getSessionId(), mode, source, skipNotify)
+	function setRuntimePermissionMode(ctx: ExtensionContext, mode: PermissionModeState, skipNotify?: boolean): void {
+		setPermissionMode(ctx.sessionManager.getSessionId(), mode, skipNotify)
+	}
+
+	/**
+	 * Persist the current permission mode to the session log if it diverges from
+	 * the last logged value, or if there is no logged value yet.
+	 */
+	function maybePersistPermissionMode(ctx: ExtensionContext): void {
+		persistPermissionModeIfChanged(ctx.sessionManager, pi.appendEntry, getRuntimePermissionMode())
 	}
 
 	function allRules(): Rule[] {
@@ -332,15 +308,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (!ctx.hasUI) return
 		const { mode } = getRuntimePermissionMode()
 		const active = MODES.find((m) => m.mode === mode) ?? MODES[0]
-		const name = `${resolvedSemanticFg(ctx.ui.theme, active.color)}${active.label}${RST_FG}`
+		const name = `${resolvedSemanticFg(ctx.ui.theme, active.color)}${active.tuiLabel}${RST_FG}`
 		const hint = ctx.ui.theme.fg("dim", "→ shift+tab")
 		ctx.ui.setStatus("permissions-mode", `${name} ${hint}`)
 	}
 
 	function maybeShowYoloWarning(ctx: ExtensionContext) {
 		if (!ctx.hasUI) return
-		const { mode, source } = getRuntimePermissionMode()
-		if (mode === "yolo" && source === "user") {
+		const { mode, initiatedBy } = getRuntimePermissionMode()
+		if (mode === "yolo" && initiatedBy === "user") {
 			ctx.ui.setStatus(
 				"permissions-warning",
 				"WARNING: all permission checks disabled. Recommended for sandbox environments only.",
@@ -353,13 +329,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	function changeMode(
 		ctx: ExtensionContext,
 		current: PermissionMode,
-		next: PermissionMode,
-		source: PermissionModeRuntimeSource,
+		next: PermissionModeState,
 		skipNotify?: boolean,
 	): void {
-		setRuntimePermissionMode(ctx, next, source, skipNotify)
-		if (current === "plan" && next !== "plan") restoreToolsFromPlanMode()
-		if (next === "plan") applyPlanModeTools()
+		setRuntimePermissionMode(ctx, next, skipNotify)
+		if (current === "plan" && next.mode !== "plan") restoreToolsFromPlanMode()
+		if (next.mode === "plan") applyPlanModeTools()
 		// Dismiss all active permission prompts so tool_call handlers re-evaluate under the new mode.
 		for (const ctrl of activeAbortControllers) ctrl.abort()
 		activeAbortControllers.clear()
@@ -371,7 +346,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const { mode: current } = getRuntimePermissionMode()
 		const idx = MODES.findIndex((m) => m.mode === current)
 		const next = MODES[(idx + 1) % MODES.length].mode
-		changeMode(ctx, current, next, "user")
+		changeMode(ctx, current, { mode: next, initiatedBy: "user", source: "runtime" })
 	}
 
 	// Ferment calls notifyFermentActive() when a ferment is activated or cleared,
@@ -384,20 +359,23 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	onActiveFermentChange((hasActive) => {
 		if (cliMode) return // explicit CLI flag always wins
 		if (!currentCtx) return // No active session
-		let { mode: current, source } = getRuntimePermissionMode()
-		let next = current
+		const current = getRuntimePermissionMode()
 		if (hasActive) {
-			if (source === "user") preFermentMode = current
-			next = "yolo"
-			source = "ferment"
+			if (current.initiatedBy === "user") preFermentMode = current
+			changeMode(currentCtx, current.mode, {
+				mode: "yolo",
+				source: "runtime",
+				initiatedBy: "ferment",
+			})
 		} else if (preFermentMode) {
-			// Clear mode that was set for ferment (not if user changed it manually)
-			next = preFermentMode
+			const saved = preFermentMode
 			preFermentMode = undefined
-			source = "user"
-		}
-		if (next && next !== current) {
-			changeMode(currentCtx, current, next, source)
+			// Only restore the pre-ferment mode while the session is still on the
+			// ferment elevation. If the user changed mode manually mid-ferment,
+			// their choice wins over the restore.
+			if (current.initiatedBy === "ferment") {
+				changeMode(currentCtx, current.mode, saved)
+			}
 		}
 	})
 
@@ -429,6 +407,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		currentCtx = ctx
+		cliMode = undefined
 		const { errors } = doLoadConfig(ctx)
 
 		for (const err of errors) {
@@ -465,20 +444,24 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// YOLO mode: --yolo and --dangerously-skip-permissions both set yolo mode (no classifier, auto-approve all)
 		else if (pi.getFlag("yolo") || pi.getFlag("dangerously-skip-permissions")) cliMode = "yolo"
 
-		let { mode: current, source } = getRuntimePermissionMode()
+		const current = getInitialPermissionMode(ctx.sessionManager)
 		let next = current
 		// Active ferment → auto-yolo so scoping/lifecycle work can proceed without approval prompts.
-		// Permission mode is persisted after the user explicitly approves ferment creation.
+		// The elevation is persisted at the next before_agent_start as a ferment-owned entry;
+		// resume skips ferment-owned entries, so the session restores the previous user mode.
 		// Only applies when no explicit CLI mode flag was given.
 		if (!cliMode && hasActiveFerment()) {
-			if (source === "user") preFermentMode = current
-			next = "yolo"
-			source = "ferment"
+			if (current.initiatedBy === "user") preFermentMode = current
+			next = {
+				mode: "yolo",
+				initiatedBy: "ferment",
+				source: "runtime",
+			}
 		}
 
-		changeMode(ctx, current, next, source)
+		changeMode(ctx, current.mode, next)
 
-		const sessionId = currentCtx.sessionManager.getSessionId()
+		const sessionId = ctx.sessionManager.getSessionId()
 		unsubscribePermissionFlagController = getSessionPermissionFlagController(sessionId)?.subscribe(({ mode: next }) => {
 			if (!next) return
 
@@ -487,7 +470,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 			// ACP already emitted the config update from controller.setMode().
 			// This call is only for local transition side effects.
-			changeMode(ctx, current.mode, next.mode, next.source, true)
+			changeMode(ctx, current.mode, next, true)
 		})
 	})
 
@@ -503,13 +486,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// having to walk every extension's blocks handle. The blocks handle is kept
 	// alive (it still owns the `pi` binding for session-shutdown cleanup); the
 	// registry entry below is the canonical lookup path.
-	const planModeSupplementBlock: SystemPromptBlock = {
-		id: "plan-mode-supplement",
-		render: () => {
-			if (getRuntimePermissionMode().mode !== "plan") return undefined
-			return planModeSupplement.trim()
-		},
-	}
+	const planModeSupplementBlock = buildPlanModeSupplementBlock(getRuntimePermissionMode)
 	PromptSupplementRegistry.register("plan-mode-supplement", planModeSupplementBlock, {
 		modes: ["adhoc"],
 	})
@@ -534,6 +511,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (event.toolName !== "questionnaire") return { kind: "noop" }
 		if (event.mode !== "idle") return { kind: "noop" }
 		return { kind: "enter-mode", mode: "adhoc", reason: "questionnaire tool call in default mode" }
+	})
+
+	// Persist user-sourced mode changes at turn boundaries. This satisfies the
+	// spec requirement that shift+tab cycling updates the UI immediately but is
+	// only written to the session log when the next agent run starts.
+	pi.on("before_agent_start", (_event, ctx) => {
+		maybePersistPermissionMode(ctx)
 	})
 
 	// When the agent produces <!-- PLAN_COMPLETE --> in plan mode, show the approval menu.
@@ -570,7 +554,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			} catch {
 				// Non-fatal: plan persistence is best-effort.
 			}
-			changeMode(ctx, "plan", "auto", "user")
+			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" })
 			executePlan(planPath, text)
 		} else if (choice === START_AS_FERMENT) {
 			// ── Tool-swap contract ────────────────────────────────────────────────
@@ -630,11 +614,16 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// the draft via /ferment list when they want to implement it.
 				if (parsed.chunks.length === 0) {
 					const draftName = parsed.goal.split("\n")[0] || "Plan from --plan mode"
-					const draft = storage.create(draftName, parsed.goal || text.trim())
+					const draft = createFerment(runtime, {
+						name: draftName,
+						goal: parsed.goal || text.trim(),
+						hasUI: ctx.hasUI,
+						isOneShot: pi.getFlag("ferment-oneshot") === true,
+					})
 					defaultFermentRuntime.setActive(draft)
 					if (pi.events) emitFermentCreated(pi.events, draft)
 					appendRefEntry(pi, draft.id)
-					changeMode(ctx, "plan", "auto", "user")
+					changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" })
 					ctx.ui?.notify?.(
 						`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment list to resume and scope it interactively.`,
 					)
@@ -645,7 +634,16 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// proper ID, is visible to runtime.getActive(), the scheduler, and
 				// the compaction / resume paths.
 				const fermentName = parsed.goal.split("\n")[0].slice(0, 80) || "Plan from --plan mode"
-				const draft = storage.create(fermentName, parsed.goal)
+				const draft = createFerment(runtime, {
+					name: fermentName,
+					goal: parsed.goal,
+					hasUI: ctx.hasUI,
+					isOneShot: pi.getFlag("ferment-oneshot") === true,
+				})
+				// Set the draft active before emitting STARTED so telemetry can capture
+				// the scoping baseline. Keep planning tools until activation succeeds.
+				defaultFermentRuntime.setActive(draft)
+				if (pi.events) emitFermentCreated(pi.events, draft)
 				// Scope it using the structured fields from the shared plan.
 				const applyAndPersist = createApplyAndPersist(runtime)
 				const scoped = applyAndPersist(draft.id, {
@@ -672,22 +670,45 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					phaseId: scoped.ferment.phases[0]?.id ?? "phase-1",
 				})
 				if (!activated.ok) throw new Error(activated.error.message)
-				// Register the ferment as active in the runtime, emit the creation
-				// event, and append a session ref so resumed sessions can find it.
 				defaultFermentRuntime.setActive(activated.ferment)
 				setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)
-				// pi.events may be undefined in headless / test contexts; guard before emitting.
-				if (pi.events) emitFermentCreated(pi.events, activated.ferment)
 				appendRefEntry(pi, activated.ferment.id)
-				changeMode(ctx, "plan", "auto", "user")
+				// Explicit model-visible handoff. Without this, the only post-approval
+				// signal was the hidden `ferment_reference` entry above, and the model
+				// started "from scratch": it re-ran discovery (`list_ferments`) and
+				// re-drafted the whole scope via `scope_ferment`, which the FSM then
+				// rejected (already PHASE_ACTIVE). Tell the model the ferment is
+				// already scoped/active and what the immediate next action is, so "Start
+				// as ferment" goes straight to execution.
+				const activePhase = activated.ferment.phases.find((p) => p.status === "active")
+				const nextActionHint = formatNextActionHint(activated.ferment, getMultiModelEnabled(ctx.sessionManager))
+				safeSendMessage(
+					pi,
+					{
+						customType: "ferment_handoff",
+						content: [
+							{
+								type: "text",
+								text: [
+									`Handoff from plan mode: the plan you just presented was approved by the user ("Start as ferment") and converted into ferment "${activated.ferment.name}" (${activated.ferment.id}).`,
+									`The ferment is ALREADY scoped — goal, success criteria, and constraints are set — and ${activePhase ? `phase "${activePhase.id}" (${activePhase.steps.length} steps) is ACTIVE` : "its first phase is ACTIVE"}.`,
+									`${formatNoReplanningGuidance()} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
+									nextActionHint,
+									"Go straight to execution.",
+								]
+									.filter(Boolean)
+									.join("\n"),
+							},
+						],
+						display: false,
+						details: { fermentId: activated.ferment.id, origin: "plan_mode_start_as_ferment" },
+					},
+					{ triggerTurn: true },
+				)
+				changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" })
 			} catch (err) {
-				// Fail closed: if the runtime path failed (storage write error, FSM
-				// rejection, etc.), the session must NOT end up with implementation
-				// tools visible but no active ferment, no session ref, no creation
-				// event, and no initialized runtime/scheduler state. That was the
-				// silent-invalid-state bug from PR #683 review (comment 3473746278).
-				// Stay in plan mode, clear any half-set runtime state, and surface
-				// the failure so the user knows promotion did not succeed.
+				// Promotion failed before activation. Keep the planning profile, clear
+				// the half-set runtime state, and tell the user that they can retry.
 				defaultFermentRuntime.setActive(undefined)
 				const message = err instanceof Error ? err.message : String(err)
 				ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
@@ -811,6 +832,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 			if (BUILTIN_ALLOW_TOOL_NAMES.includes(toolName)) return undefined
 
+			// IDE approval deferral: when the ide-adapter extension has an active
+			// IDE connection AND we're in default mode, write/edit approvals are
+			// handled via the IDE diff viewer. In auto/yolo the user has opted out
+			// of per-file approval, so don't defer.
+			if ((toolName === "write" || toolName === "edit") && mode === "default" && isIdeConnected()) {
+				// Skip the terminal prompt so the user isn't asked twice.
+				return undefined
+			}
+
 			// Ferment tools are internal state-management operations; bypass user rules and classifier prompts.
 			// User-facing ferment tools (`ask_user`) are listed in USER_FACING_FERMENT_TOOL_NAMES and skip this bypass.
 			if (isFermentToolName(toolName) && !isUserFacingFermentToolName(toolName)) return undefined
@@ -848,7 +878,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// auto-promote the session to plan mode so the rest of the conversation
 			// runs under the right tool set instead of silently approving here.
 			if (toolName === "questionnaire" && mode === "default") {
-				changeMode(ctx, "default", "plan", "user")
+				changeMode(ctx, "default", { mode: "plan", initiatedBy: "user", source: "runtime" })
 				return undefined
 			}
 			if (isReadOnlyTool(toolName)) return undefined
@@ -861,12 +891,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// through the classifier; prompts without a frontend fail closed.
 			const promptAvailable = canPrompt(ctx)
 			if (mode === "auto" || !promptAvailable) {
-				const classifierModels = resolveClassifierModels(ctx.modelRegistry)
-				if (!classifierModels) return { block: true, reason: "no model available for classifier" }
-
 				const verdict = await classifyToolCall(
-					classifierModels.primary,
-					classifierModels.fallback,
 					ctx.modelRegistry,
 					{ toolName, input, cwd: ctx.cwd },
 					{ timeoutMs: loaded.config.classifierTimeoutMs },
@@ -874,12 +899,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				)
 
 				if (verdict.verdict === "safe") return undefined
-				if (verdict.verdict === "blocked") {
-					return {
-						block: true,
-						reason: `Classifier blocked: ${verdict.reason}`,
-					}
-				}
 				if (!promptAvailable) {
 					return {
 						block: true,
@@ -888,7 +907,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				}
 				const result = await handleConfirm(event, {
 					ctx,
-					subtitle: `Classifier: ${verdict.reason}`,
+					pi,
+					subtitle: verdict.reason,
+					riskScore: verdict.riskScore,
 					session,
 					activeAborts: activeAbortControllers,
 					allRules,
@@ -905,6 +926,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					if (subcommands && subcommands.length > 0) {
 						const result = await handleCompoundConfirm(event, {
 							ctx,
+							pi,
 							session,
 							activeAborts: activeAbortControllers,
 							subcommands,
@@ -917,6 +939,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			}
 			const result = await handleConfirm(event, {
 				ctx,
+				pi,
 				session,
 				activeAborts: activeAbortControllers,
 				allRules,
@@ -937,7 +960,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		getSession: () => session,
 		getLoaded: () => loaded,
 		getPermissionMode: () => getRuntimePermissionMode().mode,
-		setPermissionMode: (ctx, mode) => changeMode(ctx, getRuntimePermissionMode().mode, mode, "user"),
+		setPermissionMode: (ctx, mode) =>
+			changeMode(ctx, getRuntimePermissionMode().mode, { mode, initiatedBy: "user", source: "runtime" }),
 		rebuildConfigRules,
 		reloadConfig: (ctx) => {
 			const { errors } = doLoadConfig(ctx)
@@ -953,8 +977,11 @@ interface ConfirmOptions {
 	ctx: ExtensionContext
 	session: SessionMemory
 	subtitle?: string
+	/** Risk score from the classifier LLM, for display in the prompt. */
+	riskScore?: RiskScore
 	activeAborts: Set<AbortController>
 	allRules?: () => Rule[]
+	pi?: ExtensionAPI
 }
 
 async function handleConfirm(
@@ -968,12 +995,21 @@ async function handleConfirm(
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
 
+		if (opts.pi?.events?.emit) {
+			opts.pi.events.emit("notification", {
+				notification_type: "permission_prompt",
+				tool_name: event.toolName,
+				tool_use_id: event.toolCallId,
+			})
+		}
+
 		const input = event.input
 		const outcome = await prompter.request({
 			toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
 			toolName: event.toolName,
 			input,
 			subtitle: opts.subtitle,
+			riskScore: opts.riskScore,
 			choices: buildPermissionChoices(event.toolName, input),
 			signal: abort.signal,
 		})
@@ -996,6 +1032,14 @@ export async function handleCompoundConfirm(
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
 
+		if (opts.pi?.events?.emit) {
+			opts.pi.events.emit("notification", {
+				notification_type: "permission_prompt",
+				tool_name: event.toolName,
+				tool_use_id: event.toolCallId,
+			})
+		}
+
 		if (opts.ctx.mode !== "tui") {
 			// Non-TUI transports (chiefly ACP) present compound commands as one
 			// permission card. They do not offer TUI's per-subcommand picker, so
@@ -1015,7 +1059,6 @@ export async function handleCompoundConfirm(
 
 		const compoundSubs: CompoundSubcommand[] = opts.subcommands.map((cmd) => ({
 			command: cmd,
-			description: `bash(${truncate(cmd, 100)})`,
 		}))
 
 		const outcome = await promptForCompoundApproval({
@@ -1121,11 +1164,6 @@ function splitFlag(raw: boolean | string | undefined): string[] {
 		.split(",")
 		.map((s) => s.trim())
 		.filter(Boolean)
-}
-
-function truncate(s: string, max: number): string {
-	if (s.length <= max) return s
-	return `${s.slice(0, max - 1)}…`
 }
 
 function formatRule(rule: Rule): string {

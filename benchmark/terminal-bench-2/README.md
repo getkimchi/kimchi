@@ -182,13 +182,26 @@ Do not use `--agent-kwarg disable-multi-model=true`; the adapter accepts that le
 
 ### Multi-model run (orchestrator)
 
-To run kimchi's multi-model orchestrator, opt into the adapter-level kwarg. In this mode the adapter intentionally does not pass `--model` to kimchi, because an explicit model flag is what disables orchestration in the kimchi CLI.
+To run kimchi's default multi-model role configuration, select the adapter's virtual `multi-model` model. In this mode the adapter intentionally does not pass `--model` to kimchi, because an explicit model flag is what disables orchestration in the kimchi CLI.
 
 ```bash
-./scripts/run-local.sh -n 8 -k 3 --agent-kwarg multi-model=true
+MODEL=multi-model ./scripts/run-local.sh -n 8 -k 3
 ```
 
-With no custom role config in the task container, the orchestrator model defaults to `kimchi-dev/kimi-k2.6`. The adapter writes `{"multiModel":true}` to the in-container harness settings before launching kimchi so orchestration is enabled even in a fresh benchmark image.
+With no custom role config in the task container, the tested Kimchi revision supplies its default role configuration. The adapter writes `{"multiModel":true}` to the in-container harness settings before launching kimchi so orchestration is enabled even in a fresh benchmark image.
+
+### Compaction
+
+Compaction follows kimchi's default (on). Pass `disable-compaction=true` to turn it off for a run: the adapter then writes `{"compaction":{"enabled":false}}` to the in-container harness settings (`~/.config/kimchi/harness/settings.json`) before launching kimchi, which turns off upstream threshold auto-compaction, ferment stage-boundary and mid-turn compaction, and the model-guard mid-turn stopgap.
+
+To A/B compaction on vs. off, hold model + dataset constant and toggle the kwarg:
+
+```bash
+# one-shot ferment, compaction on (default)
+./scripts/run-local.sh -i terminal-bench/fix-git --agent-kwarg ferment-oneshot=true
+# one-shot ferment, compaction off
+./scripts/run-local.sh -i terminal-bench/fix-git --agent-kwarg ferment-oneshot=true --agent-kwarg disable-compaction=true
+```
 
 ### One-shot ferment per task
 

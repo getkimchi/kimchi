@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { SkillManager } from "./skill-manager.js"
-import { SkillManageSchema, createSkillManageTool } from "./tool.js"
+import { createSkillManageTool, SkillManageSchema } from "./tool.js"
 import { UsageTracker } from "./usage.js"
 
 describe("createSkillManageTool", () => {

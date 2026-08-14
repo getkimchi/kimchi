@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto"
-import { mkdirSync, writeFileSync } from "node:fs"
-import { realpathSync } from "node:fs"
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import { STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -99,7 +98,15 @@ test("draft with persisted proposal reopens plan review across session restart",
 			await waitForText(terminal, "Persistent Proposal", { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("draft listed in ferment picker")
 			terminal.submit("")
-			trace.step("selected the draft — resumeFerment runs")
+			trace.step("selected the draft from the list")
+
+			// Selecting a draft ferment opens a resume dialog (Continue / Delete /
+			// Back). Confirm "Continue" to trigger resumeFerment, which re-arms
+			// the plan review from the persisted sidecar.
+			await waitForText(terminal, "Continue", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("resume dialog visible")
+			terminal.submit("")
+			trace.step("confirmed Continue — resumeFerment runs")
 
 			// Stage 3: the persisted proposal re-arms the plan review dialog
 			// directly (no LLM scoping turn, no re-propose). The dialog renders

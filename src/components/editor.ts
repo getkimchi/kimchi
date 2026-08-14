@@ -1,7 +1,7 @@
-import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent"
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
+import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
-import { Editor, isKittyProtocolActive, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { isKittyProtocolActive, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG } from "../ansi.js"
 
 const CHEVRON_WIDTH = 2
@@ -27,6 +27,7 @@ export class PromptEditor extends CustomEditor {
 	private expandHandler?: () => void
 	private _pendingImageIndicator: string | null = null
 	private _sessionIndicator: string | null = null
+	private _ideSelectionIndicator: string | null = null
 
 	constructor(tui: TUI, editorTheme: EditorTheme, keybindings: KeybindingsManager, appTheme: Theme) {
 		super(tui, editorTheme, keybindings)
@@ -62,13 +63,24 @@ export class PromptEditor extends CustomEditor {
 	}
 
 	/**
-	 * Compose the current session + pending-image indicators into a single
-	 * raw string, or null if neither is set.
+	 * Show the current IDE selection (e.g. `@src/foo.ts:10-20`) right-aligned
+	 * on the prompt's first row, next to the other indicators. Pass `null` to clear.
+	 */
+	setIdeSelectionIndicator(text: string | null) {
+		if (this._ideSelectionIndicator === text) return
+		this._ideSelectionIndicator = text
+		this.tui.requestRender()
+	}
+
+	/**
+	 * Compose the current session + pending-image + ide-selection indicators
+	 * into a single raw string, or null if none is set.
 	 */
 	private combinedIndicator(): string | null {
 		const parts: string[] = []
 		if (this._sessionIndicator) parts.push(this._sessionIndicator)
 		if (this._pendingImageIndicator) parts.push(this._pendingImageIndicator)
+		if (this._ideSelectionIndicator) parts.push(this._ideSelectionIndicator)
 		return parts.length > 0 ? parts.join(" ") : null
 	}
 

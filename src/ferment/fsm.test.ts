@@ -4,9 +4,9 @@
 
 import { describe, expect, it } from "vitest"
 import {
+	type FermentFsmContext,
 	FSM_EVENTS,
 	FSM_STATES,
-	type FermentFsmContext,
 	fermentStatusToFsmState,
 	fsmStateToFermentStatus,
 	getValidEvents,

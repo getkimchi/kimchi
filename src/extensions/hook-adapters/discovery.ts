@@ -22,6 +22,7 @@ export type CommandHookEventName =
 	| "UserBash"
 	| "SubagentStart"
 	| "SubagentStop"
+	| "Notification"
 	| "SessionEnd"
 
 /** Every hook event the command-hook adapter machinery can drive. */
@@ -44,6 +45,7 @@ export const FULL_COMMAND_HOOK_EVENTS: readonly CommandHookEventName[] = [
 	"UserBash",
 	"SubagentStart",
 	"SubagentStop",
+	"Notification",
 	"SessionEnd",
 ]
 

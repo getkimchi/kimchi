@@ -1,8 +1,8 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import type { TelemetryConfig } from "../../config.js"
-import { getVersion } from "../../utils.js"
 import { fetchWithRetry } from "../../utils/http.js"
+import { getVersion } from "../../utils.js"
 import { nowNano, strAttr } from "./helpers.js"
 
 // ---------------------------------------------------------------------------
@@ -148,7 +148,7 @@ export async function sendLogBatch(config: TelemetryConfig, records: LogRecord[]
 
 export async function sendMetrics(
 	config: TelemetryConfig,
-	sessionId: string,
+	telemetryId: string,
 	metrics: MetricData[],
 	sessionStartNano: string,
 	userEmail?: string,
@@ -171,7 +171,7 @@ export async function sendMetrics(
 										startTimeUnixNano: sessionStartNano,
 										...(Number.isInteger(m.value) ? { asInt: String(m.value) } : { asDouble: m.value }),
 										attributes: [
-											strAttr("session.id", sessionId),
+											strAttr("session.id", telemetryId),
 											strAttr("client", "pi"),
 											...Object.entries(m.attrs).map(([k, v]) => strAttr(k, String(v))),
 										],

@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
-import { Key, isKeyRelease, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
-import { GLOBAL_TODO_SCOPE, getTodoCountsForScope, getTodosForScope, resolveTodoScope } from "./store.js"
+import { isKeyRelease, Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
+import { parseTodoScopeKey } from "./scope.js"
+import { GLOBAL_TODO_SCOPE, getTodoCountsForScope, getTodoState, resolveTodoScope } from "./store.js"
 import type { TodoCounts, TodoItem, TodoScope, TodoStatus } from "./types.js"
 
 export const TODO_SHORTCUT = Key.f7
@@ -33,24 +34,18 @@ interface TodoWidgetState {
 }
 
 const todoWidgetStates = new Map<string, TodoWidgetState>()
-let activeTodoWidgetSessionId: string | undefined
 
 function createTodoWidgetState(): TodoWidgetState {
 	return { visible: false, expanded: false, collapsed: false, registered: false, registrationId: 0 }
 }
 
-function todoWidgetSessionId(ctx: ExtensionContext): string {
-	return ctx.sessionManager.getSessionId()
-}
-
 function getTodoWidgetState(ctx: ExtensionContext): TodoWidgetState {
-	const sessionId = todoWidgetSessionId(ctx)
+	const sessionId = ctx.sessionManager.getSessionId()
 	let state = todoWidgetStates.get(sessionId)
 	if (!state) {
 		state = createTodoWidgetState()
 		todoWidgetStates.set(sessionId, state)
 	}
-	activeTodoWidgetSessionId = sessionId
 	return state
 }
 
@@ -65,20 +60,20 @@ function hasActiveTodos(counts: TodoCounts): boolean {
 	return counts.pending + counts.inProgress + counts.blocked > 0
 }
 
-export function summarizeTodos(): string {
-	return summarizeTodoCounts(getTodoCountsForScope(GLOBAL_TODO_SCOPE))
+export function summarizeTodos(sessionId: string): string {
+	return summarizeTodoCounts(getTodoCountsForScope(GLOBAL_TODO_SCOPE, sessionId))
 }
 
-function isFermentTodo(todo: TodoItem): boolean {
-	return todo.content.startsWith("↳ ") || todo.content.startsWith("[Phase ")
-}
-
+/** Render a single todo line. Uses a per-scope sequential position (not the
+ *  stored todo id) so numbers restart at 1 within each scope group. Styling is
+ *  determined by `scope.kind` (not content prefixes) so a model-written global
+ *  item that starts with "[Phase " gets normal global styling. */
 function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: TodoScope): string {
 	const index = `${displayIndex + 1}`.padStart(2)
 	const symbol = TODO_SYMBOL[todo.status]
-	const isFerment = scope.kind === "ferment" || isFermentTodo(todo)
+	const isFerment = scope.kind === "ferment"
 
-	// Phase header — bold accent
+	// Phase header — bold accent (bridge-written: "[Phase N] Name")
 	if (isFerment && todo.content.startsWith("[Phase ")) {
 		if (todo.status === "completed") {
 			return ` ${index}.  ${theme.fg("success", symbol)} ${theme.fg("dim", todo.content)}`
@@ -86,7 +81,7 @@ function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: Tod
 		return ` ${index}.  ${theme.fg("accent", symbol)} ${theme.fg("accent", theme.bold(todo.activeForm ?? todo.content))}`
 	}
 
-	// Ferment step — dim the prefix arrow, normal for rest
+	// Ferment step item — dim the prefix arrow (bridge-written: "↳ description")
 	if (isFerment && todo.content.startsWith("↳ ")) {
 		const arrow = "↳ "
 		const text = todo.content.slice(arrow.length)
@@ -102,7 +97,7 @@ function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: Tod
 		return ` ${index}.  ${theme.fg("dim", symbol)} ${theme.fg("dim", arrow)}${text}`
 	}
 
-	// Global todos — original behavior
+	// All other todos (global, ferment-step sub-tasks) — standard rendering
 	if (todo.status === "completed") return ` ${index}.  ${theme.fg("success", symbol)} ${theme.fg("dim", todo.content)}`
 	if (todo.status === "blocked")
 		return ` ${index}.  ${theme.fg("warning", symbol)} ${theme.fg("warning", todo.content)}`
@@ -116,11 +111,10 @@ function formatScopeHeader(scope: TodoScope): string {
 	if (scope.kind === "ferment") {
 		return `Todos · Ferment (${scope.phaseId})`
 	}
+	if (scope.kind === "ferment-step") {
+		return `Todos · Step (${scope.phaseId}/${scope.stepId})`
+	}
 	return "Todos · Global"
-}
-
-function summarizeTodosForScope(scope: TodoScope): string {
-	return summarizeTodoCounts(getTodoCountsForScope(scope))
 }
 
 function selectTodoWindow(todos: TodoItem[]): {
@@ -157,11 +151,85 @@ function todoWindowAfterText(hiddenAfter: number): string | undefined {
 	return hiddenAfter > 0 ? `… ${hiddenAfter} more` : undefined
 }
 
-export function buildTodoLines(theme: Theme): string[] {
-	const scope = resolveTodoScope()
-	const todos = getTodosForScope(scope)
+/** Collect all non-empty scopes from the store, grouped by kind.
+ *  Returns ferment scopes first (sorted by phaseId), then step scopes,
+ *  then global. This lets the widget show the full ferment hierarchy
+ *  (phase header + steps, step sub-tasks, global todos) in one view. */
+interface WidgetScopeGroup {
+	scope: TodoScope
+	todos: TodoItem[]
+}
 
-	if (todos.length === 0) {
+function collectWidgetScopes(sessionId: string): WidgetScopeGroup[] {
+	const state = getTodoState(sessionId)
+	const scopeKeys = Object.keys(state.byScope)
+	if (scopeKeys.length === 0) return []
+
+	const fermentScopes: WidgetScopeGroup[] = []
+	const stepScopes: WidgetScopeGroup[] = []
+	let globalGroup: WidgetScopeGroup | undefined
+
+	for (const scopeKey of scopeKeys) {
+		let scope: TodoScope | undefined
+		try {
+			scope = parseTodoScopeKey(scopeKey)
+		} catch {
+			continue
+		}
+		const scopeState = state.byScope[scopeKey]
+		if (!scopeState || scopeState.todos.length === 0) continue
+
+		const todos = [...scopeState.todos].sort((a, b) => a.id - b.id)
+
+		if (scope.kind === "global") {
+			globalGroup = { scope, todos }
+			continue
+		}
+
+		if (scope.kind === "ferment") {
+			fermentScopes.push({ scope, todos })
+			continue
+		}
+
+		if (scope.kind === "ferment-step") {
+			stepScopes.push({ scope, todos })
+		}
+	}
+
+	// Sort ferment scopes by phaseId for stable ordering
+	fermentScopes.sort((a, b) => {
+		const pa = (a.scope as { phaseId: string }).phaseId
+		const pb = (b.scope as { phaseId: string }).phaseId
+		return pa < pb ? -1 : pa > pb ? 1 : 0
+	})
+	stepScopes.sort((a, b) => {
+		const pa = a.scope as { phaseId: string; stepId: string }
+		const pb = b.scope as { phaseId: string; stepId: string }
+		if (pa.phaseId !== pb.phaseId) return pa.phaseId < pb.phaseId ? -1 : 1
+		return pa.stepId < pb.stepId ? -1 : pa.stepId > pb.stepId ? 1 : 0
+	})
+
+	return [...fermentScopes, ...stepScopes, ...(globalGroup ? [globalGroup] : [])]
+}
+
+/** Count active todos across all scopes for the status bar. */
+function countAllActiveTodos(sessionId: string): TodoCounts {
+	const groups = collectWidgetScopes(sessionId)
+	const allTodos = groups.flatMap((g) => g.todos)
+	return {
+		total: allTodos.length,
+		completed: allTodos.filter((t) => t.status === "completed").length,
+		pending: allTodos.filter((t) => t.status === "pending").length,
+		blocked: allTodos.filter((t) => t.status === "blocked").length,
+		inProgress: allTodos.filter((t) => t.status === "in_progress").length,
+	}
+}
+
+export function buildTodoLines(theme: Theme, sessionId: string): string[] {
+	const groups = collectWidgetScopes(sessionId)
+
+	if (groups.length === 0) {
+		const scope = resolveTodoScope()
 		return [
 			theme.fg("accent", formatScopeHeader(scope)),
 			"",
@@ -169,57 +237,115 @@ export function buildTodoLines(theme: Theme): string[] {
 		]
 	}
 
-	const lines = buildTodoListHeaderLines(theme, scope)
-	lines.push(...todos.map((todo, index) => todoLine(todo, index, theme, scope)))
+	const lines: string[] = []
+
+	for (const group of groups) {
+		const summary = summarizeTodoCounts(getTodoCountsForScope(group.scope, sessionId))
+		lines.push(theme.fg("accent", formatScopeHeader(group.scope)))
+		lines.push("")
+		lines.push(theme.fg("dim", summary))
+		lines.push("")
+		let groupIndex = 0
+		for (const todo of group.todos) {
+			lines.push(todoLine(todo, groupIndex, theme, group.scope))
+			groupIndex++
+		}
+		lines.push("")
+	}
+
+	// Trim trailing blank line
+	while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop()
 	return lines
 }
 
-function buildTodoListHeaderLines(theme: Theme, scope: TodoScope): string[] {
-	return [theme.fg("accent", formatScopeHeader(scope)), "", theme.fg("dim", summarizeTodosForScope(scope)), ""]
-}
+function buildTodoWidgetLines(theme: Theme, expanded: boolean, sessionId: string): string[] {
+	const groups = collectWidgetScopes(sessionId)
 
-function buildTodoWidgetLines(theme: Theme, expanded: boolean): string[] {
-	const scope = resolveTodoScope()
-	const todos = getTodosForScope(scope)
-	const lines = buildTodoLines(theme)
+	// For the capped (non-expanded) view, collect all todos across scopes
+	// and apply the rolling window to the combined list.
+	const allTodos = groups.flatMap((g) => g.todos)
+	const lines = buildTodoLines(theme, sessionId)
 	const withHint = [...lines, "", theme.fg("dim", TODO_LIST_HINT_TEXT)]
 	if (expanded) return withHint
 	if (withHint.length <= MAX_TODO_WIDGET_LINES) return withHint
-	if (todos.length <= TODO_WIDGET_ROLL_THRESHOLD) return lines
+	if (allTodos.length <= TODO_WIDGET_ROLL_THRESHOLD) return lines
 
-	const window = selectTodoWindow(todos)
+	const window = selectTodoWindow(allTodos)
 	const beforeText = todoWindowBeforeText(window.hiddenBefore)
 	const afterText = todoWindowAfterText(window.hiddenAfter)
-	return [
-		...buildTodoListHeaderLines(theme, scope),
-		...(beforeText ? [theme.fg("dim", beforeText)] : []),
-		...window.todos.map((todo, index) => todoLine(todo, window.startIndex + index, theme, scope)),
-		...(afterText ? [theme.fg("dim", afterText)] : []),
-	]
+
+	// Single pass: for each group, if it contributes ≥1 windowed row, emit
+	// header + summary immediately followed by that group's windowed rows.
+	// Groups with zero windowed rows are skipped entirely (no orphan headers).
+	const result: string[] = []
+	let displayIndex = 0
+	let beforeInserted = false
+
+	for (const group of groups) {
+		const groupTodos = group.todos
+		const groupStartIndex = displayIndex
+		const groupEndIndex = displayIndex + groupTodos.length
+
+		// Skip groups entirely outside the window
+		if (groupEndIndex <= window.hiddenBefore || groupStartIndex >= window.hiddenBefore + window.todos.length) {
+			displayIndex = groupEndIndex
+			continue
+		}
+
+		// Emit header + summary for this group
+		result.push(theme.fg("accent", formatScopeHeader(group.scope)))
+		result.push("")
+		result.push(theme.fg("dim", summarizeTodoCounts(getTodoCountsForScope(group.scope, sessionId))))
+		result.push("")
+
+		// Emit windowed rows for this group, inserting before-marker before the first visible row
+		let groupDisplayIndex = 0
+		for (const todo of groupTodos) {
+			if (displayIndex >= window.hiddenBefore && displayIndex < window.hiddenBefore + window.todos.length) {
+				if (beforeText && !beforeInserted) {
+					result.push(theme.fg("dim", beforeText))
+					beforeInserted = true
+				}
+				result.push(todoLine(todo, groupDisplayIndex, theme, group.scope))
+			}
+			displayIndex++
+			groupDisplayIndex++
+		}
+		result.push("")
+	}
+
+	// Emit after-marker after the last visible row
+	if (afterText) {
+		while (result.length > 0 && result[result.length - 1] === "") result.pop()
+		result.push(theme.fg("dim", afterText))
+	}
+
+	return result
 }
 
-export function resetTodoWidgetState(): void {
-	todoWidgetStates.clear()
-	activeTodoWidgetSessionId = undefined
+export function resetTodoWidgetState(ctx: ExtensionContext): void {
+	const sessionId = ctx.sessionManager.getSessionId()
+	todoWidgetStates.delete(sessionId)
 }
 
 function requestTodoRender(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	const state = todoWidgetStates.get(todoWidgetSessionId(ctx))
+	const sessionId = ctx.sessionManager.getSessionId()
+	const state = todoWidgetStates.get(sessionId)
 	if (!state?.registered) return
 	state.tui?.requestRender?.(true)
 }
 
 export function setTodosStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	const scope = resolveTodoScope()
-	const counts = getTodoCountsForScope(scope)
+	const sessionId = ctx.sessionManager.getSessionId()
+	const counts = countAllActiveTodos(sessionId)
 	ctx.ui.setStatus(TODO_STATUS_KEY, hasActiveTodos(counts) ? `${summarizeTodoCounts(counts)} -> F7` : undefined)
 }
 
 export function ensureTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	const sessionId = todoWidgetSessionId(ctx)
+	const sessionId = ctx.sessionManager.getSessionId()
 	const state = getTodoWidgetState(ctx)
 	if (state.registered && state.ctx === ctx) return
 
@@ -230,14 +356,15 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 		state.registered = false
 		state.tui = undefined
 		state.ctx = undefined
-		if (activeTodoWidgetSessionId === sessionId) activeTodoWidgetSessionId = undefined
 	}
 	const component = (tui: unknown, theme: Theme) => {
 		state.tui = tui as { requestRender?: (force?: boolean) => void }
 		return {
 			render(width: number): string[] {
 				if (!state.visible) return []
-				return buildTodoWidgetLines(theme, state.expanded).map((line) => truncateToWidth(line, Math.max(20, width - 4)))
+				return buildTodoWidgetLines(theme, state.expanded, sessionId).map((line) =>
+					truncateToWidth(line, Math.max(20, width - 4)),
+				)
 			},
 			invalidate: unregister,
 			dispose: unregister,
@@ -254,7 +381,6 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 	ctx.ui.setWidget(TODO_WIDGET_KEY, component, TODO_WIDGET_OPTIONS)
 	state.registered = true
 	state.ctx = ctx
-	activeTodoWidgetSessionId = sessionId
 }
 
 export function openTodoWidget(ctx: ExtensionContext): void {
@@ -295,8 +421,8 @@ export function toggleTodoWidget(ctx: ExtensionContext): void {
 
 export function syncTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	const scope = resolveTodoScope()
-	const counts = getTodoCountsForScope(scope)
+	const sessionId = ctx.sessionManager.getSessionId()
+	const counts = countAllActiveTodos(sessionId)
 	const state = getTodoWidgetState(ctx)
 	if (!state.collapsed && hasActiveTodos(counts)) openTodoWidget(ctx)
 	else clearTodoWidget(ctx)
@@ -305,7 +431,7 @@ export function syncTodoWidget(ctx: ExtensionContext): void {
 
 export function disposeTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	const sessionId = todoWidgetSessionId(ctx)
+	const sessionId = ctx.sessionManager.getSessionId()
 	const state = todoWidgetStates.get(sessionId)
 	ctx.ui.setWidget(TODO_WIDGET_KEY, undefined, TODO_WIDGET_OPTIONS)
 	if (state) {
@@ -315,7 +441,6 @@ export function disposeTodoWidget(ctx: ExtensionContext): void {
 		state.ctx = undefined
 	}
 	todoWidgetStates.delete(sessionId)
-	if (activeTodoWidgetSessionId === sessionId) activeTodoWidgetSessionId = undefined
 }
 
 export function registerTodoShortcut(pi: ExtensionAPI): void {
