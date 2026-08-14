@@ -37,6 +37,12 @@ const pendingTransports = new Map<string, StreamableHTTPClientTransport>()
 // Deduplicate concurrent authenticate() calls per server.
 const pendingAuthentications = new Map<string, Promise<AuthStatus>>()
 
+async function stopCallbackServerIfIdle(): Promise<void> {
+	if (pendingTransports.size === 0 && pendingAuthentications.size === 0) {
+		await stopCallbackServer()
+	}
+}
+
 /**
  * Generate a cryptographically secure random state parameter.
  */
@@ -139,6 +145,7 @@ export async function startAuth(
 		// If we get here, we're already authenticated
 		await client.close().catch(() => {})
 		await transport.close().catch(() => {})
+		await stopCallbackServerIfIdle()
 		return { authorizationUrl: "", transport }
 	} catch (error) {
 		if (error instanceof UnauthorizedError && capturedUrl) {
@@ -149,6 +156,7 @@ export async function startAuth(
 		}
 		await client.close().catch(() => {})
 		await transport.close().catch(() => {})
+		await stopCallbackServerIfIdle()
 		throw error
 	}
 }
@@ -169,6 +177,7 @@ export async function completeAuth(serverName: string, authorizationCode: string
 	} finally {
 		pendingTransports.delete(serverName)
 		await transport.close().catch(() => {})
+		await stopCallbackServerIfIdle()
 	}
 }
 
@@ -212,16 +221,18 @@ export async function authenticate(
 		// Register the callback BEFORE opening the browser
 		const callbackPromise = waitForCallback(oauthState)
 
-		// Open browser
-		console.log(`MCP Auth: Opening browser for ${serverName}`)
 		try {
-			await open(authorizationUrl)
-		} catch (error) {
-			console.warn(`MCP Auth: Failed to open browser for ${serverName}`, { error })
-			throw new Error(`Could not open browser. Please open this URL manually: ${authorizationUrl}`, { cause: error })
-		}
+			// Open browser
+			console.log(`MCP Auth: Opening browser for ${serverName}`)
+			try {
+				await open(authorizationUrl)
+			} catch (error) {
+				console.warn(`MCP Auth: Failed to open browser for ${serverName}`, { error })
+				throw new Error(`Could not open browser. Please open this URL manually: ${authorizationUrl}`, {
+					cause: error,
+				})
+			}
 
-		try {
 			// Wait for callback
 			const code = await callbackPromise
 
@@ -237,6 +248,7 @@ export async function authenticate(
 			return await completeAuth(serverName, code)
 		} catch (error) {
 			cancelPendingCallback(oauthState)
+			await callbackPromise.catch(() => {})
 			const pendingTransport = pendingTransports.get(serverName)
 			if (pendingTransport) {
 				pendingTransports.delete(serverName)
@@ -254,6 +266,7 @@ export async function authenticate(
 		if (pendingAuthentications.get(serverName) === operation) {
 			pendingAuthentications.delete(serverName)
 		}
+		await stopCallbackServerIfIdle()
 	}
 }
 
@@ -373,6 +386,7 @@ export async function removeAuth(serverName: string): Promise<void> {
 		pendingTransports.delete(serverName)
 		await pendingTransport.close().catch(() => {})
 	}
+	await stopCallbackServerIfIdle()
 	clearAllCredentials(serverName)
 	await clearOAuthState(serverName)
 	console.log(`MCP Auth: Removed credentials for ${serverName}`)
@@ -399,11 +413,9 @@ export function supportsOAuth(definition: ServerEntry): boolean {
 
 /**
  * Initialize the OAuth system on startup.
- * Starts the callback server if there are any OAuth servers configured.
+ * OAuth callback binding is lazy and starts from startAuth() only.
  */
-export async function initializeOAuth(): Promise<void> {
-	await ensureCallbackServer()
-}
+export async function initializeOAuth(): Promise<void> {}
 
 /**
  * Shutdown the OAuth system.
