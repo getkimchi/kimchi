@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
-import { createMcpPanel, computeVisibleWindow } from "./mcp-panel.js"
-import type { McpConfig, McpPanelCallbacks, McpPanelResult, ServerProvenance } from "./types.js"
+import { computeVisibleWindow, createMcpPanel } from "./mcp-panel.js"
 import type { MetadataCache } from "./metadata-cache.js"
+import type { McpConfig, McpPanelCallbacks, McpPanelResult, ServerProvenance } from "./types.js"
 
 // ─── Panel test helpers ───────────────────────────────────────────────────────
 

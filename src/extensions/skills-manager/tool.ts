@@ -1,5 +1,5 @@
-import { Type } from "typebox"
 import type { Static } from "typebox"
+import { Type } from "typebox"
 import type { SkillManageResult, SkillManager } from "./skill-manager.js"
 import type { UsageEntry, UsageTracker } from "./usage.js"
 

@@ -56,7 +56,7 @@ export class McpLifecycleManager {
 		for (const [name, definition] of this.keepAliveServers) {
 			const connection = this.manager.getConnection(name)
 
-			if (!connection || connection.status !== "connected") {
+			if (connection?.status !== "connected") {
 				try {
 					await this.manager.connect(name, definition)
 					logger.debug(`Reconnected to ${name}`)

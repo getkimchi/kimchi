@@ -4,8 +4,6 @@ import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import { editPhaseProposal } from "./phase-editor.js"
 import type { FermentRuntime } from "./runtime.js"
 
-type PhaseEditorCtx = Partial<Pick<ExtensionContext, "ui">>
-
 interface MockUi {
 	select?: ReturnType<typeof vi.fn>
 	input?: ReturnType<typeof vi.fn>
@@ -13,8 +11,8 @@ interface MockUi {
 	notify?: ReturnType<typeof vi.fn>
 }
 
-function buildCtx(ui: MockUi | undefined): PhaseEditorCtx {
-	return { ui } as unknown as PhaseEditorCtx
+function buildCtx(ui: MockUi | undefined): ExtensionContext {
+	return { ui } as unknown as ExtensionContext
 }
 
 function makeRuntime(): FermentRuntime & { markHumanInput: ReturnType<typeof vi.fn> } {

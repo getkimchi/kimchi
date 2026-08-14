@@ -7,9 +7,9 @@
 
 import { type DeclarativeAction, determineNextAction } from "../../ferment/engine.js"
 import {
+	type FermentFsmContext,
 	FSM_EVENTS,
 	FSM_STATES,
-	type FermentFsmContext,
 	type FsmState,
 	fermentStatusToFsmState,
 	transition,

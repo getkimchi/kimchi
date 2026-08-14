@@ -1,6 +1,6 @@
 import type { KimchiConfig } from "../config.js"
-import { type ConfigSnapshot, buildConfigSnapshot } from "../extensions/telemetry/config-snapshot.js"
-import { type OsMetadata, getOsMetadata } from "./os-metadata.js"
+import { buildConfigSnapshot, type ConfigSnapshot } from "../extensions/telemetry/config-snapshot.js"
+import { getOsMetadata, type OsMetadata } from "./os-metadata.js"
 
 /**
  * The launch-time metadata captured once per process at session start.

@@ -1,19 +1,33 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment, FermentStatus } from "../../ferment/types.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { registerAgents } from "../agents/personas/agent-types.js"
 import { setPermissionMode } from "../permissions/mode-controller.js"
+
+// Mock getMultiModelEnabled so tests can control delegationMode (strict vs relaxed)
+// without depending on real config state. Default to true (multi-model / strict)
+// so existing assertions for strict-mode content continue to pass. Individual
+// tests can override via `setMultiModelEnabled(false)`.
+const getMultiModelEnabledMock = vi.fn(() => true)
+vi.mock("../multi-model.js", (importOriginal) => {
+	return importOriginal<typeof import("../multi-model.js")>().then((mod) => ({
+		...mod,
+		getMultiModelEnabled: () => getMultiModelEnabledMock(),
+	}))
+})
+
+import { createContext } from "../__mocks__/context.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
 
 const TEST_SESSION_ID = "test-session"
 
 function makeMockCtx(): ExtensionContext {
 	// Set up permission mode for the test session
-	setPermissionMode(TEST_SESSION_ID, "default", "user")
-	return { sessionManager: { getSessionId: () => TEST_SESSION_ID } } as unknown as ExtensionContext
+	setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+	return createContext({ sessionManager: { getSessionId: () => TEST_SESSION_ID } })
 }
 
 function makePi(oneshot: boolean): ExtensionAPI {
@@ -93,6 +107,12 @@ const PAUSED_HEADER = "## Ferment Paused"
 const PAUSED_RULE = "Do NOT call any ferment tools"
 
 describe("buildFermentPromptBlock", () => {
+	beforeEach(() => {
+		// Default to multi-model (strict) so existing assertions pass.
+		// Individual tests override with getMultiModelEnabledMock(false).
+		getMultiModelEnabledMock.mockReturnValue(true)
+	})
+
 	afterEach(() => {
 		registerAgents(new Map())
 	})
@@ -154,6 +174,81 @@ describe("buildFermentPromptBlock", () => {
 		})
 	})
 
+	describe("current lifecycle state section", () => {
+		const runningWithActivePhase: Partial<Ferment> = {
+			status: "running",
+			phases: [
+				{
+					id: "phase-1",
+					index: 1,
+					name: "Build the feature",
+					goal: "Ship it",
+					status: "active",
+					steps: [
+						{ id: "step-1", index: 1, description: "Do thing one", status: "done" },
+						{ id: "step-2", index: 2, description: "Do thing two", status: "pending" },
+					],
+				},
+			],
+		}
+
+		// Regression: after "Start as ferment" handoffs, /ferment resume, and
+		// post-compaction continuations, the planner supplement did not state the
+		// ferment's current position, so the model wasted turns re-running
+		// discovery (list_ferments) and re-drafting the scope (scope_ferment),
+		// which the FSM rejected (already PHASE_ACTIVE).
+		//
+		// The static anti-replanning guidance stays in the system prompt; the
+		// volatile details (active phase, step progress, next-action hint) are
+		// injected via the transient context event by lifecycle-context.ts.
+		it("running ferment states that scoping is complete and scoping calls will be rejected", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime(runningWithActivePhase)) ?? ""
+			expect(out).toContain("## Current lifecycle state")
+			expect(out).toContain("Scoping is COMPLETE")
+			expect(out).not.toContain("active phase")
+			expect(out).not.toContain("steps terminal")
+			for (const forbidden of [
+				"list_ferments",
+				"scope_ferment",
+				"propose_ferment_scoping",
+				"confirm_ferment_completion_criteria",
+			]) {
+				expect(out).toContain(`\`${forbidden}\``)
+			}
+			expect(out).toContain("Scope mutations will be rejected in this lifecycle state")
+			expect(out).toContain("`ask_user` remains available for genuine execution blockers or recovery")
+		})
+
+		it("does not include volatile next-action hint in the system prompt", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime(runningWithActivePhase)) ?? ""
+			// The planner supplement mentions "Next action:" as an instruction, but the
+			// volatile hint line ("- Next action: call `start_ferment_step`...") must
+			// not appear in the static system prompt.
+			expect(out).not.toContain("- Next action: call")
+			expect(out).not.toContain('step_id "step-2"')
+		})
+
+		it("planned ferment still shows the static lifecycle state section", () => {
+			const activePhase = runningWithActivePhase.phases?.[0]
+			if (!activePhase) throw new Error("expected active phase fixture")
+			const plannedPhase = {
+				...activePhase,
+				status: "planned" as const,
+			}
+			const out =
+				buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "planned", phases: [plannedPhase] })) ??
+				""
+			expect(out).toContain("## Current lifecycle state")
+			expect(out).not.toContain("- Next action: call")
+		})
+
+		it("still prepends the section before the planner supplement", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime(runningWithActivePhase)) ?? ""
+			expect(out.indexOf("## Current lifecycle state")).toBeGreaterThanOrEqual(0)
+			expect(out.indexOf("## Current lifecycle state")).toBeLessThan(out.indexOf(STATE_MACHINE_HEADER))
+		})
+	})
+
 	describe("rule-survival — load-bearing substrings", () => {
 		const PI_BY_NAME = { normal: PI_NORMAL, oneshot: PI_ONESHOT }
 
@@ -197,7 +292,7 @@ describe("buildFermentPromptBlock", () => {
 		it("returns undefined when permissions mode is plan (no idle hint)", () => {
 			const ctx = makeMockCtx()
 			const sessionId = ctx.sessionManager.getSessionId()
-			setPermissionMode(sessionId, "plan", "user")
+			setPermissionMode(sessionId, { mode: "plan", source: "runtime", initiatedBy: "user" })
 			expect(buildFermentPromptBlock(ctx, PI_NORMAL, makeNoActiveFermentRuntime())).toBeUndefined()
 		})
 		it("preserves paused warning for status=paused regardless of ferment-oneshot flag", () => {
@@ -307,7 +402,8 @@ describe("buildFermentPromptBlock", () => {
 			const out =
 				buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }, "automated")) ?? ""
 			expect(out).toContain("Turn discipline (automated ferment)")
-			expect(out).toContain("Every turn MUST end with a ferment lifecycle tool call")
+			expect(out).toContain("may take a brief thinking or assessment turn")
+			expect(out).not.toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
 		})
 
 		it("uses automated cross-phase instructions under automated continuation policy", () => {
@@ -443,7 +539,6 @@ describe("buildFermentPromptBlock", () => {
 		expect(out).toContain("Do not rerun it with bash")
 		expect(out).toContain("do not mark the step complete")
 		expect(out).toContain("narrower linked replacement")
-		expect(out).toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
 		expect(out).not.toContain("call complete_ferment_step with whatever it produced")
 	})
 
@@ -496,6 +591,33 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).not.toContain("read-only access to this codebase")
 			// Plan-mode questionnaire tool must not appear in ferment supplement
 			expect(out).not.toContain("questionnaire tool")
+		})
+	})
+
+	describe("single-model (relaxed) delegation mode", () => {
+		beforeEach(() => {
+			getMultiModelEnabledMock.mockReturnValue(false)
+		})
+
+		it("does NOT mandate delegation — allows direct execution", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+			expect(out).not.toContain("NEVER implement a step inline")
+			expect(out).not.toContain("NEVER write, edit, or read files yourself")
+			expect(out).toContain("may execute steps directly")
+		})
+
+		it("contains delegation guidance for when to delegate vs work directly", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+			expect(out).toContain("Prefer direct execution for narrow fixes")
+			expect(out).toContain("Prefer delegation for parallel work")
+			expect(out).toContain("If a subagent aborts on a step")
+		})
+
+		it("relaxes turn discipline — allows thinking turns", () => {
+			const out =
+				buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" }, "automated")) ?? ""
+			expect(out).toContain("may take a brief thinking or assessment turn")
+			expect(out).not.toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
 		})
 	})
 })

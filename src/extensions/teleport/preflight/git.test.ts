@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { type GitPreflightOptions, getGitRemoteUrl, gitWorkingTreeDirty, isGitRepo } from "./git.js"
+import { type GitPreflightOptions, getGitHeadSha, getGitRemoteUrl, gitWorkingTreeDirty, isGitRepo } from "./git.js"
 
 type MockExec = NonNullable<GitPreflightOptions["execFile"]>
 
@@ -90,5 +90,26 @@ describe("getGitRemoteUrl", () => {
 		getGitRemoteUrl("/work/dir", { execFile: exec })
 		expect(receivedFile).toBe("git")
 		expect(receivedArgs).toEqual(["-C", "/work/dir", "remote", "get-url", "origin"])
+	})
+})
+
+describe("getGitHeadSha", () => {
+	it("trims the trailing newline git appends to stdout", () => {
+		const exec = mockExec(() => "a1b2c3d\n")
+		expect(getGitHeadSha("/work/dir", { execFile: exec })).toBe("a1b2c3d")
+	})
+
+	it("returns undefined on failure", () => {
+		expect(getGitHeadSha("/fake", { execFile: mockExecThrowing() })).toBeUndefined()
+	})
+
+	it("invokes git with rev-parse --short HEAD", () => {
+		let receivedArgs: readonly string[] = []
+		const exec = mockExec((_file, args) => {
+			receivedArgs = args
+			return "a1b2c3d"
+		})
+		getGitHeadSha("/work/dir", { execFile: exec })
+		expect(receivedArgs).toEqual(["-C", "/work/dir", "rev-parse", "--short", "HEAD"])
 	})
 })

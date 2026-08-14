@@ -1,0 +1,121 @@
+import { writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { expect, test } from "@microsoft/tui-test"
+import { viewText, waitForTurnToSettle } from "./support/assertions.js"
+import type { KimchiFixture } from "./support/kimchi-fixture.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+
+test.use(TUI_TEST_CONFIG)
+
+/** Phrase from LSP_SYSTEM_PROMPT that appears in provider requests when the
+ *  lsp-tools prompt block is active (i.e. at least one server binary on PATH). */
+const LSP_PROMPT_PHRASE = "Prefer them over text-based alternatives"
+
+/** Status-line text for degraded LSP: marker present, binary missing. */
+const LSP_DEGRADED_STATUS_LINE = "gopls not installed"
+
+/** Status-line text for active LSP: binary on PATH and marker present. */
+const LSP_ACTIVE_STATUS_LINE = "typescript-language-server"
+
+/** Returns true if any recorded provider request body contains the phrase. */
+function anyRequestContains(fixture: KimchiFixture, phrase: string): boolean {
+	for (const request of fixture.fake.requests) {
+		const bodyText = JSON.stringify(request.body ?? "")
+		if (bodyText.includes(phrase)) return true
+	}
+	return false
+}
+
+// =============================================================================
+// Scenario 1: Go project with go.mod but gopls NOT on PATH → degraded state
+// =============================================================================
+
+test("LSP degraded state shows status-bar segment and omits prompt in a Go project without gopls", async ({
+	terminal,
+}) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "lsp-degraded-go",
+			responses: [{ stream: ["Done."] }],
+			env: { KIMCHI_LSP_BINARIES: "" },
+			seedHome: (_homeDir, workDir) => {
+				writeFileSync(join(workDir, "go.mod"), "module example.com/test\n\ngo 1.22\n")
+			},
+		},
+		async (fixture, trace) => {
+			// Wait for the status line to render the degraded LSP segment.
+			trace.step("checking status line for degraded LSP status")
+			expect(viewText(terminal)).toContain(LSP_DEGRADED_STATUS_LINE)
+
+			// Submit a prompt to trigger before_agent_start (which fires the
+			// one-time warning) and settle the turn.
+			terminal.submit("hello")
+			trace.step("submitted prompt")
+			await waitForTurnToSettle(fixture.fake.requests)
+			trace.step("settled")
+
+			// The LSP system prompt block must NOT appear in any request —
+			// no server is active so render() returned undefined.
+			expect(anyRequestContains(fixture, LSP_PROMPT_PHRASE)).toBe(false)
+		},
+	)
+})
+
+// =============================================================================
+// Scenario 2: No project markers → no LSP segment at all
+// =============================================================================
+
+test("LSP segment absent when no project markers are present", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "lsp-no-markers",
+			responses: [{ stream: ["Done."] }],
+			env: { KIMCHI_LSP_BINARIES: "typescript-language-server,gopls" },
+		},
+		async (fixture, trace) => {
+			trace.step("checking status line for absence of LSP segment")
+			expect(viewText(terminal)).not.toContain("LSP:")
+
+			terminal.submit("hello")
+			trace.step("submitted prompt")
+			await waitForTurnToSettle(fixture.fake.requests)
+			trace.step("settled")
+
+			// No markers → no server active → prompt block omitted.
+			expect(anyRequestContains(fixture, LSP_PROMPT_PHRASE)).toBe(false)
+		},
+	)
+})
+
+// =============================================================================
+// Scenario 3: TS project with package.json and typescript-language-server on PATH
+//             → active LSP, prompt block present, no degraded warning
+// =============================================================================
+
+test("LSP active state shows status-bar segment and includes prompt in a TS project", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "lsp-active-ts",
+			responses: [{ stream: ["Done."] }],
+			env: { KIMCHI_LSP_BINARIES: "typescript-language-server" },
+			seedHome: (_homeDir, workDir) => {
+				writeFileSync(join(workDir, "package.json"), '{"name":"test","version":"1.0.0"}\n')
+			},
+		},
+		async (fixture, trace) => {
+			trace.step("checking status line for active LSP status")
+			expect(viewText(terminal)).toContain(LSP_ACTIVE_STATUS_LINE)
+
+			terminal.submit("hello")
+			trace.step("submitted prompt")
+			await waitForTurnToSettle(fixture.fake.requests)
+			trace.step("settled")
+
+			// LSP system prompt MUST appear in requests — server is active.
+			expect(anyRequestContains(fixture, LSP_PROMPT_PHRASE)).toBe(true)
+		},
+	)
+})

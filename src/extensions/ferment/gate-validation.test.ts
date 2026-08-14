@@ -1,5 +1,5 @@
-import { validateToolArguments } from "@earendil-works/pi-ai"
 import type { ToolCall } from "@earendil-works/pi-ai"
+import { validateToolArguments } from "@earendil-works/pi-ai"
 import { Type } from "typebox"
 import { describe, expect, it } from "vitest"
 import { assertGateFieldsPresent, validateGatesOrErr } from "./gate-validation.js"
@@ -52,6 +52,24 @@ describe("validateGatesOrErr", () => {
 		const gates = [
 			{ id: "S1", verdict: "pass", rationale: "summary matches diff", evidence: "file.ts:1" },
 			{ id: "S2", verdict: "smoke", rationale: "ran the artifact end-to-end", evidence: "browser smoke" },
+			{ id: "S3", verdict: "pass", rationale: "edge case covered", evidence: "empty input" },
+		]
+
+		const result = validateGatesOrErr(gates, { turn: "complete_ferment_step", flagPolicy: "block-on-flag" })
+
+		expect(result).toBeNull()
+		expect(gates[1].verdict).toBe("pass")
+	})
+
+	it("normalizes inspected S2 label to pass so native-medium observation counts as verification", () => {
+		const gates = [
+			{ id: "S1", verdict: "pass", rationale: "summary matches diff", evidence: "file.ts:1" },
+			{
+				id: "S2",
+				verdict: "inspected",
+				rationale: "opened the rendered page and recorded what rendered",
+				evidence: "browser screenshot notes",
+			},
 			{ id: "S3", verdict: "pass", rationale: "edge case covered", evidence: "empty input" },
 		]
 
@@ -315,5 +333,24 @@ describe("pi-ai validation patch regressions", () => {
 				},
 			} as ToolCall),
 		).not.toThrow(SyntaxError)
+	})
+
+	it("coerces empty object {} to empty array [] for array fields", () => {
+		// Regression: LLMs (especially minimax-m3) frequently send {} instead of []
+		// for empty arrays. Without the coercion fix, Value.Convert wraps {} into
+		// [{}], which fails validation with "items[0]: must be string".
+		const tool = {
+			name: "test-empty-object-to-array",
+			description: "test empty object to array coercion",
+			parameters: Type.Object({ remaining_steps: Type.Array(Type.String(), { minItems: 0 }) }),
+			execute: () => {},
+		}
+		const args = validateToolArguments(tool, {
+			type: "toolCall",
+			id: "test-empty-object-call",
+			name: "test-empty-object-to-array",
+			arguments: { remaining_steps: {} },
+		} as ToolCall)
+		expect(args.remaining_steps).toEqual([])
 	})
 })

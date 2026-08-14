@@ -6,7 +6,7 @@
  */
 
 import { cacheGet, cacheSet } from "./cache.js"
-import { type OutputFormat, convertContent } from "./content-converter.js"
+import { convertContent, type OutputFormat } from "./content-converter.js"
 import { FetchError, type FetchResult, fetchPage } from "./page-fetcher.js"
 import { validateURL } from "./url-validator.js"
 

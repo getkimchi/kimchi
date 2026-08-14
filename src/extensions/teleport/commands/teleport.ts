@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs"
-import { basename } from "node:path"
+import { platform } from "node:os"
+import { basename, dirname } from "node:path"
 import { readGitToken, readTeleportHelpSeenAt, writeGitToken, writeTeleportHelpSeenAt } from "../../../config.js"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
@@ -10,12 +11,14 @@ import { createSession, listSessions } from "../../../sandbox/worker/sessions.js
 import type { CreateSessionRequest, Session } from "../../../sandbox/worker/types.js"
 import { createTabsOverlay } from "../overlay/overlay-component.js"
 import { generateSessionName } from "../overlay/tab-manager.js"
-import { isGitRepo } from "../preflight/git.js"
+import { getGitHeadSha, gitWorkingTreeDirty, isGitRepo } from "../preflight/git.js"
 import { runPreflight } from "../preflight/index.js"
 import { SIZE_REFUSE_BYTES, SIZE_WARN_BYTES } from "../preflight/workspace-size.js"
 import { SANDBOX_USER } from "../provisioning/constants.js"
 import { sumIncludeListBytes } from "../provisioning/estimate-bytes.js"
 import { provisionGitCredential, provisionGitIdentity } from "../provisioning/git-provision.js"
+import { buildHandoffNote, copySessionFileAndAddHandoffNote, removeTempDir } from "../provisioning/handoff-note.js"
+import { provisionHarnessConfig } from "../provisioning/harness-config.js"
 import { buildIncludeList } from "../provisioning/include-list.js"
 import { deriveSandboxDest, deriveSandboxDestFromRepoUrl, repoBasename } from "../provisioning/paths.js"
 import { formatRsyncFailure, runRsync } from "../provisioning/rsync-runner.js"
@@ -26,6 +29,9 @@ import { createTeleportProgress } from "../ui/progress.js"
 import { parseTeleportArgs } from "./args.js"
 import { refuse, warn } from "./errors.js"
 import { resolveWorkspaceRef } from "./workspace-ref.js"
+
+/** Per-call timeout for createSession: 5min — the 30s WorkerClient default aborts mid-flight on large repos. */
+export const SESSION_CREATE_TIMEOUT_MS = 5 * 60_000
 
 export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promise<void> {
 	if (hasHelpFlag(rawArgs)) {
@@ -59,7 +65,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 
 	runPreflight(ctx, args)
 
-	// Show an inline footer status while we resolve the workspace — the
+	// Show an inline status line message while we resolve the workspace — the
 	// progress overlay can't open until we know which workspace to attach
 	// to, and `listWorkspaces` over the network can take a few hundred ms.
 	ctx.ui.setStatus(STATUS_KEY, "Teleport: resolving workspace…")
@@ -231,11 +237,30 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			throw new ListFailure(err instanceof Error ? err.message : String(err))
 		})
 
+		// Harness config sync runs in parallel with the rest of the fan-out —
+		// it's a tiny rsync of ~/.config/kimchi/harness/ and never blocks the
+		// teleport. Failures warn but don't abort (config sync is a nicety, not
+		// a requirement for the session to function).
+		// Guard so a late configSyncP .then can't emit a spurious warn() after
+		// the command already refused via the catch below (configSyncP races the
+		// other fan-out promises; if Promise.all rejects first on another failure,
+		// this .then may still fire afterward).
+		let commandFailed = false
+		const configSyncP = provisionHarnessConfig({
+			remoteHost: creds.host,
+			authToken: creds.connectToken,
+			signal,
+		}).then((result) => {
+			if (!result.ok && !signal.aborted && !commandFailed) {
+				warn(ctx, `Could not sync harness config to sandbox: ${result.error}`)
+			}
+		})
+
 		let existing: Awaited<ReturnType<typeof listSessions>>
 		try {
-			const settled = await Promise.all([identityP, credsPropP, rsyncP, listP])
-			existing = settled[3]
+			;[, , , , existing] = await Promise.all([identityP, credsPropP, rsyncP, configSyncP, listP])
 		} catch (err) {
+			commandFailed = true
 			if (signal.aborted) throw err
 			if (err instanceof SyncFailure) refuse(ctx, `Workspace sync failed: ${err.message}`)
 			if (err instanceof ListFailure) refuse(ctx, `Could not list sessions: ${err.message}`)
@@ -255,8 +280,39 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			: shouldRsyncWorkspace
 				? deriveSandboxDest(ctx.cwd)
 				: undefined
-		const sessionFileToUpload =
-			!args.skipSession && ctx.sessionFile && existsSync(ctx.sessionFile) ? ctx.sessionFile : undefined
+		// Upload an annotated copy of the local session file: append a handoff
+		// note (visible in the remote transcript) explaining the environment
+		// change, provisioning provenance, and any heuristics (rsync include
+		// list / fresh clone) so the resumed agent doesn't trust stale paths
+		// or artifacts. The user's local session file is never mutated.
+		let sessionFileToUpload: string | undefined
+		let sessionFileWithHandoffNote: string | undefined
+		if (!args.skipSession && ctx.sessionFile && existsSync(ctx.sessionFile)) {
+			// Git anchor for the note (HEAD sha + tree dirtiness): one-time
+			// provenance facts about where the history was generated.
+			const gitAnchor = isGitRepo(ctx.cwd)
+				? { headSha: getGitHeadSha(ctx.cwd), dirty: gitWorkingTreeDirty(ctx.cwd) }
+				: undefined
+			const note = buildHandoffNote({
+				fromPlatform: platform(),
+				fromCwd: ctx.cwd,
+				toCwd: sessionCwd,
+				git: gitAnchor,
+				workspace: args.gitRepo
+					? { kind: "git-clone", repo: args.gitRepo, branch: args.branch }
+					: shouldRsyncWorkspace
+						? {
+								kind: "rsync",
+								fileCount: filesFrom.length,
+								syncedDotKimchi: filesFrom.some((f) => f === ".kimchi" || f.startsWith(".kimchi/")),
+							}
+						: { kind: "none" },
+				gitIdentityProvisioned: Boolean(localGitConfig.name || localGitConfig.email),
+				gitCredential: gitHost && gitToken ? { host: gitHost } : undefined,
+			})
+			sessionFileWithHandoffNote = copySessionFileAndAddHandoffNote(ctx.sessionFile, note)
+			sessionFileToUpload = sessionFileWithHandoffNote ?? ctx.sessionFile
+		}
 		const req: CreateSessionRequest = { agentMode: "PTY", cwd: sessionCwd }
 		if (args.gitRepo) {
 			req.details = {
@@ -271,10 +327,13 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			initialSession = await createSession(client, sessionName, req, {
 				sessionFile: sessionFileToUpload,
 				signal,
+				timeoutMs: SESSION_CREATE_TIMEOUT_MS,
 			})
 		} catch (err) {
 			if (signal.aborted) throw err
 			refuse(ctx, `Could not create session: ${err instanceof Error ? err.message : String(err)}`)
+		} finally {
+			if (sessionFileWithHandoffNote) removeTempDir(dirname(sessionFileWithHandoffNote))
 		}
 		progress.complete("Session ready")
 

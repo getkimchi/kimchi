@@ -1,5 +1,6 @@
 import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { getCompactionEnabled } from "../settings-watcher.js"
 import { COMPACTION_RESERVE_TOKENS } from "./compaction-thresholds.js"
 import { hasActiveFerment } from "./ferment/state.js"
 
@@ -18,18 +19,42 @@ export function contextFitsModel(tokens: number, contextWindow: number): boolean
 
 /**
  * Returns the best available token count for the current context.
- * Prefers the upstream getContextUsage().tokens (provider-accurate);
- * falls back to the local estimateTokens() heuristic when upstream
- * returns null (e.g. post-compaction, pre-first-response, fresh session).
+ * Uses upstream getContextUsage().tokens as the provider-accurate baseline,
+ * then estimates messages appended after that provider response. Falls back
+ * to the local estimateTokens() heuristic when upstream returns null
+ * (e.g. post-compaction, pre-first-response, fresh session).
  * Returns null when no data is available at all.
  */
 export function resolveContextTokens(
 	usage: { tokens: number | null } | undefined,
 	messages: ContextEvent["messages"],
 ): number | null {
-	if (usage?.tokens != null) return usage.tokens
-	if (messages.length === 0) return null
-	return estimateTokens(messages)
+	if (messages.length === 0) return usage?.tokens ?? null
+
+	if (usage?.tokens == null) return estimateTokens(messages)
+
+	const lastAssistantUsage = findLastAssistantUsage(messages)
+	if (!lastAssistantUsage) return usage.tokens
+
+	return usage.tokens + estimateTokensAfter(messages, lastAssistantUsage.index)
+}
+
+function findLastAssistantUsage(
+	messages: ContextEvent["messages"],
+): { index: number; totalTokens: number } | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i]
+		if (message.role === "assistant" && "usage" in message && typeof message.usage?.totalTokens === "number") {
+			return { index: i, totalTokens: message.usage.totalTokens }
+		}
+	}
+	return undefined
+}
+
+function estimateTokensAfter(messages: ContextEvent["messages"], index: number): number {
+	let tokens = 0
+	for (let i = index + 1; i < messages.length; i++) tokens += estimateMessageTokens(messages[i])
+	return tokens
 }
 
 /** Module-level flag tracking whether the current session contains image blocks. */
@@ -37,6 +62,12 @@ let imagesDetected = false
 
 /** Module-level flag tracking whether images have been stripped for non-vision model compatibility. */
 let imagesStripped = false
+
+/** Tracks whether the turn_end mid-turn compaction guard triggered ctx.compact().
+ *  Set before calling ctx.compact() and consumed by the session_compact handler
+ *  so the notification runs against the fresh post-compaction ctx, not the stale
+ *  one captured in the turn_end handler's closure. */
+let pendingMidTurnCompaction = false
 
 /** Reference to the latest context messages (stored for /strip-images command). */
 let latestMessages: ContextEvent["messages"] = []
@@ -97,9 +128,10 @@ export function getLatestMessagesTimestamp(): number {
 	return latestMessagesTimestamp
 }
 
-function resetImageState(): void {
+function resetSessionState(): void {
 	imagesDetected = false
 	imagesStripped = false
+	pendingMidTurnCompaction = false
 	latestMessages = []
 	latestMessagesTimestamp = 0
 	imageDescriptions.clear()
@@ -108,47 +140,15 @@ function resetImageState(): void {
 /**
  * @internal Exported for unit tests — production code uses session_start/session_shutdown hooks.
  */
-export const __resetImagesDetectedForTest = resetImageState
+export const __resetImagesDetectedForTest = resetSessionState
 
 /**
  * Rough token estimation: 4 chars per token for text, images counted separately.
  * Accumulates from assistant message usage when available for higher accuracy.
  */
 export function estimateTokens(messages: ContextEvent["messages"]): number {
-	let lastAssistantIdx = -1
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i]
-		if (msg.role === "assistant" && "usage" in msg && msg.usage?.totalTokens) {
-			lastAssistantIdx = i
-			break
-		}
-	}
-
-	let tokens = 0
-
-	if (lastAssistantIdx >= 0) {
-		const lastAssistant = messages[lastAssistantIdx]
-		tokens = (lastAssistant as AssistantMessage).usage?.totalTokens ?? 0
-	}
-
-	for (let i = lastAssistantIdx >= 0 ? lastAssistantIdx + 1 : 0; i < messages.length; i++) {
-		const msg = messages[i]
-		if (msg.role === "assistant" && "usage" in msg && msg.usage?.totalTokens) continue
-		if (!("content" in msg)) continue
-		const content = (msg as ContentMessage).content
-		if (typeof content === "string") {
-			tokens += Math.ceil(content.length / 4)
-		} else if (Array.isArray(content)) {
-			for (const block of content) {
-				if (block.type === "text") {
-					tokens += Math.ceil(block.text.length / 4)
-				} else if (block.type === "image") {
-					tokens += 1000
-				}
-			}
-		}
-	}
-	return tokens
+	const lastAssistantUsage = findLastAssistantUsage(messages)
+	return (lastAssistantUsage?.totalTokens ?? 0) + estimateTokensAfter(messages, lastAssistantUsage?.index ?? -1)
 }
 
 /**
@@ -226,7 +226,7 @@ const TRUNCATE_NOTICE = "⚠️ Context truncated to fit model context window.\n
  * Returns the original reference when nothing is truncated.
  */
 export function estimateMessageTokens(msg: ContextEvent["messages"][number]): number {
-	if (msg.role === "assistant" && "usage" in msg && msg.usage?.totalTokens) {
+	if (msg.role === "assistant" && "usage" in msg && typeof msg.usage?.totalTokens === "number") {
 		return msg.usage.totalTokens
 	}
 	if (!("content" in msg)) return 0
@@ -273,8 +273,23 @@ export function truncateMessages(messages: ContextEvent["messages"], maxTokens: 
 }
 
 export default function createModelGuardExtension(_pi: ExtensionAPI) {
-	_pi.on("session_start", resetImageState)
-	_pi.on("session_shutdown", resetImageState)
+	_pi.on("session_start", resetSessionState)
+	_pi.on("session_shutdown", resetSessionState)
+
+	// ctx.compact() replaces the session internally, invalidating the ctx
+	// captured in the turn_end handler. The session_compact event fires
+	// afterwards with a fresh ctx, so we notify from there instead of from
+	// the stale onComplete/onError closures.
+	_pi.on("session_compact", (event, ctx: ExtensionContext) => {
+		// Only consume the flag for compactions triggered by this guard's
+		// ctx.compact() call — not for /compact or threshold-triggered ones.
+		if (!pendingMidTurnCompaction || !event.fromExtension) return
+		pendingMidTurnCompaction = false
+		ctx.ui?.notify(
+			`Context compacted (${(event.compactionEntry.tokensBefore ?? 0).toLocaleString()} tokens → summary). Continue to resume.`,
+			"info",
+		)
+	})
 
 	_pi.on("context", async (event, ctx: ExtensionContext) => {
 		const model = ctx.model
@@ -356,6 +371,14 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		// Use the same threshold as upstream auto-compaction: contextWindow - reserveTokens.
 		if (usage.totalTokens <= model.contextWindow - COMPACTION_RESERVE_TOKENS) return
 
+		// /settings Auto-compact toggle (settings.json compaction.enabled).
+		// ctx.compact() is upstream's manual path and does not check the toggle
+		// itself, so this stopgap must gate on it explicitly — otherwise it
+		// compacts even when the user (or a benchmark harness) disabled
+		// auto-compaction. Project trust is already synced onto the settings
+		// reader by settingsTrustSyncExtension at session_start.
+		if (!getCompactionEnabled()) return
+
 		// Threshold exceeded mid-turn. Compact now.
 		//
 		// NOTE: ctx.compact() is the manual compaction path which calls abort() on the
@@ -368,15 +391,14 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		// The proper upstream fix is to wire _checkCompaction into the agent loop via
 		// shouldStopAfterTurn or after_provider_response so compaction fires inside
 		// the loop with transparent retry. This handler is a pragmatic stopgap.
+		pendingMidTurnCompaction = true
 		ctx.compact({
-			onComplete: (result) => {
-				ctx.ui?.notify(
-					`Context compacted (${(result.tokensBefore ?? 0).toLocaleString()} tokens → summary). Continue to resume.`,
-					"info",
-				)
-			},
+			// onComplete fires with a stale ctx after session replacement.
+			// The actual notification is delivered via the session_compact event
+			// handler above, which receives a fresh ctx.
 			onError: (error) => {
-				ctx.ui?.notify(`Context compaction failed: ${error.message}`, "error")
+				pendingMidTurnCompaction = false
+				console.warn("[model-guard] mid-turn compaction failed:", error.message)
 			},
 		})
 	})

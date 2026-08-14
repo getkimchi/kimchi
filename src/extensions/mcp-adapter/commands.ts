@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getServerProvenance, writeDirectToolsConfig } from "./config.js"
 import { getFailureAgeSeconds, lazyConnect, updateMetadataCache, updateStatusBar } from "./init.js"
-import { authenticate, supportsOAuth } from "./mcp-auth-flow.js"
 import { hasStoredTokens } from "./mcp-auth.js"
+import { authenticate, supportsOAuth } from "./mcp-auth-flow.js"
 import { loadMetadataCache } from "./metadata-cache.js"
 import type { McpExtensionState } from "./state.js"
 import { buildToolMetadata } from "./tool-metadata.js"
@@ -208,7 +208,7 @@ export async function openMcpPanel(
 		},
 		onSave: (changes) => {
 			writeDirectToolsConfig(changes, provenanceMap, config)
-			ctx.ui.notify("Direct tools updated. Restart pi to apply.", "info")
+			ctx.ui.notify("Direct tools updated. Restart kimchi to apply.", "info")
 		},
 	}
 
@@ -220,7 +220,7 @@ export async function openMcpPanel(
 				return createMcpPanel(config, cache, provenanceMap, callbacks, tui, (result: McpPanelResult) => {
 					if (!result.cancelled && result.changes.size > 0) {
 						writeDirectToolsConfig(result.changes, provenanceMap, config)
-						ctx.ui.notify("Direct tools updated. Restart pi to apply.", "info")
+						ctx.ui.notify("Direct tools updated. Restart kimchi to apply.", "info")
 					}
 					done(undefined)
 					// Force a clean redraw so any overlay artifacts are cleared from

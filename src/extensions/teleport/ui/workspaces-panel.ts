@@ -27,9 +27,9 @@ export type WorkspacePickerResult =
 export interface WorkspacesPanelOptions {
 	/** Append a synthetic "+ new workspace" row and bind `n` to it. */
 	allowNew?: boolean
-	/** Bind `d` to delete and show it in the hint footer. */
+	/** Bind `d` to delete and show it in the hint row. */
 	allowDelete?: boolean
-	/** Bind `r` to rename and show it in the hint footer. */
+	/** Bind `r` to rename and show it in the hint row. */
 	allowRename?: boolean
 	/** Drop the SESSIONS column entirely (used when session counts aren't fetched). */
 	hideSessions?: boolean
@@ -150,13 +150,13 @@ export class WorkspacesPanel implements Component {
 		}
 		if (this.allowDelete && matchesKey(data, "d")) {
 			const entry = this.entries[this.selectedIndex]
-			if (!entry || entry.kind !== "row") return
+			if (entry?.kind !== "row") return
 			this.done({ action: "delete", row: entry.row })
 			return
 		}
 		if (this.allowRename && matchesKey(data, "r")) {
 			const entry = this.entries[this.selectedIndex]
-			if (!entry || entry.kind !== "row") return
+			if (entry?.kind !== "row") return
 			this.done({ action: "rename", row: entry.row })
 			return
 		}

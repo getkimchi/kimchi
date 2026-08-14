@@ -31,6 +31,7 @@ describe("sourceToLabel", () => {
 	it("maps known sources", () => {
 		expect(sourceToLabel("kimchi.general")).toBe("General")
 		expect(sourceToLabel("kimchi.ferment")).toBe("Ferment")
+		expect(sourceToLabel("kimchi.billing")).toBe("Billing")
 	})
 
 	it("strips kimchi prefix and capitalizes unknown sources", () => {

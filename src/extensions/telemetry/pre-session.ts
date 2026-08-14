@@ -16,8 +16,8 @@
 import { getMe } from "../../api/me.js"
 import type { TelemetryConfig } from "../../config.js"
 import { ensureDeviceId } from "../../posthog-device.js"
-import { getVersion } from "../../utils.js"
 import { getOsMetadata } from "../../utils/os-metadata.js"
+import { getVersion } from "../../utils.js"
 import { sendLog } from "./transport.js"
 
 // ---------------------------------------------------------------------------

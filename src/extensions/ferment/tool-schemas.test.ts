@@ -470,6 +470,41 @@ describe("ScopeParams schema", () => {
 		expect(Value.Check(ScopeParams, { ...basePayload, success_criteria: "Tests pass" })).toBe(false)
 		expect(Value.Check(ScopeParams, { ...basePayload, success_criteria: ["Tests pass", "Smoke works"] })).toBe(true)
 	})
+
+	it("accepts the advisory scoping signals on both scoping tools", () => {
+		const payload = {
+			ferment_id: "f-123",
+			title: "Test Ferment",
+			goal: "Do something",
+			success_criteria: ["Tests pass"],
+			gates: [
+				{ id: "P1", verdict: "pass", rationale: "ok", evidence: "e" },
+				{ id: "P2", verdict: "omitted", rationale: "ok", evidence: "n/a" },
+				{ id: "P3", verdict: "pass", rationale: "ok", evidence: "e" },
+			],
+			self_critique: "Visual tone is not covered by any criterion; deliberate, deferred to grading.",
+			scope_deltas: ["every app → the 12 most-used apps"],
+			constraint_costs: [{ constraint: "bundled mock weather", cost: "weather shows no real conditions" }],
+			quality_dimensions: ["global visual coherence — answered by the shell phase"],
+		}
+		expect(Value.Check(ScopeParams, payload)).toBe(true)
+	})
+
+	it("rejects a constraint_costs item missing its cost", () => {
+		const payload = {
+			ferment_id: "f-123",
+			title: "Test Ferment",
+			goal: "Do something",
+			success_criteria: ["Tests pass"],
+			gates: [
+				{ id: "P1", verdict: "pass", rationale: "ok", evidence: "e" },
+				{ id: "P2", verdict: "omitted", rationale: "ok", evidence: "n/a" },
+				{ id: "P3", verdict: "pass", rationale: "ok", evidence: "e" },
+			],
+			constraint_costs: [{ constraint: "bundled mock weather" }],
+		}
+		expect(Value.Check(ScopeParams, payload)).toBe(false)
+	})
 })
 
 describe("CompleteStepParams schema", () => {
@@ -488,6 +523,16 @@ describe("CompleteStepParams schema", () => {
 		}
 
 		expect(Value.Check(CompleteStepParams, payload)).toBe(true)
+		expect(
+			Value.Check(CompleteStepParams, {
+				...payload,
+				gates: [
+					payload.gates[0],
+					{ id: "S2", verdict: "inspected", rationale: "rendered and observed", evidence: "browser notes" },
+					payload.gates[2],
+				],
+			}),
+		).toBe(true)
 	})
 
 	it("requires worker_agent_id because completion validates the linked worker report", () => {
@@ -503,7 +548,23 @@ describe("CompleteStepParams schema", () => {
 			],
 		}
 
-		expect(Value.Check(CompleteStepParams, payload)).toBe(false)
+		expect(Value.Check(CompleteStepParams, payload)).toBe(true)
+	})
+
+	it("accepts payload without worker_agent_id (orchestrator executed directly)", () => {
+		const payload = {
+			ferment_id: "f-123",
+			phase_id: "phase-1",
+			step_id: "step-1",
+			summary: "done directly",
+			gates: [
+				{ id: "S1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "S2", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "S3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+			],
+		}
+
+		expect(Value.Check(CompleteStepParams, payload)).toBe(true)
 	})
 })
 

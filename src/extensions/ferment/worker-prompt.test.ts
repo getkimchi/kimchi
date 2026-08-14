@@ -3,6 +3,8 @@ import type { Decision, Ferment, Memory, Phase, Step } from "../../ferment/types
 import { __resetTodoStore, applyWriteTodos } from "../todos/store.js"
 import { buildWorkerContext } from "./worker-prompt.js"
 
+const TEST_SESSION_ID = "test-session"
+
 function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 	return {
 		id: "ferment-1",
@@ -46,7 +48,7 @@ describe("buildWorkerContext", () => {
 		const phase = makePhase({ steps: [makeStep()] })
 		const f = makeFerment({ name: "Auth rewrite", phases: [phase] })
 
-		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		const ctx = buildWorkerContext(f, phase, phase.steps[0], TEST_SESSION_ID)
 		expect(ctx).toContain("Auth rewrite")
 		expect(ctx).toContain("Build it")
 		expect(ctx).toContain("Ship a working thing")
@@ -58,7 +60,7 @@ describe("buildWorkerContext", () => {
 		const phase = makePhase({ steps: [step] })
 		const f = makeFerment({ phases: [phase] })
 
-		const ctx = buildWorkerContext(f, phase, step)
+		const ctx = buildWorkerContext(f, phase, step, TEST_SESSION_ID)
 		expect(ctx).toContain("verify:")
 		expect(ctx).toContain("pnpm test")
 	})
@@ -67,7 +69,7 @@ describe("buildWorkerContext", () => {
 		const phase = makePhase({ steps: [makeStep()] })
 		const f = makeFerment({ id: "ferment-docs-1", phases: [phase] })
 
-		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		const ctx = buildWorkerContext(f, phase, phase.steps[0], TEST_SESSION_ID)
 
 		expect(ctx).toContain("Ferment docs directory:")
 		expect(ctx).toContain(".kimchi/ferments/ferment-docs-1/docs/")
@@ -79,7 +81,7 @@ describe("buildWorkerContext", () => {
 		const phase = makePhase({ steps: [makeStep({ description: "Explore the prompt assembly path" })] })
 		const f = makeFerment({ id: "ferment-docs-2", phases: [phase] })
 
-		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		const ctx = buildWorkerContext(f, phase, phase.steps[0], TEST_SESSION_ID)
 
 		expect(ctx).toContain("Explore/read-only workers must return decision-ready findings directly")
 		expect(ctx).toContain("write no reports, docs, notes, or scratch files")
@@ -102,7 +104,7 @@ describe("buildWorkerContext", () => {
 			},
 		})
 
-		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		const ctx = buildWorkerContext(f, phase, phase.steps[0], TEST_SESSION_ID)
 		expect(ctx).toContain("Goal:")
 		expect(ctx).toContain("Write /app/jump_analyzer.py")
 		expect(ctx).toContain("/app/output.toml")
@@ -114,7 +116,7 @@ describe("buildWorkerContext", () => {
 		const phase = makePhase({ steps: [makeStep()] })
 		const f = makeFerment({ phases: [phase] })
 
-		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		const ctx = buildWorkerContext(f, phase, phase.steps[0], TEST_SESSION_ID)
 		expect(ctx).not.toContain("Goal:")
 		expect(ctx).not.toContain("Criteria:")
 	})
@@ -129,7 +131,7 @@ describe("buildWorkerContext", () => {
 		})
 		const f = makeFerment({ phases: [phase] })
 
-		const ctx = buildWorkerContext(f, phase, phase.steps[2])
+		const ctx = buildWorkerContext(f, phase, phase.steps[2], TEST_SESSION_ID)
 		expect(ctx).toContain("Prior:")
 		expect(ctx).toContain("✓1")
 		expect(ctx).toContain("Created the User type")
@@ -148,7 +150,7 @@ describe("buildWorkerContext", () => {
 		})
 		const f = makeFerment({ phases: [phase] })
 
-		const ctx = buildWorkerContext(f, phase, phase.steps[1])
+		const ctx = buildWorkerContext(f, phase, phase.steps[1], TEST_SESSION_ID)
 		expect(ctx).toContain("⊘1")
 		expect(ctx).not.toContain("✓1")
 	})
@@ -163,7 +165,7 @@ describe("buildWorkerContext", () => {
 		})
 		const f = makeFerment({ phases: [phase] })
 
-		const ctx = buildWorkerContext(f, phase, phase.steps[2])
+		const ctx = buildWorkerContext(f, phase, phase.steps[2], TEST_SESSION_ID)
 		expect(ctx).not.toContain("Prior:")
 	})
 
@@ -177,7 +179,7 @@ describe("buildWorkerContext", () => {
 		})
 		const f = makeFerment({ phases: [phase] })
 
-		const ctx = buildWorkerContext(f, phase, phase.steps[1])
+		const ctx = buildWorkerContext(f, phase, phase.steps[1], TEST_SESSION_ID)
 		expect(ctx).toContain("…")
 		// The full 500 'x's should not appear verbatim
 		expect(ctx).not.toContain(longSummary)
@@ -195,7 +197,7 @@ describe("buildWorkerContext", () => {
 		const phase = makePhase({ steps: [makeStep()] })
 		const f = makeFerment({ phases: [phase], decisions })
 
-		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		const ctx = buildWorkerContext(f, phase, phase.steps[0], TEST_SESSION_ID)
 		expect(ctx).toContain("Decisions:")
 		expect(ctx).toContain("Use Zod for validation")
 	})
@@ -212,7 +214,7 @@ describe("buildWorkerContext", () => {
 		const phase = makePhase({ steps: [makeStep()] })
 		const f = makeFerment({ phases: [phase], memories })
 
-		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		const ctx = buildWorkerContext(f, phase, phase.steps[0], TEST_SESSION_ID)
 		expect(ctx).toContain("Memories:")
 		expect(ctx).toContain("[gotcha]")
 		expect(ctx).toContain("Date.parse")
@@ -228,7 +230,7 @@ describe("buildWorkerContext", () => {
 		const phase = makePhase({ steps: [makeStep()] })
 		const f = makeFerment({ phases: [phase], decisions })
 
-		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		const ctx = buildWorkerContext(f, phase, phase.steps[0], TEST_SESSION_ID)
 		// Most recent 5 are decisions 3..7
 		expect(ctx).toContain("Decision 3")
 		expect(ctx).toContain("Decision 7")
@@ -241,7 +243,7 @@ describe("buildWorkerContext", () => {
 		const phase = makePhase({ steps: [makeStep()] })
 		const f = makeFerment({ phases: [phase], decisions })
 
-		const ctx = buildWorkerContext(f, phase, phase.steps[0], { includeDecisions: false })
+		const ctx = buildWorkerContext(f, phase, phase.steps[0], TEST_SESSION_ID, { includeDecisions: false })
 		expect(ctx).not.toContain("Decisions:")
 	})
 })
@@ -259,16 +261,19 @@ describe("step todo forwarding", () => {
 		const phase = makePhase({ id: "phase-1", steps: [makeStep({ id: "step-1" })] })
 		const f = makeFerment({ phases: [phase] })
 
-		applyWriteTodos({
-			scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
-			todos: [
-				{ content: "Install dependencies", status: "completed" },
-				{ content: "Write main module", status: "in_progress" },
-				{ content: "Run tests", status: "pending" },
-			],
-		})
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+				todos: [
+					{ content: "Install dependencies", status: "completed" },
+					{ content: "Write main module", status: "in_progress" },
+					{ content: "Run tests", status: "pending" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
 
-		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		const ctx = buildWorkerContext(f, phase, phase.steps[0], TEST_SESSION_ID)
 		expect(ctx).toContain("Plan:")
 		expect(ctx).toContain("\u2713 Install dependencies")
 		expect(ctx).toContain("\u25b6 Write main module")
@@ -279,7 +284,7 @@ describe("step todo forwarding", () => {
 		const phase = makePhase({ steps: [makeStep()] })
 		const f = makeFerment({ phases: [phase] })
 
-		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		const ctx = buildWorkerContext(f, phase, phase.steps[0], TEST_SESSION_ID)
 		expect(ctx).not.toContain("Plan:")
 	})
 })

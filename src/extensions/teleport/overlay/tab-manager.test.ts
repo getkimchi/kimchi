@@ -89,7 +89,7 @@ vi.mock("../../../sandbox/worker/sessions.js", () => ({
 
 import type { WorkerClient } from "../../../sandbox/worker/client.js"
 import type { Session } from "../../../sandbox/worker/types.js"
-import { TabManager, generateSessionName } from "./tab-manager.js"
+import { generateSessionName, TabManager } from "./tab-manager.js"
 
 function mockTui(): TUI {
 	return {

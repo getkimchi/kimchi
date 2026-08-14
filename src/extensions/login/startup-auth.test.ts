@@ -1,4 +1,4 @@
-import { LoginDialogComponent, type Theme, initTheme } from "@earendil-works/pi-coding-agent"
+import { initTheme, LoginDialogComponent, type Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -22,9 +22,9 @@ vi.mock("../../config.js", () => configMock)
 vi.mock("../../models.js", () => modelsMock)
 
 import {
-	type StartupAuthGateState,
 	createStartupAuthGate,
 	createStartupAuthGateState,
+	type StartupAuthGateState,
 	shouldShowStartupAuthGate,
 } from "./startup-auth.js"
 
@@ -82,6 +82,7 @@ function createHarness(
 	const modelRegistry = {
 		authStorage,
 		refresh: vi.fn(),
+		getAll: vi.fn(() => availableModels),
 		getAvailable: vi.fn(() => availableModels),
 		getProviderAuthStatus: vi.fn(() => ({ configured: false })),
 	}
@@ -227,8 +228,8 @@ describe("startup auth gate", () => {
 			options?.onBrowserUrl?.(loginUrl)
 			return { token: "kimchi-token" }
 		})
-		// The URL is shown via the reused LoginDialogComponent's showInfo, not notify.
-		const showInfoSpy = vi.spyOn(LoginDialogComponent.prototype, "showInfo")
+		// The URL is shown via the reused LoginDialogComponent's details area, not notify.
+		const showDetailsSpy = vi.spyOn(LoginDialogComponent.prototype, "showDetails")
 
 		try {
 			const harness = createHarness()
@@ -239,7 +240,7 @@ describe("startup auth gate", () => {
 			await started
 
 			expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
-			const lines = showInfoSpy.mock.calls.flatMap((call) => call[0] as string[])
+			const lines = showDetailsSpy.mock.calls.flatMap((call) => call[0])
 			// Intact BEL-terminated OSC 8 hyperlink target so "Copy Link" yields the full
 			// URL even when the visible text wraps (a raw wrapped URL would get a newline
 			// injected at the wrap point, corrupting the state param on paste). The `id=`
@@ -247,7 +248,7 @@ describe("startup auth gate", () => {
 			expect(lines.some((line) => line.includes(`;${loginUrl}\x07`))).toBe(true)
 			expect(lines.some((line) => line.includes("\x1b]8;id=kimchi-login-"))).toBe(true)
 		} finally {
-			showInfoSpy.mockRestore()
+			showDetailsSpy.mockRestore()
 		}
 	})
 
@@ -317,7 +318,6 @@ describe("startup auth gate", () => {
 			expect(harness.state.cancelled).toBe(true)
 		} finally {
 			if (previousAgentDir === undefined) {
-				// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset rather than stringified to "undefined"
 				delete process.env.KIMCHI_CODING_AGENT_DIR
 			} else {
 				process.env.KIMCHI_CODING_AGENT_DIR = previousAgentDir
@@ -357,7 +357,6 @@ describe("startup auth gate", () => {
 			expect(harness.state.cancelled).toBe(true)
 		} finally {
 			if (previousAgentDir === undefined) {
-				// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset rather than stringified to "undefined"
 				delete process.env.KIMCHI_CODING_AGENT_DIR
 			} else {
 				process.env.KIMCHI_CODING_AGENT_DIR = previousAgentDir

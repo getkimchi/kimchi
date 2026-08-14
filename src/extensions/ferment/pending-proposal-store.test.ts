@@ -1,13 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import {
-	PENDING_PROPOSAL_SCHEMA_VERSION,
-	type PendingProposalData,
 	deletePendingProposal,
 	loadPendingProposal,
+	PENDING_PROPOSAL_SCHEMA_VERSION,
+	type PendingProposalData,
 	savePendingProposal,
 } from "./pending-proposal-store.js"
 

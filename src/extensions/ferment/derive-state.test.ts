@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
-import { type RuntimeReader, deriveFermentState } from "./derive-state.js"
+import { deriveFermentState, type RuntimeReader } from "./derive-state.js"
 import { MAX_BLOCK_RETRIES } from "./state.js"
 
 function makeStep(overrides: Partial<Step> = {}): Step {

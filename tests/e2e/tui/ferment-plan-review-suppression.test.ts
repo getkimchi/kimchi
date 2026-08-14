@@ -14,13 +14,20 @@
  * 3. Regression — the existing zero-questions scoping flow still works.
  */
 
-import { readFileSync, readdirSync } from "node:fs"
-import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText, viewText } from "./support/assertions.js"
-import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import {
+	findFermentArtifact,
+	INPUT_TIMEOUT_MS,
+	STARTUP_TIMEOUT_MS,
+	STREAM_TIMEOUT_MS,
+	viewText,
+	waitForText,
+} from "./support/assertions.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
+
+const NO_COMPACTION_MODEL = { slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }
 
 const PROPOSE_SCOPING_PAYLOAD = JSON.stringify({
 	ferment_id: "__FERMENT_ID__",
@@ -76,32 +83,6 @@ const PROPOSE_SCOPING_PAYLOAD_2 = JSON.stringify({
 	],
 })
 
-/**
- * Poll for a ferment artifact with the expected status in .kimchi/ferments/.
- * Returns the parsed artifact or undefined if not found before the deadline.
- */
-async function findFermentArtifact(
-	workDir: string,
-	expectedStatus: string,
-	timeoutMs = STREAM_TIMEOUT_MS,
-): Promise<Record<string, unknown> | undefined> {
-	const fermentsDir = join(workDir, ".kimchi", "ferments")
-	const deadline = Date.now() + timeoutMs
-	while (Date.now() < deadline) {
-		try {
-			const files = readdirSync(fermentsDir).filter((f) => f.endsWith(".json"))
-			for (const f of files) {
-				const content = JSON.parse(readFileSync(join(fermentsDir, f), "utf-8"))
-				if (content.status === expectedStatus) return content
-			}
-		} catch {
-			// dir doesn't exist yet or unreadable
-		}
-		await new Promise((r) => setTimeout(r, 250))
-	}
-	return undefined
-}
-
 // ---------------------------------------------------------------------------
 // Test 1: Full scoping flow with review confirmation
 // ---------------------------------------------------------------------------
@@ -114,6 +95,7 @@ test("plan review: model stops after propose, review dialog appears, user confir
 		{
 			artifactName: "plan-review-confirm",
 			gitInit: true,
+			models: [NO_COMPACTION_MODEL],
 			responses: [
 				// Turn 1: model calls propose_ferment_scoping (questions=[]).
 				{
@@ -128,8 +110,6 @@ test("plan review: model stops after propose, review dialog appears, user confir
 				},
 				// Turn 2: tools suppressed → model produces text-only response (no tool calls).
 				{ stream: ["I've submitted the plan for your review."] },
-				// Compaction request (consumed by auto-compaction before the post-confirmation turn).
-				{ stream: ["Summary."] },
 				// Turn 3: post-confirmation, keeps session alive.
 				{ stream: ["Starting execution now."] },
 			],
@@ -204,6 +184,7 @@ test("plan review: cancel restores planning tools, model can re-propose, ferment
 		{
 			artifactName: "plan-review-cancel",
 			gitInit: true,
+			models: [NO_COMPACTION_MODEL],
 			responses: [
 				// Turn 1: model calls propose_ferment_scoping (questions=[]).
 				{
@@ -218,8 +199,6 @@ test("plan review: cancel restores planning tools, model can re-propose, ferment
 				},
 				// Turn 2: tools suppressed → text-only response.
 				{ stream: ["Plan is ready for review."] },
-				// Compaction request (consumed by auto-compaction before the next agent run).
-				{ stream: ["Summary."] },
 				// Turn 3: after cancel, tools restored → model calls propose_ferment_scoping again.
 				{
 					toolCalls: [
@@ -320,6 +299,7 @@ test("plan review: existing zero-questions scoping flow still works (no regressi
 		{
 			artifactName: "plan-review-regression",
 			gitInit: true,
+			models: [NO_COMPACTION_MODEL],
 			responses: [
 				// Turn 1: model calls propose_ferment_scoping (questions=[]).
 				{
@@ -334,8 +314,6 @@ test("plan review: existing zero-questions scoping flow still works (no regressi
 				},
 				// Turn 2: tools suppressed → text-only response (proves suppression works).
 				{ stream: ["I've outlined the scope for the test feature."] },
-				// Compaction request (consumed by auto-compaction before the post-confirmation turn).
-				{ stream: ["Summary."] },
 				// Turn 3: post-confirmation.
 				{ stream: ["Proceeding with execution."] },
 			],

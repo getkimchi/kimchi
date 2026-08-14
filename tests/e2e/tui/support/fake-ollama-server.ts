@@ -15,7 +15,7 @@
  * fixture is the one that owns that path when both fixtures are active.
  */
 
-import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http"
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { Socket } from "node:net"
 import { setTimeout as sleep } from "node:timers/promises"
 
@@ -299,7 +299,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeOllamaChatRe
 	res.writeHead(200, {
 		"Content-Type": "text/event-stream",
 		"Cache-Control": "no-cache",
-		"Connection": "keep-alive",
+		Connection: "keep-alive",
 	})
 
 	// Role envelope.

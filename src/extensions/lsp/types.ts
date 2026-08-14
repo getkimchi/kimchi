@@ -163,4 +163,6 @@ export interface ServerConfig {
 	args?: string[]
 	extensions: string[]
 	initOptions?: Record<string, unknown>
+	/** Install command shown in the degraded-state warning when the binary is not on PATH. */
+	installHint?: string
 }

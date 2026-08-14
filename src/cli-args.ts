@@ -1,4 +1,9 @@
 import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
+import { type CliMode, getCliModeArg, PROTOCOL_MODES } from "./cli-modes.js"
+
+// Re-export the shared leaf-module helpers so existing callers can keep
+// importing them from cli-args.ts without touching their import paths.
+export { type CliMode, getCliModeArg, hasExportFlag, hasPrintFlag, PROTOCOL_MODES } from "./cli-modes.js"
 
 // Pre-dispatch scanners still need to skip values for Kimchi-local raw scans
 // such as `--mode acp`, which upstream pi does not parse.
@@ -59,15 +64,6 @@ export function isCliAtFileArg(arg: string, index: number, args: string[]): bool
 	return parsePiArgs(args.slice(0, index + 1)).fileArgs.length > parsePiArgs(args.slice(0, index)).fileArgs.length
 }
 
-export function getCliModeArg(args: string[]): string | undefined {
-	for (let i = 0; i < args.length; i += 1) {
-		const arg = args[i]
-		if (arg === "--mode" && i + 1 < args.length) return args[i + 1]
-		if (arg.startsWith("--mode=")) return arg.slice("--mode=".length)
-	}
-	return undefined
-}
-
 export function isHelpOrVersionArgs(args: string[]): boolean {
 	return args.some((a) => a === "--help" || a === "-h" || a === "--version" || a === "-v")
 }
@@ -78,7 +74,7 @@ export function isHelpOrVersionArgs(args: string[]): boolean {
 export function isProtocolOrPrintMode(args: string[]): boolean {
 	const parsed = parsePiArgs(args)
 	const mode = parsed.mode ?? getCliModeArg(args)
-	return mode === "json" || mode === "rpc" || mode === "acp" || parsed.print === true
+	return (mode !== undefined && PROTOCOL_MODES.has(mode as CliMode)) || parsed.print === true
 }
 
 export function isTerminalUiMode(args: string[], io: { stdinIsTTY: boolean; stdoutIsTTY: boolean }): boolean {

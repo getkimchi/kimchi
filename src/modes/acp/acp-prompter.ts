@@ -1,20 +1,17 @@
-import type { AgentSideConnection, PermissionOption, ToolCallUpdate } from "@agentclientprotocol/sdk"
+import type { AgentSideConnection, PermissionOption, ToolCall } from "@agentclientprotocol/sdk"
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import type { PermissionChoice, ToolPermissionPrompter } from "../../extensions/permissions/prompter.js"
 import type { ApprovalOutcome } from "../../extensions/permissions/prompts.js"
+import { buildToolCallShape } from "./tool-calls/utils.js"
 import { requestWithAbort } from "./utils.js"
 
-export type ToolCallUpdateBuilder = (
-	toolCallId: string,
-	toolName: string,
-	input: Record<string, unknown>,
-) => ToolCallUpdate
+export type AcpToolCallIdResolver = (piToolCallId: string, toolName: string) => string
 
 export function createAcpPermissionPrompter(
 	conn: AgentSideConnection,
 	sessionId: string,
 	uiContext: ExtensionUIContext,
-	buildToolCallUpdate: ToolCallUpdateBuilder,
+	resolveAcpToolCallId: AcpToolCallIdResolver,
 ): ToolPermissionPrompter {
 	return {
 		async request(req): Promise<ApprovalOutcome> {
@@ -31,14 +28,15 @@ export function createAcpPermissionPrompter(
 				}
 			})
 
-			const response = await requestWithAbort(
-				conn.requestPermission({
-					sessionId,
-					toolCall: buildToolCallUpdate(req.toolCallId, req.toolName, req.input),
-					options,
-				}),
-				req.signal,
-			)
+			const acpToolCallId = resolveAcpToolCallId(req.toolCallId, req.toolName)
+			const toolCall: ToolCall = buildToolCallShape({
+				toolCallId: acpToolCallId,
+				piToolCallId: req.toolCallId,
+				toolName: req.toolName,
+				rawInput: req.input,
+				status: "pending",
+			})
+			const response = await requestWithAbort(conn.requestPermission({ sessionId, toolCall, options }), req.signal)
 
 			if (response === "aborted" || response.outcome.outcome === "cancelled") return { kind: "aborted" }
 

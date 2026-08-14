@@ -23,7 +23,7 @@ export interface SessionDetails {
 }
 
 /**
- * Shape of the `request` part of the multipart `POST /session/{name}` body.
+ * Shape of the `request` part of the multipart `POST /api/session/{name}` body.
  * The endpoint also accepts an optional `sessionFile` (session.jsonl) binary
  * part to seed/resume the new session.
  */

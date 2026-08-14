@@ -5,6 +5,7 @@ const DEFAULT_COLOR = 256
 
 export interface CellData {
 	char: number
+	width: number
 	fg: number
 	bg: number
 	flags: number
@@ -54,14 +55,17 @@ export class XtermCore {
 		const buffer = this.terminal.buffer.active
 		const line = buffer.getLine(buffer.viewportY + row)
 		if (!line) {
-			return { char: 32, fg: DEFAULT_COLOR, bg: DEFAULT_COLOR, flags: 0 }
+			return { char: 32, width: 1, fg: DEFAULT_COLOR, bg: DEFAULT_COLOR, flags: 0 }
 		}
 		const cell = line.getCell(col)
 		if (!cell) {
-			return { char: 32, fg: DEFAULT_COLOR, bg: DEFAULT_COLOR, flags: 0 }
+			return { char: 32, width: 1, fg: DEFAULT_COLOR, bg: DEFAULT_COLOR, flags: 0 }
 		}
 
-		const char = cell.getCode() || 32
+		const width = cell.getWidth()
+		// width 0 marks the continuation cell of a wide char (CJK/emoji);
+		// expose char 0 so callers can skip it instead of rendering a space.
+		const char = width === 0 ? 0 : cell.getCode() || 32
 		let fg = DEFAULT_COLOR
 		let bg = DEFAULT_COLOR
 		let fgRgb: number | undefined
@@ -88,7 +92,7 @@ export class XtermCore {
 		if (cell.isInverse()) flags |= 0x20
 		if (cell.isStrikethrough()) flags |= 0x80
 
-		return { char, fg, bg, flags, fgRgb, bgRgb }
+		return { char, width, fg, bg, flags, fgRgb, bgRgb }
 	}
 
 	getCursor(): CursorState {

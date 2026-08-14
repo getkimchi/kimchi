@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../../../models.js"
+import { DEFAULT_MODEL_ROLES } from "../../model-roles.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../index.js"
 import { DEFAULT_BUILD_GUIDELINES } from "./default-phase-guidelines.js"
 import {
@@ -196,6 +197,14 @@ describe("guideline section building", () => {
 		const result = buildPhaseGuidelinesSection("minimax-m2.7", "explore", registry)
 		expect(result).toContain("## Phase Guidelines (explore)")
 		expect(result).toContain("During **explore** phase")
+	})
+
+	it("omits worker phase guidelines for orchestrator without the matching role", () => {
+		const result = buildPhaseGuidelinesSection("kimi-k2.7", "explore", registry, {
+			mode: "orchestrator",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toBe("")
 	})
 
 	it("returns default guideline for unknown model", () => {

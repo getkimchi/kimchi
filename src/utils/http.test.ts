@@ -102,6 +102,18 @@ describe("fetchWithRetry", () => {
 		expect(fetchImpl).toHaveBeenCalledTimes(1)
 	})
 
+	it("performs one attempt when maxRetries is 0", async () => {
+		const fetchImpl = vi.fn().mockResolvedValue(makeResponse(500))
+
+		const response = await fetchWithRetry("https://example.com", undefined, {
+			fetchImpl,
+			retry: { maxRetries: 0 },
+		})
+
+		expect(response.status).toBe(500)
+		expect(fetchImpl).toHaveBeenCalledTimes(1)
+	})
+
 	// -------------------------------------------------------------------------
 	// Retry on transient HTTP status codes
 	// -------------------------------------------------------------------------
@@ -145,7 +157,7 @@ describe("fetchWithRetry", () => {
 	// Respects maxRetries - returns final bad response
 	// -------------------------------------------------------------------------
 
-	it("calls fetch exactly maxRetries times and returns the final bad response", async () => {
+	it("calls fetch maxRetries + 1 times and returns the final bad response", async () => {
 		const fetchImpl = vi.fn().mockResolvedValue(makeResponse(500))
 
 		const response = await runWithTimers(() =>
@@ -157,7 +169,7 @@ describe("fetchWithRetry", () => {
 
 		// Last attempt is returned, not thrown
 		expect(response.status).toBe(500)
-		expect(fetchImpl).toHaveBeenCalledTimes(3)
+		expect(fetchImpl).toHaveBeenCalledTimes(4)
 	})
 
 	// -------------------------------------------------------------------------
@@ -179,7 +191,7 @@ describe("fetchWithRetry", () => {
 		await vi.runAllTimersAsync()
 
 		await expect(promise).rejects.toThrow("fetch failed")
-		expect(fetchImpl).toHaveBeenCalledTimes(2)
+		expect(fetchImpl).toHaveBeenCalledTimes(3)
 	})
 
 	// -------------------------------------------------------------------------
@@ -246,11 +258,11 @@ describe("fetchWithRetry", () => {
 		// Suppress unhandled rejection during timer flush
 		promise.catch(() => {})
 
-		// Advance past the timeout
-		await vi.advanceTimersByTimeAsync(200)
+		// Advance through both attempts and the retry delay between them.
+		await vi.runAllTimersAsync()
 
 		await expect(promise).rejects.toThrow()
-		expect(fetchImpl).toHaveBeenCalledTimes(1)
+		expect(fetchImpl).toHaveBeenCalledTimes(2)
 	})
 
 	// -------------------------------------------------------------------------

@@ -1,12 +1,6 @@
 import { expect, test } from "@microsoft/tui-test"
-import {
-	INPUT_TIMEOUT_MS,
-	STARTUP_TIMEOUT_MS,
-	STREAM_TIMEOUT_MS,
-	viewText,
-	waitForText,
-} from "./support/assertions.js"
-import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -54,7 +48,10 @@ test("todo widget renders global scope with status symbols", async ({ terminal }
 			trace.step("todo items visible")
 
 			// Status symbols: ▶ for in_progress, ○ for pending.
-			const text = terminal.getViewableBuffer().map((r) => r.join("")).join("\n")
+			const text = terminal
+				.getViewableBuffer()
+				.map((r) => r.join(""))
+				.join("\n")
 			expect(text).toContain("▶")
 			expect(text).toContain("○")
 		},
@@ -99,9 +96,7 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 										{
 											name: "Implementation",
 											goal: "Call update_todos during the ferment.",
-											steps: [
-												{ description: "Write a todo list via update_todos.", verify: "true" },
-											],
+											steps: [{ description: "Write a todo list via update_todos.", verify: "true" }],
 										},
 									],
 									questions: [],

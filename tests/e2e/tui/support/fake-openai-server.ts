@@ -1,4 +1,4 @@
-import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http"
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { Socket } from "node:net"
 import { setTimeout as sleep } from "node:timers/promises"
 
@@ -22,14 +22,27 @@ export interface FakeToolCall {
 	}
 }
 
+export interface FakeResponseRequest {
+	method: string
+	url: string
+	headers: Record<string, string | string[] | undefined>
+	body: unknown
+}
+
 export interface FakeResponseScript {
+	/** Optional predicate that reserves this script for matching chat requests. */
+	match?: (request: FakeResponseRequest) => boolean
+	/** Raw streamed deltas for tests that need exact SSE chunk boundaries. */
+	rawDeltas?: { delta: Record<string, unknown>; delayMs?: number }[]
+	/** Final streamed finish reason. Defaults to the existing tool-call-aware value. */
+	finishReason?: "stop" | "tool_calls"
 	/** Text chunks emitted as `delta.content` (the visible assistant response). */
 	stream?: string[]
 	/**
 	 * Reasoning chunks emitted as `delta.reasoning_content` BEFORE `stream`.
 	 * The upstream `openai-completions` provider maps these to `thinking_start`
-	 * / `thinking_delta` / `thinking_end` events, which the UI surfaces as
-	 * the cooking-animation "thinking…" suffix.
+	 * / `thinking_delta` / `thinking_end` events, which trigger the cooking
+	 * animation's re-arm during reasoning.
 	 */
 	thinking?: string[]
 	/** Per-chunk delay for `stream` chunks. Defaults to `delayMs`. */
@@ -39,16 +52,37 @@ export interface FakeResponseScript {
 	/** Fallback delay applied to both `thinking` and `stream` chunks. */
 	delayMs?: number
 	toolCalls?: FakeToolCall[]
+	/**
+	 * After emitting all `thinking` chunks, keep the SSE response open without
+	 * writing anything further until the client disconnects. Simulates a
+	 * provider stream stalling mid-reasoning (thinking stays active client-side).
+	 */
+	stallAfterThinking?: boolean
 	closeSocketAfterChunks?: number
 	status?: number
 	body?: unknown
+	headers?: Record<string, string>
+	/** Route this script to the subagent queue (consumed by subagent requests). */
+	forSubagent?: boolean
+	/**
+	 * Send an SSE chunk with `finish_reason: "error"` and the given error
+	 * message, simulating a provider-side error stop reason. The provider
+	 * surfaces this as `output.errorMessage`, which flows through to
+	 * `message_end` / `showError`. Use instead of `status: 500` when the test
+	 * needs the raw error string (e.g. vLLM internals) to reach the
+	 * classifier — HTTP 500 bodies are not included in the SDK's error
+	 * message.
+	 */
+	streamError?: string
+	/** Token usage reported in the final SSE chunk's `usage` field.
+	 * The openai-completions provider reads `prompt_tokens` and
+	 * `completion_tokens` to compute `totalTokens` on the assistant message.
+	 * Without this, the session has no usage data and compaction gates
+	 * (which read `totalTokens`) see 0 tokens. Defaults to a small value. */
+	usage?: { prompt_tokens: number; completion_tokens: number }
 }
 
-export interface RecordedRequest {
-	method: string
-	url: string
-	headers: Record<string, string | string[] | undefined>
-	body: unknown
+export interface RecordedRequest extends FakeResponseRequest {
 	aborted: boolean
 }
 
@@ -61,6 +95,8 @@ export interface FakeOpenAiServer {
 interface StartFakeOpenAiServerOptions {
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
+	creditsResponses?: unknown[]
+	budgetResponses?: unknown[]
 }
 
 export const DEFAULT_MODEL: Required<FakeModel> = {
@@ -95,15 +131,30 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 	const requests: RecordedRequest[] = []
 	const sockets = new Set<Socket>()
 	const models = resolveModels(options.models)
-	const responseQueue = [...options.responses]
+	const mainQueue: FakeResponseScript[] = []
+	const subagentQueue: FakeResponseScript[] = []
+	for (const script of options.responses) {
+		if (script.forSubagent === true) {
+			subagentQueue.push(script)
+		} else {
+			mainQueue.push(script)
+		}
+	}
+	const creditsQueue = [...(options.creditsResponses ?? [])]
+	const budgetQueue = [...(options.budgetResponses ?? [])]
+	let lastCreditsResponse: unknown
+	let lastBudgetResponse: unknown
 
 	const server = createServer(async (req, res) => {
 		const body = await readJsonBody(req)
-		const recorded: RecordedRequest = {
+		const request: FakeResponseRequest = {
 			method: req.method ?? "GET",
 			url: req.url ?? "/",
 			headers: req.headers,
 			body,
+		}
+		const recorded: RecordedRequest = {
+			...request,
 			aborted: false,
 		}
 		req.on("aborted", () => {
@@ -131,8 +182,26 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 				return
 			}
 
+			if (req.method === "GET" && req.url?.startsWith("/v1/credits")) {
+				const credits = creditsQueue.shift() ?? lastCreditsResponse ?? { serverless: false }
+				lastCreditsResponse = credits
+				writeJson(res, 200, credits)
+				return
+			}
+
+			if (req.method === "GET" && req.url?.startsWith("/v1/budget")) {
+				if (budgetQueue.length === 0 && lastBudgetResponse === undefined) {
+					writeJson(res, 404, { error: "Budget endpoint is not supported by this fake proxy" })
+					return
+				}
+				const budget = budgetQueue.shift() ?? lastBudgetResponse
+				lastBudgetResponse = budget
+				writeJson(res, 200, budget)
+				return
+			}
+
 			if (req.method === "POST" && req.url?.startsWith("/openai/v1/chat/completions")) {
-				const script = responseQueue.shift() ?? { stream: ["fake response"] }
+				const script = pickResponseScript(body, mainQueue, subagentQueue)
 				await writeChatCompletion(res, script, body)
 				return
 			}
@@ -188,30 +257,36 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 
 async function writeChatCompletion(res: ServerResponse, script: FakeResponseScript, body: unknown): Promise<void> {
 	if (script.status && script.status >= 400) {
-		writeJson(res, script.status, script.body ?? { error: "scripted fake model error" })
+		writeJson(res, script.status, script.body ?? { error: "scripted fake model error" }, script.headers)
 		return
 	}
 
 	const request = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
 	const model = typeof request.model === "string" ? request.model : DEFAULT_MODEL.slug
 	if (request.stream === false) {
-		writeJson(res, 200, {
-			id: "chatcmpl_fake",
-			object: "chat.completion",
-			created: unixNow(),
-			model,
-			choices: [
-				{
-					index: 0,
-					message: { role: "assistant", content: (script.stream ?? []).join("") },
-					finish_reason: "stop",
-				},
-			],
-		})
+		writeJson(
+			res,
+			200,
+			{
+				id: "chatcmpl_fake",
+				object: "chat.completion",
+				created: unixNow(),
+				model,
+				choices: [
+					{
+						index: 0,
+						message: { role: "assistant", content: (script.stream ?? []).join("") },
+						finish_reason: "stop",
+					},
+				],
+			},
+			script.headers,
+		)
 		return
 	}
 
 	res.writeHead(200, {
+		...script.headers,
 		"Content-Type": "text/event-stream",
 		"Cache-Control": "no-cache",
 		Connection: "keep-alive",
@@ -233,6 +308,16 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 			res.destroy()
 			return
 		}
+	}
+
+	if (script.stallAfterThinking) {
+		await new Promise<void>((resolve) => res.once("close", resolve))
+		return
+	}
+
+	for (const raw of script.rawDeltas ?? []) {
+		if (raw.delayMs) await sleep(raw.delayMs)
+		chunk([{ index: 0, delta: raw.delta, finish_reason: null }])
 	}
 
 	for (const text of script.stream ?? []) {
@@ -271,7 +356,38 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 		])
 	}
 
-	chunk([{ index: 0, delta: {}, finish_reason: script.toolCalls?.length ? "tool_calls" : "stop" }])
+	// If the script simulates a provider-side error stop reason, emit an
+	// SSE chunk with finish_reason: "error" and the raw error string in the
+	// delta. pi-ai maps this to stopReason: "error" with errorMessage set to
+	// the raw string, which flows through to message_end / showError. This is
+	// the path that carries the actual error text (e.g. vLLM internals).
+	if (script.streamError) {
+		chunk([{ index: 0, delta: { content: script.streamError }, finish_reason: "error" }])
+		res.write("data: [DONE]\n\n")
+		res.end()
+		return
+	}
+
+	const finalChunk: Record<string, unknown> = {
+		index: 0,
+		delta: {},
+		finish_reason: script.finishReason ?? (script.toolCalls?.length ? "tool_calls" : "stop"),
+	}
+	if (script.usage) {
+		writeSse(res, {
+			id: "chatcmpl_fake",
+			object: "chat.completion.chunk",
+			created: unixNow(),
+			model,
+			choices: [finalChunk],
+			usage: {
+				prompt_tokens: script.usage.prompt_tokens,
+				completion_tokens: script.usage.completion_tokens,
+			},
+		})
+	} else {
+		chunk([finalChunk])
+	}
 	res.write("data: [DONE]\n\n")
 	res.end()
 }
@@ -337,6 +453,43 @@ function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : {}
 }
 
+/**
+ * A chat-completion request is treated as a subagent turn when any system
+ * message carries the inherited-prompt marker the host injects for spawned
+ * subagents. This lets the fake server route scripted responses to the
+ * correct queue even when subagent and orchestrator turns interleave.
+ */
+function isSubagentRequest(body: unknown): boolean {
+	const messages = asRecord(body).messages
+	if (!Array.isArray(messages)) return false
+	return messages.some((message) => {
+		const record = asRecord(message)
+		if (record.role !== "system") return false
+		return readMessageContent(record.content).includes("<inherited_system_prompt>")
+	})
+}
+
+/**
+ * Select the next scripted response, preferring the subagent queue for
+ * subagent requests and the main queue otherwise. Falls back to the other
+ * queue when the chosen one is empty to avoid hangs if scripted counts are
+ * slightly off. When `subagentQueue` is empty this reduces to the legacy
+ * single-queue behaviour.
+ */
+function pickResponseScript(
+	body: unknown,
+	mainQueue: FakeResponseScript[],
+	subagentQueue: FakeResponseScript[],
+): FakeResponseScript {
+	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(body)
+	const primary = useSubagent ? subagentQueue : mainQueue
+	if (primary.length > 0) {
+		return primary.shift() ?? { stream: ["fake response"] }
+	}
+	const fallback = useSubagent ? mainQueue : subagentQueue
+	return fallback.shift() ?? { stream: ["fake response"] }
+}
+
 function unixNow(): number {
 	return Math.floor(Date.now() / 1000)
 }
@@ -345,8 +498,8 @@ function writeSse(res: ServerResponse, event: unknown): void {
 	res.write(`data: ${JSON.stringify(event)}\n\n`)
 }
 
-function writeJson(res: ServerResponse, status: number, body: unknown): void {
-	res.writeHead(status, { "Content-Type": "application/json" })
+function writeJson(res: ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void {
+	res.writeHead(status, { ...headers, "Content-Type": "application/json" })
 	res.end(JSON.stringify(body))
 }
 

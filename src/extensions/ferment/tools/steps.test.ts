@@ -1,10 +1,10 @@
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { clearAllStepStarts, clearPendingCompaction, getPendingCompaction } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
 
@@ -13,19 +13,26 @@ vi.mock("../../agents/index.js", () => ({
 	getAgentRecordForTaskValidation: vi.fn((id: string) => mockAgentRecords.get(id)),
 }))
 
+import { createContext } from "../../__mocks__/context.js"
 import {
-	type StepHandlerServices,
-	type VerificationResult,
 	completeStep,
 	defaultStepHandlerServices,
 	registerStepTools,
+	type StepHandlerServices,
 	startStep,
 	suggestWorkerLimits,
+	type VerificationResult,
 } from "./steps.js"
 
 interface RegisteredTool {
 	name: string
-	execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown>
+	execute: (
+		toolCallId: string,
+		params: Record<string, unknown>,
+		signal: unknown | undefined,
+		onUpdate: unknown | undefined,
+		ctx: ExtensionContext,
+	) => Promise<unknown>
 }
 
 function okText(result: { content: { text: string }[]; isError?: boolean }): string {
@@ -43,6 +50,10 @@ function createHarness(options: { verification?: string; goal?: string; successC
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const pi = {
+		events: {
+			emit: vi.fn(),
+			on: vi.fn(() => () => {}),
+		},
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),
@@ -140,7 +151,7 @@ describe("startStep", () => {
 		const result = await startStep(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -157,7 +168,7 @@ describe("startStep", () => {
 		const result = await startStep(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			createServices(),
 		)
 
@@ -178,7 +189,7 @@ describe("startStep", () => {
 		const result = await startStep(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", budget_tier: "narrow" },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			createServices(),
 		)
 
@@ -196,7 +207,7 @@ describe("startStep", () => {
 		const result = await startStep(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", budget_tier: "complex" },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			createServices(),
 		)
 
@@ -218,7 +229,7 @@ describe("startStep", () => {
 		const result = await startStep(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -234,14 +245,14 @@ describe("startStep", () => {
 		await startStep(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
 		const result = await startStep(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-2" },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -257,7 +268,7 @@ describe("startStep", () => {
 		const result = await startStep(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -272,7 +283,7 @@ describe("startStep", () => {
 		const pauseResult = await startStep(
 			pauseHarness.runtime,
 			{ ferment_id: pauseHarness.fermentId, phase_id: "phase-1", step_id: "step-1" },
-			{ pi: pauseHarness.pi, ctx: { ui: { select: vi.fn(async () => "Pause ferment") } } },
+			{ pi: pauseHarness.pi, ctx: createContext({ ui: { select: vi.fn(async () => "Pause ferment") } }) },
 			createServices(),
 		)
 		expect(okText(pauseResult)).toContain("paused")
@@ -286,7 +297,7 @@ describe("startStep", () => {
 		const skipResult = await startStep(
 			skipHarness.runtime,
 			{ ferment_id: skipHarness.fermentId, phase_id: "phase-1", step_id: "step-1" },
-			{ pi: skipHarness.pi, ctx: { ui: { select: vi.fn(async () => "Skip step") } } },
+			{ pi: skipHarness.pi, ctx: createContext({ ui: { select: vi.fn(async () => "Skip step") } }) },
 			skipServices,
 		)
 		expect(okText(skipResult)).toContain("skipped")
@@ -311,11 +322,17 @@ describe("registerStepTools", () => {
 
 		const startTool = tools.get("start_ferment_step")
 		if (!startTool) throw new Error("start_ferment_step was not registered")
-		const result = (await startTool.execute("test-call-id", {
-			ferment_id: h.fermentId,
-			phase_id: "phase-1",
-			step_id: "step-1",
-		})) as { content: { text: string }[]; isError?: boolean }
+		const result = (await startTool.execute(
+			"test-call-id",
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-1",
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)) as { content: { text: string }[]; isError?: boolean }
 
 		expect(okText(result)).toContain("First step")
 		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("running")
@@ -339,7 +356,7 @@ describe("completeStep", () => {
 				summary: "done",
 				gates: passingStepGates(),
 			},
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -367,7 +384,7 @@ describe("completeStep", () => {
 				summary: "done",
 				gates: passingStepGates(),
 			},
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -405,7 +422,7 @@ describe("completeStep", () => {
 				summary: "done",
 				gates: flaggedGates,
 			},
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -435,7 +452,7 @@ describe("completeStep", () => {
 				summary: "done",
 				gates: incomplete,
 			},
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -464,7 +481,7 @@ describe("completeStep", () => {
 				summary: "done",
 				gates: passingStepGates(),
 			},
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -492,7 +509,7 @@ describe("completeStep", () => {
 					summary: "done",
 					gates: passingStepGates(),
 				},
-				{ pi: h.pi },
+				{ pi: h.pi, ctx: createContext({ hasUI: false }) },
 				services,
 			)
 
@@ -517,7 +534,7 @@ describe("completeStep", () => {
 				summary: "done",
 				gates: passingStepGates(),
 			},
-			{ pi: h.pi, ctx: {} },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -526,7 +543,7 @@ describe("completeStep", () => {
 	})
 
 	describe("validateLinkedWorker rejection paths", () => {
-		it("rejects when worker_agent_id is omitted", async () => {
+		it("allows completion without worker_agent_id (orchestrator executed directly)", async () => {
 			const h = createHarness()
 			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
 
@@ -536,17 +553,16 @@ describe("completeStep", () => {
 					ferment_id: h.fermentId,
 					phase_id: "phase-1",
 					step_id: "step-1",
-					summary: "done",
+					summary: "done directly by orchestrator",
 					gates: passingStepGates(),
-					// Cast: this test intentionally omits `worker_agent_id` to verify
-					// runtime validation rejects the missing field. TS would otherwise
-					// flag the call because the field is required by CompleteStepParams.
-				} as unknown as Parameters<typeof completeStep>[1],
-				{ pi: h.pi },
+				},
+				{ pi: h.pi, ctx: createContext() },
 				createServices(),
 			)
 
-			expect(errText(result)).toContain("requires worker_agent_id")
+			// Success result has no `isError` property (only error results do).
+			// If completeStep didn't throw and returned content, the step completed.
+			expect(result.content[0]?.text).toContain("done")
 		})
 
 		it("rejects when the agent record is not found", async () => {
@@ -563,7 +579,7 @@ describe("completeStep", () => {
 					summary: "done",
 					gates: passingStepGates(),
 				},
-				{ pi: h.pi },
+				{ pi: h.pi, ctx: createContext() },
 				createServices(),
 			)
 
@@ -606,7 +622,7 @@ describe("completeStep", () => {
 					summary: "done",
 					gates: passingStepGates(),
 				},
-				{ pi: h.pi },
+				{ pi: h.pi, ctx: createContext() },
 				createServices(),
 			)
 
@@ -633,7 +649,7 @@ describe("completeStep", () => {
 					summary: "done",
 					gates: passingStepGates(),
 				},
-				{ pi: h.pi },
+				{ pi: h.pi, ctx: createContext() },
 				createServices(),
 			)
 
@@ -669,7 +685,7 @@ describe("completeStep", () => {
 					summary: "done",
 					gates: passingStepGates(),
 				},
-				{ pi: h.pi },
+				{ pi: h.pi, ctx: createContext() },
 				createServices(),
 			)
 
@@ -712,7 +728,7 @@ describe("completeStep", () => {
 					summary: "done",
 					gates: passingStepGates(),
 				},
-				{ pi: h.pi },
+				{ pi: h.pi, ctx: createContext() },
 				createServices(),
 			)
 
@@ -755,7 +771,7 @@ describe("completeStep", () => {
 					summary: "done",
 					gates: passingStepGates(),
 				},
-				{ pi: h.pi },
+				{ pi: h.pi, ctx: createContext() },
 				createServices(),
 			)
 
@@ -788,7 +804,7 @@ describe("completeStep", () => {
 				summary: "done",
 				gates: passingStepGates(),
 			},
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -816,7 +832,7 @@ describe("completeStep", () => {
 				summary: "done",
 				gates: passingStepGates(),
 			},
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 		expect(okText(complete1)).toContain("done")
@@ -836,7 +852,7 @@ describe("completeStep", () => {
 				summary: "done",
 				gates: passingStepGates(),
 			},
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -887,7 +903,7 @@ describe("start_ferment_step plan-first preamble", () => {
 		const result = await startStep(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -908,7 +924,7 @@ describe("start_ferment_step plan-first preamble", () => {
 		const result = await startStep(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -924,7 +940,7 @@ describe("start_ferment_step plan-first preamble", () => {
 		const result = await startStep(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -942,7 +958,7 @@ describe("start_ferment_step plan-first preamble", () => {
 		await startStep(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 		const completeResult = await completeStep(
@@ -955,7 +971,7 @@ describe("start_ferment_step plan-first preamble", () => {
 				summary: "Installed dependencies and verified config",
 				gates: passingStepGates(),
 			},
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 		// Verify step-1 completed successfully
@@ -966,7 +982,7 @@ describe("start_ferment_step plan-first preamble", () => {
 		const result = await startStep(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-2" },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -985,7 +1001,7 @@ describe("start_ferment_step plan-first preamble", () => {
 		const result = await startStep(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 

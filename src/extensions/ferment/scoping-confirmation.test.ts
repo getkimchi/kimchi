@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 
 function createRuntime(): { runtime: FermentRuntime; storage: FermentEventStore } {
@@ -205,5 +205,33 @@ describe("confirmPendingScope", () => {
 		if (result.ok) {
 			expect(result.outcome.ferment.scoping.assumptions).toBeUndefined()
 		}
+	})
+
+	it("emits SCOPING_COMPLETE with proposeIterations from pending scope", () => {
+		const { runtime, storage } = createRuntime()
+		const ferment = storage.create("Propose Iterations Test")
+		const emitted: Array<{ channel: string; data: unknown }> = []
+		// Wire a minimal event bus so confirmPendingScope → applyAndPersist → emitFermentDomainEvent works.
+		runtime.events = {
+			emit: vi.fn((channel: string, data: unknown) => emitted.push({ channel, data })),
+			on: vi.fn(() => () => {}),
+		} as never
+
+		runtime.setPendingScope(ferment.id, {
+			goal: "Goal",
+			successCriteria: ["Works"],
+			constraints: [],
+			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
+			proposeIterations: 3,
+		})
+
+		const result = confirmPendingScope(runtime, ferment.id, undefined, "propose_ferment_scoping")
+		expect(result.ok).toBe(true)
+
+		const scopingEvent = emitted.find((e) => e.channel === "ferment:scoping_complete")
+		expect(scopingEvent).toBeDefined()
+		const payload = scopingEvent?.data as { fermentId: string; proposeIterations: number }
+		expect(payload.fermentId).toBe(ferment.id)
+		expect(payload.proposeIterations).toBe(3)
 	})
 })

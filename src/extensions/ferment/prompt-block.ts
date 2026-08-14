@@ -2,11 +2,13 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getAgentConfig, getDefaultAgentNames } from "../agents/personas/agent-types.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { SCOPING_DISCOVERY_GUIDANCE, SCOPING_EXPLORE_TOKEN_BUDGET } from "./constants.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "./format.js"
 import type { FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
+import { formatNoReplanningGuidance } from "./tool-helpers.js"
 import { CREATE_FERMENT_REDIRECT_MESSAGE } from "./tool-names.js"
 
 /** Pull the first line of an agent's description (typically a one-sentence role
@@ -24,7 +26,12 @@ function buildAgentsSection(): string {
 	return `\n\n**Available subagent types (pick one per start_ferment_step by step intent):**\n${lines.join("\n")}`
 }
 
-function buildPlannerSupplement(f: Ferment, continuationPolicy: ContinuationPolicy, isOneshot = false): string {
+function buildPlannerSupplement(
+	f: Ferment,
+	continuationPolicy: ContinuationPolicy,
+	isOneshot = false,
+	delegationMode: "strict" | "relaxed" = "strict",
+): string {
 	const dm = formatDecisionsAndMemories(f)
 	const dmSection = dm ? `\n\n${dm}` : ""
 	const sc = formatScopingContext(f)
@@ -32,11 +39,11 @@ function buildPlannerSupplement(f: Ferment, continuationPolicy: ContinuationPoli
 	const stateMachineContinuationRule =
 		continuationPolicy === "manual"
 			? "\n- Manual continuation policy: if `complete_ferment_phase` returns a phase-boundary wait, ask the user whether to continue and do not call `activate_ferment_phase` until they say continue"
-			: "\n- Automated continuation policy: continue across phase boundaries without pausing. Every turn must end with a ferment tool call or Agent spawn until complete_ferment is called."
+			: "\n- Automated continuation policy: continue across phase boundaries without pausing. Keep the ferment moving — call the next ferment tool or Agent spawn, but you may take a brief thinking or assessment turn when deciding strategy."
 	const phaseAdvancementContract =
 		continuationPolicy === "manual"
 			? "Manual continuation policy is active: work autonomously inside the current phase, but stop at phase boundaries and ask the user before activating the next phase. If the user says continue, call `activate_ferment_phase` for the next phase. Do not ask the user to confirm step results."
-			: "Automated continuation policy is active: do not ask the user to confirm phase advancement or step results. Continue calling ferment lifecycle tools and spawning Agent workers turn after turn until complete_ferment is called. Never stop between steps or phases to summarize — call the next tool first, then include any summary in that tool call's arguments."
+			: "Automated continuation policy is active: do not ask the user to confirm phase advancement or step results. Continue calling ferment lifecycle tools and spawning Agent workers turn after turn until complete_ferment is called. You may take a brief thinking or assessment turn between tool calls to decide strategy — for example, after a subagent aborts, to assess whether to resume, re-delegate, or adjust the plan. Otherwise, call the next tool first, then include any summary in that tool call's arguments."
 	const delegationCheckpoint =
 		"For broad existing-codebase scoping requests, follow the shared discovery guidance in the Upfront Contract before drafting recommendations."
 	// One-shot uses scope_ferment directly; interactive routes through propose_ferment_scoping.
@@ -47,7 +54,17 @@ function buildPlannerSupplement(f: Ferment, continuationPolicy: ContinuationPoli
 
 ${SCOPING_DISCOVERY_GUIDANCE}
 
-On the first scoping turn after \`/ferment\`, draft \`title\`/\`goal\`/\`success_criteria\`/\`constraints\`/\`assumptions\`/\`phases\` from the user's free-form intent and call \`propose_ferment_scoping\` with all of them in ONE call. The title is required and should be a concise 3-5 word Ferment name.
+On the first scoping turn after \`/ferment\`, draft \`title\`/\`goal\`/\`success_criteria\`/\`constraints\`/\`assumptions\`/\`phases\`/\`charter\` from the user's free-form intent and call \`propose_ferment_scoping\` with all of them in ONE call. The title is required and should be a concise 3-5 word Ferment name.
+
+Before calling \`propose_ferment_scoping\`, run the meh-test and record it in \`self_critique\`: read your goal/success_criteria/constraints back as if presenting them to the user as THE summary of what they will get. If "meh — you missed the point" is a plausible reaction, the criteria are missing load-bearing dimensions of the request (appearance, feel, global coherence, tone) — strengthen the criteria or write down why the gap is deliberate.
+
+Named decisions are reviewable decisions: any way the plan narrows or reframes the literal request belongs in \`scope_deltas\` (e.g. "every app" → the 12 most-used apps, or full parity → functional core). Any constraint that substitutes or approximates the literal request (mock data, alternative assets, simplified behavior) belongs in \`constraint_costs\` with its visible cost. A substitution you did not record is one the reviewer cannot evaluate.
+
+Recommendations are decisions: whoever answers your scoping questions (the user or the judge) overwhelmingly takes the option you mark \`recommended: true\`. Recommend what best serves the user's original intent — never the cheapest, fastest, or safest option merely because it costs less effort.
+
+If the request references an existing artifact or named design to recreate, port, clone, migrate, or emulate, treat the reference as ground truth: observe it first (fetch/read/screenshot as feasible) and carry its key visual and behavioral facts into the charter's \`demo_script\`. Inventing substitutes (different iconography, layouts, palettes, behaviors) without recording each substitution in \`constraint_costs\` is how replicas quietly stop being replicas.
+
+Size steps by coupling: work where every part shapes every other part (one coherent artifact — a page, a core engine, a single narrative) belongs in fewer, larger steps at \`complex\` budget_tier; splitting coupled work into atomic steps causes constant mid-review re-planning. Independent siblings stay separate, cheap steps.
 
 Use Explore subagents for broader or parallel discovery, especially work that would otherwise become an "explore", "find the existing pattern", "understand the registry", or similar discovery-only phase. Keep each Explore prompt narrowly scoped to one independent area or question. If an Explore subagent aborts on the ${SCOPING_EXPLORE_TOKEN_BUDGET} token budget, do not retry the same broad task; use any partial result, spawn a narrower replacement only if that missing fact is plan-blocking, otherwise continue with direct targeted reads or record the uncertainty in \`assumptions\`. Do not make discovery-only work a user-approved phase when that discovery is needed to decide what the approved phases should be. The plan you propose should reflect the discovered files, patterns, constraints, and implementation layer.
 
@@ -90,6 +107,16 @@ After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation al
 
 	const agentsSection = buildAgentsSection()
 
+	const delegationRules =
+		delegationMode === "strict"
+			? `- NEVER write, edit, or read files yourself during step execution
+- NEVER implement a step inline — always delegate to a subagent worker
+- Spawn a subagent for every step regardless of whether you already know the answer — the subagent exists to produce verifiable evidence, not just to do work. No-op or trivially-known steps still require a subagent run.`
+			: `- You may execute steps directly (using bash, edit, write) OR delegate to a subagent — choose whichever is more efficient for the task at hand.
+- Prefer direct execution for narrow fixes, single-file edits, verification runs, and when a prior subagent already laid the groundwork you can build on.
+- Prefer delegation for parallel work, long-running builds, or when isolating a complex multi-file change into a clean context would help.
+- If a subagent aborts on a step, consider whether you can finish the remaining work directly rather than spawning another subagent that will re-discover the same context.`
+
 	return `
 
 ## Ferment Planner Role
@@ -103,16 +130,14 @@ You are the PLANNER for ferment "${f.name}". Your job is to manage the task grap
 - Every tool result ends with a "Next action:" line — execute that action immediately in the same turn, do not defer it${stateMachineContinuationRule}
 - There is no shell CLI for ferment phase or step transitions; use the ferment tools only
 - ${CREATE_FERMENT_REDIRECT_MESSAGE}
-- For start_ferment_step: choose budget_tier explicitly from the scoped work shape — narrow | standard | complex — and pass it to the tool (standard is the normal implementation default). Then spawn a subagent to do the work. Every Ferment worker Agent call must include max_turns, max_duration, token_budget, and the exact task_ref returned by start_ferment_step. Use the selected limits returned by start_ferment_step; never infer a tier from keywords in the step description.
+- For start_ferment_step: choose budget_tier explicitly from the scoped work shape — narrow | standard | complex — and pass it to the tool (standard is the normal implementation default). ${delegationMode === "strict" ? "Then spawn a subagent to do the work. Every Ferment worker Agent call must include max_turns, max_duration, token_budget, and the exact task_ref returned by start_ferment_step. Use the selected limits returned by start_ferment_step; never infer a tier from keywords in the step description." : "Then either spawn a subagent (with max_turns, max_duration, token_budget, and the exact task_ref) or execute the step directly. When delegating, use the selected limits returned by start_ferment_step."}
 - If start_ferment_step returns parallel_siblings, call start_ferment_step for all of them and spawn their subagents CONCURRENTLY
 - After a subagent returns, inspect agent_outcome before acting. If outcome is "completed" and agent_outcome.report.status is "completed", call complete_ferment_step with worker_agent_id and the report summary. If the report is missing, call resume_subagent with only agent_id and purpose "finalize_report"; the host supplies its fixed report-only prompt and limits. If outcome is budget_exhausted, failed, or stopped, do not mark the step complete. Read agent_outcome.report, then use resume_subagent for a bounded direct continuation, spawn a narrower linked replacement for a separable remaining task, or stop/report when blocked. Do not raise the limits and retry the same broad task.
 - complete_ferment_step automatically runs the scoped verification command. Do not rerun it with bash before completing the step unless the worker reported a concrete inconsistency or the scoped command itself needs diagnosis.
 - For phase transitions (activate_ferment_phase, complete_ferment_phase, complete_ferment): call the tool directly, no subagent needed
 
 **Rules:**
-- NEVER write, edit, or read files yourself during step execution
-- NEVER implement a step inline — always delegate to a subagent worker
-- Spawn a subagent for every step regardless of whether you already know the answer — the subagent exists to produce verifiable evidence, not just to do work. No-op or trivially-known steps still require a subagent run.
+${delegationRules}
 - Ferment workers must call submit_agent_report before their final answer. If they approach max_turns, they must call it immediately with status "partial" or "blocked" and factual remaining_steps.
 - If the current action is complete_ferment_step: this is a SUGGESTION — you decide when the step is done based on subagent results
 - If the specification names a fixed output path or fixed runtime interface, the worker directive must keep it fixed; do not turn it into an extra CLI argument, config option, or flexible interface unless the user explicitly requested that${agentsSection}${
@@ -120,10 +145,10 @@ You are the PLANNER for ferment "${f.name}". Your job is to manage the task grap
 			? `
 
 **Turn discipline (automated ferment):**
-- Every turn MUST end with a ferment lifecycle tool call or an Agent spawn — do NOT produce a narrative summary and stop.
-- After any tool result that includes a "Next action:" line, execute that action in the same turn. Do not defer it to a future turn.
-- The only permitted text-only response is the single final message after \`complete_ferment\` returns.
-- Writing a step summary then stopping leaves the ferment stalled — always follow the summary with the next lifecycle tool call (for example, \`complete_ferment_step\`, \`start_ferment_step\`, or \`complete_ferment_phase\`).`
+- Keep the ferment moving — do not stall between steps or produce a narrative summary and stop.
+- You MAY take a brief thinking or assessment turn between tool calls to decide strategy — for example, after a subagent aborts, to assess whether to resume, re-delegate, or adjust the plan. This is not stalling; it is orchestration.
+- After any tool result that includes a "Next action:" line, execute that action in the same turn unless you have a reason to deviate (in which case, state the reason and do the alternative).
+- The only time you should produce a text-only turn and stop is the single final message after \`complete_ferment\` returns — otherwise, follow your assessment with the next action.`
 			: ""
 	}
 
@@ -148,6 +173,31 @@ You are the PLANNER for ferment "${f.name}". Your job is to manage the task grap
 - Call add_ferment_decision after any architectural or design choice that affects future phases
 - Call add_ferment_memory for reusable patterns, gotchas, or conventions discovered during execution${scSection}${dmSection}${upfrontContract}
 `
+}
+
+/**
+ * Renders a short, STATIC prelude for a planned/running ferment.
+ *
+ * Why: the planner supplement below is lifecycle-agnostic — it describes both
+ * the planning and implementation toolsets uniformly and never states the
+ * ferment's current position. After "Start as ferment" handoffs, /ferment
+ * resume, or post-compaction continuations, the model could not tell that
+ * scoping was already complete and wasted turns re-running discovery
+ * (`list_ferments`) and re-drafting the scope (`scope_ferment`), which the
+ * FSM then rejected. Stating that scoping is complete and that scoping calls
+ * will be rejected prevents that restart loop.
+ *
+ * Only STATIC content belongs here — content that does not change across
+ * step/phase transitions. Volatile details (active phase name, step progress,
+ * next-action hint) are injected per-turn via the transient `context` event
+ * by `registerFermentLifecycleContext` so the system prompt stays cache-stable
+ * across lifecycle transitions. See system-prompt-stability.test.ts.
+ */
+function buildCurrentStateSection(f: Ferment): string {
+	return [
+		"## Current lifecycle state",
+		`- Scoping is COMPLETE (ferment status "${f.status}"). ${formatNoReplanningGuidance({ backticks: true })} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
+	].join("\n")
 }
 
 function buildPausedWarning(f: Ferment): string {
@@ -186,14 +236,16 @@ export function buildFermentPromptBlock(
 	if (!f) return undefined
 
 	const oneshot = pi.getFlag("ferment-oneshot") === true
+	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+	const delegationMode: "strict" | "relaxed" = multiModelEnabled ? "strict" : "relaxed"
 
 	switch (f.status) {
 		case "draft":
-			if (oneshot) return buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot).trim()
+			if (oneshot) return buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot, delegationMode).trim()
 			return undefined
 		case "planned":
 		case "running":
-			return buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot).trim()
+			return `${buildCurrentStateSection(f)}\n${buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot, delegationMode).trim()}`
 		case "paused":
 			return buildPausedWarning(f).trim()
 		case "complete":

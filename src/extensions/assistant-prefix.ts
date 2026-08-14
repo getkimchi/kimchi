@@ -1,7 +1,7 @@
-import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { Markdown, visibleWidth } from "@earendil-works/pi-tui"
+import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent"
 import type { MarkdownTheme } from "@earendil-works/pi-tui"
+import { Markdown, visibleWidth } from "@earendil-works/pi-tui"
 
 const PATCH_SYMBOL = Symbol("kimchi:dotted-paragraph")
 

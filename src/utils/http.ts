@@ -1,13 +1,16 @@
-import { RETRY_DEFAULTS, type RetryConfig } from "../config.js"
-
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504, 524])
+// Default retry budget for kimchi backend calls when the caller passes no retry
+// option. Deliberately independent of config's RETRY_DEFAULTS, which seeds
+// pi's chat retry policy — a different concern with a much smaller budget.
+const DEFAULT_MAX_RETRIES = 10
 const BASE_DELAY_MS = 1_000
 const MAX_DELAY_MS = 60_000
 const BACKOFF_FACTOR = 2
 
 export interface FetchWithRetryOptions {
 	timeoutMs?: number
-	retry?: Partial<RetryConfig>
+	/** Retries after the initial attempt. */
+	retry?: { maxRetries?: number }
 	signal?: AbortSignal
 	fetchImpl?: typeof globalThis.fetch
 }
@@ -61,11 +64,12 @@ export async function fetchWithRetry(
 ): Promise<Response> {
 	const fetchFn = options?.fetchImpl ?? globalThis.fetch
 	const timeoutMs = options?.timeoutMs ?? 30_000
-	const maxRetries = options?.retry?.maxRetries ?? RETRY_DEFAULTS.maxRetries
+	const maxRetries = Math.max(options?.retry?.maxRetries ?? DEFAULT_MAX_RETRIES, 0)
+	const maxAttempts = maxRetries + 1
 
 	let lastError: unknown
 
-	for (let attempt = 1; attempt <= maxRetries; attempt++) {
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		const ctrl = new AbortController()
 		const timer = setTimeout(() => ctrl.abort(), timeoutMs)
 		const signal = options?.signal ? AbortSignal.any([ctrl.signal, options.signal]) : ctrl.signal
@@ -74,7 +78,7 @@ export async function fetchWithRetry(
 			const response = await fetchFn(url, { ...init, signal })
 			clearTimeout(timer)
 
-			if (!isRetryableResponse(response) || attempt === maxRetries) {
+			if (!isRetryableResponse(response) || attempt === maxAttempts) {
 				return response
 			}
 
@@ -93,7 +97,7 @@ export async function fetchWithRetry(
 			// If caller aborted, don't retry
 			if (options?.signal?.aborted) throw error
 
-			if (attempt === maxRetries) throw error
+			if (attempt === maxAttempts) throw error
 
 			lastError = error
 

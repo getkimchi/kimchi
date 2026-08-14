@@ -12,9 +12,37 @@ import { commandToEvents } from "../../ferment/event-mapper.js"
 import type { Command, TransitionError } from "../../ferment/state-machine.js"
 import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
+import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { publicToolNameForActionKind } from "./action-tool-names.js"
 import { emitFermentDomainEvent } from "./domain-events-emitter.js"
-import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
+
+// ─── Shared guidance strings ────────────────────────────────────────────────
+// The "do not re-plan" instructions appear in two model-facing surfaces: the
+// plan-mode → ferment handoff message (permissions/index.ts) and the planner
+// prompt block's Current lifecycle state section (prompt-block.ts). Keep the
+// forbidden tool list in ONE place so a rename or policy change can't drift.
+
+/** Discovery/scoping tools the model must not revisit after scoping is complete. */
+const REPLANNING_FORBIDDEN_TOOLS = [
+	"list_ferments",
+	"scope_ferment",
+	"propose_ferment_scoping",
+	"confirm_ferment_completion_criteria",
+] as const
+
+/**
+ * Renders the no-replanning guidance shared by the handoff message and prompt
+ * block. It explicitly keeps ask_user available for real execution blockers
+ * and recovery. Pass `backticks: true` for markdown system-prompt surfaces.
+ */
+export function formatNoReplanningGuidance(opts: { backticks?: boolean } = {}): string {
+	const renderName = (name: string) => (opts.backticks ? `\`${name}\`` : name)
+	const names = REPLANNING_FORBIDDEN_TOOLS.map(renderName)
+	const list = `${names.slice(0, -1).join(", ")}, or ${names[names.length - 1]}`
+	const askUser = renderName("ask_user")
+	return `Do NOT restart discovery or scoping by calling ${list}. Do not use ${askUser} to repeat the scoping interview; ${askUser} remains available for genuine execution blockers or recovery.`
+}
 
 // ─── Tool result builders ─────────────────────────────────────────────────────
 // Every tool execute returns the same { details, content, isError? } shape;
@@ -28,7 +56,7 @@ export function toolErr(text: string) {
 	return { details: undefined, content: [{ type: "text" as const, text }], isError: true }
 }
 
-export function formatNextActionHint(ferment: Ferment): string | undefined {
+export function formatNextActionHint(ferment: Ferment, multiModelEnabled: boolean): string | undefined {
 	const action = determineNextAction(ferment)
 	if (!action) return undefined
 	const toolName = publicToolNameForActionKind(action.kind)
@@ -58,11 +86,19 @@ export function formatNextActionHint(ferment: Ferment): string | undefined {
 		}
 		case "start_step": {
 			const label = stepLabel ?? `step "${action.stepId}"`
-			return `Next action: call \`${toolName}\` to begin ${label}, then immediately spawn an Agent worker for the implementation \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}.`
+			const relaxed = !multiModelEnabled
+			const startStepSuffix = relaxed
+				? ". Then either spawn an Agent worker for the implementation, or execute the step directly - choose whichever is more efficient."
+				: ", then immediately spawn an Agent worker for the implementation."
+			return `Next action: call \`${toolName}\` to begin ${label} \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}${startStepSuffix}`
 		}
 		case "complete_step": {
 			const label = stepLabel ?? `step "${action.stepId}"`
-			return `Next action: call \`${toolName}\` with worker_agent_id only after the linked worker for ${label} has a completed outcome and completed report \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}.`
+			const relaxed = !multiModelEnabled
+			const completeStepSuffix = relaxed
+				? " If you executed the step directly (no subagent), omit worker_agent_id and include just the summary and gates."
+				: ""
+			return `Next action: call \`${toolName}\` with worker_agent_id after the linked worker for ${label} has a completed outcome and completed report \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}.${completeStepSuffix}`
 		}
 		case "verify_step": {
 			const label = stepLabel ?? `step "${action.stepId}"`
@@ -93,13 +129,13 @@ export function formatNextActionHint(ferment: Ferment): string | undefined {
 	}
 }
 
-export function withNextActionHint(text: string, ferment: Ferment | undefined): string {
-	const hint = ferment ? formatNextActionHint(ferment) : undefined
+export function withNextActionHint(text: string, ferment: Ferment | undefined, multiModelEnabled: boolean): string {
+	const hint = ferment ? formatNextActionHint(ferment, multiModelEnabled) : undefined
 	return hint ? `${text}\n\n${hint}` : text
 }
 
-export function toolErrWithNextAction(text: string, ferment: Ferment | undefined) {
-	return toolErr(withNextActionHint(text, ferment))
+export function toolErrWithNextAction(text: string, ferment: Ferment | undefined, multiModelEnabled: boolean) {
+	return toolErr(withNextActionHint(text, ferment, multiModelEnabled))
 }
 
 // ─── Resolvers ────────────────────────────────────────────────────────────────
@@ -190,7 +226,16 @@ export function createApplyAndPersist(runtime: FermentRuntime) {
 			},
 		)
 		if (outcome.ok) {
+			// A persisted lifecycle transition ends the previous guard episode,
+			// even when no text-only stop observes the intermediate obligation.
+			runtime.onLifecycleTransitionApplied(fermentId)
 			runtime.setActive(outcome.ferment)
+			// The status line's ferment segment reads getActive() at render time,
+			// but tool-call mutations happen mid-agent-run with no natural render
+			// trigger. Request a re-render so the status line reflects the
+			// new phase/step/state immediately instead of going stale until the
+			// next user keypress or message render.
+			requestSharedStatusLineRender()
 			if (runtime.events) {
 				try {
 					emitFermentDomainEvent(runtime.events, cmd, outcome.ferment)
@@ -212,6 +257,6 @@ export function applyAndPersist(fermentId: string, cmd: Command): ApplyOutcome {
  * Convert any error with a `message` field into a tool-error result.
  * Centralized so error wording stays consistent across all tool handlers.
  */
-export function failedToolResult(error: { message: string }, ferment?: Ferment) {
-	return toolErr(withNextActionHint(error.message, ferment))
+export function failedToolResult(error: { message: string }, ferment: Ferment | undefined, multiModelEnabled: boolean) {
+	return toolErr(withNextActionHint(error.message, ferment, multiModelEnabled))
 }

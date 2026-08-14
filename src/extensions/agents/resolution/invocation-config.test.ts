@@ -69,8 +69,13 @@ describe("resolveAgentInvocationConfig — persona policy precedence", () => {
 		vi.clearAllMocks()
 	})
 
-	it("agentConfig.thinking wins over params.thinking", () => {
+	it("params.thinking wins over agentConfig.thinking", () => {
 		const result = resolveAgentInvocationConfig({ ...agent, thinking: "minimal" }, { thinking: "high" })
+		expect(result.thinking).toBe("high")
+	})
+
+	it("falls back to agentConfig.thinking when params omit thinking", () => {
+		const result = resolveAgentInvocationConfig({ ...agent, thinking: "minimal" }, {})
 		expect(result.thinking).toBe("minimal")
 	})
 

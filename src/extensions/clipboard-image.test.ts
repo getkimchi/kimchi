@@ -77,10 +77,13 @@ function callInputHandler(pi: ExtensionAPI & { _handlers: Handlers }, event: { t
 }
 
 describe("clipboard-image extension", () => {
+	const realPlatform = process.platform
+
 	beforeEach(() => {
 		// Reset module-level state (clipboardHasImage) before each test.
 		// session_shutdown no longer clears it, so we drive a session_start with an
 		// empty-clipboard mock which causes checkClipboard to set clipboardHasImage=false.
+		Object.defineProperty(process, "platform", { value: "darwin" })
 		mockGetAvailableModels.mockReturnValue([{ slug: "glm-4", input_modalities: ["text", "image"] }])
 		mockGetNativeClipboard.mockReturnValue({
 			clipboard: { hasImage: () => false, availableFormats: () => [] },
@@ -95,6 +98,7 @@ describe("clipboard-image extension", () => {
 	})
 
 	afterEach(() => {
+		Object.defineProperty(process, "platform", { value: realPlatform })
 		vi.useRealTimers()
 	})
 
@@ -212,16 +216,33 @@ describe("clipboard-image extension", () => {
 	})
 
 	describe("proactive clipboard polling", () => {
-		const realPlatform = process.platform
-
 		beforeEach(() => {
 			vi.clearAllMocks()
 			mockGetAvailableModels.mockReturnValue([{ slug: "glm-4", input_modalities: ["text", "image"] }])
-			Object.defineProperty(process, "platform", { value: "darwin" })
 		})
 
 		afterEach(() => {
-			Object.defineProperty(process, "platform", { value: realPlatform })
+			vi.unstubAllEnvs()
+		})
+
+		it("does not poll the clipboard on Linux", () => {
+			Object.defineProperty(process, "platform", { value: "linux" })
+			vi.stubEnv("WAYLAND_DISPLAY", "")
+			vi.stubEnv("DISPLAY", ":0")
+			const hasImage = vi.fn(() => false)
+			const availableFormats = vi.fn(() => [])
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage, availableFormats },
+				error: null,
+			})
+
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+			vi.advanceTimersByTime(2000)
+
+			expect(availableFormats).not.toHaveBeenCalled()
+			expect(hasImage).not.toHaveBeenCalled()
 		})
 
 		it("shows hint when clipboard contains an image", () => {

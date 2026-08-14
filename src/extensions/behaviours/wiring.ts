@@ -14,6 +14,7 @@ import { deferExtensionAction } from "../deferred-action.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { TriggerEngine } from "./engine.js"
 import { EvalEngine } from "./eval-engine.js"
+import { registerRulesBlock } from "./rules-block.js"
 import { type ResolverIO, resolveSessionContext } from "./session-context.js"
 import {
 	BEHAVIOUR_EVAL_TYPE,
@@ -27,7 +28,6 @@ import {
 import type { ProbeSpec } from "./triggers.js"
 import type { Behaviour, TriggeredBehaviour } from "./types.js"
 
-const RULES_HEADER = "## Rules"
 export const BEHAVIOUR_BODY_TYPE = "behaviour"
 
 interface BehaviourBodyDetails {
@@ -37,12 +37,6 @@ interface BehaviourBodyDetails {
 export interface WireOptions {
 	/** Inject a stub IO for tests; falls back to the live filesystem/git probes. */
 	resolverIO?: ResolverIO
-}
-
-function buildRulesBlock(all: readonly Behaviour[]): string {
-	const baseline = all.filter((b) => b.kind === "baseline").map((b) => b.body.trim())
-	if (baseline.length === 0) return ""
-	return `${RULES_HEADER}\n\n${baseline.join("\n\n")}`
 }
 
 function collectSessionSpecs(triggered: readonly TriggeredBehaviour[]): ProbeSpec[] {
@@ -59,7 +53,6 @@ function isTriggered(b: Behaviour): b is TriggeredBehaviour {
 }
 
 export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[], options: WireOptions = {}): void {
-	const rulesBlock = buildRulesBlock(behaviours)
 	const triggered = behaviours.filter(isTriggered)
 	const sessionSpecs = collectSessionSpecs(triggered)
 	const engine = new TriggerEngine(behaviours)
@@ -172,21 +165,17 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 		pi.appendEntry<BehaviourSessionSummaryData>(BEHAVIOUR_SESSION_SUMMARY_TYPE, { behaviours: entries })
 	})
 
-	// Register system-prompt blocks for baseline rules and each loaded
-	// triggered behaviour. Block render returns the body iff the engine has
-	// the behaviour loaded; otherwise undefined makes the block skip silently.
-	// This is what makes triggered bodies appear in the developer role
-	// (system prompt) instead of as user-role messages — the model treats them
-	// as standing guidance rather than fresh input to acknowledge. Persistence
-	// across turns is automatic: the loaded set survives reset only on a new
-	// session_start, and the same set survives compaction by definition.
+	// Register system-prompt blocks for baseline rules (constant) and each
+	// loaded triggered behaviour (dynamic). Dynamic block render returns the
+	// body iff the engine has the behaviour loaded; otherwise undefined makes
+	// the block skip silently. This is what makes triggered bodies appear in
+	// the developer role (system prompt) instead of as user-role messages — the
+	// model treats them as standing guidance rather than fresh input to
+	// acknowledge. Persistence across turns is automatic: the loaded set
+	// survives reset only on a new session_start, and the same set survives
+	// compaction by definition.
+	registerRulesBlock(pi, behaviours)
 	const blocks = createSystemPromptBlocks(pi, "behaviours")
-	if (rulesBlock) {
-		blocks.register({
-			id: "rules",
-			render: () => rulesBlock.trim(),
-		})
-	}
 	for (const b of triggered) {
 		blocks.register({
 			id: `triggered:${b.name}`,

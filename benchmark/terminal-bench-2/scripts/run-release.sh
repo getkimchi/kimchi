@@ -6,7 +6,7 @@
 # Usage examples:
 #   ./scripts/run-release.sh -i terminal-bench/fix-git
 #   MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-release.sh -i terminal-bench/fix-git
-#   ./scripts/run-release.sh -i terminal-bench/fix-git -k 3 --agent-kwarg multi-model=true
+#   MODEL=multi-model ./scripts/run-release.sh -i terminal-bench/fix-git -k 3
 set -euo pipefail
 
 DATASET="terminal-bench/terminal-bench-2"

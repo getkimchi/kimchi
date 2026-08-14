@@ -14,18 +14,28 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import {
+	defineTool,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
-	defineTool,
+	type ExtensionUIContext,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
-import { Text } from "@earendil-works/pi-tui"
+import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
+import {
+	type DEFAULT_MODEL_ROLES,
+	getAllowedMultiModelRefs,
+	getModelRoles,
+	normalizeRoleModels,
+} from "../orchestration/model-roles.js"
+import { isRawInputCaptureActive } from "../shared-input.js"
+import { isStaleCtxError } from "../stale-ctx.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
 import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
 import {
@@ -46,7 +56,8 @@ import {
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
-import { type LifetimeUsage, addUsage, getLifetimeTotal, getSessionContextPercent } from "./manager/usage.js"
+import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./manager/usage.js"
+import { NudgeScheduler } from "./nudge-scheduler.js"
 import {
 	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
@@ -73,54 +84,75 @@ import {
 import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invocation-config.js"
 import { type ModelRegistry, resolveModel } from "./resolution/model-resolver.js"
 import { registerResumeSubagentTool } from "./resume-tool.js"
-import { type SubagentsSettings, applyAndEmitLoaded, saveAndEmitChanged } from "./settings.js"
+import { applyAndEmitLoaded, type SubagentsSettings, saveAndEmitChanged } from "./settings.js"
 import {
 	type AgentActivity,
 	type AgentDetails,
 	AgentWidget,
-	SPINNER,
-	type Theme,
-	type UICtx,
 	describeActivity,
 	formatDuration,
 	formatMs,
 	formatTokens,
 	formatTurns,
 	getDisplayName,
+	SPINNER,
+	type Theme,
+	type UICtx,
 } from "./ui/agent-widget.js"
 
 // ---- Shared helpers ----
+
+/**
+ * Maps an agent persona type to its model-roles key.
+ * Returns null for types that don't have a configured role.
+ */
+export function agentTypeToRoleKey(subagentType: string): keyof typeof DEFAULT_MODEL_ROLES | null {
+	const map: Record<string, keyof typeof DEFAULT_MODEL_ROLES> = {
+		Builder: "builder",
+		Reviewer: "reviewer",
+		Explore: "explorer",
+		Plan: "planner",
+		Researcher: "researcher",
+		Fixer: "builder", // Fixer uses the builder model pool
+		"General-Purpose": "builder", // GP defaults to builder model pool
+	}
+	return map[subagentType] ?? null
+}
+
+/**
+ * When multi-model is enabled and the caller did not specify a model,
+ * resolve the default model ref string from the role config based on
+ * the agent type. Returns the first model ref (e.g. "kimchi-dev/minimax-m3")
+ * or undefined if no role mapping exists.
+ */
+export function resolveRoleModelRef(subagentType: string): string | undefined {
+	const roleKey = agentTypeToRoleKey(subagentType)
+	if (!roleKey) return undefined
+	const roles = getModelRoles()
+	const assignment = roles[roleKey]
+	if (!assignment) return undefined
+	const modelRefs = normalizeRoleModels(assignment)
+	return modelRefs[0]
+}
 
 // Give aborted sub-agents a bounded chance to reach runner finally blocks.
 // If they do not settle, manager.dispose() still runs hard-fallback cleanup.
 const SUBAGENT_SHUTDOWN_WAIT_MS = 5_000
 
 export const AGENT_TOOL_GUIDELINES = `Guidelines:
+- Follow the **Orchestration** section for workflow, delegation, model selection, budgets, Explore-agent prompt shaping, and artifact handoff.
 - If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
 - For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
-- Keep each Agent call focused on a single outcome. Agents succeed when given 1–2 files or one mechanical change; they time out when asked to perform multi-file patch-and-verify workflows in one call. Split large tasks into smaller, independent Agent calls.
-- Use Explore for bounded fact-finding that answers one decision-relevant question for the parent orchestrator. Before delegating requested files, directories, or symbols to Explore, do cheap parent-side discovery/existence checks with available read-only tools so the prompt starts from real anchors.
-- Scope every Explore prompt with exact starting files and/or directories, prioritized symbols/search terms, one question to answer, allowed expansion rules for when it may follow imports/callers/related tests, and a qualitative stop condition tied to that question. Keep the scope bounded by relevance, not by a hard maximum file count.
-- Explore is read-only and should return decision-ready findings to you. Do not ask Explore agents to write reports, create docs, edit files, save findings to disk, or produce polished artifacts. You should consume the returned findings directly and decide the next step.
-- If you cannot provide concrete starting points for Explore, run a cheap parent-side search first or ask a narrower follow-up instead of sending a broad exploration prompt.
-- Good Explore prompt: "Inspect /app/src/program.cbl. Answer only: what are the SELECT/FD entries and PIC-derived record widths? Follow no procedure logic. Stop once record layouts are known. Return decision-ready findings to the parent; do not write files."
-- Bad Explore prompt: "Analyze the COBOL program and write a complete implementation spec."
-- Use Plan for architecture and implementation planning.
-- Use Researcher for web/docs research with cited sources.
-- Use General-Purpose for complex tasks that need file editing.
+- Keep each Agent call focused on a single outcome. Split large tasks into smaller, independent Agent calls.
+- Agent types: Explore (read-only fact-finding), Plan (spec writing), Researcher (cited web/docs research), Builder (implementation), Reviewer (findings report), Fixer (apply review fixes), General-Purpose (fallback when none of the specialized personas fit).
 - Provide clear, detailed prompts so the agent can work autonomously.
 - Agent results are returned as text — summarize them for the user.
-- Use run_in_background for work you don't need immediately. You will be notified when it completes.
-- Use resume with an agent ID to continue a previous agent's work.
-- Use steer_subagent to send mid-run messages to a running background agent.
-- Use thinking to request an extended thinking level when the selected agent profile does not fix one.
-- Use token_budget to cap the agent's cumulative output token usage when the task scope is small or bounded. Only output tokens (tokens generated by the agent) count toward the budget; input tokens do not.
-- Treat token_budget as a hard caller constraint. If an agent aborts because of token_budget, do not retry with a higher budget unless the user explicitly asks.
-- Use max_duration for long-running agents that might hang or run indefinitely (e.g., build tasks with many test iterations, background tasks with unpredictable completion times). Timeouts protect against stalled work without relying on token budgets. Short-lived agents (single queries, simple edits) typically do not need a duration limit.
-- Use inherit_context if the agent needs the parent conversation history.`
+- Use resume_subagent to continue a previous agent's work; get_subagent_result for background status; steer_subagent for mid-run steering.
+- Use thinking to request an extended thinking level on Agent calls per the Orchestration **Thinking levels** table.
+- Use token_budget, max_duration, and inherit_context per the Orchestration section.`
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
-	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Partial model IDs such as "kimi" or "nemotron" are accepted when unambiguous; specify the full versioned model ID when the exact version matters.'
+	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Partial model IDs such as "kimi" or "nemotron" are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only the models configured in the multi-model roles may be used.'
 
 function textResult<T = AgentDetails>(msg: string, details?: T) {
 	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }
@@ -295,21 +327,6 @@ function getAbortLabel(reason?: AgentAbortReason): string {
 	}
 }
 
-function getAbortNote(reason?: AgentAbortReason): string {
-	switch (reason) {
-		case "max_turns":
-			return " (aborted - max turns exceeded, output may be incomplete)"
-		case "token_budget":
-			return " (aborted - token budget exceeded, output may be incomplete)"
-		case "inactivity":
-			return " (aborted - agent became unresponsive, output may be incomplete)"
-		case "max_duration":
-			return " (aborted - wall-clock duration limit exceeded, output may be incomplete)"
-		default:
-			return " (aborted, output may be incomplete)"
-	}
-}
-
 function getStatusLabel(status: string, error?: string, abortReason?: AgentAbortReason): string {
 	switch (status) {
 		case "error":
@@ -340,7 +357,7 @@ function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
 	return ""
 }
 
-function getStatusInstruction(status: string, abortReason?: AgentAbortReason): string {
+function getStatusInstruction(status: string, multiModelEnabled: boolean, abortReason?: AgentAbortReason): string {
 	if (status === "aborted" && abortReason === "token_budget") {
 		return "\nThe agent ran out of its token budget. Inspect the worker report before acting. Use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do not blindly retry the same prompt."
 	}
@@ -348,10 +365,16 @@ function getStatusInstruction(status: string, abortReason?: AgentAbortReason): s
 		return "\nThe agent stopped producing output and was terminated. Inspect the worker report before acting; this may indicate a stall. Resume only with a steering prompt that continues the same thread while avoiding the stalled operation, or spawn a narrower replacement Agent if remaining_steps have a clean task boundary."
 	}
 	if (status === "aborted" && abortReason === "max_duration") {
-		return "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
+		const relaxed = !multiModelEnabled
+		return relaxed
+			? "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary."
+			: "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
 	}
 	if (status === "aborted" && abortReason === "max_turns") {
-		return "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
+		const relaxed = !multiModelEnabled
+		return relaxed
+			? "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked."
+			: "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
 	}
 	return ""
 }
@@ -374,11 +397,17 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 			: record.result
 		: "No output."
 
+	const note =
+		record.status === "stopped"
+			? "The user stopped this agent manually (Ctrl+X). Do not retry or reason about the stop — continue with other work or return control to the user."
+			: null
+
 	return [
 		"<task-notification>",
 		`<task-id>${record.id}</task-id>`,
 		record.toolCallId ? `<tool-use-id>${escapeXml(record.toolCallId)}</tool-use-id>` : null,
 		record.outputFile ? `<output-file>${escapeXml(record.outputFile)}</output-file>` : null,
+		note ? `<note>${escapeXml(note)}</note>` : null,
 		`<status>${escapeXml(status)}</status>`,
 		`<summary>Agent "${escapeXml(record.description)}" ${record.status}</summary>`,
 		`<result>${escapeXml(resultPreview)}</result>`,
@@ -446,6 +475,13 @@ function buildNotificationDetails(
 }
 
 let activeManager: AgentManager | undefined
+
+/** Test seam: inject a fake manager so spawnGraderAgent can be unit-tested
+ *  without booting the agents extension. */
+export function setActiveManagerForTest(manager: AgentManager | undefined): void {
+	activeManager = manager
+}
+let activeWidget: { ensureTimer: () => void; update: () => void; markFinished: (id: string) => void } | undefined
 let budgetRetryBlock: BudgetRetryBlock | undefined
 const budgetRetryCandidates = new Map<string, BudgetRetryCandidate>()
 
@@ -477,6 +513,113 @@ export function getAgentRecordForTaskValidation(id: string): Readonly<AgentRecor
 	const record = activeManager?.getRecord(id)
 	if (!record || record.visibility === "system") return undefined
 	return { ...record, latestOutcome: record.latestOutcome ?? buildAgentOutcome(record) }
+}
+
+/**
+ * Run an async function while showing a transient entry in the agent overlay.
+ * The description appears in the agents widget ("N running" footer + overlay)
+ * for the duration of the call — the same visual feedback as a real subagent.
+ *
+ * Falls back to calling fn() directly when no agent system is active
+ * (e.g. unit tests, non-TUI contexts).
+ */
+export async function runWithOverlay<T>(description: string, fn: () => Promise<T>): Promise<T> {
+	if (!activeManager) return fn()
+	const id = activeManager.registerTransient(description)
+	activeWidget?.ensureTimer()
+	activeWidget?.update()
+	try {
+		return await fn()
+	} finally {
+		activeManager.completeTransient(id)
+		activeWidget?.markFinished(id)
+		activeWidget?.update()
+	}
+}
+
+/** Resolve the model the Grader subagent should grade with: the configured
+ *  `modelRoles.judge` ref resolved against the session registry — the same
+ *  resolution the ferment judge uses for single-shot grades and for its
+ *  `gradedBy` provenance label. Only applies in multi-model mode: in
+ *  single-model mode the judge IS the current session model, so this returns
+ *  undefined and the agent runner falls back to ctx.model. Also undefined
+ *  when the role does not resolve in the registry, which matches the judge's
+ *  own session-model fallback. */
+function resolveGraderModel(ctx: ExtensionContext): typeof ctx.model | undefined {
+	if (!getMultiModelEnabled(ctx.sessionManager)) return undefined
+	const judgeAssignment = getModelRoles().judge
+	const judgeModelStr = Array.isArray(judgeAssignment) ? judgeAssignment[0] : judgeAssignment
+	if (!judgeModelStr) return undefined
+	const resolved = resolveModel(judgeModelStr, ctx.modelRegistry as ModelRegistry)
+	// resolveModel returns `unknown | string` (string is an error message) —
+	// same casting pattern as the Agent-tool model resolution below.
+	if (typeof resolved === "string") return undefined
+	return resolved as typeof ctx.model
+}
+
+/** Spawn a Grader subagent (read-only + bash, bounded turns) and wait for its
+ *  result. Returns the agent's final text response and status. Used by the
+ *  ferment grader to independently verify agent claims with tool access.
+ *
+ *  Returns undefined when the agent system is not active (e.g. unit tests,
+ *  non-TUI contexts) so callers can fall back to a single-shot LLM call. */
+export async function spawnGraderAgent(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	prompt: string,
+): Promise<{ text: string; status: string } | undefined> {
+	if (!activeManager) return undefined
+	const AGENT_GRADER_TYPE = "Grader"
+
+	// Prepare a persisted session file so the grader's transcript is saved
+	// alongside the parent session for post-mortem analysis.
+	let sessionFile: string | undefined
+	let sessionDir: string | undefined
+	try {
+		const parentSessionDir = ctx.sessionManager.getSessionDir()
+		const parentSessionFile = ctx.sessionManager.getSessionFile()
+		if (parentSessionDir && parentSessionFile) {
+			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, ctx.cwd)
+			sessionFile = prepared?.sessionFile
+			sessionDir = parentSessionDir
+		}
+	} catch {
+		// Session file creation is best-effort — the grader can still run
+		// without a persisted session, it just won't have a transcript file.
+	}
+
+	// Allow the grader to be cancelled when the parent session shuts down.
+	const abortController = new AbortController()
+
+	// Resolve and pass the judge-role model so this grader runs on the same
+	// model the ferment judge labels its grades with (describeJudgeModel).
+	// Without it the runner silently falls back to the parent session model,
+	// making persisted `gradedBy` provenance wrong whenever the roles differ.
+	const graderModel = resolveGraderModel(ctx)
+
+	const record = await activeManager.spawnAndWait(pi, ctx, AGENT_GRADER_TYPE, prompt, {
+		description: "Ferment grader",
+		visibility: "system",
+		sessionFile,
+		sessionDir,
+		signal: abortController.signal,
+		...(graderModel ? { model: graderModel } : {}),
+	})
+	// Collect all assistant text from the session — the grade JSON may appear
+	// in an earlier turn, not just the final response.
+	let fullText = record.result ?? ""
+	if (record.session) {
+		// Collect all assistant text — the grade JSON may appear in an earlier
+		// turn, not just the final response.
+		const assistantText = (record.session?.messages ?? [])
+			.filter((msg) => msg.role === "assistant")
+			.flatMap((msg) => msg.content)
+			.filter((part): part is { type: "text"; text: string } => part.type === "text")
+			.map((part) => part.text)
+			.join("\n\n")
+		fullText = assistantText || fullText
+	}
+	return { text: fullText, status: record.status }
 }
 
 function readAgentTaskRef(params: Record<string, unknown>): AgentTaskRef | undefined {
@@ -562,26 +705,15 @@ export default function (pi: ExtensionAPI) {
 	const agentActivity = new Map<string, AgentActivity>()
 
 	// ---- Cancellable pending notifications ----
-	const pendingNudges = new Map<string, ReturnType<typeof setTimeout>>()
 	const NUDGE_HOLD_MS = 200
+	const nudgeScheduler = new NudgeScheduler(NUDGE_HOLD_MS)
 
 	function scheduleNudge(key: string, send: () => void, delay = NUDGE_HOLD_MS) {
-		cancelNudge(key)
-		pendingNudges.set(
-			key,
-			setTimeout(() => {
-				pendingNudges.delete(key)
-				send()
-			}, delay),
-		)
+		nudgeScheduler.schedule(key, send, delay)
 	}
 
 	function cancelNudge(key: string) {
-		const timer = pendingNudges.get(key)
-		if (timer != null) {
-			clearTimeout(timer)
-			pendingNudges.delete(key)
-		}
+		nudgeScheduler.cancel(key)
 	}
 
 	function emitIndividualNudge(record: AgentRecord) {
@@ -589,17 +721,22 @@ export default function (pi: ExtensionAPI) {
 		if (record.resultConsumed) return
 
 		const notification = formatTaskNotification(record, 500)
-		const footer = record.outputFile ? `\nFull transcript available at: ${record.outputFile}` : ""
+		const transcriptNote = record.outputFile ? `\nFull transcript available at: ${record.outputFile}` : ""
 
-		pi.sendMessage<NotificationDetails>(
-			{
-				customType: "subagent-notification",
-				content: notification + footer,
-				display: true,
-				details: buildNotificationDetails(record, 500, agentActivity.get(record.id)),
-			},
-			{ deliverAs: "followUp", triggerTurn: true },
-		)
+		try {
+			pi.sendMessage<NotificationDetails>(
+				{
+					customType: "subagent-notification",
+					content: notification + transcriptNote,
+					display: true,
+					details: buildNotificationDetails(record, 500, agentActivity.get(record.id)),
+				},
+				{ deliverAs: "followUp", triggerTurn: true },
+			)
+		} catch (err) {
+			if (isStaleCtxError(err)) return
+			throw err
+		}
 	}
 
 	function sendIndividualNudge(record: AgentRecord) {
@@ -635,15 +772,20 @@ export default function (pi: ExtensionAPI) {
 				details.others = rest.map((r) => buildNotificationDetails(r, 300, agentActivity.get(r.id)))
 			}
 
-			pi.sendMessage<NotificationDetails>(
-				{
-					customType: "subagent-notification",
-					content: `Background agent group completed: ${label}\n\n${notifications}\n\nUse get_subagent_result for full output.`,
-					display: true,
-					details,
-				},
-				{ deliverAs: "followUp", triggerTurn: true },
-			)
+			try {
+				pi.sendMessage<NotificationDetails>(
+					{
+						customType: "subagent-notification",
+						content: `Background agent group completed: ${label}\n\n${notifications}\n\nUse get_subagent_result for full output.`,
+						display: true,
+						details,
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				)
+			} catch (err) {
+				if (isStaleCtxError(err)) return
+				throw err
+			}
 		})
 		widget.update()
 	}, 30_000)
@@ -666,6 +808,27 @@ export default function (pi: ExtensionAPI) {
 			durationMs,
 			tokens,
 		}
+	}
+
+	function appendSubagentRecord(record: AgentRecord): void {
+		pi.appendEntry("subagents:record", {
+			id: record.id,
+			type: record.type,
+			description: record.description,
+			visibility: record.visibility,
+			status: record.status,
+			abortReason: record.abortReason,
+			result: record.result,
+			error: record.error,
+			startedAt: record.startedAt,
+			completedAt: record.completedAt,
+			// Persist file paths so export post-processing can read the
+			// full transcript and attach it to the export. Stripped from
+			// the export output after reading.
+			outputFile: record.outputFile,
+			sessionFile: record.sessionFile,
+			systemPrompt: record.systemPrompt,
+		})
 	}
 
 	let currentBatchAgents: { id: string; joinMode: JoinMode }[] = []
@@ -714,18 +877,7 @@ export default function (pi: ExtensionAPI) {
 				pi.events.emit("subagents:completed", eventData)
 			}
 
-			pi.appendEntry("subagents:record", {
-				id: record.id,
-				type: record.type,
-				description: record.description,
-				visibility: record.visibility,
-				status: record.status,
-				abortReason: record.abortReason,
-				result: record.result,
-				error: record.error,
-				startedAt: record.startedAt,
-				completedAt: record.completedAt,
-			})
+			appendSubagentRecord(record)
 
 			if (record.resultConsumed) {
 				agentActivity.delete(record.id)
@@ -755,14 +907,14 @@ export default function (pi: ExtensionAPI) {
 			widget.update()
 		},
 		undefined,
-		(record) => {
+		(record, ctx) => {
 			pi.events.emit("subagents:started", {
 				id: record.id,
 				type: record.type,
 				description: record.description,
 				visibility: record.visibility,
 			})
-			void trackSubagentSpawned(record)
+			void trackSubagentSpawned(record, ctx)
 		},
 		(record, info) => {
 			pi.events.emit("subagents:compacted", {
@@ -792,14 +944,27 @@ export default function (pi: ExtensionAPI) {
 
 	pi.events.emit("subagents:ready", {})
 
+	let unsubCtrlB: (() => void) | undefined
+	let unsubKill: (() => void) | undefined
+	let currentUi: ExtensionUIContext | undefined
+
 	const widget = new AgentWidget(manager, agentActivity)
+	activeWidget = widget
 	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
 	pi.on("session_shutdown", async () => {
+		unsubCtrlB?.()
+		unsubCtrlB = undefined
+		unsubKill?.()
+		unsubKill = undefined
+		currentUi = undefined
 		manager.abortAll()
 		budgetRetryCandidates.clear()
-		for (const timer of pendingNudges.values()) clearTimeout(timer)
-		pendingNudges.clear()
+		if (batchFinalizeTimer) {
+			clearTimeout(batchFinalizeTimer)
+			batchFinalizeTimer = undefined
+		}
+		nudgeScheduler.beginShutdown()
 		await waitForSubagentShutdown(manager)
 		widget.dispose()
 		manager.dispose()
@@ -816,6 +981,47 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_execution_start", async (_event, ctx) => {
 		widget.setUICtx(ctx.ui as UICtx)
 		widget.onTurnStart()
+
+		if (ctx.hasUI) {
+			const newUi = ctx.ui as ExtensionUIContext
+			// Re-subscribe if the UI context changed (e.g. after a session switch).
+			// The terminal-input handler must use the live UI reference, not a
+			// stale closure captured from the first invocation.
+			if (newUi !== currentUi) {
+				unsubCtrlB?.()
+				unsubKill?.()
+				currentUi = newUi
+				unsubCtrlB = newUi.onTerminalInput((data) => {
+					if (isRawInputCaptureActive()) return undefined
+					if (!matchesKey(data, Key.ctrl("b")) || isKeyRelease(data)) return undefined
+
+					const foreground = manager.listAgents().filter((a) => a.status === "running" && !a.isBackground)
+					if (foreground.length === 0) return undefined
+
+					let detached = 0
+					for (const a of foreground) {
+						if (manager.detachToBackground(a.id)) detached++
+					}
+					if (detached === 0) return undefined
+					currentUi?.notify(`${detached} agent${detached > 1 ? "s" : ""} sent to background`, "info")
+					return { consume: true }
+				})
+
+				// Ctrl+X: kill the most recently spawned running background agent.
+				unsubKill = newUi.onTerminalInput((data) => {
+					if (isRawInputCaptureActive()) return undefined
+					if (!matchesKey(data, Key.ctrl("x")) || isKeyRelease(data)) return undefined
+
+					const bgRunning = manager.listAgents().filter((a) => a.status === "running" && a.isBackground)
+					if (bgRunning.length === 0) return undefined
+
+					const target = bgRunning[0]
+					manager.abort(target.id)
+					currentUi?.notify(`Stopped ${getDisplayName(target.type)} agent`, "info")
+					return { consume: true }
+				})
+			}
+		}
 	})
 
 	const buildTypeListText = () => {
@@ -899,7 +1105,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				thinking: Type.Optional(
 					Type.String({
 						description:
-							"Requested thinking level: off, minimal, low, medium, high, xhigh. Agent profiles with fixed thinking keep their profile value.",
+							"Requested thinking level: off, minimal, low, medium, high, xhigh, max. Orchestrator-provided values override agent profile defaults. Omit only when Orchestration does not require an explicit level.",
 					}),
 				),
 				max_turns: Type.Optional(
@@ -951,11 +1157,12 @@ ${AGENT_TOOL_GUIDELINES}`,
 				),
 			}),
 
-			renderCall(args, theme) {
+			renderCall(args, theme, context) {
 				// Defense-in-depth: `visibility` is not in this tool's public schema (see execute()),
 				// but if an LLM hallucinates the arg we'd rather hide the tool call than render it.
 				if ((args as Record<string, unknown>).visibility === "system") return new Text("", 0, 0)
-				const displayName = args.subagent_type ? getDisplayName(args.subagent_type as string) : "Agent"
+				if (!context.argsComplete && !args.subagent_type) return new Text("", 0, 0)
+				const displayName = getDisplayName(args.subagent_type || AGENT_GENERAL_PURPOSE)
 				const desc = (args.description as string) ?? ""
 				return new Text(
 					`▸ ${theme.fg("toolTitle", theme.bold(displayName))}${desc ? `  ${theme.fg("muted", desc)}` : ""}`,
@@ -993,12 +1200,12 @@ ${AGENT_TOOL_GUIDELINES}`,
 					const frame = SPINNER[details.spinnerFrame ?? 0]
 					const s = stats(details)
 					let line = theme.fg("accent", frame) + (s ? ` ${s}` : "")
-					line += `\n${theme.fg("dim", `  ⎿  ${details.activity ?? "thinking..."}`)}`
+					line += `\n${theme.fg("dim", `  ⎿  ${details.activity ?? "thinking..."}`)}  ${theme.fg("muted", "(ctrl+b to run in background)")}`
 					return new Text(line, 0, 0)
 				}
 
 				if (details.status === "background") {
-					return new Text(theme.fg("dim", `  ⎿  Running in background (ID: ${details.agentId})`), 0, 0)
+					return new Text(theme.fg("dim", `  ⎿  Background agent running (ID: ${details.agentId})`), 0, 0)
 				}
 
 				if (details.status === "completed" || details.status === "steered") {
@@ -1072,6 +1279,39 @@ ${AGENT_TOOL_GUIDELINES}`,
 						if (resolvedConfig.modelFromParams) return textResult(resolvedModel)
 					} else {
 						model = resolvedModel as typeof ctx.model
+					}
+				}
+
+				// When multi-model is enabled and the caller did NOT specify a model,
+				// resolve the default model from the role config based on the agent
+				// type. This ensures Builder calls use the configured builder model,
+				// not the orchestrator's own model.
+				if (getMultiModelEnabled(ctx.sessionManager) && !resolvedConfig.modelFromParams) {
+					const roleModelRef = resolveRoleModelRef(subagentType)
+					if (roleModelRef) {
+						const resolved = resolveModel(roleModelRef, ctx.modelRegistry as ModelRegistry)
+						if (typeof resolved !== "string") {
+							// resolveModel returns `unknown | string` — the cast is required because
+							// ModelRegistry.find() returns unknown. Same pattern as line 1243.
+							model = resolved as typeof ctx.model
+						}
+					}
+				}
+
+				// Multi-model guard: when multi-model mode is active and the caller supplied
+				// an explicit model, the resolved model must belong to the configured
+				// multi-model role pool. This runs before budget-retry and task_ref checks
+				// so invalid models are rejected immediately.
+				if (getMultiModelEnabled(ctx.sessionManager) && resolvedConfig.modelFromParams) {
+					const fullRef = `${(model as { provider?: string }).provider}/${(model as { id?: string }).id}`
+					const allowed = new Set(getAllowedMultiModelRefs())
+					if (!allowed.has(fullRef)) {
+						const allowedList = Array.from(allowed)
+							.map((ref) => `  - ${ref}`)
+							.join("\n")
+						return textResult(
+							`Model "${fullRef}" is not allowed in multi-model mode.\n\nAllowed models:\n${allowedList}\n\nOmit the model parameter to use the current session model, or specify one of the allowed models.`,
+						)
 					}
 				}
 
@@ -1249,8 +1489,10 @@ ${AGENT_TOOL_GUIDELINES}`,
 				let spinnerFrame = 0
 				const startedAt = Date.now()
 				let fgId: string | undefined
+				let fgDetached = false
 
 				const streamUpdate = () => {
+					if (fgDetached) return
 					const details: AgentDetails = {
 						...detailBase,
 						toolUses: fgState.toolUses,
@@ -1278,6 +1520,15 @@ ${AGENT_TOOL_GUIDELINES}`,
 							fgId = a.id
 							agentActivity.set(a.id, fgState)
 							widget.ensureTimer()
+							const rec = manager.getRecord(a.id)
+							if (rec?.outputFile) {
+								rec.outputCleanup = streamToOutputFile(
+									session as Parameters<typeof streamToOutputFile>[0],
+									rec.outputFile,
+									a.id,
+									ctx.cwd,
+								)
+							}
 							break
 						}
 					}
@@ -1290,8 +1541,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 				streamUpdate()
 
-				let record: AgentRecord
 				let childSessionFile: string | undefined
+				let fgOutputFile: string | undefined
 				const parentSessionDir = ctx.sessionManager.getSessionDir()
 				try {
 					childSessionFile = prepareAgentSessionFile(
@@ -1299,16 +1550,29 @@ ${AGENT_TOOL_GUIDELINES}`,
 						ctx.sessionManager.getSessionFile(),
 						ctx.cwd,
 					)?.sessionFile
+					fgOutputFile = createOutputFilePath(
+						ctx.cwd,
+						"placeholder",
+						ctx.sessionManager.getSessionId(),
+						parentSessionDir,
+					)
 				} catch (err) {
 					clearInterval(spinnerInterval)
 					const detail = err instanceof Error ? err.message : String(err)
 					return textResult(`Failed to pre-write Agent session file under ${parentSessionDir}: ${detail}`)
 				}
+
+				let detachResolve: (() => void) | undefined
+				const detachPromise = new Promise<"detached">((resolve) => {
+					detachResolve = () => resolve("detached")
+				})
+
+				let spawnedId: string
 				try {
-					record = await manager.spawnAndWait(pi, ctx, subagentType, effectivePrompt, {
+					spawnedId = manager.spawn(pi, ctx, subagentType, effectivePrompt, {
 						description: params.description as string,
 						visibility,
-						model: model as Parameters<typeof manager.spawnAndWait>[4]["model"],
+						model: model as Parameters<typeof manager.spawn>[4]["model"],
 						maxTurns: effectiveMaxTurns,
 						tokenBudget: resolvedConfig.tokenBudget,
 						taskRef,
@@ -1316,6 +1580,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 						isolated,
 						inheritContext,
 						thinkingLevel: thinking,
+						isBackground: false,
 						sessionFile: childSessionFile,
 						sessionDir: parentSessionDir,
 						signal,
@@ -1326,6 +1591,86 @@ ${AGENT_TOOL_GUIDELINES}`,
 					return textResult(err instanceof Error ? err.message : String(err))
 				}
 
+				// biome-ignore lint/style/noNonNullAssertion: spawn() just inserted this id into the agents map
+				const record = manager.getRecord(spawnedId)!
+				fgId = spawnedId
+				record.detachResolver = detachResolve
+				if (fgOutputFile) {
+					record.outputFile = fgOutputFile.replace("placeholder", spawnedId)
+					record.toolCallId = toolCallId
+					writeInitialEntry(record.outputFile, spawnedId, params.prompt as string, ctx.cwd)
+				}
+
+				// biome-ignore lint/style/noNonNullAssertion: promise is always set after spawn() calls startAgent()
+				const raceResult = await Promise.race([record.promise!.then(() => "completed" as const), detachPromise])
+
+				if (raceResult === "detached") {
+					fgDetached = true
+					clearInterval(spinnerInterval)
+
+					const outputFile = createOutputFilePath(
+						ctx.cwd,
+						spawnedId,
+						ctx.sessionManager.getSessionId(),
+						parentSessionDir,
+					)
+					record.outputFile = outputFile
+					writeInitialEntry(outputFile, spawnedId, params.prompt as string, ctx.cwd)
+					if (record.session) {
+						// Tear down the foreground streaming subscription before
+						// re-subscribing against the same session for background output.
+						record.outputCleanup?.()
+						record.outputCleanup = streamToOutputFile(
+							record.session as Parameters<typeof streamToOutputFile>[0],
+							outputFile,
+							spawnedId,
+							ctx.cwd,
+						)
+					}
+
+					const joinMode = resolveJoinMode(getDefaultJoinMode(), true)
+					if (record && joinMode) {
+						record.joinMode = joinMode
+					}
+					if (explicitTokenBudget != null) {
+						budgetRetryCandidates.set(spawnedId, {
+							budget: explicitTokenBudget,
+							subagentType,
+							description: params.description as string,
+							prompt: params.prompt as string,
+						})
+					}
+					if (joinMode != null && joinMode !== "async") {
+						currentBatchAgents.push({ id: spawnedId, joinMode })
+						if (batchFinalizeTimer) clearTimeout(batchFinalizeTimer)
+						batchFinalizeTimer = setTimeout(finalizeBatch, 100)
+					}
+
+					widget.ensureTimer()
+					widget.update()
+
+					pi.events.emit("subagents:backgrounded", {
+						id: spawnedId,
+						type: subagentType,
+						description: params.description,
+						visibility,
+					})
+
+					return textResult(
+						`Agent sent to background by the user (Ctrl+B).\nAgent ID: ${spawnedId}\nType: ${displayName}\nDescription: ${params.description}\n${outputFile ? `Output file: ${outputFile}\n` : ""}\nThe agent continues running in the background. You will be notified when it completes.\nDo NOT call get_subagent_result now — that would block and defeat the purpose of backgrounding. Continue with other independent work, or stop your turn and return control to the user. The completion notification will contain the results.`,
+						{
+							...detailBase,
+							toolUses: fgState.toolUses,
+							tokens: formatLifetimeTokens(fgState),
+							durationMs: Date.now() - startedAt,
+							status: "background" as const,
+							agentId: spawnedId,
+						},
+					)
+				}
+
+				// Normal completion path
+				record.detachResolver = undefined
 				clearInterval(spinnerInterval)
 
 				if (fgId) {
@@ -1361,8 +1706,21 @@ ${AGENT_TOOL_GUIDELINES}`,
 				if (tokenText) statsParts.push(tokenText)
 				const outcome = record.status === "aborted" ? "aborted" : record.status === "stopped" ? "stopped" : "completed"
 				record.latestOutcome ??= buildAgentOutcome(record)
+				// Persist a subagents:record entry for foreground agents so exports
+				// can enrich them with full transcripts the same way background
+				// agents are handled.
+				appendSubagentRecord(record)
+
+				const timeTaken = formatMs(durationMs)
+				const note = getStatusNote(record.status, record.abortReason)
+				const instruction = getStatusInstruction(
+					record.status,
+					getMultiModelEnabled(ctx.sessionManager),
+					record.abortReason,
+				)
+				const outcomeBlock = formatAgentOutcomeBlock(record.latestOutcome)
 				return textResult(
-					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, record.abortReason)}\n\n${record.result?.trim() || "No output."}${formatAgentOutcomeBlock(record.latestOutcome)}`,
+					`${fallbackNote}Agent ${outcome} in ${timeTaken} (${statsParts.join(", ")})${note}.${instruction}\n\n${record.result?.trim() || "No output."}${outcomeBlock}`,
 					details,
 				)
 			},
@@ -1731,7 +2089,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 		const options = agents.map((a) => {
 			const dn = getDisplayName(a.type)
 			const dur = formatDuration(a.startedAt, a.completedAt)
-			return `${dn} (${a.description}) · ${a.toolUses} tools · ${a.status} · ${dur}`
+			const bgLabel = a.isBackground && a.status === "running" ? " [background]" : ""
+			return `${dn} (${a.description}) · ${a.toolUses} tools · ${a.status}${bgLabel} · ${dur}`
 		})
 
 		const choice = await ctx.ui.select("Running agents", options)
@@ -1975,7 +2334,7 @@ The file format is a markdown file with YAML frontmatter and a system prompt bod
 description: <one-line description shown in UI>
 tools: <comma-separated built-in tools: read, bash, edit, write, grep, find, ls. Use "none" for no tools. Omit for all tools>
 models: <optional ordered list of models, e.g. ["kimchi-dev/minimax-m2.7"]. Omit to inherit parent model>
-thinking: <optional thinking level: off, minimal, low, medium, high, xhigh. Omit to inherit>
+thinking: <optional thinking level: off, minimal, low, medium, high, xhigh, max. Omit to inherit>
 max_turns: <optional max agentic turns. 0 or omit for unlimited (default)>
 token_budget: <optional maximum total tokens for this agent. Omit for no profile budget>
 prompt_mode: <"replace" (body IS the full system prompt) or "append" (body is appended to default prompt). Default: replace>
@@ -2064,6 +2423,7 @@ Write the file using the write tool. Only write the file, nothing else.`
 			"medium",
 			"high",
 			"xhigh",
+			"max",
 		])
 		if (!thinkingChoice) return
 

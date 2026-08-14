@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
 	return {
@@ -93,7 +94,6 @@ vi.mock("../../telemetry/index.js", () => ({
 }))
 
 vi.mock("../../../config.js", () => ({
-	loadConfig: vi.fn().mockReturnValue({ retry: { maxRetries: 10 } }),
 	readTelemetryConfig: vi.fn().mockReturnValue({
 		enabled: true,
 		endpoint: "https://test/logs",
@@ -110,14 +110,17 @@ vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", 
 import {
 	type AgentSession,
 	type CreateAgentSessionResult,
-	DefaultResourceLoader,
 	createAgentSession,
+	DefaultResourceLoader,
+	type ExtensionAPI,
+	type InlineExtension,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
@@ -134,9 +137,16 @@ const mockBuildPhaseGuidelinesSection = vi.mocked(buildPhaseGuidelinesSection)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
 const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
+const mockGetCurrentPhase = vi.mocked(getCurrentPhase)
+const mockSetCurrentPhase = vi.mocked(setCurrentPhase)
 
 type SessionEvent = { type: string; [k: string]: unknown }
 type Subscriber = (event: SessionEvent) => void
+
+function runInlineExtension(extension: InlineExtension | undefined, pi: ExtensionAPI): void | Promise<void> {
+	const factory = typeof extension === "function" ? extension : extension?.factory
+	return factory?.(pi)
+}
 
 const DEFAULT_REGISTERED_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 
@@ -249,6 +259,7 @@ function makeFakeCtx() {
 		modelRegistry: {
 			find: vi.fn().mockReturnValue(undefined),
 			getAvailable: vi.fn().mockReturnValue([]),
+			runtime: {},
 		},
 		getSystemPrompt: vi.fn().mockReturnValue(""),
 		sessionManager: {
@@ -317,7 +328,7 @@ describe("runAgent — telemetry extension", () => {
 		vi.clearAllMocks()
 	})
 
-	it("passes telemetryExtension as extensionFactories to DefaultResourceLoader", async () => {
+	it("passes required Kimchi extensions to DefaultResourceLoader", async () => {
 		const session = makeFakeSession({})
 		mockCreateAgentSession.mockResolvedValue({
 			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
@@ -334,9 +345,21 @@ describe("runAgent — telemetry extension", () => {
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
-		expect(ctorArg?.extensionFactories).toHaveLength(2)
+		expect(ctorArg?.extensionFactories).toHaveLength(4)
+		expect(ctorArg?.extensionFactories).toContain(omitKimchiMaxTokensExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+	})
+
+	it("fails before creating a child session when Pi's model runtime is unavailable", async () => {
+		Reflect.deleteProperty(ctx.modelRegistry, "runtime")
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow("Pi model registry runtime is unavailable")
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
 	})
 
 	it("applies Kimchi's default bash timeout to subagent tool calls", async () => {
@@ -355,11 +378,11 @@ describe("runAgent — telemetry extension", () => {
 		const workerFactories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
 		const toolCallHandlers: Array<(event: unknown) => void> = []
 		for (const factory of workerFactories) {
-			factory({
+			runInlineExtension(factory, {
 				on: (event: string, handler: (event: unknown) => void) => {
 					if (event === "tool_call") toolCallHandlers.push(handler)
 				},
-			} as never)
+			} as unknown as ExtensionAPI)
 		}
 
 		const event = { toolName: "bash", input: { command: "sleep 480" } }
@@ -396,8 +419,8 @@ describe("runAgent — telemetry extension", () => {
 
 		const linkedLoaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		const ordinaryLoaderOptions = mockDefaultResourceLoader.mock.calls[1]?.[0]
-		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(3)
-		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(2)
+		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(5)
+		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(4)
 		expect(linkedSession.setActiveToolsByName).toHaveBeenCalledWith(["submit_agent_report"])
 		expect(ordinarySession.setActiveToolsByName).toHaveBeenCalledWith([])
 	})
@@ -413,9 +436,9 @@ describe("runAgent — telemetry extension", () => {
 			abortSpy,
 			emitUsage: false,
 			promptAction: async (emit) => {
-				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[2]
+				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[4]
 				const registerTool = vi.fn()
-				factory?.({ registerTool } as never)
+				runInlineExtension(factory, { registerTool } as unknown as ExtensionAPI)
 				const tool = registerTool.mock.calls[0]?.[0]
 				await tool.execute(
 					"report-1",
@@ -727,6 +750,116 @@ describe("runAgent — tokenBudget forwarding", () => {
 			tokenBudget: 19_999,
 		})
 
+		expect(abortSpy).toHaveBeenCalled()
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("token_budget")
+	})
+})
+
+describe("runAgent — token_budget tool skip (R2)", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(
+			makeTypeConfig({
+				extensions: false,
+				skills: false,
+			}),
+		)
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("runAgent: skips tool calls from over-budget message (not mid-stream abort)", async () => {
+		const abortSpy = vi.fn()
+		const toolActivities: Array<{ type: string; toolName: string }> = []
+		const session = makeFakeSession({
+			abortSpy,
+			promptAction: async (emit) => {
+				emit({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						usage: { input: 1_000, output: 6_000, cacheRead: 0, cacheWrite: 0 },
+					},
+				})
+				emit({ type: "tool_execution_start", toolName: "bash" })
+				emit({ type: "turn_end" })
+			},
+		})
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			tokenBudget: 5_000,
+			onToolActivity: (activity) => {
+				toolActivities.push(activity)
+			},
+		})
+
+		expect(toolActivities).toHaveLength(0)
+		expect(abortSpy).toHaveBeenCalled()
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("token_budget")
+	})
+
+	it("resumeAgent: skips tool calls from over-budget message", async () => {
+		const abortSpy = vi.fn()
+		const toolActivities: Array<{ type: string; toolName: string }> = []
+		const subscribers: Subscriber[] = []
+		const session = {
+			subscribe: vi.fn((cb: Subscriber) => {
+				subscribers.push(cb)
+				return () => {
+					const idx = subscribers.indexOf(cb)
+					if (idx !== -1) subscribers.splice(idx, 1)
+				}
+			}),
+			abort: abortSpy,
+			steer: vi.fn(),
+			messages: [],
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockImplementation(async () => {
+				const emit = (event: SessionEvent) => {
+					for (const subscriber of subscribers) subscriber(event)
+				}
+				emit({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						usage: { input: 1_000, output: 6_000, cacheRead: 0, cacheWrite: 0 },
+					},
+				})
+				emit({ type: "tool_execution_start", toolName: "bash" })
+				emit({ type: "turn_end" })
+			}),
+		}
+
+		const result = await resumeAgent(session as unknown as AgentSession, "finish", {
+			tokenBudget: 5_000,
+			maxTurns: 5,
+			onToolActivity: (activity) => {
+				toolActivities.push(activity)
+			},
+		})
+
+		expect(toolActivities).toHaveLength(0)
 		expect(abortSpy).toHaveBeenCalled()
 		expect(result.aborted).toBe(true)
 		expect(result.abortReason).toBe("token_budget")
@@ -1277,6 +1410,130 @@ describe("runAgent — maxDuration enforcement", () => {
 		expect(result.aborted).toBe(true)
 		expect(result.abortReason).toBe("max_duration")
 	})
+
+	it("calls abortBash when max_duration fires to hard-kill in-flight bash", async () => {
+		const abortSpy = vi.fn()
+		const abortBashSpy = vi.fn()
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+
+		const session = {
+			subscribe: vi.fn((_cb: Subscriber) => () => {}),
+			abort: abortSpy.mockImplementation(() => {
+				resolvePrompt?.()
+			}),
+			abortBash: abortBashSpy,
+			steer: vi.fn(),
+			getActiveToolNames: vi.fn().mockReturnValue([]),
+			setActiveToolsByName: vi.fn(),
+			bindExtensions: vi.fn().mockResolvedValue(undefined),
+			messages: [],
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockImplementation(async () => {
+				await promptPromise
+			}),
+		}
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const resultPromise = runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"do something",
+			{
+				pi: pi as unknown as RunOptions["pi"],
+				maxDuration: 30,
+			},
+		)
+
+		await vi.advanceTimersByTimeAsync(31_000)
+		const result = await resultPromise
+
+		expect(abortSpy).toHaveBeenCalled()
+		expect(abortBashSpy).toHaveBeenCalled()
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("max_duration")
+	})
+
+	it("runAgent promise unblocks when max_duration fires during in-flight bash (simulated hang)", async () => {
+		// Regression for subagent budget bug: a subagent running a blocking bash command
+		// (e.g. `sleep 3600`) would hang forever if max_duration didn't
+		// hard-kill bash. We simulate that by making session.prompt() resolve
+		// ONLY when abortBash() is called — mimicking killProcessTree unblocking
+		// the tool execution. abort() alone does NOT resolve the prompt, so if
+		// abortBash were never called the promise would hang and the test would
+		// time out (proving the bug).
+		const abortSpy = vi.fn()
+		const abortBashSpy = vi.fn()
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+
+		const session = {
+			subscribe: vi.fn((_cb: Subscriber) => () => {}),
+			// abort() calls agent.abort() + waitForIdle() but does NOT kill bash.
+			// In the real bug the promise hangs because bash is still running.
+			// Only abortBash() (hard-kill) should unblock the prompt here.
+			abort: abortSpy.mockImplementation(() => {
+				// Intentionally do NOT resolve the prompt — bash keeps the loop blocked.
+			}),
+			abortBash: abortBashSpy.mockImplementation(() => {
+				resolvePrompt?.()
+			}),
+			steer: vi.fn(),
+			getActiveToolNames: vi.fn().mockReturnValue([]),
+			setActiveToolsByName: vi.fn(),
+			bindExtensions: vi.fn().mockResolvedValue(undefined),
+			messages: [],
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockImplementation(async () => {
+				await promptPromise
+			}),
+		}
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const resultPromise = runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"do something",
+			{
+				pi: pi as unknown as RunOptions["pi"],
+				maxDuration: 30,
+			},
+		)
+
+		// Advance past max_duration — the durationTimer fires hardAbort(session)
+		// which calls abortBash() → resolves prompt → runAgent unblocks.
+		await vi.advanceTimersByTimeAsync(31_000)
+
+		// If the bug were present (abortBash not called), this await would hang
+		// and the test would fail on the vitest test timeout. Because abortBash
+		// resolves the prompt at 31s, the promise resolves here.
+		const result = await resultPromise
+
+		expect(abortSpy).toHaveBeenCalled()
+		expect(abortBashSpy).toHaveBeenCalled()
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("max_duration")
+	})
 })
 
 describe("runAgent — runtime cleanup", () => {
@@ -1530,6 +1787,7 @@ describe("runAgent — includeContextFiles", () => {
 			makeAgentConfig({ name: "Builder", description: "Build agent", roles: ["build"] }),
 		)
 		mockBuildPhaseGuidelinesSection.mockReturnValue("## Model Guidelines\n\nBuilder guideline")
+		mockGetCurrentPhase.mockReturnValue("explore")
 
 		mockCreateAgentSession.mockResolvedValue({
 			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
@@ -1545,6 +1803,9 @@ describe("runAgent — includeContextFiles", () => {
 		expect(mockBuildPhaseGuidelinesSection).toHaveBeenCalledWith(undefined, "build", expect.anything())
 		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
 		expect(extras?.guidelinesBlock).toContain("Builder guideline")
+		expect(mockGetCurrentPhase).toHaveBeenCalledWith("session-1")
+		expect(mockSetCurrentPhase).toHaveBeenCalledWith("session-1", "build")
+		expect(mockSetCurrentPhase).toHaveBeenLastCalledWith("session-1", "explore")
 	})
 
 	it("omits guidelines when agent has no persona role", async () => {
@@ -1727,7 +1988,7 @@ describe("runAgent — parent session ID env ordering", () => {
 
 		// Should be cleaned up (deleted, not just undefined)
 		expect(process.env[PARENT_SESSION_ID_ENV_KEY]).toBeUndefined()
-		expect(Object.prototype.hasOwnProperty.call(process.env, PARENT_SESSION_ID_ENV_KEY)).toBe(false)
+		expect(Object.hasOwn(process.env, PARENT_SESSION_ID_ENV_KEY)).toBe(false)
 	})
 })
 

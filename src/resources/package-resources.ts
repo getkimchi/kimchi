@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { resolve, sep } from "node:path"
-import { DefaultPackageManager, SettingsManager, getAgentDir } from "@earendil-works/pi-coding-agent"
+import { DefaultPackageManager, getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent"
 import {
 	type ConfiguredPackageEntry,
 	getOriginalPiConfiguredPackages,

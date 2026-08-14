@@ -22,7 +22,13 @@ export interface WorkerContextOpts {
 	includeMemories?: boolean
 }
 
-export function buildWorkerContext(ferment: Ferment, phase: Phase, step: Step, opts: WorkerContextOpts = {}): string {
+export function buildWorkerContext(
+	ferment: Ferment,
+	phase: Phase,
+	step: Step,
+	sessionId: string,
+	opts: WorkerContextOpts = {},
+): string {
 	const lines: string[] = []
 	lines.push("## Worker Context")
 	lines.push(`Ferment: ${ferment.name}`)
@@ -72,7 +78,7 @@ export function buildWorkerContext(ferment: Ferment, phase: Phase, step: Step, o
 
 	// Include the orchestrator's step-level implementation plan so the worker
 	// knows what sub-tasks were planned and can track progress against them.
-	const stepTodos = getTodosForScope({ kind: "ferment-step", phaseId: phase.id, stepId: step.id })
+	const stepTodos = getTodosForScope({ kind: "ferment-step", phaseId: phase.id, stepId: step.id }, sessionId)
 	if (stepTodos.length > 0) {
 		const planItems = stepTodos.map((t) => {
 			const glyph = t.status === "completed" ? "\u2713" : t.status === "in_progress" ? "\u25b6" : "\u25cb"

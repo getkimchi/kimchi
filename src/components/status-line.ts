@@ -1,0 +1,684 @@
+import { readFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { join, resolve } from "node:path"
+import type { AssistantMessage } from "@earendil-works/pi-ai"
+import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
+import type { Component } from "@earendil-works/pi-tui"
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
+import { readStatusLineConfig } from "../config/status-line-config.js"
+import { getActiveAgentCount } from "../extensions/agents/index.js"
+import { getBillingStatusLine } from "../extensions/billing/status.js"
+import { formatBudgetStatusLine, formatCreditsStatusLine } from "../extensions/billing/status-line-format.js"
+import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
+import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-line.js"
+import { formatCount } from "../extensions/format.js"
+import { getMultiModelEnabled } from "../extensions/multi-model.js"
+import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
+import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
+
+/** Stable identifier used by compaction steps to find segments. */
+type SegmentId =
+	| "permissions"
+	| "model"
+	| "ferment"
+	| "agents"
+	| "context"
+	| "usage"
+	| "phase"
+	| "tags"
+	| "team"
+	| "credits"
+	| "budget"
+	| "lsp"
+
+/** Raw inputs preserved on segments that have compact forms, so compaction
+ *  steps can rebuild the colorized text without round-tripping through ANSI.
+ *
+ *  `ferment` is the odd one out: instead of storing inputs and rebuilding the
+ *  whole segment, it just stashes the leading colorized `Ferment: ` substring
+ *  so the compaction step can slice it off in place. Cheaper than a rebuild
+ *  and the segment's tail is identical in both forms anyway. */
+type SegmentRaw =
+	| { kind: "context"; percent: number; pctColor?: "error" | "warning" }
+	| { kind: "model"; multiModel: boolean; modelId: string }
+	| { kind: "phase"; phase: string }
+	| { kind: "budget"; percentage: string }
+	| { kind: "ferment"; prefix: string; prefixWidth: number }
+
+/** A single piece of the status line. */
+interface Segment {
+	/** Stable identifier used by compaction steps to find this segment. */
+	id: SegmentId
+	/** Already-colorized text (includes ANSI). */
+	text: string
+	/** Visible width of `text`, precomputed. */
+	width: number
+	/** Original inputs, present only on segments that participate in the
+	 *  UX-ladder compaction steps. Compact-form builders use these. */
+	raw?: SegmentRaw
+}
+
+/** A single compaction action in the UX ladder. */
+interface CompactionStep {
+	/** Human label, used in tests/debug. */
+	name: string
+	/** Mutate the segment array in place. Returning `false` means "no-op";
+	 *  the layout engine will move on to the next step. */
+	apply(segments: Segment[], ctx: CompactionContext): boolean
+}
+
+/** Context passed to compaction steps so they can rebuild colorized text. */
+interface CompactionContext {
+	/** Theme accessors so steps can rebuild colorized text when shortening. */
+	dim: (s: string) => string
+	accent: (s: string) => string
+	/** Apply a named semantic color (e.g. "error", "warning") to a string. */
+	semantic: (color: string, s: string) => string
+	/** Set to `false` once the command hint should no longer be appended. */
+	showCommandHint: boolean
+}
+
+const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
+
+export function readStatusLineCommand(): string | null {
+	try {
+		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
+		const parsed = JSON.parse(raw)
+		const cmd = parsed?.statusLine?.command
+		if (typeof cmd !== "string" || cmd.length === 0) return null
+		if (cmd.startsWith("~/")) return resolve(homedir(), cmd.slice(2))
+		return cmd
+	} catch {
+		return null
+	}
+}
+
+export function buildScriptPayload(
+	ctx: ExtensionContext,
+	status: "idle" | "generating",
+	sessionStartMs: number,
+	linesAdded: number,
+	linesRemoved: number,
+) {
+	const sessionId = ctx.sessionManager.getSessionId()
+	const usage = ctx.getContextUsage()
+
+	let costUsd = 0
+	let totalInput = 0
+	let totalOutput = 0
+	let lastTurn: { input: number; output: number } | null = null
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			const u = (entry.message as AssistantMessage).usage
+			costUsd += u.cost.total
+			totalInput += u.input
+			totalOutput += u.output
+			lastTurn = { input: u.input, output: u.output }
+		}
+	}
+	const billing = getBillingStatusLine()
+
+	return {
+		// kimchi fields
+		model: { id: ctx.model?.id ?? null, name: ctx.model?.name ?? null },
+		context: {
+			used: usage?.tokens ?? null,
+			limit: usage?.contextWindow ?? null,
+			percent: usage?.percent ?? null,
+		},
+		credits: billing?.amount ?? null,
+		budget: billing?.budget ?? null,
+		workspace: { cwd: ctx.cwd, current_dir: ctx.cwd },
+		status,
+		session: {
+			cost_usd: costUsd,
+			last_turn: lastTurn,
+			id: ctx.sessionManager.getSessionId(),
+			name: ctx.sessionManager.getSessionName() ?? null,
+			transcript_path: ctx.sessionManager.getSessionFile(),
+		},
+		// claude code compat fields
+		cost: {
+			total_cost_usd: costUsd,
+			total_duration_ms: Date.now() - sessionStartMs,
+			total_lines_added: linesAdded,
+			total_lines_removed: linesRemoved,
+		},
+		context_window: {
+			context_window_size: usage?.contextWindow ?? null,
+			used_percentage: usage?.percent ?? null,
+			remaining_percentage: usage?.percent != null ? 100 - usage.percent : null,
+			current_usage: usage?.tokens != null ? { input_tokens: usage.tokens } : null,
+			total_input_tokens: totalInput,
+			total_output_tokens: totalOutput,
+		},
+		exceeds_200k_tokens: (usage?.tokens ?? 0) > 200_000,
+		permissions: {
+			mode: getPermissionMode(sessionId),
+		},
+		multi_model: {
+			enabled: getMultiModelEnabled(ctx.sessionManager),
+		},
+		phase: getCurrentPhase(sessionId),
+	}
+}
+
+export class StatusLineScript implements Component {
+	private cachedLines: string[] = []
+
+	constructor(private getControlsLine: () => string | null) {}
+
+	setLines(lines: string[]): void {
+		this.cachedLines = lines
+	}
+
+	invalidate(): void {}
+
+	render(width: number): string[] {
+		const controls = this.getControlsLine()
+		const scriptLines = this.cachedLines.map((line) => truncateToWidth(line, width))
+		if (!controls) return scriptLines
+		return [...scriptLines, "", truncateToWidth(controls, width)]
+	}
+}
+
+const BAR_WIDTH = 16
+
+/** Compact form builders */
+
+/** Compact form for the context segment: drops the bar, keeps `N% ctx`. */
+export function buildContextCompact(ctx: CompactionContext, percent: number, pctColor?: "error" | "warning"): Segment {
+	const pctStr = pctColor ? ctx.semantic(pctColor, `${Math.round(percent)}%`) : ctx.accent(`${Math.round(percent)}%`)
+	const ctxStr = ctx.dim("ctx")
+	const text = `${pctStr} ${ctxStr}`
+	return {
+		id: "context",
+		text,
+		width: visibleWidth(text),
+		raw: { kind: "context", percent, pctColor },
+	}
+}
+
+/** Compact form for model: abbreviates "multi-model (kimi-k2.6)" to "m-m (kimi-k2.6)". */
+export function buildModelAbbrev(ctx: CompactionContext, multiModel: boolean, modelId: string): Segment {
+	const label = multiModel ? `m-m (${modelId})` : modelId
+	const text = `${ctx.accent(label)} ${ctx.dim("→ ctrl+p")}`
+	return {
+		id: "model",
+		text,
+		width: visibleWidth(text),
+		raw: { kind: "model", multiModel, modelId },
+	}
+}
+
+/** Compact form for phase: drops the "phase:" prefix, keeps just the value. */
+export function buildPhaseCompact(ctx: CompactionContext, phase: string): Segment {
+	const text = ctx.accent(phase)
+	return {
+		id: "phase",
+		text,
+		width: visibleWidth(text),
+		raw: { kind: "phase", phase },
+	}
+}
+
+/** Compaction action for ferment: drop the leading colorized `ferment:`
+ *  substring in place. The rest of the segment is unchanged, so no rebuild. */
+function dropFermentPrefix(segs: Segment[]): boolean {
+	const idx = segs.findIndex((s) => s.id === "ferment")
+	if (idx === -1) return false
+	const seg = segs[idx]
+	if (seg.raw?.kind !== "ferment") return false
+	if (!seg.text.startsWith(seg.raw.prefix)) return false
+	const newText = seg.text.slice(seg.raw.prefix.length)
+	segs[idx] = { id: seg.id, text: newText, width: seg.width - seg.raw.prefixWidth }
+	return true
+}
+
+/** Regex to strip trailing shortcut hints like "→ shift+tab" or "→ option+tab"
+ *  from segments that have them. Matches the dim/text colored shortcut at the end. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences are required for matching real terminal output
+export const SHORTCUT_TAIL = /\s*\x1b\[[\d;]*m\s*→\s+[\w+]+\x1b\[[\d;]*m\s*$/
+
+/** Strip shortcut hints from the named segments. Returns true if any were stripped. */
+function stripShortcutHintsAcross(segments: Segment[], ids: SegmentId[]): boolean {
+	let changed = false
+	for (const id of ids) {
+		const i = segments.findIndex((s) => s.id === id)
+		if (i === -1) continue
+		const stripped = segments[i].text.replace(SHORTCUT_TAIL, "")
+		if (stripped !== segments[i].text) {
+			segments[i] = { ...segments[i], text: stripped, width: visibleWidth(stripped) }
+			changed = true
+		}
+	}
+	return changed
+}
+
+/** Replace a segment by ID with a new Segment (or null to skip). Returns true if changed. */
+function replaceSegment(segs: Segment[], id: SegmentId, next: Segment | null): boolean {
+	const i = segs.findIndex((s) => s.id === id)
+	if (i === -1 || !next) return false
+	if (segs[i].text === next.text) return false
+	segs[i] = next
+	return true
+}
+
+/** Helper for compaction steps: rebuild a segment in place from its raw inputs.
+ *  Type-safe: only matches segments whose `raw.kind` equals the requested kind. */
+function recompactSegment<K extends SegmentRaw["kind"]>(
+	segs: Segment[],
+	id: SegmentId,
+	kind: K,
+	builder: (raw: Extract<SegmentRaw, { kind: K }>) => Segment,
+): boolean {
+	const seg = segs.find((s) => s.id === id)
+	if (!seg || seg.raw?.kind !== kind) return false
+	return replaceSegment(segs, id, builder(seg.raw as Extract<SegmentRaw, { kind: K }>))
+}
+
+/** The ordered compaction steps */
+const STEPS: CompactionStep[] = [
+	{
+		name: "drop-command-hint",
+		apply: (_segs, ctx) => {
+			if (!ctx.showCommandHint) return false
+			ctx.showCommandHint = false
+			return true
+		},
+	},
+	{
+		name: "drop-context-bar",
+		apply: (segs, ctx) =>
+			recompactSegment(segs, "context", "context", (raw) => buildContextCompact(ctx, raw.percent, raw.pctColor)),
+	},
+	{
+		name: "abbrev-model-label",
+		apply: (segs, ctx) =>
+			recompactSegment(segs, "model", "model", (raw) => buildModelAbbrev(ctx, raw.multiModel, raw.modelId)),
+	},
+	{
+		name: "drop-shortcut-hints",
+		apply: (segs) => stripShortcutHintsAcross(segs, ["permissions", "model", "ferment"]),
+	},
+	{
+		name: "drop-phase-prefix",
+		apply: (segs, ctx) => recompactSegment(segs, "phase", "phase", (raw) => buildPhaseCompact(ctx, raw.phase)),
+	},
+	{
+		name: "drop-ferment-prefix",
+		apply: (segs) => dropFermentPrefix(segs),
+	},
+]
+
+/** Render a line from segments, separator, and optional command hint. */
+function renderLine(
+	segments: Segment[],
+	ctx: CompactionContext,
+	sep: string,
+	sepWidth: number,
+	commandHint: { text: string; width: number },
+	width: number,
+): { text: string; width: number } {
+	if (segments.length === 0) {
+		return { text: "", width: 0 }
+	}
+
+	const joinedText = segments.map((s) => s.text).join(sep)
+	const joinedWidth = segments.reduce((sum, s) => sum + s.width, 0) + (segments.length - 1) * sepWidth
+
+	// Try to fit command hint if requested
+	if (ctx.showCommandHint && joinedWidth + 2 + commandHint.width <= width) {
+		const padding = width - joinedWidth - commandHint.width
+		return {
+			text: `${joinedText}${" ".repeat(padding)}${commandHint.text}`,
+			width, // text fills exactly `width` columns
+		}
+	}
+
+	return { text: joinedText, width: joinedWidth }
+}
+
+/** Main layout function — applies compaction steps in order, then truncates if
+ *  the fully-compacted line still doesn't fit. We deliberately do not shed
+ *  whole segments: disappearing elements look worse than a clean tail truncation. */
+function layoutStatusLine(
+	segments: Segment[],
+	width: number,
+	ctx: CompactionContext,
+	sep: string,
+	sepWidth: number,
+	commandHint: { text: string; width: number },
+): string {
+	// Initial attempt with no compaction.
+	let line = renderLine(segments, ctx, sep, sepWidth, commandHint, width)
+	if (line.width <= width) return line.text
+
+	// Apply each compaction step in order, re-rendering and stopping the first time we fit.
+	for (const step of STEPS) {
+		step.apply(segments, ctx)
+		line = renderLine(segments, ctx, sep, sepWidth, commandHint, width)
+		if (line.width <= width) return line.text
+	}
+
+	// Fully compacted line still overflows — truncate the tail.
+	return truncateToWidth(line.text, width)
+}
+
+export class StatusLine implements Component {
+	constructor(
+		private ctx: ExtensionContext,
+		private theme: Theme,
+		private statusLineData: ReadonlyFooterDataProvider,
+	) {}
+
+	invalidate(): void {}
+
+	private dim(s: string): string {
+		return this.theme.fg("dim", s)
+	}
+
+	private accent(s: string): string {
+		const ansi = resolvedAccentFg(this.theme)
+		return `${ansi}${s}${RST_FG}`
+	}
+
+	private modelSegment(): Segment {
+		const multiModel = getMultiModelEnabled(this.ctx.sessionManager)
+		const rawModelId = this.ctx.model?.id ?? "n/a"
+		const label = multiModel ? `multi-model (${rawModelId})` : rawModelId
+		const text = `${this.accent(label)} ${this.dim("→ ctrl+p")}`
+		return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId: rawModelId } }
+	}
+
+	private usageSegment(pinned = false): Segment | null {
+		if (!pinned) return null
+		let totalInput = 0
+		let totalOutput = 0
+		for (const entry of this.ctx.sessionManager.getEntries()) {
+			if (entry.type === "message") {
+				const msg = entry.message
+				if (msg?.role === "assistant" && msg.usage) {
+					totalInput += msg.usage.input ?? 0
+					totalOutput += msg.usage.output ?? 0
+				}
+			}
+		}
+		if (!totalInput && !totalOutput) {
+			const text = this.dim("↑0 ↓0")
+			return { id: "usage", text, width: visibleWidth(text) }
+		}
+		const tokens = [totalInput ? `↑${formatCount(totalInput)}` : "", totalOutput ? `↓${formatCount(totalOutput)}` : ""]
+			.filter(Boolean)
+			.join(" ")
+		return { id: "usage", text: this.dim(tokens), width: visibleWidth(tokens) }
+	}
+
+	private contextSegment(pinned = false): Segment | null {
+		if (!pinned) return null
+		const contextUsage = this.ctx.getContextUsage()
+		const pct = contextUsage?.percent ?? 0
+
+		if (pct === 0) {
+			const bar = this.dim("░".repeat(BAR_WIDTH))
+			const text = `${bar} ${this.accent("0%")} ${this.dim("ctx")}`
+			return {
+				id: "context",
+				text,
+				width: visibleWidth(text),
+				raw: { kind: "context", percent: 0, pctColor: undefined },
+			}
+		}
+
+		const filled = Math.max(0, Math.min(BAR_WIDTH, Math.round((pct / 100) * BAR_WIDTH)))
+		const fill = resolvedSemanticFg(this.theme, "success")
+		const bar = `${fill}${"█".repeat(filled)}${RST_FG}${this.dim("░".repeat(BAR_WIDTH - filled))}`
+		const pctColor = pct > 90 ? "error" : pct > 70 ? "warning" : undefined
+		const pctStr = pctColor
+			? `${resolvedSemanticFg(this.theme, pctColor)}${Math.round(pct)}%${RST_FG}`
+			: this.accent(`${Math.round(pct)}%`)
+		const text = `${bar} ${pctStr} ${this.dim("ctx")}`
+		return { id: "context", text, width: visibleWidth(text), raw: { kind: "context", percent: pct, pctColor } }
+	}
+
+	private phaseSegment(pinned = false): Segment | null {
+		if (!pinned) return null
+		const phase = getCurrentPhase(this.ctx.sessionManager.getSessionId())
+		if (!phase) {
+			const text = `${this.dim("phase:")}${this.dim("—")}`
+			return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase: "—" } }
+		}
+		const text = `${this.dim("phase:")}${this.accent(phase)}`
+		return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase } }
+	}
+
+	private tagsSegment(parsed: Array<{ key: string; value: string }>, pinned = false): Segment | null {
+		if (!pinned) return null
+		const display = parsed.filter((t) => t.key !== "team" && t.key !== "phase")
+		if (display.length === 0) {
+			const text = `${this.dim("tags:")} ${this.dim("—")}`
+			return { id: "tags", text, width: visibleWidth(text) }
+		}
+		const formatted = display.map((t) => this.dim(`${t.key}:${t.value}`)).join(this.dim(" "))
+		const text = `${this.dim("tags:")}${formatted}`
+		return { id: "tags", text, width: visibleWidth(text) }
+	}
+
+	private teamSegment(parsed: Array<{ key: string; value: string }>, pinned = false): Segment | null {
+		if (!pinned) return null
+		const team = parsed.find((t) => t.key === "team")
+		if (!team) {
+			const text = `${this.dim("team:")} ${this.dim("—")}`
+			return { id: "team", text, width: visibleWidth(text) }
+		}
+		const text = `${this.dim("team:")}${this.accent(team.value)}`
+		return { id: "team", text, width: visibleWidth(text) }
+	}
+
+	private permissionsSegment(pinned = false): Segment | null {
+		const mode = this.statusLineData.getExtensionStatuses().get("permissions-mode")
+		if (!mode) {
+			if (pinned) {
+				const text = `${this.dim("● ")}${this.dim("— ")}${this.dim("→ shift+tab")}`
+				return { id: "permissions", text, width: visibleWidth(text) }
+			}
+			return null
+		}
+		return { id: "permissions", text: mode, width: visibleWidth(mode) }
+	}
+
+	private lspSegment(): Segment | null {
+		const lspStatus = this.statusLineData.getExtensionStatuses().get("lsp")
+		if (!lspStatus) return null
+		// Style "LSP:" as dimmed label, server names as accent. Preserve the
+		// space after the colon so the label and value don't render run-together
+		// (e.g. "LSP:typescript-language-server" instead of "LSP: typescript-language-server").
+		const colonIdx = lspStatus.indexOf(":")
+		if (colonIdx === -1) return { id: "lsp", text: this.accent(lspStatus), width: visibleWidth(lspStatus) }
+		const label = this.dim(lspStatus.slice(0, colonIdx + 1))
+		const value = lspStatus.slice(colonIdx + 1).trimStart()
+		const text = value.length > 0 ? `${label} ${this.accent(value)}` : label
+		return { id: "lsp", text, width: visibleWidth(text) }
+	}
+
+	private creditsSegment(pinned = false): Segment | null {
+		if (!pinned) return null
+		const amount = getBillingStatusLine()?.amount
+		if (!amount) return null
+		const text = formatCreditsStatusLine(amount, this.theme)
+		return { id: "credits", text, width: visibleWidth(text) }
+	}
+
+	private budgetSegment(pinned = false): Segment | null {
+		if (!pinned) return null
+		const budget = getBillingStatusLine()?.budget
+		if (!budget) return null
+		const [percentage = budget] = budget.split(" ", 1)
+		const text = formatBudgetStatusLine(budget, this.theme)
+		return { id: "budget", text, width: visibleWidth(text), raw: { kind: "budget", percentage } }
+	}
+
+	private subagentSegment(pinned = false): Segment | null {
+		if (!pinned) return null
+		const count = getActiveAgentCount()
+		if (count === 0) {
+			const text = this.dim("0 agents")
+			return { id: "agents", text, width: visibleWidth(text) }
+		}
+		const text = this.accent(`${count} agent${count === 1 ? "" : "s"}`)
+		return { id: "agents", text, width: visibleWidth(text) }
+	}
+
+	private fermentSegment(pinned = false): Segment | null {
+		const display = formatFermentStatusLineDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
+			dim: (s) => this.dim(s),
+			accent: (s) => this.accent(s),
+		})
+		// No active ferment: only show the placeholder when the user has
+		// explicitly pinned the segment (so they can see it's wired up but
+		// idle). Unpinned, hide it entirely — "Ferment: —" is noise when no
+		// ferment is running.
+		if (!display) {
+			if (!pinned) return null
+			const text = `${this.dim("Ferment:")} ${this.dim("—")}`
+			return { id: "ferment", text, width: visibleWidth(text) }
+		}
+
+		// Active ferment: always render, even when unpinned. The status line is
+		// the primary surface for ferment progress and must not be hidden by
+		// default. This matches the ScriptFooter path (ui.ts) which shows the
+		// ferment segment unconditionally when there is one.
+		return {
+			id: "ferment",
+			text: display.text,
+			width: display.width,
+			raw: { kind: "ferment", prefix: display.prefix, prefixWidth: display.prefixWidth },
+		}
+	}
+
+	private permissionsWarning(): string | null {
+		const text = this.statusLineData.getExtensionStatuses().get("permissions-warning")
+		if (!text) return null
+		return this.theme.fg("warning", text)
+	}
+
+	private updateAvailableSegment(): { text: string; width: number } | null {
+		// Info-line segment (rendered above the status line), NOT one of the
+		// status-line `Segment`s above — it has no SegmentId because it never
+		// participates in compaction.
+		const text = this.statusLineData.getExtensionStatuses().get("update-available")
+		if (!text) return null
+		const segText = this.theme.fg("accent", text)
+		return { text: segText, width: visibleWidth(text) }
+	}
+
+	render(width: number): string[] {
+		const config = readStatusLineConfig()
+		const pinnedSet = new Set<SegmentId>(config.pinned)
+
+		const tags = getActiveTags(this.ctx.sessionManager)
+			.map(parseTag)
+			.filter((t): t is { key: string; value: string } => t !== null)
+
+		const allSegments: Segment[] = [
+			this.fermentSegment(pinnedSet.has("ferment")),
+			this.permissionsSegment(pinnedSet.has("permissions")),
+			this.modelSegment(),
+			this.creditsSegment(pinnedSet.has("credits")),
+			this.budgetSegment(pinnedSet.has("budget")),
+			this.subagentSegment(pinnedSet.has("agents")),
+			this.contextSegment(pinnedSet.has("context")),
+			this.usageSegment(pinnedSet.has("usage")),
+			this.phaseSegment(pinnedSet.has("phase")),
+			this.tagsSegment(tags, pinnedSet.has("tags")),
+			this.teamSegment(tags, pinnedSet.has("team")),
+			this.lspSegment(),
+		].filter((s): s is Segment => s !== null)
+
+		const unpinnedSegments = allSegments.filter((s) => !pinnedSet.has(s.id))
+		const pinnedSegments = allSegments.filter((s) => pinnedSet.has(s.id))
+
+		const sep = ` ${this.dim("·")} `
+		const sepWidth = visibleWidth(sep)
+
+		const hintText = this.dim("/ for commands")
+		const hintWidth = visibleWidth(hintText)
+
+		// The hint always lives at the far right edge, independent of pinning.
+		// Reserve its space upfront so compaction uses the right budget.
+		const minHintGap = 2
+		const hintReserve = hintWidth + minHintGap
+		const contentBudget = Math.max(0, width - hintReserve)
+
+		const ctx: CompactionContext = {
+			dim: (s) => this.dim(s),
+			accent: (s) => this.accent(s),
+			semantic: (color, s) =>
+				`${resolvedSemanticFg(this.theme, color as "success" | "warning" | "error")}${s}${RST_FG}`,
+			showCommandHint: false, // hint is appended manually after all content
+		}
+
+		// Reserve space for pinned segments so the unpinned portion compacts correctly.
+		const getPinnedTotalWidth = () =>
+			pinnedSegments.length > 0
+				? pinnedSegments.reduce((sum, s) => sum + s.width, 0) + (pinnedSegments.length - 1) * sepWidth + sepWidth // one sep between unpinned and pinned
+				: 0
+		let pinnedTotalWidth = getPinnedTotalWidth()
+		if (pinnedTotalWidth > contentBudget) {
+			recompactSegment(pinnedSegments, "budget", "budget", (raw) => {
+				const text = formatBudgetStatusLine(raw.percentage, this.theme)
+				return { id: "budget", text, width: visibleWidth(text), raw }
+			})
+			pinnedTotalWidth = getPinnedTotalWidth()
+		}
+		const unpinnedBudget = Math.max(0, contentBudget - pinnedTotalWidth)
+
+		const unpinnedLine = layoutStatusLine(unpinnedSegments, unpinnedBudget, ctx, sep, sepWidth, {
+			text: hintText,
+			width: hintWidth,
+		})
+
+		// Build content: unpinned (left) then pinned (right).
+		let contentLine: string
+		if (unpinnedSegments.length > 0 && pinnedSegments.length > 0) {
+			const pinnedText = pinnedSegments.map((s) => s.text).join(sep)
+			contentLine = `${unpinnedLine}${sep}${pinnedText}`
+		} else if (pinnedSegments.length > 0) {
+			contentLine = pinnedSegments.map((s) => s.text).join(sep)
+		} else {
+			contentLine = unpinnedLine
+		}
+
+		// Append hint at the far right when there is room; truncate if not.
+		let line: string
+		const contentWidth = visibleWidth(contentLine)
+		if (contentWidth + minHintGap + hintWidth <= width) {
+			const padding = width - contentWidth - hintWidth
+			line = `${contentLine}${" ".repeat(padding)}${hintText}`
+		} else {
+			line = contentWidth > width ? truncateToWidth(contentLine, width) : contentLine
+		}
+
+		const infoLine = this.buildInfoLine(width)
+		return infoLine ? [infoLine, line] : [line]
+	}
+
+	private buildInfoLine(width: number): string {
+		let line = ""
+		const permissionsWarningText = this.permissionsWarning()
+		const updateSeg = this.updateAvailableSegment()
+
+		let remainingWidth = width
+		if (permissionsWarningText) {
+			line = truncateToWidth(permissionsWarningText, remainingWidth)
+			remainingWidth -= visibleWidth(line)
+		}
+
+		if (updateSeg && remainingWidth >= updateSeg.width + 2) {
+			line = `${line}${" ".repeat(remainingWidth - updateSeg.width)}${updateSeg.text}`
+		}
+
+		return line
+	}
+}

@@ -38,10 +38,6 @@ vi.mock("@clack/prompts", () => ({
 	isCancel: clackMock.isCancel,
 }))
 
-vi.mock("./extensions/superpowers/installer.js", () => ({
-	ensureSuperpowersInstalled: vi.fn().mockResolvedValue(true),
-}))
-
 import {
 	type DiscoveredCommand,
 	deriveDescription,

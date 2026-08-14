@@ -7,6 +7,8 @@
  * extension triggered it.
  */
 
+import type { BashCategory } from "./bash-tool-guard.js"
+
 export const BASH_TOOL_GUARD_EVENTS = {
 	WARN: "bash_tool_guard:warn",
 	BLOCK: "bash_tool_guard:block",
@@ -16,8 +18,8 @@ export const BASH_TOOL_GUARD_EVENTS = {
 export type BashToolGuardEventChannel = (typeof BASH_TOOL_GUARD_EVENTS)[keyof typeof BASH_TOOL_GUARD_EVENTS]
 
 export interface BashToolGuardWarnPayload {
-	/** The read/edit/write category that triggered the warn. */
-	category: "read" | "edit" | "write"
+	/** The read/edit/write/background category that triggered the warn. */
+	category: BashCategory
 	/** The tool name detected in the matched segment (e.g. "cat", "sed").
 	 *  Kept short and structured so telemetry can aggregate without
 	 *  receiving raw command text. */
@@ -27,13 +29,13 @@ export interface BashToolGuardWarnPayload {
 }
 
 export interface BashToolGuardBlockPayload {
-	category: "read" | "edit" | "write"
+	category: BashCategory
 	tool: string
 	count: number
 }
 
 export interface BashToolGuardAllowedByUserRequestPayload {
-	category: "read" | "edit" | "write"
+	category: BashCategory
 	/** The tool name detected in the matched segment (e.g. "cat", "sed"). */
 	tool: string
 }

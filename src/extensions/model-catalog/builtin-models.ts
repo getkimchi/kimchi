@@ -71,11 +71,11 @@ Best for: codebase exploration, research, and trivial re-verification (confirmin
 after a fix). \
 Not suitable for: code review, building code, or any task requiring correctness judgment.`
 
-const CLAUDE_OPUS_46_DESCRIPTION = `\
-Anthropic's flagship Claude model. Dominates at architectural planning and complex task \
-decomposition — when a hard problem needs a superior plan, this is the model to delegate to. \
-Also excels at deep reasoning, research, and exploration across large codebases. Best for \
-complex multi-step tasks requiring careful analysis and methodical planning.`
+const DEEPSEEK_V4_FLASH_DESCRIPTION = `\
+Fast and cost-effective model for codebase exploration and lightweight tasks. \
+Best for: codebase exploration, reading code, tracing architecture, and trivial re-verification \
+(confirming tests pass after a fix). \
+Not suitable for: code review, building code, or any task requiring correctness judgment.`
 
 /** Filter out empty layers and join with double newlines. */
 function concatGuidelines(...layers: string[]): string {
@@ -167,6 +167,20 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				NEMOTRON_FAMILY_ORCHESTRATION,
 				NEMOTRON_3_ULTRA_ORCHESTRATION,
 			),
+		},
+	],
+	[
+		"deepseek-v4-flash",
+		{
+			vision: false,
+			tier: "light",
+			description: DEEPSEEK_V4_FLASH_DESCRIPTION,
+			guidelines: guidelinesMap({
+				explore: [DEFAULT_EXPLORE_GUIDELINES],
+				research: [DEFAULT_RESEARCH_GUIDELINES],
+			}),
+			orchestrationGuidelines:
+				"When orchestrating (deepseek-v4-flash): No model-specific orchestration overrides — follow the default delegation rules.",
 		},
 	],
 	// Proprietary (Anthropic) models — excluded from OSS subagent routing.

@@ -4,10 +4,10 @@ import type { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import {
-	type PendingPlanReview,
 	clearAllPendingPlanReviews,
 	clearPendingPlanReview,
 	getPendingPlanReview,
+	type PendingPlanReview,
 	setPendingPlanReview,
 } from "./plan-review.js"
 import type { AttachPendingProposalPartial, PendingScope } from "./scoping.js"
@@ -18,6 +18,7 @@ import {
 	getPendingScope,
 	setPendingScope,
 } from "./scoping.js"
+import type { ContinuationPolicy, PendingCompaction } from "./state.js"
 import {
 	bumpBlockRetry,
 	bumpStepCompleteAttempt,
@@ -28,6 +29,7 @@ import {
 	clearAllStepStarts,
 	clearBlockRetry,
 	clearCompactionInFlight,
+	clearLifecycleGuardRetryState,
 	clearMidTurnOneshotWarnings,
 	clearPendingCompaction,
 	clearFermentState as clearStateForFerment,
@@ -62,8 +64,6 @@ import {
 	setPhaseStartRef,
 	setStepStartRef,
 } from "./state.js"
-import type { ContinuationPolicy } from "./state.js"
-import type { PendingCompaction } from "./state.js"
 
 export interface FermentRuntime {
 	/** pi.events bus — set by the ferment extension factory so all mutations
@@ -78,11 +78,14 @@ export interface FermentRuntime {
 	setContinuationPolicy(policy: ContinuationPolicy): void
 	isAutomatedContinuationEnabled(): boolean
 	setAutomatedContinuationEnabled(enabled: boolean): void
+	/** Coordinate session-local recovery state after a state-machine command
+	 *  has been successfully persisted. */
+	onLifecycleTransitionApplied(fermentId: string): void
 	now(): Date
 	nowIso(): string
 	markHumanInput(): void
 	getLastHumanInputAt(): Date | undefined
-	captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry): void
+	captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry, multiModelEnabled?: boolean): void
 	bumpStepStart(fermentId: string, phaseId: string, stepId: string): number
 	clearStepStart(fermentId: string, phaseId: string, stepId: string): void
 	clearAllStepStarts(): void
@@ -149,6 +152,7 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		setContinuationPolicy,
 		isAutomatedContinuationEnabled,
 		setAutomatedContinuationEnabled,
+		onLifecycleTransitionApplied: clearLifecycleGuardRetryState,
 		now: () => new Date(),
 		nowIso: () => new Date().toISOString(),
 		markHumanInput: () => {

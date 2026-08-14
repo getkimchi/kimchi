@@ -50,7 +50,7 @@ function ensureWatcher(): void {
 	try {
 		watcher = watch(themesDir, { persistent: false }, (_event, filename) => {
 			// Only respond to JSON files that aren't settings.json (handled elsewhere).
-			if (!filename || !filename.endsWith(".json") || filename === "settings.json") return
+			if (!filename?.endsWith(".json") || filename === "settings.json") return
 			// fs.watch fires multiple events per write on macOS; debounce to one.
 			if (debounceTimer) clearTimeout(debounceTimer)
 			debounceTimer = setTimeout(() => fire(filename), 30)

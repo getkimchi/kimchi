@@ -5,18 +5,23 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
 	type AgentSessionEvent,
+	type CreateAgentSessionOptions,
+	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionAPI,
+	getAgentDir,
+	type InlineExtension,
+	type ModelRuntime,
 	SessionManager,
 	SettingsManager,
-	createAgentSession,
-	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
-import { loadConfig, readTelemetryConfig } from "../../../config.js"
+import { readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
-import bashDefaultTimeoutExtension from "../../bash-default-timeout.js"
+import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
+import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
+import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
@@ -41,11 +46,11 @@ import {
 	type ThinkingLevel,
 } from "../personas/types.js"
 import { buildParentContext, extractText } from "../prompt/context.js"
-import { type PromptExtras, buildAgentPrompt, formatTokenBudget } from "../prompt/prompts.js"
-import { preloadSkills } from "../prompt/skill-loader.js"
-import { WORKER_REPORT_TOOL_NAME, type WorkerReportCapability, createWorkerReportExtension } from "../worker-report.js"
+import { buildAgentPrompt, formatTokenBudget, type PromptExtras } from "../prompt/prompts.js"
+import { listAvailableSkillNames, preloadSkills } from "../prompt/skill-loader.js"
+import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
-import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage } from "./usage.js"
+import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type LifetimeUsage } from "./usage.js"
 
 /**
  * Names of tools that subagents must NOT inherit from the parent session.
@@ -94,9 +99,6 @@ const ORCHESTRATOR_PREFIX = "[Orchestrator — automated system instruction, not
 function steerAsOrchestrator(session: AgentSession, message: string): Promise<void> {
 	return session.steer(ORCHESTRATOR_PREFIX + message)
 }
-
-/** Cached kimchi config — loaded once per process to avoid repeated disk reads per agent spawn. */
-const kimchiConfig = loadConfig()
 
 /** Default max turns. undefined = unlimited (no turn limit). */
 let defaultMaxTurns: number | undefined = 30
@@ -238,6 +240,8 @@ export interface RunOptions {
 	hardTurnLimit?: boolean
 	/** Registers a hard-fallback cleanup for runner-owned resources. */
 	onRuntimeCleanupRegistered?: (cleanup: () => void) => void
+	/** Called with the built system prompt before the session starts. */
+	onSystemPrompt?: (prompt: string) => void
 }
 
 export interface RunResult {
@@ -250,6 +254,10 @@ export interface RunResult {
 	steered: boolean
 	turnsUsed?: number
 	maxTurns?: number
+}
+
+type ModelRegistryWithRuntime = {
+	runtime?: ModelRuntime
 }
 
 function collectResponseText(session: AgentSession) {
@@ -293,9 +301,20 @@ function resetUsage(usage: LifetimeUsage): void {
 	usage.cacheWrite = 0
 }
 
+/**
+ * Hard-abort the session: kill any in-flight bash process tree, then abort the agent loop.
+ * session.abort() alone does NOT kill in-flight bash (upstream gap), so we call abortBash()
+ * to trigger killProcessTree on the bash subprocess. Uses optional chaining so test mocks
+ * without abortBash don't break.
+ */
+function hardAbort(session: AgentSession): void {
+	session.abortBash?.()
+	session.abort()
+}
+
 function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => void {
 	if (!signal) return () => {}
-	const onAbort = () => session.abort()
+	const onAbort = () => hardAbort(session)
 	signal.addEventListener("abort", onAbort, { once: true })
 	return () => signal.removeEventListener("abort", onAbort)
 }
@@ -348,14 +367,32 @@ async function runAgentInner(
 			agentConfig?.includeContextFiles && !options.isolated ? loadProjectContextFiles(effectiveCwd) : undefined,
 	}
 
+	let toolNames = getToolNamesForType(type)
+
 	if (Array.isArray(skills)) {
 		const loaded = preloadSkills(skills, effectiveCwd)
 		if (loaded.length > 0) {
 			extras.skillBlocks = loaded
 		}
-	}
+	} else if (skills === true) {
+		// skills === true (the default for Builder, Fixer, Explore, Plan, GP):
+		// inject a compact skill name+description list and add the Skill tool
+		// so sub-agents can discover and load skills on demand.
+		const availableSkills = listAvailableSkillNames(effectiveCwd)
+		if (availableSkills.length > 0) {
+			const skillLines = availableSkills.map((s) => `- **${s.name}**: ${s.description}`).join("\n")
+			extras.skillListBlock = `## Available Skills
 
-	let toolNames = getToolNamesForType(type)
+Use the Skill tool to load a skill's full instructions when its description matches your task.
+
+${skillLines}`
+			// Add the Skill tool to the available tools (unless disallowed by persona config)
+			const disallowed = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
+			if (!toolNames.includes("Skill") && !disallowed?.has("Skill")) {
+				toolNames = [...toolNames, "Skill"]
+			}
+		}
+	}
 
 	if (agentConfig?.memory) {
 		const existingNames = new Set(toolNames)
@@ -398,6 +435,7 @@ async function runAgentInner(
 	}
 
 	let systemPrompt = buildSystemPrompt(getPromptToolNames(toolNames, disallowedSet))
+	options.onSystemPrompt?.(systemPrompt)
 
 	const debugSession = process.env.KIMCHI_DEBUG_SESSION
 	if (debugSession) {
@@ -415,10 +453,28 @@ async function runAgentInner(
 
 	const agentDir = getAgentDir()
 
+	// The subagent budget clamp must be wired with the deadline computed
+	// at run time (startTimeMs + maxDuration). Resolve the effective
+	// max_duration here so the bash clamp extension sees it at registration.
+	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
+
 	// Repo-native extensions registered directly by the Kimchi CLI are not
 	// discovered by a child session's DefaultResourceLoader. Register this
 	// safety hook explicitly so worker bash calls get the same default timeout.
-	const extensionFactories = [telemetryExtension(readTelemetryConfig()), bashDefaultTimeoutExtension]
+	// When max_duration is 0 (unlimited), skip the clamp and use the plain
+	// default-timeout extension so bash calls keep their unlimited semantics.
+	const bashExtension =
+		effectiveMaxDuration > 0
+			? createSubagentBashClampExtension(effectiveMaxDuration, Date.now())
+			: bashDefaultTimeoutExtension
+	// Subagents share this process and its patched retry classifier, so their
+	// successes must close the shared infrastructure breaker just like the parent's.
+	const extensionFactories: InlineExtension[] = [
+		telemetryExtension(readTelemetryConfig()),
+		bashExtension,
+		infrastructureBreakerExtension,
+		omitKimchiMaxTokensExtension,
+	]
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}
@@ -450,18 +506,19 @@ async function runAgentInner(
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
 	const settingsManager = SettingsManager.create(effectiveCwd, agentDir)
-	settingsManager.applyOverrides({ retry: { maxRetries: kimchiConfig.retry.maxRetries } })
+	const modelRuntime = (ctx.modelRegistry as unknown as ModelRegistryWithRuntime).runtime
+	if (!modelRuntime) throw new Error("Pi model registry runtime is unavailable")
 
-	const sessionOpts: Parameters<typeof createAgentSession>[0] = {
+	const sessionOpts: CreateAgentSessionOptions = {
 		cwd: effectiveCwd,
 		agentDir,
 		sessionManager: options.sessionFile
 			? SessionManager.open(options.sessionFile, options.sessionDir, effectiveCwd)
 			: SessionManager.inMemory(effectiveCwd),
 		settingsManager,
-		modelRegistry: ctx.modelRegistry,
 		model,
 		resourceLoader: loader,
+		modelRuntime,
 	}
 	if (effectiveExtensions === false) {
 		sessionOpts.tools = toolNames
@@ -557,7 +614,7 @@ async function runAgentInner(
 				if (options.hardTurnLimit && turnCount >= effectiveMaxTurns) {
 					aborted = true
 					abortReason = "max_turns"
-					session.abort()
+					hardAbort(session)
 				} else if (!softLimitReached && turnCount >= effectiveMaxTurns) {
 					softLimitReached = true
 					steerAsOrchestrator(
@@ -567,7 +624,7 @@ async function runAgentInner(
 				} else if (softLimitReached && turnCount >= effectiveMaxTurns + graceTurns) {
 					aborted = true
 					abortReason = "max_turns"
-					session.abort()
+					hardAbort(session)
 				} else if (!softLimitReached && nextProgressIdx < PROGRESS_STEER_POINTS.length) {
 					const point = PROGRESS_STEER_POINTS[nextProgressIdx]
 					if (point && turnCount >= effectiveMaxTurns * point.threshold) {
@@ -585,13 +642,19 @@ async function runAgentInner(
 			options.onTextDelta?.(event.assistantMessageEvent.delta, currentMessageText)
 		}
 		if (event.type === "tool_execution_start") {
-			options.onToolActivity?.({ type: "start", toolName: event.toolName })
+			if (budgetAborted) {
+				// R2: token_budget was exceeded on a previous message_end. Re-abort
+				// to ensure the agent loop halts and this tool call is skipped.
+				hardAbort(session)
+			} else {
+				options.onToolActivity?.({ type: "start", toolName: event.toolName })
+			}
 		}
 		if (event.type === "tool_execution_end") {
 			options.onToolActivity?.({ type: "end", toolName: event.toolName })
 			if (event.toolName === WORKER_REPORT_TOOL_NAME && options.workerReport?.isAccepted()) {
 				reportAccepted = true
-				queueMicrotask(() => session.abort())
+				queueMicrotask(() => hardAbort(session))
 			}
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
@@ -618,7 +681,7 @@ async function runAgentInner(
 						console.warn(
 							`[agent-runner] token budget exceeded (cumulative=${cumulativeTokens}, budget=${effectiveTokenBudget}); aborting`,
 						)
-						session.abort()
+						hardAbort(session)
 					} else if (!tokenSoftLimitSteered && cumulativeTokens >= effectiveTokenBudget * 0.8) {
 						tokenSoftLimitSteered = true
 						steerAsOrchestrator(
@@ -640,7 +703,7 @@ async function runAgentInner(
 		if (inactivity.steered && elapsed >= inactivityTimeout) {
 			aborted = true
 			abortReason = "inactivity"
-			session.abort()
+			hardAbort(session)
 		} else if (!inactivity.steered && elapsed >= inactivityTimeout) {
 			inactivity.steered = true
 			steerAsOrchestrator(session, "You appear to be stalled. Resume work immediately or summarize your progress.")
@@ -653,12 +716,11 @@ async function runAgentInner(
 	}
 	options.onRuntimeCleanupRegistered?.(cleanupInactivityInterval)
 
-	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
 	const durationTimer = effectiveMaxDuration
 		? setTimeout(() => {
 				aborted = true
 				abortReason = "max_duration"
-				session.abort()
+				hardAbort(session)
 			}, effectiveMaxDuration * 1000)
 		: undefined
 
@@ -680,10 +742,11 @@ async function runAgentInner(
 		process.env.KIMCHI_AGENT_PERSONA = agentConfig.name
 	}
 
-	const prevPhase = getCurrentPhase()
+	const sessionId = ctx.sessionManager.getSessionId()
+	const prevPhase = getCurrentPhase(sessionId)
 	const personaPhase = agentConfig?.roles?.[0]
 	if (personaPhase) {
-		setCurrentPhase(personaPhase)
+		setCurrentPhase(sessionId, personaPhase)
 	}
 
 	try {
@@ -700,14 +763,13 @@ async function runAgentInner(
 		if (agentConfig?.name) {
 			// Restore persona env — important for sequential runs in the same process.
 			if (prevPersona === undefined) {
-				// biome-ignore lint/performance/noDelete: must remove not set to undefined
 				delete process.env.KIMCHI_AGENT_PERSONA
 			} else {
 				process.env.KIMCHI_AGENT_PERSONA = prevPersona
 			}
 		}
 		if (personaPhase) {
-			setCurrentPhase(prevPhase)
+			setCurrentPhase(sessionId, prevPhase)
 		}
 	}
 
@@ -799,7 +861,7 @@ export async function resumeAgent(
 				if (options.hardTurnLimit && turnCount >= effectiveMaxTurns) {
 					aborted = true
 					abortReason = "max_turns"
-					session.abort()
+					hardAbort(session)
 				} else if (!softLimitReached && turnCount >= effectiveMaxTurns) {
 					softLimitReached = true
 					steerAsOrchestrator(
@@ -809,16 +871,22 @@ export async function resumeAgent(
 				} else if (softLimitReached && turnCount >= effectiveMaxTurns + graceTurns) {
 					aborted = true
 					abortReason = "max_turns"
-					session.abort()
+					hardAbort(session)
 				}
 			}
 		}
-		if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName })
+		if (event.type === "tool_execution_start") {
+			if (budgetAborted) {
+				hardAbort(session)
+			} else {
+				options.onToolActivity?.({ type: "start", toolName: event.toolName })
+			}
+		}
 		if (event.type === "tool_execution_end") {
 			options.onToolActivity?.({ type: "end", toolName: event.toolName })
 			if (options.shouldTerminateAfterTool?.(event.toolName)) {
 				terminationToolCompleted = true
-				queueMicrotask(() => session.abort())
+				queueMicrotask(() => hardAbort(session))
 			}
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
@@ -844,7 +912,7 @@ export async function resumeAgent(
 						console.warn(
 							`[agent-runner] resume token budget exceeded (cumulative=${cumulativeTokens}, budget=${effectiveTokenBudget}); aborting`,
 						)
-						session.abort()
+						hardAbort(session)
 					} else if (!tokenSoftLimitSteered && cumulativeTokens >= effectiveTokenBudget * 0.8) {
 						tokenSoftLimitSteered = true
 						steerAsOrchestrator(
@@ -865,7 +933,7 @@ export async function resumeAgent(
 		if (resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
 			aborted = true
 			abortReason = "inactivity"
-			session.abort()
+			hardAbort(session)
 		} else if (!resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
 			resumeInactivity.steered = true
 			steerAsOrchestrator(session, "You appear to be stalled. Resume work immediately or summarize your progress.")
@@ -881,7 +949,7 @@ export async function resumeAgent(
 		? setTimeout(() => {
 				aborted = true
 				abortReason = "max_duration"
-				session.abort()
+				hardAbort(session)
 			}, effectiveMaxDuration * 1000)
 		: undefined
 

@@ -10,7 +10,7 @@ export function resourceNameToToolName(name: string): string {
 
 	// Ensure we have a valid name
 	if (!result || /^\d/.test(result)) {
-		result = "resource" + (result ? "_" + result : "")
+		result = `resource${result ? `_${result}` : ""}`
 	}
 
 	return result

@@ -169,3 +169,41 @@ describe("custom agents — user override hierarchy preserves new fields", () =>
 		expect(agent?.source).toBe("package")
 	})
 })
+
+describe("custom agents — include_context_files and include_core_guidelines parsing", () => {
+	let projectDir: string
+	let projectAgentsDir: string
+
+	beforeEach(() => {
+		mockGetAgentDir.mockReturnValue(FAKE_AGENT_DIR)
+		mkdirSync(FAKE_AGENT_DIR, { recursive: true })
+		projectDir = join(tmpdir(), `kimchi-project-ctx-${Date.now()}`)
+		projectAgentsDir = join(projectDir, ".kimchi", "agents")
+	})
+
+	it("parses include_context_files: true and include_core_guidelines: true", () => {
+		writeAgentMd(
+			projectAgentsDir,
+			"ctx-agent",
+			"description: ctx\ninclude_context_files: true\ninclude_core_guidelines: true",
+		)
+
+		const agents = loadCustomAgents(projectDir)
+		const agent = agents.get("ctx-agent")
+
+		expect(agent).toBeDefined()
+		expect(agent?.includeContextFiles).toBe(true)
+		expect(agent?.includeCoreGuidelines).toBe(true)
+	})
+
+	it("defaults includeContextFiles and includeCoreGuidelines to undefined when not present", () => {
+		writeAgentMd(projectAgentsDir, "no-ctx-agent", "description: no ctx")
+
+		const agents = loadCustomAgents(projectDir)
+		const agent = agents.get("no-ctx-agent")
+
+		expect(agent).toBeDefined()
+		expect(agent?.includeContextFiles).toBeUndefined()
+		expect(agent?.includeCoreGuidelines).toBeUndefined()
+	})
+})

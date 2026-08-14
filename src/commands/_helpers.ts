@@ -1,6 +1,6 @@
 import { resolve } from "node:path"
-import { readApiKeyFromConfigFile } from "../config.js"
 import type { ConfigScope } from "../config/scope.js"
+import { readApiKeyFromConfigFile } from "../config.js"
 import { byId } from "../integrations/registry.js"
 import type { ToolId } from "../integrations/types.js"
 import { updateModelsConfig } from "../models.js"

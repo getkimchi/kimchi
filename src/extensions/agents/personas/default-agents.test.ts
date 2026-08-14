@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest"
-
+import { resolveAgentInvocationConfig } from "../resolution/invocation-config.js"
 import { DEFAULT_AGENTS } from "./default-agents.js"
 import { AGENT_BUILDER, AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER } from "./types.js"
-
-import { resolveAgentInvocationConfig } from "../resolution/invocation-config.js"
 
 describe("DEFAULT_AGENTS", () => {
 	it("always includes General-Purpose, Explore, Plan, and Researcher agents", () => {
@@ -39,6 +37,21 @@ describe("DEFAULT_AGENTS", () => {
 	it("Plan agent has includeContextFiles set to true", () => {
 		const plan = DEFAULT_AGENTS.get(AGENT_PLAN) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
 		expect(plan.includeContextFiles).toBe(true)
+	})
+
+	it("General-Purpose agent has includeContextFiles set to true", () => {
+		const gp = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(gp.includeContextFiles).toBe(true)
+	})
+
+	it("General-Purpose agent has includeCoreGuidelines set to true", () => {
+		const gp = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(gp.includeCoreGuidelines).toBe(true)
+	})
+
+	it("General-Purpose agent uses replace prompt mode", () => {
+		const gp = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(gp.promptMode).toBe("replace")
 	})
 
 	it("Explore agent has roles set to explore", () => {

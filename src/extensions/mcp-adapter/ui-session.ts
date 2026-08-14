@@ -4,6 +4,7 @@ import { isGlimpseAvailable, openGlimpseWindow } from "./glimpse-ui.js"
 import { logger } from "./logger.js"
 import type { McpExtensionState } from "./state.js"
 import {
+	extractUiPromptText,
 	UI_STREAM_HOST_CONTEXT_KEY,
 	UI_STREAM_REQUEST_META_KEY,
 	UI_STREAM_STRUCTURED_CONTENT_KEY,
@@ -11,9 +12,8 @@ import {
 	type UiMessageParams,
 	type UiModelContextParams,
 	type UiStreamMode,
-	extractUiPromptText,
 } from "./types.js"
-import { type UiServerHandle, startUiServer } from "./ui-server.js"
+import { startUiServer, type UiServerHandle } from "./ui-server.js"
 
 let activeGlimpseWindow: { close(): void } | null = null
 

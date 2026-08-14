@@ -4,7 +4,7 @@ import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import type { TeleportContext } from "../types.js"
 import { pickWorkspace } from "../ui/workspaces-panel.js"
 import type { WorkspaceRow } from "../ui/workspaces-table.js"
-import { TeleportRefusal, refuse } from "./errors.js"
+import { refuse, TeleportRefusal } from "./errors.js"
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 

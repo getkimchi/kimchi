@@ -3,8 +3,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { hasBearerAuthorizationHeader } from "./engine.js"
+import type { AgentDefinition } from "./index.js"
 import { discoverAgent } from "./index.js"
-import type { AgentDefinition, AgentDiscovery } from "./index.js"
 
 describe("discoverAgent engine", () => {
 	let tempDir: string

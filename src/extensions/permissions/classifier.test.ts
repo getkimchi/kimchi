@@ -1,24 +1,33 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { classifyToolCall, parseClassifierOutput } from "./classifier.js"
+import {
+	CLASSIFIER_FALLBACK_MODEL_ID,
+	CLASSIFIER_PRIMARY_MODEL_ID,
+	classifyToolCall,
+	parseClassifierOutput,
+} from "./classifier.js"
 
 const completeMock = vi.fn()
 
-vi.mock("@earendil-works/pi-ai", async () => {
-	const actual = await vi.importActual<typeof import("@earendil-works/pi-ai")>("@earendil-works/pi-ai")
+vi.mock("@earendil-works/pi-ai/compat", async () => {
+	const actual = await vi.importActual<typeof import("@earendil-works/pi-ai/compat")>("@earendil-works/pi-ai/compat")
 	return {
 		...actual,
 		complete: (...args: unknown[]) => completeMock(...args),
 	}
 })
 
-function fakeModel(id = "test-model"): Model<Api> {
-	return { provider: "openai", id, api: "openai-completions" } as Model<Api>
+function fakeModel(id = "test-model", provider = "openai"): Model<Api> {
+	return { provider, id, api: "openai-completions" } as Model<Api>
 }
 
-function fakeRegistry(apiKey = "fake-key"): ModelRegistry {
+function fakeRegistry(
+	available: Model<Api>[] = [fakeModel(CLASSIFIER_PRIMARY_MODEL_ID)],
+	apiKey = "fake-key",
+): ModelRegistry {
 	return {
+		getAvailable: vi.fn(() => available),
 		getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey, headers: {} }),
 	} as unknown as ModelRegistry
 }
@@ -43,27 +52,43 @@ describe("classifyToolCall", () => {
 	})
 
 	it("returns safe verdict on first attempt", async () => {
-		completeMock.mockResolvedValue(fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","reason":"fine"}' }))
+		completeMock.mockResolvedValue(
+			fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
+		)
 
 		const result = await classifyToolCall(
-			fakeModel(),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
 		)
 
 		expect(result.verdict).toBe("safe")
+		expect(result.riskScore).toBe("low")
 		expect(result.ok).toBe(true)
 		expect(completeMock).toHaveBeenCalledTimes(1)
+	})
+
+	it("keeps classifier tags while omitting Pi token limits for Kimchi", async () => {
+		let sentPayload: unknown
+		completeMock.mockImplementation((_model: unknown, _context: unknown, options: unknown) => {
+			const { onPayload } = options as { onPayload: (payload: unknown) => unknown }
+			sentPayload = onPayload({ max_completion_tokens: 100, max_tokens: 100, tags: ["existing"] })
+			return fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' })
+		})
+
+		await classifyToolCall(
+			fakeRegistry([fakeModel(CLASSIFIER_PRIMARY_MODEL_ID, "kimchi-dev")]),
+			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
+			{ timeoutMs: 5000 },
+		)
+
+		expect(sentPayload).toEqual({ tags: ["source:classifier", "existing"] })
 	})
 
 	it("retries up to 3 times on abort before giving up", async () => {
 		completeMock.mockResolvedValue(fakeResponse({ stopReason: "aborted" }))
 
 		const promise = classifyToolCall(
-			fakeModel("nemotron-test"),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "edit", input: { path: "foo.ts" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -75,18 +100,18 @@ describe("classifyToolCall", () => {
 		expect(result.verdict).toBe("requires-confirmation")
 		expect(result.ok).toBe(false)
 		expect(result.reason).toContain("classifier timeout")
-		expect(result.reason).toContain("nemotron-test")
+		expect(result.reason).toContain(CLASSIFIER_PRIMARY_MODEL_ID)
 		expect(completeMock).toHaveBeenCalledTimes(3)
 	})
 
 	it("succeeds on 2nd attempt after first abort", async () => {
 		completeMock
 			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","reason":"fine"}' }))
+			.mockResolvedValueOnce(
+				fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
+			)
 
 		const promise = classifyToolCall(
-			fakeModel(),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -96,6 +121,7 @@ describe("classifyToolCall", () => {
 		const result = await promise
 
 		expect(result.verdict).toBe("safe")
+		expect(result.riskScore).toBe("low")
 		expect(result.ok).toBe(true)
 		expect(completeMock).toHaveBeenCalledTimes(2)
 	})
@@ -104,11 +130,11 @@ describe("classifyToolCall", () => {
 		completeMock
 			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
 			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","reason":"fine"}' }))
+			.mockResolvedValueOnce(
+				fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
+			)
 
 		const promise = classifyToolCall(
-			fakeModel(),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -118,6 +144,7 @@ describe("classifyToolCall", () => {
 		const result = await promise
 
 		expect(result.verdict).toBe("safe")
+		expect(result.riskScore).toBe("low")
 		expect(result.ok).toBe(true)
 		expect(completeMock).toHaveBeenCalledTimes(3)
 	})
@@ -127,12 +154,12 @@ describe("classifyToolCall", () => {
 			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
 			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
 			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","reason":"fine"}' }))
+			.mockResolvedValueOnce(
+				fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
+			)
 
 		const promise = classifyToolCall(
-			fakeModel("primary-model"),
-			fakeModel("backoff-model"),
-			fakeRegistry(),
+			fakeRegistry([fakeModel(CLASSIFIER_PRIMARY_MODEL_ID), fakeModel(CLASSIFIER_FALLBACK_MODEL_ID)]),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
 		)
@@ -141,6 +168,7 @@ describe("classifyToolCall", () => {
 		const result = await promise
 
 		expect(result.verdict).toBe("safe")
+		expect(result.riskScore).toBe("low")
 		expect(result.ok).toBe(true)
 		expect(completeMock).toHaveBeenCalledTimes(4)
 	})
@@ -149,9 +177,7 @@ describe("classifyToolCall", () => {
 		completeMock.mockResolvedValue(fakeResponse({ stopReason: "aborted" }))
 
 		const promise = classifyToolCall(
-			fakeModel("primary-model"),
-			undefined,
-			fakeRegistry(),
+			fakeRegistry([fakeModel(CLASSIFIER_PRIMARY_MODEL_ID)]),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
 		)
@@ -180,8 +206,6 @@ describe("classifyToolCall", () => {
 		})
 
 		const promise = classifyToolCall(
-			fakeModel(),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -202,8 +226,6 @@ describe("classifyToolCall", () => {
 		controller.abort()
 
 		const result = await classifyToolCall(
-			fakeModel(),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -218,8 +240,6 @@ describe("classifyToolCall", () => {
 		completeMock.mockResolvedValue(fakeResponse({ stopReason: "error", errorMessage: "rate limit exceeded" }))
 
 		const result = await classifyToolCall(
-			fakeModel(),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -235,8 +255,6 @@ describe("classifyToolCall", () => {
 		completeMock.mockResolvedValue(fakeResponse({ stopReason: "stop", content: "not json at all" }))
 
 		const result = await classifyToolCall(
-			fakeModel(),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -261,9 +279,10 @@ describe("parseClassifierOutput", () => {
 		expect(r.verdict).toBe("requires-confirmation")
 	})
 
-	it("parses blocked", () => {
+	it("falls back to requires-confirmation for removed 'blocked' verdict", () => {
 		const r = parseClassifierOutput(`{"verdict":"blocked","reason":"destructive"}`)
-		expect(r.verdict).toBe("blocked")
+		expect(r.verdict).toBe("requires-confirmation")
+		expect(r.ok).toBe(false)
 	})
 
 	it("extracts embedded JSON when LLM adds prose", () => {
@@ -282,6 +301,7 @@ describe("parseClassifierOutput", () => {
 		const r = parseClassifierOutput(`{"verdict":"maybe","reason":"x"}`)
 		expect(r.verdict).toBe("requires-confirmation")
 		expect(r.ok).toBe(false)
+		expect(r.reason).toBe("x")
 	})
 
 	it("defaults reason when missing", () => {
@@ -290,18 +310,20 @@ describe("parseClassifierOutput", () => {
 	})
 
 	it("strips <think>…</think> and parses JSON after", () => {
-		const raw = `<think>The user is editing a test file, this is safe.</think>\n{"verdict":"safe","reason":"test file edit"}`
+		const raw = `<think>The user is editing a test file, this is safe.</think>\n{"verdict":"safe","riskScore":"low","reason":"test file edit"}`
 		const r = parseClassifierOutput(raw)
 		expect(r.ok).toBe(true)
 		expect(r.verdict).toBe("safe")
+		expect(r.riskScore).toBe("low")
 		expect(r.reason).toBe("test file edit")
 	})
 
 	it("strips <thinking>…</thinking> (alternate delimiter)", () => {
-		const raw = `<thinking>checking blast radius</thinking>\n{"verdict":"requires-confirmation","reason":"writes outside cwd"}`
+		const raw = `<thinking>checking blast radius</thinking>\n{"verdict":"requires-confirmation","riskScore":"medium","reason":"writes outside cwd"}`
 		const r = parseClassifierOutput(raw)
 		expect(r.ok).toBe(true)
 		expect(r.verdict).toBe("requires-confirmation")
+		expect(r.riskScore).toBe("medium")
 	})
 
 	it("ignores braces inside thinking block (the minimax-m2.7 bug)", () => {
@@ -309,10 +331,11 @@ describe("parseClassifierOutput", () => {
 		// then emits the real JSON after the closing tag. The naive
 		// indexOf('{') / lastIndexOf('}') approach latches onto braces
 		// inside the thinking text and returns null.
-		const raw = `<think>The answer should look like {verdict: safe, reason: ...} so I'll output it now.</think>\n{"verdict":"safe","reason":"file edit"}`
+		const raw = `<think>The answer should look like {verdict: safe, reason: ...} so I'll output it now.</think>\n{"verdict":"safe","riskScore":"low","reason":"file edit"}`
 		const r = parseClassifierOutput(raw)
 		expect(r.ok).toBe(true)
 		expect(r.verdict).toBe("safe")
+		expect(r.riskScore).toBe("low")
 		expect(r.reason).toBe("file edit")
 	})
 
@@ -326,9 +349,34 @@ describe("parseClassifierOutput", () => {
 
 	it("strips <mm:think>…</mm:think> (minimax-m3 delimiter)", () => {
 		const raw = `<mm:think>The answer should look like {verdict: safe} so I'll respond now.</mm:think>
-{"verdict":"safe","reason":"file edit"}`
+{"verdict":"safe","riskScore":"low","reason":"file edit"}`
 		const r = parseClassifierOutput(raw)
 		expect(r.ok).toBe(true)
 		expect(r.verdict).toBe("safe")
+		expect(r.riskScore).toBe("low")
+	})
+
+	it("defaults riskScore to undefined when missing", () => {
+		const r = parseClassifierOutput(`{"verdict":"safe","reason":"fine"}`)
+		expect(r.ok).toBe(true)
+		expect(r.verdict).toBe("safe")
+		expect(r.riskScore).toBeUndefined()
+	})
+
+	it("defaults riskScore to undefined when invalid", () => {
+		const r = parseClassifierOutput(`{"verdict":"safe","riskScore":"critical","reason":"fine"}`)
+		expect(r.ok).toBe(true)
+		expect(r.verdict).toBe("safe")
+		expect(r.riskScore).toBeUndefined()
+	})
+})
+
+describe("classifier model ids", () => {
+	it("primary is deepseek-v4-flash", () => {
+		expect(CLASSIFIER_PRIMARY_MODEL_ID).toBe("deepseek-v4-flash")
+	})
+
+	it("fallback is minimax-m3", () => {
+		expect(CLASSIFIER_FALLBACK_MODEL_ID).toBe("minimax-m3")
 	})
 })

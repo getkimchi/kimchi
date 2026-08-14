@@ -25,7 +25,6 @@ describe("bash hook discovery", () => {
 
 	afterEach(() => {
 		if (oldAgentDir === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset rather than stringified to "undefined"
 			delete process.env.KIMCHI_CODING_AGENT_DIR
 		} else {
 			process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir

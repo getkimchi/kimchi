@@ -1,15 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import type { Ferment, Phase } from "../../ferment/types.js"
-import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import type { PendingPlanReview } from "./plan-review.js"
 import type { FermentRuntime } from "./runtime.js"
 import { FERMENT_TOOL_NAMES } from "./tool-names.js"
 import {
-	IMPLEMENTATION_TOOL_NAMES,
-	PLANNING_TOOL_NAMES,
 	applyFermentRuntimeToolProfile,
 	applyFermentToolProfile,
+	PLANNING_TOOL_NAMES,
 	profileForFerment,
 } from "./tool-scope.js"
 

@@ -11,20 +11,20 @@
  * a single `title`; ferment's `promptForm` passes `title` + `description`.
  */
 
-import { type Theme, getSelectListTheme } from "@earendil-works/pi-coding-agent"
-import { Editor, Key, type KeyId, type TUI, matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { getSelectListTheme, type Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
+import { Editor, Key, type KeyId, matchesKey, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import {
 	type Answer,
-	type Question,
-	type QuestionnaireEffect,
-	type QuestionnaireEvent,
-	type QuestionnaireState,
 	allRequiredAnswered,
 	currentOptions,
 	currentQuestion,
 	initialState,
 	isSubmitTab,
+	type Question,
+	type QuestionnaireEffect,
+	type QuestionnaireEvent,
+	type QuestionnaireState,
 	reduce,
 } from "./questionnaire-reducer.js"
 

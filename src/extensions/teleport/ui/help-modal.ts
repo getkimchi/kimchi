@@ -1,5 +1,5 @@
 import type { ExtensionCommandContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
-import { type Component, Container, Key, Spacer, type TUI, Text, matchesKey } from "@earendil-works/pi-tui"
+import { type Component, Container, Key, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui"
 
 const TIPS: ReadonlyArray<{ keys: string; label: string }> = [
 	{ keys: "Ctrl+B then n / p / 1-9", label: "Cycle between remote sessions (next / prev / jump)" },
