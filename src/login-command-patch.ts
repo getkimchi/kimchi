@@ -15,6 +15,7 @@ import { Spacer, Text } from "@earendil-works/pi-tui"
 import {
 	createLoginChoiceSelector,
 	formatBrowserLoginMessage,
+	isKimchiProvider,
 	KIMCHI_DEFAULT_ENDPOINT,
 	KIMCHI_PROVIDER_ID,
 	performKimchiApiKeyLogin,
@@ -46,7 +47,7 @@ interface ModelRegistry {
 }
 
 interface SessionLike {
-	modelRegistry: ModelRegistry
+	modelRuntime: ModelRegistry
 	setModel(model: ModelLike): Promise<void>
 }
 
@@ -97,6 +98,16 @@ function addLoginFeedback(im: InteractiveMode, text: string): void {
 // biome-ignore lint/suspicious/noExplicitAny: private upstream prototype mutation
 const imProto = InteractiveMode.prototype as any
 
+const originalGetLoginProviderOptions = imProto.getLoginProviderOptions as (
+	// biome-ignore lint/suspicious/noExplicitAny: `this` context type for upstream prototype method is unknown
+	this: any,
+	authType?: "oauth" | "api_key",
+) => AuthSelectorProvider[]
+const originalGetLogoutProviderOptions = imProto.getLogoutProviderOptions as (
+	// biome-ignore lint/suspicious/noExplicitAny: `this` context type for upstream prototype method is unknown
+	this: any,
+) => Promise<AuthSelectorProvider[]>
+
 /**
  * Mutable delegate for the original upstream showOAuthSelector.
  * Exposed as a writable object property so tests can stub the logout
@@ -113,15 +124,29 @@ export const loginDelegate = {
 }
 
 export const warningDelegate = {
-	// biome-ignore lint/suspicious/noExplicitAny: `this` context type for upstream prototype method is unknown
+	// biome-ignore lint/suspicious/noExplicitAny: `this` context type for upstream prototype method is unknown`
 	original: imProto.showWarning as (this: any, warningMessage: string) => void,
 }
 
 /** Exported for testing: applies the prototype patch (idempotent re-apply is safe). */
 export function applyLoginCommandPatch(): void {
+	imProto.getLoginProviderOptions = patchedGetLoginProviderOptions
+	imProto.getLogoutProviderOptions = patchedGetLogoutProviderOptions
 	imProto.handleLoginCommand = patchedHandleLoginCommand
 	imProto.showOAuthSelector = patchedShowOAuthSelector
 	imProto.showWarning = patchedShowWarning
+}
+
+function visibleAuthProviders(providers: AuthSelectorProvider[]): AuthSelectorProvider[] {
+	return providers.filter((provider) => provider.id === KIMCHI_PROVIDER_ID || !isKimchiProvider(provider.id))
+}
+
+function patchedGetLoginProviderOptions(this: InteractiveMode, authType?: "oauth" | "api_key"): AuthSelectorProvider[] {
+	return visibleAuthProviders(originalGetLoginProviderOptions.call(this, authType))
+}
+
+async function patchedGetLogoutProviderOptions(this: InteractiveMode): Promise<AuthSelectorProvider[]> {
+	return visibleAuthProviders(await originalGetLogoutProviderOptions.call(this))
 }
 
 async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
@@ -129,7 +154,7 @@ async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 	const showStatus = modeLike.showStatus?.bind(modeLike)
 	const showError = im.showError.bind(im)
 	const session = modeLike.session
-	const registry = session?.modelRegistry
+	const registry = session?.modelRuntime
 	if (!registry) {
 		showError("Kimchi login failed: model registry is unavailable")
 		return
@@ -153,7 +178,7 @@ async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 	const showStatus = modeLike.showStatus?.bind(modeLike)
 	const showError = im.showError.bind(im)
 	const session = modeLike.session
-	const registry = session?.modelRegistry
+	const registry = session?.modelRuntime
 	if (!registry) {
 		showError("Kimchi API-key login failed: model registry is unavailable")
 		return
@@ -192,15 +217,13 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 		!modeLike.showSelector ||
 		!modeLike.getLoginProviderOptions ||
 		!modeLike.showLoginDialog ||
-		!modeLike.session?.modelRegistry
+		!modeLike.session?.modelRuntime
 	) {
 		void oauthDelegate.original.call(im, "login")
 		return
 	}
 
-	const providerOptions = modeLike
-		.getLoginProviderOptions("oauth")
-		.filter((provider) => provider.id !== KIMCHI_PROVIDER_ID)
+	const providerOptions = modeLike.getLoginProviderOptions("oauth").filter((provider) => !isKimchiProvider(provider.id))
 	if (providerOptions.length === 0) {
 		modeLike.showStatus?.("No subscription providers available.")
 		return
@@ -225,7 +248,7 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 
 					// After upstream login returns, refresh the registry so the models
 					// from models.json become available without requiring a manual /reload.
-					const registry = modeLike.session?.modelRegistry
+					const registry = modeLike.session?.modelRuntime
 					if (registry && typeof registry.refresh === "function") {
 						try {
 							await registry.refresh()
@@ -301,11 +324,11 @@ function patchedShowWarning(this: InteractiveMode, warningMessage: string): void
 
 function hasModelsAfterStartupAuth(im: InteractiveMode): boolean {
 	const modeLike = im as unknown as {
-		session?: { model?: unknown; modelRegistry?: { getAvailable?: () => unknown[] } }
+		session?: { model?: unknown; modelRuntime?: { getAvailable?: () => unknown[] } }
 	}
 	if (modeLike.session?.model) return true
 	try {
-		return (modeLike.session?.modelRegistry?.getAvailable?.().length ?? 0) > 0
+		return (modeLike.session?.modelRuntime?.getAvailable?.().length ?? 0) > 0
 	} catch {
 		return false
 	}

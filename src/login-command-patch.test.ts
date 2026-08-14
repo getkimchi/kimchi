@@ -67,7 +67,7 @@ function makeFakeInteractiveMode(registry: ReturnType<typeof makeFakeModelRegist
 			requestRender: vi.fn(),
 		},
 		session: {
-			modelRegistry: registry,
+			modelRuntime: registry,
 			setModel: vi.fn().mockResolvedValue(undefined),
 		},
 		showSelector: vi.fn((build: (done: () => void) => { component: unknown; focus?: unknown }) => {
@@ -474,12 +474,14 @@ it("rolls back API-key auth when fresh discovery succeeds but no Kimchi models b
 	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
 })
 
-it("routes the subscription option to upstream OAuth providers without showing Kimchi as a duplicate", async () => {
+it("routes the subscription option to OpenAI Codex without showing internal Kimchi providers", async () => {
 	const registry = makeFakeModelRegistry()
 	const fakeIm = makeFakeInteractiveMode(registry)
 	fakeIm.getLoginProviderOptions.mockReturnValue([
 		{ id: "kimchi-dev", name: "Kimchi", authType: "oauth" },
-		{ id: "anthropic", name: "Claude", authType: "oauth" },
+		{ id: "kimchi-dev/openai", name: "Kimchi", authType: "oauth" },
+		{ id: "kimchi-dev/anthropic", name: "Kimchi", authType: "oauth" },
+		{ id: "openai-codex", name: "OpenAI Codex", authType: "oauth" },
 	])
 
 	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
@@ -490,7 +492,37 @@ it("routes the subscription option to upstream OAuth providers without showing K
 	await waitForMockCall(fakeIm.showLoginDialog)
 
 	expect(fakeIm.getLoginProviderOptions).toHaveBeenCalledWith("oauth")
-	expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("anthropic", "Claude")
+	expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("openai-codex", "OpenAI Codex")
+})
+
+it("shows one Kimchi entry in generic configure and logout provider lists", async () => {
+	const providers = [
+		{ id: "kimchi-dev", name: "Kimchi", auth: { apiKey: { name: "API key" } } },
+		{ id: "kimchi-dev/openai", name: "Kimchi", auth: { apiKey: { name: "API key" } } },
+		{ id: "kimchi-dev/anthropic", name: "Kimchi", auth: { apiKey: { name: "API key" } } },
+		{ id: "anthropic", name: "Anthropic", auth: { apiKey: { name: "API key" } } },
+	]
+	const modelRuntime = {
+		getProvider: (providerId: string) => providers.find((provider) => provider.id === providerId),
+		getProviderAuthStatus: () => ({ configured: false }),
+		getProviders: () => providers,
+		isUsingOAuth: () => false,
+		listCredentials: async () => providers.map((provider) => ({ providerId: provider.id, type: "api_key" as const })),
+	}
+	const mode = { session: { modelRuntime } }
+	// biome-ignore lint/suspicious/noExplicitAny: private upstream prototype methods are patched by design
+	const prototype = InteractiveMode.prototype as any
+
+	expect(
+		prototype.getLoginProviderOptions
+			.call(mode, "api_key")
+			.map(({ id }: { id: string }) => id)
+			.sort(),
+	).toEqual(["anthropic", "kimchi-dev"])
+	expect((await prototype.getLogoutProviderOptions.call(mode)).map(({ id }: { id: string }) => id).sort()).toEqual([
+		"anthropic",
+		"kimchi-dev",
+	])
 })
 
 it("pre-populates subscription provider models in models.json before upstream login", async () => {

@@ -207,7 +207,7 @@ export function setKimchiAuthToken(
 	}
 }
 
-function getKimchiProviderIds(modelRegistry: ModelRegistryLike): Set<string> {
+export function getKimchiProviderIds(modelRegistry: ModelRegistryLike): Set<string> {
 	return new Set([
 		KIMCHI_PROVIDER_ID,
 		...modelRegistry
