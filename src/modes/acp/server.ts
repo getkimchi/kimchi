@@ -996,14 +996,17 @@ export class KimchiAcpAgent implements Agent {
 				if (msg.role !== "assistant") return
 				const usage = msg.usage
 				if (usage) {
-					turn.usage.input += usage.input
-					turn.usage.output += usage.output
-					turn.usage.cacheRead += usage.cacheRead
-					turn.usage.cacheWrite += usage.cacheWrite
-					turn.usage.total += usage.totalTokens
+					// `|| 0` guards against providers emitting undefined/NaN for a
+					// field the type declares required — one bad message must not
+					// poison the whole turn's totals.
+					turn.usage.input += usage.input || 0
+					turn.usage.output += usage.output || 0
+					turn.usage.cacheRead += usage.cacheRead || 0
+					turn.usage.cacheWrite += usage.cacheWrite || 0
+					turn.usage.total += usage.totalTokens || 0
 					// reasoning is a SUBSET of output (pi-ai 0.84 Usage docs) — summed
 					// separately for thoughtTokens only, never re-added to totals.
-					if (typeof usage.reasoning === "number") {
+					if (typeof usage.reasoning === "number" && Number.isFinite(usage.reasoning)) {
 						turn.usage.reasoning += usage.reasoning
 						turn.usage.sawReasoning = true
 					}
@@ -1329,8 +1332,18 @@ export class KimchiAcpAgent implements Agent {
 	 * fields, so there is no null-safe emission.
 	 */
 	private sendUsageUpdate(sessionId: string, entry: SessionRecord): void {
-		const ctx = entry.session.getContextUsage()
-		if (!ctx || ctx.tokens === null) return
+		// getContextUsage runs inside the synchronous event-emitter path; a
+		// throw here would abort turn processing, so swallow-and-log instead.
+		let ctx: ReturnType<AgentSession["getContextUsage"]>
+		try {
+			ctx = entry.session.getContextUsage()
+		} catch (err) {
+			process.stderr.write(`acp getContextUsage failed: ${String(err)}\n`)
+			return
+		}
+		// tokens is typed number|null, but at runtime a provider edge can also
+		// surface undefined or NaN — ACP requires a real `used`, so skip all three.
+		if (!ctx || typeof ctx.tokens !== "number" || !Number.isFinite(ctx.tokens)) return
 		this.send({
 			sessionId,
 			update: {
