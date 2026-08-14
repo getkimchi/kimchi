@@ -127,6 +127,12 @@ export type AcpSessionLoader = (params: LoadSessionRequest) => Promise<AgentSess
 export interface RunAcpOptions {
 	extensionFactories: ExtensionFactory[]
 	agentDir: string
+	/**
+	 * Content of the `--append-system-prompt` CLI flag, forwarded verbatim to
+	 * every session's DefaultResourceLoader. When a client also sends
+	 * `_meta["kimchi.dev"].systemPrompt`, meta content is appended after this.
+	 */
+	appendSystemPrompt?: string[]
 	/** Override for tests. Defaults to the pi-coding-agent-backed factory. */
 	sessionFactory?: AcpSessionFactory
 	/** Override for tests. Defaults to {@link defaultSessionLister}. */
@@ -1597,7 +1603,7 @@ function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
  * timeout, and load resources. Both the session loader and factory
  * diverge only in how they obtain a SessionManager.
  */
-async function createSessionSettings(cwd: string, options: RunAcpOptions) {
+async function createSessionSettings(cwd: string, options: RunAcpOptions, params: { _meta?: unknown }) {
 	// Construct untrusted first: pi's SettingsManager.create defaults
 	// projectTrusted to TRUE, which would let an untrusted repo's
 	// .pi/settings.json influence HTTP behavior (e.g. disable the idle
@@ -1619,6 +1625,7 @@ async function createSessionSettings(cwd: string, options: RunAcpOptions) {
 		agentDir: options.agentDir,
 		settingsManager,
 		extensionFactories: options.extensionFactories,
+		appendSystemPrompt: resolveAcpAppendSystemPrompt(params, options),
 	})
 	await resourceLoader.reload()
 	return { settingsManager, resourceLoader }
@@ -1699,7 +1706,7 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			const msg = err instanceof Error ? err.message : String(err)
 			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
 		}
-		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options)
+		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,
@@ -1711,10 +1718,36 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 	}
 }
 
+/**
+ * Extracts `_meta["kimchi.dev"].systemPrompt` from an ACP request and merges
+ * it with the `--append-system-prompt` CLI flag content (CLI flag first, meta
+ * second) into the array DefaultResourceLoader appends to the composed system
+ * prompt via the same appendSystemPrompt mechanism the CLI flag uses.
+ *
+ * Returns `undefined` when neither source contributes anything, so sessions
+ * created without `_meta["kimchi.dev"].systemPrompt` behave exactly as before.
+ * The `_meta` namespace mirrors CAPABILITIES_KEY (`kimchi.dev`) — ACP reserves
+ * `_meta` (additionalProperties: true) for custom data because "Implementations
+ * MUST NOT add any custom fields at the root of a type".
+ */
+export function resolveAcpAppendSystemPrompt(
+	params: { _meta?: unknown },
+	options: Pick<RunAcpOptions, "appendSystemPrompt">,
+): string[] | undefined {
+	const kimchiMeta = (params._meta as Record<string, unknown> | null | undefined)?.[CAPABILITIES_KEY]
+	const metaPrompt =
+		typeof kimchiMeta === "object" && kimchiMeta !== null
+			? (kimchiMeta as Record<string, unknown>).systemPrompt
+			: undefined
+	const metaEntries = typeof metaPrompt === "string" && metaPrompt.trim() !== "" ? [metaPrompt] : []
+	const combined = [...(options.appendSystemPrompt ?? []), ...metaEntries]
+	return combined.length > 0 ? combined : undefined
+}
+
 function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 	return async (params: NewSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
-		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options)
+		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,
