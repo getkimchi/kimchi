@@ -1,0 +1,277 @@
+spec:
+  include:
+    - local: /.gitlab/ci/benchmark.inputs.yml
+---
+
+include:
+  - component: $CI_SERVER_FQDN/castai/tooling/gitlab-ci-components/auth@v0.0.29
+
+default:
+  tags:
+    - runner::experimental
+  id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
+  interruptible: false
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - api_failure
+      - stuck_or_timeout_failure
+      - no_updates_running
+
+.gcloud-setup:
+  script:
+    - benchmark/scripts/gitlab/install_gcloud.sh
+
+.gcp-auth-vars:
+  variables: &gcp-auth-vars
+    GCP_SERVICE_ACCOUNT_EMAIL: cirunner@cicd-master-oxk5.iam.gserviceaccount.com
+    GCP_WORKLOAD_IDENTITY_PROVIDER: projects/865213359973/locations/global/workloadIdentityPools/castai-gitlab-wif-pool/providers/castai-kimchi-kimchi
+
+setup-image:
+  stage: prepare
+  image: mirror.gcr.io/library/node:22-bookworm
+  services:
+    - name: mirror.gcr.io/library/docker:27.5.1-dind
+      alias: docker
+  timeout: 30 min
+  resource_group: "$BENCHMARK_RESOURCE_GROUP"
+  rules:
+    - if: '$SUMMARY_ONLY == "true"'
+      when: never
+    - when: on_success
+  variables:
+    <<: *gcp-auth-vars
+    BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
+    CODING_AGENT: "$[[ inputs.agent ]]"
+    DEBIAN_FRONTEND: noninteractive
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - !reference [.auth-gcp-script]
+    - !reference [.gcloud-setup, script]
+  script:
+    - benchmark/scripts/gitlab/setup_image.sh
+  artifacts:
+    expire_in: 30 days
+    reports:
+      dotenv: bench.env
+
+.deep-swe-chunk:
+  stage: benchmark
+  image: "$BENCH_IMAGE"
+  tags:
+    - long
+  needs:
+    - job: setup-image
+      artifacts: true
+  services:
+    - name: mirror.gcr.io/library/docker:27.5.1-dind
+      alias: docker
+      command: ["--registry-mirror", "https://mirror.gcr.io"]
+  timeout: 24 hours
+  retry: 2
+  allow_failure: true
+  rules:
+    - if: '$SUMMARY_ONLY == "true"'
+      when: never
+    - when: on_success
+  variables:
+    <<: *gcp-auth-vars
+    BENCH_PARALLELISM: "$[[ inputs.parallelism ]]"
+    BENCH_ATTEMPTS: "$[[ inputs.attempts ]]"
+    BENCH_TIMEOUT_MULTIPLIER: "$[[ inputs.timeout_multiplier ]]"
+    BENCHMARK_NAME: deep-swe
+    BENCHMARK_RESULTS_DIR: benchmark/deep-swe/jobs
+    DATASET: deep-swe
+    BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
+    BENCHMARK_TAG: "$[[ inputs.benchmark_tag ]]"
+    CODING_AGENT: "$[[ inputs.agent ]]"
+    MODEL: "$[[ inputs.model ]]"
+    GCS_UPLOAD_REQUIRED: "true"
+    BENCH_TASKS_ALL: "$[[ inputs.tasks_all ]]"
+    KIMCHI_FERMENT_ONESHOT: "$[[ inputs.kimchi_ferment_oneshot ]]"
+    RUN_ID: "gitlab-p$CI_PIPELINE_ID"
+    BENCH_CHUNK_INDEX: "$CHUNK"
+    BENCH_CHUNK_COUNT: 3
+    BENCH_JOB_MAX_RETRIES: 2
+    BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
+    BENCH_LLM_TEMPERATURE: "$[[ inputs.temperature ]]"
+    BENCH_LLM_TOP_P: "$[[ inputs.top_p ]]"
+    BENCH_LLM_TOP_K: "$[[ inputs.top_k ]]"
+    BENCH_LLM_MAX_TOKENS: "$[[ inputs.max_tokens ]]"
+    USE_PIER: "true"
+    DEEP_SWE_TASKS_PATH: /tmp/deep-swe/tasks
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - !reference [.auth-gcp-script]
+    - !reference [.gcloud-setup, script]
+    - benchmark/scripts/gitlab/wait_for_docker.sh
+  script:
+    - export SELECTED_TASKS_JSON='$[[ inputs.tasks ]]'
+    - |
+      if [ ! -d /tmp/deep-swe ]; then
+        echo "==> Cloning DeepSWE tasks"
+        git clone --depth 1 https://github.com/datacurve-ai/deep-swe /tmp/deep-swe
+      fi
+    - |
+      echo "=========================================="
+      echo "DeepSWE — CI inputs"
+      echo "=========================================="
+      echo "agent:                    ${CODING_AGENT}"
+      echo "dataset:                  ${DATASET}"
+      echo "target_ref:               ${BENCHMARK_TARGET_REF}"
+      echo "tasks_all:                ${BENCH_TASKS_ALL}"
+      if [ "${BENCH_TASKS_ALL}" != "true" ]; then
+        echo "tasks:                    ${SELECTED_TASKS_JSON:-}"
+      fi
+      echo "model:                    ${MODEL}"
+      echo "kimchi_ferment_oneshot:   ${KIMCHI_FERMENT_ONESHOT}"
+      echo "parallelism:              ${BENCH_PARALLELISM}"
+      echo "attempts:                 ${BENCH_ATTEMPTS}"
+      echo "timeout_multiplier:       ${BENCH_TIMEOUT_MULTIPLIER}"
+      echo "retry_agent_timeout:      ${BENCH_RETRY_AGENT_TIMEOUT}"
+      echo "max_retries:              ${BENCH_JOB_MAX_RETRIES:-0}"
+      echo "temperature:              ${BENCH_LLM_TEMPERATURE}"
+      echo "top_p:                    ${BENCH_LLM_TOP_P}"
+      echo "top_k:                    ${BENCH_LLM_TOP_K}"
+      echo "max_tokens:               ${BENCH_LLM_MAX_TOKENS}"
+      echo "chunk:                    ${BENCH_CHUNK_INDEX}/${BENCH_CHUNK_COUNT}"
+      echo "engine:                   Pier"
+      echo "------------------------------------------"
+      if [ "${CODING_AGENT}" = "kimchi" ]; then
+        model_label="single-model"
+        [ "${MODEL}" = "multi-model" ] && model_label="multi-model"
+        extras=""
+        [ "${KIMCHI_FERMENT_ONESHOT}" = "true" ] && extras=" · ferment"
+        echo "Configuration: ${model_label}${extras}"
+      else
+        echo "Configuration: n/a (agent=${CODING_AGENT})"
+      fi
+      echo "=========================================="
+    - python3 benchmark/scripts/gitlab/chunk_runner.py
+  after_script:
+    - python3 benchmark/scripts/gitlab/redact_api_key.py
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - benchmark/deep-swe/jobs/
+      - .benchmark/run-metadata.json
+
+deep-swe-chunks:
+  extends: .deep-swe-chunk
+  parallel:
+    matrix:
+      - CHUNK: [0, 1, 2]
+
+deep-swe-summary:
+  stage: postprocess
+  rules:
+    - if: '$SUMMARY_ONLY == "true"'
+      when: never
+    - when: always
+  image: mirror.gcr.io/library/node:22-bookworm
+  needs:
+    - job: deep-swe-chunks
+      artifacts: true
+  variables:
+    <<: *gcp-auth-vars
+    BENCHMARK_RESULTS_DIR: benchmark/deep-swe/jobs
+    BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
+    BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
+    DEBIAN_FRONTEND: noninteractive
+    FF_TIMESTAMPS: "true"
+    GCS_UPLOAD_REQUIRED: "true"
+  before_script:
+    - !reference [.auth-gcp-script]
+    - !reference [.gcloud-setup, script]
+  script:
+    - python3 benchmark/scripts/gitlab/summarize_results.py
+    - python3 benchmark/scripts/gitlab/upload_gcs.py
+    - python3 benchmark/scripts/gitlab/upload_summary_gcs.py
+  artifacts:
+    when: always
+    expire_in: 30 days
+    name: "deep-swe-summary-$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID"
+    paths:
+      - .benchmark/run-metadata.json
+      - .benchmark/summary.json
+
+deep-swe-analyze:
+  stage: postprocess
+  rules:
+    - if: '$SUMMARY_ONLY == "true"'
+      when: never
+    - if: $[[ inputs.analyze_results ]] == true
+      when: always
+    - when: never
+  image: "$BENCH_IMAGE"
+  tags:
+    - long
+  id_tokens: {}
+  needs:
+    - job: setup-image
+      artifacts: true
+    - job: deep-swe-chunks
+      artifacts: true
+    - job: deep-swe-summary
+      artifacts: true
+  timeout: 3h 30min
+  variables:
+    BENCHMARK_RESULTS_DIR: benchmark/deep-swe/jobs
+    DEBIAN_FRONTEND: noninteractive
+    FF_TIMESTAMPS: "true"
+    KIMCHI_ANALYSIS_MODEL: "kimchi-dev/glm-5.2-fp8"
+    KIMCHI_ANALYSIS_MAX_RETRIES: "2"
+    KIMCHI_ANALYSIS_TIMEOUT_SECONDS: "3600"
+  script:
+    - python3 benchmark/scripts/gitlab/analyze_sessions.py
+  artifacts:
+    when: always
+    expire_in: 30 days
+    name: "deep-swe-analysis-$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID"
+    paths:
+      - .benchmark/analysis.html
+
+deep-swe-upload-analysis:
+  stage: postprocess
+  rules:
+    - if: '$SUMMARY_ONLY == "true"'
+      when: never
+    - if: $[[ inputs.analyze_results ]] == true
+      when: on_success
+    - when: never
+  image: mirror.gcr.io/library/node:22-bookworm
+  needs:
+    - job: deep-swe-summary
+      artifacts: true
+    - job: deep-swe-analyze
+      artifacts: true
+  variables:
+    <<: *gcp-auth-vars
+    DEBIAN_FRONTEND: noninteractive
+    FF_TIMESTAMPS: "true"
+    GCS_UPLOAD_REQUIRED: "true"
+  before_script:
+    - !reference [.auth-gcp-script]
+    - !reference [.gcloud-setup, script]
+  script:
+    - python3 benchmark/scripts/gitlab/upload_analysis_gcs.py
+
+summarize-benchmark-analysis:
+  stage: summarize
+  image: mirror.gcr.io/library/node:22-bookworm
+  variables:
+    <<: *gcp-auth-vars
+    DEBIAN_FRONTEND: noninteractive
+  before_script:
+    - !reference [.auth-gcp-script]
+    - !reference [.gcloud-setup, script]
+  script:
+    - python3 benchmark/scripts/gitlab/summarize_analysis.py
+  rules:
+    - if: '$SUMMARY_ONLY == "true"'
+      when: always
+    - when: never

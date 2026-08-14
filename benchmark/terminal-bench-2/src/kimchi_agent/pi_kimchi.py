@@ -23,20 +23,22 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from harbor.agents.installed.base import (
+from pier.agents.installed.base import (
     BaseInstalledAgent,
     CliFlag,
     NonZeroAgentExitCodeError,
     with_prompt_template,
 )
-from harbor.models.trial.result import AgentInfo, ModelInfo
+from pier.models.agent.install import AgentInstallSpec, InstallStep
 from pydantic import ValidationError
 
+from kimchi_agent.framework import HarborCompatMixin, agent_info_types
 from kimchi_agent.gateway import (
     KIMCHI_API_KEY_ENV,
     KimchiGatewayMixin,
 )
 from kimchi_agent.git_install import (
+    GIT_INSTALL_COMMAND,
     GIT_INSTALL_ENV,
     git_config_command,
     git_init_and_commit_baseline_command,
@@ -71,7 +73,7 @@ def _model_provider_label(model_name: str | None) -> str:
 
 if TYPE_CHECKING:
     from harbor.environments.base import BaseEnvironment
-    from harbor.models.agent.context import AgentContext
+    from pier.models.agent.context import AgentContext
 
 # In-container paths. /logs/agent is bind-mounted to self.logs_dir on the host.
 CONTAINER_LOGS_DIR = "/logs/agent"
@@ -138,7 +140,7 @@ def _tail_output(text: str | None, max_lines: int = PI_EXIT_OUTPUT_TAIL_LINES) -
     return "\n".join([f"... [showing last {max_lines} lines]", *lines[-max_lines:]])
 
 
-class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
+class PiKimchi(KimchiGatewayMixin, HarborCompatMixin, BaseInstalledAgent):
     """Harbor agent that runs the bare ``pi`` CLI inside the task container.
 
     Unlike the ``Kimchi`` adapter (which runs the kimchi binary = pi +
@@ -181,7 +183,10 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
     def name() -> str:
         return "pi-kimchi"
 
-    def to_agent_info(self) -> AgentInfo:
+    def to_agent_info(self):
+        # Framework-matched types: each runner's TrialResult only accepts its
+        # own AgentInfo (see kimchi_agent.framework).
+        AgentInfo, ModelInfo = agent_info_types()
         return AgentInfo(
             name=self.name(),
             version=self.version() or "unknown",
@@ -203,6 +208,28 @@ class PiKimchi(KimchiGatewayMixin, BaseInstalledAgent):
         # pi comes either from the offline bundle or from a global npm install;
         # put both on PATH, then print the version.
         return f"{self._path_setup()}; pi --version"
+
+    def install_spec(self) -> AgentInstallSpec:
+        """Declarative install steps for Docker image fingerprinting.
+
+        PiKimchi's install is network-dependent (npm install, nvm) and
+        cannot be fully expressed as cached Docker layers. The pure-shell
+        git install step is declared for fingerprinting; the rest runs in
+        :meth:`install` at setup time.
+        """
+        return AgentInstallSpec(
+            agent_name=self.name(),
+            version=self._version,
+            steps=[
+                InstallStep(
+                    user="root",
+                    env=dict(GIT_INSTALL_ENV),
+                    run=GIT_INSTALL_COMMAND,
+                ),
+                InstallStep(user="agent", run=git_config_command()),
+            ],
+            verification_command=self.get_version_command(),
+        )
 
     def parse_version(self, stdout: str) -> str:
         return stdout.strip().splitlines()[-1].strip()

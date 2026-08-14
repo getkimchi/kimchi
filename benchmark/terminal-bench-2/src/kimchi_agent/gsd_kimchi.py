@@ -3,11 +3,13 @@ import shlex
 from pathlib import Path
 from typing import Any
 
-from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
 from harbor.environments.base import BaseEnvironment
-from harbor.models.agent.context import AgentContext
+from pier.agents.installed.base import BaseInstalledAgent, with_prompt_template
+from pier.models.agent.context import AgentContext
+from pier.models.agent.install import AgentInstallSpec, InstallStep
 from pydantic import ValidationError
 
+from kimchi_agent.framework import HarborCompatMixin, agent_info_types
 from kimchi_agent.gateway import (
     KIMCHI_API_KEY_ENV,
     KIMCHI_OPENAI_BASE_URL,
@@ -49,7 +51,7 @@ GSD_ROLE_KEYS = (
 )
 
 
-class GsdKimchi(KimchiGatewayMixin, BaseInstalledAgent):
+class GsdKimchi(KimchiGatewayMixin, HarborCompatMixin, BaseInstalledAgent):
     """Harbor GSD agent wired to one selected Kimchi OpenAI-compatible model."""
 
     SUPPORTS_ATIF: bool = False
@@ -58,8 +60,43 @@ class GsdKimchi(KimchiGatewayMixin, BaseInstalledAgent):
     def name() -> str:
         return "gsd-kimchi"
 
+    def to_agent_info(self):
+        # Framework-matched types: each runner's TrialResult only accepts its
+        # own AgentInfo, and the pier base class builds pier's type
+        # unconditionally (see kimchi_agent.framework).
+        AgentInfo, ModelInfo = agent_info_types()
+        return AgentInfo(
+            name=self.name(),
+            version=self.version() or "unknown",
+            model_info=(
+                ModelInfo(
+                    name=self._parsed_model_name,
+                    provider=self._parsed_model_provider,
+                )
+                if self._parsed_model_name
+                else None
+            ),
+        )
+
     def get_version_command(self) -> str | None:
         return 'export NVM_DIR="$HOME/.nvm"; [ ! -s "$NVM_DIR/nvm.sh" ] || . "$NVM_DIR/nvm.sh"; gsd --version'
+
+    def install_spec(self) -> AgentInstallSpec:
+        """Declarative install steps for Docker image fingerprinting.
+
+        GsdKimchi's install is network-dependent (npm install, nvm) and
+        cannot be fully expressed as cached Docker layers. The pure-shell
+        git install step is declared for fingerprinting; the rest runs in
+        :meth:`install` at setup time.
+        """
+        return AgentInstallSpec(
+            agent_name=self.name(),
+            version=self._version,
+            steps=[
+                InstallStep(user="root", run=git_config_command()),
+            ],
+            verification_command=self.get_version_command(),
+        )
 
     async def install(self, environment: BaseEnvironment) -> None:
         await self.exec_as_root(

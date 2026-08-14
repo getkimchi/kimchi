@@ -94,6 +94,20 @@ DEFAULT_KIMCHI_FERMENT_ONESHOT = "false"
 ENV_KIMCHI_COMPACTION = "KIMCHI_COMPACTION"
 DEFAULT_KIMCHI_COMPACTION = "auto"
 
+# --- Execution engine ---
+# When true, chunk_runner uses Pier (harbor fork) instead of Harbor.
+# DeepSWE tasks require Pier for pre_artifacts.sh and air-gapped allowlists.
+ENV_USE_PIER = "USE_PIER"
+DEFAULT_USE_PIER = False
+
+ENV_DEEP_SWE_TASKS_PATH = "DEEP_SWE_TASKS_PATH"
+DEFAULT_DEEP_SWE_TASKS_PATH = "/tmp/deep-swe/tasks"
+
+
+def use_pier() -> bool:
+    """Return whether the current run should use Pier instead of Harbor."""
+    return os.environ.get(ENV_USE_PIER, str(DEFAULT_USE_PIER)).lower() == "true"
+
 ENV_DATASET = "DATASET"
 DEFAULT_DATASET = "terminal-bench/terminal-bench-2-1"
 

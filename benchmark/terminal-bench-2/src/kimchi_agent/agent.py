@@ -7,16 +7,18 @@ import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from harbor.agents.installed.base import (
+from pier.agents.installed.base import (
     BaseInstalledAgent,
     CliFlag,
     NonZeroAgentExitCodeError,
     with_prompt_template,
 )
-from harbor.models.trial.result import AgentInfo, ModelInfo
+from pier.models.agent.install import AgentInstallSpec, InstallStep
+from pier.models.agent.network import NetworkAllowlist
 from pydantic import ValidationError
 
 from kimchi_agent.config import KimchiAgentConfig
+from kimchi_agent.framework import HarborCompatMixin, agent_info_types
 from kimchi_agent.git_install import (
     GIT_INSTALL_COMMAND,
     GIT_INSTALL_ENV,
@@ -42,7 +44,7 @@ from kimchi_agent.zai import (
 
 if TYPE_CHECKING:
     from harbor.environments.base import BaseEnvironment
-    from harbor.models.agent.context import AgentContext
+    from pier.models.agent.context import AgentContext
 
 
 # The release tarball (and local `pnpm run build:binary` output) is laid out as
@@ -197,7 +199,7 @@ class KimchiExitError(NonZeroAgentExitCodeError):
         )
 
 
-class Kimchi(BaseInstalledAgent):
+class Kimchi(HarborCompatMixin, BaseInstalledAgent):
     """Harbor agent that runs the kimchi binary inside the task container.
 
     Binary source:
@@ -263,19 +265,116 @@ class Kimchi(BaseInstalledAgent):
     def name() -> str:
         return "kimchi"
 
-    def to_agent_info(self) -> AgentInfo:
+    def to_agent_info(self):
+        """Return the AgentInfo type of the framework driving this process.
+
+        Both Harbor (terminal-bench-2) and Pier (deep-swe) load this class,
+        and each framework's pydantic TrialResult only accepts its own
+        AgentInfo type. ``agent_info_types()`` picks the matching classes.
+        """
+        AgentInfo, ModelInfo = agent_info_types()
         if self._multi_model_enabled:
             return AgentInfo(
                 name=self.name(),
                 version=self.version() or "unknown",
                 model_info=ModelInfo(name="multi-model", provider="kimchi"),
             )
-        return super().to_agent_info()
+        return AgentInfo(
+            name=self.name(),
+            version=self.version() or "unknown",
+            model_info=(
+                ModelInfo(
+                    name=self._parsed_model_name,
+                    provider=self._parsed_model_provider,
+                )
+                if self._parsed_model_name
+                else None
+            ),
+        )
+
+    def network_allowlist(self) -> NetworkAllowlist:
+        """Domains the in-container kimchi binary may need at runtime.
+
+        pier 0.3.0 calls this at environment creation to configure the egress
+        proxy. The set is model-dependent: kimchi-dev/* routes through the
+        Kimchi gateway, openrouter/* through OpenRouter, and anthropic/* through
+        the native Anthropic API. Multi-model can route to any of them.
+        """
+        domains: set[str] = set()
+        if self._multi_model_enabled:
+            domains.update({"llm.kimchi.dev", "openrouter.ai", "api.anthropic.com"})
+        elif is_openrouter_model(self.model_name):
+            domains.add("openrouter.ai")
+        elif is_anthropic_model(self.model_name):
+            domains.add("api.anthropic.com")
+        else:
+            # kimchi-dev/* models route through the Kimchi LLM gateway.
+            domains.add("llm.kimchi.dev")
+        return NetworkAllowlist(domains=sorted(domains))
+
+    def install_spec(self) -> AgentInstallSpec:
+        """Declarative install steps for Docker image fingerprinting.
+
+        pier 0.3.0 calls this before setup to compute a cache fingerprint and
+        to optionally inline install steps into a Dockerfile build context.
+        The actual binary upload and copy still happen in :meth:`install`
+        (called by harbor's ``setup()``), because ``upload_dir`` cannot be
+        expressed as a shell ``InstallStep``.
+
+        Only the pure-shell, idempotent portions (git install + identity) are
+        declared here so they can be cached in a Docker layer. The binary copy
+        step references the host-uploaded stage dir and must run at setup time.
+        """
+        return AgentInstallSpec(
+            agent_name=self.name(),
+            version=self._version,
+            steps=[
+                InstallStep(
+                    user="root",
+                    env=dict(GIT_INSTALL_ENV),
+                    run=GIT_INSTALL_COMMAND,
+                ),
+                InstallStep(user="agent", run=git_config_command()),
+            ],
+            verification_command=self.get_version_command(),
+        )
 
     def get_version_command(self) -> str | None:
         # PI_PACKAGE_DIR tells entry.ts where to find package.json + theme/; without it
         # the binary falls back to $XDG_DATA_HOME/$HOME and errors out before printing the version.
         return f"PI_PACKAGE_DIR={shlex.quote(PI_PACKAGE_DIR)} {shlex.quote(BINARY_PATH)} --version"
+
+    async def setup(self, environment: BaseEnvironment) -> None:
+        """Override pier's setup to always run install().
+
+        Pier's BaseInstalledAgent.setup() skips install() when the environment
+        was pre-built with install_spec() steps inlined into the Dockerfile
+        (is_preinstalled=True). But Kimchi.install() does the binary upload
+        (upload_dir + cp), which cannot be expressed as an InstallStep and
+        must always run. The install_spec() steps (git install, git config)
+        are idempotent, so re-running them is harmless.
+        """
+        await environment.exec(command=f"mkdir -p {INSTALL_DIR}", user="root")
+
+        setup_dir = self.logs_dir / "setup"
+        setup_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            await self.install(environment)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Agent install failed: {exc}") from exc
+
+        if self._version is None:
+            version_cmd = self.get_version_command()
+            if version_cmd:
+                try:
+                    version_result = await environment.exec(command=version_cmd)
+                    if version_result.return_code == 0 and version_result.stdout:
+                        self._version = self.parse_version(version_result.stdout)
+                except Exception:
+                    pass  # Version detection is best-effort
 
     def parse_version(self, stdout: str) -> str:
         return stdout.strip().splitlines()[-1].strip()

@@ -83,6 +83,26 @@ include:
       top_k: $[[ inputs.top_k ]]
       max_tokens: $[[ inputs.max_tokens ]]
       thinking_level: $[[ inputs.thinking_level ]]
+  - local: /.gitlab/ci/deep-swe.yml
+    rules:
+      - if: '"$[[ inputs.benchmark ]]" == "deep-swe" && ($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api")'
+    inputs:
+      agent: $[[ inputs.agent ]]
+      target_ref: $[[ inputs.target_ref ]]
+      benchmark_tag: $[[ inputs.benchmark_tag ]]
+      tasks_all: $[[ inputs.tasks_all ]]
+      tasks: $[[ inputs.tasks ]]
+      model: $[[ inputs.model ]]
+      kimchi_ferment_oneshot: $[[ inputs.kimchi_ferment_oneshot ]]
+      analyze_results: $[[ inputs.analyze_results ]]
+      retry_agent_timeout: $[[ inputs.retry_agent_timeout ]]
+      parallelism: $[[ inputs.parallelism ]]
+      attempts: $[[ inputs.attempts ]]
+      timeout_multiplier: $[[ inputs.timeout_multiplier ]]
+      temperature: $[[ inputs.temperature ]]
+      top_p: $[[ inputs.top_p ]]
+      top_k: $[[ inputs.top_k ]]
+      max_tokens: $[[ inputs.max_tokens ]]
 
 benchmarks-tests:
   stage: prepare

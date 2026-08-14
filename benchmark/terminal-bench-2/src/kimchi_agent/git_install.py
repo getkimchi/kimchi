@@ -13,14 +13,16 @@ GIT_INSTALL_ENV = {"DEBIAN_FRONTEND": "noninteractive"}
 
 # Install git across the three common base image families (Alpine, Debian/Ubuntu, RHEL).
 GIT_INSTALL_COMMAND = (
-    "if command -v apk &> /dev/null; then"
+    # Skip entirely if git is already available (e.g. baked into the Docker
+    # image via install_spec). This avoids network access in air-gapped tasks.
+    "if command -v git &> /dev/null; then"
+    "  echo 'git already installed:' $(git --version);"
+    " elif command -v apk &> /dev/null; then"
     "  apk add --no-cache git;"
     " elif command -v apt-get &> /dev/null; then"
     "  apt-get update && apt-get install -y git;"
     " elif command -v yum &> /dev/null; then"
     "  yum install -y git;"
-    " elif command -v git &> /dev/null; then"
-    "  echo 'git already installed:' $(git --version);"
     " else"
     '  echo "Warning: No known package manager found and git not present" >&2;'
     " fi"

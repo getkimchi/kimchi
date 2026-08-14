@@ -100,6 +100,16 @@ def test_fetch_all_tasks_reads_swebenchpro_from_file() -> None:
     assert len(tasks) == 731
     assert tasks[0].startswith("instance_")
 
+
+def test_fetch_all_tasks_reads_deep_swe_from_file() -> None:
+    """_fetch_all_tasks reads deep-swe tasks from the static JSON file."""
+    tasks = _fetch_all_tasks("deep-swe", bench_dir=_BENCH_SCRIPTS_DIR)
+
+    assert len(tasks) == 113
+    assert "fastapi-deprecation-response-headers" in tasks
+    assert "abs-module-cache-flags" in tasks
+
+
 def test_fetch_all_tasks_raises_for_unknown_dataset(tmp_path: Path) -> None:
     """_fetch_all_tasks raises RuntimeError for a dataset with no static file."""
     with pytest.raises(RuntimeError, match="No task list file for dataset"):

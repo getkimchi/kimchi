@@ -1,12 +1,13 @@
 inputs:
   benchmark:
-    description: "Which benchmark to run. 'terminal-bench-2-1' (TB2.1, default), 'terminal-bench-2' (original TB2), or 'swe-bench-pro'."
+    description: "Which benchmark to run. 'terminal-bench-2-1' (TB2.1, default), 'terminal-bench-2' (original TB2), 'swe-bench-pro', or 'deep-swe'."
     type: string
     default: "terminal-bench-2-1"
     options:
       - "terminal-bench-2"
       - "terminal-bench-2-1"
       - "swe-bench-pro"
+      - "deep-swe"
   agent:
     description: "Benchmark agent to run. 'kimchi-workflow' and 'pi-workflow' both run a named workflow through the kimchi-workflows extension — the first hosted by the kimchi binary built from target_ref, the second by stock pi, which isolates the workflow from kimchi's extension layer. 'claude-code-standard' uses the stock Claude Code release against the native Anthropic API (no Kimchi gateway)."
     type: string

@@ -38,6 +38,7 @@ from bench_config import (
     DEFAULT_BENCHMARK_RESULTS_DIR,
     DEFAULT_BENCHMARK_RUN_METADATA,
     DEFAULT_CODING_AGENT,
+    DEFAULT_DEEP_SWE_TASKS_PATH,
     DEFAULT_KIMCHI_COMPACTION,
     DEFAULT_MODEL,
     DEFAULT_WORKFLOW,
@@ -50,6 +51,7 @@ from bench_config import (
     ENV_BENCHMARK_RUN_METADATA,
     ENV_BENCHMARK_TARGET_REF,
     ENV_CODING_AGENT,
+    ENV_DEEP_SWE_TASKS_PATH,
     ENV_KIMCHI_COMPACTION,
     ENV_KIMCHI_FERMENT_ONESHOT,
     ENV_MODEL,
@@ -67,6 +69,7 @@ from bench_config import (
     parse_model,
     resolve_thinking_level,
     should_retry_agent_timeout,
+    use_pier,
 )
 from chunk_slicing import slice_tasks
 from classify import classify
@@ -77,6 +80,7 @@ from harbor_runner import (
     format_command_for_log,
     run_harbor,
 )
+from pier_runner import build_pier_command, run_pier
 from reconcile import compute_chunk_progress, is_chunk_complete, missing_tasks
 
 # Directory containing static per-dataset task lists (JSON arrays of task name strings).
@@ -88,6 +92,7 @@ _DATASET_FILE_MAP: dict[str, str] = {
     "terminal-bench/terminal-bench-2": "terminal-bench-2.json",
     "terminal-bench/terminal-bench-2-1": "terminal-bench-2-1.json",
     "swebenchpro": "swebenchpro.json",
+    "deep-swe": "deep-swe.json",
 }
 
 
@@ -1470,6 +1475,21 @@ def main() -> int:
     agent_import_path = _agent_import_path(coding_agent)
     env = os.environ.copy()
 
+    # Invoke Harbor or Pier on the missing/infra tasks
+    engine_name = "Pier" if use_pier() else "Harbor"
+    print(
+        f"[chunk-{chunk_index}/attempt-{chunk_attempt}]"
+        f" running {engine_name} on {len(expected)} tasks: {expected}",
+        flush=True,
+    )
+    # Per-chunk job name to avoid timestamp collisions when parallel chunks
+    # start within the same second. Harbor defaults the job directory name to
+    # `YYYY-MM-DD__HH-MM-SS`; with 3 chunks dispatched at the same instant
+    # they can collapse onto the same name and clobber each other's
+    # `config.json`, `result.json`, `job.log`, `lock.json` (last writer wins).
+    # Embedding the chunk index + CI_JOB_ID guarantees a unique name per chunk.
+    job_name = f"chunk-{chunk_index}-{os.environ.get('CI_JOB_ID', 'local')}"
+
     # Phase 5: run missing work in k=1 rounds. Harbor's -k is global, so each
     # round gives every task still missing at least one trial exactly one
     # attempt. This keeps attempt accounting exact when tasks have different
@@ -1482,13 +1502,29 @@ def main() -> int:
     final_needs_retry: list[str] = []
     deadline_reached = False
     harbor_failure_status: int | None = None
-    round_num = 0
-    round_cap = max(1, attempts)
-    while round_num < round_cap:
-        round_num += 1
-        # Classify + write enriched local artifacts (preserves resume state)
-        # and recompute durable progress each round so we schedule exactly the
-        # missing trials.
+
+    if use_pier():
+        cmd = build_pier_command(
+            tasks=expected,
+            agent_import_path=agent_import_path,
+            model=model,
+            task_path=os.environ.get(ENV_DEEP_SWE_TASKS_PATH, DEFAULT_DEEP_SWE_TASKS_PATH),
+            parallelism=parallelism,
+            attempts=attempts,
+            timeout_multiplier=timeout_multiplier,
+            jobs_dir=results_dir,
+            job_name=job_name,
+            kimchi_ferment_oneshot=kimchi_ferment_oneshot,
+            coding_agent=coding_agent,
+            llm_params=llm_params,
+            llm_per_model_params=llm_per_model_params,
+        )
+        print(f"[chunk-{chunk_index}] command: {format_command_for_log(cmd)}", flush=True)
+        proc = run_pier(cmd=cmd, cwd=bench_dir, env=env)
+        pier_status = proc.wait()
+        print(f"[chunk-{chunk_index}] Pier exited with status {pier_status}", flush=True)
+        if pier_status != 0:
+            harbor_failure_status = pier_status
         write_enriched_results(results_dir=results_dir, expected_tasks=expected)
         task_to_trials = {
             task: _all_trial_dirs_for_task(results_dir, task) for task in expected
@@ -1496,84 +1532,104 @@ def main() -> int:
         progress = compute_chunk_progress(
             task_to_trial_dirs=task_to_trials,
             target_trials=attempts,
-            # The current GitLab job is itself an available attempt, including
-            # when it is the final allowed job. Only terminalize retryable
-            # results after this job has finished scheduling its work.
             retry_budget_exhausted=False,
         )
-        missing = missing_tasks(progress)
-        if not missing:
-            print(
-                f"[chunk-{chunk_index}/attempt-{chunk_attempt}] all {len(expected)} "
-                f"trials durable after round {round_num}",
-                flush=True,
-            )
-            break
-
+        final_needs_retry = missing_tasks(progress)
         if time.monotonic() >= soft_deadline_monotonic:
-            print(
-                f"[chunk-{chunk_index}] soft deadline reached before round "
-                f"{round_num}; stopping after {round_num - 1} round(s)",
-                flush=True,
-            )
             deadline_reached = True
-            final_needs_retry = missing
-            break
-
-        # k=1 each round so attempt accounting stays exact across tasks with
-        # different durable-trial counts.
-        harbor_attempts = 1
-        print(
-            f"[chunk-{chunk_index}/attempt-{chunk_attempt}/round-{round_num}] "
-            f"running Harbor (k=1) on {len(missing)} tasks: {missing}",
-            flush=True,
-        )
-        job_name = f"chunk-{chunk_index}-{os.environ.get('CI_JOB_ID', 'local')}-r{round_num}"
-        harbor_status, _received_signal = _run_harbor_invocation(
-            tasks=missing,
-            agent_import_path=agent_import_path,
-            model=model,
-            dataset=dataset,
-            parallelism=parallelism,
-            attempts=harbor_attempts,
-            timeout_multiplier=timeout_multiplier,
-            jobs_dir=results_dir,
-            job_name=job_name,
-            kimchi_ferment_oneshot=kimchi_ferment_oneshot,
-            kimchi_disable_compaction=kimchi_disable_compaction,
-            coding_agent=coding_agent,
-            llm_params=llm_params,
-            llm_per_model_params=llm_per_model_params,
-            thinking_level=thinking_level,
-            checkpoint_plugin=checkpoint_plugin,
-            results_dir=results_dir,
-            chunk_index=chunk_index,
-            bench_dir=bench_dir,
-            env=env,
-            soft_deadline_monotonic=soft_deadline_monotonic,
-        )
-        # Recompute progress after Harbor finishes this round so the loop
-        # condition reflects the latest durable trials.
-        write_enriched_results(results_dir=results_dir, expected_tasks=expected)
-        if harbor_status != 0:
-            # Harbor failed (or was terminated by the soft deadline mid-round).
-            # Preserve that infrastructure failure independently of local
-            # reconciliation: a checkpoint hook runs after Harbor writes
-            # result.json, so an upload failure can leave an apparently final
-            # local trial that is not durable in GCS.
-            harbor_failure_status = harbor_status
+    else:
+        round_num = 0
+        round_cap = max(1, attempts)
+        while round_num < round_cap:
+            round_num += 1
+            # Classify + write enriched local artifacts (preserves resume state)
+            # and recompute durable progress each round so we schedule exactly the
+            # missing trials.
+            write_enriched_results(results_dir=results_dir, expected_tasks=expected)
             task_to_trials = {
                 task: _all_trial_dirs_for_task(results_dir, task) for task in expected
             }
             progress = compute_chunk_progress(
                 task_to_trial_dirs=task_to_trials,
                 target_trials=attempts,
+                # The current GitLab job is itself an available attempt, including
+                # when it is the final allowed job. Only terminalize retryable
+                # results after this job has finished scheduling its work.
                 retry_budget_exhausted=False,
             )
-            final_needs_retry = missing_tasks(progress)
+            missing = missing_tasks(progress)
+            if not missing:
+                print(
+                    f"[chunk-{chunk_index}/attempt-{chunk_attempt}] all {len(expected)} "
+                    f"trials durable after round {round_num}",
+                    flush=True,
+                )
+                break
+
             if time.monotonic() >= soft_deadline_monotonic:
+                print(
+                    f"[chunk-{chunk_index}] soft deadline reached before round "
+                    f"{round_num}; stopping after {round_num - 1} round(s)",
+                    flush=True,
+                )
                 deadline_reached = True
-            break
+                final_needs_retry = missing
+                break
+
+            # k=1 each round so attempt accounting stays exact across tasks with
+            # different durable-trial counts.
+            harbor_attempts = 1
+            print(
+                f"[chunk-{chunk_index}/attempt-{chunk_attempt}/round-{round_num}] "
+                f"running Harbor (k=1) on {len(missing)} tasks: {missing}",
+                flush=True,
+            )
+            job_name = f"chunk-{chunk_index}-{os.environ.get('CI_JOB_ID', 'local')}-r{round_num}"
+            harbor_status, _received_signal = _run_harbor_invocation(
+                tasks=missing,
+                agent_import_path=agent_import_path,
+                model=model,
+                dataset=dataset,
+                parallelism=parallelism,
+                attempts=harbor_attempts,
+                timeout_multiplier=timeout_multiplier,
+                jobs_dir=results_dir,
+                job_name=job_name,
+                kimchi_ferment_oneshot=kimchi_ferment_oneshot,
+                kimchi_disable_compaction=kimchi_disable_compaction,
+                coding_agent=coding_agent,
+                llm_params=llm_params,
+                llm_per_model_params=llm_per_model_params,
+                thinking_level=thinking_level,
+                checkpoint_plugin=checkpoint_plugin,
+                results_dir=results_dir,
+                chunk_index=chunk_index,
+                bench_dir=bench_dir,
+                env=env,
+                soft_deadline_monotonic=soft_deadline_monotonic,
+            )
+            # Recompute progress after Harbor finishes this round so the loop
+            # condition reflects the latest durable trials.
+            write_enriched_results(results_dir=results_dir, expected_tasks=expected)
+            if harbor_status != 0:
+                # Harbor failed (or was terminated by the soft deadline mid-round).
+                # Preserve that infrastructure failure independently of local
+                # reconciliation: a checkpoint hook runs after Harbor writes
+                # result.json, so an upload failure can leave an apparently final
+                # local trial that is not durable in GCS.
+                harbor_failure_status = harbor_status
+                task_to_trials = {
+                    task: _all_trial_dirs_for_task(results_dir, task) for task in expected
+                }
+                progress = compute_chunk_progress(
+                    task_to_trial_dirs=task_to_trials,
+                    target_trials=attempts,
+                    retry_budget_exhausted=False,
+                )
+                final_needs_retry = missing_tasks(progress)
+                if time.monotonic() >= soft_deadline_monotonic:
+                    deadline_reached = True
+                break
 
     # Final reconciliation pass over everything.
     write_enriched_results(results_dir=results_dir, expected_tasks=expected)

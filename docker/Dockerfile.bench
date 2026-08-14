@@ -42,6 +42,13 @@ RUN mkdir -p /usr/local/lib/docker/cli-plugins && \
 RUN uv tool install harbor || true
 RUN uv run --python 3.14 harbor dataset download "${HARBOR_DATASET}" --cache || true
 
+# Install Pier (Harbor fork for DeepSWE tasks with pre_artifacts.sh support)
+RUN uv tool install datacurve-pier || true
+
+# Precache DeepSWE tasks (cloned at runtime too, this is a fallback)
+RUN git clone --depth 1 https://github.com/datacurve-ai/deep-swe /tmp/deep-swe || true
+ENV DEEP_SWE_TASKS_PATH=/tmp/deep-swe/tasks
+
 # Pre-populate uv package cache for kimchi-agent dependencies so chunk jobs
 # install from local cache (no network download).
 COPY benchmark/terminal-bench-2 /tmp/tb2

@@ -885,3 +885,54 @@ def test_is_openrouter_model_detects_prefixed_names() -> None:
     assert is_openrouter_model("multi-model") is False
     assert is_openrouter_model(None) is False
     assert is_openrouter_model("") is False
+
+
+async def test_setup_always_calls_install_even_when_preinstalled(tmp_path: Path) -> None:
+    """Kimchi.setup() must call install() even when the environment reports a preinstalled agent.
+
+    Pier's BaseInstalledAgent.setup() skips install() when is_preinstalled=True
+    (Dockerfile inlined install_spec steps). But Kimchi.install() does the binary
+    upload (upload_dir + cp), which cannot be expressed as an InstallStep and
+    must always run. This test verifies the override works.
+    """
+    from pier.models.agent.install import AgentInstallSpec, InstallStep
+
+    from kimchi_agent.agent import INSTALL_DIR
+
+    install_called = False
+    upload_called = False
+
+    class PreinstalledEnvironment:
+        """Fake environment that reports a preinstalled agent install spec."""
+        agent_install_spec = AgentInstallSpec(
+            agent_name="kimchi",
+            version="test",
+            steps=[InstallStep(user="root", run="echo hello")],
+        )
+
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            return SimpleNamespace(return_code=0, stdout="test-version", stderr="")
+
+        async def upload_dir(self, source_dir, target_dir):
+            nonlocal upload_called
+            upload_called = True
+
+    class SetupRecordingKimchi(RecordingKimchi):
+        async def install(self, environment):
+            nonlocal install_called
+            install_called = True
+            # Simulate the binary upload + copy that install() does
+            await environment.upload_dir(source_dir=Path("/fake"), target_dir="/tmp/kimchi-stage")
+            await self.exec_as_root(environment, command=f"cp -a /tmp/kimchi-stage/. {INSTALL_DIR}/")
+
+    agent = SetupRecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+    )
+
+    env = PreinstalledEnvironment()
+    await agent.setup(env)
+
+    assert install_called, "install() was not called despite preinstalled environment"
+    assert upload_called, "upload_dir was not called during install()"
+    assert agent._version == "test-version"
