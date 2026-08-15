@@ -6,7 +6,7 @@ import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
-import { maybeTriggerMidTurnFermentCompaction } from "./auto-compaction.js"
+import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
@@ -690,13 +690,10 @@ export function registerFermentEvents(
 			}
 		}
 
-		// Stage compactions are NOT drained here. The run loop snapshots the
-		// message array at run start, so any compaction fired mid-run replaces
-		// state.messages where the live loop never looks — proven wire no-op
-		// (9/9 mid-run fires in benchmark sessions). Pending entries stay in
-		// the map and drain at agent_end (a real boundary, where the next run
-		// re-snapshots the compacted state). The mid-turn guard below is the
-		// in-run safety net: it aborts the run to manufacture a boundary.
+		// Trigger compaction after any turn that completed a step or phase.
+		// Fires between turns in automated-continuation mode, so the next
+		// phase starts with a fresh compacted session.
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 		// Mid-turn guard: if the context crossed the auto-compaction threshold
 		// while a step is still in progress, compact now and resume the step.
