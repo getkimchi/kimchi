@@ -68,8 +68,9 @@ recent commits, and the project map, the snapshot includes at the default tier:
   (`/.dockerenv`, `/run/.containerenv`), and root/non-root user. Collected from
   node:os and fixed system files — no child processes.
 - **CLI tools** — presence/version of ecosystem-independent utilities (curl, wget,
-  jq, sqlite3, tar, OpenSSL, tmux, ffmpeg, Docker, Podman, qemu-img). Only present
-  tools are listed; the `full` verbosity tier also lists utilities unavailable on PATH.
+  jq, sqlite3, tar, OpenSSL, tmux, ffmpeg, Docker, Podman, qemu-img, 7-Zip,
+  tesseract, objdump, QEMU, ImageMagick, socat). Only present tools are listed; the
+  `full` verbosity tier also lists utilities unavailable on PATH.
 
 ## Verbosity tiers
 
@@ -136,9 +137,21 @@ Swift, and Elixir. Project wrappers such as `gradlew` are never executed.
 Probes run in priority order: the universal core first (Git, ripgrep, active
 shell, then the CLI utilities), then ecosystem-specific version probes, and
 finally — in marker-less workspaces only — the generic fallback toolbox
-(Python, pip, GCC, Make, Node, Rscript). The four-process concurrency ceiling
-is shared across concurrent agent-context collections. A context waiting for a
-probe slot still observes its own 1500 ms collection deadline.
+(Python (`python3` plus the `python` alias), pip, GCC, Make, Node, Rscript).
+The four-process concurrency ceiling is shared across concurrent agent-context
+collections. A context waiting for a probe slot still observes its own
+1500 ms collection deadline.
+
+Absent executables are resolved without process spawns: before probing, the
+collector lists each PATH directory of the probe environment once, and any bare
+command name missing from every directory resolves to `unavailable on PATH` —
+the same fact an exec `ENOENT` would produce. On minimal containers this saves
+~one spawn per absent tool, which previously consumed most of the collection
+budget. The pre-scan is degrade-safe: any failure (absent/empty PATH, an
+unreadable or removed directory) disables it entirely and probing falls back to
+exec-per-probe; a partial scan never fabricates absence facts. Scan-derived
+negatives are fresh per collection and are never written to the stable-fact
+cache, so a tool installed mid-session is discovered by the next agent context.
 
 **No OS package-manager probes.** Probes use fixed direct command args, a neutral
 temporary cwd, and a minimal environment. Max 4 probes run concurrently. Versions

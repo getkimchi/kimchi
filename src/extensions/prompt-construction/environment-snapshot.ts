@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process"
 import { existsSync } from "node:fs"
 import { readdir, readFile, stat, statfs } from "node:fs/promises"
 import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os"
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 export const ENVIRONMENT_SNAPSHOT_START = "<!-- kimchi:environment-snapshot:start -->"
 export const ENVIRONMENT_SNAPSHOT_END = "<!-- kimchi:environment-snapshot:end -->"
@@ -216,6 +216,8 @@ export interface EnvironmentSnapshotDiagnostics {
 	includedEntryCount: number
 	completedProbeCount: number
 	cancelledProbeCount: number
+	/** Absent from older entries and from restored snapshots; absent-path scans add it additively. */
+	pathPrescanAbsentCount?: number
 	renderedSnapshotBytes: number
 }
 
@@ -290,6 +292,12 @@ interface ProbeMetrics {
 	stableFactCacheMisses: number
 	completedProbeCount: number
 	requestedProbeCount: number
+	/**
+	 * Probes resolved by the PATH-existence pre-scan without a process spawn
+	 * (the executable name was absent from every PATH directory). Trace-visible
+	 * confirmation that the pre-scan absorbs the ENOENT-spawn load.
+	 */
+	pathPrescanAbsentCount: number
 	eligibleEntryCount: number
 }
 
@@ -379,6 +387,7 @@ function buildDiagnostics(
 		includedEntryCount,
 		completedProbeCount: probeMetrics.completedProbeCount,
 		cancelledProbeCount: probeMetrics.requestedProbeCount - probeMetrics.completedProbeCount,
+		pathPrescanAbsentCount: probeMetrics.pathPrescanAbsentCount,
 		renderedSnapshotBytes: snapshot ? byteLength(snapshot) : 0,
 	}
 }
@@ -922,7 +931,16 @@ const ECOSYSTEMS: readonly EcosystemDefinition[] = [
 			[...m].some((name) =>
 				["pyproject.toml", "requirements.txt", "setup.py", "Pipfile", "uv.lock", "poetry.lock"].includes(name),
 			),
-		probes: [probe("Python", "python3"), probe("uv"), probe("Poetry", "poetry"), probe("pip", "pip3")],
+		// The lowercase `python` alias resolves the measured `which python`
+		// alias ambiguity (python3-only installs vs python-is-python3) with its
+		// own fact rather than a parsing heuristic on the `Python` line.
+		probes: [
+			probe("Python", "python3"),
+			probe("python", "python"),
+			probe("uv"),
+			probe("Poetry", "poetry"),
+			probe("pip", "pip3"),
+		],
 		sourceFileMatches: (fileNames) => [...fileNames].some((name) => /\.(?:py|pyi|pyx|pxd)$/u.test(name)),
 	},
 	{ name: "Rust", matches: (m) => m.has("Cargo.toml"), probes: [probe("rustc"), probe("Cargo", "cargo")] },
@@ -1013,6 +1031,7 @@ function relevantEcosystems(
  */
 const GENERIC_FALLBACK_PROBES: readonly Probe[] = [
 	probe("Python", "python3"),
+	probe("python", "python"),
 	probe("pip", "pip3"),
 	probe("GCC", "gcc"),
 	probe("Make", "make"),
@@ -1041,6 +1060,18 @@ const UTILITY_PROBES: readonly Probe[] = [
 	probe("Docker", "docker"),
 	probe("Podman", "podman"),
 	probe("qemu-img", "qemu-img"),
+	// Curated by measured cross-task re-probe frequency (`which 7z …` checks
+	// in benchmark traces). Banners verified against Debian 12 (bookworm):
+	// bare `7z` prints its version banner on stdout and exits 0 (~3 KB, under
+	// the output cap; `7z i` exceeds it), `socat -V` prints to stdout too.
+	// Current bookworm mirrors ship upstream 7-Zip 26.02 with a "p7zip
+	// Version 16.02" compat second line; the pattern takes the first line.
+	probe("7-Zip", "7z", [], false, /\b7-Zip(?:\s+\[\d+\])?\s+(\d+\.\d+(?:\.\d+)?)/u),
+	probe("tesseract", "tesseract", ["--version"], false, /\btesseract (\d+(?:\.\d+){1,2})\b/iu),
+	probe("objdump", "objdump", ["--version"], false, /\bGNU objdump(?:\s+\([^)]*\))?\s+(\d+\.\d+(?:\.\d+)?)/u),
+	probe("QEMU", "qemu-system-x86_64", ["--version"], false, /\bQEMU emulator version (\d+\.\d+(?:\.\d+)?)/u),
+	probe("ImageMagick", "convert", ["--version"], false, /\bImageMagick (\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.-]*)?)/u),
+	probe("socat", "socat", ["-V"], false, /\bsocat version (\d+(?:\.\d+){1,3})/u),
 ]
 
 function shouldProbe(candidate: Probe, markers: ReadonlySet<string>): boolean {
@@ -1095,6 +1126,48 @@ function stableFactKey(candidate: Probe, env: NodeJS.ProcessEnv): string {
 	return `${candidate.command}\0${candidate.args.join("\0")}\0${environmentKey}`
 }
 
+/**
+ * PATH-existence pre-scan: resolve the set of executable names from one
+ * directory listing per PATH directory of the probe environment. Probes for
+ * names absent from every PATH directory can resolve to "unavailable on
+ * PATH" without a process spawn — on minimal 1-CPU containers a full batch
+ * of absent tools otherwise costs ~one ENOENT spawn each and consumes the
+ * whole collection budget.
+ *
+ * Degrade-safe: any scan failure — absent/empty PATH, an unreadable or
+ * removed directory — disables the pre-scan entirely so probing falls back
+ * to exec-per-probe; a partial scan must never fabricate "unavailable"
+ * facts. Empty PATH entries are skipped rather than scanned: their meaning
+ * depends on the caller's cwd, so exec probing keeps them honest. Rare
+ * non-empty relative entries are scanned against this process's cwd while
+ * probes exec from tmpdir(); a disagreement there errs toward a
+ * conservative "unavailable on PATH".
+ *
+ * Name-only matching: no executable-bit checks (exec stays the arbiter for
+ * names present in the listing) and no PATHEXT suffix matching — bare-name
+ * probes are POSIX-shaped, so on Windows the filter simply never fires and
+ * exec probing carries on.
+ */
+async function scanPathExecutables(
+	env: NodeJS.ProcessEnv,
+	fs: FilesystemAdapter,
+): Promise<ReadonlySet<string> | undefined> {
+	const pathValue = env.PATH ?? env.Path
+	if (!pathValue) return undefined
+	const names = new Set<string>()
+	let scannedDirectories = 0
+	try {
+		for (const dir of pathValue.split(delimiter)) {
+			if (dir.length === 0) continue
+			scannedDirectories++
+			for (const entry of await fs.readdir(dir)) names.add(entry.name)
+		}
+	} catch {
+		return undefined
+	}
+	return scannedDirectories > 0 ? names : undefined
+}
+
 async function runProbes(
 	probes: readonly Probe[],
 	runCommand: CommandRunner,
@@ -1103,6 +1176,7 @@ async function runProbes(
 	stableFacts?: Map<string, ProbeFact>,
 	metrics?: ProbeMetrics,
 	onProgress?: (facts: ProbeFact[]) => void,
+	availableExecutables?: ReadonlySet<string>,
 ): Promise<ProbeFact[]> {
 	const facts: Array<ProbeFact | undefined> = new Array(probes.length)
 	const publish = () => onProgress?.(facts.filter((fact): fact is ProbeFact => fact !== undefined))
@@ -1130,6 +1204,25 @@ async function runProbes(
 					continue
 				}
 				if (metrics) metrics.stableFactCacheMisses++
+			}
+			// PATH pre-scan short-circuit (after the stable cache: a cached
+			// version fact beats a fresh scan). A bare command name absent from
+			// every PATH directory resolves to the same "unavailable on PATH"
+			// fact an exec ENOENT would produce, without spending a spawn (or a
+			// limiter slot) on it. Commands with an explicit path (the absolute
+			// $SHELL probe) are exempt and always exec.
+			if (
+				availableExecutables !== undefined &&
+				!candidate.command.includes("/") &&
+				!availableExecutables.has(candidate.command)
+			) {
+				if (metrics) {
+					metrics.completedProbeCount++
+					metrics.pathPrescanAbsentCount++
+				}
+				facts[index] = { name: candidate.name, value: "unavailable on PATH" }
+				publish()
+				continue
 			}
 			const releaseProbeSlot = await acquireProbeSlot()
 			if (Date.now() >= deadlineMs) {
@@ -1873,6 +1966,10 @@ export class EnvironmentSnapshotService {
 			const ecosystemProbes = [...detected.probes, ...fallbackProbes]
 			const utilityProbes = verbosity === "minimal" ? [] : UTILITY_PROBES
 			probeMetrics.requestedProbeCount = alwaysProbes.length + utilityProbes.length + ecosystemProbes.length
+			// One listing per PATH directory serves all three probe batches; the
+			// worker resolves scan-absent bare commands without a spawn. Uses the
+			// identical minimal environment the probes exec with.
+			const availableExecutables = await scanPathExecutables(minimalProcessEnv(), this.filesystem)
 			let completedFactCount = 0
 			// The universal core runs first: git/ripgrep/shell and the
 			// ecosystem-independent CLI utilities are the facts agents re-probe
@@ -1891,6 +1988,7 @@ export class EnvironmentSnapshotService {
 					collectedFacts.probes = probes
 					onFacts(collectedFacts)
 				},
+				availableExecutables,
 			)
 			collectedFacts.probes = coreFacts
 			completedFactCount += coreFacts.length
@@ -1903,6 +2001,8 @@ export class EnvironmentSnapshotService {
 					this.probeTimeoutMs,
 					this.stableFacts,
 					probeMetrics,
+					undefined,
+					availableExecutables,
 				)
 				completedFactCount += collectedFacts.utilities.length
 				onFacts(collectedFacts)
@@ -1919,6 +2019,7 @@ export class EnvironmentSnapshotService {
 						collectedFacts.probes = [...coreFacts, ...probes]
 						onFacts(collectedFacts)
 					},
+					availableExecutables,
 				)
 				collectedFacts.probes = [...coreFacts, ...ecosystemFacts]
 				completedFactCount += ecosystemFacts.length
@@ -1944,6 +2045,7 @@ export class EnvironmentSnapshotService {
 			stableFactCacheMisses: 0,
 			completedProbeCount: 0,
 			requestedProbeCount: 0,
+			pathPrescanAbsentCount: 0,
 			eligibleEntryCount: 0,
 		}
 		let latestFacts: CollectionFacts | undefined

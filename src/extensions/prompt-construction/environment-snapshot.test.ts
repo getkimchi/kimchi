@@ -1,5 +1,5 @@
 import { platform, tmpdir } from "node:os"
-import { basename, dirname, join } from "node:path"
+import { basename, delimiter, dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	type CommandRequest,
@@ -1760,6 +1760,40 @@ describe("environment-snapshot", () => {
 			expect(runner.calls.some((c) => c.command === "make")).toBe(false)
 		})
 
+		it("probes the python alias alongside python3 in marker-less directories", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("data.csv", "file")]]]))
+			const runner = scriptedRunner({
+				python3: { status: "ok", stdout: "Python 3.11.2" },
+				python: { status: "ok", stdout: "Python 3.11.2" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-python-alias-fallback", cwd: ROOT })
+			expect(snapshot).toContain('"Python": "3.11.2"')
+			expect(snapshot).toContain('"python": "3.11.2"')
+		})
+
+		it("renders the python alias as unavailable at the default tier when absent", async () => {
+			// Alias absence is the decision-relevant fact (python3-only install):
+			// it renders as a fallback negative even at the default tier.
+			const fs = fakeFs(new Map([[ROOT, [dirent("data.csv", "file")]]]))
+			const runner = scriptedRunner({})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-python-alias-missing", cwd: ROOT })
+			expect(snapshot).toContain('"python": "unavailable on PATH"')
+		})
+
+		it("reports a divergent python alias in the Python ecosystem", async () => {
+			const fs = pythonProjectFs()
+			const runner = scriptedRunner({
+				python3: { status: "ok", stdout: "Python 3.11.2" },
+				python: { status: "ok", stdout: "Python 2.7.18" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-python-alias-eco", cwd: ROOT })
+			expect(snapshot).toContain('"Python": "3.11.2"')
+			expect(snapshot).toContain('"python": "2.7.18"')
+		})
+
 		it("includes Rscript in the generic fallback toolbox", async () => {
 			const fs = fakeFs(new Map([[ROOT, [dirent("data.csv", "file")]]]))
 			const runner = scriptedRunner({
@@ -2100,6 +2134,51 @@ describe("environment-snapshot (startup enrichment)", () => {
 			expect(snapshot).not.toContain('"Docker"')
 		})
 
+		it("parses the curated utility additions from recorded Debian 12 banners", async () => {
+			const fs = fakeFs(new Map([[ROOT, [dirent("main.py", "file")]]]))
+			const runner = scriptedRunner({
+				// Bare `7z` invocation: version banner + usage (~3 KB), exit 0.
+				// Current bookworm mirrors ship upstream 7-Zip 26.02 with a
+				// "p7zip Version 16.02" compat second line.
+				"7z": {
+					status: "ok",
+					stdout:
+						"\n7-Zip [64] 26.02 : Copyright (c) 1999-2026 Igor Pavlov : 2026-06-25\n" +
+						"p7zip Version 16.02 (locale=C.UTF-8,Utf16=on,HugeFiles=on,64 bits,14 CPUs arm64  (LP))\n",
+				},
+				"qemu-system-x86_64": {
+					status: "ok",
+					stdout:
+						"QEMU emulator version 7.2.22 (Debian 1:7.2+dfsg-7+deb12u18+b3)\n" +
+						"Copyright (c) 2003-2022 Fabrice Bellard and the QEMU Project developers\n",
+				},
+				tesseract: { status: "ok", stdout: "tesseract 5.3.0\n leptonica-1.82.0\n" },
+				objdump: {
+					status: "ok",
+					stdout: "GNU objdump (GNU Binutils for Debian) 2.40\nCopyright (C) 2023 Free Software Foundation, Inc.\n",
+				},
+				convert: {
+					status: "ok",
+					stdout: "Version: ImageMagick 6.9.11-60 Q16 x86_64 2021-01-25 https://imagemagick.org\n",
+				},
+				socat: {
+					status: "ok",
+					stdout:
+						"socat by Gerhard Rieger and contributors - see www.dest-unreach.org\n" +
+						"socat version 1.7.4.4 on 06 Nov 2022 08:15:51\n",
+				},
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-curated", cwd: ROOT })
+			expect(snapshot).toContain("CLI tools:")
+			expect(snapshot).toContain('"7-Zip": "26.02"')
+			expect(snapshot).toContain('"QEMU": "7.2.22"')
+			expect(snapshot).toContain('"tesseract": "5.3.0"')
+			expect(snapshot).toContain('"objdump": "2.40"')
+			expect(snapshot).toContain('"ImageMagick": "6.9.11-60"')
+			expect(snapshot).toContain('"socat": "1.7.4.4"')
+		})
+
 		it("lists unavailable utilities at the full tier", async () => {
 			process.env.KIMCHI_ENV_SNAPSHOT = "full"
 			const fs = fakeFs(new Map([[ROOT, [dirent("main.py", "file")]]]))
@@ -2108,6 +2187,234 @@ describe("environment-snapshot (startup enrichment)", () => {
 			const snapshot = await svc.get({ contextId: "ctx-1", cwd: ROOT })
 			expect(snapshot).toContain('"wget": "unavailable on PATH"')
 			expect(snapshot).toContain('"Docker": "unavailable on PATH"')
+		})
+	})
+
+	describe("PATH-existence pre-scan", () => {
+		// PATH directories that exist only inside the fake filesystem: a name
+		// present in either directory spawns as usual; a name absent from all
+		// of them resolves to "unavailable on PATH" without a spawn.
+		let originalPath: string | undefined
+		beforeEach(() => {
+			originalPath = process.env.PATH
+			process.env.PATH = ["/scan/bin", "/scan/usr/bin"].join(delimiter)
+		})
+		afterEach(() => {
+			if (originalPath === undefined) delete process.env.PATH
+			else process.env.PATH = originalPath
+		})
+
+		it("resolves PATH-absent tools to 'unavailable on PATH' without spawning them", async () => {
+			process.env.KIMCHI_ENV_SNAPSHOT = "full"
+			const fs = fakeFs(
+				new Map([
+					[ROOT, [dirent("README.md", "file")]],
+					["/scan/bin", [dirent("curl", "file"), dirent("tar", "file")]],
+					["/scan/usr/bin", [dirent("git", "file"), dirent("rg", "file")]],
+				]),
+			)
+			const absentCommands = [
+				"wget",
+				"jq",
+				"sqlite3",
+				"openssl",
+				"tmux",
+				"ffmpeg",
+				"docker",
+				"podman",
+				"qemu-img",
+				"7z",
+				"tesseract",
+				"objdump",
+				"qemu-system-x86_64",
+				"convert",
+				"socat",
+				"python3",
+				"python",
+				"pip3",
+				"gcc",
+				"make",
+				"node",
+				"Rscript",
+			]
+			const calls: CommandRequest[] = []
+			const runner: CommandRunner & { calls: CommandRequest[] } = Object.assign(
+				async (request: CommandRequest) => {
+					calls.push(request)
+					// Absolute-path probes (the $SHELL probe) are exempt from the
+					// pre-scan filter and always exec.
+					if (request.command.startsWith("/")) return { status: "missing" as const }
+					if (absentCommands.includes(request.command))
+						throw new Error(`PATH-absent probe must not spawn: ${request.command}`)
+					const scripted: Record<string, CommandResult> = {
+						git: { status: "ok", stdout: "git version 2.43.0" },
+						rg: { status: "ok", stdout: "ripgrep 14.1.0 (rev pcre2)" },
+						curl: { status: "ok", stdout: "curl 8.5.0 (x86_64)" },
+						tar: { status: "ok", stdout: "bsdtar 3.5.3" },
+					}
+					return scripted[request.command] ?? { status: "missing" as const }
+				},
+				{ calls },
+			)
+			const diagnostics: EnvironmentSnapshotDiagnostics[] = []
+			const svc = makeService({ filesystem: fs, runCommand: runner, onDebug: (entry) => diagnostics.push(entry) })
+			const snapshot = await svc.get({ contextId: "ctx-prescan-full", cwd: ROOT, debug: true })
+			// PATH-present tools still exec and parse…
+			expect(snapshot).toContain('"curl": "8.5.0"')
+			expect(snapshot).toContain('"tar": "3.5.3"')
+			// …while scan-derived negatives render just like exec-ENOENT negatives…
+			expect(snapshot).toContain('"wget": "unavailable on PATH"')
+			expect(snapshot).toContain('"Docker": "unavailable on PATH"')
+			expect(snapshot).toContain('"Python": "unavailable on PATH"')
+			expect(snapshot).toContain('"GCC": "unavailable on PATH"')
+			// …without spending a single spawn on them.
+			expect(
+				calls.every((call) => ["git", "rg", "curl", "tar"].includes(call.command) || call.command.startsWith("/")),
+			).toBe(true)
+			expect(diagnostics[0]).toMatchObject({
+				pathPrescanAbsentCount: absentCommands.length,
+				cancelledProbeCount: 0,
+			})
+			expect(snapshot).not.toMatch(/\d+ tool version probes did not complete/u)
+		})
+
+		it("still execs and parses versions for PATH-present tools", async () => {
+			const fs = fakeFs(
+				new Map([
+					[ROOT, [dirent("pyproject.toml", "file")]],
+					["/scan/bin", [dirent("python3", "file"), dirent("curl", "file")]],
+					["/scan/usr/bin", [dirent("git", "file"), dirent("rg", "file")]],
+				]),
+			)
+			const runner = scriptedRunner({
+				git: { status: "ok", stdout: "git version 2.43.0" },
+				rg: { status: "ok", stdout: "ripgrep 14.1.0" },
+				curl: { status: "ok", stdout: "curl 8.5.0 (x86_64)" },
+				python3: { status: "ok", stdout: "Python 3.11.2" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-prescan-present", cwd: ROOT })
+			expect(snapshot).toContain('"Git": "2.43.0"')
+			expect(snapshot).toContain('"ripgrep": "14.1.0"')
+			expect(snapshot).toContain('"curl": "8.5.0"')
+			expect(snapshot).toContain('"Python": "3.11.2"')
+			const spawned = new Set(runner.calls.map((call) => call.command))
+			for (const command of ["git", "rg", "curl", "python3"]) expect(spawned.has(command)).toBe(true)
+		})
+
+		it("falls back to exec probing when the PATH scan fails", async () => {
+			// The PATH directories are absent from the fake filesystem, so every
+			// readdir throws, the scan degrades to undefined, and all probes exec
+			// exactly as before the pre-scan existed.
+			const fs = fakeFs(new Map([[ROOT, [dirent("README.md", "file")]]]))
+			const runner = scriptedRunner({ curl: { status: "ok", stdout: "curl 8.5.0" } })
+			const diagnostics: EnvironmentSnapshotDiagnostics[] = []
+			const svc = makeService({ filesystem: fs, runCommand: runner, onDebug: (entry) => diagnostics.push(entry) })
+			const snapshot = await svc.get({ contextId: "ctx-prescan-degraded", cwd: ROOT, debug: true })
+			const spawned = new Set(runner.calls.map((call) => call.command))
+			for (const command of [
+				"wget",
+				"jq",
+				"sqlite3",
+				"openssl",
+				"tmux",
+				"ffmpeg",
+				"docker",
+				"podman",
+				"qemu-img",
+				"7z",
+				"tesseract",
+				"objdump",
+				"qemu-system-x86_64",
+				"convert",
+				"socat",
+				"python3",
+				"python",
+				"pip3",
+				"gcc",
+				"make",
+				"node",
+				"Rscript",
+			])
+				expect(spawned.has(command)).toBe(true)
+			// Exec-ENOENT negatives still render and no probe is lost.
+			expect(snapshot).toContain('"Python": "unavailable on PATH"')
+			expect(diagnostics[0]).toMatchObject({ pathPrescanAbsentCount: 0, cancelledProbeCount: 0 })
+		})
+
+		it("leaves probing to exec when PATH is empty", async () => {
+			process.env.PATH = ""
+			const fs = fakeFs(new Map([[ROOT, [dirent("README.md", "file")]]]))
+			const runner = scriptedRunner({ curl: { status: "ok", stdout: "curl 8.5.0" } })
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			await svc.get({ contextId: "ctx-prescan-empty", cwd: ROOT })
+			const spawned = new Set(runner.calls.map((call) => call.command))
+			expect(spawned.has("wget")).toBe(true)
+			expect(spawned.has("python3")).toBe(true)
+		})
+
+		it("frees the collection budget for slow probes when absent tools skip their spawns", async () => {
+			// pip3 is the only tool on PATH and every spawn costs 300 ms. Without
+			// the pre-scan (next test) the wasted absent-tool spawns push the
+			// 1200 ms pip probe past the deadline; with it, pip3 starts at once.
+			const fs = fakeFs(
+				new Map([
+					[ROOT, [dirent("data.csv", "file")]],
+					["/scan/bin", [dirent("pip3", "file")]],
+					["/scan/usr/bin", []],
+				]),
+			)
+			const runner: CommandRunner = async (request) => {
+				if (request.command === "pip3") {
+					await new Promise((resolveTimer) => setTimeout(resolveTimer, 1200))
+					return { status: "ok", stdout: "pip 24.0 from /usr/lib/python3/dist-packages/pip (python 3.11)" }
+				}
+				if (!request.command.startsWith("/")) await new Promise((resolveTimer) => setTimeout(resolveTimer, 300))
+				return { status: "missing" }
+			}
+			const diagnostics: EnvironmentSnapshotDiagnostics[] = []
+			const svc = makeService({
+				filesystem: fs,
+				runCommand: runner,
+				budgetMs: 2000,
+				probeTimeoutMs: 1500,
+				onDebug: (entry) => diagnostics.push(entry),
+			})
+			const snapshot = await svc.get({ contextId: "ctx-prescan-budget", cwd: ROOT, debug: true })
+			expect(snapshot).toContain('"pip": "24.0"')
+			expect(snapshot).not.toMatch(/\d+ tool version probes did not complete/u)
+			expect(diagnostics[0]).toMatchObject({ timedOut: false })
+		})
+
+		it("clips slow probes when the degraded scan leaves absent tools burning spawn budget", async () => {
+			// Same timing as the previous test, but the PATH directories are
+			// absent from the filesystem, so the scan degrades and every absent
+			// tool still costs a 300 ms spawn — the stalled pip probe outlives
+			// the deadline and the snapshot renders without it.
+			const fs = fakeFs(new Map([[ROOT, [dirent("data.csv", "file")]]]))
+			const runner: CommandRunner = async (request) => {
+				if (request.command === "pip3") {
+					await new Promise((resolveTimer) => setTimeout(resolveTimer, 1200))
+					return { status: "ok", stdout: "pip 24.0 from /usr/lib/python3/dist-packages/pip (python 3.11)" }
+				}
+				if (!request.command.startsWith("/")) await new Promise((resolveTimer) => setTimeout(resolveTimer, 300))
+				return { status: "missing" }
+			}
+			const diagnostics: EnvironmentSnapshotDiagnostics[] = []
+			const svc = makeService({
+				filesystem: fs,
+				runCommand: runner,
+				budgetMs: 2000,
+				probeTimeoutMs: 1500,
+				onDebug: (entry) => diagnostics.push(entry),
+			})
+			const snapshot = await svc.get({ contextId: "ctx-prescan-budget-degraded", cwd: ROOT, debug: true })
+			expect(snapshot).not.toContain('"pip": "24.0"')
+			// Facts that finished before the deadline are still preserved (the
+			// core batch resolves in the first spawn wave; later fallback probes
+			// start too late to finish).
+			expect(snapshot).toContain('"Git": "unavailable on PATH"')
+			expect(diagnostics[0]).toMatchObject({ timedOut: true })
 		})
 	})
 

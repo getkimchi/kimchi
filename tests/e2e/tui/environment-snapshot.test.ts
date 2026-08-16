@@ -113,7 +113,10 @@ test("a new subagent gets a fresh bounded snapshot while its parent keeps startu
 			for (const prompt of [mainAtStart, mainAfterMutation, subagent]) expectOneFinalSnapshot(prompt)
 			expect(mainAtStart).toContain(`Working directory: ${JSON.stringify(realpathSync(fixture.workDir))}`)
 			expect(mainAtStart).toContain("known-at-start.ts")
-			expect(mainAtStart).toContain('".env" [may contain sensitive data')
+			// Size annotations attach only while the collection budget has headroom:
+			// fast machines render `".env" [27 B; may contain…`, contended ones drop
+			// the size. Assert the annotation in its budget-independent shape.
+			expect(mainAtStart).toMatch(/"\.env" \[(?:\d+ B; )?may contain sensitive data/u)
 			expect(mainAtStart).toContain('"shared-link" [symlink; target not inspected]')
 			expect(mainAtStart).not.toContain("must-not-leak")
 			expect(mainAtStart).not.toContain("node_modules")
