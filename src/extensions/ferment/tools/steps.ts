@@ -539,8 +539,10 @@ export async function completeStep(
 	sendStepBreadcrumb(pi, `Step ${step.index} ✗ failed verification - ${judgeVerdict.reason}`, "warning")
 
 	// D19: surface a recovery dropdown so the user picks an action explicitly
-	// instead of leaving the planner guessing.
-	if (ctx.hasUI) {
+	// instead of leaving the planner guessing. Guard on `select` specifically
+	// so non-TUI UIs that can't render a dropdown never activate a herdr
+	// blocked pair without prompting (see herdr-events.ts PROTOCOL).
+	if (ctx.hasUI && ctx.ui?.select) {
 		const retryLabel = "Retry"
 		const skipLabel = "Skip step"
 		const editLabel = "Edit prompt and retry"
@@ -549,12 +551,7 @@ export async function completeStep(
 		const title = `Step ${step.index} "${step.description}" failed verification.\nJudge: ${judgeVerdict.reason}`
 		// Hide the cooking animation while the recovery dropdown is shown.
 		const choice = await withBlocked(pi.events, `Ferment step ${step.index} failed`, () =>
-			withWorkingHidden(
-				ctx,
-				() =>
-					ctx.ui?.select?.(title, [retryLabel, skipLabel, editLabel, abandonLabel, cancelLabel]) ??
-					Promise.resolve(undefined),
-			),
+			withWorkingHidden(ctx, () => ctx.ui.select(title, [retryLabel, skipLabel, editLabel, abandonLabel, cancelLabel])),
 		)
 		runtime.markHumanInput()
 
