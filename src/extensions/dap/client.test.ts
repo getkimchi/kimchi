@@ -670,3 +670,27 @@ describe("DAP client shutdown kills real subprocesses (no leaks)", () => {
 		expect(registry.getAll()).toHaveLength(0)
 	})
 })
+
+describe("missing adapter binary", () => {
+	it("rejects getOrCreate quickly with a spawn error — no crash, no 30s hang", async () => {
+		const registry = new DapClientRegistry()
+		const missingConfig: DapAdapterConfig = {
+			name: "missing-adapter",
+			command: "definitely-missing-dap-bin-xyz-abc123",
+			args: [],
+			languages: ["typescript"],
+			extensions: [".ts"],
+			launchType: "node",
+			transport: { kind: "stdio" },
+		}
+		const start = Date.now()
+		// Without a cp.on("error") listener this would be an uncaught exception;
+		// without 'close'-based exited tracking it would hang until the 30s
+		// initialize timeout.
+		await expect(registry.getOrCreate(missingConfig, os.tmpdir())).rejects.toThrow(/DAP adapter/)
+		expect(Date.now() - start).toBeLessThan(20_000)
+		// The failed client must not linger in the registry.
+		expect(registry.getAll()).toHaveLength(0)
+		registry.shutdownAll()
+	}, 30_000)
+})

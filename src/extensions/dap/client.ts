@@ -87,6 +87,15 @@ function spawnStdioAdapter(config: DapAdapterConfig, cwd: string): BunProcess {
 	return spawnChildProcessAsBunProcess([config.command, ...(config.args ?? [])], cwd)
 }
 
+/** A BunProcess wrapper that additionally surfaces spawn failures (ENOENT,
+ *  EACCES). The registry reads `spawnError` when the process dies to produce a
+ *  meaningful error instead of a bare `exited (code null)`.
+ *  Not part of the BunProcess interface — accessed via a typed property read. */
+interface SpawnTrackedProcess extends BunProcess {
+	/** Set when the child process itself failed to spawn or died abnormally. */
+	readonly spawnError: Error | null
+}
+
 /** Spawn a child process via node:child_process and wrap its stdio to satisfy
  *  the BunProcess interface. Used when Bun is not available (vitest forks pool,
  *  production Node build). Mirrors the BunProcess shape Bun.spawn returns. */
@@ -95,6 +104,22 @@ function spawnChildProcessAsBunProcess(argv: string[], cwd: string): BunProcess 
 	const cmd = argv[0]
 	if (!cmd) throw new Error("DAP adapter command is empty")
 	const cp = spawn(cmd, argv.slice(1), { cwd, stdio: ["pipe", "pipe", "pipe"] })
+	// A spawn failure (adapter binary missing) emits 'error' on the ChildProcess;
+	// WITHOUT a listener Node rethrows it as an uncaught exception, crashing the
+	// harness in production builds. 'exit' may never fire after a spawn error,
+	// so `exited` resolves on 'close' (always emitted).
+	let spawnError: Error | null = null
+	cp.on("error", (err: Error) => {
+		spawnError = err
+	})
+	// Writes to stdin after a spawn failure emit 'error' on the stream itself.
+	// Swallow it — the spawn error above is the meaningful signal; the request
+	// pipeline already rejects via the exited watcher / write catch.
+	cp.stdin.on("error", () => {})
+	let exitCode: number | null = null
+	cp.on("exit", (code: number | null) => {
+		exitCode = code
+	})
 	const stdinWriter = {
 		write(data: Uint8Array | string) {
 			cp.stdin.write(data)
@@ -116,16 +141,22 @@ function spawnChildProcessAsBunProcess(argv: string[], cwd: string): BunProcess 
 			},
 		})
 	}
-	return {
+	const wrapped: SpawnTrackedProcess = {
 		stdin: stdinWriter,
 		stdout: toWebStream(cp.stdout),
 		stderr: toWebStream(cp.stderr),
 		kill() {
 			cp.kill("SIGKILL")
 		},
-		exited: new Promise<void>((resolve) => cp.on("exit", () => resolve())),
-		exitCode: null,
+		exited: new Promise<void>((resolve) => cp.on("close", () => resolve())),
+		get exitCode() {
+			return exitCode
+		},
+		get spawnError() {
+			return spawnError
+		},
 	}
+	return wrapped
 }
 
 /** Spawn a TCP-based DAP adapter (js-debug's dapDebugServer.js), wait for the
@@ -219,10 +250,20 @@ async function spawnTcpAdapterForConfig(
 		const cmd = argv[0]
 		if (!cmd) throw new Error("DAP adapter command is empty")
 		const cp = spawn(cmd, argv.slice(1), { cwd, stdio: ["pipe", "pipe", "pipe"] })
+		// Without an 'error' listener a spawn failure (ENOENT) becomes an
+		// uncaught exception. Reject the listening promise immediately instead
+		// of waiting for the 10s timeout.
+		cp.on("error", (err: Error) => {
+			if (callbacks.reject) {
+				callbacks.reject(new Error(`DAP adapter '${config.command}' failed to start: ${err.message}`))
+				callbacks.reject = null
+			}
+		})
+		cp.stdin.on("error", () => {})
 		childProc = {
 			kill: () => cp.kill("SIGKILL"),
 			exitCode: null,
-			exited: new Promise<void>((resolve) => cp.on("exit", () => resolve())),
+			exited: new Promise<void>((resolve) => cp.on("close", () => resolve())),
 		}
 		cp.stdout.on("data", (data: Buffer) => {
 			stdoutBuf += data.toString("utf-8")
@@ -241,6 +282,11 @@ async function spawnTcpAdapterForConfig(
 	let addr: { host: string; port: number }
 	try {
 		addr = await listeningPromise
+	} catch (err) {
+		// Listening failed (timeout or spawn error) — the process is not tracked
+		// by any client yet, so kill it here rather than leaking it.
+		childProc.kill()
+		throw err
 	} finally {
 		clearTimeout(timer)
 	}
@@ -646,8 +692,12 @@ export class DapClientRegistry {
 			;(proc as any).exited.then(() => {
 				this.clients.delete(key)
 				this.clientLocks.delete(key)
+				const spawnErr = (proc as Partial<SpawnTrackedProcess>).spawnError
 				// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
-				const err = new Error(`DAP adapter exited (code ${(proc as any).exitCode})`)
+				const adapterExitCode = (proc as any).exitCode
+				const err = spawnErr
+					? new Error(`DAP adapter '${config.command}' failed to start: ${spawnErr.message}`)
+					: new Error(`DAP adapter exited (code ${adapterExitCode})`)
 				for (const pending of client.pendingRequests.values()) pending.reject(err)
 				client.pendingRequests.clear()
 			})
