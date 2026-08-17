@@ -127,6 +127,63 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent.metadata_fetch_count, 1)
         self.assertEqual(agent.fetched_with_api_key, "test-key")
 
+    async def test_registers_and_runs_moonshot_model(self) -> None:
+        with (
+            patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-msh-test"}),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingOpenCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="moonshotai/kimi-k3",
+            )
+
+            await agent.run("solve it", object(), AgentContext())
+
+        config = extract_echo_json(agent.agent_commands[1])
+        self.assertEqual(config["model"], "moonshotai/kimi-k3")
+        provider = config["provider"]["moonshotai"]
+        self.assertEqual(provider["options"]["baseURL"], "https://api.moonshot.ai/v1")
+        self.assertEqual(provider["options"]["apiKey"], "{env:MOONSHOT_API_KEY}")
+        self.assertIn("kimi-k3", provider["models"])
+        self.assertEqual(provider["models"]["kimi-k3"]["limit"]["context"], 1_048_576)
+
+        run_command = agent.agent_commands[2]
+        self.assertIn("opencode --model=moonshotai/kimi-k3", run_command)
+        self.assertIn("run --format=json --thinking --dangerously-skip-permissions --", run_command)
+        self.assertEqual(agent.agent_envs[0]["MOONSHOT_API_KEY"], "sk-msh-test")
+        self.assertNotIn("KIMCHI_API_KEY", agent.agent_envs[0])
+        # The Kimchi gateway is never consulted for moonshotai/* models.
+        self.assertEqual(agent.metadata_fetch_count, 0)
+
+    async def test_moonshot_model_requires_moonshot_api_key(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            os.environ.pop("MOONSHOT_API_KEY", None)
+            agent = RecordingOpenCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="moonshotai/kimi-k3",
+            )
+
+            with self.assertRaisesRegex(ValueError, "MOONSHOT_API_KEY is required"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
+
+    async def test_unknown_moonshot_model_fails_before_commands(self) -> None:
+        with (
+            patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-msh-test"}),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingOpenCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="moonshotai/kimi-k9",
+            )
+
+            with self.assertRaisesRegex(ValueError, "not in the static metadata table"):
+                await agent.run("solve it", object(), AgentContext())
+
     async def test_rejects_non_kimchi_provider(self) -> None:
         for model_name in ("openai/gpt-4.1", "anthropic/claude-sonnet-5"):
             with self.subTest(model_name=model_name), tempfile.TemporaryDirectory() as tmp:
@@ -422,6 +479,31 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("kimi-k2.5", models)
         self.assertIn("minimax-m2.7", models)
         self.assertNotIn("OPENCODE_SMALL_MODEL", agent.effective_agent_envs[0])
+
+    async def test_rejects_small_model_from_another_provider_before_key_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingOpenCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="moonshotai/kimi-k3",
+                extra_env={"OPENCODE_SMALL_MODEL": "kimchi-dev/minimax-m2.7"},
+            )
+
+            with self.assertRaisesRegex(ValueError, "must use the same provider"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
+        self.assertEqual(agent.metadata_fetch_count, 0)
+
+    def test_rejects_non_moonshot_cross_provider_small_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingOpenCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="kimchi-dev/kimi-k2.5",
+                extra_env={"OPENCODE_SMALL_MODEL": "openrouter/@preset/kimi-k2-7-moonshot"},
+            )
+
+            with self.assertRaisesRegex(ValueError, "must use the same provider"):
+                agent._small_model_name()
 
     async def test_rejects_invalid_metadata_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

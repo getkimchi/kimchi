@@ -44,18 +44,30 @@ from kimchi_agent.git_install import (
     git_init_and_commit_baseline_command,
 )
 from kimchi_agent.messages import SessionEntry
+from kimchi_agent.moonshot import (
+    MOONSHOT_API_KEY_ENV,
+    MOONSHOT_PROVIDER,
+    is_moonshot_model,
+    required_moonshot_api_key,
+    split_moonshot_model,
+)
+from kimchi_agent.moonshot import (
+    build_models_config as build_moonshot_models_config,
+)
 from kimchi_agent.openrouter import (
     OPENROUTER_API_KEY_ENV,
     OPENROUTER_ENDPOINT_ENV,
     OPENROUTER_PROVIDER,
     OpenRouterClient,
     is_openrouter_model,
+    split_openrouter_model,
 )
 from kimchi_agent.zai import (
     ZAI_API_KEY_ENV,
     ZAI_ENDPOINT_ENV,
     ZAI_PROVIDER,
     is_zai_model,
+    split_zai_model,
 )
 from kimchi_agent.zai import (
     build_models_config as build_zai_models_config,
@@ -66,6 +78,8 @@ def _model_provider_label(model_name: str | None) -> str:
     """Provider name recorded in run metadata."""
     if is_openrouter_model(model_name):
         return OPENROUTER_PROVIDER
+    if is_moonshot_model(model_name):
+        return MOONSHOT_PROVIDER
     if is_zai_model(model_name):
         return ZAI_PROVIDER
     return "kimchi"
@@ -157,7 +171,7 @@ class PiKimchi(KimchiGatewayMixin, HarborCompatMixin, BaseInstalledAgent):
     ``openrouter`` provider and resolves ``OPENROUTER_API_KEY`` from the
     environment. A generated ``models.json`` still declares the selected model
     so limits come from OpenRouter's live catalog — see
-    :meth:`_openrouter_models_command` for why that is not optional.
+    :meth:`_models_json_command` for why that is not optional.
     """
 
     CLI_FLAGS: ClassVar[list[CliFlag]] = [
@@ -428,7 +442,15 @@ class PiKimchi(KimchiGatewayMixin, HarborCompatMixin, BaseInstalledAgent):
             # by OpenRouter.
             openrouter_client = OpenRouterClient(api_key=api_key, endpoint=self._get_env(OPENROUTER_ENDPOINT_ENV))
             direct_models_config = await openrouter_client.build_models_config(
-                self.model_name.split("/", 1)[1],
+                split_openrouter_model(self.model_name),
+                include_api_key=False,
+                thinking_level=self._resolved_flags.get("thinking"),
+            )
+        elif is_moonshot_model(self.model_name):
+            api_key = required_moonshot_api_key(self._get_env)
+            key_env = {MOONSHOT_API_KEY_ENV: api_key}
+            direct_models_config = build_moonshot_models_config(
+                split_moonshot_model(self.model_name),
                 include_api_key=False,
                 thinking_level=self._resolved_flags.get("thinking"),
             )
@@ -442,7 +464,7 @@ class PiKimchi(KimchiGatewayMixin, HarborCompatMixin, BaseInstalledAgent):
             # var. "$ZAI_API_KEY" is a reference, not the key, so the
             # bind-mounted file stays artifact-safe.
             direct_models_config = build_zai_models_config(
-                self.model_name.split("/", 1)[1],
+                split_zai_model(self.model_name),
                 include_api_key=True,
                 thinking_level=self._resolved_flags.get("thinking"),
                 endpoint=self._get_env(ZAI_ENDPOINT_ENV),
@@ -521,20 +543,22 @@ class PiKimchi(KimchiGatewayMixin, HarborCompatMixin, BaseInstalledAgent):
         return api_key
 
     @staticmethod
-    def _openrouter_models_command(models_config: dict[str, Any]) -> str:
-        """Declare the selected OpenRouter model to pi before it starts.
+    def _models_json_command(models_config: dict[str, Any]) -> str:
+        """Declare the selected third-party model to pi before it starts.
 
         Not optional, even for models in pi's bundled catalog. An id pi does not
         know falls back to default limits, and pi then requests more output
-        tokens than the endpoint allows: OpenRouter answers 400, pi records
+        tokens than the endpoint allows: the provider answers 400, pi records
         ``stopReason: error`` with empty content — and still exits 0. Harbor
         scores that as an ordinary zero, so the run looks like a model failure
-        instead of a config one. Declaring the model keeps limits live from
-        OpenRouter's catalog and keeps the bundled entries from going stale.
+        instead of a config one. Declaring the model keeps limits live from the
+        provider and keeps the bundled entries from going stale.
 
-        The config deliberately carries no apiKey: pi maps the openrouter
-        provider to OPENROUTER_API_KEY itself, and this file is written inside
-        the bind-mounted logs dir that becomes CI artifacts.
+        The config deliberately carries no key material: pi maps the openrouter
+        and moonshotai providers to OPENROUTER_API_KEY / MOONSHOT_API_KEY itself,
+        and the zai config names ``$ZAI_API_KEY`` as a reference, never the key
+        value — this file is written inside the bind-mounted logs dir that
+        becomes CI artifacts.
         """
         models_json = json.dumps(models_config, separators=(",", ":"))
         return (
@@ -571,9 +595,7 @@ class PiKimchi(KimchiGatewayMixin, HarborCompatMixin, BaseInstalledAgent):
             # would need the network the bundle exists to avoid.
             parts.append(f"cd {shlex.quote(CONTAINER_EXTENSION_INSTALL_DIR)} && npm install --production")
         if direct_models_config is not None:
-            # The models.json writer is provider-agnostic; the openrouter in
-            # its name reflects which direct provider arrived here first.
-            parts.append(self._openrouter_models_command(direct_models_config))
+            parts.append(self._models_json_command(direct_models_config))
         # Ensure a git repo exists with a committed baseline, but never clobber
         # one the task image ships with (e.g. fix-git).  Harbor sets the
         # working directory via ``docker exec -w``, so ``$PWD`` is the task

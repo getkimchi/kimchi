@@ -13,6 +13,8 @@ from bench_config import (
     load_llm_params,
     parse_model,
     resolve_thinking_level,
+    validate_llm_params_for_model,
+    validate_thinking_level_for_model,
 )
 from outcome import Outcome
 
@@ -46,6 +48,9 @@ def test_explicit_multi_model_selection(monkeypatch: pytest.MonkeyPatch) -> None
         (Outcome.ERROR,         "infra", "kimchi_infra_exit",        "true",  True),
         (Outcome.ERROR,         "infra", "api_key_budget_exceeded",  "true",  False),
         (Outcome.ERROR,         "infra", "api_key_budget_exceeded",  "false", False),
+        # Moonshot account suspension: retryable — interim until the account is recharged.
+        (Outcome.ERROR,         "infra", "moonshot_quota_exceeded",  "true",  True),
+        (Outcome.ERROR,         "infra", "moonshot_quota_exceeded",  "false", True),
         # Quality / other errors: never retryable
         (Outcome.ERROR,         "quality", None,                     "true",  False),
         (Outcome.ERROR,         None,      None,                     "true",  False),
@@ -132,6 +137,35 @@ def test_load_llm_params_all_set(monkeypatch):
     global_params, per_model = load_llm_params()
     assert global_params == {"temperature": 1.0, "top_p": 0.95, "top_k": 40, "max_tokens": 4096}
     assert per_model == {}
+
+
+@pytest.mark.parametrize(
+    ("params", "parameter", "required_value"),
+    [
+        ({"temperature": 0.7}, "temperature", "1.0"),
+        ({"top_p": 0.9}, "top_p", "0.95"),
+    ],
+)
+def test_moonshot_models_reject_incompatible_sampling_params(params, parameter, required_value):
+    with pytest.raises(
+        ValueError,
+        match=rf"moonshotai/.*{parameter}.*{required_value}",
+    ):
+        validate_llm_params_for_model("moonshotai/kimi-k3", params)
+
+
+def test_moonshot_models_accept_published_fixed_sampling_params():
+    validate_llm_params_for_model(
+        "moonshotai/kimi-k2.7-code",
+        {"temperature": 1.0, "top_p": 0.95},
+    )
+
+
+def test_non_moonshot_models_keep_generic_sampling_params():
+    validate_llm_params_for_model(
+        "kimchi-dev/kimi-k2.7",
+        {"temperature": 0.7, "top_p": 0.9},
+    )
 
 
 def test_load_llm_params_gitlab_number_trailing_zero(monkeypatch):
@@ -323,3 +357,37 @@ def test_resolve_thinking_level_explicit_agent_arg(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("CODING_AGENT", "opencode")
     assert resolve_thinking_level(coding_agent="kimchi") == "high"
     assert resolve_thinking_level(coding_agent="opencode") is None
+
+
+@pytest.mark.parametrize("level", ["low", "high", "max"])
+def test_moonshot_k3_accepts_supported_thinking_levels(level: str) -> None:
+    validate_thinking_level_for_model("moonshotai/kimi-k3", level)
+
+
+@pytest.mark.parametrize("level", ["off", "minimal", "medium", "xhigh"])
+def test_moonshot_k3_rejects_unsupported_thinking_levels(level: str) -> None:
+    with pytest.raises(
+        ValueError,
+        match=rf"'{level}' is not supported by MODEL=moonshotai/kimi-k3.*high, low, max",
+    ):
+        validate_thinking_level_for_model("moonshotai/kimi-k3", level)
+
+
+@pytest.mark.parametrize(
+    "level", ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+)
+def test_moonshot_k2_7_code_rejects_every_thinking_level(level: str) -> None:
+    with pytest.raises(ValueError, match="thinking cannot be configured"):
+        validate_thinking_level_for_model("moonshotai/kimi-k2.7-code", level)
+
+
+def test_thinking_level_validation_noop_cases() -> None:
+    # No level requested.
+    validate_thinking_level_for_model("moonshotai/kimi-k3", None)
+    validate_thinking_level_for_model("moonshotai/kimi-k2.7-code", None)
+    # Non-moonshot models.
+    validate_thinking_level_for_model("kimchi-dev/kimi-k2.6", "medium")
+    validate_thinking_level_for_model("openrouter/moonshotai/kimi-k3", "medium")
+    # Unknown moonshotai ids pass here; the adapter's static table rejects
+    # them at launch.
+    validate_thinking_level_for_model("moonshotai/kimi-k9", "medium")

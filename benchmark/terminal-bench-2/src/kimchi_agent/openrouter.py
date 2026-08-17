@@ -51,6 +51,20 @@ def is_openrouter_model(model_name: str | None) -> bool:
     return bool(model_name) and model_name.startswith(f"{OPENROUTER_PROVIDER}/")
 
 
+def split_openrouter_model(model_name: str | None) -> str:
+    """Extract the model id from an ``openrouter/<id>`` model name."""
+    if not model_name or "/" not in model_name:
+        raise ValueError(
+            "--model is required and must use provider/model format, e.g. openrouter/@preset/glm-5-2-zai"
+        )
+    provider, model_id = model_name.split("/", 1)
+    if provider != OPENROUTER_PROVIDER:
+        raise ValueError(f"expected a {OPENROUTER_PROVIDER}/ model; got {model_name!r}")
+    if not model_id:
+        raise ValueError(f"--model must include a model id after {OPENROUTER_PROVIDER}/")
+    return model_id
+
+
 def resolve_openrouter_endpoint(endpoint: str | None) -> str:
     if endpoint and endpoint.strip():
         return endpoint.strip().rstrip("/")

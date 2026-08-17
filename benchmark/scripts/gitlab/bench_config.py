@@ -282,6 +282,48 @@ ENV_BENCH_LLM_TOP_P = "BENCH_LLM_TOP_P"
 ENV_BENCH_LLM_TOP_K = "BENCH_LLM_TOP_K"
 ENV_BENCH_LLM_MAX_TOKENS = "BENCH_LLM_MAX_TOKENS"
 
+MOONSHOT_PROVIDER_PREFIX = "moonshotai/"
+MOONSHOT_FIXED_SAMPLING_PARAMS = {
+    "temperature": 1.0,
+    "top_p": 0.95,
+}
+
+# Thinking levels each Moonshot model accepts. Mirrors the static table in
+# benchmark/terminal-bench-2/src/kimchi_agent/moonshot.py (CI scripts cannot
+# import the agent package); the empty set means thinking cannot be
+# configured at all.
+MOONSHOT_SUPPORTED_THINKING_LEVELS: dict[str, frozenset[str]] = {
+    "kimi-k2.7-code": frozenset(),
+    "kimi-k3": frozenset({"low", "high", "max"}),
+}
+
+
+def validate_thinking_level_for_model(model: str, thinking_level: str | None) -> None:
+    """Reject a thinking level the selected Moonshot model cannot honour.
+
+    No-op when no level was requested, the model is not routed via Moonshot,
+    or the model id is absent from the table (unknown ids are rejected later
+    by the adapter's static table). Failing here moves a clamped thinking
+    level from per-trial agent runtime to pipeline start.
+    """
+    if not thinking_level or not model.startswith(MOONSHOT_PROVIDER_PREFIX):
+        return
+    model_id = model.removeprefix(MOONSHOT_PROVIDER_PREFIX)
+    if model_id not in MOONSHOT_SUPPORTED_THINKING_LEVELS:
+        return
+    supported = MOONSHOT_SUPPORTED_THINKING_LEVELS[model_id]
+    if thinking_level in supported:
+        return
+    detail = (
+        ", ".join(sorted(supported))
+        if supported
+        else "none — thinking cannot be configured"
+    )
+    raise ValueError(
+        f"THINKING_LEVEL={thinking_level!r} is not supported by MODEL={model}; "
+        f"supported levels: {detail}"
+    )
+
 # --- Thinking / reasoning level ---
 ENV_THINKING_LEVEL = "THINKING_LEVEL"
 DEFAULT_THINKING_LEVEL = "default"
@@ -399,3 +441,24 @@ def load_llm_params() -> tuple[dict[str, float | int], dict[str, dict[str, float
         global_params["max_tokens"] = max_tokens
 
     return global_params, {}
+
+
+def validate_llm_params_for_model(
+    model: str,
+    params: dict[str, float | int],
+) -> None:
+    """Reject sampling parameters the selected provider cannot honor.
+
+    Moonshot fixes temperature and top_p for both benchmarked models. Letting
+    another value reach the API turns every trial into the same avoidable 400,
+    so fail the pipeline before Harbor starts any work.
+    """
+    if not model.startswith(MOONSHOT_PROVIDER_PREFIX):
+        return
+    for parameter, required_value in MOONSHOT_FIXED_SAMPLING_PARAMS.items():
+        value = params.get(parameter)
+        if value is not None and value != required_value:
+            raise ValueError(
+                f"MODEL={model} requires {parameter}={required_value}; "
+                f"got {parameter}={value}"
+            )

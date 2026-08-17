@@ -236,6 +236,21 @@ async def test_api_key_can_come_from_agent_extra_env(tmp_path: Path, monkeypatch
     assert agent.agent_envs[0]["KIMCHI_API_KEY"] == "extra-key"
 
 
+async def test_gateway_model_without_api_key_raises_at_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KIMCHI_API_KEY", raising=False)
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+    )
+
+    with pytest.raises(RuntimeError, match="KIMCHI_API_KEY is required"):
+        await agent.run("hello", object(), AgentContext())
+
+    assert agent.agent_commands == []
+
+
 async def test_run_defaults_infra_breaker_threshold(tmp_path: Path) -> None:
     agent = RecordingKimchi(
         logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
@@ -884,6 +899,93 @@ async def test_anthropic_unknown_model_raises(tmp_path: Path, monkeypatch: pytes
         await agent.run("hello", object(), AgentContext())
 
 
+async def test_moonshot_model_writes_models_config_before_kimchi(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A moonshotai/* model writes the static provider block to models.json."""
+    monkeypatch.delenv("KIMCHI_API_KEY", raising=False)
+    monkeypatch.setenv("MOONSHOT_API_KEY", "sk-test")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="moonshotai/kimi-k3",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert '"id":"kimi-k3"' in command
+    assert '"contextWindow":1048576' in command
+    assert '"reasoning":true' in command
+    assert '"apiKey":"$MOONSHOT_API_KEY"' in command
+    assert '"baseUrl":"https://api.moonshot.ai/v1"' in command
+    assert "~/.config/kimchi/harness/models.json" in command
+    assert "--model moonshotai/kimi-k3" in command
+
+
+async def test_moonshot_model_forwards_api_key_into_container_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MOONSHOT_API_KEY is forwarded and KIMCHI_API_KEY is NOT set for moonshotai/* models."""
+    monkeypatch.setenv("MOONSHOT_API_KEY", "sk-test")
+    monkeypatch.setenv("KIMCHI_API_KEY", "should-not-be-forwarded")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="moonshotai/kimi-k3",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    env = agent.agent_envs[0]
+    assert env is not None
+    assert env.get("MOONSHOT_API_KEY") == "sk-test"
+    assert env.get("KIMCHI_API_KEY") is None
+
+
+async def test_moonshot_model_without_api_key_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing MOONSHOT_API_KEY raises a clear error for moonshotai/* models."""
+    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="moonshotai/kimi-k3",
+    )
+
+    with pytest.raises(ValueError, match="MOONSHOT_API_KEY is required"):
+        await agent.run("hello", object(), AgentContext())
+
+
+async def test_moonshot_unknown_model_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unknown moonshotai/* model id raises a clear error."""
+    monkeypatch.setenv("MOONSHOT_API_KEY", "sk-test")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="moonshotai/kimi-k9",
+    )
+
+    with pytest.raises(ValueError, match="not in the static metadata table"):
+        await agent.run("hello", object(), AgentContext())
+
+
+async def test_moonshot_unsupported_thinking_level_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A thinking level the model cannot honour fails before the agent starts."""
+    monkeypatch.setenv("MOONSHOT_API_KEY", "sk-test")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="moonshotai/kimi-k2.7-code",
+        **{"thinking": "off"},
+    )
+
+    with pytest.raises(ValueError, match="thinking level 'off' is not supported"):
+        await agent.run("hello", object(), AgentContext())
+
+
 def test_is_openrouter_model_detects_prefixed_names() -> None:
     # Shared by the kimchi, claude-code and pi adapters.
     from kimchi_agent.openrouter import is_openrouter_model
@@ -894,6 +996,28 @@ def test_is_openrouter_model_detects_prefixed_names() -> None:
     assert is_openrouter_model("multi-model") is False
     assert is_openrouter_model(None) is False
     assert is_openrouter_model("") is False
+
+
+@pytest.mark.parametrize(
+    ("model_name", "expected_domains"),
+    [
+        ("kimchi-dev/kimi-k2.6", ["llm.kimchi.dev"]),
+        ("openrouter/z-ai/glm-5.2", ["openrouter.ai"]),
+        ("anthropic/claude-sonnet-5", ["api.anthropic.com"]),
+        ("zai/glm-5.2", ["api.z.ai"]),
+        ("moonshotai/kimi-k3", ["api.moonshot.ai"]),
+        ("multi-model", ["api.anthropic.com", "llm.kimchi.dev", "openrouter.ai"]),
+    ],
+)
+def test_network_allowlist_domains_match_the_selected_route(
+    tmp_path: Path, model_name: str, expected_domains: list[str]
+) -> None:
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name=model_name,
+    )
+
+    assert agent.network_allowlist().domains == expected_domains
 
 
 async def test_setup_always_calls_install_even_when_preinstalled(tmp_path: Path) -> None:

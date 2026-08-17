@@ -46,7 +46,7 @@ inputs:
     type: array
     default: [hf-model-inference, fix-code-vulnerability, build-cython-ext, bn-fit-modify, fix-git, mteb-leaderboard, cobol-modernization, merge-diff-arc-agi-task, extract-elf, pytorch-model-recovery]
   model:
-    description: "Model or execution mode. kimchi-dev/* routes via the Kimchi gateway; openrouter/* routes via OpenRouter (kimchi, pi, workflow, claude-code, and opencode agents); zai/* routes directly via Z.AI's API using ZAI_API_KEY (same agents as openrouter); anthropic/* uses the native Anthropic API (works with kimchi and claude-code-standard agents). Select multi-model to use the target ref's default role configuration."
+    description: "Model or execution mode. kimchi-dev/* routes via the Kimchi gateway; openrouter/* routes via OpenRouter (kimchi, pi, workflow, claude-code, and opencode agents); zai/* routes directly via Z.AI's API using ZAI_API_KEY (same agents as openrouter); anthropic/* uses the native Anthropic API (works with kimchi and claude-code-standard agents); moonshotai/* uses the native Moonshot AI API (kimchi, pi, workflow, claude-code, and opencode agents) and requires the MOONSHOT_API_KEY CI/CD variable. Select multi-model to use the target ref's default role configuration."
     type: string
     default: "kimchi-dev/minimax-m3"
     options:
@@ -61,6 +61,9 @@ inputs:
       - kimchi-dev/minimax-m3
       - kimchi-dev/glm-5.2-fp8
       - kimchi-dev/deepseek-v4-flash
+      # Native Moonshot API (require MOONSHOT_API_KEY, not KIMCHI_API_KEY)
+      - moonshotai/kimi-k2.7-code
+      - moonshotai/kimi-k3
       # Preset-pinned: route only to Moonshot (int4) instead of load-balancing across
       # multiple providers. Use this for recorded scores with Kimi K2.7.
       - openrouter/@preset/kimi-k2-7-moonshot

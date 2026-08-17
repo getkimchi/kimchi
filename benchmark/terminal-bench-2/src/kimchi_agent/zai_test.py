@@ -14,6 +14,16 @@ def test_is_zai_model_detects_prefixed_names() -> None:
     assert zai.is_zai_model("") is False
 
 
+def test_split_zai_model_extracts_id() -> None:
+    assert zai.split_zai_model("zai/glm-5.2") == "glm-5.2"
+    with pytest.raises(ValueError, match="must include a model id"):
+        zai.split_zai_model("zai/")
+    with pytest.raises(ValueError, match="expected a zai/ model"):
+        zai.split_zai_model("moonshotai/kimi-k3")
+    with pytest.raises(ValueError, match="provider/model format"):
+        zai.split_zai_model(None)
+
+
 @pytest.mark.parametrize(
     ("override", "expected"),
     [

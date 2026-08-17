@@ -11,7 +11,7 @@ The agent starts `kimchi` in its own process group and records the process-group
 - Docker running locally
 - `uv` (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 - `pnpm` — only if you use `./scripts/run-local.sh` (it cross-builds the Linux binary from the working tree)
-- `KIMCHI_API_KEY` exported on the host — kimchi routes every request through `https://llm.kimchi.dev/openai/v1`; no provider-specific keys are needed
+- The API key for the selected model route: `KIMCHI_API_KEY` for `kimchi-dev/*`, `OPENROUTER_API_KEY` for `openrouter/*`, `ANTHROPIC_API_KEY` for `anthropic/*`, or `MOONSHOT_API_KEY` for `moonshotai/*`
 
 ### Apple Silicon (M-series Macs) — read before iterating locally
 
@@ -138,6 +138,18 @@ MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-local.sh -i terminal-bench/fix-git
 Verified present at the time of writing (`kimchi --list-models`): `kimi-k2.7`, `glm-5.2-fp8`,
 `minimax-m3`, `deepseek-v4-flash`, `nemotron-3-ultra-fp4`, plus the `kimchi-dev/anthropic` family.
 
+### Native Moonshot API
+
+The GitLab benchmark pipeline accepts `moonshotai/kimi-k2.7-code` and
+`moonshotai/kimi-k3`. These models bypass the Kimchi gateway and require the
+`MOONSHOT_API_KEY` CI/CD variable. They work with the `kimchi`, `pi`,
+`kimchi-workflow`, `pi-workflow`, `claude-code`, and `opencode` agents.
+
+For OpenCode, `OPENCODE_SMALL_MODEL` defaults to the selected benchmark model.
+An explicit small model must use the same provider prefix as `MODEL`; for
+example, `moonshotai/kimi-k3` may use `moonshotai/kimi-k2.7-code`, but not a
+`kimchi-dev/*` model.
+
 ### OpenCode with the Kimchi gateway
 
 Use `run-opencode-kimchi.sh` when the benchmark should evaluate the OpenCode scaffold while routing model calls through `llm.kimchi.dev`.
@@ -147,7 +159,9 @@ export KIMCHI_API_KEY=...
 MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
 ```
 
-The script requires `KIMCHI_API_KEY` in the host environment and forwards it to Harbor with `--ae KIMCHI_API_KEY=$KIMCHI_API_KEY`; you do not need to pass that `--ae` manually when using the script.
+The script resolves the credential from `MODEL`: `KIMCHI_API_KEY` for
+`kimchi-dev/*`, `OPENROUTER_API_KEY` for `openrouter/*`, and
+`MOONSHOT_API_KEY` for `moonshotai/*`. You do not need to pass `--ae` manually.
 
 The OpenCode adapter accepts any `kimchi-dev/<model-id>` returned by Kimchi's model metadata endpoint (`/v1/models/metadata?include_in_cli=true`). It writes an OpenCode provider config for the selected model at runtime, using the live model limits and reasoning flag, then runs OpenCode in JSON mode. Reasoning-capable models include `--thinking`:
 
@@ -161,7 +175,7 @@ To change models, change only `MODEL`:
 MODEL=kimchi-dev/minimax-m3 ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
 ```
 
-By default OpenCode uses the benchmark model for `small_model` too, keeping the whole run on the selected model. To use a cheaper Kimchi model for summary/title work, set `OPENCODE_SMALL_MODEL=kimchi-dev/<model-id>`; the adapter registers that model from the same metadata endpoint.
+By default OpenCode uses the benchmark model for `small_model` too, keeping the whole run on the selected model. To use a cheaper model for summary/title work, set `OPENCODE_SMALL_MODEL=<same-provider>/<model-id>`; the adapter rejects a provider that differs from `MODEL`.
 
 By default Harbor installs the latest `opencode-ai` package. Pin OpenCode for reproducible runs with `OPENCODE_VERSION`:
 

@@ -260,6 +260,22 @@ async def test_launch_command_has_exactly_one_extension_flag(tmp_path: Path) -> 
     assert f"-e {CONTAINER_EXTENSION_DIR} --print" in command
 
 
+async def test_moonshot_workflow_does_not_require_kimchi_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KIMCHI_API_KEY", raising=False)
+    monkeypatch.setenv("MOONSHOT_API_KEY", "sk-moonshot-test")
+    agent = _agent(tmp_path, model_name="moonshotai/kimi-k3")
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("do the task", object(), AgentContext())
+
+    env = agent.agent_envs[0]
+    assert env is not None
+    assert env["MOONSHOT_API_KEY"] == "sk-moonshot-test"
+    assert "KIMCHI_API_KEY" not in env
+
+
 # --- install(): npm: (now host-resolved + uploaded, exactly like dir:) ------
 
 

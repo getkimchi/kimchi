@@ -395,6 +395,20 @@ async def test_agent_info_records_the_workflow_and_the_resolved_extension(
     assert info.model_info.name == "kimchi-dev/kimi-k2.7"
 
 
+def test_agent_info_preserves_native_moonshot_provider(tmp_path: Path) -> None:
+    (tmp_path / "resolved-extension").mkdir()
+    agent = _agent(
+        tmp_path,
+        tmp_path / "resolved-extension",
+        model_name="moonshotai/kimi-k3",
+    )
+
+    info = agent.to_agent_info()
+
+    assert info.model_info.name == "moonshotai/kimi-k3"
+    assert info.model_info.provider == "moonshotai"
+
+
 def test_agent_info_before_install_says_the_extension_is_unresolved(tmp_path: Path) -> None:
     (tmp_path / "resolved-extension").mkdir()
     agent = _agent(tmp_path, tmp_path / "resolved-extension")

@@ -27,6 +27,13 @@ from kimchi_agent.git_install import (
     git_config_command,
     git_init_and_commit_baseline_command,
 )
+from kimchi_agent.moonshot import (
+    MOONSHOT_ANTHROPIC_BASE_URL,
+    is_moonshot_model,
+    moonshot_metadata,
+    required_moonshot_api_key,
+    split_moonshot_model,
+)
 from kimchi_agent.openrouter import (
     OPENROUTER_API_KEY_ENV,
     OPENROUTER_ENDPOINT_ENV,
@@ -34,6 +41,7 @@ from kimchi_agent.openrouter import (
     OpenRouterClient,
     is_openrouter_model,
     resolve_openrouter_anthropic_base_url,
+    split_openrouter_model,
 )
 from kimchi_agent.zai import (
     ZAI_ANTHROPIC_ENDPOINT_ENV,
@@ -41,6 +49,7 @@ from kimchi_agent.zai import (
     ZAI_PROVIDER,
     is_zai_model,
     resolve_zai_anthropic_base_url,
+    split_zai_model,
     zai_model,
 )
 
@@ -56,6 +65,7 @@ CLAUDE_CODE_INSTALL_RETRY_DELAYS_SEC = (5, 15)
 # timeout has a chance to surface as a retryable 524 (which the harbor retry
 # loop can handle). Callers can override via the API_TIMEOUT_MS passthrough.
 CLAUDE_CODE_DEFAULT_API_TIMEOUT_MS = "900000"
+K2_7_CODE_THINKING_TOKENS = "32000"
 RETRYABLE_API_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 524, 529})
 # Non-retryable API statuses that we still want to classify with full error
 # text (re-raised as typed exceptions so classify.py can match on them).
@@ -95,6 +105,7 @@ FORCED_ENV_KEYS = {
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
     "ANTHROPIC_SMALL_FAST_MODEL",
     "ANTHROPIC_CUSTOM_MODEL_OPTION",
     "CLAUDE_CODE_SUBAGENT_MODEL",
@@ -124,9 +135,11 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
     ``kimchi-dev/*`` models route through the Kimchi gateway using
     ``KIMCHI_API_KEY``. ``openrouter/*`` models route through OpenRouter's
     Anthropic-compatible surface (``https://openrouter.ai/api``) using
-    ``OPENROUTER_API_KEY``; ``zai/*`` models route through Z.AI's
+    ``OPENROUTER_API_KEY``, ``zai/*`` models route through Z.AI's
     Anthropic-compatible surface (``https://api.z.ai/api/anthropic``) using
-    ``ZAI_API_KEY``. All three speak Claude Code's native protocol, so only
+    ``ZAI_API_KEY``, and ``moonshotai/*`` models route through Moonshot's
+    Anthropic-compatible surface (``https://api.moonshot.ai/anthropic``)
+    using ``MOONSHOT_API_KEY``; all four speak Claude Code's native protocol, so only
     the base URL, the auth token, and the model-metadata source differ.
     """
 
@@ -207,6 +220,27 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
             )
         return api_key
 
+    def _moonshot_model_metadata(self) -> KimchiModelMetadata:
+        """Model metadata for a ``moonshotai/*`` model, from the static table.
+
+        The slug is the id Claude Code must send through Moonshot's
+        Anthropic-compatible endpoint — for K3 that is ``kimi-k3[1m]``, which
+        selects the 1M-window variant, matching
+        https://platform.kimi.ai/docs/guide/claude-code-kimi.
+        """
+        model = moonshot_metadata(split_moonshot_model(self.model_name))
+        model.require_thinking_level(
+            self._resolved_flags.get("reasoning_effort"),
+            model_name=self.model_name or "moonshotai/unknown",
+        )
+        return KimchiModelMetadata(
+            slug=model.anthropic_model_id,
+            limits=KimchiModelLimits(
+                context_window=model.context_window,
+                max_output_tokens=model.max_output_tokens,
+            ),
+        )
+
     def _required_zai_api_key(self) -> str:
         api_key = self._get_env(ZAI_API_KEY_ENV)
         if not api_key:
@@ -223,9 +257,7 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
         Z.AI exposes no OpenRouter-style catalogue, so no network fetch — an
         unknown id raises locally instead of after the container install.
         """
-        model_id = self.model_name.split("/", 1)[1]
-        if not model_id:
-            raise ValueError(f"--model must include a model id after {ZAI_PROVIDER}/")
+        model_id = split_zai_model(self.model_name)
         meta = zai_model(model_id)
         return KimchiModelMetadata(
             slug=model_id,
@@ -242,9 +274,7 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
         the same way for both routes. Preset and variant ids are resolved to the
         catalogued model they wrap; Claude Code still receives the id as given.
         """
-        model_id = self.model_name.split("/", 1)[1]
-        if not model_id:
-            raise ValueError(f"--model must include a model id after {OPENROUTER_PROVIDER}/")
+        model_id = split_openrouter_model(self.model_name)
         client = OpenRouterClient(api_key=api_key, endpoint=self._get_env(OPENROUTER_ENDPOINT_ENV))
         limits = await client.limits_for(await client.resolve(model_id))
         return KimchiModelMetadata(
@@ -257,6 +287,14 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
 
     async def _resolve_routing(self) -> tuple[KimchiModelMetadata, str, str]:
         """Return ``(model, auth token, Anthropic base URL)`` for the selected model."""
+        if is_moonshot_model(self.model_name):
+            # Key first: a missing key should fail before any container work.
+            return (
+                self._moonshot_model_metadata(),
+                required_moonshot_api_key(self._get_env),
+                MOONSHOT_ANTHROPIC_BASE_URL,
+            )
+
         if is_openrouter_model(self.model_name):
             # Key first: a missing key should fail before we hit the network.
             api_key = self._required_openrouter_api_key()
@@ -280,7 +318,12 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
     async def _build_env(self) -> dict[str, str]:
         model, api_key, anthropic_base_url = await self._resolve_routing()
         model_id = model.slug
-        blocked_env_keys = FORCED_ENV_KEYS | DENIED_ENV_KEYS
+        force_k2_thinking = (
+            is_moonshot_model(self.model_name)
+            and split_moonshot_model(self.model_name) == "kimi-k2.7-code"
+        )
+        route_forced_env_keys = {"MAX_THINKING_TOKENS"} if force_k2_thinking else set()
+        blocked_env_keys = FORCED_ENV_KEYS | DENIED_ENV_KEYS | route_forced_env_keys
         env = self._passthrough_env(
             prefixes=CLAUDE_PASSTHROUGH_ENV_PREFIXES,
             keys=CLAUDE_PASSTHROUGH_ENV_KEYS,
@@ -303,6 +346,7 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
                 "ANTHROPIC_DEFAULT_SONNET_MODEL": model_id,
                 "ANTHROPIC_DEFAULT_OPUS_MODEL": model_id,
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL": model_id,
+                "ANTHROPIC_DEFAULT_FABLE_MODEL": model_id,
                 "ANTHROPIC_SMALL_FAST_MODEL": model_id,
                 "ANTHROPIC_CUSTOM_MODEL_OPTION": model_id,
                 "CLAUDE_CODE_SUBAGENT_MODEL": model_id,
@@ -321,6 +365,10 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
         # gateway; retryable Cloudflare 524s still surface as
         # RetryableApiError via the stream-log classifier.
         env.setdefault("API_TIMEOUT_MS", CLAUDE_CODE_DEFAULT_API_TIMEOUT_MS)
+        if force_k2_thinking:
+            # K2.7 requires thinking on. Claude Code has no --thinking flag;
+            # a positive fixed budget is its supported non-interactive control.
+            env["MAX_THINKING_TOKENS"] = K2_7_CODE_THINKING_TOKENS
         env.update({key: "" for key in DENIED_ENV_KEYS})
 
         # Harbor merges _extra_env over env=. Remove keys from that channel so

@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from harbor.models.trial.result import AgentInfo, ModelInfo
+from harbor.models.trial.result import AgentInfo
 
 from kimchi_agent import workflow_staging
 from kimchi_agent.pi_kimchi import CONTAINER_INSTALL_DIR, CONTAINER_LOGS_DIR, PiKimchi
@@ -252,12 +252,10 @@ class PiWorkflowAgent(PiKimchi):
     # -- identity --------------------------------------------------------
 
     def to_agent_info(self) -> AgentInfo:
+        base_info = super().to_agent_info()
         # Workflow file content is not captured: workflows live in this repo,
         # not the extension. Give an edited variant its own declared name
         # (e.g. deep-solve-v2) to distinguish it in results.
         extension_identity = self._extension_short_identity or "unresolved"
-        return AgentInfo(
-            name=self.name(),
-            version=f"{self.version() or 'unknown'}+{self._workflow}@{extension_identity}",
-            model_info=ModelInfo(name=self.model_name or "unknown", provider="kimchi"),
-        )
+        version = f"{base_info.version}+{self._workflow}@{extension_identity}"
+        return base_info.model_copy(update={"version": version})

@@ -1190,6 +1190,76 @@ def test_anthropic_model_does_not_require_kimchi_api_key(
 
     with patch("chunk_runner.run_harbor"):
         assert main() == 0
+
+
+def test_moonshot_model_does_not_require_kimchi_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        CODING_AGENT="pi-workflow",
+        MODEL="moonshotai/kimi-k3",
+        MOONSHOT_API_KEY="sk-moonshot-test",
+    )
+    monkeypatch.delenv("KIMCHI_API_KEY", raising=False)
+
+    results_dir = tmp_path / "jobs"
+    trial = results_dir / "run-1" / "task-a__1"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps({"verifier_result": {"rewards": {"reward": 1.0}}})
+    )
+
+    with patch("chunk_runner.run_harbor"):
+        assert main() == 0
+
+
+def test_moonshot_model_requires_moonshot_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _main_env(tmp_path, monkeypatch, CODING_AGENT="kimchi", MODEL="moonshotai/kimi-k3")
+    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+
+    assert main() == 1
+    assert "MOONSHOT_API_KEY is required" in capsys.readouterr().err
+
+
+def test_moonshot_model_rejects_incompatible_sampling_params_before_harbor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        CODING_AGENT="kimchi",
+        MODEL="moonshotai/kimi-k3",
+        MOONSHOT_API_KEY="sk-moonshot-test",
+        BENCH_LLM_TEMPERATURE="0.7",
+    )
+
+    with patch("chunk_runner.run_harbor") as run_harbor:
+        assert main() == 1
+
+    run_harbor.assert_not_called()
+    assert "moonshotai/kimi-k3 requires temperature=1.0" in capsys.readouterr().err
+
+
+def test_moonshot_model_is_rejected_for_unsupported_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        CODING_AGENT="claude-code-standard",
+        MODEL="moonshotai/kimi-k3",
+        MOONSHOT_API_KEY="sk-moonshot-test",
+        ANTHROPIC_API_KEY="sk-anthropic-test",
+    )
+
+    assert main() == 1
+    assert "is not supported when CODING_AGENT=claude-code-standard" in capsys.readouterr().err
+
+
 def test_tasks_all_false_uses_selected_tasks_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1792,3 +1862,26 @@ class TestMainRetryFlow:
         # k=1 round scheduling: the passing trial filled a slot in one round.
         assert len(captured_attempts) == 1
         assert captured_attempts[0] == 1
+
+
+def test_main_rejects_unsupported_moonshot_thinking_level_at_pipeline_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """moonshotai/kimi-k3 + THINKING_LEVEL=medium fails before Harbor launches."""
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        MODEL="moonshotai/kimi-k3",
+        THINKING_LEVEL="medium",
+        MOONSHOT_API_KEY="test-key",
+    )
+
+    with patch("chunk_runner.run_harbor") as mock_harbor:
+        exit_code = main()
+
+    assert exit_code == 1
+    assert (
+        "THINKING_LEVEL='medium' is not supported by MODEL=moonshotai/kimi-k3"
+        in capsys.readouterr().err
+    )
+    mock_harbor.assert_not_called()

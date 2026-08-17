@@ -36,7 +36,7 @@ target-version = "py314"
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.pytest.ini_options]
-testpaths = ["src", "tests"]
+testpaths = ["src", "tests", "scripts"]
 python_files = ["test_*.py", "*_test.py"]
 addopts = "-ra"
 pythonpath = ["scripts"]

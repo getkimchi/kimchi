@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from redact_api_key import REDACTED_MARKER, redact_tree
+from redact_api_key import REDACTED_MARKER, main, redact_tree
 
 
 def _write(root: Path, rel: str, data: bytes) -> None:
@@ -82,3 +82,15 @@ def test_redact_tree_fails_closed_when_secret_file_cannot_be_rewritten(
 
     with pytest.raises(PermissionError, match="read-only"):
         redact_tree(tmp_path, [secret])
+
+
+def test_main_redacts_moonshot_api_key_from_benchmark_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = b"sk-moonshot-secret"
+    _write(tmp_path, "run-1/task/agent.log", b"token=" + secret)
+    monkeypatch.setenv("BENCHMARK_RESULTS_DIR", str(tmp_path))
+    monkeypatch.setenv("MOONSHOT_API_KEY", secret.decode())
+
+    assert main() == 0
+    assert (tmp_path / "run-1/task/agent.log").read_bytes() == b"token=" + REDACTED_MARKER

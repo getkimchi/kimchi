@@ -26,6 +26,15 @@ from kimchi_agent.git_install import (
     git_init_and_commit_baseline_command,
 )
 from kimchi_agent.messages import SessionEntry
+from kimchi_agent.moonshot import (
+    MOONSHOT_API_KEY_ENV,
+    is_moonshot_model,
+    required_moonshot_api_key,
+    split_moonshot_model,
+)
+from kimchi_agent.moonshot import (
+    build_models_config as build_moonshot_models_config,
+)
 from kimchi_agent.openrouter import (
     OPENROUTER_API_KEY_ENV,
     OPENROUTER_ENDPOINT_ENV,
@@ -209,7 +218,10 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
 
     ``kimchi-dev/*`` models route through the Kimchi LLM gateway using
     ``KIMCHI_API_KEY``. ``openrouter/*`` models route directly through OpenRouter
-    using ``OPENROUTER_API_KEY``.
+    using ``OPENROUTER_API_KEY``, ``anthropic/*`` through the native Anthropic API
+    using ``ANTHROPIC_API_KEY``, ``zai/*`` through Z.AI's API using
+    ``ZAI_API_KEY``, and ``moonshotai/*`` through the native Moonshot API using
+    ``MOONSHOT_API_KEY``.
     """
 
     CLI_FLAGS: ClassVar[list[CliFlag]] = [
@@ -255,11 +267,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         self._disable_compaction = disable_compaction
         self._llm_params = llm_params
         self._llm_per_model_params = llm_per_model_params
-        config_kwargs = {}
-        api_key = self._get_env(KIMCHI_API_KEY_ENV)
-        if api_key is not None:
-            config_kwargs[KIMCHI_API_KEY_ENV] = api_key
-        self._config = KimchiAgentConfig(**config_kwargs)
+        self._config = KimchiAgentConfig()
 
     @staticmethod
     def name() -> str:
@@ -297,8 +305,10 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
 
         pier 0.3.0 calls this at environment creation to configure the egress
         proxy. The set is model-dependent: kimchi-dev/* routes through the
-        Kimchi gateway, openrouter/* through OpenRouter, and anthropic/* through
-        the native Anthropic API. Multi-model can route to any of them.
+        Kimchi gateway, openrouter/* through OpenRouter, anthropic/* through the
+        native Anthropic API, zai/* through Z.AI's API, and moonshotai/*
+        through the native Moonshot API. Multi-model can route to any of the
+        gateway-served providers.
         """
         domains: set[str] = set()
         if self._multi_model_enabled:
@@ -307,6 +317,10 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
             domains.add("openrouter.ai")
         elif is_anthropic_model(self.model_name):
             domains.add("api.anthropic.com")
+        elif is_moonshot_model(self.model_name):
+            domains.add("api.moonshot.ai")
+        elif is_zai_model(self.model_name):
+            domains.add("api.z.ai")
         else:
             # kimchi-dev/* models route through the Kimchi LLM gateway.
             domains.add("llm.kimchi.dev")
@@ -492,10 +506,14 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
             # anthropic/* models use the native Anthropic API via pi-ai's built-in
             # provider — no Kimchi gateway involvement.
             self._is_anthropic = is_anthropic_model(self.model_name)
+            # moonshotai/* models use the native Moonshot API via pi-ai's
+            # built-in provider — no Kimchi gateway involvement.
+            self._is_moonshot = is_moonshot_model(self.model_name)
         else:
             self._is_openrouter = False
             self._is_zai = False
             self._is_anthropic = False
+            self._is_moonshot = False
 
         cli_flags = self.build_cli_flags()
         if cli_flags:
@@ -527,9 +545,11 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
             "PI_PACKAGE_DIR": PI_PACKAGE_DIR,
             **ferment_env,
         }
-        # anthropic/* models use the native Anthropic API; forward
-        # ANTHROPIC_API_KEY and do NOT set KIMCHI_API_KEY (the gateway is not
-        # involved).
+        # anthropic/* and moonshotai/* models use the native provider APIs;
+        # forward the provider key and do NOT set KIMCHI_API_KEY (the gateway
+        # is not involved).
+        anthropic_models_config = None
+        moonshot_models_config = None
         if self._is_anthropic:
             anthropic_key = self._get_env(ANTHROPIC_API_KEY_ENV)
             if not anthropic_key:
@@ -540,9 +560,22 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
                 )
             env[ANTHROPIC_API_KEY_ENV] = anthropic_key
             anthropic_models_config = self._build_anthropic_models_config()
-        else:
-            env[KIMCHI_API_KEY_ENV] = self._config.api_key
-            anthropic_models_config = None
+        elif self._is_moonshot:
+            moonshot_key = required_moonshot_api_key(self._get_env)
+            env[MOONSHOT_API_KEY_ENV] = moonshot_key
+            moonshot_models_config = build_moonshot_models_config(
+                split_moonshot_model(self.model_name),
+                thinking_level=self._resolved_flags.get("thinking"),
+            )
+        elif not self._is_openrouter:
+            kimchi_key = self._get_env(KIMCHI_API_KEY_ENV)
+            if not kimchi_key:
+                raise RuntimeError(
+                    f"{KIMCHI_API_KEY_ENV} is required to run {self.model_name}. "
+                    f"Export it on the host and forward it with "
+                    f"`--ae {KIMCHI_API_KEY_ENV}=${KIMCHI_API_KEY_ENV}`."
+                )
+            env[KIMCHI_API_KEY_ENV] = kimchi_key
         # Forward the OpenRouter API key into the container so kimchi's
         # openai-completions provider can resolve $OPENROUTER_API_KEY from the
         # environment at request time. The key is read from the host env (set
@@ -609,6 +642,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
                     openrouter_models_config=openrouter_models_config,
                     zai_models_config=zai_models_config,
                     anthropic_models_config=anthropic_models_config,
+                    moonshot_models_config=moonshot_models_config,
                 ),
                 env=env,
             )
@@ -644,6 +678,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         openrouter_models_config: dict[str, Any] | None = None,
         zai_models_config: dict[str, Any] | None = None,
         anthropic_models_config: dict[str, Any] | None = None,
+        moonshot_models_config: dict[str, Any] | None = None,
     ) -> str:
         runner = self._kimchi_command(cli_flags)
         parts = [
@@ -681,7 +716,9 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
             # provider-specific.
             parts.append(self._openrouter_models_command(zai_models_config))
         if anthropic_models_config is not None:
-            parts.append(self._anthropic_models_command(anthropic_models_config))
+            parts.append(self._native_models_command(anthropic_models_config))
+        if moonshot_models_config is not None:
+            parts.append(self._native_models_command(moonshot_models_config))
         skills_registration = self._skills_registration_command()
         if skills_registration:
             parts.append(skills_registration)
@@ -799,8 +836,8 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
             }
         }
 
-    def _anthropic_models_command(self, models_config: dict[str, Any]) -> str:
-        """Write static Anthropic model metadata to models.json."""
+    def _native_models_command(self, models_config: dict[str, Any]) -> str:
+        """Write a native-provider (anthropic/moonshotai) provider block to models.json."""
         models_json = json.dumps(models_config, separators=(",", ":"))
         return (
             f"mkdir -p {CONTAINER_HARNESS_SETTINGS_DIR} && "

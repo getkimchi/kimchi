@@ -36,6 +36,17 @@ def _stub_get(monkeypatch: pytest.MonkeyPatch, routes: dict[str, object]) -> lis
     return requested
 
 
+def test_split_openrouter_model_extracts_id() -> None:
+    assert openrouter.split_openrouter_model("openrouter/z-ai/glm-5.2") == "z-ai/glm-5.2"
+    assert openrouter.split_openrouter_model("openrouter/@preset/glm-5-2-zai") == "@preset/glm-5-2-zai"
+    with pytest.raises(ValueError, match="must include a model id"):
+        openrouter.split_openrouter_model("openrouter/")
+    with pytest.raises(ValueError, match="expected a openrouter/ model"):
+        openrouter.split_openrouter_model("zai/glm-5.2")
+    with pytest.raises(ValueError, match="provider/model format"):
+        openrouter.split_openrouter_model(None)
+
+
 async def test_build_models_config_maps_live_metadata_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

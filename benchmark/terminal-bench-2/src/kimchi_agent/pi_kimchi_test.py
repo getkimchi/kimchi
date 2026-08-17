@@ -650,3 +650,72 @@ class PiKimchiOpenRouterTest(unittest.IsolatedAsyncioTestCase):
         command = agent.agent_commands[0]
         self.assertNotIn(CONTAINER_PI_MODELS_JSON, command)
         self.assertEqual(agent.agent_envs[0]["KIMCHI_API_KEY"], "test-key")
+
+
+class PiKimchiMoonshotTest(unittest.IsolatedAsyncioTestCase):
+    """moonshotai/* models bypass the Kimchi gateway for the native Moonshot API."""
+
+    def setUp(self) -> None:
+        self._env_patch = patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-msh-test"})
+        self._env_patch.start()
+        os.environ.pop("KIMCHI_API_KEY", None)
+
+    def tearDown(self) -> None:
+        self._env_patch.stop()
+
+    async def test_moonshot_model_writes_models_json_and_forwards_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingPiKimchi(logs_dir=Path(tmp), model_name="moonshotai/kimi-k3")
+            await agent.run("solve it", object(), AgentContext())
+
+        command = agent.agent_commands[0]
+        self.assertIn(CONTAINER_PI_MODELS_JSON, command)
+        self.assertIn('"id":"kimi-k3"', command)
+        self.assertIn('"baseUrl":"https://api.moonshot.ai/v1"', command)
+        # pi resolves the key from the env; writing it into the bind-mounted
+        # logs dir would put a secret in the run artifacts.
+        self.assertNotIn("apiKey", command)
+        self.assertNotIn("sk-msh-test", command)
+        self.assertIn("--model moonshotai/kimi-k3", command)
+        env = agent.agent_envs[0]
+        self.assertEqual(env["MOONSHOT_API_KEY"], "sk-msh-test")
+        self.assertNotIn("KIMCHI_API_KEY", env)
+        # The Kimchi gateway is never consulted for moonshotai/* models.
+        self.assertEqual(agent.metadata_fetch_count, 0)
+
+    async def test_moonshot_model_labels_provider_in_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingPiKimchi(logs_dir=Path(tmp), model_name="moonshotai/kimi-k3")
+
+        self.assertEqual(agent.to_agent_info().model_info.provider, "moonshotai")
+
+    async def test_unknown_moonshot_model_fails_before_container_work(self) -> None:
+        """Better a loud failure than pi's silent 400 scored as a zero."""
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingPiKimchi(logs_dir=Path(tmp), model_name="moonshotai/kimi-k9")
+            with self.assertRaisesRegex(ValueError, "not in the static metadata table"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
+
+    async def test_missing_moonshot_key_fails_before_container_work(self) -> None:
+        os.environ.pop("MOONSHOT_API_KEY", None)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingPiKimchi(logs_dir=Path(tmp), model_name="moonshotai/kimi-k3")
+            with self.assertRaisesRegex(ValueError, "MOONSHOT_API_KEY is required"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
+
+    async def test_unsupported_thinking_level_fails_before_container_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingPiKimchi(
+                logs_dir=Path(tmp),
+                model_name="moonshotai/kimi-k3",
+                **{"thinking": "xhigh"},
+            )
+            with self.assertRaisesRegex(ValueError, "thinking level 'xhigh' is not supported"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])

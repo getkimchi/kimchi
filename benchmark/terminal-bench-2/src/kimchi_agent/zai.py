@@ -52,6 +52,20 @@ def is_zai_model(model_name: str | None) -> bool:
     return bool(model_name) and model_name.startswith(f"{ZAI_PROVIDER}/")
 
 
+def split_zai_model(model_name: str | None) -> str:
+    """Extract the model id from a ``zai/<id>`` model name."""
+    if not model_name or "/" not in model_name:
+        raise ValueError(
+            "--model is required and must use provider/model format, e.g. zai/glm-5.2"
+        )
+    provider, model_id = model_name.split("/", 1)
+    if provider != ZAI_PROVIDER:
+        raise ValueError(f"expected a {ZAI_PROVIDER}/ model; got {model_name!r}")
+    if not model_id:
+        raise ValueError(f"--model must include a model id after {ZAI_PROVIDER}/")
+    return model_id
+
+
 def resolve_zai_endpoint(endpoint: str | None) -> str:
     """OpenAI-compatible endpoint, honouring a stripped override."""
     if endpoint and endpoint.strip():

@@ -9,14 +9,21 @@ from pathlib import Path
 import pytest
 
 from bench_config import is_retryable
-from classify import ERROR_RULES, classify
+from classify import ERROR_RULES, Verdict, classify
 from outcome import Outcome
 
 API_KEY_BUDGET_EXCEEDED = "api_key_budget_exceeded"
+MOONSHOT_QUOTA_EXCEEDED = "moonshot_quota_exceeded"
 _BUDGET_ERROR_EXACT_MESSAGE = (
     '429 "API key has reached its spend limit.\\n'
     "Increase the budget in the console or contact your "
     'organization admin to continue."'
+)
+# Moonshot's account-suspension 429 body (machine-readable type code).
+_MOONSHOT_SUSPENSION_429 = (
+    '429: {"message":"Your account org-35034d5421664cdda199c516433a6bd0 '
+    "<ak-fbyqo61tbed111gpt9i1> is suspended due to insufficient balance, please recharge "
+    'your account or check your plan and billing details","type":"exceeded_current_quota_error"}'
 )
 _NO_SESSION = object()
 
@@ -35,12 +42,15 @@ def _exception_payload(
     exception_message: str | None = None,
     *,
     reward: float | None | object = _NO_SESSION,
+    model_name: str | None = None,
 ) -> dict:
     payload = {"exception_info": {"exception_type": exception_type}}
     if exception_message is not None:
         payload["exception_info"]["exception_message"] = exception_message
     if reward is not _NO_SESSION:
         payload["verifier_result"] = {"rewards": {"reward": reward}}
+    if model_name is not None:
+        payload["config"] = {"agent": {"model_name": model_name}}
     return payload
 
 
@@ -256,6 +266,55 @@ RESULT_JSON_CASES = [
         ),
         {"outcome": "error", "error_category": "infra", "error_subcategory": API_KEY_BUDGET_EXCEEDED},
         id="openrouter-key-limit-by-text",
+    ),
+    pytest.param(
+        _exception_payload(
+            "KimchiExitError",
+            "Kimchi exited with code 1: /installed-agent/bin/kimchi "
+            "--print --session /logs/agent/sessions/main.jsonl "
+            "--dangerously-skip-permissions\n"
+            f"stdout: {_MOONSHOT_SUSPENSION_429}\n",
+            model_name="moonshotai/kimi-k3",
+        ),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": MOONSHOT_QUOTA_EXCEEDED},
+        id="moonshot-account-suspension",
+    ),
+    pytest.param(
+        _exception_payload(
+            "KimchiExitError",
+            f"Kimchi exited with code 1: /installed-agent/bin/kimchi\nstdouterr: {_MOONSHOT_SUSPENSION_429}\n",
+            model_name="openai/gpt-5",
+        ),
+        {"outcome": "error", "error_category": "agent", "error_subcategory": "unknown_failed"},
+        id="moonshot-suspension-text-non-moonshot-provider-not-retried",
+    ),
+    pytest.param(
+        _exception_payload(
+            "KimchiExitError",
+            f"Kimchi exited with code 1: /installed-agent/bin/kimchi\nstdouterr: {_MOONSHOT_SUSPENSION_429}\n",
+        ),
+        {"outcome": "error", "error_category": "agent", "error_subcategory": "unknown_failed"},
+        id="moonshot-suspension-text-no-provider-not-retried",
+    ),
+    pytest.param(
+        _exception_payload(
+            "KimchiExitError",
+            f"Kimchi exited with code 1: /installed-agent/bin/kimchi\nstdouterr: {_MOONSHOT_SUSPENSION_429}\n",
+            model_name="multi-model",
+        ),
+        {"outcome": "error", "error_category": "agent", "error_subcategory": "unknown_failed"},
+        id="moonshot-suspension-text-unqualified-model-not-retried",
+    ),
+    pytest.param(
+        _exception_payload(
+            "KimchiExitError",
+            "Kimchi exited with code 74: /installed-agent/bin/kimchi\n"
+            'stdout: 429: {"message":"Your account org-35034d5421664cdda199c516433a6bd0 '
+            "request reached organization TPM rate limit, current: 3025143, limit: 3000000"
+            '","type":"rate_limit_reached_error"}\n',
+        ),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "kimchi_infra_exit"},
+        id="moonshot-tpm-rate-limit-is-not-budget",
     ),
 ]
 
@@ -505,6 +564,14 @@ AGENT_TIMEOUT_BUDGET_CASES = [
         id="exact-budget-error-message",
     ),
     pytest.param(
+        '429: {"message":"Your account org-35034d5421664cdda199c516433a6bd0 / '
+        "proj-5d684da5acc2455cbb753e88c18fea37 <ak-fbyqo61tbed111gpt9i1> request reached "
+        'organization TPM rate limit, current: 3025143, limit: 3000000, see '
+        'https://platform.moonshot.ai/docs/pricing/limits","type":"rate_limit_reached_error"}',
+        {"outcome": "agent_timeout", "error_category": None, "error_subcategory": None},
+        id="moonshot-tpm-rate-limit-is-not-budget",
+    ),
+    pytest.param(
         "api key has reached its spend limit",
         {"outcome": "agent_timeout", "error_category": None, "error_subcategory": None},
         id="near-miss-budget-message",
@@ -533,7 +600,7 @@ def test_agent_timeout_budget_session_refinement_cases(
     session_error_message: object,
     expected: dict,
 ) -> None:
-    """Only the verbatim provider budget body refines AgentTimeoutError into api_key_budget_exceeded."""
+    """Provider-recognized budget/quota bodies refine AgentTimeoutError into a budget subcategory."""
     trial = tmp_results_dir / "run-1" / "case__1"
     _write_result(
         trial,
@@ -550,6 +617,66 @@ def test_agent_timeout_budget_session_refinement_cases(
     verdict = classify(trial)
 
     _assert_verdict(verdict, expected)
+
+
+# ── provider gate on the moonshot quota rule (timeout refinement path) ────────────
+
+
+def _run_moonshot_suspension_timeout(tmp_results_dir: Path, config: dict | None) -> Verdict:
+    """AgentTimeoutError + moonshot suspension errorMessage, with the given config key."""
+    trial = tmp_results_dir / "run-1" / "case__1"
+    payload = {
+        "exception_info": {
+            "exception_type": "AgentTimeoutError",
+            "exception_message": "Agent execution timed out after 3600 seconds",
+        }
+    }
+    if config is not None:
+        payload["config"] = config
+    _write_result(trial, payload)
+    _write_session_message_errorMessage(trial, _MOONSHOT_SUSPENSION_429)
+    return classify(trial)
+
+
+def test_timeout_moonshot_suspension_with_proven_moonshot_provider(tmp_results_dir: Path) -> None:
+    verdict = _run_moonshot_suspension_timeout(tmp_results_dir, {"agent": {"model_name": "moonshotai/kimi-k3"}})
+    assert verdict.outcome == "error"
+    assert verdict.error_category == "infra"
+    assert verdict.error_subcategory == MOONSHOT_QUOTA_EXCEEDED
+
+
+def test_timeout_moonshot_suspension_with_non_moonshot_provider_stays_agent_timeout(tmp_results_dir: Path) -> None:
+    verdict = _run_moonshot_suspension_timeout(tmp_results_dir, {"agent": {"model_name": "openai/gpt-5"}})
+    assert verdict.outcome == "agent_timeout"
+    assert verdict.error_category is None
+
+
+def test_timeout_moonshot_suspension_with_no_provider_stays_agent_timeout(tmp_results_dir: Path) -> None:
+    verdict = _run_moonshot_suspension_timeout(tmp_results_dir, None)
+    assert verdict.outcome == "agent_timeout"
+    assert verdict.error_category is None
+
+
+def test_exit_1_moonshot_suspension_agent_info_self_report_does_not_unlock_retry(tmp_results_dir: Path) -> None:
+    """agent_info.model_info.provider is agent self-report, not routing provenance:
+    config.agent.model_name absent => the moonshot rule must not match."""
+    trial = tmp_results_dir / "run-1" / "case__1"
+    payload = _exception_payload(
+        "KimchiExitError",
+        f"Kimchi exited with code 1: /installed-agent/bin/kimchi\nstdouterr: {_MOONSHOT_SUSPENSION_429}\n",
+    )
+    payload["agent_info"] = {
+        "name": "kimchi",
+        "version": "1.0",
+        "model_info": {"name": "kimi-k3", "provider": "moonshotai"},
+    }
+    _write_result(trial, payload)
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == "error"
+    assert verdict.error_category == "agent"
+    assert verdict.error_subcategory == "unknown_failed"
 
 
 def test_scored_pass_is_not_refined_by_non_exception_session_scan(tmp_results_dir: Path) -> None:

@@ -43,6 +43,13 @@ _TIMEOUT_STATUS_TOOL_IN_FLIGHT = "tool_in_flight"
 _TIMEOUT_STATUS_FEW_TURNS = "few_turns"
 _TIMEOUT_STATUS_UNKNOWN = "unknown"
 API_KEY_BUDGET_EXCEEDED_SUBCATEGORY = "api_key_budget_exceeded"
+MOONSHOT_QUOTA_EXCEEDED_SUBCATEGORY = "moonshot_quota_exceeded"
+
+# The only model-name provider whose quota exhaustion is retryable today:
+# the native moonshotai/* account has a top-up mechanism that resolves
+# suspension between retries. Gateway-routed or unknown provenance must
+# not unlock retry (provenance of the exhausted account is unprovable).
+_MOONSHOT_PROVIDER = "moonshotai"
 
 _KIMCHI_EXIT_CODE_PATTERN = re.compile(r"\bkimchi exited with code\s+(\d+)\b")
 
@@ -65,6 +72,7 @@ class TrialErrorContext:
     exception_type: str | None
     exception_text: str  # casefold of type + message + traceback
     exit_code: int | None
+    provider: str | None = None  # effective model provider from config (None = unproven)
 
     def contains_all(self, *needles: str) -> bool:
         return all(needle in self.exception_text for needle in needles)
@@ -84,6 +92,9 @@ class ErrorRule:
                         is in this set
       marker_groups   — text-based match: at least one group must have ALL its strings
                         present in the casefold exception text
+      providers       — if not None, the rule can only match when the trial's
+                        effective provider (config.agent.model_name prefix) is in
+                        this set; None or unproven provider never matches
     """
 
     kind: str
@@ -93,8 +104,11 @@ class ErrorRule:
     exception_types: tuple[str, ...] = field(default_factory=tuple)
     exit_codes: tuple[int, ...] = field(default_factory=tuple)
     marker_groups: tuple[tuple[str, ...], ...] = field(default_factory=tuple)
+    providers: tuple[str, ...] | None = None
 
     def matches(self, context: TrialErrorContext) -> bool:
+        if self.providers is not None and context.provider not in self.providers:
+            return False
         has_structured_matchers = bool(self.exception_types or self.exit_codes)
         type_matches = not self.exception_types or context.exception_type in self.exception_types
         exit_code_matches = not self.exit_codes or context.exit_code in self.exit_codes
@@ -269,6 +283,27 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
         marker_groups=(("api error", "524"), ("origin_response_timeout",)),
         evidence_markers=("origin_response_timeout", "524"),
     ),
+    # ── Moonshot 429 account suspension (retryable: interim until the account is recharged) ──
+    ErrorRule(
+        kind=MOONSHOT_QUOTA_EXCEEDED_SUBCATEGORY,
+        outcome=Outcome.ERROR,
+        error_category="infra",
+        # Moonshot-specific strings: the machine-readable type code and the
+        # suspension verdict phrase. Deliberately separate from the generic
+        # budget rule so retry policy can treat a rechargeable moonshot account
+        # differently from a hard budget cap. Must stay before the budget rule.
+        # Gated on proven moonshot provenance: only trials configured with a
+        # moonshotai/* model are served by the topped-up account.
+        providers=(_MOONSHOT_PROVIDER,),
+        marker_groups=(
+            ("exceeded_current_quota_error",),
+            ("suspended due to insufficient balance",),
+        ),
+        evidence_markers=(
+            "exceeded_current_quota_error",
+            "suspended due to insufficient balance",
+        ),
+    ),
     # ── Provider budget / quota errors (direct exception type or in captured stdout) ──
     ErrorRule(
         kind=API_KEY_BUDGET_EXCEEDED_SUBCATEGORY,
@@ -363,6 +398,25 @@ _PHASES: tuple[str, ...] = ("environment_setup", "agent_setup", "agent_execution
 ReadResult = tuple[Literal["ok", "missing", "corrupt"], dict | None]
 
 
+def _effective_provider(result: dict) -> str | None:
+    """Effective model provider for provider-gated rules.
+
+    Sole source: the harness-written ``config.agent.model_name`` prefix before
+    the first ``/`` (same semantics as summarize_results.split_model_ref — a
+    slash-less name like ``multi-model`` yields no provider). Returns None
+    when the name is missing or unqualified: no proven provenance, no match.
+
+    ``agent_info.model_info.provider`` is deliberately NOT consulted: with a
+    real model it merely re-splits the same name, and without one it degrades
+    to an agent-identity constant (agent identity is not routing provenance).
+    """
+    model_name = _get_path(result, "config", "agent", "model_name")
+    if not isinstance(model_name, str) or "/" not in model_name:
+        return None
+    provider = model_name.split("/", 1)[0]
+    return provider or None
+
+
 def _read_result(trial_dir: Path) -> ReadResult:
     """Read result.json from a trial directory with a tagged outcome.
 
@@ -423,6 +477,7 @@ def _build_error_context(trial_dir: Path, result: dict) -> TrialErrorContext:
         exception_type=str(exception_type) if isinstance(exception_type, str) else None,
         exception_text=exception_text,
         exit_code=_extract_exit_code(exception_text),
+        provider=_effective_provider(result),
     )
 
 
@@ -707,22 +762,39 @@ _BUDGET_ERROR_EXACT_MESSAGE = (
 )
 
 
-def _session_marks_budget_error(trial_dir: Path) -> bool:
-    """Whether an agent session message has the exact anthropic 429 spend-limit errorMessage.
+# Moonshot's account-suspension 429 carries a stable machine-readable type code
+# while its human message embeds variable org/project/api-key IDs, so match the
+# type code within the errorMessage instead of the full body.
+_MOONSHOT_BUDGET_ERROR_TYPE = "exceeded_current_quota_error"
 
-    Conservative: matches the verbatim errorMessage string from the provider's 429 response,
-    not substrings or variants. False positives would re-classify legitimate timeouts as
-    budget errors, so we trade off missing other providers' budget wording for precision.
 
-    When True, an AGENT_TIMEOUT verdict should be re-classified as ERROR/infra/budget:
-    the agent didn't time out because it was slow — it was blocked on a budget error and
-    kept retrying until Harbor killed it for exceeding the wall-clock limit.
+def _session_budget_error_subcategory(trial_dir: Path, provider: str | None) -> str | None:
+    """Return the budget/quota subcategory when an agent session message marks one.
+
+    Conservative: matches the verbatim errorMessage string the anthropic provider
+    returns on a 429 spend limit (ungated), or moonshot's machine-readable
+    suspension type code — but only when the trial's configured provider is
+    proven moonshotai (top-up makes that account recoverable; any other
+    provenance is not retried) — never free-form prose like "budget" or
+    "balance". False positives would re-classify legitimate timeouts as budget
+    errors, so we trade off missing other providers' budget wording for precision.
+
+    When non-None, an AGENT_TIMEOUT verdict should be re-classified as ERROR/infra
+    with this subcategory: the agent didn't time out because it was slow — it was
+    blocked on a budget error and kept retrying until Harbor killed it for
+    exceeding the wall-clock limit.
     """
     for entry in _iter_session_jsonl(trial_dir):
         error_message = _get_path(entry, "message", "errorMessage")
         if error_message == _BUDGET_ERROR_EXACT_MESSAGE:
-            return True
-    return False
+            return API_KEY_BUDGET_EXCEEDED_SUBCATEGORY
+        if (
+            provider == _MOONSHOT_PROVIDER
+            and isinstance(error_message, str)
+            and _MOONSHOT_BUDGET_ERROR_TYPE in error_message
+        ):
+            return MOONSHOT_QUOTA_EXCEEDED_SUBCATEGORY
+    return None
 
 
 def _classify_exception(trial_dir: Path, result: dict, reward: float | None) -> Verdict:
@@ -732,11 +804,16 @@ def _classify_exception(trial_dir: Path, result: dict, reward: float | None) -> 
             # A generic agent_timeout that was actually caused by a budget error is re-classified
             # before the Verdict is constructed. Keep the budget-specific subcategory visible while
             # retaining error_category="infra" for retry behavior.
-            if rule.outcome == Outcome.AGENT_TIMEOUT and _session_marks_budget_error(trial_dir):
+            budget_subcategory = (
+                _session_budget_error_subcategory(trial_dir, context.provider)
+                if rule.outcome == Outcome.AGENT_TIMEOUT
+                else None
+            )
+            if budget_subcategory is not None:
                 return Verdict(
                     outcome=Outcome.ERROR,
                     error_category="infra",
-                    error_subcategory=API_KEY_BUDGET_EXCEEDED_SUBCATEGORY,
+                    error_subcategory=budget_subcategory,
                     reward=reward,
                     raw=result,
                 )

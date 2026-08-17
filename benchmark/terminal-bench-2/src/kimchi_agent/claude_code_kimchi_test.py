@@ -236,6 +236,7 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
             "ANTHROPIC_DEFAULT_OPUS_MODEL",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
             "ANTHROPIC_SMALL_FAST_MODEL",
             "ANTHROPIC_CUSTOM_MODEL_OPTION",
             "CLAUDE_CODE_SUBAGENT_MODEL",
@@ -483,6 +484,7 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
                     "ANTHROPIC_AUTH_TOKEN": "wrong-key",
                     "ANTHROPIC_API_KEY": "wrong-key",
                     "ANTHROPIC_MODEL": "claude-opus-4-6",
+                    "ANTHROPIC_DEFAULT_FABLE_MODEL": "claude-fable-5",
                     "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "8192",
                 },
             )
@@ -494,11 +496,13 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "test-key")
         self.assertEqual(env["ANTHROPIC_API_KEY"], "")
         self.assertEqual(env["ANTHROPIC_MODEL"], "kimi-k2.5")
+        self.assertEqual(env["ANTHROPIC_DEFAULT_FABLE_MODEL"], "kimi-k2.5")
         self.assertEqual(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "8192")
         effective_env = agent.effective_agent_envs[0]
         self.assertEqual(effective_env["ANTHROPIC_BASE_URL"], KIMCHI_ANTHROPIC_BASE_URL)
         self.assertEqual(effective_env["ANTHROPIC_AUTH_TOKEN"], "test-key")
         self.assertEqual(effective_env["ANTHROPIC_API_KEY"], "")
+        self.assertEqual(effective_env["ANTHROPIC_DEFAULT_FABLE_MODEL"], "kimi-k2.5")
 
     async def test_clears_off_gateway_claude_auth_envs(self) -> None:
         off_gateway_env = {
@@ -646,6 +650,7 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
             "ANTHROPIC_DEFAULT_OPUS_MODEL",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
             "ANTHROPIC_SMALL_FAST_MODEL",
             "CLAUDE_CODE_SUBAGENT_MODEL",
         ):
@@ -656,6 +661,125 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         )
         # The Kimchi gateway is not consulted for openrouter/* models.
         self.assertEqual(agent.metadata_fetch_count, 0)
+
+    async def test_runs_claude_code_against_moonshot_model(self) -> None:
+        env_overrides = {"MOONSHOT_API_KEY": "sk-msh-test"}
+        with (
+            patch.dict(os.environ, env_overrides),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="moonshotai/kimi-k3",
+            )
+
+            await agent.run("solve it", object(), AgentContext())
+
+        env = agent.agent_envs[0]
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.moonshot.ai/anthropic")
+        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "sk-msh-test")
+        self.assertEqual(env["ANTHROPIC_API_KEY"], "")
+        # Claude Code selects K3's 1M window via the [1m] suffix.
+        for key in (
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
+            "ANTHROPIC_SMALL_FAST_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ):
+            self.assertEqual(env[key], "kimi-k3[1m]")
+        # The compact window is sized from K3's 1M context.
+        self.assertEqual(
+            int(env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]),
+            min(
+                1_048_576 * 85 // 100,
+                1_048_576 - CLAUDE_CODE_OUTPUT_RESERVE_TOKENS - CLAUDE_CODE_CONTEXT_SAFETY_MARGIN_TOKENS,
+            ),
+        )
+        # The Kimchi gateway is not consulted for moonshotai/* models.
+        self.assertEqual(agent.metadata_fetch_count, 0)
+
+    async def test_k2_7_code_enables_required_thinking_without_invalid_cli_flag(self) -> None:
+        with (
+            patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-msh-test"}),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="moonshotai/kimi-k2.7-code",
+                extra_env={"MAX_THINKING_TOKENS": "0"},
+            )
+
+            await agent.run("solve it", object(), AgentContext())
+
+        self.assertNotIn("--thinking", agent.agent_commands[2])
+        self.assertGreater(int(agent.agent_envs[0]["MAX_THINKING_TOKENS"]), 0)
+        self.assertGreater(int(agent.effective_agent_envs[0]["MAX_THINKING_TOKENS"]), 0)
+
+    async def test_moonshot_model_requires_moonshot_api_key(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            os.environ.pop("MOONSHOT_API_KEY", None)
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="moonshotai/kimi-k3",
+            )
+
+            with self.assertRaisesRegex(ValueError, "MOONSHOT_API_KEY is required"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
+
+    async def test_unknown_moonshot_model_fails_before_commands(self) -> None:
+        with (
+            patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-msh-test"}),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="moonshotai/kimi-k9",
+            )
+
+            with self.assertRaisesRegex(ValueError, "not in the static metadata table"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
+
+    async def test_k3_rejects_unsupported_reasoning_effort_before_commands(self) -> None:
+        with (
+            patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-msh-test"}),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="moonshotai/kimi-k3",
+                reasoning_effort="medium",
+            )
+
+            with self.assertRaisesRegex(ValueError, "thinking level 'medium' is not supported"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
+
+    async def test_k2_7_rejects_configurable_reasoning_effort_before_commands(self) -> None:
+        with (
+            patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-msh-test"}),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="moonshotai/kimi-k2.7-code",
+                reasoning_effort="high",
+            )
+
+            with self.assertRaisesRegex(ValueError, "thinking level 'high' is not supported"):
+                await agent.run("solve it", object(), AgentContext())
+
+        self.assertEqual(agent.agent_commands, [])
 
     async def test_openrouter_model_requires_openrouter_api_key(self) -> None:
         routes, requested = _openrouter_routes(models=[])

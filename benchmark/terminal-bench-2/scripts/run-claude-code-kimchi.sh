@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run terminal-bench with the Claude Code scaffold, configured to use an
 # Anthropic-compatible gateway. The selected model is controlled by MODEL:
-# kimchi-dev/* routes via the Kimchi gateway, openrouter/* via OpenRouter.
+# kimchi-dev/* routes via Kimchi, openrouter/* via OpenRouter, and
+# moonshotai/* via Moonshot's native API.
 #
 # Usage examples:
 #   MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
@@ -14,17 +15,9 @@ set -euo pipefail
 DATASET="${DATASET:-terminal-bench/terminal-bench-2-1}"
 MODEL="${MODEL:-kimchi-dev/kimi-k2.7}"
 
-# OpenRouter models authenticate with OPENROUTER_API_KEY, read from the host
-# env by the agent. It is deliberately not forwarded into the task container
-# with --ae: Claude Code authenticates with ANTHROPIC_AUTH_TOKEN, so the raw
-# key never needs to exist inside the container.
-if [[ "$MODEL" == openrouter/* ]]; then
-    : "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in env for openrouter/* models}"
-else
-    : "${KIMCHI_API_KEY:?set KIMCHI_API_KEY in env}"
-fi
-
 BENCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$BENCH_DIR/scripts/model_api_key.sh"
+require_model_api_key "$MODEL" kimchi-dev openrouter moonshotai zai
 cd "$BENCH_DIR"
 
 # The retry config sets exponential backoff (10s→20s→40s→80s→120s) for
@@ -45,7 +38,9 @@ HARBOR_ARGS=(
     --jobs-dir "${JOBS_DIR:-benchmark/${DATASET#terminal-bench/}/jobs}"
 )
 
-if [[ "$MODEL" != openrouter/* ]]; then
+# Provider keys stay in the host process for native routes. The adapter maps
+# them to ANTHROPIC_AUTH_TOKEN, so the raw key need not enter the task container.
+if [[ "$MODEL_API_KEY_ENV" == "KIMCHI_API_KEY" ]]; then
     HARBOR_ARGS+=(--ae "KIMCHI_API_KEY=$KIMCHI_API_KEY")
 fi
 

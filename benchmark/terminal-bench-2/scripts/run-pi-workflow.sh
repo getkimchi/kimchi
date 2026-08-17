@@ -12,10 +12,11 @@
 set -euo pipefail
 
 DATASET="${DATASET:-terminal-bench/terminal-bench-2-1}"
-
-: "${KIMCHI_API_KEY:?set KIMCHI_API_KEY in env}"
+MODEL="${MODEL:-kimchi-dev/kimi-k2.7}"
 
 BENCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$BENCH_DIR/scripts/model_api_key.sh"
+require_model_api_key "$MODEL" kimchi-dev openrouter moonshotai zai
 
 # Optional offline install bundle (node + pi + pi-kimchi-provider). Built
 # automatically; skip with SKIP_PI_BUNDLE=1 to force the network install.
@@ -36,8 +37,8 @@ cd "$BENCH_DIR"
 exec uv run --python 3.14 harbor run \
     --agent-import-path kimchi_agent:PiWorkflowAgent \
     --env docker \
-    --model "${MODEL:-kimchi-dev/kimi-k2.7}" \
-    --ae "KIMCHI_API_KEY=$KIMCHI_API_KEY" \
+    --model "$MODEL" \
+    --ae "$MODEL_API_KEY_ENV=${!MODEL_API_KEY_ENV}" \
     ${TB_AGENT_TIMEOUT_SEC:+--ae "TB_AGENT_TIMEOUT_SEC=$TB_AGENT_TIMEOUT_SEC"} \
     --agent-kwarg "extension=$EXTENSION" \
     --agent-kwarg "workflow=$WORKFLOW" \

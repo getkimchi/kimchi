@@ -1,6 +1,7 @@
 import copy
 import json
 import shlex
+from dataclasses import dataclass
 from typing import Any
 
 from harbor.agents.installed.base import with_prompt_template
@@ -20,6 +21,23 @@ from kimchi_agent.git_install import (
     git_config_command,
     git_init_and_commit_baseline_command,
 )
+from kimchi_agent.moonshot import (
+    MOONSHOT_API_KEY_ENV,
+    MOONSHOT_BASE_URL,
+    MOONSHOT_PROVIDER,
+    is_moonshot_model,
+    moonshot_metadata,
+    split_moonshot_model,
+)
+from kimchi_agent.openrouter import is_openrouter_model, split_openrouter_model
+from kimchi_agent.zai import (
+    DEFAULT_ZAI_ENDPOINT,
+    ZAI_API_KEY_ENV,
+    ZAI_PROVIDER,
+    is_zai_model,
+    split_zai_model,
+    zai_model,
+)
 
 SMALL_MODEL_ENV = "OPENCODE_SMALL_MODEL"
 OPENCODE_RUNTIME_ENV_KEYS = {
@@ -27,20 +45,66 @@ OPENCODE_RUNTIME_ENV_KEYS = {
     "OPENCODE_FAKE_VCS",
 }
 
-OPENROUTER_PROVIDER = "openrouter"
 OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_PROVIDER_NAME = "openrouter"
 
-ZAI_PROVIDER = "zai"
-ZAI_API_KEY_ENV = "ZAI_API_KEY"
-ZAI_BASE_URL = "https://api.z.ai/api/paas/v4"
-ZAI_PROVIDER_NAME = "zai"
+# Aliases for the test-suite import contract; canonical values live in
+# kimchi_agent.zai.
+ZAI_BASE_URL = DEFAULT_ZAI_ENDPOINT
+ZAI_PROVIDER_NAME = ZAI_PROVIDER
 
-# Static metadata for models routed directly to a third-party provider,
-# bypassing the Kimchi gateway. The Kimchi metadata API cannot describe
-# third-party providers, so known models are listed here. tool_call is
-# assumed True (the models we benchmark all support tool use).
+
+@dataclass(frozen=True)
+class ProviderRoute:
+    key: str
+    name: str
+    base_url: str
+    api_key_env: str
+    litellm_proxy: bool = False
+
+
+@dataclass(frozen=True)
+class ResolvedModel:
+    route: ProviderRoute
+    model_id: str
+    config: dict[str, Any]
+
+    @property
+    def uses_reasoning(self) -> bool:
+        return bool(self.config["reasoning"])
+
+
+KIMCHI_ROUTE = ProviderRoute(
+    key=KIMCHI_PROVIDER,
+    name="Kimchi",
+    base_url=KIMCHI_OPENAI_BASE_URL,
+    api_key_env=KIMCHI_API_KEY_ENV,
+    litellm_proxy=True,
+)
+OPENROUTER_ROUTE = ProviderRoute(
+    key=OPENROUTER_PROVIDER_NAME,
+    name="OpenRouter",
+    base_url=OPENROUTER_BASE_URL,
+    api_key_env=OPENROUTER_API_KEY_ENV,
+)
+MOONSHOT_ROUTE = ProviderRoute(
+    key=MOONSHOT_PROVIDER,
+    name="Moonshot AI",
+    base_url=MOONSHOT_BASE_URL,
+    api_key_env=MOONSHOT_API_KEY_ENV,
+)
+ZAI_ROUTE = ProviderRoute(
+    key=ZAI_PROVIDER_NAME,
+    name="Z.AI",
+    base_url=ZAI_BASE_URL,
+    api_key_env=ZAI_API_KEY_ENV,
+)
+
+# Static metadata for OpenRouter models that bypass the Kimchi gateway.
+# The Kimchi metadata API cannot describe third-party providers, so known
+# OpenRouter models are listed here. tool_call is assumed True (OpenRouter
+# models that support tool use are the ones we benchmark).
 _OPENROUTER_MODEL_METADATA: dict[str, dict[str, Any]] = {
     "@preset/glm-5-1-zai": {
         "reasoning": False,
@@ -59,41 +123,11 @@ _OPENROUTER_MODEL_METADATA: dict[str, dict[str, Any]] = {
     },
 }
 
-# docs.z.ai/guides/llm/glm-5.2 (2026-08-13): 1M context, 128K max output,
-# thinking enabled by default.
-_ZAI_MODEL_METADATA: dict[str, dict[str, Any]] = {
-    "glm-5.2": {
-        "reasoning": True,
-        "context_window": 1_000_000,
-        "max_output_tokens": 131_072,
-    },
-}
-
-# Direct (non-gateway) providers opencode can route to. Each entry names the
-# API-key env var, the OpenAI-compatible base URL, the opencode provider id
-# and display name, and the static metadata table above.
-_DIRECT_PROVIDERS: dict[str, dict[str, Any]] = {
-    OPENROUTER_PROVIDER: {
-        "key_env": OPENROUTER_API_KEY_ENV,
-        "base_url": OPENROUTER_BASE_URL,
-        "provider_key": OPENROUTER_PROVIDER_NAME,
-        "provider_name": "OpenRouter",
-        "models": _OPENROUTER_MODEL_METADATA,
-    },
-    ZAI_PROVIDER: {
-        "key_env": ZAI_API_KEY_ENV,
-        "base_url": ZAI_BASE_URL,
-        "provider_key": ZAI_PROVIDER_NAME,
-        "provider_name": "Z.AI",
-        "models": _ZAI_MODEL_METADATA,
-    },
-}
-
 
 class OpenCodeKimchi(KimchiGatewayMixin, OpenCode):
     """Harbor OpenCode agent wired to an OpenAI-compatible gateway.
 
-    Supports two provider modes selected by the ``--model`` prefix:
+    Supports four provider modes selected by the ``--model`` prefix:
 
     * ``kimchi-dev/<id>`` — routes through the Kimchi gateway. Model metadata
       (context window, output limits, reasoning) is fetched from the Kimchi
@@ -101,6 +135,8 @@ class OpenCodeKimchi(KimchiGatewayMixin, OpenCode):
     * ``openrouter/<id>`` — routes through OpenRouter directly. Metadata for
       known models is looked up from a static table; the OpenRouter API key
       is injected from ``OPENROUTER_API_KEY``.
+    * ``moonshotai/<id>`` — routes through Moonshot directly using static
+      metadata and ``MOONSHOT_API_KEY``.
     * ``zai/<id>`` — routes through Z.AI's OpenAI-compatible API directly.
       Metadata comes from the static table; the key is injected from
       ``ZAI_API_KEY``.
@@ -109,35 +145,24 @@ class OpenCodeKimchi(KimchiGatewayMixin, OpenCode):
     before invoking ``opencode run``.
     """
 
-    @staticmethod
-    def _direct_provider(model_name: str | None) -> str | None:
-        """The direct-provider prefix of ``model_name``, or None for the gateway."""
-        if not model_name:
-            return None
-        provider, _, _ = model_name.partition("/")
-        return provider if provider in _DIRECT_PROVIDERS else None
+    @classmethod
+    def _provider_route(cls, model_name: str | None) -> ProviderRoute:
+        if is_openrouter_model(model_name):
+            return OPENROUTER_ROUTE
+        if is_moonshot_model(model_name):
+            return MOONSHOT_ROUTE
+        if is_zai_model(model_name):
+            return ZAI_ROUTE
+        return KIMCHI_ROUTE
 
-    def _split_direct_model(self, model_name: str | None) -> tuple[dict[str, Any], str]:
-        """``(provider spec, model id)`` for a direct-provider model name."""
-        provider = self._direct_provider(model_name)
-        if model_name is None or provider is None:
-            raise ValueError(
-                f"{type(self).__name__} expected a direct-provider model "
-                f"({'/'.join(sorted(_DIRECT_PROVIDERS))}/*); got {model_name!r}"
-            )
-        _, model_id = model_name.split("/", 1)
-        if not model_id:
-            raise ValueError(f"--model must include a model id after {provider}/")
-        return _DIRECT_PROVIDERS[provider], model_id
-
-    def _direct_model_config(self, model_name: str | None) -> dict[str, Any]:
-        """Build static model config for a direct-provider model."""
-        spec, model_id = self._split_direct_model(model_name)
-        meta = spec["models"].get(model_id)
+    def _openrouter_model_config(self, model_name: str | None) -> dict[str, Any]:
+        """Build static model config for an OpenRouter model."""
+        model_id = split_openrouter_model(model_name)
+        meta = _OPENROUTER_MODEL_METADATA.get(model_id)
         if meta is None:
             raise ValueError(
-                f"{spec['provider_name']} model {model_id!r} is not in the static metadata table. "
-                f"Known models: {', '.join(sorted(spec['models']))}"
+                f"OpenRouter model {model_id!r} is not in the static metadata table. "
+                f"Known models: {', '.join(sorted(_OPENROUTER_MODEL_METADATA))}"
             )
         return {
             "name": model_id,
@@ -165,11 +190,52 @@ class OpenCodeKimchi(KimchiGatewayMixin, OpenCode):
         )
         await super().install(environment)
 
-    def _model_config(self, api_key: str, model_name: str | None) -> dict[str, Any]:
-        if self._direct_provider(model_name) is not None:
-            return self._direct_model_config(model_name)
-        model = self._model_metadata_for(api_key, model_name)
+    def _moonshot_model_config(self, model_name: str | None) -> dict[str, Any]:
+        """Build static model config for a Moonshot model."""
+        model = moonshot_metadata(split_moonshot_model(model_name))
         return {
+            "name": model.id,
+            "tool_call": True,
+            "reasoning": True,
+            "limit": {
+                "context": model.context_window,
+                "output": model.max_output_tokens,
+            },
+        }
+
+    def _zai_model_config(self, model_name: str | None) -> dict[str, Any]:
+        """Build static model config for a Z.AI model."""
+        meta = zai_model(split_zai_model(model_name))
+        return {
+            "name": meta.id,
+            "tool_call": True,
+            "reasoning": meta.reasoning,
+            "limit": {
+                "context": meta.context_window,
+                "output": meta.max_output_tokens,
+            },
+        }
+
+    def _resolve_model(self, model_name: str | None, api_key: str | None = None) -> ResolvedModel:
+        """Resolve provider-specific identity, metadata, and behavior once."""
+        route = self._provider_route(model_name)
+        if route is OPENROUTER_ROUTE:
+            model_id = split_openrouter_model(model_name)
+            config = self._openrouter_model_config(model_name)
+            return ResolvedModel(route, model_id, config)
+        if route is MOONSHOT_ROUTE:
+            model_id = split_moonshot_model(model_name)
+            config = self._moonshot_model_config(model_name)
+            return ResolvedModel(route, model_id, config)
+        if route is ZAI_ROUTE:
+            model_id = split_zai_model(model_name)
+            config = self._zai_model_config(model_name)
+            return ResolvedModel(route, model_id, config)
+        _, model_id = self._split_model(model_name)
+        if api_key is None:
+            raise ValueError("api_key is required for kimchi-dev/* models")
+        model = self._model_metadata_for(api_key, model_name)
+        config = {
             "name": model.slug,
             # The current metadata endpoint does not expose tool-call capability.
             # Kimchi's OpenCode integration treats gateway-served models as tool-capable.
@@ -180,28 +246,32 @@ class OpenCodeKimchi(KimchiGatewayMixin, OpenCode):
                 "output": model.limits.max_output_tokens,
             },
         }
-
-    def _selected_model_config(self, api_key: str) -> dict[str, Any]:
-        return self._model_config(api_key, self.model_name)
+        return ResolvedModel(route, model_id, config)
 
     def _small_model_name(self) -> str | None:
-        return self._get_env(SMALL_MODEL_ENV) or self.model_name
+        small_model_name = self._get_env(SMALL_MODEL_ENV) or self.model_name
+        if self.model_name and small_model_name:
+            main_provider, separator, _ = self.model_name.partition("/")
+            small_provider, small_separator, _ = small_model_name.partition("/")
+            if separator and small_separator and main_provider != small_provider:
+                raise ValueError(
+                    f"{SMALL_MODEL_ENV} must use the same provider as --model; "
+                    f"got {small_model_name!r} with {self.model_name!r}"
+                )
+        return small_model_name
 
-    def _build_register_config_command(self, api_key: str, small_model_name: str | None = None) -> str:
-        direct_provider = self._direct_provider(self.model_name)
+    def _build_register_config_command(
+        self,
+        api_key: str,
+        small_model_name: str | None = None,
+    ) -> tuple[str, bool]:
         small_model_name = small_model_name or self._small_model_name()
-        if direct_provider is not None:
-            _, model_id = self._split_direct_model(self.model_name)
-        else:
-            _, model_id = self._split_model(self.model_name)
-        models = {model_id: self._selected_model_config(api_key)}
+        selected_model = self._resolve_model(self.model_name, api_key=api_key)
+        route = selected_model.route
+        models = {selected_model.model_id: selected_model.config}
         if small_model_name != self.model_name:
-            if self._direct_provider(small_model_name) is not None:
-                _, small_model_id = self._split_direct_model(small_model_name)
-                models[small_model_id] = self._direct_model_config(small_model_name)
-            else:
-                _, small_model_id = self._split_model(small_model_name)
-                models[small_model_id] = self._model_config(api_key, small_model_name)
+            small_model = self._resolve_model(small_model_name, api_key=api_key)
+            models[small_model.model_id] = small_model.config
 
         mcp: dict[str, dict[str, Any]] = {}
         for server in self.mcp_servers:
@@ -211,36 +281,22 @@ class OpenCodeKimchi(KimchiGatewayMixin, OpenCode):
             else:
                 mcp[server.name] = {"type": "remote", "url": server.url}
 
-        if direct_provider is not None:
-            spec = _DIRECT_PROVIDERS[direct_provider]
-            provider_key = spec["provider_key"]
-            provider_config: dict[str, Any] = {
-                "npm": "@ai-sdk/openai-compatible",
-                "name": spec["provider_name"],
-                "options": {
-                    "baseURL": spec["base_url"],
-                    "apiKey": f"{{env:{spec['key_env']}}}",
-                },
-                "models": models,
-            }
-        else:
-            provider_key = KIMCHI_PROVIDER
-            provider_config = {
-                "npm": "@ai-sdk/openai-compatible",
-                "name": "Kimchi",
-                "options": {
-                    "baseURL": KIMCHI_OPENAI_BASE_URL,
-                    # kimchi: the gateway is served through LiteLLM, matching
-                    # the first-party Kimchi OpenCode provider integration.
-                    "litellmProxy": True,
-                    "apiKey": f"{{env:{KIMCHI_API_KEY_ENV}}}",
-                },
-                "models": models,
-            }
+        provider_options: dict[str, Any] = {
+            "baseURL": route.base_url,
+            "apiKey": f"{{env:{route.api_key_env}}}",
+        }
+        if route.litellm_proxy:
+            provider_options["litellmProxy"] = True
+        provider_config: dict[str, Any] = {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": route.name,
+            "options": provider_options,
+            "models": models,
+        }
 
         config: dict[str, Any] = {
             "$schema": "https://opencode.ai/config.json",
-            "provider": {provider_key: provider_config},
+            "provider": {route.key: provider_config},
             "model": self.model_name,
             # Defaults to the benchmark model for reproducibility; override with
             # OPENCODE_SMALL_MODEL=<provider>/<id> if summary/title work should
@@ -253,16 +309,17 @@ class OpenCodeKimchi(KimchiGatewayMixin, OpenCode):
         config = self._deep_merge(copy.deepcopy(self._DEFAULT_CONFIG), config)
         config = self._deep_merge(config, self._opencode_config)
         config_json = json.dumps(config, indent=2)
-        return f"mkdir -p ~/.config/opencode && echo {shlex.quote(config_json)} > ~/.config/opencode/opencode.json"
+        command = (
+            f"mkdir -p ~/.config/opencode && "
+            f"echo {shlex.quote(config_json)} > ~/.config/opencode/opencode.json"
+        )
+        return command, selected_model.uses_reasoning
 
     def _build_env(self) -> dict[str, str]:
-        direct_provider = self._direct_provider(self.model_name)
+        route = self._provider_route(self.model_name)
         env = self._passthrough_env(keys=OPENCODE_RUNTIME_ENV_KEYS)
-        if direct_provider is not None:
-            key_env = _DIRECT_PROVIDERS[direct_provider]["key_env"]
-            env.update({key_env: self._required_env(key_env)})
-        else:
-            env.update({KIMCHI_API_KEY_ENV: self._required_kimchi_api_key()})
+        api_key = self._required_env(route.api_key_env)
+        env[route.api_key_env] = api_key
         env.setdefault("OPENCODE_FAKE_VCS", "git")
         self._scrub_extra_env(prefixes=("OPENCODE_",), allow_keys=OPENCODE_RUNTIME_ENV_KEYS)
         return env
@@ -275,13 +332,6 @@ class OpenCodeKimchi(KimchiGatewayMixin, OpenCode):
             )
         return value
 
-    def _thinking_flag(self, api_key: str) -> str:
-        if self._direct_provider(self.model_name) is not None:
-            spec, model_id = self._split_direct_model(self.model_name)
-            meta = spec["models"].get(model_id)
-            return " --thinking" if meta and meta["reasoning"] else ""
-        return " --thinking" if self._selected_model_metadata(api_key).reasoning else ""
-
     @with_prompt_template
     async def run(
         self,
@@ -291,14 +341,10 @@ class OpenCodeKimchi(KimchiGatewayMixin, OpenCode):
     ) -> None:
         escaped_instruction = shlex.quote(instruction)
         small_model_name = self._small_model_name()
+        route = self._provider_route(self.model_name)
         env = self._build_env()
-        direct_provider = self._direct_provider(self.model_name)
-        api_key = (
-            env[_DIRECT_PROVIDERS[direct_provider]["key_env"]]
-            if direct_provider is not None
-            else env[KIMCHI_API_KEY_ENV]
-        )
-        config_command = self._build_register_config_command(api_key, small_model_name)
+        api_key = env[route.api_key_env]
+        config_command, uses_reasoning = self._build_register_config_command(api_key, small_model_name)
 
         await self.exec_as_agent(
             environment,
@@ -316,7 +362,8 @@ class OpenCodeKimchi(KimchiGatewayMixin, OpenCode):
             command=(
                 ". ~/.nvm/nvm.sh; "
                 f"opencode --model={shlex.quote(self.model_name or '')} "
-                f"run --format=json{self._thinking_flag(api_key)} --dangerously-skip-permissions -- "
+                f"run --format=json{' --thinking' if uses_reasoning else ''} "
+                f"--dangerously-skip-permissions -- "
                 f"{escaped_instruction} "
                 f"2>&1 </dev/null | stdbuf -oL tee /logs/agent/{shlex.quote(self._OUTPUT_FILENAME)}"
             ),

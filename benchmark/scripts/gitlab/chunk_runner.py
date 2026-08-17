@@ -29,6 +29,7 @@ import sys
 import time
 import urllib.request
 import zipfile
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -70,6 +71,8 @@ from bench_config import (
     resolve_thinking_level,
     should_retry_agent_timeout,
     use_pier,
+    validate_llm_params_for_model,
+    validate_thinking_level_for_model,
 )
 from chunk_slicing import slice_tasks
 from classify import classify
@@ -643,29 +646,38 @@ OPENROUTER_PROVIDER = "openrouter"
 OPENROUTER_CAPABLE_AGENTS = frozenset({"kimchi", "kimchi-workflow", "pi", "pi-workflow", "claude-code", "opencode"})
 
 ANTHROPIC_PROVIDER = "anthropic"
+MOONSHOT_PROVIDER = "moonshotai"
 
 
-def _openrouter_config_error(model: str, coding_agent: str) -> str | None:
-    """Reason this openrouter/* run cannot proceed, or None when it can."""
-    if not model.startswith(f"{OPENROUTER_PROVIDER}/"):
+@dataclass(frozen=True)
+class ProviderGate:
+    provider: str
+    api_key_env: str
+    capable_agents: frozenset[str] | None = None
+
+    def matches(self, model: str) -> bool:
+        return model.startswith(f"{self.provider}/")
+
+    def config_error(self, model: str, coding_agent: str) -> str | None:
+        if self.capable_agents is not None and coding_agent not in self.capable_agents:
+            return (
+                f"MODEL={model} is not supported when CODING_AGENT={coding_agent}; "
+                f"supported agents: {', '.join(sorted(self.capable_agents))}"
+            )
+        if not os.environ.get(self.api_key_env):
+            return f"{self.api_key_env} is required when MODEL={model}"
         return None
-    if coding_agent not in OPENROUTER_CAPABLE_AGENTS:
-        return (
-            f"MODEL={model} is not supported when CODING_AGENT={coding_agent}; "
-            f"supported agents: {', '.join(sorted(OPENROUTER_CAPABLE_AGENTS))}"
-        )
-    if not os.environ.get("OPENROUTER_API_KEY"):
-        return f"OPENROUTER_API_KEY is required when MODEL={model}"
-    return None
 
 
-def _anthropic_config_error(model: str) -> str | None:
-    """Reason this anthropic/* run cannot proceed, or None when it can."""
-    if not model.startswith(f"{ANTHROPIC_PROVIDER}/"):
-        return None
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return f"ANTHROPIC_API_KEY is required when MODEL={model}"
-    return None
+PROVIDER_GATES = (
+    ProviderGate(OPENROUTER_PROVIDER, "OPENROUTER_API_KEY", OPENROUTER_CAPABLE_AGENTS),
+    ProviderGate(ANTHROPIC_PROVIDER, "ANTHROPIC_API_KEY"),
+    ProviderGate(MOONSHOT_PROVIDER, "MOONSHOT_API_KEY", OPENROUTER_CAPABLE_AGENTS),
+)
+
+
+def _provider_gate(model: str) -> ProviderGate | None:
+    return next((route for route in PROVIDER_GATES if route.matches(model)), None)
 
 
 def _agent_import_path(coding_agent: str) -> str:
@@ -1295,18 +1307,22 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
     dataset = os.environ.get("DATASET", "terminal-bench/terminal-bench-2")
-    # anthropic/* models use the native Anthropic API, so ANTHROPIC_API_KEY
-    # is required instead of KIMCHI_API_KEY. claude-code-standard always uses
-    # the native Anthropic API regardless of model. cursor uses Cursor's own
-    # cloud backend, so CURSOR_API_KEY is required instead. All other agents
-    # route through the Kimchi gateway and need KIMCHI_API_KEY.
-    is_anthropic_model = model.startswith(f"{ANTHROPIC_PROVIDER}/")
-    if coding_agent == "claude-code-standard" or is_anthropic_model:
+    provider_route = _provider_gate(model)
+    provider_error = provider_route.config_error(model, coding_agent) if provider_route else None
+    if provider_error:
+        print(provider_error, file=sys.stderr)
+        return 1
+
+    # Native-provider models use their provider key instead of KIMCHI_API_KEY.
+    # claude-code-standard always uses Anthropic regardless of model, while
+    # cursor uses Cursor's own cloud backend.
+    if coding_agent == "claude-code-standard":
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
-            label = "claude-code-standard" if coding_agent == "claude-code-standard" else f"MODEL={model}"
-            print(f"ANTHROPIC_API_KEY is required for {label}", file=sys.stderr)
+            print("ANTHROPIC_API_KEY is required for claude-code-standard", file=sys.stderr)
             return 1
+    elif provider_route is not None:
+        api_key = os.environ.get(provider_route.api_key_env)
     elif coding_agent == "cursor":
         api_key = os.environ.get("CURSOR_API_KEY")
         if not api_key:
@@ -1324,20 +1340,8 @@ def main() -> int:
     if model == MULTI_MODEL and coding_agent != "kimchi":
         print("MODEL=multi-model is only supported when CODING_AGENT=kimchi", file=sys.stderr)
         return 1
-    if (
-        not api_key
-        and not is_anthropic_model
-        and coding_agent not in ("claude-code-standard", "cursor")
-    ):
+    if not api_key and provider_route is None and coding_agent not in ("claude-code-standard", "cursor"):
         print("KIMCHI_API_KEY is required", file=sys.stderr)
-        return 1
-    openrouter_error = _openrouter_config_error(model, coding_agent)
-    if openrouter_error:
-        print(openrouter_error, file=sys.stderr)
-        return 1
-    anthropic_error = _anthropic_config_error(model)
-    if anthropic_error:
-        print(anthropic_error, file=sys.stderr)
         return 1
 
     results_dir = Path(os.environ.get(ENV_BENCHMARK_RESULTS_DIR, DEFAULT_BENCHMARK_RESULTS_DIR))
@@ -1379,9 +1383,13 @@ def main() -> int:
         if not selected_tasks:
             selected_tasks = _fetch_all_tasks(dataset, bench_dir=bench_dir)
 
-    llm_params, llm_per_model_params = load_llm_params()
     try:
+        llm_params, llm_per_model_params = load_llm_params()
+        validate_llm_params_for_model(model, llm_params)
         thinking_level = resolve_thinking_level(coding_agent)
+        # thinking_level is already agent-adjusted here; claude-code effort
+        # levels use the same low/high/max spelling Moonshot accepts.
+        validate_thinking_level_for_model(model, thinking_level)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1

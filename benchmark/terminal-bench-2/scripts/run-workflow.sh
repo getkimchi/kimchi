@@ -10,11 +10,12 @@
 set -euo pipefail
 
 DATASET="${DATASET:-terminal-bench/terminal-bench-2-1}"
-
-: "${KIMCHI_API_KEY:?set KIMCHI_API_KEY in env}"
+MODEL="${MODEL:-kimchi-dev/kimi-k2.7}"
 
 BENCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(git -C "$BENCH_DIR" rev-parse --show-toplevel)"
+source "$BENCH_DIR/scripts/model_api_key.sh"
+require_model_api_key "$MODEL" kimchi-dev openrouter anthropic moonshotai zai multi-model
 
 echo "==> Cross-building kimchi (target=linux-x64)"
 (cd "$REPO_ROOT" && pnpm run build:binary-linux-x64)
@@ -35,8 +36,8 @@ cd "$BENCH_DIR"
 exec uv run --python 3.14 harbor run \
     --agent-import-path kimchi_agent:WorkflowAgent \
     --env docker \
-    --model "${MODEL:-kimchi-dev/kimi-k2.7}" \
-    --ae "KIMCHI_API_KEY=$KIMCHI_API_KEY" \
+    --model "$MODEL" \
+    --ae "$MODEL_API_KEY_ENV=${!MODEL_API_KEY_ENV}" \
     --agent-kwarg "extension=$EXTENSION" \
     --agent-kwarg "workflow=$WORKFLOW" \
     -d "$DATASET" \

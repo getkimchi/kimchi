@@ -28,12 +28,14 @@ REDACTED_MARKER = b"[redacted]"
 # Env vars holding secrets this benchmark injects into agent environments.
 # KIMCHI_API_KEY routes kimchi-dev/* models; OPENROUTER_API_KEY routes
 # openrouter/* models; ANTHROPIC_API_KEY routes anthropic/* models
-# (claude-code-standard); CURSOR_API_KEY routes cursor/* models (cursor);
-# ZAI_API_KEY routes zai/* models (direct Z.AI).
+# (claude-code-standard); MOONSHOT_API_KEY routes moonshotai/* models;
+# CURSOR_API_KEY routes cursor/* models (cursor); ZAI_API_KEY routes
+# zai/* models (direct Z.AI).
 REDACTED_ENV_KEYS = (
     "KIMCHI_API_KEY",
     "OPENROUTER_API_KEY",
     "ANTHROPIC_API_KEY",
+    "MOONSHOT_API_KEY",
     "CURSOR_API_KEY",
     "ZAI_API_KEY",
 )
