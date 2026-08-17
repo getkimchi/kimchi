@@ -1348,8 +1348,11 @@ export class KimchiAcpAgent implements Agent {
 		const turn = entry.turn
 		if (!turn) return
 		entry.turn = undefined
-		this.emitUsageUpdate(entry)
-		turn.resolve({ stopReason })
+		try {
+			this.emitUsageUpdate(entry)
+		} finally {
+			turn.resolve({ stopReason })
+		}
 	}
 
 	private failTurn(entry: SessionRecord, err: unknown): void {
