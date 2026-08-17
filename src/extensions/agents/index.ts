@@ -371,6 +371,15 @@ export interface AutoResumeShape {
 	resumeAttempts?: unknown[]
 }
 
+/** Builds the auto-resume note from the WORKER'S PRE-RESUME abort reason.
+ * The reason must be captured before `manager.resume` mutates the record
+ * (resume clears `abortReason` on success) — passing the post-resume reason
+ * yields `undefined` and silently drops the note. Exported for unit testing. */
+export function buildAutoResumeNote(beforeAbortReason: AgentAbortReason | undefined): string {
+	if (!beforeAbortReason) return ""
+	return `\nThe harness auto-resumed this worker once with a fresh budget after its attempt hit the ${beforeAbortReason === "max_turns" ? "turn" : "duration"} limit — the outcome below reflects the resumed attempt, so do NOT resume again on the same budget; if it is still incomplete, try a narrower replacement Agent or the complex tier.`
+}
+
 /** True when a ferment step worker was killed by its own budget on a first
  * attempt and still holds a live session — the auto-resume gate. Exported for
  * unit testing; the Agent tool handler uses it inline. */
@@ -1723,12 +1732,16 @@ ${AGENT_TOOL_GUIDELINES}`,
 				const autoResumeCandidate = shouldAutoResumeFermentWorker(record)
 				let autoResumedFromReason: AgentAbortReason | undefined
 				if (autoResumeCandidate) {
-					const beforeStatus = record.status
-					await manager.resume(record.id, FERMENT_WORKER_AUTO_RESUME_PROMPT, {})
-					if (beforeStatus !== record.status || record.abortReason === undefined) {
-						autoResumedFromReason = record.abortReason
-					} else {
-						autoResumedFromReason = "max_turns"
+					// Capture the pre-resume state — manager.resume mutates record in
+					// place (clears abortReason on success), so reading it after the call
+					// loses the reason the note exists to report.
+					const beforeAbortReason = record.abortReason
+					try {
+						await manager.resume(record.id, FERMENT_WORKER_AUTO_RESUME_PROMPT, {})
+						autoResumedFromReason = beforeAbortReason
+					} catch {
+						// Fall back to the normal aborted-agent summary/instruction below
+						// instead of surfacing an unhandled tool error.
 					}
 					// The summary note/instruction below reads record.status/abortReason,
 					// so it describes the post-resume state automatically.
@@ -1760,9 +1773,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				appendSubagentRecord(record)
 
 				const timeTaken = formatMs(durationMs)
-				const autoResumeNote = autoResumedFromReason
-					? `\nThe harness auto-resumed this worker once with a fresh budget after its attempt hit the ${autoResumedFromReason === "max_turns" ? "turn" : "duration"} limit — the outcome below reflects the resumed attempt, so do NOT resume again on the same budget; if it is still incomplete, try a narrower replacement Agent or the complex tier.`
-					: ""
+				const autoResumeNote = buildAutoResumeNote(autoResumedFromReason)
 				const note = getStatusNote(record.status, record.abortReason)
 				const instruction = getStatusInstruction(
 					record.status,

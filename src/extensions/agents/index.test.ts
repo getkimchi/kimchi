@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	AGENT_MODEL_PARAMETER_DESCRIPTION,
 	AGENT_TOOL_GUIDELINES,
+	buildAutoResumeNote,
 	resolveRoleModelRef,
 	setActiveManagerForTest,
 	shouldAutoResumeFermentWorker,
@@ -29,6 +30,14 @@ describe("shouldAutoResumeFermentWorker", () => {
 		expect(shouldAutoResumeFermentWorker({ ...base, abortReason: "inactivity" as const })).toBe(false)
 		expect(shouldAutoResumeFermentWorker({ ...base, status: "completed" })).toBe(false)
 		expect(shouldAutoResumeFermentWorker({ ...base, session: null })).toBe(false)
+	})
+})
+
+describe("buildAutoResumeNote", () => {
+	it("labels the limit from the PRE-resume abort reason (review regression: resume clears abortReason)", () => {
+		expect(buildAutoResumeNote("max_turns")).toContain("hit the turn limit")
+		expect(buildAutoResumeNote("max_duration")).toContain("hit the duration limit")
+		expect(buildAutoResumeNote(undefined)).toBe("")
 	})
 })
 
