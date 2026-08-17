@@ -1,6 +1,6 @@
 /**
  * Patches the upstream pi SDK's `createExtensionUIContext` so that
- * `pasteToEditor` routes through `ui.handleInput` instead of `editor.handleInput`.
+ * `pasteToEditor` routes through `ui.handleTerminalInput` instead of `editor.handleInput`.
  *
  * This ensures pasted text goes through the UI's input handling layer,
  * which properly processes bracketed-paste sequences.
@@ -17,7 +17,7 @@ export function applyPasteToEditorPatch(): void {
 	imProto.createExtensionUIContext = function patchedCreateExtensionUIContext() {
 		const ctx = originalCreateExtensionUIContext.call(this)
 		ctx.pasteToEditor = (text: string) => {
-			this.ui.handleInput(`\x1b[200~${text}\x1b[201~`)
+			this.ui.handleTerminalInput(`\x1b[200~${text}\x1b[201~`)
 		}
 		return ctx
 	}
