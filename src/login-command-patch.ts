@@ -8,8 +8,9 @@
 
 import {
 	InteractiveMode,
+	ModelRegistry,
+	type ModelRuntime,
 	OAuthSelectorComponent,
-	type ModelRegistry as PiModelRegistry,
 } from "@earendil-works/pi-coding-agent"
 import { Spacer, Text } from "@earendil-works/pi-tui"
 import {
@@ -37,18 +38,29 @@ interface ModelLike {
 	provider: string
 }
 
-interface ModelRegistry {
+/** Shape the login patch expects from `session.modelRuntime`. At runtime this is a
+ * `ModelRuntime`; the patch wraps it in a `ModelRegistry` before passing it to the
+ * flow functions that call `getAll()`. The local interface mirrors the subset of
+ * `ModelRuntime` that the patch code accesses directly (e.g. `authStorage`). */
+interface SessionModelRuntime extends ModelRuntime {
 	authStorage: AuthStorage
-	refresh(): Promise<unknown>
-	getAll(): ModelLike[]
-	getAvailable(): ModelLike[]
-	getModelById(id: string): ModelLike | undefined
-	getProviderAuthStatus(providerId: string): AuthStatus
 }
 
 interface SessionLike {
-	modelRuntime: ModelRegistry
+	modelRuntime: SessionModelRuntime
 	setModel(model: ModelLike): Promise<void>
+}
+
+/** Wraps `session.modelRuntime` (a `ModelRuntime`) in a `ModelRegistry` so the login
+ * flow can call `getAll()`. `ModelRegistry` delegates `getAll`→`getModels` and
+ * `getAvailable`→`getAvailableSnapshot`, but does not expose `authStorage`; copy it
+ * from the runtime when present so the flow's credential-storage path still works. */
+function asLoginRegistry(runtime: SessionModelRuntime): ModelRegistry {
+	const registry = new ModelRegistry(runtime)
+	if (runtime.authStorage) {
+		;(registry as { authStorage?: AuthStorage }).authStorage = runtime.authStorage
+	}
+	return registry
 }
 
 type ChatContainerLike = {
@@ -62,7 +74,6 @@ type UiLike = {
 type SelectorResult = { component: unknown; focus?: unknown }
 type ShowSelector = (build: (done: () => void) => SelectorResult) => void
 type AuthSelectorProvider = ConstructorParameters<typeof OAuthSelectorComponent>[1][number]
-type AuthStatus = ReturnType<PiModelRegistry["getProviderAuthStatus"]>
 
 type LoginModeLike = {
 	showSelector?: ShowSelector
@@ -154,14 +165,14 @@ async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 	const showStatus = modeLike.showStatus?.bind(modeLike)
 	const showError = im.showError.bind(im)
 	const session = modeLike.session
-	const registry = session?.modelRuntime
-	if (!registry) {
+	const runtime = session?.modelRuntime
+	if (!runtime) {
 		showError("Kimchi login failed: model registry is unavailable")
 		return
 	}
 
 	await performKimchiBrowserLogin({
-		modelRegistry: registry,
+		modelRegistry: asLoginRegistry(runtime),
 		setModel: (model) => session.setModel(model),
 		showStatus,
 		showError,
@@ -178,8 +189,8 @@ async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 	const showStatus = modeLike.showStatus?.bind(modeLike)
 	const showError = im.showError.bind(im)
 	const session = modeLike.session
-	const registry = session?.modelRuntime
-	if (!registry) {
+	const runtime = session?.modelRuntime
+	if (!runtime) {
 		showError("Kimchi API-key login failed: model registry is unavailable")
 		return
 	}
@@ -187,6 +198,7 @@ async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 		showError("Kimchi API-key login failed: text input is unavailable")
 		return
 	}
+	const registry = asLoginRegistry(runtime)
 
 	const apiKey = await modeLike.showExtensionInput("Kimchi API Key:", "Enter your Kimchi API key")
 	if (apiKey === undefined) return

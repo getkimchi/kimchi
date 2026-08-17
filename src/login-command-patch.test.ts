@@ -35,6 +35,12 @@ afterEach(() => {
 })
 
 function makeFakeModelRegistry() {
+	// ModelRegistry delegates getAll()→runtime.getModels() and
+	// getAvailable()→runtime.getAvailableSnapshot(). Tests set expectations on
+	// the runtime methods; the registry-level aliases share the same mock fn so
+	// pre-wrapper assertions still work.
+	const getAllMock = vi.fn().mockReturnValue([])
+	const getAvailableMock = vi.fn().mockReturnValue([])
 	return {
 		authStorage: {
 			set: vi.fn(),
@@ -42,8 +48,10 @@ function makeFakeModelRegistry() {
 			remove: vi.fn(),
 		},
 		refresh: vi.fn(),
-		getAll: vi.fn().mockReturnValue([]),
-		getAvailable: vi.fn().mockReturnValue([]),
+		getModels: getAllMock,
+		getAvailableSnapshot: getAvailableMock,
+		getAll: getAllMock,
+		getAvailable: getAvailableMock,
 		getProviderAuthStatus: vi.fn().mockReturnValue({ configured: false }),
 	}
 }
