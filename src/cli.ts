@@ -4,7 +4,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { AgentSession } from "@earendil-works/pi-coding-agent"
+import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import {
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
@@ -644,7 +644,12 @@ try {
 		if (IS_ACP_MODE) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			const { McpServerManager } = await import("./extensions/mcp-adapter/server-manager.js")
-			await runAcpMode({ extensionFactories, agentDir, mcpServerManager: new McpServerManager() })
+			await runAcpMode({
+				extensionFactories,
+				agentDir,
+				mcpServerManager: new McpServerManager(),
+				appendSystemPrompt: parsePiArgs(rawArgs).appendSystemPrompt,
+			})
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 			const { main } = await import("@earendil-works/pi-coding-agent")
