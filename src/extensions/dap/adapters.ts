@@ -313,6 +313,40 @@ export function allAdapters(): DapAdapterConfig[] {
 	return ADAPTERS
 }
 
+/** Detect the language of a directory when the program path's extension gives
+ *  no match — e.g. a Go package directory (`./cmd/server`) or the directory
+ *  containing an extensionless compiled binary (main next to main.c). Checks
+ *  for language-specific source files in the directory. Returns the matching
+ *  adapter, or null if no language is detected. */
+export function adapterForDirectory(dirPath: string, adapters: DapAdapterConfig[]): DapAdapterConfig | null {
+	try {
+		const entries = fs.readdirSync(dirPath)
+		// Check for .go files → dlv
+		if (entries.some((e) => e.endsWith(".go"))) {
+			const goAdapter = adapters.find((a) => a.languages.includes("go"))
+			if (goAdapter) return goAdapter
+		}
+		// Check for .py files → debugpy
+		if (entries.some((e) => e.endsWith(".py"))) {
+			const pyAdapter = adapters.find((a) => a.languages.includes("python"))
+			if (pyAdapter) return pyAdapter
+		}
+		// Check for .ts/.js files → js-debug
+		if (entries.some((e) => e.endsWith(".ts") || e.endsWith(".js"))) {
+			const jsAdapter = adapters.find((a) => a.languages.includes("typescript") || a.languages.includes("javascript"))
+			if (jsAdapter) return jsAdapter
+		}
+		// Check for .rs/.c/.cpp files → lldb-dap
+		if (entries.some((e) => e.endsWith(".rs") || e.endsWith(".c") || e.endsWith(".cpp"))) {
+			const nativeAdapter = adapters.find((a) => a.languages.includes("rust") || a.languages.includes("c"))
+			if (nativeAdapter) return nativeAdapter
+		}
+	} catch {
+		// Not a directory or unreadable — fall through to null
+	}
+	return null
+}
+
 /**
  * Walk up from `cwd` to the filesystem root, returning true if any of the
  * given marker files is found in cwd or a parent directory. Mirrors

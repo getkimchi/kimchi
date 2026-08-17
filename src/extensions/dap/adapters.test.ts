@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 vi.mock("node:fs", () => ({
 	default: {
 		existsSync: vi.fn(),
+		readdirSync: vi.fn(),
 	},
 }))
 
@@ -14,14 +15,23 @@ vi.mock("node:child_process", () => ({
 	spawnSync: vi.fn(),
 }))
 
-import { adapterForFile, adapterForLanguage, allAdapters, detectAdapters, detectMissingAdapters } from "./adapters.js"
+import {
+	adapterForDirectory,
+	adapterForFile,
+	adapterForLanguage,
+	allAdapters,
+	detectAdapters,
+	detectMissingAdapters,
+} from "./adapters.js"
 
 const mockExistsSync = vi.mocked(fs.existsSync)
+const mockReaddirSync = vi.mocked(fs.readdirSync)
 const mockSpawnSync = vi.mocked(spawnSync)
 
 // Suppress Bun global so exists() uses the spawnSync path (deterministic).
 beforeEach(() => {
 	mockExistsSync.mockReset()
+	mockReaddirSync.mockReset()
 	mockSpawnSync.mockReset()
 	// biome-ignore lint/suspicious/noExplicitAny: suppress Bun global for deterministic Node-path testing
 	;(globalThis as any).Bun = undefined
@@ -360,5 +370,50 @@ describe("KIMCHI_DAP_BINARIES override", () => {
 		}) as never)
 		const missing = detectMissingAdapters("/project")
 		expect(missing.map((a) => a.name).sort()).toEqual(["dlv", "js-debug"])
+	})
+})
+
+// =============================================================================
+// adapterForDirectory — language detection from directory contents
+// =============================================================================
+
+describe("adapterForDirectory", () => {
+	it("detects Go via .go files", () => {
+		mockReaddirSync.mockReturnValue(["main.go", "go.sum"] as never)
+		expect(adapterForDirectory("/proj", allAdapters())?.name).toBe("dlv")
+	})
+
+	it("detects Python via .py files", () => {
+		mockReaddirSync.mockReturnValue(["app.py"] as never)
+		expect(adapterForDirectory("/proj", allAdapters())?.name).toBe("debugpy")
+	})
+
+	it("detects TypeScript/JavaScript via .ts/.js files", () => {
+		mockReaddirSync.mockReturnValue(["index.ts", "package.json"] as never)
+		expect(adapterForDirectory("/proj", allAdapters())?.name).toBe("js-debug")
+	})
+
+	it("detects native via .c/.rs sources next to a compiled binary", () => {
+		// The extensionless `main` binary itself matches nothing; its sibling
+		// source drives detection (the compiled-binary fallback).
+		mockReaddirSync.mockReturnValue(["main.c", "main"] as never)
+		expect(adapterForDirectory("/proj", allAdapters())?.name).toBe("lldb-dap")
+	})
+
+	it("prefers go over python when both are present (documented priority order)", () => {
+		mockReaddirSync.mockReturnValue(["main.go", "app.py"] as never)
+		expect(adapterForDirectory("/proj", allAdapters())?.name).toBe("dlv")
+	})
+
+	it("returns null when no supported sources are present", () => {
+		mockReaddirSync.mockReturnValue(["README.md", "binary"] as never)
+		expect(adapterForDirectory("/proj", allAdapters())).toBeNull()
+	})
+
+	it("returns null for a non-directory path (readdirSync throws)", () => {
+		mockReaddirSync.mockImplementation((() => {
+			throw new Error("ENOTDIR")
+		}) as never)
+		expect(adapterForDirectory("/proj", allAdapters())).toBeNull()
 	})
 })

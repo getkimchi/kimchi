@@ -247,6 +247,12 @@ const StateAtSchema = Type.Object({
 		}),
 	),
 	file: Type.String({ description: "Source file to set the breakpoint in" }),
+	program: Type.Optional(
+		Type.String({
+			description:
+				"Program to launch. Defaults to `file` — correct for interpreted languages (Node, Python, Go). For compiled languages (C/C++/Rust), pass the built binary and set `file` to the source file.",
+		}),
+	),
 	line: Type.Number({ description: "1-based line number to break at" }),
 	evaluated: Type.Optional(Type.Array(Type.String(), { description: "Expressions to evaluate at the breakpoint" })),
 	timeout_ms: Type.Optional(Type.Number({ description: "Wall-clock timeout in ms (default 30000)" })),
@@ -552,6 +558,7 @@ export function createLayer2Tools(deps: DapToolDeps): ToolDefinition[] {
 					const result = await debugStateAt(deps, {
 						sessionId: params.session_id,
 						file: params.file,
+						program: params.program,
 						line: params.line,
 						evaluated: params.evaluated,
 						timeoutMs: params.timeout_ms,
