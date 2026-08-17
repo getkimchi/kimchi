@@ -1328,10 +1328,27 @@ export class KimchiAcpAgent implements Agent {
 		})
 	}
 
+	private emitUsageUpdate(entry: SessionRecord): void {
+		const session = entry.session
+		const ctx = session.getContextUsage()
+		const used = ctx?.tokens ?? session.getSessionStats().tokens.total
+		const size = session.model?.contextWindow ?? ctx?.contextWindow
+		if (used == null || !size) return
+		this.send({
+			sessionId: session.sessionId,
+			update: {
+				sessionUpdate: "usage_update",
+				used,
+				size,
+			},
+		})
+	}
+
 	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {
 		const turn = entry.turn
 		if (!turn) return
 		entry.turn = undefined
+		this.emitUsageUpdate(entry)
 		turn.resolve({ stopReason })
 	}
 
