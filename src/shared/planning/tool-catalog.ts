@@ -125,6 +125,8 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "debug_last_error", modes: ["shared"] },
 	{ name: "debug_trace_calls", modes: ["shared"] },
 	{ name: "debug_watch_change", modes: ["shared"] },
+	{ name: "debug_set_variable", modes: ["shared"] },
+	{ name: "debug_restart", modes: ["shared"] },
 	// Todo lifecycle tools — must mirror TODO_TOOL_NAMES in src/extensions/todos/tool.ts
 	// These are general-purpose session tools used in all modes (adhoc chat,
 	// ferment planning, and ferment implementation). The system prompt,

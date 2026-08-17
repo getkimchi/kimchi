@@ -365,6 +365,8 @@ Your verification file MUST contain:
 					"debug_last_error",
 					"debug_trace_calls",
 					"debug_watch_change",
+					"debug_set_variable",
+					"debug_restart",
 				],
 				disallowedTools: ["edit", "write", "Agent", "resume_subagent", "get_subagent_result", "steer_subagent"],
 				extensions: false,
