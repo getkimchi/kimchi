@@ -1714,10 +1714,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 					widget.markFinished(fgId)
 				}
 
-				const tokenText = formatLifetimeTokens(fgState)
-
-				const details = buildDetails(detailBase, record, fgState, { tokens: tokenText })
-
 				const fallbackNote = fellBack
 					? `Note: Unknown agent type "${rawType}" - using ${AGENT_GENERAL_PURPOSE}.\n\n`
 					: ""
@@ -1746,6 +1742,11 @@ ${AGENT_TOOL_GUIDELINES}`,
 					// The summary note/instruction below reads record.status/abortReason,
 					// so it describes the post-resume state automatically.
 				}
+
+				// Built AFTER the auto-resume block so they reflect the post-resume
+				// state (resume mutates record/fgState: status, abortReason, counters).
+				const tokenText = formatLifetimeTokens(fgState)
+				const details = buildDetails(detailBase, record, fgState, { tokens: tokenText })
 
 				if (record.status === "error") {
 					return textResult(`${fallbackNote}Agent failed: ${record.error}`, details)

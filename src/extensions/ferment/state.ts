@@ -603,7 +603,12 @@ export function clearBlockRetry(fermentId: string, phaseId: string): void {
 	hydrateIfNeeded(fermentId)
 	blockRetryCounts.clear(`${fermentId}:${phaseId}`)
 	lastBlockHash.delete(`${fermentId}:${phaseId}`)
-	lastPhaseRefusals.delete(`${fermentId}:${phaseId}`)
+	// NOTE: lastPhaseRefusals intentionally OUTLIVES block acceptance — the
+	// first journey-grade attempt reads the most recent phase refusal as
+	// "quality momentum" context (see latestPhaseRefusal in lifecycle.ts).
+	// Deleting it here made that path permanently dead because every shipped
+	// phase passes through this function. Refusals are purged per-ferment by
+	// clearFermentState on ferment completion/abandon.
 	persistFerment(fermentId)
 }
 

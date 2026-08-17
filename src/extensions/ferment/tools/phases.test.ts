@@ -677,8 +677,10 @@ describe("registerPhaseTools", () => {
 		expect(captured[0]).toBeUndefined()
 		expect(captured[1]?.grade).toBe("C")
 		expect(captured[1]?.recommendations).toEqual(recs)
-		// Acceptance cleared the refusal record for this phase.
-		expect(h.runtime.getLastPhaseRefusal(h.fermentId, "phase-1")).toBeUndefined()
+		// Acceptance clears the retry counter but RETAINS the refusal record —
+		// the first journey-grade attempt reads the most recent phase refusal
+		// as quality-momentum context (purged only by clearFermentState).
+		expect(h.runtime.getLastPhaseRefusal(h.fermentId, "phase-1")?.grade).toBe("C")
 	})
 
 	it("deterministic re-verification refuses a red run without spawning the grader", async () => {
