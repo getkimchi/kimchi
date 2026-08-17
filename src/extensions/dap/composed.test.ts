@@ -28,6 +28,7 @@ import type {
 	DapCapabilities,
 	DapEvaluateResult,
 	DapOutputLine,
+	ExceptionInfo,
 	Scope,
 	StackFrame,
 	StoppedEvent,
@@ -50,6 +51,7 @@ interface StubSession extends DapSession {
 	getScopes: ReturnType<typeof vi.fn>
 	getVariables: ReturnType<typeof vi.fn>
 	evaluate: ReturnType<typeof vi.fn>
+	getExceptionInfo: ReturnType<typeof vi.fn>
 	terminate: ReturnType<typeof vi.fn>
 	launch: ReturnType<typeof vi.fn>
 	completeLaunch: ReturnType<typeof vi.fn>
@@ -87,6 +89,9 @@ function createStubSession(id = "sess-aaa-bbb-ccc"): StubSession {
 			.fn()
 			.mockResolvedValue([{ name: "x", value: "42", type: "number", variablesReference: 0 }] as Variable[]),
 		evaluate: vi.fn().mockResolvedValue({ result: "42", variablesReference: 0 } as DapEvaluateResult),
+		// Default rejects: adapters lacking exceptionInfo support take the
+		// stopped-event fallback path.
+		getExceptionInfo: vi.fn().mockRejectedValue(new Error("request exceptionInfo is not supported")),
 		terminate: vi.fn().mockResolvedValue(undefined),
 		launch: vi.fn().mockResolvedValue(undefined),
 		completeLaunch: vi.fn().mockResolvedValue(undefined),
@@ -324,6 +329,44 @@ describe("debug_last_error", () => {
 		expect(result.backtrace[0].name).toBe("throwFn")
 		// Existing session — no terminate
 		expect(stub.terminate).not.toHaveBeenCalled()
+	})
+
+	it("prefers structured exceptionInfo over generic stopped-event text", async () => {
+		const stub = createStubSession()
+		// Stopped event only says "exception" — the real type/message comes
+		// from the adapter's exceptionInfo response.
+		stub.continue.mockResolvedValue(stop("exception"))
+		stub.getExceptionInfo.mockResolvedValue({
+			exceptionId: "ZeroDivisionError",
+			description: "division by zero",
+			breakMode: "always",
+			details: { typeName: "ZeroDivisionError", message: "division by zero" },
+		} as ExceptionInfo)
+		const { deps } = createDeps(stub)
+
+		const result = await debugLastError(deps, { sessionId: stub.id, program: "app.py" })
+
+		if (!result) throw new Error("expected a non-null result")
+		expect(result.exception.type).toBe("ZeroDivisionError")
+		expect(result.exception.message).toBe("division by zero")
+	})
+
+	it("falls back to stopped-event text when the adapter lacks exceptionInfo support", async () => {
+		const stub = createStubSession()
+		stub.continue.mockResolvedValue({
+			reason: "exception",
+			text: "ValueError",
+			description: "bad value",
+			threadId: 1,
+		} as StoppedEvent)
+		stub.getExceptionInfo.mockRejectedValue(new Error("does not support 'exceptionInfo' request"))
+		const { deps } = createDeps(stub)
+
+		const result = await debugLastError(deps, { sessionId: stub.id, program: "app.ts" })
+
+		if (!result) throw new Error("expected a non-null result")
+		expect(result.exception.type).toBe("ValueError")
+		expect(result.exception.message).toBe("bad value")
 	})
 
 	it("returns null when the program completes without throwing", async () => {
