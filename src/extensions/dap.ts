@@ -15,7 +15,7 @@
 import { readdirSync } from "node:fs"
 import path from "node:path"
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
-import { adapterForFile, allAdapters, detectAdapters, detectMissingAdapters } from "./dap/adapters.js"
+import { adapterExists, adapterForFile, allAdapters, detectAdapters, detectMissingAdapters } from "./dap/adapters.js"
 import { DapClientRegistry } from "./dap/client.js"
 import { DapSessionRegistry } from "./dap/session.js"
 import { createLayer1Tools, createLayer2Tools, type LaunchSessionOptions } from "./dap/tools.js"
@@ -477,6 +477,16 @@ export default function (pi: ExtensionAPI) {
 					opts.adapterName ? `adapter "${opts.adapterName}"` : `file ${opts.program}`
 				}. Supported file extensions: ${supportedExts}. ` +
 					"Tip: Use debug_state_at({file, line}) which auto-detects the adapter and manages the session lifecycle in one call.",
+			)
+		}
+
+		// Re-verify availability before spawning: the resolved adapter's binary may
+		// not be installed (probe happened at session_start, or the model picked
+		// an explicit adapter name). Fail with an actionable error instead of
+		// spawning a missing binary.
+		if (!adapterExists(adapter)) {
+			throw new Error(
+				`DAP adapter "${adapter.name}" is not installed or not on PATH.${adapter.installHint ? ` Install with: ${adapter.installHint}` : ""}`,
 			)
 		}
 

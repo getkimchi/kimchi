@@ -226,8 +226,9 @@ function existsCmd(argv: string[]): boolean {
 
 /** Check if an adapter's runtime is available. Uses `detect` (custom function)
  *  when set, then `detectModule` (e.g. `python3 -c "import debugpy"`),
- *  otherwise `detectBinary` or `command` (via `which`). */
-function adapterExists(adapter: DapAdapterConfig): boolean {
+ *  otherwise `detectBinary` or `command` (via `which`).
+ *  Exported so launch paths can re-verify availability before spawning. */
+export function adapterExists(adapter: DapAdapterConfig): boolean {
 	if (DAP_BINARIES_OVERRIDE !== undefined) {
 		// Test override: check by adapter name for custom-detect adapters.
 		if (adapter.detect) {
