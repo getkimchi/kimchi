@@ -1,8 +1,10 @@
 """Pure-function infra/quality classification for Harbor trial results.
 
-Reads a trial's `result.json` and returns a Verdict. Pure: no I/O beyond reading
-the trial directory. Conservative: unknown exception types default to
-error/quality (not retried), so we never silently retry what may be a real regression.
+Reads a trial's `result.json` and causal `trial.log` evidence, then returns a
+Verdict. Pure: no I/O beyond reading the trial directory. Unknown primary-agent
+exceptions remain agent failures when the log is available; incomplete verifier
+outcomes and unscored trials whose logs are unavailable are retried because they
+cannot provide meaningful pass@k evidence.
 
 `ErrorRule` and `ERROR_RULES` are defined here and serve dual purposes:
   1. classify() uses them to assign outcome/category/subcategory.
@@ -20,9 +22,14 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from math import isfinite
 from pathlib import Path
 from typing import Literal
 
+from docker_health import (
+    DOCKER_DAEMON_UNREACHABLE_MARKER,
+    DOCKER_DAEMON_UNREACHABLE_SUBCATEGORY,
+)
 from outcome import Outcome
 
 # Gap threshold used when inspecting the agent session JSONL for an
@@ -43,6 +50,9 @@ _TIMEOUT_STATUS_TOOL_IN_FLIGHT = "tool_in_flight"
 _TIMEOUT_STATUS_FEW_TURNS = "few_turns"
 _TIMEOUT_STATUS_UNKNOWN = "unknown"
 API_KEY_BUDGET_EXCEEDED_SUBCATEGORY = "api_key_budget_exceeded"
+VERIFIER_MISSING_REWARD_SUBCATEGORY = "verifier_missing_reward"
+TRIAL_LOG_MISSING_SUBCATEGORY = "trial_log_missing"
+TRIAL_CANCELLED_SUBCATEGORY = "trial_cancelled"
 MOONSHOT_QUOTA_EXCEEDED_SUBCATEGORY = "moonshot_quota_exceeded"
 
 # The only model-name provider whose quota exhaustion is retryable today:
@@ -183,23 +193,17 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
         evidence_markers=("killed", "oom", "container", "docker", "registry"),
     ),
     # ── Docker daemon unreachable during environment setup ──────────────────────
-    # Harbor wraps `docker compose up` failures in a plain RuntimeError, so the
-    # exception type carries no signal — match the composed text. Both markers
-    # are required: harbor's "Docker compose command failed" wrapper scopes the
-    # match to environment setup, and the daemon-connectivity substring
-    # distinguishes a cold/restarting DinD sidecar (transient, retry) from
-    # permanent environment breakage like a missing image (must stay
-    # agent/environment_setup_failed — a task with a broken environment is
-    # task evidence, not retryable infra).
-    # Keep the daemon marker in sync with kimchi_agent.docker_retry._RETRY_MARKER.
+    # Harbor commonly wraps daemon failures in a plain RuntimeError. Match the
+    # canonical connectivity marker while leaving other Docker errors, such as
+    # missing images, to their phase-specific classification.
     ErrorRule(
-        kind="docker_daemon_unreachable",
+        kind=DOCKER_DAEMON_UNREACHABLE_SUBCATEGORY,
         outcome=Outcome.ERROR,
         error_category="infra",
         marker_groups=(
-            ("docker compose command failed", "cannot connect to the docker daemon"),
+            (DOCKER_DAEMON_UNREACHABLE_MARKER,),
         ),
-        evidence_markers=("docker compose command failed", "cannot connect to the docker daemon"),
+        evidence_markers=(DOCKER_DAEMON_UNREACHABLE_MARKER,),
     ),
     ErrorRule(
         kind="infra_resource_error",
@@ -398,6 +402,46 @@ _PHASES: tuple[str, ...] = ("environment_setup", "agent_setup", "agent_execution
 ReadResult = tuple[Literal["ok", "missing", "corrupt"], dict | None]
 
 
+@dataclass(frozen=True)
+class TrialLogEvidence:
+    """Ordered signals from Harbor's trial log."""
+
+    status: Literal["ok", "missing"]
+    score_blocking_docker_failure: bool = False
+
+
+def _has_score_blocking_docker_failure(lines: list[str]) -> bool:
+    """Match a daemon failure inside one verifier test-upload operation."""
+    upload_in_progress = False
+    upload_daemon_failure = False
+
+    for line in lines:
+        if "docker compose down failed" in line:
+            # Teardown starts a different operation. Its daemon error cannot be
+            # joined to an earlier upload failure or a later traceback line.
+            upload_in_progress = False
+            upload_daemon_failure = False
+            continue
+
+        if (
+            "docker compose cp failed" in line
+            or "tar upload fallback also failed" in line
+            or ("docker compose command failed" in line and " exec " in line)
+        ):
+            upload_in_progress = True
+
+        if upload_in_progress and DOCKER_DAEMON_UNREACHABLE_MARKER in line:
+            upload_daemon_failure = True
+
+        if "addtestsdirerror" in line or "failed to add tests directory" in line:
+            if upload_in_progress and upload_daemon_failure:
+                return True
+            upload_in_progress = False
+            upload_daemon_failure = False
+
+    return False
+
+
 def _effective_provider(result: dict) -> str | None:
     """Effective model provider for provider-gated rules.
 
@@ -451,17 +495,62 @@ def _reward(result: dict) -> float | None:
     if raw is None or isinstance(raw, bool):
         return None
     if isinstance(raw, (int, float)):
-        return float(raw)
+        reward = float(raw)
+        return reward if isfinite(reward) else None
     return None
 
 
-def _build_error_context(trial_dir: Path, result: dict) -> TrialErrorContext:
+def _read_trial_log_evidence(trial_dir: Path) -> TrialLogEvidence:
+    """Extract narrow, causal Docker evidence from ``trial.log``.
+
+    A daemon marker is score-blocking only when Harbor's verifier test upload
+    fails before ``AddTestsDirError``. A marker confined to compose teardown is
+    deliberately not causal.
+    """
+    try:
+        text = (trial_dir / "trial.log").read_text(
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError:
+        return TrialLogEvidence(status="missing")
+
+    lines = [line.casefold() for line in text.splitlines()]
+    return TrialLogEvidence(
+        status="ok",
+        score_blocking_docker_failure=_has_score_blocking_docker_failure(lines),
+    )
+
+
+def _infra_verdict(result: dict, reward: float | None, subcategory: str) -> Verdict:
+    return Verdict(
+        outcome=Outcome.ERROR,
+        error_category="infra",
+        error_subcategory=subcategory,
+        reward=reward,
+        raw=result,
+    )
+
+
+def _build_structured_error_context(result: dict) -> TrialErrorContext:
+    """Build matching context from ``result.json`` exception fields only."""
     exception_type = _get_path(result, "exception_info", "exception_type")
     pieces = [
         exception_type,
         _get_path(result, "exception_info", "exception_message"),
         _get_path(result, "exception_info", "exception_traceback"),
     ]
+    exception_text = "\n".join(str(p) for p in pieces if p is not None).casefold()
+    return TrialErrorContext(
+        exception_type=str(exception_type) if isinstance(exception_type, str) else None,
+        exception_text=exception_text,
+        exit_code=_extract_exit_code(exception_text),
+    )
+
+
+def _build_error_context(trial_dir: Path, result: dict) -> TrialErrorContext:
+    structured = _build_structured_error_context(result)
+    pieces = [structured.exception_text]
     # For opencode agents, the actual error details (e.g. credit exhaustion) are
     # in agent/opencode.txt, not in exception_info which just says "Command failed".
     # Append the transcript text so ErrorRule marker matching can see it.
@@ -474,7 +563,7 @@ def _build_error_context(trial_dir: Path, result: dict) -> TrialErrorContext:
             pass
     exception_text = "\n".join(str(p) for p in pieces if p is not None).casefold()
     return TrialErrorContext(
-        exception_type=str(exception_type) if isinstance(exception_type, str) else None,
+        exception_type=structured.exception_type,
         exception_text=exception_text,
         exit_code=_extract_exit_code(exception_text),
         provider=_effective_provider(result),
@@ -800,6 +889,11 @@ def _session_budget_error_subcategory(trial_dir: Path, provider: str | None) -> 
 def _classify_exception(trial_dir: Path, result: dict, reward: float | None) -> Verdict:
     context = _build_error_context(trial_dir, result)
     for rule in ERROR_RULES:
+        # Docker causality is handled before this function using structured
+        # exception fields and ordered trial.log evidence. Agent transcripts
+        # may mention Docker errors without making them the trial's cause.
+        if rule.kind == DOCKER_DAEMON_UNREACHABLE_SUBCATEGORY:
+            continue
         if rule.matches(context):
             # A generic agent_timeout that was actually caused by a budget error is re-classified
             # before the Verdict is constructed. Keep the budget-specific subcategory visible while
@@ -837,8 +931,18 @@ def _classify_exception(trial_dir: Path, result: dict, reward: float | None) -> 
                 raw=result,
             )
 
-    # No rule matched — unknown exception, conservatively quality (don't retry).
+    # An unrecognized verifier failure without a numeric reward is not meaningful
+    # pass@k evidence. Preserve primary agent failures, but retry an incomplete
+    # verifier outcome within the existing infrastructure budget.
     phase = _exception_phase(result)
+    if phase == "verifier":
+        return Verdict(
+            outcome=Outcome.ERROR,
+            error_category="infra",
+            error_subcategory="missing_verdict",
+            reward=reward,
+            raw=result,
+        )
     return Verdict(
         outcome=Outcome.ERROR,
         error_category="agent",
@@ -852,11 +956,11 @@ def classify(trial_dir: Path) -> Verdict:
     """Classify a trial into one of four outcomes.
 
     Returns a Verdict with outcome, error_category, error_subcategory, reward, and the raw result.
-    Defaults to error/quality when classification is ambiguous (conservative: don't retry unknowns).
+    Defaults structured unknown exceptions to error/agent. Missing log evidence
+    for an unscored exception is retryable because the verdict cannot be audited.
 
-    The discriminator between "verifier ran and reported no score" (scored_fail) and
-    "verifier never ran" (error/infra missing_verdict) is the presence of the
-    `verifier_result` top-level key and the absence of `exception_info`.
+    A finite numeric verifier reward is required for a scored pass or failure.
+    A verifier result without that reward is an incomplete, retryable verdict.
     """
     status, result = _read_result(trial_dir)
 
@@ -884,36 +988,61 @@ def classify(trial_dir: Path) -> Verdict:
     exception_info = result.get("exception_info")
     reward = _reward(result)
 
-    if verifier_result is None and exception_info is None:
-        # No verifier result and no exception — something silently failed.
+    if reward is not None:
+        # A numeric verifier result is authoritative. Docker teardown and other
+        # cleanup failures cannot overwrite a completed pass or scored failure.
+        return Verdict(
+            outcome=Outcome.SCORED_PASS if reward == 1.0 else Outcome.SCORED_FAIL,
+            error_category=None,
+            error_subcategory=None,
+            reward=reward,
+            raw=result,
+        )
+
+    log_evidence = _read_trial_log_evidence(trial_dir)
+    if log_evidence.status == "missing":
+        return _infra_verdict(result, reward, TRIAL_LOG_MISSING_SUBCATEGORY)
+    if log_evidence.score_blocking_docker_failure:
+        return _infra_verdict(
+            result,
+            reward,
+            DOCKER_DAEMON_UNREACHABLE_SUBCATEGORY,
+        )
+
+    if exception_info is not None:
+        exception_type = _get_path(result, "exception_info", "exception_type")
+        context = _build_structured_error_context(result)
+        structured_docker_rule = next(
+            rule
+            for rule in ERROR_RULES
+            if rule.kind == DOCKER_DAEMON_UNREACHABLE_SUBCATEGORY
+        )
+        if structured_docker_rule.matches(context):
+            return _infra_verdict(
+                result,
+                reward,
+                DOCKER_DAEMON_UNREACHABLE_SUBCATEGORY,
+            )
+
+        if exception_type == "CancelledError":
+            return _infra_verdict(result, reward, TRIAL_CANCELLED_SUBCATEGORY)
+
+        if exception_type == "RewardFileNotFoundError":
+            return _infra_verdict(
+                result,
+                reward,
+                VERIFIER_MISSING_REWARD_SUBCATEGORY,
+            )
+
+        return _classify_exception(trial_dir, result, reward)
+
+    # A verifier result without the benchmark's numeric reward is incomplete,
+    # not evidence of a scored failure.
+    if verifier_result is not None:
         return Verdict(
             outcome=Outcome.ERROR,
             error_category="infra",
             error_subcategory="missing_verdict",
-            reward=reward,
-            raw=result,
-        )
-
-    if reward == 1.0:
-        # A verifier pass is terminal. Do not retry a passed task because the
-        # agent wrapper also reported an infra or cleanup failure afterward.
-        return Verdict(
-            outcome=Outcome.SCORED_PASS,
-            error_category=None,
-            error_subcategory=None,
-            reward=reward,
-            raw=result,
-        )
-
-    if exception_info is not None:
-        return _classify_exception(trial_dir, result, reward)
-
-    # Verifier ran to completion and produced a non-pass score with no exception.
-    if verifier_result is not None:
-        return Verdict(
-            outcome=Outcome.SCORED_FAIL,
-            error_category=None,
-            error_subcategory=None,
             reward=reward,
             raw=result,
         )

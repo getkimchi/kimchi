@@ -21,6 +21,8 @@ This module exposes two kinds of values:
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
+from dataclasses import dataclass
 
 from outcome import Outcome
 
@@ -124,6 +126,9 @@ DEFAULT_BENCHMARK_RUN_METADATA = ".benchmark/run-metadata.json"
 ENV_BENCHMARK_SUMMARY_PATH = "BENCHMARK_SUMMARY_PATH"
 DEFAULT_BENCHMARK_SUMMARY_PATH = ".benchmark/summary.json"
 
+ENV_BENCHMARK_CHUNK_ATTEMPTS_PATH = "BENCHMARK_CHUNK_ATTEMPTS_PATH"
+DEFAULT_BENCHMARK_CHUNK_ATTEMPTS_PATH = ".benchmark/chunk-attempts.json"
+
 ENV_BENCHMARK_GCS_BUCKET = "BENCHMARK_GCS_BUCKET"
 DEFAULT_BENCHMARK_GCS_BUCKET = ""
 
@@ -142,8 +147,16 @@ DEFAULT_BENCH_CHUNK_INDEX = "0"
 ENV_BENCH_CHUNK_COUNT = "BENCH_CHUNK_COUNT"
 DEFAULT_BENCH_CHUNK_COUNT = "1"
 
-ENV_BENCH_JOB_MAX_RETRIES = "BENCH_JOB_MAX_RETRIES"
-DEFAULT_BENCH_JOB_MAX_RETRIES = "0"
+# Durable per-chunk attempt budget. A chunk job may register at most this many
+# durable attempts before becoming a token fuse: attempts 1..budget are
+# work-bearing (may launch Harbor), attempt == budget is the final work-bearing
+# attempt, and attempts above the budget only reconcile durable state. This
+# budget is INDEPENDENT of GitLab's `retry:` policy — pipeline-level retries
+# re-run chunk jobs under the same run identity, so the durable ordinal
+# persists across them. Within one pipeline the value is frozen at run
+# creation into durable run-metadata.json; restored runs validate against it.
+ENV_BENCH_CHUNK_ATTEMPT_BUDGET = "BENCH_CHUNK_ATTEMPT_BUDGET"
+DEFAULT_BENCH_CHUNK_ATTEMPT_BUDGET = "8"
 
 ENV_BENCH_PARALLELISM = "BENCH_PARALLELISM"
 DEFAULT_BENCH_PARALLELISM = "1"
@@ -156,6 +169,75 @@ DEFAULT_BENCH_TIMEOUT_MULTIPLIER = "1.0"
 
 ENV_BENCH_HEARTBEAT_INTERVAL_SECONDS = "BENCH_HEARTBEAT_INTERVAL_SECONDS"
 DEFAULT_BENCH_HEARTBEAT_INTERVAL_SECONDS = "60"
+
+ENV_BENCH_DOCKER_HEALTH_MONITOR = "BENCH_DOCKER_HEALTH_MONITOR"
+ENV_BENCH_DOCKER_HEALTH_POLL_SECONDS = "BENCH_DOCKER_HEALTH_POLL_SECONDS"
+ENV_BENCH_DOCKER_HEALTH_CONFIRM_FAILURES = "BENCH_DOCKER_HEALTH_CONFIRM_FAILURES"
+ENV_BENCH_DOCKER_HEALTH_PROBE_TIMEOUT_SECONDS = (
+    "BENCH_DOCKER_HEALTH_PROBE_TIMEOUT_SECONDS"
+)
+DEFAULT_BENCH_DOCKER_HEALTH_POLL_SECONDS = "5.0"
+DEFAULT_BENCH_DOCKER_HEALTH_CONFIRM_FAILURES = "3"
+DEFAULT_BENCH_DOCKER_HEALTH_PROBE_TIMEOUT_SECONDS = "5.0"
+
+
+@dataclass(frozen=True)
+class DockerHealthConfig:
+    enabled: bool
+    poll_seconds: float
+    confirm_failures: int
+    probe_timeout_seconds: float
+
+
+def load_docker_health_config(
+    env: Mapping[str, str] | None = None,
+) -> DockerHealthConfig:
+    """Load and validate chunk-level Docker daemon monitoring settings."""
+    source = os.environ if env is None else env
+    enabled_default = bool(source.get("DOCKER_HOST"))
+    enabled_raw = source.get(
+        ENV_BENCH_DOCKER_HEALTH_MONITOR,
+        str(enabled_default),
+    ).strip().lower()
+    if enabled_raw in ("true", "1", "yes"):
+        enabled = True
+    elif enabled_raw in ("false", "0", "no"):
+        enabled = False
+    else:
+        enabled = enabled_default
+
+    def positive_float(name: str, default: str) -> float:
+        raw = source.get(name, default)
+        try:
+            value = float(raw)
+        except ValueError:
+            raise ValueError(f"{name}={raw!r} is not a valid number") from None
+        return max(0.1, value)
+
+    confirm_raw = source.get(
+        ENV_BENCH_DOCKER_HEALTH_CONFIRM_FAILURES,
+        DEFAULT_BENCH_DOCKER_HEALTH_CONFIRM_FAILURES,
+    )
+    try:
+        confirm_failures = int(confirm_raw)
+    except ValueError:
+        raise ValueError(
+            f"{ENV_BENCH_DOCKER_HEALTH_CONFIRM_FAILURES}={confirm_raw!r} "
+            "is not a valid integer"
+        ) from None
+
+    return DockerHealthConfig(
+        enabled=enabled,
+        poll_seconds=positive_float(
+            ENV_BENCH_DOCKER_HEALTH_POLL_SECONDS,
+            DEFAULT_BENCH_DOCKER_HEALTH_POLL_SECONDS,
+        ),
+        confirm_failures=max(1, confirm_failures),
+        probe_timeout_seconds=positive_float(
+            ENV_BENCH_DOCKER_HEALTH_PROBE_TIMEOUT_SECONDS,
+            DEFAULT_BENCH_DOCKER_HEALTH_PROBE_TIMEOUT_SECONDS,
+        ),
+    )
 
 # --- Durable checkpointing (per-trial GCS checkpoints) ---
 # When true, completed trials are uploaded to GCS as they finish and restored
@@ -200,6 +282,64 @@ DEFAULT_BENCH_TASKS_ALL = "false"
 ENV_BENCH_RETRY_AGENT_TIMEOUT = "BENCH_RETRY_AGENT_TIMEOUT"
 DEFAULT_BENCH_RETRY_AGENT_TIMEOUT = False
 NON_RETRYABLE_INFRA_SUBCATEGORIES = frozenset({"api_key_budget_exceeded"})
+
+
+def validate_chunk_attempt_budget(value: object, *, source: str) -> int:
+    """Validate a resolved durable attempt budget without coercion."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{source}={value!r} must be a positive integer")
+    return value
+
+
+def load_chunk_attempt_budget(source: Mapping[str, str] | None = None) -> int:
+    """Read and validate the configured per-chunk durable attempt budget.
+
+    Returns a positive integer (env value or default). Raises ValueError on a
+    non-integer or non-positive value so a bad CI input fails the run loudly.
+    """
+    env = os.environ if source is None else source
+    raw = env.get(ENV_BENCH_CHUNK_ATTEMPT_BUDGET, DEFAULT_BENCH_CHUNK_ATTEMPT_BUDGET)
+    try:
+        budget = int(raw)
+    except ValueError:
+        raise ValueError(
+            f"{ENV_BENCH_CHUNK_ATTEMPT_BUDGET}={raw!r} is not a valid integer"
+        ) from None
+    return validate_chunk_attempt_budget(
+        budget,
+        source=ENV_BENCH_CHUNK_ATTEMPT_BUDGET,
+    )
+
+
+def resolve_chunk_attempt_budget(
+    frozen_budget: object | None,
+    *,
+    source: Mapping[str, str] | None = None,
+) -> int:
+    """Resolve this run's attempt budget against a previously frozen value.
+
+    Once run metadata freezes a budget, every later job of the same run must
+    use that value: an explicitly provided environment value that disagrees is
+    identity corruption (raise ValueError), while an unset environment defers
+    silently to the frozen value. Runs without a frozen budget (brand-new or
+    non-checkpointed local runs) use the environment/default directly.
+    """
+    env = os.environ if source is None else source
+    env_set = ENV_BENCH_CHUNK_ATTEMPT_BUDGET in env
+    env_budget = load_chunk_attempt_budget(env)
+    if frozen_budget is not None:
+        frozen_budget = validate_chunk_attempt_budget(
+            frozen_budget,
+            source="frozen chunk attempt budget",
+        )
+        if env_set and env_budget != frozen_budget:
+            raise ValueError(
+                f"{ENV_BENCH_CHUNK_ATTEMPT_BUDGET}={env_budget} does not match "
+                f"the run's frozen chunk attempt budget {frozen_budget}; "
+                "run identity mismatch"
+            )
+        return frozen_budget
+    return env_budget
 
 
 def checkpoints_enabled() -> bool:

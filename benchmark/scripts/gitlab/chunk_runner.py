@@ -25,6 +25,7 @@ import json
 import os
 import re
 import signal
+import subprocess
 import sys
 import time
 import urllib.request
@@ -44,7 +45,6 @@ from bench_config import (
     DEFAULT_MODEL,
     DEFAULT_WORKFLOW,
     DEFAULT_WORKFLOW_EXTENSION,
-    ENV_BENCH_JOB_MAX_RETRIES,
     ENV_BENCH_RUN_DATE,
     ENV_BENCH_TASKS_ALL,
     ENV_BENCHMARK_NAME,
@@ -66,16 +66,23 @@ from bench_config import (
     is_multi_model,
     is_retryable,
     is_workflow_agent,
+    load_docker_health_config,
     load_llm_params,
     parse_model,
+    resolve_chunk_attempt_budget,
     resolve_thinking_level,
     should_retry_agent_timeout,
     use_pier,
+    validate_chunk_attempt_budget,
     validate_llm_params_for_model,
     validate_thinking_level_for_model,
 )
 from chunk_slicing import slice_tasks
 from classify import classify
+from docker_health import (
+    DOCKER_DAEMON_UNREACHABLE_MARKER,
+    DOCKER_DAEMON_UNREACHABLE_SUBCATEGORY,
+)
 from gitlab_api import list_pipeline_jobs
 from harbor_runner import (
     CheckpointPluginArgs,
@@ -392,6 +399,7 @@ def _write_run_metadata(
     results_dir: Path,
     selected_tasks: list[str],
     *,
+    chunk_attempt_budget: int,
     llm_params: dict[str, float | int] | None = None,
     llm_per_model_params: dict[str, dict[str, float | int]] | None = None,
     thinking_level: str | None = None,
@@ -438,6 +446,10 @@ def _write_run_metadata(
             "parallelism": os.environ.get("BENCH_PARALLELISM", "1"),
             "timeout_multiplier": os.environ.get("BENCH_TIMEOUT_MULTIPLIER", "1.0"),
             "retry_agent_timeout": should_retry_agent_timeout(),
+            # Frozen at run creation: every later job of this run resolves
+            # against this value (resolve_chunk_attempt_budget); a changed
+            # job-local value is identity corruption, not a new decision.
+            "chunk_attempt_budget": chunk_attempt_budget,
             "llm_params": llm_params or {},
             "llm_per_model_params": llm_per_model_params or {},
             "thinking_level": thinking_level,
@@ -503,6 +515,34 @@ def _persist_checkpoint_run_metadata(metadata_path: Path, run_prefix: str) -> No
         gitlab["job_url"] = ""
     data = (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode("utf-8")
     retries = checkpoint_upload_retries()
+    # Compare-or-create: concurrent first-starting chunks race to create the
+    # durable identity. An identical serialized run is harmless; an existing
+    # copy with a different frozen chunk attempt budget is identity
+    # corruption (a later job must not reinterpret a changed job-local value).
+    existing = ckpt.gcs_download_object(
+        bucket,
+        ckpt.run_metadata_object_name(run_prefix),
+    )
+    if existing is not None:
+        existing_metadata = json.loads(existing.decode("utf-8"))
+        parameters = metadata.get("parameters")
+        existing_parameters = (
+            existing_metadata.get("parameters")
+            if isinstance(existing_metadata, dict)
+            else None
+        )
+        budget = parameters.get("chunk_attempt_budget") if isinstance(parameters, dict) else None
+        existing_budget = (
+            existing_parameters.get("chunk_attempt_budget")
+            if isinstance(existing_parameters, dict)
+            else None
+        )
+        if budget != existing_budget:
+            raise ValueError(
+                "durable run metadata chunk attempt budget "
+                f"{existing_budget!r} does not match this job's frozen budget "
+                f"{budget!r}; run identity mismatch"
+            )
     ckpt.gcs_upload_bytes(
         bucket,
         ckpt.run_metadata_object_name(run_prefix),
@@ -520,6 +560,77 @@ def _persist_checkpoint_run_metadata(metadata_path: Path, run_prefix: str) -> No
         content_type="application/json",
         retries=retries,
     )
+
+
+def _metadata_chunk_attempt_budget(
+    metadata: object,
+    *,
+    source: str,
+) -> int | None:
+    """Return a validated frozen budget from one run-metadata document."""
+    if not isinstance(metadata, dict):
+        raise ValueError(f"{source} must contain a JSON object")
+    parameters = metadata.get("parameters")
+    if parameters is None:
+        return None
+    if not isinstance(parameters, dict):
+        raise ValueError(f"{source} parameters must be an object")
+    budget = parameters.get("chunk_attempt_budget")
+    if budget is None:
+        return None
+    return validate_chunk_attempt_budget(
+        budget,
+        source=f"{source} chunk attempt budget",
+    )
+
+
+def _resolve_run_chunk_attempt_budget(
+    *,
+    metadata_path: Path,
+    run_prefix: str,
+) -> int:
+    """Resolve local, durable, and configured attempt-budget identity."""
+    local_budget: int | None = None
+    if metadata_path.is_file():
+        local_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        local_budget = _metadata_chunk_attempt_budget(
+            local_metadata,
+            source=str(metadata_path),
+        )
+
+    durable_budget: int | None = None
+    if checkpoints_enabled():
+        bucket = checkpoint_bucket()
+        if not bucket:
+            raise ValueError(
+                "BENCH_TRIAL_CHECKPOINTS=true requires BENCH_CHECKPOINT_BUCKET"
+            )
+        object_name = ckpt.run_metadata_object_name(run_prefix)
+        durable_data = ckpt.gcs_download_object(bucket, object_name, strict=True)
+        if durable_data is not None:
+            try:
+                durable_metadata = json.loads(durable_data.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    f"invalid durable run metadata at gs://{bucket}/{object_name}: {exc}"
+                ) from exc
+            durable_budget = _metadata_chunk_attempt_budget(
+                durable_metadata,
+                source=f"durable run metadata gs://{bucket}/{object_name}",
+            )
+
+    if (
+        local_budget is not None
+        and durable_budget is not None
+        and local_budget != durable_budget
+    ):
+        raise ValueError(
+            f"local chunk attempt budget {local_budget} does not match durable "
+            f"run metadata budget {durable_budget}; run identity mismatch"
+        )
+
+    frozen_budget = durable_budget if durable_budget is not None else local_budget
+    return resolve_chunk_attempt_budget(frozen_budget)
 
 
 PASS_REWARD = 1.0
@@ -616,6 +727,60 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw in ("false", "0", "no"):
         return False
     return default
+
+
+def _probe_docker_daemon(
+    env: dict[str, str],
+    *,
+    timeout_seconds: float,
+) -> tuple[bool, str]:
+    """Run a bounded, cheap Docker daemon liveness probe."""
+    try:
+        completed = subprocess.run(
+            ["docker", "info"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+    if completed.returncode == 0:
+        return True, ""
+    reason = (completed.stderr or completed.stdout or "docker info failed").strip()
+    return False, reason[-1000:]
+
+
+def _daemon_loss_marker_path(results_dir: Path, chunk_index: int) -> Path:
+    return results_dir / "docker-health" / f"chunk-{chunk_index}-daemon-loss.json"
+
+
+def _record_confirmed_daemon_loss(
+    *,
+    results_dir: Path,
+    chunk_index: int,
+    failures: int,
+    reason: str,
+) -> Path:
+    marker_path = _daemon_loss_marker_path(results_dir, chunk_index)
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(
+        json.dumps(
+            {
+                "event": "docker_daemon_loss_confirmed",
+                "subcategory": DOCKER_DAEMON_UNREACHABLE_SUBCATEGORY,
+                "marker": DOCKER_DAEMON_UNREACHABLE_MARKER,
+                "consecutive_failures": failures,
+                "reason": reason,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return marker_path
 
 
 def _gitlab_job_elapsed_seconds(*, now: datetime | None = None) -> float:
@@ -989,16 +1154,31 @@ def _write_chunk_meta(
     results_dir: Path,
     chunk_index: int,
     chunk_attempt: int,
+    chunk_attempt_budget: int,
     exit_code: int,
     needs_retry: list[str],
     exhausted: bool = False,
+    stop_reason: str | None = None,
 ) -> Path:
     """Write this chunk's attempt summary. Used by summary job to detect exhausted chunks."""
     meta_path = _chunk_meta_path(results_dir, chunk_index)
+    if stop_reason is None and meta_path.is_file():
+        try:
+            previous_payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            previous_payload = None
+        if isinstance(previous_payload, dict):
+            previous_stop_reason = previous_payload.get("stop_reason")
+            if isinstance(previous_stop_reason, str) and previous_stop_reason:
+                stop_reason = previous_stop_reason
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "chunk_index": chunk_index,
         "chunk_attempt": chunk_attempt,
+        # The frozen durable budget this run was created with. Recorded on
+        # every status so summary recovery can cross-check run identity even
+        # when the run metadata copy is unavailable.
+        "chunk_attempt_budget": chunk_attempt_budget,
         "exit_code": exit_code,
         "needs_retry": sorted(needs_retry),
         "exhausted": exhausted,
@@ -1007,6 +1187,8 @@ def _write_chunk_meta(
     docker_health = _collect_docker_health(results_dir, chunk_index)
     if docker_health:
         payload["docker_health"] = docker_health
+    if stop_reason is not None:
+        payload["stop_reason"] = stop_reason
     meta_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return meta_path
 
@@ -1035,6 +1217,49 @@ def _persist_chunk_status(
         content_type="application/json",
         retries=checkpoint_upload_retries(),
     )
+
+
+def _finalize_chunk(
+    *,
+    results_dir: Path,
+    chunk_index: int,
+    chunk_attempt: int,
+    chunk_attempt_budget: int,
+    exit_code: int,
+    needs_retry: list[str],
+    run_prefix: str,
+    exhausted: bool = False,
+    stop_reason: str | None = None,
+) -> int:
+    """Write and persist terminal chunk status, returning the effective exit code.
+
+    Durable status publication is part of successful finalization: if it fails,
+    the chunk must stay failed even when its intended result was successful.
+    """
+    meta_path = _write_chunk_meta(
+        results_dir=results_dir,
+        chunk_index=chunk_index,
+        chunk_attempt=chunk_attempt,
+        chunk_attempt_budget=chunk_attempt_budget,
+        exit_code=exit_code,
+        needs_retry=needs_retry,
+        exhausted=exhausted,
+        stop_reason=stop_reason,
+    )
+    try:
+        _persist_chunk_status(
+            meta_path=meta_path,
+            run_prefix=run_prefix,
+            chunk_index=chunk_index,
+        )
+    except (ckpt.CheckpointError, OSError, ValueError) as exc:
+        print(
+            f"[chunk-{chunk_index}] failed to persist chunk status: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
+    return exit_code
 
 
 def _checkpoint_plugin_args(
@@ -1102,16 +1327,28 @@ def _restore_gcs_checkpoints(
     )
 
 
-def _chunk_retry_budget_exhausted(chunk_attempt: int) -> bool:
-    """True when GitLab will not retry this chunk again.
+def _may_launch_work(chunk_attempt: int, budget: int) -> bool:
+    """True when this durable attempt ordinal may launch Harbor.
 
-    ``BENCH_JOB_MAX_RETRIES`` is the number of *retries* after the first
-    attempt. The chunk is exhausted on its final allowed attempt, at which
-    point retryable infrastructure trials are treated as terminal (they fill
-    pass@k slots so the task can complete with fewer than k final trials).
+    Ordinals ``1..budget`` are work-bearing; ordinals above the budget are
+    reconcile-only: they restore durable state and exit successfully when the
+    restored work is complete, but never launch Harbor (the budget is a
+    token fuse, not just a reconciliation flag).
     """
-    max_retries = _env_int(ENV_BENCH_JOB_MAX_RETRIES, 0)
-    return chunk_attempt >= 1 + max_retries
+    return chunk_attempt <= budget
+
+
+def _is_final_work_attempt(chunk_attempt: int, budget: int) -> bool:
+    """True when this ordinal is the final Harbor-launching attempt.
+
+    Attempts ``1..budget`` may launch Harbor; ``budget`` is the last one. On
+    that attempt retryable infrastructure trials are treated as terminal
+    (they fill pass@k slots so the task can complete with fewer than k final
+    trials) and any work still incomplete afterwards is terminally exhausted
+    regardless of how the attempt stopped (normal completion, soft deadline,
+    Harbor failure, or confirmed daemon loss).
+    """
+    return chunk_attempt == budget
 
 
 def _register_durable_chunk_attempt(
@@ -1167,6 +1404,7 @@ def _run_harbor_invocation(
     (handled by the plugin inside the Harbor process) can finish, and the
     caller exits non-zero for a GitLab retry.
     """
+    docker_health = load_docker_health_config(env)
     cmd = build_harbor_command(
         tasks=tasks,
         agent_import_path=agent_import_path,
@@ -1220,11 +1458,52 @@ def _run_harbor_invocation(
     next_heartbeat = started + _HEARTBEAT_INTERVAL
     poll_interval = min(5, _HEARTBEAT_INTERVAL)
     deadline_hit = False
+    if docker_health.enabled:
+        poll_interval = min(poll_interval, docker_health.poll_seconds)
+    next_docker_health_probe = started
+    consecutive_docker_failures = 0
 
     try:
         while proc.poll() is None:
             time.sleep(poll_interval)
             now = time.monotonic()
+            if (
+                docker_health.enabled
+                and graceful_stop_started is None
+                and proc.poll() is None
+                and now >= next_docker_health_probe
+            ):
+                healthy, reason = _probe_docker_daemon(
+                    env,
+                    timeout_seconds=docker_health.probe_timeout_seconds,
+                )
+                if healthy:
+                    consecutive_docker_failures = 0
+                else:
+                    consecutive_docker_failures += 1
+                    print(
+                        f"[chunk-{chunk_index}] Docker health probe failed "
+                        f"({consecutive_docker_failures}/"
+                        f"{docker_health.confirm_failures}): {reason}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    if consecutive_docker_failures >= docker_health.confirm_failures:
+                        _record_confirmed_daemon_loss(
+                            results_dir=results_dir,
+                            chunk_index=chunk_index,
+                            failures=consecutive_docker_failures,
+                            reason=reason,
+                        )
+                        print(
+                            f"docker_daemon_loss_confirmed chunk={chunk_index} "
+                            f"failures={consecutive_docker_failures}; "
+                            "interrupting Harbor for checkpoint drain",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        _request_graceful_stop(signal.SIGINT)
+                next_docker_health_probe = now + docker_health.poll_seconds
             # Phase 6 soft deadline: stop accepting new work and cooperatively
             # interrupt Harbor so trial finalizers and checkpoint END hooks can
             # drain before GitLab's hard 12h timeout kills the pod.
@@ -1393,15 +1672,32 @@ def main() -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    metadata_path = Path(
+        os.environ.get(ENV_BENCHMARK_RUN_METADATA, DEFAULT_BENCHMARK_RUN_METADATA)
+    )
+    # Resolve the durable chunk attempt budget BEFORE Harbor launches and
+    # before the durable attempt ordinal is registered. Consult both restored
+    # local metadata and its durable copy: a prior pod may have persisted the
+    # latter but died before GitLab could publish the former as an artifact.
+    try:
+        chunk_attempt_budget = _resolve_run_chunk_attempt_budget(
+            metadata_path=metadata_path,
+            run_prefix=checkpoint_run_prefix,
+        )
+    except (ckpt.CheckpointError, ValueError, OSError, json.JSONDecodeError) as exc:
+        print(
+            f"[chunk-{chunk_index}] invalid chunk attempt budget: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
     _write_run_metadata(
         results_dir,
         selected_tasks,
+        chunk_attempt_budget=chunk_attempt_budget,
         llm_params=llm_params,
         llm_per_model_params=llm_per_model_params,
         thinking_level=thinking_level,
-    )
-    metadata_path = Path(
-        os.environ.get(ENV_BENCHMARK_RUN_METADATA, DEFAULT_BENCHMARK_RUN_METADATA)
     )
     try:
         _persist_checkpoint_run_metadata(metadata_path, checkpoint_run_prefix)
@@ -1432,31 +1728,61 @@ def main() -> int:
         return 1
     artifact_chunk_attempt = _detect_chunk_attempt(results_dir, chunk_index)
     chunk_attempt = durable_chunk_attempt or artifact_chunk_attempt or 1
-    retry_budget_exhausted = _chunk_retry_budget_exhausted(chunk_attempt)
+    may_launch_work = _may_launch_work(chunk_attempt, chunk_attempt_budget)
+    final_work_attempt = _is_final_work_attempt(chunk_attempt, chunk_attempt_budget)
 
     if not expected:
         print(f"[chunk-{chunk_index}] empty slice, nothing to do", flush=True)
-        meta_path = _write_chunk_meta(
+        return _finalize_chunk(
             results_dir=results_dir,
             chunk_index=chunk_index,
             chunk_attempt=chunk_attempt,
+            chunk_attempt_budget=chunk_attempt_budget,
             exit_code=0,
             needs_retry=[],
+            run_prefix=checkpoint_run_prefix,
         )
-        try:
-            _persist_chunk_status(
-                meta_path=meta_path,
-                run_prefix=checkpoint_run_prefix,
-                chunk_index=chunk_index,
-            )
-        except (ckpt.CheckpointError, OSError, ValueError) as exc:
+
+    if not may_launch_work:
+        # Above-budget startup: reconcile durable state only. Completion is
+        # checked before the budget guard — a chunk that is already complete
+        # exits successfully even at an ordinal above the budget. Incomplete
+        # restored work is terminally exhausted WITHOUT model spend (the
+        # budget is a real token fuse, not just a reconciliation flag).
+        write_enriched_results(results_dir=results_dir, expected_tasks=expected)
+        task_to_trials = {
+            task: _all_trial_dirs_for_task(results_dir, task) for task in expected
+        }
+        progress = compute_chunk_progress(
+            task_to_trial_dirs=task_to_trials,
+            target_trials=attempts,
+            retry_budget_exhausted=False,
+        )
+        incomplete = missing_tasks(progress)
+        if incomplete:
             print(
-                f"[chunk-{chunk_index}] failed to persist chunk status: {exc}",
-                file=sys.stderr,
+                f"[chunk-{chunk_index}/attempt-{chunk_attempt}] above the "
+                f"attempt budget {chunk_attempt_budget}; {len(incomplete)} "
+                f"incomplete tasks are terminally exhausted: {incomplete}",
                 flush=True,
             )
-            return 1
-        return 0
+        else:
+            print(
+                f"[chunk-{chunk_index}/attempt-{chunk_attempt}] above the "
+                f"attempt budget {chunk_attempt_budget}, but all work is "
+                "already durable",
+                flush=True,
+            )
+        return _finalize_chunk(
+            results_dir=results_dir,
+            chunk_index=chunk_index,
+            chunk_attempt=chunk_attempt,
+            chunk_attempt_budget=chunk_attempt_budget,
+            exit_code=0,
+            needs_retry=incomplete,
+            run_prefix=checkpoint_run_prefix,
+            exhausted=bool(incomplete),
+        )
 
     # Phase 3: attach the GCS checkpoint plugin for checkpoint-enabled runs so
     # completed trials become durable as they finish.
@@ -1509,6 +1835,7 @@ def main() -> int:
     # spinning forever on a stuck trial id.
     final_needs_retry: list[str] = []
     deadline_reached = False
+    daemon_loss_confirmed = False
     harbor_failure_status: int | None = None
 
     if use_pier():
@@ -1516,7 +1843,10 @@ def main() -> int:
             tasks=expected,
             agent_import_path=agent_import_path,
             model=model,
-            task_path=os.environ.get(ENV_DEEP_SWE_TASKS_PATH, DEFAULT_DEEP_SWE_TASKS_PATH),
+            task_path=os.environ.get(
+                ENV_DEEP_SWE_TASKS_PATH,
+                DEFAULT_DEEP_SWE_TASKS_PATH,
+            ),
             parallelism=parallelism,
             attempts=attempts,
             timeout_multiplier=timeout_multiplier,
@@ -1593,6 +1923,7 @@ def main() -> int:
                 flush=True,
             )
             job_name = f"chunk-{chunk_index}-{os.environ.get('CI_JOB_ID', 'local')}-r{round_num}"
+            _daemon_loss_marker_path(results_dir, chunk_index).unlink(missing_ok=True)
             harbor_status, _received_signal = _run_harbor_invocation(
                 tasks=missing,
                 agent_import_path=agent_import_path,
@@ -1619,13 +1950,17 @@ def main() -> int:
             # Recompute progress after Harbor finishes this round so the loop
             # condition reflects the latest durable trials.
             write_enriched_results(results_dir=results_dir, expected_tasks=expected)
-            if harbor_status != 0:
+            daemon_loss_confirmed = _daemon_loss_marker_path(
+                results_dir,
+                chunk_index,
+            ).is_file()
+            if harbor_status != 0 or daemon_loss_confirmed:
                 # Harbor failed (or was terminated by the soft deadline mid-round).
                 # Preserve that infrastructure failure independently of local
                 # reconciliation: a checkpoint hook runs after Harbor writes
                 # result.json, so an upload failure can leave an apparently final
                 # local trial that is not durable in GCS.
-                harbor_failure_status = harbor_status
+                harbor_failure_status = harbor_status or 1
                 task_to_trials = {
                     task: _all_trial_dirs_for_task(results_dir, task) for task in expected
                 }
@@ -1652,43 +1987,73 @@ def main() -> int:
     progress = compute_chunk_progress(
         task_to_trial_dirs=task_to_trials,
         target_trials=attempts,
-        retry_budget_exhausted=retry_budget_exhausted,
+        retry_budget_exhausted=final_work_attempt,
     )
-    if retry_budget_exhausted:
+    if final_work_attempt:
         # Preserve the tasks whose retryable trials fill slots only because
-        # this was the final GitLab attempt. Summary uses this durable signal
-        # to distinguish legitimate exhaustion from an incomplete sample.
+        # this was the final work-bearing attempt. Summary uses this durable
+        # signal to distinguish legitimate exhaustion from an incomplete
+        # sample.
         final_needs_retry = missing_tasks(progress_before_exhaustion)
     elif not final_needs_retry:
         final_needs_retry = missing_tasks(progress)
     chunk_complete = is_chunk_complete(progress)
 
-    # Exit non-zero when Harbor failed, tasks are still missing with retry
-    # budget left, or the soft deadline fired. When only the retry budget is
-    # exhausted, exit 0 so the summary job records that terminal state.
+    # Exit non-zero when Harbor failed, tasks are still missing with work
+    # budget left, or the soft deadline fired. After the final work-bearing
+    # attempt, ANY remaining incomplete work is terminally exhausted
+    # regardless of the stop path (normal completion, soft deadline, Harbor
+    # failure, or daemon loss): exit 0 so the summary job records that
+    # terminal state and publishes the bounded partial result.
     exit_code: int
-    if deadline_reached:
-        exit_code = 1
+    if daemon_loss_confirmed:
+        exit_code = 0 if final_work_attempt else 1
+        print(
+            f"[chunk-{chunk_index}] Docker daemon loss confirmed; "
+            f"{len(final_needs_retry)} tasks still missing: {final_needs_retry}",
+            file=sys.stderr,
+            flush=True,
+        )
+    elif deadline_reached:
+        exit_code = 0 if final_work_attempt else 1
         print(
             f"[chunk-{chunk_index}] soft deadline reached; "
             f"{len(final_needs_retry)} tasks still missing: {final_needs_retry}",
             flush=True,
         )
     elif harbor_failure_status is not None:
-        exit_code = 1
+        harbor_suffix = (
+            "; final work attempt, incomplete work is terminally exhausted"
+            if final_work_attempt
+            else "; refusing to treat local results as durable"
+        )
+        exit_code = 0 if final_work_attempt else 1
         print(
             f"[chunk-{chunk_index}] Harbor failed with status "
-            f"{harbor_failure_status}; refusing to treat local results as durable",
+            f"{harbor_failure_status}{harbor_suffix}",
             file=sys.stderr,
             flush=True,
         )
     elif chunk_complete:
         exit_code = 0
-        print(f"[chunk-{chunk_index}] all {len(expected)} trials complete", flush=True)
-    elif retry_budget_exhausted:
+        if final_work_attempt and final_needs_retry:
+            # pass@k slots were filled by retryable trials on the final
+            # work-bearing attempt: the tasks did not genuinely complete.
+            print(
+                f"[chunk-{chunk_index}] all {len(expected)} trial slots filled on the "
+                f"final attempt; {len(final_needs_retry)} tasks completed only via "
+                f"retry-exhaustion: {final_needs_retry}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[chunk-{chunk_index}] all {len(expected)} trials complete",
+                flush=True,
+            )
+    elif final_work_attempt and final_needs_retry:
         exit_code = 0
         print(
-            f"[chunk-{chunk_index}] retry budget exhausted; "
+            f"[chunk-{chunk_index}] attempt budget {chunk_attempt_budget} reached; "
             f"{len(final_needs_retry)} tasks remain incomplete: {final_needs_retry}",
             flush=True,
         )
@@ -1701,31 +2066,24 @@ def main() -> int:
 
     exhausted = bool(
         exit_code == 0
-        and retry_budget_exhausted
+        and final_work_attempt
         and final_needs_retry
     )
-    meta_path = _write_chunk_meta(
+    return _finalize_chunk(
         results_dir=results_dir,
         chunk_index=chunk_index,
         chunk_attempt=chunk_attempt,
+        chunk_attempt_budget=chunk_attempt_budget,
         exit_code=exit_code,
         needs_retry=final_needs_retry,
+        run_prefix=checkpoint_run_prefix,
         exhausted=exhausted,
+        stop_reason=(
+            DOCKER_DAEMON_UNREACHABLE_SUBCATEGORY
+            if daemon_loss_confirmed
+            else None
+        ),
     )
-    try:
-        _persist_chunk_status(
-            meta_path=meta_path,
-            run_prefix=checkpoint_run_prefix,
-            chunk_index=chunk_index,
-        )
-    except (ckpt.CheckpointError, OSError, ValueError) as exc:
-        print(
-            f"[chunk-{chunk_index}] failed to persist chunk status: {exc}",
-            file=sys.stderr,
-            flush=True,
-        )
-        return 1
-    return exit_code
 
 
 if __name__ == "__main__":

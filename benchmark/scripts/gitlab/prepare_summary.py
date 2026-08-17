@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any
 
 import checkpoint as ckpt
+from bench_config import (
+    DEFAULT_BENCHMARK_CHUNK_ATTEMPTS_PATH,
+    ENV_BENCHMARK_CHUNK_ATTEMPTS_PATH,
+)
 
 
 def _enabled() -> bool:
@@ -162,6 +166,30 @@ def main() -> int:
             run_prefix=run_prefix,
             dest_dir=results_dir,
             chunk_count=chunk_count,
+        )
+        # Restore the immutable attempt markers separately: the summary needs
+        # each chunk's durable ordinal to decide recoverable-vs-exhausted even
+        # when the final attempt died before writing its status. Never
+        # fabricate runner-authored chunk-meta for this.
+        ordinals = ckpt.read_chunk_attempt_ordinals(
+            bucket=bucket,
+            run_prefix=run_prefix,
+            chunk_count=chunk_count,
+        )
+        attempts_path = Path(
+            os.environ.get(
+                ENV_BENCHMARK_CHUNK_ATTEMPTS_PATH,
+                DEFAULT_BENCHMARK_CHUNK_ATTEMPTS_PATH,
+            )
+        )
+        attempts_path.parent.mkdir(parents=True, exist_ok=True)
+        attempts_path.write_text(
+            json.dumps(
+                {str(i): n for i, n in sorted(ordinals.items())},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
         )
     except (ckpt.CheckpointError, OSError, ValueError) as exc:
         print(f"[summary] checkpoint preparation failed: {exc}", file=sys.stderr)

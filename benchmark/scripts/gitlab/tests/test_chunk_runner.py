@@ -48,7 +48,7 @@ def test_write_chunk_meta_includes_docker_health(tmp_path: Path) -> None:
 
     meta_path = _write_chunk_meta(
         results_dir=results_dir, chunk_index=0, chunk_attempt=1,
-        exit_code=0, needs_retry=[],
+        chunk_attempt_budget=8, exit_code=0, needs_retry=[],
     )
 
     meta = json.loads(meta_path.read_text())
@@ -63,7 +63,7 @@ def test_write_chunk_meta_omits_docker_health_without_files(tmp_path: Path) -> N
 
     meta_path = _write_chunk_meta(
         results_dir=results_dir, chunk_index=0, chunk_attempt=1,
-        exit_code=0, needs_retry=[],
+        chunk_attempt_budget=8, exit_code=0, needs_retry=[],
     )
 
     meta = json.loads(meta_path.read_text())
@@ -267,6 +267,7 @@ def test_all_trial_dirs_falls_back_to_truncated_prefix_without_result_json(
 def _write_result(trial_dir: Path, payload: dict) -> None:
     trial_dir.mkdir(parents=True, exist_ok=True)
     (trial_dir / "result.json").write_text(json.dumps(payload))
+    (trial_dir / "trial.log").write_text("")
 
 
 def test_run_id_format() -> None:
@@ -299,7 +300,6 @@ def test_process_classifies_infra_and_writes_enriched(
     _write_result(
         trial,
         {
-            "verifier_result": {"rewards": {"reward": 0.0}},
             "exception_info": {"exception_type": "ConnectionError"},
         },
     )
@@ -320,7 +320,6 @@ def test_process_classifies_budget_infra_writes_enriched(tmp_results_dir: Path) 
     _write_result(
         trial,
         {
-            "verifier_result": {"rewards": {"reward": 0.0}},
             "exception_info": {
                 "exception_type": "NonZeroAgentExitCodeError",
                 "exception_message": "API error: insufficient credits to complete request",
@@ -998,6 +997,7 @@ def _main_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: str)
         "BENCH_CHUNK_COUNT": "1",
         "SELECTED_TASKS_JSON": '["task-a"]',
         "BENCHMARK_RESULTS_DIR": str(tmp_path / "jobs"),
+        "BENCHMARK_RUN_METADATA": str(tmp_path / ".benchmark" / "run-metadata.json"),
         "BENCHMARK_GCS_BUCKET": "test-bucket",
         "BENCH_PARALLELISM": "1",
         "BENCH_ATTEMPTS": "1",
@@ -1372,7 +1372,7 @@ def test_write_run_metadata_is_pipeline_level(
     monkeypatch.setenv("CI_JOB_ID", "9002")
     monkeypatch.setenv("BENCH_RUN_DATE", _FROZEN_DATE)
 
-    _write_run_metadata(tmp_path, ["task-a", "task-b"])
+    _write_run_metadata(tmp_path, ["task-a", "task-b"], chunk_attempt_budget=8)
 
     assert metadata_path.is_file()
     metadata = json.loads(metadata_path.read_text())
@@ -1412,7 +1412,7 @@ def test_write_run_metadata_includes_tasks_all(
     monkeypatch.setenv("CI_JOB_ID", "9002")
     monkeypatch.setenv("BENCH_RUN_DATE", _FROZEN_DATE)
 
-    _write_run_metadata(tmp_path, [f"task-{i}" for i in range(89)])
+    _write_run_metadata(tmp_path, [f"task-{i}" for i in range(89)], chunk_attempt_budget=8)
 
     metadata = json.loads(metadata_path.read_text())
     assert metadata["tasks_all"] is True
@@ -1800,9 +1800,10 @@ class TestMainRetryFlow:
         monkeypatch.setenv("BENCHMARK_NAME", "terminal-bench-2")
         monkeypatch.setenv("DATASET", "terminal-bench/terminal-bench-2")
         monkeypatch.setenv("BENCH_RETRY_AGENT_TIMEOUT", "false")
-        # chunk_attempt=2; keep the retry budget non-exhausted so the 3 infra
-        # trials remain retryable (don't fill slots) and Harbor actually runs.
-        monkeypatch.setenv("BENCH_JOB_MAX_RETRIES", "2")
+        # chunk_attempt=2; keep this attempt below the final work attempt so
+        # the 3 infra trials remain retryable (don't fill slots) and Harbor
+        # actually runs.
+        monkeypatch.setenv("BENCH_CHUNK_ATTEMPT_BUDGET", "3")
 
         results_dir = Path(str(tmp_path / "jobs"))
 

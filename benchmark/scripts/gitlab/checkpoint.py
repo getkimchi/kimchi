@@ -700,15 +700,31 @@ def gcs_download_object(
     bucket: str,
     object_name: str,
     *,
+    strict: bool = False,
     runner: SubprocessRunner = _real_runner,
 ) -> bytes | None:
-    """Download a GCS object's bytes, or None if it does not exist."""
+    """Download a GCS object's bytes, or ``None`` if it does not exist.
+
+    With ``strict=True``, operational failures raise instead of being
+    indistinguishable from absence. Identity reads use this mode so a storage
+    outage cannot cause a caller to invent a new run identity.
+    """
     with tempfile.NamedTemporaryFile(prefix="ckpt-dl-", suffix=".tar.gz") as tmp:
         rc, _out, _err = runner(
             ["gcloud", "storage", "cp", f"gs://{bucket}/{object_name}", tmp.name, "--quiet"],
             timeout=600,
         )
         if rc != 0:
+            detail = _err.strip()
+            missing = any(
+                marker in detail.lower()
+                for marker in ("not found", "matched no objects", "no urls matched", "404")
+            )
+            if strict and not missing:
+                raise CheckpointRestoreError(
+                    f"failed to download gs://{bucket}/{object_name}: "
+                    f"{detail or f'gcloud exited {rc}'}"
+                )
             logger.warning("gcs_download_object failed for %s: %s", object_name, _err.strip())
             return None
         return Path(tmp.name).read_bytes()
@@ -779,6 +795,34 @@ def register_chunk_attempt(
             f"durable chunk-attempt marker was not listed after upload: {marker}"
         )
     return len(markers)
+
+
+def read_chunk_attempt_ordinals(
+    *,
+    bucket: str,
+    run_prefix: str,
+    chunk_count: int,
+    runner: SubprocessRunner = _real_runner,
+) -> dict[int, int]:
+    """Return each chunk's durable attempt ordinal (immutable marker count).
+
+    The summary job uses this to decide whether an incomplete chunk is
+    recoverable or terminally exhausted even when its final attempt died
+    before writing ``chunk-meta``. Chunks without durable markers map to 0.
+    """
+    if chunk_count < 1:
+        raise ValueError("chunk_count must be positive")
+    ordinals: dict[int, int] = {}
+    for chunk_index in range(chunk_count):
+        prefix = chunk_attempt_prefix(run_prefix, chunk_index)
+        names = gcs_list_objects(bucket, prefix, runner=runner)
+        markers = {
+            name
+            for name in names
+            if name.startswith(f"{prefix}/job=") and name.endswith(".json")
+        }
+        ordinals[chunk_index] = len(markers)
+    return ordinals
 
 
 def restore_chunk_statuses(
@@ -1210,6 +1254,7 @@ __all__ = [
     "gcs_upload_bytes",
     "gcs_upload_object",
     "inspect_archive",
+    "read_chunk_attempt_ordinals",
     "register_chunk_attempt",
     "restore_all_chunk_checkpoints",
     "restore_chunk_checkpoints",

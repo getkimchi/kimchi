@@ -34,7 +34,7 @@ def _write_trial(trial_dir: Path, *, outcome: Outcome = Outcome.SCORED_PASS,
     """
     trial_dir.mkdir(parents=True, exist_ok=True)
     payload: dict = {}
-    if reward is not None:
+    if reward is not None and outcome in {Outcome.SCORED_PASS, Outcome.SCORED_FAIL}:
         payload["verifier_result"] = {"rewards": {"reward": reward}}
     if exception_type is not None:
         payload["exception_info"] = {
@@ -44,6 +44,7 @@ def _write_trial(trial_dir: Path, *, outcome: Outcome = Outcome.SCORED_PASS,
             "occurred_at": "2026-01-01T00:00:00Z",
         }
     (trial_dir / "result.json").write_text(json.dumps(payload))
+    (trial_dir / "trial.log").write_text("")
 
 
 def test_zero_completed_trials_all_missing(tmp_path: Path) -> None:
@@ -107,6 +108,38 @@ def test_retryable_exhausted_fills_slot(tmp_path: Path) -> None:
     )
     assert progress.exhausted_retryable_trials == 1
     assert progress.missing_trials == 4
+
+
+@pytest.mark.parametrize(
+    ("retry_budget_exhausted", "expected_exhausted", "expected_missing"),
+    [(False, 0, 1), (True, 1, 0)],
+)
+def test_cancelled_checkpoint_follows_retry_exhaustion_semantics(
+    tmp_path: Path,
+    retry_budget_exhausted: bool,
+    expected_exhausted: int,
+    expected_missing: int,
+) -> None:
+    cancelled = tmp_path / "task-a__cancelled"
+    _write_trial(
+        cancelled,
+        outcome=Outcome.ERROR,
+        reward=None,
+        exception_type="CancelledError",
+        exception_message="",
+    )
+
+    progress = compute_task_progress(
+        task="task-a",
+        trial_dirs=[cancelled],
+        target_trials=1,
+        retry_budget_exhausted=retry_budget_exhausted,
+    )
+
+    assert progress.durable_final_trials == 0
+    assert progress.retryable_trials == 1
+    assert progress.exhausted_retryable_trials == expected_exhausted
+    assert progress.missing_trials == expected_missing
 
 
 def test_budget_exhausted_clamps_filled_to_target(tmp_path: Path) -> None:

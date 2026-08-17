@@ -14,7 +14,10 @@ These scripts run on the GitLab runner to slice the benchmark task list into chu
 | `outcome.py` | `Outcome` `StrEnum` (`scored_pass`, `scored_fail`, `agent_timeout`, `error`). Producer (`classify.py`) and consumer (`summarize_results.py`) share the wire strings. |
 | `harbor_runner.py` | Pure-function builder for the `harbor run` argv list, plus a thin `subprocess.Popen` wrapper. No business logic. |
 | `chunk_runner.py` | Entry point for one chunk. Restores prior-attempt artifacts, computes the chunk's task slice, classifies existing trials, invokes Harbor for the missing tasks, writes chunk-meta. |
-| `classify.py` | Reads each trial's `result.json` + agent sessions, applies rule-based classification (error markers, exception info, verifier exit codes), and writes an enriched `result.json` with `outcome`, `error_category`, `error_subcategory`. |
+| `chunk_recovery.py` | Derives the authoritative complete, recoverable, or exhausted state for every chunk from task ownership, final trials, durable statuses, and attempt ordinals. |
+| `classify.py` | Reads each trial's `result.json`, causal `trial.log` evidence, and agent sessions; applies rule-based classification; and writes an enriched `result.json` with `outcome`, `error_category`, `error_subcategory`. |
+| `docker_health.py` | Shared Docker daemon marker and error-subcategory constants used by classification and chunk health monitoring. |
+| `prepare_summary.py` | Validates runner artifacts or hydrates durable run metadata, trials, chunk statuses, and immutable attempt ordinals before summary generation. |
 | `summarize_results.py` | Reads `run-metadata.json` + all trial artifacts under `BENCHMARK_RESULTS_DIR` and writes `summary.json`. Builds totals, per-task verdicts, and emits the `benchmark-summary/v2`-shaped output. |
 | `chunk_slicing.py` | Deterministic task-list slicing across `BENCH_CHUNK_COUNT` chunks. |
 | `upload_gcs.py` | Summary-job helper that tars `BENCHMARK_RESULTS_DIR` into `jobs.tar.gz` and uploads it along with `metadata.json` to the run's GCS prefix. |
@@ -39,12 +42,24 @@ GitLab pipeline
         │      └─ run_harbor()                  # subprocess
         │
         └─ summary job
+              ├─ prepare_summary.main()
+              │     ├─ restore run-metadata.json and trial checkpoints
+              │     ├─ restore runner-authored chunk statuses
+              │     └─ write immutable ordinals to chunk-attempts.json
               └─ summarize_results.write_summary()
                     ├─ load_json(run-metadata.json)
                     ├─ summarize_trial() per trial dir
+                    ├─ derive_chunk_recovery_states() for frozen-budget runs
+                    ├─ retain chunk-meta compatibility for legacy runs
                     ├─ build_task_verdicts()
                     └─ write summary.json (validated against benchmark-summary/v2)
 ```
+
+Frozen-budget runs use the recovery states for both summary diagnostics and
+the final success/failure decision. Legacy metadata without a frozen
+`chunk_attempt_budget` stays on the historical `chunk-meta` compatibility
+path; durable attempt markers alone never opt an old run into the new
+exhaustion semantics.
 
 The `harbor run` command invokes the `Kimchi` Harbor agent in the container, which decodes the `--agent-kwarg llm-params=...` value, sets `KIMCHI_LLM_PARAMS_JSON` env var, and copies a bundled extension into `~/.config/kimchi/extensions/llm-sampling-params/`. See [LLM sampling parameters](#llm-sampling-parameters) below.
 

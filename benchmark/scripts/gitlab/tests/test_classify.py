@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -13,6 +14,7 @@ from classify import ERROR_RULES, Verdict, classify
 from outcome import Outcome
 
 API_KEY_BUDGET_EXCEEDED = "api_key_budget_exceeded"
+TRIAL_CANCELLED = "trial_cancelled"
 MOONSHOT_QUOTA_EXCEEDED = "moonshot_quota_exceeded"
 _BUDGET_ERROR_EXACT_MESSAGE = (
     '429 "API key has reached its spend limit.\\n'
@@ -31,6 +33,12 @@ _NO_SESSION = object()
 def _write_result(trial_dir: Path, payload: dict) -> None:
     trial_dir.mkdir(parents=True, exist_ok=True)
     (trial_dir / "result.json").write_text(json.dumps(payload))
+    (trial_dir / "trial.log").write_text("")
+
+
+def _load_docker_daemon_fixtures() -> list[dict]:
+    fixture_path = Path(__file__).parent / "fixtures" / "docker_daemon_classification.json"
+    return json.loads(fixture_path.read_text(encoding="utf-8"))
 
 
 def _reward_payload(reward: float | None) -> dict:
@@ -78,9 +86,13 @@ RESULT_JSON_CASES = [
         id="scored-fail",
     ),
     pytest.param(
-        _reward_payload(None),
-        {"outcome": "scored_fail", "error_category": None},
-        id="none-reward-scored-fail",
+        {"verifier_result": {"rewards": {}}},
+        {
+            "outcome": "error",
+            "error_category": "infra",
+            "error_subcategory": "missing_verdict",
+        },
+        id="empty-rewards-are-not-a-scored-failure",
     ),
     pytest.param(
         _exception_payload("AgentTimeoutError"),
@@ -152,8 +164,13 @@ RESULT_JSON_CASES = [
     ),
     pytest.param(
         _exception_payload("SSLError", reward=0.0),
+        {"outcome": "scored_fail", "error_category": None, "error_subcategory": None, "reward": 0.0},
+        id="numeric-failure-overrides-infra-exception",
+    ),
+    pytest.param(
+        _exception_payload("SSLError", reward=float("nan")),
         {"outcome": "error", "error_category": "infra", "error_subcategory": "infra_network_error"},
-        id="infra-exception-allowlist",
+        id="non-finite-reward-does-not-override-infra-exception",
     ),
     pytest.param(
         _exception_payload("NonZeroAgentExitCodeError", "request was aborted by the server"),
@@ -225,8 +242,8 @@ RESULT_JSON_CASES = [
     ),
     pytest.param(
         _exception_payload("AssertionError", reward=0.0),
-        {"outcome": "error", "error_category": "agent"},
-        id="quality-exception",
+        {"outcome": "scored_fail", "error_category": None, "error_subcategory": None, "reward": 0.0},
+        id="numeric-failure-overrides-quality-exception",
     ),
     pytest.param(
         _exception_payload(
@@ -356,6 +373,232 @@ def test_docker_daemon_unreachable_is_retryable(tmp_results_dir: Path) -> None:
     verdict = classify(trial)
 
     assert is_retryable(verdict.outcome, verdict.error_category, verdict.error_subcategory)
+
+
+def test_reviewed_docker_daemon_classification_manifest(tmp_results_dir: Path) -> None:
+    for fixture in _load_docker_daemon_fixtures():
+        trial = tmp_results_dir / "manifest" / fixture["name"]
+        _write_result(trial, fixture["result"])
+        if fixture["trial_log"] is None:
+            (trial / "trial.log").unlink()
+        else:
+            (trial / "trial.log").write_text(fixture["trial_log"], encoding="utf-8")
+
+        verdict = classify(trial)
+
+        actual = [verdict.outcome, verdict.error_category, verdict.error_subcategory]
+        assert actual == fixture["expected"], fixture["name"]
+        if verdict.error_category == "infra":
+            assert is_retryable(
+                verdict.outcome,
+                verdict.error_category,
+                verdict.error_subcategory,
+            ), fixture["name"]
+
+
+@pytest.mark.parametrize(
+    "exception_type",
+    ["RewardFileEmptyError", "VerifierOutputParseError"],
+)
+def test_unscored_verifier_failure_is_retryable(
+    tmp_results_dir: Path,
+    exception_type: str,
+) -> None:
+    trial = tmp_results_dir / exception_type
+    _write_result(
+        trial,
+        {
+            "verifier": {
+                "started_at": "2026-08-10T22:00:00Z",
+                "finished_at": "2026-08-10T22:01:00Z",
+            },
+            "exception_info": {
+                "exception_type": exception_type,
+                "exception_message": "Verifier did not produce a numeric reward",
+                "occurred_at": "2026-08-10T22:00:30Z",
+            },
+        },
+    )
+
+    verdict = classify(trial)
+
+    _assert_verdict(
+        verdict,
+        {
+            "outcome": Outcome.ERROR,
+            "error_category": "infra",
+            "error_subcategory": "missing_verdict",
+        },
+    )
+    assert is_retryable(
+        verdict.outcome,
+        verdict.error_category,
+        verdict.error_subcategory,
+    )
+
+
+def test_unreadable_trial_log_retries_unscored_result(tmp_results_dir: Path) -> None:
+    trial = tmp_results_dir / "unreadable-log"
+    _write_result(
+        trial,
+        {
+            "exception_info": {
+                "exception_type": "KimchiExitError",
+                "exception_message": "Kimchi exited with code 255",
+            }
+        },
+    )
+    original_read_text = Path.read_text
+
+    def read_text(path: Path, *args, **kwargs):
+        if path == trial / "trial.log":
+            raise PermissionError("trial log is unreadable")
+        return original_read_text(path, *args, **kwargs)
+
+    with patch.object(Path, "read_text", read_text):
+        verdict = classify(trial)
+
+    _assert_verdict(
+        verdict,
+        {
+            "outcome": Outcome.ERROR,
+            "error_category": "infra",
+            "error_subcategory": "trial_log_missing",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"verifier_result": {"rewards": {}}},
+    ],
+)
+def test_missing_trial_log_takes_precedence_for_every_unscored_result(
+    tmp_results_dir: Path,
+    payload: dict,
+) -> None:
+    trial = tmp_results_dir / "missing-log-without-exception"
+    _write_result(trial, payload)
+    (trial / "trial.log").unlink()
+
+    verdict = classify(trial)
+
+    _assert_verdict(
+        verdict,
+        {
+            "outcome": Outcome.ERROR,
+            "error_category": "infra",
+            "error_subcategory": "trial_log_missing",
+        },
+    )
+
+
+def test_causal_trial_log_applies_without_structured_exception(
+    tmp_results_dir: Path,
+) -> None:
+    trial = tmp_results_dir / "causal-log-without-exception"
+    _write_result(trial, {})
+    (trial / "trial.log").write_text(
+        "docker compose cp failed; retrying upload with tar stream\n"
+        "Docker compose command failed. Stdout: Cannot connect to the Docker daemon.\n"
+        "harbor.verifier.verifier.AddTestsDirError: Failed to add tests directory.\n",
+        encoding="utf-8",
+    )
+
+    verdict = classify(trial)
+
+    _assert_verdict(
+        verdict,
+        {
+            "outcome": Outcome.ERROR,
+            "error_category": "infra",
+            "error_subcategory": "docker_daemon_unreachable",
+        },
+    )
+
+
+def test_agent_transcript_docker_marker_is_not_structured_daemon_evidence(
+    tmp_results_dir: Path,
+) -> None:
+    trial = tmp_results_dir / "agent-transcript-marker"
+    _write_result(
+        trial,
+        {
+            "agent_execution": {"started_at": "2026-08-10T20:00:00Z"},
+            "exception_info": {
+                "exception_type": "KimchiExitError",
+                "exception_message": "Kimchi exited with code 255",
+            },
+        },
+    )
+    transcript = trial / "agent" / "opencode.txt"
+    transcript.parent.mkdir()
+    transcript.write_text(
+        "User command output: Cannot connect to the Docker daemon\n",
+        encoding="utf-8",
+    )
+
+    verdict = classify(trial)
+
+    _assert_verdict(
+        verdict,
+        {
+            "outcome": Outcome.ERROR,
+            "error_category": "agent",
+            "error_subcategory": "agent_execution_failed",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("log_available", "expected_subcategory"),
+    [(True, TRIAL_CANCELLED), (False, "trial_log_missing")],
+)
+def test_unscored_cancelled_trial_respects_missing_log_policy(
+    tmp_results_dir: Path,
+    log_available: bool,
+    expected_subcategory: str,
+) -> None:
+    trial = tmp_results_dir / f"cancelled-log-{log_available}"
+    _write_result(trial, _exception_payload("CancelledError"))
+    if not log_available:
+        (trial / "trial.log").unlink()
+
+    verdict = classify(trial)
+
+    _assert_verdict(
+        verdict,
+        {
+            "outcome": Outcome.ERROR,
+            "error_category": "infra",
+            "error_subcategory": expected_subcategory,
+            "reward": None,
+        },
+    )
+    assert is_retryable(
+        verdict.outcome,
+        verdict.error_category,
+        verdict.error_subcategory,
+    )
+
+
+def test_numeric_reward_overrides_cancelled_exception(tmp_results_dir: Path) -> None:
+    trial = tmp_results_dir / "cancelled-after-score"
+    _write_result(trial, _exception_payload("CancelledError", reward=0.0))
+
+    verdict = classify(trial)
+
+    _assert_verdict(
+        verdict,
+        {
+            "outcome": Outcome.SCORED_FAIL,
+            "error_category": None,
+            "error_subcategory": None,
+            "reward": 0.0,
+        },
+    )
 
 
 def _write_session(trial_dir: Path, entries: list[dict]) -> None:

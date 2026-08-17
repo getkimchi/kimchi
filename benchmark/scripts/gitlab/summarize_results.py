@@ -14,7 +14,21 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from bench_config import is_retryable, should_retry_agent_timeout
+from bench_config import (
+    DEFAULT_BENCHMARK_CHUNK_ATTEMPTS_PATH,
+    ENV_BENCH_CHUNK_COUNT,
+    ENV_BENCHMARK_CHUNK_ATTEMPTS_PATH,
+    is_retryable,
+    load_chunk_attempt_budget,
+    should_retry_agent_timeout,
+    validate_chunk_attempt_budget,
+)
+from chunk_recovery import (
+    ChunkRecoveryCorruptError,
+    ChunkRecoveryState,
+    derive_chunk_recovery_states,
+)
+from chunk_slicing import slice_tasks
 from classify import ERROR_RULES, ErrorRule, classify
 from outcome import Outcome
 
@@ -23,7 +37,6 @@ _KIND_TO_RULE: dict[str, ErrorRule] = {r.kind: r for r in ERROR_RULES}
 
 PASS_REWARD = 1.0
 SUMMARY_SCHEMA_VERSION = "benchmark-summary/v2"
-MAX_CHUNK_ATTEMPTS = 3  # 1 initial + 2 retries (matches YAML retry: 2)
 KIMCHI_MODEL_PROVIDERS = frozenset({"kimchi-dev"})
 ERROR_EVIDENCE_LIMIT = 1_000
 
@@ -1045,11 +1058,80 @@ def build_source(metadata: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def load_chunk_metas(results_dir: Path) -> dict[int, dict[str, Any]]:
+def _resolve_summary_attempt_budget(metadata: dict[str, Any]) -> tuple[int, bool]:
+    """Return ``(budget, frozen)`` — the durable chunk attempt budget.
+
+    Summaries take the budget from the frozen run metadata. Legacy artifacts
+    without a frozen budget fall back to the shared environment/default
+    compatibility path; in that case schema invariants (status/ordinal
+    consistency, below-budget exhaustion) are not retroactively imposed.
+    """
+    parameters = metadata_dict(metadata, "parameters")
+    if "chunk_attempt_budget" not in parameters:
+        return load_chunk_attempt_budget(), False
+    return (
+        validate_chunk_attempt_budget(
+            parameters["chunk_attempt_budget"],
+            source="run metadata chunk_attempt_budget",
+        ),
+        True,
+    )
+
+
+def _load_chunk_attempt_ordinals() -> dict[int, int]:
+    """Read durable attempt ordinals restored by ``prepare_summary``.
+
+    Returns {} when the file is absent (non-checkpointed/legacy recovery,
+    where runner-reported statuses are authoritative). A malformed file is
+    identity corruption — it was written from immutable GCS markers.
+    """
+    path = Path(
+        getenv(
+            ENV_BENCHMARK_CHUNK_ATTEMPTS_PATH,
+            DEFAULT_BENCHMARK_CHUNK_ATTEMPTS_PATH,
+        )
+    )
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ChunkRecoveryCorruptError(
+            f"malformed chunk attempt ordinals at {path}: {exc}"
+        ) from exc
+    if not isinstance(value, dict):
+        raise ChunkRecoveryCorruptError(
+            f"malformed chunk attempt ordinals at {path}: expected an object"
+        )
+    ordinals: dict[int, int] = {}
+    for key, ordinal in value.items():
+        try:
+            chunk_index = int(key)
+            ordinal_int = int(ordinal)
+        except (TypeError, ValueError) as exc:
+            raise ChunkRecoveryCorruptError(
+                f"malformed chunk attempt ordinals at {path}: bad entry {key!r}: {ordinal!r}"
+            ) from exc
+        if chunk_index < 0 or ordinal_int < 0:
+            raise ChunkRecoveryCorruptError(
+                f"malformed chunk attempt ordinals at {path}: bad entry {key!r}: {ordinal!r}"
+            )
+        ordinals[chunk_index] = ordinal_int
+    return ordinals
+
+
+def load_chunk_metas(
+    results_dir: Path,
+    *,
+    attempt_budget: int | None = None,
+    strict: bool = False,
+) -> dict[int, dict[str, Any]]:
     """Read all chunk-meta JSON files. Returns {chunk_index: meta_dict_with_exhausted_flag}.
 
-    A chunk is 'exhausted' if its latest recorded attempt number is at MAX_CHUNK_ATTEMPTS
-    AND needs_retry is non-empty.
+    Missing "exhausted" flags (artifact-only metadata written before the
+    durable status schema carried one) are backfilled from the chunk's
+    recorded attempt against the resolved attempt budget: at or above the
+    budget with pending work counts as exhausted.
     """
     metas: dict[int, dict[str, Any]] = {}
     meta_dir = results_dir / "chunk-meta"
@@ -1065,16 +1147,53 @@ def load_chunk_metas(results_dir: Path) -> dict[int, dict[str, Any]]:
             print(f"Warning: skipping chunk-meta {meta_path}: top-level JSON is not an object", file=sys.stderr)
             continue
         chunk_index = data.get("chunk_index")
+        if strict:
+            chunk_attempt = data.get("chunk_attempt")
+            chunk_attempt_budget = data.get("chunk_attempt_budget")
+            needs_retry = data.get("needs_retry")
+            exhausted = data.get("exhausted")
+            invalid_field: str | None = None
+            if type(chunk_index) is not int or chunk_index < 0:
+                invalid_field = "chunk_index must be a non-negative integer"
+            elif type(chunk_attempt) is not int or chunk_attempt < 1:
+                invalid_field = "chunk_attempt must be a positive integer"
+            elif type(chunk_attempt_budget) is not int or chunk_attempt_budget < 1:
+                invalid_field = "chunk_attempt_budget must be a positive integer"
+            elif not isinstance(needs_retry, list) or not all(
+                isinstance(task, str) for task in needs_retry
+            ):
+                invalid_field = "needs_retry must be a list of task names"
+            elif not isinstance(exhausted, bool):
+                invalid_field = "exhausted must be a boolean"
+            if invalid_field is not None:
+                raise ChunkRecoveryCorruptError(
+                    f"{meta_path.name} is invalid: {invalid_field}"
+                )
         if not isinstance(chunk_index, int):
             print(f"Warning: skipping chunk-meta {meta_path}: missing or non-int 'chunk_index'", file=sys.stderr)
             continue
+        filename_index_raw = meta_path.stem.removeprefix("chunk-")
+        filename_index = (
+            int(filename_index_raw) if filename_index_raw.isdigit() else None
+        )
+        if strict and filename_index != chunk_index:
+            raise ChunkRecoveryCorruptError(
+                f"{meta_path.name} declares chunk_index {chunk_index}; "
+                f"expected {filename_index} from its filename"
+            )
         if not isinstance(data.get("exhausted"), bool):
             # Backward compatibility for artifact-only metadata written before
             # the durable status schema carried an explicit exhaustion flag.
             attempt = data.get("chunk_attempt", 0)
             needs = data.get("needs_retry", []) or []
             data["exhausted"] = (
-                attempt >= MAX_CHUNK_ATTEMPTS and len(needs) > 0
+                attempt_budget is not None
+                and attempt >= attempt_budget
+                and len(needs) > 0
+            )
+        if strict and chunk_index in metas:
+            raise ChunkRecoveryCorruptError(
+                f"duplicate status for chunk-{chunk_index}: {meta_path.name}"
             )
         metas[chunk_index] = data
     return metas
@@ -1102,12 +1221,23 @@ def build_summary(
     started_at: str | None,
     finished_at: str | None,
     generated_at: str,
-    results_dir: Path,
+    *,
+    chunk_metas: dict[int, dict[str, Any]],
+    recovery_states: dict[int, ChunkRecoveryState] | None = None,
 ) -> dict[str, Any]:
-    chunk_metas = load_chunk_metas(results_dir)
-    chunks_exhausted = sorted(
-        idx for idx, meta in chunk_metas.items() if meta.get("exhausted")
-    )
+    if recovery_states is not None:
+        chunks_exhausted = sorted(
+            idx for idx, state in recovery_states.items() if state.exhausted
+        )
+    else:
+        chunks_exhausted = sorted(
+            idx for idx, meta in chunk_metas.items() if meta.get("exhausted")
+        )
+    chunk_stop_reasons = {
+        f"chunk-{idx}": reason
+        for idx, meta in sorted(chunk_metas.items())
+        if isinstance((reason := meta.get("stop_reason")), str) and reason
+    }
 
     selected_tasks = metadata_dict(metadata, "parameters").get("selected_tasks") or metadata.get("selected_tasks")
     tasks_expected = (
@@ -1119,8 +1249,18 @@ def build_summary(
     attempts_per_task = int_value(metadata_dict(metadata, "parameters").get("attempts")) or 1
     trials_expected = tasks_expected * attempts_per_task
 
-    # Exhausted tasks: chunks that ran out of retries and still had failures.
-    exhausted_tasks = exhausted_tasks_from_chunk_metas(chunk_metas)
+    # Exhausted tasks: chunks that ran out of attempts and still had failures.
+    # Recovery states exempt ONLY that chunk's own incomplete assigned tasks;
+    # the legacy path uses the runner-reported status lists as before.
+    if recovery_states is not None:
+        exhausted_tasks = {
+            task
+            for state in recovery_states.values()
+            if state.exhausted
+            for task in state.incomplete_tasks
+        }
+    else:
+        exhausted_tasks = exhausted_tasks_from_chunk_metas(chunk_metas)
 
     # no_verdict: exhausted tasks with no result.json at all (true unknown, not in trials).
     trial_task_names = {t.task for t in trials}
@@ -1168,10 +1308,133 @@ def build_summary(
             "tasks_with_retryable_outcome": tasks_with_retryable_outcome,
         },
         "chunks_exhausted_retries": [f"chunk-{idx}" for idx in chunks_exhausted],
+        "chunk_recovery": (
+            {
+                f"chunk-{idx}": {
+                    "disposition": state.disposition,
+                    "durable_ordinal": state.durable_ordinal,
+                    "attempt_budget": state.attempt_budget,
+                    "incomplete_tasks": list(state.incomplete_tasks),
+                }
+                for idx, state in sorted(recovery_states.items())
+            }
+            if recovery_states is not None
+            else {}
+        ),
+        "chunk_stop_reasons": chunk_stop_reasons,
         "run": build_run(metadata, started_at, finished_at, generated_at),
         "trials": [t.to_summary_json() for t in trials],
         "source": build_source(metadata),
     }
+
+
+def _final_trial_counts(trials: list[TrialSummary]) -> dict[str, int]:
+    """Recovered count of non-retryable (final) trials per bare task."""
+    counts: dict[str, int] = {}
+    for trial in trials:
+        if not is_retryable(
+            trial.outcome,
+            trial.error_category,
+            trial.error_subcategory,
+        ):
+            counts[trial.task] = counts.get(trial.task, 0) + 1
+    return counts
+
+
+def _resolve_summary_chunk_count(
+    chunk_metas: dict[int, dict[str, Any]],
+    ordinals: dict[int, int],
+    *,
+    allow_inference: bool = True,
+) -> int | None:
+    """Resolve the chunk count for positional task ownership (PR 1)."""
+    raw = getenv(ENV_BENCH_CHUNK_COUNT, "")
+    if raw.isdigit() and int(raw) >= 1:
+        return int(raw)
+    if not allow_inference:
+        raise ChunkRecoveryCorruptError(
+            f"{ENV_BENCH_CHUNK_COUNT} is required for frozen-budget recovery; "
+            "partial statuses cannot safely infer positional task ownership"
+        )
+    seen = set(chunk_metas) | set(ordinals)
+    if seen:
+        inferred = max(seen) + 1
+        print(
+            f"WARNING: {ENV_BENCH_CHUNK_COUNT} unset/invalid; inferred chunk count "
+            f"{inferred} from chunk metadata and durable attempt ordinals",
+            file=sys.stderr,
+        )
+        return inferred
+    return None
+
+
+def _derive_summary_recovery_states(
+    *,
+    metadata: dict[str, Any],
+    trials: list[TrialSummary],
+    chunk_metas: dict[int, dict[str, Any]],
+    attempts_per_task: int,
+    attempt_budget: int,
+    budget_frozen: bool,
+) -> tuple[dict[int, ChunkRecoveryState] | None, str | None]:
+    """Derive one authoritative recovery state per chunk.
+
+    Returns ``(states, None)`` on success, ``(None, error)`` on identity
+    corruption, and ``(None, None)`` when canonical recovery inputs are
+    unavailable (legacy artifacts keep the runner-reported chunk-meta
+    compatibility path instead).
+    """
+    if not budget_frozen:
+        return None, None
+    selected = (
+        metadata_dict(metadata, "parameters").get("selected_tasks")
+        or metadata.get("selected_tasks")
+    )
+    if not (
+        isinstance(selected, list)
+        and selected
+        and all(isinstance(task, str) for task in selected)
+    ):
+        return None, None
+    try:
+        ordinals = _load_chunk_attempt_ordinals()
+    except ChunkRecoveryCorruptError as exc:
+        return None, str(exc)
+    try:
+        chunk_count = _resolve_summary_chunk_count(
+            chunk_metas,
+            ordinals,
+            allow_inference=False,
+        )
+    except ChunkRecoveryCorruptError as exc:
+        return None, str(exc)
+    if chunk_count is None:
+        return None, None
+    unexpected_chunks = sorted(
+        (set(chunk_metas) | set(ordinals)) - set(range(chunk_count))
+    )
+    if unexpected_chunks:
+        return None, (
+            f"recovery records for chunks {unexpected_chunks} are outside "
+            f"configured chunk range 0..{chunk_count - 1}"
+        )
+    try:
+        states = derive_chunk_recovery_states(
+            expected_tasks_by_chunk={
+                idx: slice_tasks(
+                    list(selected), chunk_index=idx, chunk_count=chunk_count
+                )
+                for idx in range(chunk_count)
+            },
+            final_trial_counts=_final_trial_counts(trials),
+            chunk_statuses=chunk_metas,
+            durable_ordinals=ordinals,
+            target_k=attempts_per_task,
+            attempt_budget=attempt_budget,
+        )
+    except ChunkRecoveryCorruptError as exc:
+        return None, str(exc)
+    return states, None
 
 
 def write_summary(metadata_path: Path, output_path: Path, results_dir_override: Path | None = None) -> int:
@@ -1210,7 +1473,60 @@ def write_summary(metadata_path: Path, output_path: Path, results_dir_override: 
 
     started_at, finished_at = run_bounds(results_dir, trials)
     generated_at = utc_now()
-    summary = build_summary(metadata, trials, started_at, finished_at, generated_at, results_dir)
+
+    # 1b/1c: take the durable attempt budget from the frozen run metadata and
+    # derive ONE authoritative recovery state per chunk. Both the summary JSON
+    # and the exit validation below consume these states (never re-interpreting
+    # chunk-meta independently). Legacy artifacts without canonical recovery
+    # inputs keep the runner-reported chunk-meta compatibility path.
+    try:
+        attempt_budget, budget_frozen = _resolve_summary_attempt_budget(metadata)
+    except ValueError as exc:
+        print(f"ERROR: invalid frozen chunk attempt budget: {exc}", file=sys.stderr)
+        return 1
+    try:
+        chunk_metas = load_chunk_metas(
+            results_dir,
+            attempt_budget=attempt_budget,
+            strict=budget_frozen,
+        )
+    except ChunkRecoveryCorruptError as exc:
+        print(f"ERROR: chunk recovery is corrupt: {exc}", file=sys.stderr)
+        return 1
+    for idx, meta in chunk_metas.items():
+        meta_budget = meta.get("chunk_attempt_budget")
+        if meta_budget is not None and meta_budget != attempt_budget:
+            print(
+                f"ERROR: chunk-{idx} status freezes chunk attempt budget "
+                f"{meta_budget!r}, but run metadata resolves {attempt_budget!r}; "
+                "run identity mismatch",
+                file=sys.stderr,
+            )
+            return 1
+    attempts_per_task = int_value(
+        metadata_dict(metadata, "parameters").get("attempts")
+    ) or 1
+    recovery_states, recovery_error = _derive_summary_recovery_states(
+        metadata=metadata,
+        trials=trials,
+        chunk_metas=chunk_metas,
+        attempts_per_task=attempts_per_task,
+        attempt_budget=attempt_budget,
+        budget_frozen=budget_frozen,
+    )
+    if recovery_error is not None:
+        print(f"ERROR: chunk recovery is corrupt: {recovery_error}", file=sys.stderr)
+        return 1
+
+    summary = build_summary(
+        metadata,
+        trials,
+        started_at,
+        finished_at,
+        generated_at,
+        chunk_metas=chunk_metas,
+        recovery_states=recovery_states,
+    )
 
     task_verdicts = build_task_verdicts(trials)
     print(format_totals(summary["totals"]))
@@ -1227,53 +1543,69 @@ def write_summary(metadata_path: Path, output_path: Path, results_dir_override: 
 
     # Distinguish between tasks that never ran (no trial dirs at all) and
     # tasks that were attempted but only produced error/infra verdicts.
-    # - Never-ran tasks: fail unless chunk-meta explicitly records exhaustion.
+    # - Never-ran tasks: fail unless the chunk's recovery state records
+    #   exhaustion for exactly its own incomplete tasks.
     # - All-errored tasks: warn only — the chunk ran and produced evidence,
     #   the errors are visible in the summary for analysis.
     selected_tasks = metadata_dict(metadata, "parameters").get("selected_tasks") or metadata.get("selected_tasks")
     if isinstance(selected_tasks, list) and selected_tasks:
-        exhausted_tasks = exhausted_tasks_from_chunk_metas(
-            load_chunk_metas(results_dir)
-        )
         trial_tasks = {t.task for t in trials}
-        missing_tasks = sorted(
-            set(selected_tasks) - trial_tasks - exhausted_tasks
-        )
-        if missing_tasks:
-            print(
-                f"ERROR: {len(missing_tasks)} expected task(s) never produced a trial: "
-                f"{missing_tasks}",
-                file=sys.stderr,
+        if recovery_states is not None:
+            # One authoritative state per chunk drives the exit decision. A
+            # recoverable chunk means the run is incomplete but resumable:
+            # exit 1 (red pipeline = retry-loop trigger) with an annotated
+            # error so the automatic retrier picks it up.
+            recoverable_chunks = sorted(
+                (
+                    state
+                    for state in recovery_states.values()
+                    if state.recoverable and state.incomplete_tasks
+                ),
+                key=lambda state: state.chunk_index,
             )
-            return 1
+            if recoverable_chunks:
+                for state in recoverable_chunks:
+                    print(f"ERROR: {state.diagnostic()}", file=sys.stderr)
+                return 1
+        else:
+            # Legacy compatibility path (no canonical recovery inputs):
+            # runner-reported statuses stay authoritative.
+            exhausted_tasks = exhausted_tasks_from_chunk_metas(chunk_metas)
+            missing_tasks = sorted(
+                set(selected_tasks) - trial_tasks - exhausted_tasks
+            )
+            if missing_tasks:
+                print(
+                    f"ERROR: {len(missing_tasks)} expected task(s) never produced a trial: "
+                    f"{missing_tasks}",
+                    file=sys.stderr,
+                )
+                return 1
 
-        attempts_per_task = (
-            int_value(metadata_dict(metadata, "parameters").get("attempts")) or 1
-        )
-        final_attempts = Counter(
-            trial.task
-            for trial in trials
-            if not is_retryable(
-                trial.outcome,
-                trial.error_category,
-                trial.error_subcategory,
+            final_attempts = Counter(
+                trial.task
+                for trial in trials
+                if not is_retryable(
+                    trial.outcome,
+                    trial.error_category,
+                    trial.error_subcategory,
+                )
             )
-        )
-        incomplete_tasks = [
-            f"{task} ({final_attempts[task]}/{attempts_per_task} final)"
-            for task in selected_tasks
-            if (
-                task not in exhausted_tasks
-                and final_attempts[task] < attempts_per_task
-            )
-        ]
-        if incomplete_tasks:
-            print(
-                "ERROR: expected tasks have fewer than the configured attempts: "
-                f"{incomplete_tasks}",
-                file=sys.stderr,
-            )
-            return 1
+            incomplete_tasks = [
+                f"{task} ({final_attempts[task]}/{attempts_per_task} final)"
+                for task in selected_tasks
+                if (
+                    task not in exhausted_tasks
+                    and final_attempts[task] < attempts_per_task
+                )
+            ]
+            if incomplete_tasks:
+                print(
+                    "ERROR: expected tasks have fewer than the configured attempts: "
+                    f"{incomplete_tasks}",
+                    file=sys.stderr,
+                )
+                return 1
 
         # Warn about tasks that ran but only have error/infra verdicts
         # (no scored_pass or scored_fail). These are attempted-but-failed

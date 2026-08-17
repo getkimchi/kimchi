@@ -1,0 +1,166 @@
+[
+  {
+    "name": "verifier-upload-daemon-loss",
+    "result": {
+      "exception_info": {
+        "exception_type": "KimchiExitError",
+        "exception_message": "Kimchi exited with code 255"
+      }
+    },
+    "trial_log": "Collecting main service artifacts\ndocker compose cp failed; retrying upload with tar stream: Docker compose command failed. Stdout: Cannot connect to the Docker daemon at tcp://docker:2375.\nRuntimeError: Docker compose cp failed, and tar upload fallback also failed.\nharbor.verifier.verifier.AddTestsDirError: Failed to add tests directory to environment.\nDocker compose down failed: Cannot connect to the Docker daemon at tcp://docker:2375.\n",
+    "expected": ["error", "infra", "docker_daemon_unreachable"]
+  },
+  {
+    "name": "structured-daemon-loss",
+    "result": {
+      "environment_setup": {},
+      "exception_info": {
+        "exception_type": "RuntimeError",
+        "exception_message": "Docker compose command failed for environment bn-fit-modify. Stdout: Cannot connect to the Docker daemon at tcp://docker:2375."
+      }
+    },
+    "trial_log": "Trial failed during environment setup.\n",
+    "expected": ["error", "infra", "docker_daemon_unreachable"]
+  },
+  {
+    "name": "structured-daemon-loss-canonical-marker-only",
+    "result": {
+      "environment_setup": {},
+      "exception_info": {
+        "exception_type": "RuntimeError",
+        "exception_message": "Cannot connect to the Docker daemon at tcp://docker:2375. Is the docker daemon running?"
+      }
+    },
+    "trial_log": "Trial failed during environment setup.\n",
+    "expected": ["error", "infra", "docker_daemon_unreachable"]
+  },
+  {
+    "name": "cleanup-only-pass",
+    "result": {
+      "verifier_result": {"rewards": {"reward": 1.0}}
+    },
+    "trial_log": "Verifier completed.\nDocker compose down failed: Cannot connect to the Docker daemon at tcp://docker:2375.\n",
+    "expected": ["scored_pass", null, null]
+  },
+  {
+    "name": "cleanup-only-scored-failure",
+    "result": {
+      "verifier_result": {"rewards": {"reward": 0.0}},
+      "verifier": {
+        "started_at": "2026-08-10T22:00:00Z",
+        "finished_at": "2026-08-10T22:01:00Z"
+      },
+      "exception_info": {
+        "exception_type": "RuntimeError",
+        "exception_message": "Docker compose down failed: Cannot connect to the Docker daemon",
+        "occurred_at": "2026-08-10T22:01:01Z"
+      }
+    },
+    "trial_log": "Verifier completed with reward 0.\nDocker compose down failed: Cannot connect to the Docker daemon at tcp://docker:2375.\n",
+    "expected": ["scored_fail", null, null]
+  },
+  {
+    "name": "scored-failure-with-earlier-exception-without-timestamps",
+    "result": {
+      "verifier_result": {"rewards": {"reward": 0.0}},
+      "exception_info": {
+        "exception_type": "KimchiExitError",
+        "exception_message": "Kimchi exited with code 255"
+      }
+    },
+    "trial_log": "Agent failed before verifier execution.\nVerifier completed with reward 0.\n",
+    "expected": ["scored_fail", null, null]
+  },
+  {
+    "name": "missing-reward-with-daemon-loss",
+    "result": {
+      "exception_info": {
+        "exception_type": "RewardFileNotFoundError",
+        "exception_message": "No reward file found at verifier/reward.txt or verifier/reward.json"
+      }
+    },
+    "trial_log": "Trial failed: No reward file found at verifier/reward.txt or verifier/reward.json\nDocker compose down failed: Cannot connect to the Docker daemon at tcp://docker:2375.\n",
+    "expected": ["error", "infra", "verifier_missing_reward"]
+  },
+  {
+    "name": "missing-reward-without-daemon-loss",
+    "result": {
+      "exception_info": {
+        "exception_type": "RewardFileNotFoundError",
+        "exception_message": "No reward file found at verifier/reward.txt or verifier/reward.json"
+      }
+    },
+    "trial_log": "Trial failed: No reward file found at verifier/reward.txt or verifier/reward.json\n",
+    "expected": ["error", "infra", "verifier_missing_reward"]
+  },
+  {
+    "name": "missing-reward-with-causal-upload-daemon-loss",
+    "result": {
+      "exception_info": {
+        "exception_type": "RewardFileNotFoundError",
+        "exception_message": "No reward file found at verifier/reward.txt or verifier/reward.json"
+      }
+    },
+    "trial_log": "docker compose cp failed; retrying upload with tar stream\nDocker compose command failed. Stdout: Cannot connect to the Docker daemon at tcp://docker:2375.\nRuntimeError: Docker compose cp failed, and tar upload fallback also failed.\nharbor.verifier.verifier.AddTestsDirError: Failed to add tests directory to environment.\n",
+    "expected": ["error", "infra", "docker_daemon_unreachable"]
+  },
+  {
+    "name": "cleanup-daemon-loss-does-not-contaminate-upload-failure",
+    "result": {
+      "agent_execution": {"started_at": "2026-08-10T20:00:00Z"},
+      "exception_info": {
+        "exception_type": "KimchiExitError",
+        "exception_message": "Kimchi exited with code 255"
+      }
+    },
+    "trial_log": "docker compose cp failed: permission denied\nDocker compose down failed: Cannot connect to the Docker daemon at tcp://docker:2375.\nharbor.verifier.verifier.AddTestsDirError: Failed to add tests directory to environment.\n",
+    "expected": ["error", "agent", "agent_execution_failed"]
+  },
+  {
+    "name": "missing-log-unscored",
+    "result": {
+      "exception_info": {
+        "exception_type": "KimchiExitError",
+        "exception_message": "Kimchi exited with code 255"
+      }
+    },
+    "trial_log": null,
+    "expected": ["error", "infra", "trial_log_missing"]
+  },
+  {
+    "name": "missing-log-scored",
+    "result": {
+      "verifier_result": {"rewards": {"reward": 0.0}}
+    },
+    "trial_log": null,
+    "expected": ["scored_fail", null, null]
+  },
+  {
+    "name": "agent-failure-without-daemon-loss",
+    "result": {
+      "agent_execution": {"started_at": "2026-08-10T20:00:00Z"},
+      "exception_info": {
+        "exception_type": "KimchiExitError",
+        "exception_message": "Kimchi exited with code 255"
+      }
+    },
+    "trial_log": "Command failed\nCollecting main service artifacts\n",
+    "expected": ["error", "agent", "agent_execution_failed"]
+  },
+  {
+    "name": "agent-failure-with-cleanup-only-daemon-loss",
+    "result": {
+      "agent_setup": {
+        "started_at": "2026-08-10T22:00:00Z",
+        "finished_at": "2026-08-10T22:01:00Z"
+      },
+      "exception_info": {
+        "exception_type": "KimchiExitError",
+        "exception_message": "Kimchi exited with code 255",
+        "occurred_at": "2026-08-10T22:00:30Z"
+      }
+    },
+    "trial_log": "Command failed\nDocker compose down failed: Cannot connect to the Docker daemon at tcp://docker:2375.\n",
+    "expected": ["error", "agent", "agent_setup_failed"]
+  }
+]

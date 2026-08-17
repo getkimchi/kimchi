@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import signal
 import zipfile as zf
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -26,8 +28,10 @@ from chunk_runner import (
     _all_trial_dirs_for_task,
     _build_checkpoint_run_prefix,
     _checkpoint_plugin_args,
-    _chunk_retry_budget_exhausted,
+    _finalize_chunk,
     _gitlab_job_elapsed_seconds,
+    _is_final_work_attempt,
+    _may_launch_work,
     _persist_checkpoint_run_metadata,
     _persist_chunk_status,
     _register_durable_chunk_attempt,
@@ -37,6 +41,46 @@ from chunk_runner import (
 )
 
 _RUN_PREFIX = "runs/benchmark=tb2/run=gitlab-p100"
+
+
+class _FakeHarborProcess:
+    """Configurable subprocess stand-in shared by runner lifecycle tests."""
+
+    def __init__(
+        self,
+        *,
+        poll: Callable[[], int | None],
+        wait_status: int,
+        on_signal: Callable[[int], None] | None = None,
+        on_terminate: Callable[[], None] | None = None,
+        on_kill: Callable[[], None] | None = None,
+    ) -> None:
+        self._poll = poll
+        self._wait_status = wait_status
+        self._on_signal = on_signal
+        self._on_terminate = on_terminate
+        self._on_kill = on_kill
+
+    def poll(self) -> int | None:
+        return self._poll()
+
+    def send_signal(self, signum: int) -> None:
+        if self._on_signal is None:
+            pytest.fail(f"unexpected signal {signum}")
+        self._on_signal(signum)
+
+    def terminate(self) -> None:
+        if self._on_terminate is None:
+            pytest.fail("unexpected process termination")
+        self._on_terminate()
+
+    def kill(self) -> None:
+        if self._on_kill is None:
+            pytest.fail("unexpected process kill")
+        self._on_kill()
+
+    def wait(self) -> int:
+        return self._wait_status
 
 
 def _ci_env(monkeypatch: pytest.MonkeyPatch, **overrides: str) -> None:
@@ -61,6 +105,7 @@ def _main_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: str)
         "BENCH_CHUNK_COUNT": "1",
         "SELECTED_TASKS_JSON": '["task-a"]',
         "BENCHMARK_RESULTS_DIR": str(tmp_path / "jobs"),
+        "BENCHMARK_RUN_METADATA": str(tmp_path / ".benchmark" / "run-metadata.json"),
         "BENCHMARK_GCS_BUCKET": "test-bucket",
         "BENCH_PARALLELISM": "1",
         "BENCH_ATTEMPTS": "1",
@@ -93,6 +138,10 @@ def _checkpoint_main_env(
     # Main-flow tests isolate scheduling/deadline behavior. Durable status
     # transport has a focused test below and must not invoke real gcloud here.
     monkeypatch.setattr("chunk_runner._persist_chunk_status", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "chunk_runner.ckpt.gcs_download_object",
+        lambda *args, **kwargs: None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +367,55 @@ def test_gcs_only_restore_is_visible_to_reconciliation(
     assert restored[0].name == "task-a__1"
 
 
+def test_resume_schedules_cancelled_and_never_started_tasks_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled checkpoint is preserved but does not consume its slot."""
+    monkeypatch.chdir(tmp_path)
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        SELECTED_TASKS_JSON='["completed", "cancelled", "never-started"]',
+        BENCH_CHUNK_ATTEMPT_BUDGET="2",
+        BENCH_JOB_TIMEOUT_SECONDS="999999",
+    )
+    results_dir = tmp_path / "jobs"
+    _make_trial(
+        results_dir / "checkpoint-restore" / "completed__scored",
+        task_name="completed",
+    )
+    cancelled = results_dir / "checkpoint-restore" / "cancelled__interrupted"
+    cancelled.mkdir(parents=True)
+    (cancelled / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "cancelled",
+                "exception_info": {"exception_type": "CancelledError"},
+            }
+        )
+    )
+    (cancelled / "trial.log").write_text("")
+
+    scheduled: list[list[str]] = []
+
+    def complete_fresh_attempt(**kwargs):
+        scheduled.append(kwargs["tasks"])
+        for task in kwargs["tasks"]:
+            _make_trial(
+                results_dir / "run-fresh" / f"{task}__fresh",
+                task_name=task,
+            )
+        return 0, None
+
+    with patch("chunk_runner._restore_prior_artifact", return_value=False), patch(
+        "chunk_runner._run_harbor_invocation", side_effect=complete_fresh_attempt
+    ):
+        assert main() == 0
+
+    assert scheduled == [["cancelled", "never-started"]]
+
+
 # ---------------------------------------------------------------------------
 # Phase 6: soft deadline behavior
 # ---------------------------------------------------------------------------
@@ -339,31 +437,30 @@ def test_soft_deadline_interrupts_harbor_and_waits_for_checkpoint_drain(
 
     signals: list[int] = []
 
-    class _FakeProc:
-        def __init__(self) -> None:
-            self._interrupted = False
-            self._drain_polls = 0
+    state = {"interrupted": False, "drain_polls": 0}
 
-        def poll(self):
-            if not self._interrupted:
-                return None
-            self._drain_polls += 1
-            return 130 if self._drain_polls >= 2 else None
+    def poll_status() -> int | None:
+        if not state["interrupted"]:
+            return None
+        state["drain_polls"] += 1
+        return 130 if state["drain_polls"] >= 2 else None
 
-        def send_signal(self, signum):
-            self._interrupted = True
-            signals.append(signum)
+    def record_signal(signum: int) -> None:
+        state["interrupted"] = True
+        signals.append(signum)
 
-        def terminate(self):
-            pytest.fail("Harbor exited during its checkpoint drain grace period")
-
-        def wait(self):
-            return 130
+    def reject_termination() -> None:
+        pytest.fail("Harbor exited during its checkpoint drain grace period")
 
     def fake_run_harbor(*, cmd, cwd, env):
         # Harbor stays alive until SIGINT initiates cooperative asyncio
         # cancellation, then exits after one drain poll.
-        return _FakeProc()
+        return _FakeHarborProcess(
+            poll=poll_status,
+            wait_status=130,
+            on_signal=record_signal,
+            on_terminate=reject_termination,
+        )
 
     with patch("chunk_runner.run_harbor", side_effect=fake_run_harbor), \
          patch("chunk_runner._restore_prior_artifact", return_value=False), \
@@ -445,28 +542,27 @@ def test_soft_deadline_forces_harbor_after_checkpoint_drain_timeout(
     )
     events: list[str] = []
 
-    class _FakeProc:
-        def __init__(self) -> None:
-            self._terminated = False
+    state = {"terminated": False}
 
-        def poll(self):
-            return -15 if self._terminated else None
+    def poll_status() -> int | None:
+        return -15 if state["terminated"] else None
 
-        def send_signal(self, signum):
-            assert signum == signal.SIGINT
-            events.append("interrupt")
+    def record_signal(signum: int) -> None:
+        assert signum == signal.SIGINT
+        events.append("interrupt")
 
-        def terminate(self):
-            events.append("terminate")
-            self._terminated = True
+    def terminate() -> None:
+        events.append("terminate")
+        state["terminated"] = True
 
-        def kill(self):
-            pytest.fail("SIGTERM should stop Harbor in this scenario")
-
-        def wait(self):
-            return -15
-
-    with patch("chunk_runner.run_harbor", return_value=_FakeProc()), \
+    proc = _FakeHarborProcess(
+        poll=poll_status,
+        wait_status=-15,
+        on_signal=record_signal,
+        on_terminate=terminate,
+        on_kill=lambda: pytest.fail("SIGTERM should stop Harbor in this scenario"),
+    )
+    with patch("chunk_runner.run_harbor", return_value=proc), \
          patch("chunk_runner._restore_prior_artifact", return_value=False), \
          patch("chunk_runner._restore_gcs_checkpoints"), \
          patch("chunk_runner._checkpoint_plugin_args", return_value=None), \
@@ -493,19 +589,6 @@ def test_soft_deadline_is_not_evaluated_when_checkpointing_is_disabled(
         BENCH_JOB_TIMEOUT_SECONDS="not-a-number",
     )
 
-    class _FakeProc:
-        def __init__(self):
-            self._done = False
-
-        def poll(self):
-            return 0 if self._done else None
-
-        def terminate(self):
-            pytest.fail("Harbor should not be terminated with a huge deadline")
-
-        def wait(self):
-            return 0
-
     def fake_run_harbor(*, cmd, cwd, env):
         # Write a passing result so the chunk completes.
         results_dir = Path(env["BENCHMARK_RESULTS_DIR"])
@@ -515,10 +598,7 @@ def test_soft_deadline_is_not_evaluated_when_checkpointing_is_disabled(
         (trial / "result.json").write_text(json.dumps(
             {"verifier_result": {"rewards": {"reward": 1.0}}}
         ))
-        proc = _FakeProc()
-        # Simulate Harbor completing before the next poll.
-        proc._done = True
-        return proc
+        return _FakeHarborProcess(poll=lambda: 0, wait_status=0)
 
     with patch("chunk_runner.run_harbor", side_effect=fake_run_harbor), \
          patch("chunk_runner._restore_prior_artifact", return_value=False), \
@@ -526,6 +606,279 @@ def test_soft_deadline_is_not_evaluated_when_checkpointing_is_disabled(
          patch("chunk_runner._checkpoint_plugin_args", return_value=None):
         exit_code = main()
     assert exit_code == 0
+
+
+def test_chunk_fails_on_frozen_budget_mismatch_before_harbor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A changed job-local budget against the frozen run metadata is
+    identity corruption and fails the chunk before any Harbor launch."""
+    monkeypatch.chdir(tmp_path)
+    benchmark_meta = tmp_path / ".benchmark" / "run-metadata.json"
+    benchmark_meta.parent.mkdir(parents=True)
+    benchmark_meta.write_text(json.dumps({
+        "parameters": {"chunk_attempt_budget": 8},
+    }))
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        BENCH_CHUNK_ATTEMPT_BUDGET="5",
+    )
+
+    with patch("chunk_runner._restore_prior_artifact", return_value=False), patch(
+        "chunk_runner._run_harbor_invocation",
+        side_effect=AssertionError("budget mismatch must fail before Harbor"),
+    ):
+        assert main() == 1
+
+
+def test_chunk_restores_durable_budget_when_local_metadata_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pod can die before publishing its GitLab artifact. The next job must
+    adopt the budget already frozen in GCS rather than reapplying the default.
+    """
+    monkeypatch.chdir(tmp_path)
+    _checkpoint_main_env(tmp_path, monkeypatch, BENCH_JOB_TIMEOUT_SECONDS="999999")
+    monkeypatch.delenv("BENCH_CHUNK_ATTEMPT_BUDGET", raising=False)
+    durable_metadata = json.dumps(
+        {"parameters": {"chunk_attempt_budget": 5}}
+    ).encode()
+    results_dir = tmp_path / "jobs"
+
+    def complete_trial(**kwargs):
+        del kwargs
+        _make_trial(results_dir / "run-1" / "task-a__pass", task_name="task-a")
+        return 0, None
+
+    with patch("chunk_runner._restore_prior_artifact", return_value=False), patch(
+        "chunk_runner._restore_gcs_checkpoints"
+    ), patch(
+        "chunk_runner.ckpt.gcs_download_object", return_value=durable_metadata
+    ), patch(
+        "chunk_runner.ckpt.gcs_upload_bytes"
+    ), patch(
+        "chunk_runner._register_durable_chunk_attempt", return_value=1
+    ), patch(
+        "chunk_runner._checkpoint_plugin_args", return_value=None
+    ), patch(
+        "chunk_runner._run_harbor_invocation", side_effect=complete_trial
+    ):
+        assert main() == 0
+
+    metadata = json.loads(
+        (tmp_path / ".benchmark" / "run-metadata.json").read_text()
+    )
+    assert metadata["parameters"]["chunk_attempt_budget"] == 5
+    status = json.loads(
+        (results_dir / "chunk-meta" / "chunk-0.json").read_text()
+    )
+    assert status["chunk_attempt_budget"] == 5
+
+
+def test_chunk_fails_before_attempt_registration_when_durable_metadata_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A storage outage cannot be treated as proof that no frozen identity exists."""
+    monkeypatch.chdir(tmp_path)
+    _checkpoint_main_env(tmp_path, monkeypatch)
+
+    with patch("chunk_runner._restore_prior_artifact", return_value=False), patch(
+        "chunk_runner._restore_gcs_checkpoints"
+    ), patch(
+        "chunk_runner.ckpt.gcs_download_object",
+        side_effect=ckpt.CheckpointRestoreError("temporary GCS failure"),
+    ), patch(
+        "chunk_runner._register_durable_chunk_attempt"
+    ) as register_attempt, patch(
+        "chunk_runner._run_harbor_invocation",
+        side_effect=AssertionError("metadata failure must stop before Harbor"),
+    ):
+        assert main() == 1
+
+    register_attempt.assert_not_called()
+
+
+def test_confirmed_daemon_loss_interrupts_harbor_after_checkpoint_drain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persistent health loss stops the round and preserves completed work."""
+    _checkpoint_main_env(
+        tmp_path,
+        monkeypatch,
+        DOCKER_HOST="tcp://docker:2375",
+        BENCH_DOCKER_HEALTH_CONFIRM_FAILURES="2",
+        BENCH_DOCKER_HEALTH_POLL_SECONDS="0.01",
+        BENCH_JOB_TIMEOUT_SECONDS="999999",
+        BENCH_CHUNK_ATTEMPT_BUDGET="3",
+        SELECTED_TASKS_JSON='["task-a", "task-b"]',
+    )
+    events: list[str] = []
+    results_dir = tmp_path / "jobs"
+    durable_objects: dict[str, bytes] = {}
+    trial_prefix: str | None = None
+
+    def list_checkpoint_objects(
+        bucket: str,
+        prefix: str,
+        **kwargs,
+    ) -> list[str]:
+        nonlocal trial_prefix
+        del bucket, kwargs
+        if prefix.endswith("/trials/"):
+            trial_prefix = prefix
+        return sorted(name for name in durable_objects if name.startswith(prefix))
+
+    def download_checkpoint_object(
+        bucket: str,
+        object_name: str,
+        **kwargs,
+    ) -> bytes | None:
+        del bucket, kwargs
+        return durable_objects.get(object_name)
+
+    state = {"interrupted": False}
+
+    def poll_status() -> int | None:
+        return 130 if state["interrupted"] else None
+
+    def interrupt_harbor(signum: int) -> None:
+        assert signum == signal.SIGINT
+        events.append("interrupt")
+        completed = results_dir / "run-1" / "task-a__completed"
+        _make_trial(completed, task_name="task-a")
+        assert trial_prefix is not None
+        archive, _ = ckpt.create_trial_archive(
+            completed,
+            task_name="task-a",
+            chunk_index=0,
+        )
+        durable_objects[f"{trial_prefix}task-a__completed.tar.gz"] = archive
+        state["interrupted"] = True
+
+    def reject_forced_stop() -> None:
+        pytest.fail("Harbor should finish inside the checkpoint drain grace period")
+
+    proc = _FakeHarborProcess(
+        poll=poll_status,
+        wait_status=130,
+        on_signal=interrupt_harbor,
+        on_terminate=reject_forced_stop,
+        on_kill=reject_forced_stop,
+    )
+
+    health = iter([(True, ""), (False, "daemon unavailable"), (False, "daemon unavailable")])
+    with patch("chunk_runner.run_harbor", return_value=proc), patch(
+        "chunk_runner._probe_docker_daemon", side_effect=health
+    ), patch(
+        "chunk_runner._restore_prior_artifact", return_value=False
+    ), patch(
+        "checkpoint.gcs_list_objects", side_effect=list_checkpoint_objects
+    ), patch(
+        "checkpoint.gcs_download_object", side_effect=download_checkpoint_object
+    ), patch(
+        "chunk_runner._checkpoint_plugin_args", return_value=None
+    ), patch(
+        "chunk_runner._persist_checkpoint_run_metadata"
+    ), patch(
+        "chunk_runner._register_durable_chunk_attempt", return_value=1
+    ), patch(
+        "chunk_runner._persist_chunk_status"
+    ):
+        assert main() == 1
+
+    assert events == ["interrupt"]
+    assert durable_objects
+    assert not (results_dir / "run-1" / "task-a__queued").exists()
+    meta = json.loads((results_dir / "chunk-meta" / "chunk-0.json").read_text())
+    assert meta["stop_reason"] == "docker_daemon_unreachable"
+    assert meta["needs_retry"] == ["task-b"]
+    marker = json.loads(
+        (results_dir / "docker-health" / "chunk-0-daemon-loss.json").read_text()
+    )
+    assert marker["reason"] == "daemon unavailable"
+
+    shutil.rmtree(results_dir / "run-1")
+    monkeypatch.delenv("DOCKER_HOST")
+    scheduled: list[list[str]] = []
+
+    def complete_missing_task(**kwargs):
+        scheduled.append(kwargs["tasks"])
+        completed = results_dir / "run-2" / "task-b__completed"
+        completed.mkdir(parents=True)
+        (completed / "result.json").write_text(json.dumps({
+            "task_name": "task-b",
+            "verifier_result": {"rewards": {"reward": 1.0}},
+        }))
+        return 0, None
+
+    with patch("chunk_runner._run_harbor_invocation", side_effect=complete_missing_task), patch(
+        "chunk_runner._restore_prior_artifact", return_value=False
+    ), patch(
+        "checkpoint.gcs_list_objects", side_effect=list_checkpoint_objects
+    ), patch(
+        "checkpoint.gcs_download_object", side_effect=download_checkpoint_object
+    ), patch(
+        "chunk_runner._checkpoint_plugin_args", return_value=None
+    ), patch(
+        "chunk_runner._persist_checkpoint_run_metadata"
+    ), patch(
+        "chunk_runner._register_durable_chunk_attempt", return_value=2
+    ), patch(
+        "chunk_runner._persist_chunk_status"
+    ):
+        assert main() == 0
+
+    assert scheduled == [["task-b"]]
+    assert (
+        results_dir
+        / ckpt.CHECKPOINT_RESTORE_DIR
+        / "task-a__completed"
+        / "result.json"
+    ).is_file()
+    final_meta = json.loads(
+        (results_dir / "chunk-meta" / "chunk-0.json").read_text()
+    )
+    assert final_meta["stop_reason"] == "docker_daemon_unreachable"
+
+
+def test_transient_daemon_probe_failure_does_not_interrupt_harbor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One failed health check below the confirmation threshold is tolerated."""
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        DOCKER_HOST="tcp://docker:2375",
+        BENCH_DOCKER_HEALTH_CONFIRM_FAILURES="2",
+        BENCH_DOCKER_HEALTH_POLL_SECONDS="0.01",
+    )
+    results_dir = tmp_path / "jobs"
+
+    state = {"polls": 0}
+
+    def poll_status() -> int | None:
+        state["polls"] += 1
+        return 0 if state["polls"] >= 4 else None
+
+    def fake_harbor(**kwargs):
+        trial = results_dir / "run-1" / "task-a__pass"
+        trial.mkdir(parents=True)
+        (trial / "result.json").write_text(json.dumps({
+            "task_name": "task-a",
+            "verifier_result": {"rewards": {"reward": 1.0}},
+        }))
+        return _FakeHarborProcess(poll=poll_status, wait_status=0)
+
+    with patch("chunk_runner.run_harbor", side_effect=fake_harbor), patch(
+        "chunk_runner._probe_docker_daemon",
+        side_effect=[(False, "transient"), (True, "")],
+    ), patch("chunk_runner._restore_prior_artifact", return_value=False):
+        assert main() == 0
+
+    assert not (results_dir / "docker-health" / "chunk-0-daemon-loss.json").exists()
 
 
 def test_swe_bench_pro_rejects_checkpointing_before_starting_work(
@@ -551,32 +904,28 @@ def test_swe_bench_pro_rejects_checkpointing_before_starting_work(
 
 
 # ---------------------------------------------------------------------------
-# Phase 5: retry-budget exhaustion semantics
+# Phase 5: durable attempt-budget semantics
 # ---------------------------------------------------------------------------
 
-def test_chunk_retry_budget_exhausted(monkeypatch: pytest.MonkeyPatch) -> None:
-    """BENCH_JOB_MAX_RETRIES=2 → exhausted on attempt 3 (1 + 2)."""
-    monkeypatch.setenv("BENCH_JOB_MAX_RETRIES", "2")
-    assert _chunk_retry_budget_exhausted(2) is False
-    assert _chunk_retry_budget_exhausted(3) is True
-
-
-def test_chunk_retry_budget_exhausted_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default (0 retries) → exhausted only on attempt 1."""
-    monkeypatch.delenv("BENCH_JOB_MAX_RETRIES", raising=False)
-    assert _chunk_retry_budget_exhausted(1) is True
-    assert _chunk_retry_budget_exhausted(2) is True
+def test_attempt_budget_boundary() -> None:
+    """Ordinals 1..budget are work-bearing; budget is the final launch; ordinals above it reconcile only."""
+    assert _may_launch_work(1, 3) is True
+    assert _may_launch_work(3, 3) is True
+    assert _may_launch_work(4, 3) is False
+    assert _is_final_work_attempt(2, 3) is False
+    assert _is_final_work_attempt(3, 3) is True
+    assert _is_final_work_attempt(4, 3) is False
 
 
 def test_final_gitlab_attempt_still_runs_before_retryables_are_exhausted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Attempt 3 is usable work, not already-spent retry budget."""
+    """The final work-bearing attempt (budget reached) still runs Harbor."""
     monkeypatch.chdir(tmp_path)
     _main_env(
         tmp_path,
         monkeypatch,
-        BENCH_JOB_MAX_RETRIES="2",
+        BENCH_CHUNK_ATTEMPT_BUDGET="3",
         BENCH_JOB_TIMEOUT_SECONDS="999999",
     )
     results_dir = tmp_path / "jobs"
@@ -584,7 +933,6 @@ def test_final_gitlab_attempt_still_runs_before_retryables_are_exhausted(
     retryable.mkdir(parents=True)
     (retryable / "result.json").write_text(json.dumps({
         "task_name": "task-a",
-        "verifier_result": {"rewards": {"reward": 0.0}},
         "exception_info": {
             "exception_type": "ConnectionError",
             "exception_message": "connection reset by peer",
@@ -618,13 +966,13 @@ def test_final_gitlab_attempt_still_runs_before_retryables_are_exhausted(
 
 
 def test_final_attempt_records_tasks_completed_only_by_retry_exhaustion(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.chdir(tmp_path)
     _main_env(
         tmp_path,
         monkeypatch,
-        BENCH_JOB_MAX_RETRIES="2",
+        BENCH_CHUNK_ATTEMPT_BUDGET="3",
         BENCH_JOB_TIMEOUT_SECONDS="999999",
     )
     results_dir = tmp_path / "jobs"
@@ -657,6 +1005,267 @@ def test_final_attempt_records_tasks_completed_only_by_retry_exhaustion(
     status = json.loads(chunk_meta.read_text())
     assert status["needs_retry"] == ["task-a"]
     assert status["exhausted"] is True
+
+    out = capsys.readouterr().out
+    assert (
+        "[chunk-0] all 1 trial slots filled on the final attempt; "
+        "1 tasks completed only via retry-exhaustion: ['task-a']" in out
+    )
+    assert "trials complete" not in out
+
+
+def test_final_attempt_records_confirmed_daemon_loss_as_exhausted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        BENCH_CHUNK_ATTEMPT_BUDGET="1",
+        BENCH_JOB_TIMEOUT_SECONDS="999999",
+    )
+    results_dir = tmp_path / "jobs"
+
+    def daemon_loss_invocation(**kwargs):
+        del kwargs
+        marker = results_dir / "docker-health" / "chunk-0-daemon-loss.json"
+        marker.parent.mkdir(parents=True)
+        marker.write_text(json.dumps({"reason": "daemon unavailable"}))
+        return 130, signal.SIGINT
+
+    with patch("chunk_runner._restore_prior_artifact", return_value=False), patch(
+        "chunk_runner._run_harbor_invocation",
+        side_effect=daemon_loss_invocation,
+    ):
+        assert main() == 0
+
+    status = json.loads(
+        (results_dir / "chunk-meta" / "chunk-0.json").read_text()
+    )
+    assert status["needs_retry"] == ["task-a"]
+    assert status["exhausted"] is True
+    assert status["stop_reason"] == "docker_daemon_unreachable"
+
+
+def test_final_attempt_harbor_failure_exhausts_incomplete_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After the final work-bearing attempt, a Harbor failure also
+    terminalizes remaining work: exhausted status, exit 0 so the summary
+    publishes the bounded partial result."""
+    monkeypatch.chdir(tmp_path)
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        BENCH_CHUNK_ATTEMPT_BUDGET="1",
+        BENCH_JOB_TIMEOUT_SECONDS="999999",
+    )
+    results_dir = tmp_path / "jobs"
+
+    def failing_invocation(**kwargs):
+        del kwargs
+        return 1, None  # Harbor failed; no trials produced, no daemon loss
+
+    with patch("chunk_runner._restore_prior_artifact", return_value=False), patch(
+        "chunk_runner._run_harbor_invocation",
+        side_effect=failing_invocation,
+    ):
+        assert main() == 0
+
+    status = json.loads(
+        (results_dir / "chunk-meta" / "chunk-0.json").read_text()
+    )
+    assert status["needs_retry"] == ["task-a"]
+    assert status["exhausted"] is True
+    assert status["exit_code"] == 0
+
+
+def test_durable_attempt_four_still_launches_harbor_with_budget_eight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the durable-attempt-4 coupling: with the decoupled
+    budget, attempt 4 invokes Harbor because it is BELOW the new durable
+    boundary, not because above-budget attempts may spend."""
+    monkeypatch.chdir(tmp_path)
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        BENCH_CHUNK_ATTEMPT_BUDGET="8",
+        BENCH_JOB_TIMEOUT_SECONDS="999999",
+    )
+    results_dir = tmp_path / "jobs"
+    chunk_meta = results_dir / "chunk-meta" / "chunk-0.json"
+    chunk_meta.parent.mkdir(parents=True)
+    chunk_meta.write_text(json.dumps({"chunk_attempt": 3}))
+
+    invocations: list[list[str]] = []
+
+    def fake_invocation(**kwargs):
+        invocations.append(kwargs["tasks"])
+        completed = results_dir / "run-final" / "task-a__pass"
+        completed.mkdir(parents=True)
+        (completed / "result.json").write_text(json.dumps({
+            "task_name": "task-a",
+            "verifier_result": {"rewards": {"reward": 1.0}},
+        }))
+        return 0, None
+
+    with patch("chunk_runner._restore_prior_artifact", return_value=False), patch(
+        "chunk_runner._run_harbor_invocation",
+        side_effect=fake_invocation,
+    ):
+        assert main() == 0
+
+    assert invocations == [["task-a"]]
+    status = json.loads(chunk_meta.read_text())
+    assert status["chunk_attempt"] == 4
+    assert status["exhausted"] is False
+
+
+def test_above_budget_attempt_never_launches_harbor_and_exhausts_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An above-budget startup with incomplete restored work writes an
+    exhausted status and exits 0 WITHOUT model spend (real token fuse)."""
+    monkeypatch.chdir(tmp_path)
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        BENCH_CHUNK_ATTEMPT_BUDGET="3",
+        BENCH_JOB_TIMEOUT_SECONDS="999999",
+    )
+    results_dir = tmp_path / "jobs"
+    chunk_meta = results_dir / "chunk-meta" / "chunk-0.json"
+    chunk_meta.parent.mkdir(parents=True)
+    chunk_meta.write_text(json.dumps({"chunk_attempt": 3}))
+    # An incomplete (retryable) trial remains from a prior attempt.
+    retryable = results_dir / "run-previous" / "task-a__infra"
+    retryable.mkdir(parents=True)
+    (retryable / "result.json").write_text(json.dumps({
+        "task_name": "task-a",
+        "exception_info": {
+            "exception_type": "ConnectionError",
+            "exception_message": "connection reset by peer",
+            "exception_traceback": "",
+            "occurred_at": "2026-01-01T00:00:00Z",
+        },
+    }))
+
+    with patch("chunk_runner._restore_prior_artifact", return_value=False), patch(
+        "chunk_runner._run_harbor_invocation",
+        side_effect=AssertionError("above-budget attempt must not launch Harbor"),
+    ):
+        assert main() == 0
+
+    status = json.loads(chunk_meta.read_text())
+    assert status["chunk_attempt"] == 4
+    assert status["exhausted"] is True
+    assert status["needs_retry"] == ["task-a"]
+
+
+def test_above_budget_attempt_succeeds_when_restored_work_is_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Completion is checked before the budget guard: a complete chunk exits
+    0 even at an ordinal above the budget."""
+    monkeypatch.chdir(tmp_path)
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        BENCH_CHUNK_ATTEMPT_BUDGET="3",
+        BENCH_JOB_TIMEOUT_SECONDS="999999",
+    )
+    results_dir = tmp_path / "jobs"
+    chunk_meta = results_dir / "chunk-meta" / "chunk-0.json"
+    chunk_meta.parent.mkdir(parents=True)
+    chunk_meta.write_text(json.dumps({"chunk_attempt": 3}))
+    _make_trial(results_dir / "run-previous" / "task-a__pass", task_name="task-a")
+
+    with patch("chunk_runner._restore_prior_artifact", return_value=False), patch(
+        "chunk_runner._run_harbor_invocation",
+        side_effect=AssertionError("above-budget attempt must not launch Harbor"),
+    ):
+        assert main() == 0
+
+    status = json.loads(chunk_meta.read_text())
+    assert status["exhausted"] is False
+    assert status["needs_retry"] == []
+
+
+def test_final_attempt_soft_deadline_still_exhausts_incomplete_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After the final work-bearing attempt, a soft-deadline stop writes an
+    exhausted status and exits 0 so the summary can publish partial results."""
+    monkeypatch.chdir(tmp_path)
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        BENCH_CHUNK_ATTEMPT_BUDGET="1",
+        BENCH_ATTEMPTS="2",  # two k=1 rounds so the deadline branch fires
+        # Soft deadline: int(2 * 0.96) = 1s window; restore is instant, the
+        # Harbor invocation blocks past it, and round 2 observes the deadline.
+        BENCH_JOB_TIMEOUT_SECONDS="2",
+        CI_JOB_STARTED_AT="2020-01-01T00:00:00Z",
+    )
+    results_dir = tmp_path / "jobs"
+
+    import time
+
+    def blocked_invocation(**kwargs):
+        time.sleep(2)  # past the 1s soft deadline
+        return 0, None
+
+    with patch("chunk_runner._restore_prior_artifact", return_value=False), patch(
+        "chunk_runner._run_harbor_invocation",
+        side_effect=blocked_invocation,
+    ):
+        assert main() == 0
+
+    status = json.loads(
+        (results_dir / "chunk-meta" / "chunk-0.json").read_text()
+    )
+    assert status["exhausted"] is True
+    assert status["needs_retry"] == ["task-a"]
+    assert status["chunk_attempt_budget"] == 1
+
+
+def test_run_metadata_freezes_chunk_attempt_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run creation records the resolved budget in durable run metadata, and
+    the chunk status carries the same frozen value."""
+    monkeypatch.chdir(tmp_path)
+    _main_env(
+        tmp_path,
+        monkeypatch,
+        BENCH_CHUNK_ATTEMPT_BUDGET="8",
+    )
+    results_dir = tmp_path / "jobs"
+
+    def fake_invocation(**kwargs):
+        completed = results_dir / "run-1" / "task-a__pass"
+        completed.mkdir(parents=True)
+        (completed / "result.json").write_text(json.dumps({
+            "task_name": "task-a",
+            "verifier_result": {"rewards": {"reward": 1.0}},
+        }))
+        return 0, None
+
+    with patch("chunk_runner._restore_prior_artifact", return_value=False), patch(
+        "chunk_runner._run_harbor_invocation",
+        side_effect=fake_invocation,
+    ):
+        assert main() == 0
+
+    metadata = json.loads(
+        (tmp_path / ".benchmark" / "run-metadata.json").read_text()
+    )
+    assert metadata["parameters"]["chunk_attempt_budget"] == 8
+    status = json.loads(
+        (results_dir / "chunk-meta" / "chunk-0.json").read_text()
+    )
+    assert status["chunk_attempt_budget"] == 8
 
 
 def test_checkpoint_failure_keeps_chunk_failed_when_local_trial_is_complete(
@@ -765,6 +1374,28 @@ def test_persist_chunk_status_uploads_job_scoped_metadata(
     )
 
 
+def test_finalize_chunk_fails_when_status_cannot_be_persisted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with patch(
+        "chunk_runner._persist_chunk_status",
+        side_effect=ckpt.CheckpointUploadError("storage unavailable"),
+    ):
+        exit_code = _finalize_chunk(
+            results_dir=tmp_path,
+            chunk_index=2,
+            chunk_attempt=3,
+            chunk_attempt_budget=8,
+            exit_code=0,
+            needs_retry=[],
+            run_prefix=_RUN_PREFIX,
+        )
+
+    assert exit_code == 1
+    assert (tmp_path / "chunk-meta" / "chunk-2.json").is_file()
+    assert "failed to persist chunk status: storage unavailable" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # Phase 3: checkpoint plugin args wiring
 # ---------------------------------------------------------------------------
@@ -807,7 +1438,9 @@ def test_persist_checkpoint_run_metadata_is_deterministic(
     monkeypatch.setenv("BENCH_TRIAL_CHECKPOINTS", "true")
     monkeypatch.setenv("BENCH_CHECKPOINT_BUCKET", "ckpt-bucket")
 
-    with patch("chunk_runner.ckpt.gcs_upload_bytes") as upload:
+    with patch("chunk_runner.ckpt.gcs_upload_bytes") as upload, patch(
+        "chunk_runner.ckpt.gcs_download_object", return_value=None
+    ):
         _persist_checkpoint_run_metadata(metadata_path, _RUN_PREFIX)
 
     assert [call.args[1] for call in upload.call_args_list] == [
@@ -822,6 +1455,59 @@ def test_persist_checkpoint_run_metadata_is_deterministic(
         assert durable["gcs"]["checkpoint_prefix"] == _RUN_PREFIX
         assert durable["gitlab"]["job_id"] == ""
         assert durable["gitlab"]["job_url"] == ""
+
+
+def test_persist_checkpoint_run_metadata_rejects_budget_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An existing durable copy with a different frozen budget fails loudly."""
+    metadata_path = tmp_path / "run-metadata.json"
+    metadata = {
+        "parameters": {"chunk_attempt_budget": 8},
+        "gcs": {"prefix": _RUN_PREFIX},
+        "gitlab": {
+            "project_id": "7",
+            "pipeline_id": "100",
+            "job_id": "200",
+            "job_url": "https://gitlab.example/jobs/200",
+        },
+    }
+    metadata_path.write_text(json.dumps(metadata))
+    monkeypatch.setenv("BENCH_TRIAL_CHECKPOINTS", "true")
+    monkeypatch.setenv("BENCH_CHECKPOINT_BUCKET", "ckpt-bucket")
+
+    existing = {**metadata, "parameters": {"chunk_attempt_budget": 3}}
+    with patch("chunk_runner.ckpt.gcs_upload_bytes"), patch(
+        "chunk_runner.ckpt.gcs_download_object",
+        return_value=json.dumps(existing).encode(),
+    ), pytest.raises(ValueError, match="chunk attempt budget"):
+        _persist_checkpoint_run_metadata(metadata_path, _RUN_PREFIX)
+
+
+def test_persist_checkpoint_run_metadata_accepts_matching_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Concurrent compare-or-create: identical frozen budget races harmlessly."""
+    metadata_path = tmp_path / "run-metadata.json"
+    metadata = {
+        "parameters": {"chunk_attempt_budget": 8},
+        "gcs": {"prefix": _RUN_PREFIX},
+        "gitlab": {
+            "project_id": "7",
+            "pipeline_id": "100",
+            "job_id": "200",
+            "job_url": "https://gitlab.example/jobs/200",
+        },
+    }
+    metadata_path.write_text(json.dumps(metadata))
+    monkeypatch.setenv("BENCH_TRIAL_CHECKPOINTS", "true")
+    monkeypatch.setenv("BENCH_CHECKPOINT_BUCKET", "ckpt-bucket")
+
+    with patch("chunk_runner.ckpt.gcs_upload_bytes"), patch(
+        "chunk_runner.ckpt.gcs_download_object",
+        return_value=json.dumps(metadata).encode(),
+    ):
+        _persist_checkpoint_run_metadata(metadata_path, _RUN_PREFIX)
 
 
 # ---------------------------------------------------------------------------

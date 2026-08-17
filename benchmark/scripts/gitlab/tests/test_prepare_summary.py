@@ -82,6 +82,8 @@ def test_prepare_recovers_metadata_then_hydrates_trials(
     monkeypatch.setenv("CI_PROJECT_ID", "7")
     monkeypatch.setenv("CI_PIPELINE_ID", "100")
     monkeypatch.setenv("BENCH_CHUNK_COUNT", "3")
+    attempts_path = tmp_path / ".benchmark" / "chunk-attempts.json"
+    monkeypatch.setenv("BENCHMARK_CHUNK_ATTEMPTS_PATH", str(attempts_path))
 
     with patch(
         "prepare_summary.ckpt.gcs_download_object",
@@ -91,7 +93,10 @@ def test_prepare_recovers_metadata_then_hydrates_trials(
     ) as restore, patch(
         "prepare_summary.ckpt.restore_chunk_statuses",
         return_value=3,
-    ) as restore_statuses:
+    ) as restore_statuses, patch(
+        "prepare_summary.ckpt.read_chunk_attempt_ordinals",
+        return_value={0: 4, 1: 3, 2: 2},
+    ) as ordinals:
         restore.return_value = ckpt.RestoreResult([], 0, 0, 0)
         assert prepare_summary.main() == 0
 
@@ -110,6 +115,14 @@ def test_prepare_recovers_metadata_then_hydrates_trials(
         dest_dir=results_dir,
         chunk_count=3,
     )
+    ordinals.assert_called_once_with(
+        bucket="ckpt-bucket",
+        run_prefix=metadata["gcs"]["checkpoint_prefix"],
+        chunk_count=3,
+    )
+    # Attempt ordinals are restored separately; runner-authored chunk-meta
+    # must never be fabricated from them.
+    assert json.loads(attempts_path.read_text()) == {"0": 4, "1": 3, "2": 2}
     assert json.loads(metadata_path.read_text()) == metadata
 
 

@@ -97,10 +97,12 @@ setup-image:
     RUN_ID: "gitlab-p$CI_PIPELINE_ID"
     BENCH_CHUNK_INDEX: "$CHUNK"
     BENCH_CHUNK_COUNT: 5
-    # Keep in sync with the `retry: 2` above — chunk_runner treats a chunk as
-    # retry-budget-exhausted once chunk_attempt reaches 1 + BENCH_JOB_MAX_RETRIES,
-    # so both values must describe the same number of GitLab retries.
-    BENCH_JOB_MAX_RETRIES: 2
+    # Durable per-chunk attempt budget, INDEPENDENT of GitLab's `retry: 2`
+    # above (that retry stays pure GitLab resilience policy). Ordinals
+    # 1..budget are work-bearing, `budget` is the final Harbor-launching
+    # attempt, and ordinals above it reconcile durable state only. The value
+    # is frozen into run-metadata.json at run creation.
+    BENCH_CHUNK_ATTEMPT_BUDGET: 8
     BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
     # Checkpointing is not supported for SWE-bench Pro yet. Hardcode false here
     # (ignoring the shared input, which now defaults to true) so default runs
@@ -149,7 +151,7 @@ setup-image:
       echo "attempts:                 ${BENCH_ATTEMPTS}"
       echo "timeout_multiplier:       ${BENCH_TIMEOUT_MULTIPLIER}"
       echo "retry_agent_timeout:      ${BENCH_RETRY_AGENT_TIMEOUT}"
-      echo "max_retries:              ${BENCH_JOB_MAX_RETRIES:-0}"
+      echo "chunk_attempt_budget:   ${BENCH_CHUNK_ATTEMPT_BUDGET:-8}"
       echo "temperature:              ${BENCH_LLM_TEMPERATURE}"
       echo "top_p:                    ${BENCH_LLM_TOP_P}"
       echo "top_k:                    ${BENCH_LLM_TOP_K}"
@@ -204,6 +206,7 @@ swe-bench-pro-summary:
     BENCHMARK_RESULTS_DIR: benchmark/swe-bench-pro/jobs
     BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
     BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
+    BENCH_CHUNK_COUNT: "5"
     DEBIAN_FRONTEND: noninteractive
     FF_TIMESTAMPS: "true"
     GCS_UPLOAD_REQUIRED: "true"

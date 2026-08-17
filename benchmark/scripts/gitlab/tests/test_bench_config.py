@@ -10,13 +10,80 @@ from bench_config import (
     is_multi_model,
     is_retryable,
     is_workflow_agent,
+    load_chunk_attempt_budget,
+    load_docker_health_config,
     load_llm_params,
     parse_model,
+    resolve_chunk_attempt_budget,
     resolve_thinking_level,
     validate_llm_params_for_model,
     validate_thinking_level_for_model,
 )
 from outcome import Outcome
+
+
+def _clear_docker_health_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "DOCKER_HOST",
+        "BENCH_DOCKER_HEALTH_MONITOR",
+        "BENCH_DOCKER_HEALTH_POLL_SECONDS",
+        "BENCH_DOCKER_HEALTH_CONFIRM_FAILURES",
+        "BENCH_DOCKER_HEALTH_PROBE_TIMEOUT_SECONDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_docker_health_monitor_defaults_from_remote_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_docker_health_env(monkeypatch)
+
+    assert load_docker_health_config().enabled is False
+
+    monkeypatch.setenv("DOCKER_HOST", "tcp://docker:2375")
+    config = load_docker_health_config()
+    assert config.enabled is True
+    assert config.poll_seconds == 5.0
+    assert config.confirm_failures == 3
+    assert config.probe_timeout_seconds == 5.0
+
+
+def test_docker_health_monitor_loads_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_docker_health_env(monkeypatch)
+    monkeypatch.setenv("BENCH_DOCKER_HEALTH_MONITOR", "yes")
+    monkeypatch.setenv("BENCH_DOCKER_HEALTH_POLL_SECONDS", "0.25")
+    monkeypatch.setenv("BENCH_DOCKER_HEALTH_CONFIRM_FAILURES", "4")
+    monkeypatch.setenv("BENCH_DOCKER_HEALTH_PROBE_TIMEOUT_SECONDS", "1.5")
+
+    config = load_docker_health_config()
+
+    assert config.enabled is True
+    assert config.poll_seconds == 0.25
+    assert config.confirm_failures == 4
+    assert config.probe_timeout_seconds == 1.5
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("BENCH_DOCKER_HEALTH_POLL_SECONDS", "soon", "not a valid number"),
+        ("BENCH_DOCKER_HEALTH_CONFIRM_FAILURES", "many", "not a valid integer"),
+        ("BENCH_DOCKER_HEALTH_PROBE_TIMEOUT_SECONDS", "later", "not a valid number"),
+    ],
+)
+def test_docker_health_monitor_rejects_invalid_numbers(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+    message: str,
+) -> None:
+    _clear_docker_health_env(monkeypatch)
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match=message):
+        load_docker_health_config()
 
 
 def test_concrete_model_is_the_default_selection(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -357,6 +424,80 @@ def test_resolve_thinking_level_explicit_agent_arg(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("CODING_AGENT", "opencode")
     assert resolve_thinking_level(coding_agent="kimchi") == "high"
     assert resolve_thinking_level(coding_agent="opencode") is None
+
+
+# ---------------------------------------------------------------------------
+# Durable chunk attempt budget (1a)
+# ---------------------------------------------------------------------------
+
+
+def test_load_chunk_attempt_budget_defaults_to_eight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BENCH_CHUNK_ATTEMPT_BUDGET", raising=False)
+    assert load_chunk_attempt_budget() == 8
+
+
+def test_load_chunk_attempt_budget_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BENCH_CHUNK_ATTEMPT_BUDGET", "12")
+    assert load_chunk_attempt_budget() == 12
+
+
+def test_load_chunk_attempt_budget_rejects_non_integer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BENCH_CHUNK_ATTEMPT_BUDGET", "soon")
+    with pytest.raises(ValueError, match="not a valid integer"):
+        load_chunk_attempt_budget()
+
+
+@pytest.mark.parametrize("raw", ["0", "-3"])
+def test_load_chunk_attempt_budget_rejects_non_positive(
+    raw: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BENCH_CHUNK_ATTEMPT_BUDGET", raw)
+    with pytest.raises(ValueError, match="positive integer"):
+        load_chunk_attempt_budget()
+
+
+def test_resolve_chunk_attempt_budget_uses_env_without_frozen_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Brand-new / non-checkpointed local runs take the environment/default."""
+    monkeypatch.setenv("BENCH_CHUNK_ATTEMPT_BUDGET", "4")
+    assert resolve_chunk_attempt_budget(None) == 4
+
+
+def test_resolve_chunk_attempt_budget_frozen_wins_when_env_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BENCH_CHUNK_ATTEMPT_BUDGET", raising=False)
+    assert resolve_chunk_attempt_budget(6) == 6
+
+
+def test_resolve_chunk_attempt_budget_frozen_wins_when_env_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BENCH_CHUNK_ATTEMPT_BUDGET", "6")
+    assert resolve_chunk_attempt_budget(6) == 6
+
+
+def test_resolve_chunk_attempt_budget_rejects_changed_job_local_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later job must not reinterpret a changed job-local value."""
+    monkeypatch.setenv("BENCH_CHUNK_ATTEMPT_BUDGET", "5")
+    with pytest.raises(ValueError, match="run identity mismatch"):
+        resolve_chunk_attempt_budget(8)
+
+
+@pytest.mark.parametrize("frozen", [0, -1, 2.5, "8", True, False])
+def test_resolve_chunk_attempt_budget_rejects_invalid_frozen_value(
+    frozen: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("BENCH_CHUNK_ATTEMPT_BUDGET", raising=False)
+    with pytest.raises(ValueError, match="positive integer"):
+        resolve_chunk_attempt_budget(frozen)
 
 
 @pytest.mark.parametrize("level", ["low", "high", "max"])

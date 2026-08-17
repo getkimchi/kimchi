@@ -5,6 +5,9 @@ from pathlib import Path
 CI_CONFIG = (
     Path(__file__).resolve().parents[4] / ".gitlab" / "ci" / "terminal-bench-2.yml"
 )
+SWE_CI_CONFIG = (
+    Path(__file__).resolve().parents[4] / ".gitlab" / "ci" / "swe-bench-pro.yml"
+)
 ROOT_CI_CONFIG = Path(__file__).resolve().parents[4] / ".gitlab-ci.yml"
 
 
@@ -48,6 +51,17 @@ def test_summary_uses_static_needs_for_parallel_chunk_artifacts() -> None:
         "      artifacts: true"
     ) in summary
     assert "needs:" not in rules
+
+
+def test_swe_summary_preserves_the_five_chunk_positional_ownership() -> None:
+    config = SWE_CI_CONFIG.read_text(encoding="utf-8")
+    summary = _job_block(
+        config,
+        "swe-bench-pro-summary:",
+        "swe-bench-pro-analyze:",
+    )
+
+    assert 'BENCH_CHUNK_COUNT: "5"' in summary
 
 
 def test_timeout_analysis_consumes_hydrated_summary_archive_not_chunk_artifacts() -> None:

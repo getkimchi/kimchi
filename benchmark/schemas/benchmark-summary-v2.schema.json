@@ -149,6 +149,66 @@
         "pattern": "^chunk-[0-9]+$"
       }
     },
+    "chunk_recovery": {
+      "description": "Authoritative per-chunk recovery states derived from durable attempt ordinals, runner statuses, and recovered final trials.",
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^chunk-[0-9]+$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "disposition",
+          "durable_ordinal",
+          "attempt_budget",
+          "incomplete_tasks"
+        ],
+        "properties": {
+          "disposition": {
+            "description": "complete | recoverable | exhausted_reported | exhausted_inferred",
+            "type": "string",
+            "enum": [
+              "complete",
+              "recoverable",
+              "exhausted_reported",
+              "exhausted_inferred"
+            ]
+          },
+          "durable_ordinal": {
+            "description": "Durable attempt ordinal from immutable GCS markers; null when no ordinal is recorded.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "attempt_budget": {
+            "description": "The run's frozen durable chunk attempt budget.",
+            "type": "integer",
+            "minimum": 1
+          },
+          "incomplete_tasks": {
+            "description": "The chunk's own incomplete assigned tasks (exhaustion exempts exactly these).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "chunk_stop_reasons": {
+      "description": "Machine-readable reasons a chunk stopped before normal completion.",
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^chunk-[0-9]+$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "run": {
       "type": "object",
       "additionalProperties": false,

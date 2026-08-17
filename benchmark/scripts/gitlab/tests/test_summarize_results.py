@@ -5,10 +5,12 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
+from unittest import mock
 
 from jsonschema import ValidationError, validate
 
@@ -73,6 +75,7 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
             trial_dir = Path(tmp) / "sample-task__abc123"
             trial_dir.mkdir()
             write_json(trial_dir / "result.json", result)
+            (trial_dir / "trial.log").write_text("", encoding="utf-8")
             if session_text is not None:
                 write_session(trial_dir, session_text)
             if verifier_stdout is not None:
@@ -94,6 +97,7 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
 
     def result_with_exception(self, exception_type: str, message: str) -> dict:
         result = json.loads(json.dumps(BASE_RESULT))
+        result.pop("verifier_result")
         result["exception_info"] = {
             "exception_type": exception_type,
             "exception_message": message,
@@ -231,7 +235,7 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
             "NonZeroAgentExitCodeError",
             "KIMCHI_INFRA_ERROR: provider transport failure; exiting with code 74",
         )
-        result["verifier_result"]["rewards"]["reward"] = 1
+        result["verifier_result"] = {"rewards": {"reward": 1}}
 
         summary = self.summarize(result)
         data = summary.to_summary_json()
@@ -309,6 +313,7 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
 
     def test_summarize_trial_reads_outcome_from_result_json(self) -> None:
         result = json.loads(json.dumps(BASE_RESULT))
+        result.pop("verifier_result")
         result["exception_info"] = {"exception_type": "AgentTimeoutError"}
 
         summary = self.summarize(result)
@@ -710,6 +715,7 @@ class WriteSummaryMissingTasksTest(unittest.TestCase):
                 "chunk_attempt": 3,
                 "exit_code": 0,
                 "needs_retry": ["task-a"],
+                "stop_reason": "docker_daemon_unreachable",
             })
 
             metadata_path = tmp_path / "run-metadata.json"
@@ -725,7 +731,10 @@ class WriteSummaryMissingTasksTest(unittest.TestCase):
             })
 
             output_path = tmp_path / "summary.json"
-            with contextlib.redirect_stdout(io.StringIO()), \
+            # Legacy status (attempt 3, no frozen budget/schema flag): the
+            # environment/default compatibility path supplies the budget.
+            with mock.patch.dict(os.environ, {"BENCH_CHUNK_ATTEMPT_BUDGET": "3"}), \
+                 contextlib.redirect_stdout(io.StringIO()), \
                  contextlib.redirect_stderr(io.StringIO()):
                 rc = summarize_results.write_summary(
                     metadata_path,
@@ -736,6 +745,11 @@ class WriteSummaryMissingTasksTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             summary = json.loads(output_path.read_text())
             self.assertEqual(summary["chunks_exhausted_retries"], ["chunk-0"])
+            self.assertEqual(summary["chunk_recovery"], {})
+            self.assertEqual(
+                summary["chunk_stop_reasons"],
+                {"chunk-0": "docker_daemon_unreachable"},
+            )
 
     def test_write_summary_records_no_verdict_for_exhausted_task_without_trial(self) -> None:
         """Exhaustion metadata makes a never-produced trial an explicit unknown."""
@@ -764,7 +778,8 @@ class WriteSummaryMissingTasksTest(unittest.TestCase):
             })
 
             output_path = tmp_path / "summary.json"
-            with contextlib.redirect_stdout(io.StringIO()), \
+            with mock.patch.dict(os.environ, {"BENCH_CHUNK_ATTEMPT_BUDGET": "3"}), \
+                 contextlib.redirect_stdout(io.StringIO()), \
                  contextlib.redirect_stderr(io.StringIO()):
                 rc = summarize_results.write_summary(
                     metadata_path,
@@ -775,6 +790,508 @@ class WriteSummaryMissingTasksTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             summary = json.loads(output_path.read_text())
             self.assertEqual(summary["totals"]["tasks"]["no_verdict"], 1)
+
+    def test_write_summary_infers_exhaustion_from_durable_ordinal(self) -> None:
+        """Frozen metadata budget + durable ordinal at the budget → exhausted
+        even though the final attempt died before writing an exhausted status.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs"
+            trial_dir = results_dir / "run-1" / "task-a__abc123"
+            trial_dir.mkdir(parents=True)
+            write_json(trial_dir / "result.json", {
+                **BASE_RESULT,
+                "trial_name": trial_dir.name,
+                "task_name": "terminal-bench/task-a",
+                "outcome": "error",
+                "error_category": "infra",
+                "error_subcategory": "infra_network_error",
+            })
+            chunk_meta_dir = results_dir / "chunk-meta"
+            chunk_meta_dir.mkdir()
+            write_json(chunk_meta_dir / "chunk-0.json", {
+                "chunk_index": 0,
+                "chunk_attempt": 2,
+                "chunk_attempt_budget": 2,
+                "exit_code": 0,
+                "needs_retry": ["task-a"],
+                "exhausted": False,
+            })
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir),
+                "parameters": {
+                    "selected_tasks": ["task-a"],
+                    "attempts": "1",
+                    "chunk_attempt_budget": 2,
+                },
+            })
+            attempts_path = tmp_path / "chunk-attempts.json"
+            write_json(attempts_path, {"0": 2})
+
+            output_path = tmp_path / "summary.json"
+            with mock.patch.dict(os.environ, {
+                "BENCHMARK_CHUNK_ATTEMPTS_PATH": str(attempts_path),
+                "BENCH_CHUNK_ATTEMPT_BUDGET": "99",  # frozen metadata wins
+                "BENCH_CHUNK_COUNT": "1",
+            }), contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                rc = summarize_results.write_summary(
+                    metadata_path,
+                    output_path,
+                    results_dir_override=results_dir,
+                )
+
+            self.assertEqual(rc, 0)
+            summary = json.loads(output_path.read_text())
+            self.assertEqual(summary["chunks_exhausted_retries"], ["chunk-0"])
+            self.assertEqual(
+                summary["chunk_recovery"]["chunk-0"],
+                {
+                    "disposition": "exhausted_inferred",
+                    "durable_ordinal": 2,
+                    "attempt_budget": 2,
+                    "incomplete_tasks": ["task-a"],
+                },
+            )
+
+    def test_legacy_summary_does_not_infer_exhaustion_from_durable_ordinal(self) -> None:
+        """Attempt markers predate the frozen-budget schema, so their ordinal
+        must not opt a legacy run into the new recovery-state semantics."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs"
+            chunk_meta_dir = results_dir / "chunk-meta"
+            chunk_meta_dir.mkdir(parents=True)
+            write_json(chunk_meta_dir / "chunk-0.json", {
+                "chunk_index": 0,
+                "chunk_attempt": 2,
+                "exit_code": 1,
+                "needs_retry": ["task-a"],
+                "exhausted": False,
+            })
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir),
+                "parameters": {
+                    "selected_tasks": ["task-a"],
+                    "attempts": "1",
+                },
+            })
+            attempts_path = tmp_path / "chunk-attempts.json"
+            write_json(attempts_path, {"0": 2})
+
+            output_path = tmp_path / "summary.json"
+            err_buf = io.StringIO()
+            with mock.patch.dict(os.environ, {
+                "BENCHMARK_CHUNK_ATTEMPTS_PATH": str(attempts_path),
+                "BENCH_CHUNK_ATTEMPT_BUDGET": "2",
+            }), contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(err_buf):
+                rc = summarize_results.write_summary(
+                    metadata_path,
+                    output_path,
+                    results_dir_override=results_dir,
+                )
+
+            self.assertEqual(rc, 1)
+            self.assertIn("never produced a trial", err_buf.getvalue())
+            summary = json.loads(output_path.read_text())
+            self.assertEqual(summary["chunk_recovery"], {})
+            self.assertEqual(summary["chunks_exhausted_retries"], [])
+
+    def test_write_summary_rejects_present_invalid_frozen_budget(self) -> None:
+        """A present invalid field is corrupt new-schema identity, not legacy."""
+        for invalid_budget in (True, False, 0, -1, "8"):
+            with self.subTest(invalid_budget=invalid_budget), tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                results_dir = tmp_path / "jobs"
+                results_dir.mkdir()
+                metadata_path = tmp_path / "run-metadata.json"
+                write_json(metadata_path, {
+                    "benchmark": "terminal-bench-2",
+                    "results_dir": str(results_dir),
+                    "parameters": {
+                        "selected_tasks": ["task-a"],
+                        "attempts": "1",
+                        "chunk_attempt_budget": invalid_budget,
+                    },
+                })
+                err_buf = io.StringIO()
+                with contextlib.redirect_stdout(io.StringIO()), \
+                     contextlib.redirect_stderr(err_buf):
+                    rc = summarize_results.write_summary(
+                        metadata_path,
+                        tmp_path / "summary.json",
+                        results_dir_override=results_dir,
+                    )
+
+                self.assertEqual(rc, 1)
+                self.assertIn("invalid frozen chunk attempt budget", err_buf.getvalue())
+
+    def test_write_summary_fails_recoverable_chunk_with_annotated_error(self) -> None:
+        """Incomplete work below the frozen budget is recoverable: red
+        pipeline with the retry-resume annotation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs"
+            chunk_meta_dir = results_dir / "chunk-meta"
+            chunk_meta_dir.mkdir(parents=True)
+            write_json(chunk_meta_dir / "chunk-0.json", {
+                "chunk_index": 0,
+                "chunk_attempt": 3,
+                "chunk_attempt_budget": 8,
+                "exit_code": 1,
+                "needs_retry": ["task-a"],
+                "exhausted": False,
+            })
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir),
+                "parameters": {
+                    "selected_tasks": ["task-a"],
+                    "attempts": "1",
+                    "chunk_attempt_budget": 8,
+                },
+            })
+            attempts_path = tmp_path / "chunk-attempts.json"
+            write_json(attempts_path, {"0": 3})
+
+            output_path = tmp_path / "summary.json"
+            err_buf = io.StringIO()
+            with mock.patch.dict(os.environ, {
+                "BENCHMARK_CHUNK_ATTEMPTS_PATH": str(attempts_path),
+                "BENCH_CHUNK_COUNT": "1",
+            }), contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(err_buf):
+                rc = summarize_results.write_summary(
+                    metadata_path,
+                    output_path,
+                    results_dir_override=results_dir,
+                )
+
+            self.assertEqual(rc, 1)
+            self.assertIn(
+                "chunk-0 incomplete (attempt 3/8); "
+                "pipeline retry will resume from durable checkpoints",
+                err_buf.getvalue(),
+            )
+
+    def test_write_summary_fails_on_status_budget_mismatch(self) -> None:
+        """A chunk status freezing a different budget is identity corruption."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs"
+            chunk_meta_dir = results_dir / "chunk-meta"
+            chunk_meta_dir.mkdir(parents=True)
+            write_json(chunk_meta_dir / "chunk-0.json", {
+                "chunk_index": 0,
+                "chunk_attempt": 1,
+                "chunk_attempt_budget": 4,
+                "exit_code": 0,
+                "needs_retry": [],
+                "exhausted": False,
+            })
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir),
+                "parameters": {
+                    "selected_tasks": ["task-a"],
+                    "attempts": "1",
+                    "chunk_attempt_budget": 8,
+                },
+            })
+
+            output_path = tmp_path / "summary.json"
+            err_buf = io.StringIO()
+            with mock.patch.dict(os.environ, {
+                "BENCHMARK_CHUNK_ATTEMPTS_PATH": str(tmp_path / "absent.json"),
+            }), contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(err_buf):
+                rc = summarize_results.write_summary(
+                    metadata_path,
+                    output_path,
+                    results_dir_override=results_dir,
+                )
+
+            self.assertEqual(rc, 1)
+            self.assertIn("run identity mismatch", err_buf.getvalue())
+
+    def test_write_summary_rejects_status_whose_filename_and_payload_disagree(
+        self,
+    ) -> None:
+        """A status cannot claim another chunk's identity through its payload."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs"
+            chunk_meta_dir = results_dir / "chunk-meta"
+            chunk_meta_dir.mkdir(parents=True)
+            write_json(chunk_meta_dir / "chunk-0.json", {
+                "chunk_index": 1,
+                "chunk_attempt": 1,
+                "chunk_attempt_budget": 8,
+                "exit_code": 1,
+                "needs_retry": ["task-b"],
+                "exhausted": False,
+            })
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "results_dir": str(results_dir),
+                "parameters": {
+                    "selected_tasks": ["task-a", "task-b"],
+                    "attempts": "1",
+                    "chunk_attempt_budget": 8,
+                },
+            })
+            err_buf = io.StringIO()
+
+            with mock.patch.dict(os.environ, {
+                "BENCH_CHUNK_COUNT": "2",
+                "BENCHMARK_CHUNK_ATTEMPTS_PATH": str(tmp_path / "absent.json"),
+            }, clear=True), contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(err_buf):
+                rc = summarize_results.write_summary(
+                    metadata_path,
+                    tmp_path / "summary.json",
+                    results_dir_override=results_dir,
+                )
+
+            self.assertEqual(rc, 1)
+            self.assertIn(
+                "chunk-0.json declares chunk_index 1",
+                err_buf.getvalue(),
+            )
+
+    def test_write_summary_rejects_duplicate_logical_chunk_statuses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs"
+            chunk_meta_dir = results_dir / "chunk-meta"
+            chunk_meta_dir.mkdir(parents=True)
+            status = {
+                "chunk_index": 1,
+                "chunk_attempt": 1,
+                "chunk_attempt_budget": 8,
+                "exit_code": 1,
+                "needs_retry": ["task-b"],
+                "exhausted": False,
+            }
+            write_json(chunk_meta_dir / "chunk-1.json", status)
+            write_json(chunk_meta_dir / "chunk-01.json", status)
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "results_dir": str(results_dir),
+                "parameters": {
+                    "selected_tasks": ["task-a", "task-b"],
+                    "attempts": "1",
+                    "chunk_attempt_budget": 8,
+                },
+            })
+            err_buf = io.StringIO()
+
+            with mock.patch.dict(os.environ, {
+                "BENCH_CHUNK_COUNT": "2",
+                "BENCHMARK_CHUNK_ATTEMPTS_PATH": str(tmp_path / "absent.json"),
+            }, clear=True), contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(err_buf):
+                rc = summarize_results.write_summary(
+                    metadata_path,
+                    tmp_path / "summary.json",
+                    results_dir_override=results_dir,
+                )
+
+            self.assertEqual(rc, 1)
+            self.assertIn("duplicate status for chunk-1", err_buf.getvalue())
+
+    def test_write_summary_rejects_malformed_new_schema_status_fields(self) -> None:
+        cases = {
+            "boolean chunk index": ("chunk-1.json", {"chunk_index": True}),
+            "non-positive attempt": ("chunk-0.json", {"chunk_attempt": 0}),
+            "boolean attempt budget": (
+                "chunk-0.json",
+                {"chunk_attempt_budget": True},
+            ),
+            "non-string retry task": (
+                "chunk-0.json",
+                {"needs_retry": ["task-a", 7]},
+            ),
+            "non-boolean exhaustion": ("chunk-0.json", {"exhausted": "yes"}),
+        }
+        for label, (filename, override) in cases.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                results_dir = tmp_path / "jobs"
+                chunk_meta_dir = results_dir / "chunk-meta"
+                chunk_meta_dir.mkdir(parents=True)
+                chunk_index = 1 if filename == "chunk-1.json" else 0
+                status = {
+                    "chunk_index": chunk_index,
+                    "chunk_attempt": 1,
+                    "chunk_attempt_budget": 1,
+                    "exit_code": 1,
+                    "needs_retry": [f"task-{chr(ord('a') + chunk_index)}"],
+                    "exhausted": False,
+                    **override,
+                }
+                write_json(chunk_meta_dir / filename, status)
+                metadata_path = tmp_path / "run-metadata.json"
+                write_json(metadata_path, {
+                    "benchmark": "terminal-bench-2",
+                    "results_dir": str(results_dir),
+                    "parameters": {
+                        "selected_tasks": ["task-a", "task-b"],
+                        "attempts": "1",
+                        "chunk_attempt_budget": 1,
+                    },
+                })
+                err_buf = io.StringIO()
+
+                with mock.patch.dict(os.environ, {
+                    "BENCH_CHUNK_COUNT": "2",
+                    "BENCHMARK_CHUNK_ATTEMPTS_PATH": str(tmp_path / "absent.json"),
+                }, clear=True), contextlib.redirect_stdout(io.StringIO()), \
+                     contextlib.redirect_stderr(err_buf):
+                    rc = summarize_results.write_summary(
+                        metadata_path,
+                        tmp_path / "summary.json",
+                        results_dir_override=results_dir,
+                    )
+
+                self.assertEqual(rc, 1)
+                self.assertIn("chunk recovery is corrupt", err_buf.getvalue())
+
+    def test_write_summary_requires_chunk_count_for_frozen_positional_ownership(
+        self,
+    ) -> None:
+        """Partial statuses cannot reveal a missing highest-index chunk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs"
+            chunk_meta_dir = results_dir / "chunk-meta"
+            chunk_meta_dir.mkdir(parents=True)
+            write_json(chunk_meta_dir / "chunk-0.json", {
+                "chunk_index": 0,
+                "chunk_attempt": 1,
+                "chunk_attempt_budget": 1,
+                "exit_code": 0,
+                "needs_retry": ["task-a"],
+                "exhausted": True,
+            })
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "swe-bench-pro",
+                "results_dir": str(results_dir),
+                "parameters": {
+                    "selected_tasks": ["task-a", "task-b"],
+                    "attempts": "1",
+                    "chunk_attempt_budget": 1,
+                },
+            })
+            err_buf = io.StringIO()
+
+            with mock.patch.dict(os.environ, {
+                "BENCHMARK_CHUNK_ATTEMPTS_PATH": str(tmp_path / "absent.json"),
+            }, clear=True), contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(err_buf):
+                rc = summarize_results.write_summary(
+                    metadata_path,
+                    tmp_path / "summary.json",
+                    results_dir_override=results_dir,
+                )
+
+            self.assertEqual(rc, 1)
+            self.assertIn(
+                "BENCH_CHUNK_COUNT is required for frozen-budget recovery",
+                err_buf.getvalue(),
+            )
+
+    def test_write_summary_rejects_recovery_records_outside_chunk_range(self) -> None:
+        for source in ("status", "ordinal"):
+            with self.subTest(source), tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                results_dir = tmp_path / "jobs"
+                results_dir.mkdir(parents=True)
+                attempts_path = tmp_path / "chunk-attempts.json"
+                if source == "status":
+                    chunk_meta_dir = results_dir / "chunk-meta"
+                    chunk_meta_dir.mkdir()
+                    write_json(chunk_meta_dir / "chunk-2.json", {
+                        "chunk_index": 2,
+                        "chunk_attempt": 1,
+                        "chunk_attempt_budget": 8,
+                        "exit_code": 1,
+                        "needs_retry": [],
+                        "exhausted": False,
+                    })
+                else:
+                    write_json(attempts_path, {"2": 1})
+                metadata_path = tmp_path / "run-metadata.json"
+                write_json(metadata_path, {
+                    "benchmark": "terminal-bench-2",
+                    "results_dir": str(results_dir),
+                    "parameters": {
+                        "selected_tasks": ["task-a", "task-b"],
+                        "attempts": "1",
+                        "chunk_attempt_budget": 8,
+                    },
+                })
+                err_buf = io.StringIO()
+
+                with mock.patch.dict(os.environ, {
+                    "BENCH_CHUNK_COUNT": "2",
+                    "BENCHMARK_CHUNK_ATTEMPTS_PATH": str(attempts_path),
+                }, clear=True), contextlib.redirect_stdout(io.StringIO()), \
+                     contextlib.redirect_stderr(err_buf):
+                    rc = summarize_results.write_summary(
+                        metadata_path,
+                        tmp_path / "summary.json",
+                        results_dir_override=results_dir,
+                    )
+
+                self.assertEqual(rc, 1)
+                self.assertIn("outside configured chunk range 0..1", err_buf.getvalue())
+
+
+class ResolveSummaryChunkCountTest(unittest.TestCase):
+    def test_inferred_chunk_count_warns_on_stderr(self) -> None:
+        """With BENCH_CHUNK_COUNT unset, the fallback inference is observable."""
+        err_buf = io.StringIO()
+        with mock.patch.dict(os.environ, {}, clear=True), \
+             contextlib.redirect_stderr(err_buf):
+            count = summarize_results._resolve_summary_chunk_count(
+                {0: {}, 2: {}}, {1: 1}
+            )
+
+        self.assertEqual(count, 3)
+        self.assertIn("BENCH_CHUNK_COUNT unset/invalid", err_buf.getvalue())
+        self.assertIn("3", err_buf.getvalue())
+
+    def test_env_chunk_count_skips_warning(self) -> None:
+        """A valid BENCH_CHUNK_COUNT wins and stays silent."""
+        err_buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"BENCH_CHUNK_COUNT": "5"}, clear=True), \
+             contextlib.redirect_stderr(err_buf):
+            count = summarize_results._resolve_summary_chunk_count(
+                {0: {}, 2: {}}, {1: 1}
+            )
+
+        self.assertEqual(count, 5)
+        self.assertEqual(err_buf.getvalue(), "")
 
 
 class WriteSummarySweBenchProTaskNamesTest(unittest.TestCase):
