@@ -79,6 +79,9 @@ function createDeps(stub?: StubSession): DapToolDeps {
 	return {
 		cwd: "/tmp",
 		getSession: (id: string) => sessions.get(id),
+		removeSession: (id: string) => {
+			sessions.delete(id)
+		},
 		launchSession: async (opts: LaunchSessionOptions) => {
 			const s = createStubSession("launched-abc-def-123")
 			sessions.set(s.id, s)
@@ -171,6 +174,7 @@ describe("Layer 1 DAP tools", () => {
 			deps = {
 				cwd: "/tmp",
 				getSession: () => undefined,
+				removeSession: () => {},
 				launchSession: async () => {
 					throw new Error("adapter not found")
 				},

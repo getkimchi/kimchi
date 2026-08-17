@@ -342,6 +342,17 @@ async function writeMessage(proc: BunProcess, msg: DapRequest | DapResponse): Pr
 	if (proc.stdin.flush) await proc.stdin.flush()
 }
 
+/** Reject every stop/terminate waiter registered on `state` so waiters fail
+ *  fast instead of hanging until their own timeout when the connection dies.
+ *  `state` is the client owning event state (the PARENT for nested child
+ *  connections, whose reader routes events to the parent's waiters). */
+function rejectWaiters(state: DapClient, err: Error): void {
+	const stopped = state.stoppedWaiters.splice(0)
+	for (const w of stopped) w.reject(err)
+	const terminated = state.terminatedWaiters.splice(0)
+	for (const w of terminated) w.reject(err)
+}
+
 // =============================================================================
 // Message Reader
 // =============================================================================
@@ -457,11 +468,26 @@ async function startMessageReader(client: DapClient, stateTarget?: DapClient): P
 			}
 		}
 	} catch (err) {
+		const closed = new Error(`DAP connection closed: ${err}`)
 		for (const pending of client.pendingRequests.values()) {
-			pending.reject(new Error(`DAP connection closed: ${err}`))
+			pending.reject(closed)
 		}
 		client.pendingRequests.clear()
+		rejectWaiters(state, closed)
 	} finally {
+		// Clean stream end: any request or stop/terminate waiter still outstanding
+		// will never resolve — fail fast rather than hanging until timeout. When
+		// the process failed to spawn, prefer the spawn error (it is the actual
+		// reason; spawn 'error' fires before stdio closes).
+		if (client.pendingRequests.size > 0 || state.stoppedWaiters.length > 0 || state.terminatedWaiters.length > 0) {
+			const spawnErr = (client.proc as Partial<SpawnTrackedProcess>).spawnError
+			const closed = spawnErr
+				? new Error(`DAP adapter '${client.name}' failed to start: ${spawnErr.message}`)
+				: new Error("DAP connection closed")
+			for (const pending of client.pendingRequests.values()) pending.reject(closed)
+			client.pendingRequests.clear()
+			rejectWaiters(state, closed)
+		}
 		reader.releaseLock()
 		client.isReading = false
 	}
@@ -633,12 +659,18 @@ export class DapClientRegistry {
 	private readonly clients = new Map<string, DapClient>()
 	private readonly clientLocks = new Map<string, Promise<DapClient>>()
 
-	/** Return the existing client for (command, cwd) if present (and bump its
-	 *  lastActivity), else spawn the adapter subprocess, run the initialize
+	/** Return the existing client for (command, cwd, scope) if present (and bump
+	 *  its lastActivity), else spawn the adapter subprocess, run the initialize
 	 *  handshake, and register the client. Concurrent calls for the same key
-	 *  share a single in-flight promise so the adapter is spawned only once. */
-	async getOrCreate(config: DapAdapterConfig, cwd: string): Promise<DapClient> {
-		const key = `${config.command}:${cwd}`
+	 *  share a single in-flight promise so the adapter is spawned only once.
+	 *
+	 *  `scope` namespaces the cache key — dap.ts passes the DAP session id so
+	 *  every debug session gets its own adapter process. A DAP connection is
+	 *  one-debuggee, and DapSession.terminate() SIGKILLs the client proc; with
+	 *  per-session keys one session's terminate can never cross-kill another's.
+	 *  Omitting scope uses the shared (command, cwd) key (tests, static callers). */
+	async getOrCreate(config: DapAdapterConfig, cwd: string, scope?: string): Promise<DapClient> {
+		const key = scope ? `${config.command}:${cwd}:${scope}` : `${config.command}:${cwd}`
 
 		const existing = this.clients.get(key)
 		if (existing) {
@@ -700,6 +732,12 @@ export class DapClientRegistry {
 					: new Error(`DAP adapter exited (code ${adapterExitCode})`)
 				for (const pending of client.pendingRequests.values()) pending.reject(err)
 				client.pendingRequests.clear()
+				rejectWaiters(client, err)
+				if (client.childClient) {
+					for (const pending of client.childClient.pendingRequests.values()) pending.reject(err)
+					client.childClient.pendingRequests.clear()
+					client.childClient.terminated = true
+				}
 			})
 
 			startMessageReader(client)
@@ -759,11 +797,13 @@ export class DapClientRegistry {
 		for (const client of all) {
 			for (const pending of client.pendingRequests.values()) pending.reject(err)
 			client.pendingRequests.clear()
+			rejectWaiters(client, err)
 			client.terminated = true
 			client.proc.kill()
 			if (client.childClient) {
 				for (const pending of client.childClient.pendingRequests.values()) pending.reject(err)
 				client.childClient.pendingRequests.clear()
+				rejectWaiters(client.childClient, err)
 				client.childClient.terminated = true
 				try {
 					client.childClient.proc.kill()

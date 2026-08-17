@@ -15,7 +15,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { Readable } from "node:stream"
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import type { BunProcess } from "../lsp/types.js"
 import { DapClientRegistry, sendRequest } from "./client.js"
 import type { DapAdapterConfig, DapClient } from "./types.js"
@@ -508,6 +508,77 @@ describe("DAP client (in-memory fake adapter)", () => {
 			expect(fake.isKilled()).toBe(true)
 			expect(registry.getAll()).toHaveLength(0)
 			expect(client.terminated).toBe(true)
+		})
+
+		it("rejects outstanding stop/terminate waiters", async () => {
+			const clientPromise = registry.getOrCreate(FAKE_CONFIG, CWD)
+			await answerInitialize(fake)
+			const client = await clientPromise
+
+			const stopWaiter = { resolve: vi.fn(), reject: vi.fn() }
+			client.stoppedWaiters.push(stopWaiter)
+
+			registry.shutdownAll()
+
+			expect(stopWaiter.reject).toHaveBeenCalledOnce()
+		})
+
+		it("rejects stop/terminate waiters fast when the adapter process dies", async () => {
+			const clientPromise = registry.getOrCreate(FAKE_CONFIG, CWD)
+			await answerInitialize(fake)
+			const client = await clientPromise
+
+			const stopWaiter = { resolve: vi.fn(), reject: vi.fn() }
+			const termWaiter = { resolve: vi.fn(), reject: vi.fn() }
+			client.stoppedWaiters.push(stopWaiter)
+			client.terminatedWaiters.push(termWaiter)
+
+			// Kill closes the fake's streams; the reader loop ends and must fail
+			// outstanding waiters immediately rather than letting them time out.
+			fake.proc.kill()
+			await new Promise((resolve) => setTimeout(resolve, 0))
+
+			expect(stopWaiter.reject).toHaveBeenCalledOnce()
+			expect(stopWaiter.reject.mock.calls[0]?.[0].message).toMatch(/DAP connection closed/)
+			expect(termWaiter.reject).toHaveBeenCalledOnce()
+		})
+	})
+
+	describe("session-scoped client keys", () => {
+		it("getOrCreate with different scopes spawns isolated clients", async () => {
+			const fakes = [createFakeProc(), createFakeProc()]
+			let spawnCount = 0
+			// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+			;(globalThis as any).Bun = {
+				spawn: () => fakes[spawnCount++]?.proc,
+			}
+
+			const p1 = registry.getOrCreate(FAKE_CONFIG, CWD, "session-1")
+			const p2 = registry.getOrCreate(FAKE_CONFIG, CWD, "session-2")
+			await answerInitialize(fakes[0] as FakeProc)
+			await answerInitialize(fakes[1] as FakeProc)
+			const [c1, c2] = await Promise.all([p1, p2])
+
+			expect(c1).not.toBe(c2)
+			expect(registry.getAll()).toHaveLength(2)
+
+			// Killing one session's client (what DapSession.terminate does) leaves
+			// the other session's client untouched — no cross-kill.
+			const k1 = fakes[0] as FakeProc
+			const k2 = fakes[1] as FakeProc
+			k1.proc.kill()
+			await new Promise((resolve) => setTimeout(resolve, 0))
+			expect(k2.isKilled()).toBe(false)
+		})
+
+		it("getOrCreate with the same scope dedupes to one client", async () => {
+			const p1 = registry.getOrCreate(FAKE_CONFIG, CWD, "session-1")
+			const p2 = registry.getOrCreate(FAKE_CONFIG, CWD, "session-1")
+			await answerInitialize(fake)
+			const [c1, c2] = await Promise.all([p1, p2])
+
+			expect(c1).toBe(c2)
+			expect(registry.getAll()).toHaveLength(1)
 		})
 	})
 })

@@ -46,6 +46,9 @@ export interface DapToolDeps {
 	cwd: string
 	/** Look up an active session by id (from the session registry). */
 	getSession: (id: string) => DapSession | undefined
+	/** Remove a session from the registry after it has been terminated, so
+	 *  terminated sessions do not accumulate until session shutdown. */
+	removeSession: (id: string) => void
 	/** Create + launch a new session. Resolves the adapter (from program path or
 	 *  explicit name), connects the DapClient, creates the DapSession, and calls
 	 *  session.launch(). Returns the launched session. */
@@ -462,6 +465,7 @@ export function createLayer1Tools(deps: DapToolDeps): ToolDefinition[] {
 				try {
 					const session = requireSession(deps, params.session_id)
 					await session.terminate()
+					deps.removeSession(params.session_id)
 					return textResult(`Session ${params.session_id.slice(0, 8)} terminated.`)
 				} catch (err) {
 					return errorResult((err as Error).message)

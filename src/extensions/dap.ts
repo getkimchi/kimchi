@@ -12,6 +12,7 @@
  *
  * Usage: kimchi -e extensions/dap.ts
  */
+import { randomUUID } from "node:crypto"
 import { readdirSync } from "node:fs"
 import path from "node:path"
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
@@ -342,6 +343,7 @@ export default function (pi: ExtensionAPI) {
 		const deps = {
 			cwd,
 			getSession: (id: string) => sessionRegistry.get(id),
+			removeSession: (id: string) => sessionRegistry.remove(id),
 			launchSession: (opts: LaunchSessionOptions) => launchSession(opts),
 		}
 		for (const tool of createLayer1Tools(deps)) {
@@ -490,8 +492,12 @@ export default function (pi: ExtensionAPI) {
 			)
 		}
 
-		const client = await clientRegistry.getOrCreate(adapter, cwd)
-		const session = sessionRegistry.create({ adapter, cwd, client })
+		// Pre-generate the session id so the client is keyed per session: every
+		// launch spawns its own adapter process (a DAP connection is one-debuggee),
+		// so debug_terminate can never cross-kill another session's client.
+		const sessionId = randomUUID()
+		const client = await clientRegistry.getOrCreate(adapter, cwd, sessionId)
+		const session = sessionRegistry.create({ adapter, cwd, client, id: sessionId })
 		await session.launch({
 			program,
 			cwd,
