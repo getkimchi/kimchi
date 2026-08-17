@@ -16,6 +16,7 @@ import type { Step } from "../../ferment/types.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { withBlocked } from "../herdr-events.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { registerTipProvider } from "../tips/registry.js"
@@ -155,7 +156,9 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 		planReviewRunning = true
 		try {
-			const outcome = await promptPlanReview(ctx, { planMarkdown: review.planMarkdown })
+			const outcome = await withBlocked(pi.events, "Ferment plan review", () =>
+				promptPlanReview(ctx, { planMarkdown: review.planMarkdown }),
+			)
 			if (!outcome) {
 				// promptPlanReview resolved to undefined (e.g. UI dismissed without
 				// an explicit choice). Treat it the same as cancellation: clear the

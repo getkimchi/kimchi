@@ -12,6 +12,7 @@ import { determineNextAction } from "../../../ferment/engine.js"
 import type { Ferment, Phase, Step, StepResult } from "../../../ferment/types.js"
 import { getAgentRecordForTaskValidation } from "../../agents/index.js"
 import { FERMENT_WORKER_BUDGETS, type FermentWorkerBudgetTier } from "../../agents/worker-budget-policy.js"
+import { withBlocked } from "../../herdr-events.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
 import { withWorkingHidden } from "../../ui.js"
 import { askUserForm } from "../ask-user.js"
@@ -547,11 +548,13 @@ export async function completeStep(
 		const cancelLabel = "Cancel (keep step failed)"
 		const title = `Step ${step.index} "${step.description}" failed verification.\nJudge: ${judgeVerdict.reason}`
 		// Hide the cooking animation while the recovery dropdown is shown.
-		const choice = await withWorkingHidden(
-			ctx,
-			() =>
-				ctx.ui?.select?.(title, [retryLabel, skipLabel, editLabel, abandonLabel, cancelLabel]) ??
-				Promise.resolve(undefined),
+		const choice = await withBlocked(pi.events, `Ferment step ${step.index} failed`, () =>
+			withWorkingHidden(
+				ctx,
+				() =>
+					ctx.ui?.select?.(title, [retryLabel, skipLabel, editLabel, abandonLabel, cancelLabel]) ??
+					Promise.resolve(undefined),
+			),
 		)
 		runtime.markHumanInput()
 

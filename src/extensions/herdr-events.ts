@@ -37,6 +37,8 @@
  * arguments, command text, or file contents.
  */
 
+import type { EventBus } from "@earendil-works/pi-coding-agent"
+
 export const HERDR_EVENTS = {
 	BLOCKED: "herdr:blocked",
 } as const
@@ -50,4 +52,22 @@ export interface HerdrBlockedPayload {
 	 *  Only meaningful on activation and currently only displayed while this
 	 *  is the most recent activation — nested activations overwrite it. */
 	label?: string
+}
+
+/**
+ * Run `fn` inside a balanced herdr:blocked activation pair (see the PROTOCOL
+ * section above). Use this around any prompt that waits on the user so the
+ * pairing cannot drift at the call site.
+ *
+ * Emitting through a missing bus is a no-op so heads-down surfaces (tests,
+ * subagents without the desktop app) don't need to stub the channel.
+ */
+export async function withBlocked<T>(events: EventBus | undefined, label: string, fn: () => Promise<T>): Promise<T> {
+	if (!events) return fn()
+	events.emit(HERDR_EVENTS.BLOCKED, { active: true, label } satisfies HerdrBlockedPayload)
+	try {
+		return await fn()
+	} finally {
+		events.emit(HERDR_EVENTS.BLOCKED, { active: false } satisfies HerdrBlockedPayload)
+	}
 }

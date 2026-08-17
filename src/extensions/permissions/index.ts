@@ -28,7 +28,7 @@ import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "..
 import { createApplyAndPersist, formatNextActionHint, formatNoReplanningGuidance } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
-import { HERDR_EVENTS, type HerdrBlockedPayload } from "../herdr-events.js"
+import { HERDR_EVENTS, type HerdrBlockedPayload, withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
@@ -544,8 +544,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const DECLINE = "Rework the plan"
 		const START_AS_FERMENT = "Start as ferment"
 
-		const choice = await withWorkingHidden(ctx, () =>
-			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, DECLINE, START_AS_FERMENT]),
+		const choice = await withBlocked(pi.events, "Plan complete", () =>
+			withWorkingHidden(ctx, () =>
+				ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, DECLINE, START_AS_FERMENT]),
+			),
 		)
 
 		if (choice === EXECUTE) {
