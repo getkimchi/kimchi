@@ -16,7 +16,9 @@
 // - `terminate()` is best-effort: sends `terminate` if supported (short
 //   timeout), then SIGKILLs the proc unconditionally. Matches the shutdownAll
 //   philosophy that DAP has no safe clean-shutdown handshake under forced kill.
-//   The registry owner calls shutdownAll on the DapClientRegistry when the proc dies.
+//   Each DapSession owns its DapClient (per-session registry key), so killing
+//   it cannot affect other sessions; the dead client is reaped via its exit
+//   watcher or shutdownAll.
 
 import { randomUUID } from "node:crypto"
 import { sendRequest } from "./client.js"
@@ -60,6 +62,9 @@ export interface DapSessionOptions {
 	client: DapClient
 	/** Per-request timeout (default 30s, matches client.ts DEFAULT_TIMEOUT_MS). */
 	timeoutMs?: number
+	/** Stable session id. dap.ts pre-generates it so the owning DapClient can be
+	 *  keyed by the same value (per-session client isolation). Defaults to a random UUID. */
+	id?: string
 }
 
 // =============================================================================
@@ -81,7 +86,7 @@ export class DapSession {
 	private readonly breakpoints = new Map<string, Array<{ line: number; condition?: string }>>()
 
 	constructor(opts: DapSessionOptions) {
-		this.id = randomUUID()
+		this.id = opts.id ?? randomUUID()
 		this.adapter = opts.adapter
 		this.cwd = opts.cwd
 		this.client = opts.client
