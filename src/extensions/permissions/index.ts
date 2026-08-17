@@ -28,6 +28,7 @@ import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "..
 import { createApplyAndPersist, formatNextActionHint, formatNoReplanningGuidance } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
+import { HERDR_EVENTS, type HerdrBlockedPayload } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
@@ -981,7 +982,7 @@ interface ConfirmOptions {
 	riskScore?: RiskScore
 	activeAborts: Set<AbortController>
 	allRules?: () => Rule[]
-	pi?: ExtensionAPI
+	pi: ExtensionAPI
 }
 
 async function handleConfirm(
@@ -991,17 +992,21 @@ async function handleConfirm(
 	const abort = new AbortController()
 	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
 	opts.activeAborts.add(abort)
+	let blockedSignaled = false
 	try {
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
 
-		if (opts.pi?.events?.emit) {
-			opts.pi.events.emit("notification", {
-				notification_type: "permission_prompt",
-				tool_name: event.toolName,
-				tool_use_id: event.toolCallId,
-			})
-		}
+		opts.pi.events.emit("notification", {
+			notification_type: "permission_prompt",
+			tool_name: event.toolName,
+			tool_use_id: event.toolCallId,
+		})
+		opts.pi.events.emit(HERDR_EVENTS.BLOCKED, {
+			active: true,
+			label: opts.subtitle ?? `Permission: ${event.toolName}`,
+		} satisfies HerdrBlockedPayload)
+		blockedSignaled = true
 
 		const input = event.input
 		const outcome = await prompter.request({
@@ -1016,6 +1021,9 @@ async function handleConfirm(
 
 		return applyApprovalOutcome(outcome, opts.session)
 	} finally {
+		if (blockedSignaled) {
+			opts.pi.events.emit(HERDR_EVENTS.BLOCKED, { active: false } satisfies HerdrBlockedPayload)
+		}
 		unlinkAbort()
 		opts.activeAborts.delete(abort)
 	}
@@ -1028,17 +1036,21 @@ export async function handleCompoundConfirm(
 	const abort = new AbortController()
 	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
 	opts.activeAborts.add(abort)
+	let blockedSignaled = false
 	try {
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
 
-		if (opts.pi?.events?.emit) {
-			opts.pi.events.emit("notification", {
-				notification_type: "permission_prompt",
-				tool_name: event.toolName,
-				tool_use_id: event.toolCallId,
-			})
-		}
+		opts.pi.events.emit("notification", {
+			notification_type: "permission_prompt",
+			tool_name: event.toolName,
+			tool_use_id: event.toolCallId,
+		})
+		opts.pi.events.emit(HERDR_EVENTS.BLOCKED, {
+			active: true,
+			label: opts.subtitle ?? `Permission: ${event.toolName} (compound)`,
+		} satisfies HerdrBlockedPayload)
+		blockedSignaled = true
 
 		if (opts.ctx.mode !== "tui") {
 			// Non-TUI transports (chiefly ACP) present compound commands as one
@@ -1119,6 +1131,9 @@ export async function handleCompoundConfirm(
 
 		return { block: true, reason: "Declined by user" }
 	} finally {
+		if (blockedSignaled) {
+			opts.pi.events.emit(HERDR_EVENTS.BLOCKED, { active: false } satisfies HerdrBlockedPayload)
+		}
 		unlinkAbort()
 		opts.activeAborts.delete(abort)
 	}

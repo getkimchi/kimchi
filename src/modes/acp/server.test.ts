@@ -3783,6 +3783,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 			registerFlag: () => {},
 			sendMessage: () => {},
 			appendEntry: () => {},
+			events: { emit: () => {} },
 			getEnvironment: () => ({
 				environmentInfo: {
 					permittedTools: new Set(tools),
