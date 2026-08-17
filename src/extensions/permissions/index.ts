@@ -28,7 +28,7 @@ import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "..
 import { createApplyAndPersist, formatNextActionHint, formatNoReplanningGuidance } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
-import { HERDR_EVENTS, type HerdrBlockedPayload, withBlocked } from "../herdr-events.js"
+import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
@@ -994,7 +994,6 @@ async function handleConfirm(
 	const abort = new AbortController()
 	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
 	opts.activeAborts.add(abort)
-	let blockedSignaled = false
 	try {
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
@@ -1004,28 +1003,22 @@ async function handleConfirm(
 			tool_name: event.toolName,
 			tool_use_id: event.toolCallId,
 		})
-		opts.pi.events.emit(HERDR_EVENTS.BLOCKED, {
-			active: true,
-			label: opts.subtitle ?? `Permission: ${event.toolName}`,
-		} satisfies HerdrBlockedPayload)
-		blockedSignaled = true
 
-		const input = event.input
-		const outcome = await prompter.request({
-			toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
-			toolName: event.toolName,
-			input,
-			subtitle: opts.subtitle,
-			riskScore: opts.riskScore,
-			choices: buildPermissionChoices(event.toolName, input),
-			signal: abort.signal,
+		return await withBlocked(opts.pi.events, `Permission: ${event.toolName}`, async () => {
+			const input = event.input
+			const outcome = await prompter.request({
+				toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
+				toolName: event.toolName,
+				input,
+				subtitle: opts.subtitle,
+				riskScore: opts.riskScore,
+				choices: buildPermissionChoices(event.toolName, input),
+				signal: abort.signal,
+			})
+
+			return applyApprovalOutcome(outcome, opts.session)
 		})
-
-		return applyApprovalOutcome(outcome, opts.session)
 	} finally {
-		if (blockedSignaled) {
-			opts.pi.events.emit(HERDR_EVENTS.BLOCKED, { active: false } satisfies HerdrBlockedPayload)
-		}
 		unlinkAbort()
 		opts.activeAborts.delete(abort)
 	}
@@ -1038,7 +1031,6 @@ export async function handleCompoundConfirm(
 	const abort = new AbortController()
 	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
 	opts.activeAborts.add(abort)
-	let blockedSignaled = false
 	try {
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
@@ -1048,94 +1040,88 @@ export async function handleCompoundConfirm(
 			tool_name: event.toolName,
 			tool_use_id: event.toolCallId,
 		})
-		opts.pi.events.emit(HERDR_EVENTS.BLOCKED, {
-			active: true,
-			label: opts.subtitle ?? `Permission: ${event.toolName} (compound)`,
-		} satisfies HerdrBlockedPayload)
-		blockedSignaled = true
 
-		if (opts.ctx.mode !== "tui") {
-			// Non-TUI transports (chiefly ACP) present compound commands as one
-			// permission card. They do not offer TUI's per-subcommand picker, so
-			// remembered rules are scoped to the compound call's suggested scope
-			// rather than each segment.
-			const input = event.input
-			const outcome = await prompter.request({
-				toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
+		return await withBlocked(opts.pi.events, `Permission: ${event.toolName} (compound)`, async () => {
+			if (opts.ctx.mode !== "tui") {
+				// Non-TUI transports (chiefly ACP) present compound commands as one
+				// permission card. They do not offer TUI's per-subcommand picker, so
+				// remembered rules are scoped to the compound call's suggested scope
+				// rather than each segment.
+				const input = event.input
+				const outcome = await prompter.request({
+					toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
+					toolName: event.toolName,
+					input,
+					subtitle: opts.subtitle,
+					choices: buildPermissionChoices(event.toolName, input),
+					signal: abort.signal,
+				})
+				return applyApprovalOutcome(outcome, opts.session)
+			}
+
+			const compoundSubs: CompoundSubcommand[] = opts.subcommands.map((cmd) => ({
+				command: cmd,
+			}))
+
+			const outcome = await promptForCompoundApproval({
 				toolName: event.toolName,
-				input,
-				subtitle: opts.subtitle,
-				choices: buildPermissionChoices(event.toolName, input),
+				commands: compoundSubs,
+				ctx: opts.ctx,
 				signal: abort.signal,
 			})
-			return applyApprovalOutcome(outcome, opts.session)
-		}
 
-		const compoundSubs: CompoundSubcommand[] = opts.subcommands.map((cmd) => ({
-			command: cmd,
-		}))
+			if (outcome.kind === "aborted") return "aborted"
+			if (outcome.kind === "allow-all-once") return undefined
 
-		const outcome = await promptForCompoundApproval({
-			toolName: event.toolName,
-			commands: compoundSubs,
-			ctx: opts.ctx,
-			signal: abort.signal,
-		})
-
-		if (outcome.kind === "aborted") return "aborted"
-		if (outcome.kind === "allow-all-once") return undefined
-
-		if (outcome.kind === "allow-all-remember") {
-			for (const rule of outcome.rules) {
-				opts.session.add(rule)
-			}
-			return undefined
-		}
-
-		if (outcome.kind === "pick-per-subcommand") {
-			// For each subcommand, evaluate rules and prompt if needed
-			for (const subcommand of opts.subcommands) {
-				// Re-evaluate rules (user may have added rules during the prompt)
-				const match = evaluateRules(opts.allRules ? opts.allRules() : opts.session.all(), "bash", {
-					command: subcommand,
-				})
-				if (match.decision === "allow") {
-					continue
+			if (outcome.kind === "allow-all-remember") {
+				for (const rule of outcome.rules) {
+					opts.session.add(rule)
 				}
-				if (match.decision === "deny") {
-					return {
-						block: true,
-						reason: `Subcommand blocked by rule: ${subcommand}`,
+				return undefined
+			}
+
+			if (outcome.kind === "pick-per-subcommand") {
+				// For each subcommand, evaluate rules and prompt if needed
+				for (const subcommand of opts.subcommands) {
+					// Re-evaluate rules (user may have added rules during the prompt)
+					const match = evaluateRules(opts.allRules ? opts.allRules() : opts.session.all(), "bash", {
+						command: subcommand,
+					})
+					if (match.decision === "allow") {
+						continue
+					}
+					if (match.decision === "deny") {
+						return {
+							block: true,
+							reason: `Subcommand blocked by rule: ${subcommand}`,
+						}
+					}
+
+					// Create a fake bash event for this subcommand
+					const subEvent: ToolCallEvent = {
+						...event,
+						input: { command: subcommand },
+					}
+					const result = await handleConfirm(subEvent, opts)
+					if (result === "aborted") return "aborted"
+					if (result !== undefined) {
+						// Blocked
+						return { block: true, reason: result.reason }
 					}
 				}
+				return undefined
+			}
 
-				// Create a fake bash event for this subcommand
-				const subEvent: ToolCallEvent = {
-					...event,
-					input: { command: subcommand },
-				}
-				const result = await handleConfirm(subEvent, opts)
-				if (result === "aborted") return "aborted"
-				if (result !== undefined) {
-					// Blocked
-					return { block: true, reason: result.reason }
+			if (outcome.kind === "deny-with-feedback") {
+				return {
+					block: true,
+					reason: `The user declined this action before execution and said: ${outcome.feedback}`,
 				}
 			}
-			return undefined
-		}
 
-		if (outcome.kind === "deny-with-feedback") {
-			return {
-				block: true,
-				reason: `The user declined this action before execution and said: ${outcome.feedback}`,
-			}
-		}
-
-		return { block: true, reason: "Declined by user" }
+			return { block: true, reason: "Declined by user" }
+		})
 	} finally {
-		if (blockedSignaled) {
-			opts.pi.events.emit(HERDR_EVENTS.BLOCKED, { active: false } satisfies HerdrBlockedPayload)
-		}
 		unlinkAbort()
 		opts.activeAborts.delete(abort)
 	}

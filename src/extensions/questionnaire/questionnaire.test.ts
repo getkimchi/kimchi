@@ -431,13 +431,13 @@ describe("questionnaire environment behavior", () => {
 		)
 
 		const blockedCalls = () => pi.events.emit.mock.calls.filter(([channel]) => channel === "herdr:blocked")
-		expect(blockedCalls()).toEqual([["herdr:blocked", { active: true, label: "Ship release" }]])
+		expect(blockedCalls()).toEqual([["herdr:blocked", { active: true, label: "Questionnaire" }]])
 
 		resolveForm({ questions: [], answers: [], cancelled: false })
 		await pending
 
 		expect(blockedCalls()).toEqual([
-			["herdr:blocked", { active: true, label: "Ship release" }],
+			["herdr:blocked", { active: true, label: "Questionnaire" }],
 			["herdr:blocked", { active: false }],
 		])
 	})

@@ -31,6 +31,7 @@ function createHarness(options: { phases?: number } = {}) {
 			{ name: "start_ferment_step" },
 		]),
 		setActiveTools: vi.fn(),
+		events: { emit: vi.fn() },
 	} as unknown as ExtensionAPI
 	const ferment = storage.create("Phase Test")
 	const phaseCount = options.phases ?? 2
@@ -336,6 +337,7 @@ describe("registerPhaseTools", () => {
 				{ name: "start_ferment_step" },
 			]),
 			setActiveTools: vi.fn(),
+			events: { emit: vi.fn() },
 		} as unknown as ExtensionAPI
 		registerPhaseTools(pi, h.runtime)
 
@@ -375,6 +377,7 @@ describe("registerPhaseTools", () => {
 			getActiveTools: vi.fn(() => ["read", "bash", "complete_ferment_phase"]),
 			getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "complete_ferment_phase" }]),
 			setActiveTools: vi.fn(),
+			events: { emit: vi.fn() },
 		} as unknown as ExtensionAPI
 		const h = createHarness()
 		registerPhaseTools(pi, h.runtime)

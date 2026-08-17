@@ -1,6 +1,6 @@
 import type { EventBus } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
-import { HERDR_EVENTS, withBlocked } from "./herdr-events.js"
+import { HERDR_EVENTS, HERDR_LABEL_MAX_LENGTH, withBlocked } from "./herdr-events.js"
 
 function makeBus(): EventBus & { emit: ReturnType<typeof vi.fn> } {
 	return { emit: vi.fn() } as unknown as EventBus & { emit: ReturnType<typeof vi.fn> }
@@ -51,6 +51,22 @@ describe("withBlocked", () => {
 		])
 	})
 
+	it("collapses whitespace and newlines in the label", async () => {
+		const bus = makeBus()
+		await withBlocked(bus, "  multi\nline\t label  ", async () => {})
+
+		expect(blockedCalls(bus)[0]).toEqual([HERDR_EVENTS.BLOCKED, { active: true, label: "multi line label" }])
+	})
+
+	it("truncates labels longer than HERDR_LABEL_MAX_LENGTH with an ellipsis", async () => {
+		const bus = makeBus()
+		await withBlocked(bus, "x".repeat(HERDR_LABEL_MAX_LENGTH + 50), async () => {})
+
+		const [, payload] = blockedCalls(bus)[0] as [string, { active: boolean; label: string }]
+		expect(payload.label).toHaveLength(HERDR_LABEL_MAX_LENGTH)
+		expect(payload.label.endsWith("…")).toBe(true)
+	})
+
 	it("balances nested pairs", async () => {
 		const bus = makeBus()
 		await withBlocked(bus, "outer", () => withBlocked(bus, "inner", async () => {}))
@@ -61,13 +77,5 @@ describe("withBlocked", () => {
 			[HERDR_EVENTS.BLOCKED, { active: false }],
 			[HERDR_EVENTS.BLOCKED, { active: false }],
 		])
-	})
-
-	it("runs fn without emitting when no event bus is available", async () => {
-		const fn = vi.fn(async () => "ok")
-		const result = await withBlocked(undefined, "Waiting on user", fn)
-
-		expect(result).toBe("ok")
-		expect(fn).toHaveBeenCalledTimes(1)
 	})
 })

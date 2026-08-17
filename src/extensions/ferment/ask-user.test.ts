@@ -143,7 +143,7 @@ describe("askUserForm routing", () => {
 		)
 
 		const blocked = vi.mocked(pi.events.emit).mock.calls.filter(([ch]) => ch === "herdr:blocked")
-		expect(blocked[0]).toEqual(["herdr:blocked", { active: true, label: "Clarify plan" }])
+		expect(blocked[0]).toEqual(["herdr:blocked", { active: true, label: "Ferment question" }])
 		expect(blocked[blocked.length - 1]).toEqual(["herdr:blocked", { active: false }])
 	})
 
@@ -162,7 +162,7 @@ describe("askUserForm routing", () => {
 		})
 
 		expect(vi.mocked(pi.events.emit).mock.calls.filter(([ch]) => ch === "herdr:blocked")).toEqual([
-			["herdr:blocked", { active: true, label: "Title" }],
+			["herdr:blocked", { active: true, label: "Ferment question" }],
 			["herdr:blocked", { active: false }],
 		])
 	})
@@ -187,7 +187,7 @@ describe("askUserForm routing", () => {
 		).rejects.toThrow("select blew up")
 
 		expect(vi.mocked(pi.events.emit).mock.calls.filter(([ch]) => ch === "herdr:blocked")).toEqual([
-			["herdr:blocked", { active: true, label: "Title" }],
+			["herdr:blocked", { active: true, label: "Ferment question" }],
 			["herdr:blocked", { active: false }],
 		])
 	})

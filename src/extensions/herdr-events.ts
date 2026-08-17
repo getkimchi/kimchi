@@ -33,8 +33,10 @@
  * is the canonical way to wedge a herdr pane.
  *
  * Privacy: labels are human-readable status strings shown in the herdr UI.
- * Keep them short (tool name or question prompt); never include raw tool
- * arguments, command text, or file contents.
+ * Use static, extension-authored labels ("Permission: bash", "Questionnaire");
+ * never interpolate model-generated text, raw tool arguments, command text,
+ * or file contents. As a backstop, withBlocked sanitizes every label (see
+ * sanitizeLabel) so the display invariant holds even for careless callers.
  */
 
 import type { EventBus } from "@earendil-works/pi-coding-agent"
@@ -54,17 +56,29 @@ export interface HerdrBlockedPayload {
 	label?: string
 }
 
+/** Maximum length of a herdr:blocked label after sanitization. */
+export const HERDR_LABEL_MAX_LENGTH = 80
+
+/**
+ * Enforce the display invariant on labels: single-line and bounded length.
+ * Labels should be extension-authored (see the Privacy note above); this is
+ * the choke-point backstop, not a substitute for safe call-site labels —
+ * truncation cannot hide sensitive content in a label that shouldn't have
+ * contained it.
+ */
+function sanitizeLabel(label: string): string {
+	const collapsed = label.replace(/\s+/g, " ").trim()
+	if (collapsed.length <= HERDR_LABEL_MAX_LENGTH) return collapsed
+	return `${collapsed.slice(0, HERDR_LABEL_MAX_LENGTH - 1)}…`
+}
+
 /**
  * Run `fn` inside a balanced herdr:blocked activation pair (see the PROTOCOL
  * section above). Use this around any prompt that waits on the user so the
  * pairing cannot drift at the call site.
- *
- * Emitting through a missing bus is a no-op so heads-down surfaces (tests,
- * subagents without the desktop app) don't need to stub the channel.
  */
-export async function withBlocked<T>(events: EventBus | undefined, label: string, fn: () => Promise<T>): Promise<T> {
-	if (!events) return fn()
-	events.emit(HERDR_EVENTS.BLOCKED, { active: true, label } satisfies HerdrBlockedPayload)
+export async function withBlocked<T>(events: EventBus, label: string, fn: () => Promise<T>): Promise<T> {
+	events.emit(HERDR_EVENTS.BLOCKED, { active: true, label: sanitizeLabel(label) } satisfies HerdrBlockedPayload)
 	try {
 		return await fn()
 	} finally {

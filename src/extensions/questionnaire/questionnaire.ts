@@ -218,7 +218,9 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 
 			pi.events.emit("notification", { notification_type: "agent_needs_input" })
 
-			const result = await withBlocked(pi.events, params.header ?? "Questionnaire", () =>
+			// Static label (see herdr-events.ts Privacy): params.header is
+			// agent-generated and may embed question text.
+			const result = await withBlocked(pi.events, "Questionnaire", () =>
 				ctx.mode !== "tui"
 					? promptQuestionnaireFallback(ctx.ui, questions)
 					: withWorkingHidden(ctx, () =>

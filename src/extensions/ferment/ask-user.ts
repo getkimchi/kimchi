@@ -550,8 +550,9 @@ export async function askUserForm(
 	if (ui) {
 		const promptedAtMs = Date.now()
 		// Balanced-pair contract: see ../herdr-events.ts. The judge and no-UI
-		// paths above never block on a human, so they emit nothing.
-		const result = await withBlocked(context.pi.events, title ?? "Ferment question", () =>
+		// paths above never block on a human, so they emit nothing. Static
+		// label (Privacy note in herdr-events.ts): `title` is agent-generated.
+		const result = await withBlocked(context.pi.events, "Ferment question", () =>
 			promptForm(context.ctx, { title, description, questions }),
 		)
 		if (!result || result.cancelled) {
