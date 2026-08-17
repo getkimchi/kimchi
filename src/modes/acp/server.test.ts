@@ -13,6 +13,7 @@ import type {
 	AgentSession,
 	AgentSessionEvent,
 	AgentSessionEventListener,
+	ContextUsage,
 	ExtensionContext,
 	ExtensionUIContext,
 	ModelRegistry,
@@ -129,6 +130,14 @@ class FakeAgentSession {
 			this.branch.push({ type: "custom", customType, data })
 			return "entry-id"
 		},
+	}
+	// getContextUsage drives usage_update emission. The fake defaults to "no
+	// estimate available" (undefined); tests that exercise usage_update wire a
+	// concrete estimate (or tokens: null) per case.
+	getContextUsageImpl: () => ContextUsage | undefined = () => undefined
+
+	getContextUsage(): ContextUsage | undefined {
+		return this.getContextUsageImpl()
 	}
 	// Captures whatever setUIContext the agent installs so tests can assert
 	// on it. The real AgentSession exposes this via its extensionRunner
@@ -1375,6 +1384,204 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		])
 		expect(resA.stopReason).toBe("end_turn")
 		expect(resB.stopReason).toBe("end_turn")
+	})
+})
+
+// Usage reporting (issue #03): the ACP server accumulates pi-ai Usage across
+// pi-mono's chained prompt/continue calls — each chain step emits its own
+// assistant message_end with its own usage object — folds the sum into the
+// (experimental) PromptResponse.usage, and pairs assistant message_end
+// events with usage_update sessionUpdates mapped from
+// session.getContextUsage(). Both pieces are gated: PromptResponse.usage is
+// omitted when the turn collected no usage, and usage_update is skipped when
+// the estimate is undefined or its token count is null (post-compaction).
+describe("KimchiAcpAgent usage reporting", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+
+	beforeEach(async () => {
+		fake = new FakeAgentSession("session-usage")
+		const { conn, updates: rec } = makeRecordingConn()
+		updates = rec
+		agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	const usageUpdates = () => updates.filter((u) => u.update.sessionUpdate === "usage_update")
+
+	// Builds the assistant message_end event pi-mono emits after an LLM
+	// response. totalTokens is computed the way providers do (pi-ai 0.84
+	// Usage docs): input + output + cacheRead + cacheWrite, where `reasoning`
+	// is a subset of `output` and must never be re-added.
+	function assistantUsageEvent(usage: {
+		input: number
+		output: number
+		cacheRead?: number
+		cacheWrite?: number
+		reasoning?: number
+	}): AgentSessionEvent {
+		const cacheRead = usage.cacheRead ?? 0
+		const cacheWrite = usage.cacheWrite ?? 0
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "reply" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: usage.input,
+				output: usage.output,
+				cacheRead,
+				cacheWrite,
+				...(usage.reasoning !== undefined ? { reasoning: usage.reasoning } : {}),
+				totalTokens: usage.input + usage.output + cacheRead + cacheWrite,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	it("sums pi-ai usage across chained assistant messages into PromptResponse.usage", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20, cacheRead: 5, cacheWrite: 3, reasoning: 7 }))
+			// Second chain step (e.g. agent.continue after a tool call or follow-up).
+			fake.emit(assistantUsageEvent({ input: 50, output: 10, cacheRead: 2, cacheWrite: 1, reasoning: 3 }))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		expect(result.stopReason).toBe("end_turn")
+		expect(result.usage).toEqual({
+			inputTokens: 150,
+			outputTokens: 30,
+			cachedReadTokens: 7,
+			cachedWriteTokens: 4,
+			thoughtTokens: 10,
+			// msg1: 100+20+5+3=128, msg2: 50+10+2+1=63 — reasoning (7, 3) is a
+			// subset of output and must not be double-counted.
+			totalTokens: 191,
+		})
+	})
+
+	it("omits thoughtTokens when no provider reported a reasoning count", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		expect(result.usage?.inputTokens).toBe(100)
+		expect(result.usage?.outputTokens).toBe(20)
+		expect(result.usage).not.toHaveProperty("thoughtTokens")
+	})
+
+	it("emits a usage_update sessionUpdate with size/used on assistant message_end", async () => {
+		fake.getContextUsageImpl = () => ({ tokens: 1234, contextWindow: 200000, percent: 0.617 })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		const usage = usageUpdates()
+		expect(usage).toHaveLength(1)
+		expect(usage[0].sessionId).toBe(sessionId)
+		expect(usage[0].update).toMatchObject({ sessionUpdate: "usage_update", size: 200000, used: 1234 })
+		// PromptResponse.usage is independent of the context-window estimate.
+		expect(result.usage?.inputTokens).toBe(100)
+	})
+
+	it("skips usage_update when getContextUsage returns undefined", async () => {
+		fake.getContextUsageImpl = () => undefined
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		expect(usageUpdates()).toHaveLength(0)
+		// Per-turn summing must not depend on the context-window estimate.
+		expect(result.usage?.inputTokens).toBe(100)
+	})
+
+	it("skips usage_update when the context estimate has null tokens (post-compaction)", async () => {
+		fake.getContextUsageImpl = () => ({ tokens: null, contextWindow: 200000, percent: null })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		expect(usageUpdates()).toHaveLength(0)
+	})
+
+	it("never emits usage_update during streaming (message_update deltas)", async () => {
+		fake.getContextUsageImpl = () => ({ tokens: 500, contextWindow: 200000, percent: 0.25 })
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta: "streaming ",
+					contentIndex: 0,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta: "text",
+					contentIndex: 0,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		// Streaming chunks arrived, but no usage_update and no per-turn usage —
+		// no assistant message_end with usage ever fired.
+		expect(updates.some((u) => u.update.sessionUpdate === "agent_message_chunk")).toBe(true)
+		expect(usageUpdates()).toHaveLength(0)
+		expect(result.usage).toBeUndefined()
+	})
+
+	it("omits PromptResponse.usage when the turn is cancelled before any assistant message", async () => {
+		fake.promptImpl = async () => {
+			await delay(10)
+		}
+
+		const pending = agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+		await agent.cancel({ sessionId })
+		const result = await pending
+
+		expect(result.stopReason).toBe("cancelled")
+		expect(result.usage).toBeUndefined()
+		expect(usageUpdates()).toHaveLength(0)
 	})
 })
 
