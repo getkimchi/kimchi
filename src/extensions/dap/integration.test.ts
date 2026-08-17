@@ -52,6 +52,8 @@ const HAS_DLV = binaryAvailable("dlv")
 const HAS_JS_DEBUG = false
 const HAS_DEBUGPY = binaryAvailable("debugpy")
 const HAS_LLDB_DAP = binaryAvailable("lldb-dap")
+// The lldb-dap scenario compiles a C fixture — also needs a C compiler.
+const HAS_CC = binaryAvailable("gcc")
 
 // =============================================================================
 // Test fixture helpers
@@ -75,9 +77,11 @@ function makeDeps(cwd: string): ComposedDeps {
 		cwd,
 		getSession: (id: string) => sessionRegistry.get(id),
 		launchSession: async (opts: { program: string; stopOnEntry?: boolean }) => {
-			const { adapterForFile } = await import("./adapters.js")
+			const { adapterForDirectory, adapterForFile } = await import("./adapters.js")
 			const adapters = allAdapters()
-			const adapter = adapterForFile(opts.program, adapters)
+			// program may be an extensionless compiled binary — fall back to
+			// inspecting the sources next to it (mirrors dap.ts launchSession).
+			const adapter = adapterForFile(opts.program, adapters) ?? adapterForDirectory(path.dirname(opts.program), adapters)
 			if (!adapter) throw new Error(`No adapter for ${opts.program}`)
 			const client = await clientRegistry.getOrCreate(adapter, cwd)
 			const session = sessionRegistry.create({ adapter, cwd, client })
@@ -281,7 +285,8 @@ describe("DAP integration — Python (debugpy)", () => {
 
 describe("DAP integration — C (lldb-dap)", () => {
 	let dir: string
-	let fixturePath: string
+	let sourcePath: string
+	let binPath: string
 	let deps: ComposedDeps
 
 	beforeAll(() => {
@@ -294,24 +299,26 @@ int main() {
   return 0;
 }
 `
-		const sourcePath = writeFixture(dir, "main.c", cSource)
-		const binPath = path.join(dir, "main")
+		sourcePath = writeFixture(dir, "main.c", cSource)
+		binPath = path.join(dir, "main")
 		try {
 			execFileSync("gcc", ["-g", "-o", binPath, sourcePath], { stdio: "pipe" })
-			fixturePath = binPath
 		} catch {
-			// If gcc fails, the test will skip via the lldb-dap check anyway
-			fixturePath = sourcePath
+			// No C compiler on this machine — the test skips via skipIf below.
+			binPath = ""
 		}
 		deps = makeDeps(dir)
 	})
 
-	it.skipIf(!HAS_LLDB_DAP)(
-		"debug_state_at captures locals at breakpoint",
+	it.skipIf(!HAS_LLDB_DAP || !HAS_CC)(
+		"debug_state_at launches a compiled binary via `program` while breakpoints use `file`",
 		async () => {
-			// Set breakpoint at the printf line (line 4)
+			if (!binPath) throw new Error("gcc compile failed in beforeAll")
+			// Breakpoint at the printf line (line 4); the launch must use the
+			// compiled binary while the breakpoint targets the source file.
 			const result = await debugStateAt(deps, {
-				file: fixturePath,
+				program: binPath,
+				file: sourcePath,
 				line: 4,
 				evaluated: ["x"],
 			})

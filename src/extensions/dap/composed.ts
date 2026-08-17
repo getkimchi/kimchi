@@ -244,8 +244,13 @@ function parseTraceCalls(lines: ReadonlyArray<{ category: string; text: string }
 // =============================================================================
 
 export interface DebugStateAtOptions {
+	/** Source file to set the breakpoint in. */
 	file: string
 	line: number
+	/** Program to launch. Defaults to `file` — correct for interpreted/JIT
+	 *  languages (Node, Python, Go). For compiled languages (C/C++/Rust), pass
+	 *  the built binary here and keep `file` as the source file for breakpoints. */
+	program?: string
 	sessionId?: string
 	evaluated?: string[]
 	timeoutMs?: number
@@ -257,7 +262,7 @@ export interface DebugStateAtOptions {
  *  without hitting the breakpoint. */
 export async function debugStateAt(deps: ComposedDeps, opts: DebugStateAtOptions): Promise<DebugStateAtResult> {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_COMPOSED_TIMEOUT_MS
-	const { session, shouldTerminate } = await resolveSession(deps, opts.sessionId, opts.file)
+	const { session, shouldTerminate } = await resolveSession(deps, opts.sessionId, opts.program ?? opts.file)
 
 	return withTimeoutAndCleanup(
 		timeoutMs,

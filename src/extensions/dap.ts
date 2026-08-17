@@ -13,10 +13,9 @@
  * Usage: kimchi -e extensions/dap.ts
  */
 import { randomUUID } from "node:crypto"
-import { readdirSync } from "node:fs"
 import path from "node:path"
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
-import { adapterExists, adapterForFile, allAdapters, detectAdapters, detectMissingAdapters } from "./dap/adapters.js"
+import { adapterExists, adapterForDirectory, adapterForFile, allAdapters, detectAdapters, detectMissingAdapters } from "./dap/adapters.js"
 import { DapClientRegistry } from "./dap/client.js"
 import { DapSessionRegistry } from "./dap/session.js"
 import { createLayer1Tools, createLayer2Tools, type LaunchSessionOptions } from "./dap/tools.js"
@@ -418,39 +417,6 @@ export default function (pi: ExtensionAPI) {
 		return path.isAbsolute(p) ? p : path.join(cwd, p)
 	}
 
-	/** Detect the language of a program path when the file extension gives no
-	 *  match (e.g. a Go package directory like `./cmd/server`). Checks for the
-	 *  presence of language-specific source files in the directory. Returns the
-	 *  matching adapter, or null if no language is detected. */
-	function adapterForDirectory(dirPath: string, adapters: ReturnType<typeof allAdapters>) {
-		try {
-			const entries = readdirSync(dirPath)
-			// Check for .go files → dlv
-			if (entries.some((e) => e.endsWith(".go"))) {
-				const goAdapter = adapters.find((a) => a.languages.includes("go"))
-				if (goAdapter) return goAdapter
-			}
-			// Check for .py files → debugpy
-			if (entries.some((e) => e.endsWith(".py"))) {
-				const pyAdapter = adapters.find((a) => a.languages.includes("python"))
-				if (pyAdapter) return pyAdapter
-			}
-			// Check for .ts/.js files → js-debug
-			if (entries.some((e) => e.endsWith(".ts") || e.endsWith(".js"))) {
-				const jsAdapter = adapters.find((a) => a.languages.includes("typescript") || a.languages.includes("javascript"))
-				if (jsAdapter) return jsAdapter
-			}
-			// Check for .rs/.c/.cpp files → lldb-dap
-			if (entries.some((e) => e.endsWith(".rs") || e.endsWith(".c") || e.endsWith(".cpp"))) {
-				const nativeAdapter = adapters.find((a) => a.languages.includes("rust") || a.languages.includes("c"))
-				if (nativeAdapter) return nativeAdapter
-			}
-		} catch {
-			// Not a directory or unreadable — fall through to null
-		}
-		return null
-	}
-
 	/** Launch a debug session: resolve the adapter, connect the DapClient, create
 	 *  the DapSession, and call session.launch(). Used by the debug_launch tool. */
 	async function launchSession(opts: LaunchSessionOptions) {
@@ -464,10 +430,16 @@ export default function (pi: ExtensionAPI) {
 		if (opts.adapterName) {
 			adapter = adapters.find((a) => a.name === opts.adapterName) ?? null
 		} else {
-			// Try file extension first, then directory-based detection for
-			// package directories (e.g. ./cmd/server for Go).
+			// Try file extension first, then directory-based detection: the program
+			// may itself be a package directory (./cmd/server for Go) or an
+			// extensionless compiled binary — in the latter case inspect the source
+			// files alongside it (main next to main.c).
 			adapter = adapterForFile(program, adapters)
 			if (!adapter) adapter = adapterForDirectory(program, adapters)
+			if (!adapter) {
+				const parent = path.dirname(program)
+				if (parent !== program) adapter = adapterForDirectory(parent, adapters)
+			}
 		}
 
 		if (!adapter) {

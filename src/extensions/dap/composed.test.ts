@@ -273,6 +273,29 @@ describe("debug_state_at", () => {
 
 		expect(stub.terminate).toHaveBeenCalledTimes(1)
 	})
+
+	it("launches the `program` binary while the breakpoint targets `file` (compiled languages)", async () => {
+		const stub = createStubSession()
+		stub.continue.mockResolvedValue(stop("breakpoint"))
+		const { deps } = createDeps()
+
+		let launchedProgram: string | undefined
+		deps.launchSession = async (opts: { program: string }) => {
+			launchedProgram = opts.program
+			return stub as unknown as DapSession
+		}
+
+		const result = await debugStateAt(deps, {
+			file: "/proj/main.c",
+			program: "/proj/main",
+			line: 4,
+		})
+
+		expect(launchedProgram).toBe("/proj/main")
+		expect(stub.setBreakpoint).toHaveBeenCalledWith("/proj/main.c", 4)
+		expect(result.hit).toBe(true)
+		expect(stub.terminate).toHaveBeenCalledTimes(1)
+	})
 })
 
 // ── debug_last_error ─────────────────────────────────────────────────────────
