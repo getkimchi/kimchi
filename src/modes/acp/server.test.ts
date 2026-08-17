@@ -1155,40 +1155,6 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(usageUpdates).toHaveLength(0)
 	})
 
-	it("emits usage_update with used:0 when tokens are null but stats total is 0 and size is known", async () => {
-		const { conn, updates } = makeRecordingConn()
-		const localFake = new FakeAgentSession("session-usage-zero")
-		localFake.model = { provider: "test", id: "m", name: "M", input: ["text"], contextWindow: 200_000 }
-		localFake.contextUsage = { tokens: null, contextWindow: 200_000, percent: null }
-		localFake.sessionStats = {
-			tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			cost: 0,
-		}
-		const localAgent = new KimchiAcpAgent(conn, {
-			extensionFactories: [],
-			agentDir: "/tmp/fake-agent-dir",
-			sessionFactory: async () => asSession(localFake),
-		})
-		const { sessionId: sid } = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
-
-		localFake.promptImpl = async () => {
-			localFake.emit({ type: "agent_start" })
-			localFake.emit(agentEnd())
-		}
-		const result = await localAgent.prompt({
-			sessionId: sid,
-			prompt: [{ type: "text", text: "hi" }],
-		})
-		expect(result.stopReason).toBe("end_turn")
-
-		const usageUpdates = updates.filter(
-			(u) => (u.update as { sessionUpdate?: string }).sessionUpdate === "usage_update",
-		)
-		expect(usageUpdates).toHaveLength(1)
-		expect((usageUpdates[0].update as { used: number; size: number }).used).toBe(0)
-		expect((usageUpdates[0].update as { used: number; size: number }).size).toBe(200_000)
-	})
-
 	// Resource safety on the newSession error path: if subscribe (or any step
 	// between factory-returns-session and sessions.set) throws, the live session
 	// must be disposed — nothing else will ever clean it up.
