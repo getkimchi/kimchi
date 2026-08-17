@@ -244,7 +244,7 @@ async function maybeCompleteManualPhaseBoundary(
 	const nextPhase = ferment.phases.find((phase) => phase.id === decision.action.phaseId)
 	if (!nextPhase) return undefined
 	const summaryLine = copy?.summaryLine ?? `Phase "${completedPhase.name}" done.`
-	if (ctx?.ui?.select) {
+	if (ctx.hasUI) {
 		const choice = await withBlocked(pi.events, "Ferment phase boundary", () =>
 			withWorkingHidden(ctx, () =>
 				ctx.ui.select(`${summaryLine}\nContinue "${ferment.name}" to "${nextPhase.name}"?`, [

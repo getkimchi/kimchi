@@ -539,10 +539,10 @@ export async function completeStep(
 	sendStepBreadcrumb(pi, `Step ${step.index} ✗ failed verification - ${judgeVerdict.reason}`, "warning")
 
 	// D19: surface a recovery dropdown so the user picks an action explicitly
-	// instead of leaving the planner guessing. Guard on `select` specifically
-	// so non-TUI UIs that can't render a dropdown never activate a herdr
-	// blocked pair without prompting (see herdr-events.ts PROTOCOL).
-	if (ctx.hasUI && ctx.ui?.select) {
+	// instead of leaving the planner guessing. hasUI implies a dialog-capable
+	// UI, so only prompt when we won't emit a herdr blocked pair without one
+	// (see herdr-events.ts PROTOCOL).
+	if (ctx.hasUI) {
 		const retryLabel = "Retry"
 		const skipLabel = "Skip step"
 		const editLabel = "Edit prompt and retry"
