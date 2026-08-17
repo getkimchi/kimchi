@@ -31,6 +31,7 @@ import type {
 	DapOutputLine,
 	DapStoppedWaiter,
 	DapTerminatedWaiter,
+	ExceptionInfo,
 	Scope,
 	StackFrame,
 	StoppedEvent,
@@ -290,6 +291,17 @@ export class DapSession {
 		const threadId = this.client.stoppedEvent?.threadId ?? (await this.ensureThreadId())
 		const body = await sendRequest(this.client, "stackTrace", { threadId }, this.timeoutMs)
 		return (body as { stackFrames?: StackFrame[] }).stackFrames ?? []
+	}
+
+	/** Returns structured info about the exception that stopped the debuggee
+	 *  (DAP `exceptionInfo` request). Use this at an exception stop to get the
+	 *  real type/message — the stopped event's `text` is often a bare
+	 *  "exception". Throws if the adapter doesn't support the request or no
+	 *  thread is known. */
+	async getExceptionInfo(): Promise<ExceptionInfo> {
+		const threadId = this.client.stoppedEvent?.threadId ?? (await this.ensureThreadId())
+		const body = await sendRequest(this.client, "exceptionInfo", { threadId }, this.timeoutMs)
+		return body as ExceptionInfo
 	}
 
 	/** Returns the scopes (Locals, Arguments, Registers, ...) for a frame.

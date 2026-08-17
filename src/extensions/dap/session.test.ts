@@ -24,6 +24,7 @@ import type {
 	DapCapabilities,
 	DapClient,
 	DapEvaluateResult,
+	ExceptionInfo,
 	Scope,
 	StackFrame,
 	StoppedEvent,
@@ -385,6 +386,26 @@ describe("DapSession", () => {
 			const result = await session.getStackFrame()
 			expect(result).toEqual(frames)
 			expect((captured.at(-1)?.args as { threadId: number }).threadId).toBe(1)
+		})
+
+		it("getExceptionInfo requests exceptionInfo for the current thread", async () => {
+			const client = createMockClient(null)
+			const session = makeSession(client)
+			queueResponse("launch", {})
+			await session.launch({ program: "/tmp/app.js", cwd: CWD })
+			client.threadId = 1
+
+			const body: ExceptionInfo = {
+				exceptionId: "ZeroDivisionError",
+				description: "division by zero",
+				breakMode: "always",
+			}
+			queueResponse("exceptionInfo", body)
+			const result = await session.getExceptionInfo()
+			expect(result).toEqual(body)
+			const req = captured.at(-1)
+			expect(req?.command).toBe("exceptionInfo")
+			expect((req?.args as { threadId: number }).threadId).toBe(1)
 		})
 
 		it("ensureThreadId queries threads when no threadId is tracked", async () => {

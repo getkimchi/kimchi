@@ -353,10 +353,20 @@ export async function debugLastError(
 					throw err
 				}
 				if (stop.reason === "exception") {
-					const exception = {
-						type: stop.text ?? "exception",
-						message: stop.description ?? stop.text ?? "unknown exception",
+					let type = stop.text ?? "exception"
+					let message = stop.description ?? stop.text ?? "unknown exception"
+					// Prefer the adapter's structured exceptionInfo — a stopped event's
+					// `text` is often a bare "exception", while exceptionInfo carries
+					// the real type (ZeroDivisionError) and message.
+					try {
+						const info = await session.getExceptionInfo()
+						type = info.details?.typeName ?? info.exceptionId ?? type
+						message = info.description ?? info.details?.message ?? message
+					} catch {
+						// Adapter doesn't support exceptionInfo or reports loosely —
+						// keep the stopped-event text as the fallback.
 					}
+					const exception = { type, message }
 					const locals = await collectLocals(session)
 					const backtrace = await session.getStackFrame()
 					const { stdout, stderr } = collectOutput(session.outputLines)
