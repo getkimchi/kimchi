@@ -29,6 +29,8 @@ const DAP_TOOL_NAMES = [
 	"debug_last_error",
 	"debug_trace_calls",
 	"debug_watch_change",
+	"debug_set_variable",
+	"debug_restart",
 ]
 
 const TOOL_NAMES = {
