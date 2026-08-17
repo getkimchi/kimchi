@@ -26,6 +26,8 @@ const ORIGINAL_GET_SKILLS = Symbol.for("kimchi.piNativeCompat.originalGetSkills"
 const ORIGINAL_GET_PROMPTS = Symbol.for("kimchi.piNativeCompat.originalGetPrompts")
 const ORIGINAL_GET_THEMES = Symbol.for("kimchi.piNativeCompat.originalGetThemes")
 const ORIGINAL_PACKAGE_RESOLVE = Symbol.for("kimchi.piNativeCompat.originalPackageResolve")
+const ROBUST_RESOLVE = Symbol.for("kimchi.piNativeCompat.robustResolve")
+const ORIGINAL_INSTALL_PARSED_SOURCE = Symbol.for("kimchi.piNativeCompat.originalInstallParsedSource")
 
 type HandlerFn = (event: unknown, ctx: unknown) => unknown
 type ExtensionWithMarker = LoadExtensionsResult["extensions"][number] & { [NORMALIZED]?: boolean }
@@ -35,10 +37,48 @@ type ResourceLoaderWithOriginal = DefaultResourceLoader & {
 	[ORIGINAL_GET_PROMPTS]?: DefaultResourceLoader["getPrompts"]
 	[ORIGINAL_GET_THEMES]?: DefaultResourceLoader["getThemes"]
 }
+export interface PackageInstallFailure {
+	source: string
+}
+
+/**
+ * Module-level failure collection.
+ *
+ * Sequential access assumption: resolve() calls clearFailures() at its start
+ * and sets ROBUST_RESOLVE=true; installParsedSource records failures during
+ * that window. The session_start handler in package-install-guard.ts then
+ * calls consumePackageInstallFailures() to drain the list. This relies on the
+ * startup lifecycle ordering: resolve() runs before session_start fires. If
+ * resolve() is called again before session_start consumes, earlier failures
+ * are cleared (acceptable — the latest resolve() is what matters for the
+ * current session). If session_start fires without a prior resolve()
+ * (e.g. no packages configured), consumePackageInstallFailures() returns an
+ * empty array and no warning is shown.
+ */
+const packageInstallFailures: PackageInstallFailure[] = []
+
+function recordFailure(failure: PackageInstallFailure): void {
+	if (packageInstallFailures.some((f) => f.source === failure.source)) return
+	packageInstallFailures.push(failure)
+}
+
+function clearFailures(): void {
+	packageInstallFailures.length = 0
+}
+
+export function consumePackageInstallFailures(): PackageInstallFailure[] {
+	const snapshot = [...packageInstallFailures]
+	clearFailures()
+	return snapshot
+}
+
 type PackageManagerWithOriginal = {
 	cwd?: string
 	resolve: DefaultPackageManager["resolve"]
+	installParsedSource: (parsed: unknown, scope: string) => Promise<void>
 	[ORIGINAL_PACKAGE_RESOLVE]?: DefaultPackageManager["resolve"]
+	[ORIGINAL_INSTALL_PARSED_SOURCE]?: (parsed: unknown, scope: string) => Promise<void>
+	[ROBUST_RESOLVE]?: boolean
 }
 
 export function installPiNativeCompatibilityShim(): void {
@@ -78,22 +118,54 @@ export function installPiNativeCompatibilityShim(): void {
 	const packageProto = DefaultPackageManager.prototype as unknown as PackageManagerWithOriginal
 	const originalPackageResolve = packageProto.resolve
 	packageProto[ORIGINAL_PACKAGE_RESOLVE] = originalPackageResolve
+
+	// Wrap installParsedSource so that install failures during resolve() are
+	// caught and recorded instead of crashing the session. The CLI install/update
+	// path calls installParsedSource directly (not through resolve()), so the
+	// ROBUST_RESOLVE flag is only set during resolve() — CLI errors propagate
+	// normally.
+	const originalInstallParsedSource = packageProto.installParsedSource
+	packageProto[ORIGINAL_INSTALL_PARSED_SOURCE] = originalInstallParsedSource
+	packageProto.installParsedSource = async function patchedInstallParsedSource(
+		this: DefaultPackageManager,
+		parsed: unknown,
+		scope: string,
+	): Promise<void> {
+		const pm = this as unknown as PackageManagerWithOriginal
+		const original = pm[ORIGINAL_INSTALL_PARSED_SOURCE] ?? originalInstallParsedSource
+		if (!pm[ROBUST_RESOLVE]) {
+			return original.call(this, parsed, scope)
+		}
+		try {
+			return await original.call(this, parsed, scope)
+		} catch {
+			recordFailure({
+				source: reconstructSourceFromParsed(parsed),
+			})
+		}
+	}
+
 	packageProto.resolve = async function patchedPackageResolve(
 		this: DefaultPackageManager,
 		...args: Parameters<DefaultPackageManager["resolve"]>
 	): ReturnType<DefaultPackageManager["resolve"]> {
-		const cwd = (this as unknown as PackageManagerWithOriginal).cwd ?? process.cwd()
-		const records = getConfiguredPackageResourceRecords(cwd)
-		const nativeResolvedPaths = filterDisabledPackageResolvedPaths(
-			await originalPackageResolve.apply(this, args),
-			records,
-		)
-		if (isOriginalPiPackageManager(this)) return nativeResolvedPaths
-		const piResolvedPaths = filterDisabledPackageResolvedPaths(
-			await resolveOriginalPiPackageResources(cwd, getPackageManagerPackageIdentities(this)),
-			records,
-		)
-		return mergeResolvedPaths(nativeResolvedPaths, piResolvedPaths)
+		clearFailures()
+		const pm = this as unknown as PackageManagerWithOriginal
+		pm[ROBUST_RESOLVE] = true
+		try {
+			const cwd = pm.cwd ?? process.cwd()
+			const records = getConfiguredPackageResourceRecords(cwd)
+			const originalResolve = pm[ORIGINAL_PACKAGE_RESOLVE] ?? originalPackageResolve
+			const nativeResolvedPaths = filterDisabledPackageResolvedPaths(await originalResolve.apply(this, args), records)
+			if (isOriginalPiPackageManager(this)) return nativeResolvedPaths
+			const piResolvedPaths = filterDisabledPackageResolvedPaths(
+				await resolveOriginalPiPackageResources(cwd, getPackageManagerPackageIdentities(this)),
+				records,
+			)
+			return mergeResolvedPaths(nativeResolvedPaths, piResolvedPaths)
+		} finally {
+			pm[ROBUST_RESOLVE] = false
+		}
 	}
 	proto[INSTALLED] = true
 }
@@ -210,6 +282,17 @@ function isDisabledResolvedResource(
 			isPathInsidePackage(resource.path, record) ||
 			isPathInsidePackage(resource.metadata.baseDir, record),
 	)
+}
+
+function reconstructSourceFromParsed(parsed: unknown): string {
+	if (!isRecord(parsed)) return String(parsed)
+	const type = parsed.type
+	if (type === "npm" && typeof parsed.name === "string") return `npm:${parsed.name}`
+	if (type === "git" && typeof parsed.host === "string" && typeof parsed.path === "string") {
+		return `git:${parsed.host}/${parsed.path}`
+	}
+	if (type === "local" && typeof parsed.path === "string") return parsed.path
+	return String(parsed)
 }
 
 function normalizeToolResultHandlers(handlers: Map<string, HandlerFn[]>): void {

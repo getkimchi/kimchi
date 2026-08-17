@@ -5,6 +5,7 @@ import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
 import { rsyncInstallHint, whichRsync } from "../preflight/rsync.js"
 import { SANDBOX_HOME, SANDBOX_USER } from "../provisioning/constants.js"
+import { provisionHarnessConfig } from "../provisioning/harness-config.js"
 import { formatRsyncFailure, runRsync } from "../provisioning/rsync-runner.js"
 import type { TeleportContext } from "../types.js"
 import { formatBytes } from "../ui/format-bytes.js"
@@ -82,6 +83,20 @@ export async function runSync(rawArgs: string, ctx: TeleportContext): Promise<vo
 			info(ctx, `${prefix}: ${result.fileCount} file(s), ${kb} KB in ${sec}s.`)
 		} catch (err) {
 			refuse(ctx, `rsync failed: ${formatRsyncFailure(err)}`)
+		}
+
+		// Fatal here (vs warn-and-continue in /teleport): /sync is an explicit user
+		// action where a config-sync failure should be surfaced clearly, not silent.
+		if (args.direction === "up" && !args.dryRun) {
+			progress.setPhase("Syncing harness config…")
+			const configResult = await provisionHarnessConfig({
+				remoteHost: creds.host,
+				authToken: creds.connectToken,
+				signal: ctx.signal,
+			})
+			if (!configResult.ok) {
+				refuse(ctx, `Could not sync harness config: ${configResult.error}`)
+			}
 		}
 	} finally {
 		progress.stop()

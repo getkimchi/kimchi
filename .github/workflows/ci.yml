@@ -4,6 +4,7 @@ on:
   push:
     branches: [master]
   pull_request:
+  merge_group:
 
 jobs:
   pr-checks:
@@ -56,7 +57,11 @@ jobs:
     # a PR based on a stale base ref can pass `pr-checks` and only fail at the
     # post-merge `master-checks` step, leaving master red until a follow-up
     # lands (see #657 for the original incident).
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    # It also runs on merge_group events as the merge queue's required
+    # validation build ("CI / master-checks"): checkout@v4 resolves to the
+    # queued merge branch (base + queued PRs), so the queue validates exactly
+    # the tree that would land on master before squashing.
+    if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -67,15 +72,21 @@ jobs:
       #   pull_request       → group = "ci-pr-master-checks-<head_ref>"
       #                        e.g. PR from "fix/foo"  →  "ci-pr-master-checks-fix/foo"
       #                        (one slot per PR; cancels only that PR's stale runs)
+      #   merge_group        → group = "ci-mq-<run_id>"
+      #                        (merge-queue validation builds. github.head_ref
+      #                        is empty on merge_group events, and each queued
+      #                        build needs its own slot — a shared group with
+      #                        cancel-in-progress would make successive queue
+      #                        builds cancel each other)
       #
       # Why not a single "ci-master" group across both events? It would make
       # concurrent PRs cancel each other and let master pushes cancel
       # in-flight PR runs.
       #
-      # `&&`/`||` short-circuit in GitHub Actions expressions, so the
-      # `format(...)` on the right side is only evaluated on pull_request
-      # events (where `github.head_ref` is defined; it's empty for push).
-      group: ${{ github.event_name == 'push' && 'ci-master' || format('ci-pr-master-checks-{0}', github.head_ref) }}
+      # `&&`/`||` short-circuit (and `&&` binds tighter than `||`) in GitHub
+      # Actions expressions, so each `format(...)` branch is only evaluated
+      # for its own event (github.head_ref is only defined on pull_request).
+      group: ${{ github.event_name == 'push' && 'ci-master' || github.event_name == 'merge_group' && format('ci-mq-{0}', github.run_id) || format('ci-pr-master-checks-{0}', github.head_ref) }}
       cancel-in-progress: true
 
     steps:

@@ -5,12 +5,9 @@ import { createContext } from "../__mocks__/context.js"
 import { FERMENT_EVENTS } from "../ferment/domain-events.js"
 import { setActive } from "../ferment/state.js"
 import { bumpStallCounter, registerFermentTodoSync } from "../ferment/todo-sync.js"
-import {
-	__test_renderTodoPromptBlock,
-	__test_renderTodoStateMarkdown,
-	appendTodoPromptBlockIfMissing,
-	renderTodoStateBlock,
-} from "./prompt-block.js"
+import { FERMENT_TODO_GUIDANCE, renderFermentTodoPromptBlock } from "./ferment-prompt-block.js"
+import { __test_renderTodoPromptBlock } from "./prompt-block.js"
+import { __test_renderTodoStateMarkdown, renderTodoStateBlock } from "./state-markdown.js"
 import {
 	__resetTodoStore,
 	applyWriteTodos,
@@ -153,14 +150,6 @@ describe("todo prompt block", () => {
 		expect(__test_renderTodoPromptBlock()).not.toContain("Current global todos:")
 		expect(__test_renderTodoPromptBlock()).not.toContain("alpha")
 		expect(__test_renderTodoPromptBlock()).not.toContain("bravo")
-	})
-
-	it("appends guidance when the assembled system prompt missed the todo block", () => {
-		const prompt = appendTodoPromptBlockIfMissing("## Tools\n- read")
-
-		expect(prompt).toContain("## Tools")
-		expect(prompt).toContain("## Todos")
-		expect(appendTodoPromptBlockIfMissing(prompt ?? "")).toBeUndefined()
 	})
 })
 
@@ -494,17 +483,25 @@ describe("ferment-conditional todo guidance", () => {
 		setActive(undefined)
 	})
 
-	it("renderTodoPromptBlock includes ferment guidance when ferment is active", () => {
+	it("renderTodoPromptBlock is independent of ferment state", () => {
+		const withoutFerment = __test_renderTodoPromptBlock()
 		setActive(makeFerment())
-		const block = __test_renderTodoPromptBlock()
-		expect(block).toContain("When working inside a ferment step")
-		expect(block).toContain("break the step into concrete sub-tasks")
+		const withFerment = __test_renderTodoPromptBlock()
+		expect(withFerment).toBe(withoutFerment)
+		expect(withFerment).not.toContain("When working inside a ferment step")
 	})
 
-	it("renderTodoPromptBlock does NOT include ferment guidance when no ferment is active", () => {
+	it("ferment supplement block renders only while a ferment is active", () => {
+		expect(renderFermentTodoPromptBlock()).toBeUndefined()
+
+		setActive(makeFerment())
+		const supplement = renderFermentTodoPromptBlock()
+		expect(supplement).toBe(FERMENT_TODO_GUIDANCE)
+		expect(supplement).toContain("When working inside a ferment step")
+		expect(supplement).toContain("break the step into concrete sub-tasks")
+
 		setActive(undefined)
-		const block = __test_renderTodoPromptBlock()
-		expect(block).not.toContain("When working inside a ferment step")
+		expect(renderFermentTodoPromptBlock()).toBeUndefined()
 	})
 })
 

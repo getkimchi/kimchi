@@ -59,6 +59,10 @@ function cleanPermissionEnv(): void {
 beforeEach(cleanPermissionEnv)
 afterEach(cleanPermissionEnv)
 
+vi.mock("../ide-adapter/index.js", () => ({
+	isIdeConnected: vi.fn(() => false),
+}))
+
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
 	rawPlatform: "linux",
@@ -75,6 +79,7 @@ const testEnv: EnvironmentInfo = {
 }
 
 const TEST_SESSION_ID = "test-session"
+const WORKFLOW_OUTPUT_TOOLS = ["workflow_submit_result", "workflow_submit_questions"]
 
 // Helper to create mock ExtensionContext with ui.select
 // When an AbortSignal is passed and aborted=true, returns undefined to trigger "aborted" outcome
@@ -261,6 +266,17 @@ describe("permissions plan-mode tool visibility", () => {
 					createMockContext([]),
 				),
 			).resolves.toBeUndefined()
+		}
+	})
+
+	it("keeps workflow output tools visible and allowed under explicit --plan", async () => {
+		const harness = createPermissionsHarness(["read", ...WORKFLOW_OUTPUT_TOOLS], { plan: true })
+
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(harness.activeTools().sort()).toEqual(["read", ...WORKFLOW_OUTPUT_TOOLS].sort())
+		for (const toolName of WORKFLOW_OUTPUT_TOOLS) {
+			await expect(harness.fire("tool_call", { toolName, input: {} }, createMockContext([]))).resolves.toBeUndefined()
 		}
 	})
 
@@ -713,6 +729,51 @@ describe("plan mode assumption detection", () => {
 	// the session with implementation tools visible but no active ferment, no
 	// session ref, no creation event, and no initialized runtime state. The fix
 	// is fail-closed: stay in plan mode, do NOT apply implementation tools.
+	// Regression: previously the only post-approval signal was the hidden
+	// ferment_reference entry, so the model "started over" — it re-ran discovery
+	// (list_ferments) and re-drafted the scope via scope_ferment, which the FSM
+	// rejected (already PHASE_ACTIVE). The ferment_handoff message must tell the
+	// model the ferment is already scoped/active and name the next action.
+	it("Start as ferment sends a ferment_handoff message with no-re-planning and next-action guidance", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const tmpDir = mkdtempSync(join(tmpdir(), "handoff-"))
+		try {
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+
+			const handoffCall = vi
+				.mocked(harness.pi.sendMessage)
+				.mock.calls.find(([message]) => message.customType === "ferment_handoff")
+			expect(handoffCall).toBeDefined()
+			const [handoffMessage, handoffOptions] = handoffCall ?? []
+			const text = Array.isArray(handoffMessage?.content)
+				? handoffMessage.content
+						.filter((content) => content.type === "text")
+						.map((content) => content.text)
+						.join("\n")
+				: String(handoffMessage?.content ?? "")
+			expect(text).toContain('approved by the user ("Start as ferment")')
+			expect(text).toContain("ALREADY scoped")
+			expect(text).toContain('phase "phase-1"')
+			expect(text).toContain("is ACTIVE")
+			for (const forbidden of ["list_ferments", "scope_ferment", "propose_ferment_scoping"]) {
+				expect(text).toContain(forbidden)
+			}
+			expect(text).toContain("Scope mutations will be rejected")
+			expect(text).toContain("ask_user remains available for genuine execution blockers or recovery")
+			expect(text).toContain("start_ferment_step")
+			expect(text).toContain('phase_id "phase-1", step_id "step-1"')
+			expect(handoffOptions).toMatchObject({ triggerTurn: true })
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
+			defaultFermentRuntime.setActive(undefined)
+		}
+	})
+
 	it("Start as ferment fails closed when runtime creation throws — stays in plan mode, no implementation tools", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
@@ -933,6 +994,41 @@ describe("permissions ferment tool classification", () => {
 
 		expect(readResult).toBeUndefined()
 		expect(bashResult).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+})
+
+describe("permissions workflow output tool classification", () => {
+	beforeEach(() => {
+		vi.mocked(classifyToolCall).mockClear()
+	})
+
+	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
+		vi.unstubAllEnvs()
+	})
+
+	it("allows workflow output tools in auto mode without invoking the classifier", async () => {
+		const harness = createPermissionsHarness(WORKFLOW_OUTPUT_TOOLS, { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		for (const toolName of WORKFLOW_OUTPUT_TOOLS) {
+			await expect(harness.fire("tool_call", { toolName, input: {} }, ctx)).resolves.toBeUndefined()
+		}
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("allows workflow output tools in default mode without prompting", async () => {
+		const harness = createPermissionsHarness(WORKFLOW_OUTPUT_TOOLS)
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+
+		for (const toolName of WORKFLOW_OUTPUT_TOOLS) {
+			await expect(harness.fire("tool_call", { toolName, input: {} }, ctx)).resolves.toBeUndefined()
+		}
+		expect(ctx.ui.select).not.toHaveBeenCalled()
 		expect(classifyToolCall).not.toHaveBeenCalled()
 	})
 })

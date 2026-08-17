@@ -32,6 +32,10 @@ export interface FakeResponseRequest {
 export interface FakeResponseScript {
 	/** Optional predicate that reserves this script for matching chat requests. */
 	match?: (request: FakeResponseRequest) => boolean
+	/** Raw streamed deltas for tests that need exact SSE chunk boundaries. */
+	rawDeltas?: { delta: Record<string, unknown>; delayMs?: number }[]
+	/** Final streamed finish reason. Defaults to the existing tool-call-aware value. */
+	finishReason?: "stop" | "tool_calls"
 	/** Text chunks emitted as `delta.content` (the visible assistant response). */
 	stream?: string[]
 	/**
@@ -311,6 +315,11 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 		return
 	}
 
+	for (const raw of script.rawDeltas ?? []) {
+		if (raw.delayMs) await sleep(raw.delayMs)
+		chunk([{ index: 0, delta: raw.delta, finish_reason: null }])
+	}
+
 	for (const text of script.stream ?? []) {
 		const delay = script.textDelayMs ?? script.delayMs
 		if (delay) await sleep(delay)
@@ -362,7 +371,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 	const finalChunk: Record<string, unknown> = {
 		index: 0,
 		delta: {},
-		finish_reason: script.toolCalls?.length ? "tool_calls" : "stop",
+		finish_reason: script.finishReason ?? (script.toolCalls?.length ? "tool_calls" : "stop"),
 	}
 	if (script.usage) {
 		writeSse(res, {

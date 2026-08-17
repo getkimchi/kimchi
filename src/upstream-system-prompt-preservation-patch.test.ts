@@ -1,8 +1,6 @@
 /**
- * Regression tests for the kimchi patch in
- * `patches/@earendil-works__pi-coding-agent@0.79.10.patch` that makes upstream
- * `AgentSession.setActiveToolsByName()` (and the resources-reload path)
- * preserve an extension-installed system prompt.
+ * Regression tests for Pi's native `setActiveToolsByName()` override
+ * preservation and Kimchi's resource-reload patch.
  *
  * Why: kimchi's prompt-enrichment extension replaces the system prompt on
  * every `before_agent_start`. Mid-run `pi.setActiveTools()` calls (ferment
@@ -67,18 +65,17 @@ function makeFakeSession(basePrompt: string) {
 
 describe("upstream system-prompt preservation patch", () => {
 	it("is present in the installed dist (setActiveToolsByName + resource reload)", () => {
-		// Pin the stable "kimchi-dev" marker comment each hunk carries, not an
-		// internal local variable name (which a future patch revision might rename).
 		const setActiveSource = String(sessionProto.setActiveToolsByName)
-		expect(setActiveSource).toContain("kimchi-dev: preserve an extension-installed system prompt")
+		expect(setActiveSource).toContain("_systemPromptOverride")
 
 		const reloadSource = String(sessionProto.extendResourcesFromExtensions)
-		expect(reloadSource).toContain("kimchi-dev: same override preservation")
+		expect(reloadSource).toContain("kimchi-dev: preserve a before_agent_start prompt")
 	})
 
 	it("setActiveToolsByName preserves an extension-installed prompt while rebuilding tools and base", () => {
 		const fake = makeFakeSession("PI BASE PROMPT")
 		fake.agent.state.systemPrompt = "KIMCHI OVERRIDE PROMPT"
+		fake._systemPromptOverride = "KIMCHI OVERRIDE PROMPT"
 
 		sessionProto.setActiveToolsByName.call(fake, ["read", "bash"])
 
@@ -101,6 +98,7 @@ describe("upstream system-prompt preservation patch", () => {
 	it("setActiveToolsByName preserves the override even when the tool set is emptied", () => {
 		const fake = makeFakeSession("PI BASE PROMPT")
 		fake.agent.state.systemPrompt = "KIMCHI OVERRIDE PROMPT"
+		fake._systemPromptOverride = "KIMCHI OVERRIDE PROMPT"
 
 		// ferment plan-review suppression calls pi.setActiveTools([]).
 		sessionProto.setActiveToolsByName.call(fake, [])
@@ -112,6 +110,7 @@ describe("upstream system-prompt preservation patch", () => {
 	it("extendResourcesFromExtensions preserves an extension-installed prompt", async () => {
 		const fake = makeFakeSession("PI BASE PROMPT")
 		fake.agent.state.systemPrompt = "KIMCHI OVERRIDE PROMPT"
+		fake._systemPromptOverride = "KIMCHI OVERRIDE PROMPT"
 
 		await sessionProto.extendResourcesFromExtensions.call(fake, "startup")
 

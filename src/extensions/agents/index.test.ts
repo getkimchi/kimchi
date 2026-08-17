@@ -114,11 +114,13 @@ vi.mock("../orchestration/model-roles.js", () => ({
 }))
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { Component } from "@earendil-works/pi-tui"
 import { createContext } from "../__mocks__/context.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getAllowedMultiModelRefs, getModelRoles } from "../orchestration/model-roles.js"
 import agentsExtension from "./index.js"
 import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
+import type { Theme } from "./ui/agent-widget.js"
 
 type CapturedHandler = (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>
 
@@ -340,6 +342,7 @@ function getRegisteredAgentTool(pi: ReturnType<typeof makeMockPi>): {
 		onUpdate: unknown,
 		ctx: unknown,
 	) => Promise<{ content: { type: string; text: string }[] }>
+	renderCall: (args: Record<string, unknown>, theme: Theme, context: { argsComplete: boolean }) => Component
 } {
 	const calls = (pi.registerTool as ReturnType<typeof vi.fn>).mock.calls
 	const tool = calls.map((c: unknown[]) => c[0]).find((t: unknown) => (t as { name?: string }).name === "Agent")
@@ -352,8 +355,30 @@ function getRegisteredAgentTool(pi: ReturnType<typeof makeMockPi>): {
 			onUpdate: unknown,
 			ctx: unknown,
 		) => Promise<{ content: { type: string; text: string }[] }>
+		renderCall: (args: Record<string, unknown>, theme: Theme, context: { argsComplete: boolean }) => Component
 	}
 }
+
+describe("Agent tool renderer", () => {
+	it("hides the bare Agent header until the streamed agent type is known", () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const tool = getRegisteredAgentTool(pi)
+		const theme: Theme = {
+			fg: (_color, text) => text,
+			bold: (text) => text,
+		}
+
+		expect(tool.renderCall({}, theme, { argsComplete: false }).render(80)).toEqual([])
+		expect(tool.renderCall({}, theme, { argsComplete: true }).render(80)[0]?.trimEnd()).toBe("▸ General Purpose")
+		expect(tool.renderCall({ subagent_type: "Explore" }, theme, { argsComplete: false }).render(80)[0]?.trimEnd()).toBe(
+			"▸ Explore",
+		)
+		expect(tool.renderCall({ subagent_type: "unknown" }, theme, { argsComplete: true }).render(80)[0]?.trimEnd()).toBe(
+			"▸ General Purpose",
+		)
+	})
+})
 
 describe("Agent tool multi-mode model guard", () => {
 	beforeEach(() => {

@@ -14,12 +14,14 @@ import {
 	readGitToken,
 	readHideTips,
 	readTelemetryConfig,
+	readTeleportCompactHintEnabled,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
 	writeDeviceId,
 	writeGitToken,
 	writeHideTips,
 	writeSessionModeWizardSeenAt,
+	writeTeleportCompactHintEnabled,
 } from "./config.js"
 
 describe("loadConfig", () => {
@@ -663,6 +665,63 @@ describe("readGitToken / writeGitToken", () => {
 	})
 })
 
+describe("readTeleportCompactHintEnabled / writeTeleportCompactHintEnabled", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("defaults to enabled when config file does not exist", () => {
+		expect(readTeleportCompactHintEnabled(configPath)).toBe(true)
+	})
+
+	it("defaults to enabled when the teleport.compactHint section is missing", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "key" }))
+		expect(readTeleportCompactHintEnabled(configPath)).toBe(true)
+	})
+
+	it("defaults to enabled when config file is corrupt", () => {
+		writeFileSync(configPath, "{ not json")
+		expect(readTeleportCompactHintEnabled(configPath)).toBe(true)
+	})
+
+	it("defaults to enabled when enabled is not a boolean", () => {
+		writeFileSync(configPath, JSON.stringify({ teleport: { compactHint: { enabled: "no" } } }))
+		expect(readTeleportCompactHintEnabled(configPath)).toBe(true)
+	})
+
+	it("reads a stored false", () => {
+		writeFileSync(configPath, JSON.stringify({ teleport: { compactHint: { enabled: false } } }))
+		expect(readTeleportCompactHintEnabled(configPath)).toBe(false)
+	})
+
+	it("round-trips write then read", () => {
+		writeTeleportCompactHintEnabled(false, configPath)
+		expect(readTeleportCompactHintEnabled(configPath)).toBe(false)
+	})
+
+	it("preserves sibling keys when writing", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "key",
+				teleport: { otherSetting: true, compactHint: { futureField: 1 } },
+			}),
+		)
+		writeTeleportCompactHintEnabled(false, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("key")
+		expect(raw.teleport.otherSetting).toBe(true)
+		expect(raw.teleport.compactHint).toEqual({ futureField: 1, enabled: false })
+	})
+})
 describe("buildSkillPathOptions", () => {
 	let tempDir: string
 	let originalCwd: string

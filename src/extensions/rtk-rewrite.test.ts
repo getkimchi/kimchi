@@ -5,11 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } fr
 import {
 	_resetRtkState,
 	detectRtk,
-	getBashCommandForDisplay,
 	isRtkPassthrough,
 	rewritePreparedBashCommand,
 	rewriteWithRtk,
-	rtkSpawnHook,
 } from "./rtk-rewrite.js"
 
 // ---------------------------------------------------------------------------
@@ -18,7 +16,7 @@ import {
 
 describe("isRtkPassthrough", () => {
 	it.each([
-		// explicit `run` forms
+		// package-manager scripts
 		"pnpm run lint",
 		"npm run lint",
 		"yarn run build",
@@ -26,10 +24,17 @@ describe("isRtkPassthrough", () => {
 		"pnpm run lint --fix",
 		"npm run lint:fix",
 		"  pnpm run lint", // leading whitespace
-		// npx / bunx
+		// package-manager built-ins
+		"npm install",
+		"npm ci",
+		"yarn install",
+		"yarn add react",
+		"bun install",
+		"bun add react",
+		// package launchers
 		"npx eslint .",
 		"bunx tsx script.ts",
-		// all pnpm commands — scripts AND built-ins — are passed through
+		// all pnpm commands are passed through
 		"pnpm lint",
 		"pnpm build",
 		"pnpm typecheck",
@@ -42,6 +47,24 @@ describe("isRtkPassthrough", () => {
 		"pnpm update",
 		"pnpm remove lodash",
 		"pnpm exec eslint .",
+		// package-manager commands in compound shell expressions
+		"cd /tmp && pnpm exec vitest --version",
+		"cd '/tmp/project with spaces' && npm install",
+		"git status || bunx tsx script.ts",
+		"(pnpm run lint)",
+		"$(pnpm run lint)",
+		"echo $(pnpm run lint)",
+		"cat <(pnpm run lint)",
+		"{ pnpm run lint; }",
+		"if true; then pnpm test; fi",
+		"echo ready\npnpm test",
+		"# run tests\npnpm test",
+		"  # run tests\npnpm test",
+		// leading environment assignments still invoke pnpm directly
+		"CI=1 pnpm test",
+		// Parse failures bypass the optional RTK optimization rather than risk
+		// changing the command's semantics.
+		"git status ${BROKEN",
 	])("returns true for %s", (cmd) => {
 		expect(isRtkPassthrough(cmd)).toBe(true)
 	})
@@ -49,8 +72,11 @@ describe("isRtkPassthrough", () => {
 	it.each([
 		"git status",
 		"cargo test",
-		"npm install", // npm without `run` is not passed through
 		"echo pnpm run lint", // pnpm not at start
+		'echo "cd /tmp && pnpm exec vitest --version"',
+		"echo '$(pnpm test)'", // single-quoted command substitution is literal text
+		"echo ready && echo pnpm exec vitest --version",
+		"bash -c 'pnpm exec vitest --version'",
 	])("returns false for %s", (cmd) => {
 		expect(isRtkPassthrough(cmd)).toBe(false)
 	})
@@ -204,13 +230,17 @@ describe("rewriteWithRtk", () => {
 		expect(rewriteWithRtk("git status")).toBe("rtk git status")
 	})
 
-	it("does not call rtk for package-manager script invocations", async () => {
+	it("does not call rtk for package-manager or launcher invocations", async () => {
 		seedRtkAvailable()
 		await detectRtk()
 
 		expect(rewriteWithRtk("pnpm run lint")).toBe("pnpm run lint")
-		expect(rewriteWithRtk("npm run build")).toBe("npm run build")
+		expect(rewriteWithRtk("npm install")).toBe("npm install")
+		expect(rewriteWithRtk("cd /tmp && npm install")).toBe("cd /tmp && npm install")
+		expect(rewriteWithRtk("yarn add react")).toBe("yarn add react")
+		expect(rewriteWithRtk("bun install")).toBe("bun install")
 		expect(rewriteWithRtk("npx eslint .")).toBe("npx eslint .")
+		expect(rewriteWithRtk("cd /tmp && pnpm exec vitest --version")).toBe("cd /tmp && pnpm exec vitest --version")
 		expect(mockExecFileSync).not.toHaveBeenCalled()
 	})
 
@@ -264,58 +294,5 @@ describe("rewriteWithRtk", () => {
 			return "rtk git log --oneline -10 && echo done\n"
 		})
 		rewriteWithRtk("git log --oneline -10 && echo done")
-	})
-})
-
-describe("rtkSpawnHook", () => {
-	let tmpRtkRoot: string | undefined
-	let previousKimchiDir: string | undefined
-	let previousHome: string | undefined
-
-	beforeEach(() => {
-		_resetRtkState()
-		previousKimchiDir = process.env.KIMCHI_CODING_AGENT_DIR
-		previousHome = process.env.HOME
-		tmpRtkRoot = mkdtempSync(join(tmpdir(), "kimchi-rtk-spawn-test-"))
-		process.env.KIMCHI_CODING_AGENT_DIR = tmpRtkRoot
-		process.env.HOME = tmpRtkRoot
-		mockExecFileSync.mockReset()
-		mockExecFile.mockReset()
-	})
-
-	afterEach(() => {
-		if (tmpRtkRoot) rmSync(tmpRtkRoot, { recursive: true, force: true })
-		tmpRtkRoot = undefined
-		if (previousKimchiDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
-		else process.env.KIMCHI_CODING_AGENT_DIR = previousKimchiDir
-		if (previousHome === undefined) delete process.env.HOME
-		else process.env.HOME = previousHome
-	})
-
-	it("rewrites the command in a BashSpawnContext", async () => {
-		// Seed rtk as available.
-		mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: ExecFileCb) => {
-			cb(null, "rtk 0.40.0\n", "")
-		})
-		await detectRtk()
-
-		mockExecFileSync.mockReturnValueOnce("rtk git status\n")
-		const ctx = { command: "git status", cwd: "/tmp", env: process.env }
-		const result = rtkSpawnHook(ctx)
-		expect(result.command).toBe("rtk git status")
-		expect(result.cwd).toBe("/tmp")
-		expect(getBashCommandForDisplay("git status")).toBe("rtk git status")
-	})
-
-	it("returns the original context when command is unchanged", async () => {
-		mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: ExecFileCb) => {
-			cb(null, "rtk 0.40.0\n", "")
-		})
-		await detectRtk()
-
-		mockExecFileSync.mockReturnValueOnce("echo hello\n")
-		const ctx = { command: "echo hello", cwd: "/tmp", env: process.env }
-		const result = rtkSpawnHook(ctx)
-		expect(result).toBe(ctx) // Same reference — no copy.
 	})
 })

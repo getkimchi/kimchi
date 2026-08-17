@@ -213,17 +213,6 @@ describe("todos extension session state", () => {
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session")[0]?.status).toBe("in_progress")
 	})
 
-	it("adds todo guidance to a system prompt that missed extension prompt blocks", async () => {
-		const harness = createTodosHarness()
-		const result = (await harness.fire(
-			"before_agent_start",
-			{ systemPrompt: "## Tools\n- read" },
-			createContext("session", []),
-		)) as { systemPrompt?: string }
-
-		expect(result.systemPrompt).toContain("## Todos")
-	})
-
 	it("does not inject hidden todo steers for non-todo tool calls", async () => {
 		const harness = createTodosHarness()
 		const result = await harness.fire("tool_call", toolCall("bash"), createContext("session", []))

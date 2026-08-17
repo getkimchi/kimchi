@@ -121,6 +121,10 @@ With the metadata above, the orchestrator will use minimax for simple build chun
 
 Metadata can also be managed interactively via `/multi-model` → "Edit model metadata" — this is the only in-app path for configuring or overriding metadata, so model selection stays uninterrupted. Custom overrides can be reset to defaults from the same menu. Metadata for builtin models can be overridden the same way.
 
+#### Completion token limits
+
+Kimchi omits Pi's estimated `max_completion_tokens` and `max_tokens` fields from requests to managed Kimchi providers. The gateway determines how much output fits using the model's actual tokenizer; output-budget enforcement belongs at the gateway rather than in Pi's approximate client-side context calculation.
+
 ### Phase tracking
 
 Kimchi tags every LLM request with a `phase:{name}` label for usage analytics and cost attribution. The orchestrator sets the phase as work progresses and it is displayed in the status line.

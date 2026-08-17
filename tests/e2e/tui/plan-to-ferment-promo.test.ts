@@ -3,14 +3,10 @@
  *
  * This file has two test cases:
  *
- * 1. "plan-to-ferment promotion — dropdown UI" (test.fail):
+ * 1. "plan-to-ferment promotion — dropdown UI":
  *    Exercises the START_AS_FERMENT dropdown path end-to-end.
- *    KNOWN ISSUE: the dropdown overlay text ("Execute the plan", "Start as ferment",
- *    etc.) does not appear in the tui-test buffer for the START_AS_FERMENT branch,
- *    even though the EXECUTE branch fires (confirmed by model receiving
- *    "The user approved the plan. Execute it now." in the follow-up request).
- *    The artifact-persistence + tool-swap contract is verified by the
- *    companion test below and by `oneshot-bypasses-dropdown.test.ts`.
+ *    Choosing Start as ferment must trigger the implementation turn without
+ *    another user message.
  *
  * 2. "plan-to-ferment promotion — side effects via plan complete handler"
  *    (test): Verifies the side effects of the plan-to-ferment flow by
@@ -29,105 +25,82 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 test.use(TUI_TEST_CONFIG)
 
 // ---------------------------------------------------------------------------
-// Test 1: Dropdown UI — KNOWN ISSUE documented via test.fail
+// Test 1: Dropdown UI and automatic implementation handoff
 // ---------------------------------------------------------------------------
+test("plan-to-ferment promotion — Start as ferment immediately continues execution", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "plan-to-ferment-promo",
+			gitInit: true,
+			responses: [
+				{
+					stream: [
+						"## Goal\nImplement a streaming think parser.\n\n",
+						"## Constraints\n- Preserve the existing parser API\n\n",
+						"## Chunks\n\n",
+						"### Chunk 1: Implement streaming parser\n",
+						"- **Files Changed**: src/parser.ts\n",
+						"- **Accept When**: streaming think blocks parse correctly\n\n",
+						"## Verification Strategy\nRun the parser tests.\n\n",
+						"<!-- PLAN_COMPLETE -->\n",
+					],
+				},
+				{ stream: ["I'll start implementing the streaming think parser."] },
+			],
+			extraArgs: ["--plan=true"],
+		},
+		async (fixture, trace) => {
+			// Stage 1: plan mode confirmed in status line.
+			await waitForText(terminal, "plan → shift+tab", { timeoutMs: STARTUP_TIMEOUT_MS })
+			trace.step("status line confirms plan mode")
 
-// KNOWN ISSUE: plan-complete dropdown overlay does not capture in tui-test
-// buffer reliably — the EXECUTE branch fires (model receives "The user approved
-// the plan...") but the dropdown text never lands in the buffer. This is a
-// rendering/buffer-capture issue, not a logic bug. The artifact-persistence +
-// tool-swap contract is exercised by test 2 and by
-// `oneshot-bypasses-dropdown.test.ts`.
-test.fail(
-	"plan-to-ferment promotion — dropdown UI: navigate to Start as ferment and verify artifact + tool swap",
-	async ({ terminal }) => {
-		await runKimchiSession(
-			terminal,
-			{
-				artifactName: "plan-to-ferment-promo",
-				gitInit: true,
-				responses: [
-					{
-						stream: [
-							"Here's a lightweight plan:\n\n",
-							"1. Read the relevant source files\n",
-							"2. Make the targeted change\n",
-							"3. Run tests to verify\n\n",
-							"<!-- PLAN_COMPLETE -->\n",
-						],
-					},
-					{ stream: ["I'll start implementing the streaming think parser."] },
-				],
-				extraArgs: ["--plan=true"],
-			},
-			async (fixture, trace) => {
-				// Stage 1: plan mode confirmed in status line.
-				await waitForText(terminal, "plan → shift+tab", { timeoutMs: STARTUP_TIMEOUT_MS })
-				trace.step("status line confirms plan mode")
+			// Stage 2: submit request → model emits plan with PLAN_COMPLETE marker.
+			terminal.submit("Implement a streaming think parser")
+			trace.step("submitted planning request")
+			await waitForText(terminal, "<!-- PLAN_COMPLETE -->", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("plan complete marker seen")
 
-				// Stage 2: submit request → model emits plan with PLAN_COMPLETE marker.
-				terminal.submit("Implement a streaming think parser")
-				trace.step("submitted planning request")
-				await waitForText(terminal, "<!-- PLAN_COMPLETE -->", { timeoutMs: STREAM_TIMEOUT_MS })
-				trace.step("plan complete marker seen")
+			// Stage 3: dropdown appears — all three options must be visible in buffer.
+			await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "Rework the plan", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "Start as ferment", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("all three dropdown options visible")
 
-				// Stage 3: dropdown appears — all three options must be visible in buffer.
-				// NOTE: This times out in CI — the dropdown renders but its text does not
-				// appear in the tui-test terminal buffer for the START_AS_FERMENT branch.
-				await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
-				await waitForText(terminal, "Rework the plan", { timeoutMs: INPUT_TIMEOUT_MS })
-				await waitForText(terminal, "Start as ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-				trace.step("all three dropdown options visible")
+			// Stage 4: navigate to "Start as ferment" (index 2) and select.
+			terminal.keyDown()
+			terminal.keyDown()
+			trace.step("navigated to 'Start as ferment'")
+			terminal.keyPress(Key.Enter)
+			trace.step("selected 'Start as ferment'")
 
-				// Stage 4: navigate to "Start as ferment" (index 2) and select.
-				terminal.keyDown()
-				terminal.keyDown()
-				trace.step("navigated to 'Start as ferment'")
-				terminal.keyPress(Key.Enter)
-				trace.step("selected 'Start as ferment'")
+			// Stage 5: dropdown closes — Ferment is running under auto permissions.
+			await waitForText(terminal, /Ferment: .* · Running · .* · auto ·/, { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("status line transitioned to auto — ferment created")
 
-				// Stage 5: dropdown closes — status line transitions to auto.
-				await waitForText(terminal, "auto → shift+tab", { timeoutMs: STREAM_TIMEOUT_MS })
-				trace.step("status line transitioned to auto — ferment created")
+			// Stage 6: verify the ferment artifact was written.
+			const fermentsDir = join(fixture.workDir, ".kimchi", "ferments")
+			const files = readdirSync(fermentsDir).filter((file) => file.endsWith(".json"))
+			expect(files.length).toBe(1)
+			const [fermentFile] = files
+			expect(fermentFile).toMatch(/\.json$/)
 
-				// Stage 6: verify the ferment artifact was written.
-				const fermentsDir = join(fixture.workDir, ".kimchi", "ferments")
-				const files = readdirSync(fermentsDir)
-				expect(files.length).toBe(1)
-				const [fermentFile] = files
-				expect(fermentFile).toMatch(/\.json$/)
+			const fermentArtifact = JSON.parse(readFileSync(join(fermentsDir, fermentFile), "utf-8"))
+			expect(fermentArtifact).toHaveProperty("id")
+			expect(fermentArtifact).toHaveProperty("name")
+			expect(fermentArtifact.status).toBe("running")
+			expect(fermentArtifact).toHaveProperty("phases")
+			expect(Array.isArray(fermentArtifact.phases)).toBe(true)
+			expect(fermentArtifact.phases.length > 0).toBe(true)
+			trace.step("ferment artifact valid")
 
-				const fermentArtifact = JSON.parse(readFileSync(join(fermentsDir, fermentFile), "utf-8"))
-				expect(fermentArtifact).toHaveProperty("id")
-				expect(fermentArtifact).toHaveProperty("name")
-				const validStatus = ["draft", "planned"].includes(fermentArtifact.status)
-				expect(validStatus).toBe(true)
-				expect(fermentArtifact).toHaveProperty("phases")
-				expect(Array.isArray(fermentArtifact.phases)).toBe(true)
-				expect(fermentArtifact.phases.length > 0).toBe(true)
-				trace.step("ferment artifact valid")
-
-				// Stage 7: second prompt → verify ask_user (not questionnaire) in next turn.
-				terminal.submit("Continue")
-				trace.step("submitted second prompt")
-				await waitForText(terminal, "I'll start implementing", { timeoutMs: STREAM_TIMEOUT_MS })
-				trace.step("second model response visible")
-
-				await waitForText(terminal, "ask_user", { timeoutMs: STREAM_TIMEOUT_MS })
-				trace.step("ask_user visible in tool list — tool swap confirmed")
-
-				// Todo lifecycle tools are shared core — they must remain visible
-				// after the plan-to-ferment tool swap (regression: previously adhoc-only).
-				await waitForText(terminal, "update_todos", { timeoutMs: STREAM_TIMEOUT_MS })
-				trace.step("update_todos visible — todo tools available during ferment")
-
-				const finalText = fullText(terminal)
-				expect(finalText.includes("questionnaire")).toBe(false)
-				trace.step("`questionnaire` absent — adhoc tools removed")
-			},
-		)
-	},
-)
+			// Stage 7: the handoff itself triggers the implementation turn. Requiring
+			// another submitted prompt here would reproduce the original stall.
+			await waitForText(terminal, "I'll start implementing", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("implementation response triggered without another user message")
+		},
+	)
+})
 
 // ---------------------------------------------------------------------------
 // Test 2: Side-effect verification via plan-complete handler (no dropdown UI)

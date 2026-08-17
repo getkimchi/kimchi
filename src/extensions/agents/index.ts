@@ -1157,11 +1157,12 @@ ${AGENT_TOOL_GUIDELINES}`,
 				),
 			}),
 
-			renderCall(args, theme) {
+			renderCall(args, theme, context) {
 				// Defense-in-depth: `visibility` is not in this tool's public schema (see execute()),
 				// but if an LLM hallucinates the arg we'd rather hide the tool call than render it.
 				if ((args as Record<string, unknown>).visibility === "system") return new Text("", 0, 0)
-				const displayName = args.subagent_type ? getDisplayName(args.subagent_type as string) : "Agent"
+				if (!context.argsComplete && !args.subagent_type) return new Text("", 0, 0)
+				const displayName = getDisplayName(args.subagent_type || AGENT_GENERAL_PURPOSE)
 				const desc = (args.description as string) ?? ""
 				return new Text(
 					`▸ ${theme.fg("toolTitle", theme.bold(displayName))}${desc ? `  ${theme.fg("muted", desc)}` : ""}`,

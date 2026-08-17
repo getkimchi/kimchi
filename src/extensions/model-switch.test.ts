@@ -57,6 +57,13 @@ const MODELS: ModelEntry[] = [
 		input: ["text", "image"],
 		contextWindow: 200_000,
 	},
+	{
+		id: "gpt-5.6-sol",
+		provider: "kimchi-dev/openai",
+		name: "GPT 5.6 Sol",
+		input: ["text", "image"],
+		contextWindow: 1_050_000,
+	},
 ]
 
 function createHarness(options: { setModelResult?: boolean } = {}): Harness {
@@ -163,7 +170,6 @@ describe("modelSwitchExtension", () => {
 			{ label: "no slash", value: "kimi-k2.6" },
 			{ label: "leading slash (missing provider)", value: "/kimi-k2.6" },
 			{ label: "trailing slash (missing model)", value: "kimchi-dev/" },
-			{ label: "extra slash (three parts)", value: "kimchi-dev/kimi/k2.6" },
 		]
 
 		for (const { label, value } of invalidInputs) {
@@ -209,7 +215,6 @@ describe("modelSwitchExtension", () => {
 			const h = createHarness()
 			const result = await h.exec("kimchi-dev/does-not-exist")
 
-			expect(h.find).toHaveBeenCalledWith("kimchi-dev", "does-not-exist")
 			expect(textOf(result)).toContain("Model not found: kimchi-dev/does-not-exist")
 			expect(textOf(result)).toContain("Available models:")
 			expect(textOf(result)).toContain("kimchi-dev/kimi-k2.6")
@@ -223,7 +228,6 @@ describe("modelSwitchExtension", () => {
 			const h = createHarness()
 			const result = await h.exec("kimchi-dev/kimi-k2.6")
 
-			expect(h.find).toHaveBeenCalledWith("kimchi-dev", "kimi-k2.6")
 			expect(h.setModel).toHaveBeenCalledTimes(1)
 			expect(h.setModel).toHaveBeenCalledWith({
 				id: "kimi-k2.6",
@@ -248,6 +252,20 @@ describe("modelSwitchExtension", () => {
 				contextWindow: 200_000,
 			})
 			expect(textOf(result)).toBe("Switched to model anthropic/claude-sonnet-4-20250514 (Claude Sonnet 4)")
+		})
+
+		it("supports provider refs containing slashes", async () => {
+			const h = createHarness()
+			const result = await h.exec("kimchi-dev/openai/gpt-5.6-sol")
+
+			expect(h.setModel).toHaveBeenCalledWith({
+				id: "gpt-5.6-sol",
+				provider: "kimchi-dev/openai",
+				name: "GPT 5.6 Sol",
+				input: ["text", "image"],
+				contextWindow: 1_050_000,
+			})
+			expect(textOf(result)).toBe("Switched to model kimchi-dev/openai/gpt-5.6-sol (GPT 5.6 Sol)")
 		})
 	})
 
@@ -742,7 +760,7 @@ describe("modelSwitchExtension", () => {
 			it("rejects switch to kimi-k2.6 when large context accumulated (null upstream tokens)", async () => {
 				// Simulate a large conversation: 30 messages × 2000 chars → ~15,000 tokens estimated.
 				// The guard checks against the found model's contextWindow (from MODELS registry).
-				// Override the harness find mock to return a kimi with a small context window
+				// Override the registry result to return a kimi with a small context window
 				// so the guard fires, without mutating the global MODELS array.
 				__setLatestMessagesForTest(
 					Array.from({ length: 30 }, () => ({
@@ -752,13 +770,11 @@ describe("modelSwitchExtension", () => {
 					})),
 				)
 				const h = createHarness()
-				h.find.mockImplementation((provider: string, id: string) => {
-					const found = MODELS.find((m) => m.provider === provider && m.id === id)
-					if (found && found.id === "kimi-k2.6" && found.provider === "kimchi-dev") {
-						return { ...found, contextWindow: 10_000 }
-					}
-					return found
-				})
+				h.getAvailable.mockReturnValue(
+					MODELS.map((model) =>
+						model.id === "kimi-k2.6" && model.provider === "kimchi-dev" ? { ...model, contextWindow: 10_000 } : model,
+					),
+				)
 				const result = await h.exec("kimchi-dev/kimi-k2.6")
 
 				expect(h.setModel).not.toHaveBeenCalled()

@@ -1,9 +1,45 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+
+const {
+	authMock,
+	resolveWorkspaceRefMock,
+	runRsyncMock,
+	formatRsyncFailureMock,
+	provisionHarnessConfigMock,
+	whichRsyncMock,
+	rsyncInstallHintMock,
+} = vi.hoisted(() => ({
+	authMock: vi.fn(),
+	resolveWorkspaceRefMock: vi.fn(),
+	runRsyncMock: vi.fn(),
+	formatRsyncFailureMock: vi.fn((err: unknown) => (err instanceof Error ? err.message : String(err))),
+	provisionHarnessConfigMock: vi.fn(),
+	whichRsyncMock: vi.fn(() => true),
+	rsyncInstallHintMock: vi.fn(() => "Install rsync"),
+}))
+
+vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMock }))
+vi.mock("./workspace-ref.js", () => ({ resolveWorkspaceRef: resolveWorkspaceRefMock }))
+vi.mock("../provisioning/rsync-runner.js", () => ({
+	runRsync: runRsyncMock,
+	formatRsyncFailure: formatRsyncFailureMock,
+}))
+vi.mock("../provisioning/harness-config.js", () => ({
+	provisionHarnessConfig: provisionHarnessConfigMock,
+}))
+vi.mock("../preflight/rsync.js", () => ({
+	whichRsync: whichRsyncMock,
+	rsyncInstallHint: rsyncInstallHintMock,
+}))
+
+import type { TeleportContext } from "../types.js"
 import type { SyncArgs } from "./args.js"
-import { resolveSyncPaths } from "./sync.js"
+import { TeleportRefusal } from "./errors.js"
+import { resolveSyncPaths, runSync } from "./sync.js"
 
 function syncArgs(overrides: Partial<SyncArgs>): SyncArgs {
 	return {
@@ -18,6 +54,61 @@ function syncArgs(overrides: Partial<SyncArgs>): SyncArgs {
 		...overrides,
 	}
 }
+
+const CREDS = {
+	connectToken: "tok-1",
+	expiresAt: "2030-01-01T00:00:00Z",
+	wsUrl: "wss://host.example",
+	host: "host.example",
+}
+
+function makeUi() {
+	return {
+		notify: vi.fn(),
+		setStatus: vi.fn(),
+		setWidget: vi.fn(),
+	} as unknown as ExtensionUIContext & {
+		notify: ReturnType<typeof vi.fn>
+		setStatus: ReturnType<typeof vi.fn>
+		setWidget: ReturnType<typeof vi.fn>
+	}
+}
+
+function makeCtx(over: Partial<TeleportContext> = {}): {
+	ctx: TeleportContext
+	ui: ReturnType<typeof makeUi>
+} {
+	const ui = makeUi()
+	const ctx: TeleportContext = {
+		apiKey: "test-key",
+		endpoint: "https://api.example.com",
+		cwd: "/work/proj",
+		ui,
+		signal: undefined,
+		...over,
+	}
+	return { ctx, ui }
+}
+
+let syncTempDir = ""
+
+beforeEach(() => {
+	syncTempDir = mkdtempSync(join(tmpdir(), "kimchi-sync-run-"))
+	writeFileSync(join(syncTempDir, "file.txt"), "hello", "utf-8")
+	authMock.mockReset().mockResolvedValue(CREDS)
+	resolveWorkspaceRefMock.mockReset().mockResolvedValue({ id: "ws-1", name: "my-ws" })
+	runRsyncMock.mockReset().mockResolvedValue({ totalBytes: 1024, durationMs: 500, fileCount: 3 })
+	formatRsyncFailureMock
+		.mockReset()
+		.mockImplementation((err: unknown) => (err instanceof Error ? err.message : String(err)))
+	provisionHarnessConfigMock.mockReset().mockResolvedValue({ ok: true })
+	whichRsyncMock.mockReset().mockReturnValue(true)
+	rsyncInstallHintMock.mockReset().mockReturnValue("Install rsync")
+})
+
+afterEach(() => {
+	if (syncTempDir) rmSync(syncTempDir, { recursive: true, force: true })
+})
 
 describe("resolveSyncPaths — up", () => {
 	let cwd: string
@@ -100,5 +191,52 @@ describe("resolveSyncPaths — down", () => {
 		const r = resolveSyncPaths(cwd, syncArgs({ direction: "down", source: "~/project/dist/", target: "./dist/" }))
 		expect(r.remotePath).toBe("/home/sandbox/project/dist/")
 		expect(r.isSourceDirectory).toBe(true)
+	})
+})
+
+describe("harness config sync", () => {
+	it("/sync up calls provisionHarnessConfig with resolved creds and signal after the workspace rsync", async () => {
+		const ac = new AbortController()
+		const { ctx } = makeCtx({ cwd: syncTempDir, signal: ac.signal })
+
+		await runSync("up --workspace my-ws --source file.txt --target /remote/path", ctx)
+
+		expect(runRsyncMock).toHaveBeenCalledOnce()
+		expect(runRsyncMock).toHaveBeenCalledBefore(provisionHarnessConfigMock)
+		expect(provisionHarnessConfigMock).toHaveBeenCalledOnce()
+		expect(provisionHarnessConfigMock.mock.calls[0][0]).toMatchObject({
+			remoteHost: "host.example",
+			authToken: "tok-1",
+			signal: ac.signal,
+		})
+	})
+
+	it("/sync down does NOT call provisionHarnessConfig", async () => {
+		const { ctx } = makeCtx({ cwd: syncTempDir })
+
+		await runSync("down --workspace my-ws --source /remote/path --target file.txt", ctx)
+
+		expect(runRsyncMock).toHaveBeenCalledOnce()
+		expect(provisionHarnessConfigMock).not.toHaveBeenCalled()
+	})
+
+	it("/sync up --dry-run does NOT call provisionHarnessConfig", async () => {
+		const { ctx } = makeCtx({ cwd: syncTempDir })
+
+		await runSync("up --workspace my-ws --source file.txt --target /remote/path --dry-run", ctx)
+
+		expect(runRsyncMock).toHaveBeenCalledOnce()
+		expect(provisionHarnessConfigMock).not.toHaveBeenCalled()
+	})
+
+	it("refuses when provisionHarnessConfig returns ok: false", async () => {
+		provisionHarnessConfigMock.mockResolvedValueOnce({ ok: false, error: "boom" })
+		const { ctx, ui } = makeCtx({ cwd: syncTempDir })
+
+		await expect(runSync("up --workspace my-ws --source file.txt --target /remote/path", ctx)).rejects.toBeInstanceOf(
+			TeleportRefusal,
+		)
+		expect(provisionHarnessConfigMock).toHaveBeenCalledOnce()
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("Could not sync harness config: boom"), "error")
 	})
 })

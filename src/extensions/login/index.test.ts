@@ -2,12 +2,19 @@ import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agen
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import loginExtension from "./index.js"
 
-const loadConfigMock = vi.hoisted(() => vi.fn())
+const { clearApiKeyMock, loadConfigMock } = vi.hoisted(() => ({
+	clearApiKeyMock: vi.fn(),
+	loadConfigMock: vi.fn(),
+}))
 
 vi.mock("../../config.js", () => ({
-	clearApiKey: vi.fn(),
+	clearApiKey: clearApiKeyMock,
 	loadConfig: loadConfigMock,
 	writeApiKey: vi.fn(),
+}))
+
+vi.mock("../billing/status.js", () => ({
+	refreshBillingStatusFromConfig: vi.fn(),
 }))
 
 // Keep the real chatCompletionsApi (URL builder + scheme normalization) so baseUrl assertions
@@ -25,7 +32,7 @@ function providerConfigFor(customLlmEndpoint: string | undefined): ProviderConfi
 	loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint })
 	const registerProvider = vi.fn()
 	loginExtension({ on: vi.fn(), registerProvider } as unknown as ExtensionAPI)
-	const [providerId, providerConfig] = registerProvider.mock.calls[0]
+	const [providerId, providerConfig] = registerProvider.mock.calls.find(([provider]) => provider === "kimchi-dev") ?? []
 	expect(providerId).toBe("kimchi-dev")
 	return providerConfig
 }
@@ -58,5 +65,48 @@ describe("loginExtension", () => {
 		const config = providerConfigFor(undefined)
 		expect(config.baseUrl).toBeUndefined()
 		expect(config.oauth?.name).toBe("Kimchi")
+	})
+
+	it("restores OpenAI Codex subscription login while builtin API-key providers stay disabled", () => {
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		const registerProvider = vi.fn()
+
+		loginExtension({
+			on: vi.fn(),
+			registerProvider,
+		} as unknown as ExtensionAPI)
+
+		expect(registerProvider.mock.calls[0]?.[0]).toMatchObject({
+			id: "openai-codex",
+			name: "OpenAI Codex",
+			auth: { oauth: { name: "OpenAI (ChatGPT Plus/Pro)" } },
+		})
+	})
+
+	it("logs out every internal Kimchi provider when the single Kimchi entry is selected", () => {
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		const on = vi.fn()
+		const originalLogout = vi.fn()
+		const authStorage = { logout: originalLogout }
+		const modelRegistry = {
+			authStorage,
+			getAll: () => [
+				{ id: "sol", provider: "kimchi-dev" },
+				{ id: "sol", provider: "kimchi-dev/openai" },
+				{ id: "claude", provider: "kimchi-dev/anthropic" },
+			],
+		}
+
+		loginExtension({ on, registerProvider: vi.fn() } as unknown as ExtensionAPI)
+		const sessionStart = on.mock.calls[0]?.[1]
+		sessionStart({}, { modelRegistry })
+		authStorage.logout("kimchi-dev")
+
+		expect(originalLogout.mock.calls.map(([provider]) => provider)).toEqual([
+			"kimchi-dev",
+			"kimchi-dev/openai",
+			"kimchi-dev/anthropic",
+		])
+		expect(clearApiKeyMock).toHaveBeenCalledOnce()
 	})
 })

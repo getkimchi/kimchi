@@ -19,18 +19,42 @@ export function contextFitsModel(tokens: number, contextWindow: number): boolean
 
 /**
  * Returns the best available token count for the current context.
- * Prefers the upstream getContextUsage().tokens (provider-accurate);
- * falls back to the local estimateTokens() heuristic when upstream
- * returns null (e.g. post-compaction, pre-first-response, fresh session).
+ * Uses upstream getContextUsage().tokens as the provider-accurate baseline,
+ * then estimates messages appended after that provider response. Falls back
+ * to the local estimateTokens() heuristic when upstream returns null
+ * (e.g. post-compaction, pre-first-response, fresh session).
  * Returns null when no data is available at all.
  */
 export function resolveContextTokens(
 	usage: { tokens: number | null } | undefined,
 	messages: ContextEvent["messages"],
 ): number | null {
-	if (usage?.tokens != null) return usage.tokens
-	if (messages.length === 0) return null
-	return estimateTokens(messages)
+	if (messages.length === 0) return usage?.tokens ?? null
+
+	if (usage?.tokens == null) return estimateTokens(messages)
+
+	const lastAssistantUsage = findLastAssistantUsage(messages)
+	if (!lastAssistantUsage) return usage.tokens
+
+	return usage.tokens + estimateTokensAfter(messages, lastAssistantUsage.index)
+}
+
+function findLastAssistantUsage(
+	messages: ContextEvent["messages"],
+): { index: number; totalTokens: number } | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i]
+		if (message.role === "assistant" && "usage" in message && typeof message.usage?.totalTokens === "number") {
+			return { index: i, totalTokens: message.usage.totalTokens }
+		}
+	}
+	return undefined
+}
+
+function estimateTokensAfter(messages: ContextEvent["messages"], index: number): number {
+	let tokens = 0
+	for (let i = index + 1; i < messages.length; i++) tokens += estimateMessageTokens(messages[i])
+	return tokens
 }
 
 /** Module-level flag tracking whether the current session contains image blocks. */
@@ -123,40 +147,8 @@ export const __resetImagesDetectedForTest = resetSessionState
  * Accumulates from assistant message usage when available for higher accuracy.
  */
 export function estimateTokens(messages: ContextEvent["messages"]): number {
-	let lastAssistantIdx = -1
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i]
-		if (msg.role === "assistant" && "usage" in msg && msg.usage?.totalTokens) {
-			lastAssistantIdx = i
-			break
-		}
-	}
-
-	let tokens = 0
-
-	if (lastAssistantIdx >= 0) {
-		const lastAssistant = messages[lastAssistantIdx]
-		tokens = (lastAssistant as AssistantMessage).usage?.totalTokens ?? 0
-	}
-
-	for (let i = lastAssistantIdx >= 0 ? lastAssistantIdx + 1 : 0; i < messages.length; i++) {
-		const msg = messages[i]
-		if (msg.role === "assistant" && "usage" in msg && msg.usage?.totalTokens) continue
-		if (!("content" in msg)) continue
-		const content = (msg as ContentMessage).content
-		if (typeof content === "string") {
-			tokens += Math.ceil(content.length / 4)
-		} else if (Array.isArray(content)) {
-			for (const block of content) {
-				if (block.type === "text") {
-					tokens += Math.ceil(block.text.length / 4)
-				} else if (block.type === "image") {
-					tokens += 1000
-				}
-			}
-		}
-	}
-	return tokens
+	const lastAssistantUsage = findLastAssistantUsage(messages)
+	return (lastAssistantUsage?.totalTokens ?? 0) + estimateTokensAfter(messages, lastAssistantUsage?.index ?? -1)
 }
 
 /**
@@ -234,7 +226,7 @@ const TRUNCATE_NOTICE = "⚠️ Context truncated to fit model context window.\n
  * Returns the original reference when nothing is truncated.
  */
 export function estimateMessageTokens(msg: ContextEvent["messages"][number]): number {
-	if (msg.role === "assistant" && "usage" in msg && msg.usage?.totalTokens) {
+	if (msg.role === "assistant" && "usage" in msg && typeof msg.usage?.totalTokens === "number") {
 		return msg.usage.totalTokens
 	}
 	if (!("content" in msg)) return 0

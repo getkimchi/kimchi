@@ -141,6 +141,29 @@ describe("resolveContextTokens", () => {
 		expect(resolveContextTokens(usage, msgs)).toBe(42_000)
 	})
 
+	it("returns usage.tokens when messages are empty", () => {
+		expect(resolveContextTokens({ tokens: 42_000 }, [])).toBe(42_000)
+	})
+
+	it("adds messages appended after the provider-reported usage", () => {
+		const usage = { tokens: 200_000 }
+		const msgs: ContextEvent["messages"] = [makeAssistant(200_000), makeToolResult("x".repeat(300_000))]
+
+		expect(resolveContextTokens(usage, msgs)).toBe(275_000)
+	})
+
+	it("recognizes zero-token assistant usage before appended messages", () => {
+		const msgs: ContextEvent["messages"] = [makeAssistant(0), makeToolResult("x".repeat(400))]
+
+		expect(resolveContextTokens({ tokens: 0 }, msgs)).toBe(100)
+	})
+
+	it("adds the appended suffix to a refreshed provider baseline", () => {
+		const msgs: ContextEvent["messages"] = [makeAssistant(200), makeToolResult("x".repeat(400))]
+
+		expect(resolveContextTokens({ tokens: 50 }, msgs)).toBe(150)
+	})
+
 	it("falls back to estimateTokens(messages) when usage.tokens is null", () => {
 		const usage = { tokens: null }
 		// 30 msgs × 2000 chars each → ceil(2000/4)=500 tokens each → 15,000 total
@@ -483,6 +506,24 @@ describe("modelGuardExtension handler", () => {
 		const msgs: ContextEvent["messages"] = Array.from({ length: 30 }, () => makeUser("x".repeat(2000)))
 		const result = await trigger("context", { messages: msgs }, ctx)
 		expect(result).toBeUndefined()
+	})
+
+	it("truncates when appended tool output pushes the current payload over the hard limit", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const ctx = makeMockCtx({
+			model: { id: "claude", input: ["text"], contextWindow: 10_000 } as ExtensionContext["model"],
+			getContextUsage: () => ({ tokens: 9_600, contextWindow: 10_000, percent: 96 }),
+		})
+		const msgs: ContextEvent["messages"] = [
+			...Array.from({ length: 20 }, () => makeUser("x".repeat(2000))),
+			makeAssistant(9_600),
+			makeToolResult("x".repeat(4000)),
+		]
+
+		const result = (await trigger("context", { messages: msgs }, ctx)) as { messages: ContextEvent["messages"] }
+		expect(result).toBeDefined()
+		expect(result.messages.length).toBeLessThan(msgs.length)
 	})
 
 	it("truncates when usage.tokens exceeds the hard context window limit", async () => {

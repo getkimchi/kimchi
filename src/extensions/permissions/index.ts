@@ -23,10 +23,13 @@ import { createFerment } from "../ferment/create.js"
 import { emitFermentCreated } from "../ferment/domain-events-emitter.js"
 import { appendRefEntry } from "../ferment/nudge.js"
 import { defaultFermentRuntime } from "../ferment/runtime.js"
+import { safeSendMessage } from "../ferment/safe-send.js"
 import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
-import { createApplyAndPersist } from "../ferment/tool-helpers.js"
+import { createApplyAndPersist, formatNextActionHint, formatNoReplanningGuidance } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
+import { isIdeConnected } from "../ide-adapter/index.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
 import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
@@ -140,6 +143,22 @@ function resolvePrompter(ctx: ExtensionContext): ToolPermissionPrompter | undefi
 
 	if (ctx.hasUI) return terminalPrompter(ctx)
 	return undefined
+}
+
+/**
+ * Build the plan-mode prompt supplement system-prompt block. The mode
+ * resolver is injected so tests can drive the block deterministically
+ * without booting the full extension — the block's ONLY declared input
+ * is the runtime permission mode (see system-prompt-stability tests).
+ */
+export function buildPlanModeSupplementBlock(getMode: () => PermissionModeState): SystemPromptBlock {
+	return {
+		id: "plan-mode-supplement",
+		render: () => {
+			if (getMode().mode !== "plan") return undefined
+			return planModeSupplement.trim()
+		},
+	}
 }
 
 export default function permissionsExtension(pi: ExtensionAPI): void {
@@ -467,13 +486,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// having to walk every extension's blocks handle. The blocks handle is kept
 	// alive (it still owns the `pi` binding for session-shutdown cleanup); the
 	// registry entry below is the canonical lookup path.
-	const planModeSupplementBlock: SystemPromptBlock = {
-		id: "plan-mode-supplement",
-		render: () => {
-			if (getRuntimePermissionMode().mode !== "plan") return undefined
-			return planModeSupplement.trim()
-		},
-	}
+	const planModeSupplementBlock = buildPlanModeSupplementBlock(getRuntimePermissionMode)
 	PromptSupplementRegistry.register("plan-mode-supplement", planModeSupplementBlock, {
 		modes: ["adhoc"],
 	})
@@ -660,6 +673,38 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				defaultFermentRuntime.setActive(activated.ferment)
 				setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)
 				appendRefEntry(pi, activated.ferment.id)
+				// Explicit model-visible handoff. Without this, the only post-approval
+				// signal was the hidden `ferment_reference` entry above, and the model
+				// started "from scratch": it re-ran discovery (`list_ferments`) and
+				// re-drafted the whole scope via `scope_ferment`, which the FSM then
+				// rejected (already PHASE_ACTIVE). Tell the model the ferment is
+				// already scoped/active and what the immediate next action is, so "Start
+				// as ferment" goes straight to execution.
+				const activePhase = activated.ferment.phases.find((p) => p.status === "active")
+				const nextActionHint = formatNextActionHint(activated.ferment, getMultiModelEnabled(ctx.sessionManager))
+				safeSendMessage(
+					pi,
+					{
+						customType: "ferment_handoff",
+						content: [
+							{
+								type: "text",
+								text: [
+									`Handoff from plan mode: the plan you just presented was approved by the user ("Start as ferment") and converted into ferment "${activated.ferment.name}" (${activated.ferment.id}).`,
+									`The ferment is ALREADY scoped — goal, success criteria, and constraints are set — and ${activePhase ? `phase "${activePhase.id}" (${activePhase.steps.length} steps) is ACTIVE` : "its first phase is ACTIVE"}.`,
+									`${formatNoReplanningGuidance()} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
+									nextActionHint,
+									"Go straight to execution.",
+								]
+									.filter(Boolean)
+									.join("\n"),
+							},
+						],
+						display: false,
+						details: { fermentId: activated.ferment.id, origin: "plan_mode_start_as_ferment" },
+					},
+					{ triggerTurn: true },
+				)
 				changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" })
 			} catch (err) {
 				// Promotion failed before activation. Keep the planning profile, clear
@@ -786,6 +831,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			}
 
 			if (BUILTIN_ALLOW_TOOL_NAMES.includes(toolName)) return undefined
+
+			// IDE approval deferral: when the ide-adapter extension has an active
+			// IDE connection AND we're in default mode, write/edit approvals are
+			// handled via the IDE diff viewer. In auto/yolo the user has opted out
+			// of per-file approval, so don't defer.
+			if ((toolName === "write" || toolName === "edit") && mode === "default" && isIdeConnected()) {
+				// Skip the terminal prompt so the user isn't asked twice.
+				return undefined
+			}
 
 			// Ferment tools are internal state-management operations; bypass user rules and classifier prompts.
 			// User-facing ferment tools (`ask_user`) are listed in USER_FACING_FERMENT_TOOL_NAMES and skip this bypass.

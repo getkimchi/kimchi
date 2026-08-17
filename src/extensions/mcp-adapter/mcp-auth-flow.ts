@@ -19,12 +19,7 @@ import {
 	type StoredTokens,
 	updateOAuthState,
 } from "./mcp-auth.js"
-import {
-	cancelPendingCallback,
-	ensureCallbackServer,
-	stopCallbackServer,
-	waitForCallback,
-} from "./mcp-callback-server.js"
+import { cancelPendingCallback, prepareCallback, stopCallbackServer } from "./mcp-callback-server.js"
 import { type McpOAuthConfig, McpOAuthProvider } from "./mcp-oauth-provider.js"
 import type { ServerEntry } from "./types.js"
 
@@ -36,6 +31,12 @@ const pendingTransports = new Map<string, StreamableHTTPClientTransport>()
 
 // Deduplicate concurrent authenticate() calls per server.
 const pendingAuthentications = new Map<string, Promise<AuthStatus>>()
+
+async function stopCallbackServerIfIdle(): Promise<void> {
+	if (pendingTransports.size === 0 && pendingAuthentications.size === 0) {
+		await stopCallbackServer()
+	}
+}
 
 /**
  * Generate a cryptographically secure random state parameter.
@@ -75,7 +76,12 @@ export async function startAuth(
 	serverName: string,
 	serverUrl: string,
 	definition?: ServerEntry,
-): Promise<{ authorizationUrl: string; transport: StreamableHTTPClientTransport }> {
+): Promise<{
+	authorizationUrl: string
+	transport: StreamableHTTPClientTransport
+	oauthState?: string
+	callbackPromise?: Promise<string>
+}> {
 	const config = definition ? extractOAuthConfig(definition) : {}
 
 	if (config.grantType === "client_credentials") {
@@ -101,19 +107,7 @@ export async function startAuth(
 		}
 	}
 
-	// Start the callback server with strict port binding. The redirect URI
-	// is tied to the port — if the port changes between registrations, the
-	// OAuth server rejects the callback with "redirect_uri not registered".
-	// Always use the default port (19876) so dynamic client registration
-	// stays consistent across attempts.
-	await ensureCallbackServer({ strictPort: true })
-
-	// Generate and store OAuth state BEFORE creating the provider.
-	// The SDK calls provider.state() (not saveState) to read the state when
-	// constructing the authorization URL — it expects the state to already
-	// be stored. We generate it here so it's available when the SDK needs it.
 	const oauthState = generateState()
-	await updateOAuthState(serverName, oauthState)
 
 	// Create the auth provider
 	let capturedUrl: URL | undefined
@@ -132,23 +126,41 @@ export async function startAuth(
 		name: "pi-mcp",
 		version: "3.0.0",
 	})
+	let callbackPromise: Promise<string> | undefined
 
 	// Try to connect - this triggers the OAuth flow
 	try {
+		// Start the callback server and register ownership in one serialized operation.
+		// This prevents shutdown from closing the listener between those two steps.
+		const preparedCallback = await prepareCallback(oauthState, { strictPort: true })
+		callbackPromise = preparedCallback.callbackPromise
+		void callbackPromise.catch(() => {})
+
+		// The SDK reads the stored state while constructing the authorization URL.
+		await updateOAuthState(serverName, oauthState)
+
 		await client.connect(transport)
 		// If we get here, we're already authenticated
+		cancelPendingCallback(oauthState)
+		await callbackPromise.catch(() => {})
 		await client.close().catch(() => {})
 		await transport.close().catch(() => {})
+		await stopCallbackServerIfIdle()
 		return { authorizationUrl: "", transport }
 	} catch (error) {
-		if (error instanceof UnauthorizedError && capturedUrl) {
+		if (error instanceof UnauthorizedError && capturedUrl && callbackPromise) {
 			await client.close().catch(() => {})
 			// Store transport for later finishAuth
 			pendingTransports.set(serverName, transport)
-			return { authorizationUrl: capturedUrl.toString(), transport }
+			return { authorizationUrl: capturedUrl.toString(), transport, oauthState, callbackPromise }
+		}
+		if (callbackPromise) {
+			cancelPendingCallback(oauthState)
+			await callbackPromise.catch(() => {})
 		}
 		await client.close().catch(() => {})
 		await transport.close().catch(() => {})
+		await stopCallbackServerIfIdle()
 		throw error
 	}
 }
@@ -169,6 +181,7 @@ export async function completeAuth(serverName: string, authorizationCode: string
 	} finally {
 		pendingTransports.delete(serverName)
 		await transport.close().catch(() => {})
+		await stopCallbackServerIfIdle()
 	}
 }
 
@@ -192,36 +205,29 @@ export async function authenticate(
 
 	const operation = (async (): Promise<AuthStatus> => {
 		// Start auth flow
-		const { authorizationUrl } = await startAuth(serverName, serverUrl, definition)
+		const { authorizationUrl, callbackPromise, oauthState } = await startAuth(serverName, serverUrl, definition)
 
 		// If no auth URL needed, already authenticated
 		if (!authorizationUrl) {
 			return "authenticated"
 		}
 
-		// Read the OAuth state stored by startAuth() (line ~107) and/or
-		// by the SDK via provider.saveState() during client.connect().
-		// At least one of these paths always saves state before we reach
-		// here — startAuth() pre-generates it, and provider.state()
-		// auto-generates if missing — so this is always defined.
-		const oauthState = await getOAuthState(serverName)
-		if (!oauthState) {
-			throw new Error("OAuth state was not saved during startAuth")
-		}
-
-		// Register the callback BEFORE opening the browser
-		const callbackPromise = waitForCallback(oauthState)
-
-		// Open browser
-		console.log(`MCP Auth: Opening browser for ${serverName}`)
 		try {
-			await open(authorizationUrl)
-		} catch (error) {
-			console.warn(`MCP Auth: Failed to open browser for ${serverName}`, { error })
-			throw new Error(`Could not open browser. Please open this URL manually: ${authorizationUrl}`, { cause: error })
-		}
+			if (!oauthState || !callbackPromise) {
+				throw new Error("OAuth callback was not registered during startAuth")
+			}
 
-		try {
+			// Open browser
+			console.log(`MCP Auth: Opening browser for ${serverName}`)
+			try {
+				await open(authorizationUrl)
+			} catch (error) {
+				console.warn(`MCP Auth: Failed to open browser for ${serverName}`, { error })
+				throw new Error(`Could not open browser. Please open this URL manually: ${authorizationUrl}`, {
+					cause: error,
+				})
+			}
+
 			// Wait for callback
 			const code = await callbackPromise
 
@@ -236,7 +242,10 @@ export async function authenticate(
 			// Complete the auth
 			return await completeAuth(serverName, code)
 		} catch (error) {
-			cancelPendingCallback(oauthState)
+			if (oauthState) {
+				cancelPendingCallback(oauthState)
+			}
+			await callbackPromise?.catch(() => {})
 			const pendingTransport = pendingTransports.get(serverName)
 			if (pendingTransport) {
 				pendingTransports.delete(serverName)
@@ -254,6 +263,7 @@ export async function authenticate(
 		if (pendingAuthentications.get(serverName) === operation) {
 			pendingAuthentications.delete(serverName)
 		}
+		await stopCallbackServerIfIdle()
 	}
 }
 
@@ -373,6 +383,7 @@ export async function removeAuth(serverName: string): Promise<void> {
 		pendingTransports.delete(serverName)
 		await pendingTransport.close().catch(() => {})
 	}
+	await stopCallbackServerIfIdle()
 	clearAllCredentials(serverName)
 	await clearOAuthState(serverName)
 	console.log(`MCP Auth: Removed credentials for ${serverName}`)
@@ -399,11 +410,9 @@ export function supportsOAuth(definition: ServerEntry): boolean {
 
 /**
  * Initialize the OAuth system on startup.
- * Starts the callback server if there are any OAuth servers configured.
+ * OAuth callback binding is lazy and starts from startAuth() only.
  */
-export async function initializeOAuth(): Promise<void> {
-	await ensureCallbackServer()
-}
+export async function initializeOAuth(): Promise<void> {}
 
 /**
  * Shutdown the OAuth system.
