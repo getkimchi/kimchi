@@ -26,6 +26,7 @@ import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import dapExtension from "../../dap.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
@@ -475,6 +476,14 @@ ${skillLines}`
 		infrastructureBreakerExtension,
 		omitKimchiMaxTokensExtension,
 	]
+	// Personas that request DAP debugger tools (e.g. Debugger) need the dap
+	// extension registered in the child session: repo-native extensions wired
+	// directly in cli.ts are not discovered by a child DefaultResourceLoader.
+	// The extension registers its tools on the child's session_start, and the
+	// SDK activates them because their names are in the session's tool allowlist.
+	if (toolNames.some((n) => n.startsWith("debug_") || n.startsWith("step_"))) {
+		extensionFactories.push(dapExtension)
+	}
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}
