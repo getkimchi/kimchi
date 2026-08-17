@@ -71,7 +71,7 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 		expect(bumpBlockRetry(fId, "phase-1")).toBe(3)
 	})
 
-	it("persists lastPhaseRefusals across a restart and clears them with the retry budget", () => {
+	it("persists lastPhaseRefusals across a restart and retains them past the retry budget", () => {
 		const fId = "ferment-refusal-persist"
 		setLastPhaseRefusal(fId, "phase-1", {
 			grade: "C",
@@ -86,8 +86,16 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 		expect(restored?.grade).toBe("C")
 		expect(restored?.recommendations).toEqual(["Add edge-case test for empty input."])
 
-		// Acceptance clears both the retry budget AND the refusal record.
+		// Acceptance clears the retry budget but RETAINS the refusal record — the
+		// first journey attempt reads it as quality-momentum context (deleting it
+		// here made latestPhaseRefusal permanently dead). Ferment-level cleanup
+		// (clearFermentState) is the sole purge point.
 		clearBlockRetry(fId, "phase-1")
+		simulateRestart()
+		expect(getLastPhaseRefusal(fId, "phase-1")?.grade).toBe("C")
+		expect(getLastPhaseRefusal(fId, "phase-1")?.recommendations).toEqual(["Add edge-case test for empty input."])
+
+		clearFermentState(fId)
 		simulateRestart()
 		expect(getLastPhaseRefusal(fId, "phase-1")).toBeUndefined()
 	})
