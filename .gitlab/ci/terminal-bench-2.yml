@@ -151,7 +151,7 @@ setup-image:
       echo "attempts:                 ${BENCH_ATTEMPTS}"
       echo "timeout_multiplier:       ${BENCH_TIMEOUT_MULTIPLIER}"
       echo "retry_agent_timeout:      ${BENCH_RETRY_AGENT_TIMEOUT}"
-      echo "chunk_attempt_budget:   ${BENCH_CHUNK_ATTEMPT_BUDGET:-8}"
+      echo "chunk_attempt_budget:     ${BENCH_CHUNK_ATTEMPT_BUDGET:-8}"
       echo "temperature:              ${BENCH_LLM_TEMPERATURE}"
       echo "top_p:                    ${BENCH_LLM_TOP_P}"
       echo "top_k:                    ${BENCH_LLM_TOP_K}"

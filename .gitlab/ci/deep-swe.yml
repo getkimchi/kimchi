@@ -90,7 +90,12 @@ setup-image:
     RUN_ID: "gitlab-p$CI_PIPELINE_ID"
     BENCH_CHUNK_INDEX: "$CHUNK"
     BENCH_CHUNK_COUNT: 3
-    BENCH_JOB_MAX_RETRIES: 2
+    # Durable per-chunk attempt budget, INDEPENDENT of GitLab's `retry: 2`
+    # above (that retry stays pure GitLab resilience policy). Ordinals
+    # 1..budget are work-bearing, `budget` is the final Pier-launching
+    # attempt, and ordinals above it reconcile durable state only. The value
+    # is frozen into run-metadata.json at run creation.
+    BENCH_CHUNK_ATTEMPT_BUDGET: 8
     BENCH_JOB_TIMEOUT_SECONDS: "86400"  # 24h — matches GitLab job timeout
     BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
     BENCH_TRIAL_CHECKPOINTS: "$[[ inputs.trial_checkpoints ]]"
@@ -140,7 +145,7 @@ setup-image:
       echo "trial_checkpoints:        ${BENCH_TRIAL_CHECKPOINTS:-false}"
       echo "thinking_level:           ${THINKING_LEVEL:-default}"
       echo "kimchi_compaction:        ${KIMCHI_COMPACTION:-auto}"
-      echo "max_retries:              ${BENCH_JOB_MAX_RETRIES:-0}"
+      echo "chunk_attempt_budget:     ${BENCH_CHUNK_ATTEMPT_BUDGET:-8}"
       echo "temperature:              ${BENCH_LLM_TEMPERATURE}"
       echo "top_p:                    ${BENCH_LLM_TOP_P}"
       echo "top_k:                    ${BENCH_LLM_TOP_K}"

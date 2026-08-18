@@ -1647,6 +1647,7 @@ def _run_pier_invocation(
     reached, Pier is terminated gracefully via the same SIGINT/drain/SIGTERM/
     SIGKILL cascade as ``_run_harbor_invocation``.
     """
+    docker_health = load_docker_health_config(env)
     print(f"[chunk-{chunk_index}] command: {format_command_for_log(cmd)}", flush=True)
     proc = run_pier(cmd=cmd, cwd=bench_dir, env=env)
     reported_trials: set[str] = set()
@@ -1737,11 +1738,52 @@ def _run_pier_invocation(
     next_heartbeat = started + _HEARTBEAT_INTERVAL
     poll_interval = min(5, _HEARTBEAT_INTERVAL)
     deadline_hit = False
+    if docker_health.enabled:
+        poll_interval = min(poll_interval, docker_health.poll_seconds)
+    next_docker_health_probe = started
+    consecutive_docker_failures = 0
 
     try:
         while proc.poll() is None:
             time.sleep(poll_interval)
             now = time.monotonic()
+            if (
+                docker_health.enabled
+                and graceful_stop_started is None
+                and proc.poll() is None
+                and now >= next_docker_health_probe
+            ):
+                healthy, reason = _probe_docker_daemon(
+                    env,
+                    timeout_seconds=docker_health.probe_timeout_seconds,
+                )
+                if healthy:
+                    consecutive_docker_failures = 0
+                else:
+                    consecutive_docker_failures += 1
+                    print(
+                        f"[chunk-{chunk_index}] Docker health probe failed "
+                        f"({consecutive_docker_failures}/"
+                        f"{docker_health.confirm_failures}): {reason}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    if consecutive_docker_failures >= docker_health.confirm_failures:
+                        _record_confirmed_daemon_loss(
+                            results_dir=results_dir,
+                            chunk_index=chunk_index,
+                            failures=consecutive_docker_failures,
+                            reason=reason,
+                        )
+                        print(
+                            f"docker_daemon_loss_confirmed chunk={chunk_index} "
+                            f"failures={consecutive_docker_failures}; "
+                            "interrupting Pier for checkpoint drain",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        _request_graceful_stop()
+                next_docker_health_probe = now + docker_health.poll_seconds
             if (
                 now >= soft_deadline_monotonic
                 and graceful_stop_started is None

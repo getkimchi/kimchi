@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
+import signal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -2359,3 +2361,98 @@ def test_run_pier_invocation_still_kills_pier_on_genuine_upload_failure(
     # Pier should still be killed for genuine upload failures
     assert status == 1
     assert received_signal is None
+
+
+# ── _run_pier_invocation Docker daemon health ──────────────────────────────
+
+
+def test_run_pier_invocation_interrupts_on_daemon_loss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Confirmed Docker daemon loss interrupts Pier via SIGINT for checkpoint drain."""
+    from chunk_runner import _run_pier_invocation
+
+    results_dir = tmp_path / "jobs"
+    results_dir.mkdir()
+
+    monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
+    monkeypatch.setenv("BENCH_DOCKER_HEALTH_MONITOR", "true")
+    monkeypatch.setenv("BENCH_DOCKER_HEALTH_POLL_SECONDS", "0.01")
+    monkeypatch.setenv("BENCH_DOCKER_HEALTH_CONFIRM_FAILURES", "2")
+    monkeypatch.setenv("BENCH_DOCKER_HEALTH_PROBE_TIMEOUT_SECONDS", "5")
+
+    state = {"interrupted": False}
+
+    def poll_status() -> int | None:
+        return 130 if state["interrupted"] else None
+
+    def interrupt_pier(*args) -> None:
+        state["interrupted"] = True
+
+    proc = MagicMock()
+    proc.poll.side_effect = poll_status
+    proc.wait.return_value = 130
+    proc.send_signal = MagicMock(side_effect=interrupt_pier)
+    proc.terminate = MagicMock()
+    proc.kill = MagicMock()
+
+    # First probe healthy, then two failures → confirmed loss
+    health = iter([(True, ""), (False, "daemon unavailable"), (False, "daemon unavailable")])
+
+    with patch("chunk_runner.run_pier", return_value=proc), \
+         patch("chunk_runner._probe_docker_daemon", side_effect=health), \
+         patch("chunk_runner._print_heartbeat"), \
+         patch("chunk_runner._record_confirmed_daemon_loss") as mock_record:
+        _status, _received_signal = _run_pier_invocation(
+            cmd=["pier", "run"],
+            bench_dir=tmp_path,
+            env=dict(os.environ),
+            results_dir=results_dir,
+            chunk_index=0,
+            n_tasks=1,
+            checkpoint_plugin=None,
+            soft_deadline_monotonic=float("inf"),
+        )
+
+    # Pier was interrupted via SIGINT
+    proc.send_signal.assert_called_with(signal.SIGINT)
+    # Daemon loss was recorded
+    mock_record.assert_called_once()
+    assert mock_record.call_args.kwargs["chunk_index"] == 0
+    assert mock_record.call_args.kwargs["failures"] == 2
+
+
+def test_run_pier_invocation_no_daemon_probe_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Docker daemon probing is skipped when docker_health is disabled."""
+    from chunk_runner import _run_pier_invocation
+
+    results_dir = tmp_path / "jobs"
+    results_dir.mkdir()
+
+    monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
+    monkeypatch.setenv("BENCH_DOCKER_HEALTH_MONITOR", "false")
+
+    proc = MagicMock()
+    proc.poll.return_value = 0
+    proc.wait.return_value = 0
+
+    with patch("chunk_runner.run_pier", return_value=proc), \
+         patch("chunk_runner._print_heartbeat"), \
+         patch("chunk_runner._probe_docker_daemon") as mock_probe, \
+         patch("chunk_runner._record_confirmed_daemon_loss") as mock_record:
+        status, _received_signal = _run_pier_invocation(
+            cmd=["pier", "run"],
+            bench_dir=tmp_path,
+            env=dict(os.environ),
+            results_dir=results_dir,
+            chunk_index=0,
+            n_tasks=1,
+            checkpoint_plugin=None,
+            soft_deadline_monotonic=float("inf"),
+        )
+
+    assert status == 0
+    mock_probe.assert_not_called()
+    mock_record.assert_not_called()
