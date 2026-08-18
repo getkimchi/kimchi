@@ -22,6 +22,7 @@ import {
 	allAdapters,
 	detectAdapters,
 	detectMissingAdapters,
+	resolveJsDebugScript,
 } from "./adapters.js"
 
 const mockExistsSync = vi.mocked(fs.existsSync)
@@ -315,6 +316,27 @@ describe("module-based detection (detectModule)", () => {
 	})
 })
 
+describe("resolveJsDebugScript JS_DEBUG_PATH validation", () => {
+	afterEach(() => {
+		delete process.env.JS_DEBUG_PATH
+	})
+
+	it("honors JS_DEBUG_PATH only when the file exists", () => {
+		process.env.JS_DEBUG_PATH = "/opt/js-debug/src/dapDebugServer.js"
+		mockExistsSync.mockImplementation(((p: unknown) => String(p) === "/opt/js-debug/src/dapDebugServer.js") as never)
+		expect(resolveJsDebugScript()).toBe("/opt/js-debug/src/dapDebugServer.js")
+	})
+
+	it("ignores JS_DEBUG_PATH when the file does not exist", () => {
+		// Regression: a stale/typo'd JS_DEBUG_PATH previously marked the adapter
+		// as installed, and the spawn of `node <path>` failed only much later
+		// inside client.ts.
+		process.env.JS_DEBUG_PATH = "/opt/js-debug/WRONG-PATH/dapDebugServer.js"
+		mockExistsSync.mockImplementation((() => false) as never)
+		expect(resolveJsDebugScript()).toBeNull()
+	})
+})
+
 describe("KIMCHI_DAP_BINARIES override", () => {
 	// The override is read at module load (process.env.KIMCHI_DAP_BINARIES),
 	// so each test resets modules and re-imports adapters.js with the env set.
@@ -342,7 +364,10 @@ describe("KIMCHI_DAP_BINARIES override", () => {
 	})
 
 	it("returns only adapters whose detection is whitelisted", async () => {
-		process.env.KIMCHI_DAP_BINARIES = "js-debug,python3"
+		// Override whitelist is adapter NAMES uniformly: "debugpy" (the adapter
+		// name) whitelists the module-based adapter, not "python3" (the argv[0]
+		// of its detectModule check).
+		process.env.KIMCHI_DAP_BINARIES = "js-debug,debugpy"
 		const { detectAdapters } = await import("./adapters.js")
 		// Multiple markers present; only js-debug + debugpy whitelisted (not dlv).
 		vi.mocked(fs.existsSync).mockImplementation(((p: unknown) => {
@@ -351,6 +376,19 @@ describe("KIMCHI_DAP_BINARIES override", () => {
 		}) as never)
 		const result = detectAdapters("/project")
 		expect(result.map((a) => a.name).sort()).toEqual(["debugpy", "js-debug"])
+	})
+
+	it("does not whitelist module-based adapters by their detectModule argv[0]", async () => {
+		// Regression: the override key is the adapter name. "python3" is only
+		// the executor of the module check ({ python3 -c "import debugpy" }) and
+		// must NOT activate debugpy on its own.
+		process.env.KIMCHI_DAP_BINARIES = "python3"
+		const { detectAdapters } = await import("./adapters.js")
+		vi.mocked(fs.existsSync).mockImplementation(((p: unknown) => {
+			return String(p) === "/project/pyproject.toml"
+		}) as never)
+		const result = detectAdapters("/project")
+		expect(result.map((a) => a.name)).toEqual([])
 	})
 
 	it("returns empty when override is set but no detectBinary is whitelisted", async () => {
@@ -408,6 +446,24 @@ describe("adapterForDirectory", () => {
 	it("returns null when no supported sources are present", () => {
 		mockReaddirSync.mockReturnValue(["README.md", "binary"] as never)
 		expect(adapterForDirectory("/proj", allAdapters())).toBeNull()
+	})
+
+	it("detects Swift via .swift (full extension arrays, not a hard-coded subset)", () => {
+		// Regression: the pre-fix detector only hard-coded .ts/.js/.rs/.c/.cpp,
+		// so a binary next to main.swift silently failed detection. Detection
+		// now consults every adapter's declared `extensions` array.
+		mockReaddirSync.mockReturnValue(["main", "main.swift"] as never)
+		expect(adapterForDirectory("/proj", allAdapters())?.name).toBe("lldb-dap")
+	})
+
+	it("detects TypeScript via .tsx/.jsx variants", () => {
+		mockReaddirSync.mockReturnValue(["App.tsx", "component.jsx"] as never)
+		expect(adapterForDirectory("/proj", allAdapters())?.name).toBe("js-debug")
+	})
+
+	it("detects C++ via .cc/.cxx variants", () => {
+		mockReaddirSync.mockReturnValue(["main", "main.cxx"] as never)
+		expect(adapterForDirectory("/proj", allAdapters())?.name).toBe("lldb-dap")
 	})
 
 	it("returns null for a non-directory path (readdirSync throws)", () => {

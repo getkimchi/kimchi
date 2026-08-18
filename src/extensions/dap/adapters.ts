@@ -16,7 +16,7 @@ import type { DapAdapterConfig } from "./types.js"
  *  npm prefix. Returns null if not found. Exported so client.ts can reuse
  *  the same resolution at spawn time. */
 export function resolveJsDebugScript(): string | null {
-	if (process.env.JS_DEBUG_PATH) return process.env.JS_DEBUG_PATH
+	if (process.env.JS_DEBUG_PATH && fs.existsSync(process.env.JS_DEBUG_PATH)) return process.env.JS_DEBUG_PATH
 	const candidates = [
 		"node_modules/js-debug-adapter/src/dapDebugServer.js",
 		"node_modules/@vscode/js-debug/src/dapDebugServer.js",
@@ -161,10 +161,14 @@ const ROOT_MARKERS: Record<string, string[]> = {
 
 /**
  * Test-only override: when KIMCHI_DAP_BINARIES is set, `exists()` ignores the
- * real PATH and returns true only for detectBinary names listed in the
- * comma-separated value. This lets tests control which adapters appear
- * "installed" regardless of the host machine's setup. When unset, normal
- * `which` behavior. Mirrors KIMCHI_LSP_BINARIES exactly.
+ * real PATH and returns true only for names listed in the comma-separated
+ * value. The listed names are adapter names throughout: for binary adapters
+ * the adapter name matches its binary (dlv, lldb-dap, ...), for js-debug the
+ * name applies to its custom script-path detection, and for module-based
+ * adapters (debugpy) the name applies to the `detectModule` check.
+ * This lets tests control which adapters appear "installed" regardless of the
+ * host machine's setup. When unset, normal detection behavior. Mirrors
+ * KIMCHI_LSP_BINARIES exactly.
  */
 const DAP_BINARIES_OVERRIDE = process.env.KIMCHI_DAP_BINARIES
 
@@ -230,14 +234,18 @@ function existsCmd(argv: string[]): boolean {
  *  Exported so launch paths can re-verify availability before spawning. */
 export function adapterExists(adapter: DapAdapterConfig): boolean {
 	if (DAP_BINARIES_OVERRIDE !== undefined) {
-		// Test override: check by adapter name for custom-detect adapters.
+		// Test override: whitelist tokens are adapter NAMES throughout.
+		// js-debug matches its custom script-path detection, and module-based
+		// adapters (debugpy) match by name — not by the executor argv[0] of
+		// their detectModule check ("python3"), which would whitelist the
+		// interpreter, not the adapter.
 		if (adapter.detect) {
 			const available = DAP_BINARIES_OVERRIDE.split(",").map((s) => s.trim())
 			return available.includes(adapter.name)
 		}
 		if (adapter.detectModule) {
 			const available = DAP_BINARIES_OVERRIDE.split(",").map((s) => s.trim())
-			return available.includes(adapter.detectModule[0])
+			return available.includes(adapter.name)
 		}
 		const available = DAP_BINARIES_OVERRIDE.split(",").map((s) => s.trim())
 		return available.includes(detectBinaryOf(adapter))
@@ -321,26 +329,20 @@ export function allAdapters(): DapAdapterConfig[] {
 export function adapterForDirectory(dirPath: string, adapters: DapAdapterConfig[]): DapAdapterConfig | null {
 	try {
 		const entries = fs.readdirSync(dirPath)
-		// Check for .go files → dlv
-		if (entries.some((e) => e.endsWith(".go"))) {
-			const goAdapter = adapters.find((a) => a.languages.includes("go"))
-			if (goAdapter) return goAdapter
+		const extsPresent = new Set(entries.map((e) => path.extname(e).slice(1).toLowerCase()).filter((ext) => ext !== ""))
+		// Match against each adapter's OWN `extensions` list — so every suffix
+		// declared in ADAPTERS counts (.tsx, .jsx, .swift, .cc, .cxx, .java,
+		// .rb, .php, ...). Keep the original language-priority order for
+		// mixed-language directories: go, python, js/ts, native, then whatever
+		// else the registry offers (java, ruby, php) in registry order.
+		const priorityLangs = ["go", "python", "typescript", "javascript", "rust", "c", "cpp", "swift"]
+		for (const lang of priorityLangs) {
+			const adapter = adapters.find(
+				(a) => a.languages.includes(lang) && a.extensions.some((ext) => extsPresent.has(ext.toLowerCase())),
+			)
+			if (adapter) return adapter
 		}
-		// Check for .py files → debugpy
-		if (entries.some((e) => e.endsWith(".py"))) {
-			const pyAdapter = adapters.find((a) => a.languages.includes("python"))
-			if (pyAdapter) return pyAdapter
-		}
-		// Check for .ts/.js files → js-debug
-		if (entries.some((e) => e.endsWith(".ts") || e.endsWith(".js"))) {
-			const jsAdapter = adapters.find((a) => a.languages.includes("typescript") || a.languages.includes("javascript"))
-			if (jsAdapter) return jsAdapter
-		}
-		// Check for .rs/.c/.cpp files → lldb-dap
-		if (entries.some((e) => e.endsWith(".rs") || e.endsWith(".c") || e.endsWith(".cpp"))) {
-			const nativeAdapter = adapters.find((a) => a.languages.includes("rust") || a.languages.includes("c"))
-			if (nativeAdapter) return nativeAdapter
-		}
+		return adapters.find((a) => a.extensions.some((ext) => extsPresent.has(ext.toLowerCase()))) ?? null
 	} catch {
 		// Not a directory or unreadable — fall through to null
 	}

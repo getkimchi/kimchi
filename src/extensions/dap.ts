@@ -294,7 +294,8 @@ export default function (pi: ExtensionAPI) {
 	let rubySkillActive = false
 	let phpSkillActive = false
 
-	createSystemPromptBlocks(pi, "dap").register({
+	const dapBlocks = createSystemPromptBlocks(pi, "dap")
+	dapBlocks.register({
 		id: "dap-tools",
 		render: () => (activeAdapters.length > 0 ? DAP_SYSTEM_PROMPT : undefined),
 	})
@@ -302,27 +303,27 @@ export default function (pi: ExtensionAPI) {
 	// Language-specific skills — only render when the matching adapter is detected.
 	// These provide concrete expression syntax, data structure inspection patterns,
 	// and adapter-specific gotchas that the general DAP_SYSTEM_PROMPT doesn't cover.
-	createSystemPromptBlocks(pi, "dap").register({
+	dapBlocks.register({
 		id: "dap-go-skill",
 		render: () => (goSkillActive ? DAP_GO_SKILL : undefined),
 	})
-	createSystemPromptBlocks(pi, "dap").register({
+	dapBlocks.register({
 		id: "dap-python-skill",
 		render: () => (pythonSkillActive ? DAP_PYTHON_SKILL : undefined),
 	})
-	createSystemPromptBlocks(pi, "dap").register({
+	dapBlocks.register({
 		id: "dap-ts-skill",
 		render: () => (tsSkillActive ? DAP_TS_SKILL : undefined),
 	})
-	createSystemPromptBlocks(pi, "dap").register({
+	dapBlocks.register({
 		id: "dap-java-skill",
 		render: () => (javaSkillActive ? DAP_JAVA_SKILL : undefined),
 	})
-	createSystemPromptBlocks(pi, "dap").register({
+	dapBlocks.register({
 		id: "dap-ruby-skill",
 		render: () => (rubySkillActive ? DAP_RUBY_SKILL : undefined),
 	})
-	createSystemPromptBlocks(pi, "dap").register({
+	dapBlocks.register({
 		id: "dap-php-skill",
 		render: () => (phpSkillActive ? DAP_PHP_SKILL : undefined),
 	})
@@ -364,8 +365,11 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	pi.on("session_shutdown", async () => {
-		sessionRegistry.clearAll()
-		clientRegistry.shutdownAll()
+		// Await both: today these are sync, but awaiting makes the handler safe
+		// against them becoming async later (a fire-and-forget promise here would
+		// race process exit or the next session start).
+		await sessionRegistry.clearAll()
+		await clientRegistry.shutdownAll()
 		if (ui) {
 			ui.setStatus("dap", undefined)
 			ui = undefined
@@ -477,13 +481,24 @@ export default function (pi: ExtensionAPI) {
 		const sessionId = randomUUID()
 		const client = await clientRegistry.getOrCreate(adapter, cwd, sessionId)
 		const session = sessionRegistry.create({ adapter, cwd, client, id: sessionId })
-		await session.launch({
-			program,
-			cwd,
-			args: opts.args,
-			stopOnEntry: opts.stopOnEntry,
-			env: opts.env,
-		})
+		try {
+			await session.launch({
+				program,
+				cwd,
+				args: opts.args,
+				stopOnEntry: opts.stopOnEntry,
+				env: opts.env,
+			})
+		} catch (err) {
+			// Launch failed before the caller received a session id, so
+			// debug_terminate can never reach this session — clean up directly or
+			// the adapter process leaks until session_shutdown. terminate() kills
+			// the client proc, and the proc-exit hook in client.ts then reaps the
+			// client from DapClientRegistry.
+			sessionRegistry.remove(sessionId)
+			await session.terminate()
+			throw err
+		}
 		return session
 	}
 }
