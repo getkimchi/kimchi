@@ -194,8 +194,13 @@ async function withTimeoutAndCleanup<T>(
 	const timeoutP = new Promise<never>((_, reject) => {
 		timer = setTimeout(() => reject(new ComposedTimeoutError(timeoutMs)), timeoutMs)
 	})
+	// If the timeout wins the race, work() keeps running unattended; when it
+	// finally settles (e.g. a 30s stop-waiter timer), its rejection would be
+	// unhandled. Mark it handled upfront — awaiting the race is unaffected.
+	const workP = work()
+	workP.catch(() => {})
 	try {
-		return await Promise.race([work(), timeoutP])
+		return await Promise.race([workP, timeoutP])
 	} finally {
 		if (timer) clearTimeout(timer)
 		await cleanup().catch(() => {})

@@ -123,6 +123,14 @@ export class DapSession {
 		// `configurationDone`. If we awaited here, we'd deadlock. The launch
 		// response is awaited in completeLaunch() after configurationDone is sent.
 		this.launchPromise = sendRequest(this.client, "launch", launchArgs, this.timeoutMs)
+		// Some adapters answer `launch` late (js-debug defers until
+		// configurationDone) or never (a hung adapter — e.g. dlv dap 1.27
+		// launch deadlock on darwin/arm64). When such a session is terminated
+		// before anyone awaits the response, the launch rejection would surface
+		// as an unhandled rejection ~30s later. Mark it handled now; genuine
+		// awaiters (awaitLaunch/continue paths) still see the rejection
+		// because attaching a handler does not consume it.
+		this.launchPromise.catch(() => {})
 		this.launched = true
 	}
 

@@ -4,7 +4,7 @@
 //
 // PRIMARY acceptance targets (must pass when adapter is on PATH):
 //   - Node.js / TypeScript via js-debug (TCP transport)
-//   - Go via dlv dap (stdio transport)
+//   - Go via dlv dap (TCP transport — `dlv dap` prints a listen address)
 //
 // Best-effort (skip-when-absent, never fail):
 //   - Python via debugpy
@@ -22,6 +22,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { resolveJsDebugScript } from "./adapters.js"
 import { allAdapters } from "./adapters.js"
 import { DapClientRegistry } from "./client.js"
 import type { ComposedDeps } from "./composed.js"
@@ -42,15 +43,35 @@ function binaryAvailable(name: string): boolean {
 }
 
 const HAS_DLV = binaryAvailable("dlv")
-// js-debug uses a nested `startDebugging` reverse-request architecture: the
-// parent DAP server spawns a child debug adapter on a separate connection, and
-// breakpoints/threads/stops happen in the child session. Our single-DapClient
-// model cannot drive the child session. The TCP transport, initialize
-// handshake, and adapter detection all work (verified manually) — only the
-// nested-session launch is unsupported. Skip js-debug integration tests until
-// nested-session support is added (tracked as a follow-up).
-const HAS_JS_DEBUG = false
-const HAS_DEBUGPY = binaryAvailable("debugpy")
+// js-debug nested sessions (startDebugging reverse request → child DAP
+// connection) ARE implemented in client.ts and unit-tested in
+// nested-session.test.ts; integrate for real whenever a dapDebugServer.js
+// script is resolvable. Local note: not installed in this repo's layout, so
+// these tests skip except where JS_DEBUG_PATH / an npm prefix provides it.
+const HAS_JS_DEBUG = resolveJsDebugScript() !== null
+// debugpy spawns via `python3 -m debugpy.adapter` — there is no `debugpy`
+// binary on PATH, so detectability = "python3 can import debugpy".
+const HAS_DEBUGPY = (() => {
+	try {
+		execFileSync("python3", ["-c", "import debugpy"], { stdio: "pipe" })
+		return true
+	} catch {
+		return false
+	}
+})()
+// NOTE: dlv dap 1.27.0/1.27.1 hang answering the DAP `launch` request on
+// macOS arm64 with go 1.26 (verified 2026-08 with a raw DAP client —
+// `dlv debug --headless` works, so it is the dlv DAP path, not this client).
+// The dlv tests below FAIL on affected machines rather than skip, by design:
+// dlv is a primary acceptance target and must go green once the adapter is
+// fixed (or where dlv is healthy, e.g. Linux CI runners).
+// debugpy: the divide-by-zero scenario was un-skipped on 2026-08 with debugpy
+// available and still never produced an exception stop within 30s (throw-site
+// capture times out). Suspected protocol-ordering issue in completeLaunch
+// (setExceptionBreakpoints sent before debugpy has settled post-launch), not
+// root-caused yet. Flip to true with a debugpy-capable machine to validate a
+// fix; leave false so CI stays deterministic.
+const DEBUGPY_SCENARIO_STABLE = false
 const HAS_LLDB_DAP = binaryAvailable("lldb-dap")
 // The lldb-dap scenario compiles a C fixture — also needs a C compiler.
 const HAS_CC = binaryAvailable("gcc")
@@ -265,7 +286,7 @@ describe("DAP integration — Python (debugpy)", () => {
 		deps = makeDeps(dir)
 	})
 
-	it.skipIf(!HAS_DEBUGPY || true)(
+	it.skipIf(!(HAS_DEBUGPY && DEBUGPY_SCENARIO_STABLE))(
 		"debug_last_error captures exception on divide-by-zero",
 		async () => {
 			const result = await debugLastError(deps, {
