@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { setResourceOverride } from "../../resources/store.js"
 import claudeCodeHooksAdapter from "../claude-code-hook-adapter/index.js"
+import { markHarnessSteer } from "../steer-marker.js"
 import { createCommandHookAdapter, parseCommandHookOutput, runCommandHook } from "./adapter.js"
 
 vi.mock("node:child_process", () => ({
@@ -147,7 +148,7 @@ describe("hook adapter command execution", () => {
 		expect(result).toBeUndefined()
 		expect(event.input.command).toBe("rtk git status")
 		expect(pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ content: "context from hook", display: false }),
+			expect.objectContaining({ content: markHarnessSteer("context from hook"), display: false }),
 			{ deliverAs: "steer", triggerTurn: false },
 		)
 	})
