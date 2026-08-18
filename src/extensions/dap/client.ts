@@ -353,6 +353,11 @@ function rejectWaiters(state: DapClient, err: Error): void {
 	for (const w of terminated) w.reject(err)
 }
 
+/** Cap on unparsed buffered bytes before the connection is treated as broken.
+ *  A runaway or garbage adapter (emitting bytes without Content-Length
+ *  framing) would otherwise buffer up unbounded memory forever. */
+const MAX_MESSAGE_BUFFER_BYTES = 10 * 1024 * 1024
+
 // =============================================================================
 // Message Reader
 // =============================================================================
@@ -376,6 +381,11 @@ async function startMessageReader(client: DapClient, stateTarget?: DapClient): P
 			if (done) break
 
 			client.messageBuffer = Buffer.concat([client.messageBuffer, value])
+			if (client.messageBuffer.length > MAX_MESSAGE_BUFFER_BYTES) {
+				throw new Error(
+					"DAP message buffer exceeded 10MB without a parseable frame — adapter is emitting protocol garbage; treating the connection as broken",
+				)
+			}
 			let parsed = parseMessage(client.messageBuffer)
 			while (parsed) {
 				const { message, remaining } = parsed
@@ -449,11 +459,11 @@ async function startMessageReader(client: DapClient, stateTarget?: DapClient): P
 				} else if (message.type === "request") {
 					if (message.command === "startDebugging") {
 						if (client.parentServer) {
-							handleStartDebuggingRequest(client, message).catch(() => {})
+							handleStartDebuggingRequest(client, message).catch(logSwallow("startDebugging"))
 						} else {
 							// stdio adapter — no parent TCP server to connect a child to.
 							// Reply success:true so the adapter doesn't hang waiting.
-							sendResponse(client, message.seq, true, undefined, undefined).catch(() => {})
+							sendResponse(client, message.seq, true, undefined, undefined).catch(logSwallow("sendResponse"))
 						}
 					} else {
 						// Server-initiated requests (e.g. runInTerminal) are unsupported.
@@ -575,7 +585,6 @@ async function startChildSession(parent: DapClient, configuration: Record<string
 		pendingRequests: new Map(),
 		messageBuffer: Buffer.alloc(0),
 		isReading: false,
-		lastActivity: Date.now(),
 		threadId: null,
 		stoppedEvent: null,
 		stoppedWaiters: [],
@@ -659,8 +668,8 @@ export class DapClientRegistry {
 	private readonly clients = new Map<string, DapClient>()
 	private readonly clientLocks = new Map<string, Promise<DapClient>>()
 
-	/** Return the existing client for (command, cwd, scope) if present (and bump
-	 *  its lastActivity), else spawn the adapter subprocess, run the initialize
+	/** Return the existing client for (command, cwd, scope) if present, else
+	 *  spawn the adapter subprocess, run the initialize
 	 *  handshake, and register the client. Concurrent calls for the same key
 	 *  share a single in-flight promise so the adapter is spawned only once.
 	 *
@@ -674,7 +683,6 @@ export class DapClientRegistry {
 
 		const existing = this.clients.get(key)
 		if (existing) {
-			existing.lastActivity = Date.now()
 			return existing
 		}
 
@@ -703,7 +711,6 @@ export class DapClientRegistry {
 				pendingRequests: new Map(),
 				messageBuffer: Buffer.alloc(0),
 				isReading: false,
-				lastActivity: Date.now(),
 				threadId: null,
 				stoppedEvent: null,
 				stoppedWaiters: [],
@@ -848,7 +855,6 @@ export async function sendRequest(
 	}
 	const seq = ++client.seq
 	const request: DapRequest = { seq, type: "request", command, arguments: args }
-	client.lastActivity = Date.now()
 
 	const timeoutDuration = timeoutMs ?? DEFAULT_TIMEOUT_MS
 	return new Promise((resolve, reject) => {
@@ -894,6 +900,14 @@ export async function sendResponse(
 		body,
 		message,
 	}
-	client.lastActivity = Date.now()
 	await writeMessage(client.proc, response)
+}
+
+/** Non-fatal async failures (reverse-request replies, child-session setup) must
+ *  be observable without crashing the reader loop — log instead of silently
+ *  swallowing. */
+function logSwallow(label: string): (err: unknown) => void {
+	return (err: unknown) => {
+		console.error(`[dap] ${label} failed: ${err instanceof Error ? err.message : String(err)}`)
+	}
 }

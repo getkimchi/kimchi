@@ -131,7 +131,7 @@ describe("Layer 1 DAP tools", () => {
 	})
 
 	describe("tool registration", () => {
-		it("registers all 10 Layer 1 tools", () => {
+		it("registers all 12 Layer 1 tools (10 base + set_variable/restart)", () => {
 			const names = tools.map((t) => t.name).sort()
 			expect(names).toEqual(
 				[
@@ -140,7 +140,9 @@ describe("Layer 1 DAP tools", () => {
 					"debug_eval",
 					"debug_launch",
 					"debug_locals",
+					"debug_restart",
 					"debug_set_breakpoint",
+					"debug_set_variable",
 					"debug_terminate",
 					"step_in",
 					"step_out",

@@ -74,6 +74,8 @@ interface FakeProc {
 	written: string[]
 	/** Enqueue a framed DAP message into the fake stdout so the reader pumps it. */
 	enqueue: (msg: unknown) => void
+	/** Enqueue raw bytes (garbage/unframed) into the fake stdout. */
+	enqueueRaw: (bytes: Uint8Array) => void
 	isKilled: () => boolean
 }
 
@@ -129,6 +131,9 @@ function createFakeProc(): FakeProc {
 		written,
 		enqueue: (msg: unknown) => {
 			stdoutController?.enqueue(encode(frame(msg)))
+		},
+		enqueueRaw: (bytes: Uint8Array) => {
+			stdoutController?.enqueue(bytes)
 		},
 		isKilled: () => killed,
 	}
@@ -369,7 +374,6 @@ describe("DAP client (in-memory fake adapter)", () => {
 				pendingRequests: new Map(),
 				messageBuffer: Buffer.alloc(0),
 				isReading: false,
-				lastActivity: Date.now(),
 				threadId: null,
 				stoppedEvent: null,
 				stoppedWaiters: [],
@@ -386,7 +390,6 @@ describe("DAP client (in-memory fake adapter)", () => {
 					pendingRequests: new Map(),
 					messageBuffer: Buffer.alloc(0),
 					isReading: false,
-					lastActivity: Date.now(),
 					threadId: null,
 					stoppedEvent: null,
 					stoppedWaiters: [],
@@ -438,7 +441,6 @@ describe("DAP client (in-memory fake adapter)", () => {
 				pendingRequests: new Map(),
 				messageBuffer: Buffer.alloc(0),
 				isReading: false,
-				lastActivity: Date.now(),
 				threadId: null,
 				stoppedEvent: null,
 				stoppedWaiters: [],
@@ -487,6 +489,26 @@ describe("DAP client (in-memory fake adapter)", () => {
 			expect(startDbgResp).toBeDefined()
 			// The handler should reply success:true for stdio adapters
 			expect(startDbgResp?.success).toBe(true)
+		})
+	})
+
+	describe("message buffer cap", () => {
+		it("rejects pending requests when the adapter floods >10MB of unframed bytes", async () => {
+			const clientPromise = registry.getOrCreate(FAKE_CONFIG, CWD)
+			await answerInitialize(fake)
+			const client = await clientPromise
+
+			// Start a request that will never be answered; long timeout so only
+			// the buffer-cap path can end it.
+			const pending = sendRequest(client, "evaluate", { expression: "y" }, 30_000)
+			await Promise.resolve()
+			expect(client.pendingRequests.size).toBe(1)
+
+			// 10MB+1 of zero bytes — no DAP framing, parseMessage keeps buffering.
+			fake.enqueueRaw(new Uint8Array(10 * 1024 * 1024 + 1))
+
+			await expect(pending).rejects.toThrow(/protocol garbage/)
+			expect(client.pendingRequests.size).toBe(0)
 		})
 	})
 

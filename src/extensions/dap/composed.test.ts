@@ -303,6 +303,49 @@ describe("debug_state_at", () => {
 	})
 })
 
+// ── collection caps (locals + watch changes) ────────────────────────────────
+
+describe("collection caps", () => {
+	it("caps the locals collection at 100 entries with a truncation marker", async () => {
+		const stub = createStubSession()
+		stub.continue.mockResolvedValue(stop("breakpoint"))
+		// The scope call and every child-expansion call return 40 entries —
+		// 40 + 40×40 children = 1640, far past the 100-entry cap.
+		stub.getVariables.mockImplementation(async () =>
+			Array.from({ length: 40 }, (_, i) => ({ name: `v${i}`, value: `${i}`, variablesReference: 1000 })),
+		)
+		const { deps } = createDeps(stub)
+
+		const result = await debugStateAt(deps, { sessionId: stub.id, file: "app.ts", line: 10 })
+
+		expect(result.locals).toHaveLength(101)
+		expect(result.locals[100]?.name).toBe("[truncated]")
+	})
+
+	it("caps watch-change captures at 200 and stops stepping", async () => {
+		const stub = createStubSession()
+		let evalCount = 0
+		// The tracked expression changes on every step → a change is recorded
+		// on every stepOver, exercising the unbounded-loop cap.
+		stub.evaluate.mockImplementation(async () => ({ result: String(evalCount++), variablesReference: 0 }))
+		const { deps } = createDeps(stub)
+
+		const result = await debugWatchChange(deps, {
+			sessionId: stub.id,
+			program: "app.ts",
+			file: "app.ts",
+			line: 5,
+			expression: "i",
+			timeoutMs: 5_000,
+		})
+
+		expect(result.changes).toHaveLength(200)
+		// 1 initial evaluation + 1 per step up to the cap — the loop stopped
+		// at the cap, not at program termination or timeout.
+		expect(evalCount).toBe(201)
+	})
+})
+
 // ── debug_last_error ─────────────────────────────────────────────────────────
 
 describe("debug_last_error", () => {

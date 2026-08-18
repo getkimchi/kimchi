@@ -237,7 +237,6 @@ export interface DapClient {
 	pendingRequests: Map<number, DapPendingRequest>
 	messageBuffer: Buffer
 	isReading: boolean
-	lastActivity: number
 	/** Current thread id (from the most recent `stopped` or `thread` event). */
 	threadId: number | null
 	/** The most recent stopped event for this session. */
@@ -268,11 +267,11 @@ export interface DapClient {
 }
 
 /** How the DAP client talks to the adapter subprocess.
- *  - stdio: frame pump over the subprocess's stdin/stdout (dlv, debugpy, lldb-dap)
- *  - tcp:   adapter listens on a port given as a CLI arg; client connects via TCP
- *           socket and runs the same framing pump over it (js-debug's dapDebugServer.js).
+ *  - stdio: frame pump over the subprocess's stdin/stdout (debugpy, lldb-dap)
+ *  - tcp:   adapter listens on a port; the client connects via TCP socket and
+ *           runs the same framing pump over it (dlv dap, js-debug's dapDebugServer.js).
  *  See the js-debug protocol conclusion at the top of adapters.ts. */
-export type DapTransport = { kind: "stdio" } | { kind: "tcp"; portArgIndex: number; host?: string }
+export type DapTransport = { kind: "stdio" } | { kind: "tcp"; host?: string }
 
 export interface DapAdapterConfig {
 	name: string
