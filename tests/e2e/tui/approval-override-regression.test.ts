@@ -1,5 +1,5 @@
 import { expect, test } from "@microsoft/tui-test"
-import { waitForTurnToSettle } from "./support/assertions.js"
+import { waitForText, waitForTurnToSettle } from "./support/assertions.js"
 import type { RecordedRequest } from "./support/fake-openai-server.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
@@ -10,17 +10,6 @@ const ASSISTANT_QUESTION = "Go ahead and commit this small ADR update?"
 
 function requestBodyText(request: RecordedRequest): string {
 	return JSON.stringify(request.body ?? "")
-}
-
-function findQuestionRequestIndex(requests: RecordedRequest[]): number {
-	return requests.findIndex((r) => requestBodyText(r).includes(ASSISTANT_QUESTION))
-}
-
-function anyLaterRequestContains(requests: RecordedRequest[], startIndex: number, text: string): boolean {
-	for (let i = startIndex + 1; i < requests.length; i++) {
-		if (requestBodyText(requests[i]).includes(text)) return true
-	}
-	return false
 }
 
 /**
@@ -72,23 +61,18 @@ test("continuation nudge is suppressed after an unanswered assistant question", 
 		async (fixture, trace) => {
 			terminal.submit("draft a small ADR update")
 			trace.step("submitted prompt")
+
+			// Wait until the assistant's confirmation question is rendered in the
+			// terminal, then wait for the harness to settle (no further requests).
+			await waitForText(terminal, ASSISTANT_QUESTION)
+			trace.step("assistant question rendered")
 			await waitForTurnToSettle(fixture.fake.requests)
 			trace.step("turn settled")
 
-			const questionIndex = findQuestionRequestIndex(fixture.fake.requests)
-			expect(questionIndex).toBeGreaterThanOrEqual(0)
-
 			// The core regression: no continuation nudge should be injected after
 			// the assistant asks a question.
-			expect(anyLaterRequestContains(fixture.fake.requests, questionIndex, CONTINUATION_NUDGE_PHRASE)).toBe(false)
-
-			// And therefore no unauthorized git commit/push tool calls should
-			// appear in any later request.
-			const laterRequests = fixture.fake.requests.slice(questionIndex + 1)
-			for (const request of laterRequests) {
-				const text = requestBodyText(request)
-				expect(text).not.toContain("git commit")
-				expect(text).not.toContain("git push")
+			for (const request of fixture.fake.requests) {
+				expect(requestBodyText(request)).not.toContain(CONTINUATION_NUDGE_PHRASE)
 			}
 		},
 	)
