@@ -72,6 +72,11 @@ export interface RsyncOptions {
 	 *  Mutually exclusive with `gitignoredPaths` / `excludeGlobs` /
 	 *  `includeIgnored`: when `filesFrom` is set, those are ignored. */
 	filesFrom?: string[]
+	/** Additional rsync filter globs. Each entry becomes a single
+	 *  `-f "- <glob>"` arg pair applied in BOTH list modes (unlike
+	 *  `--exclude`, `-f` filter rules still match under `--files-from`).
+	 *  Unset = no filter rules, identical to before. */
+	excludeFilters?: string[]
 	/** Optional progress callback. Fires for each rsync progress tick. Values
 	 *  are per-file (rsync's `--progress` shows current-file bytes/%), not
 	 *  cumulative — use `onCumulativeProgress` (with `precomputeTotal`) for
@@ -201,6 +206,9 @@ interface BuildRsyncArgvInput {
 	 *  include list. The runner chooses based on whether the caller supplied
 	 *  an explicit `filesFrom` list. */
 	listMode: RsyncListMode
+	/** Each entry becomes a `-f "- <glob>"` filter-rule pair, placed after
+	 *  the list-mode args and before `-e`. Works in both list modes. */
+	excludeFilters?: string[]
 	deleteExtraneous?: boolean
 	/** Transfer direction: "up" = local→remote (default), "down" = remote→local. */
 	direction?: "up" | "down"
@@ -233,6 +241,9 @@ export function buildRsyncArgv(input: BuildRsyncArgvInput): string[] {
 		args.push("--files-from", input.listMode.file)
 	} else {
 		args.push("--exclude-from", input.listMode.file)
+	}
+	for (const glob of input.excludeFilters ?? []) {
+		args.push("-f", `- ${glob}`)
 	}
 	args.push("-e", sshOption)
 	if (input.deleteExtraneous !== false) args.push("--delete")
@@ -277,6 +288,51 @@ export function buildMkdirArgv(input: BuildMkdirArgvInput): string[] {
 		`${input.remoteUser}@${input.remoteHost}`,
 		`mkdir -p ${input.remoteDir}`,
 	]
+}
+
+/**
+ * Pure helper: assembles the ssh argv that checks whether a directory
+ * exists on the sandbox (`test -d`). Exit code 0 = exists.
+ */
+export function buildDirExistsArgv(input: BuildMkdirArgvInput): string[] {
+	return [
+		"-o",
+		`ProxyCommand=${input.proxyCommand}`,
+		"-o",
+		"StrictHostKeyChecking=accept-new",
+		"-o",
+		`UserKnownHostsFile=${input.knownHostsFile}`,
+		"-o",
+		"BatchMode=yes",
+		`${input.remoteUser}@${input.remoteHost}`,
+		`test -d ${shellDoubleQuote(input.remoteDir)}`,
+	]
+}
+
+/**
+ * Spawn `ssh ... test -d <remoteDir>` and report whether the directory
+ * exists. Resolves true iff the ssh exits 0; false on any non-zero exit,
+ * spawn error, or abort. Never rejects.
+ */
+export async function runRemoteDirExists(
+	input: BuildMkdirArgvInput,
+	opts?: { _spawn?: typeof spawn; signal?: AbortSignal },
+): Promise<boolean> {
+	return new Promise((resolve) => {
+		const spawner = opts?._spawn ?? spawn
+		let child: ChildProcess
+		try {
+			child = spawner("ssh", buildDirExistsArgv(input), {
+				signal: opts?.signal,
+				stdio: ["ignore", "ignore", "ignore"],
+			})
+		} catch {
+			resolve(false)
+			return
+		}
+		child.on("error", () => resolve(false))
+		child.on("close", (code) => resolve(code === 0))
+	})
 }
 
 /**
@@ -398,6 +454,7 @@ export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 			proxyCommand,
 			knownHostsFile,
 			listMode,
+			excludeFilters: opts.excludeFilters,
 			deleteExtraneous: opts.deleteExtraneous,
 			direction: dir,
 			dryRun: opts.dryRun,
@@ -670,4 +727,13 @@ export function handleLine(line: string, stats: RsyncStats, onProgress?: (pct: n
  */
 function rsyncShellQuote(value: string): string {
 	return `'${value.replace(/'/g, "'\\''")}'`
+}
+
+/**
+ * Double-quote `value` for embedding in a remote shell command run via ssh.
+ * Escapes the four double-quote-context metachars so paths containing
+ * spaces or `$` survive one level of remote shell parsing.
+ */
+function shellDoubleQuote(value: string): string {
+	return `"${value.replace(/(["\\$`])/g, "\\$1")}"`
 }

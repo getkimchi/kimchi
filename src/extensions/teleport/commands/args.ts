@@ -7,6 +7,7 @@ export interface TeleportArgs {
 	branch?: string
 	noGitToken?: boolean
 	skipSession?: boolean
+	fast?: boolean
 }
 
 const SESSION_NAME_RE = /^[A-Za-z0-9\-_]+$/
@@ -16,7 +17,8 @@ const BOOLEAN_FLAGS = new Set(["--no-git-token", "--skip-session"])
 
 /**
  * Parse `/teleport [name] [--workspace ID] [--git-repo URL] [--branch B]
- *                  [--allow-dirty] [--force] [--no-git-token] [--skip-session]`.
+ *                  [--allow-dirty] [--force] [--no-git-token] [--skip-session]
+ *                  [--fast]`.
  *
  * A malformed input (a `--flag=` with no key, a stray `--`) throws so the
  * command surfaces a clear refusal.
@@ -69,6 +71,10 @@ export function parseTeleportArgs(raw: string): TeleportArgs {
 			}
 			if (flag === "--skip-session") {
 				args.skipSession = true
+				continue
+			}
+			if (flag === "--fast") {
+				args.fast = true
 				continue
 			}
 			if (BOOLEAN_FLAGS.has(flag)) {

@@ -57,6 +57,22 @@ describe("parseTeleportArgs", () => {
 		expect(parseTeleportArgs("name --skip-session")).toEqual({ name: "name", skipSession: true })
 	})
 
+	it("reads --fast as a boolean", () => {
+		expect(parseTeleportArgs("--fast")).toEqual({ fast: true })
+	})
+
+	it("reads --git-repo with --fast together", () => {
+		expect(parseTeleportArgs("--git-repo https://x/y.git --fast")).toEqual({
+			gitRepo: "https://x/y.git",
+			fast: true,
+		})
+	})
+
+	it("leaves fast unset by default", () => {
+		expect(parseTeleportArgs("").fast).toBeUndefined()
+		expect(parseTeleportArgs("name --force").fast).toBeUndefined()
+	})
+
 	it("rejects unknown flags", () => {
 		expect(() => parseTeleportArgs("--bogus")).toThrow(/Unknown flag/)
 	})

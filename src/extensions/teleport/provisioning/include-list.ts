@@ -161,11 +161,9 @@ export async function walkGitDir(cwd: string, signal?: AbortSignal): Promise<str
 }
 
 /**
- * Build the rsync `--files-from` include list for teleport: every path
- * the workspace upload should consist of, relative to `cwd`,
- * POSIX-separated.
- *
- * Composed of:
+ * Tracked + untracked working-tree files, relative to `cwd`,
+ * POSIX-separated. Shared core of `buildIncludeList` /
+ * `buildWorkingTreeList`:
  *   1. `git ls-files --cached -z` — tracked files, minus any that
  *      `git ls-files --deleted -z` reports as missing from the working
  *      tree. Tracked entries are otherwise explicit user intent — if we
@@ -177,9 +175,35 @@ export async function walkGitDir(cwd: string, signal?: AbortSignal): Promise<str
  *      git would otherwise see. The basename safety filter is applied
  *      here so an accidentally-left-around `.env` / `.DS_Store` doesn't
  *      leak to the sandbox.
- *   3. A recursive walk of `<cwd>/.git/` — git's metadata dir, which the
- *      teleport flow currently uploads (it's not in `BASE_EXCLUDE_GLOBS`)
- *      but which `git ls-files` never lists.
+ *
+ * Per-source git errors (git missing, not a repo) are swallowed so a
+ * partial list is still useful.
+ */
+async function buildWorkingTreeEntries(
+	cwd: string,
+	signal: AbortSignal | undefined,
+	spawner: typeof spawn,
+): Promise<string[]> {
+	const [tracked, others, deleted] = await Promise.all([
+		listGitTrackedFiles(cwd, signal, spawner),
+		listGitUntrackedFiles(cwd, signal, spawner),
+		listGitDeletedFiles(cwd, signal, spawner),
+	])
+	const deletedSet = new Set(deleted)
+	const liveTracked = tracked.filter((p) => !deletedSet.has(p))
+	const safeOthers = others.filter((p) => !excludesBaseFilePattern(p))
+	return [...liveTracked, ...safeOthers]
+}
+
+/**
+ * Build the rsync `--files-from` include list for teleport: every path
+ * the workspace upload should consist of, relative to `cwd`,
+ * POSIX-separated.
+ *
+ * Composed of the working-tree entries (see `buildWorkingTreeEntries`)
+ * plus a recursive walk of `<cwd>/.git/` — git's metadata dir, which the
+ * teleport flow currently uploads (it's not in `BASE_EXCLUDE_GLOBS`)
+ * but which `git ls-files` never lists.
  *
  * Cheap: no remote roundtrip, no rsync subprocess. Per-source errors
  * (git missing, `.git` unreadable) are swallowed so a partial list is
@@ -190,14 +214,22 @@ export async function buildIncludeList(
 	signal?: AbortSignal,
 	spawner: typeof spawn = defaultSpawn,
 ): Promise<string[]> {
-	const [tracked, others, deleted, gitDirFiles] = await Promise.all([
-		listGitTrackedFiles(cwd, signal, spawner),
-		listGitUntrackedFiles(cwd, signal, spawner),
-		listGitDeletedFiles(cwd, signal, spawner),
+	const [entries, gitDirFiles] = await Promise.all([
+		buildWorkingTreeEntries(cwd, signal, spawner),
 		walkGitDir(cwd, signal),
 	])
-	const deletedSet = new Set(deleted)
-	const liveTracked = tracked.filter((p) => !deletedSet.has(p))
-	const safeOthers = others.filter((p) => !excludesBaseFilePattern(p))
-	return [...liveTracked, ...safeOthers, ...gitDirFiles]
+	return [...entries, ...gitDirFiles]
+}
+
+/**
+ * Like `buildIncludeList` but WITHOUT the `<cwd>/.git/` walk — the
+ * `/teleport --fast` diff-rsync variant, where the remote side already
+ * has a fresh clone's `.git` and only the working-tree diff is synced.
+ */
+export async function buildWorkingTreeList(
+	cwd: string,
+	signal?: AbortSignal,
+	spawner: typeof spawn = defaultSpawn,
+): Promise<string[]> {
+	return buildWorkingTreeEntries(cwd, signal, spawner)
 }
