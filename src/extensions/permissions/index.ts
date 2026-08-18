@@ -56,6 +56,8 @@ import {
 	promptForCompoundApproval,
 	terminalPrompter,
 	withWorkingHidden,
+	type ApprovalOutcome,
+	type CompoundApprovalOutcome,
 } from "./prompts.js"
 import { evaluateRules, parseRules, stringifyRule } from "./rules.js"
 import { SessionMemory } from "./session-memory.js"
@@ -66,7 +68,8 @@ import {
 	isReadOnlyTool,
 	splitCompoundCommand,
 } from "./taxonomy.js"
-import type { PermissionMode, PermissionModeState, RiskScore, Rule } from "./types.js"
+import { PERMISSION_EVENTS, type ModeChangeReason, type PermissionDecision } from "./permissions-events.js"
+import type { PermissionMode, PermissionModeState, RiskScore, Rule, RuleSource } from "./types.js"
 
 /**
  * Check whether a file path is within .kimchi/plans/ relative to cwd.
@@ -330,8 +333,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		ctx: ExtensionContext,
 		current: PermissionMode,
 		next: PermissionModeState,
+		reason: ModeChangeReason,
 		skipNotify?: boolean,
 	): void {
+		const from = getRuntimePermissionMode()
 		setRuntimePermissionMode(ctx, next, skipNotify)
 		if (current === "plan" && next.mode !== "plan") restoreToolsFromPlanMode()
 		if (next.mode === "plan") applyPlanModeTools()
@@ -340,13 +345,16 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		activeAbortControllers.clear()
 		updateStatus(ctx)
 		maybeShowYoloWarning(ctx)
+		if (pi.events?.emit) {
+			pi.events.emit(PERMISSION_EVENTS.MODE_CHANGED, { from, to: next, reason })
+		}
 	}
 
 	function cycleMode(ctx: ExtensionContext): void {
 		const { mode: current } = getRuntimePermissionMode()
 		const idx = MODES.findIndex((m) => m.mode === current)
 		const next = MODES[(idx + 1) % MODES.length].mode
-		changeMode(ctx, current, { mode: next, initiatedBy: "user", source: "runtime" })
+		changeMode(ctx, current, { mode: next, initiatedBy: "user", source: "runtime" }, "user_shift_tab")
 	}
 
 	// Ferment calls notifyFermentActive() when a ferment is activated or cleared,
@@ -366,7 +374,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				mode: "yolo",
 				source: "runtime",
 				initiatedBy: "ferment",
-			})
+			}, "ferment_elevation")
 		} else if (preFermentMode) {
 			const saved = preFermentMode
 			preFermentMode = undefined
@@ -374,7 +382,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// ferment elevation. If the user changed mode manually mid-ferment,
 			// their choice wins over the restore.
 			if (current.initiatedBy === "ferment") {
-				changeMode(currentCtx, current.mode, saved)
+				changeMode(currentCtx, current.mode, saved, "ferment_restore")
 			}
 		}
 	})
@@ -388,6 +396,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		})
 		loaded = lc
 		rebuildConfigRules()
+		if (pi.events?.emit) {
+			pi.events.emit(PERMISSION_EVENTS.CONFIG_LOADED, {
+				cwd: ctx.cwd,
+				ruleCount: configRules.length + builtinRules.length,
+				errors,
+			})
+		}
 		return { errors }
 	}
 
@@ -459,7 +474,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			}
 		}
 
-		changeMode(ctx, current.mode, next)
+		changeMode(ctx, current.mode, next, "session_start")
 
 		const sessionId = ctx.sessionManager.getSessionId()
 		unsubscribePermissionFlagController = getSessionPermissionFlagController(sessionId)?.subscribe(({ mode: next }) => {
@@ -470,7 +485,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 			// ACP already emitted the config update from controller.setMode().
 			// This call is only for local transition side effects.
-			changeMode(ctx, current.mode, next, true)
+			changeMode(ctx, current.mode, next, "controller", true)
 		})
 	})
 
@@ -554,7 +569,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			} catch {
 				// Non-fatal: plan persistence is best-effort.
 			}
-			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" })
+			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
 			executePlan(planPath, text)
 		} else if (choice === START_AS_FERMENT) {
 			// ── Tool-swap contract ────────────────────────────────────────────────
@@ -623,7 +638,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					defaultFermentRuntime.setActive(draft)
 					if (pi.events) emitFermentCreated(pi.events, draft)
 					appendRefEntry(pi, draft.id)
-					changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" })
+					changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
 					ctx.ui?.notify?.(
 						`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment list to resume and scope it interactively.`,
 					)
@@ -705,7 +720,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					},
 					{ triggerTurn: true },
 				)
-				changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" })
+				changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
 			} catch (err) {
 				// Promotion failed before activation. Keep the planning profile, clear
 				// the half-set runtime state, and tell the user that they can retry.
@@ -878,7 +893,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// auto-promote the session to plan mode so the rest of the conversation
 			// runs under the right tool set instead of silently approving here.
 			if (toolName === "questionnaire" && mode === "default") {
-				changeMode(ctx, "default", { mode: "plan", initiatedBy: "user", source: "runtime" })
+				changeMode(ctx, "default", { mode: "plan", initiatedBy: "user", source: "runtime" }, "questionnaire_promote")
 				return undefined
 			}
 			if (isReadOnlyTool(toolName)) return undefined
@@ -961,7 +976,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		getLoaded: () => loaded,
 		getPermissionMode: () => getRuntimePermissionMode().mode,
 		setPermissionMode: (ctx, mode) =>
-			changeMode(ctx, getRuntimePermissionMode().mode, { mode, initiatedBy: "user", source: "runtime" }),
+			changeMode(ctx, getRuntimePermissionMode().mode, { mode, initiatedBy: "user", source: "runtime" }, "command"),
 		rebuildConfigRules,
 		reloadConfig: (ctx) => {
 			const { errors } = doLoadConfig(ctx)
@@ -1001,6 +1016,13 @@ async function handleConfirm(
 				tool_name: event.toolName,
 				tool_use_id: event.toolCallId,
 			})
+			opts.pi.events.emit(PERMISSION_EVENTS.BEFORE_PROMPT, {
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				compound: false,
+				riskScore: opts.riskScore,
+				classifierReason: opts.subtitle,
+			})
 		}
 
 		const input = event.input
@@ -1013,6 +1035,18 @@ async function handleConfirm(
 			choices: buildPermissionChoices(event.toolName, input),
 			signal: abort.signal,
 		})
+
+		if (opts.pi?.events?.emit) {
+			opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				decision: approvalOutcomeToDecision(outcome),
+				ruleAdded:
+					outcome.kind === "allow-remember" || outcome.kind === "allow-remember-wildcard"
+						? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
+						: undefined,
+			})
+		}
 
 		return applyApprovalOutcome(outcome, opts.session)
 	} finally {
@@ -1038,6 +1072,13 @@ export async function handleCompoundConfirm(
 				tool_name: event.toolName,
 				tool_use_id: event.toolCallId,
 			})
+			opts.pi.events.emit(PERMISSION_EVENTS.BEFORE_PROMPT, {
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				compound: true,
+				riskScore: opts.riskScore,
+				classifierReason: opts.subtitle,
+			})
 		}
 
 		if (opts.ctx.mode !== "tui") {
@@ -1054,6 +1095,17 @@ export async function handleCompoundConfirm(
 				choices: buildPermissionChoices(event.toolName, input),
 				signal: abort.signal,
 			})
+			if (opts.pi?.events?.emit) {
+				opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
+					toolCallId: event.toolCallId,
+					toolName: event.toolName,
+					decision: approvalOutcomeToDecision(outcome),
+					ruleAdded:
+						outcome.kind === "allow-remember" || outcome.kind === "allow-remember-wildcard"
+							? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
+							: undefined,
+				})
+			}
 			return applyApprovalOutcome(outcome, opts.session)
 		}
 
@@ -1067,6 +1119,14 @@ export async function handleCompoundConfirm(
 			ctx: opts.ctx,
 			signal: abort.signal,
 		})
+
+		if (opts.pi?.events?.emit) {
+			opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				decision: compoundOutcomeToDecision(outcome),
+			})
+		}
 
 		if (outcome.kind === "aborted") return "aborted"
 		if (outcome.kind === "allow-all-once") return undefined
@@ -1156,6 +1216,40 @@ function linkAbortSignal(signal: AbortSignal | undefined, controller: AbortContr
 	const abort = () => controller.abort()
 	signal.addEventListener("abort", abort, { once: true })
 	return () => signal.removeEventListener("abort", abort)
+}
+
+function approvalOutcomeToDecision(outcome: ApprovalOutcome): PermissionDecision {
+	switch (outcome.kind) {
+		case "allow-once":
+			return "allow_once"
+		case "allow-remember":
+			return "allow_remember"
+		case "allow-remember-wildcard":
+			return "allow_remember_wildcard"
+		case "deny-with-feedback":
+			return "deny_with_feedback"
+		case "deny":
+			return "deny"
+		case "aborted":
+			return "aborted"
+	}
+}
+
+function compoundOutcomeToDecision(outcome: CompoundApprovalOutcome): PermissionDecision {
+	switch (outcome.kind) {
+		case "allow-all-once":
+			return "allow_once"
+		case "allow-all-remember":
+			return "allow_remember"
+		case "pick-per-subcommand":
+			return "pick_per_subcommand"
+		case "deny-with-feedback":
+			return "deny_with_feedback"
+		case "deny":
+			return "deny"
+		case "aborted":
+			return "aborted"
+	}
 }
 
 function splitFlag(raw: boolean | string | undefined): string[] {
