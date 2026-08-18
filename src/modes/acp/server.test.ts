@@ -134,12 +134,29 @@ class FakeAgentSession {
 	// Branch entries returned to the replay walker. Tests fill this with the
 	// shape buildSessionContext consumers expect (type:"message" + role).
 	branch: unknown[] = []
+	contextMessages: unknown[] = []
+	sessionFile: string | undefined
+	onSetSessionFile: ((sessionFile: string) => void) | undefined
+	agent = {
+		state: {
+			messages: [] as unknown[],
+		},
+	}
 	sessionManager = {
 		getBranch: () => this.branch,
 		getSessionId: () => this.sessionId,
 		getEntries: () => this.branch,
 		getCwd: () => this.cwd,
 		getSessionDir: () => `${this.cwd}/.fake-agent-sessions-dir`,
+		getSessionFile: () => this.sessionFile,
+		setSessionFile: (sessionFile: string) => {
+			this.onSetSessionFile?.(sessionFile)
+		},
+		buildSessionContext: () => ({
+			messages: this.contextMessages,
+			thinkingLevel: "off",
+			model: null,
+		}),
 		appendCustomEntry: (customType: string, data?: unknown) => {
 			this.branch.push({ type: "custom", customType, data })
 			return "entry-id"
@@ -4797,7 +4814,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(loaderCalls.count).toBe(0)
 	})
 
-	it("replays and returns an already loaded session without reopening it", async () => {
+	it("replays an already loaded session from memory when its backing file does not exist", async () => {
 		const loaderCalls = { count: 0 }
 		const live = new FakeAgentSession("live-1")
 		live.branch = [userTextEntry("already here", "u1", null)]
@@ -4833,6 +4850,74 @@ describe("KimchiAcpAgent loadSession", () => {
 			sessionUpdate: "user_message_chunk",
 			content: { type: "text", text: "already here" },
 		})
+	})
+
+	it("refreshes an already loaded session from disk before replay and the next prompt", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "kimchi-acp-refresh-"))
+		try {
+			const sessionFile = join(tmpDir, "live-refresh.jsonl")
+			writeFileSync(sessionFile, "backing file exists\n")
+
+			const live = new FakeAgentSession("live-refresh", tmpDir)
+			const staleMessages = [
+				{ role: "user", content: "one" },
+				{ role: "user", content: "two" },
+			]
+			const freshMessages = [...staleMessages, { role: "user", content: "three from CLI" }]
+			live.sessionFile = sessionFile
+			live.branch = [userTextEntry("one", "u1", null), userTextEntry("two", "u2", "u1")]
+			live.contextMessages = staleMessages
+			live.agent.state.messages = staleMessages
+			live.onSetSessionFile = () => {
+				live.branch = [
+					userTextEntry("one", "u1", null),
+					userTextEntry("two", "u2", "u1"),
+					userTextEntry("three from CLI", "u3", "u2"),
+				]
+				live.contextMessages = freshMessages
+			}
+
+			let loaderCalls = 0
+			const { conn, updates } = makeRecordingConn()
+			const agent = new KimchiAcpAgent(conn, {
+				extensionFactories: [],
+				agentDir: tmpDir,
+				sessionFactory: async () => asSession(live),
+				sessionLoader: async () => {
+					loaderCalls++
+					return asSession(new FakeAgentSession("unused"))
+				},
+			})
+			await agent.newSession({ cwd: tmpDir, mcpServers: [] })
+
+			await agent.loadSession({
+				sessionId: "live-refresh",
+				cwd: tmpDir,
+				mcpServers: [],
+			})
+
+			expect(loaderCalls).toBe(0)
+			expect(live.agent.state.messages).toEqual(freshMessages)
+			expect(
+				replayOnly(updates).map((update) =>
+					update.update.sessionUpdate === "user_message_chunk"
+						? (update.update as { content: { text: string } }).content.text
+						: undefined,
+				),
+			).toEqual(["one", "two", "three from CLI"])
+
+			live.promptImpl = async () => {
+				expect(live.agent.state.messages).toEqual(freshMessages)
+			}
+			await expect(
+				agent.prompt({
+					sessionId: "live-refresh",
+					prompt: [{ type: "text", text: "four from Chat" }],
+				}),
+			).resolves.toEqual({ stopReason: "end_turn" })
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
 	})
 
 	it("returns configOptions in loadSession response", async () => {

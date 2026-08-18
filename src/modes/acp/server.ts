@@ -1,7 +1,7 @@
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
 // @agentclientprotocol/sdk. Lets IDE extensions, Zed, openclaw drive kimchi in-process.
 
-import { closeSync, openSync, readdirSync, readFileSync, readSync } from "node:fs"
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync } from "node:fs"
 import { join } from "node:path"
 import { Readable, Writable } from "node:stream"
 import {
@@ -572,6 +572,7 @@ export class KimchiAcpAgent implements Agent {
 			if (existing.turn) {
 				throw RequestError.invalidRequest(undefined, `session ${sessionId} has a turn in progress; cancel it first`)
 			}
+			this.refreshSessionFromDisk(existing.session, sessionId)
 			this.replayTranscript(existing.session)
 			this.sendAvailableCommandsUpdate(sessionId)
 
@@ -596,6 +597,39 @@ export class KimchiAcpAgent implements Agent {
 				this.loadingSessions.delete(sessionId)
 			}
 		}
+	}
+
+	/**
+	 * Refresh an idle cached ACP session from its JSONL before replaying it.
+	 *
+	 * Studio can temporarily hand the same persisted session to a CLI process.
+	 * The CLI appends to disk while ACP still owns an idle AgentSession whose
+	 * SessionManager leaf and agent message state are now stale. Reload both in
+	 * place so a subsequent loadSession sees the CLI turn and the next ACP prompt
+	 * uses it as model context. Sessions without a materialized backing file (for
+	 * example, a newly-created session before its first assistant response) keep
+	 * their current in-memory state.
+	 */
+	private refreshSessionFromDisk(session: AgentSession, expectedSessionId: string): void {
+		const { sessionManager } = session
+		const sessionFile = sessionManager.getSessionFile()
+		if (!sessionFile || !existsSync(sessionFile)) return
+
+		try {
+			sessionManager.setSessionFile(sessionFile)
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err)
+			throw RequestError.invalidParams(undefined, `failed to refresh session: ${msg}`)
+		}
+
+		if (sessionManager.getSessionId() !== expectedSessionId) {
+			throw RequestError.invalidParams(
+				undefined,
+				`session header id ${sessionManager.getSessionId()} does not match requested sessionId ${expectedSessionId}`,
+			)
+		}
+
+		session.agent.state.messages = sessionManager.buildSessionContext().messages
 	}
 
 	private async loadSessionFresh(params: LoadSessionRequest): Promise<LoadSessionResponse> {
