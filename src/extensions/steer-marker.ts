@@ -31,8 +31,8 @@ export function markOrchestratorSteer(text: string): string {
 	return `${SYSTEM_REMINDER_OPEN}${text}${SYSTEM_REMINDER_CLOSE}`
 }
 
-/** Returns true when the text is wrapped in <system-reminder> tags and should
- *  not be treated as a user-authored prompt. */
+/** Returns true when the text is wrapped in <system-reminder>...</system-reminder>
+ *  tags and should not be treated as a user-authored prompt. */
 export function isHarnessSteer(text: string): boolean {
-	return text.startsWith(SYSTEM_REMINDER_OPEN)
+	return text.startsWith(SYSTEM_REMINDER_OPEN) && text.endsWith(SYSTEM_REMINDER_CLOSE)
 }

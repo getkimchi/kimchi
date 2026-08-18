@@ -51,5 +51,9 @@ describe("steer-marker", () => {
 			expect(isHarnessSteer("<system-reminder> x")).toBe(false)
 			expect(isHarnessSteer("see <system-reminder> above")).toBe(false)
 		})
+
+		it("returns false when the opening tag is present but the closing tag is missing", () => {
+			expect(isHarnessSteer(`${SYSTEM_REMINDER_OPEN}x`)).toBe(false)
+		})
 	})
 })
