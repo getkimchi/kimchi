@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
+import type { ThinkingLevel } from "./extensions/agents/personas/types.js"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_API = "https://llm.kimchi.dev"
@@ -176,7 +177,7 @@ export interface PiModelConfig {
 		supportsUsageInStreaming?: boolean
 	}
 	/** Maps thinking levels to provider-specific values. `off: "none"` sends `reasoning_effort: "none"`. */
-	thinkingLevelMap?: Partial<Record<string, string | null>>
+	thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>
 	/** Model-level API type: upstream custom-provider parseModels falls through to this field. */
 	api?: string
 	/** Model-level base URL: upstream custom-provider parseModels falls through to this field. */

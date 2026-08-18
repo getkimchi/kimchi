@@ -35,6 +35,28 @@ interface Handlers {
 	context: Handler
 }
 
+interface TextMessage {
+	role: string
+	content: Array<{ type: string; text: string }>
+}
+
+interface MessageEndResult {
+	message: TextMessage
+}
+
+function getText(result: MessageEndResult | undefined): string {
+	if (!result) throw new Error("expected message_end result")
+	return result.message.content[0].text
+}
+
+function getContextText(result: unknown, index = 0): string {
+	if (!result || typeof result !== "object" || !("messages" in result)) {
+		throw new Error("expected context result")
+	}
+	const messages = (result as { messages: TextMessage[] }).messages
+	return messages[index].content[0].text
+}
+
 function setupExtension(): Handlers {
 	const { handlers, api } = createMockApi()
 	hideThinkingExtension(api)
@@ -56,7 +78,7 @@ async function simulateStreaming(h: Handlers, tokens: string[]) {
 		content[0].text += token
 		await h.messageUpdate({ type: "message_update", message, assistantMessageEvent: {} })
 	}
-	const endResult = await h.messageEnd({ type: "message_end", message })
+	const endResult = (await h.messageEnd({ type: "message_end", message })) as MessageEndResult | undefined
 	return { message, content, endResult }
 }
 
@@ -120,7 +142,7 @@ describe("hideThinkingExtension", () => {
 		_setHideThinking(false)
 		const { endResult } = await simulateStreaming(h, ["Before ", "<think>", "reason", "</think>", " After"])
 		expect(endResult).toBeDefined()
-		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const text = getText(endResult)
 		expect(text).toBe(`Before ${fg(ANSI.dim, "reason")}\n\n After`)
 	})
 
@@ -131,7 +153,7 @@ describe("hideThinkingExtension", () => {
 		const { endResult } = await simulateStreaming(h, ["Hello ", "<think>", "let me think...", "</think>", " World"])
 
 		expect(endResult).toBeDefined()
-		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const text = getText(endResult)
 		expect(text).toBe("Hello  World")
 	})
 
@@ -150,7 +172,7 @@ describe("hideThinkingExtension", () => {
 		])
 
 		expect(endResult).toBeDefined()
-		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const text = getText(endResult)
 		const expectedLines = thinkingLines.slice(-5)
 		const expectedDimmed = expectedLines.map((l) => fg(ANSI.dim, l)).join("\n")
 		expect(text).toBe(`Before ${expectedDimmed}\n\n After`)
@@ -228,7 +250,7 @@ describe("hideThinkingExtension", () => {
 	it("restores original thinking content in context event after streaming", async () => {
 		_setHideThinking(true)
 		const { endResult } = await simulateStreaming(h, ["Before ", "<think>", "deep reasoning", "</think>", " After"])
-		const displayText = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const displayText = getText(endResult)
 		expect(displayText).toBe("Before  After")
 
 		// Simulate structuredClone (context event gets cloned messages)
@@ -241,9 +263,8 @@ describe("hideThinkingExtension", () => {
 		})
 
 		expect(contextResult).toBeDefined()
-		const restored = (contextResult as { messages: Array<{ content: Array<{ text: string }> }> }).messages
-		expect(restored[1].content[0].text).toBe("Before <think>deep reasoning</think> After")
-		expect(restored[0].content[0].text).toBe("question")
+		expect(getContextText(contextResult, 1)).toBe("Before <think>deep reasoning</think> After")
+		expect(getContextText(contextResult)).toBe("question")
 	})
 
 	it("populates shadow map for each transformed block", async () => {
@@ -307,7 +328,7 @@ describe("hideThinkingExtension", () => {
 		])
 
 		expect(endResult).toBeDefined()
-		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const text = getText(endResult)
 		expect(text).toBe("A  B  C")
 	})
 
@@ -323,7 +344,7 @@ describe("hideThinkingExtension", () => {
 			" After",
 		])
 		expect(endResult).toBeDefined()
-		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const text = getText(endResult)
 		expect(text).toBe("Before  After")
 	})
 
@@ -331,7 +352,7 @@ describe("hideThinkingExtension", () => {
 		_setHideThinking(false)
 		const { endResult } = await simulateStreaming(h, ["Before ", "<thinking>", "long reason", "</thinking>", " After"])
 		expect(endResult).toBeDefined()
-		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const text = getText(endResult)
 		expect(text).toBe(`Before ${fg(ANSI.dim, "long reason")}\n\n After`)
 	})
 
@@ -366,7 +387,7 @@ describe("hideThinkingExtension", () => {
 	it("restores <thinking> content in context event", async () => {
 		_setHideThinking(true)
 		const { endResult } = await simulateStreaming(h, ["Before ", "<thinking>", "long deep", "</thinking>", " After"])
-		const displayText = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const displayText = getText(endResult)
 		expect(displayText).toBe("Before  After")
 
 		const contextResult = await h.context({
@@ -375,8 +396,7 @@ describe("hideThinkingExtension", () => {
 		})
 
 		expect(contextResult).toBeDefined()
-		const restored = (contextResult as { messages: Array<{ content: Array<{ text: string }> }> }).messages
-		expect(restored[0].content[0].text).toBe("Before <thinking>long deep</thinking> After")
+		expect(getContextText(contextResult)).toBe("Before <thinking>long deep</thinking> After")
 	})
 
 	it("hides trailing content when <thinking> is never closed (hideThinking is true)", async () => {
@@ -410,35 +430,35 @@ describe("hideThinkingExtension", () => {
 	it("strips trailing orphan </think> with no opener (hideThinking is true)", async () => {
 		_setHideThinking(true)
 		const { endResult } = await simulateStreaming(h, ["reasoning text", "</think>"])
-		const display = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const display = getText(endResult)
 		expect(display).toBe("reasoning text")
 	})
 
 	it("strips leading and trailing orphan </think> (hideThinking is true)", async () => {
 		_setHideThinking(true)
 		const { endResult } = await simulateStreaming(h, ["</think>Need to describe", " the branch.", "</think>"])
-		const display = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const display = getText(endResult)
 		expect(display).toBe("Need to describe the branch.")
 	})
 
 	it("strips leading orphan </think> from final answer (hideThinking is true)", async () => {
 		_setHideThinking(true)
 		const { endResult } = await simulateStreaming(h, ["</think>Current branch: ", "fix/foo"])
-		const display = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const display = getText(endResult)
 		expect(display).toBe("Current branch: fix/foo")
 	})
 
 	it("strips orphan close tags when hideThinking is false", async () => {
 		_setHideThinking(false)
 		const { endResult } = await simulateStreaming(h, ["</think>answer"])
-		const display = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const display = getText(endResult)
 		expect(display).toBe("answer")
 	})
 
 	it("does not strip close tags that belong to balanced blocks", async () => {
 		_setHideThinking(true)
 		const { endResult } = await simulateStreaming(h, ["A <think>hidden</think> B </think> C"])
-		const display = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const display = getText(endResult)
 		expect(display).toBe("A  B  C")
 	})
 
@@ -446,16 +466,14 @@ describe("hideThinkingExtension", () => {
 		_setHideThinking(true)
 		const { content, endResult } = await simulateStreaming(h, ["plan", "</t", "hi", "nk>"])
 		// message_end transforms the full original and returns the display text
-		const display =
-			(endResult as { message: { content: Array<{ text: string }> } } | undefined)?.message.content[0].text ??
-			content[0].text
+		const display = endResult?.message.content[0].text ?? content[0].text
 		expect(display).toBe("plan")
 	})
 
 	it("strips orphan </thinking> and </mm:think> close tags", async () => {
 		_setHideThinking(true)
 		const { endResult } = await simulateStreaming(h, ["</thinking>middle </mm:think> end"])
-		const display = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const display = getText(endResult)
 		expect(display).toBe("middle  end")
 	})
 
@@ -465,7 +483,7 @@ describe("hideThinkingExtension", () => {
 		_setHideThinking(false)
 		const { endResult } = await simulateStreaming(h, ["Before ", "<mm:think>", "mm reason", "</mm:think>", " After"])
 		expect(endResult).toBeDefined()
-		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const text = getText(endResult)
 		expect(text).toBe(`Before ${fg(ANSI.dim, "mm reason")}\n\n After`)
 	})
 
@@ -473,7 +491,7 @@ describe("hideThinkingExtension", () => {
 		_setHideThinking(true)
 		const { endResult } = await simulateStreaming(h, ["Hello ", "<mm:think>", "mm reasoning", "</mm:think>", " World"])
 		expect(endResult).toBeDefined()
-		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const text = getText(endResult)
 		expect(text).toBe("Hello  World")
 	})
 
@@ -508,7 +526,7 @@ describe("hideThinkingExtension", () => {
 	it("restores <mm:think> content in context event", async () => {
 		_setHideThinking(true)
 		const { endResult } = await simulateStreaming(h, ["Before ", "<mm:think>", "mm deep", "</mm:think>", " After"])
-		const displayText = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		const displayText = getText(endResult)
 		expect(displayText).toBe("Before  After")
 
 		const contextResult = await h.context({
@@ -517,8 +535,7 @@ describe("hideThinkingExtension", () => {
 		})
 
 		expect(contextResult).toBeDefined()
-		const restored = (contextResult as { messages: Array<{ content: Array<{ text: string }> }> }).messages
-		expect(restored[0].content[0].text).toBe("Before <mm:think>mm deep</mm:think> After")
+		expect(getContextText(contextResult)).toBe("Before <mm:think>mm deep</mm:think> After")
 	})
 
 	it("context handler is a no-op when shadow map is empty", async () => {

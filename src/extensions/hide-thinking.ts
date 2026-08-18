@@ -31,6 +31,17 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { ANSI, fg } from "../ansi.js"
 import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
 
+interface ThinkTagVariant {
+	open: string
+	close: string
+}
+
+const THINK_TAG_VARIANTS: ThinkTagVariant[] = [
+	{ open: "<think>", close: "</think>" },
+	{ open: "<thinking>", close: "</thinking>" },
+	{ open: "<mm:think>", close: "</mm:think>" },
+]
+
 const THINK_TAG_PATTERN = /<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>|<mm:think>[\s\S]*?<\/mm:think>/g
 
 // Orphaned close tags: some models (observed with kimi-k2.x when thinking is
@@ -38,30 +49,29 @@ const THINK_TAG_PATTERN = /<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>|<mm:think>[\
 // matching open tag. After the closed-block replace pass has consumed all
 // balanced pairs, any remaining close tag is unmatched by definition and is
 // never meaningful prose, so it is safe to strip it for display.
-const ORPHAN_CLOSE_TAG_PATTERN = /<\/(?:mm:think|thinking|think)>/g
+const ORPHAN_CLOSE_TAG_PATTERN = new RegExp(
+	`</(?:${THINK_TAG_VARIANTS.map((v) => v.close.slice(2, -1)).join("|")})>`,
+	"g",
+)
 
 function stripOrphanCloseTags(text: string): string {
 	return text.replace(ORPHAN_CLOSE_TAG_PATTERN, "")
 }
 
 function containsCloseTag(text: string): boolean {
-	return text.includes("</think>") || text.includes("</thinking>") || text.includes("</mm:think>")
+	return THINK_TAG_VARIANTS.some((v) => text.includes(v.close))
 }
 
 function containsAnyThinkTag(text: string): boolean {
-	return (
-		text.includes("<think>") || text.includes("<thinking>") || text.includes("<mm:think>") || containsCloseTag(text)
-	)
+	return THINK_TAG_VARIANTS.some((v) => text.includes(v.open)) || containsCloseTag(text)
 }
 
 function getOpenTag(match: string): string {
-	if (match.startsWith("<mm:think>")) return "<mm:think>"
-	return match.startsWith("<thinking>") ? "<thinking>" : "<think>"
+	return THINK_TAG_VARIANTS.find((v) => match.startsWith(v.open))?.open ?? "<think>"
 }
 
 function getCloseTag(match: string): string {
-	if (match.startsWith("<mm:think>")) return "</mm:think>"
-	return match.startsWith("<thinking>") ? "</thinking>" : "</think>"
+	return THINK_TAG_VARIANTS.find((v) => match.endsWith(v.close))?.close ?? "</think>"
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +217,7 @@ function applyStreamingDisplay(text: string, hideThinking: boolean): string {
 		return dimThinkingContent(inner) + separator
 	})
 	// 2. Handle unclosed open tags (thinking content still streaming)
-	for (const openTag of ["<think>", "<thinking>", "<mm:think>"]) {
+	for (const openTag of THINK_TAG_VARIANTS.map((v) => v.open)) {
 		const openIdx = result.indexOf(openTag)
 		if (openIdx !== -1) {
 			const before = result.slice(0, openIdx)
