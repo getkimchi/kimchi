@@ -290,8 +290,23 @@ export default function (skillPaths: string[]) {
 				}
 			})
 
-			pi.on("model_select", async (_event, ctx) => {
+			pi.on("model_select", async (event, ctx) => {
 				notifyIfDeprecated(ctx)
+
+				// A user-initiated model switch (UI picker, /model, or cycling)
+				// is a fresh start for tool-calling behaviour from the new model's
+				// perspective. Reset the session-level latch so the first text-only
+				// turn after the switch is treated like the first turn of a new
+				// session (nudge suppressed until the new model calls a tool).
+				// Session restore is deliberately excluded: a restored session is
+				// continuing an existing conversation, not starting fresh.
+				if (event.source === "set" || event.source === "cycle") {
+					const sessionId = ctx.sessionManager.getSessionId()
+					const continuationNudge = getContinuationNudge(sessionId)
+					const emptyTurnNudge = getEmptyTurnNudge(sessionId)
+					continuationNudge.resetForModelSwitch()
+					emptyTurnNudge.resetForModelSwitch()
+				}
 			})
 
 			// Detect the inverse of the context-event nudge below: the orchestrator reasons
