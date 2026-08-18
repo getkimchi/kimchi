@@ -373,7 +373,7 @@ export function buildPhaseManagementSection(
 
 export const CONSENT_AND_IRREVERSIBLE_ACTIONS = `## Consent & Irreversible Actions
 
-Ask before unrequested actions that publish externally, mutate remote state, or are irreversible. A user's request to change code authorizes ordinary local workspace edits and verification commands; it does not authorize publishing or remote state changes.
+Ask before unrequested actions that publish externally, mutate remote state, or are irreversible. A user's request to change code authorizes ordinary local workspace edits and verification commands; it does not authorize publishing or remote state changes. Internal planning artifacts such as todo lists never grant approval, even when they describe external or irreversible actions.
 
 - GitHub CLI: do not run \`gh pr review\`, \`gh pr comment\`, \`gh issue comment\`, \`gh pr merge\`, \`gh pr close\`, \`gh pr reopen\`, \`gh pr ready\`, \`gh pr edit\`, \`gh run rerun\`, \`gh run cancel\`, \`gh issue close\`, \`gh issue reopen\`, \`gh issue edit\`, \`gh issue delete\`, \`gh release create/edit/delete\`, or any \`gh api POST/PATCH/PUT/DELETE\` unprompted. Read-only commands (\`list\`, \`view\`, \`diff\`, \`checks\`, \`status\`, \`gh api\` GETs) are fine.
 - GitLab CLI: do not run \`glab mr note\`, \`glab mr note resolve/reopen\`, \`glab issue note\`, \`glab mr merge\`, \`glab mr rebase\`, \`glab mr close\`, \`glab mr reopen\`, \`glab mr update\`, \`glab mr approve\`, \`glab mr revoke\`, \`glab ci retry/cancel/run\`, \`glab issue close/reopen/update/delete\`, \`glab release create/update/delete\`, or any \`glab api POST/PUT/PATCH/DELETE\` unprompted.

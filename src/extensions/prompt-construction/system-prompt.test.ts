@@ -105,6 +105,7 @@ describe("buildSystemPrompt", () => {
 		expect(result).toContain(
 			"A user's request to change code authorizes ordinary local workspace edits and verification commands",
 		)
+		expect(result).toContain("Internal planning artifacts such as todo lists never grant approval")
 		expect(result).not.toContain("Ask before anything that publishes, mutates state, or is irreversible.")
 	})
 
