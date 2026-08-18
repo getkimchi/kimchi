@@ -1130,6 +1130,10 @@ export async function handleCompoundConfirm(
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
 				decision: compoundOutcomeToDecision(outcome),
+				ruleAdded:
+					outcome.kind === "allow-all-remember" && outcome.rules.length > 0
+						? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
+						: undefined,
 			})
 		}
 
@@ -1237,6 +1241,10 @@ function approvalOutcomeToDecision(outcome: ApprovalOutcome): PermissionDecision
 			return "deny"
 		case "aborted":
 			return "aborted"
+		default: {
+			const _exhaustive: never = outcome
+			throw new Error(`Unhandled approval outcome: ${(_exhaustive as ApprovalOutcome).kind}`)
+		}
 	}
 }
 
@@ -1254,6 +1262,10 @@ function compoundOutcomeToDecision(outcome: CompoundApprovalOutcome): Permission
 			return "deny"
 		case "aborted":
 			return "aborted"
+		default: {
+			const _exhaustive: never = outcome
+			throw new Error(`Unhandled compound approval outcome: ${(_exhaustive as CompoundApprovalOutcome).kind}`)
+		}
 	}
 }
 
