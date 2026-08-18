@@ -138,6 +138,8 @@ Probes run in priority order: the universal core first (Git, ripgrep, active
 shell, then the CLI utilities), then ecosystem-specific version probes, and
 finally — in marker-less workspaces only — the generic fallback toolbox
 (Python (`python3` plus the `python` alias), pip, GCC, Make, Node, Rscript).
+Within the ecosystem batch, `pip3` is always requested last because it carries a
+longer per-probe timeout (see below); every other probe keeps its relative order.
 The four-process concurrency ceiling is shared across concurrent agent-context
 collections. A context waiting for a probe slot still observes its own
 1500 ms collection deadline.
@@ -153,6 +155,59 @@ exec-per-probe; a partial scan never fabricates absence facts. Scan-derived
 negatives are fresh per collection and are never written to the stable-fact
 cache, so a tool installed mid-session is discovered by the next agent context.
 
+**pip resolves from packaging metadata before it resolves from exec.** `pip
+--version` is a cold Python-interpreter startup plus a heavy import, so on 1-CPU
+containers its wall time straddles the default per-probe timeout and the probe is
+killed in a large share of collections. The version it would print is already in
+the `pip-<version>.dist-info` directory name, so the collector reads it from disk
+instead: adjacent to the directory holding the **first `pip3` on PATH**, it lists
+`<prefix>/lib/pythonX.Y/{site-packages,dist-packages}/` (Debian system Python
+uses `dist-packages`; venvs and Homebrew use `site-packages`) with names-only
+`readdir` calls — no file contents, no `stat`, no spawned process. The fact
+renders exactly like an exec-derived one; there is no provenance annotation.
+
+The fast path is deliberately conservative and falls through to `pip3 --version`
+whenever it cannot be certain: only the first `pip3` PATH directory is consulted
+(the `python3` command may be a different interpreter entirely), a version is
+used only when every valid adjacent match agrees on exactly **one** version
+(duplicates corroborate; multiple distinct versions are ambiguous and never
+resolved by taking the maximum), layouts retaining more than 8 Python runtime
+directories are treated as ambiguous, and a degraded PATH pre-scan skips the fast
+path entirely. Free-threaded runtimes count as candidates: since CPython 3.13
+they occupy a `t`-suffixed tree (`lib/python3.13t/`), so a prefix holding both
+builds is correctly seen as disagreeing rather than looking unanimous from only
+the GIL build's metadata. Unreadable candidate directories are isolated so one missing
+optional path cannot erase a valid result found elsewhere. Collections that do
+not probe pip at all (JavaScript-only projects) perform no extra filesystem
+reads. When prompt debugging is enabled, `distInfoResolvedCount` reports how many
+probes were answered this way.
+
+**Per-user installs invalidate the prefix answer.** The per-user site directory
+precedes the prefix on `sys.path`, so `apt install python3-pip` followed by `pip
+install --user -U pip` leaves the distro metadata in place while the launcher
+actually reports the newer per-user version. After the prefix yields a single
+version, the collector therefore also lists `$PYTHONUSERBASE/lib` (default
+`~/.local/lib`) and falls through to exec if it names any *different* version.
+The per-user root can only ever **invalidate** an answer, never supply one: a
+shim `pip3` whose own prefix holds no metadata cannot be shown to target that
+userbase. This check is skipped inside a venv — a `pyvenv.cfg` beside the
+launcher's prefix means `site.ENABLE_USER_SITE` is false and the per-user
+directory is not importable, so a stale userbase must not cost the fast path.
+
+Two consequences worth knowing when reading local diagnostics:
+
+- **The fast path effectively never engages on Homebrew/macOS.** Homebrew keeps
+  every installed runtime under one prefix (`/opt/homebrew/lib/python3.12`,
+  `python3.13`, `python3.14`, …), so their differing pip versions read as
+  ambiguous and exec answers instead. That is by design — the optimization
+  targets single-runtime Linux containers — but it means a local
+  `distInfoResolvedCount: 0` is expected, not a regression.
+- **Pre-release versions resolve more precisely than exec does.** A
+  `pip-24.0b1.dist-info` name yields `24.0b1`, whereas the generic banner
+  pattern cannot express a pre-release and would drop the fact entirely. The
+  directory name is authoritative here, so it is preferred rather than truncated
+  to `24.0`.
+
 **No OS package-manager probes.** Probes use fixed direct command args, a neutral
 temporary cwd, and a minimal environment. Max 4 probes run concurrently. Versions
 are normalized (strips `v` prefix: `v22.18.0` → `22.18.0`). Tools whose banners lead
@@ -163,6 +218,12 @@ with another component's version use banner-specific extraction (`go version go1
 
 - **Cold-prompt ceiling**: 1500 ms. Collection is bounded by per-probe (350 ms)
   and global timeouts.
+- **Per-probe timeout override**: an individual probe may request a longer slot
+  than the 350 ms default. Today `pip3` is the only exception, at 900 ms
+  (≈2.6× the default), covering the cold interpreter start on the collections
+  where the metadata fast path above cannot answer. Overrides are always clamped
+  by the remaining global budget, so the 1500 ms ceiling still wins, and `pip3`
+  runs last in its batch so its longer slot cannot delay another probe.
 - **Silent failure**: If collection fails before producing useful facts, the snapshot
   block is omitted. If the deadline expires after workspace facts were collected,
   those completed facts are preserved and unfinished probes are omitted.

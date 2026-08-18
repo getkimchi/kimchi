@@ -111,8 +111,49 @@ function makeService(opts?: {
 
 const ROOT = "/fake/project"
 
+/** A runner that fails the test if the pip probe ever spawns. */
+function noPipRunner(): CommandRunner & { calls: CommandRequest[] } {
+	const calls: CommandRequest[] = []
+	return Object.assign(
+		async (request: CommandRequest): Promise<CommandResult> => {
+			calls.push(request)
+			if (request.command === "pip3") throw new Error("pip3 must not spawn when dist-info resolves the version")
+			return { status: "missing" }
+		},
+		{ calls },
+	)
+}
+
 function pythonProjectFs(): FilesystemAdapter {
 	return fakeFs(new Map([[ROOT, [dirent("pyproject.toml", "file")]]]))
+}
+
+/**
+ * `requirements.txt` is what gates the marker-scoped pip3 probe, so pip
+ * fixtures carry it alongside pyproject.toml.
+ */
+const PIP_PROJECT_ENTRIES = [dirent("pyproject.toml", "file"), dirent("requirements.txt", "file")]
+
+/**
+ * Pins the environment variables the pip fast path reads, restoring whatever
+ * the host had afterwards. `PATH` locates the launcher, `HOME` and
+ * `PYTHONUSERBASE` locate per-user installs.
+ */
+function usePinnedPythonEnv(path: string): void {
+	const keys = ["PATH", "HOME", "PYTHONUSERBASE"] as const
+	let original: Array<[string, string | undefined]> = []
+	beforeEach(() => {
+		original = keys.map((key) => [key, process.env[key]])
+		process.env.PATH = path
+		process.env.HOME = "/home/agent"
+		delete process.env.PYTHONUSERBASE
+	})
+	afterEach(() => {
+		for (const [key, value] of original) {
+			if (value === undefined) delete process.env[key]
+			else process.env[key] = value
+		}
+	})
 }
 
 // ─── Setup ───────────────────────────────────────────────────────────────────
@@ -2415,6 +2456,530 @@ describe("environment-snapshot (startup enrichment)", () => {
 			// start too late to finish).
 			expect(snapshot).toContain('"Git": "unavailable on PATH"')
 			expect(diagnostics[0]).toMatchObject({ timedOut: true })
+		})
+	})
+
+	describe("pip version from dist-info", () => {
+		// `pip --version` is a cold interpreter start that straddles the
+		// per-probe timeout on 1-CPU hosts. The version is already in the
+		// packaging metadata directory name, so the fast path reads it with
+		// names-only readdirs and exec becomes the fallback.
+		usePinnedPythonEnv("/usr/bin")
+
+		it("resolves the pip version from dist-info without spawning pip3 (Debian layout)", async () => {
+			const fs = fakeFs(
+				new Map([
+					[ROOT, PIP_PROJECT_ENTRIES],
+					["/usr/bin", [dirent("python3", "file"), dirent("pip3", "file"), dirent("sh", "file")]],
+					["/usr/lib", [dirent("python3", "directory")]],
+					["/usr/lib/python3/dist-packages", [dirent("pip-24.0.dist-info", "directory")]],
+				]),
+			)
+			const runner = noPipRunner()
+			const diagnostics: EnvironmentSnapshotDiagnostics[] = []
+			const svc = makeService({ filesystem: fs, runCommand: runner, onDebug: (entry) => diagnostics.push(entry) })
+			const snapshot = await svc.get({ contextId: "ctx-distinfo", cwd: ROOT, debug: true })
+			// Renders identically to an exec-derived fact — no provenance marker.
+			expect(snapshot).toContain('"pip": "24.0"')
+			expect(runner.calls.some((call) => call.command === "pip3")).toBe(false)
+			expect(diagnostics[0]).toMatchObject({ distInfoResolvedCount: 1 })
+			expect(snapshot).not.toMatch(/\d+ tool version probes did not complete/u)
+		})
+
+		it("accepts duplicate dist-info directories that agree on one version", async () => {
+			const fs = fakeFs(
+				new Map([
+					[ROOT, PIP_PROJECT_ENTRIES],
+					["/usr/bin", [dirent("pip3", "file")]],
+					["/usr/lib", [dirent("python3.12", "directory")]],
+					["/usr/lib/python3.12/site-packages", [dirent("pip-24.0.dist-info", "directory")]],
+					["/usr/lib/python3.12/dist-packages", [dirent("pip-24.0.dist-info", "directory")]],
+				]),
+			)
+			const runner = noPipRunner()
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-distinfo-dup", cwd: ROOT })
+			expect(snapshot).toContain('"pip": "24.0"')
+			expect(runner.calls.some((call) => call.command === "pip3")).toBe(false)
+		})
+
+		it("falls back to exec when two distinct dist-info versions make the answer ambiguous", async () => {
+			const fs = fakeFs(
+				new Map([
+					[ROOT, PIP_PROJECT_ENTRIES],
+					["/usr/bin", [dirent("pip3", "file")]],
+					["/usr/lib", [dirent("python3", "directory")]],
+					[
+						"/usr/lib/python3/dist-packages",
+						[dirent("pip-24.0.dist-info", "directory"), dirent("pip-25.2.dist-info", "directory")],
+					],
+				]),
+			)
+			const runner = scriptedRunner({
+				pip3: { status: "ok", stdout: "pip 23.1 from /usr/lib/python3/dist-packages/pip" },
+			})
+			const diagnostics: EnvironmentSnapshotDiagnostics[] = []
+			const svc = makeService({ filesystem: fs, runCommand: runner, onDebug: (entry) => diagnostics.push(entry) })
+			const snapshot = await svc.get({ contextId: "ctx-distinfo-ambiguous", cwd: ROOT, debug: true })
+			// The rendered fact comes from the runner, never from either name.
+			expect(snapshot).toContain('"pip": "23.1"')
+			expect(snapshot).not.toContain('"pip": "25.2"')
+			expect(runner.calls.some((call) => call.command === "pip3")).toBe(true)
+			expect(diagnostics[0]).toMatchObject({ distInfoResolvedCount: 0 })
+		})
+
+		it("never selects the greatest version across multiple Python runtime directories", async () => {
+			const fs = fakeFs(
+				new Map([
+					[ROOT, PIP_PROJECT_ENTRIES],
+					["/usr/bin", [dirent("pip3", "file")]],
+					["/usr/lib", [dirent("python3.11", "directory"), dirent("python3.12", "directory")]],
+					["/usr/lib/python3.11/site-packages", [dirent("pip-24.0.dist-info", "directory")]],
+					["/usr/lib/python3.12/site-packages", [dirent("pip-25.2.dist-info", "directory")]],
+				]),
+			)
+			const runner = scriptedRunner({
+				pip3: { status: "ok", stdout: "pip 24.0 from /usr/lib/python3.11/site-packages/pip" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-distinfo-multi-runtime", cwd: ROOT })
+			expect(snapshot).toContain('"pip": "24.0"')
+			expect(runner.calls.some((call) => call.command === "pip3")).toBe(true)
+		})
+
+		it("treats a free-threaded runtime beside the GIL build as a disagreeing candidate", async () => {
+			// Since CPython 3.13 a free-threaded install keeps its own
+			// `lib/pythonX.Yt/` tree. Skipping the `t` directory would make this
+			// prefix look unanimous on 24.0 and answer confidently from half the
+			// evidence, so the suffix must be recognised to see the conflict.
+			const fs = fakeFs(
+				new Map([
+					[ROOT, PIP_PROJECT_ENTRIES],
+					["/usr/bin", [dirent("pip3", "file")]],
+					["/usr/lib", [dirent("python3.13", "directory"), dirent("python3.13t", "directory")]],
+					["/usr/lib/python3.13/site-packages", [dirent("pip-24.0.dist-info", "directory")]],
+					["/usr/lib/python3.13t/site-packages", [dirent("pip-25.2.dist-info", "directory")]],
+				]),
+			)
+			const runner = scriptedRunner({
+				pip3: { status: "ok", stdout: "pip 24.0 from /usr/lib/python3.13/site-packages/pip" },
+			})
+			const diagnostics: EnvironmentSnapshotDiagnostics[] = []
+			const svc = makeService({ filesystem: fs, runCommand: runner, onDebug: (entry) => diagnostics.push(entry) })
+			const snapshot = await svc.get({ contextId: "ctx-distinfo-freethreaded", cwd: ROOT, debug: true })
+			expect(runner.calls.some((call) => call.command === "pip3")).toBe(true)
+			expect(diagnostics[0]).toMatchObject({ distInfoResolvedCount: 0 })
+			expect(snapshot).toContain('"pip": "24.0"')
+		})
+
+		it("resolves a lone free-threaded runtime from its suffixed directory", async () => {
+			const fs = fakeFs(
+				new Map([
+					[ROOT, PIP_PROJECT_ENTRIES],
+					["/usr/bin", [dirent("pip3", "file")]],
+					["/usr/lib", [dirent("python3.13t", "directory")]],
+					["/usr/lib/python3.13t/site-packages", [dirent("pip-25.2.dist-info", "directory")]],
+				]),
+			)
+			const runner = noPipRunner()
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-distinfo-freethreaded-only", cwd: ROOT })
+			expect(snapshot).toContain('"pip": "25.2"')
+			expect(runner.calls.some((call) => call.command === "pip3")).toBe(false)
+		})
+
+		it("considers only the prefix adjacent to the first pip3 on PATH", async () => {
+			process.env.PATH = ["/first/bin", "/second/bin"].join(delimiter)
+			const fs = fakeFs(
+				new Map([
+					[ROOT, PIP_PROJECT_ENTRIES],
+					["/first/bin", [dirent("pip3", "file")]],
+					["/second/bin", [dirent("pip3", "file")]],
+					["/first/lib", [dirent("python3.12", "directory")]],
+					["/first/lib/python3.12/site-packages", [dirent("pip-24.0.dist-info", "directory")]],
+					// A later duplicate must not contribute — exec resolves the first.
+					["/second/lib", [dirent("python3.12", "directory")]],
+					["/second/lib/python3.12/site-packages", [dirent("pip-9.9.9.dist-info", "directory")]],
+				]),
+			)
+			const runner = noPipRunner()
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-distinfo-first-path", cwd: ROOT })
+			expect(snapshot).toContain('"pip": "24.0"')
+			expect(snapshot).not.toContain('"9.9.9"')
+		})
+
+		it("isolates an unreadable candidate directory from a successful one", async () => {
+			const fs = fakeFs(
+				new Map<string, FsDirent[] | "missing">([
+					[ROOT, PIP_PROJECT_ENTRIES],
+					["/usr/bin", [dirent("pip3", "file")]],
+					["/usr/lib", [dirent("python3.12", "directory")]],
+					// site-packages is absent (throws ENOENT); dist-packages answers.
+					["/usr/lib/python3.12/dist-packages", [dirent("pip-24.0.dist-info", "directory")]],
+				]),
+			)
+			const runner = noPipRunner()
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-distinfo-isolated", cwd: ROOT })
+			expect(snapshot).toContain('"pip": "24.0"')
+			expect(runner.calls.some((call) => call.command === "pip3")).toBe(false)
+		})
+
+		it("falls back to exec when more than eight Python runtime directories are present", async () => {
+			const runtimes = Array.from({ length: 9 }, (_, index) => dirent(`python3.${index}`, "directory"))
+			const layout = new Map<string, FsDirent[] | "missing">([
+				[ROOT, PIP_PROJECT_ENTRIES],
+				["/usr/bin", [dirent("pip3", "file")]],
+				["/usr/lib", runtimes],
+			])
+			// Every runtime agrees on one version, yet the fan-out cap still
+			// defers to exec rather than inspecting a large candidate set.
+			for (const runtime of runtimes) {
+				layout.set(`/usr/lib/${runtime.name}/site-packages`, [dirent("pip-24.0.dist-info", "directory")])
+			}
+			const runner = scriptedRunner({
+				pip3: { status: "ok", stdout: "pip 24.0 from /usr/lib/python3.8/site-packages/pip" },
+			})
+			const svc = makeService({ filesystem: fakeFs(layout), runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-distinfo-fanout", cwd: ROOT })
+			expect(snapshot).toContain('"pip": "24.0"')
+			expect(runner.calls.some((call) => call.command === "pip3")).toBe(true)
+		})
+
+		it("falls back to exec with the raised timeout when no dist-info exists", async () => {
+			const fs = fakeFs(
+				new Map([
+					[ROOT, PIP_PROJECT_ENTRIES],
+					["/usr/bin", [dirent("pip3", "file")]],
+					// A shim directory with no adjacent packaging metadata.
+					["/usr/lib", [dirent("unrelated", "directory")]],
+				]),
+			)
+			const runner = scriptedRunner({ pip3: { status: "ok", stdout: "pip 24.0 from /shim/pip" } })
+			// probeTimeoutMs stays at the service default for other probes; the
+			// pip probe carries its own override.
+			const svc = makeService({ filesystem: fs, runCommand: runner, probeTimeoutMs: 350 })
+			const snapshot = await svc.get({ contextId: "ctx-distinfo-none", cwd: ROOT })
+			expect(snapshot).toContain('"pip": "24.0"')
+			const pipCall = runner.calls.find((call) => call.command === "pip3")
+			expect(pipCall?.timeoutMs).toBe(900)
+		})
+
+		it("skips the fast path entirely when the PATH scan is degraded", async () => {
+			// The PATH directory is absent, so the scan degrades to undefined and
+			// no lib root is consulted; exec covers pip as before.
+			const libReads: string[] = []
+			const base = fakeFs(new Map([[ROOT, PIP_PROJECT_ENTRIES]]))
+			const fs: FilesystemAdapter = {
+				...base,
+				readdir: async (path) => {
+					if (path.includes("lib")) libReads.push(path)
+					return base.readdir(path)
+				},
+			}
+			const runner = scriptedRunner({
+				pip3: { status: "ok", stdout: "pip 24.0 from /usr/lib/python3/dist-packages/pip" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-distinfo-degraded", cwd: ROOT })
+			expect(snapshot).toContain('"pip": "24.0"')
+			expect(libReads).toEqual([])
+			expect(runner.calls.some((call) => call.command === "pip3")).toBe(true)
+		})
+
+		it("reads no Python lib roots for a collection that does not probe pip", async () => {
+			// A JavaScript-only project requests no pip3 probe, so it must pay no
+			// additional filesystem reads.
+			const libReads: string[] = []
+			const base = fakeFs(
+				new Map([
+					[ROOT, [dirent("package.json", "file")]],
+					["/usr/bin", [dirent("node", "file"), dirent("pip3", "file")]],
+					["/usr/lib", [dirent("python3", "directory")]],
+					["/usr/lib/python3/dist-packages", [dirent("pip-24.0.dist-info", "directory")]],
+				]),
+			)
+			const fs: FilesystemAdapter = {
+				...base,
+				readdir: async (path) => {
+					if (path.startsWith("/usr/lib")) libReads.push(path)
+					return base.readdir(path)
+				},
+			}
+			const runner = scriptedRunner({ node: { status: "ok", stdout: "v22.18.0" } })
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-distinfo-no-pip-probe", cwd: ROOT })
+			expect(snapshot).toContain('"Node": "22.18.0"')
+			expect(snapshot).not.toContain('"pip"')
+			expect(libReads).toEqual([])
+		})
+
+		it("renders no incomplete-probe notice when the fast path replaces a stalling pip exec", async () => {
+			// The runner would outlive the budget if pip3 spawned; the fast path
+			// skips it, so the snapshot is clean and the metric records it.
+			const fs = fakeFs(
+				new Map([
+					[ROOT, PIP_PROJECT_ENTRIES],
+					["/usr/bin", [dirent("pip3", "file")]],
+					["/usr/lib", [dirent("python3", "directory")]],
+					["/usr/lib/python3/dist-packages", [dirent("pip-24.0.dist-info", "directory")]],
+				]),
+			)
+			const runner: CommandRunner = async (request) => {
+				if (request.command === "pip3") {
+					await new Promise((resolveTimer) => setTimeout(resolveTimer, 5000))
+					return { status: "timeout" }
+				}
+				return { status: "missing" }
+			}
+			const diagnostics: EnvironmentSnapshotDiagnostics[] = []
+			const svc = makeService({
+				filesystem: fs,
+				runCommand: runner,
+				budgetMs: 1500,
+				onDebug: (entry) => diagnostics.push(entry),
+			})
+			const snapshot = await svc.get({ contextId: "ctx-distinfo-budget", cwd: ROOT, debug: true })
+			expect(snapshot).toContain('"pip": "24.0"')
+			expect(snapshot).not.toMatch(/\d+ tool version probes did not complete/u)
+			expect(diagnostics[0]).toMatchObject({ distInfoResolvedCount: 1, timedOut: false })
+		})
+
+		it("resolves a pre-release version that the exec banner pattern would drop", async () => {
+			// The generic banner pattern cannot express `24.0b1`, so exec would
+			// render no pip fact at all. The directory name is exact, so the fast
+			// path is strictly more informative here — pinned so a future tightening
+			// of the name pattern cannot silently start truncating to "24.0".
+			const fs = fakeFs(
+				new Map([
+					[ROOT, PIP_PROJECT_ENTRIES],
+					["/usr/bin", [dirent("pip3", "file")]],
+					["/usr/lib", [dirent("python3.12", "directory")]],
+					["/usr/lib/python3.12/site-packages", [dirent("pip-24.0b1.dist-info", "directory")]],
+				]),
+			)
+			const runner = noPipRunner()
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-distinfo-prerelease", cwd: ROOT })
+			expect(snapshot).toContain('"pip": "24.0b1"')
+			expect(runner.calls.some((call) => call.command === "pip3")).toBe(false)
+		})
+
+		it("ignores dist-info directories belonging to other pip-prefixed packages", async () => {
+			const fs = fakeFs(
+				new Map([
+					[ROOT, PIP_PROJECT_ENTRIES],
+					["/usr/bin", [dirent("pip3", "file")]],
+					["/usr/lib", [dirent("python3.12", "directory")]],
+					[
+						"/usr/lib/python3.12/site-packages",
+						[
+							dirent("pip-24.0.dist-info", "directory"),
+							// None of these are pip itself; treating any as a match
+							// would fabricate ambiguity and lose the fast path.
+							dirent("pip_audit-2.7.3.dist-info", "directory"),
+							dirent("pip-licenses-4.3.3.dist-info", "directory"),
+							dirent("pipenv-2023.12.1.dist-info", "directory"),
+						],
+					],
+				]),
+			)
+			const runner = noPipRunner()
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-distinfo-decoys", cwd: ROOT })
+			expect(snapshot).toContain('"pip": "24.0"')
+			expect(runner.calls.some((call) => call.command === "pip3")).toBe(false)
+		})
+	})
+
+	describe("pip dist-info vs per-user installs", () => {
+		// `apt install python3-pip` then `pip install --user -U pip` leaves the
+		// distro metadata in the prefix while the launcher actually reports the
+		// userbase version, because the per-user site directory precedes the
+		// prefix on `sys.path`. The prefix alone would answer confidently wrong.
+		usePinnedPythonEnv("/usr/bin")
+
+		const systemLayout = (): Map<string, FsDirent[] | "missing"> =>
+			new Map<string, FsDirent[] | "missing">([
+				[ROOT, PIP_PROJECT_ENTRIES],
+				["/usr/bin", [dirent("pip3", "file")]],
+				["/usr", [dirent("bin", "directory"), dirent("lib", "directory")]],
+				["/usr/lib", [dirent("python3", "directory")]],
+				["/usr/lib/python3/dist-packages", [dirent("pip-23.0.1.dist-info", "directory")]],
+			])
+
+		it("falls back to exec when a per-user install shadows the prefix version", async () => {
+			const layout = systemLayout()
+			layout.set("/home/agent/.local/lib", [dirent("python3.11", "directory")])
+			layout.set("/home/agent/.local/lib/python3.11/site-packages", [dirent("pip-25.2.dist-info", "directory")])
+			const runner = scriptedRunner({
+				pip3: { status: "ok", stdout: "pip 25.2 from /home/agent/.local/lib/python3.11/site-packages/pip" },
+			})
+			const diagnostics: EnvironmentSnapshotDiagnostics[] = []
+			const svc = makeService({
+				filesystem: fakeFs(layout),
+				runCommand: runner,
+				onDebug: (entry) => diagnostics.push(entry),
+			})
+			const snapshot = await svc.get({ contextId: "ctx-userbase-shadow", cwd: ROOT, debug: true })
+			// The launcher's real answer, never the shadowed distro metadata.
+			expect(snapshot).toContain('"pip": "25.2"')
+			expect(snapshot).not.toContain('"23.0.1"')
+			expect(diagnostics[0]).toMatchObject({ distInfoResolvedCount: 0 })
+		})
+
+		it("keeps the fast path when the per-user install agrees with the prefix", async () => {
+			const layout = systemLayout()
+			layout.set("/home/agent/.local/lib", [dirent("python3.11", "directory")])
+			layout.set("/home/agent/.local/lib/python3.11/site-packages", [dirent("pip-23.0.1.dist-info", "directory")])
+			const runner = noPipRunner()
+			const svc = makeService({ filesystem: fakeFs(layout), runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-userbase-agrees", cwd: ROOT })
+			expect(snapshot).toContain('"pip": "23.0.1"')
+			expect(runner.calls.some((call) => call.command === "pip3")).toBe(false)
+		})
+
+		it("honours PYTHONUSERBASE when locating per-user installs", async () => {
+			process.env.PYTHONUSERBASE = "/opt/userbase"
+			const layout = systemLayout()
+			// The default ~/.local location agrees; the overridden one does not, so
+			// only reading PYTHONUSERBASE catches the shadowing install.
+			layout.set("/home/agent/.local/lib", [dirent("python3.11", "directory")])
+			layout.set("/home/agent/.local/lib/python3.11/site-packages", [dirent("pip-23.0.1.dist-info", "directory")])
+			layout.set("/opt/userbase/lib", [dirent("python3.11", "directory")])
+			layout.set("/opt/userbase/lib/python3.11/site-packages", [dirent("pip-25.2.dist-info", "directory")])
+			const runner = scriptedRunner({ pip3: { status: "ok", stdout: "pip 25.2 from /opt/userbase" } })
+			const svc = makeService({ filesystem: fakeFs(layout), runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-userbase-env", cwd: ROOT })
+			expect(snapshot).toContain('"pip": "25.2"')
+			expect(runner.calls.some((call) => call.command === "pip3")).toBe(true)
+		})
+
+		it("ignores the per-user root inside a venv, where it is not importable", async () => {
+			// A venv sets `site.ENABLE_USER_SITE = False`, so a stale userbase
+			// cannot shadow the venv's own pip and must not cost the fast path.
+			const layout = new Map<string, FsDirent[] | "missing">([
+				[ROOT, PIP_PROJECT_ENTRIES],
+				["/venv/bin", [dirent("pip3", "file")]],
+				["/venv", [dirent("bin", "directory"), dirent("lib", "directory"), dirent("pyvenv.cfg", "file")]],
+				["/venv/lib", [dirent("python3.11", "directory")]],
+				["/venv/lib/python3.11/site-packages", [dirent("pip-24.0.dist-info", "directory")]],
+				["/home/agent/.local/lib", [dirent("python3.11", "directory")]],
+				["/home/agent/.local/lib/python3.11/site-packages", [dirent("pip-9.9.9.dist-info", "directory")]],
+			])
+			process.env.PATH = "/venv/bin"
+			const runner = noPipRunner()
+			const svc = makeService({ filesystem: fakeFs(layout), runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-userbase-venv", cwd: ROOT })
+			expect(snapshot).toContain('"pip": "24.0"')
+			expect(snapshot).not.toContain('"9.9.9"')
+			expect(runner.calls.some((call) => call.command === "pip3")).toBe(false)
+		})
+
+		it("resolves normally when no per-user root exists at all", async () => {
+			const runner = noPipRunner()
+			const svc = makeService({ filesystem: fakeFs(systemLayout()), runCommand: runner })
+			const snapshot = await svc.get({ contextId: "ctx-userbase-absent", cwd: ROOT })
+			expect(snapshot).toContain('"pip": "23.0.1"')
+			expect(runner.calls.some((call) => call.command === "pip3")).toBe(false)
+		})
+	})
+
+	describe("relaxed pip exec-fallback timeout", () => {
+		usePinnedPythonEnv("/usr/bin")
+
+		/**
+		 * Models a slow tool by comparing the requested timeout against its wall
+		 * time instead of actually sleeping: a probe granted less than the
+		 * operation's cost times out, more succeeds.
+		 */
+		function timeoutAwareRunner(
+			costs: Record<string, { costMs: number; stdout: string }>,
+		): CommandRunner & { calls: CommandRequest[] } {
+			const calls: CommandRequest[] = []
+			return Object.assign(
+				async (request: CommandRequest): Promise<CommandResult> => {
+					calls.push(request)
+					const operation = costs[request.command]
+					if (!operation) return { status: "missing" }
+					return request.timeoutMs < operation.costMs
+						? { status: "timeout" }
+						: { status: "ok", stdout: operation.stdout }
+				},
+				{ calls },
+			)
+		}
+
+		it("resolves a 600 ms pip exec that the shared 350 ms default would kill", async () => {
+			const fs = fakeFs(
+				new Map([
+					[ROOT, PIP_PROJECT_ENTRIES],
+					// No adjacent metadata: the exec fallback is the only path.
+					["/usr/bin", [dirent("pip3", "file")]],
+				]),
+			)
+			const runner = timeoutAwareRunner({ pip3: { costMs: 600, stdout: "pip 24.0 from /usr/lib/python3/pip" } })
+			const svc = makeService({ filesystem: fs, runCommand: runner, probeTimeoutMs: 350 })
+			const snapshot = await svc.get({ contextId: "ctx-pip-timeout", cwd: ROOT })
+			expect(snapshot).toContain('"pip": "24.0"')
+			expect(snapshot).not.toMatch(/\d+ tool version probes did not complete/u)
+			expect(runner.calls.find((call) => call.command === "pip3")?.timeoutMs).toBe(900)
+		})
+
+		it("leaves the shared default in place for other slow tools", async () => {
+			process.env.KIMCHI_ENV_SNAPSHOT = "full"
+			const fs = fakeFs(
+				new Map([
+					[ROOT, [dirent("README.md", "file")]],
+					["/usr/bin", [dirent("curl", "file")]],
+				]),
+			)
+			const runner = timeoutAwareRunner({ curl: { costMs: 600, stdout: "curl 8.5.0 (x86_64)" } })
+			const svc = makeService({ filesystem: fs, runCommand: runner, probeTimeoutMs: 350 })
+			const snapshot = await svc.get({ contextId: "ctx-curl-timeout", cwd: ROOT })
+			// The override is pip-specific: curl keeps 350 ms and times out, so
+			// the honest incomplete-probe notice still fires.
+			expect(runner.calls.find((call) => call.command === "curl")?.timeoutMs).toBe(350)
+			expect(snapshot).not.toContain('"curl": "8.5.0"')
+			expect(snapshot).toMatch(/tool version probe(?:s)? did not complete/u)
+		})
+
+		it("requests pip3 last while other ecosystem probes keep their relative order", async () => {
+			// A polyglot workspace: pip3's relaxed slot must never sit ahead of
+			// another ecosystem candidate.
+			const fs = fakeFs(
+				new Map([
+					[
+						ROOT,
+						[
+							dirent("pyproject.toml", "file"),
+							dirent("requirements.txt", "file"),
+							dirent("package.json", "file"),
+							dirent("Cargo.toml", "file"),
+						],
+					],
+					[
+						"/usr/bin",
+						[dirent("python3", "file"), dirent("pip3", "file"), dirent("node", "file"), dirent("rustc", "file")],
+					],
+				]),
+			)
+			const runner = scriptedRunner({
+				python3: { status: "ok", stdout: "Python 3.12.4" },
+				node: { status: "ok", stdout: "v22.18.0" },
+				rustc: { status: "ok", stdout: "rustc 1.78.0" },
+				pip3: { status: "ok", stdout: "pip 24.0 from /usr/lib/python3/pip" },
+			})
+			const svc = makeService({ filesystem: fs, runCommand: runner })
+			await svc.get({ contextId: "ctx-pip-order", cwd: ROOT })
+			const ecosystemOrder = runner.calls
+				.map((call) => call.command)
+				.filter((command) => ["python3", "node", "rustc", "pip3"].includes(command))
+			expect(ecosystemOrder[ecosystemOrder.length - 1]).toBe("pip3")
+			// Relative order of the non-pip probes is untouched.
+			const nonPip = ecosystemOrder.filter((command) => command !== "pip3")
+			expect(nonPip).toEqual(["node", "python3", "rustc"])
 		})
 	})
 

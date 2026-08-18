@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process"
 import { existsSync } from "node:fs"
 import { readdir, readFile, stat, statfs } from "node:fs/promises"
-import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os"
+import { arch, cpus, homedir, platform, release, tmpdir, totalmem } from "node:os"
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 export const ENVIRONMENT_SNAPSHOT_START = "<!-- kimchi:environment-snapshot:start -->"
@@ -32,6 +32,35 @@ const MAX_ROOT_MARKERS = 32
  * runs render individually because the collapse notation saves nothing.
  */
 const COLLAPSE_RUN_MIN = 5
+/**
+ * `pip3 --version` pays a cold Python startup that straddles the per-probe
+ * timeout on 1-CPU hosts. When the fast path cannot answer, the exec fallback
+ * gets a slot long enough to finish; the global budget stays the backstop.
+ */
+const PIP_PROBE_TIMEOUT_MS = 900
+/**
+ * Python runtime directories to inspect for pip packaging metadata. A prefix
+ * retaining more than this is an ambiguous layout that falls through to exec
+ * rather than inflating startup filesystem work.
+ */
+const MAX_PYTHON_RUNTIME_CANDIDATES = 8
+/**
+ * `python3`, `python3.12`, `python3.13t` — strict, so unrelated siblings are
+ * skipped. The optional `t` suffix marks a free-threaded build, which since
+ * CPython 3.13 lives in its own `lib/pythonX.Yt/` tree. Matching it matters
+ * less for finding a version than for *seeing* a second runtime that
+ * disagrees: skipping it would let a `python3.13` + `python3.13t` prefix look
+ * unanimous and answer confidently from only half the evidence.
+ */
+const PYTHON_RUNTIME_DIRECTORY = /^python\d+(?:\.\d+)?t?$/u
+/**
+ * A venv prefix carries this marker, and inside a venv `site.ENABLE_USER_SITE`
+ * is False — the per-user site directory is NOT importable there. Checking for
+ * it keeps a stale userbase from making venv collections look ambiguous.
+ */
+const VENV_MARKER = "pyvenv.cfg"
+/** `pip-24.0.dist-info`, `pip-24.0.1.dist-info`, `pip-24.0b1.dist-info`. */
+const PIP_DIST_INFO = /^pip-(\d+(?:\.\d+)*(?:[.-]?[A-Za-z][A-Za-z0-9.]*)?)\.dist-info$/u
 
 export const ENVIRONMENT_SNAPSHOT_SESSION_ENTRY = "kimchi:environment-snapshot"
 
@@ -124,6 +153,27 @@ export interface CommandRequest {
 export type CommandResult = { status: "ok"; stdout: string } | { status: "missing" } | { status: "timeout" | "error" }
 
 export type CommandRunner = (request: CommandRequest) => Promise<CommandResult>
+
+/**
+ * PATH pre-scan result: the executable-name set that resolves absent probes
+ * without a spawn, plus the first PATH directory each name was found in —
+ * the directory exec itself would resolve, and the anchor for filesystem-first
+ * version resolution.
+ */
+interface PathExecutableScan {
+	names: ReadonlySet<string>
+	/** Populated only for the names the caller asked to track. */
+	firstDirectoryByName: ReadonlyMap<string, string>
+}
+
+const EMPTY_NAME_SET: ReadonlySet<string> = new Set()
+
+/**
+ * Commands whose PATH directory is read after the scan, to anchor
+ * filesystem-first version resolution. Today only pip's launcher prefix is
+ * inspected (`readPipVersionFromDistInfo`).
+ */
+const PREFIX_ANCHORED_COMMANDS: ReadonlySet<string> = new Set(["pip3"])
 
 interface ProbeLimiter {
 	active: number
@@ -218,6 +268,8 @@ export interface EnvironmentSnapshotDiagnostics {
 	cancelledProbeCount: number
 	/** Absent from older entries and from restored snapshots; absent-path scans add it additively. */
 	pathPrescanAbsentCount?: number
+	/** Absent from older entries; metadata-resolved version facts add it additively. */
+	distInfoResolvedCount?: number
 	renderedSnapshotBytes: number
 }
 
@@ -280,6 +332,12 @@ interface Probe {
 	 * semver scan when the pattern misses.
 	 */
 	versionPattern?: RegExp
+	/**
+	 * Per-probe timeout override for tools whose honest cold-start cost
+	 * exceeds the shared default (pip's interpreter startup). Still clamped by
+	 * the remaining global budget, which always wins.
+	 */
+	probeTimeoutMs?: number
 }
 
 interface ProbeFact {
@@ -298,6 +356,12 @@ interface ProbeMetrics {
 	 * confirmation that the pre-scan absorbs the ENOENT-spawn load.
 	 */
 	pathPrescanAbsentCount: number
+	/**
+	 * Probes answered from packaging metadata on disk instead of a process
+	 * spawn (today: pip's `dist-info` directory name). Trace-visible
+	 * confirmation that the fast path absorbs the timeout-killed population.
+	 */
+	distInfoResolvedCount: number
 	eligibleEntryCount: number
 }
 
@@ -388,6 +452,7 @@ function buildDiagnostics(
 		completedProbeCount: probeMetrics.completedProbeCount,
 		cancelledProbeCount: probeMetrics.requestedProbeCount - probeMetrics.completedProbeCount,
 		pathPrescanAbsentCount: probeMetrics.pathPrescanAbsentCount,
+		distInfoResolvedCount: probeMetrics.distInfoResolvedCount,
 		renderedSnapshotBytes: snapshot ? byteLength(snapshot) : 0,
 	}
 }
@@ -900,6 +965,18 @@ const probe = (
 	versionPattern,
 })
 
+/**
+ * pip probe with the relaxed exec-fallback timeout. The fast path
+ * (`readPipVersionFromDistInfo`) answers most collections without a spawn;
+ * when it cannot, `pip3 --version` needs more than the shared 350ms default
+ * to survive a cold interpreter start on a contended 1-CPU host. 900ms is
+ * ≈2.6× the default and 1.5× the slowest wall time observed in traces.
+ *
+ * collect() moves `pip3` to the absolute end of the ecosystem batch, so this
+ * longer slot cannot delay another ecosystem candidate.
+ */
+const pipProbe = (): Probe => ({ ...probe("pip", "pip3"), probeTimeoutMs: PIP_PROBE_TIMEOUT_MS })
+
 const ECOSYSTEMS: readonly EcosystemDefinition[] = [
 	{
 		name: "JavaScript/TypeScript",
@@ -934,13 +1011,7 @@ const ECOSYSTEMS: readonly EcosystemDefinition[] = [
 		// The lowercase `python` alias resolves the measured `which python`
 		// alias ambiguity (python3-only installs vs python-is-python3) with its
 		// own fact rather than a parsing heuristic on the `Python` line.
-		probes: [
-			probe("Python", "python3"),
-			probe("python", "python"),
-			probe("uv"),
-			probe("Poetry", "poetry"),
-			probe("pip", "pip3"),
-		],
+		probes: [probe("Python", "python3"), probe("python", "python"), probe("uv"), probe("Poetry", "poetry"), pipProbe()],
 		sourceFileMatches: (fileNames) => [...fileNames].some((name) => /\.(?:py|pyi|pyx|pxd)$/u.test(name)),
 	},
 	{ name: "Rust", matches: (m) => m.has("Cargo.toml"), probes: [probe("rustc"), probe("Cargo", "cargo")] },
@@ -1032,7 +1103,7 @@ function relevantEcosystems(
 const GENERIC_FALLBACK_PROBES: readonly Probe[] = [
 	probe("Python", "python3"),
 	probe("python", "python"),
-	probe("pip", "pip3"),
+	pipProbe(),
 	probe("GCC", "gcc"),
 	probe("Make", "make"),
 	probe("Node", "node"),
@@ -1151,21 +1222,148 @@ function stableFactKey(candidate: Probe, env: NodeJS.ProcessEnv): string {
 async function scanPathExecutables(
 	env: NodeJS.ProcessEnv,
 	fs: FilesystemAdapter,
-): Promise<ReadonlySet<string> | undefined> {
+	trackDirectoriesFor: ReadonlySet<string> = EMPTY_NAME_SET,
+): Promise<PathExecutableScan | undefined> {
 	const pathValue = env.PATH ?? env.Path
 	if (!pathValue) return undefined
 	const names = new Set<string>()
+	const firstDirectoryByName = new Map<string, string>()
 	let scannedDirectories = 0
 	try {
 		for (const dir of pathValue.split(delimiter)) {
 			if (dir.length === 0) continue
 			scannedDirectories++
-			for (const entry of await fs.readdir(dir)) names.add(entry.name)
+			for (const entry of await fs.readdir(dir)) {
+				names.add(entry.name)
+				// Only the handful of names whose install prefix is actually read
+				// are retained, so the map stays a few entries rather than one per
+				// executable on PATH. Never overwrite: PATH is scanned in order, so
+				// the first directory recorded for a name is the one exec would
+				// resolve. Mapping the last duplicate instead would model a
+				// different executable than the probe actually runs.
+				if (trackDirectoriesFor.has(entry.name) && !firstDirectoryByName.has(entry.name))
+					firstDirectoryByName.set(entry.name, dir)
+			}
 		}
 	} catch {
 		return undefined
 	}
-	return scannedDirectories > 0 ? names : undefined
+	return scannedDirectories > 0 ? { names, firstDirectoryByName } : undefined
+}
+
+/**
+ * Resolve the installed pip version from `pip-<version>.dist-info` directory
+ * names adjacent to the `pip3` launcher, with no process spawn. `pip
+ * --version` is a cold Python-interpreter startup plus a heavy import: on
+ * 1-CPU containers its wall time straddles the per-probe timeout and the
+ * probe is killed in a large fraction of collections. The version it would
+ * print is already in the packaging metadata directory name, so a handful of
+ * names-only `readdir` calls answer the same question in the pre-scan's cost
+ * class.
+ *
+ * Layout coverage: Debian system Python keeps metadata in
+ * `/usr/lib/python3/dist-packages/`; venvs and Homebrew use
+ * `<prefix>/lib/pythonX.Y/site-packages/`. pyenv and other shim directories
+ * usually have no adjacent metadata and intentionally fall through to exec.
+ *
+ * Honesty rules: only the directory holding the *first* `pip3` on PATH is
+ * consulted (the `python3` command may be a different interpreter entirely),
+ * and a version is returned only when every valid adjacent match agrees on
+ * exactly one version. Multiple distinct versions cannot identify which
+ * interpreter the launcher targets, so they are ambiguous and fall through to
+ * `pip3 --version` rather than guessing a maximum. A per-user install that
+ * would shadow the prefix on `sys.path` also forces the fallback.
+ */
+async function pythonRuntimeDirectories(libRoots: readonly string[], fs: FilesystemAdapter): Promise<string[]> {
+	const runtimeDirectories: string[] = []
+	for (const libRoot of libRoots) {
+		try {
+			for (const entry of await fs.readdir(libRoot)) {
+				if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
+				if (!PYTHON_RUNTIME_DIRECTORY.test(entry.name)) continue
+				runtimeDirectories.push(join(libRoot, entry.name))
+			}
+		} catch {
+			// Missing or unreadable root: the other root may still answer.
+		}
+	}
+	return runtimeDirectories
+}
+
+/**
+ * Distinct pip versions named by `pip-<version>.dist-info` directories under
+ * the given Python runtime directories. Failures are isolated per package
+ * directory so one missing optional path cannot erase a result found
+ * elsewhere.
+ */
+async function pipDistInfoVersions(
+	runtimeDirectories: readonly string[],
+	fs: FilesystemAdapter,
+): Promise<ReadonlySet<string>> {
+	const versions = new Set<string>()
+	for (const runtimeDirectory of runtimeDirectories) {
+		for (const packagesName of ["site-packages", "dist-packages"]) {
+			try {
+				for (const entry of await fs.readdir(join(runtimeDirectory, packagesName))) {
+					const version = entry.name.match(PIP_DIST_INFO)?.[1]
+					if (version) versions.add(version)
+				}
+			} catch {
+				// Optional directory (venvs have no dist-packages and vice
+				// versa): keep examining the remaining candidates.
+			}
+		}
+	}
+	return versions
+}
+
+/**
+ * Root holding per-user installs (`pip install --user`). `PYTHONUSERBASE`
+ * overrides the default `~/.local` when set.
+ */
+function userBaseLibRoot(): string | undefined {
+	try {
+		const userBase = process.env.PYTHONUSERBASE
+		return join(userBase && userBase.length > 0 ? userBase : join(homedir(), ".local"), "lib")
+	} catch {
+		return undefined
+	}
+}
+
+async function readPipVersionFromDistInfo(pipBinDir: string, fs: FilesystemAdapter): Promise<string | undefined> {
+	// Both a prefix layout (`<prefix>/bin` + `<prefix>/lib`) and the rare
+	// bin-adjacent layout (`<bin>/lib`). Read independently so one missing
+	// root never erases a result found under the other.
+	const prefix = resolve(pipBinDir, "..")
+	// Deduplicated because the two layouts coincide when `pip3` resolves at the
+	// filesystem root (both roots become `/lib`), which would read every package
+	// directory twice and halve the effective fan-out cap.
+	const libRoots = [...new Set([join(prefix, "lib"), resolve(pipBinDir, "lib")])]
+	const runtimeDirectories = await pythonRuntimeDirectories(libRoots, fs)
+	// A prefix retaining many Python runtimes is an ambiguous layout, not an
+	// invitation to inspect a truncated subset and guess from it.
+	if (runtimeDirectories.length === 0 || runtimeDirectories.length > MAX_PYTHON_RUNTIME_CANDIDATES) return undefined
+	const versions = await pipDistInfoVersions(runtimeDirectories, fs)
+	// Duplicate metadata carrying one version corroborates; anything else is
+	// unresolved and exec is the only honest answer.
+	if (versions.size !== 1) return undefined
+	// A per-user install shadows the prefix on `sys.path`, so
+	// `apt install python3-pip` followed by `pip install --user -U pip` leaves
+	// the launcher reporting the userbase version while the prefix metadata
+	// still names the distro one. Consult the userbase only to INVALIDATE that
+	// answer: it can never supply a version on its own, because a shim `pip3`
+	// whose prefix holds no metadata cannot be proven to target this userbase.
+	// Checked last so these readdirs happen only on collections that would
+	// otherwise have resolved.
+	if (!fs.exists(join(prefix, VENV_MARKER))) {
+		const userLibRoot = userBaseLibRoot()
+		const userRuntimeDirectories = userLibRoot ? await pythonRuntimeDirectories([userLibRoot], fs) : []
+		if (userRuntimeDirectories.length > MAX_PYTHON_RUNTIME_CANDIDATES) return undefined
+		for (const userVersion of await pipDistInfoVersions(userRuntimeDirectories, fs)) {
+			if (!versions.has(userVersion)) return undefined
+		}
+	}
+	return [...versions][0]
 }
 
 async function runProbes(
@@ -1176,7 +1374,13 @@ async function runProbes(
 	stableFacts?: Map<string, ProbeFact>,
 	metrics?: ProbeMetrics,
 	onProgress?: (facts: ProbeFact[]) => void,
-	availableExecutables?: ReadonlySet<string>,
+	pathScan?: PathExecutableScan,
+	/**
+	 * Facts already resolved without a spawn, keyed by probe command (today:
+	 * the pip version read from packaging metadata). Consulted after the
+	 * stable cache and the PATH short-circuit, before a limiter slot is taken.
+	 */
+	preResolvedFacts?: ReadonlyMap<string, string>,
 ): Promise<ProbeFact[]> {
 	const facts: Array<ProbeFact | undefined> = new Array(probes.length)
 	const publish = () => onProgress?.(facts.filter((fact): fact is ProbeFact => fact !== undefined))
@@ -1211,11 +1415,7 @@ async function runProbes(
 			// fact an exec ENOENT would produce, without spending a spawn (or a
 			// limiter slot) on it. Commands with an explicit path (the absolute
 			// $SHELL probe) are exempt and always exec.
-			if (
-				availableExecutables !== undefined &&
-				!candidate.command.includes("/") &&
-				!availableExecutables.has(candidate.command)
-			) {
+			if (pathScan !== undefined && !candidate.command.includes("/") && !pathScan.names.has(candidate.command)) {
 				if (metrics) {
 					metrics.completedProbeCount++
 					metrics.pathPrescanAbsentCount++
@@ -1224,12 +1424,26 @@ async function runProbes(
 				publish()
 				continue
 			}
+			// Filesystem-derived fact (pip's packaging metadata): the version was
+			// already read from disk, so the probe needs neither a limiter slot
+			// nor a spawn. Positioned like the pre-scan short-circuit — after the
+			// stable cache, so a cached version fact still wins first.
+			const preResolved = preResolvedFacts?.get(candidate.command)
+			if (preResolved !== undefined) {
+				if (metrics) {
+					metrics.completedProbeCount++
+					metrics.distInfoResolvedCount++
+				}
+				facts[index] = { name: candidate.name, value: preResolved }
+				publish()
+				continue
+			}
 			const releaseProbeSlot = await acquireProbeSlot()
 			if (Date.now() >= deadlineMs) {
 				releaseProbeSlot()
 				return
 			}
-			const timeoutMs = Math.max(1, Math.min(probeTimeoutMs, deadlineMs - Date.now()))
+			const timeoutMs = Math.max(1, Math.min(candidate.probeTimeoutMs ?? probeTimeoutMs, deadlineMs - Date.now()))
 			let result: CommandResult
 			try {
 				result = await runCommand({
@@ -1963,13 +2177,40 @@ export class EnvironmentSnapshotService {
 			// Bare task/data directories match no ecosystem even via source
 			// files; probe a small generic toolbox in their place.
 			const fallbackProbes = detected.names.length === 0 ? GENERIC_FALLBACK_PROBES : []
-			const ecosystemProbes = [...detected.probes, ...fallbackProbes]
+			// `pip3` carries the relaxed exec-fallback timeout, so it is stable-
+			// partitioned to the absolute end of the batch: its longer slot can
+			// push against the global deadline but can never hold a limiter slot
+			// ahead of another ecosystem candidate. Every other probe keeps its
+			// current relative order, and the probe count is unchanged.
+			const combinedEcosystemProbes = [...detected.probes, ...fallbackProbes]
+			const ecosystemProbes = [
+				...combinedEcosystemProbes.filter((candidate) => candidate.command !== "pip3"),
+				...combinedEcosystemProbes.filter((candidate) => candidate.command === "pip3"),
+			]
 			const utilityProbes = verbosity === "minimal" ? [] : UTILITY_PROBES
 			probeMetrics.requestedProbeCount = alwaysProbes.length + utilityProbes.length + ecosystemProbes.length
 			// One listing per PATH directory serves all three probe batches; the
 			// worker resolves scan-absent bare commands without a spawn. Uses the
 			// identical minimal environment the probes exec with.
-			const availableExecutables = await scanPathExecutables(minimalProcessEnv(), this.filesystem)
+			const pathScan = await scanPathExecutables(minimalProcessEnv(), this.filesystem, PREFIX_ANCHORED_COMMANDS)
+			// Filesystem-first pip version: only when this collection actually
+			// probes pip3 and the scan located its launcher, so JavaScript-only
+			// and other non-Python collections pay no extra reads. A degraded
+			// scan skips the fast path entirely — the exec fallback covers it.
+			//
+			// Awaited serially ahead of the probe batches, like the PATH pre-scan
+			// above: a bounded ~20 names-only readdirs (single-digit ms warm)
+			// buys the removal of a spawn that otherwise times out. If a cold
+			// filesystem ever makes this material, it can run concurrently with
+			// the core batch — nothing in `alwaysProbes` depends on the result.
+			const preResolvedEcosystemFacts = new Map<string, string>()
+			const pipBinDir = ecosystemProbes.some((candidate) => candidate.command === "pip3")
+				? pathScan?.firstDirectoryByName.get("pip3")
+				: undefined
+			if (pipBinDir !== undefined) {
+				const pipVersion = await readPipVersionFromDistInfo(pipBinDir, this.filesystem)
+				if (pipVersion !== undefined) preResolvedEcosystemFacts.set("pip3", pipVersion)
+			}
 			let completedFactCount = 0
 			// The universal core runs first: git/ripgrep/shell and the
 			// ecosystem-independent CLI utilities are the facts agents re-probe
@@ -1988,7 +2229,7 @@ export class EnvironmentSnapshotService {
 					collectedFacts.probes = probes
 					onFacts(collectedFacts)
 				},
-				availableExecutables,
+				pathScan,
 			)
 			collectedFacts.probes = coreFacts
 			completedFactCount += coreFacts.length
@@ -2002,7 +2243,7 @@ export class EnvironmentSnapshotService {
 					this.stableFacts,
 					probeMetrics,
 					undefined,
-					availableExecutables,
+					pathScan,
 				)
 				completedFactCount += collectedFacts.utilities.length
 				onFacts(collectedFacts)
@@ -2019,7 +2260,8 @@ export class EnvironmentSnapshotService {
 						collectedFacts.probes = [...coreFacts, ...probes]
 						onFacts(collectedFacts)
 					},
-					availableExecutables,
+					pathScan,
+					preResolvedEcosystemFacts,
 				)
 				collectedFacts.probes = [...coreFacts, ...ecosystemFacts]
 				completedFactCount += ecosystemFacts.length
@@ -2046,6 +2288,7 @@ export class EnvironmentSnapshotService {
 			completedProbeCount: 0,
 			requestedProbeCount: 0,
 			pathPrescanAbsentCount: 0,
+			distInfoResolvedCount: 0,
 			eligibleEntryCount: 0,
 		}
 		let latestFacts: CollectionFacts | undefined
