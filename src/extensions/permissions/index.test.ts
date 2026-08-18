@@ -1534,7 +1534,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
-		pi: mockPi,
+			pi: mockPi,
 			subcommands: ["echo a", "echo b"],
 		})
 
@@ -1549,7 +1549,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
-		pi: mockPi,
+			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1568,7 +1568,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
-		pi: mockPi,
+			pi: mockPi,
 			subcommands: ["echo a"],
 		})
 
@@ -1587,7 +1587,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
-		pi: mockPi,
+			pi: mockPi,
 			subcommands: ["echo a", "echo b"],
 		})
 
@@ -1606,7 +1606,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
-		pi: mockPi,
+			pi: mockPi,
 			subcommands: ["echo a", "echo b"],
 		})
 
@@ -1625,7 +1625,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
-		pi: mockPi,
+			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1642,7 +1642,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
-		pi: mockPi,
+			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1659,7 +1659,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
-		pi: mockPi,
+			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1682,7 +1682,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
-		pi: mockPi,
+			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1697,7 +1697,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
-		pi: mockPi,
+			pi: mockPi,
 			subcommands: [],
 		})
 
@@ -1714,7 +1714,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
-		pi: mockPi,
+			pi: mockPi,
 			subcommands: ["echo hello"],
 		})
 
@@ -1734,7 +1734,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
-		pi: mockPi,
+			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1763,7 +1763,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
-		pi: mockPi,
+			pi: mockPi,
 			subcommands: ["echo hello", "whoami"],
 		})
 
@@ -1781,7 +1781,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
-		pi: mockPi,
+			pi: mockPi,
 			subcommands: ["echo a"],
 		})
 
