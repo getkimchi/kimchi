@@ -47,17 +47,18 @@ import {
 	setPermissionMode,
 } from "./mode-controller.js"
 import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
+import { type ModeChangeReason, PERMISSION_EVENTS, type PermissionDecision } from "./permissions-events.js"
 import { saveApprovedPlan } from "./plan-persistence.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import {
+	type ApprovalOutcome,
 	buildPermissionChoices,
+	type CompoundApprovalOutcome,
 	type CompoundSubcommand,
 	promptForCompoundApproval,
 	terminalPrompter,
 	withWorkingHidden,
-	type ApprovalOutcome,
-	type CompoundApprovalOutcome,
 } from "./prompts.js"
 import { evaluateRules, parseRules, stringifyRule } from "./rules.js"
 import { SessionMemory } from "./session-memory.js"
@@ -68,7 +69,6 @@ import {
 	isReadOnlyTool,
 	splitCompoundCommand,
 } from "./taxonomy.js"
-import { PERMISSION_EVENTS, type ModeChangeReason, type PermissionDecision } from "./permissions-events.js"
 import type { PermissionMode, PermissionModeState, RiskScore, Rule, RuleSource } from "./types.js"
 
 /**
@@ -370,11 +370,16 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const current = getRuntimePermissionMode()
 		if (hasActive) {
 			if (current.initiatedBy === "user") preFermentMode = current
-			changeMode(currentCtx, current.mode, {
-				mode: "yolo",
-				source: "runtime",
-				initiatedBy: "ferment",
-			}, "ferment_elevation")
+			changeMode(
+				currentCtx,
+				current.mode,
+				{
+					mode: "yolo",
+					source: "runtime",
+					initiatedBy: "ferment",
+				},
+				"ferment_elevation",
+			)
 		} else if (preFermentMode) {
 			const saved = preFermentMode
 			preFermentMode = undefined
