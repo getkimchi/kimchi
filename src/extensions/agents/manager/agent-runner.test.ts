@@ -2,8 +2,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 import dapExtension from "../../dap.js"
+import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
 	return {
