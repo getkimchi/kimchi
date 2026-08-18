@@ -22,8 +22,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
-import { resolveJsDebugScript } from "./adapters.js"
-import { allAdapters } from "./adapters.js"
+import { allAdapters, resolveJsDebugScript } from "./adapters.js"
 import { DapClientRegistry } from "./client.js"
 import type { ComposedDeps } from "./composed.js"
 import { debugLastError, debugStateAt, debugTraceCalls } from "./composed.js"
@@ -59,12 +58,13 @@ const HAS_DEBUGPY = (() => {
 		return false
 	}
 })()
-// NOTE: dlv dap 1.27.0/1.27.1 hang answering the DAP `launch` request on
-// macOS arm64 with go 1.26 (verified 2026-08 with a raw DAP client —
-// `dlv debug --headless` works, so it is the dlv DAP path, not this client).
-// The dlv tests below FAIL on affected machines rather than skip, by design:
-// dlv is a primary acceptance target and must go green once the adapter is
-// fixed (or where dlv is healthy, e.g. Linux CI runners).
+// NOTE (corrected 2026-08): earlier failures attributed to a "dlv launch
+// hang" (dlv 1.27.0/1.27.1, macOS arm64, go 1.26) were actually a COLD Go
+// build cache — dlv's launch compiles the Go std library with
+// `-gcflags="all=-N -l"` (debug build), which takes several minutes the
+// first time and blows every 30s DAP timeout. With a warm cache both dlv
+// tests pass locally in ~1s. The GO describe pre-warms the cache in
+// beforeAll so cold runners (fresh CI) do not hit the same trap.
 // debugpy: the divide-by-zero scenario was un-skipped on 2026-08 with debugpy
 // available and still never produced an exception stop within 30s (throw-site
 // capture times out). Suspected protocol-ordering issue in completeLaunch
@@ -102,7 +102,8 @@ function makeDeps(cwd: string): ComposedDeps {
 			const adapters = allAdapters()
 			// program may be an extensionless compiled binary — fall back to
 			// inspecting the sources next to it (mirrors dap.ts launchSession).
-			const adapter = adapterForFile(opts.program, adapters) ?? adapterForDirectory(path.dirname(opts.program), adapters)
+			const adapter =
+				adapterForFile(opts.program, adapters) ?? adapterForDirectory(path.dirname(opts.program), adapters)
 			if (!adapter) throw new Error(`No adapter for ${opts.program}`)
 			const client = await clientRegistry.getOrCreate(adapter, cwd)
 			const session = sessionRegistry.create({ adapter, cwd, client })
@@ -234,6 +235,19 @@ describe("DAP integration — Go (dlv dap)", () => {
 	let dir: string
 	let fixturePath: string
 	let deps: ComposedDeps
+
+	// dlv's `launch` compiles the fixture AND the whole Go std library with
+	// `-gcflags="all=-N -l"` on first use. On a cold Go build cache that takes
+	// minutes of silence and blows every 30s DAP timeout — pre-warm the cache
+	// with identical flags so the tests measure the DAP flow, not go build.
+	beforeAll(() => {
+		if (!HAS_DLV) return
+		const warmDir = tmpDir("dap-go-warm-")
+		const warmMain = writeFixture(warmDir, "main.go", GO_FIXTURE)
+		execFileSync("go", ["build", "-gcflags=all=-N -l", "-o", path.join(warmDir, "__warm"), warmMain], {
+			stdio: "pipe",
+		})
+	}, 900_000)
 
 	beforeEach(() => {
 		if (!HAS_DLV) return

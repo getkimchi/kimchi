@@ -15,7 +15,14 @@
 import { randomUUID } from "node:crypto"
 import path from "node:path"
 import type { ExtensionAPI, ExtensionUIContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
-import { adapterExists, adapterForDirectory, adapterForFile, allAdapters, detectAdapters, detectMissingAdapters } from "./dap/adapters.js"
+import {
+	adapterExists,
+	adapterForDirectory,
+	adapterForFile,
+	allAdapters,
+	detectAdapters,
+	detectMissingAdapters,
+} from "./dap/adapters.js"
 import { DapClientRegistry } from "./dap/client.js"
 import { DapSessionRegistry } from "./dap/session.js"
 import { createLayer1Tools, createLayer2Tools, type LaunchSessionOptions } from "./dap/tools.js"

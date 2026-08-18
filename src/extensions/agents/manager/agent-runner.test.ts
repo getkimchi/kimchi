@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 import dapExtension from "../../dap.js"
+import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
 	return {

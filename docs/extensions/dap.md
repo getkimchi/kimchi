@@ -28,12 +28,14 @@ dap.ts (extension entry point)
 
 4. **js-debug nested sessions** — js-debug's `pwa-node` launch type sends a `startDebugging` reverse-request to spawn a child debug session. The client opens a new TCP connection to the same server, runs `initialize` + `launch` + `configurationDone` on the child, and routes all subsequent debug traffic to it via `client.childClient`.
 
+5. **Session-per-launch client isolation** — the client registry key includes the pre-generated session id, so every debug session owns its adapter process (a DAP connection is one-debuggee). `debug_terminate` can never cross-kill another session's client, and terminating removes the session from the registry immediately instead of accumulating terminated sessions.
+
 ## Supported Adapters
 
 | Adapter | Language(s) | Transport | Binary Detection |
 |---------|-------------|-----------|-------------------|
 | dlv | Go | TCP | `which dlv` |
-| js-debug | TypeScript, JavaScript | TCP | `which js-debug-adapter` |
+| js-debug | TypeScript, JavaScript | TCP | script path: `$JS_DEBUG_PATH`, `node_modules/js-debug-adapter/src/dapDebugServer.js`, npm global prefix |
 | debugpy | Python | stdio | `python3 -c "import debugpy"` |
 | lldb-dap | C, C++, Rust, Swift | stdio | `which lldb-dap` |
 | java-debug | Java, Kotlin | stdio | `which java-debug` |
@@ -51,7 +53,7 @@ Each adapter is defined in the `ADAPTERS` array in `adapters.ts`:
     args: ["dap"],
     detectBinary: "dlv",          // optional: what `which` checks (defaults to command)
     detectModule: ["python3", "-c", "import debugpy"],  // optional: module-presence check
-    transport: { kind: "tcp", portArgIndex: -1 },  // or { kind: "stdio" }
+    transport: { kind: "tcp" },  // or { kind: "stdio" }
     languages: ["go"],
     extensions: ["go"],
     launchType: "go",             // DAP `type` field in launch request
@@ -81,7 +83,7 @@ const ROOT_MARKERS: Record<string, string[]> = {
 1. Add a config object to the `ADAPTERS` array in `adapters.ts`
 2. Add root markers to `ROOT_MARKERS`
 3. If the adapter uses a module (not a standalone binary), use `detectModule` instead of `detectBinary`
-4. If the adapter uses TCP transport, set `transport: { kind: "tcp", portArgIndex: N }` and ensure `client.ts`'s `spawnTcpAdapterForConfig` can parse the listening port
+4. If the adapter uses TCP transport, set `transport: { kind: "tcp" }` and ensure `client.ts`'s TCP spawn parser finds the adapter's `listening at ...` stdout line
 5. Add a language-specific skill constant in `dap.ts` (e.g., `DAP_JAVA_SKILL`) following the pattern of existing skills
 6. Register the skill with on-demand injection: add a `xxxSkillActive` flag, register a system prompt block, and update the `tool_call` handler to set the flag
 7. Update `adapters.test.ts` to include the new adapter in test assertions
@@ -118,6 +120,14 @@ One-call tools that handle the full launch→breakpoint→inspect→terminate li
 | `debug_trace_calls` | Run to completion, return structured call records via sentinel parsing |
 | `debug_watch_change` | Watch an expression for changes across stepping |
 
+`debug_state_at` accepts an optional `program` param (defaults to `file`) — required for compiled languages, where the launch target is an extensionless binary while breakpoints target the source file. Adapter auto-detection falls back to scanning the program's directory so `main` next to `main.c` resolves lldb-dap.
+
+`debug_last_error` enriches the exception from the adapter's `exceptionInfo` DAP request (real type/message, e.g. `ZeroDivisionError`, not the generic stopped-event text), falling back to the stop text when the adapter doesn't support it.
+
+## Permissions (plan mode)
+
+All 16 debug tools are visible in plan mode (explore/plan phases), including effect-full operations (`debug_set_variable`, `debug_restart`, `debug_terminate`): debugging is treated as investigation, and launching/stopping a debuggee does not modify project files. Security note: a launched debuggee executes arbitrary code and `debug_set_variable` mutates runtime memory, so plan mode is not strictly read-only while these tools are enabled. This is a deliberate product decision (debugging helps the agent investigate the code it is asked to plan a fix for) — revisit the allowlist in `permissions/index.ts` (`PLAN_MODE_TOOLS`) if a strict read-only plan phase is ever required.
+
 ## Skill Injection Model
 
 Language-specific skills are **not** injected into every system prompt. They start inactive and activate on the first `debug_*` or `step_*` tool call:
@@ -131,12 +141,21 @@ Language-specific skills are **not** injected into every system prompt. They sta
 
 ## Known Limitations
 
-1. **debugpy integration test** — The `debug_last_error` flow times out because debugpy defers `setExceptionBreakpoints` and `launch` responses until after `configurationDone`. The adapter config is correct; the protocol ordering needs adjustment.
+1. **Cold Go build cache looks like a dlv `launch` hang** — dlv's `launch` request compiles the whole Go std library with `-gcflags="all=-N -l"` (debug build). On a machine that has never built with those flags, this takes several minutes of `Building …` silence, so a 30s launch timeout looks exactly like an adapter deadlock (mistakenly diagnosed as one on 2026-08). The integration suite pre-warms the cache with the identical flags so tests measure the DAP flow. The same applies to a user's first real Go debugging session on a fresh machine — wait for the build to finish rather than terminating.
 
-2. **js-debug integration test** — The `startDebugging` handler and child-session routing are implemented and unit-tested via TCP mock server tests. Real end-to-end testing requires installing `js-debug-adapter`.
+2. **debugpy `debug_last_error` integration test** — An un-skipped run (2026-08, debugpy importable) never produced an exception stop within 30s. Root cause unconfirmed; suspected protocol-ordering issue in `completeLaunch` (`setExceptionBreakpoints` sent before debugpy has settled post-launch). The test is gated by a named `DEBUGPY_SCENARIO_STABLE = false` constant in `integration.test.ts` until root-caused.
 
-3. **`debug_trace_calls` requires sentinel instrumentation** — The program must be pre-instrumented with `__KIMCHI_TRACE__` log statements. Auto-instrumentation via DAP logpoints is planned but not yet implemented.
+3. **js-debug nested sessions** — `startDebugging` plus child-client routing are implemented and unit-tested (`nested-session.test.ts`). Real end-to-end tests (integration suite, TUI happy path) run only when a `dapDebugServer.js` script is resolvable ($JS_DEBUG_PATH, cwd `node_modules`, npm global prefix).
 
-4. **`debug_watch_change` polling fallback** — When `supportsDataBreakpoints` is false (most adapters), the tool steps through the program one line at a time, which is slow for programs with many lines between changes.
+4. **`debug_trace_calls` requires sentinel instrumentation** — The program must be pre-instrumented with `__KIMCHI_TRACE__` log statements. Auto-instrumentation via DAP logpoints is planned but not yet implemented.
 
-5. **`runInTerminal` server requests** — Replied with `success: false`. Some adapters may require this for terminal-based program launching.
+5. **`debug_watch_change` polling only** — `supportsDataBreakpoints` is detected but the data-breakpoint path (`dataBreakpointInfo`/`setDataBreakpoints`) is not yet implemented; polling steps through the program one line at a time.
+
+6. **`runInTerminal` server requests** — Replied with `success: false`. Adapters that require `runInTerminal` for terminal-based program launching are unsupported.
+
+## Future Work
+
+- Attach mode (`debug_attach`) — connect to an already-running process.
+- Data breakpoints for `debug_watch_change` (v2 watch path).
+- `runInTerminal` support for TTY-dependent debuggees.
+- Trace auto-instrumentation via DAP logpoints.

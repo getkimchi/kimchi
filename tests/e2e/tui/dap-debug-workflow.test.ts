@@ -36,9 +36,7 @@ function anyRequestContains(fixture: { fake: { requests: { body: unknown }[] } }
 // Test A: degraded path — adapter missing
 // =============================================================================
 
-test("DAP degraded state: debug_launch surfaces the missing-adapter error and status footer", async ({
-	terminal,
-}) => {
+test("DAP degraded state: debug_launch surfaces the missing-adapter error and status footer", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -106,12 +104,18 @@ test("DAP degraded state: debug_launch surfaces the missing-adapter error and st
  *  dapDebugServer.js script is resolvable. */
 function jsDebugScriptResolvable(): boolean {
 	if (process.env.JS_DEBUG_PATH && existsSync(process.env.JS_DEBUG_PATH)) return true
-	for (const c of ["node_modules/js-debug-adapter/src/dapDebugServer.js", "node_modules/@vscode/js-debug/src/dapDebugServer.js"]) {
+	for (const c of [
+		"node_modules/js-debug-adapter/src/dapDebugServer.js",
+		"node_modules/@vscode/js-debug/src/dapDebugServer.js",
+	]) {
 		if (existsSync(c)) return c.length > 0
 	}
 	try {
 		const prefix = spawnSync("npm", ["prefix", "-g"], { encoding: "utf-8" })
-		if (prefix.status === 0 && existsSync(`${prefix.stdout.trim()}/lib/node_modules/js-debug-adapter/src/dapDebugServer.js`))
+		if (
+			prefix.status === 0 &&
+			existsSync(`${prefix.stdout.trim()}/lib/node_modules/js-debug-adapter/src/dapDebugServer.js`)
+		)
 			return true
 	} catch {
 		// npm not on PATH
@@ -126,49 +130,52 @@ const HAS_JS_DEBUG_SCRIPT = jsDebugScriptResolvable()
 // conditional predicate.
 const testWithJsDebug = HAS_JS_DEBUG_SCRIPT ? test : test.skip
 
-testWithJsDebug("DAP happy path: debug_state_at runs the full launch→breakpoint→locals→terminate workflow", async ({
-	terminal,
-}) => {
-
-	await runKimchiSession(
-		terminal,
-		{
-			artifactName: "dap-happy",
-			responses: [
-				{
-					toolCalls: [
-						{
-							function: {
-								name: "debug_state_at",
-								arguments: JSON.stringify({ file: "app.js", line: 2, evaluated: ["a + b"] }),
+testWithJsDebug(
+	"DAP happy path: debug_state_at runs the full launch→breakpoint→locals→terminate workflow",
+	async ({ terminal }) => {
+		await runKimchiSession(
+			terminal,
+			{
+				artifactName: "dap-happy",
+				responses: [
+					{
+						toolCalls: [
+							{
+								function: {
+									name: "debug_state_at",
+									arguments: JSON.stringify({ file: "app.js", line: 2, evaluated: ["a + b"] }),
+								},
 							},
-						},
-					],
+						],
+					},
+					{ stream: ["State captured at the breakpoint."] },
+				],
+				env: { KIMCHI_DAP_BINARIES: "" }, // keep other machine adapters inert
+				seedHome: (_homeDir, workDir) => {
+					writeFileSync(join(workDir, "package.json"), '{"name":"debugme","version":"1.0.0"}\n')
+					// Breakpoint at line 2 stops inside add() with a=2, b=3.
+					writeFileSync(
+						join(workDir, "app.js"),
+						'function add(a, b) {\n  return a + b\n}\nconst r = add(2, 3)\nconsole.log("result=" + r)\n',
+					)
 				},
-				{ stream: ["State captured at the breakpoint."] },
-			],
-			env: { KIMCHI_DAP_BINARIES: "" }, // keep other machine adapters inert
-			seedHome: (_homeDir, workDir) => {
-				writeFileSync(join(workDir, "package.json"), '{"name":"debugme","version":"1.0.0"}\n')
-				// Breakpoint at line 2 stops inside add() with a=2, b=3.
-				writeFileSync(join(workDir, "app.js"), 'function add(a, b) {\n  return a + b\n}\nconst r = add(2, 3)\nconsole.log("result=" + r)\n')
 			},
-		},
-		async (fixture, trace) => {
-			trace.step("checking status footer for active js-debug")
-			expect(viewText(terminal)).toContain("DAP: js-debug")
+			async (fixture, trace) => {
+				trace.step("checking status footer for active js-debug")
+				expect(viewText(terminal)).toContain("DAP: js-debug")
 
-			terminal.submit("capture state at app.js line 2")
-			trace.step("submitted prompt")
-			await waitForTurnToSettle(fixture.fake.requests)
-			trace.step("settled")
+				terminal.submit("capture state at app.js line 2")
+				trace.step("submitted prompt")
+				await waitForTurnToSettle(fixture.fake.requests)
+				trace.step("settled")
 
-			const view = viewText(terminal)
-			expect(view).toContain("Debug State At")
-			// The program ran to completion after the breakpoint — its stdout is
-			// part of the captured state, which must reach the model as the tool
-			// result (visible tool output is collapsed in the TUI).
-			expect(anyRequestContains(fixture, "result=5")).toBe(true)
-		},
-	)
-})
+				const view = viewText(terminal)
+				expect(view).toContain("Debug State At")
+				// The program ran to completion after the breakpoint — its stdout is
+				// part of the captured state, which must reach the model as the tool
+				// result (visible tool output is collapsed in the TUI).
+				expect(anyRequestContains(fixture, "result=5")).toBe(true)
+			},
+		)
+	},
+)
