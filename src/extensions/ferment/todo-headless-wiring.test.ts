@@ -19,7 +19,7 @@ import { createEventBus } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
-import { __test_renderTodoStateMarkdown, renderTodoStateBlock } from "../todos/prompt-block.js"
+import { __test_renderTodoStateMarkdown, renderTodoStateBlock } from "../todos/state-markdown.js"
 import { __resetTodoStore, applyWriteTodos, getTodosForScope, resolveTodoScope } from "../todos/store.js"
 import { emitFermentDomainEvent } from "./domain-events-emitter.js"
 import { setActive } from "./state.js"
@@ -512,11 +512,11 @@ describe("stall detection via step todo write tracking", () => {
 				TEST_SESSION_ID,
 			)
 
-			// Bump past threshold (5 turns)
-			for (let i = 0; i < 6; i++) bumpStallCounter(TEST_SESSION_ID)
+			// Bump past threshold (12 turns — one long step = genuine thrash)
+			for (let i = 0; i < 13; i++) bumpStallCounter(TEST_SESSION_ID)
 
 			const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
-			expect(md).toContain("\u26a0 Step todos have not been updated for 6 turns")
+			expect(md).toContain("\u26a0 Step todos have not been updated for 13 turns")
 			expect(md).toContain("reassess your approach")
 		} finally {
 			unsubscribe()

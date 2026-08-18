@@ -14,7 +14,7 @@ import type { Ferment, Grade, Phase } from "../../../ferment/types.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
 import { withWorkingHidden } from "../../ui.js"
-import { askUserForm } from "../ask-user.js"
+import { askUserForm, createJudgeDecisionRecorder } from "../ask-user.js"
 import { gradeColor } from "../colors.js"
 import { decideContinuation } from "../continuation.js"
 import { formatDecisionsAndMemories } from "../format.js"
@@ -30,12 +30,12 @@ import {
 	judgePhaseGradeViaSubagent,
 } from "../judge.js"
 import { onPhaseCompleted } from "../nudge.js"
-import { captureGitHead, gatherPhaseEvidence, type PhaseEvidence } from "../phase-evidence.js"
+import { captureGitHead, gatherPhaseEvidence, gatherStepVerifyEvidence, type PhaseEvidence } from "../phase-evidence.js"
 import { type ProjectCheckResult, runProjectChecks, summarizeProjectChecks } from "../project-tests.js"
 import { hashFlags, writeEscalationArtifact, writeReviewEvidence } from "../review-evidence.js"
 import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { safeSendMessage } from "../safe-send.js"
-import { MAX_BLOCK_RETRIES } from "../state.js"
+import { FIX_PROTOCOL, MAX_BLOCK_RETRIES } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -48,6 +48,7 @@ import {
 import { FERMENT_TOOLS } from "../tool-names.js"
 import { ActivateParams, CompletePhaseParams, FailPhaseParams, RefineParams, SkipPhaseParams } from "../tool-schemas.js"
 import { applyFermentToolProfile, profileForFerment } from "../tool-scope.js"
+import { runVerificationCommand, type VerificationExecution, type VerificationResult } from "./steps.js"
 
 function sendPhaseAck(pi: ExtensionAPI, text: string): void {
 	safeSendMessage(
@@ -86,6 +87,11 @@ export interface PhaseHandlerServices {
 	 *  Judge-unavailable outcomes (no_registry/no_model/no_auth/api_error/
 	 *  unparseable/invalid_grade) are advisory and do NOT refuse advancement. */
 	judgePhaseGrade(input: JudgePhaseInput, spawner?: GraderSpawner): Promise<JudgePhaseGradeResult>
+	/** Re-runs a step's declared verify command. Used by the deterministic
+	 *  evidence-class gate at complete_ferment_phase: agent-authored F-gates
+	 *  claim verification; this re-executes it. Same executor as step
+	 *  completion (steps.ts runVerificationCommand). */
+	runVerification(args: VerificationExecution): Promise<VerificationResult>
 	/** Optional spawner for the grader subagent. When provided, the grader
 	 *  runs as a bounded subagent with read-only + bash tools so it can
 	 *  independently verify the agent's claims. When undefined, the grader
@@ -104,6 +110,7 @@ export const defaultPhaseHandlerServices: PhaseHandlerServices = {
 	gatherEvidence: gatherPhaseEvidence,
 	runProjectChecks: (cwd) => runProjectChecks(cwd),
 	judgePhaseGrade: (input, spawner) => judgePhaseGradeViaSubagent(input, spawner),
+	runVerification: runVerificationCommand,
 	onPhaseCompleted,
 }
 
@@ -408,7 +415,13 @@ export async function completePhase(
 						],
 					},
 				],
-				{ ferment: f, pi, ctx: ctx ?? ({} as ExtensionContext), runtime },
+				{
+					ferment: f,
+					pi,
+					ctx: ctx ?? ({} as ExtensionContext),
+					runtime,
+					recordJudgeDecision: createJudgeDecisionRecorder(runtime),
+				},
 			)
 
 			const escalationChoice = escalationResponse.failed ? undefined : escalationResponse.answers?.[0]?.value
@@ -449,6 +462,46 @@ export async function completePhase(
 		}
 	}
 
+	// Step 3b: deterministic evidence-class gate — re-run every declared step
+	// verify command in this phase. The agent's F-gates CLAIM verification;
+	// this executes it. A red re-run refuses the completion immediately,
+	// WITHOUT spending a grader session. Skipped steps are not re-run.
+	const verifyFailures: string[] = []
+	let verifyCommandCount = 0
+	for (const step of phase.steps) {
+		if (!step.verification || step.status === "skipped") continue
+		verifyCommandCount++
+		const verified = await services.runVerification({
+			command: step.verification.command,
+			ctx: ctx ?? ({} as ExtensionContext),
+		})
+		if (verified.exitCode !== 0) {
+			const errTail = (verified.stderr || verified.stdout).trim()
+			const indentedTail = errTail
+				? `\n  output (tail):\n${errTail
+						.slice(-400)
+						.split("\n")
+						.map((l) => `    ${l}`)
+						.join("\n")}`
+				: ""
+			verifyFailures.push(
+				`- ${step.id} "${step.description}": \`${step.verification.command}\` → exit ${verified.exitCode}${indentedTail}`,
+			)
+		}
+	}
+	if (verifyFailures.length > 0) {
+		const retry = runtime.bumpBlockRetry(params.ferment_id, phase.id)
+		if (retry > MAX_BLOCK_RETRIES) {
+			// Budget exhausted — accept with warnings, same policy as the
+			// judge-refusal ladder; fall through to grading below.
+			runtime.clearBlockRetry(params.ferment_id, phase.id)
+		} else {
+			return toolErr(
+				`**Phase "${phase.name}"** cannot complete — deterministic re-verification failed (retry ${retry}/${MAX_BLOCK_RETRIES}). The phase's own step verify commands no longer pass:\n${verifyFailures.join("\n")}\n\nFix the failing behavior (or correct the verify command) and call complete_ferment_phase again with an updated summary.`,
+			)
+		}
+	}
+
 	// Step 4: no block flags from gates or project checks. Run the per-phase
 	// LLM grader (council-of-specialists prompt) to assign a final letter
 	// grade + recommendations. C/D/F refuses advancement and routes through
@@ -468,6 +521,8 @@ export async function completePhase(
 			? { available: evidence.available, filesChanged: evidence.filesChanged, diffSnippet: evidence.diffSnippet }
 			: { available: false },
 		evidence: params.evidence,
+		stepVerificationRuns: gatherStepVerifyEvidence(phase.steps),
+		priorRefusal: runtime.getLastPhaseRefusal(params.ferment_id, phase.id),
 	}
 	const phaseJudgeResult = await runWithOverlay(`Grading phase "${phase.name}"…`, () =>
 		services.judgePhaseGrade(judgeInput, services.graderSpawner),
@@ -486,14 +541,28 @@ export async function completePhase(
 		finalGrade = phaseJudgeResult.grade
 		finalRationale = phaseJudgeResult.rationale
 		finalRecommendations = phaseJudgeResult.recommendations
-		const gradeOrder: Record<Grade, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 }
-		if (gradeOrder[phaseJudgeResult.grade] < gradeOrder[minimumAcceptableGrade]) {
-			judgeRefused = true
-			judgeRecsText = phaseJudgeResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
+		if (phaseJudgeResult.graderSource === "fallback_single_shot") {
+			// The tool-equipped grader subagent was unusable — the blind fallback
+			// grade has no independent verification behind it, so it is
+			// advisory-only (same treatment as judge-unavailable): the letter is
+			// persisted for the record, but it must never refuse advancement.
+			finalRationale = `${finalRationale} (advisory-only grade: grader subagent unusable — blind fallback judge without tool access)`
+		} else {
+			const gradeOrder: Record<Grade, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 }
+			if (gradeOrder[phaseJudgeResult.grade] < gradeOrder[minimumAcceptableGrade]) {
+				judgeRefused = true
+				judgeRecsText = phaseJudgeResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
+			}
 		}
 	} else {
 		// Judge unavailable — advisory only, do NOT refuse advancement.
 		finalRationale = `${rationale} (Phase LLM judge unavailable: ${phaseJudgeResult.reason}${phaseJudgeResult.detail ? `: ${phaseJudgeResult.detail}` : ""})`
+	}
+
+	if (verifyCommandCount === 0) {
+		// Nothing could be re-run deterministically (proxy-only plan, or the
+		// verification-less refine shape) — record the absence as advisory.
+		finalRationale = `${finalRationale} (advisory: phase declared no executable verification commands — nothing was re-run deterministically)`
 	}
 
 	if (judgeRefused) {
@@ -512,8 +581,17 @@ export async function completePhase(
 			runtime.clearBlockRetry(params.ferment_id, phase.id)
 			// Fall through to the advance path below with the judge's grade + recs.
 		} else {
+			// Record the refusal so the NEXT grader of this phase delta-grades:
+			// verify these items are fixed, then scan the fix wave — no re-sweep.
+			if (phaseJudgeResult.ok) {
+				runtime.setLastPhaseRefusal(params.ferment_id, phase.id, {
+					grade: phaseJudgeResult.grade,
+					recommendations: phaseJudgeResult.recommendations,
+					at: runtime.nowIso(),
+				})
+			}
 			return toolErr(
-				`**Phase "${phase.name}"** cannot complete — LLM grader assigned grade ${phaseJudgeResult.ok ? phaseJudgeResult.grade : "?"}, minimum required is ${minimumAcceptableGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).${projectChecksNote}\n\nRecommendations:\n${judgeRecsText}${warnLines}\n\nAddress the recommendations above and call complete_ferment_phase again with an updated summary.`,
+				`**Phase "${phase.name}"** cannot complete — LLM grader assigned grade ${phaseJudgeResult.ok ? phaseJudgeResult.grade : "?"}, minimum required is ${minimumAcceptableGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).${projectChecksNote}\n\nRecommendations:\n${judgeRecsText}${warnLines}\n\n${FIX_PROTOCOL}\n\nAddress the recommendations above and call complete_ferment_phase again with an updated summary.`,
 			)
 		}
 	}
@@ -531,6 +609,7 @@ export async function completePhase(
 			gradedAt: runtime.nowIso(),
 			...(finalRecommendations.length > 0 ? { recommendations: finalRecommendations } : {}),
 			...(gradedBy ? { gradedBy } : {}),
+			...(phaseJudgeResult.ok && phaseJudgeResult.graderSource ? { graderSource: phaseJudgeResult.graderSource } : {}),
 		},
 		blockRetries: blockRetriesForTelemetry,
 	})
@@ -772,9 +851,17 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 
 			const refined = outcome.ferment.phases.find((p) => p.id === phase.id)
 			const stepList = refined?.steps.map((st, i) => `  ${i + 1}. [step-${i + 1}] ${st.description}`).join("\n") ?? ""
+			// Verification coverage advisory — refuses nothing: the grader now
+			// receives exactly what ran at phase completion (deterministic re-run),
+			// so a verify-less refined plan scores worse. Say so here, once.
+			const verifyCount = refined?.steps.filter((st) => st.verification).length ?? 0
+			const verifyAdvisory =
+				(refined?.steps.length ?? 0) > 0 && verifyCount === 0
+					? "\n\nAdvisory: none of the refined steps declares a verify command. complete_ferment_phase re-runs declared verifies deterministically before grading, and the grader receives exactly what ran — verify-less runtime-claim plans now grade worse. Add behavioral verify commands via refine_ferment_phase if these steps make runtime claims."
+					: ""
 			return toolOk(
 				withNextActionHint(
-					`"${phase.name}" refined with ${refined?.steps.length ?? 0} step(s).\nferment_id: ${outcome.ferment.id}\nphase_id: ${phase.id}\n${stepList}`,
+					`"${phase.name}" refined with ${refined?.steps.length ?? 0} step(s).\nferment_id: ${outcome.ferment.id}\nphase_id: ${phase.id}\n${stepList}${verifyAdvisory}`,
 					outcome.ferment,
 					multiModelEnabled,
 				),

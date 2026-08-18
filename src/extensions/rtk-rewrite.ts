@@ -1,11 +1,7 @@
 import { execFile, execFileSync } from "node:child_process"
 import { existsSync } from "node:fs"
-import {
-	type BashOperations,
-	type BashSpawnContext,
-	createLocalBashOperations,
-	type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent"
+import { type BashOperations, createLocalBashOperations, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { parse as parseShell } from "shell-quote"
 import { applyEnabledBashHooks } from "../resources/bash-hooks.js"
 import { globalRtkLinkPath, managedRtkPath } from "../resources/rtk-install.js"
 import { isResourceEnabled } from "../resources/store.js"
@@ -64,34 +60,83 @@ export function detectRtk(): Promise<boolean> {
 }
 
 /**
- * Package-manager script invocations that RTK must not rewrite.
+ * Package-manager invocations that RTK must not rewrite.
  *
  * RTK hijacks subcommand names that collide with its own — the most painful
  * example is `pnpm lint` / `pnpm run lint` → `rtk lint` (its own ESLint
  * wrapper), which breaks projects that use Biome or other linters.
  *
- * Rather than maintaining an allowlist of pnpm built-ins, we passthrough
- * ALL `pnpm …` commands.  RTK's token-compression benefit on pnpm subcommands
- * is negligible compared to the risk of future subcommand name collisions.
- * Other package managers (`npm run`, `yarn run`, `bun run`) are also
- * passed through because they may invoke arbitrary user-defined scripts.
+ * Rather than maintaining an allowlist of package-manager built-ins, we pass
+ * through every invocation of the supported package managers and launchers.
+ * RTK's token-compression benefit on these commands is negligible compared to
+ * the risk of current or future subcommand collisions.
  */
-const RTK_PASSTHROUGH_RE = /^\s*(pnpm|npm\s+run|yarn\s+run|bun\s+run)\b|^\s*(npx|bunx)\s/
+const RTK_PASSTHROUGH_COMMANDS = new Set(["pnpm", "npm", "yarn", "bun", "npx", "bunx"])
+
+// Shell operators that begin another executable command context. shell-quote
+// keeps quoted operators inside string tokens, avoiding substring matches such
+// as `echo "pnpm test"`. Opening subshell/process-substitution operators are
+// included so nested commands such as `$(pnpm test)` and `<(pnpm test)` are
+// checked independently from their outer command. Quoted source passed to a
+// nested shell, such as `bash -c 'pnpm test'`, remains outside this policy.
+const COMMAND_SEPARATORS = new Set(["||", "&&", "|&", "&", ";", "|", "(", "<("])
+const LEADING_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/
+const COMMAND_PREFIXES = new Set(["!", "{", "if", "then", "elif", "else", "while", "until", "do", "time"])
+const FULL_LINE_COMMENT_RE = /^[\t ]*#[^\r\n]*(?:\r?\n|$)/gm
+
+function segmentInvokesPassthroughCommand(tokens: string[]): boolean {
+	let commandIndex = 0
+	while (commandIndex < tokens.length) {
+		const token = tokens[commandIndex]
+		if (token === undefined) return false
+		if (!LEADING_ASSIGNMENT_RE.test(token) && !COMMAND_PREFIXES.has(token)) break
+		commandIndex++
+	}
+
+	const command = tokens[commandIndex]
+	if (command === undefined) return false
+	return RTK_PASSTHROUGH_COMMANDS.has(command)
+}
 
 /**
  * Returns true for commands that must bypass RTK rewriting entirely.
  */
 export function isRtkPassthrough(command: string): boolean {
-	return RTK_PASSTHROUGH_RE.test(command)
+	try {
+		// shell-quote treats a comment as extending to the end of its input and
+		// newlines as whitespace. Remove full-line comments before normalizing
+		// newlines so a following command is still parsed as its own segment.
+		const entries = parseShell(command.replace(FULL_LINE_COMMENT_RE, "").replace(/\r?\n/g, ";"))
+		let segment: string[] = []
+
+		for (const entry of entries) {
+			if (typeof entry === "string") {
+				segment.push(entry)
+				continue
+			}
+
+			if ("op" in entry && COMMAND_SEPARATORS.has(entry.op)) {
+				if (segmentInvokesPassthroughCommand(segment)) return true
+				segment = []
+			}
+		}
+
+		return segmentInvokesPassthroughCommand(segment)
+	} catch {
+		// RTK is an optional optimization. If we cannot safely classify a shell
+		// command, preserve its original semantics instead of asking RTK to
+		// reinterpret malformed or unsupported syntax.
+		return true
+	}
 }
 
 /**
  * Synchronously ask `rtk rewrite` to compress / rewrite a command string.
- * Used as a pi-mono BashSpawnHook (which must be synchronous).
+ * Used by the synchronous `tool_call` extension event before Bash execution.
  *
  * Returns the original command unchanged when:
  *   - rtk is not available or hooks.rtk-rewrite is disabled
- *   - the command is a package-manager script invocation (passthrough)
+ *   - the command invokes a passthrough package manager or launcher
  *   - rtk returns empty output or the same string
  *   - the subprocess times out or fails to spawn
  */
@@ -126,17 +171,6 @@ const rewriteCache = new Map<string, string>()
 export function getBashCommandForDisplay(command: string | undefined): string | undefined {
 	if (!command) return command
 	return rewriteCache.get(command) ?? command
-}
-
-/**
- * BashSpawnHook for pi-mono's createBashToolDefinition.
- * Rewrites the command through `rtk rewrite` before the shell spawns.
- * Caches the result so renderCall can display it without a subprocess.
- */
-export function rtkSpawnHook(context: BashSpawnContext): BashSpawnContext {
-	const rewritten = rewriteWithRtk(context.command)
-	rewriteCache.set(context.command, rewritten)
-	return rewritten !== context.command ? { ...context, command: rewritten } : context
 }
 
 /** Reset cached detection state (for tests). */

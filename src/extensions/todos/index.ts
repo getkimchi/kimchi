@@ -3,7 +3,8 @@ import { isAgentWorker } from "../agent-worker-context.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { registerTodoContextState } from "./context-state.js"
-import { appendTodoPromptBlockIfMissing, registerTodoPromptBlock } from "./prompt-block.js"
+import { registerFermentTodoPromptBlock } from "./ferment-prompt-block.js"
+import { registerTodoPromptBlock } from "./prompt-block.js"
 import {
 	bumpToolCallsSinceTodoWrite,
 	bumpWorkToolCalls,
@@ -29,8 +30,10 @@ import {
 
 export * from "./command.js"
 export * from "./constants.js"
+export * from "./ferment-prompt-block.js"
 export * from "./prompt-block.js"
 export * from "./reducer.js"
+export * from "./state-markdown.js"
 export * from "./store.js"
 export * from "./tool.js"
 export * from "./types.js"
@@ -75,7 +78,7 @@ function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager,
 	)
 }
 
-const TODO_EARLY_NUDGE_THRESHOLD = 5
+export const TODO_EARLY_NUDGE_THRESHOLD = 5
 
 const TODO_EARLY_NUDGE_MESSAGE =
 	"You are working on a multi-step task without a todo list. Consider creating one to plan your approach — pair the create_todos call with your next work tool call in the same turn."
@@ -92,13 +95,16 @@ function hiddenTodoMessage(text: string) {
 export default function todosExtension(pi: ExtensionAPI): void {
 	registerTodosTool(pi)
 	registerTodoPromptBlock(pi)
+	registerFermentTodoPromptBlock(pi)
 
 	registerTodoContextState(pi)
 
-	pi.on("before_agent_start", (event) => {
-		const systemPrompt = appendTodoPromptBlockIfMissing(event.systemPrompt)
-		return systemPrompt ? { systemPrompt } : undefined
-	})
+	// No `before_agent_start` fallback appending the guidance block is
+	// registered here, on purpose: prompt-enrichment (registered earlier in
+	// cli.ts) rebuilds the prompt on every turn via buildSystemPrompt, which
+	// always includes this session's todo-guidance block. A silent patch
+	// handler would mask a block-pipeline regression that the cache-stability
+	// contract tests are designed to catch.
 
 	if (isAgentWorker()) return
 

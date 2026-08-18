@@ -16,9 +16,11 @@ export function createExtensionApi(overrides: Partial<ExtensionAPI> = {}): {
 		handlers.set(event, registered)
 	})
 	const sendMessage = vi.fn<ExtensionAPI["sendMessage"]>()
+	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
+	const registerTool = vi.fn<ExtensionAPI["registerTool"]>()
 
 	return {
-		api: { ...overrides, on, sendMessage } as ExtensionAPI,
+		api: { ...overrides, on, registerCommand, registerTool, sendMessage } as ExtensionAPI,
 		getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R> {
 			const handler = handlers.get(event)?.[0]
 			if (!handler) throw new Error(`Extension did not register a ${event} handler`)

@@ -46,12 +46,12 @@ import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai"
 import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
-	AuthStorage,
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionFactory,
 	initTheme,
 	ModelRegistry,
+	ModelRuntime,
 	type SessionInfo as PiSessionInfo,
 	type SessionHeader,
 	SessionManager,
@@ -237,8 +237,11 @@ export class KimchiAcpAgent implements Agent {
 
 		this.clientCapabilities = request.clientCapabilities
 
-		const authStorage = AuthStorage.create(join(this.agentDir, "auth.json"))
-		const modelRegistry = ModelRegistry.create(authStorage, join(this.agentDir, "models.json"))
+		const modelRuntime = await ModelRuntime.create({
+			authPath: join(this.agentDir, "auth.json"),
+			modelsPath: join(this.agentDir, "models.json"),
+		})
+		const modelRegistry = new ModelRegistry(modelRuntime)
 		const supportsImages = modelRegistry.getAvailable().some((m) => m.input?.includes("image"))
 
 		// ACP Registry compliance: advertise at least one auth method. Agent Auth
@@ -356,10 +359,13 @@ export class KimchiAcpAgent implements Agent {
 		clearApiKey()
 
 		// Clear stored OAuth credentials (refresh tokens etc.) for the
-		// kimchi-dev provider from auth.json. AuthStorage.create is cheap —
-		// it reads auth.json lazily on access.
-		const authStorage = AuthStorage.create(join(this.agentDir, "auth.json"))
-		authStorage.logout(KIMCHI_PROVIDER_ID)
+		// kimchi-dev provider from auth.json.
+		const modelRuntime = await ModelRuntime.create({
+			authPath: join(this.agentDir, "auth.json"),
+			modelsPath: join(this.agentDir, "models.json"),
+			refreshOnCreate: false,
+		})
+		await modelRuntime.logout(KIMCHI_PROVIDER_ID)
 
 		return {}
 	}
@@ -502,8 +508,9 @@ export class KimchiAcpAgent implements Agent {
 		}
 		const { session } = record
 		const sessionId = session.sessionId
+		const modelRegistry = getSessionModelRegistry(session)
 		if (value === "multi-model") {
-			const { model: orchestrator, modelRef: orchRef } = getOrchestratorModel(session.sessionId, session.modelRegistry)
+			const { model: orchestrator, modelRef: orchRef } = getOrchestratorModel(session.sessionId, modelRegistry)
 			if (!orchestrator) {
 				throw RequestError.invalidParams(undefined, `multi-model orchestrator (${orchRef}) is not available`)
 			}
@@ -526,9 +533,9 @@ export class KimchiAcpAgent implements Agent {
 				`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
 			)
 		}
-		const target = session.modelRegistry.find(provider, modelId)
+		const target = modelRegistry.find(provider, modelId)
 		if (!target) {
-			const available = session.modelRegistry
+			const available = modelRegistry
 				.getAvailable()
 				.map((m) => refFromModel(m))
 				.sort()
@@ -1321,11 +1328,31 @@ export class KimchiAcpAgent implements Agent {
 		})
 	}
 
+	private emitUsageUpdate(entry: SessionRecord): void {
+		const session = entry.session
+		const ctx = session.getContextUsage()
+		const used = ctx?.tokens ?? session.getSessionStats().tokens.total
+		const size = session.model?.contextWindow ?? ctx?.contextWindow
+		if (used == null || !size) return
+		this.send({
+			sessionId: session.sessionId,
+			update: {
+				sessionUpdate: "usage_update",
+				used,
+				size,
+			},
+		})
+	}
+
 	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {
 		const turn = entry.turn
 		if (!turn) return
 		entry.turn = undefined
-		turn.resolve({ stopReason })
+		try {
+			this.emitUsageUpdate(entry)
+		} finally {
+			turn.resolve({ stopReason })
+		}
 	}
 
 	private failTurn(entry: SessionRecord, err: unknown): void {
@@ -1364,22 +1391,31 @@ export function buildPermissionsConfigOption(currentMode: PermissionMode): Sessi
  * Combines the orchestrator model with multi-model support into a single select UI.
  * Exported for testing.
  */
-export function buildModelConfigOption(
-	session: Pick<AgentSession, "model" | "modelRegistry" | "sessionId" | "sessionManager">,
-): SessionConfigOption {
+type AgentSessionModelConfig = Pick<AgentSession, "model" | "modelRuntime" | "sessionId" | "sessionManager"> & {
+	modelRegistry?: ModelRegistry
+}
+
+function getSessionModelRegistry(
+	session: Pick<AgentSession, "modelRuntime"> & { modelRegistry?: ModelRegistry },
+): ModelRegistry {
+	return session.modelRegistry ?? new ModelRegistry(session.modelRuntime)
+}
+
+export function buildModelConfigOption(session: AgentSessionModelConfig): SessionConfigOption {
 	const multiModelEnabled = getMultiModelEnabled(session.sessionManager)
+	const modelRegistry = getSessionModelRegistry(session)
 	const {
 		model: orchestrator,
 		modelRef: orchRef,
 		modelId: orchId,
-	} = getOrchestratorModel(session.sessionId, session.modelRegistry)
+	} = getOrchestratorModel(session.sessionId, modelRegistry)
 	const orchName = orchestrator?.name ?? orchId ?? orchRef
 	const options = [
 		{
 			value: "multi-model",
 			name: `Multi-model (${orchName})`,
 		},
-		...session.modelRegistry
+		...modelRegistry
 			.getAvailable()
 			.map((m) => ({
 				value: refFromModel(m),

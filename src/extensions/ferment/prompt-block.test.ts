@@ -174,6 +174,81 @@ describe("buildFermentPromptBlock", () => {
 		})
 	})
 
+	describe("current lifecycle state section", () => {
+		const runningWithActivePhase: Partial<Ferment> = {
+			status: "running",
+			phases: [
+				{
+					id: "phase-1",
+					index: 1,
+					name: "Build the feature",
+					goal: "Ship it",
+					status: "active",
+					steps: [
+						{ id: "step-1", index: 1, description: "Do thing one", status: "done" },
+						{ id: "step-2", index: 2, description: "Do thing two", status: "pending" },
+					],
+				},
+			],
+		}
+
+		// Regression: after "Start as ferment" handoffs, /ferment resume, and
+		// post-compaction continuations, the planner supplement did not state the
+		// ferment's current position, so the model wasted turns re-running
+		// discovery (list_ferments) and re-drafting the scope (scope_ferment),
+		// which the FSM rejected (already PHASE_ACTIVE).
+		//
+		// The static anti-replanning guidance stays in the system prompt; the
+		// volatile details (active phase, step progress, next-action hint) are
+		// injected via the transient context event by lifecycle-context.ts.
+		it("running ferment states that scoping is complete and scoping calls will be rejected", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime(runningWithActivePhase)) ?? ""
+			expect(out).toContain("## Current lifecycle state")
+			expect(out).toContain("Scoping is COMPLETE")
+			expect(out).not.toContain("active phase")
+			expect(out).not.toContain("steps terminal")
+			for (const forbidden of [
+				"list_ferments",
+				"scope_ferment",
+				"propose_ferment_scoping",
+				"confirm_ferment_completion_criteria",
+			]) {
+				expect(out).toContain(`\`${forbidden}\``)
+			}
+			expect(out).toContain("Scope mutations will be rejected in this lifecycle state")
+			expect(out).toContain("`ask_user` remains available for genuine execution blockers or recovery")
+		})
+
+		it("does not include volatile next-action hint in the system prompt", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime(runningWithActivePhase)) ?? ""
+			// The planner supplement mentions "Next action:" as an instruction, but the
+			// volatile hint line ("- Next action: call `start_ferment_step`...") must
+			// not appear in the static system prompt.
+			expect(out).not.toContain("- Next action: call")
+			expect(out).not.toContain('step_id "step-2"')
+		})
+
+		it("planned ferment still shows the static lifecycle state section", () => {
+			const activePhase = runningWithActivePhase.phases?.[0]
+			if (!activePhase) throw new Error("expected active phase fixture")
+			const plannedPhase = {
+				...activePhase,
+				status: "planned" as const,
+			}
+			const out =
+				buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "planned", phases: [plannedPhase] })) ??
+				""
+			expect(out).toContain("## Current lifecycle state")
+			expect(out).not.toContain("- Next action: call")
+		})
+
+		it("still prepends the section before the planner supplement", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime(runningWithActivePhase)) ?? ""
+			expect(out.indexOf("## Current lifecycle state")).toBeGreaterThanOrEqual(0)
+			expect(out.indexOf("## Current lifecycle state")).toBeLessThan(out.indexOf(STATE_MACHINE_HEADER))
+		})
+	})
+
 	describe("rule-survival — load-bearing substrings", () => {
 		const PI_BY_NAME = { normal: PI_NORMAL, oneshot: PI_ONESHOT }
 
@@ -528,14 +603,15 @@ describe("buildFermentPromptBlock", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
 			expect(out).not.toContain("NEVER implement a step inline")
 			expect(out).not.toContain("NEVER write, edit, or read files yourself")
-			expect(out).toContain("may execute steps directly")
+			expect(out).toContain("Execute steps directly with bash/edit/write")
+			expect(out).toContain("Delegation is for exceptions, not the default")
 		})
 
 		it("contains delegation guidance for when to delegate vs work directly", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
-			expect(out).toContain("Prefer direct execution for narrow fixes")
-			expect(out).toContain("Prefer delegation for parallel work")
-			expect(out).toContain("If a subagent aborts on a step")
+			expect(out).toContain("residue-heavy steps")
+			expect(out).toContain("Measured rationale: direct execution completed 28 steps")
+			expect(out).toContain("If a worker aborts mid-step, resume it with resume_subagent")
 		})
 
 		it("relaxes turn discipline — allows thinking turns", () => {

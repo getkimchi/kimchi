@@ -1,20 +1,10 @@
-# Patch: kimchi-dev fixes for pi-tui
+# Patch: Kimchi stroke rendering and scrollback behavior for pi-tui 0.84.1
 #
-# NOTE for upgraders: `pnpm patch-commit` regenerates this file and STRIPS this
-# header — re-add it (and re-run `pnpm install` to refresh the lockfile hash)
-# after every regeneration.
+# Tracking: https://github.com/getkimchi/kimchi/issues/863
+# Changes: account for stroke width in box/text/markdown rendering and make
+# scrollback clearing opt-in to avoid viewport jumps in long iTerm2 sessions.
+# Removal: delete when the pinned Pi TUI release provides both behaviors.
 #
-# Changes included:
-#   1. dist/components/box.js       — stroke-width accounting for bordered boxes
-#   2. dist/components/markdown.js  — stroke-width accounting for bordered markdown
-#   3. dist/components/text.js      — stroke-width accounting for bordered text
-#   4. dist/utils.js                — applyStrokeToLine helper
-#   5. dist/tui.js                  — make ESC[3J (erase scrollback) opt-in via
-#                                    PI_TUI_NO_CLEAR_SCROLLBACK=1 to avoid iTerm2
-#                                    snapping the viewport to the session start
-#                                    in long sessions / large diffs.
-#                                    See: https://github.com/getkimchi/kimchi/issues/863
-
 diff --git a/dist/components/box.js b/dist/components/box.js
 index 5de0f24bfe4e9ccb7b9476dae9ea55f882acce75..e8bf2e8986ec53c8189a58764e47e16d50d8793a 100644
 --- a/dist/components/box.js
@@ -51,28 +41,29 @@ index 5de0f24bfe4e9ccb7b9476dae9ea55f882acce75..e8bf2e8986ec53c8189a58764e47e16d
          return padded;
      }
 diff --git a/dist/components/markdown.js b/dist/components/markdown.js
-index 64766013e0705ff953cbdcfd3b8ac94913c3b623..ccef50d93ac2ae2987db927f9b67d22817b4b987 100644
+index 8f0ef3bef6645d790932cbb9eaf4c2fdb2849b7c..c078a5ad7250232972727d6f1052912089cbd5c6 100644
 --- a/dist/components/markdown.js
 +++ b/dist/components/markdown.js
-@@ -1,6 +1,6 @@
+@@ -1,7 +1,7 @@
  import { Marked, Tokenizer } from "marked";
+ import { renderLatex } from "../latex.js";
  import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.js";
 -import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.js";
 +import { STROKE_WIDTH, applyStrokeToLine, visibleWidth, wrapTextWithAnsi } from "../utils.js";
  const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
  class StrictStrikethroughTokenizer extends Tokenizer {
      del(src) {
-@@ -78,7 +78,8 @@ export class Markdown {
+@@ -182,7 +182,8 @@ export class Markdown {
              return this.cachedLines;
          }
          // Calculate available width for content (subtract horizontal padding)
 -        const contentWidth = Math.max(1, width - this.paddingX * 2);
 +        const strokeWidth = this.defaultTextStyle?.bgColor ? STROKE_WIDTH : 0;
 +        const contentWidth = Math.max(1, width - this.paddingX * 2 - strokeWidth);
+         const text = this.options.transform?.(this.text, contentWidth) ?? this.text;
          // Don't render anything if there's no actual text
-         if (!this.text || this.text.trim() === "") {
-             const result = [];
-@@ -126,21 +127,22 @@ export class Markdown {
+         if (!text || text.trim() === "") {
+@@ -231,21 +232,22 @@ export class Markdown {
                  continue;
              }
              const lineWithMargins = leftMargin + line + rightMargin;
@@ -151,27 +142,27 @@ index 0d840239c41181e24dfc60237c3338081c6b48d5..7208d53add7d89955c799f73d9d5ce13
              emptyLines.push(line);
          }
          const result = [...emptyLines, ...contentLines, ...emptyLines];
-diff --git a/dist/tui.js b/dist/tui.js
-index 62574431ce65ff9e6d7e68407b2563dcef5c8f3e..60fa69fd09776448a88e67d4e0ce0e4fb9640871 100644
---- a/dist/tui.js
-+++ b/dist/tui.js
-@@ -1004,7 +1004,10 @@ export class TUI extends Container {
+diff --git a/dist/tui-main-screen.js b/dist/tui-main-screen.js
+index 05279f4699c298ca345785dd2f896a33d8271f4a..2f8c183515b8bc8b967fa441ad10b371d245b07b 100644
+--- a/dist/tui-main-screen.js
++++ b/dist/tui-main-screen.js
+@@ -181,7 +181,10 @@ export class TuiMainScreen extends TuiBase {
              let buffer = "\x1b[?2026h"; // Begin synchronized output
              if (clear) {
                  buffer += this.deleteKittyImages(this.previousKittyImageIds);
 -                buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback
 +                buffer += "\x1b[2J\x1b[H"; // Clear screen and home
 +                if (process.env.PI_TUI_NO_CLEAR_SCROLLBACK !== "1") {
-+                    buffer += "\x1b[3J"; // Clear scrollback (disabled by PI_TUI_NO_CLEAR_SCROLLBACK=1 to avoid iTerm2 viewport jump)
++                    buffer += "\x1b[3J"; // Clear scrollback unless disabled to avoid iTerm2 viewport jumps
 +                }
              }
              for (let i = 0; i < newLines.length; i++) {
                  if (i > 0)
 diff --git a/dist/utils.js b/dist/utils.js
-index bc550a400f3ac921263a8f2fa1753335b4fded8c..a9314e7ed5f39c4f31a5d38b17f84c07ccce8020 100644
+index 9621f90fa35d800a46107274853c71bbc8c654f6..4df119d2aff44b7b39f0a2019e7f0c8e030a7be5 100644
 --- a/dist/utils.js
 +++ b/dist/utils.js
-@@ -807,6 +807,30 @@ export function applyBackgroundToLine(line, width, bgFn) {
+@@ -938,6 +938,30 @@ export function applyBackgroundToLine(line, width, bgFn) {
      const withPadding = line + padding;
      return bgFn(withPadding);
  }

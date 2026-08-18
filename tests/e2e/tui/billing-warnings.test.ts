@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { waitForText } from "./support/assertions.js"
+import { INPUT_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -183,7 +183,13 @@ test("shows caller budget in the footer and command, then refreshes a budget war
 			await waitForText(terminal, "Credits: $18.40", { full: true })
 			await waitForText(terminal, "Budget: 13.73% ($274.59/$2k)", { full: true })
 
-			terminal.submit("/budget")
+			// Type the command and wait for it to echo, then press Enter on its own.
+			// A one-shot submit can drop the command's leading `/`, which appears to
+			// happen when the Enter bytes merge with the command text in one pty read.
+			// Same approach as the theme-selector and todo-overlay tests.
+			terminal.write("/budget")
+			await waitForText(terminal, "/budget", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
 			await waitForText(terminal, "Budget  Jul 1–Aug 1 UTC", { full: true })
 			await waitForText(terminal, "Personal", { full: true })
 			await waitForText(terminal, "Organization per-user hard", { full: true })

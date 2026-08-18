@@ -1,167 +1,35 @@
-# Patch: kimchi-dev runtime extensions for pi-coding-agent
+# Patch: Kimchi runtime and UI integrations for pi-coding-agent 0.84.1
 #
-# NOTE for upgraders: `pnpm patch-commit` regenerates this file and STRIPS this
-# header — re-add it (and re-run `pnpm install` to refresh the lockfile hash)
-# after every regeneration. Patches port textually but can break semantically:
-# verify that every symbol referenced by added lines still exists in the new
-# upstream version (e.g. 0.79.10 removed the `setTheme` import from
-# interactive-mode.js, which previewTheme used to call).
+# Tracking: LLM-2564. No matching upstream issue exists yet; report remaining
+# generic changes to https://github.com/earendil-works/pi before the next upgrade.
+# Retains Kimchi CLI/provider defaults, extension-triggered prompt handling,
+# forced compaction, model selection, extension UI helpers, and compact visuals.
+# Removal: delete each hunk once the pinned Pi release exposes equivalent APIs
+# or Kimchi no longer needs the branded behavior.
 #
-# Changes included:
-#   1. dist/cli/args.js         — expose KIMCHI_API_KEY in --help env-var block;
-#                                 add "xhigh" and "max" to VALID_THINKING_LEVELS
-#                                 and --thinking help text so the CLI accepts them.
-#   2. dist/core/extensions/runner.js — add emitBeforeProviderHeaders(headers) method,
-#                                       mirroring emitBeforeProviderRequest pattern
-#   3. dist/core/sdk.js         — call emitBeforeProviderHeaders in streamFn after
-#                                 static header assembly, so extensions can inject
-#                                 per-request dynamic headers (X-Session-Id, X-Turn-Index)
-#   4. dist/core/agent-session.js — set agent.prepareNextTurn to refresh context.tools
-#                                   from state.tools after each tool batch, enabling
-#                                   mid-run setActiveTools() calls to take effect on
-#                                   the next model response within the same agent run.
-#                                   Also add "xhigh" and "max" to the THINKING_LEVELS
-#                                   fallback constant so getAvailableThinkingLevels()
-#                                   returns them when no model is set.
-#                                   Also make setActiveToolsByName() and the
-#                                   resources-discovered reload path preserve an
-#                                   extension-installed system prompt (any prompt that
-#                                   differs from _baseSystemPrompt, e.g. a
-#                                   before_agent_start override) instead of resetting
-#                                   to the default prompt. Upstream tracking:
-#                                   https://github.com/earendil-works/pi-mono/issues/new
-#                                   (file alongside PR; see .kimchi/docs/pi-default-prompt-investigation.md).
-#                                   Removal criteria: upstream setActiveToolsByName /
-#                                   resource reload no longer clobber a non-base
-#                                   systemPrompt, or upstream adds a prompt
-#                                   re-resolution hook we adopt instead.
-#                                   Also fire before_agent_start in sendCustomMessage's
-#                                   triggerTurn branch (mirroring prompt()), so
-#                                   extensions that install the system prompt only in
-#                                   that hook run for sessions driven entirely by
-#                                   extension-triggered turns (kimchi ferment / one-shot
-#                                   flows) instead of staying on the default base prompt.
-#                                   Removal criteria: upstream emits before_agent_start
-#                                   for extension-triggered turns (or moves prompt
-#                                   resolution out of prompt()).
-#   5. dist/modes/interactive/  — miscellaneous upstream UI fixes bundled in this patch
-#   6. dist/modes/interactive/interactive-mode.js — add previewTheme(name) and
-#      dist/core/extensions/types.d.ts              showError(message) to createExtensionUIContext,
-#                                                   and their type declarations to ExtensionUIContext.
-#
-#                                 previewTheme applies a theme live by delegating to
-#                                 InteractiveThemeController.preview() (the same path as
-#                                 the internal onThemePreview callback used by /settings),
-#                                 WITHOUT the settingsManager.setTheme() persistence that
-#                                 the public ui.setTheme() includes.
-#
-#                                 Why a patch is required: the public ExtensionUIContext conflates
-#                                 "change the rendered theme" and "persist to settingsManager" —
-#                                 the public ui.setTheme() always does both. Theme preview already exists
-#                                 inside InteractiveMode (used by /settings via the private
-#                                 themeController.preview()); the patch simply promotes it to the
-#                                 extension API surface. There is no public-API-only workaround: the
-#                                 only alternative is ui.setTheme() on each arrow-key press, which
-#                                 writes to disk every keystroke and leaves a dirty settings state
-#                                 if the user cancels.
 diff --git a/dist/cli/args.js b/dist/cli/args.js
-index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..63ca4495adc5dc3428d45f3a8bfaa3b7cc6a1d65 100644
+index e66b528fe676bd24ee5ad95abaa6201418850678..a15fe8267bfe863a8becaadc0f894ace5db70767 100644
 --- a/dist/cli/args.js
 +++ b/dist/cli/args.js
-@@ -3,7 +3,7 @@
-  */
- import chalk from "chalk";
- import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.js";
--const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
-+const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
- export function isValidThinkingLevel(level) {
-     return VALID_THINKING_LEVELS.includes(level);
- }
-@@ -246,7 +246,7 @@ ${chalk.bold("Options:")}
-                                  Applies to built-in, extension, and custom tools
-   --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable
-                                  Applies to built-in, extension, and custom tools
--  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh
-+  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max
-   --extension, -e <path>         Load an extension file (can be used multiple times)
-   --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)
-   --skill <path>                 Load a skill file or directory (can be used multiple times)
-@@ -321,6 +321,7 @@ ${chalk.bold("Examples:")}
+@@ -346,6 +346,7 @@ ${chalk.bold("Examples:")}
    ${APP_NAME} --export session.jsonl output.html
  
  ${chalk.bold("Environment Variables:")}
 +  KIMCHI_API_KEY                   - Kimchi API key (auto-login when not already configured)
+   ANTHROPIC_AUTH_TOKEN             - Anthropic bearer auth token
    ANTHROPIC_API_KEY                - Anthropic Claude API key
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
-   ANT_LING_API_KEY                 - Ant Ling API key
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 3b2c24d1b52869e351ea488f0c535c34eaedf127..2006918a17488764ffc7fd7cf4aee973e98d6e5d 100644
+index ce8a9a2a613c08de483a6c94ef4f6341efff0457..a544673865fbe886ae36b03f755b16b923a61e8f 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
-@@ -60,7 +60,7 @@
- // Constants
- // ============================================================================
- /** Standard thinking levels */
--const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"];
-+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
- // ============================================================================
- // AgentSession Class
- // ============================================================================
-@@ -203,6 +203,20 @@
-                 throw new Error(`Extension failed, blocking execution: ${String(err)}`);
-             }
-         };
-+        // Refresh context.tools from state.tools after every tool batch so that
-+        // mid-run setActiveTools() calls (e.g. the planning→implementation profile
-+        // transition fired by activate_ferment_phase) are visible to the next model
-+        // response within the same agent run. Without this, createContextSnapshot()
-+        // snaps tools once at prompt/continue time and the loop never updates them.
-+        this.agent.prepareNextTurn = async (_signal) => {
-+            return {
-+                context: {
-+                    systemPrompt: this.agent.state.systemPrompt,
-+                    messages: this.agent.state.messages.slice(),
-+                    tools: this.agent.state.tools.slice(),
-+                },
-+            };
-+        };
-         this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
-             const runner = this._extensionRunner;
-             if (!runner.hasHandlers("tool_result")) {
-@@ -558,9 +572,17 @@
-             }
-         }
-         this.agent.state.tools = tools;
--        // Rebuild base system prompt with new tool set
-+        // Rebuild base system prompt with new tool set.
-+        // kimchi-dev: preserve an extension-installed system prompt (e.g. a
-+        // before_agent_start override). This method's contract is to change the
-+        // tool set; unconditionally resetting state.systemPrompt would discard
-+        // extension-built prompts mid-run, degrading the model to the default
-+        // prompt until the next user prompt re-fires before_agent_start.
-+        const systemPromptOverride = this.agent.state.systemPrompt !== this._baseSystemPrompt
-+            ? this.agent.state.systemPrompt
-+            : undefined;
-         this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
--        this.agent.state.systemPrompt = this._baseSystemPrompt;
-+        this.agent.state.systemPrompt = systemPromptOverride ?? this._baseSystemPrompt;
-     }
-     /** Whether compaction or branch summarization is currently running */
-     get isCompacting() {
-@@ -1001,7 +1023,42 @@
+@@ -1087,7 +1087,37 @@ export class AgentSession {
              }
          }
          else if (options?.triggerTurn) {
 -            await this._runAgentPrompt(appMessage);
-+            // kimchi-dev: fire before_agent_start for extension-triggered turns,
-+            // mirroring prompt(). Extensions that install the system prompt (or
-+            // inject context messages) only in that hook otherwise never run when
-+            // a session is driven entirely by sendCustomMessage(..., { triggerTurn:
-+            // true }) or followUp delivery (kimchi ferment/one-shot flows), leaving
-+            // the agent on the default base prompt for the whole run.
++            // kimchi-dev: mirror prompt() for extension-triggered turns.
 +            const triggerMessages = [appMessage];
-+            // content may be a plain string (agent-completion notifications,
-+            // feedback nudges) or ContentPart[] — normalize before extracting text.
 +            const triggerParts = Array.isArray(appMessage.content)
 +                ? appMessage.content
 +                : [{ type: "text", text: String(appMessage.content) }];
@@ -175,36 +43,36 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..2006918a17488764ffc7fd7cf4aee973
 +                    triggerMessages.unshift({
 +                        role: "custom",
 +                        customType: msg.customType,
-+                        content: msg.content,
++                        content: msg.content ?? [],
 +                        display: msg.display,
 +                        details: msg.details,
 +                        timestamp: Date.now(),
 +                    });
 +                }
 +            }
-+            if (beforeResult?.systemPrompt) {
++            if (beforeResult?.systemPrompt !== undefined) {
++                this._systemPromptOverride = beforeResult.systemPrompt;
 +                this.agent.state.systemPrompt = beforeResult.systemPrompt;
 +            }
 +            else {
++                this._systemPromptOverride = undefined;
 +                this.agent.state.systemPrompt = this._baseSystemPrompt;
 +            }
 +            await this._runAgentPrompt(triggerMessages);
          }
          else {
              this.agent.state.messages.push(appMessage);
-@@ -1270,8 +1327,9 @@
-      * Manually compact the session context.
+@@ -1364,7 +1394,7 @@ export class AgentSession {
       * Aborts current agent operation first.
       * @param customInstructions Optional instructions for the compaction summary
-+     * @param force If true, compact even when the session is below the normal size threshold
       */
 -    async compact(customInstructions) {
 +    async compact(customInstructions, force = false) {
-         this._disconnectFromAgent();
          await this.abort();
          this._compactionAbortController = new AbortController();
-@@ -1283,14 +1341,21 @@
-             const { apiKey, headers, env } = await this._getCompactionRequestAuth(this.model);
+         this._emit({ type: "compaction_start", reason: "manual" });
+@@ -1375,14 +1405,21 @@ export class AgentSession {
+             const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
              const pathEntries = this.sessionManager.getBranch();
              const settings = this.settingsManager.getCompactionSettings();
 -            const preparation = prepareCompaction(pathEntries, settings);
@@ -227,22 +95,17 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..2006918a17488764ffc7fd7cf4aee973
              }
              let extensionCompaction;
              let fromExtension = false;
-@@ -1678,8 +1743,13 @@
-             themePaths: this.buildExtensionResourcePaths(themePaths),
+@@ -1776,7 +1813,8 @@ export class AgentSession {
          };
          this._resourceLoader.extendResources(extensionPaths);
-+        // kimchi-dev: same override preservation as setActiveToolsByName — newly
-+        // discovered resources must not discard an extension-installed prompt.
-+        const systemPromptOverride = this.agent.state.systemPrompt !== this._baseSystemPrompt
-+            ? this.agent.state.systemPrompt
-+            : undefined;
          this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
 -        this.agent.state.systemPrompt = this._baseSystemPrompt;
-+        this.agent.state.systemPrompt = systemPromptOverride ?? this._baseSystemPrompt;
++        // kimchi-dev: preserve a before_agent_start prompt across resource reloads.
++        this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
      }
      buildExtensionResourcePaths(entries) {
          return entries.map((entry) => {
-@@ -1809,7 +1879,7 @@
+@@ -1911,7 +1949,7 @@ export class AgentSession {
              compact: (options) => {
                  void (async () => {
                      try {
@@ -251,46 +114,11 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..2006918a17488764ffc7fd7cf4aee973
                          options?.onComplete?.(result);
                      }
                      catch (error) {
-diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
-index 45d68a44d4fb1738509aae509ad7314150d87d74..305c751da224e124de5ddd6ada06deb70a9365d4 100644
---- a/dist/core/extensions/runner.js
-+++ b/dist/core/extensions/runner.js
-@@ -743,6 +743,30 @@ export class ExtensionRunner {
-         }
-         return currentPayload;
-     }
-+    async emitBeforeProviderHeaders(headers) {
-+        const ctx = this.createContext();
-+        let current = headers;
-+        for (const ext of this.extensions) {
-+            const handlers = ext.handlers.get("before_provider_headers");
-+            if (!handlers || handlers.length === 0)
-+                continue;
-+            for (const handler of handlers) {
-+                try {
-+                    const result = await handler({ type: "before_provider_headers", headers: current }, ctx);
-+                    if (result !== undefined)
-+                        current = result;
-+                } catch (err) {
-+                    this.emitError({
-+                        extensionPath: ext.path,
-+                        event: "before_provider_headers",
-+                        error: err instanceof Error ? err.message : String(err),
-+                        stack: err instanceof Error ? err.stack : undefined,
-+                    });
-+                }
-+            }
-+        }
-+        return current;
-+    }
-     async emitBeforeAgentStart(prompt, images, systemPrompt, systemPromptOptions) {
-         let currentSystemPrompt = systemPrompt;
-         const ctx = Object.defineProperties({}, Object.getOwnPropertyDescriptors(this.createContext()));
 diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
-index 32c62bef1e9797d2512557e3504d1aa52112ab7f..94cd217e715f5a471dba51717a9287c0b79514b2 100644
+index cb7b8e7cfb9d1fb07f4f8c3161d25927b3186e94..7ee0096f0bfc71534b34a17015525acd1bc45316 100644
 --- a/dist/core/extensions/types.d.ts
 +++ b/dist/core/extensions/types.d.ts
-@@ -188,6 +188,16 @@ export interface ExtensionUIContext {
+@@ -189,6 +189,16 @@ export interface ExtensionUIContext {
      getToolsExpanded(): boolean;
      /** Set tool output expansion state. */
      setToolsExpanded(expanded: boolean): void;
@@ -307,7 +135,7 @@ index 32c62bef1e9797d2512557e3504d1aa52112ab7f..94cd217e715f5a471dba51717a9287c0
  }
  export interface ContextUsage {
      /** Estimated context tokens, or null if unknown (e.g. right after compaction, before next LLM response). */
-@@ -198,6 +208,9 @@ export interface ContextUsage {
+@@ -199,6 +209,9 @@ export interface ContextUsage {
  }
  export interface CompactOptions {
      customInstructions?: string;
@@ -317,101 +145,52 @@ index 32c62bef1e9797d2512557e3504d1aa52112ab7f..94cd217e715f5a471dba51717a9287c0
      onComplete?: (result: CompactionResult) => void;
      onError?: (error: Error) => void;
  }
-diff --git a/dist/core/model-registry.js b/dist/core/model-registry.js
-index dff21eeeacc779bd1ee0ac30966384679967c30f..3925f317922d6cfaae208fe9491f7dec91c77a44 100644
---- a/dist/core/model-registry.js
-+++ b/dist/core/model-registry.js
-@@ -308,7 +308,8 @@ export class ModelRegistry {
-     }
-     /** Load built-in models and apply provider/model overrides */
-     loadBuiltInModels(overrides, modelOverrides) {
--        return getProviders().flatMap((provider) => {
-+        const allowed = process.env.KIMCHI_DISABLE_BUILTIN_PROVIDERS ? new Set(["kimchi-dev"]) : null;
-+        return getProviders().filter((p) => !allowed || allowed.has(p)).flatMap((provider) => {
-             const models = getModels(provider);
-             const providerOverride = overrides.get(provider);
-             const perModelOverrides = modelOverrides.get(provider);
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index 2bbfd7fa7c4234cf34afe47de4988f35566b2f4e..6ef3eb0560587cdbc8708297fd9ebcbdaf1124e7 100644
+index 6b2143e141ad2865616e42ae60b2f382fe443544..556e46322e8cb9ecbc17bc134b52c1cfa761cedf 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
-@@ -37,6 +37,7 @@ export const defaultModelPerProvider = {
+@@ -39,6 +39,7 @@ export const defaultModelPerProvider = {
      opencode: "kimi-k2.6",
      "opencode-go": "kimi-k2.6",
      "kimi-coding": "kimi-for-coding",
 +    "kimchi-dev": "minimax-m3",
      "cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
      "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
-     xiaomi: "mimo-v2.5-pro",
-diff --git a/dist/core/sdk.js b/dist/core/sdk.js
-index e386db6d62622a8c77c7d7e9844e63020d8af39a..f2f9e0161b47f7111df88f429c36feb74f9fbf76 100644
---- a/dist/core/sdk.js
-+++ b/dist/core/sdk.js
-@@ -186,6 +186,12 @@ export async function createAgentSession(options = {}) {
-             const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
-             const timeoutMs = options?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
-             const websocketConnectTimeoutMs = options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
-+            let headers = mergeProviderAttributionHeaders(model, settingsManager, options?.sessionId, auth.headers, options?.headers);
-+            // Let extensions inject per-request dynamic headers (e.g. X-Session-Id, X-Turn-Index)
-+            const runner = extensionRunnerRef.current;
-+            if (runner?.hasHandlers("before_provider_headers")) {
-+                headers = await runner.emitBeforeProviderHeaders(headers ?? {});
-+            }
-             return streamSimple(model, context, {
-                 ...options,
-                 apiKey: auth.apiKey,
-@@ -194,7 +200,7 @@ export async function createAgentSession(options = {}) {
-                 websocketConnectTimeoutMs,
-                 maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
-                 maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
--                headers: mergeProviderAttributionHeaders(model, settingsManager, options?.sessionId, auth.headers, options?.headers),
-+                headers,
-             });
-         },
-         onPayload: async (payload, _model) => {
+     "qwen-token-plan": "qwen3.7-max",
+diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
+index 7d93ba62bdb5d47e129751e8075cbb34620322ad..89c8147bdfcd8ce91ea6a51ea4822c81cdddaaf9 100644
+--- a/dist/core/model-runtime.js
++++ b/dist/core/model-runtime.js
+@@ -82,6 +82,7 @@ export class ModelRuntime {
+         const builtinModelDataGeneratedAt = builtinProviderCatalog.getBuiltinModelDataGeneratedAt();
+         const providers = builtinProviderCatalog
+             .builtinProviders()
++            .filter((provider) => !process.env.KIMCHI_DISABLE_BUILTIN_PROVIDERS || provider.id === "kimchi-dev")
+             .map((provider) => provider.id === "radius"
+             ? provider
+             : withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt));
 diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
-index 98b69bb9ccf6464dfaec7b2271cf78677cb73ce9..e746c2c99edd7fb9da866b60f80fb8b8de8ed630 100644
+index f274908793624a5870008ab738fa19ac6758165c..320acfb56155b8d9711b423824350b7630b8e8cb 100644
 --- a/dist/core/tools/bash.js
 +++ b/dist/core/tools/bash.js
-@@ -62,6 +62,16 @@ export function createLocalBashOperations(options) {
+@@ -81,6 +81,12 @@ export function createLocalBashOperations(options) {
                          timedOut = true;
                          if (child.pid)
                              killProcessTree(child.pid);
-+                        // Destroy stdio streams after a short grace so the tool
-+                        // call returns even when setsid'd grandchildren (e.g.
-+                        // bubblewrap used by opam install on Linux) escape the
-+                        // process-group SIGKILL, inherit the pipe, and keep
-+                        // writing — which would re-arm waitForChildProcess's
-+                        // grace timer indefinitely.
++                        // Close inherited pipes after a short grace so detached
++                        // descendants cannot keep waitForChildProcess pending.
 +                        setTimeout(() => {
 +                            child.stdout?.destroy();
 +                            child.stderr?.destroy();
 +                        }, 500);
-                     }, timeout * 1000);
+                     }, timeoutMs);
                  }
                  // Stream stdout and stderr.
-@@ -86,6 +96,16 @@ export function createLocalBashOperations(options) {
-                 return { exitCode };
-             }
-             finally {
-+                // Kill the process group on normal completion too, not just
-+                // on timeout/abort. Without this, processes backgrounded with
-+                // `&` / `nohup` / `disown` inside the bash command are
-+                // orphaned when the shell exits — they survive in the
-+                // child's process group, consuming memory until the
-+                // container OOMs. Guard against PID-reuse: only kill if the
-+                // child hasn't exited yet (exitCode is null until 'exit').
-+                if (child.pid && child.exitCode === null) {
-+                    killProcessTree(child.pid);
-+                }
-                 if (child.pid)
-                     untrackDetachedChildPid(child.pid);
-                 if (timeoutHandle)
 diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
-index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5d97aa84c 100644
+index 9e83601e93c81b87d52448b429f4817e6cf25bd5..a124622278d37c6372466b990a2240dae094e9c5 100644
 --- a/dist/core/tools/edit.js
 +++ b/dist/core/tools/edit.js
-@@ -55,7 +55,7 @@ function validateEditInput(input) {
+@@ -64,7 +64,7 @@ function validateEditInput(input) {
      return { path: input.path, edits: input.edits };
  }
  function createEditCallRenderComponent() {
@@ -420,7 +199,7 @@ index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5
          preview: undefined,
          previewArgsKey: undefined,
          previewPending: false,
-@@ -120,14 +120,14 @@ function formatEditResult(args, preview, result, theme, isError) {
+@@ -129,14 +129,14 @@ function formatEditResult(args, preview, result, theme, isError) {
  function getEditHeaderBg(preview, settledError, theme) {
      if (preview) {
          if ("error" in preview) {
@@ -466,11 +245,11 @@ index 48c22718e1dff7cf4faa4cc09b8a917301b0d892..93b59defc4ecc9caf7faf907230260a1
          this.markdownTheme = markdownTheme;
          this.updateDisplay();
 diff --git a/dist/modes/interactive/components/custom-message.js b/dist/modes/interactive/components/custom-message.js
-index 2d54902da1800044206eb1f00ca07501a7310145..44daf4982a5ab6f671f5bce373a94a310a52fc73 100644
+index 7c6fb37daea606e59d1616d24fb18d689fed6023..918f1027fa6014595cf399c456da967ff5d7d1a1 100644
 --- a/dist/modes/interactive/components/custom-message.js
 +++ b/dist/modes/interactive/components/custom-message.js
-@@ -18,7 +18,7 @@ export class CustomMessageComponent extends Container {
-         this.markdownTheme = markdownTheme;
+@@ -20,7 +20,7 @@ export class CustomMessageComponent extends Container {
+         this.outputPad = outputPad;
          this.addChild(new Spacer(1));
          // Create box with purple background (used for default rendering)
 -        this.box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
@@ -509,29 +288,32 @@ index 8220e06bc1e2b136c4b84c4af3cd29fd21b98a9f..b213a26c7ac002776850a59d7cafce4c
      dispose() {
          this.countdown?.dispose();
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
-index 8f8c5019a46285adc43b6116aaed0c0758efd2db..03db595639c8a66d25778dae1ecde841d1edfdfb 100644
+index afdb7896d9c55cb04ca529d25f1d3e21ae707757..1c87b9030bc72e31587e37b3ecc0cddd103430d9 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
-@@ -31,13 +31,15 @@ export class ModelSelectorComponent extends Container {
-     onCancelCallback;
-     errorMessage;
+@@ -33,6 +33,7 @@ export class ModelSelectorComponent extends Container {
+     refreshStatusMessage = "Refreshing model catalogs…";
+     refreshStatusSuccess = false;
      tui;
 +    sessionId;
      scopedModels;
      scope = "all";
      scopeText;
-     scopeHintText;
--    constructor(tui, currentModel, settingsManager, modelRegistry, scopedModels, onSelect, onCancel, initialSearchInput) {
-+    constructor(tui, currentModel, settingsManager, modelRegistry, scopedModels, onSelect, onCancel, initialSearchInput, sessionId) {
+@@ -40,9 +41,10 @@ export class ModelSelectorComponent extends Container {
+     refreshAbortController = new AbortController();
+     refreshTimeout;
+     closed = false;
+-    constructor(tui, currentModel, settingsManager, modelRuntime, scopedModels, onSelect, onCancel, initialSearchInput) {
++    constructor(tui, currentModel, settingsManager, modelRuntime, scopedModels, onSelect, onCancel, initialSearchInput, sessionId) {
          super();
          this.tui = tui;
 +        this.sessionId = sessionId;
          this.currentModel = currentModel;
          this.settingsManager = settingsManager;
-         this.modelRegistry = modelRegistry;
-@@ -118,6 +120,14 @@ export class ModelSelectorComponent extends Container {
-             return;
-         }
+         this.modelRuntime = modelRuntime;
+@@ -100,6 +102,14 @@ export class ModelSelectorComponent extends Container {
+             model,
+         }));
          this.allModels = this.sortModels(models);
 +        const orchRef = process.__kimchiOrchestratorRef instanceof Map ? process.__kimchiOrchestratorRef.get(this.sessionId) : undefined;
 +        if (orchRef) {
@@ -542,9 +324,9 @@ index 8f8c5019a46285adc43b6116aaed0c0758efd2db..03db595639c8a66d25778dae1ecde841
 +            }
 +        }
          this.scopedModels = this.scopedModels.map((scoped) => {
-             const refreshed = this.modelRegistry.find(scoped.model.provider, scoped.model.id);
+             const refreshed = this.modelRuntime.getModel(scoped.model.provider, scoped.model.id);
              return refreshed ? { ...scoped, model: refreshed } : scoped;
-@@ -127,6 +137,13 @@ export class ModelSelectorComponent extends Container {
+@@ -109,6 +119,13 @@ export class ModelSelectorComponent extends Container {
              id: scoped.model.id,
              model: scoped.model,
          }));
@@ -558,7 +340,7 @@ index 8f8c5019a46285adc43b6116aaed0c0758efd2db..03db595639c8a66d25778dae1ecde841
          this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
          this.filteredModels = this.activeModels;
          const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-@@ -185,17 +202,21 @@ export class ModelSelectorComponent extends Container {
+@@ -225,17 +242,21 @@ export class ModelSelectorComponent extends Container {
              if (!item)
                  continue;
              const isSelected = i === this.selectedIndex;
@@ -583,10 +365,10 @@ index 8f8c5019a46285adc43b6116aaed0c0758efd2db..03db595639c8a66d25778dae1ecde841
                  const providerBadge = theme.fg("muted", `[${item.provider}]`);
                  const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
                  line = `${modelText} ${providerBadge}${checkmark}`;
-@@ -268,6 +289,11 @@ export class ModelSelectorComponent extends Container {
-         }
+@@ -314,6 +335,11 @@ export class ModelSelectorComponent extends Container {
      }
      handleSelect(model) {
+         this.dispose();
 +        const selectedItem = this.filteredModels[this.selectedIndex];
 +        if (!(process.__kimchiMultiModelEnabled instanceof Map)) {
 +            process.__kimchiMultiModelEnabled = new Map();
@@ -638,23 +420,41 @@ index 3f93cc6c5665f603d29b3d6ac3dabfa560d6bb32..a0b9d9a89b5f2e6384d4b909a949794e
          this.hideComponent = false;
          if (this.hasRendererDefinition()) {
 diff --git a/dist/modes/interactive/components/user-message.js b/dist/modes/interactive/components/user-message.js
-index 0e85e9006835b754e38a7af725b4f1ca18eb3a61..94ea3d983a2abe039a7729d452f60c32457a6638 100644
+index 2e0490362d3396995b587f502ff3e69a7cad9a43..0cb75bb6a9fd0c0a9bdb5eba7cf2eeb8e3eae896 100644
 --- a/dist/modes/interactive/components/user-message.js
 +++ b/dist/modes/interactive/components/user-message.js
-@@ -10,7 +10,7 @@ export class UserMessageComponent extends Container {
-     contentBox;
-     constructor(text, markdownTheme = getMarkdownTheme()) {
+@@ -11,6 +11,7 @@ export class UserMessageComponent extends Container {
+     text;
+     markdownTheme;
+     outputPad;
++    contentBox;
+     markdownTransformers;
+     constructor(text, markdownTheme = getMarkdownTheme(), outputPad = 1, markdownTransformers = []) {
          super();
--        this.contentBox = new Box(1, 1, (content) => theme.bg("userMessageBg", content));
-+        this.contentBox = new Box(1, 1, (content) => theme.fg("accent", content));
-         this.contentBox.addChild(new Markdown(text, 0, 0, markdownTheme, {
+@@ -26,15 +27,15 @@ export class UserMessageComponent extends Container {
+     }
+     rebuild() {
+         this.clear();
+-        const contentBox = new Box(this.outputPad, 1, (content) => theme.bg("userMessageBg", content));
+-        contentBox.addChild(new Markdown(this.text, 0, 0, this.markdownTheme, {
++        this.contentBox = new Box(this.outputPad, 1, (content) => theme.fg("accent", content));
++        this.contentBox.addChild(new Markdown(this.text, 0, 0, this.markdownTheme, {
              color: (content) => theme.fg("userMessageText", content),
-         }, { preserveOrderedListMarkers: true }));
+         }, {
+             preserveOrderedListMarkers: true,
+             preserveBackslashEscapes: true,
+             transform: createMarkdownTransform("user", false, this.markdownTransformers),
+         }));
+-        this.addChild(contentBox);
++        this.addChild(this.contentBox);
+     }
+     render(width) {
+         const lines = super.render(width);
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce5c914869 100644
+index 42e655de0fee8081a31cb588426edd30992d893c..4f33b15d036dd0f24f5e03f3712d3e9bec63d9e3 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -1592,6 +1592,7 @@ export class InteractiveMode {
+@@ -1844,6 +1844,7 @@ export class InteractiveMode {
              confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
              input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
              notify: (message, type) => this.showExtensionNotify(message, type),
@@ -662,7 +462,7 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce
              onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
              setStatus: (key, text) => this.setExtensionStatus(key, text),
              setWorkingMessage: (message) => {
-@@ -1608,7 +1609,7 @@ export class InteractiveMode {
+@@ -1860,7 +1861,7 @@ export class InteractiveMode {
              setHeader: (factory) => this.setExtensionHeader(factory),
              setTitle: (title) => this.ui.terminal.setTitle(title),
              custom: (factory, options) => this.showExtensionCustom(factory, options),
@@ -671,7 +471,7 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce
              setEditorText: (text) => this.editor.setText(text),
              getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
              editor: (title, prefill) => this.showExtensionEditor(title, prefill),
-@@ -1637,6 +1638,16 @@ export class InteractiveMode {
+@@ -1889,6 +1890,16 @@ export class InteractiveMode {
              },
              getToolsExpanded: () => this.toolOutputExpanded,
              setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
@@ -688,7 +488,7 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce
          };
      }
      /**
-@@ -3425,6 +3436,33 @@ export class InteractiveMode {
+@@ -3815,6 +3826,33 @@ export class InteractiveMode {
              this.showModelSelector();
              return;
          }
@@ -722,24 +522,24 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-@@ -3539,6 +3577,7 @@ export class InteractiveMode {
+@@ -3947,6 +3985,7 @@ export class InteractiveMode {
      }
      showModelSelector(initialSearchInput) {
          this.showSelector((done) => {
 +            const sessionId = this.sessionManager.getSessionId();
-             const selector = new ModelSelectorComponent(this.ui, this.session.model, this.settingsManager, this.session.modelRegistry, this.session.scopedModels, async (model) => {
+             const selector = new ModelSelectorComponent(this.ui, this.session.model, this.settingsManager, this.session.modelRuntime, this.session.scopedModels, async (model) => {
                  try {
                      await this.session.setModel(model);
-@@ -3556,7 +3595,7 @@ export class InteractiveMode {
+@@ -3964,7 +4003,7 @@ export class InteractiveMode {
              }, () => {
                  done();
                  this.ui.requestRender();
 -            }, initialSearchInput);
 +            }, initialSearchInput, sessionId);
-             return { component: selector, focus: selector };
+             return { component: selector, focus: selector, dispose: () => selector.dispose() };
          });
      }
-@@ -4255,7 +4294,7 @@ export class InteractiveMode {
+@@ -4823,7 +4862,7 @@ export class InteractiveMode {
          const outputPath = this.getPathCommandArgument(text, "/export");
          try {
              if (outputPath?.endsWith(".jsonl")) {
@@ -748,18 +548,3 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce
                  this.showStatus(`Session exported to: ${filePath}`);
              }
              else {
-diff --git a/package.json b/package.json
-index 81489b289024d8e66e132e4e9b8ab320e251c5a4..0c29e69450d109fa471efa7d70f2b05c15efcd36 100644
---- a/package.json
-+++ b/package.json
-@@ -15,6 +15,10 @@
- 		".": {
- 			"types": "./dist/index.d.ts",
- 			"import": "./dist/index.js"
-+		},
-+		"./dist/core/tools/output-accumulator.js": {
-+			"types": "./dist/core/tools/output-accumulator.d.ts",
-+			"import": "./dist/core/tools/output-accumulator.js"
- 		}
- 	},
- 	"files": [

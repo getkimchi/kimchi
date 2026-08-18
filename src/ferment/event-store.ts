@@ -241,6 +241,10 @@ export interface StepCompletedPayload {
 	phaseId: string
 	stepId: string
 	completedAt: string
+	/** Worker-written step summary; persisted so replay keeps prior-step
+	 *  summaries available to later worker prompts. Optional for
+	 *  backwards compatibility with events written before this field. */
+	summary?: string
 }
 
 export interface StepSkippedPayload {
@@ -262,6 +266,10 @@ export interface StepVerifiedPayload {
 	result: StepResult
 	verifiedAt: string
 	exitCode?: number
+	/** Worker-written step summary; persisted so replay keeps prior-step
+	 *  summaries available to later worker prompts. Optional for
+	 *  backwards compatibility with events written before this field. */
+	summary?: string
 }
 
 export interface StepGradedPayload {
@@ -1204,7 +1212,9 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 						? {
 								...ph,
 								steps: ph.steps.map((s) =>
-									s.id === p.stepId ? { ...s, status: "done" as const, completedAt: event.timestamp } : s,
+									s.id === p.stepId
+										? { ...s, status: "done" as const, completedAt: event.timestamp, summary: p.summary ?? s.summary }
+										: s,
 								),
 							}
 						: ph,
@@ -1271,6 +1281,7 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 												status: p.result.success ? ("verified" as const) : ("done" as const),
 												completedAt: p.result.completedAt,
 												result: p.result,
+												summary: p.summary ?? s.summary,
 											}
 										: s,
 								),

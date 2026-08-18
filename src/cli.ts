@@ -71,9 +71,11 @@ import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
+import omitKimchiMaxTokensExtension from "./extensions/omit-kimchi-max-tokens.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
 import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-sanitizer.js"
+import packageInstallGuardExtension from "./extensions/package-install-guard.js"
 import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
@@ -137,6 +139,7 @@ import {
 	readOllamaModelsFromConfig,
 	resolveOllamaHost,
 } from "./ollama.js"
+import { syncPiAuth } from "./pi-auth.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
@@ -365,6 +368,7 @@ try {
 				throw err
 			}
 		}
+		await syncPiAuth(resolve(agentDir, "auth.json"), modelsJsonPath, currentApiKey)
 
 		// Must run before main() so the keybindings file is loaded with the
 		// override in place.
@@ -537,6 +541,7 @@ try {
 			settingsTrustSyncExtension,
 			autoUpdateSettingsExtension,
 			startupUpdateExtension,
+			packageInstallGuardExtension,
 			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
@@ -625,6 +630,7 @@ try {
 			modelGuardExtension,
 			orphanToolResultRepairExtension,
 			orphanToolResultSanitizerExtension,
+			omitKimchiMaxTokensExtension,
 			piiRedactionExtension,
 			stripImagesExtension,
 			traceIdExtension,

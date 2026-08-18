@@ -1,7 +1,6 @@
 import type { Message } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { TelemetryConfig } from "../../config.js"
-import { onBeforeProviderHeaders } from "../../types/before-provider-headers.js"
 import {
 	BASH_TOOL_GUARD_EVENTS,
 	type BashToolGuardAllowedByUserRequestPayload,
@@ -737,11 +736,10 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				console.warn("[telemetry] turn_start received without turnIndex field — telemetryCtx.turnIndex unchanged")
 			}
 		})
-		onBeforeProviderHeaders(pi, (event) => ({
-			...event.headers,
-			"X-Session-Id": telemetryCtx.telemetryId,
+		pi.on("before_provider_headers", (event) => {
+			event.headers["X-Session-Id"] = telemetryCtx.telemetryId
 			// 0 means "before first turn" (sentinel); backend should treat it accordingly.
-			"X-Turn-Index": String(telemetryCtx.turnIndex),
-		}))
+			event.headers["X-Turn-Index"] = String(telemetryCtx.turnIndex)
+		})
 	}
 }

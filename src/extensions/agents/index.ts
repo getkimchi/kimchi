@@ -357,6 +357,42 @@ function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
 	return ""
 }
 
+/** Continuation prompt used by the harness-side auto-resume for ferment step
+ * workers killed by their own budget. Bounded, finish-oriented, and bans
+ * re-reading (the worker already holds its context from attempt 1). */
+const FERMENT_WORKER_AUTO_RESUME_PROMPT =
+	"The harness resumed you with a fresh budget after your previous attempt was killed by its turn/duration limit mid-task. Continue the SAME assigned step immediately — do not restart, re-plan, or re-read files you already know. If the attempt stalled on a hanging or blocked command, avoid that specific operation and reach the goal differently. Finish the remaining work, run the declared verification, then call submit_agent_report and stop."
+
+export interface AutoResumeShape {
+	status: string
+	abortReason?: AgentAbortReason
+	session?: unknown
+	taskRef?: { kind: string }
+	resumeAttempts?: unknown[]
+}
+
+/** Builds the auto-resume note from the WORKER'S PRE-RESUME abort reason.
+ * The reason must be captured before `manager.resume` mutates the record
+ * (resume clears `abortReason` on success) — passing the post-resume reason
+ * yields `undefined` and silently drops the note. Exported for unit testing. */
+export function buildAutoResumeNote(beforeAbortReason: AgentAbortReason | undefined): string {
+	if (!beforeAbortReason) return ""
+	return `\nThe harness auto-resumed this worker once with a fresh budget after its attempt hit the ${beforeAbortReason === "max_turns" ? "turn" : "duration"} limit — the outcome below reflects the resumed attempt, so do NOT resume again on the same budget; if it is still incomplete, try a narrower replacement Agent or the complex tier.`
+}
+
+/** True when a ferment step worker was killed by its own budget on a first
+ * attempt and still holds a live session — the auto-resume gate. Exported for
+ * unit testing; the Agent tool handler uses it inline. */
+export function shouldAutoResumeFermentWorker(record: AutoResumeShape): boolean {
+	return (
+		record.status === "aborted" &&
+		(record.abortReason === "max_turns" || record.abortReason === "max_duration") &&
+		record.session != null &&
+		record.taskRef?.kind === "ferment_step" &&
+		(record.resumeAttempts ?? []).length === 0
+	)
+}
+
 function getStatusInstruction(status: string, multiModelEnabled: boolean, abortReason?: AgentAbortReason): string {
 	if (status === "aborted" && abortReason === "token_budget") {
 		return "\nThe agent ran out of its token budget. Inspect the worker report before acting. Use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do not blindly retry the same prompt."
@@ -368,7 +404,7 @@ function getStatusInstruction(status: string, multiModelEnabled: boolean, abortR
 		const relaxed = !multiModelEnabled
 		return relaxed
 			? "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary."
-			: "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
+			: '\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build. If this is a ferment step that simply needs more wall-clock for builds/tests, restart it at budget_tier="complex" (max_duration "900", max_turns "45") — full multi-file builds do not fit the standard duration tier.'
 	}
 	if (status === "aborted" && abortReason === "max_turns") {
 		const relaxed = !multiModelEnabled
@@ -1678,13 +1714,39 @@ ${AGENT_TOOL_GUIDELINES}`,
 					widget.markFinished(fgId)
 				}
 
-				const tokenText = formatLifetimeTokens(fgState)
-
-				const details = buildDetails(detailBase, record, fgState, { tokens: tokenText })
-
 				const fallbackNote = fellBack
 					? `Note: Unknown agent type "${rawType}" - using ${AGENT_GENERAL_PURPOSE}.\n\n`
 					: ""
+
+				// Ferment step worker killed by its OWN budget (turns/duration) on a
+				// first attempt: auto-resume once so the worker finishes instead of the
+				// orchestrator patching the remaining work on the main thread — the
+				// exact residue workers exist to keep out. Measured run 019ff5cc: 8/17
+				// Builders aborted at the hard cap with no report and every one was
+				// finished by main-thread edits. First abort only (resumeAttempts
+				// empty); a second exhaustion returns to the planner as before.
+				const autoResumeCandidate = shouldAutoResumeFermentWorker(record)
+				let autoResumedFromReason: AgentAbortReason | undefined
+				if (autoResumeCandidate) {
+					// Capture the pre-resume state — manager.resume mutates record in
+					// place (clears abortReason on success), so reading it after the call
+					// loses the reason the note exists to report.
+					const beforeAbortReason = record.abortReason
+					try {
+						await manager.resume(record.id, FERMENT_WORKER_AUTO_RESUME_PROMPT, {})
+						autoResumedFromReason = beforeAbortReason
+					} catch {
+						// Fall back to the normal aborted-agent summary/instruction below
+						// instead of surfacing an unhandled tool error.
+					}
+					// The summary note/instruction below reads record.status/abortReason,
+					// so it describes the post-resume state automatically.
+				}
+
+				// Built AFTER the auto-resume block so they reflect the post-resume
+				// state (resume mutates record/fgState: status, abortReason, counters).
+				const tokenText = formatLifetimeTokens(fgState)
+				const details = buildDetails(detailBase, record, fgState, { tokens: tokenText })
 
 				if (record.status === "error") {
 					return textResult(`${fallbackNote}Agent failed: ${record.error}`, details)
@@ -1712,6 +1774,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				appendSubagentRecord(record)
 
 				const timeTaken = formatMs(durationMs)
+				const autoResumeNote = buildAutoResumeNote(autoResumedFromReason)
 				const note = getStatusNote(record.status, record.abortReason)
 				const instruction = getStatusInstruction(
 					record.status,
@@ -1720,7 +1783,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				)
 				const outcomeBlock = formatAgentOutcomeBlock(record.latestOutcome)
 				return textResult(
-					`${fallbackNote}Agent ${outcome} in ${timeTaken} (${statsParts.join(", ")})${note}.${instruction}\n\n${record.result?.trim() || "No output."}${outcomeBlock}`,
+					`${fallbackNote}Agent ${outcome} in ${timeTaken} (${statsParts.join(", ")})${note}.${instruction}${autoResumeNote}\n\n${record.result?.trim() || "No output."}${outcomeBlock}`,
 					details,
 				)
 			},
