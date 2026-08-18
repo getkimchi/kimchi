@@ -5,6 +5,7 @@ spec:
 
 include:
   - component: $CI_SERVER_FQDN/castai/tooling/gitlab-ci-components/auth@v0.0.29
+  - local: /.gitlab/ci/dind.yml
 
 default:
   tags:
@@ -31,9 +32,7 @@ default:
 setup-image:
   stage: prepare
   image: mirror.gcr.io/library/node:22-bookworm
-  services:
-    - name: mirror.gcr.io/library/docker:27.5.1-dind
-      alias: docker
+  services: !reference [.dind, services]
   timeout: 30 min
   resource_group: "$BENCHMARK_RESOURCE_GROUP"
   rules:
@@ -65,10 +64,7 @@ setup-image:
   needs:
     - job: setup-image
       artifacts: true
-  services:
-    - name: mirror.gcr.io/library/docker:27.5.1-dind
-      alias: docker
-      command: ["--registry-mirror", "https://mirror.gcr.io"]
+  services: !reference [.dind, services]
   timeout: 24 hours
   retry: 2
   allow_failure: true
@@ -95,7 +91,13 @@ setup-image:
     BENCH_CHUNK_INDEX: "$CHUNK"
     BENCH_CHUNK_COUNT: 3
     BENCH_JOB_MAX_RETRIES: 2
+    BENCH_JOB_TIMEOUT_SECONDS: "86400"  # 24h — matches GitLab job timeout
     BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
+    BENCH_TRIAL_CHECKPOINTS: "$[[ inputs.trial_checkpoints ]]"
+    # BENCH_CHECKPOINT_BUCKET is a CI/CD variable (project settings), not a
+    # pipeline input, so it is injected automatically into all jobs.
+    THINKING_LEVEL: "$[[ inputs.thinking_level ]]"
+    KIMCHI_COMPACTION: "$[[ inputs.kimchi_compaction ]]"
     BENCH_LLM_TEMPERATURE: "$[[ inputs.temperature ]]"
     BENCH_LLM_TOP_P: "$[[ inputs.top_p ]]"
     BENCH_LLM_TOP_K: "$[[ inputs.top_k ]]"
@@ -108,6 +110,7 @@ setup-image:
     - !reference [.auth-gcp-script]
     - !reference [.gcloud-setup, script]
     - benchmark/scripts/gitlab/wait_for_docker.sh
+    - gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin us-east4-docker.pkg.dev/cicd-master-oxk5
   script:
     - export SELECTED_TASKS_JSON='$[[ inputs.tasks ]]'
     - |
@@ -115,6 +118,8 @@ setup-image:
         echo "==> Cloning DeepSWE tasks"
         git clone --depth 1 https://github.com/datacurve-ai/deep-swe /tmp/deep-swe
       fi
+    - echo "==> Pre-fetching task images from GCP AR for chunk ${BENCH_CHUNK_INDEX}"
+    - python3 benchmark/scripts/gitlab/prefetch_deep_swe_images.py || echo "[WARN] image pre-fetch failed; continuing without it"
     - |
       echo "=========================================="
       echo "DeepSWE — CI inputs"
@@ -132,6 +137,9 @@ setup-image:
       echo "attempts:                 ${BENCH_ATTEMPTS}"
       echo "timeout_multiplier:       ${BENCH_TIMEOUT_MULTIPLIER}"
       echo "retry_agent_timeout:      ${BENCH_RETRY_AGENT_TIMEOUT}"
+      echo "trial_checkpoints:        ${BENCH_TRIAL_CHECKPOINTS:-false}"
+      echo "thinking_level:           ${THINKING_LEVEL:-default}"
+      echo "kimchi_compaction:        ${KIMCHI_COMPACTION:-auto}"
       echo "max_retries:              ${BENCH_JOB_MAX_RETRIES:-0}"
       echo "temperature:              ${BENCH_LLM_TEMPERATURE}"
       echo "top_p:                    ${BENCH_LLM_TOP_P}"

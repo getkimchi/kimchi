@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import checkpoint as ckpt
+import redact_api_key
 from bench_config import (
     DEFAULT_BENCHMARK_NAME,
     DEFAULT_BENCHMARK_RESULTS_DIR,
@@ -260,6 +261,8 @@ __all__ = [
     "_build_gcs_key_prefix",
     "_detect_chunk_attempt",
     "_expected_tasks_for_chunk",
+    "_run_pier_invocation",
+    "_upload_trial_checkpoint",
     "_write_chunk_meta",
     "list_trial_dirs",
     "main",
@@ -635,6 +638,59 @@ def _resolve_run_chunk_attempt_budget(
 
 PASS_REWARD = 1.0
 _HEARTBEAT_INTERVAL = int(os.environ.get("BENCH_HEARTBEAT_INTERVAL_SECONDS", "60"))
+
+
+def _upload_trial_checkpoint(
+    *,
+    trial_dir: Path,
+    bucket: str,
+    run_prefix: str,
+    chunk_index: int,
+    upload_retries: int,
+    base_retry_delay: float,
+) -> None:
+    """Archive + upload one completed trial to GCS. Raises on failure.
+
+    Mirrors GCSCheckpointPlugin._on_trial_ended, but runs in this process
+    (chunk_runner's system python) instead of inside the runner's venv, so
+    redact_api_key and checkpoint are imported directly rather than through
+    a scripts_dir sys.path shim. Raises on any failure so the caller can
+    apply the checkpoint-failure policy.
+    """
+    trial_id = ckpt.trial_id_from_dir(trial_dir)
+    # Prefer the exact task_name recorded by the runner; fall back to reading
+    # it out of the trial id. Bare name only (strip any "source/" prefix).
+    task_name = _task_name_from_result(trial_dir) or ckpt.task_from_trial_id(trial_id)
+    if "/" in task_name:
+        task_name = task_name.rsplit("/", 1)[-1]
+    object_name = ckpt.trial_object_name(run_prefix, chunk_index, trial_id)
+
+    secrets = [
+        value.encode("utf-8")
+        for value in (os.environ.get(name, "") for name in redact_api_key.REDACTED_ENV_KEYS)
+        if value
+    ]
+    archive_bytes, payload_sha256 = ckpt.create_trial_archive(
+        trial_dir,
+        task_name=task_name,
+        chunk_index=chunk_index,
+        redact_secrets=secrets,
+    )
+    started = time.monotonic()
+    ckpt.gcs_upload_object(
+        bucket,
+        object_name,
+        archive_bytes,
+        content_type="application/gzip",
+        retries=upload_retries,
+        base_delay=base_retry_delay,
+    )
+    print(
+        f"[chunk-{chunk_index}] checkpoint_durable trial={trial_id} task={task_name} "
+        f"object={object_name} sha256={payload_sha256[:12]} bytes={len(archive_bytes)} "
+        f"duration_s={time.monotonic() - started:.2f}",
+        flush=True,
+    )
 
 
 def _format_elapsed(seconds: int) -> str:
@@ -1563,6 +1619,194 @@ def _run_harbor_invocation(
     return harbor_status, received_signal
 
 
+def _run_pier_invocation(
+    *,
+    cmd: list[str],
+    bench_dir: Path,
+    env: dict[str, str],
+    results_dir: Path,
+    chunk_index: int,
+    n_tasks: int,
+    checkpoint_plugin: CheckpointPluginArgs | None,
+    soft_deadline_monotonic: float,
+) -> tuple[int, int | None]:
+    """Run one Pier invocation, honoring the soft chunk deadline.
+
+    Pier's CLI has no ``--plugin`` support, so when checkpointing is enabled
+    this parent process uploads completed trials to GCS as their result.json
+    files appear. Uploads run on the heartbeat tick, same cadence as
+    ``_print_heartbeat``.
+
+    Checkpoint-failure policy matches the Harbor plugin's: a checkpoint-enabled
+    run does not keep spending model tokens without durable protection. On the
+    first upload failure Pier is gracefully interrupted (SIGINT), remaining
+    uploads are skipped, and the returned status is forced non-zero so
+    ``main()`` exits non-zero for a GitLab retry.
+
+    Returns ``(pier_status, received_signal)``. When the soft deadline is
+    reached, Pier is terminated gracefully via the same SIGINT/drain/SIGTERM/
+    SIGKILL cascade as ``_run_harbor_invocation``.
+    """
+    print(f"[chunk-{chunk_index}] command: {format_command_for_log(cmd)}", flush=True)
+    proc = run_pier(cmd=cmd, cwd=bench_dir, env=env)
+    reported_trials: set[str] = set()
+    uploaded_trial_ids: set[str] = set()
+    checkpoint_unhealthy = False
+    _print_heartbeat(results_dir, 0, n_tasks, reported_trials, chunk_index)
+
+    received_signal: int | None = None
+    graceful_stop_started: float | None = None
+    force_stop_started: float | None = None
+    drain_grace_seconds = float(
+        os.environ.get("BENCH_CHECKPOINT_SHUTDOWN_GRACE_SECONDS", "300")
+    )
+    force_grace_seconds = 30.0
+
+    def _request_graceful_stop() -> None:
+        """Ask asyncio-based Pier to cancel trials and finish finalizers."""
+        nonlocal graceful_stop_started
+        if graceful_stop_started is not None or proc.poll() is not None:
+            return
+        graceful_stop_started = time.monotonic()
+        proc.send_signal(signal.SIGINT)
+
+    def _handle_parent_signal(signum: int, _frame: object) -> None:
+        nonlocal received_signal
+        received_signal = signum
+        _request_graceful_stop()
+
+    def _upload_completed_trials() -> None:
+        """Upload trials whose result.json appeared since the last tick."""
+        nonlocal checkpoint_unhealthy
+        if checkpoint_plugin is None or checkpoint_unhealthy:
+            return
+        for trial_dir in list_trial_dirs(results_dir):
+            if not (trial_dir / "result.json").is_file():
+                continue
+            trial_id = ckpt.trial_id_from_dir(trial_dir)
+            if trial_id in uploaded_trial_ids:
+                continue
+            try:
+                _upload_trial_checkpoint(
+                    trial_dir=trial_dir,
+                    bucket=checkpoint_plugin.bucket,
+                    run_prefix=checkpoint_plugin.run_prefix,
+                    chunk_index=chunk_index,
+                    upload_retries=checkpoint_plugin.upload_retries,
+                    base_retry_delay=checkpoint_plugin.base_retry_delay,
+                )
+                uploaded_trial_ids.add(trial_id)
+            except ckpt.CheckpointUploadError as exc:
+                # An immutability conflict (existing GCS object with a
+                # different checksum) means a prior attempt already durably
+                # checkpointed this trial. The existing checkpoint is still
+                # valid — skip this upload and continue rather than killing
+                # Pier. Only genuine upload failures (network, GCS down)
+                # trigger the interrupt-Pier policy.
+                if "refusing to overwrite immutable checkpoint" in str(exc):
+                    uploaded_trial_ids.add(trial_id)
+                    print(
+                        f"[chunk-{chunk_index}] checkpoint already durable for "
+                        f"{trial_dir.name} (immutability conflict); skipping upload",
+                        flush=True,
+                    )
+                    continue
+                checkpoint_unhealthy = True
+                print(
+                    f"[chunk-{chunk_index}] checkpoint upload failed for "
+                    f"{trial_dir.name}: {exc}; interrupting Pier",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                _request_graceful_stop()
+                return
+            except Exception as exc:
+                checkpoint_unhealthy = True
+                print(
+                    f"[chunk-{chunk_index}] checkpoint upload failed for "
+                    f"{trial_dir.name}: {exc}; interrupting Pier",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                _request_graceful_stop()
+                return
+
+    prev_sigint = signal.signal(signal.SIGINT, _handle_parent_signal)
+    prev_sigterm = signal.signal(signal.SIGTERM, _handle_parent_signal)
+    started = time.monotonic()
+    next_heartbeat = started + _HEARTBEAT_INTERVAL
+    poll_interval = min(5, _HEARTBEAT_INTERVAL)
+    deadline_hit = False
+
+    try:
+        while proc.poll() is None:
+            time.sleep(poll_interval)
+            now = time.monotonic()
+            if (
+                now >= soft_deadline_monotonic
+                and graceful_stop_started is None
+                and proc.poll() is None
+            ):
+                print(
+                    f"[chunk-{chunk_index}] soft deadline reached "
+                    f"({int(now - started)}s elapsed); interrupting Pier and "
+                    f"allowing {drain_grace_seconds:.0f}s for checkpoint drain",
+                    flush=True,
+                )
+                deadline_hit = True
+                _request_graceful_stop()
+            if (
+                graceful_stop_started is not None
+                and force_stop_started is None
+                and now - graceful_stop_started >= drain_grace_seconds
+                and proc.poll() is None
+            ):
+                print(
+                    f"[chunk-{chunk_index}] Pier exceeded checkpoint drain "
+                    "grace period; sending SIGTERM",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                proc.terminate()
+                force_stop_started = now
+            if (
+                force_stop_started is not None
+                and now - force_stop_started >= force_grace_seconds
+                and proc.poll() is None
+            ):
+                print(
+                    f"[chunk-{chunk_index}] Pier ignored SIGTERM; sending SIGKILL",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                proc.kill()
+            if proc.poll() is None and now >= next_heartbeat:
+                _print_heartbeat(
+                    results_dir, int(now - started), n_tasks, reported_trials, chunk_index
+                )
+                _upload_completed_trials()
+                next_heartbeat = now + _HEARTBEAT_INTERVAL
+    finally:
+        signal.signal(signal.SIGINT, prev_sigint)
+        signal.signal(signal.SIGTERM, prev_sigterm)
+
+    pier_status = proc.wait()
+    # Final pass: upload trials that completed on exit (e.g. via the graceful
+    # stop's finalizers writing result.json after the last loop tick).
+    _upload_completed_trials()
+    _print_heartbeat(
+        results_dir, int(time.monotonic() - started), n_tasks, reported_trials, chunk_index
+    )
+    if checkpoint_unhealthy and pier_status == 0:
+        # Trials completed but are not durable; force non-zero so the chunk
+        # retries and the missing checkpoints are re-uploaded from the restored
+        # GitLab artifact.
+        pier_status = 1
+    tag = " (soft-deadline)" if deadline_hit else ""
+    print(f"[chunk-{chunk_index}] Pier exited with status {pier_status}{tag}", flush=True)
+    return pier_status, received_signal
+
+
 def main() -> int:
     """Entry point for the chunk runner. Returns exit code for GitLab retry."""
     process_started_monotonic = time.monotonic()
@@ -1839,28 +2083,64 @@ def main() -> int:
     harbor_failure_status: int | None = None
 
     if use_pier():
-        cmd = build_pier_command(
-            tasks=expected,
-            agent_import_path=agent_import_path,
-            model=model,
-            task_path=os.environ.get(
-                ENV_DEEP_SWE_TASKS_PATH,
-                DEFAULT_DEEP_SWE_TASKS_PATH,
-            ),
-            parallelism=parallelism,
-            attempts=attempts,
-            timeout_multiplier=timeout_multiplier,
-            jobs_dir=results_dir,
-            job_name=job_name,
-            kimchi_ferment_oneshot=kimchi_ferment_oneshot,
-            coding_agent=coding_agent,
-            llm_params=llm_params,
-            llm_per_model_params=llm_per_model_params,
+        # Filter to tasks still missing trials (same logic as the Harbor
+        # k=1 round loop). Checkpoint restore may have already completed
+        # some tasks; re-running them wastes model tokens and can trigger
+        # checkpoint immutability conflicts.
+        write_enriched_results(results_dir=results_dir, expected_tasks=expected)
+        task_to_trials = {
+            task: _all_trial_dirs_for_task(results_dir, task) for task in expected
+        }
+        progress = compute_chunk_progress(
+            task_to_trial_dirs=task_to_trials,
+            target_trials=attempts,
+            retry_budget_exhausted=False,
         )
-        print(f"[chunk-{chunk_index}] command: {format_command_for_log(cmd)}", flush=True)
-        proc = run_pier(cmd=cmd, cwd=bench_dir, env=env)
-        pier_status = proc.wait()
-        print(f"[chunk-{chunk_index}] Pier exited with status {pier_status}", flush=True)
+        missing = missing_tasks(progress)
+
+        if not missing:
+            print(
+                f"[chunk-{chunk_index}/attempt-{chunk_attempt}] all {len(expected)} "
+                "tasks already complete after checkpoint restore; skipping Pier",
+                flush=True,
+            )
+            pier_status = 0
+        else:
+            print(
+                f"[chunk-{chunk_index}/attempt-{chunk_attempt}]"
+                f" running Pier on {len(missing)} tasks: {missing}",
+                flush=True,
+            )
+            cmd = build_pier_command(
+                tasks=missing,
+                agent_import_path=agent_import_path,
+                model=model,
+                task_path=os.environ.get(
+                    ENV_DEEP_SWE_TASKS_PATH,
+                    DEFAULT_DEEP_SWE_TASKS_PATH,
+                ),
+                parallelism=parallelism,
+                attempts=attempts,
+                timeout_multiplier=timeout_multiplier,
+                jobs_dir=results_dir,
+                job_name=job_name,
+                kimchi_ferment_oneshot=kimchi_ferment_oneshot,
+                coding_agent=coding_agent,
+                llm_params=llm_params,
+                llm_per_model_params=llm_per_model_params,
+                thinking_level=thinking_level,
+                kimchi_disable_compaction=kimchi_disable_compaction,
+            )
+            pier_status, _received_signal = _run_pier_invocation(
+                cmd=cmd,
+                bench_dir=bench_dir,
+                env=env,
+                results_dir=results_dir,
+                chunk_index=chunk_index,
+                n_tasks=len(missing),
+                checkpoint_plugin=checkpoint_plugin,
+                soft_deadline_monotonic=soft_deadline_monotonic,
+            )
         if pier_status != 0:
             harbor_failure_status = pier_status
         write_enriched_results(results_dir=results_dir, expected_tasks=expected)

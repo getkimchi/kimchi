@@ -5,6 +5,7 @@ spec:
 
 include:
   - component: $CI_SERVER_FQDN/castai/tooling/gitlab-ci-components/auth@v0.0.29
+  - local: /.gitlab/ci/dind.yml
 
 default:
   tags:
@@ -31,9 +32,7 @@ default:
 setup-image:
   stage: prepare
   image: mirror.gcr.io/library/node:22-bookworm
-  services:
-    - name: mirror.gcr.io/library/docker:27.5.1-dind
-      alias: docker
+  services: !reference [.dind, services]
   timeout: 30 min
   resource_group: "$BENCHMARK_RESOURCE_GROUP"
   rules:
@@ -65,10 +64,7 @@ setup-image:
   needs:
     - job: setup-image
       artifacts: true
-  services:
-    - name: mirror.gcr.io/library/docker:27.5.1-dind
-      alias: docker
-      command: ["--registry-mirror", "https://mirror.gcr.io"]
+  services: !reference [.dind, services]
   timeout: 24 hours
   retry: 2
   allow_failure: true

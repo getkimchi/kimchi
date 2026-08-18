@@ -107,6 +107,8 @@ include:
 benchmarks-tests:
   stage: prepare
   image: ghcr.io/astral-sh/uv:python3.14-bookworm
+  tags:
+    - long
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "benchmarks"'
   script:

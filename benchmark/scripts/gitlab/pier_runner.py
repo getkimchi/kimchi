@@ -18,6 +18,13 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from bench_config import (
+    CLAUDE_CODE_CODING_AGENT,
+    CLAUDE_CODE_STANDARD_CODING_AGENT,
+    PI_THINKING_AGENTS,
+    is_kimchi_family,
+)
+
 
 def build_pier_command(
     *,
@@ -34,6 +41,8 @@ def build_pier_command(
     coding_agent: str = "kimchi",
     llm_params: dict[str, Any] | None = None,
     llm_per_model_params: dict[str, dict[str, Any]] | None = None,
+    thinking_level: str | None = None,
+    kimchi_disable_compaction: bool = False,
 ) -> list[str]:
     """Build the `pier run` command as a list of args (suitable for subprocess).
 
@@ -68,6 +77,23 @@ def build_pier_command(
         encoded_per_model = _encode_agent_kwargs(llm_per_model_params)
         if encoded_per_model:
             cmd.extend(["--agent-kwarg", f"llm-per-model-params={encoded_per_model}"])
+
+    # Compaction: omitted when compaction stays enabled so the command remains
+    # compatible with agents that predate the disable-compaction kwarg.
+    if is_kimchi_family(coding_agent) and kimchi_disable_compaction:
+        cmd.extend(["--agent-kwarg", "disable-compaction=true"])
+
+    # Thinking / reasoning effort — mirrors harbor_runner.build_harbor_command().
+    # kimchi and pi agents accept --thinking via the CliFlag mechanism; Claude
+    # Code uses --effort (mapped from reasoning_effort). resolve_thinking_level()
+    # in bench_config.py has already rejected levels the agent cannot express,
+    # so the value here is always valid for the selected agent.
+    if is_kimchi_family(coding_agent) and thinking_level is not None:
+        cmd.extend(["--agent-kwarg", f"thinking={thinking_level}"])
+    if coding_agent in PI_THINKING_AGENTS and thinking_level is not None:
+        cmd.extend(["--agent-kwarg", f"thinking={thinking_level}"])
+    if coding_agent in (CLAUDE_CODE_CODING_AGENT, CLAUDE_CODE_STANDARD_CODING_AGENT) and thinking_level is not None:
+        cmd.extend(["--agent-kwarg", f"reasoning_effort={thinking_level}"])
 
     # DeepSWE tasks are local directories — no prefix needed (unlike
     # terminal-bench which gets "terminal-bench/" prepended).

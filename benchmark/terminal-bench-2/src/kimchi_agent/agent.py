@@ -320,6 +320,8 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         elif is_moonshot_model(self.model_name):
             domains.add("api.moonshot.ai")
         elif is_zai_model(self.model_name):
+            # zai/* models route directly through Z.AI's OpenAI-compatible and
+            # Anthropic-compatible APIs (both under api.z.ai).
             domains.add("api.z.ai")
         else:
             # kimchi-dev/* models route through the Kimchi LLM gateway.

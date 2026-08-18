@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import checkpoint as ckpt
 from chunk_runner import (
     _agent_import_path,
     _all_trial_dirs_for_task,
@@ -17,15 +18,18 @@ from chunk_runner import (
     _compaction_disabled,
     _derive_configuration,
     _fetch_all_tasks,
+    _run_pier_invocation,
     _selected_workflow,
     _selected_workflow_extension,
     _task_name_from_result,
+    _upload_trial_checkpoint,
     _write_chunk_meta,
     _write_run_metadata,
     main,
     run_id_from_chunk_attempt,
     write_enriched_results,
 )
+from harbor_runner import CheckpointPluginArgs
 from outcome import Outcome
 
 _BENCH_SCRIPTS_DIR = Path(__file__).parent.parent
@@ -1886,3 +1890,472 @@ def test_main_rejects_unsupported_moonshot_thinking_level_at_pipeline_start(
         in capsys.readouterr().err
     )
     mock_harbor.assert_not_called()
+
+
+# ── _upload_trial_checkpoint ──────────────────────────────────────────────
+
+
+def _make_gp_args(
+    *, bucket: str = "test-bucket", run_prefix: str = "runs/test",
+) -> CheckpointPluginArgs:
+    return CheckpointPluginArgs(
+        bucket=bucket,
+        run_prefix=run_prefix,
+        chunk_index=0,
+        scripts_dir=Path("/fake"),
+        upload_retries=3,
+        base_retry_delay=0.5,
+    )
+
+
+def test_upload_trial_checkpoint_calls_create_and_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_upload_trial_checkpoint archives via create_trial_archive and uploads via gcs_upload_object."""
+    trial_dir = tmp_path / "run-1" / "fastapi-deprecation-response-headers__abc123"
+    trial_dir.mkdir(parents=True)
+    (trial_dir / "result.json").write_text(
+        json.dumps({
+            "task_name": "fastapi-deprecation-response-headers",
+            "verifier_result": {"rewards": {"reward": 1.0}},
+        })
+    )
+
+    monkeypatch.setenv("KIMCHI_API_KEY", "sk-secret-test")
+
+    create_calls: list = []
+    upload_calls: list = []
+
+    original_create = ckpt.create_trial_archive
+
+    def mock_create(trial_dir, *, task_name, chunk_index, redact_secrets=None):
+        create_calls.append(
+            {
+                "trial_dir": trial_dir,
+                "task_name": task_name,
+                "chunk_index": chunk_index,
+                "redact_secrets": redact_secrets,
+            }
+        )
+        return original_create(
+            trial_dir, task_name=task_name, chunk_index=chunk_index,
+            redact_secrets=redact_secrets,
+        )
+
+    def mock_upload(bucket, object_name, data, **kwargs):
+        upload_calls.append(
+            {"bucket": bucket, "object_name": object_name, "data": data, **kwargs}
+        )
+
+    monkeypatch.setattr(ckpt, "create_trial_archive", mock_create)
+    monkeypatch.setattr(ckpt, "gcs_upload_object", mock_upload)
+
+    _upload_trial_checkpoint(
+        trial_dir=trial_dir,
+        bucket="test-bucket",
+        run_prefix="runs/benchmark/test",
+        chunk_index=0,
+        upload_retries=5,
+        base_retry_delay=1.0,
+    )
+
+    assert len(create_calls) == 1
+    assert create_calls[0]["task_name"] == "fastapi-deprecation-response-headers"
+    assert create_calls[0]["chunk_index"] == 0
+    assert create_calls[0]["trial_dir"] == trial_dir
+
+    assert len(upload_calls) == 1
+    assert upload_calls[0]["bucket"] == "test-bucket"
+    assert upload_calls[0]["object_name"] == ckpt.trial_object_name(
+        "runs/benchmark/test", 0, "fastapi-deprecation-response-headers__abc123"
+    )
+
+    # Verify redaction included the KIMCHI_API_KEY
+    secrets_used = create_calls[0]["redact_secrets"]
+    assert b"sk-secret-test" in secrets_used
+
+
+def test_upload_trial_checkpoint_passes_correct_object_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Object naming uses trial_object_name with the run_prefix, chunk, and trial id."""
+    trial_dir = tmp_path / "run-A" / "abs-module-cache-flags__xyz999"
+    trial_dir.mkdir(parents=True)
+    (trial_dir / "result.json").write_text(
+        json.dumps({
+            "task_name": "abs-module-cache-flags",
+            "verifier_result": {"rewards": {"reward": 1.0}},
+        })
+    )
+
+    monkeypatch.setenv("KIMCHI_API_KEY", "test-value")
+
+    captured: dict = {}
+    def mock_create(trial_dir, *, task_name, chunk_index, redact_secrets=None):
+        return b"fake-archive-bytes", "fakesha256"
+
+    def mock_upload(bucket, object_name, data, **kwargs):
+        captured.update({"object_name": object_name, "data": data})
+
+    monkeypatch.setattr(ckpt, "create_trial_archive", mock_create)
+    monkeypatch.setattr(ckpt, "gcs_upload_object", mock_upload)
+
+    _upload_trial_checkpoint(
+        trial_dir=trial_dir,
+        bucket="my-bucket",
+        run_prefix="runs/benchmark=deep-swe/date=2026-08-14",
+        chunk_index=2,
+        upload_retries=5,
+        base_retry_delay=1.0,
+    )
+
+    assert captured["object_name"] == (
+        "runs/benchmark=deep-swe/date=2026-08-14/"
+        "_checkpoints/chunk=2/trials/abs-module-cache-flags__xyz999.tar.gz"
+    )
+    assert captured["data"] == b"fake-archive-bytes"
+
+
+# ── _run_pier_invocation ─────────────────────────────────────────────────
+
+
+def test_run_pier_invocation_exits_with_pier_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_run_pier_invocation returns Pier's exit status and no signal."""
+    results_dir = tmp_path / "jobs"
+    results_dir.mkdir()
+
+    # Trial completes with result.json already present
+    trial = results_dir / "run-1" / "task-a__1"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps({
+            "task_name": "task-a",
+            "verifier_result": {"rewards": {"reward": 1.0}},
+        })
+    )
+
+    proc = MagicMock()
+    proc.poll.return_value = 0
+    proc.wait.return_value = 0
+
+    with patch("chunk_runner.run_pier", return_value=proc), \
+         patch("chunk_runner._upload_trial_checkpoint") as mock_upload:
+        status, received_signal = _run_pier_invocation(
+            cmd=["pier", "run"],
+            bench_dir=tmp_path,
+            env={},
+            results_dir=results_dir,
+            chunk_index=0,
+            n_tasks=1,
+            checkpoint_plugin=None,
+            soft_deadline_monotonic=float("inf"),
+        )
+
+    assert status == 0
+    assert received_signal is None
+    mock_upload.assert_not_called()
+
+
+def test_run_pier_invocation_calls_upload_for_new_trials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """New result.json files trigger _upload_trial_checkpoint when checkpointing is on."""
+    results_dir = tmp_path / "jobs"
+    results_dir.mkdir()
+
+    proc = MagicMock()
+    # Already exited (poll returns non-None immediately)
+    proc.poll.return_value = 0
+    proc.wait.return_value = 0
+
+    # Create the trial result before Pier "exits" (simulating what happens
+    # if a trial completes between Pier exit and the final upload pass)
+    trial = results_dir / "run-1" / "task-b__1"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps({
+            "task_name": "task-b",
+            "verifier_result": {"rewards": {"reward": 1.0}},
+        })
+    )
+
+    gp_args = _make_gp_args()
+
+    with patch("chunk_runner.run_pier", return_value=proc), \
+         patch("chunk_runner._upload_trial_checkpoint") as mock_upload, \
+         patch.object(ckpt, "create_trial_archive", side_effect=lambda *a, **kw: (b"x", "h")), \
+         patch.object(ckpt, "gcs_upload_object", side_effect=lambda *a, **kw: None):
+        status, _received_signal = _run_pier_invocation(
+            cmd=["pier", "run"],
+            bench_dir=tmp_path,
+            env={},
+            results_dir=results_dir,
+            chunk_index=0,
+            n_tasks=1,
+            checkpoint_plugin=gp_args,
+            soft_deadline_monotonic=float("inf"),
+        )
+
+    assert status == 0
+    assert mock_upload.call_count == 1
+    assert mock_upload.call_args.kwargs["trial_dir"] == trial
+    assert mock_upload.call_args.kwargs["bucket"] == "test-bucket"
+    assert mock_upload.call_args.kwargs["run_prefix"] == "runs/test"
+    assert mock_upload.call_args.kwargs["chunk_index"] == 0
+    assert mock_upload.call_args.kwargs["upload_retries"] == 3
+    assert mock_upload.call_args.kwargs["base_retry_delay"] == 0.5
+
+
+def test_run_pier_invocation_upload_failure_forces_nonzero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An upload failure sets the run to non-zero and signals Pier to stop."""
+    results_dir = tmp_path / "jobs"
+    results_dir.mkdir()
+
+    trial = results_dir / "run-1" / "task-a__1"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps({
+            "task_name": "task-a",
+            "verifier_result": {"rewards": {"reward": 1.0}},
+        })
+    )
+
+    proc = MagicMock()
+    # Pier already exited
+    proc.poll.return_value = 0
+    proc.wait.return_value = 0
+
+    gp_args = _make_gp_args()
+
+    monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
+
+    def fail_upload(bucket, object_name, data, **kwargs):
+        raise RuntimeError("GCS is down")
+
+    with patch("chunk_runner.run_pier", return_value=proc), \
+         patch.object(ckpt, "create_trial_archive", side_effect=lambda *a, **kw: (b"x", "h")), \
+         patch.object(ckpt, "gcs_upload_object", side_effect=fail_upload), \
+         patch("chunk_runner._upload_trial_checkpoint", side_effect=RuntimeError("GCS is down")), \
+         patch("chunk_runner._print_heartbeat"):
+        status, received_signal = _run_pier_invocation(
+            cmd=["pier", "run"],
+            bench_dir=tmp_path,
+            env={},
+            results_dir=results_dir,
+            chunk_index=0,
+            n_tasks=1,
+            checkpoint_plugin=gp_args,
+            soft_deadline_monotonic=float("inf"),
+        )
+
+    # Upload failure forces exit 1 even though Pier exited 0
+    assert status == 1
+    assert received_signal is None
+
+
+# ── main() Pier branch integration ───────────────────────────────────────────
+
+
+def test_main_uses_run_pier_invocation_when_use_pier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """main() calls _run_pier_invocation when USE_PIER=true and tasks are missing."""
+    _main_env(
+        tmp_path, monkeypatch,
+        USE_PIER="true",
+        DATASET="deep-swe",
+        SELECTED_TASKS_JSON='["fastapi-deprecation-response-headers", "abs-module-cache-flags"]',
+        DEEP_SWE_TASKS_PATH="/tmp/deep-swe/tasks",
+        BENCH_TRIAL_CHECKPOINTS="false",
+    )
+    monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
+    import chunk_runner
+
+    monkeypatch.setattr(chunk_runner, "_restore_gcs_checkpoints", lambda **kw: None)
+
+    # Pre-populate one task as done; the other is missing
+    trial = tmp_path / "jobs" / "run-1" / "fastapi-deprecation-response-headers__1"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps({
+            "task_name": "fastapi-deprecation-response-headers",
+            "verifier_result": {"rewards": {"reward": 1.0}},
+        })
+    )
+
+    pier_invoke: list = []
+
+    def capture_pier_invocation(**kwargs):
+        pier_invoke.append(kwargs)
+        # Simulate Pier completing the missing task
+        run_dir = tmp_path / "jobs" / "run-1"
+        t = run_dir / "abs-module-cache-flags__1"
+        t.mkdir(parents=True, exist_ok=True)
+        (t / "result.json").write_text(
+            json.dumps({
+                "task_name": "abs-module-cache-flags",
+                "verifier_result": {"rewards": {"reward": 1.0}},
+            })
+        )
+        return (0, None)
+
+    with patch("chunk_runner._run_pier_invocation", side_effect=capture_pier_invocation) as mock_inv:
+        exit_code = main()
+
+    assert exit_code == 0
+    mock_inv.assert_called_once()
+    # Pier should only be called with the missing task, not the completed one
+    call_kwargs = mock_inv.call_args.kwargs
+    assert call_kwargs["n_tasks"] == 1
+    assert call_kwargs["checkpoint_plugin"] is None
+    assert call_kwargs["chunk_index"] == 0
+
+
+def test_main_pier_skips_completed_tasks_after_checkpoint_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When all tasks are already complete from checkpoint restore, Pier is not called."""
+    _main_env(
+        tmp_path, monkeypatch,
+        USE_PIER="true",
+        DATASET="deep-swe",
+        SELECTED_TASKS_JSON='["task-a", "task-b"]',
+        DEEP_SWE_TASKS_PATH="/tmp/deep-swe/tasks",
+        BENCH_TRIAL_CHECKPOINTS="false",
+    )
+    monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
+    import chunk_runner
+
+    monkeypatch.setattr(chunk_runner, "_restore_gcs_checkpoints", lambda **kw: None)
+
+    # Both tasks already have results (restored from checkpoints)
+    for task in ["task-a", "task-b"]:
+        trial = tmp_path / "jobs" / "run-1" / f"{task}__1"
+        trial.mkdir(parents=True)
+        (trial / "result.json").write_text(
+            json.dumps({
+                "task_name": task,
+                "verifier_result": {"rewards": {"reward": 1.0}},
+            })
+        )
+
+    with patch("chunk_runner._run_pier_invocation") as mock_inv:
+        exit_code = main()
+
+    assert exit_code == 0
+    mock_inv.assert_not_called()
+
+
+def test_run_pier_invocation_skips_upload_on_immutability_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Checkpoint immutability conflict (checksum mismatch) skips upload, doesn't kill Pier."""
+    import checkpoint as ckpt
+    from chunk_runner import _run_pier_invocation
+
+    results_dir = tmp_path / "jobs"
+    results_dir.mkdir()
+
+    trial = results_dir / "run-1" / "task-a__1"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps({
+            "task_name": "task-a",
+            "verifier_result": {"rewards": {"reward": 1.0}},
+        })
+    )
+
+    monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
+
+    gp_args = _make_gp_args()
+
+    proc = MagicMock()
+    proc.poll.return_value = 0  # Pier already exited
+    proc.wait.return_value = 0
+
+    immutability_error = ckpt.CheckpointUploadError(
+        "refusing to overwrite immutable checkpoint gs://bucket/path: "
+        "existing checksum 'abc' differs from 'def'"
+    )
+
+    call_count = {"n": 0}
+
+    def mock_upload(*args, **kwargs):
+        call_count["n"] += 1
+        raise immutability_error
+
+    with patch("chunk_runner.run_pier", return_value=proc), \
+         patch.object(ckpt, "create_trial_archive", side_effect=lambda *a, **kw: (b"x", "h")), \
+         patch.object(ckpt, "gcs_upload_object", side_effect=mock_upload), \
+         patch("chunk_runner._print_heartbeat"):
+        status, received_signal = _run_pier_invocation(
+            cmd=["pier", "run"],
+            bench_dir=tmp_path,
+            env={},
+            results_dir=results_dir,
+            chunk_index=0,
+            n_tasks=1,
+            checkpoint_plugin=gp_args,
+            soft_deadline_monotonic=float("inf"),
+        )
+
+    # Pier should NOT have been interrupted — status is 0
+    assert status == 0
+    assert received_signal is None
+    # Upload was attempted once and then skipped (immutability conflict)
+    assert call_count["n"] == 1
+
+
+def test_run_pier_invocation_still_kills_pier_on_genuine_upload_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-immutability upload failures (e.g. network) still interrupt Pier."""
+    import checkpoint as ckpt
+    from chunk_runner import _run_pier_invocation
+
+    results_dir = tmp_path / "jobs"
+    results_dir.mkdir()
+
+    trial = results_dir / "run-1" / "task-a__1"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps({
+            "task_name": "task-a",
+            "verifier_result": {"rewards": {"reward": 1.0}},
+        })
+    )
+
+    monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
+
+    gp_args = _make_gp_args()
+
+    proc = MagicMock()
+    proc.poll.return_value = 0
+    proc.wait.return_value = 0
+
+    network_error = ckpt.CheckpointUploadError(
+        "failed to upload gs://bucket/path after 3 attempts: timeout"
+    )
+
+    with patch("chunk_runner.run_pier", return_value=proc), \
+         patch.object(ckpt, "create_trial_archive", side_effect=lambda *a, **kw: (b"x", "h")), \
+         patch.object(ckpt, "gcs_upload_object", side_effect=network_error), \
+         patch("chunk_runner._print_heartbeat"):
+        status, received_signal = _run_pier_invocation(
+            cmd=["pier", "run"],
+            bench_dir=tmp_path,
+            env={},
+            results_dir=results_dir,
+            chunk_index=0,
+            n_tasks=1,
+            checkpoint_plugin=gp_args,
+            soft_deadline_monotonic=float("inf"),
+        )
+
+    # Pier should still be killed for genuine upload failures
+    assert status == 1
+    assert received_signal is None

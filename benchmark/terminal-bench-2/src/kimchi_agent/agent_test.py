@@ -1069,3 +1069,30 @@ async def test_setup_always_calls_install_even_when_preinstalled(tmp_path: Path)
     assert install_called, "install() was not called despite preinstalled environment"
     assert upload_called, "upload_dir was not called during install()"
     assert agent._version == "test-version"
+
+
+def test_network_allowlist_includes_zai_domain_for_zai_models(tmp_path: Path) -> None:
+    """zai/* models must allow egress to api.z.ai so Pier's proxy does not block them."""
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="zai/glm-5.2",
+    )
+
+    allowlist = agent.network_allowlist()
+
+    assert "api.z.ai" in allowlist.domains
+    assert "llm.kimchi.dev" not in allowlist.domains
+    assert "openrouter.ai" not in allowlist.domains
+
+
+def test_network_allowlist_uses_kimchi_gateway_for_kimchi_dev_models(tmp_path: Path) -> None:
+    """kimchi-dev/* models must continue to route through the Kimchi gateway."""
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+    )
+
+    allowlist = agent.network_allowlist()
+
+    assert "llm.kimchi.dev" in allowlist.domains
+    assert "api.z.ai" not in allowlist.domains

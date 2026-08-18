@@ -137,6 +137,114 @@ def test_build_pier_command_llm_params() -> None:
     assert len(kwarg_idx) == 1
 
 
+def test_build_pier_command_thinking_level_kimchi() -> None:
+    """thinking kwarg is included for kimchi agent when thinking_level is set."""
+    cmd = build_pier_command(
+        tasks=["abs-module-cache-flags"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/minimax-m3",
+        task_path="/tmp/deep-swe/tasks",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        coding_agent="kimchi",
+        thinking_level="max",
+    )
+
+    assert "--agent-kwarg" in cmd
+    assert "thinking=max" in cmd
+
+
+def test_build_pier_command_thinking_level_pi() -> None:
+    """thinking kwarg is included for pi agent when thinking_level is set."""
+    cmd = build_pier_command(
+        tasks=["abs-module-cache-flags"],
+        agent_import_path="kimchi_agent:PiKimchi",
+        model="kimchi-dev/minimax-m3",
+        task_path="/tmp/deep-swe/tasks",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        coding_agent="pi",
+        thinking_level="high",
+    )
+
+    assert "--agent-kwarg" in cmd
+    assert "thinking=high" in cmd
+
+
+def test_build_pier_command_thinking_level_claude_code() -> None:
+    """reasoning_effort kwarg is included for claude-code when thinking_level is set."""
+    cmd = build_pier_command(
+        tasks=["abs-module-cache-flags"],
+        agent_import_path="kimchi_agent:ClaudeCodeKimchi",
+        model="kimchi-dev/claude-sonnet-5",
+        task_path="/tmp/deep-swe/tasks",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        coding_agent="claude-code",
+        thinking_level="xhigh",
+    )
+
+    assert "--agent-kwarg" in cmd
+    assert "reasoning_effort=xhigh" in cmd
+
+
+def test_build_pier_command_thinking_level_none_omitted() -> None:
+    """No thinking kwarg when thinking_level is None (harness default)."""
+    cmd = build_pier_command(
+        tasks=["abs-module-cache-flags"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/minimax-m3",
+        task_path="/tmp/deep-swe/tasks",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        coding_agent="kimchi",
+        thinking_level=None,
+    )
+
+    cmd_str = " ".join(cmd)
+    assert "thinking=" not in cmd_str
+    assert "reasoning_effort=" not in cmd_str
+
+
+def test_build_pier_command_disable_compaction() -> None:
+    """disable-compaction kwarg is included when kimchi_disable_compaction=True."""
+    cmd = build_pier_command(
+        tasks=["abs-module-cache-flags"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/minimax-m3",
+        task_path="/tmp/deep-swe/tasks",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        coding_agent="kimchi",
+        kimchi_disable_compaction=True,
+    )
+
+    assert "--agent-kwarg" in cmd
+    assert "disable-compaction=true" in cmd
+
+
+def test_build_pier_command_compaction_enabled_omitted() -> None:
+    """No disable-compaction kwarg when kimchi_disable_compaction=False."""
+    cmd = build_pier_command(
+        tasks=["abs-module-cache-flags"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/minimax-m3",
+        task_path="/tmp/deep-swe/tasks",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        coding_agent="kimchi",
+        kimchi_disable_compaction=False,
+    )
+
+    assert "disable-compaction" not in " ".join(cmd)
+
+
 def test_build_pier_command_uses_uv_run() -> None:
     """Command starts with uv run --project for correct environment."""
     cmd = build_pier_command(

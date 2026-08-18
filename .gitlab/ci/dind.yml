@@ -1,0 +1,28 @@
+# Shared dind service definition for all benchmark CI jobs.
+#
+# The runner pod eth0 MTU is 1400 (Hetzner vSwitch), but the inner dockerd in
+# docker:dind defaults to 1500 and does NOT inherit the pod MTU. Bridge networks
+# at MTU 1500 cause containers to advertise TCP MSS 1460; servers that honor it
+# literally (e.g. the Zenlayer edge serving api.z.ai) send 1460-byte segments
+# that are silently dropped on the 1400-MTU overlay — a PMTUD blackhole that
+# hangs TLS handshakes forever.
+#
+# --mtu=1360 sets the default bridge MTU.
+# --default-network-opt=bridge=com.docker.network.driver.mtu=1360 covers custom
+#   and compose networks (Pier creates one per trial), which do NOT inherit
+#   --mtu (moby#34981, fixed by PR 43197 in Docker 27+).
+#
+# Ref: https://docs.gitlab.com/runner/executors/docker/#docker-in-docker-mtu-does-not-inherit-from-the-runner
+# Root-cause pcap: GitLab job 15938242995; fix verification: job 15939835382.
+
+.dind:
+  services:
+    - name: mirror.gcr.io/library/docker:27.5.1-dind
+      alias: docker
+      command:
+        [
+          "--registry-mirror",
+          "https://mirror.gcr.io",
+          "--mtu=1360",
+          "--default-network-opt=bridge=com.docker.network.driver.mtu=1360",
+        ]
