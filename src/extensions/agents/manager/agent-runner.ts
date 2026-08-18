@@ -92,12 +92,11 @@ function getActiveSubagentToolNames(
 	})
 }
 
-/** Prefix applied to automated steering messages so the LLM does not attribute them to the user. */
-const ORCHESTRATOR_PREFIX = "[Orchestrator — automated system instruction, not a user message]\n\n"
+import { markOrchestratorSteer } from "../../steer-marker.js"
 
 /** Send a steering message that is clearly marked as coming from the orchestrator, not the user. */
 function steerAsOrchestrator(session: AgentSession, message: string): Promise<void> {
-	return session.steer(ORCHESTRATOR_PREFIX + message)
+	return session.steer(markOrchestratorSteer(message))
 }
 
 /** Default max turns. undefined = unlimited (no turn limit). */

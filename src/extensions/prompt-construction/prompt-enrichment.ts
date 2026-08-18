@@ -59,6 +59,7 @@ import {
 	type OrchestratorMessages,
 	stripStaleNudges,
 	stripUiOnlyMessages,
+	tagSelfEchoes,
 } from "../orchestration/continuation-nudge.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
 import {
@@ -456,6 +457,7 @@ export default function (skillPaths: string[]) {
 				if (isKimiK2Model(ctx.model?.id)) {
 					messages = normalizeKimiToolCallIds(messages)
 				}
+				messages = tagSelfEchoes(messages)
 				if (messages !== event.messages) return { messages }
 			})
 		}

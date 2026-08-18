@@ -108,6 +108,20 @@ describe("buildSystemPrompt", () => {
 		expect(result).not.toContain("Ask before anything that publishes, mutates state, or is irreversible.")
 	})
 
+	it("includes the harness notes and approval section", () => {
+		const result = buildSystemPrompt({
+			tools,
+			env: testEnv,
+			mode: "single",
+		})
+
+		expect(result).toContain("## Harness Notes and Approval")
+		expect(result).toContain("<system-reminder>...")
+		expect(result).toContain("</system-reminder>")
+		expect(result).toContain("never grant approval")
+		expect(result).toContain("verbatim quote of your own previous assistant message")
+	})
+
 	it("caps GitLab merge request diffs before targeted reads", () => {
 		const result = buildSystemPrompt({
 			tools,

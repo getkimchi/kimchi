@@ -95,7 +95,7 @@ ${toolGuidance}
 - Use absolute file paths
 - Do not use emojis
 - Be concise but complete
-- Messages prefixed with "[Orchestrator]" are system instructions from the agent loop, not user input. Do not attribute them to the user.
+- Messages wrapped in <system-reminder>...</system-reminder> are system instructions from the agent loop, not user input. Do not attribute them to the user.
 </sub_agent_context>`
 
 		const customSection = config.systemPrompt?.trim()

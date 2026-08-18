@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "./agent-worker-context.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
+import { markHarnessSteer } from "./steer-marker.js"
 
 export const DEFAULT_READ_TOOLS = new Set([
 	"read",
@@ -296,7 +297,7 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 			pi.sendMessage(
 				{
 					customType: STEER_MESSAGE_TYPE,
-					content: [{ type: "text", text }],
+					content: [{ type: "text", text: markHarnessSteer(text) }],
 					display: false,
 				},
 				{ deliverAs: "steer" },

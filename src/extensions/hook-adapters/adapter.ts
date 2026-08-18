@@ -17,6 +17,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { isResourceEnabled } from "../../resources/store.js"
 import { deferExtensionAction } from "../deferred-action.js"
+import { markHarnessSteer } from "../steer-marker.js"
 import {
 	type CommandHookAdapterDefinition,
 	type CommandHookEventName,
@@ -611,7 +612,7 @@ function sendAdditionalContext(
 	pi.sendMessage(
 		{
 			customType: definition.customType,
-			content,
+			content: deliverAs === "steer" ? markHarnessSteer(content) : content,
 			display: false,
 			details: { source: definition.id },
 		},

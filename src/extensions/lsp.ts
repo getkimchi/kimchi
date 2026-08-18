@@ -26,6 +26,7 @@ import { detectMissingCandidates, detectServers, findRoot, serverForFile } from 
 import type { Hover, Location, LocationLink, TextDocumentEdit, WorkspaceEdit } from "./lsp/types.js"
 import { fileToUri, formatDiagnostic, uriToFile } from "./lsp/utils.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
+import { markHarnessSteer } from "./steer-marker.js"
 
 export function clientCwd(filePath: string, sessionCwd: string): string {
 	if (filePath.startsWith(sessionCwd + path.sep) || filePath === sessionCwd) return sessionCwd
@@ -185,7 +186,7 @@ export default function (pi: ExtensionAPI) {
 						// Inject diagnostics as a hidden custom message so the model
 						// sees them as context (not as a visible user turn). Plain
 						// text — no terminal coloring, since this is model-facing.
-						const content = `[LSP diagnostics for ${relativePath}]\n${lines.join("\n")}`
+						const content = markHarnessSteer(`[LSP diagnostics for ${relativePath}]\n${lines.join("\n")}`)
 						pi.sendMessage({ customType: LSP_DIAGNOSTICS_CUSTOM_TYPE, content, display: false }, { deliverAs: "steer" })
 					}
 				}

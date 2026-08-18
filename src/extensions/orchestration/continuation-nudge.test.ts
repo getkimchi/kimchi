@@ -1,5 +1,6 @@
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai"
 import { describe, expect, it } from "vitest"
+import { isHarnessSteer } from "../steer-marker.js"
 import {
 	ContinuationNudge,
 	DONE_SIGNAL,
@@ -7,6 +8,7 @@ import {
 	type OrchestratorMessages,
 	stripStaleNudges,
 	stripUiOnlyMessages,
+	tagSelfEchoes,
 } from "./continuation-nudge.js"
 
 function makeAssistant(content: AssistantMessage["content"]): AssistantMessage {
@@ -688,5 +690,81 @@ describe("stripUiOnlyMessages", () => {
 		const messages: OrchestratorMessages = [makeUser("q"), other, textOnlyMessage]
 		const result = stripUiOnlyMessages(messages)
 		expect(result).toBe(messages)
+	})
+})
+
+describe("ContinuationNudge question suppression", () => {
+	it("does not nudge when the assistant's text ends with a question", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const asking = makeAssistant([{ type: "text", text: "Go ahead and commit this small ADR update?" }])
+		expect(guard.evaluateTurn(asking)).toBe(false)
+	})
+
+	it("does not nudge when the question is followed by a quote mark", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const asking = makeAssistant([{ type: "text", text: 'Are you sure you want to proceed?"' }])
+		expect(guard.evaluateTurn(asking)).toBe(false)
+	})
+
+	it("still nudges when the text contains a question but ends with a statement", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const mixed = makeAssistant([{ type: "text", text: "You asked about the ADR. I will delegate this to Nemotron." }])
+		expect(guard.evaluateTurn(mixed)).toBe(true)
+	})
+})
+
+describe("tagSelfEchoes", () => {
+	function makeUser(text: string): OrchestratorMessages[number] {
+		return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() }
+	}
+
+	function makeCustom(text: string): OrchestratorMessages[number] {
+		return {
+			role: "custom",
+			customType: "nudge",
+			content: [{ type: "text", text }],
+			display: false,
+			timestamp: Date.now(),
+		}
+	}
+
+	it("returns the same reference when no echo is present", () => {
+		const messages: OrchestratorMessages = [
+			makeUser("hello"),
+			makeAssistant([{ type: "text", text: "assistant reply" }]),
+			makeUser("follow-up"),
+		]
+		expect(tagSelfEchoes(messages)).toBe(messages)
+	})
+
+	it("annotates a user message that verbatim-echoes the previous assistant text", () => {
+		const echoText = "Want me to jot this as the recommendation into the report's follow-ups?"
+		const messages: OrchestratorMessages = [makeAssistant([{ type: "text", text: echoText }]), makeUser(echoText)]
+		const result = tagSelfEchoes(messages)
+		expect(result).not.toBe(messages)
+		const lastText = (result[1] as { content: { text: string }[] }).content[0].text
+		expect(isHarnessSteer(lastText)).toBe(true)
+		expect(lastText).toContain("verbatim echo")
+		expect(lastText).toContain(echoText)
+	})
+
+	it("annotates a custom message that verbatim-echoes the previous assistant text", () => {
+		const echoText = "Please confirm before I push."
+		const messages: OrchestratorMessages = [makeAssistant([{ type: "text", text: echoText }]), makeCustom(echoText)]
+		const result = tagSelfEchoes(messages)
+		expect(result).not.toBe(messages)
+		const lastText = (result[1] as { content: { text: string }[] }).content[0].text
+		expect(isHarnessSteer(lastText)).toBe(true)
+	})
+
+	it("ignores partial matches", () => {
+		const messages: OrchestratorMessages = [
+			makeAssistant([{ type: "text", text: "Want me to commit this?" }]),
+			makeUser("commit this"),
+		]
+		expect(tagSelfEchoes(messages)).toBe(messages)
 	})
 })
