@@ -137,6 +137,18 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev/anthropic"].headers["X-Provider-Type"]).toBe("anthropic")
 	})
 
+	it("does not set compat for non-anthropic ai-enabler models", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
+	})
+
 	it("sets thinkingLevelMap for ai-enabler models so thinking=off sends reasoning_effort=none", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
