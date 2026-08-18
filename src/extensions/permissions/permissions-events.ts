@@ -36,10 +36,10 @@ export type ModeChangeReason =
 	| "ferment_elevation"
 	| "ferment_restore"
 	| "plan_approval"
-	| "questionnaire_promote"
+	| "questionnaire_promotion"
 	| "command"
 	| "session_start"
-	| "controller"
+	| "controller" // ACP/IDE SessionPermissionFlagController setMode callback
 
 export interface PermissionModeChangedPayload {
 	from: PermissionModeState

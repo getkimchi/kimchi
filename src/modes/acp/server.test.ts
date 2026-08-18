@@ -3916,6 +3916,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 				},
 			}),
 			setActiveToolIdsByServer: () => {},
+			events: { emit: () => {} },
 		} as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI
 
 		permissionsExtension(pi)

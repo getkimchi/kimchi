@@ -345,9 +345,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		activeAbortControllers.clear()
 		updateStatus(ctx)
 		maybeShowYoloWarning(ctx)
-		if (pi.events?.emit) {
-			pi.events.emit(PERMISSION_EVENTS.MODE_CHANGED, { from, to: next, reason })
-		}
+		pi.events.emit(PERMISSION_EVENTS.MODE_CHANGED, { from, to: next, reason })
 	}
 
 	function cycleMode(ctx: ExtensionContext): void {
@@ -401,13 +399,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		})
 		loaded = lc
 		rebuildConfigRules()
-		if (pi.events?.emit) {
-			pi.events.emit(PERMISSION_EVENTS.CONFIG_LOADED, {
-				cwd: ctx.cwd,
-				ruleCount: configRules.length + builtinRules.length,
-				errors,
-			})
-		}
+		pi.events.emit(PERMISSION_EVENTS.CONFIG_LOADED, {
+			cwd: ctx.cwd,
+			ruleCount: configRules.length + builtinRules.length,
+			errors,
+		})
 		return { errors }
 	}
 
@@ -898,7 +894,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// auto-promote the session to plan mode so the rest of the conversation
 			// runs under the right tool set instead of silently approving here.
 			if (toolName === "questionnaire" && mode === "default") {
-				changeMode(ctx, "default", { mode: "plan", initiatedBy: "user", source: "runtime" }, "questionnaire_promote")
+				changeMode(ctx, "default", { mode: "plan", initiatedBy: "user", source: "runtime" }, "questionnaire_promotion")
 				return undefined
 			}
 			if (isReadOnlyTool(toolName)) return undefined
@@ -1001,7 +997,7 @@ interface ConfirmOptions {
 	riskScore?: RiskScore
 	activeAborts: Set<AbortController>
 	allRules?: () => Rule[]
-	pi?: ExtensionAPI
+	pi: ExtensionAPI
 }
 
 async function handleConfirm(
@@ -1015,20 +1011,18 @@ async function handleConfirm(
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
 
-		if (opts.pi?.events?.emit) {
-			opts.pi.events.emit("notification", {
-				notification_type: "permission_prompt",
-				tool_name: event.toolName,
-				tool_use_id: event.toolCallId,
-			})
-			opts.pi.events.emit(PERMISSION_EVENTS.BEFORE_PROMPT, {
-				toolCallId: event.toolCallId,
-				toolName: event.toolName,
-				compound: false,
-				riskScore: opts.riskScore,
-				classifierReason: opts.subtitle,
-			})
-		}
+		opts.pi.events.emit("notification", {
+			notification_type: "permission_prompt",
+			tool_name: event.toolName,
+			tool_use_id: event.toolCallId,
+		})
+		opts.pi.events.emit(PERMISSION_EVENTS.BEFORE_PROMPT, {
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			compound: false,
+			riskScore: opts.riskScore,
+			classifierReason: opts.subtitle,
+		})
 
 		const input = event.input
 		const outcome = await prompter.request({
@@ -1041,17 +1035,15 @@ async function handleConfirm(
 			signal: abort.signal,
 		})
 
-		if (opts.pi?.events?.emit) {
-			opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
-				toolCallId: event.toolCallId,
-				toolName: event.toolName,
-				decision: approvalOutcomeToDecision(outcome),
-				ruleAdded:
-					outcome.kind === "allow-remember" || outcome.kind === "allow-remember-wildcard"
-						? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
-						: undefined,
-			})
-		}
+		opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			decision: approvalOutcomeToDecision(outcome),
+			ruleAdded:
+				outcome.kind === "allow-remember" || outcome.kind === "allow-remember-wildcard"
+					? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
+					: undefined,
+		})
 
 		return applyApprovalOutcome(outcome, opts.session)
 	} finally {
@@ -1071,20 +1063,18 @@ export async function handleCompoundConfirm(
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
 
-		if (opts.pi?.events?.emit) {
-			opts.pi.events.emit("notification", {
-				notification_type: "permission_prompt",
-				tool_name: event.toolName,
-				tool_use_id: event.toolCallId,
-			})
-			opts.pi.events.emit(PERMISSION_EVENTS.BEFORE_PROMPT, {
-				toolCallId: event.toolCallId,
-				toolName: event.toolName,
-				compound: true,
-				riskScore: opts.riskScore,
-				classifierReason: opts.subtitle,
-			})
-		}
+		opts.pi.events.emit("notification", {
+			notification_type: "permission_prompt",
+			tool_name: event.toolName,
+			tool_use_id: event.toolCallId,
+		})
+		opts.pi.events.emit(PERMISSION_EVENTS.BEFORE_PROMPT, {
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			compound: true,
+			riskScore: opts.riskScore,
+			classifierReason: opts.subtitle,
+		})
 
 		if (opts.ctx.mode !== "tui") {
 			// Non-TUI transports (chiefly ACP) present compound commands as one
@@ -1100,17 +1090,15 @@ export async function handleCompoundConfirm(
 				choices: buildPermissionChoices(event.toolName, input),
 				signal: abort.signal,
 			})
-			if (opts.pi?.events?.emit) {
-				opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
-					toolCallId: event.toolCallId,
-					toolName: event.toolName,
-					decision: approvalOutcomeToDecision(outcome),
-					ruleAdded:
-						outcome.kind === "allow-remember" || outcome.kind === "allow-remember-wildcard"
-							? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
-							: undefined,
-				})
-			}
+			opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				decision: approvalOutcomeToDecision(outcome),
+				ruleAdded:
+					outcome.kind === "allow-remember" || outcome.kind === "allow-remember-wildcard"
+						? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
+						: undefined,
+			})
 			return applyApprovalOutcome(outcome, opts.session)
 		}
 
@@ -1125,17 +1113,15 @@ export async function handleCompoundConfirm(
 			signal: abort.signal,
 		})
 
-		if (opts.pi?.events?.emit) {
-			opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
-				toolCallId: event.toolCallId,
-				toolName: event.toolName,
-				decision: compoundOutcomeToDecision(outcome),
-				ruleAdded:
-					outcome.kind === "allow-all-remember" && outcome.rules.length > 0
-						? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
-						: undefined,
-			})
-		}
+		opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			decision: compoundOutcomeToDecision(outcome),
+			ruleAdded:
+				outcome.kind === "allow-all-remember" && outcome.rules.length > 0
+					? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
+					: undefined,
+		})
 
 		if (outcome.kind === "aborted") return "aborted"
 		if (outcome.kind === "allow-all-once") return undefined

@@ -1517,11 +1517,13 @@ describe("compound command with session rules", () => {
 describe("handleCompoundConfirm", () => {
 	let session: SessionMemory
 	let activeAborts: Set<AbortController>
+	const mockPi = { events: { emit: vi.fn() } } as unknown as ExtensionAPI
 
 	beforeEach(() => {
 		session = new SessionMemory()
 		session.clear()
 		activeAborts = new Set()
+		vi.mocked(mockPi.events.emit).mockClear()
 	})
 
 	it("returns undefined for allow-all-once", async () => {
@@ -1532,6 +1534,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+		pi: mockPi,
 			subcommands: ["echo a", "echo b"],
 		})
 
@@ -1546,6 +1549,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+		pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1564,6 +1568,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+		pi: mockPi,
 			subcommands: ["echo a"],
 		})
 
@@ -1582,6 +1587,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+		pi: mockPi,
 			subcommands: ["echo a", "echo b"],
 		})
 
@@ -1600,6 +1606,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+		pi: mockPi,
 			subcommands: ["echo a", "echo b"],
 		})
 
@@ -1618,6 +1625,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+		pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1634,6 +1642,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+		pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1650,6 +1659,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+		pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1672,6 +1682,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+		pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1686,6 +1697,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+		pi: mockPi,
 			subcommands: [],
 		})
 
@@ -1702,6 +1714,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+		pi: mockPi,
 			subcommands: ["echo hello"],
 		})
 
@@ -1721,6 +1734,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+		pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1749,6 +1763,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+		pi: mockPi,
 			subcommands: ["echo hello", "whoami"],
 		})
 
@@ -1766,6 +1781,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+		pi: mockPi,
 			subcommands: ["echo a"],
 		})
 
