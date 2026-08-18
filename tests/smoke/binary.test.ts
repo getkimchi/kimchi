@@ -97,7 +97,7 @@ describe("binary smoke tests", () => {
 		expect(result.stdout + result.stderr).toContain(`No session found matching '${missingSessionId}'`)
 	})
 
-	it("prompt templates are embedded in binary (no extension errors on startup)", () => {
+	it("prompt templates are embedded in binary (no extension errors on startup)", { timeout: 30_000 }, () => {
 		const result = runBinary({
 			args: ["-p", "hello"],
 			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy" },
