@@ -134,6 +134,10 @@ function collectOutput(lines: ReadonlyArray<{ category: string; text: string }>)
 	return { stdout: truncateOutput(stdout), stderr: truncateOutput(stderr) }
 }
 
+/** Caps on returned collections so one tool call can't flood the context. */
+const MAX_LOCALS_PER_CAPTURE = 100
+const MAX_WATCH_CHANGES = 200
+
 /** Collect all local variables from all non-empty scopes of the top frame
  *  (or a specific frame if provided). */
 async function collectLocals(session: DapSession, frameId?: number): Promise<Variable[]> {
@@ -159,6 +163,14 @@ async function collectLocals(session: DapSession, frameId?: number): Promise<Var
 				}
 			}
 		}
+	}
+	if (variables.length > MAX_LOCALS_PER_CAPTURE) {
+		variables.length = MAX_LOCALS_PER_CAPTURE
+		variables.push({
+			name: "[truncated]",
+			value: `${MAX_LOCALS_PER_CAPTURE} variables collected; use debug_eval to inspect specific variables`,
+			variablesReference: 0,
+		})
 	}
 	return variables
 }
@@ -494,6 +506,10 @@ export async function debugWatchChange(
 						new: newValue,
 					})
 					oldValue = newValue
+					// Long tight loops (e.g. counters) can change the expression on
+					// every step — cap the capture rather than loitering until the
+					// wall-clock timeout.
+					if (changes.length >= MAX_WATCH_CHANGES) break
 				}
 			}
 			return {

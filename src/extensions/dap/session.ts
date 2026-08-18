@@ -410,6 +410,10 @@ export class DapSession {
 			// it), don't cancel the stop waiter — the program is still executing
 			// and will hit a breakpoint or terminate. The waiter will resolve
 			// when the next stop event arrives.
+			// Classification is string-matching — DAP has no error-code taxonomy —
+			// so adapter phrasing may drift across versions; extend the matchers
+			// below if an adapter misbehaves rather than tightening this to a
+			// single known string.
 			const msg = (err as Error).message
 			if (command === "continue" && /Unable to process|already running/i.test(msg)) {
 				return promise

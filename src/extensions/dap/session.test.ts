@@ -93,7 +93,6 @@ function createMockClient(capabilities: DapCapabilities | null = null): MockClie
 		pendingRequests: new Map(),
 		messageBuffer: Buffer.alloc(0),
 		isReading: false,
-		lastActivity: Date.now(),
 		threadId: null,
 		stoppedEvent: null,
 		stoppedWaiters,

@@ -6,15 +6,15 @@
  * (js-debug), Python (debugpy), Go (dlv dap), and native (lldb-dap).
  *
  * Modeled on extensions/lsp.ts: detects adapters on session_start, sets a status
- * footer, registers Layer 1 primitive tools, and tears down on session_shutdown.
- * Layer 2 composed tools (debug_state_at, debug_trace_calls, etc.) are added
- * in a later phase.
+ * footer, registers the Layer 1 primitive tools and the Layer 2 composed
+ * tools (debug_state_at, debug_trace_calls, ...), injects a DAP system prompt
+ * plus on-demand language skills, and tears down on session_shutdown.
  *
  * Usage: kimchi -e extensions/dap.ts
  */
 import { randomUUID } from "node:crypto"
 import path from "node:path"
-import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionUIContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { adapterExists, adapterForDirectory, adapterForFile, allAdapters, detectAdapters, detectMissingAdapters } from "./dap/adapters.js"
 import { DapClientRegistry } from "./dap/client.js"
 import { DapSessionRegistry } from "./dap/session.js"
@@ -379,7 +379,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── On-demand skill injection: activate language skills on first debug tool call ─
 	pi.on("tool_call", (event) => {
-		const name = (event as { toolName?: string }).toolName ?? ""
+		const name = (event as ToolCallEvent).toolName
 		if (name.startsWith("debug_") || name.startsWith("step_")) {
 			if (activeAdapters.some((a) => a.name === "dlv")) goSkillActive = true
 			if (activeAdapters.some((a) => a.name === "debugpy")) pythonSkillActive = true

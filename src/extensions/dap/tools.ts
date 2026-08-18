@@ -294,10 +294,18 @@ const WatchChangeSchema = Type.Object({
 	timeout_ms: Type.Optional(Type.Number({ description: "Wall-clock timeout in ms (default 30000)" })),
 })
 
+/** Cap on debug_locals output lines — huge structs would otherwise flood the
+ *  tool result and the agent's context. */
+const MAX_LOCALS_LINES = 100
+
 // =============================================================================
 // Tool definitions
 // =============================================================================
 
+/** Layer 1 primitive tools — one DAP request per call, no composed
+ *  orchestration. step_in/step_over/step_out keep the step_* prefix (rather
+ *  than debug_*) deliberately: `step` is the natural verb for LLM tool choice,
+ *  and the skill-injection trigger in dap.ts matches both prefixes. */
 export function createLayer1Tools(deps: DapToolDeps): ToolDefinition[] {
 	return [
 		// ── debug_launch ────────────────────────────────────────────────────
@@ -404,6 +412,10 @@ export function createLayer1Tools(deps: DapToolDeps): ToolDefinition[] {
 								}
 							}
 						}
+					}
+					if (lines.length > MAX_LOCALS_LINES) {
+						lines.length = MAX_LOCALS_LINES
+						lines.push(`  [truncated at ${MAX_LOCALS_LINES} lines — use debug_eval to inspect specific variables]`)
 					}
 					if (lines.length === 0) return textResult("No local variables at this frame.")
 					return textResult(lines.join("\n"))
@@ -536,6 +548,44 @@ export function createLayer1Tools(deps: DapToolDeps): ToolDefinition[] {
 			},
 			renderCall: dapRenderCall("DAP: Step Out"),
 		},
+		// ── debug_set_variable ─────────────────────────────────────────────
+		{
+			name: "debug_set_variable",
+			label: "DAP: Set Variable",
+			description:
+				"Set a variable's value at runtime. Useful for testing hypotheses — \"what if this value were 42?\" Requires a variablesReference from debug_locals output. The variable is modified in the debuggee's memory.",
+			promptSnippet: "Set a variable value at runtime to test a hypothesis",
+			parameters: SetVariableSchema,
+			async execute(_toolCallId, params: Static<typeof SetVariableSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
+				try {
+					const session = requireSession(deps, params.session_id)
+					const result = await session.setVariable(params.variables_reference, params.name, params.value)
+					return textResult(`Set ${params.name} = ${result.value}`)
+				} catch (err) {
+					return errorResult((err as Error).message)
+				}
+			},
+			renderCall: dapRenderCall("DAP: Set Variable"),
+		},
+		// ── debug_restart ──────────────────────────────────────────────────
+		{
+			name: "debug_restart",
+			label: "DAP: Restart Session",
+			description:
+				"Restart the debug session. Faster than terminate + launch for iterative debugging. Only works if the adapter supports restart (supportsRestartRequest capability).",
+			promptSnippet: "Restart the debug session for faster iteration",
+			parameters: SessionIdSchema,
+			async execute(_toolCallId, params: Static<typeof SessionIdSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
+				try {
+					const session = requireSession(deps, params.session_id)
+					await session.restart()
+					return textResult(`Session ${params.session_id} restarted.`)
+				} catch (err) {
+					return errorResult((err as Error).message)
+				}
+			},
+			renderCall: dapRenderCall("DAP: Restart Session"),
+		},
 	]
 }
 
@@ -643,44 +693,6 @@ export function createLayer2Tools(deps: DapToolDeps): ToolDefinition[] {
 			},
 			renderCall: dapRenderCall("DAP: Watch Expression Changes"),
 		},
-		// ── debug_set_variable ─────────────────────────────────────────────
-		{
-			name: "debug_set_variable",
-			label: "DAP: Set Variable",
-			description:
-				"Set a variable's value at runtime. Useful for testing hypotheses — \"what if this value were 42?\" Requires a variablesReference from debug_locals output. The variable is modified in the debuggee's memory.",
-			promptSnippet: "Set a variable value at runtime to test a hypothesis",
-			parameters: SetVariableSchema,
-			async execute(_toolCallId, params: Static<typeof SetVariableSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
-				try {
-					const session = requireSession(deps, params.session_id)
-					const result = await session.setVariable(params.variables_reference, params.name, params.value)
-					return textResult(`Set ${params.name} = ${result.value}`)
-				} catch (err) {
-					return errorResult((err as Error).message)
-				}
-			},
-			renderCall: dapRenderCall("DAP: Set Variable"),
-		},
-		// ── debug_restart ──────────────────────────────────────────────────
-		{
-			name: "debug_restart",
-			label: "DAP: Restart Session",
-			description:
-				"Restart the debug session. Faster than terminate + launch for iterative debugging. Only works if the adapter supports restart (supportsRestartRequest capability).",
-			promptSnippet: "Restart the debug session for faster iteration",
-			parameters: SessionIdSchema,
-			async execute(_toolCallId, params: Static<typeof SessionIdSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
-				try {
-					const session = requireSession(deps, params.session_id)
-					await session.restart()
-					return textResult(`Session ${params.session_id} restarted.`)
-				} catch (err) {
-					return errorResult((err as Error).message)
-				}
-			},
-			renderCall: dapRenderCall("DAP: Restart Session"),
-		},
 	]
 }
 
@@ -780,12 +792,9 @@ async function getTopFrameId(session: DapSession): Promise<number> {
  *  location. Shared by debug_continue, step_in, step_over, step_out. */
 function formatStop(session: DapSession, event: { reason: string; description?: string }): string {
 	const threadId = session.threadId ?? "?"
-	// Synchronously read the top frame — getStackFrame is async but the stop
-	// event has already arrived, so the frame is available immediately.
-	// We don't await here to keep formatStop synchronous; callers that need
-	// the frame call getStackFrame separately. For the tool result, we show
-	// the stop reason + threadId; the user can call debug_backtrace for details.
-	void session // suppress unused warning (threadId read above)
+	// formatStop stays synchronous (no getStackFrame await): the tool result
+	// shows stop reason + threadId; the user can call debug_backtrace for the
+	// frame details.
 	const desc = event.description ? ` — ${event.description}` : ""
 	return `Stopped: ${event.reason}${desc} (thread ${threadId})`
 }

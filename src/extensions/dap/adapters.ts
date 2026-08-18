@@ -1,8 +1,8 @@
 // extensions/dap/adapters.ts
 //
 // Adapter registry for DAP debug adapters. Mirrors lsp/servers.ts.
-// Supports stdio (dlv, debugpy, lldb-dap, java-debug, rdbg, php-debug-adapter)
-// and TCP transports (js-debug). js-debug uses nested sessions via
+// Supports stdio (debugpy, lldb-dap, java-debug, rdbg, php-debug-adapter)
+// and TCP transports (dlv dap, js-debug). js-debug uses nested sessions via
 // the startDebugging reverse-request — see client.ts for handling.
 // See docs/extensions/dap.md for architecture details.
 
@@ -62,7 +62,7 @@ const ADAPTERS: DapAdapterConfig[] = [
 		// client.ts search common install locations.
 		args: [],
 		detect: () => resolveJsDebugScript() !== null,
-		transport: { kind: "tcp", portArgIndex: 1, host: "127.0.0.1" },
+		transport: { kind: "tcp", host: "127.0.0.1" },
 		languages: ["typescript", "javascript"],
 		extensions: ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
 		launchType: "pwa-node",
@@ -88,7 +88,7 @@ const ADAPTERS: DapAdapterConfig[] = [
 		// dlv dap is TCP-based: it starts a headless TCP server and prints
 		// "DAP server listening at: <host>:<port>" to stdout. The DAP client
 		// connects via TCP. (Despite the name, dlv dap does NOT speak stdio.)
-		transport: { kind: "tcp", portArgIndex: -1 }, // -1 = no port arg; dlv picks ephemeral
+		transport: { kind: "tcp" }, // dlv picks an ephemeral port
 		languages: ["go"],
 		extensions: ["go"],
 		launchType: "go",
