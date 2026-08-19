@@ -258,9 +258,9 @@ describe("bash_control — error cases", () => {
 		expect(registry.getEntry(handle)?.state).toBe("running")
 	})
 
-	it("returns an error for checkin_interval <= 0 and leaves cadence unchanged", async () => {
+	it("returns an error for checkin_interval <= 0 or non-finite and leaves cadence unchanged", async () => {
 		const { registry, tool, handle } = setup()
-		for (const bad of [0, -5]) {
+		for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
 			const result = await callExecute(tool, { handle, action: "continue", checkin_interval: bad })
 			expect((result.content[0] as { text: string }).text).toContain("checkin_interval must be a positive number")
 			expect(result.details.reason).toBe("invalid-params")

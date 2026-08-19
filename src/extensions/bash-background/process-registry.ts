@@ -515,7 +515,7 @@ export function createProcessRegistry(): ProcessRegistry {
 		const entry = entries.get(handle)
 		if (!entry) return
 		if (entry.state !== "running") return
-		if (seconds <= 0) return
+		if (!Number.isFinite(seconds) || seconds <= 0) return
 		entry.intervalSeconds = seconds
 	}
 

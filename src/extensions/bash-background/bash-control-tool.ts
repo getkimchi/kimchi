@@ -105,7 +105,7 @@ export function createBashControlToolDefinition(
 				details: { handle, exited: false, exitCode: null, action, reason: "invalid-params" },
 			}
 		}
-		if (checkin_interval !== undefined && checkin_interval <= 0) {
+		if (checkin_interval !== undefined && (!Number.isFinite(checkin_interval) || checkin_interval <= 0)) {
 			return {
 				content: [
 					{
