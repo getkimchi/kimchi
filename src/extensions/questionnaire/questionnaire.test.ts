@@ -258,8 +258,11 @@ describe("questionnaire environment behavior", () => {
 		getActiveTools: ReturnType<typeof vi.fn>
 		setActiveTools: ReturnType<typeof vi.fn>
 		events: { emit: ReturnType<typeof vi.fn> }
+		getFlag: ReturnType<typeof vi.fn>
 		// Captures the registered session_start handler so tests can fire it.
 		_sessionStart: ((event: unknown, ctx: { hasUI: boolean }) => void) | null
+		// Captures the registered before_agent_start handler so tests can fire it.
+		_beforeAgentStart: ((event: { systemPrompt: string }, ctx: { hasUI: boolean }) => unknown) | null
 	}
 
 	function makePi(activeTools: string[] = ["questionnaire"]): FakePi {
@@ -269,10 +272,13 @@ describe("questionnaire environment behavior", () => {
 			getActiveTools: vi.fn(() => activeTools),
 			setActiveTools: vi.fn(),
 			events: { emit: vi.fn() },
+			getFlag: vi.fn(() => undefined),
 			_sessionStart: null,
+			_beforeAgentStart: null,
 		}
 		pi.on.mockImplementation((event: string, handler: (e: unknown, ctx: { hasUI: boolean }) => void) => {
-			if (event === "session_start") pi._sessionStart = handler
+			if (event === "session_start") pi._sessionStart = handler as FakePi["_sessionStart"]
+			if (event === "before_agent_start") pi._beforeAgentStart = handler as FakePi["_beforeAgentStart"]
 		})
 		return pi
 	}
@@ -319,6 +325,43 @@ describe("questionnaire environment behavior", () => {
 		// because the tool is already in the active set.
 		const writes = pi.setActiveTools.mock.calls
 		expect(writes).toEqual([])
+	})
+
+	// ─── before_agent_start: autonomous-mode prompt injection ────────────────
+
+	it("injects autonomous-mode instruction when headless and not ferment-oneshot", () => {
+		const pi = makePi(["questionnaire"])
+		pi.getFlag = vi.fn(() => undefined) // not ferment-oneshot
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+
+		const result = pi._beforeAgentStart?.({ systemPrompt: "BASE" }, { hasUI: false }) as
+			| { systemPrompt: string }
+			| undefined
+
+		expect(result).toBeDefined()
+		expect(result!.systemPrompt).toContain("BASE")
+		expect(result!.systemPrompt).toContain("Autonomous mode")
+		expect(result!.systemPrompt).toContain("no human or judge")
+		expect(result!.systemPrompt).toContain("Do NOT end your turn with questions")
+	})
+
+	it("does not inject when UI is attached (interactive session)", () => {
+		const pi = makePi(["questionnaire"])
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+
+		const result = pi._beforeAgentStart?.({ systemPrompt: "BASE" }, { hasUI: true })
+
+		expect(result).toBeUndefined()
+	})
+
+	it("does not inject when ferment-oneshot is true (judge handles questions)", () => {
+		const pi = makePi(["questionnaire"])
+		pi.getFlag = vi.fn((name: string) => (name === "ferment-oneshot" ? true : undefined))
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+
+		const result = pi._beforeAgentStart?.({ systemPrompt: "BASE" }, { hasUI: false })
+
+		expect(result).toBeUndefined()
 	})
 
 	it("execute returns a 'do not retry' steer when no UI is attached (defense-in-depth)", async () => {
