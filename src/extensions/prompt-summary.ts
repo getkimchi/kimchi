@@ -44,11 +44,13 @@ interface PromptSummaryData {
 	metrics?: PromptSummaryMetric[]
 }
 
-const pendingExtras: string[] = []
+const pendingExtrasBySession = new Map<string, string[]>()
 const pendingMetricsBySession = new Map<string, PromptSummaryMetric[]>()
 
-export function addPromptSummaryExtra(text: string): void {
-	pendingExtras.push(text)
+export function addPromptSummaryExtra(sessionId: string, text: string): void {
+	const extras = pendingExtrasBySession.get(sessionId) ?? []
+	extras.push(text)
+	pendingExtrasBySession.set(sessionId, extras)
 }
 
 export function addPromptSummaryMetric(sessionId: string, label: string, value: string): void {
@@ -232,9 +234,10 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 		}
 		const sessionId = ctx.sessionManager.getSessionId()
 		const metrics = pendingMetricsBySession.get(sessionId) ?? []
-		if (grandTotal.input + grandTotal.output === 0 && pendingExtras.length === 0 && metrics.length === 0) return
+		const extras = pendingExtrasBySession.get(sessionId) ?? []
+		if (grandTotal.input + grandTotal.output === 0 && extras.length === 0 && metrics.length === 0) return
 
-		const extras = pendingExtras.splice(0)
+		pendingExtrasBySession.delete(sessionId)
 		pendingMetricsBySession.delete(sessionId)
 
 		const subagentsByModel =
@@ -290,5 +293,6 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		pendingMetricsBySession.delete(ctx.sessionManager.getSessionId())
+		pendingExtrasBySession.delete(ctx.sessionManager.getSessionId())
 	})
 }

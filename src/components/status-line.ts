@@ -591,9 +591,9 @@ export class StatusLine implements Component {
 			.filter((t): t is { key: string; value: string } => t !== null)
 
 		const allSegments: Segment[] = [
-			this.goalSegment(),
 			this.fermentSegment(pinnedSet.has("ferment")),
 			this.permissionsSegment(pinnedSet.has("permissions")),
+			this.goalSegment(),
 			this.modelSegment(),
 			this.creditsSegment(pinnedSet.has("credits")),
 			this.budgetSegment(pinnedSet.has("budget")),

@@ -44,12 +44,16 @@ import {
 	createGoal,
 	editGoal,
 	type GoalState,
+	isRecord,
 	putGoalEntry,
 	recordGoalEvaluation,
 	replaceGoal,
 	restoreGoal,
+	setGoalConsecutiveErrorTurns,
 	setGoalStatus,
+	setGoalUnchangedContinuationTurns,
 } from "./reducer.js"
+import { getGoalSettings } from "./settings.js"
 import {
 	GOAL_COMPLETION_CONFIDENCES,
 	type GoalEvaluation,
@@ -90,8 +94,6 @@ type GoalTodoState = PendingGoalContinuation & {
 }
 const TODO_TOOL_NAME_SET = new Set<string>(TODO_TOOL_NAMES)
 const GOAL_TOOL_NAME_SET = new Set<string>(GOAL_TOOL_NAMES)
-const MAX_CONSECUTIVE_ERROR_TURNS = 3
-const MAX_UNCHANGED_CONTINUATIONS = 3
 
 export default function goalExtension(pi: ExtensionAPI): void {
 	if (isAgentWorker()) return
@@ -202,7 +204,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
 	function goalStatusText(): string | undefined {
 		const goal = currentGoal
-		if (!goal) return "Goal ready"
+		if (!goal) return undefined
 		if (goal.status === "complete") return undefined
 		const label =
 			goal.status === "active"
@@ -267,7 +269,16 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
 	function replaySession(ctx: ExtensionContext): void {
 		clearGoalStatus()
+		// A rewind can land on the same goal id/revision, so the post-await
+		// identity check in agent_settled can't tell a stale verdict from a live
+		// one. Abort before the state it was judged against is rebuilt below.
+		abortEvaluation()
 		const previousSessionId = currentSessionId
+		// Preserved only when the session itself didn't change (repeated session_start
+		// or session_tree replays on an already-attached session), and only re-applied
+		// below if it still matches the goal that comes back out of the replay.
+		const preservedContinuation =
+			previousSessionId === ctx.sessionManager.getSessionId() ? pendingContinuation : undefined
 		currentSessionId = ctx.sessionManager.getSessionId()
 		if (previousSessionId !== currentSessionId) resolveSessionWaiters(previousSessionId)
 		const restored = restoreGoalRuntime(
@@ -277,8 +288,22 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		)
 		currentGoal = restored.goal
 		resetGoalRuntime()
+		pendingContinuation = matchesGoal(preservedContinuation, currentGoal, currentSessionId)
+			? preservedContinuation
+			: undefined
 		todoStateFor = restored.todoState
 		goalLessons = restored.lessons
+		// resetGoalRuntime() just zeroed these along with everything else. The
+		// journal already carries the true counts -- both stall guards fold
+		// their counter into whichever commit is already happening when it
+		// changes (turn_end, agent_settled) -- so re-seed from the restored
+		// goal instead of letting a session restart (or the session_start
+		// resume kick below, for a crash-loop with no user in the loop) reset a
+		// guard that was never actually paused. An explicit /goal resume is the
+		// only thing that should zero these against an otherwise-active goal,
+		// and it does so by folding the reset into its own commit.
+		consecutiveErrorTurns = currentGoal?.consecutiveErrorTurns ?? 0
+		unchangedContinuationTurns = currentGoal?.unchangedContinuationTurns ?? 0
 		syncGoalStatus(ctx)
 	}
 
@@ -403,6 +428,23 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		}
 	}
 
+	/**
+	 * Whether a deferred session-start resume kick should stand down: the
+	 * session is busy, a message is already queued, or the ctx went stale
+	 * (the session was replaced or torn down before the timer fired). A
+	 * stale ctx means there is nothing left to resume against, so it counts
+	 * as blocked rather than propagating.
+	 */
+	function goalResumeBlocked(ctx: ExtensionContext): boolean {
+		if (goalIsBusy(ctx)) return true
+		try {
+			return ctx.hasPendingMessages()
+		} catch (error) {
+			if (isStaleCtxError(error)) return true
+			throw error
+		}
+	}
+
 	function abortEvaluation(): void {
 		evaluationAbort?.abort()
 		evaluationAbort = undefined
@@ -427,6 +469,23 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			!ctx.hasPendingMessages() &&
 			goalToolsAvailable()
 		)
+	}
+
+	/**
+	 * Called wherever `canEvaluateGoal` just failed, whether before or after
+	 * the evaluator ran. Drops `conversation` if it's still the one in
+	 * flight, and — only when nothing downstream could ever drive this goal
+	 * to a terminal state on its own — releases a headless command still
+	 * waiting on it. A goal that stopped being active, changed identity, or
+	 * has pending user input is already handled elsewhere (commitGoal,
+	 * commitClear, or the turn that the pending input will drive); only the
+	 * goal toolset going away leaves nothing else to act.
+	 */
+	function abandonGoalEvaluation(sessionId: string, conversation: CapturedGoalConversation): void {
+		if (capturedConversation === conversation) capturedConversation = undefined
+		// Nothing downstream will drive this goal to a terminal state, so a
+		// headless command waiting on it would block forever.
+		if (!goalToolsAvailable()) resolveGoalWaiter(sessionId, conversation.goalId)
 	}
 
 	function assertUnchanged(captured: SessionGoal | undefined): SessionGoal | undefined {
@@ -467,9 +526,12 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			assertUnchanged(captured)
 			const nowMs = Date.now()
 			const now = timestamp(nowMs)
+			// An explicit --tokens always wins; the configured default only fills
+			// in when the user didn't pass one.
+			const effectiveTokenBudget = tokenBudget ?? getGoalSettings().defaultTokenBudget
 			const next = captured
-				? replaceGoal(objective, randomUUID(), now, tokenBudget)
-				: createGoal(undefined, objective, randomUUID(), now, tokenBudget)
+				? replaceGoal(objective, randomUUID(), now, effectiveTokenBudget)
+				: createGoal(undefined, objective, randomUUID(), now, effectiveTokenBudget)
 			commitGoal(next)
 			emitGoalLifecycle(captured ? GOAL_EVENTS.REPLACED : GOAL_EVENTS.STARTED, next)
 			resetGoalRuntime()
@@ -510,8 +572,20 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				const current = assertUnchanged(captured)
 				if (!current) throw new Error("No goal is currently set.")
 				const nowMs = Date.now()
+				const now = timestamp(nowMs)
 				const accounted = checkpointGoal(current, 0, nowMs)
-				const next = editGoal(accounted, current.id, current.revision, editedObjective, timestamp(nowMs))
+				const edited = editGoal(accounted, current.id, current.revision, editedObjective, now)
+				// An edit already resets both guard counters in-memory below (via
+				// invalidateContinuation() and consecutiveErrorTurns = 0); fold that
+				// same reset into the committed revision so a later restart doesn't
+				// restore a streak that belonged to a superseded objective.
+				const next = setGoalUnchangedContinuationTurns(
+					setGoalConsecutiveErrorTurns(edited, edited.id, edited.revision, 0, now),
+					edited.id,
+					edited.revision,
+					0,
+					now,
+				)
 				const retainedTodoState =
 					todoStateFor && matchesGoal(todoStateFor, current, sessionId)
 						? rebindTodoState(todoStateFor, next)
@@ -598,7 +672,30 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			}
 			if (current.status === "complete") return ctx.ui.notify("A completed goal cannot be resumed.", "warning")
 			const nowMs = Date.now()
-			const next = setGoalStatus(current, current.id, current.revision, "active", timestamp(nowMs))
+			const now = timestamp(nowMs)
+			const activated = setGoalStatus(current, current.id, current.revision, "active", now)
+			// setGoalStatus refuses "active" and returns budget_limited when tokensUsed
+			// already caught up to the budget while paused (e.g. an aborted turn that
+			// both blew the budget and forced a pause in the same turn_end). Persist
+			// that correction, but don't act as if the resume succeeded: queueing a
+			// turn or a headless waiter against a non-active goal would never resolve.
+			if (activated.status !== "active") {
+				commitGoal(activated)
+				syncGoalStatus(ctx)
+				ctx.ui.notify("Goal token budget is exhausted. Start a replacement goal with a new budget.", "warning")
+				return
+			}
+			// An explicit resume is the user acknowledging a stall and choosing to
+			// continue, so both guard counters are deliberately zeroed here -- unlike
+			// a session restart, which must leave them alone. Fold the reset into
+			// this same commit so it survives a later restart too.
+			const next = setGoalUnchangedContinuationTurns(
+				setGoalConsecutiveErrorTurns(activated, activated.id, activated.revision, 0, now),
+				activated.id,
+				activated.revision,
+				0,
+				now,
+			)
 			commitGoal(next)
 			invalidateContinuation()
 			consecutiveErrorTurns = 0
@@ -775,6 +872,49 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		replaySession(ctx)
+		// A resumed active goal has no in-flight or queued turn (resetGoalRuntime
+		// cleared pendingContinuation above), so nothing will ever drive it forward
+		// on its own. Kick a continuation unless the normal chat path is about to
+		// run a turn anyway.
+		//
+		// The kick itself must be deferred, not sent from this handler. Embedders
+		// (print mode in particular) fully await session_start's dispatch --
+		// which runs this handler -- before calling session.prompt() with their
+		// own message. hasPendingMessages() is always false at this point
+		// regardless: pendingMessageCount is only populated by prompt()/steer()/
+		// followUp(), none of which have run yet. If the continuation were sent
+		// synchronously here, pi.sendMessage()'s fire-and-forget dispatch starts
+		// a real turn immediately (isStreaming is still false during
+		// session_start), and that turn can claim the streaming slot before the
+		// embedder's own session.prompt() call reaches its isStreaming check --
+		// which then throws "Agent is already processing" and aborts the run
+		// before the incoming prompt ever executes.
+		//
+		// Deferring to a macrotask lets any prompt already in flight win that
+		// race for real: everything session.prompt() does up to setting
+		// isStreaming is synchronous/microtask work, so it completes before this
+		// timer's callback runs. goalResumeBlocked re-checks busy/pending state
+		// (and the goal identity, in case something else replaced or cleared it
+		// in the meantime) when the timer fires, so an incoming prompt -- or any
+		// other turn -- skips the kick instead of racing it. Nothing here is
+		// awaited and no waiter is created: a session that goes idle-free or
+		// tears down before the timer fires just means the kick is skipped, not
+		// a hang. queueGoalTurn's existing revision-scoped pendingContinuation
+		// guard still makes this idempotent across repeated resumes.
+		const goal = currentGoal
+		if (goal?.status !== "active") return
+		if (!getGoalSettings().autoResume) return
+		const sessionId = currentSessionId
+		const goalId = goal.id
+		const goalRevision = goal.revision
+		const resumeKickTimer = setTimeout(() => {
+			if (currentSessionId !== sessionId) return
+			const latest = currentGoal
+			if (latest?.id !== goalId || latest.revision !== goalRevision || latest.status !== "active") return
+			if (goalResumeBlocked(ctx)) return
+			queueGoalTurn(ctx, latest, buildGoalStartSteer("resumed"), "session_start_resume", "followUp")
+		}, 0)
+		resumeKickTimer.unref()
 	})
 
 	pi.on("session_tree", (_event, ctx) => {
@@ -864,17 +1004,30 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			const current = currentGoal
 			if (attribution?.sessionId === sessionId && current?.id === attribution.goalId) {
 				const nowMs = Date.now()
+				const now = timestamp(nowMs)
 				const accounted = checkpointGoal(current, assistantTurnTokens(event), nowMs)
 				const reachedBudget = current.status === "active" && accounted.status === "budget_limited"
 				const interruption = current.status === "active" ? assistantTurnInterruption(event) : undefined
 				failedTurn = interruption ? { sessionId, goalId: current.id, revision: current.revision } : undefined
 				if (interruption === "error") consecutiveErrorTurns += 1
 				else consecutiveErrorTurns = 0
+				// Folded into whatever commit this turn already produces (accounting
+				// alone, or the pause below): setGoalConsecutiveErrorTurns is a
+				// no-op when the count didn't change, so this never adds a commit on
+				// its own -- see setGoalConsecutiveErrorTurns's doc comment.
+				const withErrorTurns = setGoalConsecutiveErrorTurns(
+					accounted,
+					current.id,
+					current.revision,
+					consecutiveErrorTurns,
+					now,
+				)
+				const { maxConsecutiveErrors } = getGoalSettings()
 				const terminalInterruption =
-					interruption === "aborted" || consecutiveErrorTurns >= MAX_CONSECUTIVE_ERROR_TURNS ? interruption : undefined
+					interruption === "aborted" || consecutiveErrorTurns >= maxConsecutiveErrors ? interruption : undefined
 				const next = terminalInterruption
-					? setGoalStatus(accounted, current.id, current.revision, "paused", timestamp(nowMs))
-					: accounted
+					? setGoalStatus(withErrorTurns, current.id, current.revision, "paused", now)
+					: withErrorTurns
 				if (next !== current) commitGoal(next)
 				activeSinceMs = undefined
 				if (terminalInterruption) {
@@ -885,7 +1038,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify(
 						terminalInterruption === "aborted"
 							? "Goal paused because the agent turn was cancelled."
-							: `Goal paused after ${MAX_CONSECUTIVE_ERROR_TURNS} consecutive agent errors.`,
+							: `Goal paused after ${maxConsecutiveErrors} consecutive agent errors.`,
 						"warning",
 					)
 				} else if (reachedBudget) {
@@ -927,10 +1080,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		const conversation = capturedConversation
 		if (!conversation) return
 		if (!canEvaluateGoal(conversation, capturedGoal, sessionId, ctx)) {
-			if (capturedConversation === conversation) capturedConversation = undefined
-			// Nothing downstream will drive this goal to a terminal state, so a
-			// headless command waiting on it would block forever.
-			if (!goalToolsAvailable()) resolveGoalWaiter(sessionId, conversation.goalId)
+			abandonGoalEvaluation(sessionId, conversation)
 			return
 		}
 		if (conversation.failed) {
@@ -964,7 +1114,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			assertCurrentSession(ctx, sessionId)
 			const goal = currentGoal
 			if (!canEvaluateGoal(conversation, goal, sessionId, ctx)) {
-				if (capturedConversation === conversation) capturedConversation = undefined
+				abandonGoalEvaluation(sessionId, conversation)
 				return
 			}
 			const now = timestamp()
@@ -1042,9 +1192,32 @@ export default function goalExtension(pi: ExtensionAPI): void {
 					? "The evaluator found the objective met, but the current Goal revision still needs a visible, fully completed Todo list."
 					: result.reason
 			const fingerprint = goalProgressFingerprint(evaluated, todoState, goalLessons)
+			const { maxUnchangedContinuations } = getGoalSettings()
 			const unchanged = !hadSubstantiveToolUse && fingerprint === startFingerprint ? unchangedContinuationTurns + 1 : 0
-			if (unchanged >= MAX_UNCHANGED_CONTINUATIONS) {
-				const paused = setGoalStatus(evaluated, evaluated.id, evaluated.revision, "paused", now)
+			// Folded into the single commit below either way (setGoalUnchangedContinuationTurns
+			// is a no-op when the count didn't change). This is recorded even on the rare path
+			// where queueGoalTurn then fails to actually queue a turn: canEvaluateGoal already
+			// confirmed goal tools are available and the session is current with no await in
+			// between, so that failure is not a meaningfully different outcome here, and
+			// deferring the fold until after queueGoalTurn would mean either a second commit
+			// (breaking the "one commit per turn" invariant other tests pin) or committing
+			// after queueGoalTurn's pi.sendMessage(triggerTurn) may have already synchronously
+			// started the next turn against a stale currentGoal.
+			const withContinuationCount = setGoalUnchangedContinuationTurns(
+				evaluated,
+				evaluated.id,
+				evaluated.revision,
+				unchanged,
+				now,
+			)
+			if (unchanged >= maxUnchangedContinuations) {
+				const paused = setGoalStatus(
+					withContinuationCount,
+					withContinuationCount.id,
+					withContinuationCount.revision,
+					"paused",
+					now,
+				)
 				commitGoal(paused)
 				emitEvaluation(paused)
 				emitGoalLifecycle(GOAL_EVENTS.STALLED, paused, {
@@ -1055,18 +1228,18 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				invalidateContinuation()
 				syncGoalStatus(ctx)
 				ctx.ui.notify(
-					`Goal paused after ${MAX_UNCHANGED_CONTINUATIONS} unchanged continuation turns without substantive tool use.`,
+					`Goal paused after ${maxUnchangedContinuations} unchanged continuation turns without substantive tool use.`,
 					"warning",
 				)
 				return
 			}
 
-			commitGoal(evaluated)
-			emitEvaluation(evaluated)
+			commitGoal(withContinuationCount)
+			emitEvaluation(withContinuationCount)
 			if (
 				queueGoalTurn(
 					ctx,
-					evaluated,
+					withContinuationCount,
 					buildGoalContinuation(unchanged > 0, continuationReason),
 					"evaluation",
 					"followUp",
@@ -1076,7 +1249,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			} else {
 				// No turn was queued, so nothing will drive this goal further; release
 				// any headless command still waiting on a terminal state.
-				resolveGoalWaiter(sessionId, evaluated.id)
+				resolveGoalWaiter(sessionId, withContinuationCount.id)
 			}
 			syncGoalStatus(ctx)
 		})
@@ -1186,12 +1359,39 @@ function rebindTodoState(state: GoalTodoState, goal: SessionGoal): GoalTodoState
 	}
 }
 
+/**
+ * A turn that only appends a fresh, not-yet-started todo must not look like
+ * progress: the prompt now actively invites adding a todo the moment new
+ * work is discovered, so mere list growth is reachable from an agent that is
+ * merely confused ("add a todo, plan, add a todo, plan"), not just a
+ * malicious one. Excluding "pending" items means a newly added item
+ * contributes nothing to the fingerprint until it is actually started or
+ * settled -- at which point its (now non-pending) tuple appears for the
+ * first time and the fingerprint changes, which is a real state transition.
+ *
+ * Per-item identity is kept (rather than folding in only aggregate counts)
+ * so two transitions that happen to cancel out in aggregate -- e.g. one item
+ * settling from blocked to completed while another settles the other way in
+ * the same turn -- still register as progress.
+ *
+ * Sorted by id for determinism: the todos store already returns items in id
+ * order (see orderTodosForStorage in todos/reducer.ts), but sorting here
+ * keeps this function self-contained and pure with respect to its inputs --
+ * a pure reorder or rename of otherwise-unchanged items must not look like
+ * progress, and this function shouldn't have to trust an invariant
+ * maintained in a different module to stay order-stable.
+ */
 function goalProgressFingerprint(
 	goal: SessionGoal,
 	todoState: GoalTodoState | undefined,
 	lessons: readonly GoalLesson[],
 ): string {
-	const todos = todoState?.todos.map(({ id, status, activeForm }) => [id, status, activeForm?.trim() ?? null]) ?? []
+	const todos = todoState
+		? [...todoState.todos]
+				.filter((todo) => todo.status !== "pending")
+				.sort((a, b) => a.id - b.id)
+				.map(({ id, status, activeForm }) => [id, status, activeForm?.trim() ?? null])
+		: []
 	const durableLessons = lessons.map(({ todoId, kind, text }) => [todoId, kind, text])
 	return JSON.stringify([goal.id, goal.revision, todos, durableLessons])
 }
@@ -1219,10 +1419,6 @@ function todoResultState(
 	}
 
 	return { todos: details.todos, ...todoCounts(details.todos) }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object"
 }
 
 function assistantTurnInterruption(event: TurnEndEvent): "aborted" | "error" | undefined {

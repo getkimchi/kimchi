@@ -195,13 +195,39 @@ Goal state is stored in the session journal, so resume, rewind, and fork follow 
 
 While an agent turn is working on a goal, the status line shows `Goal running` with elapsed time rounded down to minutes (`<1m`, `12m`, or `1h 5m`) and tokens. Goals with a token budget show used and budgeted tokens; reaching the budget stops automatic continuation. After Pi finishes retries, compaction, and queued messages, Goal evaluates the final conversation once: `met` completes, `impossible` blocks, and `continue` queues another hidden turn. If the evaluator is unavailable or returns invalid output, Goal pauses so it can be resumed. Time counts only active agent turns; cancelling a turn pauses the goal immediately, while three consecutive failed or unchanged continuation turns pause it after bounded retries. Token usage counts input and output tokens from this session's goal turns, excluding agent-worker child sessions; evaluator usage is tracked separately in the Goal journal.
 
-Goal mode directs the agent to track tactical progress in the normal Todos widget without creating a second goal-specific checklist. `update_goal complete` records a runtime completion claim and ends the working turn, but only the independent evaluation can complete the Goal. A `met` verdict still requires a visible, fully completed list for the current Goal revision. `update_goal blocked` remains immediate. Regular work tools remain available while the list is created or reconciled.
+Goal mode directs the agent to track tactical progress in the normal Todos widget without creating a second goal-specific checklist. The agent may add a todo mid-goal for work the objective requires, even after the list looked settled, since that is progress rather than a reason to leave the work unrecorded. `update_goal complete` records a runtime completion claim and ends the working turn, but only the independent evaluation can complete the Goal. A `met` verdict still requires a visible, fully completed list for the current Goal revision. `update_goal blocked` remains immediate. Regular work tools remain available while the list is created or reconciled.
 
 Evaluation details stay out of the transcript and status line. `/goal` shows the evaluation count and the latest verdict and reason.
 
 The evaluator runs on the session model, or on the configured `judge` role when multi-model is enabled. It is given a reasoning-aware token budget, because reasoning and the answer share that budget and a verdict-sized one returns no answer at all on a thinking model. A missing, truncated, unparseable, timed-out, or failed response pauses Goal after that single call.
 
 Goal mode validates Todo tool results only for the current session, goal ID, and revision. Todo state observed in another session cannot unlock work or completion.
+
+### Settings
+
+Goal mode's policy numbers are adjustable. Edit `~/.config/kimchi/harness/settings.json` directly, under a single `goal` key:
+
+```json
+{
+  "goal": {
+    "autoResume": true,
+    "maxUnchangedContinuations": 3,
+    "maxConsecutiveErrors": 3,
+    "defaultTokenBudget": 200000,
+    "evaluationTimeoutMs": 30000
+  }
+}
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `autoResume` | `true` | Whether to automatically queue a continuation turn for a resumed active goal on session start. |
+| `maxUnchangedContinuations` | `3` | Consecutive continuation turns without recorded progress before the goal pauses itself. |
+| `maxConsecutiveErrors` | `3` | Consecutive agent-error turns before the goal pauses itself. |
+| `defaultTokenBudget` | unset | Token budget applied to `/goal <objective>` when `--tokens` isn't given. An explicit `--tokens` always overrides this. |
+| `evaluationTimeoutMs` | `30000` | How long the independent completion check is allowed to run before it's treated as unavailable. |
+
+Only non-default values need to be specified; missing or invalid keys fall back to their default rather than failing the extension. There is no separate evaluator-model setting -- it uses the `judge` model role from [Model roles](#model-roles).
 
 ## Ferment -- cross-session project management
 

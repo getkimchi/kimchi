@@ -81,6 +81,7 @@ function renderGoalContext(goal: SessionGoal, lessons: readonly GoalLesson[]): s
 			? "Autonomous goal continuation is enabled. The goal JSON above is authoritative. " +
 				"Do not call get_goal while this context is present. " +
 				"Use the separately supplied Todo state as the authoritative tactical plan; do not clear it while this goal is active. " +
+				"Add a todo when you discover work the objective requires; a list that grows from real discovered work is progress, not a failure, even though it defers completion. " +
 				"Keep activeForm as the exact current action and note as concise evidence or decisions that must survive compaction. " +
 				"Prefix durable notes with Decision:, Evidence:, or Dead-end:; terminal notes may remain under lessons after their todos leave the list. " +
 				"Do not repeat dead ends without new evidence. " +

@@ -21,11 +21,17 @@ import {
 import { GOAL_EVENTS } from "./domain-events.js"
 import { evaluateGoal } from "./evaluator.js"
 import goalExtension from "./index.js"
+import { DEFAULT_GOAL_SETTINGS, getGoalSettings } from "./settings.js"
 import type { GoalJournalEntry, SessionGoal } from "./types.js"
 
 vi.mock("./evaluator.js", () => ({ evaluateGoal: vi.fn() }))
+vi.mock("./settings.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./settings.js")>()
+	return { ...actual, getGoalSettings: vi.fn() }
+})
 
 const evaluateGoalMock = vi.mocked(evaluateGoal)
+const goalSettingsMock = vi.mocked(getGoalSettings)
 const EVALUATOR_USAGE = {
 	input: 10,
 	output: 5,
@@ -65,6 +71,7 @@ describe("goal extension", () => {
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
 		})
+		goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS })
 		harness = createHarness()
 		await harness.fire("session_start", { type: "session_start", reason: "new" })
 	})
@@ -93,6 +100,11 @@ describe("goal extension", () => {
 
 		const result = await harness.tool(GET_GOAL_TOOL_NAME, {})
 		expect(result.details.goal).toBeNull()
+	})
+
+	it("publishes no status when no goal exists", async () => {
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("goal", undefined)
+		expect(harness.ui.setStatus).not.toHaveBeenCalledWith("goal", expect.any(String))
 	})
 
 	it("creates a goal, persists it, and confirms unfinished replacement", async () => {
@@ -154,6 +166,41 @@ describe("goal extension", () => {
 		await headlessHarness.command("ship feature A")
 		expect(headlessHarness.sendMessage).not.toHaveBeenCalled()
 		expect(headlessHarness.currentGoal()).toMatchObject({ status: "active" })
+	})
+
+	it("resolves a headless waiter when the goal tools go away mid-evaluation", async () => {
+		const headless = createHarness({ hasUI: false })
+
+		let resolved = false
+		const command = headless.command("ship feature A").then(() => {
+			resolved = true
+		})
+		await vi.waitFor(() => expect(headless.sendMessage).toHaveBeenCalledOnce())
+		expect(resolved).toBe(false)
+
+		// The pre-evaluator canEvaluateGoal check passes here (tools are still
+		// available), so the evaluator call proceeds and only the post-evaluator
+		// twin ever sees the tools go away.
+		const { release, settled } = await holdEvaluation(headless)
+		expect(resolved).toBe(false)
+
+		headless.setActiveTools([])
+		release({ verdict: "continue", reason: "More work is required.", model: "test/evaluator", usage: EVALUATOR_USAGE })
+		await settled
+
+		const TIMED_OUT = Symbol("timed out")
+		let timer: ReturnType<typeof setTimeout> | undefined
+		const timeout = new Promise<typeof TIMED_OUT>((resolve) => {
+			timer = setTimeout(() => resolve(TIMED_OUT), 300)
+		})
+		const winner = await Promise.race([command, timeout])
+		if (timer) clearTimeout(timer)
+
+		// If this regresses, the post-evaluator canEvaluateGoal failure never
+		// resolves the waiter (unlike its pre-evaluator twin), and the headless
+		// command hangs forever instead of the race above timing out.
+		expect(winner).not.toBe(TIMED_OUT)
+		expect(resolved).toBe(true)
 	})
 
 	it("starts replacement accounting with its own turn", async () => {
@@ -519,10 +566,122 @@ describe("goal extension", () => {
 		await harness.command("clear")
 		expect(harness.currentGoal()).toBeUndefined()
 		expect(harness.latestJournal()).toMatchObject({ op: "clear" })
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("goal", undefined)
 
 		await harness.fire("session_start", { type: "session_start", reason: "resume" })
 		expect(harness.currentGoal()).toBeUndefined()
 		expect((await harness.tool(GET_GOAL_TOOL_NAME, {})).details.goal).toBeNull()
+	})
+
+	it("schedules a continuation turn when resuming a session with an active goal", async () => {
+		await harness.command("ship it")
+		// Simulate a hard kill: no session_shutdown fired, journal branch untouched.
+		// A fresh harness stands in for the new process re-attaching to the same
+		// journal: only the persisted branch survives, not in-memory scheduling state.
+		const capturedBranch = [...harness.branch]
+
+		const resumed = createHarness()
+		resumed.setSession("session-a", capturedBranch)
+		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
+
+		expect(resumed.currentGoal()?.status).toBe("active")
+		expect(resumed.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: GOAL_CONTROL_MESSAGE_TYPE }),
+			expect.objectContaining({ triggerTurn: true }),
+		)
+	})
+
+	it("does not double-queue a continuation across repeated resume session_start events", async () => {
+		await harness.command("ship it")
+		const capturedBranch = [...harness.branch]
+
+		const resumed = createHarness()
+		resumed.setSession("session-a", capturedBranch)
+		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
+		expect(resumed.sendMessage).toHaveBeenCalledTimes(1)
+
+		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
+		expect(resumed.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not schedule a continuation turn when resuming a non-active goal", async () => {
+		await harness.command("ship it")
+		harness.setIdle(false)
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await harness.command("pause")
+		expect(harness.currentGoal()?.status).toBe("paused")
+		const capturedBranch = [...harness.branch]
+
+		const resumed = createHarness()
+		resumed.setSession("session-a", capturedBranch)
+		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
+
+		expect(resumed.currentGoal()?.status).toBe("paused")
+		expect(resumed.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not schedule a continuation turn on resume when a user message is already pending", async () => {
+		await harness.command("ship it")
+		const capturedBranch = [...harness.branch]
+
+		const resumed = createHarness()
+		resumed.setSession("session-a", capturedBranch)
+		resumed.setPending(true)
+		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
+
+		expect(resumed.currentGoal()?.status).toBe("active")
+		expect(resumed.sendMessage).not.toHaveBeenCalled()
+	})
+
+	// The resume kick fires from a deferred timer, not synchronously during
+	// session_start (see index.ts): an embedder such as print mode awaits
+	// session_start's dispatch, in which hasPendingMessages() is always false
+	// (prompt()/steer()/followUp() haven't run yet), and then immediately
+	// calls session.prompt() with its own message. Sending the continuation
+	// synchronously there raced that prompt for the streaming slot and could
+	// win it, crashing the incoming prompt with "Agent is already
+	// processing". Re-checking busyness with ctx.isIdle() (via goalIsBusy) at
+	// the deferred kick lets an incoming prompt -- which sets isStreaming
+	// before the timer fires -- stand the kick down instead of racing it.
+	it("does not schedule a continuation turn on resume when the session is already busy", async () => {
+		await harness.command("ship it")
+		const capturedBranch = [...harness.branch]
+
+		const resumed = createHarness()
+		resumed.setSession("session-a", capturedBranch)
+		resumed.setIdle(false)
+		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
+
+		expect(resumed.currentGoal()?.status).toBe("active")
+		expect(resumed.sendMessage).not.toHaveBeenCalled()
+	})
+
+	// Pins the actual race fix: the kick must not be sent synchronously while
+	// session_start is still dispatching (that is what let it beat an
+	// embedder's incoming prompt to the streaming slot). It should only be
+	// sent once the deferred timer fires.
+	it("does not send the resume kick synchronously during session_start dispatch", async () => {
+		await harness.command("ship it")
+		const capturedBranch = [...harness.branch]
+
+		const resumed = createHarness()
+		resumed.setSession("session-a", capturedBranch)
+
+		vi.useFakeTimers()
+		try {
+			const firePromise = resumed.fire("session_start", { type: "session_start", reason: "resume" })
+			expect(resumed.sendMessage).not.toHaveBeenCalled()
+
+			await vi.runAllTimersAsync()
+			await firePromise
+
+			expect(resumed.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: GOAL_CONTROL_MESSAGE_TYPE }),
+				expect.objectContaining({ triggerTurn: true }),
+			)
+		} finally {
+			vi.useRealTimers()
+		}
 	})
 
 	it("uses the active turn revision internally for model updates", async () => {
@@ -987,6 +1146,61 @@ describe("goal extension", () => {
 		await settled
 	})
 
+	it("aborts an evaluation held across a session_tree rewind that lands on the same goal revision", async () => {
+		await harness.command("ship it")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		// Journaled like the other replay tests: restoreGoalRuntime rebuilds
+		// todoStateFor from branch entries, so the settled Todo has to actually be
+		// there for the post-rewind "met" path to be reachable at all.
+		harness.setBranch([
+			...harness.branch,
+			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
+				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+				scope: { kind: "global" },
+				todos: [{ id: 1, content: "Finish the goal", status: "completed" }],
+				updatedAt: "2026-08-03T00:00:01.000Z",
+			}),
+		])
+
+		const { release, settled, signal } = await holdEvaluation(harness)
+
+		// A rewind landing back on the same goal id/revision: the post-await
+		// identity check alone can't tell this apart from a live evaluation.
+		await harness.fire("session_tree", { type: "session_tree", oldLeafId: "before", newLeafId: "after" })
+
+		expect(signal?.aborted).toBe(true)
+
+		release({
+			verdict: "met",
+			reason: "All requirements are evidenced.",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+		})
+		await settled
+
+		// The stale "met" verdict must not resurrect and complete a goal whose
+		// conversation was just rewound away from.
+		expect(harness.currentGoal()?.status).not.toBe("complete")
+	})
+
+	it("aborts an in-flight evaluation when session_start switches to a different session", async () => {
+		await harness.command("ship it")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		const { release, settled, signal } = await holdEvaluation(harness)
+
+		harness.setSession("session-b", [])
+		await harness.fire("session_start", { type: "session_start", reason: "new" })
+
+		expect(signal?.aborted).toBe(true)
+		release({
+			verdict: "continue",
+			reason: "old result",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+		})
+		await settled
+	})
+
 	it("pauses after three continuation turns without recorded todo progress", async () => {
 		await harness.command("keep going")
 		await harness.fire("tool_execution_end", {
@@ -1046,6 +1260,191 @@ describe("goal extension", () => {
 			"Goal paused after 3 unchanged continuation turns without substantive tool use.",
 			"warning",
 		)
+	})
+
+	it("pauses after three no-progress continuation turns split across a session restart", async () => {
+		await harness.command("keep going")
+
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await settleGoal(harness, "continue")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
+		await settleGoal(harness, "continue")
+
+		expect(harness.currentGoal()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
+
+		// Simulate a crash-loop or a reconnecting harness re-attaching to the
+		// same journal branch: only the persisted goal survives, not this
+		// process's in-memory scheduling state. Before the fix, resetGoalRuntime
+		// zeroed the counter here and the guard never fired.
+		const capturedBranch = [...harness.branch]
+		const resumed = createHarness()
+		resumed.setSession("session-a", capturedBranch)
+		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
+		resumed.sendMessage.mockClear()
+
+		await resumed.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
+		await settleGoal(resumed, "continue")
+
+		expect(resumed.currentGoal()?.status).toBe("paused")
+		expect(resumed.events.emit).toHaveBeenLastCalledWith(
+			GOAL_EVENTS.STALLED,
+			expect.objectContaining({ reason: "no_progress", continuationCount: 3, status: "paused" }),
+		)
+	})
+
+	it("pauses when every turn only appends a fresh not-yet-started todo", async () => {
+		// The `<kimchi_session_goal>` prompt now explicitly invites adding a todo
+		// for newly discovered work. Mere list growth must not reset the
+		// no-progress guard, or an agent stuck "add a todo, plan, add a todo,
+		// plan" would never trip it.
+		await harness.command("keep going")
+		harness.sendMessage.mockClear()
+
+		for (let turnIndex = 1; turnIndex <= 3; turnIndex += 1) {
+			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
+			await harness.fire("tool_execution_end", {
+				type: "tool_execution_end",
+				toolName: "add_todo",
+				isError: false,
+				result: {
+					details: {
+						schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+						scope: { kind: "global" },
+						todos: Array.from({ length: turnIndex }, (_, index) => ({
+							id: index + 1,
+							content: `Discovered item ${index + 1}`,
+							status: "pending" as const,
+						})),
+						updatedAt: `2026-08-03T00:00:0${turnIndex}.000Z`,
+					},
+				},
+			})
+			await harness.fire("turn_end", terminalTurn())
+			await settleGoal(harness, "continue")
+		}
+
+		expect(harness.currentGoal()?.status).toBe("paused")
+		expect(harness.events.emit).toHaveBeenLastCalledWith(
+			GOAL_EVENTS.STALLED,
+			expect.objectContaining({ reason: "no_progress", continuationCount: 3, status: "paused" }),
+		)
+	})
+
+	it("counts starting an added todo as progress and resets the no-progress counter", async () => {
+		await harness.command("keep going")
+		harness.sendMessage.mockClear()
+
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await harness.fire("tool_execution_end", {
+			type: "tool_execution_end",
+			toolName: "add_todo",
+			isError: false,
+			result: {
+				details: {
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+					scope: { kind: "global" },
+					todos: [{ id: 1, content: "Discovered item", status: "pending" }],
+					updatedAt: "2026-08-03T00:00:01.000Z",
+				},
+			},
+		})
+		await harness.fire("turn_end", terminalTurn())
+		await settleGoal(harness, "continue")
+
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
+		await harness.fire("tool_execution_end", {
+			type: "tool_execution_end",
+			toolName: "add_todo",
+			isError: false,
+			result: {
+				details: {
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+					scope: { kind: "global" },
+					todos: [
+						{ id: 1, content: "Discovered item", status: "pending" },
+						{ id: 2, content: "Another discovered item", status: "pending" },
+					],
+					updatedAt: "2026-08-03T00:00:02.000Z",
+				},
+			},
+		})
+		await harness.fire("turn_end", terminalTurn())
+		await settleGoal(harness, "continue")
+
+		expect(harness.currentGoal()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
+
+		// Starting the first item -- pending to in_progress -- is a real state
+		// transition, not mere growth, so it must reset the counter.
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
+		await harness.fire("tool_execution_end", {
+			type: "tool_execution_end",
+			toolName: "mark_todo",
+			isError: false,
+			result: {
+				details: {
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+					scope: { kind: "global" },
+					todos: [
+						{ id: 1, content: "Discovered item", status: "in_progress", activeForm: "Working on it" },
+						{ id: 2, content: "Another discovered item", status: "pending" },
+					],
+					updatedAt: "2026-08-03T00:00:03.000Z",
+				},
+			},
+		})
+		await harness.fire("turn_end", terminalTurn())
+		await settleGoal(harness, "continue")
+
+		expect(harness.currentGoal()).toMatchObject({ status: "active" })
+		expect(harness.currentGoal()?.unchangedContinuationTurns).toBeUndefined()
+	})
+
+	it("counts settling a todo as progress and resets the no-progress counter", async () => {
+		await harness.command("keep going")
+		await harness.fire("tool_execution_end", {
+			type: "tool_execution_end",
+			toolName: "create_todos",
+			isError: false,
+			result: {
+				details: {
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+					scope: { kind: "global" },
+					todos: [{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working" }],
+					updatedAt: "2026-08-03T00:00:00.000Z",
+				},
+			},
+		})
+		harness.sendMessage.mockClear()
+
+		for (let turnIndex = 1; turnIndex <= 2; turnIndex += 1) {
+			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
+			await harness.fire("turn_end", terminalTurn())
+			await settleGoal(harness, "continue")
+		}
+
+		expect(harness.currentGoal()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
+
+		// Settling the item -- in_progress to completed -- is a real state
+		// transition, so it must reset the counter even though the list didn't grow.
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
+		await harness.fire("tool_execution_end", {
+			type: "tool_execution_end",
+			toolName: "mark_todo",
+			isError: false,
+			result: {
+				details: {
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+					scope: { kind: "global" },
+					todos: [{ id: 1, content: "Do the work", status: "completed" }],
+					updatedAt: "2026-08-03T00:00:03.000Z",
+				},
+			},
+		})
+		await harness.fire("turn_end", terminalTurn())
+		await settleGoal(harness, "continue")
+
+		expect(harness.currentGoal()).toMatchObject({ status: "active" })
+		expect(harness.currentGoal()?.unchangedContinuationTurns).toBeUndefined()
 	})
 
 	it("does not loop when goal tools are hidden", async () => {
@@ -1122,6 +1521,119 @@ describe("goal extension", () => {
 		expect(harness.ui.notify).toHaveBeenCalledWith("Goal paused after 3 consecutive agent errors.", "warning")
 	})
 
+	it("pauses after three consecutive agent-error turns split across a session restart", async () => {
+		await harness.command("keep going")
+		evaluateGoalMock.mockClear()
+
+		for (let turnIndex = 1; turnIndex <= 2; turnIndex++) {
+			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
+			await harness.fire("turn_end", terminalTurn("error"))
+			await harness.fire("agent_end", { type: "agent_end", messages: [] })
+			await harness.fire("agent_settled", { type: "agent_settled" })
+		}
+
+		expect(harness.currentGoal()).toMatchObject({ status: "active", consecutiveErrorTurns: 2 })
+		expect(evaluateGoalMock).not.toHaveBeenCalled()
+
+		// Simulate a crash-loop or a reconnecting harness re-attaching to the
+		// same journal branch. Before the fix, resetGoalRuntime zeroed the
+		// error streak here and a third consecutive error turn never paused.
+		const capturedBranch = [...harness.branch]
+		const resumed = createHarness()
+		resumed.setSession("session-a", capturedBranch)
+		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
+		resumed.sendMessage.mockClear()
+
+		await resumed.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
+		await resumed.fire("turn_end", terminalTurn("error"))
+		await resumed.fire("agent_end", { type: "agent_end", messages: [] })
+		await resumed.fire("agent_settled", { type: "agent_settled" })
+
+		expect(resumed.currentGoal()?.status).toBe("paused")
+		expect(resumed.events.emit).toHaveBeenLastCalledWith(
+			GOAL_EVENTS.PAUSED,
+			expect.objectContaining({ reason: "agent_errors", status: "paused" }),
+		)
+		expect(resumed.ui.notify).toHaveBeenCalledWith("Goal paused after 3 consecutive agent errors.", "warning")
+	})
+
+	it("still resets the stall-guard counters on an explicit /goal resume", async () => {
+		await harness.command("keep going")
+
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await harness.fire("turn_end", terminalTurn("error"))
+		await harness.fire("agent_end", { type: "agent_end", messages: [] })
+		await harness.fire("agent_settled", { type: "agent_settled" })
+		expect(harness.currentGoal()).toMatchObject({ status: "active", consecutiveErrorTurns: 1 })
+
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
+		await harness.fire("turn_end", terminalTurn("stop"))
+		await settleGoal(harness, "continue")
+		// A non-error turn already resets the error streak on its own.
+		expect(harness.currentGoal()).toMatchObject({ status: "active", unchangedContinuationTurns: 1 })
+		expect(harness.currentGoal()?.consecutiveErrorTurns).toBeUndefined()
+
+		await harness.command("pause")
+		await harness.command("resume")
+
+		// A user explicitly acknowledging and continuing past a stall must
+		// still zero the no-progress counter -- this is deliberate, unlike a
+		// session_start replay, which must not touch it.
+		expect(harness.currentGoal()).toMatchObject({ status: "active" })
+		expect(harness.currentGoal()?.consecutiveErrorTurns).toBeUndefined()
+		expect(harness.currentGoal()?.unchangedContinuationTurns).toBeUndefined()
+
+		// Confirm it was a real reset and not merely hidden: two more
+		// no-progress turns land at 2, not 3 (which would already be paused).
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
+		await settleGoal(harness, "continue")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 4, timestamp: Date.now() })
+		await settleGoal(harness, "continue")
+		expect(harness.currentGoal()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
+	})
+
+	it("persists a genuine progress reset across a session restart, not just increments", async () => {
+		await harness.command("keep going")
+
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await harness.fire("turn_end", terminalTurn("error"))
+		await harness.fire("agent_end", { type: "agent_end", messages: [] })
+		await harness.fire("agent_settled", { type: "agent_settled" })
+		expect(harness.currentGoal()).toMatchObject({ status: "active", consecutiveErrorTurns: 1 })
+
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
+		await harness.fire("turn_end", terminalTurn("stop"))
+		await settleGoal(harness, "continue")
+		expect(harness.currentGoal()?.consecutiveErrorTurns).toBeUndefined()
+
+		const capturedBranch = [...harness.branch]
+		const resumed = createHarness()
+		resumed.setSession("session-a", capturedBranch)
+		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
+		resumed.sendMessage.mockClear()
+
+		// If the reset above hadn't really been journaled, a stale streak of 1
+		// plus these two errors would already reach the pause threshold. It
+		// must take all three post-restart errors, proving the reset was real.
+		await resumed.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
+		await resumed.fire("turn_end", terminalTurn("error"))
+		await resumed.fire("agent_end", { type: "agent_end", messages: [] })
+		await resumed.fire("agent_settled", { type: "agent_settled" })
+		expect(resumed.currentGoal()).toMatchObject({ status: "active", consecutiveErrorTurns: 1 })
+
+		await resumed.fire("turn_start", { type: "turn_start", turnIndex: 4, timestamp: Date.now() })
+		await resumed.fire("turn_end", terminalTurn("error"))
+		await resumed.fire("agent_end", { type: "agent_end", messages: [] })
+		await resumed.fire("agent_settled", { type: "agent_settled" })
+		expect(resumed.currentGoal()).toMatchObject({ status: "active", consecutiveErrorTurns: 2 })
+
+		await resumed.fire("turn_start", { type: "turn_start", turnIndex: 5, timestamp: Date.now() })
+		await resumed.fire("turn_end", terminalTurn("error"))
+		await resumed.fire("agent_end", { type: "agent_end", messages: [] })
+		await resumed.fire("agent_settled", { type: "agent_settled" })
+		expect(resumed.currentGoal()?.status).toBe("paused")
+	})
+
 	it("stops continuation when the token budget is reached", async () => {
 		await harness.command("--tokens 100 keep going")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
@@ -1140,6 +1652,62 @@ describe("goal extension", () => {
 		expect(evaluateGoalMock).not.toHaveBeenCalled()
 		expect(harness.appendEntry).not.toHaveBeenCalled()
 		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("refuses to resume a goal that is paused but still over its token budget", async () => {
+		// An aborted turn can both push tokensUsed past the budget and force a
+		// pause in the same turn_end (budget_limited is overwritten by paused),
+		// leaving a goal that is paused yet already over budget.
+		await harness.command("--tokens 100 keep going")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await harness.fire("turn_end", terminalTurn("aborted", { input: 80, output: 20 }))
+		expect(harness.currentGoal()).toMatchObject({ status: "paused", tokenBudget: 100, tokensUsed: 100 })
+
+		harness.sendMessage.mockClear()
+		harness.ui.notify.mockClear()
+
+		await harness.command("resume")
+
+		expect(harness.currentGoal()).toMatchObject({ status: "budget_limited", tokenBudget: 100, tokensUsed: 100 })
+		expect(harness.ui.notify).toHaveBeenCalledWith(
+			"Goal token budget is exhausted. Start a replacement goal with a new budget.",
+			"warning",
+		)
+		expect(harness.ui.notify).not.toHaveBeenCalledWith("Goal resumed.", "info")
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("settles a headless resume instead of hanging when the goal is paused but over budget", async () => {
+		await harness.command("--tokens 100 keep going")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await harness.fire("turn_end", terminalTurn("aborted", { input: 80, output: 20 }))
+		expect(harness.currentGoal()).toMatchObject({ status: "paused", tokenBudget: 100, tokensUsed: 100 })
+
+		const capturedBranch = [...harness.branch]
+		const headless = createHarness({ hasUI: false })
+		headless.setSession("session-a", capturedBranch)
+		await headless.fire("session_start", { type: "session_start", reason: "resume" })
+		expect(headless.sendMessage).not.toHaveBeenCalled()
+
+		let resolved = false
+		const command = headless.command("resume").then(() => {
+			resolved = true
+		})
+		const TIMED_OUT = Symbol("timed out")
+		let timer: ReturnType<typeof setTimeout> | undefined
+		const timeout = new Promise<typeof TIMED_OUT>((resolve) => {
+			timer = setTimeout(() => resolve(TIMED_OUT), 250)
+		})
+		const winner = await Promise.race([command, timeout])
+		if (timer) clearTimeout(timer)
+
+		// If this regresses, the resume command hangs forever (an unresolvable
+		// waiter is created after the goal is already terminal) and the race
+		// above times out instead of the command winning.
+		expect(winner).not.toBe(TIMED_OUT)
+		expect(resolved).toBe(true)
+		expect(headless.currentGoal()).toMatchObject({ status: "budget_limited", tokenBudget: 100, tokensUsed: 100 })
+		expect(headless.sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("serializes edit and agent-end so no old-revision continuation is scheduled", async () => {
@@ -1385,6 +1953,112 @@ describe("goal extension", () => {
 			}),
 		).toMatchObject({ block: true, reason: expect.stringContaining("visible tactical todo") })
 	})
+
+	describe("configurable policy settings", () => {
+		it("pauses at the configured maxUnchangedContinuations count, not the default", async () => {
+			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, maxUnchangedContinuations: 2 })
+			await harness.command("keep going")
+			harness.sendMessage.mockClear()
+
+			await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+			await settleGoal(harness, "continue")
+			expect(harness.currentGoal()).toMatchObject({ status: "active", unchangedContinuationTurns: 1 })
+
+			await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
+			await settleGoal(harness, "continue")
+
+			expect(harness.currentGoal()?.status).toBe("paused")
+			expect(harness.events.emit).toHaveBeenLastCalledWith(
+				GOAL_EVENTS.STALLED,
+				expect.objectContaining({ reason: "no_progress", continuationCount: 2, status: "paused" }),
+			)
+			expect(harness.ui.notify).toHaveBeenCalledWith(
+				"Goal paused after 2 unchanged continuation turns without substantive tool use.",
+				"warning",
+			)
+		})
+
+		it("pauses at the configured maxConsecutiveErrors count, not the default", async () => {
+			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, maxConsecutiveErrors: 2 })
+			await harness.command("keep going")
+			harness.sendMessage.mockClear()
+			evaluateGoalMock.mockClear()
+
+			for (let turnIndex = 1; turnIndex <= 2; turnIndex++) {
+				await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
+				await harness.fire("turn_end", terminalTurn("error"))
+				harness.appendEntry.mockClear()
+				await harness.fire("agent_end", { type: "agent_end", messages: [] })
+				await harness.fire("agent_settled", { type: "agent_settled" })
+				if (turnIndex < 2) expect(harness.currentGoal()?.status).toBe("active")
+			}
+
+			expect(evaluateGoalMock).not.toHaveBeenCalled()
+			expect(harness.currentGoal()?.status).toBe("paused")
+			expect(harness.events.emit).toHaveBeenLastCalledWith(
+				GOAL_EVENTS.PAUSED,
+				expect.objectContaining({ reason: "agent_errors", status: "paused" }),
+			)
+			expect(harness.ui.notify).toHaveBeenCalledWith("Goal paused after 2 consecutive agent errors.", "warning")
+		})
+
+		it("does not schedule a resume continuation on session_start when autoResume is disabled", async () => {
+			await harness.command("ship it")
+			const capturedBranch = [...harness.branch]
+
+			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, autoResume: false })
+			const resumed = createHarness()
+			resumed.setSession("session-a", capturedBranch)
+			await resumed.fire("session_start", { type: "session_start", reason: "resume" })
+
+			expect(resumed.currentGoal()?.status).toBe("active")
+			expect(resumed.sendMessage).not.toHaveBeenCalled()
+		})
+
+		it("still schedules a resume continuation when autoResume is true (default)", async () => {
+			await harness.command("ship it")
+			const capturedBranch = [...harness.branch]
+
+			// Default mock already resolves to DEFAULT_GOAL_SETTINGS (autoResume: true);
+			// set it explicitly here so the intent of this test reads standalone.
+			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, autoResume: true })
+			const resumed = createHarness()
+			resumed.setSession("session-a", capturedBranch)
+			await resumed.fire("session_start", { type: "session_start", reason: "resume" })
+
+			expect(resumed.currentGoal()?.status).toBe("active")
+			expect(resumed.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: GOAL_CONTROL_MESSAGE_TYPE }),
+				expect.objectContaining({ triggerTurn: true }),
+			)
+		})
+
+		it("applies defaultTokenBudget to /goal <objective> without --tokens", async () => {
+			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, defaultTokenBudget: 500 })
+
+			await harness.command("ship it")
+
+			expect(harness.currentGoal()).toMatchObject({ tokenBudget: 500 })
+		})
+
+		it("lets an explicit --tokens win over a configured defaultTokenBudget", async () => {
+			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, defaultTokenBudget: 500 })
+
+			await harness.command("--tokens 250 ship it")
+
+			expect(harness.currentGoal()).toMatchObject({ tokenBudget: 250 })
+		})
+
+		it("still lets an explicit --tokens win when replacing a goal under a configured default", async () => {
+			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, defaultTokenBudget: 500 })
+
+			await harness.command("first")
+			expect(harness.currentGoal()).toMatchObject({ tokenBudget: 500 })
+
+			await harness.command("--tokens 250 second")
+			expect(harness.currentGoal()).toMatchObject({ objective: "second", tokenBudget: 250 })
+		})
+	})
 })
 
 function createHarness(options: { hasUI?: boolean } = {}) {
@@ -1397,6 +2071,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 	let pending = false
 	let activeTools: string[] = [...GOAL_TOOL_NAMES, ...TODO_TOOL_NAMES]
 
+	let idleError: Error | undefined
 	const ui = {
 		notify: vi.fn(),
 		confirm: vi.fn(async () => true),
@@ -1429,7 +2104,14 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 		mode: "tui",
 		ui,
 		waitForIdle,
-		isIdle: () => idle,
+		isIdle: () => {
+			if (idleError) {
+				const error = idleError
+				idleError = undefined
+				throw error
+			}
+			return idle
+		},
 		hasPendingMessages: () => pending,
 		sessionManager: {
 			getSessionId: () => sessionId,
@@ -1461,6 +2143,9 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 		setIdle(value: boolean) {
 			idle = value
 		},
+		setIdleError(error: Error) {
+			idleError = error
+		},
 		setPending(value: boolean) {
 			pending = value
 		},
@@ -1471,6 +2156,14 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 			let result: unknown
 			for (const handler of handlers.get(event) ?? []) {
 				result = await handler(payload as never, ctx)
+			}
+			// session_start defers its resume kick past dispatch with a real
+			// setTimeout(0) (see index.ts) so an embedder's own incoming prompt
+			// can win the race for the streaming slot instead of crashing against
+			// it. Flush that one macrotask here so callers observe the settled
+			// outcome instead of a callback still pending on the real timer queue.
+			if (event === "session_start") {
+				await new Promise((resolve) => setTimeout(resolve, 0))
 			}
 			return result
 		},

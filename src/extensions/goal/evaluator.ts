@@ -4,9 +4,10 @@ import type { AgentEndEvent, ExtensionContext } from "@earendil-works/pi-coding-
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles, normalizeRoleModels, splitModelRef } from "../orchestration/model-roles.js"
 import type { TodoItem } from "../todos/types.js"
+import { isRecord } from "./reducer.js"
+import { getGoalSettings } from "./settings.js"
 import type { GoalEvaluatorUsage } from "./types.js"
 
-export const GOAL_EVALUATION_TIMEOUT_MS = 30_000
 export const MAX_TRANSCRIPT_CHARS = 16_000
 const MAX_REASON_CHARS = 1_000
 /**
@@ -125,7 +126,8 @@ export async function evaluateGoal(input: GoalEvaluationInput, ctx: ExtensionCon
 	// Two distinct aborts: our own deadline, and the caller cancelling the goal.
 	// Keeping the deadline signal lets the timeout be reported as a timeout
 	// rather than as a generic abort.
-	const deadline = AbortSignal.timeout(GOAL_EVALUATION_TIMEOUT_MS)
+	const { evaluationTimeoutMs } = getGoalSettings()
+	const deadline = AbortSignal.timeout(evaluationTimeoutMs)
 	const signal = input.signal ? AbortSignal.any([deadline, input.signal]) : deadline
 
 	try {
@@ -148,7 +150,7 @@ export async function evaluateGoal(input: GoalEvaluationInput, ctx: ExtensionCon
 		return {
 			verdict: "unavailable",
 			reason: deadline.aborted
-				? `Evaluator ${modelRef} timed out after ${GOAL_EVALUATION_TIMEOUT_MS / 1_000} seconds.`
+				? `Evaluator ${modelRef} timed out after ${evaluationTimeoutMs / 1_000} seconds.`
 				: input.signal?.aborted
 					? `Evaluator ${modelRef} was cancelled.`
 					: `Evaluator ${modelRef} call failed: ${errorMessage(error)}`,
@@ -223,8 +225,4 @@ function contentText(content: unknown): string {
 		})
 		.filter(Boolean)
 		.join("\n")
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object"
 }

@@ -5,13 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles } from "../orchestration/model-roles.js"
-import {
-	evaluateGoal,
-	GOAL_EVALUATION_TIMEOUT_MS,
-	MAX_TRANSCRIPT_CHARS,
-	parseGoalEvaluatorOutput,
-	resolveGoalEvaluatorModel,
-} from "./evaluator.js"
+import { evaluateGoal, MAX_TRANSCRIPT_CHARS, parseGoalEvaluatorOutput, resolveGoalEvaluatorModel } from "./evaluator.js"
+import { DEFAULT_GOAL_SETTINGS, getGoalSettings } from "./settings.js"
 
 vi.mock("@earendil-works/pi-ai/compat", () => ({ completeSimple: vi.fn() }))
 vi.mock("../multi-model.js", () => ({ getMultiModelEnabled: vi.fn() }))
@@ -19,10 +14,20 @@ vi.mock("../orchestration/model-roles.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../orchestration/model-roles.js")>()
 	return { ...actual, getModelRoles: vi.fn() }
 })
+// evaluationTimeoutMs is now user-configurable (see settings.ts); evaluator.ts
+// reads it via getGoalSettings() on every call instead of a fixed exported
+// constant, so GOAL_EVALUATION_TIMEOUT_MS no longer exists. Tests below mock
+// this module and assert against DEFAULT_GOAL_SETTINGS.evaluationTimeoutMs
+// (or an overridden value) instead.
+vi.mock("./settings.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./settings.js")>()
+	return { ...actual, getGoalSettings: vi.fn() }
+})
 
 const completeMock = vi.mocked(completeSimple)
 const multiModelMock = vi.mocked(getMultiModelEnabled)
 const modelRolesMock = vi.mocked(getModelRoles)
+const goalSettingsMock = vi.mocked(getGoalSettings)
 const sessionModel = model("session", "main")
 const judgeModel = model("judge", "independent")
 // Raw pi-ai Usage, as completeSimple returns it.
@@ -48,6 +53,7 @@ describe("Goal evaluator", () => {
 	beforeEach(() => {
 		completeMock.mockReset()
 		multiModelMock.mockReturnValue(false)
+		goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS })
 		modelRolesMock.mockReturnValue({
 			orchestrator: "session/main",
 			planner: "session/main",
@@ -153,8 +159,22 @@ describe("Goal evaluator", () => {
 			reason: "Evaluator session/main timed out after 30 seconds.",
 			model: "session/main",
 		})
-		expect(timeout).toHaveBeenCalledWith(GOAL_EVALUATION_TIMEOUT_MS)
+		expect(timeout).toHaveBeenCalledWith(DEFAULT_GOAL_SETTINGS.evaluationTimeoutMs)
 		expect(completeMock).toHaveBeenCalledOnce()
+		timeout.mockRestore()
+	})
+
+	it("uses the configured evaluation timeout instead of the default", async () => {
+		goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, evaluationTimeoutMs: 5_000 })
+		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(AbortSignal.abort())
+		completeMock.mockRejectedValue(new DOMException("timed out", "TimeoutError"))
+
+		await expect(evaluateGoal({ objective: "ship it", messages: [], todos: [] }, evaluatorContext())).resolves.toEqual({
+			verdict: "unavailable",
+			reason: "Evaluator session/main timed out after 5 seconds.",
+			model: "session/main",
+		})
+		expect(timeout).toHaveBeenCalledWith(5_000)
 		timeout.mockRestore()
 	})
 

@@ -392,6 +392,27 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 		}
 	})
 
+	it("permissions indicator survives truncation with an active goal (regression)", () => {
+		// At width 50, without a goal, "● default" (the permissions bullet) fits
+		// in full — see the "width 100" test above for the same shape at a wider
+		// width. Before the fix, adding an active goal pushed the whole
+		// permissions segment off the truncated tail at this same width; the
+		// permissions indicator is safety-relevant (yolo vs. plan mode) and must
+		// never be the segment a new feature evicts.
+		statusLineData = createMockStatusLineData({
+			permissionsMode: "● default \x1b[2m→ shift+tab\x1b[0m",
+			goal: "Goal running · 1h 5m · 1.5k tokens",
+		})
+		const { raw, visible } = renderAt(50)
+
+		expect(visibleWidth(raw)).toBeLessThanOrEqual(50)
+		// Sanity-check the fixture actually exercises the goal segment.
+		expect(visible).toContain("Goal running")
+		// The permissions bullet must still be present.
+		expect(visible).toContain("●")
+		expect(visible).toContain("default")
+	})
+
 	it("with an active ferment, shows ferment when pinned", () => {
 		const ferment = {
 			id: "f-1",

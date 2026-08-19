@@ -39,6 +39,14 @@ export interface SessionGoal {
 	evaluationCount?: number
 	lastEvaluation?: GoalEvaluation
 	evaluatorUsage?: GoalEvaluatorUsage
+	/**
+	 * Runaway-loop guard counters (see MAX_CONSECUTIVE_ERROR_TURNS /
+	 * MAX_UNCHANGED_CONTINUATIONS in index.ts). Persisted so a session restart
+	 * mid-stall reseeds the in-memory guard instead of silently zeroing it —
+	 * omitted (treated as 0) whenever there's no streak to record.
+	 */
+	consecutiveErrorTurns?: number
+	unchangedContinuationTurns?: number
 	tokensUsed: number
 	tokenBudget?: number
 	timeUsedMs: number

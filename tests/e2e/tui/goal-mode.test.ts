@@ -70,8 +70,8 @@ test("experimental goal evaluates continue, resumes work, then completes", async
 		},
 		async (fixture, trace) => {
 			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
-			await waitForText(terminal, "Goal ready", { timeoutMs: 5_000 })
-			trace.step("ready with experimental goal resource enabled")
+			expect(viewText(terminal)).not.toContain("Goal")
+			trace.step("no goal segment before a goal exists, with experimental goal resource enabled")
 
 			terminal.submit("/goal --tokens 2k implement feature A")
 			await waitForText(terminal, "Goal created.", { timeoutMs: 5_000 })

@@ -83,6 +83,113 @@ it("exits --print with code 0 when the evaluator returns no parseable verdict, i
 	}
 })
 
+it("answers a resumed --print prompt instead of crashing on the session_start resume kick", {
+	timeout: 25_000,
+}, async () => {
+	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-goal-print-exit-"))
+	let fake: FakeOpenAiServer | undefined
+	try {
+		fake = await startFakeOpenAiServer({ responses: resumedActiveGoalResponses() })
+		const homeDir = join(tempRoot, "home")
+		const workDir = join(tempRoot, "work")
+		const sessionPath = join(tempRoot, "main.jsonl")
+		mkdirSync(homeDir, { recursive: true })
+		mkdirSync(workDir, { recursive: true })
+		writeKimchiConfig(homeDir, fake.baseUrl)
+
+		// Seed the session file directly with an ACTIVE goal already on the
+		// journal (option b from the task: hand-write the .jsonl). A real two
+		// -run seed would need the first run's goal to land on "active" right
+		// as the process exits, which the goal loop won't do on its own -- it
+		// only stops at a terminal status (complete/paused/blocked) or when
+		// killed mid-turn, and killing mid-write risks a torn session file.
+		// Hand-writing sidesteps that timing entirely and matches exactly what
+		// `putGoalEntry` (src/extensions/goal/reducer.ts) emits for a freshly
+		// created goal, and what `readGoalJournal` below already knows how to
+		// read back out.
+		writeSeededActiveGoalSession(sessionPath, workDir)
+
+		const prompt = "Check on progress please."
+		const result = await runGoalPrint(homeDir, workDir, sessionPath, prompt)
+		const goals = readGoalJournal(sessionPath)
+		const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
+
+		expect(result.timedOut, failure).toBe(false)
+		expect(result.code, failure).toBe(0)
+		expect(result.stderr, failure).not.toMatch(/Agent is already processing/)
+		// The resumed session's own turn actually ran: the fake server saw the
+		// user's prompt on the first request, and the reply that request
+		// scripted reached stdout.
+		expect(
+			fake.requests.some(
+				(request) =>
+					request.url.startsWith("/openai/v1/chat/completions") && JSON.stringify(request.body).includes(prompt),
+			),
+			failure,
+		).toBe(true)
+		expect(result.stdout, failure).toContain("Still working on it.")
+		// One request for the resumed turn's reply, one for the evaluator call
+		// that follows it -- confirms the deferred resume kick stood down
+		// rather than firing a second, colliding turn.
+		expect(
+			fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")),
+			failure,
+		).toHaveLength(2)
+		expect(goals.at(-1)?.status, failure).toBe("blocked")
+	} finally {
+		await fake?.stop().catch(() => {})
+		rmSync(tempRoot, { recursive: true, force: true })
+	}
+})
+
+function resumedActiveGoalResponses() {
+	return [
+		{ stream: ["Still working on it."] },
+		{ stream: ['{"verdict":"impossible","reason":"Blocked on missing external approval."}'] },
+	]
+}
+
+/**
+ * Hand-writes a minimal but valid pi session file: a session header followed
+ * by one `kimchi_goal_state` custom entry carrying an ACTIVE goal, matching
+ * the shape `putGoalEntry` (src/extensions/goal/reducer.ts) produces for a
+ * freshly created goal. `SessionManager.open` (dist/core/session-manager.js)
+ * only requires the first line to be `{type: "session", id: string}`; every
+ * later line just needs `id`/`parentId` fields forming a chain back to the
+ * header, and `restoreGoalRuntime` (src/extensions/goal/index.ts) rebuilds
+ * `currentGoal` by replaying every `kimchi_goal_state` custom entry it finds
+ * on that chain. `header.cwd` becomes the session's actual cwd once resumed
+ * (SessionManager.open reads it off the header), so it must point at a real,
+ * existing directory or the harness treats it as a missing-cwd error.
+ */
+function writeSeededActiveGoalSession(sessionPath: string, workDir: string): void {
+	const now = new Date().toISOString()
+	const header = { type: "session", version: 3, id: "resume-race-session", timestamp: now, cwd: workDir }
+	const goalEntry = {
+		type: "custom",
+		customType: "kimchi_goal_state",
+		data: {
+			schemaVersion: 1,
+			op: "put",
+			goal: {
+				schemaVersion: 1,
+				id: "resume-race-goal",
+				revision: 1,
+				objective: "Implement feature A",
+				status: "active",
+				tokensUsed: 0,
+				timeUsedMs: 0,
+				createdAt: now,
+				updatedAt: now,
+			},
+		},
+		id: "seed-goal-entry",
+		parentId: null,
+		timestamp: now,
+	}
+	writeFileSync(sessionPath, `${JSON.stringify(header)}\n${JSON.stringify(goalEntry)}\n`)
+}
+
 interface GoalJournalGoal {
 	status?: string
 	lastEvaluation?: { verdict?: string }
@@ -201,7 +308,7 @@ function writeKimchiConfig(homeDir: string, fakeBaseUrl: string): void {
 	)
 }
 
-function runGoalPrint(homeDir: string, workDir: string, sessionPath: string) {
+function runGoalPrint(homeDir: string, workDir: string, sessionPath: string, prompt = "/goal implement feature A") {
 	return new Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }>((resolvePromise) => {
 		const child = spawn(
 			BINARY_PATH,
@@ -223,7 +330,7 @@ function runGoalPrint(homeDir: string, workDir: string, sessionPath: string) {
 		let timedOut = false
 		child.stdout.setEncoding("utf-8").on("data", (chunk) => (stdout += chunk))
 		child.stderr.setEncoding("utf-8").on("data", (chunk) => (stderr += chunk))
-		child.stdin.end("/goal implement feature A")
+		child.stdin.end(prompt)
 		const timeout = setTimeout(() => {
 			timedOut = true
 			child.kill("SIGKILL")

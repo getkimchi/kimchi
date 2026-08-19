@@ -57,7 +57,11 @@ export function setGoalStatus(
 ): SessionGoal {
 	const current = requireCurrentGoal(state, expectedId, expectedRevision)
 	if (!GOAL_STATUSES.includes(status)) throw new Error(`Invalid goal status '${String(status)}'.`)
-	return { ...current, status, updatedAt: now }
+	return {
+		...current,
+		status: status === "active" && isOverBudget(current.tokenBudget, current.tokensUsed) ? "budget_limited" : status,
+		updatedAt: now,
+	}
 }
 
 export function addGoalAccounting(
@@ -75,9 +79,7 @@ export function addGoalAccounting(
 	return {
 		...state,
 		status:
-			state.status === "active" && state.tokenBudget !== undefined && nextTokensUsed >= state.tokenBudget
-				? "budget_limited"
-				: state.status,
+			state.status === "active" && isOverBudget(state.tokenBudget, nextTokensUsed) ? "budget_limited" : state.status,
 		tokensUsed: nextTokensUsed,
 		timeUsedMs: state.timeUsedMs + nonNegativeInteger(timeUsedMs, "elapsed time"),
 		updatedAt: now,
@@ -100,6 +102,54 @@ export function recordGoalEvaluation(
 		...(usage ? { evaluatorUsage: addUsage(current.evaluatorUsage, usage) } : {}),
 		updatedAt: now,
 	}
+}
+
+/**
+ * Sets the persisted consecutive-agent-error-turn streak that backs
+ * MAX_CONSECUTIVE_ERROR_TURNS, omitting the field once the streak is back to
+ * zero. Returns the same object when the count already matches, mirroring
+ * addGoalAccounting's no-op-on-no-change shape so callers can tell whether a
+ * commit is actually needed by reference equality.
+ */
+export function setGoalConsecutiveErrorTurns(
+	state: GoalState,
+	expectedId: string,
+	expectedRevision: number,
+	count: number,
+	now: string,
+): SessionGoal {
+	const current = requireCurrentGoal(state, expectedId, expectedRevision)
+	return withCounterField(current, "consecutiveErrorTurns", count, now)
+}
+
+/**
+ * Sets the persisted no-progress continuation streak that backs
+ * MAX_UNCHANGED_CONTINUATIONS. Same shape as setGoalConsecutiveErrorTurns.
+ */
+export function setGoalUnchangedContinuationTurns(
+	state: GoalState,
+	expectedId: string,
+	expectedRevision: number,
+	count: number,
+	now: string,
+): SessionGoal {
+	const current = requireCurrentGoal(state, expectedId, expectedRevision)
+	return withCounterField(current, "unchangedContinuationTurns", count, now)
+}
+
+function withCounterField(
+	goal: SessionGoal,
+	field: "consecutiveErrorTurns" | "unchangedContinuationTurns",
+	count: number,
+	now: string,
+): SessionGoal {
+	const next = nonNegativeInteger(
+		count,
+		field === "consecutiveErrorTurns" ? "consecutive error turns" : "unchanged continuation turns",
+	)
+	if ((goal[field] ?? 0) === next) return goal
+	const { [field]: _drop, ...rest } = goal
+	return next === 0 ? { ...rest, updatedAt: now } : { ...rest, [field]: next, updatedAt: now }
 }
 
 export function clearGoal(state: GoalState, expectedId: string, expectedRevision: number): undefined {
@@ -133,6 +183,10 @@ export function clearGoalEntry(goal: SessionGoal, clearedAt: string): GoalJourna
 		revision: goal.revision,
 		clearedAt,
 	}
+}
+
+function isOverBudget(tokenBudget: number | undefined, tokensUsed: number): boolean {
+	return tokenBudget !== undefined && tokensUsed >= tokenBudget
 }
 
 function requireCurrentGoal(state: GoalState, expectedId: string, expectedRevision: number): SessionGoal {
@@ -204,6 +258,14 @@ function parseGoal(value: unknown): SessionGoal | undefined {
 		// rather than rejecting the whole entry, which would silently roll the
 		// restored goal back to an older revision.
 		(value.evaluationCount !== undefined && !isNonNegativeInteger(value.evaluationCount)) ||
+		// Unlike evaluationCount, these two gate a safety pause (see
+		// MAX_CONSECUTIVE_ERROR_TURNS / MAX_UNCHANGED_CONTINUATIONS in
+		// index.ts): silently dropping a malformed value back to zero would
+		// defeat the stall guard the same way the bug they exist to fix does,
+		// so a malformed counter rejects the whole entry instead, falling back
+		// to the last validly-persisted goal.
+		(value.consecutiveErrorTurns !== undefined && !isNonNegativeInteger(value.consecutiveErrorTurns)) ||
+		(value.unchangedContinuationTurns !== undefined && !isNonNegativeInteger(value.unchangedContinuationTurns)) ||
 		(value.tokensUsed !== undefined && !isNonNegativeInteger(value.tokensUsed)) ||
 		(value.tokenBudget !== undefined && !isPositiveInteger(value.tokenBudget)) ||
 		(value.timeUsedMs !== undefined && !isNonNegativeInteger(value.timeUsedMs)) ||
@@ -218,10 +280,14 @@ function parseGoal(value: unknown): SessionGoal | undefined {
 		revision: value.revision,
 		objective: value.objective,
 		status,
-		...(completionConfidence ? { completionConfidence } : {}),
+		...(completionConfidence && status === "complete" ? { completionConfidence } : {}),
 		...(value.evaluationCount === undefined ? {} : { evaluationCount: value.evaluationCount }),
 		...(lastEvaluation ? { lastEvaluation } : {}),
 		...(evaluatorUsage ? { evaluatorUsage } : {}),
+		...(value.consecutiveErrorTurns === undefined ? {} : { consecutiveErrorTurns: value.consecutiveErrorTurns }),
+		...(value.unchangedContinuationTurns === undefined
+			? {}
+			: { unchangedContinuationTurns: value.unchangedContinuationTurns }),
 		tokensUsed: value.tokensUsed ?? 0,
 		...(value.tokenBudget === undefined ? {} : { tokenBudget: value.tokenBudget }),
 		timeUsedMs: value.timeUsedMs ?? 0,
@@ -243,18 +309,29 @@ function parseGoalEvaluation(value: unknown): GoalEvaluation | undefined {
 	}
 }
 
-const USAGE_FIELDS = ["input", "output", "cacheRead", "cacheWrite", "totalTokens", "costUsd"] as const
+function nonNegativeNumberField(value: unknown): number | undefined {
+	return isNonNegativeNumber(value) ? value : undefined
+}
 
 function parseUsage(value: unknown): SessionGoal["evaluatorUsage"] {
-	if (!isRecord(value) || USAGE_FIELDS.some((field) => !isNonNegativeNumber(value[field]))) return undefined
-	return {
-		input: value.input as number,
-		output: value.output as number,
-		cacheRead: value.cacheRead as number,
-		cacheWrite: value.cacheWrite as number,
-		totalTokens: value.totalTokens as number,
-		costUsd: value.costUsd as number,
+	if (!isRecord(value)) return undefined
+	const input = nonNegativeNumberField(value.input)
+	const output = nonNegativeNumberField(value.output)
+	const cacheRead = nonNegativeNumberField(value.cacheRead)
+	const cacheWrite = nonNegativeNumberField(value.cacheWrite)
+	const totalTokens = nonNegativeNumberField(value.totalTokens)
+	const costUsd = nonNegativeNumberField(value.costUsd)
+	if (
+		input === undefined ||
+		output === undefined ||
+		cacheRead === undefined ||
+		cacheWrite === undefined ||
+		totalTokens === undefined ||
+		costUsd === undefined
+	) {
+		return undefined
 	}
+	return { input, output, cacheRead, cacheWrite, totalTokens, costUsd }
 }
 
 export function addUsage(
@@ -272,7 +349,7 @@ export function addUsage(
 	}
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object"
 }
 
