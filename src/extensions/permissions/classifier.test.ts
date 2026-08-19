@@ -68,7 +68,7 @@ describe("classifyToolCall", () => {
 		expect(completeMock).toHaveBeenCalledTimes(1)
 	})
 
-	it("keeps classifier tags while omitting Pi token limits for Kimchi", async () => {
+	it("keeps classifier tags and preserves token limits for Kimchi", async () => {
 		let sentPayload: unknown
 		completeMock.mockImplementation((_model: unknown, _context: unknown, options: unknown) => {
 			const { onPayload } = options as { onPayload: (payload: unknown) => unknown }
@@ -82,7 +82,11 @@ describe("classifyToolCall", () => {
 			{ timeoutMs: 5000 },
 		)
 
-		expect(sentPayload).toEqual({ tags: ["source:classifier", "existing"] })
+		expect(sentPayload).toEqual({
+			max_completion_tokens: 100,
+			max_tokens: 100,
+			tags: ["source:classifier", "existing"],
+		})
 	})
 
 	it("retries up to 3 times on abort before giving up", async () => {

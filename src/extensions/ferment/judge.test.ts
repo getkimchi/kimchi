@@ -1163,9 +1163,7 @@ describe("judgeApiCall", () => {
 		await judgeApiCall("system", "user")
 		await judgeApiCall("system", "user", 100)
 
-		expect(requests[0].onPayload?.({ max_completion_tokens: 100, max_tokens: 100, messages: [] })).toEqual({
-			messages: [],
-		})
+		expect(requests[0].onPayload).toBeUndefined()
 		expect(requests[1]).toMatchObject({ maxTokens: 100 })
 		expect(requests[1].onPayload).toBeUndefined()
 	})
