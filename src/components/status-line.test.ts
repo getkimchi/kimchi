@@ -7,6 +7,7 @@ import { setBillingStatusForTest } from "../extensions/billing/status.js"
 import * as FERMENT from "../extensions/ferment/index.js"
 import * as MULTI_MODEL from "../extensions/multi-model.js"
 import * as TAGS from "../extensions/tags.js"
+import type { Ferment } from "../ferment/types.js"
 import {
 	buildContextCompact,
 	buildControlsLineSegments,
@@ -137,18 +138,41 @@ function stubPlatform(value: NodeJS.Platform): () => void {
 	return () => Object.defineProperty(process, "platform", { value: original })
 }
 
-/** Mock an active "my-ferment" in the running state with a manual stop policy. */
-function mockActiveFerment(): void {
-	const ferment = {
+/** Build a typed Ferment mock without `as unknown as` casts. */
+function createFermentMock(overrides?: Partial<Ferment>): Ferment {
+	return {
 		id: "f-1",
 		name: "my-ferment",
 		status: "running",
-		mode: "yolo",
+		worktree: { path: "/test" },
+		scoping: {},
 		phases: [],
-		activePhaseId: undefined,
-	} as unknown as ReturnType<typeof FERMENT.getActiveFerment>
-	vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(ferment)
+		decisions: [],
+		memories: [],
+		createdAt: new Date().toISOString(),
+		updatedAt: new Date().toISOString(),
+		...overrides,
+	}
+}
+
+/** Mock an active "my-ferment" in the running state with a manual stop policy. */
+function mockActiveFerment(): void {
+	vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(createFermentMock())
 	vi.spyOn(FERMENT, "getFermentContinuationPolicy").mockReturnValue("manual")
+}
+
+/** Shared setup for status-line behavioural tests. */
+function setupStatusLineTest(): { theme: Theme; restorePlatform: () => void } {
+	pinnedElements = []
+	vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
+	vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
+	vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
+	vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
+	vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+	vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
+	const theme = createMockTheme()
+	const restorePlatform = stubPlatform("darwin")
+	return { theme, restorePlatform }
 }
 
 /** Standard billing fixture: $5 credits, 13.73% of a $2k budget. */
@@ -432,14 +456,7 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 	})
 
 	it("with an active ferment, shows ferment when pinned", () => {
-		const ferment = {
-			id: "f-1",
-			name: "my-ferment",
-			status: "running",
-			mode: "yolo",
-			phases: [],
-			activePhaseId: undefined,
-		} as unknown as ReturnType<typeof FERMENT.getActiveFerment>
+		const ferment = createFermentMock()
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(ferment)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getFermentContinuationPolicy").mockReturnValue("manual")
@@ -966,15 +983,9 @@ describe("status line priority shedding", () => {
 	const permissionsMode = "● default \x1b[2m→ shift+tab\x1b[0m"
 
 	beforeEach(() => {
-		theme = createMockTheme()
-		pinnedElements = []
-		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
-		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
-		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
-		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
-		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
-		restorePlatform = stubPlatform("darwin")
+		const setup = setupStatusLineTest()
+		theme = setup.theme
+		restorePlatform = setup.restorePlatform
 	})
 
 	afterEach(() => {
@@ -1077,15 +1088,9 @@ describe("script controls line (statusLine.command path)", () => {
 	const permissionsMode = "● default \x1b[2m→ shift+tab\x1b[0m"
 
 	beforeEach(() => {
-		theme = createMockTheme()
-		pinnedElements = []
-		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
-		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
-		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
-		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
-		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
-		restorePlatform = stubPlatform("darwin")
+		const setup = setupStatusLineTest()
+		theme = setup.theme
+		restorePlatform = setup.restorePlatform
 	})
 
 	afterEach(() => {
@@ -1097,7 +1102,7 @@ describe("script controls line (statusLine.command path)", () => {
 
 	function controlsLine(width: number): { raw: string; visible: string } {
 		const data = createMockStatusLineData({ permissionsMode })
-		const segments = buildControlsLineSegments(createMockContext(), theme, data)
+		const segments = buildControlsLineSegments({ ctx: createMockContext(), theme, statusLineData: data })
 		const raw = renderFittedLine(segments, width, theme)
 		return { raw, visible: stripAnsi(raw) }
 	}

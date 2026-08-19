@@ -350,7 +350,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 			// built-in status line: permissions and model lead, the compaction
 			// ladder and priority shedding apply at narrow widths.
 			const getControlsLine = (width: number): string | null => {
-				const segments = buildControlsLineSegments(ctx, theme, statusLineData)
+				const segments = buildControlsLineSegments({ ctx, theme, statusLineData })
 				if (segments.length === 0) return null
 				return renderFittedLine(segments, width, theme)
 			}

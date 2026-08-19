@@ -327,10 +327,11 @@ function joinSegments(segments: Segment[], sep: string): string {
 const SHED_ORDER: SegmentId[] = ["lsp", "team", "tags", "phase", "usage", "agents", "credits", "budget", "ferment"]
 
 /** Fit segments into `width` columns: run the compaction ladder, then shed
- *  whole segments in SHED_ORDER until the line fits. Never mutates the input
- *  array; returns the surviving segments (compacted in place on a copy).
- *  May still exceed `width` when only core segments remain — the caller
- *  tail-truncates in that case. */
+ *  whole segments in SHED_ORDER until the line fits. The input `segments`
+ *  array and the segment objects themselves are not mutated — a shallow copy
+ *  of each segment is compacted/shed internally. Returns the surviving
+ *  segments; if only core segments remain and still overflow, the caller is
+ *  responsible for tail-truncating the rendered line. */
 export function fitSegments(
 	segments: Segment[],
 	width: number,
@@ -338,7 +339,7 @@ export function fitSegments(
 	sepWidth: number,
 	extraSteps: CompactionStep[] = [],
 ): Segment[] {
-	const working = [...segments]
+	const working = segments.map((s) => ({ ...s }))
 	const fits = () => segmentsLineWidth(working, sepWidth) <= width
 
 	if (fits()) return working
@@ -398,11 +399,15 @@ function buildAbbrevBudgetStep(theme: Theme): CompactionStep {
  *  Shared fitting logic for any line built from status-line segments. */
 export function renderFittedLine(segments: Segment[], width: number, theme: Theme): string {
 	const sep = ` ${dimText(theme, "·")} `
-	const sepWidth = visibleWidth(sep)
-	const survivors = fitSegments(segments, width, buildCompactionContext(theme), sepWidth, [
-		buildAbbrevBudgetStep(theme),
-	])
+	const survivors = fitWithBudgetStep(segments, width, theme)
 	return truncateToWidth(joinSegments(survivors, sep), width)
+}
+
+/** Fit segments using the full pipeline. Encapsulates the budget abbreviation
+ *  step so callers don't repeat the same `fitSegments` invocation shape. */
+function fitWithBudgetStep(segments: Segment[], width: number, theme: Theme): Segment[] {
+	const sep = ` ${dimText(theme, "·")} `
+	return fitSegments(segments, width, buildCompactionContext(theme), visibleWidth(sep), [buildAbbrevBudgetStep(theme)])
 }
 
 function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
@@ -583,14 +588,18 @@ function buildFermentSegment(theme: Theme, pinned: boolean): Segment | null {
 	}
 }
 
+export interface StatusLineBuildContext {
+	ctx: ExtensionContext
+	theme: Theme
+	statusLineData: ReadonlyFooterDataProvider
+}
+
 /** Build the full status-line segment pool in display order.
  *  Permissions and model ALWAYS lead — they are the modes the user changes
  *  most frequently, so no other segment (ferment name included) may push them
  *  off the left edge. Everything else follows. */
 export function buildStatusLineSegments(
-	ctx: ExtensionContext,
-	theme: Theme,
-	statusLineData: ReadonlyFooterDataProvider,
+	{ ctx, theme, statusLineData }: StatusLineBuildContext,
 	pinned: ReadonlySet<SegmentId>,
 ): Segment[] {
 	const tags = getActiveTags(ctx.sessionManager)
@@ -621,14 +630,8 @@ export function buildStatusLineSegments(
 const CONTROLS_LINE_IDS: ReadonlySet<SegmentId> = new Set(["permissions", "model", "ferment", "credits", "budget"])
 const CONTROLS_LINE_PINNED: ReadonlySet<SegmentId> = new Set(["credits", "budget"])
 
-export function buildControlsLineSegments(
-	ctx: ExtensionContext,
-	theme: Theme,
-	statusLineData: ReadonlyFooterDataProvider,
-): Segment[] {
-	return buildStatusLineSegments(ctx, theme, statusLineData, CONTROLS_LINE_PINNED).filter((s) =>
-		CONTROLS_LINE_IDS.has(s.id),
-	)
+export function buildControlsLineSegments(buildCtx: StatusLineBuildContext): Segment[] {
+	return buildStatusLineSegments(buildCtx, CONTROLS_LINE_PINNED).filter((s) => CONTROLS_LINE_IDS.has(s.id))
 }
 
 export class StatusLine implements Component {
@@ -663,10 +666,12 @@ export class StatusLine implements Component {
 	render(width: number): string[] {
 		const config = readStatusLineConfig()
 		const pinnedSet = new Set<SegmentId>(config.pinned)
-		const allSegments = buildStatusLineSegments(this.ctx, this.theme, this.statusLineData, pinnedSet)
+		const allSegments = buildStatusLineSegments(
+			{ ctx: this.ctx, theme: this.theme, statusLineData: this.statusLineData },
+			pinnedSet,
+		)
 
 		const sep = ` ${this.dim("·")} `
-		const sepWidth = visibleWidth(sep)
 
 		const hintText = this.dim("/ for commands")
 		const hintWidth = visibleWidth(hintText)
@@ -681,9 +686,7 @@ export class StatusLine implements Component {
 		// segments get no upfront reservation: the hardcoded compaction/shedding
 		// priority beats pinning, so a pinned low-priority segment sheds before
 		// the core permissions/model/context trio is touched.
-		const survivors = fitSegments(allSegments, contentBudget, buildCompactionContext(this.theme), sepWidth, [
-			buildAbbrevBudgetStep(this.theme),
-		])
+		const survivors = fitWithBudgetStep(allSegments, contentBudget, this.theme)
 
 		// Display order is unchanged: unpinned group left, pinned group right.
 		const unpinned = survivors.filter((s) => !pinnedSet.has(s.id))
