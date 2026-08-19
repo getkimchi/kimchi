@@ -1163,7 +1163,10 @@ describe("judgeApiCall", () => {
 		await judgeApiCall("system", "user")
 		await judgeApiCall("system", "user", 100)
 
+		// When no explicit maxTokens is passed, neither onPayload nor maxTokens
+		// is set — Pi uses the model's maxTokens from models.json as max_completion_tokens.
 		expect(requests[0].onPayload).toBeUndefined()
+		expect(requests[0].maxTokens).toBeUndefined()
 		expect(requests[1]).toMatchObject({ maxTokens: 100 })
 		expect(requests[1].onPayload).toBeUndefined()
 	})
