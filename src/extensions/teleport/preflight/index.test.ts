@@ -52,7 +52,9 @@ describe("runPreflight", () => {
 	it("passes a dirty tree when --fast is set (rsync still checked)", () => {
 		const { ctx, ui } = wrap()
 		const rsync = vi.fn().mockReturnValue(true)
-		expect(() => runPreflight(ctx, { fast: true }, makeDeps({ whichRsync: rsync, gitWorkingTreeDirty: () => true }))).not.toThrow()
+		expect(() =>
+			runPreflight(ctx, { fast: true }, makeDeps({ whichRsync: rsync, gitWorkingTreeDirty: () => true })),
+		).not.toThrow()
 		expect(rsync).toHaveBeenCalled()
 		expect(ui.notify).not.toHaveBeenCalled()
 	})

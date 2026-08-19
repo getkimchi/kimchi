@@ -42,6 +42,7 @@ export interface SessionStatus {
 	connectedThroughBridge: boolean
 	startedAt?: string | null
 	finishedAt?: string | null
+	freshClone?: boolean
 	lastActivityAt?: string | null
 }
 

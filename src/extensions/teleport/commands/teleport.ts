@@ -1,7 +1,5 @@
 import { existsSync } from "node:fs"
-import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { basename, join } from "node:path"
+import { basename } from "node:path"
 import { readGitToken, readTeleportHelpSeenAt, writeGitToken, writeTeleportHelpSeenAt } from "../../../config.js"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
@@ -15,15 +13,14 @@ import { generateSessionName } from "../overlay/tab-manager.js"
 import { isGitRepo } from "../preflight/git.js"
 import { runPreflight } from "../preflight/index.js"
 import { SIZE_REFUSE_BYTES, SIZE_WARN_BYTES } from "../preflight/workspace-size.js"
-import { ClonePlanError, type ClonePlan, resolveClonePlan } from "../provisioning/clone-plan.js"
+import { type ClonePlan, ClonePlanError, resolveClonePlan } from "../provisioning/clone-plan.js"
 import { SANDBOX_USER } from "../provisioning/constants.js"
 import { sumIncludeListBytes } from "../provisioning/estimate-bytes.js"
 import { provisionGitCredential, provisionGitIdentity } from "../provisioning/git-provision.js"
 import { provisionHarnessConfig } from "../provisioning/harness-config.js"
 import { buildIncludeList, buildWorkingTreeList } from "../provisioning/include-list.js"
 import { deriveSandboxDest, deriveSandboxDestFromRepoUrl, repoBasename } from "../provisioning/paths.js"
-import { buildProxyCommand } from "../provisioning/proxy-command.js"
-import { formatRsyncFailure, runRemoteDirExists, runRsync } from "../provisioning/rsync-runner.js"
+import { formatRsyncFailure, runRsync } from "../provisioning/rsync-runner.js"
 import { STATUS_KEY, type TeleportContext } from "../types.js"
 import { formatBytes } from "../ui/format-bytes.js"
 import { promptTeleportHelp } from "../ui/help-modal.js"
@@ -100,15 +97,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 	signal.addEventListener("abort", () => progress.setCancelling(), { once: true })
 
 	// Kick off everything local at the top so it runs in parallel with the
-	// network-bound auth + readiness wait below. The include list is built
-	// from `git ls-files --cached --others --exclude-standard -z` plus
-	// a walk of `.git/`. Passing it via `--files-from` to rsync avoids
-	// the per-file pattern matching cost.
-	// Fast path: the sandbox clones the repo server-side from its origin
-	// (datacenter bandwidth), then rsyncs only the local working-tree diff
-	// over the clone. Resolve the clone plan up front — a plan failure (cwd
-	// not a git repo, no origin, --git-repo URL mismatch) refuses before any
-	// sandbox is touched. Non-fast paths are untouched.
+	// network-bound auth + readiness wait below.
 	let clonePlan: ClonePlan | undefined
 	if (args.fast) {
 		try {
@@ -129,12 +118,10 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 	const sizeEstimateP: Promise<number> = shouldRsyncWorkspace
 		? filesFromP.then((list) => sumIncludeListBytes(ctx.cwd, list, signal).catch(() => 0))
 		: Promise.resolve(0)
-	// Fast diff list: tracked-minus-deleted + safe untracked, NO .git/ walk
-	// (the fresh clone already has its own .git).
-	const fastFilesFromP: Promise<string[]> = clonePlan
+	const fastFilesFromP: Promise<string[]> = args.fast
 		? buildWorkingTreeList(ctx.cwd, signal).catch(() => [])
 		: Promise.resolve([])
-	const fastSizeEstimateP: Promise<number> = clonePlan
+	const fastSizeEstimateP: Promise<number> = args.fast
 		? fastFilesFromP.then((list) => sumIncludeListBytes(ctx.cwd, list, signal).catch(() => 0))
 		: Promise.resolve(0)
 	const localGitConfigP = readLocalGitConfig(ctx.cwd).catch(
@@ -173,11 +160,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		// (kicked off in the local block) rather than the raw `du` size, so
 		// the user sees the actual upload bytes (after excludes), not the
 		// disk footprint.
-		const estimatedUploadBytes = shouldRsyncWorkspace
-			? await sizeEstimateP
-			: clonePlan
-				? await fastSizeEstimateP
-				: 0
+		const estimatedUploadBytes = shouldRsyncWorkspace ? await sizeEstimateP : clonePlan ? await fastSizeEstimateP : 0
 		if (shouldRsyncWorkspace || clonePlan) {
 			if (estimatedUploadBytes > SIZE_REFUSE_BYTES && !args.force) {
 				refuse(
@@ -194,24 +177,6 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		// to prompt the user, the panel switches into git-token mode, which
 		// would visually fight rsync's setStepDetail ticks if it ran during
 		// the parallel block.
-		// Fast: probe whether the clone target already exists on the sandbox.
-		// Started here so the ssh roundtrip overlaps the (possibly interactive)
-		// token resolution below. Dir exists → diff rsync runs WITHOUT --delete
-		// (never prune files the user may have placed there); absent or any
-		// ssh/spawn failure → fresh clone, --delete on.
-		const dirExistedP: Promise<boolean> = remoteDest
-			? probeRemoteDirExists(
-					{
-						remoteHost: creds.host,
-						remoteUser: SANDBOX_USER,
-						proxyCommand: buildProxyCommand(),
-						// `test -d` target has no trailing slash.
-						remoteDir: remoteDest.replace(/\/$/, ""),
-					},
-					signal,
-				).catch(() => false)
-			: Promise.resolve(false)
-
 		const gitHost = await gitHostP
 		const gitToken = await resolveGitToken(progress, gitHost, args, ctx)
 
@@ -349,9 +314,6 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			!args.skipSession && ctx.sessionFile && existsSync(ctx.sessionFile) ? ctx.sessionFile : undefined
 		const req: CreateSessionRequest = { agentMode: "PTY", cwd: sessionCwd }
 		if (clonePlan && targetDirectory) {
-			// Fast: the worker clones the repo server-side before the session
-			// starts. identityP/credsPropP were already awaited by the fan-out
-			// above — a private origin needs the token in place for this clone.
 			req.details = {
 				git: {
 					repo: clonePlan.httpsUrl,
@@ -397,10 +359,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 				)
 			} catch (retryErr) {
 				if (signal.aborted) throw retryErr
-				refuse(
-					ctx,
-					`Could not create session: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
-				)
+				refuse(ctx, `Could not create session: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`)
 			}
 			const fullList = await buildIncludeList(ctx.cwd, signal).catch(() => [])
 			const fullEstimate = await sumIncludeListBytes(ctx.cwd, fullList, signal).catch(() => 0)
@@ -432,8 +391,8 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		// untouched either way. A failed diff keeps the session — the repo
 		// is there, some working-tree files may just be stale.
 		if (cloneProvisioned && clonePlan && remoteDest) {
-			const dirExisted = await dirExistedP
-			if (dirExisted) {
+			const freshClone = initialSession.freshClone ?? false
+			if (!freshClone) {
 				warn(ctx, "Remote dir already existed — skipping pruning of extra remote files")
 			}
 			progress.setStepDetail("Syncing local changes")
@@ -446,8 +405,8 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 					remoteUser: SANDBOX_USER,
 					authToken: creds.connectToken,
 					signal,
-					deleteExtraneous: !dirExisted,
-					excludeFilters: [".git/"],
+					deleteExtraneous: freshClone,
+					excludeFilters: [".git/", ".env", ".env.*", ".envrc", ".kimchi/"],
 					precomputeTotal: true,
 					precomputedTotalBytes: estimatedUploadBytes,
 					filesFrom: await fastFilesFromP,
@@ -526,24 +485,6 @@ async function resolveGitToken(
 		}
 	}
 	return result.token
-}
-
-/**
- * ssh `test -d <remoteDir>` over the WS tunnel — the --fast pre-clone probe
- * for whether the clone target already exists on the sandbox. Needs a
- * scratch dir for the per-probe known_hosts file (same pattern runRsync
- * uses per-run); cleaned up on both paths.
- */
-async function probeRemoteDirExists(
-	input: { remoteHost: string; remoteUser: string; proxyCommand: string; remoteDir: string },
-	signal: AbortSignal,
-): Promise<boolean> {
-	const sessionDir = await mkdtemp(join(tmpdir(), "kimchi-teleport-probe-"))
-	try {
-		return await runRemoteDirExists({ ...input, knownHostsFile: join(sessionDir, "known_hosts") }, { signal })
-	} finally {
-		await rm(sessionDir, { recursive: true, force: true }).catch(() => {})
-	}
 }
 
 /**

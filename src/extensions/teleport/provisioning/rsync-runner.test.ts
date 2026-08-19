@@ -4,7 +4,6 @@ import { Readable } from "node:stream"
 import { describe, expect, it } from "vitest"
 import {
 	BASE_EXCLUDE_GLOBS,
-	buildDirExistsArgv,
 	buildExcludeList,
 	buildMkdirArgv,
 	buildRsyncArgv,
@@ -15,7 +14,6 @@ import {
 	RsyncError,
 	type RsyncStats,
 	resolveGitIgnored,
-	runRemoteDirExists,
 	runRsync,
 	trackCumulative,
 } from "./rsync-runner.js"
@@ -360,80 +358,6 @@ describe("buildMkdirArgv", () => {
 			"u@h",
 			"mkdir -p /home/sandbox",
 		])
-	})
-})
-
-describe("buildDirExistsArgv", () => {
-	it("builds an ssh argv running test -d on the quoted remote dir", () => {
-		const argv = buildDirExistsArgv({
-			remoteHost: "h",
-			remoteUser: "u",
-			proxyCommand: "node /p %h %p",
-			knownHostsFile: "/k",
-			remoteDir: "/home/sandbox/repo",
-		})
-		expect(argv).toEqual([
-			"-o",
-			"ProxyCommand=node /p %h %p",
-			"-o",
-			"StrictHostKeyChecking=accept-new",
-			"-o",
-			"UserKnownHostsFile=/k",
-			"-o",
-			"BatchMode=yes",
-			"u@h",
-			'test -d "/home/sandbox/repo"',
-		])
-	})
-
-	it("double-quotes the remote dir so paths with spaces survive the remote shell", () => {
-		const argv = buildDirExistsArgv({
-			remoteHost: "h",
-			remoteUser: "u",
-			proxyCommand: "node /p %h %p",
-			knownHostsFile: "/k",
-			remoteDir: "/home/sandbox/my dir",
-		})
-		expect(argv[argv.length - 1]).toBe('test -d "/home/sandbox/my dir"')
-	})
-})
-
-describe("runRemoteDirExists", () => {
-	const input = {
-		remoteHost: "h",
-		remoteUser: "u",
-		proxyCommand: "node /p %h %p",
-		knownHostsFile: "/k",
-		remoteDir: "/home/sandbox/repo",
-	}
-
-	it("spawns ssh with the dir-exists argv", async () => {
-		let called: { binary: string; args: readonly string[] } | undefined
-		const fakeSpawn: typeof spawn = ((binary: string, args?: readonly string[], _opts?: unknown) => {
-			called = { binary, args: args ?? [] }
-			return makeFakeChild({ exitCode: 0 })
-		}) as unknown as typeof spawn
-		await runRemoteDirExists(input, { _spawn: fakeSpawn })
-		expect(called?.binary).toBe("ssh")
-		expect(called?.args[called.args.length - 1]).toBe('test -d "/home/sandbox/repo"')
-	})
-
-	it("resolves true when ssh exits 0", async () => {
-		const fakeSpawn: typeof spawn = ((_cmd: string, _args?: readonly string[], _opts?: unknown) =>
-			makeFakeChild({ exitCode: 0 })) as unknown as typeof spawn
-		await expect(runRemoteDirExists(input, { _spawn: fakeSpawn })).resolves.toBe(true)
-	})
-
-	it("resolves false when ssh exits non-zero", async () => {
-		const fakeSpawn: typeof spawn = ((_cmd: string, _args?: readonly string[], _opts?: unknown) =>
-			makeFakeChild({ exitCode: 1 })) as unknown as typeof spawn
-		await expect(runRemoteDirExists(input, { _spawn: fakeSpawn })).resolves.toBe(false)
-	})
-
-	it("resolves false on a spawn error event", async () => {
-		const fakeSpawn: typeof spawn = ((_cmd: string, _args?: readonly string[], _opts?: unknown) =>
-			makeFakeChild({ exitCode: 0, errorAfter: true })) as unknown as typeof spawn
-		await expect(runRemoteDirExists(input, { _spawn: fakeSpawn })).resolves.toBe(false)
 	})
 })
 

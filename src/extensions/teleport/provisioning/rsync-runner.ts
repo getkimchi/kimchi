@@ -291,51 +291,6 @@ export function buildMkdirArgv(input: BuildMkdirArgvInput): string[] {
 }
 
 /**
- * Pure helper: assembles the ssh argv that checks whether a directory
- * exists on the sandbox (`test -d`). Exit code 0 = exists.
- */
-export function buildDirExistsArgv(input: BuildMkdirArgvInput): string[] {
-	return [
-		"-o",
-		`ProxyCommand=${input.proxyCommand}`,
-		"-o",
-		"StrictHostKeyChecking=accept-new",
-		"-o",
-		`UserKnownHostsFile=${input.knownHostsFile}`,
-		"-o",
-		"BatchMode=yes",
-		`${input.remoteUser}@${input.remoteHost}`,
-		`test -d ${shellDoubleQuote(input.remoteDir)}`,
-	]
-}
-
-/**
- * Spawn `ssh ... test -d <remoteDir>` and report whether the directory
- * exists. Resolves true iff the ssh exits 0; false on any non-zero exit,
- * spawn error, or abort. Never rejects.
- */
-export async function runRemoteDirExists(
-	input: BuildMkdirArgvInput,
-	opts?: { _spawn?: typeof spawn; signal?: AbortSignal },
-): Promise<boolean> {
-	return new Promise((resolve) => {
-		const spawner = opts?._spawn ?? spawn
-		let child: ChildProcess
-		try {
-			child = spawner("ssh", buildDirExistsArgv(input), {
-				signal: opts?.signal,
-				stdio: ["ignore", "ignore", "ignore"],
-			})
-		} catch {
-			resolve(false)
-			return
-		}
-		child.on("error", () => resolve(false))
-		child.on("close", (code) => resolve(code === 0))
-	})
-}
-
-/**
  * Concatenates the three exclude sources into a single ordered list.
  * Order matters for human auditability (e.g. tail -f the file) but rsync
  * itself treats the file as a set.
@@ -727,13 +682,4 @@ export function handleLine(line: string, stats: RsyncStats, onProgress?: (pct: n
  */
 function rsyncShellQuote(value: string): string {
 	return `'${value.replace(/'/g, "'\\''")}'`
-}
-
-/**
- * Double-quote `value` for embedding in a remote shell command run via ssh.
- * Escapes the four double-quote-context metachars so paths containing
- * spaces or `$` survive one level of remote shell parsing.
- */
-function shellDoubleQuote(value: string): string {
-	return `"${value.replace(/(["\\$`])/g, "\\$1")}"`
 }
