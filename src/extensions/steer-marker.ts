@@ -25,11 +25,8 @@ export function markHarnessSteer(text: string): string {
 	return `${SYSTEM_REMINDER_OPEN}${text}${SYSTEM_REMINDER_CLOSE}`
 }
 
-/** Mark a subagent orchestrator steer. Idempotent. */
-export function markOrchestratorSteer(text: string): string {
-	if (isHarnessSteer(text)) return text
-	return `${SYSTEM_REMINDER_OPEN}${text}${SYSTEM_REMINDER_CLOSE}`
-}
+/** Same marker as {@link markHarnessSteer}, exported under an orchestrator-specific name for call-site clarity. */
+export const markOrchestratorSteer = markHarnessSteer
 
 /** Returns true when the text is wrapped in <system-reminder>...</system-reminder>
  *  tags and should not be treated as a user-authored prompt. */
