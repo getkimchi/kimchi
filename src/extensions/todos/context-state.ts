@@ -1,4 +1,5 @@
 import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { markHarnessSteer } from "../steer-marker.js"
 import { renderTodoStateMarkdown } from "./state-markdown.js"
 
 type OrchestratorMessages = ContextEvent["messages"]
@@ -44,7 +45,9 @@ export function registerTodoContextState(pi: ExtensionAPI): void {
 		messages.push({
 			role: "custom",
 			customType: TODO_STATE_CUSTOM_TYPE,
-			content: stateMarkdown,
+			// Brand harness-injected state so the model can distinguish it from
+			// user-authored text (upstream flattens custom messages to user role).
+			content: markHarnessSteer(stateMarkdown),
 			display: false,
 			timestamp: Date.now(),
 		})
