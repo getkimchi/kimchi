@@ -109,6 +109,18 @@ describe("buildSystemPrompt", () => {
 		expect(result).not.toContain("Ask before anything that publishes, mutates state, or is irreversible.")
 	})
 
+	it("scopes approval to the requested action, not escalations or substitutes", () => {
+		const result = buildSystemPrompt({
+			tools,
+			env: testEnv,
+			mode: "single",
+		})
+
+		expect(result).toContain("Approval covers exactly the action the user requested")
+		expect(result).toContain('A request to "push" does not authorize opening a pull request')
+		expect(result).toContain("wait for the user to choose")
+	})
+
 	it("includes the harness notes and approval section", () => {
 		const result = buildSystemPrompt({
 			tools,
