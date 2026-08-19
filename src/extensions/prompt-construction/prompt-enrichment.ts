@@ -72,6 +72,7 @@ import {
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
+import { stripCrossModelThinking } from "./strip-cross-model-thinking.js"
 import {
 	buildSystemPrompt,
 	DELEGATION_TOOL_NAMES,
@@ -445,10 +446,14 @@ export default function (skillPaths: string[]) {
 				)
 			})
 
-			pi.on("context", async (event) => {
+			pi.on("context", async (event, ctx) => {
 				let messages = stripStaleNudges(event.messages)
 				messages = stripEmptyToolCalls(messages)
 				messages = stripUiOnlyMessages(messages)
+				// Keep this strip in prompt-enrichment: context handlers registered
+				// later (hide-thinking et al.) must not reintroduce thinking blocks.
+				// Rationale in strip-cross-model-thinking.ts.
+				messages = stripCrossModelThinking(messages, ctx.model)
 				if (messages !== event.messages) return { messages }
 			})
 		}
@@ -459,8 +464,9 @@ export default function (skillPaths: string[]) {
 			// and MiniMax M2.7) emit empty tool calls after a real write/edit call,
 			// which the runtime rejects with a "Tool  not found" result that would
 			// otherwise accumulate in the subagent's context across turns.
-			pi.on("context", async (event) => {
-				const messages = stripEmptyToolCalls(event.messages)
+			pi.on("context", async (event, ctx) => {
+				let messages = stripEmptyToolCalls(event.messages)
+				messages = stripCrossModelThinking(messages, ctx.model)
 				if (messages !== event.messages) return { messages }
 			})
 		}
