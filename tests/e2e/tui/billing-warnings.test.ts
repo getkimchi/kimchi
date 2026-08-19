@@ -147,9 +147,15 @@ test("explains BYO inference when the backend blocks a Community user", async ({
 			await waitForText(terminal, "inference to the harness", { full: true })
 			await waitForText(terminal, "To use Kimchi inference", { full: true })
 			await waitForText(terminal, "upgrade", { full: true })
-			await waitForText(terminal, "to Coder.", { full: true })
+			await waitForText(terminal, "Coder.", { full: true })
 			expect(fullText(terminal)).not.toContain("You ran out of credits")
 			expect(fullText(terminal)).not.toContain("Top up at")
+			expect(fullText(terminal)).not.toContain("You are using Community tier")
+
+			const lines = fullText(terminal).split("\n")
+			const headerBottom = lines.findIndex((line) => line.startsWith("└"))
+			const blockedWarning = lines.findIndex((line) => line.includes("You are using the Community tier"))
+			expect(blockedWarning).toBeGreaterThan(headerBottom)
 		},
 	)
 })
