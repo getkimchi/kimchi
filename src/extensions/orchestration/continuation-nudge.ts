@@ -25,7 +25,7 @@
 
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
-import { markHarnessSteer } from "../steer-marker.js"
+import { isHarnessSteer, markHarnessSteer } from "../steer-marker.js"
 
 /**
  * Message-array shape passed through `context` events. Derived from
@@ -389,4 +389,43 @@ export function stripUiOnlyMessages(messages: OrchestratorMessages): Orchestrato
 		(m) => !(isCustomMessage(m) && UI_ONLY_CUSTOM_TYPES.has((m as { customType?: string }).customType ?? "")),
 	)
 	return filtered.length === messages.length ? messages : filtered
+}
+
+/**
+ * Wrap any unbranded custom message in `<system-reminder>` tags so the model
+ * can tell harness-injected content from user-authored text. Upstream
+ * converts `role: "custom"` to verbatim `role: "user"` before the LLM call
+ * (see steer-marker.ts), so every custom message that reaches context is
+ * harness-authored by definition — branding should be an invariant enforced
+ * here, at the context boundary, not a convention remembered at every
+ * `sendMessage` site. A missed or future steer site (e.g. the behaviour-body
+ * steer found during census) can no longer regress to unbranded user-role
+ * text silently.
+ *
+ * Placement in the `context` handler chain: after the taggers
+ * (tagSelfEchoes, …), which wrap their own output — so their messages are
+ * recognized as already branded and never double-wrapped. The UI_ONLY check
+ * is defence in depth: stripUiOnlyMessages runs earlier, but handler
+ * ordering across extensions is not a maintained invariant.
+ *
+ * Returns the same array reference when nothing needs wrapping.
+ */
+export function brandUnmarkedSteers(messages: OrchestratorMessages): OrchestratorMessages {
+	let changed = false
+	const result = messages.map((m) => {
+		if (!isCustomMessage(m)) return m
+		if (UI_ONLY_CUSTOM_TYPES.has((m as { customType?: string }).customType ?? "")) return m
+		const text = extractMessageText(m.content)
+		if (!text.trim()) return m
+		if (isHarnessSteer(text)) return m
+
+		changed = true
+		const branded = markHarnessSteer(text)
+		if (typeof m.content === "string") {
+			return { ...m, content: branded } as OrchestratorMessages[number]
+		}
+		return { ...m, content: [{ type: "text" as const, text: branded }] } as OrchestratorMessages[number]
+	})
+
+	return changed ? result : messages
 }
