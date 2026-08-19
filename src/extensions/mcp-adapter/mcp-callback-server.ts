@@ -65,6 +65,13 @@ interface PendingAuth {
 /** Server singleton state */
 let server: Server | undefined
 const pendingAuths = new Map<string, PendingAuth>()
+let serverLifecycle = Promise.resolve()
+
+function serializeServerLifecycle(operation: () => Promise<void>): Promise<void> {
+	const result = serverLifecycle.then(operation, operation)
+	serverLifecycle = result.catch(() => {})
+	return result
+}
 
 /** Timeout for callback completion (5 minutes) */
 const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000
@@ -150,7 +157,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
  * If strictPort is true, requires binding on the configured callback port.
  * If strictPort is false, scans forward for an available local port.
  */
-export async function ensureCallbackServer(options: EnsureCallbackServerOptions = {}): Promise<void> {
+async function ensureCallbackServerLocked(options: EnsureCallbackServerOptions): Promise<void> {
 	const configuredPort = getConfiguredOAuthCallbackPort()
 	const strictPort = options.strictPort === true
 
@@ -163,7 +170,7 @@ export async function ensureCallbackServer(options: EnsureCallbackServerOptions 
 			)
 		}
 
-		await stopCallbackServer()
+		await stopCallbackServerLocked()
 	}
 
 	const preferredPort = configuredPort
@@ -216,6 +223,23 @@ export async function ensureCallbackServer(options: EnsureCallbackServerOptions 
 	)
 }
 
+export function ensureCallbackServer(options: EnsureCallbackServerOptions = {}): Promise<void> {
+	return serializeServerLifecycle(() => ensureCallbackServerLocked(options))
+}
+
+export async function prepareCallback(
+	oauthState: string,
+	options: EnsureCallbackServerOptions = {},
+): Promise<{ callbackPromise: Promise<string> }> {
+	let callbackPromise: Promise<string> | undefined
+	await serializeServerLifecycle(async () => {
+		await ensureCallbackServerLocked(options)
+		callbackPromise = waitForCallback(oauthState)
+	})
+	if (!callbackPromise) throw new Error("OAuth callback registration failed")
+	return { callbackPromise }
+}
+
 /**
  * Wait for a callback with the given OAuth state.
  * Returns a promise that resolves with the authorization code.
@@ -248,7 +272,7 @@ export function cancelPendingCallback(oauthState: string): void {
 /**
  * Stop the callback server and reject all pending authorizations.
  */
-export async function stopCallbackServer(): Promise<void> {
+async function stopCallbackServerLocked(): Promise<void> {
 	if (server) {
 		await new Promise<void>((resolve) => {
 			server?.close(() => {
@@ -269,6 +293,10 @@ export async function stopCallbackServer(): Promise<void> {
 			pending.reject(new Error("OAuth callback server stopped"))
 		}
 	}, 0)
+}
+
+export function stopCallbackServer(): Promise<void> {
+	return serializeServerLifecycle(stopCallbackServerLocked)
 }
 
 /**

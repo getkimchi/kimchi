@@ -91,11 +91,12 @@ class FakeAgentSession {
 	private listeners = new Set<AgentSessionEventListener>()
 	disposed = false
 	aborted = false
-	model: { provider: string; id: string; name?: string; input?: string[] } | undefined = {
+	model: { provider: string; id: string; name?: string; input?: string[]; contextWindow?: number } | undefined = {
 		provider: "test",
 		id: "test-model",
 		name: "Test Model",
 		input: ["text"],
+		contextWindow: 200_000,
 	}
 	modelRegistry = {
 		getAvailable: () =>
@@ -116,6 +117,20 @@ class FakeAgentSession {
 	bindExtensionsImpl: (_bindings: unknown) => Promise<void> = async () => {}
 	lastPromptImages?: unknown[]
 	promptCalls: Array<{ prompt: string; opts?: { images?: unknown[] } }> = []
+	// Context-usage stats surfaced to emitUsageUpdate. Tests override these
+	// to simulate provider-reported usage or the null/empty no-op path.
+	contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } | undefined = {
+		tokens: 50_000,
+		contextWindow: 200_000,
+		percent: 25,
+	}
+	sessionStats: {
+		tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }
+		cost: number
+	} = {
+		tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		cost: 0,
+	}
 	// Branch entries returned to the replay walker. Tests fill this with the
 	// shape buildSessionContext consumers expect (type:"message" + role).
 	branch: unknown[] = []
@@ -183,6 +198,17 @@ class FakeAgentSession {
 
 	async bindExtensions(bindings: unknown): Promise<void> {
 		await this.bindExtensionsImpl(bindings)
+	}
+
+	getContextUsage(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined {
+		return this.contextUsage
+	}
+
+	getSessionStats(): {
+		tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }
+		cost: number
+	} {
+		return this.sessionStats
 	}
 
 	dispose(): void {
@@ -1026,6 +1052,107 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		// Stray agent_end arrives later (shouldn't happen in production, but
 		// the guard in onSessionEvent must keep us safe either way).
 		expect(() => fake.emit(agentEnd())).not.toThrow()
+	})
+
+	it("emits a usage_update notification with used/size after a turn resolves", async () => {
+		const { conn, updates } = makeRecordingConn()
+		const localFake = new FakeAgentSession("session-usage")
+		localFake.model = { provider: "test", id: "m", name: "M", input: ["text"], contextWindow: 200_000 }
+		localFake.contextUsage = { tokens: 50_000, contextWindow: 200_000, percent: 25 }
+		localFake.sessionStats = {
+			tokens: { input: 10_000, output: 5_000, cacheRead: 0, cacheWrite: 0, total: 15_000 },
+			cost: 0,
+		}
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(localFake),
+		})
+		const { sessionId: sid } = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		localFake.promptImpl = async () => {
+			localFake.emit({ type: "agent_start" })
+			localFake.emit(agentEnd())
+		}
+		const result = await localAgent.prompt({
+			sessionId: sid,
+			prompt: [{ type: "text", text: "hi" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+
+		const usageUpdates = updates.filter(
+			(u) => (u.update as { sessionUpdate?: string }).sessionUpdate === "usage_update",
+		)
+		expect(usageUpdates).toHaveLength(1)
+		expect(usageUpdates[0].sessionId).toBe(sid)
+		expect((usageUpdates[0].update as { used: number; size: number }).used).toBe(50_000)
+		expect((usageUpdates[0].update as { used: number; size: number }).size).toBe(200_000)
+	})
+
+	it("falls back to getSessionStats total when getContextUsage tokens is null", async () => {
+		const { conn, updates } = makeRecordingConn()
+		const localFake = new FakeAgentSession("session-usage-fallback")
+		localFake.model = { provider: "test", id: "m", name: "M", input: ["text"], contextWindow: 128_000 }
+		localFake.contextUsage = { tokens: null, contextWindow: 128_000, percent: null }
+		localFake.sessionStats = {
+			tokens: { input: 8_000, output: 2_000, cacheRead: 0, cacheWrite: 0, total: 10_000 },
+			cost: 0,
+		}
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(localFake),
+		})
+		const { sessionId: sid } = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		localFake.promptImpl = async () => {
+			localFake.emit({ type: "agent_start" })
+			localFake.emit(agentEnd())
+		}
+		const result = await localAgent.prompt({
+			sessionId: sid,
+			prompt: [{ type: "text", text: "hi" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+
+		const usageUpdates = updates.filter(
+			(u) => (u.update as { sessionUpdate?: string }).sessionUpdate === "usage_update",
+		)
+		expect(usageUpdates).toHaveLength(1)
+		expect((usageUpdates[0].update as { used: number; size: number }).used).toBe(10_000)
+		expect((usageUpdates[0].update as { used: number; size: number }).size).toBe(128_000)
+	})
+
+	it("does not emit usage_update when size is unavailable (no contextWindow)", async () => {
+		const { conn, updates } = makeRecordingConn()
+		const localFake = new FakeAgentSession("session-usage-no-size")
+		localFake.model = { provider: "test", id: "m", name: "M", input: ["text"] }
+		localFake.contextUsage = undefined
+		localFake.sessionStats = {
+			tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			cost: 0,
+		}
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(localFake),
+		})
+		const { sessionId: sid } = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		localFake.promptImpl = async () => {
+			localFake.emit({ type: "agent_start" })
+			localFake.emit(agentEnd())
+		}
+		const result = await localAgent.prompt({
+			sessionId: sid,
+			prompt: [{ type: "text", text: "hi" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+
+		const usageUpdates = updates.filter(
+			(u) => (u.update as { sessionUpdate?: string }).sessionUpdate === "usage_update",
+		)
+		expect(usageUpdates).toHaveLength(0)
 	})
 
 	// Resource safety on the newSession error path: if subscribe (or any step

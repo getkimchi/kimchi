@@ -1,6 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { startNewInteractiveSessionWithModel } from "./interactive-model-session.js"
 import { findModelByRef, refFromModel, splitModelRef } from "./model-catalog/ref-utils.js"
 import {
 	contextFitsModel,
@@ -49,7 +50,15 @@ export function getModelTier(
 	return (caps as { tier: ModelTier }).tier
 }
 
-export default function modelSwitchExtension(pi: ExtensionAPI) {
+type StartNewSessionWithModel = (
+	sessionManager: ExtensionContext["sessionManager"],
+	model: Model<Api>,
+) => Promise<boolean>
+
+export default function modelSwitchExtension(
+	pi: ExtensionAPI,
+	startNewSessionWithModel: StartNewSessionWithModel = startNewInteractiveSessionWithModel,
+) {
 	pi.registerTool({
 		name: "set_model",
 		label: "Switch Model",
@@ -201,8 +210,8 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		if (isRevertingModel) return
 		// Skip if set_model tool initiated this (already validated)
 		if (suppressModelSelectGuard) return
-		// cycle and restore are handled by ctrl+p / session recovery already
-		if (event.source === "cycle" || event.source === "restore") return
+		// Session recovery must restore the persisted model without prompting.
+		if (event.source === "restore") return
 		// Nothing to revert to
 		if (!event.previousModel) return
 
@@ -215,12 +224,50 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		const tokens = resolveContextTokens(usage, messages)
 		if (tokens != null && !contextFitsModel(tokens, event.model.contextWindow)) {
 			isRevertingModel = true
-			await pi.setModel(event.previousModel)
-			isRevertingModel = false
-			ctx.ui?.notify(
-				`Current context (${tokens} tokens) exceeds the ${event.model.id} safe context limit (${getSafeContextWindow(event.model.contextWindow)} of ${event.model.contextWindow} tokens). Switch rejected — use /compact to reduce context size, then try again.`,
-				"error",
+			try {
+				await pi.setModel(event.previousModel)
+			} finally {
+				isRevertingModel = false
+			}
+
+			const limit = getSafeContextWindow(event.model.contextWindow)
+			const excess = tokens - limit
+			if (!ctx.hasUI) {
+				ctx.ui.notify(
+					`Current context (${tokens.toLocaleString()} tokens) exceeds the ${event.model.id} safe context limit (${limit.toLocaleString()} of ${event.model.contextWindow.toLocaleString()} tokens) by ${excess.toLocaleString()} tokens. Start a new session or compact before switching.`,
+					"error",
+				)
+				return
+			}
+
+			const compactAndSwitch = "Compact conversation and switch"
+			const startNewSession = "Start a new session"
+			const choice = await ctx.ui.select(
+				`Context is ${excess.toLocaleString()} tokens over ${event.model.id}'s safe limit (${tokens.toLocaleString()} current vs ${limit.toLocaleString()} safe)`,
+				ctx.mode === "tui" ? [compactAndSwitch, startNewSession] : [compactAndSwitch],
 			)
+
+			if (choice === compactAndSwitch) {
+				try {
+					await new Promise<void>((resolve, reject) => {
+						ctx.compact({ force: true, onComplete: () => resolve(), onError: reject })
+					})
+					await withSuppressedModelSelectGuard(() => pi.setModel(event.model))
+					ctx.ui.notify(`Compacted context and switched to ${refFromModel(event.model)}.`, "info")
+				} catch {
+					ctx.ui.notify("Compaction failed; the previous model remains active.", "error")
+				}
+				return
+			}
+
+			if (choice === startNewSession) {
+				if (!(await startNewSessionWithModel(ctx.sessionManager, event.model))) {
+					ctx.ui.notify("Could not start a new session; the previous model remains active.", "error")
+				}
+				return
+			}
+
+			ctx.ui.notify("Model switch cancelled.", "info")
 			return
 		}
 

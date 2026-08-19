@@ -247,6 +247,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	pi.on("session_start", (_event, _ctx) => {
 		ctx = _ctx
 		runtime.clearMidTurnOneshotWarnings()
+		runtime.clearMidTurnCompactionTracking()
 
 		// (Re)wire the ferment todo bridge to the current session id. The
 		// session-scoped todo store requires every store call to target a

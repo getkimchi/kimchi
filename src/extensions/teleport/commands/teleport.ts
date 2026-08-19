@@ -1,7 +1,14 @@
 import { existsSync } from "node:fs"
+import { open, readFile, stat } from "node:fs/promises"
 import { platform } from "node:os"
 import { basename, dirname } from "node:path"
-import { readGitToken, readTeleportHelpSeenAt, writeGitToken, writeTeleportHelpSeenAt } from "../../../config.js"
+import {
+	readGitToken,
+	readTeleportCompactHintEnabled,
+	readTeleportHelpSeenAt,
+	writeGitToken,
+	writeTeleportHelpSeenAt,
+} from "../../../config.js"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
 import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
@@ -11,6 +18,7 @@ import { createSession, listSessions } from "../../../sandbox/worker/sessions.js
 import type { CreateSessionRequest, Session } from "../../../sandbox/worker/types.js"
 import { createTabsOverlay } from "../overlay/overlay-component.js"
 import { generateSessionName } from "../overlay/tab-manager.js"
+import { evaluateCompactHint, TELEPORT_COMPACT_HINT_DEFAULTS } from "../preflight/compaction-hint.js"
 import { getGitHeadSha, gitWorkingTreeDirty, isGitRepo } from "../preflight/git.js"
 import { runPreflight } from "../preflight/index.js"
 import { SIZE_REFUSE_BYTES, SIZE_WARN_BYTES } from "../preflight/workspace-size.js"
@@ -64,6 +72,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 	}
 
 	runPreflight(ctx, args)
+	await maybeRefuseTeleportForLongSession(ctx, args)
 
 	// Show an inline status line message while we resolve the workspace — the
 	// progress overlay can't open until we know which workspace to attach
@@ -402,6 +411,131 @@ async function resolveGitToken(
 		}
 	}
 	return result.token
+}
+
+/**
+ * v1 compaction-hint gate (companion to the --force/--allow-dirty preflight
+ * refuses). When the session about to be uploaded is large AND was recently
+ * active, the local prompt cache is likely still warm, so compacting locally
+ * first is cheaper than letting the remote re-read the whole history cold —
+ * refusing with an actionable message saves the difference. A stale session
+ * inverts the economics (compaction would itself be a cold read), so
+ * freshness gates the hint inside evaluateCompactHint.
+ *
+ * Sizing comes from the harness's live context usage (provider-backed). The
+ * hint is non-critical, so anything that makes the number unavailable is a
+ * silent skip: no live session stats (RPC mode, no model), tokens === null
+ * right after compaction, or no session file. The session file is only read
+ * once the session is known to be over the threshold — and only its tail:
+ * the evaluator scans backward with early-exit, so a widening re-read to the
+ * whole file only happens when the tail genuinely can't decide.
+ */
+async function maybeRefuseTeleportForLongSession(
+	ctx: TeleportContext,
+	args: ReturnType<typeof parseTeleportArgs>,
+): Promise<void> {
+	if (args.skipSession || args.noCompactHint) return
+	const config = { ...TELEPORT_COMPACT_HINT_DEFAULTS, enabled: readTeleportCompactHintEnabled(ctx.configPath) }
+	if (!config.enabled) return
+	const tokens = ctx.getContextUsage?.()?.tokens
+	if (tokens === undefined || tokens === null || tokens <= config.tokenThreshold) return
+	const sessionFile = ctx.sessionFile
+	if (!sessionFile || !existsSync(sessionFile)) return
+
+	let tailInfo: SessionTail
+	try {
+		tailInfo = await readSessionTail(sessionFile)
+	} catch {
+		return
+	}
+	const { tail, tailIsWholeFile, fileMtimeMs } = tailInfo
+	let evaluation = evaluateCompactHint({
+		sessionTail: tail,
+		tailIsWholeFile,
+		estimatedTokens: tokens,
+		now: Date.now(),
+		config,
+		fallbackTimestampMs: fileMtimeMs,
+	})
+	if (!evaluation.decided) {
+		// Cap the widening re-read: the hint is a non-critical nudge, so loading
+		// a pathologically large session file fully into memory just to decide
+		// suppression is not worth it — skip the hint instead.
+		if (tailInfo.fileSizeBytes > SESSION_WIDEN_MAX_BYTES) return
+		// The tail slice ran out before either stop condition (e.g. fewer than
+		// the lookback window of very large messages, compaction just beyond
+		// the slice). Widen to the whole file and decide.
+		try {
+			evaluation = evaluateCompactHint({
+				sessionTail: await readFile(sessionFile, "utf-8"),
+				tailIsWholeFile: true,
+				estimatedTokens: tokens,
+				now: Date.now(),
+				config,
+				fallbackTimestampMs: fileMtimeMs,
+			})
+		} catch {
+			return
+		}
+	}
+	const { shouldHint, estimatedTokens } = evaluation
+	if (!shouldHint) return
+	refuse(
+		ctx,
+		`Long session history (~${formatTokenCount(estimatedTokens)} tokens) — consider /compact prior to teleport (or --no-compact-hint to skip).`,
+	)
+}
+
+/**
+ * Size of the tail slice read first. 512KB holds dozens of typical entries,
+ * well beyond the lookback window; pathological single messages bigger than
+ * this simply trigger the widen-to-whole-file path.
+ */
+export const SESSION_TAIL_BYTES = 512 * 1024
+
+/**
+ * Maximum file size for the widen-to-whole-file fallback. Real sessions over
+ * the hint threshold are a few MB at most, so 6MB covers them with headroom;
+ * anything beyond is too large to justify loading fully into memory for a
+ * non-critical hint.
+ */
+export const SESSION_WIDEN_MAX_BYTES = 6 * 1024 * 1024
+
+interface SessionTail {
+	tail: string
+	tailIsWholeFile: boolean
+	fileMtimeMs: number
+	fileSizeBytes: number
+}
+
+/** Read the last SESSION_TAIL_BYTES of the session file as UTF-8 (whole file when smaller). */
+export async function readSessionTail(path: string): Promise<SessionTail> {
+	const { size, mtimeMs } = await stat(path)
+	if (size <= SESSION_TAIL_BYTES) {
+		return {
+			tail: await readFile(path, "utf-8"),
+			tailIsWholeFile: true,
+			fileMtimeMs: mtimeMs,
+			fileSizeBytes: size,
+		}
+	}
+	const handle = await open(path, "r")
+	try {
+		const buffer = Buffer.alloc(SESSION_TAIL_BYTES)
+		const { bytesRead } = await handle.read(buffer, 0, buffer.length, size - SESSION_TAIL_BYTES)
+		return {
+			tail: buffer.subarray(0, bytesRead).toString("utf-8"),
+			tailIsWholeFile: false,
+			fileMtimeMs: mtimeMs,
+			fileSizeBytes: size,
+		}
+	} finally {
+		await handle.close()
+	}
+}
+
+function formatTokenCount(tokens: number): string {
+	return tokens >= 1000 ? `${Math.round(tokens / 1000)}K` : String(tokens)
 }
 
 /**

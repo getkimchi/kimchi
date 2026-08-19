@@ -45,10 +45,10 @@ function formatProgressSummary(todos: TodoItem[]): string {
  * reads, and can choose to act on it at the next natural break point.
  */
 function stalenessIndicator(changes: number): string | undefined {
-	if (changes <= 2) return undefined
-	if (changes <= 6) return `${changes} changes since last update — update alongside your next tool call`
-	if (changes <= 11) return `⚠ ${changes} changes since last update — update alongside your next tool call now`
-	return `⚠ ${changes} changes — list is significantly stale, update alongside your next tool call`
+	if (changes <= 8) return undefined
+	if (changes <= 16) return `${changes} changes since last update — refresh the list at the next natural breakpoint`
+	if (changes <= 24) return `⚠ ${changes} changes since last update — update at the next natural breakpoint`
+	return `⚠ ${changes} changes — list is significantly stale, update at the next natural breakpoint`
 }
 
 /** Render the current todo store as a markdown section. Returns `undefined`
@@ -143,9 +143,13 @@ export function renderTodoStateMarkdown(sessionId: string): string | undefined {
 	}
 
 	// Ferment stall detection: if a ferment step is running and the step-scope
-	// todos haven't been updated in several turns, add a staleness warning.
+	// todos haven't been updated in many turns, add a staleness warning.
+	// Step-list staleness health check. Now that sub-task lists are optional,
+	// nagging at a few turns manufactures todo churn exactly where we told the
+	// model to skip lists — one threshold at roughly one long step means the
+	// warning fires only on genuine iteration thrash.
 	const staleTurns = getTurnsSinceStepTodoWrite(sessionId)
-	if (staleTurns >= 5) {
+	if (staleTurns >= 12) {
 		stalenessWarnings.push(
 			`⚠ Step todos have not been updated for ${staleTurns} turns. If you are iterating without progress, step back and reassess your approach. Update your todo plan with what you have tried and what to try next.`,
 		)

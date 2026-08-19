@@ -3,10 +3,10 @@ import { describe, expect, it, vi } from "vitest"
 import "./paste-to-editor-patch.js"
 
 describe("pasteToEditor patch", () => {
-	it("routes pasteToEditor through ui.handleInput instead of editor.handleInput", () => {
+	it("routes pasteToEditor through ui.handleTerminalInput instead of editor.handleInput", () => {
 		const fakeIm = {
 			ui: {
-				handleInput: vi.fn(),
+				handleTerminalInput: vi.fn(),
 			},
 			editor: {
 				handleInput: vi.fn(),
@@ -17,8 +17,8 @@ describe("pasteToEditor patch", () => {
 		const ctx = (InteractiveMode.prototype as any).createExtensionUIContext.call(fakeIm)
 		ctx.pasteToEditor("hello")
 
-		expect(fakeIm.ui.handleInput).toHaveBeenCalledOnce()
-		expect(fakeIm.ui.handleInput).toHaveBeenCalledWith("\x1b[200~hello\x1b[201~")
+		expect(fakeIm.ui.handleTerminalInput).toHaveBeenCalledOnce()
+		expect(fakeIm.ui.handleTerminalInput).toHaveBeenCalledWith("\x1b[200~hello\x1b[201~")
 		expect(fakeIm.editor.handleInput).not.toHaveBeenCalled()
 	})
 })

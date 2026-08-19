@@ -46,4 +46,10 @@ runs:
     - name: Install Playwright Chromium
       if: inputs.playwright == 'true'
       shell: bash
-      run: npx playwright install chromium --with-deps
+      # --with-deps runs `sudo apt-get update && apt-get install` on every run,
+      # which is slow on GitHub's ubuntu-latest runners (they already ship
+      # the core Chromium system deps) and intermittently hangs on apt mirror
+      # stalls, causing merge-queue ejections when the step exceeds the
+      # job's timeout-minutes.  Dropping it saves ~20s on cache hits and
+      # eliminates the hang risk.
+      run: npx playwright install chromium

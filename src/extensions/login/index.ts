@@ -1,9 +1,11 @@
 import { resolve } from "node:path"
+import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth"
+import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { clearApiKey, loadConfig, writeApiKey } from "../../config.js"
 import { chatCompletionsApi, updateModelsConfig, validateApiKey } from "../../models.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
-import { KIMCHI_PROVIDER_ID, setKimchiAuthToken } from "./flow.js"
+import { getKimchiProviderIds, KIMCHI_PROVIDER_ID, setKimchiAuthToken } from "./flow.js"
 
 const KIMCHI_LOGOUT_PATCHED = Symbol("kimchi.logoutPatched")
 
@@ -11,6 +13,10 @@ export default function loginExtension(pi: ExtensionAPI): void {
 	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
 	if (!agentDir) return
 	const modelsJsonPath = resolve(agentDir, "models.json")
+
+	// Builtin providers are disabled globally; explicitly restore the approved subscription provider.
+	registerBunOAuthFlows()
+	pi.registerProvider(openaiCodexProvider())
 
 	pi.on("session_start", (_event, ctx) => {
 		// Re-read config every session start (not once at load): the API key can change mid-process
@@ -29,11 +35,15 @@ export default function loginExtension(pi: ExtensionAPI): void {
 
 		const originalLogout = patchedAuthStorage.logout.bind(patchedAuthStorage)
 		patchedAuthStorage.logout = (provider: string) => {
-			originalLogout(provider)
 			if (provider === KIMCHI_PROVIDER_ID) {
+				for (const providerId of getKimchiProviderIds(ctx.modelRegistry)) {
+					originalLogout(providerId)
+				}
 				clearApiKey()
 				void refreshBillingStatusFromConfig({ mode: "forced" })
+				return
 			}
+			originalLogout(provider)
 		}
 		patchedAuthStorage[KIMCHI_LOGOUT_PATCHED] = true
 	})

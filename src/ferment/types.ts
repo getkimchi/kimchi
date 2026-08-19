@@ -189,6 +189,11 @@ export interface JudgeGrade {
 	 *  recorded so the grading model is auditable post-hoc — see
 	 *  judge.ts describeJudgeModel(). */
 	gradedBy?: string
+	/** Which grader produced this grade: the tool-equipped subagent, or the
+	 *  blind single-shot fallback (no tool access) engaged when the subagent
+	 *  was unusable. Fallback grades are advisory-only — they never refuse
+	 *  advancement. Undefined on grades persisted before provenance existed. */
+	graderSource?: "subagent" | "fallback_single_shot"
 	/** Legacy marker for older completions that persisted a placeholder grade
 	 *  when the journey-grade judge was unreachable. New completions leave
 	 *  Ferment.grade unset instead of recording a synthetic grade. */

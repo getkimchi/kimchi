@@ -61,6 +61,7 @@ import {
 	applyInteractiveErrorSurfacePatch,
 	default as interactiveErrorSurfaceExtension,
 } from "./extensions/interactive-error-surface.js"
+import { applyInteractiveModelSessionPatch } from "./extensions/interactive-model-session.js"
 import kimchiHooksAdapter from "./extensions/kimchi-hooks/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import llmResponseLogExtension from "./extensions/llm-response-log.js"
@@ -162,6 +163,7 @@ installPiNativeCompatibilityShim()
 // suppressed / sanitized before reaching the terminal. Must run before any
 // InteractiveMode instance is constructed.
 applyInteractiveErrorSurfacePatch()
+applyInteractiveModelSessionPatch()
 
 function getSubcommand(args: string[]): string {
 	if (args.includes("--version") || args.includes("-v")) return "version"
