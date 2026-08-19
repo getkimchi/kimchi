@@ -13,12 +13,14 @@ import { formatBudgetStatusLine, formatCreditsStatusLine } from "../extensions/b
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-line.js"
 import { formatCount } from "../extensions/format.js"
+import { GOAL_STATUS_KEY } from "../extensions/goal/constants.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
 type SegmentId =
+	| "goal"
 	| "permissions"
 	| "model"
 	| "ferment"
@@ -488,6 +490,13 @@ export class StatusLine implements Component {
 		return { id: "permissions", text: mode, width: visibleWidth(mode) }
 	}
 
+	private goalSegment(): Segment | null {
+		const status = this.statusLineData.getExtensionStatuses().get(GOAL_STATUS_KEY)
+		if (!status) return null
+		const text = this.accent(status)
+		return { id: "goal", text, width: visibleWidth(text) }
+	}
+
 	private lspSegment(): Segment | null {
 		const lspStatus = this.statusLineData.getExtensionStatuses().get("lsp")
 		if (!lspStatus) return null
@@ -582,6 +591,7 @@ export class StatusLine implements Component {
 			.filter((t): t is { key: string; value: string } => t !== null)
 
 		const allSegments: Segment[] = [
+			this.goalSegment(),
 			this.fermentSegment(pinnedSet.has("ferment")),
 			this.permissionsSegment(pinnedSet.has("permissions")),
 			this.modelSegment(),

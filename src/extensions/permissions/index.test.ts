@@ -14,6 +14,7 @@ import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/perm
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
+import { GOAL_TOOL_NAMES } from "../goal/constants.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
@@ -908,7 +909,7 @@ describe("permissions prompt inheritance", () => {
 	})
 })
 
-describe("permissions ferment tool classification", () => {
+describe("permissions internal tool classification", () => {
 	beforeEach(() => {
 		vi.mocked(classifyToolCall).mockClear()
 	})
@@ -917,6 +918,17 @@ describe("permissions ferment tool classification", () => {
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
 		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
 		vi.unstubAllEnvs()
+	})
+
+	it("allows goal state tools without permission prompts", async () => {
+		const harness = createPermissionsHarness([...GOAL_TOOL_NAMES])
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+
+		for (const toolName of GOAL_TOOL_NAMES) {
+			await expect(harness.fire("tool_call", { toolName, input: {} }, ctx)).resolves.toBeUndefined()
+		}
+		expect(ctx.ui.select).not.toHaveBeenCalled()
 	})
 
 	it("allows ferment tools in auto mode without invoking the classifier", async () => {

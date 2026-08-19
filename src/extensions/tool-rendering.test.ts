@@ -3,6 +3,7 @@ import { Text, visibleWidth } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it } from "vitest"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createToolRenderContext } from "./__mocks__/tool-render-context.js"
+import { GOAL_TOOL_NAMES } from "./goal/constants.js"
 import toolRenderingExtension, {
 	createErrorTruncatingResultRenderer,
 	formatToolTimer,
@@ -157,6 +158,21 @@ describe("hidden tool block rendering", () => {
 			"write_todos",
 			"tc-legacy",
 			{ todos: [{ content: "legacy", status: "pending" }] },
+			{},
+			undefined,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+
+		expect(component.render(80)).toEqual([])
+	})
+
+	it.each(GOAL_TOOL_NAMES)("hides %s tool calls and results", (toolName) => {
+		const component = new ToolExecutionComponent(
+			toolName,
+			`tc-${toolName}`,
+			{},
 			{},
 			undefined,
 			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double

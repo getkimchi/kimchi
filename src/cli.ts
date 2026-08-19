@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import {
+	hasPrintFlag,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
@@ -51,6 +52,8 @@ import clipboardImageExtension from "./extensions/clipboard-image.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
+import { GOAL_RESOURCE_ID } from "./extensions/goal/constants.js"
+import goalExtension from "./extensions/goal/index.js"
 import helpExtension from "./extensions/help.js"
 import hiddenToolGuidanceExtension from "./extensions/hidden-tool-guidance.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
@@ -610,6 +613,9 @@ try {
 			...enabledExtensionFactories([
 				{ id: "extensions.agents", factory: agentsExtension },
 			] satisfies ManagedExtensionFactory[]),
+			...enabledExtensionFactories([
+				{ id: GOAL_RESOURCE_ID, factory: goalExtension },
+			] satisfies ManagedExtensionFactory[]),
 			helpExtension,
 			themeSelectorExtension,
 			customizeStatusLineExtension,
@@ -652,11 +658,13 @@ try {
 			const { main } = await import("@earendil-works/pi-coding-agent")
 			await main(rawArgs, { extensionFactories })
 		}
-		// Only reclassify runs that already failed (print mode sets exitCode 1);
-		// a clean interactive quit after a transient error stays a success.
-		if (process.exitCode) {
-			applyPostMainInfrastructureExitPolicy(infrastructureErrorTracker.getFailure())
-		}
+		// Goal continuations can end on an infrastructure error without Pi setting
+		// exitCode. In print mode, a trailing tracked failure still failed the run.
+		applyPostMainInfrastructureExitPolicy(
+			infrastructureErrorTracker.getFailure(),
+			process.exit,
+			Boolean(process.exitCode) || hasPrintFlag(rawArgs),
+		)
 	}
 } catch (err) {
 	await drainPreSessionTelemetry()

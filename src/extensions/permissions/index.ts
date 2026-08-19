@@ -28,6 +28,7 @@ import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "..
 import { createApplyAndPersist, formatNextActionHint, formatNoReplanningGuidance } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
+import { GOAL_TOOL_NAMES } from "../goal/constants.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
@@ -124,7 +125,14 @@ const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 //
 // Names are lowercased because the tool_call handler lowercases event.toolName
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
-const BUILTIN_ALLOW_TOOL_NAMES = ["set_phase", "agent", "get_subagent_result", "steer_subagent", ...TODO_TOOL_NAMES]
+const BUILTIN_ALLOW_TOOL_NAMES = [
+	"set_phase",
+	"agent",
+	"get_subagent_result",
+	"steer_subagent",
+	...GOAL_TOOL_NAMES,
+	...TODO_TOOL_NAMES,
+]
 
 export { notifyFermentActive }
 
