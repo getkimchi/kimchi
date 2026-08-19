@@ -121,6 +121,19 @@ describe("buildSystemPrompt", () => {
 		expect(result).toContain("wait for the user to choose")
 	})
 
+	it("does not treat investigate-or-plan requests as implementation approval", () => {
+		const result = buildSystemPrompt({
+			tools,
+			env: testEnv,
+			mode: "single",
+		})
+
+		expect(result).toContain(
+			"A request to investigate an issue, evaluate options, or draft a plan authorizes only the analysis",
+		)
+		expect(result).toContain("wait for the user's go-ahead before writing or modifying code")
+	})
+
 	it("includes the harness notes and approval section", () => {
 		const result = buildSystemPrompt({
 			tools,
