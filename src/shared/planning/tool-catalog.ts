@@ -99,6 +99,11 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "skill", modes: ["shared"] },
 	{ name: "web_fetch", modes: ["shared"] },
 	{ name: "web_search", modes: ["shared"] },
+	// Framework-owned workflow control-plane tools. They are registered only
+	// while a reporting/asking step is active, but must survive restrictive
+	// planning profiles so the step can return its result or questions.
+	{ name: "workflow_submit_result", modes: ["shared"] },
+	{ name: "workflow_submit_questions", modes: ["shared"] },
 	// MCP gateway — discovery + proxy for MCP server tools. Treated as a
 	// shared discovery tool (analogous to read/grep/find): harmless when no
 	// servers are configured, and required during planning so the model can

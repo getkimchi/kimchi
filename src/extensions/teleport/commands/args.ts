@@ -6,6 +6,7 @@ export interface TeleportArgs {
 	gitRepo?: string
 	branch?: string
 	noGitToken?: boolean
+	noCompactHint?: boolean
 	skipSession?: boolean
 	fast?: boolean
 }
@@ -13,11 +14,12 @@ export interface TeleportArgs {
 const SESSION_NAME_RE = /^[A-Za-z0-9\-_]+$/
 
 const FLAGS_WITH_VALUE = new Set(["--workspace", "--git-repo", "--branch"])
-const BOOLEAN_FLAGS = new Set(["--no-git-token", "--skip-session"])
+const BOOLEAN_FLAGS = new Set(["--no-git-token", "--no-compact-hint", "--skip-session"])
 
 /**
  * Parse `/teleport [name] [--workspace ID] [--git-repo URL] [--branch B]
- *                  [--allow-dirty] [--force] [--no-git-token] [--skip-session]
+ *                  [--allow-dirty] [--force] [--no-git-token] [--no-compact-hint]
+ *                  [--skip-session]
  *                  [--fast]`.
  *
  * A malformed input (a `--flag=` with no key, a stray `--`) throws so the
@@ -67,6 +69,10 @@ export function parseTeleportArgs(raw: string): TeleportArgs {
 			}
 			if (flag === "--no-git-token") {
 				args.noGitToken = true
+				continue
+			}
+			if (flag === "--no-compact-hint") {
+				args.noCompactHint = true
 				continue
 			}
 			if (flag === "--skip-session") {

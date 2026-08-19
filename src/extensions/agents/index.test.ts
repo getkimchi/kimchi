@@ -2,11 +2,44 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	AGENT_MODEL_PARAMETER_DESCRIPTION,
 	AGENT_TOOL_GUIDELINES,
+	buildAutoResumeNote,
 	resolveRoleModelRef,
 	setActiveManagerForTest,
+	shouldAutoResumeFermentWorker,
 	spawnGraderAgent,
 	summaryForStatus,
 } from "./index.js"
+
+describe("shouldAutoResumeFermentWorker", () => {
+	const base = {
+		status: "aborted",
+		abortReason: "max_turns" as const,
+		session: {},
+		taskRef: { kind: "ferment_step" },
+		resumeAttempts: [],
+	}
+	it("fires for a ferment step worker killed by turns or duration on first attempt", () => {
+		expect(shouldAutoResumeFermentWorker({ ...base })).toBe(true)
+		expect(shouldAutoResumeFermentWorker({ ...base, abortReason: "max_duration" as const })).toBe(true)
+	})
+	it("does NOT fire on second exhaustion, non-ferment agents, or non-budget aborts", () => {
+		expect(shouldAutoResumeFermentWorker({ ...base, resumeAttempts: [{}] })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, taskRef: { kind: "other" } })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, taskRef: undefined })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, abortReason: "token_budget" as const })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, abortReason: "inactivity" as const })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, status: "completed" })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, session: null })).toBe(false)
+	})
+})
+
+describe("buildAutoResumeNote", () => {
+	it("labels the limit from the PRE-resume abort reason (review regression: resume clears abortReason)", () => {
+		expect(buildAutoResumeNote("max_turns")).toContain("hit the turn limit")
+		expect(buildAutoResumeNote("max_duration")).toContain("hit the duration limit")
+		expect(buildAutoResumeNote(undefined)).toBe("")
+	})
+})
 
 describe("summaryForStatus", () => {
 	it("labels token-budget aborts distinctly from max-turn aborts", () => {

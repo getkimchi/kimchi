@@ -708,6 +708,102 @@ describe("judgePhaseGradeViaSubagent", () => {
 		if (!result.ok) return
 		expect(result.grade).toBe("A")
 	})
+
+	it("honors a steered subagent verdict — soft turn-cap wrap-up is a designed success state", async () => {
+		// Regression: rigorous graders that re-run the whole verification matrix
+		// hit the soft turn cap and finish "steered"; their (valid) verdicts used
+		// to be silently discarded for the blind fallback because the judge only
+		// accepted status === "completed".
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: '{"grade":"A","rationale":"re-ran build, tests, and e2e — all green","recommendations":[]}',
+				status: "steered",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"D","rationale":"blind pessimism"}'))
+		const result = await judgePhaseGradeViaSubagent(makePhaseInput(), spawn, apiCall)
+		expect(apiCall).not.toHaveBeenCalled()
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("A")
+		expect(result.graderSource).toBe("subagent")
+	})
+
+	it("tags subagent grades with graderSource subagent", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: '{"grade":"B","rationale":"fine","recommendations":[]}',
+				status: "completed",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"A","rationale":"x"}'))
+		const result = await judgePhaseGradeViaSubagent(makePhaseInput(), spawn, apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.graderSource).toBe("subagent")
+	})
+
+	it("tags fallback grades with graderSource fallback_single_shot", async () => {
+		const spawn = vi.fn(async (): Promise<GraderSubagentResult> => ({ text: "", status: "aborted" }))
+		const apiCall = vi.fn(async () => ok('{"grade":"C","rationale":"x"}'))
+		const result = await judgePhaseGradeViaSubagent(makePhaseInput(), spawn, apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.graderSource).toBe("fallback_single_shot")
+	})
+
+	it("retries the grader subagent once on abort before going blind (measured run 019ff5cc)", async () => {
+		// A single killed grader spawn used to short-circuit to the blind
+		// fallback, letting phases accept grades an equipped grader would refuse.
+		const spawn = vi.fn(async (): Promise<GraderSubagentResult> => ({ text: "", status: "aborted" }))
+		await judgePhaseGradeViaSubagent(
+			makePhaseInput(),
+			spawn,
+			vi.fn(async () => ok('{"grade":"B","rationale":"x"}')),
+		)
+		expect(spawn).toHaveBeenCalledTimes(2)
+	})
+
+	it("accepts the grade when the retried grader subagent succeeds", async () => {
+		const spawn = vi
+			.fn()
+			.mockResolvedValueOnce({ text: "", status: "aborted" } as GraderSubagentResult)
+			.mockResolvedValueOnce({
+				text: '{"grade":"A","rationale":"verified","recommendations":[]}',
+				status: "completed",
+			} as GraderSubagentResult)
+		const apiCall = vi.fn(async () => ok('{"grade":"C","rationale":"blind"}'))
+		const result = await judgePhaseGradeViaSubagent(makePhaseInput(), spawn, apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.graderSource).toBe("subagent")
+		expect(result.grade).toBe("A")
+		expect(apiCall).not.toHaveBeenCalled()
+	})
+
+	it("prepends delta-grade instructions to the grader prompt when priorRefusal is present", async () => {
+		let prompt = ""
+		const spawn = vi.fn(async (p: string): Promise<GraderSubagentResult> => {
+			prompt = p
+			return { text: '{"grade":"A","rationale":"fixed","recommendations":[]}', status: "completed" }
+		})
+		const result = await judgePhaseGradeViaSubagent(
+			makePhaseInput({
+				priorRefusal: {
+					grade: "C",
+					recommendations: ["Add edge-case tests for empty input."],
+					at: "2026-08-11T12:00:00Z",
+				},
+			}),
+			spawn,
+			vi.fn(),
+		)
+		expect(result.ok).toBe(true)
+		expect(prompt).toContain("DELTA-GRADE INSTRUCTIONS")
+		expect(prompt).toContain("grade C")
+		expect(prompt).toContain("Add edge-case tests for empty input.")
+		expect(prompt).toContain("scan ONLY for new issues")
+	})
 })
 
 describe("judgeJourneyGradeViaSubagent", () => {
@@ -727,6 +823,26 @@ describe("judgeJourneyGradeViaSubagent", () => {
 		expect(result.ok).toBe(true)
 		if (!result.ok) return
 		expect(result.grade).toBe("A")
+		expect(apiCall).not.toHaveBeenCalled()
+	})
+
+	it("retries the journey grader once on abort before going blind (measured run 019ff5cc)", async () => {
+		// The flagship benchmark completed with journey grade=None because one
+		// killed grader spawn short-circuited to the blind fallback judge.
+		const spawn = vi
+			.fn()
+			.mockResolvedValueOnce({ text: "", status: "aborted" } as GraderSubagentResult)
+			.mockResolvedValueOnce({
+				text: '{"grade":"A","rationale":"verified","recommendations":[]}',
+				status: "completed",
+			} as GraderSubagentResult)
+		const apiCall = vi.fn(async () => ok('{"grade":"C","rationale":"blind"}'))
+		const result = await judgeJourneyGradeViaSubagent(makeInput(), spawn, apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.graderSource).toBe("subagent")
+		expect(result.grade).toBe("A")
+		expect(spawn).toHaveBeenCalledTimes(2)
 		expect(apiCall).not.toHaveBeenCalled()
 	})
 
@@ -783,6 +899,22 @@ describe("judgeJourneyGradeViaSubagent", () => {
 		expect(result.ok).toBe(true)
 		if (!result.ok) return
 		expect(result.grade).toBe("B")
+	})
+
+	it("honors a steered subagent verdict and tags it with graderSource subagent", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: '{"grade":"A","rationale":"independently re-ran the full suite","recommendations":[]}',
+				status: "steered",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"C","rationale":"x"}'))
+		const result = await judgeJourneyGradeViaSubagent(makeInput(), spawn, apiCall)
+		expect(apiCall).not.toHaveBeenCalled()
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("A")
+		expect(result.graderSource).toBe("subagent")
 	})
 
 	it("falls back to single-shot when subagent returns unparseable text", async () => {
@@ -847,6 +979,87 @@ describe("judgeJourneyGradeViaSubagent", () => {
 		expect(result.grade).toBe("B")
 		expect(result.rationale).toContain("coverage thin")
 		expect(apiCall).not.toHaveBeenCalled()
+	})
+
+	it("attaches step verification runs + evidence-trust policy to the journey grader prompt", async () => {
+		let prompt = ""
+		const spawn = vi.fn(async (p: string): Promise<GraderSubagentResult> => {
+			prompt = p
+			return { text: '{"grade":"A","rationale":"ok","recommendations":[]}', status: "completed" }
+		})
+		const result = await judgeJourneyGradeViaSubagent(
+			makeInput({ stepVerificationRuns: "step-1\n  npm test\n  ✓ exit 0" }),
+			spawn,
+			vi.fn(),
+		)
+		expect(result.ok).toBe(true)
+		expect(prompt).toContain("HARNESS-EXECUTED VERIFICATION")
+		expect(prompt).toContain("npm test")
+		expect(prompt).toContain("VERIFICATION EVIDENCE POLICY")
+		// Non-overridable contract: the observed rationalizations are named and banned.
+		expect(prompt).toContain("Full stop.")
+		expect(prompt).toContain("to catch anything not covered")
+	})
+
+	it("omits the evidence-trust policy when any verification run failed", async () => {
+		let prompt = ""
+		const spawn = vi.fn(async (p: string): Promise<GraderSubagentResult> => {
+			prompt = p
+			return { text: '{"grade":"C","rationale":"bad","recommendations":["x"]}', status: "completed" }
+		})
+		const result = await judgeJourneyGradeViaSubagent(
+			makeInput({ stepVerificationRuns: "step-1\n  npm test\n  ✗ exit 1" }),
+			spawn,
+			vi.fn(),
+		)
+		expect(result.ok).toBe(true)
+		expect(prompt).toContain("HARNESS-EXECUTED VERIFICATION")
+		expect(prompt).not.toContain("VERIFICATION EVIDENCE POLICY")
+	})
+
+	it("prepends delta-grade instructions when the journey was previously refused", async () => {
+		let prompt = ""
+		const spawn = vi.fn(async (p: string): Promise<GraderSubagentResult> => {
+			prompt = p
+			return { text: '{"grade":"A","rationale":"fixed","recommendations":[]}', status: "completed" }
+		})
+		const result = await judgeJourneyGradeViaSubagent(
+			makeInput({
+				priorRefusal: { grade: "C", recommendations: ["Fix the broken onClick handler."], at: "2026-08-11T12:00:00Z" },
+			}),
+			spawn,
+			vi.fn(),
+		)
+		expect(result.ok).toBe(true)
+		expect(prompt).toContain("DELTA-GRADE INSTRUCTIONS")
+		expect(prompt).toContain("refused the ferment at grade C")
+		expect(prompt).toContain("Fix the broken onClick handler.")
+	})
+
+	it("scopes the journey grader to delta reads via certified phase verdicts", async () => {
+		let prompt = ""
+		const spawn = vi.fn(async (p: string): Promise<GraderSubagentResult> => {
+			prompt = p
+			return { text: '{"grade":"A","rationale":"ok","recommendations":[]}', status: "completed" }
+		})
+		const input = makeInput()
+		input.phases = input.phases.map((p) => ({ ...p, grade: { grade: "A", recommendations: [] as string[] } }))
+		const result = await judgeJourneyGradeViaSubagent(input, spawn, vi.fn())
+		expect(result.ok).toBe(true)
+		expect(prompt).toContain("CERTIFIED PHASE VERDICTS")
+		expect(prompt).toContain("graded A by phase grader")
+		expect(prompt).toContain("do NOT re-audit phases line-by-line")
+	})
+
+	it("omits the certified-verdicts block when no phase carries a grade", async () => {
+		let prompt = ""
+		const spawn = vi.fn(async (p: string): Promise<GraderSubagentResult> => {
+			prompt = p
+			return { text: '{"grade":"A","rationale":"ok","recommendations":[]}', status: "completed" }
+		})
+		const result = await judgeJourneyGradeViaSubagent(makeInput(), spawn, vi.fn())
+		expect(result.ok).toBe(true)
+		expect(prompt).not.toContain("CERTIFIED PHASE VERDICTS")
 	})
 })
 
@@ -955,5 +1168,79 @@ describe("judgeApiCall", () => {
 		})
 		expect(requests[1]).toMatchObject({ maxTokens: 100 })
 		expect(requests[1].onPayload).toBeUndefined()
+	})
+})
+
+describe("recommendation contract (producible-evidence whitelist)", () => {
+	function ok(text: string): JudgeApiResult {
+		return { ok: true, text }
+	}
+
+	const CONTRACT_FRAGMENTS = [
+		"At most 3 recommendations",
+		"headless",
+		"manual review needed",
+		// Run-6 fix-wave failure: grader demanded a computed-CSS assertion the
+		// main agent could only satisfy by swapping test environments (jsdom →
+		// happy-dom). Recommendations must now name a source-level fix-check
+		// the executor can evaluate in this environment.
+		"fix-check",
+		"jsdom/happy-dom cannot evaluate",
+	]
+
+	function expectContract(text: string) {
+		for (const fragment of CONTRACT_FRAGMENTS) {
+			expect(text).toContain(fragment)
+		}
+	}
+
+	it("phase-grade system prompt constrains recommendations to producible evidence", async () => {
+		let system = ""
+		const apiCall = vi.fn(async (sys: string) => {
+			system = sys
+			return ok('{"grade":"B","rationale":"x","recommendations":["y"]}')
+		})
+		await judgePhaseGrade(
+			{ fermentName: "F", phaseName: "P1", phaseGoal: "g", phaseSummary: "done", gateVerdicts: [] },
+			apiCall,
+		)
+		expect(system).not.toBe("")
+		expectContract(system)
+	})
+
+	it("journey-grade system prompt constrains recommendations to producible evidence", async () => {
+		let system = ""
+		const apiCall = vi.fn(async (sys: string) => {
+			system = sys
+			return ok('{"grade":"B","rationale":"x","recommendations":["y"]}')
+		})
+		await judgeJourneyGrade(makeInput(), apiCall)
+		expect(system).not.toBe("")
+		expectContract(system)
+	})
+
+	it("phase subagent grader prompt constrains recommendations to producible evidence", async () => {
+		let prompt = ""
+		const spawn = vi.fn(async (p: string): Promise<GraderSubagentResult> => {
+			prompt = p
+			return { text: '{"grade":"A","rationale":"x"}', status: "completed" }
+		})
+		await judgePhaseGradeViaSubagent(
+			{ fermentName: "F", phaseName: "P1", phaseGoal: "g", phaseSummary: "done", gateVerdicts: [] },
+			spawn,
+		)
+		expect(prompt).not.toBe("")
+		expectContract(prompt)
+	})
+
+	it("journey subagent grader prompt constrains recommendations to producible evidence", async () => {
+		let prompt = ""
+		const spawn = vi.fn(async (p: string): Promise<GraderSubagentResult> => {
+			prompt = p
+			return { text: '{"grade":"A","rationale":"x"}', status: "completed" }
+		})
+		await judgeJourneyGradeViaSubagent(makeInput(), spawn)
+		expect(prompt).not.toBe("")
+		expectContract(prompt)
 	})
 })

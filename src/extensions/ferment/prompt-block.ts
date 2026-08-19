@@ -1,5 +1,4 @@
-import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { TERMINAL_STEP_STATUSES } from "../../ferment/state-machine.js"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getAgentConfig, getDefaultAgentNames } from "../agents/personas/agent-types.js"
@@ -9,12 +8,8 @@ import { SCOPING_DISCOVERY_GUIDANCE, SCOPING_EXPLORE_TOKEN_BUDGET } from "./cons
 import { formatDecisionsAndMemories, formatScopingContext } from "./format.js"
 import type { FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
-import { formatNextActionHint, formatNoReplanningGuidance } from "./tool-helpers.js"
+import { formatNoReplanningGuidance } from "./tool-helpers.js"
 import { CREATE_FERMENT_REDIRECT_MESSAGE } from "./tool-names.js"
-
-type OrchestratorMessages = ContextEvent["messages"]
-
-const FERMENT_STATE_CUSTOM_TYPE = "ferment-state"
 
 /** Pull the first line of an agent's description (typically a one-sentence role
  *  summary) so the planner can pick the right subagent without each entry
@@ -117,10 +112,10 @@ After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation al
 			? `- NEVER write, edit, or read files yourself during step execution
 - NEVER implement a step inline — always delegate to a subagent worker
 - Spawn a subagent for every step regardless of whether you already know the answer — the subagent exists to produce verifiable evidence, not just to do work. No-op or trivially-known steps still require a subagent run.`
-			: `- You may execute steps directly (using bash, edit, write) OR delegate to a subagent — choose whichever is more efficient for the task at hand.
-- Prefer direct execution for narrow fixes, single-file edits, verification runs, and when a prior subagent already laid the groundwork you can build on.
-- Prefer delegation for parallel work, long-running builds, or when isolating a complex multi-file change into a clean context would help.
-- If a subagent aborts on a step, consider whether you can finish the remaining work directly rather than spawning another subagent that will re-discover the same context.`
+			: `- Execute steps directly with bash/edit/write — you hold the project context, and the deterministic verify gate plus phase graders supply the trust. Delegation is for exceptions, not the default.
+- Delegate to a linked subagent worker only for residue-heavy steps: long builds, large test-suite output, many large file reads, or independent parallel units (use run_in_background for those).
+- Measured rationale: direct execution completed 28 steps in 109 min at A/B grades (run 019ff530); forced delegation was slower per step at bench scale — workers re-establish context (~14 reads each) and hit budget caps on real builds.
+- If a worker aborts mid-step, resume it with resume_subagent, or finish directly when you already hold the context — do not spawn a duplicate that re-discovers the same work.`
 
 	return `
 
@@ -181,7 +176,7 @@ ${delegationRules}
 }
 
 /**
- * Renders a short, state-aware prelude for a planned/running ferment.
+ * Renders a short, STATIC prelude for a planned/running ferment.
  *
  * Why: the planner supplement below is lifecycle-agnostic — it describes both
  * the planning and implementation toolsets uniformly and never states the
@@ -189,66 +184,20 @@ ${delegationRules}
  * resume, or post-compaction continuations, the model could not tell that
  * scoping was already complete and wasted turns re-running discovery
  * (`list_ferments`) and re-drafting the scope (`scope_ferment`), which the
- * FSM then rejected. Naming the current state, the no-re-planning rule, and
- * the immediate next lifecycle action prevents that restart loop.
+ * FSM then rejected. Stating that scoping is complete and that scoping calls
+ * will be rejected prevents that restart loop.
+ *
+ * Only STATIC content belongs here — content that does not change across
+ * step/phase transitions. Volatile details (active phase name, step progress,
+ * next-action hint) are injected per-turn via the transient `context` event
+ * by `registerFermentLifecycleContext` so the system prompt stays cache-stable
+ * across lifecycle transitions. See system-prompt-stability.test.ts.
  */
-function buildCurrentStateSection(f: Ferment, multiModelEnabled: boolean): string {
-	const activePhaseStates = f.phases
-		.filter((phase) => phase.status === "active")
-		.map((phase) => {
-			const terminalSteps = phase.steps.filter((step) => TERMINAL_STEP_STATUSES.includes(step.status)).length
-			return `active phase "${phase.id}" ("${phase.name}"), ${terminalSteps}/${phase.steps.length} steps terminal in phase "${phase.id}"`
-		})
-	const stateLine = [`ferment status "${f.status}"`, ...activePhaseStates].join("; ")
-	const nextActionHint = formatNextActionHint(f, multiModelEnabled)
+function buildCurrentStateSection(f: Ferment): string {
 	return [
 		"## Current lifecycle state",
-		`- Scoping is COMPLETE (${stateLine}). ${formatNoReplanningGuidance({ backticks: true })} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
-		nextActionHint ? `- ${nextActionHint} Execute it immediately.` : undefined,
-	]
-		.filter(Boolean)
-		.join("\n")
-}
-
-function getActivePlannerFerment(ctx: ExtensionContext, runtime: FermentRuntime): Ferment | undefined {
-	if (isAgentWorker()) return undefined
-	if (getPermissionMode(ctx.sessionManager.getSessionId())?.mode === "plan") return undefined
-	return runtime.getActive()
-}
-
-export function buildFermentContextState(ctx: ExtensionContext, runtime: FermentRuntime): string | undefined {
-	const f = getActivePlannerFerment(ctx, runtime)
-	if (f?.status !== "planned" && f?.status !== "running") return undefined
-	return buildCurrentStateSection(f, getMultiModelEnabled(ctx.sessionManager))
-}
-
-function stripFermentStateMessages(messages: OrchestratorMessages): OrchestratorMessages {
-	return messages.filter(
-		(message) =>
-			!(
-				message.role === "custom" &&
-				"customType" in message &&
-				(message as { customType: string }).customType === FERMENT_STATE_CUSTOM_TYPE
-			),
-	)
-}
-
-export function registerFermentContextState(pi: ExtensionAPI, runtime: FermentRuntime): void {
-	pi.on("context", async (event, ctx) => {
-		const content = buildFermentContextState(ctx, runtime)
-		if (!content) return undefined
-
-		const messages = stripFermentStateMessages(event.messages)
-		messages.push({
-			role: "custom",
-			customType: FERMENT_STATE_CUSTOM_TYPE,
-			content,
-			display: false,
-			timestamp: Date.now(),
-		})
-
-		return { messages }
-	})
+		`- Scoping is COMPLETE (ferment status "${f.status}"). ${formatNoReplanningGuidance({ backticks: true })} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
+	].join("\n")
 }
 
 function buildPausedWarning(f: Ferment): string {
@@ -275,7 +224,15 @@ export function buildFermentPromptBlock(
 	pi: ExtensionAPI,
 	runtime: FermentRuntime,
 ): string | undefined {
-	const f = getActivePlannerFerment(ctx, runtime)
+	if (isAgentWorker()) return undefined
+
+	const sessionId = ctx.sessionManager.getSessionId()
+
+	// Plan mode is a separate lightweight planning path; suppress the ferment
+	// idle hint so the agent does not conflate it with the ferment workflow.
+	if (getPermissionMode(sessionId)?.mode === "plan") return undefined
+
+	const f = runtime.getActive()
 	if (!f) return undefined
 
 	const oneshot = pi.getFlag("ferment-oneshot") === true
@@ -288,7 +245,7 @@ export function buildFermentPromptBlock(
 			return undefined
 		case "planned":
 		case "running":
-			return buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot, delegationMode).trim()
+			return `${buildCurrentStateSection(f)}\n${buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot, delegationMode).trim()}`
 		case "paused":
 			return buildPausedWarning(f).trim()
 		case "complete":

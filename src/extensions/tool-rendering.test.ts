@@ -1,7 +1,10 @@
 import { initTheme, type Theme, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent"
 import { Text, visibleWidth } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it } from "vitest"
+import { createExtensionApi } from "./__mocks__/extension-api.js"
+import { createToolRenderContext } from "./__mocks__/tool-render-context.js"
 import toolRenderingExtension, {
+	createErrorTruncatingResultRenderer,
 	formatToolTimer,
 	getToolElapsedMs,
 	isMcpToolName,
@@ -146,11 +149,7 @@ describe("execution timestamp tracking", () => {
 
 describe("hidden tool block rendering", () => {
 	beforeAll(() => {
-		toolRenderingExtension({
-			registerCommand: () => {},
-			registerTool: () => {},
-			on: () => {},
-		} as never)
+		toolRenderingExtension(createExtensionApi().api)
 	})
 
 	it("hides legacy write_todos tool results", () => {
@@ -437,5 +436,263 @@ describe("set_phase tool summary", () => {
 	it("summarizes set_phase calls with unknown phase fallback", () => {
 		const summary = summarizeOpenAiToolCall("set_phase", {}, plainTheme, (path) => path)
 		expect(summary).toBe("set phase")
+	})
+})
+
+describe("validation error display truncation", () => {
+	const validationErrorFor = (toolName: string, schemaError = "arguments: must match the tool schema") =>
+		[
+			`Validation failed for tool "${toolName}":`,
+			`  - ${schemaError}`,
+			"",
+			"Received arguments:",
+			JSON.stringify({ path: "a.py", edits: [{ oldText: "x".repeat(200), newText: "y" }] }, null, 2),
+		].join("\n")
+
+	const validationError = validationErrorFor("edit", "edits.0: must not have additional properties")
+
+	const truncationCases = [
+		{ toolName: "edit", schemaError: "edits.0: must not have additional properties" },
+		{ toolName: "write", schemaError: "content: must be a string" },
+		{ toolName: "read", schemaError: "path: must be a string" },
+	]
+
+	const errorResult = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined })
+	const makeErrorCtx = () => createToolRenderContext({ isError: true })
+	const upstreamTextRenderer = () => new Text(validationError, 0, 0)
+
+	const renderToString = (component: ReturnType<ReturnType<typeof createErrorTruncatingResultRenderer>>) =>
+		stripSgr(component.render(120).join("\n"))
+
+	it.each(truncationCases)("keeps $toolName schema errors but drops the args dump when collapsed", ({
+		toolName,
+		schemaError,
+	}) => {
+		const toolValidationError = validationErrorFor(toolName, schemaError)
+		const errorCtx = makeErrorCtx()
+		const renderer = createErrorTruncatingResultRenderer(toolName, () => new Text(toolValidationError, 0, 0))
+		const component = renderer(
+			errorResult(toolValidationError),
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			errorCtx,
+		)
+		const rendered = renderToString(component)
+
+		expect(rendered).toContain(`Validation failed for tool "${toolName}":`)
+		expect(rendered).toContain(schemaError)
+		expect(rendered).not.toContain("Received arguments")
+		expect(rendered).toContain("ctrl+o to expand")
+	})
+
+	it("drops the args dump for conversion-failure errors (the second pi-ai throw site)", () => {
+		const conversionError = [
+			`Validation failed for tool "edit": argument conversion failed: edits: expected array`,
+			"",
+			"Received arguments:",
+			JSON.stringify({ path: "a.py", edits: "oops" }, null, 2),
+		].join("\n")
+		const errorCtx = makeErrorCtx()
+		const renderer = createErrorTruncatingResultRenderer("edit", () => new Text(conversionError, 0, 0))
+		const component = renderer(
+			errorResult(conversionError),
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			errorCtx,
+		)
+		const rendered = renderToString(component)
+
+		expect(rendered).toContain(`Validation failed for tool "edit": argument conversion failed`)
+		expect(rendered).not.toContain("Received arguments")
+		expect(rendered).toContain("ctrl+o to expand")
+	})
+
+	it("defers to the upstream renderer when expanded, showing the full error", () => {
+		let called = 0
+		const errorCtx = makeErrorCtx()
+		const renderer = createErrorTruncatingResultRenderer("edit", () => {
+			called++
+			return new Text(validationError, 0, 0)
+		})
+		const component = renderer(errorResult(validationError), { expanded: true, isPartial: false }, plainTheme, errorCtx)
+
+		expect(called).toBe(1)
+		const rendered = renderToString(component)
+		expect(rendered).toContain("Received arguments")
+		expect(rendered).not.toContain("ctrl+o to expand")
+	})
+
+	it("passes through non-error results to the upstream renderer", () => {
+		let called = 0
+		const renderer = createErrorTruncatingResultRenderer("edit", () => {
+			called++
+			return new Text("upstream ok", 0, 0)
+		})
+		const component = renderer(
+			errorResult("ok"),
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			createToolRenderContext(),
+		)
+
+		expect(called).toBe(1)
+		expect(renderToString(component).trim()).toBe("upstream ok")
+	})
+
+	it("runs the upstream renderer for its side effects on errors but tolerates its failures", () => {
+		let called = 0
+		const errorCtx = makeErrorCtx()
+		const renderer = createErrorTruncatingResultRenderer("edit", () => {
+			called++
+			throw new Error("stale lastComponent")
+		})
+		const component = renderer(
+			errorResult(validationError),
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			errorCtx,
+		)
+
+		expect(called).toBe(1)
+		const rendered = renderToString(component)
+		expect(rendered).toContain('Validation failed for tool "edit":')
+		expect(rendered).not.toContain("Received arguments")
+	})
+
+	it("defers short non-validation errors to the upstream renderer", () => {
+		let called = 0
+		const errorCtx = makeErrorCtx()
+		const upstreamText = "Could not edit file: foo.py. Error code: ENOENT."
+		const renderer = createErrorTruncatingResultRenderer("edit", () => {
+			called++
+			return new Text(upstreamText, 0, 0)
+		})
+		const component = renderer(errorResult(upstreamText), { expanded: false, isPartial: false }, plainTheme, errorCtx)
+
+		expect(called).toBe(1)
+		const rendered = renderToString(component)
+		expect(rendered).toContain("Could not edit file: foo.py.")
+		expect(rendered).not.toContain("ctrl+o to expand")
+	})
+
+	it("defers non-validation errors containing the received-arguments marker to upstream", () => {
+		const errorCtx = makeErrorCtx()
+		const operationalError = [
+			"Edit failed while processing diagnostics.",
+			"",
+			"Received arguments:",
+			'{ "diagnostic": "must remain visible" }',
+		].join("\n")
+		const renderer = createErrorTruncatingResultRenderer("edit", () => new Text(operationalError, 0, 0))
+		const component = renderer(
+			errorResult(operationalError),
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			errorCtx,
+		)
+		const rendered = renderToString(component)
+
+		expect(rendered).toContain("must remain visible")
+		expect(rendered).not.toContain("ctrl+o to expand")
+	})
+
+	it("does not truncate a validation error for a different tool", () => {
+		const errorCtx = makeErrorCtx()
+		const renderer = createErrorTruncatingResultRenderer("read", () => new Text(validationError, 0, 0))
+		const component = renderer(
+			errorResult(validationError),
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			errorCtx,
+		)
+
+		expect(renderToString(component)).toContain("Received arguments")
+	})
+
+	it("never hands our component to upstream across fresh wrapper instances (production render cycle)", () => {
+		const seenLastComponents: unknown[] = []
+		const errorCtx = makeErrorCtx()
+		// Upstream calls getResultRenderer() on every render, so each render gets
+		// a fresh wrapper — ownership must survive across wrapper instances.
+		const makeWrapper = () =>
+			createErrorTruncatingResultRenderer("edit", (_result, _options, _theme, ctx) => {
+				seenLastComponents.push(ctx.lastComponent)
+				return new Text("upstream full", 0, 0)
+			})
+
+		// Render 1 (collapsed): we take over; the host stores our component and
+		// hands it back as ctx.lastComponent on the next render.
+		const collapsed = makeWrapper()(
+			errorResult(validationError),
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			errorCtx,
+		)
+		expect(collapsed).toBeDefined()
+		errorCtx.lastComponent = collapsed
+
+		// Render 2 (expanded, e.g. after ctrl+o): upstream takes over and must
+		// not receive our component as lastComponent.
+		makeWrapper()(errorResult(validationError), { expanded: true, isPartial: false }, plainTheme, errorCtx)
+
+		expect(seenLastComponents).toHaveLength(2)
+		expect(seenLastComponents[0]).toBeUndefined()
+		expect(seenLastComponents[1]).toBeUndefined()
+		expect(errorCtx.lastComponent).toBeUndefined()
+	})
+
+	describe("patch installation on ToolExecutionComponent", () => {
+		beforeAll(() => {
+			toolRenderingExtension(createExtensionApi().api)
+		})
+
+		// biome-ignore lint/suspicious/noExplicitAny: invoking patched prototype method with a minimal `this`
+		const resolveResultRenderer = (self: any) =>
+			// biome-ignore lint/suspicious/noExplicitAny: invoking patched prototype method with a minimal `this`
+			(ToolExecutionComponent.prototype as any).getResultRenderer.call(self)
+
+		it("falls back to upstream's no-renderer path when none resolved for a truncating tool", () => {
+			// e.g. an extension-registered 'edit' override without renderResult
+			const renderer = resolveResultRenderer({
+				toolName: "edit",
+				builtInToolDefinition: undefined,
+				toolDefinition: { name: "edit", renderResult: undefined },
+			})
+
+			expect(renderer).toBeUndefined()
+		})
+
+		it.each(["edit", "write", "read"])("wraps the resolved renderer for %s", (toolName) => {
+			const upstream = () => new Text("upstream", 0, 0)
+			const renderer = resolveResultRenderer({
+				toolName,
+				builtInToolDefinition: undefined,
+				toolDefinition: { name: toolName, renderResult: upstream },
+			})
+
+			expect(typeof renderer).toBe("function")
+			expect(renderer).not.toBe(upstream)
+		})
+
+		it("does not wrap renderers for tools outside the truncating set", () => {
+			const upstream = () => new Text("upstream", 0, 0)
+			const renderer = resolveResultRenderer({
+				toolName: "bash",
+				builtInToolDefinition: undefined,
+				toolDefinition: { name: "bash", renderResult: upstream },
+			})
+
+			expect(renderer).toBe(upstream)
+		})
+	})
+
+	it("reuses our own component between collapsed renders", () => {
+		const errorCtx = makeErrorCtx()
+		const renderer = createErrorTruncatingResultRenderer("edit", upstreamTextRenderer)
+		const first = renderer(errorResult(validationError), { expanded: false, isPartial: false }, plainTheme, errorCtx)
+		errorCtx.lastComponent = first
+		const second = renderer(errorResult(validationError), { expanded: false, isPartial: false }, plainTheme, errorCtx)
+
+		expect(second).toBe(first)
 	})
 })

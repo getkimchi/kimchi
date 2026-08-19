@@ -82,6 +82,9 @@ describe("provisionHarnessConfig", () => {
 
 describe("HARNESS_CONFIG_ALLOWLIST", () => {
 	it("contains exactly the synced harness config entries", () => {
-		expect([...HARNESS_CONFIG_ALLOWLIST]).toEqual(["settings.json", "keybindings.json", "themes", "models.json"])
+		// Directory entries must keep their trailing slash: in --files-from
+		// mode a bare `themes` syncs as an empty dir (still exit 0) on both
+		// GNU rsync and macOS openrsync.
+		expect([...HARNESS_CONFIG_ALLOWLIST]).toEqual(["settings.json", "keybindings.json", "themes/", "models.json"])
 	})
 })

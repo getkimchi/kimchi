@@ -9,7 +9,8 @@ import { tool } from "../behaviours/triggers.js"
 import type { TriggeredBehaviour } from "../behaviours/types.js"
 import { BEHAVIOUR_BODY_TYPE, wireBehaviours } from "../behaviours/wiring.js"
 import { emitFermentDomainEvent } from "../ferment/domain-events-emitter.js"
-import { buildFermentPromptBlock, registerFermentContextState } from "../ferment/prompt-block.js"
+import { registerFermentLifecycleContext } from "../ferment/lifecycle-context.js"
+import { buildFermentPromptBlock } from "../ferment/prompt-block.js"
 import { createDefaultFermentRuntime } from "../ferment/runtime.js"
 import { setActive } from "../ferment/state.js"
 import { registerFermentTodoSync } from "../ferment/todo-sync.js"
@@ -148,7 +149,7 @@ function createHarness(surface: WorkflowSurface): TestHarness {
 			suppress: () => new Set(),
 			render: () => buildFermentPromptBlock(ctx, pi, runtime),
 		})
-		registerFermentContextState(pi, runtime)
+		registerFermentLifecycleContext(pi, runtime)
 	}
 
 	async function fire(event: string, payload: unknown): Promise<unknown> {

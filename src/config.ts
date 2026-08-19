@@ -709,6 +709,46 @@ export function clearApiKey(configPath?: string): void {
 	)
 }
 
+export const TELEPORT_COMPACT_HINT_ENABLED_DEFAULT = true
+
+/**
+ * Whether the pre-teleport compaction hint is enabled (`teleport.compactHint.enabled`
+ * in the config file).
+ * Missing/invalid values or unreadable/corrupt files fall back to enabled.
+ */
+export function readTeleportCompactHintEnabled(configPath?: string): boolean {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	try {
+		const raw = readFileSync(path, "utf-8")
+		const parsed = JSON.parse(raw)
+		const enabled = parsed?.teleport?.compactHint?.enabled
+		return typeof enabled === "boolean" ? enabled : TELEPORT_COMPACT_HINT_ENABLED_DEFAULT
+	} catch {
+		return TELEPORT_COMPACT_HINT_ENABLED_DEFAULT
+	}
+}
+
+/**
+ * Set `teleport.compactHint.enabled` in the config file, preserving sibling
+ * keys in the compactHint section, the teleport section, and the file.
+ */
+export function writeTeleportCompactHintEnabled(enabled: boolean, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateConfigFile(path, (raw) => {
+		const teleport =
+			raw.teleport && typeof raw.teleport === "object" && !Array.isArray(raw.teleport)
+				? { ...(raw.teleport as Record<string, unknown>) }
+				: {}
+		const compactHint =
+			teleport.compactHint && typeof teleport.compactHint === "object" && !Array.isArray(teleport.compactHint)
+				? { ...(teleport.compactHint as Record<string, unknown>) }
+				: {}
+		compactHint.enabled = enabled
+		teleport.compactHint = compactHint
+		raw.teleport = teleport
+	})
+}
+
 /**
  * Read a stored git token for a specific host from the global config.
  * Tokens are stored under `gitTokens.<host>` (e.g. `gitTokens["github.com"]`).

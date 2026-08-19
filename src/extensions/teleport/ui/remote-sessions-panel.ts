@@ -119,7 +119,7 @@ function entryLastActivity(entry: Entry): Date | undefined {
 }
 
 function entryNameText(entry: Entry): string {
-	if (entry.kind === "workspace") return entry.node.row.name || "-"
+	if (entry.kind === "workspace") return entry.node.row.displayName || entry.node.row.name || "-"
 	const connector = entry.isLast ? "└─ " : "├─ "
 	return `${connector}${entry.node.sessionName || "-"}`
 }

@@ -48,6 +48,10 @@ describe("parseTeleportArgs", () => {
 		expect(parseTeleportArgs("--no-git-token")).toEqual({ noGitToken: true })
 	})
 
+	it("reads --no-compact-hint as a boolean", () => {
+		expect(parseTeleportArgs("--no-compact-hint")).toEqual({ noCompactHint: true })
+	})
+
 	it("rejects --no-shallow (removed in favor of worker-side clone)", () => {
 		expect(() => parseTeleportArgs("--no-shallow")).toThrow(/Unknown flag/)
 	})

@@ -25,10 +25,11 @@ import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
 import { decideContinuation } from "./continuation.js"
 import { registerFermentEvents } from "./events.js"
+import { registerFermentLifecycleContext } from "./lifecycle-context.js"
 import { deletePendingProposal } from "./pending-proposal-store.js"
 import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
 import { setPendingPlanReviewTrigger } from "./plan-review-trigger.js"
-import { buildFermentPromptBlock, registerFermentContextState } from "./prompt-block.js"
+import { buildFermentPromptBlock } from "./prompt-block.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
@@ -127,6 +128,8 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	// Wire pi.events into the runtime so createApplyAndPersist can emit domain
 	// events for every state mutation without importing from telemetry.
 	runtime.events = pi.events
+
+	registerFermentLifecycleContext(pi, runtime)
 
 	const unregisterFermentTips = registerTipProvider(createFermentTipProvider(runtime))
 	let unregisterFermentTodoSync: (() => void) | undefined
@@ -235,6 +238,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	pi.on("session_start", (_event, _ctx) => {
 		ctx = _ctx
 		runtime.clearMidTurnOneshotWarnings()
+		runtime.clearMidTurnCompactionTracking()
 
 		// (Re)wire the ferment todo bridge to the current session id. The
 		// session-scoped todo store requires every store call to target a
@@ -321,7 +325,6 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		modes: ["ferment"],
 	})
 	createSystemPromptBlocks(pi, "ferment").register(fermentPlanningBlock)
-	registerFermentContextState(pi, runtime)
 
 	// ─── Entry triggers (planning mode routing) ───────────────────────────
 	// The actual ferment-creation logic lives in commands.ts (slash command

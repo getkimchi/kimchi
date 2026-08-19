@@ -79,6 +79,7 @@ const testEnv: EnvironmentInfo = {
 }
 
 const TEST_SESSION_ID = "test-session"
+const WORKFLOW_OUTPUT_TOOLS = ["workflow_submit_result", "workflow_submit_questions"]
 
 // Helper to create mock ExtensionContext with ui.select
 // When an AbortSignal is passed and aborted=true, returns undefined to trigger "aborted" outcome
@@ -265,6 +266,17 @@ describe("permissions plan-mode tool visibility", () => {
 					createMockContext([]),
 				),
 			).resolves.toBeUndefined()
+		}
+	})
+
+	it("keeps workflow output tools visible and allowed under explicit --plan", async () => {
+		const harness = createPermissionsHarness(["read", ...WORKFLOW_OUTPUT_TOOLS], { plan: true })
+
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(harness.activeTools().sort()).toEqual(["read", ...WORKFLOW_OUTPUT_TOOLS].sort())
+		for (const toolName of WORKFLOW_OUTPUT_TOOLS) {
+			await expect(harness.fire("tool_call", { toolName, input: {} }, createMockContext([]))).resolves.toBeUndefined()
 		}
 	})
 
@@ -986,6 +998,41 @@ describe("permissions ferment tool classification", () => {
 	})
 })
 
+describe("permissions workflow output tool classification", () => {
+	beforeEach(() => {
+		vi.mocked(classifyToolCall).mockClear()
+	})
+
+	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
+		vi.unstubAllEnvs()
+	})
+
+	it("allows workflow output tools in auto mode without invoking the classifier", async () => {
+		const harness = createPermissionsHarness(WORKFLOW_OUTPUT_TOOLS, { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		for (const toolName of WORKFLOW_OUTPUT_TOOLS) {
+			await expect(harness.fire("tool_call", { toolName, input: {} }, ctx)).resolves.toBeUndefined()
+		}
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("allows workflow output tools in default mode without prompting", async () => {
+		const harness = createPermissionsHarness(WORKFLOW_OUTPUT_TOOLS)
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+
+		for (const toolName of WORKFLOW_OUTPUT_TOOLS) {
+			await expect(harness.fire("tool_call", { toolName, input: {} }, ctx)).resolves.toBeUndefined()
+		}
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+})
+
 describe("permissions notification emission", () => {
 	afterEach(() => {
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
@@ -1470,11 +1517,13 @@ describe("compound command with session rules", () => {
 describe("handleCompoundConfirm", () => {
 	let session: SessionMemory
 	let activeAborts: Set<AbortController>
+	const mockPi = { events: { emit: vi.fn() } } as unknown as ExtensionAPI
 
 	beforeEach(() => {
 		session = new SessionMemory()
 		session.clear()
 		activeAborts = new Set()
+		vi.mocked(mockPi.events.emit).mockClear()
 	})
 
 	it("returns undefined for allow-all-once", async () => {
@@ -1485,6 +1534,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+			pi: mockPi,
 			subcommands: ["echo a", "echo b"],
 		})
 
@@ -1499,6 +1549,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1517,6 +1568,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+			pi: mockPi,
 			subcommands: ["echo a"],
 		})
 
@@ -1535,6 +1587,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+			pi: mockPi,
 			subcommands: ["echo a", "echo b"],
 		})
 
@@ -1553,6 +1606,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+			pi: mockPi,
 			subcommands: ["echo a", "echo b"],
 		})
 
@@ -1571,6 +1625,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1587,6 +1642,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1603,6 +1659,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1625,6 +1682,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1639,6 +1697,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+			pi: mockPi,
 			subcommands: [],
 		})
 
@@ -1655,6 +1714,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+			pi: mockPi,
 			subcommands: ["echo hello"],
 		})
 
@@ -1674,6 +1734,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1702,6 +1763,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+			pi: mockPi,
 			subcommands: ["echo hello", "whoami"],
 		})
 
@@ -1719,6 +1781,7 @@ describe("handleCompoundConfirm", () => {
 			ctx,
 			session,
 			activeAborts,
+			pi: mockPi,
 			subcommands: ["echo a"],
 		})
 

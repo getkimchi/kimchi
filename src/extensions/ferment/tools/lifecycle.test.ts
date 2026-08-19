@@ -50,6 +50,8 @@ const { judgeApiCall: mockJudgeApiCall, judgeJourneyGradeViaSubagent: mockJudgeJ
 	"../judge.js"
 )
 
+import type { JudgeJourneyGradeInput } from "../judge.js"
+
 interface RegisteredTool {
 	name: string
 	execute: (
@@ -1471,6 +1473,62 @@ describe("completeFerment", () => {
 		expect(h.storage.get(h.fermentId)?.grade?.recommendations).toEqual(recs)
 	})
 
+	it("journey retry carries its own refusal as delta context", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Fix the broken onClick handler."]
+		vi.mocked(mockJudgeJourneyGrade)
+			.mockResolvedValueOnce({ ok: true, grade: "C", rationale: "Handler bug.", recommendations: recs })
+			.mockResolvedValueOnce({ ok: true, grade: "A", rationale: "Fixed.", recommendations: [] })
+
+		const first = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ ctx: createContext() },
+		)
+		expect(errText(first)).toContain("final LLM grader assigned grade C")
+		expect(errText(first)).toContain("How to fix this correctly")
+		expect(errText(first)).toContain("do NOT modify test files, assertions, test runners")
+
+		const second = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ ctx: createContext() },
+		)
+		expect(okText(second)).toContain("**Final grade:** A")
+
+		const calls = vi.mocked(mockJudgeJourneyGrade).mock.calls
+		const inputs = calls.slice(-2).map((c) => c[0] as unknown as JudgeJourneyGradeInput)
+		expect(inputs[0].priorRefusal).toBeUndefined()
+		expect(inputs[1].priorRefusal?.grade).toBe("C")
+		expect(inputs[1].priorRefusal?.recommendations).toEqual(recs)
+	})
+
+	it("first journey attempt carries the most recent phase refusal as quality momentum", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Add an integration test for the menu path."]
+		h.runtime.setLastPhaseRefusal(h.fermentId, "phase-1", {
+			grade: "B",
+			recommendations: recs,
+			at: "2026-08-11T12:00:00Z",
+		})
+		vi.mocked(mockJudgeJourneyGrade).mockClear()
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ ctx: createContext() },
+		)
+		expect(okText(result)).toContain("**Final grade:** A")
+
+		const calls = vi.mocked(mockJudgeJourneyGrade).mock.calls
+		expect(calls).toHaveLength(1)
+		const input = calls[0][0] as unknown as JudgeJourneyGradeInput
+		expect(input.priorRefusal?.grade).toBe("B")
+		expect(input.priorRefusal?.recommendations).toEqual(recs)
+	})
+
 	it("C-grade refuses ship within budget and surfaces recommendations", async () => {
 		const h = createHarness()
 		createTerminalFerment(h)
@@ -1498,6 +1556,37 @@ describe("completeFerment", () => {
 		expect(h.storage.get(h.fermentId)?.status).not.toBe("complete")
 		// Retry counter must have been bumped.
 		expect(h.runtime.getBlockRetry(h.fermentId, "__ferment__")).toBe(1)
+	})
+
+	it("fallback_single_shot journey grade is advisory-only and ships, with provenance persisted", async () => {
+		// Regression: a blind fallback letter (grader subagent unusable) used to be
+		// able to refuse ship even though it had no independent verification.
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "F",
+			rationale: "Blind fallback could not verify anything.",
+			recommendations: ["Everything looks broken."],
+			graderSource: "fallback_single_shot",
+		})
+		await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		// No retry bump — the grade never blocks.
+		expect(h.runtime.getBlockRetry(h.fermentId, "__ferment__")).toBe(0)
+		const stored = h.storage.get(h.fermentId)
+		expect(stored?.status).toBe("complete")
+		expect(stored?.grade?.grade).toBe("F")
+		expect(stored?.grade?.rationale).toContain("advisory-only")
+		expect(stored?.grade?.graderSource).toBe("fallback_single_shot")
 	})
 
 	it("C-grade repeated exhausts budget and ships with the grade", async () => {

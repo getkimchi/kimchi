@@ -14,7 +14,7 @@ import { getAgentRecordForTaskValidation } from "../../agents/index.js"
 import { FERMENT_WORKER_BUDGETS, type FermentWorkerBudgetTier } from "../../agents/worker-budget-policy.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
 import { withWorkingHidden } from "../../ui.js"
-import { askUserForm } from "../ask-user.js"
+import { askUserForm, createJudgeDecisionRecorder } from "../ask-user.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
@@ -75,9 +75,25 @@ type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
  * will act upon — if it says complete_phase, the phase IS complete and the
  * phase-compaction path WILL fire.
  */
-function maybeRecordStepCompaction(runtime: FermentRuntime, ferment: Ferment, phase: Phase, step: Step): void {
+function maybeRecordStepCompaction(
+	runtime: FermentRuntime,
+	ferment: Ferment,
+	phase: Phase,
+	step: Step,
+	workerDelegated?: boolean,
+): void {
 	const next = determineNextAction(ferment)
 	if (next?.kind === "complete_phase" && next.phaseId === phase.id) return
+	// Worker-delegated steps keep their tool-call residue (file reads, build
+	// output, test logs) inside the worker session — the main thread only gains
+	// the worker's report summary. Forced per-step compaction was built for the
+	// direct-execution era, where the residue landed HERE; firing it after a
+	// delegated step mostly costs a summarization call and collapses the
+	// orchestrator's own reasoning (work-order designs, verdicts) — the spine
+	// workers depend on. Measured run 019ff5cc: main context held 55–85K with
+	// delegation, far below any pressure threshold. Phase-boundary compaction
+	// and the mid-turn pressure path remain the safety nets.
+	if (workerDelegated) return
 	runtime.setPendingCompaction(ferment.id, {
 		kind: "step",
 		fermentId: ferment.id,
@@ -181,7 +197,7 @@ function validateLinkedWorker(params: CompleteStepArgs): string | null {
 	return `Worker Agent "${params.worker_agent_id}" outcome is ${latest.outcome}${latest.reason ? ` (${latest.reason})` : ""}. Complete requires a linked worker whose latest outcome is completed. Spawn a corrected linked replacement Agent or stop and report the failure.`
 }
 
-async function runVerificationCommand({
+export async function runVerificationCommand({
 	command,
 	signal,
 	onUpdate,
@@ -262,7 +278,7 @@ export async function startStep(
 					],
 				},
 			],
-			{ ferment: f, pi, ctx, runtime },
+			{ ferment: f, pi, ctx, runtime, recordJudgeDecision: createJudgeDecisionRecorder(runtime) },
 		)
 
 		if (response.failed) {
@@ -390,13 +406,98 @@ Do NOT call start_ferment_step again without user input.`,
 • Include a verification sub-task that checks exact expected output, not just substring grep. Match the verify command's precision.
 • If the artifact has behavior no script can decide (rendered output, interactive behavior), include an inspection sub-task: exercise the artifact in its native medium and record what you observed (S2 'inspected' class).
 • If the step compiles or builds artifacts, include a cleanup sub-task to remove intermediate files from output directories.
+• Batch all step-todo state changes into a single update_todos call per turn, paired with your next work tool call — never emit a turn whose only action is a todo update.
 • Embed the plan in the worker Agent's prompt at dispatch time.${priorContext}`
 
 	const isMultiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 	return toolOk(
 		withNextActionHint(
-			`${planFirstPreamble}\n\nStep ${step.index}: "${step.description}" started. ${isMultiModelEnabled ? `Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.` : `Either spawn a subagent with the persona that matches this step's intent (pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits; the worker will receive its Agent ID and must call submit_agent_report before its final answer), or execute the step directly using bash/edit/write. When a subagent returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary. If you executed directly, call complete_ferment_step with just the summary and gates (worker_agent_id is optional).`}${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
+			`${planFirstPreamble}\n\nStep ${step.index}: "${step.description}" started. ${isMultiModelEnabled ? `Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.` : `Execute this step directly with bash/edit/write — measured run 019ff530 showed direct execution is fastest at bench scale (28 steps in 109 min, A/B grades) and you already hold the project context. Delegate to a linked subagent worker ONLY when the step would dump heavy residue into this session: long builds, large suite output, many large file reads, or independent parallelizable units (use run_in_background). If you delegate: spawn the persona matching this step's intent, pass task_ref: ${JSON.stringify(taskRef)} and the selected limits (the worker receives its Agent ID and must call submit_agent_report before its final answer). When a subagent returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary. For direct execution, call complete_ferment_step with just the summary and gates (worker_agent_id is optional).`}${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
 			outcome.ferment,
+			multiModelEnabled,
+		),
+	)
+}
+
+/**
+ * Subsumed completion path (step granularity): the step's work was already
+ * performed by another step in the same phase (absorbed_by). Worker linking
+ * and step gates are skipped — the guardrails are (a) the absorber must be a
+ * done/verified step in the same phase and (b) this step's verification
+ * command is re-run; a failed re-run refuses the subsumption and the work
+ * must happen for real. This gives agents an honest, auditable way to close
+ * steps that turned out redundant instead of mock-completing them.
+ */
+async function completeStepAsSubsumed(
+	runtime: FermentRuntime,
+	params: CompleteStepArgs,
+	{ pi, ctx, signal, onUpdate }: StepExecutionContext,
+	services: StepHandlerServices,
+	phase: Phase,
+	step: Step,
+	multiModelEnabled: boolean,
+): Promise<ToolResult> {
+	if (!params.absorbed_by) {
+		return toolErr(
+			"subsumed=true requires absorbed_by: the step_id (same phase, done/verified) whose work covered this step.",
+		)
+	}
+	if (params.absorbed_by === step.id) {
+		return toolErr("absorbed_by must name a different step that covered this step's work.")
+	}
+	const absorber = phase.steps.find((s) => s.id === params.absorbed_by)
+	if (!absorber) {
+		return toolErr(`absorbed_by step id not found in ${phase.id}: ${params.absorbed_by}.`)
+	}
+	if (absorber.status !== "done" && absorber.status !== "verified") {
+		return toolErr(
+			`Absorbing step must be done or verified; step "${absorber.description}" is ${absorber.status}. Complete it first, or complete this step normally.`,
+		)
+	}
+	if (!step.verification) {
+		return toolErr(
+			"subsumed=true requires this step to declare a verification command (the absorption claim is re-verified by running it). This step has none — complete it normally.",
+		)
+	}
+
+	const { exitCode, stdout, stderr } = await services.runVerification({
+		command: step.verification.command,
+		signal,
+		onUpdate,
+		ctx,
+	})
+	if (exitCode !== 0) {
+		return toolErr(
+			`Subsumption not verified: re-running step "${step.description}" verify command against the absorbing step's work exited ${exitCode}. The claim that step ${absorber.index} covered this step does not hold — do the work, then complete normally.\n\nstderr (tail):\n${stderr.slice(-800)}`,
+		)
+	}
+
+	const summary = `[Subsumed by step ${absorber.index}: "${absorber.description}"] ${params.summary ?? ""}`.trim()
+	const verifyResult: StepResult = {
+		success: true,
+		exitCode,
+		stdout,
+		stderr,
+		completedAt: runtime.nowIso(),
+	}
+	const applyAndPersist = createApplyAndPersist(runtime)
+	const verifyOutcome = applyAndPersist(params.ferment_id, {
+		type: "verify_step",
+		phaseId: phase.id,
+		stepId: step.id,
+		result: verifyResult,
+		summary,
+	})
+	if (!verifyOutcome.ok) return failedToolResult(verifyOutcome.error, undefined, multiModelEnabled)
+	runtime.clearStepStart(params.ferment_id, phase.id, step.id)
+	runtime.bumpStepCompleteAttempt(params.ferment_id, phase.id, step.id)
+	maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step)
+	services.onStepCompleted(runtime)
+	sendStepBreadcrumb(pi, `Step ${step.index} ✓ done — subsumed by step ${absorber.index} and verified`)
+	return toolOk(
+		withNextActionHint(
+			`Step ${step.index}: "${step.description}" done ✓ Subsumed by step ${absorber.index}; verification re-run passed.`,
+			verifyOutcome.ferment,
 			multiModelEnabled,
 		),
 	)
@@ -421,6 +522,18 @@ export async function completeStep(
 	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 	const fsmError = validateFsmTransition(f, "COMPLETE_STEP", { phaseId: phase.id, stepId: step.id })
 	if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
+
+	if (params.subsumed) {
+		return completeStepAsSubsumed(
+			runtime,
+			params,
+			{ pi, ctx, signal, onUpdate },
+			services,
+			phase,
+			step,
+			multiModelEnabled,
+		)
+	}
 
 	const workerError = validateLinkedWorker(params)
 	if (workerError) return toolErrWithNextAction(workerError, f, multiModelEnabled)
@@ -449,7 +562,7 @@ export async function completeStep(
 		if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f, multiModelEnabled)
 		runtime.clearStepStart(f.id, phase.id, step.id)
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
-		maybeRecordStepCompaction(runtime, completeOutcome.ferment, phase, step)
+		maybeRecordStepCompaction(runtime, completeOutcome.ferment, phase, step, params.worker_agent_id != null)
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓ ${step.description}`)
 		return toolOk(
@@ -488,7 +601,7 @@ export async function completeStep(
 	if (exitCode === 0) {
 		// Verification passed + all gates pass → silent advance. No LLM call.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
-		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step)
+		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step, params.worker_agent_id != null)
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓ verified - ${step.description}`)
 		return toolOk(
@@ -515,7 +628,7 @@ export async function completeStep(
 		// is acceptable (e.g. linter noise on an unrelated file). Gate
 		// verdicts already passed above, so advance.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
-		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step)
+		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step, params.worker_agent_id != null)
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓  Judge passed: ${judgeVerdict.reason}`)
 		return toolOk(

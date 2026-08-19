@@ -591,7 +591,7 @@ describe("modelSwitchExtension", () => {
 			)
 			// Guard is active → revert was called
 			expect(setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "kimi-k2.6" }))
-			expect(notify).toHaveBeenCalledWith(expect.stringContaining("context"), "error")
+			expect(notify).toHaveBeenCalledWith("Model switch cancelled.", "info")
 		})
 
 		it("after reset, model_select guard is skipped when suppressModelSelectGuard is set via set_model", async () => {
@@ -806,6 +806,8 @@ describe("modelSwitchExtension", () => {
 				modelId: string
 				modelProvider: string
 				hasUI: boolean
+				mode: ExtensionContext["mode"]
+				compact: ExtensionContext["compact"]
 				ui: {
 					notify: (...args: unknown[]) => unknown
 					select?: (...args: unknown[]) => unknown
@@ -878,7 +880,7 @@ describe("modelSwitchExtension", () => {
 			expect(setModel).not.toHaveBeenCalled()
 		})
 
-		it("skips when source is cycle", async () => {
+		it("allows source=cycle when tokens fit", async () => {
 			const { pi, trigger } = createHarnessWithTrigger()
 			modelSwitchExtension(pi)
 			const setModel = pi.setModel as ReturnType<typeof vi.fn>
@@ -947,6 +949,70 @@ describe("modelSwitchExtension", () => {
 			// Reverted back to previousModel
 			expect(setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "kimi-k2.6" }))
 			expect(notify).toHaveBeenCalledWith(expect.stringContaining("context"), "error")
+		})
+
+		it("force-compacts with the previous model before completing an oversized cycle switch", async () => {
+			const { pi, trigger, setModel } = createHarnessWithTrigger()
+			modelSwitchExtension(pi)
+			const notify = vi.fn()
+			const select = vi.fn().mockResolvedValue("Compact conversation and switch")
+			const compact = vi.fn((options: Parameters<ExtensionContext["compact"]>[0]) => {
+				options?.onComplete?.({} as never)
+			})
+			const target = {
+				id: "minimax-m2.7",
+				provider: "kimchi-dev",
+				input: ["text"],
+				contextWindow: 100_000,
+			} as const
+
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: target,
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "cycle",
+				},
+				createContext({ tokens: 150_000, hasUI: true, mode: "tui", compact, ui: { notify, select } }),
+			)
+
+			expect(setModel).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: "kimi-k2.6" }))
+			expect(select).toHaveBeenCalledWith(expect.stringContaining("55,000 tokens over"), [
+				"Compact conversation and switch",
+				"Start a new session",
+			])
+			expect(compact).toHaveBeenCalledWith(expect.objectContaining({ force: true }))
+			expect(setModel).toHaveBeenNthCalledWith(2, target)
+			expect(notify).toHaveBeenCalledWith("Compacted context and switched to kimchi-dev/minimax-m2.7.", "info")
+		})
+
+		it("starts a fresh session on the requested model when the user declines compaction", async () => {
+			const { pi, trigger, setModel } = createHarnessWithTrigger()
+			const startNewSession = vi.fn(async () => true)
+			modelSwitchExtension(pi, startNewSession)
+			const select = vi.fn().mockResolvedValue("Start a new session")
+			const target = {
+				id: "minimax-m2.7",
+				provider: "kimchi-dev",
+				input: ["text"],
+				contextWindow: 100_000,
+			} as const
+			const ctx = createContext({ tokens: 150_000, hasUI: true, mode: "tui", ui: { notify: vi.fn(), select } })
+
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: target,
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "set",
+				},
+				ctx,
+			)
+
+			expect(setModel).toHaveBeenCalledTimes(1)
+			expect(startNewSession).toHaveBeenCalledWith(ctx.sessionManager, target)
 		})
 
 		it("allows when tokens fit within target context window", async () => {

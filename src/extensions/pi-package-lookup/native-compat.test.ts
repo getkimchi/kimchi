@@ -1,9 +1,11 @@
-import type { LoadExtensionsResult } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
+import { DefaultPackageManager, type LoadExtensionsResult } from "@earendil-works/pi-coding-agent"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { ResolvedPaths } from "./index.js"
 import {
+	consumePackageInstallFailures,
 	filterDisabledPackageExtensions,
 	filterDisabledPackageResolvedPaths,
+	installPiNativeCompatibilityShim,
 	normalizePiNativeExtensions,
 } from "./native-compat.js"
 
@@ -172,6 +174,125 @@ describe("pi native compatibility", () => {
 		)
 
 		expect(filtered.extensions).toEqual([])
+	})
+})
+
+describe("robust installParsedSource", () => {
+	const ROBUST_RESOLVE = Symbol.for("kimchi.piNativeCompat.robustResolve")
+	const ORIGINAL_INSTALL_PARSED_SOURCE = Symbol.for("kimchi.piNativeCompat.originalInstallParsedSource")
+
+	beforeEach(() => {
+		installPiNativeCompatibilityShim()
+		consumePackageInstallFailures()
+	})
+
+	function makePackageManager(overrides: Record<string, unknown> = {}): DefaultPackageManager {
+		const pm = Object.create(DefaultPackageManager.prototype) as DefaultPackageManager
+		Object.assign(pm, overrides)
+		return pm
+	}
+
+	function callInstallParsedSource(pm: DefaultPackageManager, parsed: unknown, scope = "user"): Promise<void> {
+		return (pm as unknown as { installParsedSource: (p: unknown, s: string) => Promise<void> }).installParsedSource(
+			parsed,
+			scope,
+		)
+	}
+
+	it("swallows install failure in robust mode and records it", async () => {
+		const originalInstall = vi.fn().mockRejectedValue(new Error("npm install failed with code 1"))
+		const pm = makePackageManager({
+			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
+			[ROBUST_RESOLVE]: true,
+		})
+
+		await callInstallParsedSource(pm, { type: "npm", name: "@kimchi-dev/kimchi-workflows" })
+
+		const failures = consumePackageInstallFailures()
+		expect(failures).toHaveLength(1)
+		expect(failures[0].source).toBe("npm:@kimchi-dev/kimchi-workflows")
+	})
+
+	it("swallows ENOENT error in robust mode", async () => {
+		const originalInstall = vi.fn().mockRejectedValue(new Error("spawn npm ENOENT"))
+		const pm = makePackageManager({
+			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
+			[ROBUST_RESOLVE]: true,
+		})
+
+		await callInstallParsedSource(pm, { type: "npm", name: "some-package" })
+
+		const failures = consumePackageInstallFailures()
+		expect(failures).toHaveLength(1)
+		expect(failures[0].source).toBe("npm:some-package")
+	})
+
+	it("propagates errors when not in robust mode (CLI path)", async () => {
+		const originalInstall = vi.fn().mockRejectedValue(new Error("npm install failed with code 1"))
+		const pm = makePackageManager({
+			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
+			[ROBUST_RESOLVE]: false,
+		})
+
+		await expect(callInstallParsedSource(pm, { type: "npm", name: "some-package" })).rejects.toThrow(
+			"npm install failed with code 1",
+		)
+
+		expect(consumePackageInstallFailures()).toHaveLength(0)
+	})
+
+	it("reconstructs git source from parsed", async () => {
+		const originalInstall = vi.fn().mockRejectedValue(new Error("git clone failed"))
+		const pm = makePackageManager({
+			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
+			[ROBUST_RESOLVE]: true,
+		})
+
+		await callInstallParsedSource(pm, { type: "git", host: "github.com", path: "user/repo" })
+
+		const failures = consumePackageInstallFailures()
+		expect(failures).toHaveLength(1)
+		expect(failures[0].source).toBe("git:github.com/user/repo")
+	})
+
+	it("deduplicates failures by source", async () => {
+		const originalInstall = vi.fn().mockRejectedValue(new Error("failed"))
+		const pm = makePackageManager({
+			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
+			[ROBUST_RESOLVE]: true,
+		})
+
+		await callInstallParsedSource(pm, { type: "npm", name: "dup-package" }, "user")
+		await callInstallParsedSource(pm, { type: "npm", name: "dup-package" }, "project")
+
+		const failures = consumePackageInstallFailures()
+		expect(failures).toHaveLength(1)
+		expect(failures[0].source).toBe("npm:dup-package")
+	})
+
+	it("consumePackageInstallFailures clears the collection", async () => {
+		const originalInstall = vi.fn().mockRejectedValue(new Error("failed"))
+		const pm = makePackageManager({
+			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
+			[ROBUST_RESOLVE]: true,
+		})
+
+		await callInstallParsedSource(pm, { type: "npm", name: "clearable-package" })
+
+		expect(consumePackageInstallFailures()).toHaveLength(1)
+		expect(consumePackageInstallFailures()).toHaveLength(0)
+	})
+
+	it("does not record failures outside robust mode (CLI path)", async () => {
+		const originalInstall = vi.fn().mockRejectedValue(new Error("install error"))
+		const pm = makePackageManager({
+			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
+			[ROBUST_RESOLVE]: false,
+		})
+
+		await expect(callInstallParsedSource(pm, { type: "npm", name: "outside-resolve" })).rejects.toThrow()
+
+		expect(consumePackageInstallFailures()).toHaveLength(0)
 	})
 })
 
