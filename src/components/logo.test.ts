@@ -168,18 +168,18 @@ describe("LogoHeader", () => {
 		const theme = createMockTheme()
 		const header = new LogoHeader(theme, {
 			getRightColumnNotice: () =>
-				"You are using the community tier you can bring your own inference to the harness. To use Kimchi inference, upgrade to Code.",
+				"You are using the Community tier. You can bring your own inference to the harness. To use Kimchi inference, upgrade to Coder.",
 		})
 		const lines = header.render(120)
 		const rightText = lines.slice(1, -1).map(stripAnsi).join(" ")
 
 		expect(rightText).toContain("Kimchi's special:")
 		expect(rightText).toContain("/ferment")
-		expect(rightText).toContain("You are using the community tier")
+		expect(rightText).toContain("You are using the Community tier")
 		expect(rightText).toContain("bring your own")
 		expect(rightText).toContain("inference to the harness")
 		expect(rightText).toContain("upgrade")
-		expect(rightText).toContain("to Code.")
+		expect(rightText).toContain("to Coder.")
 		expect(rightText).not.toContain("ferment exit")
 	})
 

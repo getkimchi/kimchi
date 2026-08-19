@@ -142,12 +142,12 @@ test("explains BYO inference when the backend blocks a Community user", async ({
 			responses: [],
 		},
 		async () => {
-			await waitForText(terminal, "You are using the community tier", { full: true })
+			await waitForText(terminal, "You are using the Community tier", { full: true })
 			await waitForText(terminal, "bring your own", { full: true })
 			await waitForText(terminal, "inference to the harness", { full: true })
 			await waitForText(terminal, "To use Kimchi inference", { full: true })
 			await waitForText(terminal, "upgrade", { full: true })
-			await waitForText(terminal, "to Code.", { full: true })
+			await waitForText(terminal, "to Coder.", { full: true })
 			expect(fullText(terminal)).not.toContain("You ran out of credits")
 			expect(fullText(terminal)).not.toContain("Top up at")
 		},
