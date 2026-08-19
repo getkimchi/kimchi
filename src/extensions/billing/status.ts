@@ -75,7 +75,7 @@ export const LOW_CREDITS_THRESHOLD_USD = 5
 export const COMMUNITY_TIER_MESSAGES = {
 	available: "You are using Community tier. For faster performance, upgrade to Coder at https://app.kimchi.dev/pricing",
 	inferenceBlocked:
-		"You are using the Community tier. You can bring your own inference to the harness. To use Kimchi inference, upgrade to Coder.",
+		"You are using the Community tier. You can bring your own inference to the harness. To use Kimchi inference, upgrade to Coder at https://app.kimchi.dev/pricing.",
 } as const
 export const BILLING_EXHAUSTED_MESSAGE = "You ran out of credits. Top up at https://app.kimchi.dev/billing"
 // A zero balance is reached both by a paid subscriber demoted to free-tier limits and by a free
