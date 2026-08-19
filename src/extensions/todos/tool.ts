@@ -216,10 +216,39 @@ async function executeMarkTodo(
 		}
 		const scope = resolved.scope
 		const todos = getTodosForScope(scope, sessionId)
-		let found = false
+		const existing = todos.find((todo) => todo.id === id)
+		if (!existing) {
+			// Soft steer, not an error: an unknown id usually means the list was
+			// replaced (e.g. by update_todos or another scope) — tell the model to
+			// re-read state rather than retry the same mark.
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Todo #${id} doesn't exist in ${formatScopeLabel(scope)} — the list may have been replaced. Check the current ids in the todo list before marking again.`,
+					},
+				],
+				details: null,
+			}
+		}
+
+		// No-op fast path: same status and no field changes — skip the write
+		// (and the session-branch churn that comes with it) and tell the model
+		// not to re-mark, so duplicate marks don't look productive.
+		if (existing.status === status && params.activeForm === undefined && params.note === undefined) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Todo #${id} is already '${status}' — no change made. Don't re-mark todos whose status hasn't changed.`,
+					},
+				],
+				details: null,
+			}
+		}
+
 		const nextTodos = todos.map((todo) => {
 			if (todo.id !== id) return todo
-			found = true
 			return {
 				...todo,
 				status,
@@ -227,10 +256,6 @@ async function executeMarkTodo(
 				...(params.note !== undefined ? { note: params.note } : {}),
 			}
 		})
-		if (!found) {
-			const label = formatScopeLabel(scope)
-			throw new Error(`Todo #${id} not found in ${label}`)
-		}
 
 		const details = applyWriteTodos({ scope, todos: nextTodos }, sessionId)
 		const label = formatScopeLabel(details.scope)
@@ -289,8 +314,8 @@ export function registerTodosTool(pi: ExtensionAPI): void {
 		name: UPDATE_TODOS_TOOL_NAME,
 		label: "Update Todos",
 		description:
-			"Replace the entire todo list. Use only when the plan changes significantly (adding, removing, or reordering items). For routine status changes, use mark_todo instead — it is lighter and pairs more naturally with a work tool call. Always pair this with the next work tool call in the same turn — never make a turn that is only a todo update.",
-		promptSnippet: "Replace the todo list for batch progress updates",
+			"Replace the entire todo list. Use only when the plan changes significantly (adding, removing, or reordering items). For routine status changes, use mark_todo instead — it is lighter and pairs more naturally with a work tool call. For appending a single item, use add_todo instead of rewriting the whole list. Always pair this with the next work tool call in the same turn — never make a turn that is only a todo update.",
+		promptSnippet: "Replace the whole todo list when the plan changes",
 		parameters: TODO_TOOL_PARAMETERS,
 		executionMode: "parallel",
 		execute: executeWriteTodos,
@@ -300,8 +325,8 @@ export function registerTodosTool(pi: ExtensionAPI): void {
 		name: ADD_TODO_TOOL_NAME,
 		label: "Add Todo",
 		description:
-			"Add one todo to the current list. Use for a missing follow-up item. Pair this with the next work tool call in the same turn when possible.",
-		promptSnippet: "Add a single todo item",
+			"Add one todo to the current list. Use for a missing follow-up item. Prefer this over rewriting the whole list with update_todos just to append one item. Pair this with the next work tool call in the same turn when possible.",
+		promptSnippet: "Add one todo — prefer over rewriting the list",
 		parameters: ADD_TODO_PARAMETERS,
 		executionMode: "parallel",
 		execute: executeAddTodo,
