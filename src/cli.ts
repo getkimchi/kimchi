@@ -465,7 +465,7 @@ try {
 		// before upstream pi-mono sees them (it does not recognize "multi-model"
 		// as a model id).
 		populateCliArgs(rawArgs)
-		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs).args
+		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
 
 		const terminalIo = {
 			stdinIsTTY: process.stdin.isTTY === true,

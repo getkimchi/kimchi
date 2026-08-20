@@ -244,40 +244,38 @@ describe("stripExperimentalFeaturesArg", () => {
 
 describe("stripMultiModelArgs", () => {
 	it("strips --multi-model", () => {
-		expect(stripMultiModelArgs(["--multi-model"])).toEqual({ args: [], explicitMultiModel: true })
+		expect(stripMultiModelArgs(["--multi-model"])).toEqual([])
 	})
 
 	it("strips --model multi-model", () => {
-		expect(stripMultiModelArgs(["--model", "multi-model"])).toEqual({ args: [], explicitMultiModel: true })
+		expect(stripMultiModelArgs(["--model", "multi-model"])).toEqual([])
 	})
 
 	it("strips --model=multi-model", () => {
-		expect(stripMultiModelArgs(["--model=multi-model"])).toEqual({ args: [], explicitMultiModel: true })
+		expect(stripMultiModelArgs(["--model=multi-model"])).toEqual([])
 	})
 
 	it("preserves real --model values", () => {
-		expect(stripMultiModelArgs(["--model", "kimchi-dev/kimi-k2.7"])).toEqual({
-			args: ["--model", "kimchi-dev/kimi-k2.7"],
-			explicitMultiModel: false,
-		})
-		expect(stripMultiModelArgs(["--model=kimchi-dev/kimi-k2.7"])).toEqual({
-			args: ["--model=kimchi-dev/kimi-k2.7"],
-			explicitMultiModel: false,
-		})
+		expect(stripMultiModelArgs(["--model", "kimchi-dev/kimi-k2.7"])).toEqual(["--model", "kimchi-dev/kimi-k2.7"])
+		expect(stripMultiModelArgs(["--model=kimchi-dev/kimi-k2.7"])).toEqual(["--model=kimchi-dev/kimi-k2.7"])
 	})
 
 	it("preserves surrounding args", () => {
-		expect(stripMultiModelArgs(["--provider", "kimchi-dev", "--model", "multi-model", "fix tests"])).toEqual({
-			args: ["--provider", "kimchi-dev", "fix tests"],
-			explicitMultiModel: true,
-		})
+		expect(stripMultiModelArgs(["--provider", "kimchi-dev", "--model", "multi-model", "fix tests"])).toEqual([
+			"--provider",
+			"kimchi-dev",
+			"fix tests",
+		])
 	})
 
 	it("returns the array unchanged when no multi-model flags are present", () => {
-		expect(stripMultiModelArgs(["--provider", "kimchi-dev", "--model", "kimi-k2.7", "fix tests"])).toEqual({
-			args: ["--provider", "kimchi-dev", "--model", "kimi-k2.7", "fix tests"],
-			explicitMultiModel: false,
-		})
+		expect(stripMultiModelArgs(["--provider", "kimchi-dev", "--model", "kimi-k2.7", "fix tests"])).toEqual([
+			"--provider",
+			"kimchi-dev",
+			"--model",
+			"kimi-k2.7",
+			"fix tests",
+		])
 	})
 })
 

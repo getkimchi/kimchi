@@ -42,30 +42,24 @@ export function isPreDispatchValueFlag(arg: string): boolean {
  *   --multi-model
  *   --model multi-model
  *   --model=multi-model
- *
- * Returns the filtered args and whether multi-model was explicitly requested.
  */
-export function stripMultiModelArgs(args: string[]): { args: string[]; explicitMultiModel: boolean } {
-	let explicitMultiModel = false
+export function stripMultiModelArgs(args: string[]): string[] {
 	const result: string[] = []
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i]
 		if (arg === "--multi-model") {
-			explicitMultiModel = true
 			continue
 		}
 		if (arg === "--model" && i + 1 < args.length && args[i + 1] === "multi-model") {
-			explicitMultiModel = true
 			i += 1
 			continue
 		}
 		if (arg === "--model=multi-model") {
-			explicitMultiModel = true
 			continue
 		}
 		result.push(arg)
 	}
-	return { args: result, explicitMultiModel }
+	return result
 }
 
 export type CliOptionType = "string" | "boolean" | "optional-string"
@@ -194,18 +188,19 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	},
 }
 
-/** Parsed Kimchi-local CLI flags. Populated once at startup. */
-export interface CliArgs {
+/**
+ * Parsed Kimchi-local CLI flags that affect the running session / model
+ * selection. One-shot flags (help, version, export, resume, etc.) are not
+ * cached here because they are handled before or outside the session loop.
+ */
+export interface SessionCliArgs {
 	options: {
 		provider?: string
 		model?: string
 		thinking?: string
 		mode?: string
 		print?: boolean
-		continue?: boolean
-		session?: string
 		"no-session"?: boolean
-		export?: string
 		"allow-tool"?: string[]
 		"deny-tool"?: string[]
 		plan?: boolean
@@ -213,13 +208,11 @@ export interface CliArgs {
 		yolo?: boolean
 		"permissions-config"?: string
 		verbose?: boolean
-		help?: boolean
-		version?: boolean
 	}
 	positionals: string[]
 }
 
-let cachedCliArgs: CliArgs | undefined
+let cachedCliArgs: SessionCliArgs | undefined
 
 /**
  * Parse Kimchi-local CLI flags and cache the result. Should be called once
@@ -243,17 +236,22 @@ for (const [name, def] of Object.entries(CLI_OPTIONS)) {
 }
 
 /** Parse args without caching. Exported for tests. */
-export function parseCliArgs(args: string[]): CliArgs {
+export function parseCliArgs(args: string[]): SessionCliArgs {
 	const { values, positionals } = parseArgs({
 		args,
 		options: PARSE_ARGS_OPTIONS,
 		strict: false,
 		allowPositionals: true,
 	})
-	const { "multi-model": _, ...rest } = values as Record<string, unknown>
-	const options = rest as CliArgs["options"]
-	if (values["multi-model"] === true) {
-		options.model = "multi-model"
+	const options: SessionCliArgs["options"] = {}
+	for (const key of Object.keys(PARSE_ARGS_OPTIONS)) {
+		const value = values[key]
+		if (value === undefined) continue
+		if (key === "multi-model") {
+			options.model = "multi-model"
+		} else {
+			;(options as Record<string, unknown>)[key] = value
+		}
 	}
 	return { options, positionals }
 }
@@ -265,7 +263,7 @@ export function parseCliArgs(args: string[]): CliArgs {
  * falls back to parsing `process.argv.slice(2)`. This lets code loaded before
  * the main harness entry still resolve flags in a consistent way.
  */
-export function getParsedCliArgs(): CliArgs {
+export function getParsedCliArgs(): SessionCliArgs {
 	if (!cachedCliArgs) {
 		cachedCliArgs = parseCliArgs(process.argv.slice(2))
 	}

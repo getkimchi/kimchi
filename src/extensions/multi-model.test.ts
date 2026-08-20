@@ -231,6 +231,14 @@ describe("resolveMultiModelEnabled", () => {
 		})
 	})
 
+	it("distinguishes --model multi-model from a real --model value", () => {
+		const sm = makeSessionManager([])
+		populateCliArgs(["--model", "multi-model"])
+		expect(resolveMultiModelEnabled(sm)).toEqual({ value: true, source: "cli" })
+		populateCliArgs(["--model", "kimchi-dev/kimi-k2.7"])
+		expect(resolveMultiModelEnabled(sm)).toEqual({ value: false, source: "cli" })
+	})
+
 	it("returns global default when sessionManager is null", () => {
 		setGlobalConfig({})
 		expect(resolveMultiModelEnabled(null)).toEqual({
