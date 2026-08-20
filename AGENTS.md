@@ -25,7 +25,7 @@ You are editing the kimchi coding harness. This repo extends the pi-mono SDK (`@
 ## CLI arguments
 
 - **Declare Kimchi-local flags in `src/cli-args.ts`:** add them to `CLI_OPTIONS` with `type`, `description`, and an optional `short` alias / `placeholder`. This catalog is the single source of truth for both the parser and help text.
-- **Read parsed CLI args via `getParsedCliArgs()` / `populateCliArgs()`:** do not scan `process.argv` by hand outside of `src/cli.ts` startup/bootstrap code, and do not stash CLI state on `process` globals. The cached parse is populated once after `@file` / resume-id normalization so downstream code sees the same argument list that upstream pi-mono receives.
+- **Read parsed CLI args via `getParsedCliArgs()`:** do not scan `process.argv` by hand outside of `src/cli.ts` startup/bootstrap code, and do not stash CLI state on `process` globals. The cached parse is populated once (by `cli.ts`) after `@file` / resume-id normalization so downstream code sees the same argument list that upstream pi-mono receives.
 
 ## Testing expectations
 
