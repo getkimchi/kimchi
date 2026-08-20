@@ -67,7 +67,7 @@ function setup() {
 
 async function callExecute(
 	tool: ReturnType<typeof createBashControlToolDefinition>,
-	params: { handle: string; action: "continue" | "stop"; extend_seconds?: number },
+	params: { handle: string; action: "continue" | "stop"; extend_seconds?: number; checkin_interval?: number },
 ) {
 	const result = await tool.execute("call-1", params as never, undefined, undefined, undefined as never)
 	return result
@@ -85,12 +85,19 @@ describe("createBashControlToolDefinition — shape", () => {
 		expect(tool.name).toBe("bash_control")
 	})
 
-	it("schema has handle, action (continue|stop), optional extend_seconds", () => {
+	it("schema has handle, action (continue|stop), optional extend_seconds and checkin_interval", () => {
 		const tool = createBashControlToolDefinition(() => undefined)
 		const schema = tool.parameters as unknown as { properties: Record<string, unknown> }
 		expect(schema.properties).toHaveProperty("handle")
 		expect(schema.properties).toHaveProperty("action")
 		expect(schema.properties).toHaveProperty("extend_seconds")
+		expect(schema.properties).toHaveProperty("checkin_interval")
+	})
+
+	it("description distinguishes checkin_interval (cadence) from extend_seconds (deadline)", () => {
+		const tool = createBashControlToolDefinition(() => undefined)
+		expect(tool.description).toContain("checkin_interval")
+		expect(tool.description).toContain("extend_seconds")
 	})
 
 	it("description mentions continue/stop", () => {
@@ -98,6 +105,50 @@ describe("createBashControlToolDefinition — shape", () => {
 		expect(tool.description).toContain("continue")
 		expect(tool.description).toContain("stop")
 	})
+})
+
+it("checkin_interval changes the cadence for the re-armed wait", async () => {
+	vi.useFakeTimers()
+	const { ops, registry, tool, handle } = setup()
+	// Continue with cadence 5s: the next checkin must NOT resolve at the spawn-time 1s.
+	const execPromise = callExecute(tool, { handle, action: "continue", checkin_interval: 5 })
+	await Promise.resolve()
+	expect(registry.getEntry(handle)?.intervalSeconds).toBe(5)
+	let resolved = false
+	void execPromise.then(() => {
+		resolved = true
+	})
+	await vi.advanceTimersByTimeAsync(1000)
+	expect(resolved).toBe(false)
+	ops.emit("slow cadence\n")
+	await vi.advanceTimersByTimeAsync(4000)
+	await execPromise
+	expect(resolved).toBe(true)
+	await ops.exit(0).catch(() => {})
+})
+
+it("continue without checkin_interval keeps the spawn-time cadence", async () => {
+	vi.useFakeTimers()
+	const { ops, registry, tool, handle } = setup()
+	const execPromise = callExecute(tool, { handle, action: "continue" })
+	await Promise.resolve()
+	expect(registry.getEntry(handle)?.intervalSeconds).toBe(1)
+	await vi.advanceTimersByTimeAsync(1000)
+	await execPromise
+	await ops.exit(0).catch(() => {})
+})
+
+it("checkin_interval combined with extend_seconds applies both", async () => {
+	vi.useFakeTimers()
+	const { ops, registry, tool, handle } = setup()
+	const before = registry.getEntry(handle)?.deadlineMs
+	const execPromise = callExecute(tool, { handle, action: "continue", extend_seconds: 30, checkin_interval: 2 })
+	await Promise.resolve()
+	expect(registry.getEntry(handle)?.deadlineMs).toBe(before !== undefined ? before + 30_000 : undefined)
+	expect(registry.getEntry(handle)?.intervalSeconds).toBe(2)
+	await vi.advanceTimersByTimeAsync(2000)
+	await execPromise
+	await ops.exit(0).catch(() => {})
 })
 
 describe("bash_control — action 'continue'", () => {
@@ -194,6 +245,27 @@ describe("bash_control — error cases", () => {
 		expect(result.details.exited).toBe(true)
 		expect(result.details.reason).toBe("no-registry")
 		expect((result.content[0] as { text: string }).text).toContain("no active bash session registry")
+	})
+
+	it("returns an error when checkin_interval is passed with action 'stop'", async () => {
+		const { registry, tool, handle } = setup()
+		const result = await callExecute(tool, { handle, action: "stop", checkin_interval: 5 })
+		expect((result.content[0] as { text: string }).text).toContain(
+			"checkin_interval is only valid with action 'continue'",
+		)
+		expect(result.details.reason).toBe("invalid-params")
+		// Process must NOT have been killed by the rejected call.
+		expect(registry.getEntry(handle)?.state).toBe("running")
+	})
+
+	it("returns an error for checkin_interval <= 0 or non-finite and leaves cadence unchanged", async () => {
+		const { registry, tool, handle } = setup()
+		for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+			const result = await callExecute(tool, { handle, action: "continue", checkin_interval: bad })
+			expect((result.content[0] as { text: string }).text).toContain("checkin_interval must be a positive number")
+			expect(result.details.reason).toBe("invalid-params")
+		}
+		expect(registry.getEntry(handle)?.intervalSeconds).toBe(1)
 	})
 
 	it("returns an error for an unknown handle", async () => {

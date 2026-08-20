@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { fullText, INPUT_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -124,7 +124,43 @@ test("shows a rate-limit warning when a depleted Coder plan reports as free tier
 	)
 })
 
-test("shows Community tier notice from the credits API in the startup header", async ({ terminal }) => {
+test("explains BYO inference when the backend blocks a Community user", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "billing-community-inference-blocked",
+			creditsResponses: [
+				{
+					serverless: true,
+					tier: "free-slow",
+					is_paid_tier: false,
+					billing_status: "free_tier",
+					has_credits: false,
+					remaining: "0",
+				},
+			],
+			responses: [],
+		},
+		async () => {
+			await waitForText(terminal, "You are using the Community tier", { full: true })
+			await waitForText(terminal, "bring your own", { full: true })
+			await waitForText(terminal, "inference to the harness", { full: true })
+			await waitForText(terminal, "To use Kimchi inference", { full: true })
+			await waitForText(terminal, "upgrade", { full: true })
+			await waitForText(terminal, "https://app.kimchi.dev/pricing", { full: true })
+			expect(fullText(terminal)).not.toContain("You ran out of credits")
+			expect(fullText(terminal)).not.toContain("Top up at")
+			expect(fullText(terminal)).not.toContain("You are using Community tier")
+
+			const lines = fullText(terminal).split("\n")
+			const headerBottom = lines.findIndex((line) => line.startsWith("└"))
+			const blockedWarning = lines.findIndex((line) => line.includes("You are using the Community tier"))
+			expect(blockedWarning).toBeGreaterThan(headerBottom)
+		},
+	)
+})
+
+test("keeps the available Community notice while the backend still serves inference", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{

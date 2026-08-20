@@ -19,7 +19,7 @@ export interface BillingWarning {
 	// "exhausted" is a hard stop (the server refuses the request); "rate-limited" still serves, just
 	// slower. Kept apart so the tip surfaces the second as a warning rather than an error — for a
 	// free-tier user a zero balance is a steady state, not a failure.
-	kind: "low" | "exhausted" | "rate-limited"
+	kind: "low" | "exhausted" | "rate-limited" | "community-inference-blocked"
 	message: string
 }
 
@@ -72,8 +72,11 @@ interface RefreshBillingStatusOptions {
 }
 
 export const LOW_CREDITS_THRESHOLD_USD = 5
-export const COMMUNITY_TIER_HEADER_NOTICE =
-	"You are using Community tier. For faster performance, upgrade to Coder at https://app.kimchi.dev/pricing"
+export const COMMUNITY_TIER_MESSAGES = {
+	available: "You are using Community tier. For faster performance, upgrade to Coder at https://app.kimchi.dev/pricing",
+	inferenceBlocked:
+		"You are using the Community tier. You can bring your own inference to the harness. To use Kimchi inference, upgrade to Coder at https://app.kimchi.dev/pricing.",
+} as const
 export const BILLING_EXHAUSTED_MESSAGE = "You ran out of credits. Top up at https://app.kimchi.dev/billing"
 // A zero balance is reached both by a paid subscriber demoted to free-tier limits and by a free
 // user whose included credits were never spendable, who was therefore rate limited all along. The
@@ -314,10 +317,11 @@ export function getCommunityTierHeaderNotice(
 	status: BillingStatus | undefined = currentBillingStatus,
 ): string | undefined {
 	if (status?.plan !== "community") return undefined
-	// A depleted paid subscriber is reported as community, so this would tell them to upgrade to the
-	// plan they already pay for. The credit warning carries the actionable remedy instead.
+	// Blocked Community users get actionable BYO guidance in the warning below the header. A depleted
+	// paid subscriber can also be reported as Community, so an upsell here would tell them to upgrade
+	// to the plan they already pay for.
 	if (isCreditsExhausted(status)) return undefined
-	return COMMUNITY_TIER_HEADER_NOTICE
+	return COMMUNITY_TIER_MESSAGES.available
 }
 
 export function getBillingWarnings(status: BillingStatus | undefined = currentBillingStatus): BillingWarning[] {
@@ -329,6 +333,12 @@ export function getBillingWarnings(status: BillingStatus | undefined = currentBi
 
 function getCreditBillingWarning(status: BillingStatus | undefined): BillingWarning | undefined {
 	if (!status) return undefined
+	// Community users are blocked because their plan does not include Kimchi inference,
+	// not because they ran out of credits. Show the BYO/upgrade warning instead of the
+	// generic top-up warning, which would give them the wrong action.
+	if (isCommunityInferenceBlocked(status)) {
+		return { kind: "community-inference-blocked", message: COMMUNITY_TIER_MESSAGES.inferenceBlocked }
+	}
 
 	// Server-declared: it named the balance spent, or has_credits=false says it is refusing
 	// requests outright. Never soften an explicit statement with an inference.
@@ -361,6 +371,25 @@ function getCreditBillingWarning(status: BillingStatus | undefined): BillingWarn
 	}
 
 	return undefined
+}
+
+/**
+ * A Community user is considered blocked only when the backend reports both of these facts:
+ *
+ * - The organization is on the Community plan.
+ * - `has_credits` is explicitly `false`, meaning Kimchi inference requests will be rejected.
+ *
+ * The backend decides which Community organizations are blocked. The harness does not receive the
+ * organization's signup date or the reason for the decision, so it must not try to recreate that
+ * policy from the plan name or credit balance.
+ *
+ * A zero balance alone is not enough: an exhausted Coder subscriber may be reported as Community
+ * while still receiving slower, rate-limited inference. Likewise, `has_credits: false` alone is not
+ * enough because it can also describe an exhausted Teams user. Checking both values prevents either
+ * user from receiving the wrong message.
+ */
+function isCommunityInferenceBlocked(status: BillingStatus): boolean {
+	return status.plan === "community" && status.restrictedMode === true
 }
 
 /**

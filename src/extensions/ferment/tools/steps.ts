@@ -12,6 +12,7 @@ import { determineNextAction } from "../../../ferment/engine.js"
 import type { Ferment, Phase, Step, StepResult } from "../../../ferment/types.js"
 import { getAgentRecordForTaskValidation } from "../../agents/index.js"
 import { FERMENT_WORKER_BUDGETS, type FermentWorkerBudgetTier } from "../../agents/worker-budget-policy.js"
+import { withBlocked } from "../../herdr-events.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
 import { withWorkingHidden } from "../../ui.js"
 import { askUserForm, createJudgeDecisionRecorder } from "../ask-user.js"
@@ -651,7 +652,9 @@ export async function completeStep(
 	sendStepBreadcrumb(pi, `Step ${step.index} ✗ failed verification - ${judgeVerdict.reason}`, "warning")
 
 	// D19: surface a recovery dropdown so the user picks an action explicitly
-	// instead of leaving the planner guessing.
+	// instead of leaving the planner guessing. hasUI implies a dialog-capable
+	// UI, so only prompt when we won't emit a herdr blocked pair without one
+	// (see herdr-events.ts PROTOCOL).
 	if (ctx.hasUI) {
 		const retryLabel = "Retry"
 		const skipLabel = "Skip step"
@@ -660,11 +663,8 @@ export async function completeStep(
 		const cancelLabel = "Cancel (keep step failed)"
 		const title = `Step ${step.index} "${step.description}" failed verification.\nJudge: ${judgeVerdict.reason}`
 		// Hide the cooking animation while the recovery dropdown is shown.
-		const choice = await withWorkingHidden(
-			ctx,
-			() =>
-				ctx.ui?.select?.(title, [retryLabel, skipLabel, editLabel, abandonLabel, cancelLabel]) ??
-				Promise.resolve(undefined),
+		const choice = await withBlocked(pi.events, `Ferment step ${step.index} failed`, () =>
+			withWorkingHidden(ctx, () => ctx.ui.select(title, [retryLabel, skipLabel, editLabel, abandonLabel, cancelLabel])),
 		)
 		runtime.markHumanInput()
 

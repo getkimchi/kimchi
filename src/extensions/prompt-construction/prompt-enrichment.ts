@@ -72,6 +72,7 @@ import {
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
+import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
 import {
 	buildSystemPrompt,
 	DELEGATION_TOOL_NAMES,
@@ -290,8 +291,23 @@ export default function (skillPaths: string[]) {
 				}
 			})
 
-			pi.on("model_select", async (_event, ctx) => {
+			pi.on("model_select", async (event, ctx) => {
 				notifyIfDeprecated(ctx)
+
+				// A user-initiated model switch (UI picker, /model, or cycling)
+				// is a fresh start for tool-calling behaviour from the new model's
+				// perspective. Reset the session-level latch so the first text-only
+				// turn after the switch is treated like the first turn of a new
+				// session (nudge suppressed until the new model calls a tool).
+				// Session restore is deliberately excluded: a restored session is
+				// continuing an existing conversation, not starting fresh.
+				if (event.source === "set" || event.source === "cycle") {
+					const sessionId = ctx.sessionManager.getSessionId()
+					const continuationNudge = getContinuationNudge(sessionId)
+					const emptyTurnNudge = getEmptyTurnNudge(sessionId)
+					continuationNudge.resetForModelSwitch()
+					emptyTurnNudge.resetForModelSwitch()
+				}
 			})
 
 			// Detect the inverse of the context-event nudge below: the orchestrator reasons
@@ -430,10 +446,16 @@ export default function (skillPaths: string[]) {
 				)
 			})
 
-			pi.on("context", async (event) => {
+			pi.on("context", async (event, ctx) => {
 				let messages = stripStaleNudges(event.messages)
 				messages = stripEmptyToolCalls(messages)
 				messages = stripUiOnlyMessages(messages)
+				// kimi-k2.x stalls on historical tool calls whose IDs are not in
+				// Moonshot's canonical format (issue #1063) — normalize for those
+				// targets only.
+				if (isKimiK2Model(ctx.model?.id)) {
+					messages = normalizeKimiToolCallIds(messages)
+				}
 				if (messages !== event.messages) return { messages }
 			})
 		}
@@ -444,8 +466,11 @@ export default function (skillPaths: string[]) {
 			// and MiniMax M2.7) emit empty tool calls after a real write/edit call,
 			// which the runtime rejects with a "Tool  not found" result that would
 			// otherwise accumulate in the subagent's context across turns.
-			pi.on("context", async (event) => {
-				const messages = stripEmptyToolCalls(event.messages)
+			pi.on("context", async (event, ctx) => {
+				let messages = stripEmptyToolCalls(event.messages)
+				if (isKimiK2Model(ctx.model?.id)) {
+					messages = normalizeKimiToolCallIds(messages)
+				}
 				if (messages !== event.messages) return { messages }
 			})
 		}

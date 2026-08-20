@@ -133,6 +133,83 @@ describe("askUserForm routing", () => {
 		expect((result as { failed: true; reason: string }).reason).toBe("user_cancelled")
 		expect(pi.events.emit).not.toHaveBeenCalledWith("ferment:user_unblocked", expect.anything())
 	})
+
+	it("emits a balanced herdr:blocked pair around a successful interactive form", async () => {
+		const pi = makePi()
+		const ctx = createContext({
+			ui: {
+				select: vi.fn(async () => "safe"),
+				input: vi.fn(async () => ""),
+			},
+		})
+		await askUserForm(
+			"Clarify plan",
+			"Desc",
+			[{ id: "q1", type: "single", prompt: "Which?", options: [{ id: "safe", label: "Safe" }] }],
+			{ ferment: makeFerment(), pi, ctx },
+		)
+
+		const blocked = vi.mocked(pi.events.emit).mock.calls.filter(([ch]) => ch === "herdr:blocked")
+		expect(blocked[0]).toEqual(["herdr:blocked", { active: true, label: "Ferment question" }])
+		expect(blocked[blocked.length - 1]).toEqual(["herdr:blocked", { active: false }])
+	})
+
+	it("deactivates herdr:blocked when the user cancels", async () => {
+		const pi = makePi()
+		const ctx = createContext({
+			ui: {
+				select: vi.fn(async () => undefined),
+				input: vi.fn(async () => ""),
+			},
+		})
+		await askUserForm("Title", "Desc", [{ id: "q1", type: "text", prompt: "Question?" }], {
+			ferment: makeFerment(),
+			pi,
+			ctx,
+		})
+
+		expect(vi.mocked(pi.events.emit).mock.calls.filter(([ch]) => ch === "herdr:blocked")).toEqual([
+			["herdr:blocked", { active: true, label: "Ferment question" }],
+			["herdr:blocked", { active: false }],
+		])
+	})
+
+	it("deactivates herdr:blocked when the prompt throws", async () => {
+		const pi = makePi()
+		const ctx = createContext({
+			ui: {
+				select: vi.fn(async () => {
+					throw new Error("select blew up")
+				}),
+				input: vi.fn(async () => ""),
+			},
+		})
+
+		await expect(
+			askUserForm("Title", "Desc", [{ id: "q1", type: "single", prompt: "Q?", options: [{ id: "a", label: "A" }] }], {
+				ferment: makeFerment(),
+				pi,
+				ctx,
+			}),
+		).rejects.toThrow("select blew up")
+
+		expect(vi.mocked(pi.events.emit).mock.calls.filter(([ch]) => ch === "herdr:blocked")).toEqual([
+			["herdr:blocked", { active: true, label: "Ferment question" }],
+			["herdr:blocked", { active: false }],
+		])
+	})
+
+	it("emits no herdr:blocked events when no UI is attached (no prompt shown)", async () => {
+		const pi = makePi()
+		const result = await askUserForm("Title", "Desc", [{ id: "q1", type: "text", prompt: "Question?" }], {
+			ferment: makeFerment(),
+			pi,
+			ctx: createContext({ hasUI: false }),
+		})
+
+		expect(result.failed).toBe(true)
+		expect(pi.events.emit).not.toHaveBeenCalledWith("herdr:blocked", expect.anything())
+	})
 })
 
 describe("toScopingQuestionType", () => {

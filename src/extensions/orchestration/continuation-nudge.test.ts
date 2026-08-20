@@ -258,6 +258,35 @@ describe("ContinuationNudge session-level tool tracking", () => {
 		expect(guard.hasToolBeenCalledThisSession()).toBe(true)
 	})
 
+	it("resetForModelSwitch clears the session-level tool latch", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		guard.recordToolCall()
+		guard.resetForNewUserInput()
+		expect(guard.hasToolBeenCalledThisSession()).toBe(true)
+
+		guard.resetForModelSwitch()
+
+		expect(guard.hasToolBeenCalledThisSession()).toBe(false)
+		expect(guard.hasToolBeenCalledThisCycle()).toBe(false)
+		expect(guard.hasToolBeenCalledThisRun()).toBe(false)
+		// A text-only turn after the model switch is treated like a fresh
+		// session and is not nudged.
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
+	it("resetForModelSwitch clears pending nudge response state", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		guard.evaluateTurn(textOnlyMessage)
+		expect(guard.isNudgeResponsePending()).toBe(true)
+
+		guard.resetForModelSwitch()
+
+		expect(guard.isNudgeResponsePending()).toBe(false)
+		expect(guard.isDoneSignalReceived()).toBe(false)
+	})
+
 	it("does not consume a nudge slot while no tools have been called this session", () => {
 		// Fresh session, no tools yet — repeated text-only turns must not burn
 		// the per-cycle budget, so when a tool is eventually called the full
@@ -393,6 +422,17 @@ describe("ContinuationNudge Agent-pending suppression", () => {
 		// Simulate an unrelated user input arriving while an Agent is running.
 		guard.resetForNewUserInput()
 		// The nudge must still be suppressed — we are still waiting for the result.
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
+	it("resetForModelSwitch does NOT clear pending delegation count", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		guard.markDelegationCall()
+		// User switches models while an Agent result is still in flight.
+		guard.resetForModelSwitch()
+		// Delegated agents are independent of the orchestrator model, so the
+		// pending count must survive the switch to keep the nudge suppressed.
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
 	})
 
@@ -545,6 +585,18 @@ describe("EmptyTurnNudge", () => {
 		// Reset re-arms the nudge for the next user-input cycle
 		guard.resetForNewUserInput()
 		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+	})
+
+	it("re-arms after resetForModelSwitch", () => {
+		const guard = new EmptyTurnNudge()
+		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+		expect(guard.evaluateTurn(emptyMessage)).toBe(false)
+		// A new model gets a fresh empty-turn budget even within the same cycle.
+		guard.resetForModelSwitch()
+		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+		expect(guard.evaluateTurn(emptyMessage)).toBe(false)
 	})
 
 	it("does not nudge when the user aborted the turn (stopReason: aborted)", () => {

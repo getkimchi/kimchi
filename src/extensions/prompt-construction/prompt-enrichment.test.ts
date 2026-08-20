@@ -1019,4 +1019,83 @@ describe("continuation nudge turn_end handler", () => {
 		expect(sendMessageCalls.length).toBe(1)
 		expect((sendMessageCalls[0].message as { content?: string }).content).toContain("If you have finished")
 	})
+
+	it("does not nudge after a model switch when the previous model called tools", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Previous model called a tool during the session.
+		await fire("tool_execution_start", {})
+
+		// User switches models (e.g. via the UI model picker).
+		await fire("model_select", {
+			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
+			previousModel: undefined,
+			source: "set",
+		})
+
+		// New user input after the switch.
+		await fire("input", { source: "user" })
+
+		// New model responds with orientation text only, no tool calls.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
+		})
+
+		// No nudge should fire — the model switch reset the session-level
+		// tool latch, so the new model's orientation turn is treated like a
+		// fresh session.
+		expect(sendMessageCalls.length).toBe(0)
+	})
+
+	it("does not nudge after a model cycle when the previous model called tools", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Previous model called a tool during the session.
+		await fire("tool_execution_start", {})
+
+		// User cycles models (e.g. via the keyboard shortcut).
+		await fire("model_select", {
+			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
+			previousModel: undefined,
+			source: "cycle",
+		})
+
+		// New user input after the cycle.
+		await fire("input", { source: "user" })
+
+		// New model responds with orientation text only, no tool calls.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
+		})
+
+		// Cycling is a user-initiated switch and must also reset the latch.
+		expect(sendMessageCalls.length).toBe(0)
+	})
+
+	it("still nudges after a model restore when the previous model called tools", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Previous model called a tool during the session.
+		await fire("tool_execution_start", {})
+
+		// Session restore is not a user-initiated switch; the conversation
+		// continues and the session-level tool latch must stay true.
+		await fire("model_select", {
+			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
+			previousModel: undefined,
+			source: "restore",
+		})
+
+		// New user input after restore.
+		await fire("input", { source: "user" })
+
+		// Model responds with text only, no tool calls.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
+		})
+
+		// Nudge should fire because restore must not reset the latch.
+		expect(sendMessageCalls.length).toBe(1)
+		expect((sendMessageCalls[0].message as { customType?: string }).customType).toBe("nudge")
+	})
 })

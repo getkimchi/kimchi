@@ -85,6 +85,7 @@ describe("updateModelsConfig", () => {
 				maxTokens: 262144,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				provider: "ai-enabler",
+				thinkingLevelMap: { off: "none" },
 			},
 		])
 	})
@@ -136,7 +137,7 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev/anthropic"].headers["X-Provider-Type"]).toBe("anthropic")
 	})
 
-	it("omits compat for non-anthropic models", async () => {
+	it("does not set compat for non-anthropic ai-enabler models", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI] }),
@@ -146,6 +147,20 @@ describe("updateModelsConfig", () => {
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
+	})
+
+	it("sets thinkingLevelMap for ai-enabler models so thinking=off sends reasoning_effort=none", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models[0].thinkingLevelMap).toEqual({
+			off: "none",
+		})
 	})
 
 	it("sets compat for claude-* models regardless of upstream provider (e.g. azure_ai)", async () => {

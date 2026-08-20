@@ -51,8 +51,10 @@ test("plan-to-ferment promotion — Start as ferment immediately continues execu
 			extraArgs: ["--plan=true"],
 		},
 		async (fixture, trace) => {
-			// Stage 1: plan mode confirmed in status line.
-			await waitForText(terminal, "plan → shift+tab", { timeoutMs: STARTUP_TIMEOUT_MS })
+			// Stage 1: plan mode confirmed in status line. The shortcut hint may be
+			// stripped under the new compaction ladder, so match "plan" with or
+			// without "→ shift+tab" and anchored by the model segment.
+			await waitForText(terminal, /plan(?: → shift\+tab)? · basic\b/, { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("status line confirms plan mode")
 
 			// Stage 2: submit request → model emits plan with PLAN_COMPLETE marker.
@@ -75,7 +77,9 @@ test("plan-to-ferment promotion — Start as ferment immediately continues execu
 			trace.step("selected 'Start as ferment'")
 
 			// Stage 5: dropdown closes — Ferment is running under auto permissions.
-			await waitForText(terminal, /Ferment: .* · Running · .* · auto ·/, { timeoutMs: STREAM_TIMEOUT_MS })
+			// Status-line order is now permissions/model first, then ferment, so
+			// look for "auto" leading and "Ferment: ... · Running" somewhere after.
+			await waitForText(terminal, /auto · .* · Ferment: .* · Running/, { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("status line transitioned to auto — ferment created")
 
 			// Stage 6: verify the ferment artifact was written.
@@ -134,8 +138,10 @@ test("plan-to-ferment promotion — side effects: plan file written + tool swap 
 			extraArgs: ["--plan=true"],
 		},
 		async (fixture, trace) => {
-			// Stage 1: plan mode confirmed in status line.
-			await waitForText(terminal, "plan → shift+tab", { timeoutMs: STARTUP_TIMEOUT_MS })
+			// Stage 1: plan mode confirmed in status line. The shortcut hint may be
+			// stripped under the new compaction ladder, so match "plan" with or
+			// without "→ shift+tab" and anchored by the model segment.
+			await waitForText(terminal, /plan(?: → shift\+tab)? · basic\b/, { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("status line confirms plan mode")
 
 			// Stage 2: submit request → model emits plan with PLAN_COMPLETE marker.
@@ -152,10 +158,10 @@ test("plan-to-ferment promotion — side effects: plan file written + tool swap 
 			terminal.keyPress(Key.Enter)
 			trace.step("pressed Enter to select default dropdown option ('Execute the plan')")
 
-			// Stage 4: the plan-complete handler (permissions/index.ts:506-540) writes
-			// the approved plan to .kimchi/plans/ and transitions to auto mode.
-			// Verify both side effects appear in the TUI.
-			await waitForText(terminal, "auto → shift+tab", { timeoutMs: STREAM_TIMEOUT_MS })
+			// Stage 4: the plan-complete handler transitions to auto mode.
+			// Match "auto" with or without the stripped shortcut hint, anchored by
+			// the model segment.
+			await waitForText(terminal, /auto(?: → shift\+tab)? · basic\b/, { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("status line transitioned to auto — handler fired and mode changed")
 
 			// Verify the approved plan file was written (proof that plan-complete

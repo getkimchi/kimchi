@@ -3910,13 +3910,13 @@ describe("ACP mode controller integration with permissions extension", () => {
 			registerFlag: () => {},
 			sendMessage: () => {},
 			appendEntry: () => {},
+			events: { emit: () => {} },
 			getEnvironment: () => ({
 				environmentInfo: {
 					permittedTools: new Set(tools),
 				},
 			}),
 			setActiveToolIdsByServer: () => {},
-			events: { emit: () => {} },
 		} as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI
 
 		permissionsExtension(pi)

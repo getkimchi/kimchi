@@ -1,4 +1,5 @@
 import { ANSI, fg } from "../ansi.js"
+import { CLI_OPTIONS, type CliOptionDef } from "../cli-args.js"
 import { COMMANDS } from "./registry.js"
 
 const SECTION_HEADER = "\x1b[1m"
@@ -17,28 +18,17 @@ interface FlagDoc {
 	description: string
 }
 
-const KIMCHI_FLAGS: FlagDoc[] = [
-	{ name: "--provider <name>", description: "Provider (default: kimchi-dev)" },
-	{ name: "--model <pattern>", description: "Model id or pattern, optionally `provider/id` and/or `:<thinking>`" },
-	{ name: "--thinking <level>", description: "Thinking level: off, minimal, low, medium, high, xhigh, max" },
-	{ name: "--mode <mode>", description: "Output mode: text (default), json, rpc, acp" },
-	{ name: "--print, -p", description: "Non-interactive mode: process prompt and exit" },
-	{ name: "--continue, -c", description: "Resume the most recent session" },
-	{ name: "--resume, -r [id]", description: "Resume by id, or pick a previous session interactively when omitted" },
-	{ name: "--session <path>", description: "Resume a specific session file (full path or partial UUID)" },
-	{ name: "--no-session", description: "Run ephemerally — don't write a session file" },
-	{ name: "--export <file>", description: "Export a session to HTML and exit" },
-	{ name: "--list-models [search]", description: "Print available models (optionally fuzzy-filtered)" },
-	{ name: "--allow-tool <rule>", description: "Add session permission allow rules (comma-separated)" },
-	{ name: "--deny-tool <rule>", description: "Add session permission deny rules (comma-separated)" },
-	{ name: "--plan", description: "Start in plan mode (read-only)" },
-	{ name: "--auto", description: "Start in auto mode (run freely, classifier guards)" },
-	{ name: "--yolo", description: "Start in yolo mode (run freely, no classifier - DANGER)" },
-	{ name: "--permissions-config <path>", description: "Replace the merged permissions config with this file" },
-	{ name: "--verbose", description: "Force verbose startup (overrides quietStartup)" },
-	{ name: "--help, -h", description: "Show this help" },
-	{ name: "--version, -v", description: "Show the kimchi version" },
-]
+function flagDocFromCliOption(name: string, def: CliOptionDef): FlagDoc {
+	const long = `--${name}`
+	const short = def.short ? `, -${def.short}` : ""
+	let value = ""
+	if (def.type === "string") {
+		value = ` ${def.optional ? (def.placeholder ?? "[value]") : (def.placeholder ?? "<value>")}`
+	}
+	return { name: `${long}${short}${value}`, description: def.description }
+}
+
+const KIMCHI_FLAGS: FlagDoc[] = Object.entries(CLI_OPTIONS).map(([name, def]) => flagDocFromCliOption(name, def))
 
 const KIMCHI_ENV: FlagDoc[] = [
 	{ name: "KIMCHI_API_KEY", description: "Kimchi API key (overrides config.json apiKey)" },

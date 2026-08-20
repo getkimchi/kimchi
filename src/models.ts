@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
+import type { ThinkingLevel } from "./extensions/agents/personas/types.js"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_API = "https://llm.kimchi.dev"
@@ -170,7 +171,13 @@ export interface PiModelConfig {
 	cost: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	// Persisted so telemetry can resolve the actual upstream provider after cache round-trip.
 	provider: string
-	compat?: { supportsReasoningEffort?: boolean; cacheControlFormat?: "anthropic"; supportsUsageInStreaming?: boolean }
+	compat?: {
+		supportsReasoningEffort?: boolean
+		cacheControlFormat?: "anthropic"
+		supportsUsageInStreaming?: boolean
+	}
+	/** Maps thinking levels to provider-specific values. `off: "none"` sends `reasoning_effort: "none"`. */
+	thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>
 	/** Model-level API type: upstream custom-provider parseModels falls through to this field. */
 	api?: string
 	/** Model-level base URL: upstream custom-provider parseModels falls through to this field. */
@@ -186,10 +193,17 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// Claude models routed through openai-completions need:
 	// - cacheControlFormat: "anthropic" so pi injects cache_control markers
 	// - supportsUsageInStreaming: true so stream_options.include_usage is sent
+	//
+	// ai-enabler models don't support chat_template_kwargs, so we rely on the
+	// default `openai` thinkingFormat which sends `reasoning_effort`. Setting
+	// thinkingLevelMap.off = "none" ensures that the off level sends
+	// reasoning_effort: "none" instead of omitting it, which would leave
+	// thinking enabled by default.
 	const compat =
 		m.provider === "anthropic" || m.slug.startsWith("claude-")
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
 			: undefined
+	const thinkingLevelMap = m.provider === "ai-enabler" ? { off: "none" as const } : undefined
 	return {
 		id: m.slug,
 		name: m.display_name.trim().length > 0 ? m.display_name : m.slug,
@@ -201,6 +215,7 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		// Store upstream provider for telemetry round-trip via models.json
 		provider: m.provider,
 		...(compat && { compat }),
+		...(thinkingLevelMap && { thinkingLevelMap }),
 	}
 }
 

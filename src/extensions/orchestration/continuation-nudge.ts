@@ -109,6 +109,27 @@ export class ContinuationNudge {
 		// would incorrectly allow the nudge to fire while Agents are still in flight.
 	}
 
+	/**
+	 * Reset the session-level tool latch when the active model changes.
+	 *
+	 * A new model has not yet demonstrated tool-calling behaviour in this
+	 * session, so the fresh-session suppression should apply until it makes
+	 * its first tool call. Without this reset, a model that legitimately
+	 * opens with an orientation/clarification text turn (e.g. kimi-k2.7 in
+	 * single-model mode) is immediately nudged because the previous model
+	 * already called tools.
+	 */
+	resetForModelSwitch(): void {
+		this.toolsCalledThisSession = false
+		this.toolsCalledSinceLastUserInput = false
+		this.toolsCalledThisAgentRun = false
+		this.nudgeCountThisCycle = 0
+		this.nudgeResponsePending = false
+		this.accumulatedResponseText = ""
+		// pendingDelegationCount is intentionally NOT reset here — delegated
+		// agents are independent of which orchestrator model is active.
+	}
+
 	recordToolCall(): void {
 		this.toolsCalledSinceLastUserInput = true
 		this.toolsCalledThisAgentRun = true
@@ -230,6 +251,17 @@ export class EmptyTurnNudge {
 	}
 
 	resetForNewUserInput(): void {
+		this.nudgeCountThisCycle = 0
+	}
+
+	/**
+	 * Reset the per-cycle empty-turn budget when the active model changes.
+	 *
+	 * A new model has its own empty-turn behaviour, so it should get the
+	 * full per-cycle budget rather than inheriting any budget consumed by
+	 * the previous model.
+	 */
+	resetForModelSwitch(): void {
 		this.nudgeCountThisCycle = 0
 	}
 }
