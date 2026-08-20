@@ -28,7 +28,7 @@ import { sumIncludeListBytes } from "../provisioning/estimate-bytes.js"
 import { provisionGitCredential, provisionGitIdentity } from "../provisioning/git-provision.js"
 import { buildHandoffNote, copySessionFileAndAddHandoffNote, removeTempDir } from "../provisioning/handoff-note.js"
 import { provisionHarnessConfig } from "../provisioning/harness-config.js"
-import { buildIncludeList, buildWorkingTreeList } from "../provisioning/include-list.js"
+import { buildChangedFilesList, buildIncludeList } from "../provisioning/include-list.js"
 import { deriveSandboxDest, deriveSandboxDestFromRepoUrl, repoBasename } from "../provisioning/paths.js"
 import { formatRsyncFailure, runRsync } from "../provisioning/rsync-runner.js"
 import { STATUS_KEY, type TeleportContext } from "../types.js"
@@ -135,7 +135,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		? filesFromP.then((list) => sumIncludeListBytes(ctx.cwd, list, signal).catch(() => 0))
 		: Promise.resolve(0)
 	const fastFilesFromP: Promise<string[]> = args.fast
-		? buildWorkingTreeList(ctx.cwd, signal).catch(() => [])
+		? buildChangedFilesList(ctx.cwd, signal).catch(() => [])
 		: Promise.resolve([])
 	const fastSizeEstimateP: Promise<number> = args.fast
 		? fastFilesFromP.then((list) => sumIncludeListBytes(ctx.cwd, list, signal).catch(() => 0))
@@ -353,6 +353,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 					repo: clonePlan.httpsUrl,
 					branch: clonePlan.branch,
 					targetDirectory,
+					noHistory: true,
 				},
 			}
 		} else if (args.gitRepo) {
@@ -429,32 +430,37 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			if (!freshClone) {
 				warn(ctx, "Remote dir already existed — skipping pruning of extra remote files")
 			}
-			progress.setStepDetail("Syncing local changes")
-			try {
-				await runRsync({
-					localPath: ctx.cwd,
-					remotePath: remoteDest,
-					isSourceDirectory: true,
-					remoteHost: creds.host,
-					remoteUser: SANDBOX_USER,
-					authToken: creds.connectToken,
-					signal,
-					deleteExtraneous: freshClone,
-					excludeFilters: [".git/", ".env", ".env.*", ".envrc", ".kimchi/"],
-					precomputeTotal: true,
-					precomputedTotalBytes: estimatedUploadBytes,
-					filesFrom: await fastFilesFromP,
-					onPhase: (phase: "estimate" | "mkdir" | "rsync") => {
-						if (phase === "mkdir") progress.setStepDetail("preparing remote directory…")
-						else if (phase === "rsync") progress.setStepDetail("starting transfer…")
-					},
-					onCumulativeProgress: ({ transferredBytes, totalBytes, pct }) => {
-						progress.setStepDetail(`${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)} (${pct}%)`)
-					},
-				})
-			} catch (err) {
-				if (signal.aborted) throw err
-				warn(ctx, formatRsyncFailure(err))
+			const fastFilesFrom = await fastFilesFromP
+			if (fastFilesFrom.length === 0) {
+				progress.setStepDetail("No local changes to sync")
+			} else {
+				progress.setStepDetail("Syncing local changes")
+				try {
+					await runRsync({
+						localPath: ctx.cwd,
+						remotePath: remoteDest,
+						isSourceDirectory: true,
+						remoteHost: creds.host,
+						remoteUser: SANDBOX_USER,
+						authToken: creds.connectToken,
+						signal,
+						deleteExtraneous: freshClone,
+						excludeFilters: [".git/", ".env", ".env.*", ".envrc", ".kimchi/"],
+						precomputeTotal: true,
+						precomputedTotalBytes: estimatedUploadBytes,
+						filesFrom: fastFilesFrom,
+						onPhase: (phase: "estimate" | "mkdir" | "rsync") => {
+							if (phase === "mkdir") progress.setStepDetail("preparing remote directory…")
+							else if (phase === "rsync") progress.setStepDetail("starting transfer…")
+						},
+						onCumulativeProgress: ({ transferredBytes, totalBytes, pct }) => {
+							progress.setStepDetail(`${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)} (${pct}%)`)
+						},
+					})
+				} catch (err) {
+					if (signal.aborted) throw err
+					warn(ctx, formatRsyncFailure(err))
+				}
 			}
 		}
 		if (sessionFileWithHandoffNote) removeTempDir(dirname(sessionFileWithHandoffNote))

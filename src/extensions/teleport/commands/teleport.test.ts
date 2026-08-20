@@ -30,7 +30,7 @@ const {
 	formatRsyncFailureMock,
 	resolveClonePlanMock,
 	buildIncludeListMock,
-	buildWorkingTreeListMock,
+	buildChangedFilesListMock,
 	sumIncludeListBytesMock,
 } = vi.hoisted(() => ({
 	authMock: vi.fn(),
@@ -66,7 +66,7 @@ const {
 	formatRsyncFailureMock: vi.fn((err: unknown) => (err instanceof Error ? err.message : String(err))),
 	resolveClonePlanMock: vi.fn(),
 	buildIncludeListMock: vi.fn(),
-	buildWorkingTreeListMock: vi.fn(),
+	buildChangedFilesListMock: vi.fn(),
 	sumIncludeListBytesMock: vi.fn(),
 }))
 
@@ -114,7 +114,7 @@ vi.mock("../provisioning/clone-plan.js", () => {
 })
 vi.mock("../provisioning/include-list.js", () => ({
 	buildIncludeList: buildIncludeListMock,
-	buildWorkingTreeList: buildWorkingTreeListMock,
+	buildChangedFilesList: buildChangedFilesListMock,
 }))
 vi.mock("../provisioning/estimate-bytes.js", () => ({
 	sumIncludeListBytes: sumIncludeListBytesMock,
@@ -251,7 +251,7 @@ beforeEach(() => {
 		.mockImplementation((err: unknown) => (err instanceof Error ? err.message : String(err)))
 	resolveClonePlanMock.mockReset().mockResolvedValue(undefined)
 	buildIncludeListMock.mockReset().mockResolvedValue(["src/a.ts", ".git/HEAD", ".git/refs/heads/main"])
-	buildWorkingTreeListMock.mockReset().mockResolvedValue(["src/a.ts", "README.md"])
+	buildChangedFilesListMock.mockReset().mockResolvedValue(["src/a.ts", "README.md"])
 	sumIncludeListBytesMock.mockReset().mockResolvedValue(123)
 })
 
@@ -936,7 +936,7 @@ describe("runTeleport --fast", () => {
 		await runTeleport(`mysession --workspace ${FAST_WS}`, ctx)
 
 		expect(resolveClonePlanMock).not.toHaveBeenCalled()
-		expect(buildWorkingTreeListMock).not.toHaveBeenCalled()
+		expect(buildChangedFilesListMock).not.toHaveBeenCalled()
 	})
 
 	it("clones server-side with details.git, then diff-rsyncs the working tree", async () => {

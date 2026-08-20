@@ -233,3 +233,153 @@ export async function buildWorkingTreeList(
 ): Promise<string[]> {
 	return buildWorkingTreeEntries(cwd, signal, spawner)
 }
+
+/**
+ * Files that differ from the upstream tracking ref — only what the diff
+ * rsync actually needs to transfer after a server-side clone. Uses
+ * `git diff @{upstream}` to capture both unpushed commits AND uncommitted
+ * changes. Falls back to `git diff HEAD` (uncommitted only) when no
+ * upstream is set (unpushed branch with no tracking ref).
+ *
+ * On a clean tree with no unpushed commits, this returns ~0 files.
+ */
+export async function buildChangedFilesList(
+	cwd: string,
+	signal?: AbortSignal,
+	spawner: typeof spawn = defaultSpawn,
+): Promise<string[]> {
+	const [changed, others] = await Promise.all([
+		listGitChangedFiles(cwd, signal, spawner),
+		listGitUntrackedFiles(cwd, signal, spawner),
+	])
+	const safeOthers = others.filter((p) => !excludesBaseFilePattern(p))
+	return [...changed, ...safeOthers]
+}
+
+function listGitChangedFiles(cwd: string, signal: AbortSignal | undefined, spawner: typeof spawn): Promise<string[]> {
+	return new Promise((resolve) => {
+		let stdout = Buffer.alloc(0)
+		let child: ChildProcess
+		try {
+			// @{upstream} = origin/<branch>. Captures both unpushed commits
+			// and uncommitted changes in one diff.
+			child = spawner("git", ["-C", cwd, "diff", "--name-only", "--diff-filter=ACMRTUXB", "@{upstream}", "-z"], {
+				cwd,
+				signal,
+				stdio: ["ignore", "pipe", "pipe"],
+			})
+		} catch {
+			resolve([])
+			return
+		}
+		child.stdout?.on("data", (chunk: Buffer) => {
+			stdout = Buffer.concat([stdout, chunk])
+		})
+		child.on("error", () => resolve([]))
+		child.on("close", (code) => {
+			if (code !== 0) {
+				// No upstream set (unpushed branch) — fall back to HEAD + local-only commits.
+				resolve(listGitChangedFilesFallback(cwd, signal, spawner))
+				return
+			}
+			resolve(
+				stdout
+					.toString("utf-8")
+					.split("\0")
+					.filter((s) => s.length > 0),
+			)
+		})
+	})
+}
+
+/**
+ * Fallback when no upstream tracking ref is set (unpushed branch).
+ * Combines:
+ *   1. `git diff HEAD` — uncommitted changes (staged + unstaged).
+ *   2. `git log --branches --not --remotes --name-only` — files changed in
+ *      commits that exist locally but not on any remote (unpushed commits).
+ * Together these capture everything the remote clone is missing.
+ */
+async function listGitChangedFilesFallback(
+	cwd: string,
+	signal: AbortSignal | undefined,
+	spawner: typeof spawn,
+): Promise<string[]> {
+	const [uncommitted, localOnly] = await Promise.all([
+		runGitDiffHEAD(cwd, signal, spawner),
+		runGitLogLocalOnly(cwd, signal, spawner),
+	])
+	return [...new Set([...uncommitted, ...localOnly])]
+}
+
+function runGitDiffHEAD(cwd: string, signal: AbortSignal | undefined, spawner: typeof spawn): Promise<string[]> {
+	return new Promise((resolve) => {
+		let stdout = Buffer.alloc(0)
+		let child: ChildProcess
+		try {
+			child = spawner("git", ["-C", cwd, "diff", "--name-only", "--diff-filter=ACMRTUXB", "HEAD", "-z"], {
+				cwd,
+				signal,
+				stdio: ["ignore", "pipe", "pipe"],
+			})
+		} catch {
+			resolve([])
+			return
+		}
+		child.stdout?.on("data", (chunk: Buffer) => {
+			stdout = Buffer.concat([stdout, chunk])
+		})
+		child.on("error", () => resolve([]))
+		child.on("close", (code) => {
+			if (code !== 0) {
+				resolve([])
+				return
+			}
+			resolve(
+				stdout
+					.toString("utf-8")
+					.split("\0")
+					.filter((s) => s.length > 0),
+			)
+		})
+	})
+}
+
+function runGitLogLocalOnly(cwd: string, signal: AbortSignal | undefined, spawner: typeof spawn): Promise<string[]> {
+	return new Promise((resolve) => {
+		let stdout = Buffer.alloc(0)
+		let child: ChildProcess
+		try {
+			// List files changed in commits that exist on local branches
+			// but not on any remote — i.e. unpushed commits.
+			child = spawner(
+				"git",
+				["-C", cwd, "log", "--branches", "--not", "--remotes", "--name-only", "--pretty=format:", "-z"],
+				{
+					cwd,
+					signal,
+					stdio: ["ignore", "pipe", "pipe"],
+				},
+			)
+		} catch {
+			resolve([])
+			return
+		}
+		child.stdout?.on("data", (chunk: Buffer) => {
+			stdout = Buffer.concat([stdout, chunk])
+		})
+		child.on("error", () => resolve([]))
+		child.on("close", (code) => {
+			if (code !== 0) {
+				resolve([])
+				return
+			}
+			resolve(
+				stdout
+					.toString("utf-8")
+					.split("\0")
+					.filter((s) => s.length > 0),
+			)
+		})
+	})
+}
