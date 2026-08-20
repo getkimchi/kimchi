@@ -47,9 +47,12 @@ export function ensureStateDir(dir: string): void {
  * Validate a user-supplied daemon name. Only alphanumerics, dash, and
  * underscore — the name is interpolated into a filename, so path
  * separators or dots could escape the state dir (review-lessons rule 4).
+ * Empty string is INVALID — callers wanting "no name" must pass
+ * `undefined` (an explicit empty name would silently fall through to the
+ * default prefix and produce confusing `-a1b2c3`-style ids).
  */
 export function validateDaemonName(name: string): string | undefined {
-	if (name.length === 0) return undefined
+	if (name.length === 0) return "Daemon name cannot be empty (omit the parameter for the default name)."
 	if (name.length > 40) return "Daemon name too long (max 40 chars)."
 	if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
 		return "Daemon name may only contain letters, digits, dash, and underscore."
@@ -60,7 +63,7 @@ export function validateDaemonName(name: string): string | undefined {
 /** Generate a daemon id: <name|daemon>-<6 hex chars>. */
 export function makeDaemonId(name: string | undefined): string {
 	const suffix = randomBytes(3).toString("hex")
-	return `${name ?? "daemon"}-${suffix}`
+	return `${name ? name : "daemon"}-${suffix}`
 }
 
 export function daemonRecordPath(dir: string, id: string): string {

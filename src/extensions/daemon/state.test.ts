@@ -63,9 +63,17 @@ describe("daemon state", () => {
 		it("rejects over-long names", () => {
 			expect(validateDaemonName("x".repeat(41))).toBeDefined()
 		})
+
+		it("rejects empty string (must not silently fall back to a '-'-prefixed id)", () => {
+			expect(validateDaemonName("")).toBeDefined()
+		})
 	})
 
 	describe("makeDaemonId", () => {
+		it("treats empty name as absent (defensive — tools coerce at the boundary)", () => {
+			expect(makeDaemonId("")).toMatch(/^daemon-[0-9a-f]{6}$/)
+		})
+
 		it("prefixes with the name and a 6-hex suffix", () => {
 			expect(makeDaemonId("web")).toMatch(/^web-[0-9a-f]{6}$/)
 		})

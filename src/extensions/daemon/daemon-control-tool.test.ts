@@ -86,6 +86,37 @@ describePosix("daemon_control tool execute (real processes)", () => {
 		expect(text).toContain(String(record.pid))
 	})
 
+	it("status on a dead daemon: reports not-running and KEEPS the record", async () => {
+		// Regression for review feedback: status must not prune dead
+		// records as a side effect — only `list` does that.
+		const outcome = await spawnDaemon({
+			command: "bash -c 'echo transient; exit 0'",
+			cwd: dir,
+			name: "transient",
+			stateDir: dir,
+			crashGraceMs: 0, // skip liveness check — it's SUPPOSED to exit
+		})
+		if (!outcome.ok) throw new Error(`setup spawn failed: ${outcome.error}`)
+		// Bounded wait for natural death.
+		const deadline = Date.now() + 3000
+		while (isPidAlive(outcome.record.pid) && Date.now() < deadline) {
+			await new Promise((r) => setTimeout(r, 50))
+		}
+		expect(isPidAlive(outcome.record.pid)).toBe(false)
+
+		const result = await tool().execute(
+			"t3b",
+			{ action: "status", id: outcome.record.id },
+			undefined,
+			undefined,
+			fakeCtx,
+		)
+		const text = result.content[0].type === "text" ? result.content[0].text : ""
+		expect(text).toContain("not running")
+		// Record retained for the next `list` to prune (or investigate).
+		expect(readDaemon(dir, outcome.record.id)).toBeDefined()
+	})
+
 	it("status on unknown id steers to list (soft, not a throw)", async () => {
 		const result = await tool().execute("t4", { action: "status", id: "ghost-123abc" }, undefined, undefined, fakeCtx)
 		const text = result.content[0].type === "text" ? result.content[0].text : ""

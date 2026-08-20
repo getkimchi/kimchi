@@ -13,7 +13,7 @@
  */
 
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -60,8 +60,9 @@ describePosix("spawnDaemon / stopDaemon (real processes)", () => {
 		const { record } = outcome
 		expect(record.id).toMatch(/^test-sleeper-[0-9a-f]{6}$/)
 		expect(isPidAlive(record.pid)).toBe(true)
-		// exec replaced the shell: the pid IS the daemon, and the daemon is
-		// its own process-group leader (detached: true → setsid).
+		// The pid is the process-group leader (detached: true → setsid). The
+		// command itself may exec-replace that leader or leave a thin shell
+		// wrapper behind — group kill behaves the same either way.
 		expect(readFileSync(record.pidFile, "utf8")).toBe(String(record.pid))
 		const recordOnDisk = readDaemon(dir, record.id)
 		expect(recordOnDisk).toEqual(record)
@@ -182,5 +183,16 @@ describePosix("spawnDaemon / stopDaemon (real processes)", () => {
 		const stop = await stopDaemon(outcome.record, dir)
 		expect(stop.stopped).toBe(false)
 		expect(stop.note).toContain("already not running")
+	})
+
+	it("readLogTail never emits mojibake when the cut splits a UTF-8 character", () => {
+		const logFile = join(dir, "utf8.log")
+		// 1000 ASCII bytes + two 3-byte chars, so the tail window starts
+		// mid-code-point for alignments that the fix must snap away from.
+		writeFileSync(logFile, `x'.repeat(1000)}€€✓✓`)
+		for (const maxBytes of [6, 7, 8, 9, 10]) {
+			const tail = readLogTail(logFile, maxBytes)
+			expect(tail).not.toContain("�")
+		}
 	})
 })

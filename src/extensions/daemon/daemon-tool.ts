@@ -22,7 +22,7 @@ import { daemonStateDir, validateDaemonName } from "./state.js"
 const daemonSchema = Type.Object({
 	command: Type.String({
 		description:
-			"Bash command line to run as the daemon. Executed in place of the shell (no wrapper stays behind). Output is redirected to the daemon's log file — do '... >> log 2>&1' style plumbing inside the command only when the default log file location is unsuitable.",
+			"Bash command line to run as the daemon (compound commands like 'a && b' are fine — the whole line runs in one shell). The returned pid is the process-group leader; a thin shell wrapper may remain if the command doesn't end in exec. Output is redirected to the daemon's log file automatically.",
 	}),
 	name: Type.Optional(
 		Type.String({
@@ -64,8 +64,11 @@ export function createDaemonToolDefinition(
 		promptSnippet: "start a detached service that must outlive this session (manage via daemon_control)",
 		parameters: daemonSchema,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (params.name !== undefined) {
-				const nameError = validateDaemonName(params.name)
+			// Coerce empty-string name to undefined so it takes the default
+			// `daemon-` prefix instead of producing a `-a1b2c3`-style id.
+			const name = params.name === "" ? undefined : params.name
+			if (name !== undefined) {
+				const nameError = validateDaemonName(name)
 				if (nameError) {
 					return {
 						content: [{ type: "text", text: `Error: ${nameError}` }],
@@ -77,7 +80,7 @@ export function createDaemonToolDefinition(
 			const outcome = await spawnDaemon({
 				command: params.command,
 				cwd: ctx.cwd,
-				name: params.name,
+				name,
 				stateDir,
 				crashGraceMs: options.crashGraceMs,
 			})

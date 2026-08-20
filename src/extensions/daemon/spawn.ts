@@ -17,12 +17,15 @@
  *      leader, reparented to init when kimchi exits.
  *
  * Spawn mechanics:
- *   spawn("bash", ["-c", "exec <command> >> <log> 2>&1"], { detached, stdio: "ignore" })
+ *   spawn("bash", ["-c", "exec bash -c \"<command>\" >> <log> 2>&1"], { detached, stdio: "ignore" })
  *
- * `exec` makes the shell REPLACE itself with the daemon so `child.pid` is
- * both the daemon pid AND its process-group id — `kill(-pid)` in stop()
- * reaches exactly the daemon tree, no wrapping shell left behind. stdout
- * and stderr are shell-redirected into the state-dir log file (stdio is
+ * The outer `exec` replaces the outer shell with ONE inner `bash -c`, so
+ * `child.pid` is the daemon's process-group id: `kill(-pid)` in stop()
+ * reaches exactly the daemon tree. If the user's command ends in `exec`
+ * (or is a single simple command) the inner bash may replace itself too,
+ * but for compound commands a thin inner-bash wrapper stays behind as the
+ * group leader — group kill behaves the same either way. stdout and
+ * stderr are shell-redirected into the state-dir log file (stdio is
  * ignored, so kimchi keeps no pipes open and `unref()` lets the node
  * process exit freely).
  *
@@ -64,7 +67,13 @@ export function readLogTail(logFile: string, maxBytes = 8192): string | undefine
 	if (!existsSync(logFile)) return undefined
 	try {
 		const buf = readFileSync(logFile)
-		const slice = buf.length > maxBytes ? buf.subarray(buf.length - maxBytes) : buf
+		let slice = buf.length > maxBytes ? buf.subarray(buf.length - maxBytes) : buf
+		// Snap the cut to a UTF-8 code-point boundary — slicing mid-sequence
+		// would write replacement characters (mojibake) at the start of the
+		// tail. Continuation bytes have the form 10xx xxxx; skip past them.
+		let start = 0
+		while (start < slice.length && (slice[start] & 0xc0) === 0x80) start++
+		if (start > 0) slice = slice.subarray(start)
 		return slice.toString("utf8")
 	} catch (err) {
 		console.error(`daemon: failed to read log ${logFile}:`, err)

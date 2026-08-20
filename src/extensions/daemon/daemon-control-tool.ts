@@ -16,7 +16,7 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { readLogTail, stopDaemon } from "./spawn.js"
-import { daemonStateDir, listDaemons, readDaemon } from "./state.js"
+import { daemonStateDir, isPidAlive, listDaemons, readDaemon } from "./state.js"
 
 const daemonControlSchema = Type.Object({
 	action: Type.Union([Type.Literal("list"), Type.Literal("status"), Type.Literal("logs"), Type.Literal("stop")], {
@@ -29,7 +29,8 @@ const daemonControlSchema = Type.Object({
 		}),
 	),
 	max_bytes: Type.Optional(
-		Type.Number({
+		Type.Integer({
+			minimum: 1,
 			description: "Only valid with action 'logs'. Max bytes to return from the end of the log file (default 8192).",
 		}),
 	),
@@ -124,7 +125,9 @@ export function createDaemonControlToolDefinition(
 
 			// ── status ──────────────────────────────────────────────────
 			if (action === "status") {
-				const live = listDaemons(stateDir).some((e) => e.record.id === id)
+				// isPidAlive directly — listDaemons would prune dead records, a
+				// surprising side effect from a read-only status query.
+				const live = isPidAlive(record.pid)
 				return {
 					content: [
 						{

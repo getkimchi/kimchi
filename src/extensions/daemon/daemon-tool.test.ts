@@ -92,6 +92,14 @@ describePosix("daemon tool execute (real processes)", () => {
 		expect(result.details?.error).toBe("invalid-name")
 	})
 
+	it("empty-string name falls back to the default daemon- prefix", async () => {
+		const result = await tool().execute("tc2b", { command: "sleep 5", name: "" }, undefined, undefined, fakeCtx(dir))
+		expect(result.details?.error).toBeUndefined()
+		const text = result.content[0].type === "text" ? result.content[0].text : ""
+		expect(text).toContain("Daemon started")
+		expect(text).not.toMatch(/id:\s+-[0-9a-f]{6}/)
+	})
+
 	it("empty command returns an error result", async () => {
 		const result = await tool().execute("tc3", { command: "  " }, undefined, undefined, fakeCtx(dir))
 		expect(result.details?.error).toBe("spawn-failed")
