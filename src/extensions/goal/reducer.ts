@@ -106,10 +106,11 @@ export function recordGoalEvaluation(
 
 /**
  * Sets the persisted consecutive-agent-error-turn streak that backs
- * MAX_CONSECUTIVE_ERROR_TURNS, omitting the field once the streak is back to
- * zero. Returns the same object when the count already matches, mirroring
- * addGoalAccounting's no-op-on-no-change shape so callers can tell whether a
- * commit is actually needed by reference equality.
+ * getGoalSettings().maxConsecutiveErrors (settings.ts), omitting the field
+ * once the streak is back to zero. Returns the same object when the count
+ * already matches, mirroring addGoalAccounting's no-op-on-no-change shape so
+ * callers can tell whether a commit is actually needed by reference
+ * equality.
  */
 export function setGoalConsecutiveErrorTurns(
 	state: GoalState,
@@ -124,7 +125,8 @@ export function setGoalConsecutiveErrorTurns(
 
 /**
  * Sets the persisted no-progress continuation streak that backs
- * MAX_UNCHANGED_CONTINUATIONS. Same shape as setGoalConsecutiveErrorTurns.
+ * getGoalSettings().maxUnchangedContinuations (settings.ts). Same shape as
+ * setGoalConsecutiveErrorTurns.
  */
 export function setGoalUnchangedContinuationTurns(
 	state: GoalState,
@@ -258,9 +260,9 @@ function parseGoal(value: unknown): SessionGoal | undefined {
 		// rather than rejecting the whole entry, which would silently roll the
 		// restored goal back to an older revision.
 		(value.evaluationCount !== undefined && !isNonNegativeInteger(value.evaluationCount)) ||
-		// Unlike evaluationCount, these two gate a safety pause (see
-		// MAX_CONSECUTIVE_ERROR_TURNS / MAX_UNCHANGED_CONTINUATIONS in
-		// index.ts): silently dropping a malformed value back to zero would
+		// Unlike evaluationCount, these two gate a safety pause (limits are
+		// getGoalSettings().maxConsecutiveErrors / maxUnchangedContinuations,
+		// settings.ts): silently dropping a malformed value back to zero would
 		// defeat the stall guard the same way the bug they exist to fix does,
 		// so a malformed counter rejects the whole entry instead, falling back
 		// to the last validly-persisted goal.

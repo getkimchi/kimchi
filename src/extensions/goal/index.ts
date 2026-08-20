@@ -77,7 +77,6 @@ const UPDATE_GOAL_PARAMETERS = Type.Object({
 
 type UpdateGoalParams = Static<typeof UPDATE_GOAL_PARAMETERS>
 
-type PendingGoalTerminalFeedback = PendingGoalContinuation
 type GoalCompletionClaim = PendingGoalContinuation & {
 	completionConfidence: "tested" | "proven"
 }
@@ -102,7 +101,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	const mutationTails = new Map<string, Promise<void>>()
 	let currentSessionId: string | undefined
 	let pendingContinuation: PendingGoalContinuation | undefined
-	let pendingTerminalFeedback: PendingGoalTerminalFeedback | undefined
+	let pendingTerminalFeedback: PendingGoalContinuation | undefined
 	let completionClaim: GoalCompletionClaim | undefined
 	let capturedConversation: CapturedGoalConversation | undefined
 	let activeTurn: PendingGoalContinuation | undefined
@@ -1141,28 +1140,48 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				})
 			}
 
-			if (result.verdict === "unavailable") {
-				const paused = setGoalStatus(evaluated, evaluated.id, evaluated.revision, "paused", now)
-				commitGoal(paused)
-				emitGoalLifecycle(GOAL_EVENTS.PAUSED, paused, { reason: "evaluator_unavailable" })
-				completionClaim = undefined
+			// Ends the run with a fixed sequence: commit (which can still throw
+			// and roll back) before the evaluation event before the lifecycle event, whose
+			// payload is read off the committed goal -- then reset per-turn state and notify.
+			// `skipEvaluationEvent` and `keepCompletionClaim` name the only two branches that
+			// deliberately diverge from this sequence, instead of leaving them as silent omissions.
+			const recordTerminalOutcome = (
+				goal: SessionGoal,
+				event: GoalEventName,
+				notify: { message: string; level: "info" | "warning" },
+				options: {
+					details?: Pick<GoalLifecyclePayload, "reason" | "continuationCount">
+					skipEvaluationEvent?: boolean
+					keepCompletionClaim?: boolean
+				} = {},
+			): void => {
+				commitGoal(goal)
+				if (!options.skipEvaluationEvent) emitEvaluation(goal)
+				emitGoalLifecycle(event, goal, options.details)
+				if (!options.keepCompletionClaim) completionClaim = undefined
 				activeSinceMs = undefined
 				invalidateContinuation()
 				syncGoalStatus(ctx)
-				ctx.ui.notify(`Goal paused: ${result.reason}`, "warning")
+				ctx.ui.notify(notify.message, notify.level)
+			}
+
+			if (result.verdict === "unavailable") {
+				const paused = setGoalStatus(evaluated, evaluated.id, evaluated.revision, "paused", now)
+				recordTerminalOutcome(
+					paused,
+					GOAL_EVENTS.PAUSED,
+					{ message: `Goal paused: ${result.reason}`, level: "warning" },
+					{ details: { reason: "evaluator_unavailable" }, skipEvaluationEvent: true },
+				)
 				return
 			}
 
 			if (result.verdict === "impossible") {
 				const blocked = setGoalStatus(evaluated, evaluated.id, evaluated.revision, "blocked", now)
-				commitGoal(blocked)
-				emitEvaluation(blocked)
-				emitGoalLifecycle(GOAL_EVENTS.BLOCKED, blocked)
-				completionClaim = undefined
-				activeSinceMs = undefined
-				invalidateContinuation()
-				syncGoalStatus(ctx)
-				ctx.ui.notify(`Goal blocked: ${result.reason}`, "warning")
+				recordTerminalOutcome(blocked, GOAL_EVENTS.BLOCKED, {
+					message: `Goal blocked: ${result.reason}`,
+					level: "warning",
+				})
 				return
 			}
 
@@ -1173,14 +1192,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 					...setGoalStatus(evaluated, evaluated.id, evaluated.revision, "complete", now),
 					...(claim ? { completionConfidence: claim.completionConfidence } : {}),
 				}
-				commitGoal(completed)
-				emitEvaluation(completed)
-				emitGoalLifecycle(GOAL_EVENTS.COMPLETED, completed)
-				completionClaim = undefined
-				activeSinceMs = undefined
-				invalidateContinuation()
-				syncGoalStatus(ctx)
-				ctx.ui.notify("Goal complete.", "info")
+				recordTerminalOutcome(completed, GOAL_EVENTS.COMPLETED, { message: "Goal complete.", level: "info" })
 				return
 			}
 
@@ -1194,15 +1206,9 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			const fingerprint = goalProgressFingerprint(evaluated, todoState, goalLessons)
 			const { maxUnchangedContinuations } = getGoalSettings()
 			const unchanged = !hadSubstantiveToolUse && fingerprint === startFingerprint ? unchangedContinuationTurns + 1 : 0
-			// Folded into the single commit below either way (setGoalUnchangedContinuationTurns
-			// is a no-op when the count didn't change). This is recorded even on the rare path
-			// where queueGoalTurn then fails to actually queue a turn: canEvaluateGoal already
-			// confirmed goal tools are available and the session is current with no await in
-			// between, so that failure is not a meaningfully different outcome here, and
-			// deferring the fold until after queueGoalTurn would mean either a second commit
-			// (breaking the "one commit per turn" invariant other tests pin) or committing
-			// after queueGoalTurn's pi.sendMessage(triggerTurn) may have already synchronously
-			// started the next turn against a stale currentGoal.
+			// Folded into the single commit below (a no-op if unchanged) rather than committed
+			// separately after queueGoalTurn: that would mean two commits per turn, and by then
+			// queueGoalTurn's pi.sendMessage(triggerTurn) may already have raced a synchronously-started next turn.
 			const withContinuationCount = setGoalUnchangedContinuationTurns(
 				evaluated,
 				evaluated.id,
@@ -1218,18 +1224,17 @@ export default function goalExtension(pi: ExtensionAPI): void {
 					"paused",
 					now,
 				)
-				commitGoal(paused)
-				emitEvaluation(paused)
-				emitGoalLifecycle(GOAL_EVENTS.STALLED, paused, {
-					reason: "no_progress",
-					continuationCount: unchanged,
-				})
-				activeSinceMs = undefined
-				invalidateContinuation()
-				syncGoalStatus(ctx)
-				ctx.ui.notify(
-					`Goal paused after ${maxUnchangedContinuations} unchanged continuation turns without substantive tool use.`,
-					"warning",
+				recordTerminalOutcome(
+					paused,
+					GOAL_EVENTS.STALLED,
+					{
+						message: `Goal paused after ${maxUnchangedContinuations} unchanged continuation turns without substantive tool use.`,
+						level: "warning",
+					},
+					{
+						details: { reason: "no_progress", continuationCount: unchanged },
+						keepCompletionClaim: true,
+					},
 				)
 				return
 			}

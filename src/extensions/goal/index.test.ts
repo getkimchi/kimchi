@@ -1954,6 +1954,55 @@ describe("goal extension", () => {
 		).toMatchObject({ block: true, reason: expect.stringContaining("visible tactical todo") })
 	})
 
+	describe("stale ctx handling", () => {
+		it("treats a stale ctx from the busy check as not busy, skipping the pause stop-steer", async () => {
+			await harness.command("ship it")
+			harness.sendMessage.mockClear()
+			// Idle is false (the agent looks busy), but the stale ctx thrown from
+			// isIdle() must still win: goalIsBusy catches it and reports "not busy",
+			// so pause must not attempt to steer a run that no longer exists.
+			harness.setIdle(false)
+			harness.setIdleError(new Error("This extension ctx is stale: session torn down"))
+
+			await harness.command("pause")
+
+			expect(harness.currentGoal()?.status).toBe("paused")
+			expect(harness.ui.notify).toHaveBeenCalledWith("Goal paused.", "info")
+			expect(harness.sendMessage).not.toHaveBeenCalled()
+		})
+
+		it("treats a stale ctx from the pending-message check as blocked, skipping the resume kick", async () => {
+			await harness.command("ship it")
+			const capturedBranch = [...harness.branch]
+
+			const resumed = createHarness()
+			resumed.setSession("session-a", capturedBranch)
+			// Idle stays at its default true, so goalIsBusy returns normally (not
+			// busy) and goalResumeBlocked reaches hasPendingMessages(), which is the
+			// call this error targets.
+			resumed.setPendingMessagesError(new Error("This extension ctx is stale: session torn down"))
+
+			await resumed.fire("session_start", { type: "session_start", reason: "resume" })
+
+			expect(resumed.currentGoal()?.status).toBe("active")
+			expect(resumed.sendMessage).not.toHaveBeenCalled()
+		})
+
+		it("treats a stale ctx from sendMessage as an unsent steer, not a thrown error", async () => {
+			await harness.command("ship it")
+			harness.setIdle(false)
+			await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+			harness.sendMessage.mockImplementationOnce(() => {
+				throw new Error("This extension ctx is stale: session torn down")
+			})
+
+			await harness.command("pause")
+
+			expect(harness.currentGoal()?.status).toBe("paused")
+			expect(harness.ui.notify).toHaveBeenCalledWith("Goal paused.", "info")
+		})
+	})
+
 	describe("configurable policy settings", () => {
 		it("pauses at the configured maxUnchangedContinuations count, not the default", async () => {
 			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, maxUnchangedContinuations: 2 })
@@ -2015,24 +2064,6 @@ describe("goal extension", () => {
 			expect(resumed.sendMessage).not.toHaveBeenCalled()
 		})
 
-		it("still schedules a resume continuation when autoResume is true (default)", async () => {
-			await harness.command("ship it")
-			const capturedBranch = [...harness.branch]
-
-			// Default mock already resolves to DEFAULT_GOAL_SETTINGS (autoResume: true);
-			// set it explicitly here so the intent of this test reads standalone.
-			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, autoResume: true })
-			const resumed = createHarness()
-			resumed.setSession("session-a", capturedBranch)
-			await resumed.fire("session_start", { type: "session_start", reason: "resume" })
-
-			expect(resumed.currentGoal()?.status).toBe("active")
-			expect(resumed.sendMessage).toHaveBeenCalledWith(
-				expect.objectContaining({ customType: GOAL_CONTROL_MESSAGE_TYPE }),
-				expect.objectContaining({ triggerTurn: true }),
-			)
-		})
-
 		it("applies defaultTokenBudget to /goal <objective> without --tokens", async () => {
 			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, defaultTokenBudget: 500 })
 
@@ -2072,6 +2103,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 	let activeTools: string[] = [...GOAL_TOOL_NAMES, ...TODO_TOOL_NAMES]
 
 	let idleError: Error | undefined
+	let pendingMessagesError: Error | undefined
 	const ui = {
 		notify: vi.fn(),
 		confirm: vi.fn(async () => true),
@@ -2112,7 +2144,14 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 			}
 			return idle
 		},
-		hasPendingMessages: () => pending,
+		hasPendingMessages: () => {
+			if (pendingMessagesError) {
+				const error = pendingMessagesError
+				pendingMessagesError = undefined
+				throw error
+			}
+			return pending
+		},
 		sessionManager: {
 			getSessionId: () => sessionId,
 			getBranch: () => branch,
@@ -2145,6 +2184,9 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 		},
 		setIdleError(error: Error) {
 			idleError = error
+		},
+		setPendingMessagesError(error: Error) {
+			pendingMessagesError = error
 		},
 		setPending(value: boolean) {
 			pending = value

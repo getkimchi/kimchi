@@ -40,10 +40,12 @@ export interface SessionGoal {
 	lastEvaluation?: GoalEvaluation
 	evaluatorUsage?: GoalEvaluatorUsage
 	/**
-	 * Runaway-loop guard counters (see MAX_CONSECUTIVE_ERROR_TURNS /
-	 * MAX_UNCHANGED_CONTINUATIONS in index.ts). Persisted so a session restart
-	 * mid-stall reseeds the in-memory guard instead of silently zeroing it —
-	 * omitted (treated as 0) whenever there's no streak to record.
+	 * Runaway-loop guard counters; the limits that trip them are
+	 * getGoalSettings().maxConsecutiveErrors / maxUnchangedContinuations
+	 * (settings.ts), user-configurable and 3 by default. Persisted so a
+	 * session restart mid-stall reseeds the in-memory guard instead of
+	 * silently zeroing it — omitted (treated as 0) whenever there's no
+	 * streak to record.
 	 */
 	consecutiveErrorTurns?: number
 	unchangedContinuationTurns?: number

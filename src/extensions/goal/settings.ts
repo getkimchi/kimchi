@@ -1,39 +1,17 @@
 /**
  * User-adjustable policy knobs for the Goal extension.
  *
- * Stored as a single namespaced object under the "goal" key in
- * ~/.config/kimchi/harness/settings.json — following the same pattern as
- * "modelRoles" (see orchestration/model-roles.ts): one tidy key rather than
- * five top-level ones.
+ * Stored under a single namespaced "goal" key in settings.json — following
+ * "modelRoles" (orchestration/model-roles.ts) rather than five top-level
+ * keys. See README.md's "Goal mode (experimental) > Settings" for an example.
  *
- * Every field is validated independently. A missing key, a malformed "goal"
- * value (wrong type, null, an array, ...), or an individual field with the
- * wrong type/shape (a string where a number belongs, 0, a negative number, a
- * float, null, ...) silently falls back to that field's default — never
- * throws, never crashes the extension, and never lets one bad field discard
- * the others.
- *
- * Read fresh on every call (no caching), matching getMultiModelEnabled's
- * convention: a user editing settings.json takes effect on the next read
- * without restarting.
+ * Read fresh on every call (no caching), matching getMultiModelEnabled: an
+ * edited settings.json takes effect without restarting.
  *
  * Deliberately NOT included here: an evaluator-model override. The "judge"
- * model role (see orchestration/model-roles.ts, resolveGoalEvaluatorModel in
- * evaluator.ts) already selects the evaluator model; a second knob here would
- * be a second source of truth for the same decision.
- *
- * Example settings.json:
- * ```json
- * {
- *   "goal": {
- *     "autoResume": true,
- *     "maxUnchangedContinuations": 3,
- *     "maxConsecutiveErrors": 3,
- *     "defaultTokenBudget": 200000,
- *     "evaluationTimeoutMs": 30000
- *   }
- * }
- * ```
+ * model role (orchestration/model-roles.ts, resolveGoalEvaluatorModel in
+ * evaluator.ts) already owns that decision — a second knob here would be a
+ * second source of truth.
  */
 
 import { readConfigSetting } from "../../config/settings.js"
@@ -94,8 +72,7 @@ export function parseGoalSettings(raw: unknown): GoalSettings {
 
 /**
  * Resolve the effective Goal settings from settings.json, merged with
- * defaults. Reads on every call (no caching) so an edited settings.json
- * takes effect without restarting -- evaluateGoal runs at most once per
+ * defaults. No caching (see header) -- evaluateGoal runs at most once per
  * settled turn and everything else here runs at most once per turn, so a
  * fresh read each time is not a meaningful cost.
  */
