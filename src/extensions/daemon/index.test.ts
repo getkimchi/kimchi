@@ -1,0 +1,48 @@
+/**
+ * Extension-level tests for the daemon extension factory.
+ *
+ * The factory is thin: register both tools on session_start, and on
+ * session_shutdown notify (TUI only) when detached daemons are still
+ * running. The shutdown notice uses the REAL default state dir by
+ * default, which would leak `~/.config/kimchi` into tests — the current
+ * API gives no seam for it. Test what's testable without that seam:
+ * registration wiring.
+ */
+import { describe, expect, it, vi } from "vitest"
+import { createContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import daemonExtension from "./index.js"
+
+describe("daemonExtension", () => {
+	it("registers daemon and daemon_control tools on session_start", () => {
+		const { api, getHandler } = createExtensionApi()
+		const registerTool = vi.mocked(api.registerTool)
+
+		daemonExtension(api)
+		getHandler("session_start")({} as never, createContext())
+
+		const names = registerTool.mock.calls.map(([tool]) => tool.name)
+		expect(names).toContain("daemon")
+		expect(names).toContain("daemon_control")
+	})
+
+	it("registers a session_shutdown handler (honesty notice, no killing)", () => {
+		const { api } = createExtensionApi()
+		daemonExtension(api)
+		const on = vi.mocked(api.on)
+		const events = on.mock.calls.map(([event]) => event)
+		expect(events).toContain("session_shutdown")
+	})
+
+	it("session_shutdown is a no-op in headless sessions", () => {
+		const { api, getHandler } = createExtensionApi()
+		daemonExtension(api)
+		const ctx = createContext({ hasUI: false })
+		const notify = vi.mocked(ctx.ui.notify)
+
+		// State dir interference would only matter with a UI; headless
+		// must never touch the UI.
+		getHandler("session_shutdown")({} as never, ctx)
+		expect(notify).not.toHaveBeenCalled()
+	})
+})

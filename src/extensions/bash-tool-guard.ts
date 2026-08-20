@@ -159,7 +159,8 @@ const EDIT_SUGGESTION = "Use the edit tool with old_string/new_string."
 const WRITE_SUGGESTION = "Use the edit tool for targeted changes or the write tool for full-file replacements."
 const BACKGROUND_SUGGESTION =
 	"Use the bash tool with a long timeout (e.g. timeout=1800) and checkin_interval (e.g. 60) for long-running commands, then drive them via bash_control. " +
-	"Do not background processes with `&`, `nohup`, or `disown` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs."
+	"Do not background processes with `&`, `nohup`, or `disown` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs. " +
+	"Managed background (bash + bash_control) is killed when the session ends; if the process must keep running after your session ends (e.g. a server someone connects to afterwards), use the `daemon` tool instead."
 
 /**
  * Replacement description for the bash tool. Keeps the original output
@@ -176,7 +177,7 @@ DO NOT use bash for: reading files (use \`read\`), editing files (use \`edit\`),
 
 DO NOT pipe output through \`tail\` or \`head\` to hide it — this buffers all output until the process ends, preventing real-time progress monitoring. Instead, let the bash tool stream output directly and set a realistic timeout. For long-running commands (builds, tests, training), set a long timeout (e.g. timeout=1800) and checkin_interval (e.g. 60), then drive the process via bash_control.
 
-DO NOT background processes with \`&\`, \`nohup\`, or \`disown\` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs. Instead, set a long timeout on the bash command so it runs in the bash tool's background mode with proper process management.
+DO NOT background processes with \`&\`, \`nohup\`, or \`disown\` — they escape the bash tool's process lifecycle and become orphaned, consuming memory until the container OOMs. Instead, set a long timeout on the bash command so it runs in the bash tool's background mode with proper process management. Managed background (timeout/checkin_interval + bash_control) is killed when the session ends — use the \`daemon\` tool instead when, and only when, a process must keep running after your session ends (e.g. a server someone connects to afterwards).
 
 Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.
 

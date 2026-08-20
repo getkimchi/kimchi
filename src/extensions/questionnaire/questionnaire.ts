@@ -193,7 +193,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 		if (ctx.hasUI) return
 		if (pi.getFlag?.("ferment-oneshot") === true) return
 		return {
-			systemPrompt: `${event.systemPrompt}\n\n## Autonomous mode\n\nYou are running in a non-interactive session with no human or judge to answer questions. Do NOT end your turn with questions or ask for confirmation — no one will respond. Make the safest reasonable decision based on the task description and proceed. If you encounter genuine ambiguity, state your assumption and continue working. Never end your turn waiting for input.`,
+			systemPrompt: `${event.systemPrompt}\n\n## Autonomous mode\n\nYou are running in a non-interactive session with no human or judge to answer questions. Do NOT end your turn with questions or ask for confirmation — no one will respond. Make the safest reasonable decision based on the task description and proceed. If you encounter genuine ambiguity, state your assumption and continue working. Never end your turn waiting for input.\n\n## Long-lived services\n\nWhen the task requires a web server or other long-lived service that a grader or user will connect to AFTER you finish, use the \`daemon\` tool to start it — managed background (bash + bash_control) and \`&\`/\`nohup\` processes are killed when the session ends, so the service would be dead by the time anyone connects.`,
 		}
 	})
 

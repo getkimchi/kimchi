@@ -338,11 +338,15 @@ describe("questionnaire environment behavior", () => {
 			| { systemPrompt: string }
 			| undefined
 
-		expect(result).toBeDefined()
-		expect(result!.systemPrompt).toContain("BASE")
-		expect(result!.systemPrompt).toContain("Autonomous mode")
-		expect(result!.systemPrompt).toContain("no human or judge")
-		expect(result!.systemPrompt).toContain("Do NOT end your turn with questions")
+		if (!result) throw new Error("expected autonomous-mode prompt injection")
+		expect(result.systemPrompt).toContain("BASE")
+		expect(result.systemPrompt).toContain("Autonomous mode")
+		expect(result.systemPrompt).toContain("no human or judge")
+		expect(result.systemPrompt).toContain("Do NOT end your turn with questions")
+		// Long-lived service guidance — drives 'daemon' tool choice over
+		// session-scoped managed background in headless runs.
+		expect(result.systemPrompt).toContain("Long-lived services")
+		expect(result.systemPrompt).toContain("daemon")
 	})
 
 	it("does not inject when UI is attached (interactive session)", () => {

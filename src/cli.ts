@@ -49,6 +49,7 @@ import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
+import daemonExtension from "./extensions/daemon/index.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
@@ -568,6 +569,10 @@ try {
 			// continue/stop decision, other tool calls are hard-blocked with a
 			// steering reason; natural process exit releases the gate.
 			bashControlExtension,
+			// Session-surviving daemons: daemon + daemon_control tools.
+			// Deliberate last resort for services that must outlive the session —
+			// session_shutdown intentionally kills nothing here.
+			daemonExtension,
 			bashToolGuardExtension,
 			bashTimeoutGuidanceExtension,
 			hiddenToolGuidanceExtension,
