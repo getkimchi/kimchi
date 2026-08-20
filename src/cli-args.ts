@@ -50,11 +50,11 @@ export function stripMultiModelArgs(args: string[]): string[] {
 		if (arg === "--multi-model") {
 			continue
 		}
-		if (arg === "--model" && i + 1 < args.length && args[i + 1] === "multi-model") {
+		if (arg === "--model" && i + 1 < args.length && args[i + 1] === MULTI_MODEL_ID) {
 			i += 1
 			continue
 		}
-		if (arg === "--model=multi-model") {
+		if (arg === `--model=${MULTI_MODEL_ID}`) {
 			continue
 		}
 		result.push(arg)
@@ -63,6 +63,9 @@ export function stripMultiModelArgs(args: string[]): string[] {
 }
 
 export type CliOptionType = "string" | "boolean"
+
+/** Virtual model id that enables multi-model orchestration mode. */
+export const MULTI_MODEL_ID = "multi-model"
 
 export interface CliOptionDef {
 	type: CliOptionType
@@ -202,6 +205,7 @@ export interface SessionCliArgs {
 	options: {
 		provider?: string
 		model?: string
+		"multi-model"?: boolean
 		thinking?: string
 		mode?: string
 		print?: boolean
@@ -244,6 +248,7 @@ for (const [name, def] of Object.entries(CLI_OPTIONS)) {
 const CACHEABLE_OPTION_NAMES = [
 	"provider",
 	"model",
+	"multi-model",
 	"thinking",
 	"mode",
 	"print",
@@ -270,9 +275,6 @@ export function parseCliArgs(args: string[]): SessionCliArgs {
 		const value = values[key]
 		if (value === undefined) continue
 		;(options as Record<string, unknown>)[key] = value
-	}
-	if (values["multi-model"] === true) {
-		options.model = "multi-model"
 	}
 	return { options, positionals }
 }

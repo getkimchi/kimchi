@@ -1,5 +1,5 @@
 import type { CustomEntry, ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent"
-import { getParsedCliArgs } from "../cli-args.js"
+import { getParsedCliArgs, MULTI_MODEL_ID } from "../cli-args.js"
 import { readConfigSetting } from "../config/settings.js"
 import { getProcessMultiModelEnabled, setProcessMultiModelEnabled } from "./kimchi-process.js"
 
@@ -20,9 +20,10 @@ export interface MultiModelResolution {
 
 const MULTI_MODEL_SESSION_ENTRY_TYPE = "multi_model_enabled"
 
-/** Whether --model (or --multi-model) was passed on the CLI. */
+/** Whether --model was passed on the CLI (including `--model multi-model`). */
 export function hasExplicitModelFlag(): boolean {
-	return getParsedCliArgs().options.model !== undefined
+	const { options } = getParsedCliArgs()
+	return !!options.model
 }
 
 /**
@@ -33,7 +34,8 @@ export function hasExplicitModelFlag(): boolean {
  * it falls back to parsing `process.argv.slice(2)`.
  */
 export function isCliMultiModelEnabled(): boolean {
-	return getParsedCliArgs().options.model === "multi-model"
+	const { options } = getParsedCliArgs()
+	return options.model === MULTI_MODEL_ID || options["multi-model"] === true
 }
 
 /** The global config default (settings.json or hardcoded true). */

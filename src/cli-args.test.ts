@@ -295,7 +295,10 @@ describe("populateCliArgs / getParsedCliArgs", () => {
 
 	it("parses --multi-model", () => {
 		populateCliArgs(["--multi-model", "fix tests"])
-		expect(getParsedCliArgs()).toEqual({ options: { model: "multi-model" }, positionals: ["fix tests"] })
+		expect(getParsedCliArgs()).toEqual({
+			options: { "multi-model": true },
+			positionals: ["fix tests"],
+		})
 	})
 
 	it("parses real --model values", () => {
@@ -310,8 +313,8 @@ describe("populateCliArgs / getParsedCliArgs", () => {
 
 	it("reuses the cached parse across calls", () => {
 		populateCliArgs(["--multi-model"])
-		expect(getParsedCliArgs()).toEqual({ options: { model: "multi-model" }, positionals: [] })
+		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
 		// Subsequent calls return the same cached result without re-parsing.
-		expect(getParsedCliArgs()).toEqual({ options: { model: "multi-model" }, positionals: [] })
+		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
 	})
 })
