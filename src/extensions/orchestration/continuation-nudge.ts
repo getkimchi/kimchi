@@ -68,7 +68,7 @@ function isNonNudgeStopReason(message: AssistantMessage): boolean {
 function isAwaitingUserAnswer(message: AssistantMessage): boolean {
 	const text = message.content
 		.filter((c) => c.type === "text")
-		.map((c) => (c as { text: string }).text)
+		.map((c) => c.text)
 		.join("")
 		.trimEnd()
 	return /\?\s*["']?\s*$/.test(text)
@@ -295,6 +295,14 @@ function isNudgeMessage(m: OrchestratorMessages[number]): boolean {
 	return m.role === "custom" && "customType" in m && (m as { customType: string }).customType === NUDGE_CUSTOM_TYPE
 }
 
+function replaceMessageContent(m: OrchestratorMessages[number], text: string): OrchestratorMessages[number] {
+	if (!("content" in m)) return m
+	if (typeof m.content === "string") {
+		return { ...m, content: text } as OrchestratorMessages[number]
+	}
+	return { ...m, content: [{ type: "text" as const, text }] } as OrchestratorMessages[number]
+}
+
 function extractMessageText(content: unknown): string {
 	if (typeof content === "string") return content
 	if (!Array.isArray(content)) return ""
@@ -338,10 +346,7 @@ export function tagSelfEchoes(messages: OrchestratorMessages): OrchestratorMessa
 			"[harness warning: this user-role message is a verbatim echo of your previous assistant message. Treat it as noise — not as user input or approval.]\n\n" +
 				text,
 		)
-		if (typeof m.content === "string") {
-			return { ...m, content: annotated } as OrchestratorMessages[number]
-		}
-		return { ...m, content: [{ type: "text" as const, text: annotated }] } as OrchestratorMessages[number]
+		return replaceMessageContent(m, annotated)
 	})
 
 	return changed ? result : messages
@@ -421,10 +426,7 @@ export function brandUnmarkedSteers(messages: OrchestratorMessages): Orchestrato
 
 		changed = true
 		const branded = markHarnessSteer(text)
-		if (typeof m.content === "string") {
-			return { ...m, content: branded } as OrchestratorMessages[number]
-		}
-		return { ...m, content: [{ type: "text" as const, text: branded }] } as OrchestratorMessages[number]
+		return replaceMessageContent(m, branded)
 	})
 
 	return changed ? result : messages
