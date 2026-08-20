@@ -115,6 +115,30 @@ const PLAN_MODE_TOOLS = [
 	"questionnaire",
 	"bash",
 	...TODO_TOOL_NAMES,
+	// DAP debugger tools — available in plan mode by product decision: the
+	// debugger is the fastest way to investigate an issue the user is asking
+	// to plan a fix for. NOTE: this is NOT a read-only allowance —
+	// debug_launch executes the program (with args/env) and debug_eval runs
+	// arbitrary expressions in the debuggee, so plan mode can observe runtime
+	// behavior at the cost of executing user code. This mirrors how plan mode
+	// already permits read-only bash probing; side effects of the debuggee
+	// itself are out of scope for the gate.
+	"debug_launch",
+	"debug_set_breakpoint",
+	"debug_continue",
+	"debug_locals",
+	"debug_eval",
+	"debug_backtrace",
+	"debug_terminate",
+	"step_in",
+	"step_over",
+	"step_out",
+	"debug_state_at",
+	"debug_last_error",
+	"debug_trace_calls",
+	"debug_watch_change",
+	"debug_set_variable",
+	"debug_restart",
 ]
 const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 

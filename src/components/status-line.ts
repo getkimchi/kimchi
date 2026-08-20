@@ -31,6 +31,7 @@ type SegmentId =
 	| "credits"
 	| "budget"
 	| "lsp"
+	| "dap"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -502,6 +503,17 @@ export class StatusLine implements Component {
 		return { id: "lsp", text, width: visibleWidth(text) }
 	}
 
+	private dapSegment(): Segment | null {
+		const dapStatus = this.statusLineData.getExtensionStatuses().get("dap")
+		if (!dapStatus) return null
+		const colonIdx = dapStatus.indexOf(":")
+		if (colonIdx === -1) return { id: "dap", text: this.accent(dapStatus), width: visibleWidth(dapStatus) }
+		const label = this.dim(dapStatus.slice(0, colonIdx + 1))
+		const value = dapStatus.slice(colonIdx + 1).trimStart()
+		const text = value.length > 0 ? `${label} ${this.accent(value)}` : label
+		return { id: "dap", text, width: visibleWidth(text) }
+	}
+
 	private creditsSegment(pinned = false): Segment | null {
 		if (!pinned) return null
 		const amount = getBillingStatusLine()?.amount
@@ -594,6 +606,7 @@ export class StatusLine implements Component {
 			this.tagsSegment(tags, pinnedSet.has("tags")),
 			this.teamSegment(tags, pinnedSet.has("team")),
 			this.lspSegment(),
+			this.dapSegment(),
 		].filter((s): s is Segment => s !== null)
 
 		const unpinnedSegments = allSegments.filter((s) => !pinnedSet.has(s.id))
