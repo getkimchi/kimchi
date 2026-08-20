@@ -967,6 +967,16 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
     error_evidence = extract_error_evidence(result, trial_dir, session_files, warnings, error_subcategory)
     error_message = error_evidence.text or exception_message
     total_time_seconds = trial_total_time(result, session_scan)
+
+    # The exported per-attempt score reflects the classified verdict, not the
+    # raw verifier payload: an error-interrupted or timed-out attempt exports
+    # score=null so external consumers never read a contradictory
+    # "verdict": "error", "score": 1.0 as pass evidence. The untouched raw
+    # verifier reward remains in result.json as the audit source.
+    exported_reward = (
+        reward if outcome in (Outcome.SCORED_PASS, Outcome.SCORED_FAIL) else None
+    )
+
     # Prefer task_name from result.json (full name for swe-bench-pro, which
     # contains "__"). Strip any "source/" prefix Harbor adds (e.g.
     # "terminal-bench/sample-task"). Fall back to the trial dir name for
@@ -992,8 +1002,8 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
         task=task,
         trial_id=trial_dir.name,
         attempt=attempt,
-        solved=reward == PASS_REWARD,
-        reward=reward,
+        solved=outcome == Outcome.SCORED_PASS,
+        reward=exported_reward,
         exception=exception,
         exception_message=error_message,
         total_time_seconds=total_time_seconds,

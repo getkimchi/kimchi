@@ -54,6 +54,27 @@ VERIFIER_MISSING_REWARD_SUBCATEGORY = "verifier_missing_reward"
 TRIAL_LOG_MISSING_SUBCATEGORY = "trial_log_missing"
 TRIAL_CANCELLED_SUBCATEGORY = "trial_cancelled"
 MOONSHOT_QUOTA_EXCEEDED_SUBCATEGORY = "moonshot_quota_exceeded"
+USAGE_LIMIT_EXCEEDED_SUBCATEGORY = "usage_limit_exceeded"
+
+# Harbor 0.18's serialized NonZeroAgentExitCodeError subclass names — result.json
+# preserves only the concrete exception name — plus the project-defined
+# KimchiExitError / PiExitError subclasses that Harbor/Pier catch through the
+# same base-class contract. If Harbor/Pier or a project adapter adds a new
+# concrete NonZero subclass, add its serialized name here and update its tests;
+# a missing name classifies as teardown-style and its score incorrectly stands.
+_NONZERO_EXIT_FAMILY: frozenset[str] = frozenset({
+    "NonZeroAgentExitCodeError",
+    "ApiError",
+    "ApiRateLimitError",
+    "ApiUsageLimitError",
+    "ApiInternalServerError",
+    "ApiOverloadedError",
+    "ApiConnectionClosedError",
+    "UnknownApiError",
+    "NetworkConnectionError",
+    "KimchiExitError",
+    "PiExitError",
+})
 
 # The only model-name provider whose quota exhaustion is retryable today:
 # the native moonshotai/* account has a top-up mechanism that resolves
@@ -116,21 +137,48 @@ class ErrorRule:
     marker_groups: tuple[tuple[str, ...], ...] = field(default_factory=tuple)
     providers: tuple[str, ...] | None = None
 
-    def matches(self, context: TrialErrorContext) -> bool:
-        if self.providers is not None and context.provider not in self.providers:
+    def _provider_matches(self, context: TrialErrorContext) -> bool:
+        return self.providers is None or context.provider in self.providers
+
+    def matches_structured(self, context: TrialErrorContext) -> bool:
+        """Match only exception type / exit code fields."""
+        if not self._provider_matches(context):
             return False
-        has_structured_matchers = bool(self.exception_types or self.exit_codes)
+        if not (self.exception_types or self.exit_codes):
+            return False
         type_matches = not self.exception_types or context.exception_type in self.exception_types
         exit_code_matches = not self.exit_codes or context.exit_code in self.exit_codes
-        if has_structured_matchers and type_matches and exit_code_matches:
-            return True
+        return type_matches and exit_code_matches
+
+    def matches_markers(self, context: TrialErrorContext) -> bool:
+        """Match only text marker groups."""
+        if not self._provider_matches(context):
+            return False
         return any(context.contains_all(*group) for group in self.marker_groups)
+
+    def matches(self, context: TrialErrorContext) -> bool:
+        return self.matches_structured(context) or self.matches_markers(context)
 
 
 # Exception-type rules are listed first so they take priority over text-pattern rules
 # when both could match the same result (e.g. ConnectionError exception type vs
 # socket-pattern text in agent_transport_error).
 ERROR_RULES: tuple[ErrorRule, ...] = (
+    # ── Trial lifecycle / verifier artifact signals (typed) ──────────────────────
+    ErrorRule(
+        kind=TRIAL_CANCELLED_SUBCATEGORY,
+        outcome=Outcome.ERROR,
+        error_category="infra",
+        exception_types=("CancelledError",),
+        evidence_markers=("cancelled",),
+    ),
+    ErrorRule(
+        kind=VERIFIER_MISSING_REWARD_SUBCATEGORY,
+        outcome=Outcome.ERROR,
+        error_category="infra",
+        exception_types=("RewardFileNotFoundError",),
+        evidence_markers=("reward file not found",),
+    ),
     # ── Harbor task timeout (agent was running, Harbor killed it) ────────────────
     ErrorRule(
         kind="agent_timeout",
@@ -170,7 +218,7 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
             "ConnectionError", "TimeoutError", "NetworkError", "HTTPError",
             "RequestException", "SSLError", "RateLimitError",
             "APIConnectionError", "APITimeoutError",
-            "NetworkConnectionError",
+            "NetworkConnectionError", "ApiRateLimitError",
         ),
         evidence_markers=("connection", "network", "timeout", "ssl", "rate limit"),
     ),
@@ -308,6 +356,23 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
             "suspended due to insufficient balance",
         ),
     ),
+    # ── Z.AI 5-hour windowed quota 429 (terminal infra, non-retryable) ──────────
+    ErrorRule(
+        kind=USAGE_LIMIT_EXCEEDED_SUBCATEGORY,
+        outcome=Outcome.ERROR,
+        error_category="infra",
+        # Z.AI's windowed account quota carries a stable [1308] code and the
+        # "usage limit reached for" phrasing. Deliberately ungated on provider:
+        # retry never depends on provenance here (unlike moonshot). Matches
+        # neither transient [1302] per-minute limits nor Claude's "usage limit
+        # reached." (no "for"), nor moonshot's rate_limit_reached_error TPM
+        # body. Must stay before the generic budget rule.
+        marker_groups=(
+            ("[1308]",),
+            ("usage limit reached for",),
+        ),
+        evidence_markers=("[1308]", "usage limit reached for"),
+    ),
     # ── Provider budget / quota errors (direct exception type or in captured stdout) ──
     ErrorRule(
         kind=API_KEY_BUDGET_EXCEEDED_SUBCATEGORY,
@@ -380,10 +445,14 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
         ),
         evidence_markers=("killed", "exit 137", "exit 143"),
     ),
+    # The 404 "may not exist / may not have access" comes from the provider
+    # rejecting the requested preset — a run-configuration failure, not agent
+    # quality. Terminal infra so chunks don't burn tokens on a deterministically
+    # broken config.
     ErrorRule(
         kind="model_access_error",
         outcome=Outcome.ERROR,
-        error_category="agent",
+        error_category="infra",
         marker_groups=(("may not exist", "may not have access"),),
         evidence_markers=("may not exist", "may not have access"),
     ),
@@ -857,79 +926,143 @@ _BUDGET_ERROR_EXACT_MESSAGE = (
 _MOONSHOT_BUDGET_ERROR_TYPE = "exceeded_current_quota_error"
 
 
-def _session_budget_error_subcategory(trial_dir: Path, provider: str | None) -> str | None:
-    """Return the budget/quota subcategory when an agent session message marks one.
+def _terminal_assistant_error_message(entries: list[dict]) -> str | None:
+    """The driving session's terminal assistant error, or None.
 
-    Conservative: matches the verbatim errorMessage string the anthropic provider
-    returns on a 429 spend limit (ungated), or moonshot's machine-readable
-    suspension type code — but only when the trial's configured provider is
-    proven moonshotai (top-up makes that account recoverable; any other
-    provenance is not retried) — never free-form prose like "budget" or
-    "balance". False positives would re-classify legitimate timeouts as budget
-    errors, so we trade off missing other providers' budget wording for precision.
+    A provider error is a wall-clock timeout's cause only when it is the
+    session's terminal assistant error (stopReason == "error") with no later
+    successful assistant or tool-result progress. An earlier error the agent
+    recovered from does not prove the cutoff was budget-blocked.
+    """
+    candidate: str | None = None
+    for entry in entries:
+        if entry.get("type") != "message":
+            continue
+        message = entry.get("message")
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "assistant":
+            if message.get("stopReason") == "error":
+                error_message = message.get("errorMessage")
+                candidate = error_message if isinstance(error_message, str) else None
+            else:
+                # Successful assistant progress after an earlier error.
+                candidate = None
+        elif role == "toolResult":
+            candidate = None
+    return candidate
+
+
+def _session_budget_error_subcategory(trial_dir: Path, provider: str | None) -> str | None:
+    """Return the budget/quota subcategory when the driving session shows one.
+
+    Conservative and terminal-state-based: inspects only the driving session
+    selected by the same policy as the timeout analysis (main.jsonl, else the
+    workflow orchestrator, else the best single-session fallback), and refines
+    only when the session's terminal assistant error matches. A matching error
+    in a non-driving subagent session, or one followed by recovered progress,
+    does not prove the timeout was budget-blocked.
+
+    Matchers: the verbatim errorMessage the anthropic provider returns on a 429
+    spend limit (ungated); Z.AI's windowed-quota [1308] code / "usage limit
+    reached for" phrasing (ungated); moonshot's machine-readable suspension
+    type code — only when the trial's configured provider is proven moonshotai
+    (top-up makes that account recoverable; any other provenance is not
+    retried). Never free-form prose like "budget" or "balance": false
+    positives would re-classify legitimate timeouts as budget errors, so we
+    trade off missing other providers' wording for precision.
 
     When non-None, an AGENT_TIMEOUT verdict should be re-classified as ERROR/infra
     with this subcategory: the agent didn't time out because it was slow — it was
     blocked on a budget error and kept retrying until Harbor killed it for
     exceeding the wall-clock limit.
     """
-    for entry in _iter_session_jsonl(trial_dir):
-        error_message = _get_path(entry, "message", "errorMessage")
-        if error_message == _BUDGET_ERROR_EXACT_MESSAGE:
-            return API_KEY_BUDGET_EXCEEDED_SUBCATEGORY
-        if (
-            provider == _MOONSHOT_PROVIDER
-            and isinstance(error_message, str)
-            and _MOONSHOT_BUDGET_ERROR_TYPE in error_message
-        ):
-            return MOONSHOT_QUOTA_EXCEEDED_SUBCATEGORY
+    error_message = _terminal_assistant_error_message(_timeout_session_entries(trial_dir))
+    if error_message is None:
+        return None
+    if error_message == _BUDGET_ERROR_EXACT_MESSAGE:
+        return API_KEY_BUDGET_EXCEEDED_SUBCATEGORY
+    if "[1308]" in error_message or "usage limit reached for" in error_message.casefold():
+        return USAGE_LIMIT_EXCEEDED_SUBCATEGORY
+    if provider == _MOONSHOT_PROVIDER and _MOONSHOT_BUDGET_ERROR_TYPE in error_message:
+        return MOONSHOT_QUOTA_EXCEEDED_SUBCATEGORY
     return None
 
 
-def _classify_exception(trial_dir: Path, result: dict, reward: float | None) -> Verdict:
-    context = _build_error_context(trial_dir, result)
-    for rule in ERROR_RULES:
-        # Docker causality is handled before this function using structured
-        # exception fields and ordered trial.log evidence. Agent transcripts
-        # may mention Docker errors without making them the trial's cause.
-        if rule.kind == DOCKER_DAEMON_UNREACHABLE_SUBCATEGORY:
-            continue
-        if rule.matches(context):
-            # A generic agent_timeout that was actually caused by a budget error is re-classified
-            # before the Verdict is constructed. Keep the budget-specific subcategory visible while
-            # retaining error_category="infra" for retry behavior.
-            budget_subcategory = (
-                _session_budget_error_subcategory(trial_dir, context.provider)
-                if rule.outcome == Outcome.AGENT_TIMEOUT
-                else None
-            )
-            if budget_subcategory is not None:
-                return Verdict(
-                    outcome=Outcome.ERROR,
-                    error_category="infra",
-                    error_subcategory=budget_subcategory,
-                    reward=reward,
-                    raw=result,
-                )
-
-            if rule.outcome == Outcome.AGENT_TIMEOUT:
-                # Inspect the agent session JSONL to locate where the timeout
-                # happened (model API, tool executor, subagent dispatch, etc.).
-                # The cause lives in raw["agent_timeout_analysis"]; subcategory
-                # stays None so consumers don't conflate it with retry buckets.
-                analysis = _analyze_agent_timeout(trial_dir, result)
-                result = {**result, "agent_timeout_analysis": analysis}
-                subcategory: str | None = None
-            else:
-                subcategory = rule.kind
-
+def _verdict_for_rule(
+    trial_dir: Path,
+    result: dict,
+    rule: ErrorRule,
+    context: TrialErrorContext,
+    reward: float | None,
+) -> Verdict:
+    """Build the Verdict for a matched rule, refining timeouts by session evidence."""
+    if rule.outcome == Outcome.AGENT_TIMEOUT:
+        # A generic agent_timeout that was actually caused by a budget error is re-classified
+        # before the Verdict is constructed. Keep the budget-specific subcategory visible while
+        # retaining error_category="infra" for retry behavior.
+        budget_subcategory = _session_budget_error_subcategory(trial_dir, context.provider)
+        if budget_subcategory is not None:
             return Verdict(
-                outcome=rule.outcome,
-                error_category=rule.error_category,
-                error_subcategory=subcategory,
+                outcome=Outcome.ERROR,
+                error_category="infra",
+                error_subcategory=budget_subcategory,
                 reward=reward,
                 raw=result,
             )
+        # Inspect the agent session JSONL to locate where the timeout
+        # happened (model API, tool executor, subagent dispatch, etc.).
+        # The cause lives in raw["agent_timeout_analysis"]; subcategory
+        # stays None so consumers don't conflate it with retry buckets.
+        analysis = _analyze_agent_timeout(trial_dir, result)
+        result = {**result, "agent_timeout_analysis": analysis}
+        subcategory: str | None = None
+    else:
+        subcategory = rule.kind
+
+    return Verdict(
+        outcome=rule.outcome,
+        error_category=rule.error_category,
+        error_subcategory=subcategory,
+        reward=reward,
+        raw=result,
+    )
+
+
+def _classify_exception(trial_dir: Path, result: dict, reward: float | None) -> Verdict:
+    """Single cause engine for both reward populations.
+
+    Passes, in precedence order:
+      1. Typed rules (exception type / exit code) against the full error context.
+      2. The DOCKER_DAEMON_UNREACHABLE rule against structured exception fields
+         (type / message / traceback from result.json) only — a docker mention
+         in an agent transcript is never treated as causal.
+      3. Remaining text-pattern rules against the full error context.
+      4. The phase fallback for unrecognized exceptions.
+    """
+    context = _build_error_context(trial_dir, result)
+    structured_context = _build_structured_error_context(result)
+
+    typed_rules: list[ErrorRule] = []
+    docker_rule: ErrorRule | None = None
+    for rule in ERROR_RULES:
+        if rule.kind == DOCKER_DAEMON_UNREACHABLE_SUBCATEGORY:
+            docker_rule = rule
+        elif rule.exception_types or rule.exit_codes:
+            typed_rules.append(rule)
+
+    for rule in typed_rules:
+        if rule.matches_structured(context):
+            return _verdict_for_rule(trial_dir, result, rule, context, reward)
+
+    assert docker_rule is not None  # ERROR_RULES always carries the docker rule
+    if docker_rule.matches_markers(structured_context):
+        return _verdict_for_rule(trial_dir, result, docker_rule, context, reward)
+
+    for rule in ERROR_RULES:
+        if rule is not docker_rule and rule.matches_markers(context):
+            return _verdict_for_rule(trial_dir, result, rule, context, reward)
 
     # An unrecognized verifier failure without a numeric reward is not meaningful
     # pass@k evidence. Preserve primary agent failures, but retry an incomplete
@@ -947,6 +1080,30 @@ def _classify_exception(trial_dir: Path, result: dict, reward: float | None) -> 
         outcome=Outcome.ERROR,
         error_category="agent",
         error_subcategory=f"{phase}_failed",
+        reward=reward,
+        raw=result,
+    )
+
+
+def _agent_execution_ended_exceptionally(result: dict) -> bool:
+    """Whether the agent attempt terminated on an agent-execution exception.
+
+    In Harbor 0.18, AgentTimeoutError and the NonZeroAgentExitCodeError family
+    are raised only from agent execution and caught only in
+    SingleStepTrial._run_agent, so their coexistence with a verifier reward is
+    structural proof the verifier graded a timeout-cutoff or error-interrupted
+    workspace. Any other exception type coexisting with a reward is a
+    post-verifier teardown/cleanup failure, not an interrupted attempt.
+    """
+    exception_type = _get_path(result, "exception_info", "exception_type")
+    return exception_type == "AgentTimeoutError" or exception_type in _NONZERO_EXIT_FAMILY
+
+
+def _scored_verdict(reward: float, result: dict) -> Verdict:
+    return Verdict(
+        outcome=Outcome.SCORED_PASS if reward == 1.0 else Outcome.SCORED_FAIL,
+        error_category=None,
+        error_subcategory=None,
         reward=reward,
         raw=result,
     )
@@ -989,15 +1146,25 @@ def classify(trial_dir: Path) -> Verdict:
     reward = _reward(result)
 
     if reward is not None:
-        # A numeric verifier result is authoritative. Docker teardown and other
-        # cleanup failures cannot overwrite a completed pass or scored failure.
-        return Verdict(
-            outcome=Outcome.SCORED_PASS if reward == 1.0 else Outcome.SCORED_FAIL,
-            error_category=None,
-            error_subcategory=None,
-            reward=reward,
-            raw=result,
-        )
+        if exception_info is not None and _agent_execution_ended_exceptionally(result):
+            # The verifier graded a workspace the agent could not finish: a
+            # clean wall-clock timeout is the benchmark's intentional scored
+            # cutoff and keeps its score, but an error-interrupted attempt
+            # (budget 429 mid-run, transport drop, daemon death) is not
+            # legitimate pass@k evidence — classify the cause and discard the
+            # reward. Exceptions outside the agent-execution families are
+            # post-verifier teardown/cleanup and never overwrite a score.
+            verdict = _classify_exception(trial_dir, result, reward)
+            if verdict.outcome == Outcome.AGENT_TIMEOUT:
+                return _scored_verdict(reward, result)
+            return Verdict(
+                outcome=verdict.outcome,
+                error_category=verdict.error_category,
+                error_subcategory=verdict.error_subcategory,
+                reward=None,
+                raw=verdict.raw,
+            )
+        return _scored_verdict(reward, result)
 
     log_evidence = _read_trial_log_evidence(trial_dir)
     if log_evidence.status == "missing":
@@ -1010,30 +1177,6 @@ def classify(trial_dir: Path) -> Verdict:
         )
 
     if exception_info is not None:
-        exception_type = _get_path(result, "exception_info", "exception_type")
-        context = _build_structured_error_context(result)
-        structured_docker_rule = next(
-            rule
-            for rule in ERROR_RULES
-            if rule.kind == DOCKER_DAEMON_UNREACHABLE_SUBCATEGORY
-        )
-        if structured_docker_rule.matches(context):
-            return _infra_verdict(
-                result,
-                reward,
-                DOCKER_DAEMON_UNREACHABLE_SUBCATEGORY,
-            )
-
-        if exception_type == "CancelledError":
-            return _infra_verdict(result, reward, TRIAL_CANCELLED_SUBCATEGORY)
-
-        if exception_type == "RewardFileNotFoundError":
-            return _infra_verdict(
-                result,
-                reward,
-                VERIFIER_MISSING_REWARD_SUBCATEGORY,
-            )
-
         return _classify_exception(trial_dir, result, reward)
 
     # A verifier result without the benchmark's numeric reward is incomplete,

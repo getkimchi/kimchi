@@ -10,12 +10,23 @@ from unittest.mock import patch
 import pytest
 
 from bench_config import is_retryable
-from classify import ERROR_RULES, Verdict, classify
+from classify import ERROR_RULES, Verdict, _classify_exception, classify
 from outcome import Outcome
 
 API_KEY_BUDGET_EXCEEDED = "api_key_budget_exceeded"
 TRIAL_CANCELLED = "trial_cancelled"
 MOONSHOT_QUOTA_EXCEEDED = "moonshot_quota_exceeded"
+USAGE_LIMIT_EXCEEDED = "usage_limit_exceeded"
+# Z.AI's 5-hour windowed account quota 429 (verbatim shape from traced runs).
+_ZAI_USAGE_LIMIT_429 = (
+    "API Error: Request rejected (429) · [1308][Usage limit reached for 5 hour. "
+    "Your limit will reset at 2026-08-14 15:00:00]"
+)
+# Z.AI's transient per-minute rate limit — explicitly NOT the windowed quota.
+_ZAI_TRANSIENT_1302_429 = (
+    "API Error: Request rejected (429) · [1302][Rate limit reached for requests. "
+    "Please try again later]"
+)
 _BUDGET_ERROR_EXACT_MESSAGE = (
     '429 "API key has reached its spend limit.\\n'
     "Increase the budget in the console or contact your "
@@ -191,8 +202,8 @@ RESULT_JSON_CASES = [
             "KIMCHI_INFRA_ERROR: provider transport failure; exiting with code 74",
             reward=1.0,
         ),
-        {"outcome": "scored_pass", "error_category": None, "error_subcategory": None, "reward": 1.0},
-        id="infra-marker-after-success-is-terminal-pass",
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "kimchi_infra_exit", "reward": None},
+        id="infra-marker-interrupted-attempt-discards-reward",
     ),
     pytest.param(
         _exception_payload("NonZeroAgentExitCodeError", "Command failed (exit 137): /installed-agent/bin/kimchi"),
@@ -204,7 +215,7 @@ RESULT_JSON_CASES = [
             "UnknownApiError",
             "It may not exist or you may not have access to it. Run --model to pick a different model.",
         ),
-        {"outcome": "error", "error_category": "agent", "error_subcategory": "model_access_error"},
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "model_access_error"},
         id="model-access-error",
     ),
     # Verbatim failure string from the 2026-08-05 DinD outage: harbor wraps the
@@ -333,6 +344,134 @@ RESULT_JSON_CASES = [
         {"outcome": "error", "error_category": "infra", "error_subcategory": "kimchi_infra_exit"},
         id="moonshot-tpm-rate-limit-is-not-budget",
     ),
+    # ── Reward-present + exception matrix (score discard policy) ────────────────
+    # Teardown/cleanup exceptions (outside the agent-execution families) never
+    # overwrite a completed score.
+    pytest.param(
+        _exception_payload("RuntimeError", "docker compose down failed", reward=1.0),
+        {"outcome": "scored_pass", "error_category": None, "error_subcategory": None, "reward": 1.0},
+        id="teardown-runtime-error-keeps-score",
+    ),
+    # Transient-429 process death is retryable infra in both reward populations.
+    pytest.param(
+        _exception_payload("ApiRateLimitError", "429 too many requests"),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "infra_network_error"},
+        id="api-rate-limit-error",
+    ),
+    pytest.param(
+        _exception_payload("ApiRateLimitError", "429 too many requests", reward=0.0),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "infra_network_error", "reward": None},
+        id="api-rate-limit-error-discards-reward",
+    ),
+    # Z.AI windowed-quota 429 captured by the NonZero wrapper: terminal infra,
+    # ungated on provider, reward discarded.
+    pytest.param(
+        _exception_payload(
+            "NonZeroAgentExitCodeError",
+            f"Command failed (exit 1): opencode run\nstdout: {_ZAI_USAGE_LIMIT_429}",
+            model_name="zai/glm-5",
+        ),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": USAGE_LIMIT_EXCEEDED},
+        id="zai-usage-limit",
+    ),
+    pytest.param(
+        _exception_payload(
+            "NonZeroAgentExitCodeError",
+            f"Command failed (exit 1): opencode run\nstdout: {_ZAI_USAGE_LIMIT_429}",
+            reward=1.0,
+            model_name="zai/glm-5",
+        ),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": USAGE_LIMIT_EXCEEDED, "reward": None},
+        id="zai-usage-limit-discards-reward",
+    ),
+    pytest.param(
+        _exception_payload(
+            "NonZeroAgentExitCodeError",
+            f"Command failed (exit 1): opencode run\nstdout: {_ZAI_USAGE_LIMIT_429}",
+            reward=0.0,
+        ),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": USAGE_LIMIT_EXCEEDED, "reward": None},
+        id="zai-usage-limit-no-provider-discards-reward",
+    ),
+    # Transient [1302] per-minute rate limits are NOT the windowed quota.
+    pytest.param(
+        _exception_payload(
+            "NonZeroAgentExitCodeError",
+            f"Command failed (exit 1): opencode run\nstdout: {_ZAI_TRANSIENT_1302_429}",
+            reward=1.0,
+        ),
+        {"outcome": "error", "error_category": "agent", "error_subcategory": "unknown_failed", "reward": None},
+        id="zai-transient-1302-not-usage-limit",
+    ),
+    # Typed budget exception with a verifier reward: discarded, non-retryable.
+    pytest.param(
+        _exception_payload("ApiUsageLimitError", "403 Key limit exceeded (total limit)", reward=0.0),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": API_KEY_BUDGET_EXCEEDED, "reward": None},
+        id="openrouter-key-limit-discards-reward",
+    ),
+    # Structured docker-daemon marker in a NonZero wrapper: retryable infra,
+    # reward discarded.
+    pytest.param(
+        _exception_payload(
+            "NonZeroAgentExitCodeError",
+            "Command failed (exit 1): Cannot connect to the Docker daemon at tcp://docker:2375",
+            reward=1.0,
+        ),
+        {
+            "outcome": "error",
+            "error_category": "infra",
+            "error_subcategory": "docker_daemon_unreachable",
+            "reward": None,
+        },
+        id="nonzero-docker-daemon-discards-reward",
+    ),
+    # Agent-caused error-interruption: discarded under the agent bucket.
+    pytest.param(
+        _exception_payload(
+            "NonZeroAgentExitCodeError",
+            "error: This extension ctx is stale after session replacement",
+            reward=0.0,
+        ),
+        {
+            "outcome": "error",
+            "error_category": "agent",
+            "error_subcategory": "agent_stale_extension_context",
+            "reward": None,
+        },
+        id="stale-context-discards-reward",
+    ),
+    pytest.param(
+        {
+            **_exception_payload(
+                "NonZeroAgentExitCodeError",
+                "Command failed (exit 1): /installed-agent/bin/kimchi --print",
+                reward=0.0,
+            ),
+            "agent_execution": {"started_at": "2026-08-10T20:00:00Z"},
+        },
+        {"outcome": "error", "error_category": "agent", "error_subcategory": "agent_execution_failed", "reward": None},
+        id="nonzero-exit-1-no-markers-discards-reward",
+    ),
+    # Project-defined NonZero subclasses discard their reward as well.
+    pytest.param(
+        _exception_payload("KimchiExitError", "Kimchi exited with code 255", reward=1.0),
+        {"outcome": "error", "error_category": "agent", "error_subcategory": "unknown_failed", "reward": None},
+        id="kimchi-exit-error-discards-reward",
+    ),
+    pytest.param(
+        _exception_payload("PiExitError", "Pi exited with code 255", reward=1.0),
+        {"outcome": "error", "error_category": "agent", "error_subcategory": "unknown_failed", "reward": None},
+        id="pi-exit-error-discards-reward",
+    ),
+    # Typed rules take precedence over docker-daemon text causality.
+    pytest.param(
+        _exception_payload(
+            "CancelledError",
+            "trial cancelled: Cannot connect to the Docker daemon at tcp://docker:2375",
+        ),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": TRIAL_CANCELLED},
+        id="cancelled-with-daemon-text-stays-trial-cancelled",
+    ),
 ]
 
 
@@ -373,6 +512,57 @@ def test_docker_daemon_unreachable_is_retryable(tmp_results_dir: Path) -> None:
     verdict = classify(trial)
 
     assert is_retryable(verdict.outcome, verdict.error_category, verdict.error_subcategory)
+
+
+def test_classify_exception_matches_structured_docker_daemon_error(
+    tmp_results_dir: Path,
+) -> None:
+    """The shared cause engine classifies structured daemon evidence directly."""
+    trial = tmp_results_dir / "run-1" / "case__docker_cause_engine"
+    result = {
+        "exception_info": {
+            "exception_type": "RuntimeError",
+            "exception_message": (
+                "Cannot connect to the Docker daemon at tcp://docker:2375"
+            ),
+        },
+        "environment_setup": {},
+    }
+    _write_result(trial, result)
+
+    verdict = _classify_exception(trial, result, None)
+
+    assert verdict.outcome == Outcome.ERROR
+    assert verdict.error_category == "infra"
+    assert verdict.error_subcategory == "docker_daemon_unreachable"
+
+
+def test_structured_docker_error_precedes_transcript_budget_marker(
+    tmp_results_dir: Path,
+) -> None:
+    """Marker fallbacks cannot override structured Docker causality."""
+    trial = tmp_results_dir / "run-1" / "case__docker_with_transcript_noise"
+    _write_result(
+        trial,
+        _exception_payload(
+            "NonZeroAgentExitCodeError",
+            "Command failed (exit 1): Cannot connect to the Docker daemon at tcp://docker:2375",
+            reward=1.0,
+        ),
+    )
+    agent_dir = trial / "agent"
+    agent_dir.mkdir()
+    (agent_dir / "opencode.txt").write_text(
+        "Earlier recoverable request failed with insufficient credits",
+        encoding="utf-8",
+    )
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == Outcome.ERROR
+    assert verdict.error_category == "infra"
+    assert verdict.error_subcategory == "docker_daemon_unreachable"
+    assert verdict.reward is None
 
 
 def test_reviewed_docker_daemon_classification_manifest(tmp_results_dir: Path) -> None:
@@ -601,10 +791,14 @@ def test_numeric_reward_overrides_cancelled_exception(tmp_results_dir: Path) -> 
     )
 
 
-def _write_session(trial_dir: Path, entries: list[dict]) -> None:
+def _write_session(
+    trial_dir: Path,
+    entries: list[dict],
+    filename: str = "main.jsonl",
+) -> None:
     session_dir = trial_dir / "agent" / "sessions"
     session_dir.mkdir(parents=True, exist_ok=True)
-    with (session_dir / "main.jsonl").open("w", encoding="utf-8") as fh:
+    with (session_dir / filename).open("w", encoding="utf-8") as fh:
         for e in entries:
             fh.write(json.dumps(e) + "\n")
 
@@ -781,11 +975,15 @@ def test_error_rules_outcomes_are_consistent() -> None:
 # ── error/infra — API key budget (agent timed out because of budget) ─────────────
 
 
-def _write_session_message_errorMessage(trial: Path, error_message: object) -> None:
+def _write_session_message_errorMessage(
+    trial: Path,
+    error_message: object,
+    filename: str = "main.jsonl",
+) -> None:
     """Write a session jsonl containing one assistant message with the given errorMessage."""
     sessions = trial / "agent" / "sessions"
     sessions.mkdir(parents=True, exist_ok=True)
-    (sessions / "main.jsonl").write_text(
+    (sessions / filename).write_text(
         json.dumps(
             {
                 "type": "message",
@@ -936,7 +1134,9 @@ def test_scored_pass_is_not_refined_by_non_exception_session_scan(tmp_results_di
     assert verdict.error_subcategory is None
 
 
-def test_scored_pass_is_not_refined_by_budget_timeout_session(tmp_results_dir: Path) -> None:
+def test_budget_blocked_timeout_with_reward_discards_score(tmp_results_dir: Path) -> None:
+    """A timeout its driving session proves budget-blocked is error-interrupted:
+    the verifier graded a blocked workspace, so the score is discarded."""
     trial = tmp_results_dir / "run-1" / "task-pass-budget-timeout__1"
     _write_result(
         trial,
@@ -952,9 +1152,281 @@ def test_scored_pass_is_not_refined_by_budget_timeout_session(tmp_results_dir: P
 
     verdict = classify(trial)
 
-    assert verdict.outcome == "scored_pass"
+    assert verdict.outcome == "error"
+    assert verdict.error_category == "infra"
+    assert verdict.error_subcategory == API_KEY_BUDGET_EXCEEDED
+    assert verdict.reward is None
+    assert not is_retryable(verdict.outcome, verdict.error_category, verdict.error_subcategory)
+
+
+def test_clean_wallclock_timeout_with_reward_keeps_score(tmp_results_dir: Path) -> None:
+    """A clean wall-clock cutoff is the benchmark's intentional scored cutoff:
+    grading the partial workspace at the cutoff is valid pass@k evidence."""
+    trial = tmp_results_dir / "run-1" / "task-clean-timeout__1"
+    _write_result(
+        trial,
+        {
+            "verifier_result": {"rewards": {"reward": 0.0}},
+            "exception_info": {
+                "exception_type": "AgentTimeoutError",
+                "exception_message": "Agent execution timed out after 3600 seconds",
+            },
+        },
+    )
+    _write_session(
+        trial,
+        [
+            {"type": "message", "message": {"role": "user"}},
+            {"type": "message", "message": {"role": "assistant"}},
+            {"type": "message", "message": {"role": "toolResult"}},
+        ],
+    )
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == "scored_fail"
     assert verdict.error_category is None
     assert verdict.error_subcategory is None
+    assert verdict.reward == 0.0
+
+
+@pytest.mark.parametrize("reward", [None, 1.0])
+def test_timeout_zai_usage_limit_session_refinement(tmp_results_dir: Path, reward: float | None) -> None:
+    """A Z.AI windowed-quota 429 terminal in the driving session refines the
+    timeout to infra/usage_limit_exceeded — with or without a verifier reward."""
+    trial = tmp_results_dir / "run-1" / "task-zai-timeout__1"
+    payload = {
+        "exception_info": {
+            "exception_type": "AgentTimeoutError",
+            "exception_message": "Agent execution timed out after 3600 seconds",
+        }
+    }
+    if reward is not None:
+        payload["verifier_result"] = {"rewards": {"reward": reward}}
+    _write_result(trial, payload)
+    _write_session_message_errorMessage(trial, _ZAI_USAGE_LIMIT_429)
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == "error"
+    assert verdict.error_category == "infra"
+    assert verdict.error_subcategory == USAGE_LIMIT_EXCEEDED
+    assert verdict.reward is None
+    assert not is_retryable(verdict.outcome, verdict.error_category, verdict.error_subcategory)
+
+
+def test_timeout_budget_error_uses_workflow_orchestrator_session(
+    tmp_results_dir: Path,
+) -> None:
+    trial = tmp_results_dir / "run-1" / "task-workflow-timeout__1"
+    _write_result(
+        trial,
+        {
+            "verifier_result": {"rewards": {"reward": 1.0}},
+            "exception_info": {
+                "exception_type": "AgentTimeoutError",
+                "exception_message": "Agent execution timed out after 3600 seconds",
+            },
+        },
+    )
+    _write_session(
+        trial,
+        [
+            {"type": "message", "message": {"role": "user"}},
+            {"type": "message", "message": {"role": "assistant"}},
+            {"type": "message", "message": {"role": "toolResult"}},
+        ],
+        "subagent-worker.jsonl",
+    )
+    _write_session_message_errorMessage(
+        trial,
+        _BUDGET_ERROR_EXACT_MESSAGE,
+        "workflow-orchestrator.jsonl",
+    )
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == Outcome.ERROR
+    assert verdict.error_category == "infra"
+    assert verdict.error_subcategory == API_KEY_BUDGET_EXCEEDED
+    assert verdict.reward is None
+
+
+def test_timeout_budget_error_uses_best_session_fallback(
+    tmp_results_dir: Path,
+) -> None:
+    trial = tmp_results_dir / "run-1" / "task-fallback-timeout__1"
+    _write_result(
+        trial,
+        {
+            "verifier_result": {"rewards": {"reward": 1.0}},
+            "exception_info": {
+                "exception_type": "AgentTimeoutError",
+                "exception_message": "Agent execution timed out after 3600 seconds",
+            },
+        },
+    )
+    _write_session(
+        trial,
+        [{"type": "message", "message": {"role": "assistant"}}],
+        "short-session.jsonl",
+    )
+    _write_session(
+        trial,
+        [
+            {"type": "message", "message": {"role": "user"}},
+            {
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "stopReason": "error",
+                    "errorMessage": _BUDGET_ERROR_EXACT_MESSAGE,
+                },
+            },
+        ],
+        "long-session.jsonl",
+    )
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == Outcome.ERROR
+    assert verdict.error_category == "infra"
+    assert verdict.error_subcategory == API_KEY_BUDGET_EXCEEDED
+    assert verdict.reward is None
+
+
+def _write_session_with_recovered_budget_error(trial: Path) -> None:
+    """Terminal-state guard: an earlier budget error followed by progress."""
+    _write_session(
+        trial,
+        [
+            {"type": "message", "message": {"role": "user"}},
+            {
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "stopReason": "error",
+                    "errorMessage": _BUDGET_ERROR_EXACT_MESSAGE,
+                },
+            },
+            {"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "retrying"}]}},
+            {"type": "message", "message": {"role": "toolResult", "content": [{"type": "text", "text": "ok"}]}},
+        ],
+    )
+
+
+def test_timeout_budget_error_followed_by_progress_stays_clean(tmp_results_dir: Path) -> None:
+    """An error the agent recovered from does not prove the cutoff was budget-blocked."""
+    trial = tmp_results_dir / "run-1" / "task-recovered-timeout__1"
+    _write_result(
+        trial,
+        {
+            "exception_info": {
+                "exception_type": "AgentTimeoutError",
+                "exception_message": "Agent execution timed out after 3600 seconds",
+            }
+        },
+    )
+    _write_session_with_recovered_budget_error(trial)
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == "agent_timeout"
+    assert verdict.error_category is None
+
+
+def test_timeout_budget_error_followed_by_progress_with_reward_keeps_score(tmp_results_dir: Path) -> None:
+    trial = tmp_results_dir / "run-1" / "task-recovered-timeout__1"
+    _write_result(
+        trial,
+        {
+            "verifier_result": {"rewards": {"reward": 1.0}},
+            "exception_info": {
+                "exception_type": "AgentTimeoutError",
+                "exception_message": "Agent execution timed out after 3600 seconds",
+            },
+        },
+    )
+    _write_session_with_recovered_budget_error(trial)
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == "scored_pass"
+    assert verdict.reward == 1.0
+
+
+def _write_sessions_with_subagent_budget_error(trial: Path) -> None:
+    """Budget error confined to a non-driving subagent session; main is clean."""
+    _write_session(
+        trial,
+        [
+            {"type": "message", "message": {"role": "user"}},
+            {"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "working"}]}},
+            {"type": "message", "message": {"role": "toolResult", "content": [{"type": "text", "text": "ok"}]}},
+        ],
+    )
+    sessions = trial / "agent" / "sessions"
+    (sessions / "subagent-worker.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "stopReason": "error",
+                    "errorMessage": _BUDGET_ERROR_EXACT_MESSAGE,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_timeout_budget_error_only_in_subagent_session_stays_clean(tmp_results_dir: Path) -> None:
+    """An error in a non-driving subagent session is not the timeout's cause."""
+    trial = tmp_results_dir / "run-1" / "task-subagent-error__1"
+    _write_result(
+        trial,
+        {
+            "exception_info": {
+                "exception_type": "AgentTimeoutError",
+                "exception_message": "Agent execution timed out after 3600 seconds",
+            }
+        },
+    )
+    _write_sessions_with_subagent_budget_error(trial)
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == "agent_timeout"
+    assert verdict.error_category is None
+
+
+def test_timeout_budget_error_only_in_subagent_session_with_reward_keeps_score(tmp_results_dir: Path) -> None:
+    trial = tmp_results_dir / "run-1" / "task-subagent-error__1"
+    _write_result(
+        trial,
+        {
+            "verifier_result": {"rewards": {"reward": 1.0}},
+            "exception_info": {
+                "exception_type": "AgentTimeoutError",
+                "exception_message": "Agent execution timed out after 3600 seconds",
+            },
+        },
+    )
+    _write_sessions_with_subagent_budget_error(trial)
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == "scored_pass"
+    assert verdict.reward == 1.0
+
+
+def test_terminal_infra_subcategories_are_not_retryable() -> None:
+    for subcategory in (API_KEY_BUDGET_EXCEEDED, USAGE_LIMIT_EXCEEDED, "model_access_error"):
+        assert not is_retryable(Outcome.ERROR, "infra", subcategory)
+    # Moonshot's top-up mechanism keeps its suspension retryable.
+    assert is_retryable(Outcome.ERROR, "infra", MOONSHOT_QUOTA_EXCEEDED)
 
 
 # ── OpenCode trajectory.json — credit exhaustion from opencode.txt ──────────────────

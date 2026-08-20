@@ -281,7 +281,18 @@ DEFAULT_BENCH_TASKS_ALL = "false"
 # --- Retry behavior ---
 ENV_BENCH_RETRY_AGENT_TIMEOUT = "BENCH_RETRY_AGENT_TIMEOUT"
 DEFAULT_BENCH_RETRY_AGENT_TIMEOUT = False
-NON_RETRYABLE_INFRA_SUBCATEGORIES = frozenset({"api_key_budget_exceeded"})
+# Terminal infra conditions: retrying never helps.
+# - api_key_budget_exceeded: hard spend cap on the API key.
+# - usage_limit_exceeded: Z.AI's rolling 5-hour windowed account quota.
+# - model_access_error: provider rejects the requested preset; the run
+#   configuration is deterministically broken, so retries only burn tokens.
+# Moonshot's account suspension is deliberately NOT here: the account top-up
+# mechanism makes recovery possible between chunk attempts.
+NON_RETRYABLE_INFRA_SUBCATEGORIES = frozenset({
+    "api_key_budget_exceeded",
+    "usage_limit_exceeded",
+    "model_access_error",
+})
 
 
 def validate_chunk_attempt_budget(value: object, *, source: str) -> int:
