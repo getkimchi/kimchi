@@ -84,6 +84,13 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
+import { parseTodoScopeKey } from "../../extensions/todos/scope.js"
+import { getTodoState, hasEverHadTodos, subscribeTodoStore } from "../../extensions/todos/store.js"
+import {
+	TODO_TOOL_RESULT_SCHEMA_VERSION,
+	type TodoScope,
+	type WriteTodosDetails,
+} from "../../extensions/todos/types.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { updateModelsConfig } from "../../models.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
@@ -94,6 +101,7 @@ import { AVAILABLE_COMMANDS } from "./commands.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
+import { buildPlanUpdate } from "./plan-mapper.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
 import { asString, truncate } from "./utils.js"
@@ -153,6 +161,8 @@ type TurnContext = {
 type SessionRecord = {
 	session: AgentSession
 	unsubscribe: () => void
+	/** Unsubscribes the ACP `plan` emitter wired in {@link KimchiAcpAgent.attachPlanSync}. */
+	unsubscribePlanSync: () => void
 	turn?: TurnContext
 	/**
 	 * Session-wide monotonic counter for ACP messageIds. Every distinct
@@ -191,6 +201,36 @@ type SessionRecord = {
 	 * ACP id, so collisions across compaction boundaries are disambiguated.
 	 */
 	toolCallIdMap: Map<string, string>
+}
+
+/** Display specificity when multiple todo scopes hold items. */
+const TODO_SCOPE_SPECIFICITY: Record<TodoScope["kind"], number> = {
+	"ferment-step": 2,
+	ferment: 1,
+	global: 0,
+}
+
+/**
+ * Picks the initial plan snapshot for a resumed session: the most specific
+ * non-empty todo scope (ferment-step > ferment > global). Deterministic —
+ * TodoScopeState carries no timestamps and key order is insertion order.
+ */
+function pickInitialPlanDetails(sessionId: string): WriteTodosDetails | undefined {
+	const byScope = getTodoState(sessionId).byScope
+	const candidates = Object.entries(byScope).filter(([, state]) => state.todos.length > 0)
+	if (candidates.length === 0) return undefined
+	candidates.sort(
+		([a], [b]) =>
+			(TODO_SCOPE_SPECIFICITY[parseTodoScopeKey(b).kind] ?? -1) -
+			(TODO_SCOPE_SPECIFICITY[parseTodoScopeKey(a).kind] ?? -1),
+	)
+	const [scopeKey, state] = candidates[0]
+	return {
+		schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+		scope: parseTodoScopeKey(scopeKey),
+		todos: state.todos,
+		updatedAt: new Date().toISOString(),
+	}
 }
 
 export class KimchiAcpAgent implements Agent {
@@ -400,6 +440,7 @@ export class KimchiAcpAgent implements Agent {
 			const record: SessionRecord = {
 				session,
 				unsubscribe: () => {},
+				unsubscribePlanSync: () => {},
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
 				nextToolCallId: 0,
@@ -415,6 +456,7 @@ export class KimchiAcpAgent implements Agent {
 
 			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, record)
+			this.attachPlanSync(sessionId, record)
 
 			this.sendAvailableCommandsUpdate(sessionId)
 
@@ -428,6 +470,7 @@ export class KimchiAcpAgent implements Agent {
 			unregisterAcpPrompter(session.sessionId)
 			unregisterSessionPermissionFlagController(session.sessionId)
 			clearPermissionModeEnv(session.sessionId)
+			this.sessions.get(session.sessionId)?.unsubscribePlanSync()
 
 			session.dispose()
 			throw err
@@ -633,6 +676,7 @@ export class KimchiAcpAgent implements Agent {
 			const record: SessionRecord = {
 				session,
 				unsubscribe: () => {},
+				unsubscribePlanSync: () => {},
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
 				nextToolCallId: 0,
@@ -648,6 +692,7 @@ export class KimchiAcpAgent implements Agent {
 
 			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
 			this.sessions.set(sid, record)
+			this.attachPlanSync(sid, record, { emitInitialSnapshot: true })
 
 			// Seed the block counter from the persisted branch so replay emits the
 			// same messageIds the live turn would have — and so any new block the
@@ -675,6 +720,7 @@ export class KimchiAcpAgent implements Agent {
 			if (existing) {
 				this.sessions.delete(sid)
 				existing.unsubscribe()
+				existing.unsubscribePlanSync()
 			}
 			session.dispose()
 			throw err
@@ -819,6 +865,24 @@ export class KimchiAcpAgent implements Agent {
 		resetAcpClientInfo()
 	}
 
+	/**
+	 * Emits ACP `plan` session updates for todo writes belonging to this
+	 * session. Session-scoped on purpose (not turn-scoped): store notifications
+	 * fire synchronously inside applyWriteTodos, so snapshots land in order on
+	 * the SDK write queue. On resume (`emitInitialSnapshot`), emits one
+	 * snapshot from restored todos — the transcript restore path bypasses
+	 * store listeners, so this must be done imperatively.
+	 */
+	private attachPlanSync(sessionId: string, record: SessionRecord, opts: { emitInitialSnapshot?: boolean } = {}): void {
+		record.unsubscribePlanSync = subscribeTodoStore((details, emitterSessionId) => {
+			if (emitterSessionId !== sessionId) return
+			this.send({ sessionId, update: buildPlanUpdate(details) })
+		})
+		if (!opts.emitInitialSnapshot || !hasEverHadTodos(sessionId)) return
+		const initial = pickInitialPlanDetails(sessionId)
+		if (initial) this.send({ sessionId, update: buildPlanUpdate(initial) })
+	}
+
 	private async closeSessionRecord(sessionId: string): Promise<void> {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return
@@ -845,6 +909,7 @@ export class KimchiAcpAgent implements Agent {
 		opts: { alreadyUnsubscribed?: boolean } = {},
 	): Promise<void> {
 		if (!opts.alreadyUnsubscribed) entry.unsubscribe()
+		entry.unsubscribePlanSync()
 		// Emit session_shutdown to extensions and await all handlers before
 		// calling dispose(). dispose() is synchronous and returns void, so async
 		// extension handlers (e.g. telemetry drain, shutdown marker) would be
