@@ -190,8 +190,9 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 
 /**
  * Parsed Kimchi-local CLI flags that affect the running session / model
- * selection. One-shot flags (help, version, export, resume, etc.) are not
- * cached here because they are handled before or outside the session loop.
+ * selection. Only options listed in `CACHEABLE_OPTION_NAMES` are cached;
+ * one-shot flags (help, version, export, resume, etc.) are handled before or
+ * outside the session loop.
  */
 export interface SessionCliArgs {
 	options: {
@@ -235,6 +236,23 @@ for (const [name, def] of Object.entries(CLI_OPTIONS)) {
 	}
 }
 
+/** Option names that affect the running session and are cached in `SessionCliArgs`. */
+const CACHEABLE_OPTION_NAMES = [
+	"provider",
+	"model",
+	"thinking",
+	"mode",
+	"print",
+	"no-session",
+	"allow-tool",
+	"deny-tool",
+	"plan",
+	"auto",
+	"yolo",
+	"permissions-config",
+	"verbose",
+] as const satisfies ReadonlyArray<keyof SessionCliArgs["options"]>
+
 /** Parse args without caching. Exported for tests. */
 export function parseCliArgs(args: string[]): SessionCliArgs {
 	const { values, positionals } = parseArgs({
@@ -244,14 +262,13 @@ export function parseCliArgs(args: string[]): SessionCliArgs {
 		allowPositionals: true,
 	})
 	const options: SessionCliArgs["options"] = {}
-	for (const key of Object.keys(PARSE_ARGS_OPTIONS)) {
+	for (const key of CACHEABLE_OPTION_NAMES) {
 		const value = values[key]
 		if (value === undefined) continue
-		if (key === "multi-model") {
-			options.model = "multi-model"
-		} else {
-			;(options as Record<string, unknown>)[key] = value
-		}
+		;(options as Record<string, unknown>)[key] = value
+	}
+	if (values["multi-model"] === true) {
+		options.model = "multi-model"
 	}
 	return { options, positionals }
 }
