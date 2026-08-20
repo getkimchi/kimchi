@@ -62,13 +62,15 @@ export function stripMultiModelArgs(args: string[]): string[] {
 	return result
 }
 
-export type CliOptionType = "string" | "boolean" | "optional-string"
+export type CliOptionType = "string" | "boolean"
 
 export interface CliOptionDef {
 	type: CliOptionType
 	description: string
 	/** Placeholder shown in help text for string options. */
 	placeholder?: string
+	/** Whether the value is optional (e.g. `--resume [id]`). Implies `type: "string"`. */
+	optional?: boolean
 	/** Single-letter short alias (without the leading `-`). */
 	short?: string
 	/** Whether the option can be specified multiple times. */
@@ -119,7 +121,8 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		description: "Resume the most recent session",
 	},
 	resume: {
-		type: "optional-string",
+		type: "string",
+		optional: true,
 		short: "r",
 		description: "Resume by id, or pick a previous session interactively when omitted",
 		placeholder: "[id]",
@@ -139,7 +142,8 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		placeholder: "<file>",
 	},
 	"list-models": {
-		type: "optional-string",
+		type: "string",
+		optional: true,
 		description: "Print available models (optionally fuzzy-filtered)",
 		placeholder: "[search]",
 	},
@@ -228,7 +232,7 @@ export function populateCliArgs(args: string[]): void {
 /** Schema `node:util.parseArgs` expects, derived once from `CLI_OPTIONS`. */
 const PARSE_ARGS_OPTIONS: Record<string, { type: "string" | "boolean"; short?: string; multiple?: boolean }> = {}
 for (const [name, def] of Object.entries(CLI_OPTIONS)) {
-	if (def.type !== "string" && def.type !== "boolean") continue
+	if (def.optional || (def.type !== "string" && def.type !== "boolean")) continue
 	PARSE_ARGS_OPTIONS[name] = {
 		type: def.type,
 		...(def.short ? { short: def.short } : {}),

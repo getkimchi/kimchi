@@ -23,9 +23,7 @@ function flagDocFromCliOption(name: string, def: CliOptionDef): FlagDoc {
 	const short = def.short ? `, -${def.short}` : ""
 	let value = ""
 	if (def.type === "string") {
-		value = ` ${def.placeholder ?? "<value>"}`
-	} else if (def.type === "optional-string") {
-		value = ` ${def.placeholder ?? "[value]"}`
+		value = ` ${def.optional ? (def.placeholder ?? "[value]") : (def.placeholder ?? "<value>")}`
 	}
 	return { name: `${long}${short}${value}`, description: def.description }
 }
