@@ -339,10 +339,10 @@ describe("questionnaire environment behavior", () => {
 			| undefined
 
 		expect(result).toBeDefined()
-		expect(result!.systemPrompt).toContain("BASE")
-		expect(result!.systemPrompt).toContain("Autonomous mode")
-		expect(result!.systemPrompt).toContain("no human or judge")
-		expect(result!.systemPrompt).toContain("Do NOT end your turn with questions")
+		expect(result?.systemPrompt).toContain("BASE")
+		expect(result?.systemPrompt).toContain("Autonomous mode")
+		expect(result?.systemPrompt).toContain("no human or judge")
+		expect(result?.systemPrompt).toContain("Do NOT end your turn with questions")
 	})
 
 	it("does not inject when UI is attached (interactive session)", () => {
