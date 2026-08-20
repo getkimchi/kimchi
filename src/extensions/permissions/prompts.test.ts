@@ -69,7 +69,7 @@ describe("promptForApproval — withWorkingHidden", () => {
 })
 
 describe("promptForCompoundApproval", () => {
-	it("stores program wildcards without the RTK wrapper", async () => {
+	it("stores program wildcards from each command", async () => {
 		const ctx = {
 			hasUI: true,
 			ui: {
@@ -82,7 +82,7 @@ describe("promptForCompoundApproval", () => {
 
 		const result = await promptForCompoundApproval({
 			toolName: "bash",
-			commands: [{ command: "rtk git status" }, { command: "rtk kubectl get pods" }],
+			commands: [{ command: "git status" }, { command: "kubectl get pods" }],
 			ctx,
 		})
 

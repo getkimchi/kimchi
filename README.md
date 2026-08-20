@@ -403,23 +403,6 @@ kimchi update --canary              # install the latest canary build from maste
 
 Kimchi respects `HTTP_PROXY` / `HTTPS_PROXY` environment variables for network requests.
 
-### Token optimization (RTK)
-
-Kimchi installs [RTK](https://github.com/rtk-ai/rtk) during setup and keeps the `rtk` command available on startup. When enabled, kimchi rewrites bash tool calls through `rtk rewrite` before execution. This compresses command output (git, cargo, npm, docker, etc.) by 60-90%, reducing LLM context usage.
-
-Before every bash tool execution, kimchi calls `rtk rewrite "<command>"`. If RTK returns a rewritten command (e.g. `git status` becomes `rtk git status`), the rewritten version is executed instead.
-
-```bash
-brew install rtk    # macOS / Linux
-```
-
-RTK rewrite is managed from resources:
-
-```bash
-kimchi resources disable hooks.rtk-rewrite
-kimchi resources enable hooks.rtk-rewrite
-```
-
 ### Hooks
 
 Users can add custom Bash hooks to rewrite or block shell commands before they run. Global hooks live in `~/.config/kimchi/harness/hooks/bash/`; project hooks live in `.kimchi/hooks/bash/` and default to disabled until enabled from `/resources` or `kimchi resources enable ...`.

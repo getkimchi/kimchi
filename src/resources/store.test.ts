@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -6,8 +6,6 @@ import {
 	getResourceOverride,
 	getResourceSettingsPath,
 	isResourceEnabled,
-	listResourceSettings,
-	readResourceSettings,
 	resetResourceOverride,
 	setResourceOverride,
 } from "./store.js"
@@ -35,49 +33,6 @@ describe("resource store", () => {
 		process.env.KIMCHI_CODING_AGENT_DIR = dir
 
 		expect(getResourceSettingsPath()).toBe(join(dir, "settings.json"))
-	})
-
-	it("defaults known resources from definitions", () => {
-		const path = tempSettingsPath()
-
-		expect(isResourceEnabled("hooks.rtk-rewrite", path)).toBe(true)
-		expect(isResourceEnabled("extensions.pi-package-lookup", path)).toBe(false)
-		expect(getResourceOverride("hooks.rtk-rewrite", path)).toBeUndefined()
-	})
-
-	it("persists resource overrides without clobbering unrelated settings", () => {
-		const path = tempSettingsPath()
-		writeJson(path, { theme: "kimchi-minimal", resources: { "tools.web_fetch": false } })
-
-		setResourceOverride("hooks.rtk-rewrite", false, path)
-
-		expect(readResourceSettings(path).resources).toEqual({
-			"tools.web_fetch": false,
-			"hooks.rtk-rewrite": false,
-		})
-		expect(JSON.parse(readFileSync(path, "utf-8")).theme).toBe("kimchi-minimal")
-		expect(isResourceEnabled("hooks.rtk-rewrite", path)).toBe(false)
-	})
-
-	it("reads and lists valid resource ids only", () => {
-		const path = tempSettingsPath()
-		writeJson(path, {
-			resources: {
-				"hooks.rtk-rewrite": false,
-				"extensions.mcp-adapter": true,
-				"unknown.bad": false,
-				"tools.web_search": "no",
-			},
-		})
-
-		expect(readResourceSettings(path).resources).toEqual({
-			"hooks.rtk-rewrite": false,
-			"extensions.mcp-adapter": true,
-		})
-		expect(listResourceSettings(path)).toEqual([
-			{ id: "extensions.mcp-adapter", enabled: true, overridden: true },
-			{ id: "hooks.rtk-rewrite", enabled: false, overridden: true },
-		])
 	})
 
 	it("resets an override back to the default", () => {
@@ -109,8 +64,4 @@ describe("resource store", () => {
 
 function tempSettingsPath(): string {
 	return join(dir, "settings.json")
-}
-
-function writeJson(path: string, data: unknown): void {
-	writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`, "utf-8")
 }

@@ -4,7 +4,6 @@ import { join } from "node:path"
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { isResourceEnabled } from "./store.js"
 import { createResourceManager } from "./ui.js"
 
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
@@ -54,15 +53,18 @@ describe("ResourceManagerComponent", () => {
 	})
 
 	it("keeps the selected row after toggling a resource", () => {
-		const component = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, {} as Theme, vi.fn(), "hooks")
+		const component = createResourceManager(
+			{ requestRender: vi.fn() } as unknown as TUI,
+			{} as Theme,
+			vi.fn(),
+			"extensions",
+		)
 
 		component.handleInput("\x1b[B")
 		expect(selectedIndex(component)).toBe(1)
-		expect(isResourceEnabled("hooks.rtk-rewrite")).toBe(true)
 
 		component.handleInput(" ")
 
-		expect(isResourceEnabled("hooks.rtk-rewrite")).toBe(false)
 		expect(selectedIndex(component)).toBe(1)
 	})
 })

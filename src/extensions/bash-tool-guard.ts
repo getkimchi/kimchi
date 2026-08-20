@@ -78,7 +78,7 @@ import {
 	type BashToolGuardWarnPayload,
 } from "./bash-tool-guard-events.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
-import { parseCommandSegments, stripRtk } from "./permissions/taxonomy.js"
+import { parseCommandSegments } from "./permissions/taxonomy.js"
 
 const RESOURCE_ID = "extensions.bash-tool-guard"
 
@@ -91,7 +91,7 @@ export interface BashClassification {
 	suggestion: string
 	/** A short, human-readable rendering of the matched segment (for steer text). */
 	matchedSegment: string
-	/** The tool name detected (first token after stripping rtk wrapper). */
+	/** The tool name detected (first token of the matched segment). */
 	tool: string
 }
 
@@ -226,8 +226,7 @@ export function classifyBashCommand(command: string): BashClassification | null 
 	if (bg) return bg
 
 	for (const segment of segments) {
-		// Drop the leading tool name and any RTK wrapper to inspect args.
-		const tokens = stripRtk(segment.tokens)
+		const tokens = segment.tokens
 		const tool = tokens[0]
 		if (!tool) continue
 
@@ -283,7 +282,7 @@ function detectBackgrounding(command: string): BashClassification | null {
 	// on quoted text (e.g. `echo "do not use nohup"`).
 	const segments = parseCommandSegments(command)
 	for (const segment of segments) {
-		const tokens = stripRtk(segment.tokens)
+		const tokens = segment.tokens
 		const tool = tokens[0]
 		if (!tool) continue
 

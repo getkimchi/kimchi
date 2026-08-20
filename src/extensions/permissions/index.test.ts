@@ -1104,14 +1104,14 @@ describe("permissions TUI allow-remember", () => {
 		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
 	})
 
-	it("does not re-prompt for an env-prefixed + rtk-wrapped command", async () => {
+	it("does not re-prompt for an env-prefixed command", async () => {
 		const harness = createPermissionsHarness(["bash"])
 		const ctx = rememberingContext()
 		await harness.fire("session_start", {}, ctx)
 
 		const event = {
 			toolName: "bash",
-			input: { command: "GOWORK=off rtk go test -race -timeout 30s -count=1 ./controllers/discovery/... 2>&1" },
+			input: { command: "GOWORK=off go test -race -timeout 30s -count=1 ./controllers/discovery/... 2>&1" },
 		}
 
 		await harness.fire("tool_call", event, ctx)

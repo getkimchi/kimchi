@@ -43,7 +43,6 @@ import * as Diff from "diff"
 import type { BundledLanguage, BundledTheme } from "shiki"
 import type { TSchema } from "typebox"
 import { formatDuration } from "../extensions/format.js"
-import { getBashCommandForDisplay } from "./rtk-rewrite.js"
 import { TODO_TOOL_NAMES } from "./todos/tool.js"
 
 const RESET = "\x1b[0m"
@@ -4180,7 +4179,7 @@ export default function (pi: ExtensionAPI) {
 			return bashTool.execute(toolCallId, params, signal, onUpdate)
 		},
 		renderCall(args, theme, ctx) {
-			const command = getBashCommandForDisplay(args.command) ?? args.command
+			const command = args.command
 			const timer = formatToolTimer(getToolElapsedMs(ctx))
 			if (ctx.expanded && command) {
 				// Expanded: show the tool name + timer on line 1, then the full
