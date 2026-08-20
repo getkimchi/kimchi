@@ -43,6 +43,10 @@ setup-image:
     <<: *gcp-auth-vars
     BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
     CODING_AGENT: "$[[ inputs.agent ]]"
+    # Same value the chunk jobs use: the selection gate below must resolve the
+    # dataset's task list to check membership against.
+    DATASET: terminal-bench/$[[ inputs.benchmark ]]
+    BENCH_TASKS_ALL: "$[[ inputs.tasks_all ]]"
     DEBIAN_FRONTEND: noninteractive
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
@@ -50,6 +54,12 @@ setup-image:
     - !reference [.auth-gcp-script]
     - !reference [.gcloud-setup, script]
   script:
+    # Gate the task selection before any paid agent work starts. A task name
+    # absent from the dataset can never produce a trial, so every chunk would
+    # retry until its durable attempt budget drained before anything reported
+    # the typo. Runs once here rather than per chunk.
+    - export SELECTED_TASKS_JSON='$[[ inputs.tasks ]]'
+    - python3 benchmark/scripts/gitlab/validate_task_selection.py
     - benchmark/scripts/gitlab/setup_image.sh
   artifacts:
     expire_in: 30 days
@@ -199,7 +209,11 @@ $[[ inputs.benchmark ]]-summary:
   rules:
     - if: '$SUMMARY_ONLY == "true" || $TB21_RETRY_TRIGGER == "true" || $TB21_RETRY_SCHEDULE == "true"'
       when: never
-    - when: always
+    # on_success, not always: chunk jobs are allow_failure, so real benchmark
+    # failures (allowed) still let the summary run and report them, while a
+    # hard setup-image failure — e.g. the task-selection gate — skips this
+    # job instead of producing an empty summary over nothing.
+    - when: on_success
   image: mirror.gcr.io/library/node:22-bookworm
   variables:
     <<: *gcp-auth-vars
@@ -237,7 +251,9 @@ $[[ inputs.benchmark ]]-analyze:
     - if: '$SUMMARY_ONLY == "true" || $TB21_RETRY_TRIGGER == "true" || $TB21_RETRY_SCHEDULE == "true"'
       when: never
     - if: $[[ inputs.analyze_results ]] == true
-      when: always
+      # Same contract as the summary job: allowed chunk failures still reach
+      # analysis; a failed prepare stage skips it.
+      when: on_success
     - when: never
   image: "$BENCH_IMAGE"
   tags:
@@ -298,7 +314,9 @@ $[[ inputs.benchmark ]]-analyze-timeouts:
     - if: '$SUMMARY_ONLY == "true" || $TB21_RETRY_TRIGGER == "true" || $TB21_RETRY_SCHEDULE == "true"'
       when: never
     - if: $[[ inputs.analyze_results ]] == true
-      when: always
+      # Same contract as the summary job: allowed chunk failures still reach
+      # analysis; a failed prepare stage skips it.
+      when: on_success
     - when: never
   image: "$BENCH_IMAGE"
   tags:

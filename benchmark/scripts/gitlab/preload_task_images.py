@@ -63,6 +63,7 @@ from pathlib import Path
 
 # This script runs as `python3 benchmark/scripts/gitlab/preload_task_images.py`,
 # so this directory is on sys.path and these sibling modules import cleanly.
+from bench_config import ENV_BENCH_TASKS_ALL, env_bool, normalize_selected_tasks
 from chunk_runner import _fetch_all_tasks
 from chunk_slicing import slice_tasks
 
@@ -142,13 +143,18 @@ def _resolve_chunk_tasks() -> list[str]:
     """
     # Same env default as chunk_runner.main().
     dataset = os.environ.get("DATASET", "terminal-bench/terminal-bench-2")
-    tasks_all = os.environ.get("BENCH_TASKS_ALL", "false").strip().lower() in ("true", "1", "yes")
+    tasks_all = env_bool(ENV_BENCH_TASKS_ALL)
 
     selected: list[str] = json.loads(os.environ.get("SELECTED_TASKS_JSON", "[]"))
     if tasks_all or not selected:
         # chunk_runner owns the dataset-file mapping; reuse it instead of
         # duplicating _DATASET_FILE_MAP here.
         selected = _fetch_all_tasks(dataset, bench_dir=Path("."))
+
+    # Normalise to bare names before slicing, exactly as chunk_runner does, so
+    # a source-qualified input (e.g. "terminal-bench/fix-git") pre-warms this
+    # chunk's real tasks instead of silently matching no task directory.
+    selected = normalize_selected_tasks(selected)
 
     chunk_index = int(os.environ.get("BENCH_CHUNK_INDEX", "0"))
     chunk_count = int(os.environ.get("BENCH_CHUNK_COUNT", "1"))

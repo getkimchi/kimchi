@@ -20,6 +20,7 @@ from bench_config import (
     ENV_BENCHMARK_CHUNK_ATTEMPTS_PATH,
     is_retryable,
     load_chunk_attempt_budget,
+    normalize_selected_tasks,
     should_retry_agent_timeout,
     validate_chunk_attempt_budget,
 )
@@ -416,6 +417,31 @@ def metadata_string(metadata: dict[str, Any], key: str, default: str = "unknown"
 def metadata_dict(metadata: dict[str, Any], key: str) -> dict[str, Any]:
     value = metadata.get(key)
     return value if isinstance(value, dict) else {}
+
+
+def metadata_selected_tasks(metadata: dict[str, Any]) -> list[str] | None:
+    """Selected tasks from run metadata, normalised to bare task names.
+
+    Returns None when metadata records no usable selection (legacy artifacts),
+    which callers treat as "fall back to observed trials".
+
+    Normalising on read is required, not cosmetic: ``selected_tasks`` is frozen
+    into ``run-metadata.json`` at run creation and restored from GCS by later
+    jobs, so a run started with source-qualified names (e.g.
+    ``terminal-bench/fix-git``) keeps them for its whole lifetime. Trial task
+    names are always stripped to bare names, so without this the two sides
+    never match and every chunk looks permanently incomplete.
+    """
+    selected = (
+        metadata_dict(metadata, "parameters").get("selected_tasks")
+        or metadata.get("selected_tasks")
+    )
+    if not isinstance(selected, list):
+        return None
+    tasks = [task for task in selected if isinstance(task, str)]
+    if len(tasks) != len(selected):
+        return None
+    return normalize_selected_tasks(tasks)
 
 
 def metadata_bool(metadata: dict[str, Any], key: str, default: bool = False) -> bool:
@@ -1249,10 +1275,10 @@ def build_summary(
         if isinstance((reason := meta.get("stop_reason")), str) and reason
     }
 
-    selected_tasks = metadata_dict(metadata, "parameters").get("selected_tasks") or metadata.get("selected_tasks")
+    selected_tasks = metadata_selected_tasks(metadata)
     tasks_expected = (
         len(selected_tasks)
-        if isinstance(selected_tasks, list)
+        if selected_tasks is not None
         else len({t.task for t in trials})
     )
 
@@ -1396,15 +1422,8 @@ def _derive_summary_recovery_states(
     """
     if not budget_frozen:
         return None, None
-    selected = (
-        metadata_dict(metadata, "parameters").get("selected_tasks")
-        or metadata.get("selected_tasks")
-    )
-    if not (
-        isinstance(selected, list)
-        and selected
-        and all(isinstance(task, str) for task in selected)
-    ):
+    selected = metadata_selected_tasks(metadata)
+    if not selected:
         return None, None
     try:
         ordinals = _load_chunk_attempt_ordinals()
@@ -1557,8 +1576,8 @@ def write_summary(metadata_path: Path, output_path: Path, results_dir_override: 
     #   exhaustion for exactly its own incomplete tasks.
     # - All-errored tasks: warn only — the chunk ran and produced evidence,
     #   the errors are visible in the summary for analysis.
-    selected_tasks = metadata_dict(metadata, "parameters").get("selected_tasks") or metadata.get("selected_tasks")
-    if isinstance(selected_tasks, list) and selected_tasks:
+    selected_tasks = metadata_selected_tasks(metadata)
+    if selected_tasks:
         trial_tasks = {t.task for t in trials}
         if recovery_states is not None:
             # One authoritative state per chunk drives the exit decision. A

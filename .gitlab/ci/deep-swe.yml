@@ -43,6 +43,10 @@ setup-image:
     <<: *gcp-auth-vars
     BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
     CODING_AGENT: "$[[ inputs.agent ]]"
+    # Same value the chunk jobs use: the selection gate below must resolve the
+    # dataset's task list to check membership against.
+    DATASET: deep-swe
+    BENCH_TASKS_ALL: "$[[ inputs.tasks_all ]]"
     DEBIAN_FRONTEND: noninteractive
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
@@ -50,6 +54,18 @@ setup-image:
     - !reference [.auth-gcp-script]
     - !reference [.gcloud-setup, script]
   script:
+    # Gate the task selection before any paid agent work starts: a task name
+    # absent from the dataset can never produce a trial, so the chunk would
+    # retry and report it missing every time. Runs once here rather than per
+    # chunk.
+    #
+    # Checked against the committed datasets/deep-swe.json, while the chunk
+    # jobs run tasks cloned from datacurve-ai/deep-swe at job start. If
+    # upstream adds a task, a valid selection can be rejected here until the
+    # committed list is refreshed — the check is deliberately a name-membership
+    # gate, not a dataset sync.
+    - export SELECTED_TASKS_JSON='$[[ inputs.tasks ]]'
+    - python3 benchmark/scripts/gitlab/validate_task_selection.py
     - benchmark/scripts/gitlab/setup_image.sh
   artifacts:
     expire_in: 30 days
@@ -184,7 +200,11 @@ deep-swe-summary:
   rules:
     - if: '$SUMMARY_ONLY == "true"'
       when: never
-    - when: always
+    # on_success, not always: chunk jobs are allow_failure, so real benchmark
+    # failures (allowed) still let the summary run and report them, while a
+    # hard setup-image failure — e.g. the task-selection gate — skips this
+    # job instead of producing an empty summary over nothing.
+    - when: on_success
   image: mirror.gcr.io/library/node:22-bookworm
   needs:
     - job: deep-swe-chunks
@@ -218,7 +238,9 @@ deep-swe-analyze:
     - if: '$SUMMARY_ONLY == "true"'
       when: never
     - if: $[[ inputs.analyze_results ]] == true
-      when: always
+      # Same contract as the summary job: allowed chunk failures still reach
+      # analysis; a failed prepare stage skips it.
+      when: on_success
     - when: never
   image: "$BENCH_IMAGE"
   tags:

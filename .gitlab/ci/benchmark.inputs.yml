@@ -42,7 +42,7 @@ inputs:
     type: boolean
     default: false
   tasks:
-    description: "Benchmark tasks to run. Defaults to a Terminal Bench 2 subset chosen as the most informative tasks (explaining ~96% of variance in total score). Ignored when `tasks_all` is true. For SWE-bench Pro, pass instance IDs from datasets/swebenchpro.json."
+    description: "Benchmark tasks to run, as bare task names (e.g. fix-git). Harbor's own output prints the source-qualified form (terminal-bench/fix-git); pasting that is accepted and normalised. Names are validated against the dataset when the pipeline starts, so a typo fails immediately instead of after retrying. Defaults to a Terminal Bench 2 subset chosen as the most informative tasks (explaining ~96% of variance in total score). Ignored when `tasks_all` is true. For SWE-bench Pro, pass instance IDs from datasets/swebenchpro.json."
     type: array
     default: [hf-model-inference, fix-code-vulnerability, build-cython-ext, bn-fit-modify, fix-git, mteb-leaderboard, cobol-modernization, merge-diff-arc-agi-task, extract-elf, pytorch-model-recovery]
   model:

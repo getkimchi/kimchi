@@ -166,6 +166,20 @@ class TestChunkTaskResolution:
         # chunk 0 gets 4, chunk 1 gets 3, chunk 2 gets 3.
         assert tasks == ["task-4", "task-5", "task-6"]
 
+    def test_source_qualified_names_normalise_and_dedupe_before_slicing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pre-warm exactly the tasks chunk_runner will own: bare, aliases collapsed."""
+        monkeypatch.setenv(
+            "SELECTED_TASKS_JSON",
+            json.dumps(["terminal-bench/fix-git", "fix-git", "extract-elf"]),
+        )
+        monkeypatch.setenv("BENCH_TASKS_ALL", "false")
+        monkeypatch.setenv("BENCH_CHUNK_INDEX", "0")
+        monkeypatch.setenv("BENCH_CHUNK_COUNT", "1")
+
+        assert preload._resolve_chunk_tasks() == ["fix-git", "extract-elf"]
+
     def test_tasks_all_ignores_selected_json_and_uses_dataset_file(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

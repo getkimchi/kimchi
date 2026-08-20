@@ -8,6 +8,9 @@ CI_CONFIG = (
 SWE_CI_CONFIG = (
     Path(__file__).resolve().parents[4] / ".gitlab" / "ci" / "swe-bench-pro.yml"
 )
+DEEP_CI_CONFIG = (
+    Path(__file__).resolve().parents[4] / ".gitlab" / "ci" / "deep-swe.yml"
+)
 ROOT_CI_CONFIG = Path(__file__).resolve().parents[4] / ".gitlab-ci.yml"
 
 
@@ -145,7 +148,46 @@ def _declared_inputs() -> set[str]:
     }
 
 
-def test_root_pipeline_forwards_every_declared_input_to_both_benchmarks() -> None:
+def _job_rules(config: str, job_header: str) -> str:
+    """The `rules:` section of a job block (rules precede `image:` in these jobs)."""
+    start = config.index(job_header)
+    rules_start = config.index("  rules:", start)
+    rules_end = config.index("  image:", rules_start)
+    return config[rules_start:rules_end]
+
+
+def test_summary_chain_gates_on_success_while_chunks_allow_failure() -> None:
+    """The summary/analyze chain must only run for pipelines that started work.
+
+    Chunk jobs are allow_failure: real benchmark failures (allowed) count as
+    success for downstream gating, so failed/partial runs still get summaries
+    and analysis. A hard setup-image failure — e.g. the task-selection gate —
+    is not allowed, so it skips the whole postprocess chain instead of
+    producing empty summaries and failing uploads over nothing.
+
+    The pairing IS the contract: dropping allow_failure from the chunks would
+    silently stop failure summaries; switching the summary chain back to
+    `when: always` would resurrect noisy post-gate-failure jobs.
+    """
+    gated_jobs = {
+        CI_CONFIG: (
+            "$[[ inputs.benchmark ]]-summary:",
+            "$[[ inputs.benchmark ]]-analyze:",
+            "$[[ inputs.benchmark ]]-analyze-timeouts:",
+        ),
+        SWE_CI_CONFIG: ("swe-bench-pro-summary:", "swe-bench-pro-analyze:"),
+        DEEP_CI_CONFIG: ("deep-swe-summary:", "deep-swe-analyze:"),
+    }
+    for config_path, job_headers in gated_jobs.items():
+        config = config_path.read_text(encoding="utf-8")
+        assert "allow_failure: true" in config, (
+            f"{config_path.name}: chunk jobs must keep allow_failure: true or "
+            "on_success summaries of failed runs silently stop running"
+        )
+        for job_header in job_headers:
+            rules = _job_rules(config, job_header)
+            assert "when: on_success" in rules, job_header
+            assert "when: always" not in rules, job_header
     """An input the root spec accepts but never forwards silently uses its default.
 
     thinking_level was declared and settable in the UI, yet omitted from both
@@ -161,3 +203,42 @@ def test_root_pipeline_forwards_every_declared_input_to_both_benchmarks() -> Non
         forwarded = _forwarded_inputs(root, include_path)
         missing = declared - forwarded - exempt
         assert not missing, f"{include_path} does not forward: {sorted(missing)}"
+
+
+def test_setup_image_gates_task_selection_before_paid_chunk_work() -> None:
+    """The pipeline-start selection gate must stay wired into every workflow.
+
+    Without it, a typo'd or wrong-dataset task name costs a full chunk attempt
+    budget of paid agent runs before anything reports the problem. The gate
+    runs in setup-image (prepare stage), which chunk jobs declare in `needs:`,
+    so a failure there blocks all downstream agent work. The job must pin the
+    DATASET the gate checks membership against and forward the same
+    task-selection inputs the chunk jobs use.
+    """
+    for config_path, expected_dataset in (
+        (CI_CONFIG, "terminal-bench/$[[ inputs.benchmark ]]"),
+        (SWE_CI_CONFIG, "swebenchpro"),
+        (DEEP_CI_CONFIG, "deep-swe"),
+    ):
+        config = config_path.read_text(encoding="utf-8")
+        setup_index = config.index("setup-image:")
+        gate_index = config.index(
+            "python3 benchmark/scripts/gitlab/validate_task_selection.py"
+        )
+
+        assert setup_index < gate_index, (
+            f"{config_path.name}: validate_task_selection.py must run inside setup-image"
+        )
+        assert gate_index < config.index(
+            "benchmark/scripts/gitlab/setup_image.sh", setup_index
+        ), f"{config_path.name}: the gate must run before setup_image.sh"
+
+        job_block = config[setup_index:gate_index]
+        assert f"DATASET: {expected_dataset}" in job_block
+        assert 'BENCH_TASKS_ALL: "$[[ inputs.tasks_all ]]"' in job_block
+        assert "export SELECTED_TASKS_JSON='$[[ inputs.tasks ]]'" in job_block
+
+        assert "    - job: setup-image" in config, (
+            f"{config_path.name}: chunk jobs must `needs: setup-image` so a "
+            "failed gate blocks paid work"
+        )
