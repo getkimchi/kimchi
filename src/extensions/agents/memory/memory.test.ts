@@ -114,6 +114,27 @@ describe("memory provider registry", () => {
 			expect(block).toContain("# Agent Memory")
 		})
 
+		it("rejects relative module paths before any import", async () => {
+			const modulePath = writeFixtureModule(`export default { name: "relative", buildBlock: async () => "# Relative" }`)
+			// Manifest entry uses a relative reference to the same file — must be skipped.
+			writeManifest([{ name: "relative", module: "./fixture-provider.mjs" }])
+			const block = await resolveMemoryBlock("my-agent", "user", "/cwd", true)
+			expect(getMemoryProviders()).toEqual([])
+			expect(block).toContain("# Agent Memory")
+			expect(modulePath).toBeTruthy()
+		})
+
+		it("rejects symlinked module paths", async () => {
+			const symlinkSyncMod = await import("node:fs")
+			const modulePath = writeFixtureModule(`export default { name: "linked", buildBlock: async () => "# Linked" }`)
+			const linkPath = join(process.env.PI_CODING_AGENT_DIR as string, "linked-provider.mjs")
+			symlinkSyncMod.symlinkSync(modulePath, linkPath)
+			writeManifest([{ name: "linked", module: linkPath }])
+			const block = await resolveMemoryBlock("my-agent", "user", "/cwd", true)
+			expect(getMemoryProviders()).toEqual([])
+			expect(block).toContain("# Agent Memory")
+		})
+
 		it("skips modules whose default export does not match the contract", async () => {
 			const badModule = writeFixtureModule(`export default { name: 42 }`)
 			writeManifest([{ module: badModule }])
@@ -152,8 +173,33 @@ describe("memory provider registry", () => {
 
 		const block = await resolveMemoryBlock("my-agent", "user", "/cwd", true)
 		expect(block).toBe("# Custom Memory\nfrom custom db")
-		expect(blockProvider.buildBlock).toHaveBeenCalledWith("my-agent", "/cwd")
+		expect(blockProvider.buildBlock).toHaveBeenCalledWith("my-agent", "/cwd", {
+			scope: "user",
+			hasWriteTools: true,
+		})
 		expect(afterProvider.buildBlock).not.toHaveBeenCalled()
+	})
+
+	it("treats a provider returning undefined as not applicable", async () => {
+		clearMemoryProviders()
+		registerMemoryProvider({
+			name: "undefined-provider",
+			buildBlock: vi.fn().mockResolvedValue(undefined),
+		})
+		registerMemoryProvider({ name: "ok", buildBlock: vi.fn().mockResolvedValue("# OK") })
+		const block = await resolveMemoryBlock("my-agent", "user", "/cwd", true)
+		expect(block).toBe("# OK")
+	})
+
+	it("passes read-only mode through the provider context", async () => {
+		clearMemoryProviders()
+		const spy = vi.fn().mockResolvedValue(null)
+		registerMemoryProvider({ name: "spy", buildBlock: spy })
+		await resolveMemoryBlock("my-agent", "project", "/cwd", false)
+		expect(spy).toHaveBeenCalledWith("my-agent", "/cwd", {
+			scope: "project",
+			hasWriteTools: false,
+		})
 	})
 
 	it("falls back to file memory when all providers return null", async () => {
