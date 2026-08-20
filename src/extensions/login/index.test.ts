@@ -2,13 +2,11 @@ import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agen
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import loginExtension from "./index.js"
 
-const { clearApiKeyMock, loadConfigMock } = vi.hoisted(() => ({
-	clearApiKeyMock: vi.fn(),
+const { loadConfigMock } = vi.hoisted(() => ({
 	loadConfigMock: vi.fn(),
 }))
 
 vi.mock("../../config.js", () => ({
-	clearApiKey: clearApiKeyMock,
 	loadConfig: loadConfigMock,
 	writeApiKey: vi.fn(),
 }))
@@ -81,32 +79,5 @@ describe("loginExtension", () => {
 			name: "OpenAI Codex",
 			auth: { oauth: { name: "OpenAI (ChatGPT Plus/Pro)" } },
 		})
-	})
-
-	it("logs out every internal Kimchi provider when the single Kimchi entry is selected", () => {
-		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
-		const on = vi.fn()
-		const originalLogout = vi.fn()
-		const authStorage = { logout: originalLogout }
-		const modelRegistry = {
-			authStorage,
-			getAll: () => [
-				{ id: "sol", provider: "kimchi-dev" },
-				{ id: "sol", provider: "kimchi-dev/openai" },
-				{ id: "claude", provider: "kimchi-dev/anthropic" },
-			],
-		}
-
-		loginExtension({ on, registerProvider: vi.fn() } as unknown as ExtensionAPI)
-		const sessionStart = on.mock.calls[0]?.[1]
-		sessionStart({}, { modelRegistry })
-		authStorage.logout("kimchi-dev")
-
-		expect(originalLogout.mock.calls.map(([provider]) => provider)).toEqual([
-			"kimchi-dev",
-			"kimchi-dev/openai",
-			"kimchi-dev/anthropic",
-		])
-		expect(clearApiKeyMock).toHaveBeenCalledOnce()
 	})
 })

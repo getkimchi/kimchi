@@ -1,14 +1,39 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { syncKimchiAuth } from "./extensions/login/flow.js"
 import { syncPiAuth } from "./pi-auth.js"
 
 const tempDirs: string[] = []
 
 afterEach(() => {
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+	vi.unstubAllEnvs()
 })
+
+function model(id: string) {
+	return {
+		id,
+		name: id,
+		reasoning: false,
+		input: ["text"],
+		contextWindow: 1000,
+		maxTokens: 100,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	}
+}
+
+function provider(models: ReturnType<typeof model>[]) {
+	return {
+		baseUrl: "https://example.invalid/openai/v1",
+		apiKey: "$KIMCHI_API_KEY",
+		api: "openai-completions",
+		authHeader: true,
+		models,
+	}
+}
 
 describe("syncPiAuth", () => {
 	it("creates Pi auth storage on first run", async () => {
@@ -76,5 +101,75 @@ describe("syncPiAuth", () => {
 		expect(JSON.parse(readFileSync(authPath, "utf-8"))).toEqual({
 			ollama: { type: "api_key", key: "keep" },
 		})
+	})
+
+	it("does not rewrite auth storage when Kimchi credentials are unchanged", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-"))
+		tempDirs.push(dir)
+		const authPath = join(dir, "auth.json")
+		const modelsPath = join(dir, "models.json")
+		const originalAuth = JSON.stringify({
+			anthropic: { type: "api_key", key: "keep-me" },
+			"kimchi-dev": { type: "api_key", key: "kimchi-key" },
+		})
+		writeFileSync(authPath, originalAuth)
+		writeFileSync(modelsPath, JSON.stringify({ providers: { "kimchi-dev": {} } }))
+		const fixedTime = new Date("2000-01-01T00:00:00.000Z")
+		utimesSync(authPath, fixedTime, fixedTime)
+		const originalMtime = statSync(authPath).mtimeMs
+
+		await syncPiAuth(authPath, modelsPath, "kimchi-key")
+
+		expect(readFileSync(authPath, "utf-8")).toBe(originalAuth)
+		expect(statSync(authPath).mtimeMs).toBe(originalMtime)
+		expect(statSync(authPath).mode & 0o777).toBe(0o600)
+	})
+
+	it("switches the active key in the same Pi runtime, including newly discovered sub-providers", async () => {
+		vi.stubEnv("KIMCHI_DISABLE_BUILTIN_PROVIDERS", "1")
+		vi.stubEnv("KIMCHI_API_KEY", undefined)
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-runtime-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", dir)
+		tempDirs.push(dir)
+		const authPath = join(dir, "auth.json")
+		const modelsPath = join(dir, "models.json")
+		writeFileSync(
+			authPath,
+			JSON.stringify({
+				"kimchi-dev": { type: "api_key", key: "old-account-token" },
+			}),
+		)
+		writeFileSync(
+			modelsPath,
+			JSON.stringify({
+				providers: { "kimchi-dev": provider([model("old-model")]) },
+			}),
+		)
+
+		const runtime = await ModelRuntime.create({
+			authPath,
+			modelsPath,
+			allowModelNetwork: false,
+			refreshOnCreate: false,
+		})
+		const registry = new ModelRegistry(runtime)
+		expect(await registry.getApiKeyForProvider("kimchi-dev")).toBe("old-account-token")
+
+		writeFileSync(
+			modelsPath,
+			JSON.stringify({
+				providers: {
+					"kimchi-dev": provider([model("new-root-model")]),
+					"kimchi-dev/new-provider": provider([model("new-sub-provider-model")]),
+				},
+			}),
+		)
+		await syncKimchiAuth(registry, "new-account-token")
+
+		expect(await registry.getApiKeyForProvider("kimchi-dev")).toBe("new-account-token")
+		expect(await registry.getApiKeyForProvider("kimchi-dev/new-provider")).toBe("new-account-token")
+		expect(new Set(registry.getAll().map(({ provider }) => provider))).toEqual(
+			new Set(["kimchi-dev", "kimchi-dev/new-provider"]),
+		)
 	})
 })
