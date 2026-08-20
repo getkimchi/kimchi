@@ -126,7 +126,18 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 			if (stopHookActive) stopHookFollowUpPending = false
 			if (result?.block && result.reason && !stopHookActive) {
 				stopHookFollowUpPending = true
-				pi.sendUserMessage(result.reason, { deliverAs: "followUp" })
+				// Deliver hook-authored continuation reasons as a branded custom
+				// message, not via sendUserMessage — hook text is neither the user's
+				// words nor harness-core prose, and user-role delivery makes it
+				// indistinguishable from genuine user input.
+				pi.sendMessage(
+					{
+						customType: "hook_stop_reason",
+						content: [{ type: "text", text: markHarnessSteer(result.reason) }],
+						display: false,
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				)
 			}
 		})
 		pi.on("message_start", async (event, ctx) => {

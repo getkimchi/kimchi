@@ -331,7 +331,19 @@ describe("hook adapter command execution", () => {
 
 		await pi.handlers.agent_end[0](agentEndEvent(), fakeCtx())
 
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("Run tests before stopping.", { deliverAs: "followUp" })
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "hook_stop_reason",
+				display: false,
+				content: [
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringMatching(/^<system-reminder>\nRun tests before stopping\.\n<\/system-reminder>$/),
+					}),
+				],
+			}),
+			{ deliverAs: "followUp", triggerTurn: true },
+		)
 		expect(hookPayload(child).last_assistant_message).toBe("done")
 	})
 
@@ -350,7 +362,11 @@ describe("hook adapter command execution", () => {
 		await pi.handlers.input[0]({ type: "input", text: "follow-up", source: "user" }, fakeCtx())
 		await pi.handlers.agent_end[0](agentEndEvent(), fakeCtx())
 
-		expect(pi.sendUserMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "hook_stop_reason" }), {
+			deliverAs: "followUp",
+			triggerTurn: true,
+		})
 		expect(hookPayload(firstHook).stop_hook_active).toBe(false)
 		const secondPayload = hookPayload(secondHook)
 		expect(secondPayload.stop_hook_active).toBe(true)
@@ -373,7 +389,11 @@ describe("hook adapter command execution", () => {
 		await pi.handlers.agent_end[0](agentEndEvent(), fakeCtx())
 
 		expect(mockSpawn).toHaveBeenCalledTimes(2)
-		expect(pi.sendUserMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "hook_stop_reason" }), {
+			deliverAs: "followUp",
+			triggerTurn: true,
+		})
 	})
 
 	it("runs StopFail hooks in addition to Stop when the run ends with an error", async () => {
@@ -451,7 +471,19 @@ describe("hook adapter command execution", () => {
 
 		await pi.handlers.agent_end[0](agentEndEvent({ stopReason: "error" }), fakeCtx())
 
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("Retry the failed run.", { deliverAs: "followUp" })
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "hook_stop_reason",
+				display: false,
+				content: [
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringMatching(/^<system-reminder>\nRetry the failed run\.\n<\/system-reminder>$/),
+					}),
+				],
+			}),
+			{ deliverAs: "followUp", triggerTurn: true },
+		)
 	})
 
 	it("runs TaskCompleted hooks per turn without follow-up continuation", async () => {

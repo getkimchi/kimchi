@@ -1100,6 +1100,8 @@ describe("continuation nudge turn_end handler", () => {
 		// Nudge should fire because restore must not reset the latch.
 		expect(sendMessageCalls.length).toBe(1)
 		expect((sendMessageCalls[0].message as { customType?: string }).customType).toBe("nudge")
+	})
+
 	it("brands unbranded custom messages in the context handler", async () => {
 		const { fire } = buildNudgeHandlers()
 
@@ -1135,6 +1137,5 @@ describe("continuation nudge turn_end handler", () => {
 		// runtime's message array untouched.
 		const result = await fire("context", { messages: [branded] })
 		expect(result).toBeUndefined()
-
 	})
 })

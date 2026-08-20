@@ -6,6 +6,7 @@ import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { markHarnessSteer } from "../steer-marker.js"
 import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
@@ -166,6 +167,28 @@ async function maybeRunManualBoundaryDropdown(
 	return true
 }
 
+const FERMENT_UI_CONFIRMATION_TYPE = "ferment_ui_confirmation"
+
+/**
+ * Mirror a user's UI confirmation/choice into the model context.
+ * Delivered as a branded custom message — never via `sendUserMessage`, which
+ * upstream flattens to indistinguishable user-role text (and is invisible to
+ * `brandUnmarkedSteers`). The text must DESCRIBE the user's action third-person;
+ * first-person consent mimicry ("Yes, proceed.") is not allowed — a later
+ * read must never mistake the mirror for a genuine user grant.
+ */
+function mirrorUserChoice(pi: ExtensionAPI, text: string): void {
+	safeSendMessage(
+		pi,
+		{
+			customType: FERMENT_UI_CONFIRMATION_TYPE,
+			content: [{ type: "text", text: markHarnessSteer(text) }],
+			display: false,
+		},
+		{ deliverAs: "followUp", triggerTurn: true },
+	)
+}
+
 async function maybeRunUserInputDropdown(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -186,15 +209,22 @@ async function maybeRunUserInputDropdown(
 	if (!choice) return true
 
 	let reply: string
+	/** True only when the payload is the user's own freeform text — must stay on
+	 *  the genuine user channel (`sendUserMessage`). Every other branch mirrors a
+	 *  UI action through the branded harness channel. */
+	let replyIsUserAuthored = false
 
 	if (choice === "Let me say something else") {
 		const custom = await promptEditor(ctx, "Your message:")
 		if (!custom) return true
 		reply = custom
+		replyIsUserAuthored = true
 	} else if (choice === prompt.noLabel) {
-		reply = prompt.isDraft ? "No — please revise." : "No, pause for now."
+		reply = prompt.isDraft
+			? 'The user answered "No, revise" in the UI prompt — revise the plan in your next response.'
+			: 'The user answered "No, pause" in the UI prompt — pause the ferment for now.'
 	} else if (prompt.contextualOptions?.includes(choice)) {
-		reply = choice
+		reply = `The user selected "${choice}" in the UI prompt.`
 	} else if (prompt.isDraft && choice === prompt.yesLabel) {
 		// Open the phase editor so the user can rename/reorder/delete/add
 		// before we persist. The pending phases are the LLM's proposal.
@@ -209,17 +239,18 @@ async function maybeRunUserInputDropdown(
 				runtime.markHumanInput()
 				const msg = err instanceof Error ? err.message : String(err)
 				ctx.ui?.notify?.(`Phase editor failed: ${msg} — plan not saved.`)
-				void pi.sendUserMessage(
-					"Phase editor errored before the user could confirm. Ask the user to retry confirmation explicitly.",
-					{ deliverAs: "followUp" },
+				mirrorUserChoice(
+					pi,
+					"The phase editor errored before the user could confirm. Ask the user to retry confirmation explicitly.",
 				)
 				return true
 			}
 			if (!result) {
 				runtime.markHumanInput()
-				void pi.sendUserMessage("User chose to keep editing the phases — revise the plan in your next response.", {
-					deliverAs: "followUp",
-				})
+				mirrorUserChoice(
+					pi,
+					"The user chose to keep editing the phases in the editor. Revise the plan in your next response.",
+				)
 				return true
 			}
 			edited = result
@@ -238,11 +269,15 @@ async function maybeRunUserInputDropdown(
 				"User confirmed the plan but you never called propose_ferment_scoping — there's nothing structured for the host to save. Call propose_ferment_scoping now with the same plan you just showed; propose_ferment_scoping will handle confirmation via its own dropdown — do not append a trailing question."
 		}
 	} else {
-		reply = "Yes, proceed."
+		reply = "The user confirmed in the UI prompt: proceed."
 	}
 
 	runtime.markHumanInput()
-	void pi.sendUserMessage(reply, { deliverAs: "followUp" })
+	if (replyIsUserAuthored) {
+		void pi.sendUserMessage(reply, { deliverAs: "followUp" })
+	} else {
+		mirrorUserChoice(pi, reply)
+	}
 	return true
 }
 
