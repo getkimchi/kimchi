@@ -91,7 +91,6 @@ import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
-import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
@@ -593,7 +592,6 @@ try {
 				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, effectiveSkillPaths) },
 			] satisfies ManagedExtensionFactory[]),
 			promptEnrichmentExtension(effectiveSkillPaths),
-			rtkRewriteExtension,
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-hook-adapter", factory: claudeCodeHooksAdapter },
 			] satisfies ManagedExtensionFactory[]),
