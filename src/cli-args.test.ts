@@ -277,6 +277,11 @@ describe("stripMultiModelArgs", () => {
 			"fix tests",
 		])
 	})
+
+	it("strips --multi-model when combined with a real --model value", () => {
+		expect(stripMultiModelArgs(["--model", "real-model", "--multi-model"])).toEqual(["--model", "real-model"])
+		expect(stripMultiModelArgs(["--multi-model", "--model", "real-model"])).toEqual(["--model", "real-model"])
+	})
 })
 
 describe("populateCliArgs / getParsedCliArgs", () => {
