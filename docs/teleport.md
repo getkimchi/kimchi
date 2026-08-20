@@ -114,7 +114,7 @@ After a successful teleport, the tabbed overlay opens and takes over the termina
 
 **Behavior:**
 
-- The clone branch is your current local branch, used only when `git ls-remote` confirms it exists on origin; otherwise the repo's default branch is cloned and, after the diff sync lands, your local branch is force-created on the sandbox at the synced HEAD (`git checkout -B`) so the remote session sits on the same branch name. Failure here only warns (content parity already holds).
+- The clone branch is your current local branch (resolved via `git symbolic-ref`). The sandbox worker verifies branch existence against origin at clone time; if the branch doesn't exist there, the repo's default branch is cloned and, after the diff sync lands, your local branch is force-created on the sandbox at the synced HEAD (`git checkout -B`) so the remote session sits on the same branch name. Failure here only warns (content parity already holds).
 - The diff rsync sends tracked-plus-safe-untracked files (no `.git` upload). On a fresh remote dir extra clone files missing locally are pruned (`--delete`); the clone's `.git` is always filter-protected and never touched.
 - If the remote dir already exists (e.g. re-teleporting into a reused workspace), pruning is skipped and a warning is shown.
 - Uncommitted changes are shipped by design — `--fast` skips the dirty-tree refusal; `--allow-dirty` is only relevant for plain `/teleport`.

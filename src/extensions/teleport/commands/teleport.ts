@@ -376,6 +376,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		} catch (err) {
 			if (signal.aborted) throw err
 			if (!clonePlan || !remoteDest) {
+				if (sessionFileWithHandoffNote) removeTempDir(dirname(sessionFileWithHandoffNote))
 				refuse(ctx, `Could not create session: ${err instanceof Error ? err.message : String(err)}`)
 			}
 			// Fast fallback: clone failed — retry without details.git + full rsync.
@@ -392,6 +393,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 				)
 			} catch (retryErr) {
 				if (signal.aborted) throw retryErr
+				if (sessionFileWithHandoffNote) removeTempDir(dirname(sessionFileWithHandoffNote))
 				refuse(ctx, `Could not create session: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`)
 			}
 			const fullList = await buildIncludeList(ctx.cwd, signal).catch(() => [])
@@ -419,6 +421,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 				})
 			} catch (syncErr) {
 				if (signal.aborted) throw syncErr
+				if (sessionFileWithHandoffNote) removeTempDir(dirname(sessionFileWithHandoffNote))
 				refuse(ctx, `Workspace sync failed: ${formatRsyncFailure(syncErr)}`)
 			}
 		}

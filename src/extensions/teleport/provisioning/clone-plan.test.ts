@@ -137,13 +137,12 @@ describe("resolveClonePlan", () => {
 		expect(err.message).toContain(explicitUrl)
 	})
 
-	it("happy path: returns {url, httpsUrl, branch} when ls-remote confirms the branch", async () => {
+	it("happy path: returns {url, httpsUrl, branch} from local HEAD", async () => {
 		const originUrl = "git@github.com:org/repo.git"
 		const exec = mockExec([
 			{ match: "rev-parse --is-inside-work-tree", result: { stdout: "true\n", stderr: "" } },
 			{ match: "remote get-url origin", result: { stdout: `${originUrl}\n`, stderr: "" } },
 			{ match: "symbolic-ref --short HEAD", result: { stdout: "main\n", stderr: "" } },
-			{ match: "ls-remote --heads origin", result: { stdout: "abc123\trefs/heads/main\n", stderr: "" } },
 		])
 		const plan = await resolveClonePlan("/fake", undefined, { exec })
 		expect(plan).toEqual({
