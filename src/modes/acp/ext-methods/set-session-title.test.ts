@@ -28,6 +28,8 @@ class FakeAgentSession {
 		this.sessionId = sessionId
 	}
 
+	getToolDefinition = vi.fn((_name: string) => undefined)
+	setActiveToolsByName = vi.fn()
 	subscribe = () => () => {}
 	async bindExtensions(): Promise<void> {}
 	async prompt(): Promise<void> {}

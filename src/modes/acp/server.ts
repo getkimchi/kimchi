@@ -748,7 +748,7 @@ export class KimchiAcpAgent implements Agent {
 
 		// If the prompt starts with `/skillname` and matches a skill advertised
 		// for this session, rewrite the turn to inject the skill content.
-		const skillRewrite = tryParseSkillCommand(text, entry.skillCommands)
+		const skillRewrite = await tryParseSkillCommand(text, entry.skillCommands)
 		if (skillRewrite) {
 			text = buildSkillCommandPrompt(skillRewrite)
 		}

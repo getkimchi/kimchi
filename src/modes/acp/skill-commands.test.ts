@@ -3,6 +3,14 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { beforeEach, describe, expect, it } from "vitest"
 
+function makeSkill(dir: string, name: string, description: string, body = "Skill body."): string {
+	const skillDir = join(dir, name)
+	mkdirSync(skillDir, { recursive: true })
+	const filePath = join(skillDir, "SKILL.md")
+	writeFileSync(filePath, `---\nname: ${name}\ndescription: ${description}\n---\n${body}`, "utf-8")
+	return filePath
+}
+
 import {
 	type AcpSkillInfo,
 	buildSkillAvailableCommands,
@@ -11,12 +19,6 @@ import {
 	discoverAcpSkillCommands,
 	tryParseSkillCommand,
 } from "./skill-commands.js"
-
-function makeSkill(dir: string, name: string, description: string, body = "Skill body."): void {
-	const skillDir = join(dir, name)
-	mkdirSync(skillDir, { recursive: true })
-	writeFileSync(join(skillDir, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\n${body}`, "utf-8")
-}
 
 describe("discoverAcpSkillCommands", () => {
 	let tmpDir: string
@@ -92,21 +94,40 @@ describe("buildSkillAvailableCommands", () => {
 })
 
 describe("tryParseSkillCommand", () => {
-	const skills = new Map<string, AcpSkillInfo>([
-		["typescript-safety", { name: "typescript-safety", description: "", filePath: "" }],
-	])
-
-	it("returns undefined for text without the /skill: prefix", () => {
-		expect(tryParseSkillCommand("hello world", skills)).toBeUndefined()
-		expect(tryParseSkillCommand("/typescript-safety", skills)).toBeUndefined()
+	it("returns undefined for text without the /skill: prefix", async () => {
+		const skills = new Map<string, AcpSkillInfo>([
+			["typescript-safety", { name: "typescript-safety", description: "", filePath: "" }],
+		])
+		expect(await tryParseSkillCommand("hello world", skills)).toBeUndefined()
+		expect(await tryParseSkillCommand("/typescript-safety", skills)).toBeUndefined()
 	})
 
-	it("returns undefined for unknown command names", () => {
-		expect(tryParseSkillCommand("/skill:unknown", skills)).toBeUndefined()
+	it("returns undefined for unknown command names", async () => {
+		const skills = new Map<string, AcpSkillInfo>([
+			["typescript-safety", { name: "typescript-safety", description: "", filePath: "" }],
+		])
+		expect(await tryParseSkillCommand("/skill:unknown", skills)).toBeUndefined()
 	})
 
-	it("returns undefined when the skill file cannot be read", () => {
-		expect(tryParseSkillCommand("/skill:typescript-safety", skills)).toBeUndefined()
+	it("returns undefined when the skill file cannot be read", async () => {
+		const skills = new Map<string, AcpSkillInfo>([
+			["missing", { name: "missing", description: "", filePath: "/no/such/SKILL.md" }],
+		])
+		expect(await tryParseSkillCommand("/skill:missing", skills)).toBeUndefined()
+	})
+
+	it("strips YAML frontmatter from the injected skill content", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "acp-skill-frontmatter-"))
+		const filePath = makeSkill(dir, "frontmatter-skill", "Frontmatter test", "Use strict types.")
+		const skills = new Map<string, AcpSkillInfo>([
+			["frontmatter-skill", { name: "frontmatter-skill", description: "", filePath }],
+		])
+		const result = await tryParseSkillCommand("/skill:frontmatter-skill review this", skills)
+		expect(result).toBeDefined()
+		expect(result?.skillContent).toBe("Use strict types.")
+		expect(result?.skillContent).not.toContain("---")
+		expect(result?.skillContent).not.toContain("name: frontmatter-skill")
+		expect(result?.skillContent).not.toContain("description: Frontmatter test")
 	})
 })
 

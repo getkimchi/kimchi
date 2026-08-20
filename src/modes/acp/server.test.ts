@@ -3291,6 +3291,8 @@ describe("newSession skill commands", () => {
 		expect(sentPrompt).toContain("Invoking skill: acp-test-skill")
 		expect(sentPrompt).toContain("Always use strict types.")
 		expect(sentPrompt).toContain("review this file")
+		expect(sentPrompt).not.toContain("description: ACP test skill")
+		expect(sentPrompt).not.toContain("---")
 	})
 
 	it("leaves non-skill prompts unchanged", async () => {

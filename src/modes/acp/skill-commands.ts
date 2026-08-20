@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs"
+import { readFile } from "node:fs/promises"
 import type { AvailableCommand } from "@agentclientprotocol/sdk"
-import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
+import { loadSkillsFromDir, stripFrontmatter } from "@earendil-works/pi-coding-agent"
 import { listAvailableSkillNames } from "../../extensions/agents/prompt/skill-loader.js"
 import { getClaudeCodeSkillResourcePaths } from "../../extensions/claude-code-skills/definition.js"
 
@@ -98,10 +98,10 @@ export interface SkillCommandRewrite {
  * Returns undefined if the text does not begin with `/skill:` or if the name
  * is not a known skill.
  */
-export function tryParseSkillCommand(
+export async function tryParseSkillCommand(
 	text: string,
 	skills: ReadonlyMap<string, AcpSkillInfo>,
-): SkillCommandRewrite | undefined {
+): Promise<SkillCommandRewrite | undefined> {
 	if (!text.startsWith("/skill:")) return undefined
 	const withoutPrefix = text.slice("/skill:".length)
 	const spaceIdx = withoutPrefix.search(/\s/)
@@ -112,13 +112,14 @@ export function tryParseSkillCommand(
 	const skill = skills.get(name)
 	if (!skill) return undefined
 
-	let skillContent: string
+	let rawContent: string
 	try {
-		skillContent = readFileSync(skill.filePath, "utf-8").trim()
+		rawContent = await readFile(skill.filePath, "utf-8")
 	} catch {
 		return undefined
 	}
 
+	const skillContent = stripFrontmatter(rawContent).trim()
 	return { skillName: skill.name, remainingText: remaining, skillContent }
 }
 
