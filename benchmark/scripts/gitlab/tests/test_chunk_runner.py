@@ -861,15 +861,17 @@ def test_restore_prior_artifact_uses_include_retried(
     [
         # non-kimchi agents always get "default"
         (
-            {"CODING_AGENT": "claude-code", "MODEL": "kimchi-dev/kimi-k2.7", "KIMCHI_FERMENT_ONESHOT": "false"},
+            {"CODING_AGENT": "claude-code", "MODEL": "kimchi-dev/kimi-k2.7", "KIMCHI_GOAL": "true"},
             "default",
         ),
         ({"CODING_AGENT": "opencode"}, "default"),
         # kimchi mode is selected through MODEL
         ({"CODING_AGENT": "kimchi", "MODEL": "multi-model", "KIMCHI_FERMENT_ONESHOT": "false"}, "multi-mode"),
         ({"CODING_AGENT": "kimchi", "MODEL": "multi-model", "KIMCHI_FERMENT_ONESHOT": "true"}, "multi-mode-ferment"),
+        ({"CODING_AGENT": "kimchi", "MODEL": "multi-model", "KIMCHI_GOAL": "true"}, "multi-mode-goal"),
         ({"CODING_AGENT": "kimchi", "MODEL": "kimchi-dev/kimi-k2.7", "KIMCHI_FERMENT_ONESHOT": "false"}, "single-model"),  # noqa: E501
         ({"CODING_AGENT": "kimchi", "MODEL": "kimchi-dev/kimi-k2.7", "KIMCHI_FERMENT_ONESHOT": "true"}, "single-model-ferment"),  # noqa: E501
+        ({"CODING_AGENT": "kimchi", "MODEL": "kimchi-dev/kimi-k2.7", "KIMCHI_GOAL": "true", "KIMCHI_FERMENT_ONESHOT": "true"}, "single-model-goal-ferment"),  # noqa: E501
         # defaults: CODING_AGENT=kimchi with a concrete model
         ({}, "single-model"),
         # KIMCHI_COMPACTION does not affect the configuration label; the resolved
@@ -890,7 +892,14 @@ def test_restore_prior_artifact_uses_include_retried(
     ],
 )
 def test_derive_configuration(env: dict, expected: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in ("CODING_AGENT", "MODEL", "KIMCHI_FERMENT_ONESHOT", "KIMCHI_COMPACTION", "BENCH_WORKFLOW"):
+    for key in (
+        "CODING_AGENT",
+        "MODEL",
+        "KIMCHI_FERMENT_ONESHOT",
+        "KIMCHI_GOAL",
+        "KIMCHI_COMPACTION",
+        "BENCH_WORKFLOW",
+    ):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -1013,6 +1022,7 @@ def _main_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: str)
         "KIMCHI_API_KEY": "test-key",
         "DATASET": "terminal-bench/terminal-bench-2",
         "KIMCHI_FERMENT_ONESHOT": "false",
+        "KIMCHI_GOAL": "false",
         "BENCH_RUN_DATE": "2026-06-22",
     }
     for key, val in {**defaults, **overrides}.items():
@@ -1306,6 +1316,7 @@ def test_build_gcs_key_prefix_is_pipeline_level(monkeypatch: pytest.MonkeyPatch)
         "CODING_AGENT": "kimchi",
         "MODEL": "multi-model",
         "KIMCHI_FERMENT_ONESHOT": "false",
+        "KIMCHI_GOAL": "false",
         "CI_COMMIT_REF_NAME": "benchmarks",
         "CI_COMMIT_SHA": "abc1234567890abcdef1234567890abcdef12345",
         "CI_PIPELINE_ID": "1001",
@@ -1318,6 +1329,7 @@ def test_build_gcs_key_prefix_is_pipeline_level(monkeypatch: pytest.MonkeyPatch)
         "CODING_AGENT",
         "MODEL",
         "KIMCHI_FERMENT_ONESHOT",
+        "KIMCHI_GOAL",
         "CI_COMMIT_REF_NAME",
         "CI_COMMIT_SHA",
         "CI_PIPELINE_ID",
@@ -1371,6 +1383,7 @@ def test_write_run_metadata_is_pipeline_level(
     monkeypatch.setenv("CODING_AGENT", "kimchi")
     monkeypatch.setenv("MODEL", "multi-model")
     monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
+    monkeypatch.setenv("KIMCHI_GOAL", "true")
     monkeypatch.delenv("KIMCHI_COMPACTION", raising=False)
     monkeypatch.setenv("CI_COMMIT_REF_NAME", "benchmarks")
     monkeypatch.setenv("CI_COMMIT_SHA", "abc1234567890abcdef1234567890abcdef12345")
@@ -1393,12 +1406,13 @@ def test_write_run_metadata_is_pipeline_level(
     assert metadata["model"] == "multi-model"
     assert metadata["model_provider"] == "kimchi"
     assert metadata["model_name"] == "multi-model"
-    assert metadata["configuration"] == "multi-mode"
+    assert metadata["configuration"] == "multi-mode-goal"
     assert metadata["multi_mode"] is True
+    assert metadata["goal"] is True
     # KIMCHI_COMPACTION unset defaults to auto; ferment is off here, so
     # compaction stays enabled.
     assert metadata["compaction_disabled"] is False
-    assert "/model_provider=kimchi/model=multi-model/configuration=multi-mode/" in metadata["gcs"]["prefix"]
+    assert "/model_provider=kimchi/model=multi-model/configuration=multi-mode-goal/" in metadata["gcs"]["prefix"]
 
 
 def test_write_run_metadata_includes_tasks_all(
@@ -1411,6 +1425,7 @@ def test_write_run_metadata_includes_tasks_all(
     monkeypatch.setenv("CODING_AGENT", "kimchi")
     monkeypatch.setenv("MODEL", "multi-model")
     monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
+    monkeypatch.setenv("KIMCHI_GOAL", "false")
     monkeypatch.setenv("BENCH_TASKS_ALL", "true")
     monkeypatch.setenv("CI_COMMIT_REF_NAME", "benchmarks")
     monkeypatch.setenv("CI_COMMIT_SHA", "abc1234567890abcdef1234567890abcdef12345")
@@ -1438,6 +1453,7 @@ def test_build_gcs_key_prefix_uses_benchmark_name_env(
         "CODING_AGENT": "kimchi",
         "MODEL": "kimchi-dev/kimi-k2.6",
         "KIMCHI_FERMENT_ONESHOT": "false",
+        "KIMCHI_GOAL": "false",
         "CI_COMMIT_REF_NAME": "benchmarks",
         "CI_COMMIT_SHA": "abc1234567890abcdef1234567890abcdef12345",
         "CI_PIPELINE_ID": "1001",
@@ -1449,6 +1465,7 @@ def test_build_gcs_key_prefix_uses_benchmark_name_env(
         "CODING_AGENT",
         "MODEL",
         "KIMCHI_FERMENT_ONESHOT",
+        "KIMCHI_GOAL",
         "CI_COMMIT_REF_NAME",
         "CI_COMMIT_SHA",
         "CI_PIPELINE_ID",
@@ -1489,6 +1506,7 @@ def test_build_gcs_key_prefix_uses_bench_run_date_env(
         "CODING_AGENT",
         "MODEL",
         "KIMCHI_FERMENT_ONESHOT",
+        "KIMCHI_GOAL",
         "CI_COMMIT_REF_NAME",
         "CI_COMMIT_SHA",
         "CI_PIPELINE_ID",
@@ -1521,6 +1539,7 @@ def test_build_gcs_key_prefix_fails_without_bench_run_date(
         "CODING_AGENT",
         "MODEL",
         "KIMCHI_FERMENT_ONESHOT",
+        "KIMCHI_GOAL",
         "CI_COMMIT_REF_NAME",
         "CI_COMMIT_SHA",
         "CI_PIPELINE_ID",

@@ -157,6 +157,21 @@ def test_command_includes_kimchi_ferment_oneshot_kwarg() -> None:
     assert ("--agent-kwarg", "ferment-oneshot=true") in pairs
 
 
+def test_command_includes_kimchi_goal_kwarg() -> None:
+    cmd = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/kimi-k2.6",
+        dataset="terminal-bench/terminal-bench-2",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        kimchi_goal=True,
+    )
+
+    assert ("--agent-kwarg", "goal=true") in list(itertools.pairwise(cmd))
+
+
 def test_command_includes_kimchi_disable_compaction_kwarg() -> None:
     cmd = build_harbor_command(
         tasks=["task-a"],

@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import shlex
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -25,7 +26,7 @@ from kimchi_agent.git_install import (
     git_config_command,
     git_init_and_commit_baseline_command,
 )
-from kimchi_agent.messages import SessionEntry
+from kimchi_agent.messages import GoalEvaluatorUsage, SessionEntry
 from kimchi_agent.moonshot import (
     MOONSHOT_API_KEY_ENV,
     is_moonshot_model,
@@ -250,6 +251,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         disable_multi_model = _coerce_bool_kwarg(kwargs.pop("disable-multi-model", False), "disable-multi-model")
         # Compaction follows kimchi's default (on) unless explicitly disabled.
         disable_compaction = _coerce_bool_kwarg(kwargs.pop("disable-compaction", False), "disable-compaction")
+        goal_enabled = _coerce_bool_kwarg(kwargs.pop("goal", False), "goal")
 
         llm_params = _decode_agent_kwarg(kwargs.pop("llm-params", None))
         llm_per_model_params = _decode_agent_kwarg(kwargs.pop("llm-per-model-params", None))
@@ -265,6 +267,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
             raise ValueError("multi-model selection conflicts with legacy 'disable-multi-model=true'")
         self._multi_model_enabled = selected_multi_model
         self._disable_compaction = disable_compaction
+        self._goal_enabled = goal_enabled
         self._llm_params = llm_params
         self._llm_per_model_params = llm_per_model_params
         self._config = KimchiAgentConfig()
@@ -666,7 +669,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
 
     def _stdin_payload(self, instruction: str) -> str:
         """What to pipe to kimchi, when it is not the instruction verbatim."""
-        return instruction
+        return f"/goal {instruction}" if self._goal_enabled else instruction
 
     def _pre_launch_commands(self, instruction: str) -> list[str]:
         """Shell commands to run in the launch pipeline, before kimchi starts."""
@@ -774,6 +777,8 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
             # Read by kimchi through pi's SettingsManager: disables upstream
             # threshold auto-compaction and both ferment compaction paths.
             settings["compaction"] = {"enabled": False}
+        if self._goal_enabled:
+            settings["resources"] = {"extensions.goal": True}
 
         settings_json = json.dumps(settings, separators=(",", ":"))
         return (
@@ -960,6 +965,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         total_cache_read_tokens = 0
         total_cache_write_tokens = 0
         total_cost = 0.0
+        evaluator_usage: dict[str, GoalEvaluatorUsage] = {}
 
         # rglob, not glob: an extension may nest per-step sessions under
         # sessions/<subdir>/, and a flat glob silently under-reports those
@@ -981,6 +987,14 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
                     entry = SessionEntry.model_validate_json(line)
                 except ValidationError:
                     continue
+                if entry.type == "custom" and entry.custom_type == "kimchi_goal_state":
+                    goal = (entry.data or {}).get("goal")
+                    if isinstance(goal, dict) and isinstance(goal.get("evaluatorUsage"), dict):
+                        with suppress(ValidationError):
+                            evaluator_usage[str(goal.get("id", ""))] = GoalEvaluatorUsage.model_validate(
+                                goal["evaluatorUsage"]
+                            )
+                    continue
                 if entry.type != "message" or entry.message.role != "assistant":
                     continue
                 usage = entry.message.usage
@@ -989,6 +1003,13 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
                 total_cache_read_tokens += usage.cache_read
                 total_cache_write_tokens += usage.cache_write
                 total_cost += usage.cost.total
+
+        for usage in evaluator_usage.values():
+            total_input_tokens += usage.input
+            total_output_tokens += usage.output
+            total_cache_read_tokens += usage.cache_read
+            total_cache_write_tokens += usage.cache_write
+            total_cost += usage.cost_usd
 
         # pi-ai treats input, cacheRead, cacheWrite as disjoint summing to totalTokens
         # (see node_modules/.../pi-ai/dist/providers/anthropic.js). Sum all three for

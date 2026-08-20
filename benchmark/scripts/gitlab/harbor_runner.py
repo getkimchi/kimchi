@@ -71,6 +71,7 @@ def build_harbor_command(
     jobs_dir: str | Path | None = None,
     job_name: str | None = None,
     kimchi_ferment_oneshot: bool = False,
+    kimchi_goal: bool = False,
     kimchi_disable_compaction: bool = False,
     claude_code_api_max_retries: int = 0,
     coding_agent: str = "kimchi",
@@ -130,6 +131,9 @@ def build_harbor_command(
 
     if coding_agent == "kimchi" and kimchi_ferment_oneshot:
         cmd.extend(["--agent-kwarg", "ferment-oneshot=true"])
+
+    if coding_agent == "kimchi" and kimchi_goal:
+        cmd.extend(["--agent-kwarg", "goal=true"])
 
     # Omitted when compaction stays enabled, so the command remains compatible
     # with checkouts whose kimchi_agent predates the disable-compaction kwarg.

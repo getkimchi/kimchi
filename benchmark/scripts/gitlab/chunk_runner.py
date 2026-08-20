@@ -56,6 +56,7 @@ from bench_config import (
     ENV_DEEP_SWE_TASKS_PATH,
     ENV_KIMCHI_COMPACTION,
     ENV_KIMCHI_FERMENT_ONESHOT,
+    ENV_KIMCHI_GOAL,
     ENV_MODEL,
     ENV_WORKFLOW,
     ENV_WORKFLOW_EXTENSION,
@@ -283,8 +284,7 @@ def _expected_tasks_for_chunk(
 def _derive_configuration() -> str:
     """Derive configuration label from agent/model flags.
 
-    Returns one of: 'default', 'multi-mode', 'multi-mode-ferment',
-    'single-model', 'single-model-ferment', 'workflow-<name>'.
+    Returns a stable agent/model label with optional Goal and Ferment suffixes.
     """
     coding_agent = os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
     if is_workflow_agent(coding_agent):
@@ -295,6 +295,8 @@ def _derive_configuration() -> str:
     if coding_agent != "kimchi":
         return "default"
     segments = [_configuration_segment()]
+    if _env_bool(ENV_KIMCHI_GOAL, False):
+        segments.append("goal")
     if _env_bool(ENV_KIMCHI_FERMENT_ONESHOT, False):
         segments.append("ferment")
     return "-".join(segments)
@@ -440,7 +442,8 @@ def _write_run_metadata(
         "model_name": model_name,
         "configuration": _derive_configuration(),
         "multi_mode": coding_agent == "kimchi" and is_multi_model(model),
-        "ferment": _env_bool("KIMCHI_FERMENT_ONESHOT", False),
+        "ferment": _env_bool(ENV_KIMCHI_FERMENT_ONESHOT, False),
+        "goal": coding_agent == "kimchi" and _env_bool(ENV_KIMCHI_GOAL, False),
         "compaction_disabled": _compaction_disabled(),
         "tasks_all": _env_bool(ENV_BENCH_TASKS_ALL, False),
         "selected_tasks": selected_tasks,
@@ -1441,6 +1444,7 @@ def _run_harbor_invocation(
     jobs_dir: Path,
     job_name: str,
     kimchi_ferment_oneshot: bool,
+    kimchi_goal: bool,
     kimchi_disable_compaction: bool,
     coding_agent: str,
     llm_params: dict[str, float | int],
@@ -1472,6 +1476,7 @@ def _run_harbor_invocation(
         jobs_dir=jobs_dir,
         job_name=job_name,
         kimchi_ferment_oneshot=kimchi_ferment_oneshot,
+        kimchi_goal=kimchi_goal,
         kimchi_disable_compaction=kimchi_disable_compaction,
         coding_agent=coding_agent,
         llm_params=llm_params,
@@ -1866,6 +1871,7 @@ def main() -> int:
     coding_agent = os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
     model = os.environ.get(ENV_MODEL, DEFAULT_MODEL)
     kimchi_ferment_oneshot = _env_bool(ENV_KIMCHI_FERMENT_ONESHOT, False)
+    kimchi_goal = coding_agent == "kimchi" and _env_bool(ENV_KIMCHI_GOAL, False)
     try:
         kimchi_disable_compaction = _compaction_disabled()
     except ValueError as exc:
@@ -2109,7 +2115,6 @@ def main() -> int:
     # `config.json`, `result.json`, `job.log`, `lock.json` (last writer wins).
     # Embedding the chunk index + CI_JOB_ID guarantees a unique name per chunk.
     job_name = f"chunk-{chunk_index}-{os.environ.get('CI_JOB_ID', 'local')}"
-
     # Phase 5: run missing work in k=1 rounds. Harbor's -k is global, so each
     # round gives every task still missing at least one trial exactly one
     # attempt. This keeps attempt accounting exact when tasks have different
@@ -2257,6 +2262,7 @@ def main() -> int:
                 jobs_dir=results_dir,
                 job_name=job_name,
                 kimchi_ferment_oneshot=kimchi_ferment_oneshot,
+                kimchi_goal=kimchi_goal,
                 kimchi_disable_compaction=kimchi_disable_compaction,
                 coding_agent=coding_agent,
                 llm_params=llm_params,

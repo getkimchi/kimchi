@@ -89,6 +89,7 @@ setup-image:
     GCS_UPLOAD_REQUIRED: "true"
     BENCH_TASKS_ALL: "$[[ inputs.tasks_all ]]"
     KIMCHI_FERMENT_ONESHOT: "$[[ inputs.kimchi_ferment_oneshot ]]"
+    KIMCHI_GOAL: "$[[ inputs.kimchi_goal ]]"
     KIMCHI_COMPACTION: "$[[ inputs.kimchi_compaction ]]"
     RUN_ID: "gitlab-p$CI_PIPELINE_ID"
     BENCH_CHUNK_INDEX: "$CHUNK"
@@ -142,6 +143,7 @@ setup-image:
         echo "workflow_extension:       ${BENCH_WORKFLOW_EXTENSION}"
       fi
       echo "kimchi_ferment_oneshot:   ${KIMCHI_FERMENT_ONESHOT}"
+      echo "kimchi_goal:              ${KIMCHI_GOAL}"
       echo "kimchi_compaction:        ${KIMCHI_COMPACTION}"
       echo "parallelism:              ${BENCH_PARALLELISM}"
       echo "attempts:                 ${BENCH_ATTEMPTS}"
@@ -163,7 +165,8 @@ setup-image:
         model_label="single-model"
         [ "${MODEL}" = "multi-model" ] && model_label="multi-model"
         extras=""
-        [ "${KIMCHI_FERMENT_ONESHOT}" = "true" ] && extras=" · ferment"
+        [ "${KIMCHI_GOAL}" = "true" ] && extras=" · goal"
+        [ "${KIMCHI_FERMENT_ONESHOT}" = "true" ] && extras="${extras} · ferment"
         echo "Configuration: ${model_label}${extras}"
       elif [ "${CODING_AGENT}" = "kimchi-workflow" ]; then
         echo "Configuration: workflow-${BENCH_WORKFLOW}"

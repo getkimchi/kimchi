@@ -110,11 +110,15 @@ async def test_single_model_run_passes_model_without_multi_model_cli_flag(tmp_pa
     command = agent.agent_commands[0]
     assert "--model kimchi-dev/kimi-k2.6" in command
     assert "--multi-model" not in command
+    assert "printf '%s' hello" in command
     # Pinned on disk, not just on the CLI: workflow steps run as spawned
     # kimchi subprocesses whose argv carries no --model, and would otherwise
     # resolve multi-model=true and a different model from the global defaults.
     assert "~/.config/kimchi/harness/settings.json" in command
-    assert '{"multiModel":false,"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6"}' in command
+    assert (
+        '{"multiModel":false,"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6"}'
+        in command
+    )
 
 
 async def test_disable_compaction_writes_harness_setting(tmp_path: Path) -> None:
@@ -134,6 +138,17 @@ async def test_disable_compaction_writes_harness_setting(tmp_path: Path) -> None
         '{"multiModel":false,"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6",'
         '"compaction":{"enabled":false}}' in command
     )
+
+
+def test_goal_kwarg_wraps_prompt_and_enables_resource(tmp_path: Path) -> None:
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        goal="true",
+    )
+
+    assert agent._stdin_payload("hello") == "/goal hello"
+    assert '"resources":{"extensions.goal":true}' in agent._harness_settings_command()
 
 
 async def test_multi_model_run_omits_model_and_enables_harness_setting(tmp_path: Path) -> None:
@@ -359,6 +374,32 @@ def test_kimchi_exit_error_has_structured_exit_code_and_output_tails(tmp_path: P
     assert "stderr line 0" not in error.stderr
     assert f"stderr line {KIMCHI_EXIT_OUTPUT_TAIL_LINES + 4}" in error.stderr
     assert f"Kimchi exited with code {os.EX_IOERR}" in str(error)
+
+
+def test_populate_context_bills_goal_evaluator_usage(tmp_path: Path) -> None:
+    logs_dir = tmp_path / "jobs" / "run-1" / "task__trial" / "agent"
+    sessions_dir = logs_dir / "sessions"
+    sessions_dir.mkdir(parents=True)
+    # evaluatorUsage is cumulative per goal, so only the last entry counts.
+    (sessions_dir / "main.jsonl").write_text(
+        '{"type":"message","message":{"role":"assistant","usage":'
+        '{"input":10,"output":3,"cacheRead":2,"cacheWrite":1,"cost":{"total":0.5}}}}\n'
+        '{"type":"custom","customType":"kimchi_goal_state","data":{"op":"put","goal":'
+        '{"id":"g1","evaluatorUsage":{"input":4,"output":2,"cacheRead":0,"cacheWrite":0,'
+        '"totalTokens":6,"costUsd":0.1}}}}\n'
+        '{"type":"custom","customType":"kimchi_goal_state","data":{"op":"put","goal":'
+        '{"id":"g1","evaluatorUsage":{"input":8,"output":5,"cacheRead":0,"cacheWrite":0,'
+        '"totalTokens":13,"costUsd":0.25}}}}\n'
+    )
+
+    agent = Kimchi(logs_dir=logs_dir, model_name="kimchi-dev/kimi-k2.6")
+    context = AgentContext()
+    agent.populate_context_post_run(context)
+
+    assert context.n_input_tokens == 21
+    assert context.n_output_tokens == 8
+    assert context.n_cache_tokens == 2
+    assert context.cost_usd == 0.75
 
 
 def test_populate_context_skips_unreadable_session_files(tmp_path: Path) -> None:
