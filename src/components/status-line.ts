@@ -688,9 +688,14 @@ export class StatusLine implements Component {
 		// the core permissions/model/context trio is touched.
 		const survivors = fitWithBudgetStep(allSegments, contentBudget, this.theme)
 
+		// Core segments (permissions/model) must always lead the line, even if a
+		// persisted config marks them as pinned. Pinning only affects display order
+		// for non-core segments.
+		const CORE_LEAD_IDS: Set<SegmentId> = new Set(["permissions", "model"])
+
 		// Display order is unchanged: unpinned group left, pinned group right.
-		const unpinned = survivors.filter((s) => !pinnedSet.has(s.id))
-		const pinned = survivors.filter((s) => pinnedSet.has(s.id))
+		const unpinned = survivors.filter((s) => !pinnedSet.has(s.id) || CORE_LEAD_IDS.has(s.id))
+		const pinned = survivors.filter((s) => pinnedSet.has(s.id) && !CORE_LEAD_IDS.has(s.id))
 
 		// Build content: unpinned (left) then pinned (right).
 		let contentLine: string

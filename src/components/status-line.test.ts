@@ -471,6 +471,24 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 			expect(visibleWidth(narrow.raw)).toBeLessThanOrEqual(70)
 		})
 	})
+
+	it("keeps permissions and model first even when persisted settings pin them", () => {
+		const ferment = createFermentMock()
+		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(ferment)
+		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
+		vi.spyOn(FERMENT, "getFermentContinuationPolicy").mockReturnValue("manual")
+
+		withPinned(["permissions", "model"], () => {
+			const { visible } = renderAt(200)
+			const permIdx = visible.indexOf("● default")
+			const modelIdx = visible.indexOf("multi-model (claude-opus-4-6)")
+			const fermentIdx = visible.indexOf("Ferment: my-ferment")
+
+			expect(permIdx).toBe(0)
+			expect(modelIdx).toBeGreaterThan(permIdx)
+			expect(fermentIdx).toBeGreaterThan(modelIdx)
+		})
+	})
 })
 
 describe("StatusLine segment coverage", () => {
