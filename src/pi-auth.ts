@@ -28,6 +28,9 @@ export async function syncPiAuth(authPath: string, modelsPath: string, apiKey: s
 		}
 
 		if (apiKey) {
+			if (!existsSync(modelsPath)) {
+				throw new Error(`Models configuration is missing at ${modelsPath}`)
+			}
 			const models = JSON.parse(readFileSync(modelsPath, "utf-8")) as {
 				providers?: Record<string, unknown>
 			}

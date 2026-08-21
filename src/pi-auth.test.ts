@@ -36,6 +36,17 @@ function provider(models: ReturnType<typeof model>[]) {
 }
 
 describe("syncPiAuth", () => {
+	it("reports the missing models configuration when storing a Kimchi key", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-"))
+		tempDirs.push(dir)
+		const authPath = join(dir, "auth.json")
+		const modelsPath = join(dir, "models.json")
+
+		await expect(syncPiAuth(authPath, modelsPath, "kimchi-key")).rejects.toThrow(
+			`Models configuration is missing at ${modelsPath}`,
+		)
+	})
+
 	it("creates Pi auth storage on first run", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-"))
 		tempDirs.push(dir)
