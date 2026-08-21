@@ -26,6 +26,12 @@ const {
 	provisionGitCredentialMock,
 	provisionHarnessConfigMock,
 	readTeleportCompactHintEnabledMock,
+	runRsyncMock,
+	formatRsyncFailureMock,
+	resolveClonePlanMock,
+	buildIncludeListMock,
+	buildChangedFilesListMock,
+	sumIncludeListBytesMock,
 } = vi.hoisted(() => ({
 	authMock: vi.fn(),
 	waitReadyMock: vi.fn(),
@@ -56,6 +62,12 @@ const {
 	provisionGitCredentialMock: vi.fn(),
 	provisionHarnessConfigMock: vi.fn(),
 	readTeleportCompactHintEnabledMock: vi.fn(),
+	runRsyncMock: vi.fn(),
+	formatRsyncFailureMock: vi.fn((err: unknown) => (err instanceof Error ? err.message : String(err))),
+	resolveClonePlanMock: vi.fn(),
+	buildIncludeListMock: vi.fn(),
+	buildChangedFilesListMock: vi.fn(),
+	sumIncludeListBytesMock: vi.fn(),
 }))
 
 vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMock }))
@@ -88,6 +100,28 @@ vi.mock("../provisioning/git-provision.js", () => ({
 }))
 vi.mock("../provisioning/harness-config.js", () => ({
 	provisionHarnessConfig: provisionHarnessConfigMock,
+}))
+vi.mock("../provisioning/clone-plan.js", () => {
+	class ClonePlanError extends Error {
+		readonly code: string
+		constructor(code: string, message: string) {
+			super(message)
+			this.name = "ClonePlanError"
+			this.code = code
+		}
+	}
+	return { resolveClonePlan: resolveClonePlanMock, ClonePlanError }
+})
+vi.mock("../provisioning/include-list.js", () => ({
+	buildIncludeList: buildIncludeListMock,
+	buildChangedFilesList: buildChangedFilesListMock,
+}))
+vi.mock("../provisioning/estimate-bytes.js", () => ({
+	sumIncludeListBytes: sumIncludeListBytesMock,
+}))
+vi.mock("../provisioning/rsync-runner.js", () => ({
+	runRsync: runRsyncMock,
+	formatRsyncFailure: formatRsyncFailureMock,
 }))
 vi.mock("../ui/progress.js", () => ({
 	createTeleportProgress: (...args: unknown[]) => {
@@ -190,7 +224,7 @@ beforeEach(() => {
 	waitReadyMock.mockReset().mockResolvedValue(undefined)
 	listWorkspacesMock.mockReset().mockResolvedValue([])
 	listSessionsMock.mockReset().mockResolvedValue([])
-	createSessionMock.mockReset().mockResolvedValue({})
+	createSessionMock.mockReset().mockResolvedValue({ freshClone: true })
 	pickWorkspaceMock.mockReset()
 	overlayMock.mockReset().mockReturnValue(() => ({
 		render: () => [],
@@ -211,6 +245,14 @@ beforeEach(() => {
 	provisionGitCredentialMock.mockReset().mockResolvedValue(undefined)
 	provisionHarnessConfigMock.mockReset().mockResolvedValue({ ok: true })
 	readTeleportCompactHintEnabledMock.mockReset().mockReturnValue(true)
+	runRsyncMock.mockReset().mockResolvedValue({ fileCount: 1, totalBytes: 1, durationMs: 1 })
+	formatRsyncFailureMock
+		.mockReset()
+		.mockImplementation((err: unknown) => (err instanceof Error ? err.message : String(err)))
+	resolveClonePlanMock.mockReset().mockResolvedValue(undefined)
+	buildIncludeListMock.mockReset().mockResolvedValue(["src/a.ts", ".git/HEAD", ".git/refs/heads/main"])
+	buildChangedFilesListMock.mockReset().mockResolvedValue(["src/a.ts", "README.md"])
+	sumIncludeListBytesMock.mockReset().mockResolvedValue(123)
 })
 
 afterEach(() => {
@@ -874,5 +916,131 @@ describe("readSessionTail", () => {
 		expect(info.tailIsWholeFile).toBe(false)
 		expect(info.tail).toBe("x".repeat(SESSION_TAIL_BYTES))
 		expect(info.fileSizeBytes).toBe(SESSION_TAIL_BYTES + 1000)
+	})
+})
+
+describe("runTeleport --fast", () => {
+	const FAST_WS = "11111111-1111-4111-8111-111111111111"
+
+	beforeEach(() => {
+		resolveClonePlanMock.mockResolvedValue({
+			url: "https://github.com/me/proj.git",
+			httpsUrl: "https://github.com/me/proj.git",
+			branch: "main",
+		})
+	})
+
+	it("without --fast: clone plan / working-tree list are never touched", async () => {
+		const { ctx } = makeCtx()
+
+		await runTeleport(`mysession --workspace ${FAST_WS}`, ctx)
+
+		expect(resolveClonePlanMock).not.toHaveBeenCalled()
+		expect(buildChangedFilesListMock).not.toHaveBeenCalled()
+	})
+
+	it("clones server-side with details.git, then diff-rsyncs the working tree", async () => {
+		const { ctx, ui } = makeCtx()
+
+		await runTeleport(`mysession --workspace ${FAST_WS} --fast`, ctx)
+
+		expect(resolveClonePlanMock).toHaveBeenCalledWith("/work/proj", undefined, expect.anything())
+		expect(createSessionMock).toHaveBeenCalledOnce()
+		expect(createSessionMock.mock.calls[0][2]).toMatchObject({
+			agentMode: "PTY",
+			cwd: "/home/sandbox/proj/",
+			details: {
+				git: {
+					repo: "https://github.com/me/proj.git",
+					branch: "main",
+					targetDirectory: "proj",
+				},
+			},
+		})
+		expect(runRsyncMock).toHaveBeenCalledOnce()
+		expect(runRsyncMock.mock.calls[0][0]).toMatchObject({
+			localPath: "/work/proj",
+			remotePath: "/home/sandbox/proj/",
+			filesFrom: ["src/a.ts", "README.md"],
+			deleteExtraneous: true,
+			excludeFilters: [".git/", ".env", ".env.*", ".envrc", ".kimchi/"],
+		})
+		expect(buildIncludeListMock).not.toHaveBeenCalled()
+		expect(ui.custom).toHaveBeenCalledOnce()
+	})
+
+	it("--git-repo URL mismatch refuses before touching the sandbox", async () => {
+		const { ClonePlanError } = await import("../provisioning/clone-plan.js")
+		resolveClonePlanMock.mockRejectedValue(
+			new ClonePlanError("url-mismatch", "cwd origin X does not match --git-repo URL Y"),
+		)
+		const { ctx, ui } = makeCtx()
+
+		await expect(
+			runTeleport(`mysession --workspace ${FAST_WS} --git-repo https://github.com/me/y.git --fast`, ctx),
+		).rejects.toBeInstanceOf(TeleportRefusal)
+		expect(ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("cwd origin X does not match --git-repo URL Y"),
+			"error",
+		)
+		expect(authMock).not.toHaveBeenCalled()
+		expect(createSessionMock).not.toHaveBeenCalled()
+		expect(runRsyncMock).not.toHaveBeenCalled()
+	})
+
+	it("freshClone=false: diff rsync skips --delete and warns", async () => {
+		createSessionMock.mockResolvedValue({ freshClone: false })
+		const { ctx, ui } = makeCtx()
+
+		await runTeleport(`mysession --workspace ${FAST_WS} --fast`, ctx)
+
+		expect(runRsyncMock.mock.calls[0][0]).toMatchObject({ deleteExtraneous: false })
+		expect(ui.notify).toHaveBeenCalledWith(
+			"Remote dir already existed — skipping pruning of extra remote files",
+			"warning",
+		)
+	})
+
+	it("diff-rsync failure warns, keeps the session, opens the overlay", async () => {
+		runRsyncMock.mockRejectedValue(new Error("rsync boom"))
+		const { ctx, ui } = makeCtx()
+
+		await runTeleport(`mysession --workspace ${FAST_WS} --fast`, ctx)
+
+		expect(createSessionMock).toHaveBeenCalledOnce()
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("rsync boom"), "warning")
+		expect(ui.custom).toHaveBeenCalledOnce()
+	})
+
+	it("unpushed branch: sends branch in details.git, worker falls back to checkout -B", async () => {
+		resolveClonePlanMock.mockResolvedValue({
+			url: "https://github.com/me/proj.git",
+			httpsUrl: "https://github.com/me/proj.git",
+			branch: "feat-x",
+		})
+		const { ctx, ui } = makeCtx()
+
+		await runTeleport(`mysession --workspace ${FAST_WS} --fast`, ctx)
+
+		expect(createSessionMock.mock.calls[0][2]).toMatchObject({
+			details: { git: { branch: "feat-x" } },
+		})
+		expect(ui.custom).toHaveBeenCalledOnce()
+	})
+
+	it("clone failure: warns, retries createSession without details.git, then full rsync", async () => {
+		createSessionMock.mockRejectedValueOnce(new Error("clone boom")).mockResolvedValueOnce({ freshClone: true })
+		const { ctx, ui } = makeCtx()
+
+		await runTeleport(`mysession --workspace ${FAST_WS} --fast`, ctx)
+
+		expect(ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Clone-based provisioning failed: clone boom"),
+			"warning",
+		)
+		expect(createSessionMock).toHaveBeenCalledTimes(2)
+		expect(createSessionMock.mock.calls[1][2]).not.toHaveProperty("details")
+		expect(buildIncludeListMock).toHaveBeenCalled()
+		expect(runRsyncMock).toHaveBeenCalled()
 	})
 })

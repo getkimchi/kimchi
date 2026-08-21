@@ -22,12 +22,13 @@ import { evaluateCompactHint, TELEPORT_COMPACT_HINT_DEFAULTS } from "../prefligh
 import { getGitHeadSha, gitWorkingTreeDirty, isGitRepo } from "../preflight/git.js"
 import { runPreflight } from "../preflight/index.js"
 import { SIZE_REFUSE_BYTES, SIZE_WARN_BYTES } from "../preflight/workspace-size.js"
+import { type ClonePlan, ClonePlanError, resolveClonePlan } from "../provisioning/clone-plan.js"
 import { SANDBOX_USER } from "../provisioning/constants.js"
 import { sumIncludeListBytes } from "../provisioning/estimate-bytes.js"
 import { provisionGitCredential, provisionGitIdentity } from "../provisioning/git-provision.js"
 import { buildHandoffNote, copySessionFileAndAddHandoffNote, removeTempDir } from "../provisioning/handoff-note.js"
 import { provisionHarnessConfig } from "../provisioning/harness-config.js"
-import { buildIncludeList } from "../provisioning/include-list.js"
+import { buildChangedFilesList, buildIncludeList } from "../provisioning/include-list.js"
 import { deriveSandboxDest, deriveSandboxDestFromRepoUrl, repoBasename } from "../provisioning/paths.js"
 import { formatRsyncFailure, runRsync } from "../provisioning/rsync-runner.js"
 import { STATUS_KEY, type TeleportContext } from "../types.js"
@@ -111,12 +112,33 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 	// from `git ls-files --cached --others --exclude-standard -z` plus
 	// a walk of `.git/`. Passing it via `--files-from` to rsync avoids
 	// the per-file pattern matching cost.
-	const shouldRsyncWorkspace = !args.gitRepo && isGitRepo(ctx.cwd)
+	// Fast path: resolve clone plan (URL + branch). Refuses before any sandbox
+	// is touched if cwd isn't a git repo, has no origin, or URL mismatches.
+	let clonePlan: ClonePlan | undefined
+	if (args.fast) {
+		try {
+			clonePlan = await resolveClonePlan(ctx.cwd, args.gitRepo, { signal })
+		} catch (err) {
+			if (signal.aborted) throw err
+			if (err instanceof ClonePlanError) refuse(ctx, err.message)
+			throw err
+		}
+	}
+	const targetDirectory = clonePlan ? repoBasename(clonePlan.url) : undefined
+	const remoteDest = clonePlan ? deriveSandboxDestFromRepoUrl(clonePlan.url) : undefined
+
+	const shouldRsyncWorkspace = !args.fast && !args.gitRepo && isGitRepo(ctx.cwd)
 	const filesFromP: Promise<string[]> = shouldRsyncWorkspace
 		? buildIncludeList(ctx.cwd, signal).catch(() => [])
 		: Promise.resolve([])
 	const sizeEstimateP: Promise<number> = shouldRsyncWorkspace
 		? filesFromP.then((list) => sumIncludeListBytes(ctx.cwd, list, signal).catch(() => 0))
+		: Promise.resolve(0)
+	const fastFilesFromP: Promise<string[]> = args.fast
+		? buildChangedFilesList(ctx.cwd, signal).catch(() => [])
+		: Promise.resolve([])
+	const fastSizeEstimateP: Promise<number> = args.fast
+		? fastFilesFromP.then((list) => sumIncludeListBytes(ctx.cwd, list, signal).catch(() => 0))
 		: Promise.resolve(0)
 	const localGitConfigP = readLocalGitConfig(ctx.cwd).catch(
 		() => ({}) as Awaited<ReturnType<typeof readLocalGitConfig>>,
@@ -154,8 +176,8 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		// (kicked off in the local block) rather than the raw `du` size, so
 		// the user sees the actual upload bytes (after excludes), not the
 		// disk footprint.
-		const estimatedUploadBytes = shouldRsyncWorkspace ? await sizeEstimateP : 0
-		if (shouldRsyncWorkspace) {
+		const estimatedUploadBytes = shouldRsyncWorkspace ? await sizeEstimateP : clonePlan ? await fastSizeEstimateP : 0
+		if (shouldRsyncWorkspace || clonePlan) {
 			if (estimatedUploadBytes > SIZE_REFUSE_BYTES && !args.force) {
 				refuse(
 					ctx,
@@ -284,11 +306,13 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 				`Session "${sessionName}" already exists in workspace ${workspaceId}. Use /remote-sessions to attach.`,
 			)
 		}
-		const sessionCwd = args.gitRepo
-			? deriveSandboxDestFromRepoUrl(args.gitRepo)
-			: shouldRsyncWorkspace
-				? deriveSandboxDest(ctx.cwd)
-				: undefined
+		const sessionCwd = clonePlan
+			? remoteDest
+			: args.gitRepo
+				? deriveSandboxDestFromRepoUrl(args.gitRepo)
+				: shouldRsyncWorkspace
+					? deriveSandboxDest(ctx.cwd)
+					: undefined
 		// Upload an annotated copy of the local session file: append a handoff
 		// note (visible in the remote transcript) explaining the environment
 		// change, provisioning provenance, and any heuristics (rsync include
@@ -323,7 +347,16 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			sessionFileToUpload = sessionFileWithHandoffNote ?? ctx.sessionFile
 		}
 		const req: CreateSessionRequest = { agentMode: "PTY", cwd: sessionCwd }
-		if (args.gitRepo) {
+		if (clonePlan && targetDirectory) {
+			req.details = {
+				git: {
+					repo: clonePlan.httpsUrl,
+					branch: clonePlan.branch,
+					targetDirectory,
+					noHistory: true,
+				},
+			}
+		} else if (args.gitRepo) {
 			req.details = {
 				git: {
 					repo: args.gitRepo,
@@ -332,18 +365,108 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 				},
 			}
 		}
+		let cloneProvisioned = false
 		try {
 			initialSession = await createSession(client, sessionName, req, {
 				sessionFile: sessionFileToUpload,
 				signal,
 				timeoutMs: SESSION_CREATE_TIMEOUT_MS,
 			})
+			cloneProvisioned = clonePlan !== undefined
 		} catch (err) {
 			if (signal.aborted) throw err
-			refuse(ctx, `Could not create session: ${err instanceof Error ? err.message : String(err)}`)
-		} finally {
-			if (sessionFileWithHandoffNote) removeTempDir(dirname(sessionFileWithHandoffNote))
+			if (!clonePlan || !remoteDest) {
+				if (sessionFileWithHandoffNote) removeTempDir(dirname(sessionFileWithHandoffNote))
+				refuse(ctx, `Could not create session: ${err instanceof Error ? err.message : String(err)}`)
+			}
+			// Fast fallback: clone failed — retry without details.git + full rsync.
+			warn(
+				ctx,
+				`Clone-based provisioning failed: ${err instanceof Error ? err.message : String(err)} — falling back to full upload`,
+			)
+			try {
+				initialSession = await createSession(
+					client,
+					sessionName,
+					{ agentMode: "PTY", cwd: remoteDest },
+					{ sessionFile: sessionFileToUpload, signal, timeoutMs: SESSION_CREATE_TIMEOUT_MS },
+				)
+			} catch (retryErr) {
+				if (signal.aborted) throw retryErr
+				if (sessionFileWithHandoffNote) removeTempDir(dirname(sessionFileWithHandoffNote))
+				refuse(ctx, `Could not create session: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`)
+			}
+			const fullList = await buildIncludeList(ctx.cwd, signal).catch(() => [])
+			const fullEstimate = await sumIncludeListBytes(ctx.cwd, fullList, signal).catch(() => 0)
+			try {
+				await runRsync({
+					localPath: ctx.cwd,
+					remotePath: remoteDest,
+					isSourceDirectory: true,
+					remoteHost: creds.host,
+					remoteUser: SANDBOX_USER,
+					authToken: creds.connectToken,
+					signal,
+					deleteExtraneous: false,
+					precomputeTotal: true,
+					precomputedTotalBytes: fullEstimate,
+					filesFrom: fullList,
+					onPhase: (phase: "estimate" | "mkdir" | "rsync") => {
+						if (phase === "mkdir") progress.setStepDetail("preparing remote directory…")
+						else if (phase === "rsync") progress.setStepDetail("starting transfer…")
+					},
+					onCumulativeProgress: ({ transferredBytes, totalBytes, pct }) => {
+						progress.setStepDetail(`${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)} (${pct}%)`)
+					},
+				})
+			} catch (syncErr) {
+				if (signal.aborted) throw syncErr
+				if (sessionFileWithHandoffNote) removeTempDir(dirname(sessionFileWithHandoffNote))
+				refuse(ctx, `Workspace sync failed: ${formatRsyncFailure(syncErr)}`)
+			}
 		}
+
+		// Fast success: rsync only the local working-tree diff over the
+		// fresh clone.
+		if (cloneProvisioned && clonePlan && remoteDest) {
+			const freshClone = initialSession.freshClone ?? false
+			if (!freshClone) {
+				warn(ctx, "Remote dir already existed — skipping pruning of extra remote files")
+			}
+			const fastFilesFrom = await fastFilesFromP
+			if (fastFilesFrom.length === 0) {
+				progress.setStepDetail("No local changes to sync")
+			} else {
+				progress.setStepDetail("Syncing local changes")
+				try {
+					await runRsync({
+						localPath: ctx.cwd,
+						remotePath: remoteDest,
+						isSourceDirectory: true,
+						remoteHost: creds.host,
+						remoteUser: SANDBOX_USER,
+						authToken: creds.connectToken,
+						signal,
+						deleteExtraneous: freshClone,
+						excludeFilters: [".git/", ".env", ".env.*", ".envrc", ".kimchi/"],
+						precomputeTotal: true,
+						precomputedTotalBytes: estimatedUploadBytes,
+						filesFrom: fastFilesFrom,
+						onPhase: (phase: "estimate" | "mkdir" | "rsync") => {
+							if (phase === "mkdir") progress.setStepDetail("preparing remote directory…")
+							else if (phase === "rsync") progress.setStepDetail("starting transfer…")
+						},
+						onCumulativeProgress: ({ transferredBytes, totalBytes, pct }) => {
+							progress.setStepDetail(`${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)} (${pct}%)`)
+						},
+					})
+				} catch (err) {
+					if (signal.aborted) throw err
+					warn(ctx, formatRsyncFailure(err))
+				}
+			}
+		}
+		if (sessionFileWithHandoffNote) removeTempDir(dirname(sessionFileWithHandoffNote))
 		progress.complete("Session ready")
 
 		progress.finish({
@@ -458,13 +581,7 @@ async function maybeRefuseTeleportForLongSession(
 		fallbackTimestampMs: fileMtimeMs,
 	})
 	if (!evaluation.decided) {
-		// Cap the widening re-read: the hint is a non-critical nudge, so loading
-		// a pathologically large session file fully into memory just to decide
-		// suppression is not worth it — skip the hint instead.
 		if (tailInfo.fileSizeBytes > SESSION_WIDEN_MAX_BYTES) return
-		// The tail slice ran out before either stop condition (e.g. fewer than
-		// the lookback window of very large messages, compaction just beyond
-		// the slice). Widen to the whole file and decide.
 		try {
 			evaluation = evaluateCompactHint({
 				sessionTail: await readFile(sessionFile, "utf-8"),
