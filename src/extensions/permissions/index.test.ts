@@ -11,6 +11,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
@@ -1070,6 +1071,13 @@ describe("permissions notification emission", () => {
 				tool_use_id: "tc-write-1",
 			},
 		)
+
+		const emitMock = (harness.pi as unknown as { events: { emit: ReturnType<typeof vi.fn> } }).events.emit
+		const blocked = emitMock.mock.calls as [string, { active: boolean; label?: string }][]
+		expect(blocked.filter(([channel]) => channel === "herdr:blocked")).toEqual([
+			["herdr:blocked", { active: true, label: "Permission: write" }],
+			["herdr:blocked", { active: false }],
+		])
 	})
 })
 
@@ -1529,13 +1537,13 @@ describe("compound command with session rules", () => {
 describe("handleCompoundConfirm", () => {
 	let session: SessionMemory
 	let activeAborts: Set<AbortController>
-	const mockPi = { events: { emit: vi.fn() } } as unknown as ExtensionAPI
+	let pi: ExtensionAPI
 
 	beforeEach(() => {
 		session = new SessionMemory()
 		session.clear()
 		activeAborts = new Set()
-		vi.mocked(mockPi.events.emit).mockClear()
+		pi = createExtensionApi().api
 	})
 
 	it("returns undefined for allow-all-once", async () => {
@@ -1545,8 +1553,8 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
-			pi: mockPi,
 			subcommands: ["echo a", "echo b"],
 		})
 
@@ -1560,8 +1568,8 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
-			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1579,8 +1587,8 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
-			pi: mockPi,
 			subcommands: ["echo a"],
 		})
 
@@ -1598,8 +1606,8 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
-			pi: mockPi,
 			subcommands: ["echo a", "echo b"],
 		})
 
@@ -1617,8 +1625,8 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
-			pi: mockPi,
 			subcommands: ["echo a", "echo b"],
 		})
 
@@ -1636,8 +1644,8 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
-			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1653,8 +1661,8 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
-			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1670,8 +1678,8 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
-			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1693,8 +1701,8 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
-			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1708,8 +1716,8 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
-			pi: mockPi,
 			subcommands: [],
 		})
 
@@ -1725,8 +1733,8 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
-			pi: mockPi,
 			subcommands: ["echo hello"],
 		})
 
@@ -1745,8 +1753,8 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
-			pi: mockPi,
 			subcommands: ["echo a", "whoami"],
 		})
 
@@ -1774,8 +1782,8 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
-			pi: mockPi,
 			subcommands: ["echo hello", "whoami"],
 		})
 
@@ -1792,12 +1800,130 @@ describe("handleCompoundConfirm", () => {
 		const result = await handleCompoundConfirm(event, {
 			ctx,
 			session,
+			pi,
 			activeAborts,
-			pi: mockPi,
 			subcommands: ["echo a"],
 		})
 
 		expect(result).toEqual({ block: true, reason: "Declined by user" })
+	})
+})
+
+describe("herdr:blocked signaling", () => {
+	let session: SessionMemory
+	let activeAborts: Set<AbortController>
+	let pi: ExtensionAPI
+	let emitEvent: ReturnType<typeof vi.fn>
+
+	function blockedCalls(): [string, { active: boolean; label?: string }][] {
+		return (emitEvent.mock.calls as [string, { active: boolean; label?: string }][]).filter(
+			([channel]) => channel === "herdr:blocked",
+		)
+	}
+
+	beforeEach(() => {
+		session = new SessionMemory()
+		session.clear()
+		activeAborts = new Set()
+		const mock = createExtensionApi()
+		pi = mock.api
+		emitEvent = mock.emitEvent
+	})
+
+	it("keeps blocked active while a compound prompt is pending and clears it on resolution", async () => {
+		const ctx = createMockContext([])
+		let resolvePrompt!: (value: string) => void
+		ctx.ui.select = vi.fn(
+			() =>
+				new Promise<string>((resolve) => {
+					resolvePrompt = resolve
+				}),
+		)
+
+		const pending = handleCompoundConfirm(createMockEvent(), {
+			ctx,
+			pi,
+			session,
+			activeAborts,
+			subcommands: ["echo a", "echo b"],
+		})
+
+		// The compound prompt reaches ui.select after an async hop; wait for the
+		// prompt to actually be on screen before asserting the pending state.
+		await vi.waitFor(() => {
+			expect(ctx.ui.select).toHaveBeenCalled()
+		})
+		expect(blockedCalls()).toEqual([["herdr:blocked", { active: true, label: "Permission: bash (compound)" }]])
+
+		resolvePrompt("Run all (once)")
+		await expect(pending).resolves.toBeUndefined()
+
+		expect(blockedCalls()).toEqual([
+			["herdr:blocked", { active: true, label: "Permission: bash (compound)" }],
+			["herdr:blocked", { active: false }],
+		])
+	})
+
+	it("balances activations across nested pick-per-subcommand prompts", async () => {
+		const ctx = createMockContext(["Pick permissions per subcommand", "Yes — just this call", "Yes — just this call"])
+
+		const result = await handleCompoundConfirm(createMockEvent(), {
+			ctx,
+			pi,
+			session,
+			activeAborts,
+			subcommands: ["echo a", "whoami"],
+		})
+		expect(result).toBeUndefined()
+
+		const calls = blockedCalls()
+		expect(calls[0]).toEqual(["herdr:blocked", { active: true, label: "Permission: bash (compound)" }])
+		expect(calls).toHaveLength(6)
+		let depth = 0
+		let minDepth = 0
+		for (const [, payload] of calls) {
+			depth += payload.active ? 1 : -1
+			minDepth = Math.min(minDepth, depth)
+		}
+		expect(depth).toBe(0)
+		expect(minDepth).toBe(0)
+	})
+
+	it("emits deactivation when the prompt rejects", async () => {
+		const ctx = createMockContext([])
+		ctx.ui.select = vi.fn(async () => {
+			throw new Error("select blew up")
+		})
+
+		await expect(
+			handleCompoundConfirm(createMockEvent(), {
+				ctx,
+				pi,
+				session,
+				activeAborts,
+				subcommands: ["echo a"],
+			}),
+		).rejects.toThrow("select blew up")
+
+		expect(blockedCalls()).toEqual([
+			["herdr:blocked", { active: true, label: "Permission: bash (compound)" }],
+			["herdr:blocked", { active: false }],
+		])
+	})
+
+	it("emits nothing when no prompter is available (no UI)", async () => {
+		const ctx: ExtensionContext = { ...createMockContext([]), hasUI: false, mode: "print" }
+
+		const result = await handleCompoundConfirm(createMockEvent(), {
+			ctx,
+			pi,
+			session,
+			activeAborts,
+			subcommands: ["echo a"],
+		})
+
+		expect(result).toEqual({ block: true, reason: "No UI to confirm permission" })
+		expect(blockedCalls()).toEqual([])
 	})
 })
 

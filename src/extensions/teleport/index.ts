@@ -2,6 +2,7 @@ import os from "node:os"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { isInSandboxCluster } from "../../utils/sandbox.js"
+import { getTeleportArgumentCompletions } from "./commands/args.js"
 import { TeleportRefusal } from "./commands/errors.js"
 import { runRemoteSessions } from "./commands/remote-sessions.js"
 import { runSshConfig } from "./commands/ssh-config.js"
@@ -45,7 +46,9 @@ export default function teleportExtension(pi: ExtensionAPI): void {
 		return
 	}
 	pi.registerCommand("teleport", {
-		description: "Open a kimchi PTY session in a sandbox workspace",
+		description:
+			"Teleport to a remote workspace: /teleport [name], /teleport --allow-dirty, /teleport --force, /teleport --workspace <id>, /teleport --git-repo <url> --branch <branch>",
+		getArgumentCompletions: (prefix) => getTeleportArgumentCompletions(prefix),
 		handler: makeHandler(runTeleport),
 	})
 	pi.registerCommand("terminal", {

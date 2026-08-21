@@ -50,7 +50,7 @@ describe("billing status", () => {
 		expect(formatBudgetLimit("0.000000")).toBe("unlimited")
 	})
 
-	it("shows BYO guidance instead of a credit warning when Community inference is blocked", () => {
+	it("shows BYO guidance as a warning when Community inference is blocked", () => {
 		observeCreditsPayload({
 			serverless: true,
 			tier: "free-slow",
@@ -68,8 +68,13 @@ describe("billing status", () => {
 			restrictedMode: true,
 			remainingCredits: 0,
 		})
-		expect(getCommunityTierHeaderNotice()).toBe(COMMUNITY_TIER_MESSAGES.inferenceBlocked)
-		expect(getBillingWarnings()).toEqual([])
+		expect(getCommunityTierHeaderNotice()).toBeUndefined()
+		expect(getBillingWarnings()).toEqual([
+			{
+				kind: "community-inference-blocked",
+				message: COMMUNITY_TIER_MESSAGES.inferenceBlocked,
+			},
+		])
 		expect(getBillingStatusLine()).toEqual({ amount: "$0.00" })
 	})
 

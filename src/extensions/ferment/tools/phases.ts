@@ -12,6 +12,7 @@ import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import type { Ferment, Grade, Phase } from "../../../ferment/types.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
+import { withBlocked } from "../../herdr-events.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
 import { withWorkingHidden } from "../../ui.js"
 import { askUserForm, createJudgeDecisionRecorder } from "../ask-user.js"
@@ -237,6 +238,7 @@ function formatManualPhaseBoundaryContinue(
 
 async function maybeCompleteManualPhaseBoundary(
 	runtime: FermentRuntime,
+	pi: ExtensionAPI,
 	ferment: Ferment,
 	completedPhase: Phase,
 	projectChecksLine: string,
@@ -249,14 +251,14 @@ async function maybeCompleteManualPhaseBoundary(
 	const nextPhase = ferment.phases.find((phase) => phase.id === decision.action.phaseId)
 	if (!nextPhase) return undefined
 	const summaryLine = copy?.summaryLine ?? `Phase "${completedPhase.name}" done.`
-	if (ctx?.ui?.select) {
-		const choice = await withWorkingHidden(
-			ctx,
-			() =>
-				ctx.ui?.select?.(`${summaryLine}\nContinue "${ferment.name}" to "${nextPhase.name}"?`, [
+	if (ctx.hasUI) {
+		const choice = await withBlocked(pi.events, "Ferment phase boundary", () =>
+			withWorkingHidden(ctx, () =>
+				ctx.ui.select(`${summaryLine}\nContinue "${ferment.name}" to "${nextPhase.name}"?`, [
 					"Continue to next phase",
 					"Pause here",
-				]) ?? Promise.resolve(undefined),
+				]),
+			),
 		)
 		if (choice === "Continue to next phase") {
 			return toolOk(
@@ -649,6 +651,7 @@ export async function completePhase(
 
 	const manualBoundary = await maybeCompleteManualPhaseBoundary(
 		runtime,
+		pi,
 		fresh,
 		phase,
 		projectChecksLine,
@@ -919,7 +922,7 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
 
-			const manualBoundary = await maybeCompleteManualPhaseBoundary(runtime, outcome.ferment, phase, "", "", ctx, {
+			const manualBoundary = await maybeCompleteManualPhaseBoundary(runtime, pi, outcome.ferment, phase, "", "", ctx, {
 				summaryLine: `Phase "${phase.name}" skipped.`,
 			})
 			if (manualBoundary) return manualBoundary

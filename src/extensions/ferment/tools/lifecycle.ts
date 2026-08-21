@@ -29,6 +29,7 @@ import {
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
+import { withBlocked } from "../../herdr-events.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
@@ -1329,7 +1330,7 @@ ${renderGateGuidance("scope_ferment")}`,
 
 			// Outer loop: supports "Restart questions".
 			while (true) {
-				const answersResult = await runQuestions()
+				const answersResult = await withBlocked(pi.events, "Ferment scoping questions", runQuestions)
 
 				if (answersResult === "cancelled") {
 					return planToolOk("Question flow cancelled. Waiting for your next instruction.")

@@ -29,12 +29,14 @@ import { createApplyAndPersist, formatNextActionHint, formatNoReplanningGuidance
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
 import { GOAL_TOOL_NAMES } from "../goal/constants.js"
+import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
 import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
+import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
@@ -422,7 +424,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		pi.sendMessage(
 			{
 				customType: "plan-execute",
-				content: `The user approved the plan. Execute it now.${planRef}\n\n---\n\n${planText}`,
+				content: markHarnessSteer(`The user approved the plan. Execute it now.${planRef}\n\n---\n\n${planText}`),
 				display: false,
 			},
 			{ triggerTurn: true },
@@ -567,8 +569,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const DECLINE = "Rework the plan"
 		const START_AS_FERMENT = "Start as ferment"
 
-		const choice = await withWorkingHidden(ctx, () =>
-			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, DECLINE, START_AS_FERMENT]),
+		const choice = await withBlocked(pi.events, "Plan complete", () =>
+			withWorkingHidden(ctx, () =>
+				ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, DECLINE, START_AS_FERMENT]),
+			),
 		)
 
 		if (choice === EXECUTE) {
@@ -713,15 +717,17 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						content: [
 							{
 								type: "text",
-								text: [
-									`Handoff from plan mode: the plan you just presented was approved by the user ("Start as ferment") and converted into ferment "${activated.ferment.name}" (${activated.ferment.id}).`,
-									`The ferment is ALREADY scoped — goal, success criteria, and constraints are set — and ${activePhase ? `phase "${activePhase.id}" (${activePhase.steps.length} steps) is ACTIVE` : "its first phase is ACTIVE"}.`,
-									`${formatNoReplanningGuidance()} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
-									nextActionHint,
-									"Go straight to execution.",
-								]
-									.filter(Boolean)
-									.join("\n"),
+								text: markHarnessSteer(
+									[
+										`Handoff from plan mode: the plan you just presented was approved by the user ("Start as ferment") and converted into ferment "${activated.ferment.name}" (${activated.ferment.id}).`,
+										`The ferment is ALREADY scoped — goal, success criteria, and constraints are set — and ${activePhase ? `phase "${activePhase.id}" (${activePhase.steps.length} steps) is ACTIVE` : "its first phase is ACTIVE"}.`,
+										`${formatNoReplanningGuidance()} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
+										nextActionHint,
+										"Go straight to execution.",
+									]
+										.filter(Boolean)
+										.join("\n"),
+								),
 							},
 						],
 						display: false,
@@ -1024,36 +1030,39 @@ async function handleConfirm(
 			tool_name: event.toolName,
 			tool_use_id: event.toolCallId,
 		})
-		opts.pi.events.emit(PERMISSION_EVENTS.BEFORE_PROMPT, {
-			toolCallId: event.toolCallId,
-			toolName: event.toolName,
-			compound: false,
-			riskScore: opts.riskScore,
-			classifierReason: opts.subtitle,
-		})
 
-		const input = event.input
-		const outcome = await prompter.request({
-			toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
-			toolName: event.toolName,
-			input,
-			subtitle: opts.subtitle,
-			riskScore: opts.riskScore,
-			choices: buildPermissionChoices(event.toolName, input),
-			signal: abort.signal,
-		})
+		return await withBlocked(opts.pi.events, `Permission: ${event.toolName}`, async () => {
+			opts.pi.events.emit(PERMISSION_EVENTS.BEFORE_PROMPT, {
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				compound: false,
+				riskScore: opts.riskScore,
+				classifierReason: opts.subtitle,
+			})
 
-		opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
-			toolCallId: event.toolCallId,
-			toolName: event.toolName,
-			decision: approvalOutcomeToDecision(outcome),
-			ruleAdded:
-				outcome.kind === "allow-remember" || outcome.kind === "allow-remember-wildcard"
-					? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
-					: undefined,
-		})
+			const input = event.input
+			const outcome = await prompter.request({
+				toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
+				toolName: event.toolName,
+				input,
+				subtitle: opts.subtitle,
+				riskScore: opts.riskScore,
+				choices: buildPermissionChoices(event.toolName, input),
+				signal: abort.signal,
+			})
 
-		return applyApprovalOutcome(outcome, opts.session)
+			opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				decision: approvalOutcomeToDecision(outcome),
+				ruleAdded:
+					outcome.kind === "allow-remember" || outcome.kind === "allow-remember-wildcard"
+						? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
+						: undefined,
+			})
+
+			return applyApprovalOutcome(outcome, opts.session)
+		})
 	} finally {
 		unlinkAbort()
 		opts.activeAborts.delete(abort)
@@ -1076,111 +1085,114 @@ export async function handleCompoundConfirm(
 			tool_name: event.toolName,
 			tool_use_id: event.toolCallId,
 		})
-		opts.pi.events.emit(PERMISSION_EVENTS.BEFORE_PROMPT, {
-			toolCallId: event.toolCallId,
-			toolName: event.toolName,
-			compound: true,
-			riskScore: opts.riskScore,
-			classifierReason: opts.subtitle,
-		})
 
-		if (opts.ctx.mode !== "tui") {
-			// Non-TUI transports (chiefly ACP) present compound commands as one
-			// permission card. They do not offer TUI's per-subcommand picker, so
-			// remembered rules are scoped to the compound call's suggested scope
-			// rather than each segment.
-			const input = event.input
-			const outcome = await prompter.request({
-				toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
+		return await withBlocked(opts.pi.events, `Permission: ${event.toolName} (compound)`, async () => {
+			opts.pi.events.emit(PERMISSION_EVENTS.BEFORE_PROMPT, {
+				toolCallId: event.toolCallId,
 				toolName: event.toolName,
-				input,
-				subtitle: opts.subtitle,
-				choices: buildPermissionChoices(event.toolName, input),
+				compound: true,
+				riskScore: opts.riskScore,
+				classifierReason: opts.subtitle,
+			})
+
+			if (opts.ctx.mode !== "tui") {
+				// Non-TUI transports (chiefly ACP) present compound commands as one
+				// permission card. They do not offer TUI's per-subcommand picker, so
+				// remembered rules are scoped to the compound call's suggested scope
+				// rather than each segment.
+				const input = event.input
+				const outcome = await prompter.request({
+					toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
+					toolName: event.toolName,
+					input,
+					subtitle: opts.subtitle,
+					choices: buildPermissionChoices(event.toolName, input),
+					signal: abort.signal,
+				})
+				opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
+					toolCallId: event.toolCallId,
+					toolName: event.toolName,
+					decision: approvalOutcomeToDecision(outcome),
+					ruleAdded:
+						outcome.kind === "allow-remember" || outcome.kind === "allow-remember-wildcard"
+							? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
+							: undefined,
+				})
+				return applyApprovalOutcome(outcome, opts.session)
+			}
+
+			const compoundSubs: CompoundSubcommand[] = opts.subcommands.map((cmd) => ({
+				command: cmd,
+			}))
+
+			const outcome = await promptForCompoundApproval({
+				toolName: event.toolName,
+				commands: compoundSubs,
+				ctx: opts.ctx,
 				signal: abort.signal,
 			})
+
 			opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
-				decision: approvalOutcomeToDecision(outcome),
+				decision: compoundOutcomeToDecision(outcome),
 				ruleAdded:
-					outcome.kind === "allow-remember" || outcome.kind === "allow-remember-wildcard"
+					outcome.kind === "allow-all-remember" && outcome.rules.length > 0
 						? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
 						: undefined,
 			})
-			return applyApprovalOutcome(outcome, opts.session)
-		}
 
-		const compoundSubs: CompoundSubcommand[] = opts.subcommands.map((cmd) => ({
-			command: cmd,
-		}))
+			if (outcome.kind === "aborted") return "aborted"
+			if (outcome.kind === "allow-all-once") return undefined
 
-		const outcome = await promptForCompoundApproval({
-			toolName: event.toolName,
-			commands: compoundSubs,
-			ctx: opts.ctx,
-			signal: abort.signal,
-		})
-
-		opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
-			toolCallId: event.toolCallId,
-			toolName: event.toolName,
-			decision: compoundOutcomeToDecision(outcome),
-			ruleAdded:
-				outcome.kind === "allow-all-remember" && outcome.rules.length > 0
-					? { toolName: event.toolName, behavior: "allow" as const, source: "session" as RuleSource }
-					: undefined,
-		})
-
-		if (outcome.kind === "aborted") return "aborted"
-		if (outcome.kind === "allow-all-once") return undefined
-
-		if (outcome.kind === "allow-all-remember") {
-			for (const rule of outcome.rules) {
-				opts.session.add(rule)
-			}
-			return undefined
-		}
-
-		if (outcome.kind === "pick-per-subcommand") {
-			// For each subcommand, evaluate rules and prompt if needed
-			for (const subcommand of opts.subcommands) {
-				// Re-evaluate rules (user may have added rules during the prompt)
-				const match = evaluateRules(opts.allRules ? opts.allRules() : opts.session.all(), "bash", {
-					command: subcommand,
-				})
-				if (match.decision === "allow") {
-					continue
+			if (outcome.kind === "allow-all-remember") {
+				for (const rule of outcome.rules) {
+					opts.session.add(rule)
 				}
-				if (match.decision === "deny") {
-					return {
-						block: true,
-						reason: `Subcommand blocked by rule: ${subcommand}`,
+				return undefined
+			}
+
+			if (outcome.kind === "pick-per-subcommand") {
+				// For each subcommand, evaluate rules and prompt if needed
+				for (const subcommand of opts.subcommands) {
+					// Re-evaluate rules (user may have added rules during the prompt)
+					const match = evaluateRules(opts.allRules ? opts.allRules() : opts.session.all(), "bash", {
+						command: subcommand,
+					})
+					if (match.decision === "allow") {
+						continue
+					}
+					if (match.decision === "deny") {
+						return {
+							block: true,
+							reason: `Subcommand blocked by rule: ${subcommand}`,
+						}
+					}
+
+					// Create a fake bash event for this subcommand
+					const subEvent: ToolCallEvent = {
+						...event,
+						input: { command: subcommand },
+					}
+					const result = await handleConfirm(subEvent, opts)
+					if (result === "aborted") return "aborted"
+					if (result !== undefined) {
+						// Blocked
+						return { block: true, reason: result.reason }
 					}
 				}
+				return undefined
+			}
 
-				// Create a fake bash event for this subcommand
-				const subEvent: ToolCallEvent = {
-					...event,
-					input: { command: subcommand },
-				}
-				const result = await handleConfirm(subEvent, opts)
-				if (result === "aborted") return "aborted"
-				if (result !== undefined) {
-					// Blocked
-					return { block: true, reason: result.reason }
+			if (outcome.kind === "deny-with-feedback") {
+				return {
+					block: true,
+					reason: `The user declined this action before execution and said: ${outcome.feedback}`,
 				}
 			}
-			return undefined
-		}
 
-		if (outcome.kind === "deny-with-feedback") {
-			return {
-				block: true,
-				reason: `The user declined this action before execution and said: ${outcome.feedback}`,
-			}
-		}
-
-		return { block: true, reason: "Declined by user" }
+			return { block: true, reason: "Declined by user" }
+		})
 	} finally {
 		unlinkAbort()
 		opts.activeAborts.delete(abort)

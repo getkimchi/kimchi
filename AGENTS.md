@@ -22,6 +22,11 @@ You are editing the kimchi coding harness. This repo extends the pi-mono SDK (`@
 - **Pre-commit**: `.husky/pre-commit` runs `pnpm run lint` — CI runs full `check` (lint + typecheck)
 - **README changes**: Run `./scripts/copy-resources.js --dev` after editing to propagate to dist/
 
+## CLI arguments
+
+- **Declare Kimchi-local flags in `src/cli-args.ts`:** add them to `CLI_OPTIONS` with `type`, `description`, and an optional `short` alias / `placeholder`. This catalog is the single source of truth for both the parser and help text.
+- **Read parsed CLI args via `getParsedCliArgs()`:** do not scan `process.argv` by hand outside of `src/cli.ts` startup/bootstrap code, and do not stash CLI state on `process` globals. The cached parse is populated once (by `cli.ts`) after `@file` / resume-id normalization so downstream code sees the same argument list that upstream pi-mono receives.
+
 ## Testing expectations
 
 - **Always add or update tests with behavior changes.** Bug fixes should include a regression test that fails before the fix; new features should cover the user-visible behavior they introduce. If a test is not practical, say why in the PR/commit notes.

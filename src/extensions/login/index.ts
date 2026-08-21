@@ -2,12 +2,10 @@ import { resolve } from "node:path"
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth"
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { clearApiKey, loadConfig, writeApiKey } from "../../config.js"
+import { loadConfig, writeApiKey } from "../../config.js"
 import { chatCompletionsApi, updateModelsConfig, validateApiKey } from "../../models.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
-import { getKimchiProviderIds, KIMCHI_PROVIDER_ID, setKimchiAuthToken } from "./flow.js"
-
-const KIMCHI_LOGOUT_PATCHED = Symbol("kimchi.logoutPatched")
+import { KIMCHI_PROVIDER_ID } from "./flow.js"
 
 export default function loginExtension(pi: ExtensionAPI): void {
 	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
@@ -17,36 +15,6 @@ export default function loginExtension(pi: ExtensionAPI): void {
 	// Builtin providers are disabled globally; explicitly restore the approved subscription provider.
 	registerBunOAuthFlows()
 	pi.registerProvider(openaiCodexProvider())
-
-	pi.on("session_start", (_event, ctx) => {
-		// Re-read config every session start (not once at load): the API key can change mid-process
-		// after a `/login` writes it, and each new session must pick up the latest key. This is a
-		// separate read from the load-time customLlmEndpoint lookup below — do not dedupe them.
-		const configKey = loadConfig().apiKey
-		if (configKey) {
-			setKimchiAuthToken(ctx.modelRegistry, configKey, "oauth")
-			void refreshBillingStatusFromConfig({ mode: "forced" })
-		}
-
-		const authStorage = (ctx.modelRegistry as { authStorage?: { logout(provider: string): void } }).authStorage
-		if (!authStorage) return
-		const patchedAuthStorage = authStorage as typeof authStorage & { [KIMCHI_LOGOUT_PATCHED]?: boolean }
-		if (patchedAuthStorage[KIMCHI_LOGOUT_PATCHED]) return
-
-		const originalLogout = patchedAuthStorage.logout.bind(patchedAuthStorage)
-		patchedAuthStorage.logout = (provider: string) => {
-			if (provider === KIMCHI_PROVIDER_ID) {
-				for (const providerId of getKimchiProviderIds(ctx.modelRegistry)) {
-					originalLogout(providerId)
-				}
-				clearApiKey()
-				void refreshBillingStatusFromConfig({ mode: "forced" })
-				return
-			}
-			originalLogout(provider)
-		}
-		patchedAuthStorage[KIMCHI_LOGOUT_PATCHED] = true
-	})
 
 	// Apply a custom llmEndpoint as an in-memory baseUrl override for the kimchi-dev provider.
 	// This routes chat requests to the override even when the metadata refresh falls back to the
@@ -86,6 +54,10 @@ export default function loginExtension(pi: ExtensionAPI): void {
 	// This runs on every session_start because sub-providers may not exist yet
 	// at initial load (they're created by updateModelsConfig from the metadata API).
 	pi.on("session_start", (_event, ctx) => {
+		if (loadConfig().apiKey) {
+			void refreshBillingStatusFromConfig({ mode: "forced" })
+		}
+
 		const subProviders = new Set(
 			ctx.modelRegistry
 				.getAll()

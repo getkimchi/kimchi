@@ -8,6 +8,7 @@ import type {
 	LoopGuardWarnPayload,
 } from "./loop-guard-events.js"
 import { LOOP_GUARD_EVENTS } from "./loop-guard-events.js"
+import { markHarnessSteer } from "./steer-marker.js"
 
 export interface ToolHistoryRecord {
 	toolName: string
@@ -764,7 +765,7 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 			pi.sendMessage(
 				{
 					customType: "loop-guard-steer",
-					content: [{ type: "text", text: result.reason }],
+					content: [{ type: "text", text: markHarnessSteer(result.reason) }],
 					display: false,
 				},
 				{ deliverAs: "steer" },

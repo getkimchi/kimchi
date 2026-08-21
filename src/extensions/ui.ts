@@ -10,18 +10,22 @@ import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { LogoHeader } from "../components/logo.js"
-import { buildScriptPayload, readStatusLineCommand, StatusLine, StatusLineScript } from "../components/status-line.js"
+import {
+	buildControlsLineSegments,
+	buildScriptPayload,
+	readStatusLineCommand,
+	renderFittedLine,
+	StatusLine,
+	StatusLineScript,
+} from "../components/status-line.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { refreshGitBranch } from "../utils.js"
-import { getBillingStatusLine, getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
-import { formatBudgetStatusLine, formatCreditsStatusLine } from "./billing/status-line-format.js"
+import { getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
 import { isBareExitAlias } from "./exit-utils.js"
-import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
-import { formatFermentStatusLineDisplay } from "./ferment/status-line.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
-import { getOrchestratorModelId, getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
+import { getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
 import { isRawInputCaptureActive } from "./shared-input.js"
 import {
 	isSessionModeOnboardingStatusLineSuppressed,
@@ -342,23 +346,13 @@ export default function uiExtension(pi: ExtensionAPI) {
 				return new SuppressibleStatusLine(new StatusLine(ctx, theme, statusLineData), tui)
 			}
 			scriptCmd = cmd
-			const getControlsLine = (): string | null => {
-				const parts: string[] = []
-				const ferment = formatFermentStatusLineDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
-					dim: (s) => theme.fg("dim", s),
-					accent: (s) => `${resolvedAccentFg(theme)}${s}${RST_FG}`,
-				})
-				if (ferment) parts.push(ferment.text)
-				const perm = statusLineData.getExtensionStatuses().get("permissions-mode")
-				if (perm) parts.push(perm)
-				const billing = getBillingStatusLine()
-				if (billing?.amount) parts.push(formatCreditsStatusLine(billing.amount, theme))
-				if (billing?.budget) parts.push(formatBudgetStatusLine(billing.budget, theme))
-				const modelId = getMultiModelEnabled(ctx.sessionManager)
-					? `multi-model (${getOrchestratorModelId(sessionId)})`
-					: (ctx.model?.id ?? "n/a")
-				parts.push(`${resolvedAccentFg(theme)}${modelId}${RST_FG} ${theme.fg("dim", "→ ctrl+p")}`)
-				return parts.join(` ${theme.fg("dim", "·")} `)
+			// The controls line runs through the same segment pipeline as the
+			// built-in status line: permissions and model lead, the compaction
+			// ladder and priority shedding apply at narrow widths.
+			const getControlsLine = (width: number): string | null => {
+				const segments = buildControlsLineSegments({ ctx, theme, statusLineData })
+				if (segments.length === 0) return null
+				return renderFittedLine(segments, width, theme)
 			}
 			scriptStatusLine = new StatusLineScript(getControlsLine)
 			scriptTui = tui

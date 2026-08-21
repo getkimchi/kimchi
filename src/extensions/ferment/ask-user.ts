@@ -28,6 +28,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { renderLabeledSuccessCriteria } from "../../ferment/success-criteria.js"
 import type { Ferment, ScopingQuestionType } from "../../ferment/types.js"
+import { withBlocked } from "../herdr-events.js"
 import { normalizeQuestionType, YES_NO_OPTIONS } from "../questionnaire/index.js"
 import { FERMENT_EVENTS, type UserUnblockedPayload } from "./domain-events.js"
 import { type JudgeApiResult, judgeApiCall } from "./judge.js"
@@ -587,10 +588,15 @@ export async function askUserForm(
 		return response
 	}
 
-	const ui = context.ctx?.ui
+	const ui = context.ctx?.hasUI ? context.ctx.ui : undefined
 	if (ui) {
 		const promptedAtMs = Date.now()
-		const result = await promptForm(context.ctx, { title, description, questions })
+		// Balanced-pair contract: see ../herdr-events.ts. The judge and no-UI
+		// paths above never block on a human, so they emit nothing. Static
+		// label (Privacy note in herdr-events.ts): `title` is agent-generated.
+		const result = await withBlocked(context.pi.events, "Ferment question", () =>
+			promptForm(context.ctx, { title, description, questions }),
+		)
 		if (!result || result.cancelled) {
 			return { failed: true, reason: "user_cancelled", detail: "User cancelled the prompt." }
 		}

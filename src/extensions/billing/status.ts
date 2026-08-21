@@ -19,7 +19,7 @@ export interface BillingWarning {
 	// "exhausted" is a hard stop (the server refuses the request); "rate-limited" still serves, just
 	// slower. Kept apart so the tip surfaces the second as a warning rather than an error — for a
 	// free-tier user a zero balance is a steady state, not a failure.
-	kind: "low" | "exhausted" | "rate-limited"
+	kind: "low" | "exhausted" | "rate-limited" | "community-inference-blocked"
 	message: string
 }
 
@@ -75,7 +75,7 @@ export const LOW_CREDITS_THRESHOLD_USD = 5
 export const COMMUNITY_TIER_MESSAGES = {
 	available: "You are using Community tier. For faster performance, upgrade to Coder at https://app.kimchi.dev/pricing",
 	inferenceBlocked:
-		"You are using the Community tier. You can bring your own inference to the harness. To use Kimchi inference, upgrade to Coder.",
+		"You are using the Community tier. You can bring your own inference to the harness. To use Kimchi inference, upgrade to Coder at https://app.kimchi.dev/pricing.",
 } as const
 export const BILLING_EXHAUSTED_MESSAGE = "You ran out of credits. Top up at https://app.kimchi.dev/billing"
 // A zero balance is reached both by a paid subscriber demoted to free-tier limits and by a free
@@ -317,9 +317,9 @@ export function getCommunityTierHeaderNotice(
 	status: BillingStatus | undefined = currentBillingStatus,
 ): string | undefined {
 	if (status?.plan !== "community") return undefined
-	if (isCommunityInferenceBlocked(status)) return COMMUNITY_TIER_MESSAGES.inferenceBlocked
-	// A depleted paid subscriber is reported as community, so this would tell them to upgrade to the
-	// plan they already pay for. The credit warning carries the actionable remedy instead.
+	// Blocked Community users get actionable BYO guidance in the warning below the header. A depleted
+	// paid subscriber can also be reported as Community, so an upsell here would tell them to upgrade
+	// to the plan they already pay for.
 	if (isCreditsExhausted(status)) return undefined
 	return COMMUNITY_TIER_MESSAGES.available
 }
@@ -334,9 +334,11 @@ export function getBillingWarnings(status: BillingStatus | undefined = currentBi
 function getCreditBillingWarning(status: BillingStatus | undefined): BillingWarning | undefined {
 	if (!status) return undefined
 	// Community users are blocked because their plan does not include Kimchi inference,
-	// not because they ran out of credits. Show the BYO/upgrade message instead of the
+	// not because they ran out of credits. Show the BYO/upgrade warning instead of the
 	// generic top-up warning, which would give them the wrong action.
-	if (isCommunityInferenceBlocked(status)) return undefined
+	if (isCommunityInferenceBlocked(status)) {
+		return { kind: "community-inference-blocked", message: COMMUNITY_TIER_MESSAGES.inferenceBlocked }
+	}
 
 	// Server-declared: it named the balance spent, or has_credits=false says it is refusing
 	// requests outright. Never soften an explicit statement with an inference.

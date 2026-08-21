@@ -46,6 +46,25 @@ describe("billing tips", () => {
 		])
 	})
 
+	it("uses warning tone when Community inference is blocked", () => {
+		setBillingStatusForTest({
+			plan: "community",
+			isPaidTier: false,
+			creditStatus: "ok",
+			restrictedMode: true,
+			remainingCredits: 0,
+			updatedAt: "2026-08-19T00:00:00.000Z",
+		})
+
+		expect(createBillingTipProvider().getTips()).toEqual([
+			expect.objectContaining({
+				id: "billing-community-inference-blocked-0",
+				tone: "warning",
+				showPrefix: false,
+			}),
+		])
+	})
+
 	// restrictedMode is has_credits=false: the server refuses the request outright, which is the one
 	// credit state that is genuinely an error rather than a slowdown.
 	it("uses error tone for exhausted-credit warnings", () => {

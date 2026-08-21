@@ -12,6 +12,7 @@ import { createContext } from "../__mocks__/context.js"
 import * as agentWorkerContext from "../agent-worker-context.js"
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../claude-code-skills/definition.js"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
+import { isHarnessSteer } from "../steer-marker.js"
 import promptEnrichmentExtension, {
 	_resetDeprecatedNotificationTracking,
 	stripEmptyToolCalls,
@@ -905,7 +906,9 @@ describe("continuation nudge turn_end handler", () => {
 		const fire = async (event: string, payload: unknown) => {
 			const handlers = handlerMap.get(event) ?? []
 			const ctx = createContext({ model: { provider: "test", id: "test-model" } })
-			for (const h of handlers) await h(payload, ctx)
+			let result: unknown
+			for (const h of handlers) result = await h(payload, ctx)
+			return result
 		}
 
 		return { fire, sendMessageCalls }
@@ -1018,5 +1021,121 @@ describe("continuation nudge turn_end handler", () => {
 		// might be stuck.
 		expect(sendMessageCalls.length).toBe(1)
 		expect((sendMessageCalls[0].message as { content?: string }).content).toContain("If you have finished")
+	})
+
+	it("does not nudge after a model switch when the previous model called tools", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Previous model called a tool during the session.
+		await fire("tool_execution_start", {})
+
+		// User switches models (e.g. via the UI model picker).
+		await fire("model_select", {
+			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
+			previousModel: undefined,
+			source: "set",
+		})
+
+		// New user input after the switch.
+		await fire("input", { source: "user" })
+
+		// New model responds with orientation text only, no tool calls.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
+		})
+
+		// No nudge should fire — the model switch reset the session-level
+		// tool latch, so the new model's orientation turn is treated like a
+		// fresh session.
+		expect(sendMessageCalls.length).toBe(0)
+	})
+
+	it("does not nudge after a model cycle when the previous model called tools", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Previous model called a tool during the session.
+		await fire("tool_execution_start", {})
+
+		// User cycles models (e.g. via the keyboard shortcut).
+		await fire("model_select", {
+			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
+			previousModel: undefined,
+			source: "cycle",
+		})
+
+		// New user input after the cycle.
+		await fire("input", { source: "user" })
+
+		// New model responds with orientation text only, no tool calls.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
+		})
+
+		// Cycling is a user-initiated switch and must also reset the latch.
+		expect(sendMessageCalls.length).toBe(0)
+	})
+
+	it("still nudges after a model restore when the previous model called tools", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Previous model called a tool during the session.
+		await fire("tool_execution_start", {})
+
+		// Session restore is not a user-initiated switch; the conversation
+		// continues and the session-level tool latch must stay true.
+		await fire("model_select", {
+			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
+			previousModel: undefined,
+			source: "restore",
+		})
+
+		// New user input after restore.
+		await fire("input", { source: "user" })
+
+		// Model responds with text only, no tool calls.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
+		})
+
+		// Nudge should fire because restore must not reset the latch.
+		expect(sendMessageCalls.length).toBe(1)
+		expect((sendMessageCalls[0].message as { customType?: string }).customType).toBe("nudge")
+	})
+
+	it("brands unbranded custom messages in the context handler", async () => {
+		const { fire } = buildNudgeHandlers()
+
+		const unbranded = {
+			role: "custom",
+			customType: "exploration-guard-steer",
+			content: "Act on your hypothesis now.",
+			display: false,
+			timestamp: 1,
+		}
+
+		const result = (await fire("context", { messages: [unbranded] })) as
+			| { messages: Array<{ content: string }> }
+			| undefined
+
+		expect(result).toBeDefined()
+		expect(isHarnessSteer(result?.messages[0]?.content ?? "")).toBe(true)
+		expect(result?.messages[0]?.content).toContain("Act on your hypothesis now.")
+	})
+
+	it("leaves already-branded custom messages byte-identical in the context handler", async () => {
+		const { fire } = buildNudgeHandlers()
+
+		const branded = {
+			role: "custom",
+			customType: "nudge",
+			content: "<system-reminder>\nYou ended your turn without calling a tool.\n</system-reminder>",
+			display: false,
+			timestamp: 1,
+		}
+
+		// No transform applies: the handler returns undefined, leaving the
+		// runtime's message array untouched.
+		const result = await fire("context", { messages: [branded] })
+		expect(result).toBeUndefined()
 	})
 })

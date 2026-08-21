@@ -209,4 +209,58 @@ describe("MCP OAuth callback lifecycle", () => {
 			rmSync(authDir, { recursive: true, force: true })
 		}
 	})
+
+	it("uses non-strict port binding for dynamic registration (no clientId), scanning for a free port when busy", async () => {
+		const port = await getFreePort()
+		const { authDir, authStore, callbackServer, flow, oauthProvider, openBrowser } = await loadAuthFlowForPort(port)
+
+		// Occupy the preferred callback port so the server must scan forward
+		const blocker = createServer()
+		await new Promise<void>((resolve, reject) => {
+			blocker.once("error", reject)
+			blocker.listen(port, "127.0.0.1", resolve)
+		})
+
+		try {
+			const authPromise = flow.authenticate("slack", "https://slack.example.test/mcp")
+			await vi.waitFor(() => expect(openBrowser).toHaveBeenCalledOnce())
+
+			// Server should be running on the next free port (port + 1)
+			const actualPort = oauthProvider.getOAuthCallbackPort()
+			expect(actualPort).toBe(port + 1)
+			expect(callbackServer.isCallbackServerRunning()).toBe(true)
+
+			const state = await authStore.getOAuthState("slack")
+			if (!state) throw new Error("Missing Slack OAuth state")
+			await sendCallback(actualPort, oauthProvider.OAUTH_CALLBACK_PATH, state, "slack-code")
+			await expect(authPromise).resolves.toBe("authenticated")
+		} finally {
+			await flow.shutdownOAuth()
+			await new Promise<void>((resolve) => blocker.close(() => resolve()))
+			rmSync(authDir, { recursive: true, force: true })
+		}
+	})
+
+	it("uses strict port binding for pre-registered clients (clientId set), failing when the port is busy", async () => {
+		const port = await getFreePort()
+		const { authDir, flow } = await loadAuthFlowForPort(port)
+
+		// Occupy the preferred callback port
+		const blocker = createServer()
+		await new Promise<void>((resolve, reject) => {
+			blocker.once("error", reject)
+			blocker.listen(port, "127.0.0.1", resolve)
+		})
+
+		try {
+			const definition = { url: "https://slack.example.test/mcp", oauth: { clientId: "pre-registered-id" } }
+			await expect(flow.authenticate("slack", "https://slack.example.test/mcp", definition)).rejects.toThrow(
+				/already in use/,
+			)
+		} finally {
+			await flow.shutdownOAuth()
+			await new Promise<void>((resolve) => blocker.close(() => resolve()))
+			rmSync(authDir, { recursive: true, force: true })
+		}
+	})
 })

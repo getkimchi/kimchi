@@ -87,7 +87,7 @@ export function createBackgroundBashToolDefinition(
 
 	const description =
 		wrapped.description +
-		" Long-running commands run in the background: you receive a tail-window of output plus a process handle at each checkin (default every 15s, or every checkin_interval seconds when provided), then drive it to completion with the bash_control tool. Always set a timeout appropriate to the command — do not shorten it artificially."
+		" Long-running commands run in the background: you receive a tail-window of output plus a process handle at each checkin (default every 15s, or every checkin_interval seconds when provided), then drive it to completion with the bash_control tool. For commands expected to run several minutes (builds, installs, training), set a longer checkin_interval (e.g. 60–120s) to avoid waking up every 15s; the cadence can also be changed later via bash_control's checkin_interval. Always set a timeout appropriate to the command — do not shorten it artificially."
 
 	async function execute(
 		toolCallId: string,

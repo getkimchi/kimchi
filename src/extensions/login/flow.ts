@@ -18,6 +18,7 @@ import {
 	syncProviderModels,
 	updateModelsConfig,
 } from "../../models.js"
+import { syncPiAuth } from "../../pi-auth.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
 export const KIMCHI_PROVIDER_ID = "kimchi-dev"
@@ -75,12 +76,8 @@ export function formatBrowserLoginMessage(url: string): string {
 
 type AuthSelectorProvider = ConstructorParameters<typeof OAuthSelectorComponent>[1][number]
 type AuthStatus = ReturnType<PiModelRegistry["getProviderAuthStatus"]>
-type ProviderConfigInput = NonNullable<Parameters<PiModelRegistry["registerProvider"]>[1]>
+
 interface AuthStorageLike {
-	set(provider: string, credential: unknown): void
-	get(provider: string): unknown
-	remove?(provider: string): void
-	logout?(provider: string): void
 	getOAuthProviders?(): Array<{ id: string; name: string; usesCallbackServer?: boolean }>
 	login?(
 		provider: string,
@@ -110,10 +107,9 @@ interface ModelRegistryLike<TModel extends ProviderModelLike = ProviderModelLike
 	getProvider?(
 		providerId: string,
 	): { id?: string; name?: string; auth?: { oauth?: { name?: string; login?: unknown } } } | undefined
-	registerProvider?(providerId: string, config: ProviderConfigInput): void
-	unregisterProvider?(providerId: string): void
-	getRegisteredProviderConfig?(providerId: string): ProviderConfigInput | undefined
 	getRegisteredProviderIds?(): readonly string[]
+	/** Resolve the credential Pi will use for a provider. */
+	getApiKeyForProvider?(providerId: string): Promise<string | undefined>
 }
 
 export function createLoginChoiceSelector(options: {
@@ -188,25 +184,6 @@ async function refreshKimchiModels(
 	await updateModelsConfig(resolve(agentDir, "models.json"), token, { endpoint, ...options })
 }
 
-export function setKimchiAuthToken(
-	modelRegistry: ModelRegistryLike,
-	token: string,
-	credentialType: "api_key" | "oauth" = "api_key",
-): void {
-	const credential =
-		credentialType === "oauth"
-			? { type: "oauth" as const, access: token, refresh: "", expires: Number.MAX_SAFE_INTEGER }
-			: { type: "api_key" as const, key: token }
-
-	for (const providerId of getKimchiProviderIds(modelRegistry)) {
-		if (modelRegistry.authStorage) {
-			modelRegistry.authStorage.set(providerId, credential)
-		} else {
-			registerProviderApiKey(modelRegistry, providerId, token)
-		}
-	}
-}
-
 export function getKimchiProviderIds(modelRegistry: ModelRegistryLike): Set<string> {
 	return new Set([
 		KIMCHI_PROVIDER_ID,
@@ -217,13 +194,34 @@ export function getKimchiProviderIds(modelRegistry: ModelRegistryLike): Set<stri
 	])
 }
 
-function registerProviderApiKey(modelRegistry: ModelRegistryLike, providerId: string, token: string): void {
-	const registerProvider = modelRegistry.registerProvider?.bind(modelRegistry)
-	if (!registerProvider) return
-	registerProvider(providerId, {
-		...modelRegistry.getRegisteredProviderConfig?.(providerId),
-		apiKey: token,
-	})
+/** Persist Kimchi credentials for every provider in models.json and refresh Pi's
+ * current registry. Pi's AuthStorage notices the auth.json revision change, so the
+ * same running session resolves the new key without reaching into private runtime
+ * fields or requiring a restart. */
+export async function syncKimchiAuth(modelRegistry: ModelRegistryLike, token: string): Promise<void> {
+	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	if (!agentDir) {
+		throw new Error("KIMCHI_CODING_AGENT_DIR is missing; Kimchi credentials cannot be synchronized")
+	}
+
+	await syncPiAuth(resolve(agentDir, "auth.json"), resolve(agentDir, "models.json"), token)
+	await modelRegistry.refresh()
+
+	if (!modelRegistry.getApiKeyForProvider) return
+	const unresolvedProviders: string[] = []
+	const expectedKey = token || undefined
+	for (const providerId of getKimchiProviderIds(modelRegistry)) {
+		const resolvedKey = await modelRegistry.getApiKeyForProvider(providerId)
+		if (resolvedKey !== expectedKey) {
+			unresolvedProviders.push(providerId)
+		}
+	}
+	if (unresolvedProviders.length > 0) {
+		// This can happen when Kimchi was started with `--api-key`. That key stays in memory and takes
+		// priority over auth.json, so logging in or out updates the file while the running session keeps
+		// using the command-line key.
+		throw new Error(`Kimchi did not activate the updated credentials for: ${unresolvedProviders.join(", ")}`)
+	}
 }
 
 export interface KimchiBrowserLoginHost {
@@ -244,24 +242,6 @@ export interface KimchiBrowserLoginOptions {
 export interface KimchiApiKeyLoginOptions {
 	apiKey: string
 	endpoint: string
-}
-
-function restoreKimchiAuth(modelRegistry: ModelRegistryLike, previousCredentials: Map<string, unknown>): void {
-	for (const [providerId, previousCredential] of previousCredentials) {
-		if (!modelRegistry.authStorage) {
-			if (previousCredential) {
-				modelRegistry.registerProvider?.(providerId, previousCredential as ProviderConfigInput)
-			} else {
-				modelRegistry.unregisterProvider?.(providerId)
-			}
-			continue
-		}
-		if (previousCredential !== undefined) {
-			modelRegistry.authStorage.set(providerId, previousCredential)
-		} else {
-			modelRegistry.authStorage.remove?.(providerId)
-		}
-	}
 }
 
 function formatKimchiTokenError(error: unknown, options: { saved: boolean }): string {
@@ -298,24 +278,17 @@ async function configureKimchiToken(
 		return false
 	}
 
-	const previousCredentials = new Map(
-		[...getKimchiProviderIds(host.modelRegistry)].map((providerId) => [
-			providerId,
-			host.modelRegistry.authStorage
-				? host.modelRegistry.authStorage.get(providerId)
-				: host.modelRegistry.getRegisteredProviderConfig?.(providerId),
-		]),
-	)
-	setKimchiAuthToken(host.modelRegistry, token)
+	// Metadata authentication succeeded (or browser login is using cached metadata),
+	// so make config.json and Pi's auth.json agree before refreshing the live registry.
+	// If the process stops between these writes, startup sync repairs auth.json from
+	// config.json on the next launch.
+	options.persistConfig?.()
+	let authSynchronized = false
 	try {
-		await host.modelRegistry.refresh()
+		await syncKimchiAuth(host.modelRegistry, token)
+		authSynchronized = true
 	} catch (error) {
 		refreshError ??= error
-		if (options.strictFreshDiscovery) {
-			restoreKimchiAuth(host.modelRegistry, previousCredentials)
-			host.showError?.(formatKimchiTokenError(error, { saved: false }))
-			return false
-		}
 	}
 
 	let providerModels: ProviderModelLike[] = []
@@ -324,19 +297,12 @@ async function configureKimchiToken(
 	} catch (error) {
 		refreshError ??= error
 	}
-	if (providerModels.length > 0) {
-		options.persistConfig?.()
+	if (authSynchronized && providerModels.length > 0) {
 		void refreshBillingStatusFromConfig({ mode: "forced" })
 		const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
 		await host.setModel?.(selectedModel)
 		host.addFeedback?.(formatKimchiLoginSuccessMessage(selectedModel.id))
 		return true
-	}
-
-	if (options.strictFreshDiscovery) {
-		restoreKimchiAuth(host.modelRegistry, previousCredentials)
-		host.showError?.("Kimchi API-key login found no available Kimchi models. No changes were saved.")
-		return false
 	}
 
 	if (refreshError) {
@@ -590,7 +556,7 @@ async function showOAuthLoginDialogWithExtensionUI(
 ): Promise<boolean> {
 	const authStorage = (ctx.modelRegistry as ModelRegistryLike).authStorage
 	if (!authStorage?.login) {
-		ctx.ui.notify(`${providerName} subscription login is unavailable in this Pi version. Use /login.`, "error")
+		ctx.ui.notify(`${providerName} subscription login is unavailable in this Kimchi version. Use /login.`, "error")
 		return false
 	}
 	const login = authStorage.login.bind(authStorage)

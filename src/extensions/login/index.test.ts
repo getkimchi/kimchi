@@ -2,19 +2,18 @@ import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agen
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import loginExtension from "./index.js"
 
-const { clearApiKeyMock, loadConfigMock } = vi.hoisted(() => ({
-	clearApiKeyMock: vi.fn(),
+const { loadConfigMock, refreshBillingStatusFromConfigMock } = vi.hoisted(() => ({
 	loadConfigMock: vi.fn(),
+	refreshBillingStatusFromConfigMock: vi.fn(),
 }))
 
 vi.mock("../../config.js", () => ({
-	clearApiKey: clearApiKeyMock,
 	loadConfig: loadConfigMock,
 	writeApiKey: vi.fn(),
 }))
 
 vi.mock("../billing/status.js", () => ({
-	refreshBillingStatusFromConfig: vi.fn(),
+	refreshBillingStatusFromConfig: refreshBillingStatusFromConfigMock,
 }))
 
 // Keep the real chatCompletionsApi (URL builder + scheme normalization) so baseUrl assertions
@@ -83,30 +82,17 @@ describe("loginExtension", () => {
 		})
 	})
 
-	it("logs out every internal Kimchi provider when the single Kimchi entry is selected", () => {
+	it("refreshes billing when an authenticated session starts", () => {
 		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
 		const on = vi.fn()
-		const originalLogout = vi.fn()
-		const authStorage = { logout: originalLogout }
-		const modelRegistry = {
-			authStorage,
-			getAll: () => [
-				{ id: "sol", provider: "kimchi-dev" },
-				{ id: "sol", provider: "kimchi-dev/openai" },
-				{ id: "claude", provider: "kimchi-dev/anthropic" },
-			],
-		}
 
 		loginExtension({ on, registerProvider: vi.fn() } as unknown as ExtensionAPI)
-		const sessionStart = on.mock.calls[0]?.[1]
-		sessionStart({}, { modelRegistry })
-		authStorage.logout("kimchi-dev")
+		loadConfigMock.mockReturnValue({ apiKey: "configured-api-key", customLlmEndpoint: undefined })
 
-		expect(originalLogout.mock.calls.map(([provider]) => provider)).toEqual([
-			"kimchi-dev",
-			"kimchi-dev/openai",
-			"kimchi-dev/anthropic",
-		])
-		expect(clearApiKeyMock).toHaveBeenCalledOnce()
+		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
+		sessionStart({}, { modelRegistry: { getAll: () => [] } })
+
+		expect(refreshBillingStatusFromConfigMock).toHaveBeenCalledOnce()
+		expect(refreshBillingStatusFromConfigMock).toHaveBeenCalledWith({ mode: "forced" })
 	})
 })

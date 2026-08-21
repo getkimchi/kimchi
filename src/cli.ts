@@ -12,7 +12,9 @@ import {
 	isHelpOrVersionArgs,
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
+	populateCliArgs,
 	stripExperimentalFeaturesArg,
+	stripMultiModelArgs,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
@@ -461,6 +463,13 @@ try {
 			process.exit(1)
 		}
 		const rawArgs = atFileArgs.args
+
+		// Parse Kimchi-local CLI flags once and strip virtual multi-model args
+		// before upstream pi-mono sees them (it does not recognize "multi-model"
+		// as a model id).
+		populateCliArgs(rawArgs)
+		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
+
 		const terminalIo = {
 			stdinIsTTY: process.stdin.isTTY === true,
 			stdoutIsTTY: process.stdout.isTTY === true,
@@ -656,7 +665,7 @@ try {
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 			const { main } = await import("@earendil-works/pi-coding-agent")
-			await main(rawArgs, { extensionFactories })
+			await main(rawArgsWithoutMultiModel, { extensionFactories })
 		}
 		// Goal continuations can end on an infrastructure error without Pi setting
 		// exitCode. In print mode, a trailing tracked failure still failed the run.

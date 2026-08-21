@@ -79,6 +79,7 @@ import {
 } from "./bash-tool-guard-events.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
 import { parseCommandSegments, stripRtk } from "./permissions/taxonomy.js"
+import { markHarnessSteer } from "./steer-marker.js"
 
 const RESOURCE_ID = "extensions.bash-tool-guard"
 
@@ -749,7 +750,7 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 		pi.sendMessage(
 			{
 				customType: STEER_MESSAGE_TYPE,
-				content: [{ type: "text", text: guard.formatWarnText(result) }],
+				content: [{ type: "text", text: markHarnessSteer(guard.formatWarnText(result)) }],
 				display: false,
 			},
 			{ deliverAs: "steer" },

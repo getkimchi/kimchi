@@ -19,6 +19,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text, truncateToWidth } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 
+import { withBlocked } from "../herdr-events.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { withWorkingHidden } from "../ui.js"
 import { promptQuestionnaireFallback, type QuestionnaireResult } from "./questionnaire-fallback.js"
@@ -182,6 +183,20 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 		}
 	})
 
+	// In headless sessions without a ferment-oneshot judge, there is no
+	// audience for questions — not a human (no TUI), not a judge (no
+	// ferment-oneshot flag). Inject a system-prompt instruction so the model
+	// acts autonomously instead of ending turns with questions into the void.
+	// Ferment one-shot sessions are excluded: ask_user routes to the LLM judge
+	// there, so questions have a real audience.
+	pi.on("before_agent_start", (event, ctx: ExtensionContext) => {
+		if (ctx.hasUI) return
+		if (pi.getFlag?.("ferment-oneshot") === true) return
+		return {
+			systemPrompt: `${event.systemPrompt}\n\n## Autonomous mode\n\nYou are running in a non-interactive session with no human or judge to answer questions. Do NOT end your turn with questions or ask for confirmation — no one will respond. Make the safest reasonable decision based on the task description and proceed. If you encounter genuine ambiguity, state your assumption and continue working. Never end your turn waiting for input.`,
+		}
+	})
+
 	pi.registerTool({
 		name: "questionnaire",
 		label: "Questionnaire",
@@ -215,20 +230,19 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				)
 			}
 
-			if (pi.events?.emit) {
-				pi.events.emit("notification", { notification_type: "agent_needs_input" })
-			}
+			pi.events.emit("notification", { notification_type: "agent_needs_input" })
 
-			let result: QuestionnaireResult
-			if (ctx.mode !== "tui") {
-				result = await promptQuestionnaireFallback(ctx.ui, questions)
-			} else {
-				result = await withWorkingHidden(ctx, () =>
-					ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
-						createQuestionForm(tui, theme, questions, { title: params.header }, done),
-					),
-				)
-			}
+			// Static label (see herdr-events.ts Privacy): params.header is
+			// agent-generated and may embed question text.
+			const result = await withBlocked(pi.events, "Questionnaire", () =>
+				ctx.mode !== "tui"
+					? promptQuestionnaireFallback(ctx.ui, questions)
+					: withWorkingHidden(ctx, () =>
+							ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
+								createQuestionForm(tui, theme, questions, { title: params.header }, done),
+							),
+						),
+			)
 
 			if (result.cancelled) {
 				return {
