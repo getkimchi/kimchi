@@ -35,6 +35,7 @@ import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
 import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
+import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
@@ -415,7 +416,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		pi.sendMessage(
 			{
 				customType: "plan-execute",
-				content: `The user approved the plan. Execute it now.${planRef}\n\n---\n\n${planText}`,
+				content: markHarnessSteer(`The user approved the plan. Execute it now.${planRef}\n\n---\n\n${planText}`),
 				display: false,
 			},
 			{ triggerTurn: true },
@@ -708,15 +709,17 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						content: [
 							{
 								type: "text",
-								text: [
-									`Handoff from plan mode: the plan you just presented was approved by the user ("Start as ferment") and converted into ferment "${activated.ferment.name}" (${activated.ferment.id}).`,
-									`The ferment is ALREADY scoped — goal, success criteria, and constraints are set — and ${activePhase ? `phase "${activePhase.id}" (${activePhase.steps.length} steps) is ACTIVE` : "its first phase is ACTIVE"}.`,
-									`${formatNoReplanningGuidance()} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
-									nextActionHint,
-									"Go straight to execution.",
-								]
-									.filter(Boolean)
-									.join("\n"),
+								text: markHarnessSteer(
+									[
+										`Handoff from plan mode: the plan you just presented was approved by the user ("Start as ferment") and converted into ferment "${activated.ferment.name}" (${activated.ferment.id}).`,
+										`The ferment is ALREADY scoped — goal, success criteria, and constraints are set — and ${activePhase ? `phase "${activePhase.id}" (${activePhase.steps.length} steps) is ACTIVE` : "its first phase is ACTIVE"}.`,
+										`${formatNoReplanningGuidance()} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
+										nextActionHint,
+										"Go straight to execution.",
+									]
+										.filter(Boolean)
+										.join("\n"),
+								),
 							},
 						],
 						display: false,

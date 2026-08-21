@@ -712,4 +712,25 @@ describe("kimchi mcp probe", () => {
 			error: null,
 		})
 	})
+
+	it("uses the real name and does not clean up when the entry is from an incomplete OAuth flow", async () => {
+		// An OAuth flow that was started but never finished leaves an entry
+		// with only oauthState/codeVerifier — no serverUrl. Treating it as a
+		// URL mismatch would probe under a throwaway name whose OAuth tokens
+		// the finally block then deletes, leaving every subsequent probe with
+		// needsAuth: true. The real name must be reused so the flow can
+		// complete on the correct entry.
+		mockGetAuthEntry.mockReturnValue({ oauthState: "state-123" })
+		mockSupportsOAuth.mockReturnValue(true)
+		mockProbeTools.mockResolvedValue({ tools: [{ name: "secure_tool" }], needsAuth: false })
+
+		mockStdin(probeInput(OAUTH_SERVER))
+		const out = captureStdout()
+
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(0)
+		expect(out.json.error).toBeNull()
+		expect(mockProbeTools).toHaveBeenCalledWith(SERVER_NAME, OAUTH_SERVER)
+		expect(mockRemoveAuthEntry).not.toHaveBeenCalled()
+	})
 })

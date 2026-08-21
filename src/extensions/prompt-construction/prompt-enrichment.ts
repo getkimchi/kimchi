@@ -52,6 +52,7 @@ import { bumpStallCounter } from "../ferment/todo-sync.js"
 import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
+	brandUnmarkedSteers,
 	ContinuationNudge,
 	EMPTY_TURN_NUDGE_TEXT,
 	EmptyTurnNudge,
@@ -59,6 +60,7 @@ import {
 	type OrchestratorMessages,
 	stripStaleNudges,
 	stripUiOnlyMessages,
+	tagSelfEchoes,
 } from "../orchestration/continuation-nudge.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
 import {
@@ -456,6 +458,8 @@ export default function (skillPaths: string[]) {
 				if (isKimiK2Model(ctx.model?.id)) {
 					messages = normalizeKimiToolCallIds(messages)
 				}
+				messages = tagSelfEchoes(messages)
+				messages = brandUnmarkedSteers(messages)
 				if (messages !== event.messages) return { messages }
 			})
 		}
@@ -471,6 +475,7 @@ export default function (skillPaths: string[]) {
 				if (isKimiK2Model(ctx.model?.id)) {
 					messages = normalizeKimiToolCallIds(messages)
 				}
+				messages = brandUnmarkedSteers(messages)
 				if (messages !== event.messages) return { messages }
 			})
 		}

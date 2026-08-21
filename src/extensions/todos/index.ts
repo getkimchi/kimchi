@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { markHarnessSteer } from "../steer-marker.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { registerTodoContextState } from "./context-state.js"
@@ -80,8 +81,9 @@ function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager,
 
 export const TODO_EARLY_NUDGE_THRESHOLD = 5
 
-const TODO_EARLY_NUDGE_MESSAGE =
-	"You are working on a multi-step task without a todo list. Consider creating one to plan your approach — pair the create_todos call with your next work tool call in the same turn."
+const TODO_EARLY_NUDGE_MESSAGE = markHarnessSteer(
+	"You are working on a multi-step task without a todo list. Consider creating one to plan your approach — pair the create_todos call with your next work tool call in the same turn.",
+)
 
 function hiddenTodoMessage(text: string) {
 	return {

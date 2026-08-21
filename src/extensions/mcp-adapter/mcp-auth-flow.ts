@@ -132,7 +132,13 @@ export async function startAuth(
 	try {
 		// Start the callback server and register ownership in one serialized operation.
 		// This prevents shutdown from closing the listener between those two steps.
-		const preparedCallback = await prepareCallback(oauthState, { strictPort: true })
+		// Pre-registered clients (with a configured clientId) must bind the exact
+		// redirect URI port registered with the OAuth server. Dynamic registration
+		// (RFC 7591) sends the redirect URI at registration time, so the port can
+		// vary — RFC 8252 §7.3 requires authorization servers to accept any port
+		// for loopback redirect URIs.
+		const strictPort = !!config.clientId
+		const preparedCallback = await prepareCallback(oauthState, { strictPort })
 		callbackPromise = preparedCallback.callbackPromise
 		void callbackPromise.catch(() => {})
 

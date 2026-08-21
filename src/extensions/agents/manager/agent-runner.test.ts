@@ -1065,7 +1065,7 @@ describe("runAgent — budget awareness steers", () => {
 				maxTurns: 10,
 				turns: 5,
 				expectedSteerCount: 1,
-				pattern: /\[Orchestrator — automated system instruction, not a user message\][\s\S]*50% of your turn budget./,
+				pattern: /<system-reminder>[\s\S]*50% of your turn budget./,
 			},
 			"does not steer between 50% and 75%": {
 				maxTurns: 10,
@@ -1076,13 +1076,13 @@ describe("runAgent — budget awareness steers", () => {
 				maxTurns: 10,
 				turns: 8,
 				expectedSteerCount: 2,
-				pattern: /\[Orchestrator — automated system instruction, not a user message\][\s\S]*75% of your turn budget./,
+				pattern: /<system-reminder>[\s\S]*75% of your turn budget./,
 			},
 			"steers at 90% of turn budget": {
 				maxTurns: 10,
 				turns: 9,
 				expectedSteerCount: 3,
-				pattern: /\[Orchestrator — automated system instruction, not a user message\][\s\S]*90% of your turn budget./,
+				pattern: /<system-reminder>[\s\S]*90% of your turn budget./,
 			},
 		}
 
@@ -1998,7 +1998,7 @@ describe("steerAgent — explicit steering", () => {
 		const session = makeFakeSession()
 		await steerAgent(session as unknown as AgentSession, "custom user steer")
 		expect(session.steer).toHaveBeenCalledWith("custom user steer")
-		expect(session.steer).not.toHaveBeenCalledWith(expect.stringContaining("[Orchestrator"))
+		expect(session.steer).not.toHaveBeenCalledWith(expect.stringContaining("<system-reminder>"))
 	})
 })
 
@@ -2097,9 +2097,7 @@ describe("resumeAgent — inactivity steering", () => {
 
 		await promise
 
-		expect(session.steer).toHaveBeenCalledWith(
-			expect.stringMatching(/\[Orchestrator — automated system instruction, not a user message\]/),
-		)
+		expect(session.steer).toHaveBeenCalledWith(expect.stringMatching(/<system-reminder>/))
 		expect(session.steer).toHaveBeenCalledWith(expect.stringContaining("You appear to be stalled"))
 
 		vi.useRealTimers()

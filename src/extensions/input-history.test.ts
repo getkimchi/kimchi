@@ -435,7 +435,7 @@ describe("inputHistoryExtension", () => {
 		expect(editor.addToHistory).toHaveBeenCalledWith("real prompt")
 	})
 
-	it("filters out orchestrator system messages", async () => {
+	it("filters out orchestrator system-reminder messages", async () => {
 		const { SessionManager } = await import("@earendil-works/pi-coding-agent")
 
 		vi.mocked(SessionManager.list).mockResolvedValue([
@@ -452,7 +452,42 @@ describe("inputHistoryExtension", () => {
 		])
 		vi.mocked(SessionManager.open).mockReturnValue({
 			getEntries: () => [
-				makeUserMessageEntry("[Orchestrator — automated system instruction, not a user message]\n\nStop exploring."),
+				makeUserMessageEntry("<system-reminder>\nStop exploring.\n</system-reminder>"),
+				makeUserMessageEntry("real user prompt"),
+			],
+		} as never)
+
+		const { pi, trigger } = makeMockPI()
+		const ctx = makeMockCtx()
+
+		const { default: ext } = await import("./input-history.js")
+		ext(pi)
+		await trigger("session_start", {}, ctx)
+
+		const factory = (ctx.ui.setEditorComponent as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
+		const editor = factory({} as never, {} as never, {} as never) as { addToHistory: ReturnType<typeof vi.fn> }
+
+		expect(editor.addToHistory).toHaveBeenCalledTimes(1)
+		expect(editor.addToHistory).toHaveBeenCalledWith("real user prompt")
+	})
+
+	it("filters Kimchi harness-steer messages from prompt history", async () => {
+		const { SessionManager } = await import("@earendil-works/pi-coding-agent")
+		vi.mocked(SessionManager.list).mockResolvedValue([
+			{
+				path: "/tmp/session",
+				modified: new Date("2025-01-01"),
+				id: "s8",
+				cwd: "/tmp",
+				created: new Date(),
+				messageCount: 2,
+				firstMessage: "",
+				allMessagesText: "",
+			},
+		])
+		vi.mocked(SessionManager.open).mockReturnValue({
+			getEntries: () => [
+				makeUserMessageEntry("<system-reminder>\nCall a tool now.\n</system-reminder>"),
 				makeUserMessageEntry("real user prompt"),
 			],
 		} as never)

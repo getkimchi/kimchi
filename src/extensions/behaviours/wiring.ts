@@ -12,6 +12,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { deferExtensionAction } from "../deferred-action.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
+import { markHarnessSteer } from "../steer-marker.js"
 import { TriggerEngine } from "./engine.js"
 import { EvalEngine } from "./eval-engine.js"
 import { registerRulesBlock } from "./rules-block.js"
@@ -127,7 +128,7 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 			pi.sendMessage(
 				{
 					customType: BEHAVIOUR_BODY_TYPE,
-					content: b.body,
+					content: markHarnessSteer(b.body),
 					display: false,
 					details: { name: b.name } satisfies BehaviourBodyDetails,
 				},

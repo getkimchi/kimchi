@@ -94,6 +94,14 @@ import { AVAILABLE_COMMANDS } from "./commands.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
+import {
+	type AcpSkillInfo,
+	buildSkillAvailableCommands,
+	buildSkillCommandPrompt,
+	buildSkillListBlock,
+	discoverAcpSkillCommands,
+	tryParseSkillCommand,
+} from "./skill-commands.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
 import { asString, truncate } from "./utils.js"
@@ -191,6 +199,22 @@ type SessionRecord = {
 	 * ACP id, so collisions across compaction boundaries are disambiguated.
 	 */
 	toolCallIdMap: Map<string, string>
+	/**
+	 * Per-session skill commands advertised to the ACP client. Populated from
+	 * the session cwd during newSession/loadSession so command names can be
+	 * resolved and skill content injected when the user invokes one.
+	 */
+	skillCommands: Map<string, AcpSkillInfo>
+}
+
+/** Options for {@link KimchiAcpAgent.disposeSessionRecord}. */
+interface DisposeSessionRecordOpts {
+	alreadyUnsubscribed?: boolean
+}
+
+/** Options for {@link KimchiAcpAgent.retireToolCall}. */
+interface RetireToolCallOpts {
+	removeFromHidden?: boolean
 }
 
 export class KimchiAcpAgent implements Agent {
@@ -404,6 +428,7 @@ export class KimchiAcpAgent implements Agent {
 				contentIndexToBlockId: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
+				skillCommands: new Map(discoverAcpSkillCommands(session.sessionManager.getCwd()).map((s) => [s.name, s])),
 			}
 			registerAcpPrompter(
 				sessionId,
@@ -453,6 +478,16 @@ export class KimchiAcpAgent implements Agent {
 				process.stderr.write(`acp ext error [${err.extensionPath}] ${err.event}: ${err.error}\n`)
 			},
 		})
+
+		// Activate the Skill tool if the claude-code-skills extension registered it.
+		// This gives ACP sessions the same model-driven skill loading that TUI has
+		// by default (skills === true).
+		if (session.getToolDefinition("Skill")) {
+			const active = new Set(session.getActiveToolNames())
+			if (!active.has("Skill")) {
+				session.setActiveToolsByName([...active, "Skill"])
+			}
+		}
 	}
 
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
@@ -637,6 +672,7 @@ export class KimchiAcpAgent implements Agent {
 				contentIndexToBlockId: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
+				skillCommands: new Map(discoverAcpSkillCommands(session.sessionManager.getCwd()).map((s) => [s.name, s])),
 			}
 			registerAcpPrompter(
 				sid,
@@ -705,10 +741,18 @@ export class KimchiAcpAgent implements Agent {
 				process.stderr.write(`acp prompt: dropping ${b.type} block (${reason})\n`)
 			}
 		}
-		const text = params.prompt
+		let text = params.prompt
 			.map((b: ContentBlock) => (b.type === "text" ? b.text : ""))
 			.join("")
 			.trim()
+
+		// If the prompt starts with `/skill:<name>` and matches a skill advertised
+		// for this session, rewrite the turn to inject the skill content.
+		const skillRewrite = await tryParseSkillCommand(text, entry.skillCommands)
+		if (skillRewrite) {
+			text = buildSkillCommandPrompt(skillRewrite)
+		}
+
 		// Extract image blocks from the prompt only if model supports vision.
 		const images: ImageContent[] = supportsImages
 			? params.prompt
@@ -840,10 +884,7 @@ export class KimchiAcpAgent implements Agent {
 		await this.disposeSessionRecord(entry, { alreadyUnsubscribed: true })
 	}
 
-	private async disposeSessionRecord(
-		entry: SessionRecord,
-		opts: { alreadyUnsubscribed?: boolean } = {},
-	): Promise<void> {
+	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
 		if (!opts.alreadyUnsubscribed) entry.unsubscribe()
 		// Emit session_shutdown to extensions and await all handlers before
 		// calling dispose(). dispose() is synchronous and returns void, so async
@@ -1308,7 +1349,7 @@ export class KimchiAcpAgent implements Agent {
 		record: SessionRecord,
 		turn: TurnContext,
 		piToolCallId: string,
-		opts: { removeFromHidden?: boolean } = {},
+		opts: RetireToolCallOpts = {},
 	): void {
 		record.toolCallIdMap.delete(piToolCallId)
 		turn.announcedToolCallIds.delete(piToolCallId)
@@ -1319,11 +1360,13 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private sendAvailableCommandsUpdate(sessionId: string): void {
+		const record = this.sessions.get(sessionId)
+		const skillCommands = record ? buildSkillAvailableCommands(Array.from(record.skillCommands.values())) : []
 		this.send({
 			sessionId,
 			update: {
 				sessionUpdate: "available_commands_update",
-				availableCommands: AVAILABLE_COMMANDS,
+				availableCommands: [...AVAILABLE_COMMANDS, ...skillCommands],
 			},
 		})
 	}
@@ -1634,11 +1677,20 @@ async function createSessionSettings(cwd: string, options: RunAcpOptions) {
 	// sessions in one process, the last-configured session's value governs
 	// all of them (see setStreamIdleTimeoutOverride).
 	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
+	// Cache the skill list block per session so we don't rediscover skills on
+	// every turn's system prompt rebuild.
+	let cachedSkillListBlock: string | undefined
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,
 		agentDir: options.agentDir,
 		settingsManager,
 		extensionFactories: options.extensionFactories,
+		appendSystemPromptOverride: () => {
+			if (cachedSkillListBlock === undefined) {
+				cachedSkillListBlock = buildSkillListBlock(cwd)
+			}
+			return cachedSkillListBlock ? [cachedSkillListBlock] : []
+		},
 	})
 	await resourceLoader.reload()
 	return { settingsManager, resourceLoader }

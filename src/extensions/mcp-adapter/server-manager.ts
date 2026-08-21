@@ -98,15 +98,12 @@ export class McpServerManager {
 	}
 
 	private async createConnection(name: string, definition: ServerDefinition): Promise<ServerConnection> {
-		const client = new Client({ name: `pi-mcp-${name}`, version: "1.0.0" })
-		const transport = await this.createTransport(name, definition)
+		let client = new Client({ name: `pi-mcp-${name}`, version: "1.0.0" })
+		let transport: Transport | undefined
 
 		try {
-			await client.connect(transport)
-			this.attachAdapterNotificationHandlers(name, client)
-
-			// Discover tools and resources
-			const [tools, resources] = await Promise.all([this.fetchAllTools(client), this.fetchAllResources(client)])
+			transport = await this.createTransport(name, definition)
+			const { tools, resources } = await this.connectAndDiscover(client, transport, name)
 
 			return {
 				client,
@@ -121,33 +118,96 @@ export class McpServerManager {
 		} catch (error) {
 			// Check for UnauthorizedError - server requires OAuth
 			if (error instanceof UnauthorizedError && supportsOAuth(definition)) {
-				// Clean up both client and transport before reporting needs-auth.
 				await client.close().catch(() => {})
-				await transport.close().catch(() => {})
+				await transport?.close().catch(() => {})
 
-				return {
-					client,
-					transport,
-					definition,
-					tools: [],
-					resources: [],
-					lastUsedAt: Date.now(),
-					inFlight: 0,
-					status: "needs-auth",
+				if (!transport) throw error
+
+				return this.buildNeedsAuthConnection(client, transport, definition)
+			}
+
+			// SSE fallback for HTTP servers: if StreamableHTTP connect fails with a
+			// non-auth error, retry with the legacy SSE transport.
+			if (definition.url && transport && !(error instanceof UnauthorizedError)) {
+				await transport.close().catch(() => {})
+				await client.close().catch(() => {})
+				transport = this.createSseTransport(definition as ServerEntry & { url: string }, name)
+				client = new Client({ name: `pi-mcp-${name}`, version: "1.0.0" })
+
+				try {
+					const { tools, resources } = await this.connectAndDiscover(client, transport, name)
+
+					return {
+						client,
+						transport,
+						definition,
+						tools,
+						resources,
+						lastUsedAt: Date.now(),
+						inFlight: 0,
+						status: "connected",
+					}
+				} catch (sseError) {
+					if (sseError instanceof UnauthorizedError && supportsOAuth(definition)) {
+						await client.close().catch(() => {})
+						await transport.close().catch(() => {})
+						return this.buildNeedsAuthConnection(client, transport, definition)
+					}
+					await client.close().catch(() => {})
+					await transport.close().catch(() => {})
+					throw sseError
 				}
 			}
 
-			// Clean up both client and transport on any error
 			await client.close().catch(() => {})
-			await transport.close().catch(() => {})
+			await transport?.close().catch(() => {})
 			throw error
 		}
 	}
 
-	private async createHttpTransport(
+	/**
+	 * Connect a client to a transport and fetch tools + resources.
+	 * Shared by createConnection() for both StreamableHTTP and SSE attempts.
+	 */
+	private async connectAndDiscover(
+		client: Client,
+		transport: Transport,
+		name: string,
+	): Promise<{ tools: McpTool[]; resources: McpResource[] }> {
+		await client.connect(transport)
+		this.attachAdapterNotificationHandlers(name, client)
+		const [tools, resources] = await Promise.all([this.fetchAllTools(client), this.fetchAllResources(client)])
+		return { tools, resources }
+	}
+
+	/**
+	 * Build a ServerConnection in the needs-auth state.
+	 */
+	private buildNeedsAuthConnection(
+		client: Client,
+		transport: Transport,
+		definition: ServerDefinition,
+	): ServerConnection {
+		return {
+			client,
+			transport,
+			definition,
+			tools: [],
+			resources: [],
+			lastUsedAt: Date.now(),
+			inFlight: 0,
+			status: "needs-auth",
+		}
+	}
+
+	/**
+	 * Build the shared HTTP transport config (URL, headers, auth provider)
+	 * used by both StreamableHTTP and SSE transports.
+	 */
+	private buildHttpConfig(
 		definition: ServerDefinition & { url: string },
 		serverName: string,
-	): Promise<Transport> {
+	): { url: URL; requestInit: Record<string, unknown> | undefined; authProvider: McpOAuthProvider | undefined } {
 		const url = new URL(definition.url)
 
 		// Build headers first (including any bearer token)
@@ -168,7 +228,6 @@ export class McpServerManager {
 		// For OAuth servers, create an auth provider
 		let authProvider: McpOAuthProvider | undefined
 		if (supportsOAuth(definition)) {
-			// Extract OAuth config (handles both object and false cases)
 			const oauthConfig =
 				definition.oauth === false
 					? {}
@@ -185,34 +244,21 @@ export class McpServerManager {
 			})
 		}
 
-		// Try StreamableHTTP first (modern MCP servers)
-		const streamableTransport = new StreamableHTTPClientTransport(url, {
-			requestInit,
-			authProvider,
-		})
+		return { url, requestInit, authProvider }
+	}
 
-		try {
-			// Create a test client to verify the transport works
-			const testClient = new Client({ name: "pi-mcp-probe", version: "2.1.2" })
-			await testClient.connect(streamableTransport)
-			await testClient.close().catch(() => {})
-			// Close probe transport before creating fresh one
-			await streamableTransport.close().catch(() => {})
+	private createHttpTransport(definition: ServerDefinition & { url: string }, serverName: string): Transport {
+		const { url, requestInit, authProvider } = this.buildHttpConfig(definition, serverName)
+		return new StreamableHTTPClientTransport(url, { requestInit, authProvider })
+	}
 
-			// StreamableHTTP works - create fresh transport for actual use
-			return new StreamableHTTPClientTransport(url, { requestInit, authProvider })
-		} catch (error) {
-			// StreamableHTTP failed, close and try SSE fallback
-			await streamableTransport.close().catch(() => {})
-
-			// If this was an UnauthorizedError, don't try SSE - the server needs auth
-			if (error instanceof UnauthorizedError) {
-				throw error
-			}
-
-			// SSE is the legacy transport
-			return new SSEClientTransport(url, { requestInit, authProvider })
-		}
+	/**
+	 * Create an SSE transport for HTTP servers that don't support StreamableHTTP.
+	 * Shares the same config (URL, headers, auth provider) as the StreamableHTTP transport.
+	 */
+	private createSseTransport(definition: ServerDefinition & { url: string }, serverName: string): Transport {
+		const { url, requestInit, authProvider } = this.buildHttpConfig(definition, serverName)
+		return new SSEClientTransport(url, { requestInit, authProvider })
 	}
 
 	private async fetchAllTools(client: Client): Promise<McpTool[]> {
@@ -354,48 +400,85 @@ export class McpServerManager {
 		// tools/list) — it gets a single 60s budget from start to finish.
 		const deadline = Date.now() + totalBudgetMs
 
-		const client = new Client({ name: `pi-mcp-probe-${name}`, version: "1.0.0" })
-		let transport: Transport
+		let client = new Client({ name: `pi-mcp-probe-${name}`, version: "1.0.0" })
+		let transport: Transport | undefined
 
 		try {
 			transport = await this.createTransport(name, definition)
 		} catch (error) {
-			if (error instanceof UnauthorizedError) {
-				return { tools: [], needsAuth: true, error: null }
-			}
-			return {
-				tools: [],
-				needsAuth: false,
-				error: error instanceof Error ? error.message : String(error),
-			}
+			if (error instanceof UnauthorizedError) return this.authProbeResult()
+			return this.errorProbeResult(error)
 		}
 
 		try {
-			await withTimeout(client.connect(transport), deadline)
-			this.attachAdapterNotificationHandlers(name, client)
-
-			const tools = await withTimeout(this.fetchAllTools(client), deadline)
-			const probeTools: ProbeMcpTool[] = tools.map((t) => ({
-				name: t.name,
-				title: t.title,
-				description: t.description,
-				inputSchema: t.inputSchema,
-				annotations: t.annotations,
-			}))
-
-			return { tools: probeTools, needsAuth: false, error: null }
+			const result = await this.connectAndList(client, transport, name, deadline)
+			return result
 		} catch (error) {
-			if (error instanceof UnauthorizedError) {
-				return { tools: [], needsAuth: true, error: null }
+			// SSE fallback for HTTP servers: if StreamableHTTP connect fails with a
+			// non-auth error, retry with the legacy SSE transport.
+			if (definition.url && !(error instanceof UnauthorizedError)) {
+				await transport.close().catch(() => {})
+				await client.close().catch(() => {})
+				transport = this.createSseTransport(definition as ServerEntry & { url: string }, name)
+				client = new Client({ name: `pi-mcp-probe-${name}`, version: "1.0.0" })
+
+				try {
+					const result = await this.connectAndList(client, transport, name, deadline)
+					return result
+				} catch (sseError) {
+					if (sseError instanceof UnauthorizedError) return this.authProbeResult()
+					return this.errorProbeResult(sseError)
+				}
 			}
-			return {
-				tools: [],
-				needsAuth: false,
-				error: error instanceof Error ? error.message : String(error),
-			}
+
+			if (error instanceof UnauthorizedError) return this.authProbeResult()
+			return this.errorProbeResult(error)
 		} finally {
 			await client.close().catch(() => {})
-			await transport.close().catch(() => {})
+			await transport?.close().catch(() => {})
+		}
+	}
+
+	/**
+	 * Connect a client to a transport, fetch tools, and return a ProbeResult.
+	 * Shared by probeTools() for both StreamableHTTP and SSE attempts.
+	 */
+	private async connectAndList(
+		client: Client,
+		transport: Transport,
+		name: string,
+		deadline: number,
+	): Promise<ProbeResult> {
+		await withTimeout(client.connect(transport), deadline)
+		this.attachAdapterNotificationHandlers(name, client)
+
+		const tools = await withTimeout(this.fetchAllTools(client), deadline)
+		const probeTools: ProbeMcpTool[] = tools.map((t) => ({
+			name: t.name,
+			title: t.title,
+			description: t.description,
+			inputSchema: t.inputSchema,
+			annotations: t.annotations,
+		}))
+
+		return { tools: probeTools, needsAuth: false, error: null }
+	}
+
+	/**
+	 * Build a ProbeResult indicating the server requires authentication.
+	 */
+	private authProbeResult(): ProbeResult {
+		return { tools: [], needsAuth: true, error: null }
+	}
+
+	/**
+	 * Build a ProbeResult from an error, extracting a human-readable message.
+	 */
+	private errorProbeResult(error: unknown): ProbeResult {
+		return {
+			tools: [],
+			needsAuth: false,
+			error: error instanceof Error ? error.message : String(error),
 		}
 	}
 }

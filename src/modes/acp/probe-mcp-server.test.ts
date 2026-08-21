@@ -262,6 +262,94 @@ describe("KimchiAcpAgent extMethod probe_mcp_server OAuth", () => {
 	})
 })
 
+describe("KimchiAcpAgent extMethod probe_mcp_server skipAuth", () => {
+	beforeEach(() => {
+		vi.mocked(supportsOAuth).mockReturnValue(false)
+		vi.mocked(authenticate).mockReset()
+		vi.mocked(getAuthEntry).mockReturnValue(undefined)
+		vi.mocked(getAuthStatus).mockReset()
+		vi.mocked(getAuthStatus).mockResolvedValue("not_authenticated")
+	})
+
+	it("skips authenticate() and probes directly when skipAuth is true", async () => {
+		const serverEntry: ServerEntry = { url: "https://example.com/mcp" }
+		const probeResult: ProbeResult = { tools: [{ name: "tool1" }], needsAuth: false, error: null }
+		const manager = makeFakeMcpServerManager(probeResult)
+		vi.mocked(supportsOAuth).mockReturnValue(true)
+		vi.mocked(getAuthStatus).mockResolvedValue("not_authenticated")
+
+		const agent = makeAgent(manager)
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, {
+			server: serverEntry,
+			serverName: "my-server",
+			skipAuth: true,
+		})
+
+		expect(result.tools).toHaveLength(1)
+		expect(vi.mocked(authenticate)).not.toHaveBeenCalled()
+		expect(vi.mocked(getAuthStatus)).not.toHaveBeenCalled()
+		expect(manager.probeTools).toHaveBeenCalledTimes(1)
+		expect(manager.probeTools).toHaveBeenCalledWith("my-server", serverEntry)
+	})
+
+	it("returns needsAuth without opening browser when skipAuth is true and tokens are invalid", async () => {
+		const serverEntry: ServerEntry = { url: "https://example.com/mcp" }
+		const needsAuthResult: ProbeResult = { tools: [], needsAuth: true, error: null }
+		const manager = makeFakeMcpServerManager(needsAuthResult)
+		vi.mocked(supportsOAuth).mockReturnValue(true)
+		vi.mocked(getAuthStatus).mockResolvedValue("expired")
+
+		const agent = makeAgent(manager)
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, {
+			server: serverEntry,
+			serverName: "my-server",
+			skipAuth: true,
+		})
+
+		expect(result.needsAuth).toBe(true)
+		expect(result.error).toBeNull()
+		expect(vi.mocked(authenticate)).not.toHaveBeenCalled()
+		expect(manager.probeTools).toHaveBeenCalledTimes(1)
+	})
+
+	it("still authenticates when skipAuth is false", async () => {
+		const serverEntry: ServerEntry = { url: "https://example.com/mcp" }
+		const probeResult: ProbeResult = { tools: [{ name: "tool1" }], needsAuth: false, error: null }
+		const manager = makeFakeMcpServerManager(probeResult)
+		vi.mocked(supportsOAuth).mockReturnValue(true)
+		vi.mocked(getAuthStatus).mockResolvedValue("not_authenticated")
+		vi.mocked(authenticate).mockResolvedValue("authenticated" as never)
+
+		const agent = makeAgent(manager)
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, {
+			server: serverEntry,
+			serverName: "my-server",
+			skipAuth: false,
+		})
+
+		expect(result.tools).toHaveLength(1)
+		expect(vi.mocked(authenticate)).toHaveBeenCalledWith("my-server", "https://example.com/mcp", serverEntry)
+		expect(manager.probeTools).toHaveBeenCalledTimes(1)
+	})
+
+	it("still authenticates when skipAuth is omitted", async () => {
+		const serverEntry: ServerEntry = { url: "https://example.com/mcp" }
+		const probeResult: ProbeResult = { tools: [{ name: "tool1" }], needsAuth: false, error: null }
+		const manager = makeFakeMcpServerManager(probeResult)
+		vi.mocked(supportsOAuth).mockReturnValue(true)
+		vi.mocked(getAuthStatus).mockResolvedValue("not_authenticated")
+		vi.mocked(authenticate).mockResolvedValue("authenticated" as never)
+
+		const agent = makeAgent(manager)
+		await agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, {
+			server: serverEntry,
+			serverName: "my-server",
+		})
+
+		expect(vi.mocked(authenticate)).toHaveBeenCalledWith("my-server", "https://example.com/mcp", serverEntry)
+	})
+})
+
 describe("KimchiAcpAgent extMethod probe_mcp_server validation", () => {
 	it("rejects non-object server param", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))

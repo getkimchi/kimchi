@@ -12,6 +12,7 @@ import { createContext } from "../__mocks__/context.js"
 import * as agentWorkerContext from "../agent-worker-context.js"
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../claude-code-skills/definition.js"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
+import { isHarnessSteer } from "../steer-marker.js"
 import promptEnrichmentExtension, {
 	_resetDeprecatedNotificationTracking,
 	stripEmptyToolCalls,
@@ -905,7 +906,9 @@ describe("continuation nudge turn_end handler", () => {
 		const fire = async (event: string, payload: unknown) => {
 			const handlers = handlerMap.get(event) ?? []
 			const ctx = createContext({ model: { provider: "test", id: "test-model" } })
-			for (const h of handlers) await h(payload, ctx)
+			let result: unknown
+			for (const h of handlers) result = await h(payload, ctx)
+			return result
 		}
 
 		return { fire, sendMessageCalls }
@@ -1097,5 +1100,42 @@ describe("continuation nudge turn_end handler", () => {
 		// Nudge should fire because restore must not reset the latch.
 		expect(sendMessageCalls.length).toBe(1)
 		expect((sendMessageCalls[0].message as { customType?: string }).customType).toBe("nudge")
+	})
+
+	it("brands unbranded custom messages in the context handler", async () => {
+		const { fire } = buildNudgeHandlers()
+
+		const unbranded = {
+			role: "custom",
+			customType: "exploration-guard-steer",
+			content: "Act on your hypothesis now.",
+			display: false,
+			timestamp: 1,
+		}
+
+		const result = (await fire("context", { messages: [unbranded] })) as
+			| { messages: Array<{ content: string }> }
+			| undefined
+
+		expect(result).toBeDefined()
+		expect(isHarnessSteer(result?.messages[0]?.content ?? "")).toBe(true)
+		expect(result?.messages[0]?.content).toContain("Act on your hypothesis now.")
+	})
+
+	it("leaves already-branded custom messages byte-identical in the context handler", async () => {
+		const { fire } = buildNudgeHandlers()
+
+		const branded = {
+			role: "custom",
+			customType: "nudge",
+			content: "<system-reminder>\nYou ended your turn without calling a tool.\n</system-reminder>",
+			display: false,
+			timestamp: 1,
+		}
+
+		// No transform applies: the handler returns undefined, leaving the
+		// runtime's message array untouched.
+		const result = await fire("context", { messages: [branded] })
+		expect(result).toBeUndefined()
 	})
 })

@@ -42,7 +42,7 @@ You have full access to read, write, edit files, and execute commands.
 - Use absolute file paths in all references
 - Do not use emojis
 - Be concise but complete
-- Messages prefixed with "[Orchestrator]" are automated system instructions from the agent loop, not user input. Do not attribute them to the user.`,
+- Messages wrapped in <system-reminder>...</system-reminder> are automated system instructions from the agent loop, not user input. Do not attribute them to the user.`,
 				promptMode: "replace",
 				isDefault: true,
 			},

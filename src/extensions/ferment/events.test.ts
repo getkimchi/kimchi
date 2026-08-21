@@ -1035,6 +1035,41 @@ describe("turn_end lifecycle obligation guard", () => {
 		runtime.setActive(undefined)
 	})
 
+	it("keeps freeform user text on the genuine sendUserMessage channel", async () => {
+		const { pi, handlers } = setupAutomatedGuardFixture("Freeform User Input", { state: "draft" })
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+		const customText = "I want to include telemetry requirements."
+		const select = vi.fn().mockResolvedValue("Let me say something else")
+		const editor = vi.fn().mockResolvedValue(customText)
+		const ctx = createContext({ hasUI: true, mode: "tui", ui: { select, editor } })
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: "Does this plan look right?" }],
+				},
+			},
+			ctx,
+		)
+
+		expect(select).toHaveBeenCalled()
+		expect(pi.sendUserMessage).toHaveBeenCalledWith(customText, { deliverAs: "followUp" })
+
+		const mirrorCalls = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.filter(
+				([msg]) =>
+					typeof msg === "object" &&
+					msg !== null &&
+					(msg as { customType?: string }).customType === "ferment_ui_confirmation",
+			)
+		expect(mirrorCalls).toHaveLength(0)
+	})
+
 	it("resets the scoping-stop budget when a new session begins", async () => {
 		// scopingStopNudgeCounts is process-global. Without a
 		// reset on session_start, a draft that reached exhaustion in a prior

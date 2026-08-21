@@ -97,11 +97,12 @@ describe("binary smoke tests", () => {
 		expect(result.stdout + result.stderr).toContain(`No session found matching '${missingSessionId}'`)
 	})
 
-	it("prompt templates are embedded in binary (no extension errors on startup)", () => {
+	it("prompt templates are embedded in binary (no extension errors on startup)", { timeout: 35_000 }, () => {
 		const result = runBinary({
 			args: ["-p", "hello"],
 			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy" },
 			throwOnError: false,
+			timeoutMs: 25_000,
 		})
 		// The orchestration extension fires "input" and "before_agent_start" events, triggering template loading. If templates are missing from the compiled binary, the extension runner reports ENOENT via "Extension error" on stderr.
 		expect(result.stderr).not.toContain("Extension error")

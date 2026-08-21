@@ -133,6 +133,9 @@ describe("todo prompt block", () => {
 		expect(block).toContain("Always pair todo updates with the next work tool call")
 		expect(block).toContain("natural break points")
 		expect(block).toContain("staleness warning")
+		expect(block).toContain("Todo items are planning artifacts only")
+		expect(block).toContain("does **not** grant authorization")
+		expect(block).toContain("Always obtain explicit user approval")
 		expect(block).not.toContain("before your final response")
 	})
 

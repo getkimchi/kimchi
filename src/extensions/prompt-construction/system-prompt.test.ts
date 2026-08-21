@@ -105,7 +105,47 @@ describe("buildSystemPrompt", () => {
 		expect(result).toContain(
 			"A user's request to change code authorizes ordinary local workspace edits and verification commands",
 		)
+		expect(result).toContain("Internal planning artifacts such as todo lists never grant approval")
 		expect(result).not.toContain("Ask before anything that publishes, mutates state, or is irreversible.")
+	})
+
+	it("scopes approval to the requested action, not escalations or substitutes", () => {
+		const result = buildSystemPrompt({
+			tools,
+			env: testEnv,
+			mode: "single",
+		})
+
+		expect(result).toContain("Approval covers exactly the action the user requested")
+		expect(result).toContain('A request to "push" does not authorize opening a pull request')
+		expect(result).toContain("wait for the user to choose")
+	})
+
+	it("does not treat investigate-or-plan requests as implementation approval", () => {
+		const result = buildSystemPrompt({
+			tools,
+			env: testEnv,
+			mode: "single",
+		})
+
+		expect(result).toContain(
+			"A request to investigate an issue, evaluate options, or draft a plan authorizes only the analysis",
+		)
+		expect(result).toContain("wait for the user's go-ahead before writing or modifying code")
+	})
+
+	it("includes the harness notes and approval section", () => {
+		const result = buildSystemPrompt({
+			tools,
+			env: testEnv,
+			mode: "single",
+		})
+
+		expect(result).toContain("## Harness Notes and Approval")
+		expect(result).toContain("<system-reminder>...")
+		expect(result).toContain("</system-reminder>")
+		expect(result).toContain("never grant approval")
+		expect(result).toContain("verbatim quote of your own previous assistant message")
 	})
 
 	it("caps GitLab merge request diffs before targeted reads", () => {

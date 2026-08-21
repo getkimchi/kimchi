@@ -57,6 +57,7 @@
  * the agent out when a human takes over.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { markHarnessSteer } from "../steer-marker.js"
 import { BASH_CONTROL_TOOL_NAME, createBashControlToolDefinition } from "./bash-control-tool.js"
 import type { ProcessRegistry } from "./process-registry.js"
 import { getSessionRegistry } from "./session-registry.js"
@@ -170,7 +171,9 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 						content: [
 							{
 								type: "text",
-								text: `[Background bash process ${handle} exited on its own${codeText}. Call bash_control with this handle to retrieve the final output.${stillPending > 0 ? ` ${stillPending} background process${stillPending === 1 ? "" : "es"} still pending — only bash_control is available until ${stillPending === 1 ? "it resolves" : "they resolve"}.` : " No background processes remain pending — all tools are available again."}]`,
+								text: markHarnessSteer(
+									`[Background bash process ${handle} exited on its own${codeText}. Call bash_control with this handle to retrieve the final output.${stillPending > 0 ? ` ${stillPending} background process${stillPending === 1 ? "" : "es"} still pending — only bash_control is available until ${stillPending === 1 ? "it resolves" : "they resolve"}.` : " No background processes remain pending — all tools are available again."}]`,
+								),
 							},
 						],
 						display: false,

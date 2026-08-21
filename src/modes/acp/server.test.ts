@@ -27,11 +27,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 vi.mock("../../cli-auth/index.js", () => ({
 	authenticateViaBrowser: vi.fn(),
 }))
-// Mock config writes so tests don't touch the real config file.
-vi.mock("../../config.js", () => ({
-	writeApiKey: vi.fn(),
-	clearApiKey: vi.fn(),
-}))
+// Mock config writes so tests don't touch the real config file, but keep
+// DEFAULT_SKILL_PATHS so skill discovery in the ACP server works.
+vi.mock("../../config.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../config.js")>()
+	return {
+		...actual,
+		writeApiKey: vi.fn(),
+		clearApiKey: vi.fn(),
+	}
+})
 // Mock the model cache refresh so tests don't hit the network.
 vi.mock("../../models.js", () => ({
 	updateModelsConfig: vi.fn(),
@@ -81,6 +86,50 @@ function cleanPermissionEnv(): void {
 beforeEach(cleanPermissionEnv)
 afterEach(cleanPermissionEnv)
 
+/** Model shape used by FakeAgentSession's model registry. */
+interface FakeModel {
+	provider: string
+	id: string
+	name?: string
+	input?: string[]
+	contextWindow?: number
+}
+
+/** Options passed through `AgentSession.prompt()` to the fake. */
+interface PromptOpts {
+	images?: unknown[]
+}
+
+/** Record of one prompt call captured by FakeAgentSession. */
+interface PromptCall {
+	prompt: string
+	opts?: PromptOpts
+}
+
+/** Context-usage stats surfaced to emitUsageUpdate. */
+interface ContextUsage {
+	tokens: number | null
+	contextWindow: number
+	percent: number | null
+}
+
+/** Token and cost stats returned by `AgentSession.getSessionStats()`. */
+interface SessionStats {
+	tokens: {
+		input: number
+		output: number
+		cacheRead: number
+		cacheWrite: number
+		total: number
+	}
+	cost: number
+}
+
+/** One option entry inside a config option returned by the ACP server. */
+interface SelectOptionItem {
+	value: string
+}
+
 // Minimal fake of AgentSession surface used by KimchiAcpAgent. The factory seam
 // means we only need to stand in for the methods the ACP server actually calls:
 // sessionId, subscribe, prompt, abort, dispose. loadSession also reads
@@ -91,7 +140,7 @@ class FakeAgentSession {
 	private listeners = new Set<AgentSessionEventListener>()
 	disposed = false
 	aborted = false
-	model: { provider: string; id: string; name?: string; input?: string[]; contextWindow?: number } | undefined = {
+	model: FakeModel | undefined = {
 		provider: "test",
 		id: "test-model",
 		name: "Test Model",
@@ -112,22 +161,22 @@ class FakeAgentSession {
 		find: (provider: string, id: string) =>
 			this.modelRegistry.getAvailable().find((m) => m.provider === provider && m.id === id),
 	}
-	promptImpl: (text: string, opts?: { images?: unknown[] }) => Promise<void> = async () => {}
+	promptImpl: (text: string, opts?: PromptOpts) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
 	bindExtensionsImpl: (_bindings: unknown) => Promise<void> = async () => {}
+	// Captures tool registration and activation state for parity assertions.
+	registeredTools: Map<string, unknown> = new Map()
+	activeToolNames: string[] = []
 	lastPromptImages?: unknown[]
-	promptCalls: Array<{ prompt: string; opts?: { images?: unknown[] } }> = []
+	promptCalls: PromptCall[] = []
 	// Context-usage stats surfaced to emitUsageUpdate. Tests override these
 	// to simulate provider-reported usage or the null/empty no-op path.
-	contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } | undefined = {
+	contextUsage: ContextUsage | undefined = {
 		tokens: 50_000,
 		contextWindow: 200_000,
 		percent: 25,
 	}
-	sessionStats: {
-		tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }
-		cost: number
-	} = {
+	sessionStats: SessionStats = {
 		tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		cost: 0,
 	}
@@ -198,6 +247,18 @@ class FakeAgentSession {
 
 	async bindExtensions(bindings: unknown): Promise<void> {
 		await this.bindExtensionsImpl(bindings)
+	}
+
+	getToolDefinition(name: string): unknown {
+		return this.registeredTools.get(name)
+	}
+
+	getActiveToolNames(): string[] {
+		return [...this.activeToolNames]
+	}
+
+	setActiveToolsByName(names: string[]): void {
+		this.activeToolNames = [...names]
 	}
 
 	getContextUsage(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined {
@@ -3131,9 +3192,9 @@ describe("newSession available commands", () => {
 		const updatePayload = update?.update as {
 			availableCommands: Array<Record<string, unknown>>
 		}
-		expect(updatePayload.availableCommands).toHaveLength(1)
+		expect(updatePayload.availableCommands.length).toBeGreaterThanOrEqual(1)
 
-		const cmd = updatePayload.availableCommands[0]
+		const cmd = updatePayload.availableCommands.find((c) => c.name === "bug")
 		expect(cmd).toMatchObject({
 			name: "bug",
 			description: expect.any(String),
@@ -3165,6 +3226,114 @@ describe("loadSession available commands", () => {
 		const cmdUpdate = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
 		expect(cmdUpdate).toBeDefined()
 		expect(updates.find((u) => u.update.sessionUpdate === "user_message_chunk")).toBeDefined()
+	})
+})
+
+describe("newSession skill commands", () => {
+	function makeSkillDir(): { dir: string; skillName: string } {
+		const dir = mkdtempSync(join(tmpdir(), "acp-server-skills-"))
+		const skillName = "acp-test-skill"
+		const skillDir = join(dir, ".pi", "agent", "skills", skillName)
+		mkdirSync(skillDir, { recursive: true })
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: ${skillName}\ndescription: ACP test skill\n---\nAlways use strict types.`,
+			"utf-8",
+		)
+		return { dir, skillName }
+	}
+
+	it("advertises discovered skills as available commands", async () => {
+		const { dir, skillName } = makeSkillDir()
+		const fake = new FakeAgentSession("session-skill-cmd", dir)
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: dir, mcpServers: [] })
+
+		const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+		expect(update).toBeDefined()
+		const availableCommands = (update?.update as { availableCommands: Array<Record<string, unknown>> })
+			.availableCommands
+		const skillCmd = availableCommands.find((c) => c.name === `skill:${skillName}`)
+		expect(skillCmd).toMatchObject({
+			name: `skill:${skillName}`,
+			description: "ACP test skill",
+			input: { hint: expect.any(String) },
+		})
+	})
+
+	it("rewrites a skill command prompt to inject skill content", async () => {
+		const { dir, skillName } = makeSkillDir()
+		const fake = new FakeAgentSession("session-skill-invoke", dir)
+		fake.promptImpl = async () => {
+			fake.emit(agentEnd())
+		}
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: dir, mcpServers: [] })
+
+		await agent.prompt({
+			sessionId: "session-skill-invoke",
+			prompt: [{ type: "text", text: `/skill:${skillName} review this file` }],
+		})
+
+		expect(fake.promptCalls).toHaveLength(1)
+		const sentPrompt = fake.promptCalls[0]?.prompt
+		expect(sentPrompt).toContain("Invoking skill: acp-test-skill")
+		expect(sentPrompt).toContain("Always use strict types.")
+		expect(sentPrompt).toContain("review this file")
+		expect(sentPrompt).not.toContain("description: ACP test skill")
+		expect(sentPrompt).not.toContain("---")
+	})
+
+	it("leaves non-skill prompts unchanged", async () => {
+		const { dir } = makeSkillDir()
+		const fake = new FakeAgentSession("session-skill-pass-through", dir)
+		fake.promptImpl = async () => {
+			fake.emit(agentEnd())
+		}
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: dir, mcpServers: [] })
+
+		await agent.prompt({
+			sessionId: "session-skill-pass-through",
+			prompt: [{ type: "text", text: "hello world" }],
+		})
+
+		expect(fake.promptCalls).toHaveLength(1)
+		expect(fake.promptCalls[0]?.prompt).toBe("hello world")
+	})
+
+	it("activates the Skill tool when it is registered", async () => {
+		const { dir } = makeSkillDir()
+		const fake = new FakeAgentSession("session-skill-tool", dir)
+		fake.registeredTools.set("Skill", { name: "Skill" })
+		fake.activeToolNames = ["read", "bash"]
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: dir, mcpServers: [] })
+
+		expect(fake.activeToolNames).toContain("Skill")
+		expect(fake.activeToolNames).toContain("read")
+		expect(fake.activeToolNames).toContain("bash")
 	})
 })
 
@@ -3394,7 +3563,7 @@ describe("setSessionConfigOption", () => {
 		// biome-ignore lint/suspicious/noExplicitAny: union type requires assertion
 		const selectOption = res.configOptions[0] as any
 		expect(selectOption.options).toHaveLength(4)
-		expect(selectOption.options.map((o: { value: string }) => o.value)).toEqual(PERMISSION_MODES)
+		expect(selectOption.options.map((o: SelectOptionItem) => o.value)).toEqual(PERMISSION_MODES)
 	})
 
 	describe("model config option", () => {
