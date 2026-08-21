@@ -1,7 +1,8 @@
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
 import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
-import { isKittyProtocolActive, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { isKittyProtocolActive, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { isNativeModifierPressed } from "@earendil-works/pi-tui/dist/native-modifiers.js"
 import { RST_FG } from "../ansi.js"
 
 const CHEVRON_WIDTH = 2
@@ -117,6 +118,56 @@ export class PromptEditor extends CustomEditor {
 			// Going through super avoids brittle prototype-chain jumps.
 			super.handleInput("\n")
 			return
+		}
+		// macOS-native text editing shortcuts using the Cmd (super) modifier.
+		//
+		// Terminals handle these inconsistently:
+		// - iTerm2/Kitty/WezTerm: send raw super-modified Kitty sequences
+		// - Ghostty: translates cmd+backspace→alt+w, cmd+left→ctrl+a,
+		//   cmd+right→ctrl+e; cmd+delete is swallowed entirely
+		// - Terminal.app: translates cmd+backspace→ctrl+u (already works)
+		//
+		// ctrl+a (cmd+left) and ctrl+e (cmd+right) already work via default
+		// keybindings. We intercept the remaining cases and re-emit the
+		// equivalent raw control sequences that the upstream Editor already
+		// handles via its default keybindings (ctrl+u, ctrl+k, home, end).
+		//
+		// This cannot be done via keybindings.json because user bindings
+		// REPLACE defaults rather than augmenting them.
+		const isGhostty = process.env.TERM_PROGRAM === "ghostty"
+		// For super+backspace: Ghostty translates to alt+w, so intercept that
+		// ONLY on Ghostty to avoid clobbering real alt+w on other terminals.
+		if (matchesKey(data, Key.super("backspace")) || (isGhostty && matchesKey(data, "alt+w"))) {
+			super.handleInput("\x15") // ctrl+u → deleteToLineStart
+			return
+		}
+		if (matchesKey(data, Key.super("delete"))) {
+			super.handleInput("\x0b") // ctrl+k → deleteToLineEnd
+			return
+		}
+		if (matchesKey(data, Key.super("left"))) {
+			super.handleInput("\x1b[H") // home → cursorLineStart
+			return
+		}
+		if (matchesKey(data, Key.super("right"))) {
+			super.handleInput("\x1b[F") // end → cursorLineEnd
+			return
+		}
+		// Ghostty strips the Option modifier from opt+backspace and opt+delete,
+		// sending plain DEL (\x7f) or plain delete (\x1b[3~) with no way to
+		// distinguish from a plain keypress via the byte stream alone. Use the
+		// native macOS modifier detection (same mechanism pi-tui uses for
+		// Terminal.app's Shift+Enter) to check if Option is physically pressed.
+		// Only works when pi runs on the same Mac as the terminal (not over SSH).
+		if (process.platform === "darwin") {
+			if (data === "\x7f" && isNativeModifierPressed("option")) {
+				super.handleInput("\x1b\x7f") // alt+backspace → deleteWordBackward
+				return
+			}
+			if (data === "\x1b[3~" && isNativeModifierPressed("option")) {
+				super.handleInput("\x1b[3;3~") // alt+delete → deleteWordForward
+				return
+			}
 		}
 		super.handleInput(data)
 	}
