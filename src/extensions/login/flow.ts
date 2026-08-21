@@ -216,7 +216,10 @@ export async function syncKimchiAuth(modelRegistry: ModelRegistryLike, token: st
 		}
 	}
 	if (unresolvedProviders.length > 0) {
-		throw new Error(`Pi did not activate the updated credentials for: ${unresolvedProviders.join(", ")}`)
+		// This can happen when Kimchi was started with `--api-key`. That key stays in memory and takes
+		// priority over auth.json, so logging in or out updates the file while the running session keeps
+		// using the command-line key.
+		throw new Error(`Kimchi did not activate the updated credentials for: ${unresolvedProviders.join(", ")}`)
 	}
 }
 
@@ -552,7 +555,7 @@ async function showOAuthLoginDialogWithExtensionUI(
 ): Promise<boolean> {
 	const authStorage = (ctx.modelRegistry as ModelRegistryLike).authStorage
 	if (!authStorage?.login) {
-		ctx.ui.notify(`${providerName} subscription login is unavailable in this Pi version. Use /login.`, "error")
+		ctx.ui.notify(`${providerName} subscription login is unavailable in this Kimchi version. Use /login.`, "error")
 		return false
 	}
 	const login = authStorage.login.bind(authStorage)

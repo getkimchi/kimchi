@@ -2,8 +2,9 @@ import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agen
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import loginExtension from "./index.js"
 
-const { loadConfigMock } = vi.hoisted(() => ({
+const { loadConfigMock, refreshBillingStatusFromConfigMock } = vi.hoisted(() => ({
 	loadConfigMock: vi.fn(),
+	refreshBillingStatusFromConfigMock: vi.fn(),
 }))
 
 vi.mock("../../config.js", () => ({
@@ -12,7 +13,7 @@ vi.mock("../../config.js", () => ({
 }))
 
 vi.mock("../billing/status.js", () => ({
-	refreshBillingStatusFromConfig: vi.fn(),
+	refreshBillingStatusFromConfig: refreshBillingStatusFromConfigMock,
 }))
 
 // Keep the real chatCompletionsApi (URL builder + scheme normalization) so baseUrl assertions
@@ -79,5 +80,19 @@ describe("loginExtension", () => {
 			name: "OpenAI Codex",
 			auth: { oauth: { name: "OpenAI (ChatGPT Plus/Pro)" } },
 		})
+	})
+
+	it("refreshes billing when an authenticated session starts", () => {
+		loadConfigMock.mockReturnValue({ apiKey: "", customLlmEndpoint: undefined })
+		const on = vi.fn()
+
+		loginExtension({ on, registerProvider: vi.fn() } as unknown as ExtensionAPI)
+		loadConfigMock.mockReturnValue({ apiKey: "configured-api-key", customLlmEndpoint: undefined })
+
+		const sessionStart = on.mock.calls.find(([event]) => event === "session_start")?.[1]
+		sessionStart({}, { modelRegistry: { getAll: () => [] } })
+
+		expect(refreshBillingStatusFromConfigMock).toHaveBeenCalledOnce()
+		expect(refreshBillingStatusFromConfigMock).toHaveBeenCalledWith({ mode: "forced" })
 	})
 })

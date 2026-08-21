@@ -172,4 +172,43 @@ describe("syncPiAuth", () => {
 			new Set(["kimchi-dev", "kimchi-dev/new-provider"]),
 		)
 	})
+
+	it("rejects when a --api-key runtime override prevents Kimchi from activating the synchronized credential", async () => {
+		vi.stubEnv("KIMCHI_DISABLE_BUILTIN_PROVIDERS", "1")
+		vi.stubEnv("KIMCHI_API_KEY", undefined)
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-stale-runtime-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", dir)
+		tempDirs.push(dir)
+		const authPath = join(dir, "auth.json")
+		const modelsPath = join(dir, "models.json")
+		writeFileSync(
+			authPath,
+			JSON.stringify({
+				"kimchi-dev": { type: "api_key", key: "old-account-token" },
+			}),
+		)
+		writeFileSync(
+			modelsPath,
+			JSON.stringify({
+				providers: { "kimchi-dev": provider([model("kimchi-model")]) },
+			}),
+		)
+
+		const runtime = await ModelRuntime.create({
+			authPath,
+			modelsPath,
+			allowModelNetwork: false,
+			refreshOnCreate: false,
+		})
+		const registry = new ModelRegistry(runtime)
+		await runtime.setRuntimeApiKey("kimchi-dev", "stale-runtime-token")
+
+		await expect(syncKimchiAuth(registry, "new-account-token")).rejects.toThrow(
+			"Kimchi did not activate the updated credentials for: kimchi-dev",
+		)
+		expect(JSON.parse(readFileSync(authPath, "utf-8"))).toMatchObject({
+			"kimchi-dev": { type: "api_key", key: "new-account-token" },
+		})
+		expect(await registry.getApiKeyForProvider("kimchi-dev")).toBe("stale-runtime-token")
+	})
 })

@@ -54,6 +54,10 @@ export default function loginExtension(pi: ExtensionAPI): void {
 	// This runs on every session_start because sub-providers may not exist yet
 	// at initial load (they're created by updateModelsConfig from the metadata API).
 	pi.on("session_start", (_event, ctx) => {
+		if (loadConfig().apiKey) {
+			void refreshBillingStatusFromConfig({ mode: "forced" })
+		}
+
 		const subProviders = new Set(
 			ctx.modelRegistry
 				.getAll()
