@@ -136,6 +136,7 @@ export async function evaluateGoal(input: GoalEvaluationInput, ctx: ExtensionCon
 			headers: auth.headers,
 			reasoning: "minimal",
 			maxTokens: model.reasoning ? REASONING_MAX_TOKENS : PLAIN_MAX_TOKENS,
+			samplingParams: model.provider === "moonshotai" ? { response_format: { type: "json_object" } } : undefined,
 			signal,
 		})
 		const usage = toGoalEvaluatorUsage(response.usage)

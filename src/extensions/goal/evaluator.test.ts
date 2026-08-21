@@ -104,6 +104,19 @@ describe("Goal evaluator", () => {
 		expect(completeMock.mock.calls[0]?.[1]).not.toHaveProperty("tools")
 	})
 
+	it("requests JSON output from Moonshot evaluators", async () => {
+		completeMock.mockResolvedValue(assistant('{"verdict":"met","reason":"all checks pass"}'))
+
+		await evaluateGoal(
+			{ objective: "ship it", messages: [], todos: [] },
+			evaluatorContext(undefined, false, model("moonshotai", "kimi-k3")),
+		)
+
+		expect(completeMock.mock.calls[0]?.[2]).toMatchObject({
+			samplingParams: { response_format: { type: "json_object" } },
+		})
+	})
+
 	it("gives a reasoning model room for thinking and the verdict", async () => {
 		completeMock.mockResolvedValue(assistant('{"verdict":"met","reason":"all checks pass"}'))
 
@@ -261,9 +274,9 @@ describe("Goal evaluator", () => {
 	})
 })
 
-function evaluatorContext(resolvedJudge?: Model<Api>, reasoning = false) {
+function evaluatorContext(resolvedJudge?: Model<Api>, reasoning = false, activeModel = sessionModel) {
 	return createContext({
-		model: reasoning ? { ...sessionModel, reasoning: true } : sessionModel,
+		model: reasoning ? { ...activeModel, reasoning: true } : activeModel,
 		modelRegistry: {
 			find: vi.fn(() => resolvedJudge),
 			getApiKeyAndHeaders: vi.fn(async () => ({ ok: true as const, apiKey: "test-key" })),
