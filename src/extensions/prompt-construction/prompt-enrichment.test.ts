@@ -347,6 +347,20 @@ describe("prompt enrichment Claude Code skills", () => {
 		expect(result).toEqual({ skillPaths: [projectSkillPath] })
 	})
 
+	it("contributes configured absolute skill paths through resources_discover so /skill: can invoke them", async () => {
+		const cwd = join(dir, "project")
+		const configuredSkills = join(dir, "opt", "skills")
+		writeSkill(join(configuredSkills, "agent-browser", "SKILL.md"), {
+			description: "Drive a browser.",
+		})
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([configuredSkills])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
+
+		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined)
+
+		expect(result).toEqual({ skillPaths: [configuredSkills] })
+	})
+
 	it("injects Kimchi project skills without configured paths", async () => {
 		const cwd = join(dir, "project", "src")
 		writeSkill(join(dir, "project", ".kimchi", "skills", "typescript-safety", "SKILL.md"), {
