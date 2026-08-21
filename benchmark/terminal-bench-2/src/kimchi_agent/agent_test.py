@@ -541,7 +541,8 @@ async def test_default_hooks_leave_the_launch_command_unchanged(tmp_path: Path) 
     command = await launch_command(RecordingKimchi)
 
     assert command == await launch_command(ExplicitDefaultsKimchi)
-    assert f"{BINARY_PATH} --print" in command
+    # Experimental features (daemon tools) are always on for benchmark runs.
+    assert f"{BINARY_PATH} --enable-experimental-features --print" in command
     assert " -e " not in command
     assert "printf '%s' hello |" in command
 
@@ -563,7 +564,8 @@ async def test_extension_paths_override_adds_quoted_e_flags_after_binary_path(
 
     command = agent.agent_commands[0]
     assert (
-        "/installed-agent/bin/kimchi -e /installed-agent/kimchi-workflows -e '/path with spaces/ext' --print --session"
+        "/installed-agent/bin/kimchi -e /installed-agent/kimchi-workflows -e '/path with spaces/ext' "
+        "--enable-experimental-features --print --session"
     ) in command
 
 
