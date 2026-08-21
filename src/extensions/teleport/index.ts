@@ -47,7 +47,7 @@ export default function teleportExtension(pi: ExtensionAPI): void {
 	}
 	pi.registerCommand("teleport", {
 		description:
-			"Teleport to a remote workspace: /teleport [name], /teleport --allow-dirty, /teleport --force, /teleport --workspace <id>, /teleport --git-repo <url> --branch <branch>",
+			"Teleport to a remote workspace: /teleport [name], /teleport --allow-dirty, /teleport --force, /teleport --workspace <id>, /teleport --git-repo <url> --branch <branch>, /teleport --fast",
 		getArgumentCompletions: (prefix) => getTeleportArgumentCompletions(prefix),
 		handler: makeHandler(runTeleport),
 	})

@@ -96,7 +96,7 @@ describe("getTeleportArgumentCompletions", () => {
 	it("returns all flags for a non-dash, non-empty prefix (discoverable while typing a name)", () => {
 		const result = getTeleportArgumentCompletions("my-session")
 		expect(result).not.toBeNull()
-		expect(result).toHaveLength(8)
+		expect(result).toHaveLength(9)
 		const labels = result?.map((c) => c.label)
 		expect(labels).toContain("--workspace")
 		expect(labels).toContain("--git-repo")
@@ -106,7 +106,7 @@ describe("getTeleportArgumentCompletions", () => {
 	it("returns all flags for a non-dash partial like 'task-1'", () => {
 		const result = getTeleportArgumentCompletions("task-1")
 		expect(result).not.toBeNull()
-		expect(result).toHaveLength(8)
+		expect(result).toHaveLength(9)
 	})
 
 	it("returns discovery items on an empty prefix", () => {
@@ -128,7 +128,7 @@ describe("getTeleportArgumentCompletions", () => {
 	it("returns all flags when prefix is just --", () => {
 		const result = getTeleportArgumentCompletions("--")
 		expect(result).not.toBeNull()
-		expect(result).toHaveLength(8)
+		expect(result).toHaveLength(9)
 		const labels = result?.map((c) => c.label)
 		expect(labels).toContain("--allow-dirty")
 		expect(labels).toContain("--force")
@@ -138,6 +138,7 @@ describe("getTeleportArgumentCompletions", () => {
 		expect(labels).toContain("--no-git-token")
 		expect(labels).toContain("--no-compact-hint")
 		expect(labels).toContain("--skip-session")
+		expect(labels).toContain("--fast")
 	})
 
 	it("filters by --all to --allow-dirty", () => {
@@ -151,6 +152,17 @@ describe("getTeleportArgumentCompletions", () => {
 		const result = getTeleportArgumentCompletions("--force")
 		expect(result).toEqual([
 			{ value: "--force", label: "--force", description: "Override the 5 GB workspace size limit" },
+		])
+	})
+
+	it("filters by --fast to exactly --fast", () => {
+		const result = getTeleportArgumentCompletions("--fast")
+		expect(result).toEqual([
+			{
+				value: "--fast",
+				label: "--fast",
+				description: "Clone server-side + rsync only local diff (faster for large repos)",
+			},
 		])
 	})
 
