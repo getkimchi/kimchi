@@ -11,7 +11,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
-import { setExperimentalFeaturesEnabled } from "../experimental.js"
+import { setExperimentalFeaturesEnabled, withExperimentalFeatures } from "../experimental.js"
 import daemonExtension from "./index.js"
 
 afterEach(() => {
@@ -61,5 +61,45 @@ describe("daemonExtension", () => {
 		// must never touch the UI.
 		getHandler("session_shutdown")({} as never, ctx)
 		expect(notify).not.toHaveBeenCalled()
+	})
+
+	describe("before_agent_start steering (long-lived services clause)", () => {
+		async function callBeforeAgentStart(
+			{ api, getHandler }: ReturnType<typeof createExtensionApi>,
+			ctxOverrides: Parameters<typeof createContext>[0],
+		): Promise<{ systemPrompt: string } | undefined> {
+			daemonExtension(api)
+			const handler = getHandler<unknown, { systemPrompt: string }>("before_agent_start")
+			const result = await handler({ systemPrompt: "BASE" } as never, createContext(ctxOverrides))
+			return result as { systemPrompt: string } | undefined
+		}
+
+		it("injects the daemon clause in headless sessions with the flag on", () =>
+			withExperimentalFeatures(true, async () => {
+				const result = await callBeforeAgentStart(createExtensionApi(), { hasUI: false })
+				expect(result?.systemPrompt).toContain("BASE")
+				expect(result?.systemPrompt).toContain("## Long-lived services")
+				expect(result?.systemPrompt).toContain("`daemon`")
+			}))
+
+		it("does NOT name the daemon tool when experimental features are disabled", () =>
+			withExperimentalFeatures(false, async () => {
+				const result = await callBeforeAgentStart(createExtensionApi(), { hasUI: false })
+				expect(result).toBeUndefined()
+			}))
+
+		it("stays silent when a UI is attached", () =>
+			withExperimentalFeatures(true, async () => {
+				const result = await callBeforeAgentStart(createExtensionApi(), { hasUI: true })
+				expect(result).toBeUndefined()
+			}))
+
+		it("stays silent in ferment-oneshot sessions", () =>
+			withExperimentalFeatures(true, async () => {
+				const fresh = createExtensionApi()
+				;(fresh.api as { getFlag?: (f: string) => unknown }).getFlag = () => true
+				const result = await callBeforeAgentStart(fresh, { hasUI: false })
+				expect(result).toBeUndefined()
+			}))
 	})
 })

@@ -19,7 +19,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text, truncateToWidth } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 
-import { isExperimentalFeaturesEnabled } from "../experimental.js"
 import { withBlocked } from "../herdr-events.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { withWorkingHidden } from "../ui.js"
@@ -193,14 +192,8 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", (event, ctx: ExtensionContext) => {
 		if (ctx.hasUI) return
 		if (pi.getFlag?.("ferment-oneshot") === true) return
-		// The daemon steering refers to an experimental tool — omit it when
-		// --enable-experimental-features is off so the prompt never names an
-		// unregistered tool.
-		const daemonClause = isExperimentalFeaturesEnabled()
-			? `\n\n## Long-lived services\n\nWhen the task requires a web server or other long-lived service that a grader or user will connect to AFTER you finish, use the \`daemon\` tool to start it — managed background (bash + bash_control) and \`&\`/\`nohup\` processes are killed when the session ends, so the service would be dead by the time anyone connects.`
-			: ""
 		return {
-			systemPrompt: `${event.systemPrompt}\n\n## Autonomous mode\n\nYou are running in a non-interactive session with no human or judge to answer questions. Do NOT end your turn with questions or ask for confirmation — no one will respond. Make the safest reasonable decision based on the task description and proceed. If you encounter genuine ambiguity, state your assumption and continue working. Never end your turn waiting for input.${daemonClause}`,
+			systemPrompt: `${event.systemPrompt}\n\n## Autonomous mode\n\nYou are running in a non-interactive session with no human or judge to answer questions. Do NOT end your turn with questions or ask for confirmation — no one will respond. Make the safest reasonable decision based on the task description and proceed. If you encounter genuine ambiguity, state your assumption and continue working. Never end your turn waiting for input.`,
 		}
 	})
 

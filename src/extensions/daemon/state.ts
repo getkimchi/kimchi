@@ -21,7 +21,7 @@
 import { randomBytes } from "node:crypto"
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join, normalize, resolve, sep } from "node:path"
 
 export interface DaemonRecord {
 	id: string
@@ -82,6 +82,18 @@ export function unregisterDaemon(dir: string, id: string): void {
 }
 
 /** Runtime-validated record read; undefined when missing or malformed. */
+/**
+ * True when `filePath` resolves to a location inside the daemon state
+ * dir. Guards against records that redirect future reads/writes to an
+ * arbitrary path (hand-edited or corrupted on disk).
+ */
+export function isSafeStatePath(dir: string, filePath: string): boolean {
+	if (!isAbsolute(filePath)) return false
+	const resolvedDir = resolve(normalize(dir)) + sep
+	const resolvedPath = resolve(normalize(filePath))
+	return resolvedPath.startsWith(resolvedDir)
+}
+
 export function readDaemon(dir: string, id: string): DaemonRecord | undefined {
 	const path = daemonRecordPath(dir, id)
 	if (!existsSync(path)) return undefined
@@ -104,6 +116,28 @@ export function readDaemon(dir: string, id: string): DaemonRecord | undefined {
 	) {
 		console.error(`daemon state: record ${id} missing required fields`)
 		return undefined
+	}
+	// Hardening beyond shape: reject values that would be dangerous to act on.
+	// - pid must be a positive integer. kill(0, …) targets the CURRENT
+	//   process group; -1 signals all processes we may signal — both would
+	//   be catastrophic in stop/status paths.
+	// - record id must match the filename it was loaded from — a tampered or
+	//   corrupted record otherwise launders itself through list/status.
+	// - log/pid files must stay inside the state dir; filenames are joins
+	//   on our side, but a hand-edited record could redirect a future write.
+	if (!Number.isInteger(r.pid) || r.pid <= 0) {
+		console.error(`daemon state: record ${id} has invalid pid ${r.pid}`)
+		return undefined
+	}
+	if (r.id !== id) {
+		console.error(`daemon state: record ${id} id mismatch (contains "${r.id}")`)
+		return undefined
+	}
+	for (const filePath of [r.logFile, r.pidFile]) {
+		if (!isSafeStatePath(dir, filePath)) {
+			console.error(`daemon state: record ${id} path escapes state dir: ${filePath}`)
+			return undefined
+		}
 	}
 	return {
 		id: r.id,

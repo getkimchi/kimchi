@@ -157,10 +157,27 @@ export function createDaemonControlToolDefinition(
 			}
 
 			// ── stop ────────────────────────────────────────────────────
-			const { note } = await stopDaemon(record, stateDir)
+			// Explicit branch, NOT a fallthrough — if a future action is added
+			// above but not handled, we must not silently STOP the daemon.
+			if (action === "stop") {
+				const { note } = await stopDaemon(record, stateDir)
+				return {
+					content: [{ type: "text", text: note }],
+					details: { action, id, pid: record.pid },
+				}
+			}
+
+			// Unreachable for the current schema (closed union) — but if a
+			// new action is ever added and its branch is missed, nag rather
+			// than fall into a destructive default.
 			return {
-				content: [{ type: "text", text: note }],
-				details: { action, id, pid: record.pid },
+				content: [
+					{
+						type: "text",
+						text: `Unknown daemon_control action "${action}". Valid actions: list, status, logs, stop.`,
+					},
+				],
+				details: { action, error: "unknown-action" },
 			}
 		},
 	}

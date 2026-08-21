@@ -21,7 +21,7 @@ import {
 	validateDaemonName,
 } from "./state.js"
 
-function makeRecord(overrides: Partial<DaemonRecord> = {}): DaemonRecord {
+function makeRecord(dir: string, overrides: Partial<DaemonRecord> = {}): DaemonRecord {
 	const id = overrides.id ?? "test-daemon-123abc"
 	return {
 		id,
@@ -30,8 +30,10 @@ function makeRecord(overrides: Partial<DaemonRecord> = {}): DaemonRecord {
 		cwd: "/tmp",
 		name: "test-daemon",
 		startedAt: new Date().toISOString(),
-		logFile: `/tmp/${id}.log`,
-		pidFile: `/tmp/${id}.pid`,
+		// Paths must live INSIDE the state dir — readDaemon's containment
+		// check (review round 2) rejects out-of-state-dir paths.
+		logFile: join(dir, `${id}.log`),
+		pidFile: join(dir, `${id}.pid`),
 		...overrides,
 	}
 }
@@ -89,7 +91,7 @@ describe("daemon state", () => {
 
 	describe("register/read/unregister round-trip", () => {
 		it("persists a record and reads it back", () => {
-			const record = makeRecord()
+			const record = makeRecord(dir)
 			registerDaemon(dir, record)
 			expect(readDaemon(dir, record.id)).toEqual(record)
 			// pid file written as plain text for humans
@@ -97,7 +99,7 @@ describe("daemon state", () => {
 		})
 
 		it("unregister removes json and pid files", () => {
-			const record = makeRecord()
+			const record = makeRecord(dir)
 			registerDaemon(dir, record)
 			unregisterDaemon(dir, record.id)
 			expect(readDaemon(dir, record.id)).toBeUndefined()
@@ -116,6 +118,32 @@ describe("daemon state", () => {
 			writeFileSync(join(dir, "thin-123abc.json"), JSON.stringify({ id: "thin-123abc" }), "utf8")
 			expect(readDaemon(dir, "thin-123abc")).toBeUndefined()
 		})
+
+		// Review round 2: records are trusted less — act-on values get
+		// hardened checks since they feed kill("-"pid) and file writes.
+		it("readDaemon rejects non-positive or non-integer pids", () => {
+			const bad = makeRecord(dir, { pid: 0 })
+			writeFileSync(join(dir, `${bad.id}.json`), JSON.stringify(bad), "utf8")
+			expect(readDaemon(dir, bad.id)).toBeUndefined()
+		})
+
+		it("readDaemon rejects records whose id does not match the filename", () => {
+			const record = makeRecord(dir)
+			writeFileSync(join(dir, "aliased-123abc.json"), JSON.stringify(record), "utf8")
+			expect(readDaemon(dir, "aliased-123abc")).toBeUndefined()
+		})
+
+		it("readDaemon rejects records with paths outside the state dir", () => {
+			const record = makeRecord(dir, { logFile: "../evil.log" })
+			// resolve("../evil.log") is fine inside the dir? No — relative
+			// paths are rejected outright; also test an absolute escape:
+			writeFileSync(join(dir, `${record.id}.json`), JSON.stringify(record), "utf8")
+			expect(readDaemon(dir, record.id)).toBeUndefined()
+
+			const absolute = makeRecord(dir, { logFile: "/etc/passwd" })
+			writeFileSync(join(dir, `${absolute.id}.json`), JSON.stringify(absolute), "utf8")
+			expect(readDaemon(dir, absolute.id)).toBeUndefined()
+		})
 	})
 
 	describe("isPidAlive", () => {
@@ -131,14 +159,14 @@ describe("daemon state", () => {
 
 	describe("listDaemons", () => {
 		it("returns live records", () => {
-			registerDaemon(dir, makeRecord())
+			registerDaemon(dir, makeRecord(dir))
 			const live = listDaemons(dir)
 			expect(live).toHaveLength(1)
 			expect(live[0].alive).toBe(true)
 		})
 
 		it("prunes dead-pid records from disk", () => {
-			registerDaemon(dir, makeRecord({ id: "dead-123abc", pid: 4194303 }))
+			registerDaemon(dir, makeRecord(dir, { id: "dead-123abc", pid: 4194303 }))
 			expect(listDaemons(dir)).toHaveLength(0)
 			// Pruned: a second read finds no record at all.
 			expect(readDaemon(dir, "dead-123abc")).toBeUndefined()

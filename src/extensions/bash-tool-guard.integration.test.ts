@@ -4,7 +4,7 @@
  * using a mock ExtensionAPI.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import bashToolGuardExtension, { BASH_TOOL_DESCRIPTION, STEER_MESSAGE_TYPE } from "./bash-tool-guard.js"
+import bashToolGuardExtension, { bashToolDescription, STEER_MESSAGE_TYPE } from "./bash-tool-guard.js"
 import { BASH_TOOL_GUARD_EVENTS } from "./bash-tool-guard-events.js"
 import { setExperimentalFeaturesEnabled } from "./experimental.js"
 
@@ -20,8 +20,8 @@ vi.mock("../resources/store.js", () => ({
 }))
 
 beforeEach(() => {
-	// Description assertions compare against the full BASH_TOOL_DESCRIPTION;
-	// that text (with the daemon steer) is only served when the flag is on.
+	// Description assertions compare against bashToolDescription(); that
+	// text (with the daemon steer) is only served when the flag is on.
 	setExperimentalFeaturesEnabled(true)
 })
 
@@ -832,7 +832,7 @@ describe("bashToolGuardExtension - description override", () => {
 		fireSessionStart(pi)
 
 		expect(pi.registeredTools.size).toBe(1)
-		expect(pi.registeredTools.get("bash")?.description).toBe(BASH_TOOL_DESCRIPTION)
+		expect(pi.registeredTools.get("bash")?.description).toBe(bashToolDescription())
 	})
 
 	it("preserves the upstream execute/renderCall/renderResult/parameters", () => {
@@ -865,6 +865,6 @@ describe("bashToolGuardExtension - description override", () => {
 		expect(capturedCwd).toBe("/repo-b")
 		const second = pi.registeredTools.get("bash")
 		expect(second).not.toBe(first)
-		expect(second?.description).toBe(BASH_TOOL_DESCRIPTION)
+		expect(second?.description).toBe(bashToolDescription())
 	})
 })

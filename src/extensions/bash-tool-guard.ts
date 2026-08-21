@@ -182,7 +182,11 @@ function backgroundSuggestion(): string {
  * rather than by mutating a `pi.getAllTools()` result — the registry
  * write is what actually reaches the rendered system prompt.
  */
-export const BASH_TOOL_DESCRIPTION = `
+// Private: the flag-aware `bashToolDescription()` below is the single
+// public entry point — everything (override + tests) must go through the
+// GATE-aware variant, never reach for the constant directly (the raw
+// const contains the experimental `daemon` mention).
+const BASH_TOOL_DESCRIPTION = `
 Execute a bash command for operations without a dedicated tool: build commands, test runners, git, package managers, system administration, shell scripting.
 
 DO NOT use bash for: reading files (use \`read\`), editing files (use \`edit\`), writing files (use \`write\`), searching file contents (use \`grep\`), finding files by pattern (use \`find\`), or listing directories (use \`ls\`) — dedicated tools are faster and unlock LSP context.

@@ -22,3 +22,20 @@ export function setExperimentalFeaturesEnabled(value: boolean): void {
 export function isExperimentalFeaturesEnabled(): boolean {
 	return enabled
 }
+
+/**
+ * TEST-ONLY helper: run `fn` with the flag set to `value`, then restore
+ * the previous value — even when `fn` throws. Prefer this over bare
+ * `setExperimentalFeaturesEnabled` in tests; a failed assertion
+ * mid-test otherwise leaks flag state into the next test in the file
+ * (module-level singleton + vitest's in-process module graph).
+ */
+export async function withExperimentalFeatures<T>(value: boolean, fn: () => T | Promise<T>): Promise<T> {
+	const previous = enabled
+	enabled = value
+	try {
+		return await fn()
+	} finally {
+		enabled = previous
+	}
+}

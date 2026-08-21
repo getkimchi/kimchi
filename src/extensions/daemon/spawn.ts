@@ -17,7 +17,7 @@
  *      leader, reparented to init when kimchi exits.
  *
  * Spawn mechanics:
- *   spawn("bash", ["-c", "exec bash -c \"<command>\" >> <log> 2>&1"], { detached, stdio: "ignore" })
+ *   spawn("bash", ["-c", "exec bash -c '<command>' >> <log> 2>&1"], { detached, stdio: "ignore" })
  *
  * The outer `exec` replaces the outer shell with ONE inner `bash -c`, so
  * `child.pid` is the daemon's process-group id: `kill(-pid)` in stop()
@@ -34,7 +34,7 @@
  * Verified on POSIX only — benchmark targets are Linux containers.
  */
 import { spawn, spawnSync } from "node:child_process"
-import { existsSync, readFileSync } from "node:fs"
+import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs"
 import { type DaemonRecord, isPidAlive, makeDaemonId, registerDaemon, unregisterDaemon } from "./state.js"
 
 /** How long to wait after spawn before checking the daemon didn't die instantly. */
@@ -62,12 +62,35 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** Read the last `maxBytes` of a log file (or undefined when absent). */
+/**
+ * POSIX-safe single-quote escaping. Double-quote interpolation
+ * (JSON.stringify) is NOT safe for shell embedding: the outer shell
+ * expands $vars/backticks/$(…) inside double quotes before the inner
+ * bash receives them (e.g. `VAR=inner; echo "$VAR"` would log the
+ * OUTER shell's empty $VAR). Single quotes suppress all expansion; a
+ * literal `'` is closed, escaped, reopened (`'\''` → '"'"'`).
+ */
+function shellQuote(s: string): string {
+	return `'${s.replace(/'/g, `'"'"'`)}'`
+}
+
+/**
+ * Read the last `maxBytes` of a log file (or undefined when absent).
+ * Seeks to the tail rather than loading the whole file — daemon logs are
+ * unbounded, so `readFileSync` could pull gigabytes into memory.
+ */
 export function readLogTail(logFile: string, maxBytes = 8192): string | undefined {
 	if (!existsSync(logFile)) return undefined
+	let fd: number | undefined
 	try {
-		const buf = readFileSync(logFile)
-		let slice = buf.length > maxBytes ? buf.subarray(buf.length - maxBytes) : buf
+		fd = openSync(logFile, "r")
+		const size = fstatSync(fd).size
+		const from = Math.max(0, size - maxBytes)
+		const length = size - from
+		if (length <= 0) return ""
+		const buf = Buffer.alloc(length)
+		readSync(fd, buf, 0, length, from)
+		let slice = buf
 		// Snap the cut to a UTF-8 code-point boundary — slicing mid-sequence
 		// would write replacement characters (mojibake) at the start of the
 		// tail. Continuation bytes have the form 10xx xxxx; skip past them.
@@ -78,6 +101,8 @@ export function readLogTail(logFile: string, maxBytes = 8192): string | undefine
 	} catch (err) {
 		console.error(`daemon: failed to read log ${logFile}:`, err)
 		return undefined
+	} finally {
+		if (fd !== undefined) closeSync(fd)
 	}
 }
 
@@ -92,13 +117,14 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<SpawnDaemon
 
 	// Wrap the user's command behind `bash -c` so exec applies to ONE
 	// process: `exec <compound> >> log` would only exec+redirect the first
-	// segment and silently drop the rest. JSON.stringify double-quotes and
-	// escapes for safe single-arg shell embedding. Windows (cmd) has no
-	// exec/setsid semantics; run the command plainly there.
+	// segment and silently drop the rest. shellQuote single-quotes —
+	// JSON.stringify (double quotes) is NOT safe here: the outer shell
+	// would expand $vars/backticks before the inner bash sees them.
+	// Windows (cmd) has no exec/setsid semantics; run plainly there.
 	const wrapped =
 		process.platform === "win32"
-			? `${command} >> ${JSON.stringify(logFile)} 2>&1`
-			: `exec bash -c ${JSON.stringify(command)} >> ${JSON.stringify(logFile)} 2>&1`
+			? `${command} >> "${logFile}" 2>&1`
+			: `exec bash -c ${shellQuote(command)} >> ${shellQuote(logFile)} 2>&1`
 
 	const child = spawn(SHELL, SHELL_ARGS(wrapped), {
 		cwd,
@@ -109,10 +135,18 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<SpawnDaemon
 		stdio: "ignore",
 		windowsHide: true,
 	})
+
+	// `spawn` never rejects for a missing cwd/binary — it emits 'error'
+	// asynchronously instead. An unhandled 'error' would throw and kill
+	// the kimchi process; capture it and convert to a soft spawn failure.
+	let spawnError: Error | undefined
+	child.on("error", (err) => {
+		spawnError = err
+	})
 	child.unref()
 
 	if (child.pid === undefined) {
-		return { ok: false, error: "Failed to spawn daemon: no pid assigned." }
+		return { ok: false, error: `Failed to spawn daemon: ${spawnError?.message ?? "no pid assigned"}.` }
 	}
 
 	const record: DaemonRecord = {
@@ -135,11 +169,12 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<SpawnDaemon
 	if (!isPidAlive(child.pid)) {
 		const tail = readLogTail(logFile, 2048)
 		unregisterDaemon(stateDir, id)
+		const reason = spawnError
+			? `Spawn failed: ${spawnError.message}`
+			: `Daemon ${id} (pid ${child.pid}) exited immediately. The command probably failed at startup.`
 		return {
 			ok: false,
-			error:
-				`Daemon ${id} (pid ${child.pid}) exited immediately. The command probably failed at startup.` +
-				(tail ? `\n\n--- last output ---\n${tail.trimEnd()}` : ""),
+			error: reason + (tail ? `\n\n--- last output ---\n${tail.trimEnd()}` : ""),
 		}
 	}
 
@@ -182,12 +217,15 @@ export async function stopDaemon(record: DaemonRecord, stateDir: string): Promis
 		}
 	}
 
-	unregisterDaemon(stateDir, record.id)
 	const stillAlive = isPidAlive(pid)
-	return stillAlive
-		? {
-				stopped: false,
-				note: `Sent SIGKILL to daemon ${record.id} (pid ${pid}) but it is still alive — manual intervention needed.`,
-			}
-		: { stopped: true, note: `Daemon ${record.id} (pid ${pid}) stopped. Log kept at ${record.logFile}.` }
+	if (stillAlive) {
+		// KEEP the record — the daemon is alive but unmanageable without it
+		// (unregistering here would orphan a running process group).
+		return {
+			stopped: false,
+			note: `Sent SIGKILL to daemon ${record.id} (pid ${pid}) but it is still alive — manual intervention needed. Record kept for another daemon_control stop attempt.`,
+		}
+	}
+	unregisterDaemon(stateDir, record.id)
+	return { stopped: true, note: `Daemon ${record.id} (pid ${pid}) stopped. Log kept at ${record.logFile}.` }
 }
