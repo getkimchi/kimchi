@@ -93,6 +93,7 @@ import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from
 import { AVAILABLE_COMMANDS } from "./commands.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
+import { AO_STEERING_CAPABILITY, AO_STEERING_METHOD, handleSteering } from "./ext-methods/steering.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import {
 	type AcpSkillInfo,
@@ -310,6 +311,9 @@ export class KimchiAcpAgent implements Agent {
 						...ADVERTISED_CAPABILITIES,
 						...(this.mcpServerManager ? {} : { probe_mcp_server: false }),
 					},
+					// AO's extensionSupported() reads _meta.steering.supported at the top
+					// level (its own cross-agent contract), not the vendor namespace.
+					steering: AO_STEERING_CAPABILITY,
 				},
 			},
 			authMethods,
@@ -835,6 +839,13 @@ export class KimchiAcpAgent implements Agent {
 			}
 			case AVAILABLE_EXT_METHODS.set_session_title:
 				return handleSetSessionTitle((sessionId) => this.sessions.get(sessionId)?.session, params)
+			case AVAILABLE_EXT_METHODS.steering:
+			case AO_STEERING_METHOD:
+				return handleSteering((sessionId) => {
+					const entry = this.sessions.get(sessionId)
+					if (!entry) return undefined
+					return { session: entry.session, turnActive: entry.turn !== undefined }
+				}, params)
 			default:
 				throw RequestError.methodNotFound(method)
 		}
