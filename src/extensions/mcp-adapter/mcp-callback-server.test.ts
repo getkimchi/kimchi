@@ -7,7 +7,6 @@
  * (addressed via KIMCHI_OAUTH_TEMPLATE_DIR). Without that env var the callback
  * server must fall back to a minimal *unbranded* page — never a Pi-branded one.
  */
-import { createServer } from "node:http"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -18,19 +17,25 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..")
 // branded template rendered rather than the unbranded fallback.
 const KIMCHI_LOGO_ORANGE = "#FF521D"
 
-async function getFreePort(): Promise<number> {
-	const server = createServer()
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
-	const address = server.address()
-	await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
-	if (!address || typeof address === "string") throw new Error("Could not allocate a local test port")
-	return address.port
-}
-
-async function loadCallbackServerForPort(port: number) {
+/**
+ * Import the callback server and build callback URLs from the port it actually
+ * bound. No port is pre-selected: the server's own scan-forward handles busy
+ * ports, and tests always read the bound port afterwards.
+ */
+async function loadCallbackServer() {
 	vi.resetModules()
-	vi.stubEnv("MCP_OAUTH_CALLBACK_PORT", String(port))
-	return import("./mcp-callback-server.js")
+	const callbackServer = await import("./mcp-callback-server.js")
+	const oauthProvider = await import("./mcp-oauth-provider.js")
+
+	function callbackUrl(params: Record<string, string>): URL {
+		const url = new URL(oauthProvider.OAUTH_CALLBACK_PATH, `http://127.0.0.1:${oauthProvider.getOAuthCallbackPort()}`)
+		for (const [key, value] of Object.entries(params)) {
+			url.searchParams.set(key, value)
+		}
+		return url
+	}
+
+	return { callbackServer, callbackUrl }
 }
 
 afterEach(() => {
@@ -39,14 +44,13 @@ afterEach(() => {
 
 describe("MCP OAuth callback page", () => {
 	it("serves the branded authorization-success page after the provider redirects back", async () => {
-		const port = await getFreePort()
 		vi.stubEnv("KIMCHI_OAUTH_TEMPLATE_DIR", resolve(repoRoot, "resources", "oauth"))
-		const callbackServer = await loadCallbackServerForPort(port)
+		const { callbackServer, callbackUrl } = await loadCallbackServer()
 
 		try {
 			const { callbackPromise } = await callbackServer.prepareCallback("state-success")
 
-			const response = await fetch(`http://127.0.0.1:${port}/mcp/oauth/callback?code=test-code&state=state-success`)
+			const response = await fetch(callbackUrl({ code: "test-code", state: "state-success" }))
 			const body = await response.text()
 
 			expect(response.status).toBe(200)
@@ -64,9 +68,8 @@ describe("MCP OAuth callback page", () => {
 	})
 
 	it("serves the branded authorization-failure page when the provider reports an error", async () => {
-		const port = await getFreePort()
 		vi.stubEnv("KIMCHI_OAUTH_TEMPLATE_DIR", resolve(repoRoot, "resources", "oauth"))
-		const callbackServer = await loadCallbackServerForPort(port)
+		const { callbackServer, callbackUrl } = await loadCallbackServer()
 
 		try {
 			const { callbackPromise } = await callbackServer.prepareCallback("state-error")
@@ -75,7 +78,11 @@ describe("MCP OAuth callback page", () => {
 			const rejection = expect(callbackPromise).rejects.toThrow("The user denied the authorization request")
 
 			const response = await fetch(
-				`http://127.0.0.1:${port}/mcp/oauth/callback?error=access_denied&error_description=The%20user%20denied%20the%20authorization%20request&state=state-error`,
+				callbackUrl({
+					error: "access_denied",
+					error_description: "The user denied the authorization request",
+					state: "state-error",
+				}),
 			)
 			const body = await response.text()
 
@@ -94,15 +101,14 @@ describe("MCP OAuth callback page", () => {
 	})
 
 	it("rejects the pending auth when the callback has a state but no authorization code", async () => {
-		const port = await getFreePort()
-		const callbackServer = await loadCallbackServerForPort(port)
+		const { callbackServer, callbackUrl } = await loadCallbackServer()
 
 		try {
 			const { callbackPromise } = await callbackServer.prepareCallback("state-no-code")
 			// Fail fast instead of waiting for the 5-minute callback timeout.
 			const rejection = expect(callbackPromise).rejects.toThrow("No authorization code provided")
 
-			const response = await fetch(`http://127.0.0.1:${port}/mcp/oauth/callback?state=state-no-code`)
+			const response = await fetch(callbackUrl({ state: "state-no-code" }))
 			const body = await response.text()
 
 			expect(response.status).toBe(400)
@@ -114,16 +120,19 @@ describe("MCP OAuth callback page", () => {
 	})
 
 	it("HTML-escapes provider-controlled error text", async () => {
-		const port = await getFreePort()
 		vi.stubEnv("KIMCHI_OAUTH_TEMPLATE_DIR", resolve(repoRoot, "resources", "oauth"))
-		const callbackServer = await loadCallbackServerForPort(port)
+		const { callbackServer, callbackUrl } = await loadCallbackServer()
 
 		try {
 			const { callbackPromise } = await callbackServer.prepareCallback("state-xss")
 			const rejection = expect(callbackPromise).rejects.toThrow("alert(1)")
 
 			const response = await fetch(
-				`http://127.0.0.1:${port}/mcp/oauth/callback?error=access_denied&error_description=%3Cscript%3Ealert(1)%3C/script%3E&state=state-xss`,
+				callbackUrl({
+					error: "access_denied",
+					error_description: "<script>alert(1)</script>",
+					state: "state-xss",
+				}),
 			)
 			const body = await response.text()
 
@@ -137,14 +146,13 @@ describe("MCP OAuth callback page", () => {
 	})
 
 	it("falls back to a minimal unbranded page when KIMCHI_OAUTH_TEMPLATE_DIR is unset", async () => {
-		const port = await getFreePort()
 		vi.stubEnv("KIMCHI_OAUTH_TEMPLATE_DIR", "")
-		const callbackServer = await loadCallbackServerForPort(port)
+		const { callbackServer, callbackUrl } = await loadCallbackServer()
 
 		try {
 			const { callbackPromise } = await callbackServer.prepareCallback("state-fallback")
 
-			const response = await fetch(`http://127.0.0.1:${port}/mcp/oauth/callback?code=test-code&state=state-fallback`)
+			const response = await fetch(callbackUrl({ code: "test-code", state: "state-fallback" }))
 			const body = await response.text()
 
 			expect(response.status).toBe(200)
