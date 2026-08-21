@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto"
+
 import type { Message } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { TelemetryConfig } from "../../config.js"
@@ -740,6 +742,23 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			event.headers["X-Session-Id"] = telemetryCtx.telemetryId
 			// 0 means "before first turn" (sentinel); backend should treat it accordingly.
 			event.headers["X-Turn-Index"] = String(telemetryCtx.turnIndex)
+
+			// Inject W3C Trace Context (if not already present) derived from
+			// the session id so that downstream distributed tracing spans
+			// join the same trace. Header names are case-insensitive, so
+			// check all keys rather than a single property name.
+			// Example:
+			//   session id: 85a2d4f5-9f9f-49fb-890e-522a10e4a1e8
+			//   trace id:   85a2d4f59f9f49fb890e522a10e4a1e8
+			//   span id:    <new random 16-hex value per request>
+			const hasTraceparent = Object.keys(event.headers).some((name) => name.toLowerCase() === "traceparent")
+			if (!hasTraceparent) {
+				const traceId = telemetryCtx.telemetryId.replace(/-/g, "").toLowerCase()
+				if (traceId.length === 32) {
+					const spanId = randomBytes(8).toString("hex")
+					event.headers.traceparent = `00-${traceId}-${spanId}-01`
+				}
+			}
 		})
 	}
 }
