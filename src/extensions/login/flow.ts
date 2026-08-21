@@ -209,9 +209,10 @@ export async function syncKimchiAuth(modelRegistry: ModelRegistryLike, token: st
 
 	if (!modelRegistry.getApiKeyForProvider) return
 	const unresolvedProviders: string[] = []
+	const expectedKey = token || undefined
 	for (const providerId of getKimchiProviderIds(modelRegistry)) {
 		const resolvedKey = await modelRegistry.getApiKeyForProvider(providerId)
-		if (token ? resolvedKey !== token : resolvedKey !== undefined) {
+		if (resolvedKey !== expectedKey) {
 			unresolvedProviders.push(providerId)
 		}
 	}
