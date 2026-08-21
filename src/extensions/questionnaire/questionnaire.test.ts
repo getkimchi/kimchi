@@ -1,6 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { setExperimentalFeaturesEnabled } from "../experimental.js"
 import questionnaireExtension, { formatAnswerText, normalizeQuestionType } from "./questionnaire.js"
+
+afterEach(() => {
+	// Module-level singleton — restore the default-off state so other
+	// suites aren't polluted by tests that flipped it.
+	setExperimentalFeaturesEnabled(false)
+})
 
 function registeredQuestionnaireTool() {
 	let tool:
@@ -343,10 +350,28 @@ describe("questionnaire environment behavior", () => {
 		expect(result.systemPrompt).toContain("Autonomous mode")
 		expect(result.systemPrompt).toContain("no human or judge")
 		expect(result.systemPrompt).toContain("Do NOT end your turn with questions")
-		// Long-lived service guidance — drives 'daemon' tool choice over
-		// session-scoped managed background in headless runs.
-		expect(result.systemPrompt).toContain("Long-lived services")
-		expect(result.systemPrompt).toContain("daemon")
+	})
+
+	it("includes the daemon clause only when experimental features are enabled", () => {
+		const pi = makePi(["questionnaire"])
+		pi.getFlag = vi.fn(() => undefined)
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+
+		// Flag OFF: the prompt must not name an unregistered tool.
+		setExperimentalFeaturesEnabled(false)
+		const off = pi._beforeAgentStart?.({ systemPrompt: "BASE" }, { hasUI: false }) as
+			| { systemPrompt: string }
+			| undefined
+		expect(off?.systemPrompt).not.toContain("Long-lived services")
+		expect(off?.systemPrompt).not.toContain("`daemon`")
+
+		// Flag ON: daemon steering steers headless agents to the tool.
+		setExperimentalFeaturesEnabled(true)
+		const on = pi._beforeAgentStart?.({ systemPrompt: "BASE" }, { hasUI: false }) as
+			| { systemPrompt: string }
+			| undefined
+		expect(on?.systemPrompt).toContain("Long-lived services")
+		expect(on?.systemPrompt).toContain("daemon")
 	})
 
 	it("does not inject when UI is attached (interactive session)", () => {

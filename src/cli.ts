@@ -50,6 +50,7 @@ import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
+import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
@@ -262,6 +263,10 @@ try {
 		await main(originalArgs, { extensionFactories: [] })
 	} else {
 		const experimentalFeatures = isExperimentalFeaturesArg(originalArgs)
+		// Publish to the module-level flag so extensions (daemon tools,
+		// steering text) can gate on it — the CLI arg is stripped from the
+		// args that reach main(), so pi.getFlag can't discover it.
+		setExperimentalFeaturesEnabled(experimentalFeatures)
 		let config = loadConfig()
 
 		const envKey = process.env.KIMCHI_API_KEY || undefined
@@ -572,7 +577,8 @@ try {
 			// Session-surviving daemons: daemon + daemon_control tools.
 			// Deliberate last resort for services that must outlive the session —
 			// session_shutdown intentionally kills nothing here.
-			daemonExtension,
+			// EXPERIMENTAL: gated behind --enable-experimental-features.
+			...(experimentalFeatures ? [daemonExtension] : []),
 			bashToolGuardExtension,
 			bashTimeoutGuidanceExtension,
 			hiddenToolGuidanceExtension,

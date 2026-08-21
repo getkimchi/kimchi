@@ -10,6 +10,7 @@
  * servers on their machine.
  */
 import type { ExtensionAPI, SessionShutdownEvent } from "@earendil-works/pi-coding-agent"
+import { isExperimentalFeaturesEnabled } from "../experimental.js"
 import { createDaemonControlToolDefinition } from "./daemon-control-tool.js"
 import { createDaemonToolDefinition } from "./daemon-tool.js"
 import { daemonStateDir, listDaemons } from "./state.js"
@@ -23,6 +24,11 @@ function formatDaemonNotice(count: number, firstId: string): string {
 
 export default function daemonExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", () => {
+		// EXPERIMENTAL: tools require --enable-experimental-features. cli.ts
+		// already gates registration; this inner check is defense-in-depth
+		// for any path that wires the extension directly (subagent sessions,
+		// bespoke entry points).
+		if (!isExperimentalFeaturesEnabled()) return
 		pi.registerTool(createDaemonToolDefinition())
 		pi.registerTool(createDaemonControlToolDefinition())
 	})

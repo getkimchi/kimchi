@@ -8,13 +8,19 @@
  * API gives no seam for it. Test what's testable without that seam:
  * registration wiring.
  */
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { setExperimentalFeaturesEnabled } from "../experimental.js"
 import daemonExtension from "./index.js"
+
+afterEach(() => {
+	setExperimentalFeaturesEnabled(false)
+})
 
 describe("daemonExtension", () => {
 	it("registers daemon and daemon_control tools on session_start", () => {
+		setExperimentalFeaturesEnabled(true)
 		const { api, getHandler } = createExtensionApi()
 		const registerTool = vi.mocked(api.registerTool)
 
@@ -24,6 +30,17 @@ describe("daemonExtension", () => {
 		const names = registerTool.mock.calls.map(([tool]) => tool.name)
 		expect(names).toContain("daemon")
 		expect(names).toContain("daemon_control")
+	})
+
+	it("registers no tools when experimental features are disabled", () => {
+		setExperimentalFeaturesEnabled(false)
+		const { api, getHandler } = createExtensionApi()
+		const registerTool = vi.mocked(api.registerTool)
+
+		daemonExtension(api)
+		getHandler("session_start")({} as never, createContext())
+
+		expect(registerTool).not.toHaveBeenCalled()
 	})
 
 	it("registers a session_shutdown handler (honesty notice, no killing)", () => {

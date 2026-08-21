@@ -3,9 +3,10 @@
  * Tests the event handler registration (session_start, input, turn_start, tool_call)
  * using a mock ExtensionAPI.
  */
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import bashToolGuardExtension, { BASH_TOOL_DESCRIPTION, STEER_MESSAGE_TYPE } from "./bash-tool-guard.js"
 import { BASH_TOOL_GUARD_EVENTS } from "./bash-tool-guard-events.js"
+import { setExperimentalFeaturesEnabled } from "./experimental.js"
 
 let mockMode: string | undefined = "default"
 let mockResourceEnabled = true
@@ -18,9 +19,16 @@ vi.mock("../resources/store.js", () => ({
 	isResourceEnabled: (id: string) => (id === "extensions.bash-tool-guard" ? mockResourceEnabled : true),
 }))
 
+beforeEach(() => {
+	// Description assertions compare against the full BASH_TOOL_DESCRIPTION;
+	// that text (with the daemon steer) is only served when the flag is on.
+	setExperimentalFeaturesEnabled(true)
+})
+
 afterEach(() => {
 	mockMode = "default"
 	mockResourceEnabled = true
+	setExperimentalFeaturesEnabled(false)
 })
 
 // Capture what session_start actually passes to createBashToolDefinition

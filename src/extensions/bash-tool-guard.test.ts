@@ -6,7 +6,7 @@
  * ExtensionAPI (session_start/tool_call handlers) live in
  * bash-tool-guard.integration.test.ts instead.
  */
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 import {
 	applyDescriptionOverride,
 	BASH_TOOL_DESCRIPTION,
@@ -17,6 +17,12 @@ import {
 	classifyBashCommand,
 	toolDescriptionOverride,
 } from "./bash-tool-guard.js"
+import { setExperimentalFeaturesEnabled } from "./experimental.js"
+
+afterEach(() => {
+	// Module-level singleton — restore default so suites don't leak state.
+	setExperimentalFeaturesEnabled(false)
+})
 
 describe("classifyBashCommand — read patterns", () => {
 	it("flags `cat <file>`", () => {
@@ -855,8 +861,19 @@ describe("BASH_TOOL_DESCRIPTION", () => {
 })
 
 describe("toolDescriptionOverride", () => {
-	it("returns the override for the bash tool", () => {
+	it("returns the override for the bash tool when experimental features are enabled", () => {
+		setExperimentalFeaturesEnabled(true)
 		expect(toolDescriptionOverride("bash")).toBe(BASH_TOOL_DESCRIPTION)
+	})
+
+	it("strips the daemon sentence when experimental features are disabled", () => {
+		setExperimentalFeaturesEnabled(false)
+		const override = toolDescriptionOverride("bash")
+		if (!override) throw new Error("expected bash description override")
+		expect(override).not.toContain("`daemon`")
+		expect(override).toContain(
+			"Managed background (timeout/checkin_interval + bash_control) is killed when the session ends.",
+		)
 	})
 
 	it("returns undefined for non-bash tools", () => {
@@ -870,6 +887,7 @@ describe("toolDescriptionOverride", () => {
 
 describe("applyDescriptionOverride", () => {
 	it("overrides the description for bash", () => {
+		setExperimentalFeaturesEnabled(true)
 		const tool = { name: "bash", description: "old description" }
 		const result = applyDescriptionOverride(tool)
 		expect(result.description).toBe(BASH_TOOL_DESCRIPTION)
