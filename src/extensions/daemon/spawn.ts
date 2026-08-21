@@ -43,6 +43,14 @@ const CRASH_GRACE_MS = 500
 /** Grace between SIGTERM and SIGKILL when stopping. */
 const STOP_TERM_GRACE_MS = 2000
 
+/**
+ * Grace AFTER SIGKILL when stopping. SIGKILL is asynchronous from our
+ * point of view (kernel signal delivery + reaping), so a killed process
+ * can still fail kill(pid, 0) checks right after the signal. Waiting
+ * avoids reporting a GOOD stop as "manual intervention needed".
+ */
+const STOP_KILL_GRACE_MS = 1000
+
 /** Default shell. POSIX-first; Windows support is best-effort. */
 const SHELL = process.platform === "win32" ? "cmd.exe" : "bash"
 const SHELL_ARGS = (cmd: string) => (process.platform === "win32" ? ["/c", cmd] : ["-c", cmd])
@@ -213,6 +221,13 @@ export async function stopDaemon(record: DaemonRecord, stateDir: string): Promis
 				process.kill(-pid, "SIGKILL")
 			} catch (err) {
 				console.error(`daemon: SIGKILL to group -${pid} failed:`, err)
+			}
+			// Wait for the kernel to actually reap the process — an instant
+			// liveness check would race signal delivery and false-negative
+			// (report "still alive" for a process that is dying).
+			const killDeadline = Date.now() + STOP_KILL_GRACE_MS
+			while (isPidAlive(pid) && Date.now() < killDeadline) {
+				await sleep(50)
 			}
 		}
 	}
