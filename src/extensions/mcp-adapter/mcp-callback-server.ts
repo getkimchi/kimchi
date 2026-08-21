@@ -97,6 +97,14 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 	if (!code) {
 		res.writeHead(400, { "Content-Type": "text/html" })
 		res.end(oauthErrorHtml(ERROR_MESSAGE, "No authorization code provided", ERROR_PAGE))
+		// Reject the pending auth so the flow fails fast instead of hanging until the timeout
+		if (pendingAuths.has(state)) {
+			// biome-ignore lint/style/noNonNullAssertion: asserted above
+			const pending = pendingAuths.get(state)!
+			clearTimeout(pending.timeout)
+			pendingAuths.delete(state)
+			setTimeout(() => pending.reject(new Error("No authorization code provided")), 0)
+		}
 		return
 	}
 

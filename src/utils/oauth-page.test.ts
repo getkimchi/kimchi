@@ -1,6 +1,6 @@
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { oauthErrorHtml, oauthSuccessHtml } from "./oauth-page.js"
 
 const templateDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../resources/oauth")
@@ -9,19 +9,12 @@ const templateDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../reso
 // branded template rendered rather than the unbranded fallback.
 const KIMCHI_LOGO_ORANGE = "#FF521D"
 
-let originalTemplateDir: string | undefined
-
 beforeEach(() => {
-	originalTemplateDir = process.env.KIMCHI_OAUTH_TEMPLATE_DIR
-	process.env.KIMCHI_OAUTH_TEMPLATE_DIR = templateDir
+	vi.stubEnv("KIMCHI_OAUTH_TEMPLATE_DIR", templateDir)
 })
 
 afterEach(() => {
-	if (originalTemplateDir === undefined) {
-		delete process.env.KIMCHI_OAUTH_TEMPLATE_DIR
-	} else {
-		process.env.KIMCHI_OAUTH_TEMPLATE_DIR = originalTemplateDir
-	}
+	vi.unstubAllEnvs()
 })
 
 describe("oauthSuccessHtml", () => {
@@ -67,7 +60,7 @@ describe("oauthErrorHtml", () => {
 
 describe("unbranded fallback", () => {
 	it("applies overrides when the template dir is not configured", () => {
-		delete process.env.KIMCHI_OAUTH_TEMPLATE_DIR
+		vi.stubEnv("KIMCHI_OAUTH_TEMPLATE_DIR", "")
 
 		const html = oauthSuccessHtml("msg", {
 			title: "MCP Authorization Successful",

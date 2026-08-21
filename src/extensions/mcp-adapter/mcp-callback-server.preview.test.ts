@@ -41,8 +41,8 @@ describe("MCP OAuth callback page preview", () => {
 				console.log("\n  Open in your browser to view the callback pages:")
 				console.log(`    success: ${base}?code=demo-code&state=demo-state`)
 				console.log(
-				`    error:   ${base}?error=access_denied&error_description=The+user+denied+the+request&state=anything`,
-			)
+					`    error:   ${base}?error=access_denied&error_description=The+user+denied+the+request&state=anything`,
+				)
 				console.log("  The server shuts down once the success URL is visited (5-minute timeout otherwise).\n")
 
 				const code = await callbackPromise
