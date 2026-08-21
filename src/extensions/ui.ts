@@ -32,7 +32,7 @@ import {
 	registerSharedStatusLineRenderer,
 	setSessionModeOnboardingStatusLineSuppressed,
 } from "./shared-status-line.js"
-import { createWorkingAnimator } from "./spinner.js"
+import { createWorkingAnimator, type WorkingAnimator } from "./spinner.js"
 import { createBranchPoller } from "./ui-branch-poll.js"
 
 export { requestSharedStatusLineRender, setSessionModeOnboardingStatusLineSuppressed } from "./shared-status-line.js"
@@ -123,6 +123,36 @@ let currentIdeSelectionIndicatorText: string | null = null
 // the abort stage consumes the event, so we can't rely on it.
 let lastCtrlCTime = 0
 const CTRL_C_EXIT_WINDOW_MS = 500
+
+// Working animation controller — replaced every turn_start. Module-level so
+// helpers outside `uiExtension` (e.g. `withWorkingHidden`) can pause/resume it
+// without owning it.
+let workingAnimator: WorkingAnimator | undefined
+let workingAnimationPauseDepth = 0
+
+export function pauseWorkingAnimation(): void {
+	if (workingAnimationPauseDepth === 0) {
+		workingAnimator?.pause()
+	}
+	workingAnimationPauseDepth++
+}
+
+export function resumeWorkingAnimation(): void {
+	if (workingAnimationPauseDepth === 0) return
+	workingAnimationPauseDepth--
+	if (workingAnimationPauseDepth === 0) {
+		workingAnimator?.resume()
+	}
+}
+
+/**
+ * @internal — test-only override for the working animation controller.
+ * Production callers must not touch this; `startIndicator` /
+ * `stopIndicator` own the controller lifecycle.
+ */
+export function __setWorkingAnimatorForTest(controller: WorkingAnimator | undefined): void {
+	workingAnimator = controller
+}
 
 /** Cascade: text → clear, streaming → abort, otherwise → exit. */
 export type CtrlCAction = "clear" | "abort" | "exit"
@@ -253,18 +283,23 @@ function runScript(
  * permission prompts, ferment step recovery). Command handlers run when the
  * agent is idle and don't need this.
  *
- * Uses try/finally so the indicator is restored even if the prompt throws
- * or the user cancels.
+ * Pauses the cooking animator's timers so `setWorkingIndicator` /
+ * `setWorkingMessage` stop firing while the prompt has focus — otherwise
+ * upstream would call `requestRender()` every 40–200 ms, producing visible
+ * full-screen redraws behind a static prompt. Uses try/finally so the
+ * animator is restored even if the prompt throws or the user cancels.
  */
 export async function withWorkingHidden<T>(
 	ctx: Pick<ExtensionContext, "ui"> | { ui?: { setWorkingVisible?: (visible: boolean) => void } },
 	fn: () => Promise<T>,
 ): Promise<T> {
+	pauseWorkingAnimation()
 	ctx.ui?.setWorkingVisible?.(false)
 	try {
 		return await fn()
 	} finally {
 		ctx.ui?.setWorkingVisible?.(true)
+		resumeWorkingAnimation()
 	}
 }
 
@@ -306,8 +341,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 		const sessionId = ctx.sessionManager.getSessionId()
 
 		setSessionModeOnboardingStatusLineSuppressed(false)
-		stopWorkingAnimation?.()
-		stopWorkingAnimation = undefined
+		workingAnimator?.stop()
+		workingAnimator = undefined
 		resetState()
 		currentCtx = ctx
 		sessionStartMs = Date.now()
@@ -543,8 +578,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 	})
 
 	pi.on("session_shutdown", () => {
-		stopWorkingAnimation?.()
-		stopWorkingAnimation = undefined
+		workingAnimator?.stop()
+		workingAnimator = undefined
 		currentCtx = null
 		branchPoller.stop()
 	})
@@ -554,8 +589,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 			ctx.shutdown()
 		}
 	})
-
-	let stopWorkingAnimation: (() => void) | undefined
 
 	// ── Indicator lifecycle ──────────────────────────────────────────────────
 	//
@@ -568,8 +601,13 @@ export default function uiExtension(pi: ExtensionAPI) {
 	// one exception: while they have keyboard focus the spinner must be hidden
 	// so it doesn't show behind the form. Each tool that shows an interactive
 	// prompt during a turn wraps the call in `withWorkingHidden(ctx, fn)`
-	// (exported below) — it calls setWorkingVisible(false), runs the prompt, then
-	// restores setWorkingVisible(true) in a finally block. Currently:
+	// (exported below) — it pauses the cooking animator AND calls
+	// setWorkingVisible(false), runs the prompt, then resumes the animator and
+	// restores setWorkingVisible(true) in a finally block. Pausing the animator
+	// (not just hiding the indicator) is required: the animator's onUpdate
+	// callback unconditionally calls setWorkingIndicator/setWorkingMessage, and
+	// upstream turns those into requestRender() — a hidden indicator that keeps
+	// firing still redraws the screen behind a static prompt. Currently:
 	//   - questionnaire       (questionnaire.ts)
 	//   - ask_user / confirm  (ferment/prompt-ui.ts)
 	//   - permission prompts   (permissions/prompts.ts)
@@ -580,8 +618,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 	const startIndicator = (ctx: ExtensionContext) => {
 		ctx.ui.setWorkingVisible(true)
-		stopWorkingAnimation?.()
-		stopWorkingAnimation = createWorkingAnimator((char, message) => {
+		workingAnimator?.stop()
+		workingAnimationPauseDepth = 0
+		workingAnimator = createWorkingAnimator((char, message) => {
 			const accent = resolvedAccentFg(ctx.ui.theme)
 			ctx.ui.setWorkingIndicator({ frames: [`${accent}${char}${RST_FG}`] })
 			ctx.ui.setWorkingMessage(`${accent}${message}${RST_FG}`)
@@ -589,8 +628,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 	}
 
 	const stopIndicator = (ctx: ExtensionContext) => {
-		stopWorkingAnimation?.()
-		stopWorkingAnimation = undefined
+		workingAnimator?.stop()
+		workingAnimator = undefined
+		workingAnimationPauseDepth = 0
 		ctx.ui.setWorkingVisible(false)
 	}
 

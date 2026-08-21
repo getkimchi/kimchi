@@ -1,7 +1,7 @@
 import { Key, matchesKey } from "@earendil-works/pi-tui"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { isBareExitAlias } from "./exit-utils.js"
-import { ctrlCCascadeDecision, findNextCompatibleModel } from "./ui.js"
+import { __setWorkingAnimatorForTest, ctrlCCascadeDecision, findNextCompatibleModel, withWorkingHidden } from "./ui.js"
 
 // Helper to create a minimal Model mock
 function makeModel(id: string, contextWindow: number, input: string[] = ["text", "image"]) {
@@ -206,5 +206,148 @@ describe("findNextCompatibleModel", () => {
 		const result = findNextCompatibleModel(models, 0, 50_000, false)
 		expect(result.model).toBeUndefined()
 		expect(result.skipped).toHaveLength(1)
+	})
+})
+
+describe("withWorkingHidden — cooking animator pause/resume", () => {
+	afterEach(() => {
+		// Reset module-level controller so tests don't leak state into each other.
+		__setWorkingAnimatorForTest(undefined)
+	})
+
+	function fakeCtx() {
+		return {
+			ui: {
+				setWorkingVisible: vi.fn(),
+			},
+		}
+	}
+
+	it("pauses the working animator before the prompt and resumes after", async () => {
+		const order: string[] = []
+		const ctx = fakeCtx()
+		ctx.ui.setWorkingVisible = vi.fn((v: boolean) => order.push(`setWorkingVisible:${v}`))
+		const controller = {
+			pause: vi.fn(() => order.push("pause")),
+			resume: vi.fn(() => order.push("resume")),
+			stop: vi.fn(() => order.push("stop")),
+		}
+		__setWorkingAnimatorForTest(controller)
+
+		const result = await withWorkingHidden(ctx, async () => {
+			order.push("prompt")
+			return "ok"
+		})
+
+		expect(result).toBe("ok")
+		expect(controller.pause).toHaveBeenCalledTimes(1)
+		expect(controller.resume).toHaveBeenCalledTimes(1)
+		expect(controller.stop).not.toHaveBeenCalled()
+		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
+		// Order: pause → setWorkingVisible(false) → prompt → setWorkingVisible(true) → resume
+		expect(order).toEqual(["pause", "setWorkingVisible:false", "prompt", "setWorkingVisible:true", "resume"])
+	})
+
+	it("resumes the animator even when the prompt throws", async () => {
+		const order: string[] = []
+		const ctx = fakeCtx()
+		ctx.ui.setWorkingVisible = vi.fn((v: boolean) => order.push(`setWorkingVisible:${v}`))
+		const controller = {
+			pause: vi.fn(() => order.push("pause")),
+			resume: vi.fn(() => order.push("resume")),
+			stop: vi.fn(),
+		}
+		__setWorkingAnimatorForTest(controller)
+
+		await expect(
+			withWorkingHidden(ctx, async () => {
+				order.push("prompt")
+				throw new Error("prompt failed")
+			}),
+		).rejects.toThrow("prompt failed")
+
+		expect(controller.pause).toHaveBeenCalledTimes(1)
+		expect(controller.resume).toHaveBeenCalledTimes(1)
+		// setWorkingVisible(false) is still called before the prompt,
+		// setWorkingVisible(true) is restored in finally.
+		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
+		expect(order).toEqual(["pause", "setWorkingVisible:false", "prompt", "setWorkingVisible:true", "resume"])
+	})
+
+	it("resumes the animator even when the prompt resolves to undefined", async () => {
+		const ctx = fakeCtx()
+		const controller = {
+			pause: vi.fn(),
+			resume: vi.fn(),
+			stop: vi.fn(),
+		}
+		__setWorkingAnimatorForTest(controller)
+
+		const result = await withWorkingHidden(ctx, async () => undefined)
+		expect(result).toBeUndefined()
+		expect(controller.pause).toHaveBeenCalledTimes(1)
+		expect(controller.resume).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not throw when no controller is registered", async () => {
+		__setWorkingAnimatorForTest(undefined)
+		const ctx = fakeCtx()
+		// No animator registered — pause/resume are no-ops, should not throw.
+		await expect(withWorkingHidden(ctx, async () => "ok")).resolves.toBe("ok")
+		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
+	})
+
+	it("works when ctx.ui.setWorkingVisible is absent", async () => {
+		const controller = {
+			pause: vi.fn(),
+			resume: vi.fn(),
+			stop: vi.fn(),
+		}
+		__setWorkingAnimatorForTest(controller)
+		// biome-ignore lint/suspicious/noExplicitAny: minimal stub for test
+		const ctx = { ui: undefined as any }
+		await expect(withWorkingHidden(ctx, async () => 42)).resolves.toBe(42)
+		expect(controller.pause).toHaveBeenCalledTimes(1)
+		expect(controller.resume).toHaveBeenCalledTimes(1)
+	})
+
+	it("only resumes the animator after the outermost nested prompt finishes", async () => {
+		const order: string[] = []
+		const ctx = fakeCtx()
+		ctx.ui.setWorkingVisible = vi.fn((v: boolean) => order.push(`setWorkingVisible:${v}`))
+		const controller = {
+			pause: vi.fn(() => order.push("pause")),
+			resume: vi.fn(() => order.push("resume")),
+			stop: vi.fn(),
+		}
+		__setWorkingAnimatorForTest(controller)
+
+		const result = await withWorkingHidden(ctx, async () => {
+			order.push("outer-prompt")
+			return await withWorkingHidden(ctx, async () => {
+				order.push("inner-prompt")
+				return "nested"
+			})
+		})
+
+		expect(result).toBe("nested")
+		// Only the outermost pause/resume should touch the animator; the inner
+		// pair is a depth-based no-op so the animator stays paused until the
+		// outer prompt finishes.
+		expect(controller.pause).toHaveBeenCalledTimes(1)
+		expect(controller.resume).toHaveBeenCalledTimes(1)
+		expect(order).toEqual([
+			"pause",
+			"setWorkingVisible:false",
+			"outer-prompt",
+			"setWorkingVisible:false",
+			"inner-prompt",
+			"setWorkingVisible:true",
+			"setWorkingVisible:true",
+			"resume",
+		])
 	})
 })
