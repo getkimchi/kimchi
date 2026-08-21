@@ -158,6 +158,7 @@ describe("handleSessionShutdown", () => {
 		expect(typeChangedAttrs.session_type).toBe("ferment")
 		expect(typeChangedAttrs.previous_session_type).toBe("coding")
 		expect(typeChangedAttrs.ferment_id).toBe("f-drift")
+		expect(typeChangedAttrs["telemetry.cli_version"]).toBeDefined()
 
 		const endRecord = allRecords.find((r) => r.eventName === "session.end")
 		expect(endRecord).toBeDefined()

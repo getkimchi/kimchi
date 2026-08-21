@@ -4,6 +4,7 @@ import { getMe } from "../../api/me.js"
 import type { TelemetryConfig } from "../../config.js"
 import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import { getOsMetadata } from "../../utils/os-metadata.js"
+import { getVersion } from "../../utils.js"
 import { getActiveFerment } from "../ferment/index.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
 import { getAcpAttributes, getPiSessionAttributes } from "./handlers/utils.js"
@@ -176,6 +177,7 @@ export class TelemetryContext {
 				previous_session_type: this.lastSessionType,
 				source,
 				ferment_id: ferment?.id ?? "",
+				"telemetry.cli_version": getVersion(),
 			})
 			this.logBuffer.push(buildLogRecord(this.telemetryId, "session.type_changed", changeAttrs))
 		}
@@ -200,6 +202,7 @@ export class TelemetryContext {
 			source: IS_ACP_MODE ? "acp" : "cli",
 			session_type: getSessionType(),
 			model: this.currentModel,
+			"telemetry.cli_version": getVersion(),
 			...getAcpAttributes(),
 			...(ctx ? getPiSessionAttributes(ctx) : {}),
 		}
