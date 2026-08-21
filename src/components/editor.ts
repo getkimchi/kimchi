@@ -128,7 +128,10 @@ export class PromptEditor extends CustomEditor {
 		const muted = this.appTheme.getFgAnsi("muted")
 
 		const innerWidth = width
-		const contentWidth = innerWidth - CHEVRON_WIDTH
+		// Upstream Editor crashes on negative widths ("─".repeat(-1)) when the
+		// terminal is narrower than the chevron prefix; clamp to a minimum of 1
+		// and let the trailing truncateToWidth fit the result to `width`.
+		const contentWidth = Math.max(1, innerWidth - CHEVRON_WIDTH)
 
 		// Editor body always renders at the full content width — the indicator
 		// lives in its own row (renderIndicatorRow below), so the user's text
