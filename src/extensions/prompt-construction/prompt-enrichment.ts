@@ -495,9 +495,15 @@ export default function (skillPaths: string[]) {
 		let cachedGitRemote: string | undefined | null = null
 
 		pi.on("resources_discover", (event) => {
-			const skillPaths = getKimchiProjectSkillPaths(event.cwd)
-			if (skillPaths.length === 0) return undefined
-			return { skillPaths }
+			// Contribute user-configured skill paths (e.g. /opt/kimchi/skills) in
+			// addition to project .kimchi/skills, so they register with pi's
+			// resource loader and become invocable via /skill:<name> — the
+			// before_agent_start system-prompt list below is a separate pipeline.
+			const discoveredSkillPaths = Array.from(
+				new Set([...getKimchiProjectSkillPaths(event.cwd), ...getConfiguredSkillResourcePaths(event.cwd, skillPaths)]),
+			)
+			if (discoveredSkillPaths.length === 0) return undefined
+			return { skillPaths: discoveredSkillPaths }
 		})
 
 		pi.on("before_agent_start", async (event, ctx) => {
