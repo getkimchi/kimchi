@@ -214,6 +214,9 @@ deep-swe-summary:
     BENCHMARK_RESULTS_DIR: benchmark/deep-swe/jobs
     BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
     BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
+    # Required by summarize_results.py for frozen-budget chunk recovery when
+    # reconciling durable checkpoints across chunks.
+    BENCH_CHUNK_COUNT: 3
     DEBIAN_FRONTEND: noninteractive
     FF_TIMESTAMPS: "true"
     GCS_UPLOAD_REQUIRED: "true"
