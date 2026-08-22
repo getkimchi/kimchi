@@ -14,7 +14,7 @@ from harbor.models.trial.result import AgentInfo, ModelInfo
 from pydantic import ValidationError
 
 from kimchi_agent.config import KimchiAgentConfig
-from kimchi_agent.messages import SessionEntry
+from kimchi_agent.messages import GoalEvaluatorUsage, SessionEntry
 from kimchi_agent.release import BINARY_RELPATH, SHARE_RELPATH, GitHubClient
 
 if TYPE_CHECKING:
@@ -494,6 +494,10 @@ class Kimchi(BaseInstalledAgent):
         total_cache_read_tokens = 0
         total_cache_write_tokens = 0
         total_cost = 0.0
+        # Goal evaluator calls are made outside the agent loop, so they never appear
+        # as assistant messages. Each goal entry carries the running total, so keep
+        # the last value seen per goal rather than summing entries.
+        evaluator_usage: dict[str, GoalEvaluatorUsage] = {}
 
         # Aggregate main.jsonl + Agent child <timestamp>_<uuid>.jsonl siblings.
         # Agent runs are separate sessions, so their usage isn't reflected in main.jsonl.
@@ -514,6 +518,16 @@ class Kimchi(BaseInstalledAgent):
                     entry = SessionEntry.model_validate_json(line)
                 except ValidationError:
                     continue
+                if entry.type == "custom" and entry.custom_type == "kimchi_goal_state":
+                    goal = (entry.data or {}).get("goal")
+                    if isinstance(goal, dict) and isinstance(goal.get("evaluatorUsage"), dict):
+                        try:
+                            evaluator_usage[str(goal.get("id", ""))] = GoalEvaluatorUsage.model_validate(
+                                goal["evaluatorUsage"]
+                            )
+                        except ValidationError:
+                            pass
+                    continue
                 if entry.type != "message" or entry.message.role != "assistant":
                     continue
                 usage = entry.message.usage
@@ -522,6 +536,13 @@ class Kimchi(BaseInstalledAgent):
                 total_cache_read_tokens += usage.cache_read
                 total_cache_write_tokens += usage.cache_write
                 total_cost += usage.cost.total
+
+        for usage in evaluator_usage.values():
+            total_input_tokens += usage.input
+            total_output_tokens += usage.output
+            total_cache_read_tokens += usage.cache_read
+            total_cache_write_tokens += usage.cache_write
+            total_cost += usage.cost_usd
 
         # pi-ai treats input, cacheRead, cacheWrite as disjoint summing to totalTokens
         # (see node_modules/.../pi-ai/dist/providers/anthropic.js). Sum all three for

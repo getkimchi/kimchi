@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AgentDiscovery } from "../../agent-discovery/index.js"
 import * as agentDiscovery from "../../agent-discovery/index.js"
 import type { KimchiConfig, SearchStrategyConfig } from "../../config.js"
+import * as resourceStore from "../../resources/store.js"
 import * as multiModel from "../multi-model.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
 import * as modelRoles from "../orchestration/model-roles.js"
@@ -31,6 +32,7 @@ function makeConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 
 const EXPECTED_KEYS = [
 	"config.agents_enabled",
+	"config.goal_enabled",
 	"config.mcp_server_count",
 	"config.model",
 	"config.model_roles.builder",
@@ -70,6 +72,7 @@ describe("buildConfigSnapshot", () => {
 
 		multiSpy = vi.spyOn(multiModel, "getMultiModelEnabled").mockReturnValue(true)
 		vi.spyOn(modelRoles, "getModelRoles").mockReturnValue(MOCK_MODEL_ROLES)
+		vi.spyOn(resourceStore, "isResourceEnabled").mockReturnValue(false)
 		// Mock discoverAgent to return 1 server named "evil-corp-server" per definition.
 		const fakeDiscovery: AgentDiscovery = {
 			id: "test",
@@ -91,7 +94,7 @@ describe("buildConfigSnapshot", () => {
 	})
 
 	describe("safe keys present with correct values", () => {
-		it("returns exactly the 15 expected config.* keys", () => {
+		it("returns exactly the 16 expected config.* keys", () => {
 			const snapshot = buildConfigSnapshot(makeConfig(), true)
 			expect(Object.keys(snapshot).sort()).toEqual(EXPECTED_KEYS)
 		})
@@ -123,6 +126,11 @@ describe("buildConfigSnapshot", () => {
 			expect(snapshot["config.permission_mode"]).toBe("yolo")
 			expect(snapshot["config.agents_enabled"]).toBe(false)
 			expect(snapshot["config.search_provider"]).toBe("regex")
+		})
+
+		it("reports whether Goal is enabled", () => {
+			vi.mocked(resourceStore.isResourceEnabled).mockReturnValue(true)
+			expect(buildConfigSnapshot(makeConfig(), true)["config.goal_enabled"]).toBe(true)
 		})
 
 		it("mcp_server_count equals total mocked server count across agent definitions", () => {
@@ -209,7 +217,7 @@ describe("buildConfigSnapshot", () => {
 			}
 		})
 
-		it("emits exactly the 15 safe keys even when config carries secrets", () => {
+		it("emits exactly the 16 safe keys even when config carries secrets", () => {
 			const configWithSecrets = makeConfig({
 				apiKey: "secret-key-123",
 				llmEndpoint: "https://secret.example.com",
@@ -217,7 +225,7 @@ describe("buildConfigSnapshot", () => {
 			const snapshot = buildConfigSnapshot(configWithSecrets, true)
 			expect(Object.keys(snapshot).sort()).toEqual(EXPECTED_KEYS)
 			// No extra key smuggles a secret value through.
-			expect(Object.keys(snapshot)).toHaveLength(15)
+			expect(Object.keys(snapshot)).toHaveLength(16)
 		})
 	})
 
@@ -230,7 +238,7 @@ describe("buildConfigSnapshot", () => {
 
 			const snapshot = buildConfigSnapshot(makeConfig(), true)
 
-			// Must still have exactly the 15 expected keys.
+			// Must still have exactly the 16 expected keys.
 			expect(Object.keys(snapshot).sort()).toEqual(EXPECTED_KEYS)
 			// Fallback values are safe defaults.
 			expect(snapshot["config.model"]).toBe("unknown")
@@ -239,6 +247,7 @@ describe("buildConfigSnapshot", () => {
 			expect(snapshot["config.telemetry_enabled"]).toBe(true)
 			expect(snapshot["config.permission_mode"]).toBe("default")
 			expect(snapshot["config.agents_enabled"]).toBe(false)
+			expect(snapshot["config.goal_enabled"]).toBe(false)
 			expect(snapshot["config.mcp_server_count"]).toBe(0)
 			// Multimodel fallback defaults.
 			expect(snapshot["config.multi_model_enabled"]).toBe(false)

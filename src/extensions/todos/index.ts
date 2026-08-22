@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext, SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { registerTodosCommand } from "./command.js"
@@ -6,6 +6,7 @@ import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { registerTodoContextState } from "./context-state.js"
 import { registerFermentTodoPromptBlock } from "./ferment-prompt-block.js"
 import { registerTodoPromptBlock } from "./prompt-block.js"
+import { isTodoWriteToolName, restoreTodoStoreFromSessionEntries } from "./session.js"
 import {
 	bumpToolCallsSinceTodoWrite,
 	bumpWorkToolCalls,
@@ -16,11 +17,9 @@ import {
 	markTodoNudgeFired,
 	resetToolCallsSinceTodoWrite,
 	resolveTodoScope,
-	restoreTodoStoreFromDetails,
 	subscribeTodoStore,
 } from "./store.js"
-import { registerTodosTool, TODO_TOOL_NAMES } from "./tool.js"
-import { TODO_TOOL_RESULT_SCHEMA_VERSION, type WriteTodosDetails } from "./types.js"
+import { registerTodosTool } from "./tool.js"
 import {
 	disposeTodoWidget,
 	ensureTodoWidget,
@@ -42,41 +41,6 @@ export * from "./widget.js"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object"
-}
-
-function isWriteTodosDetails(value: unknown): value is WriteTodosDetails {
-	return (
-		isRecord(value) &&
-		value.schemaVersion === TODO_TOOL_RESULT_SCHEMA_VERSION &&
-		value.scope !== undefined &&
-		Array.isArray(value.todos)
-	)
-}
-
-const TODO_REPLAY_TOOL_NAME_SET = new Set<string>([...TODO_TOOL_NAMES, "write_todos"])
-
-function getWriteTodosDetails(entry: SessionEntry): WriteTodosDetails | undefined {
-	if (entry.type === "custom" && entry.customType === TODO_CUSTOM_ENTRY_TYPE) {
-		return isWriteTodosDetails(entry.data) ? entry.data : undefined
-	}
-
-	if (entry.type === "message") {
-		const message = entry.message as unknown
-		if (!isRecord(message)) return undefined
-		if (message.role !== "toolResult" || !TODO_REPLAY_TOOL_NAME_SET.has(String(message.toolName))) return undefined
-		return isWriteTodosDetails(message.details) ? message.details : undefined
-	}
-
-	return undefined
-}
-
-function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager, "getBranch" | "getSessionId">): void {
-	const sessionId = sessionManager.getSessionId()
-	const entries = sessionManager.getBranch()
-	restoreTodoStoreFromDetails(
-		entries.map(getWriteTodosDetails).filter((details) => details !== undefined),
-		sessionId,
-	)
 }
 
 export const TODO_EARLY_NUDGE_THRESHOLD = 5
@@ -158,7 +122,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("tool_execution_end", (event, ctx) => {
-		if (event.isError || TODO_REPLAY_TOOL_NAME_SET.has(event.toolName)) return
+		if (event.isError || isTodoWriteToolName(event.toolName)) return
 		const sessionId = ctx.sessionManager.getSessionId()
 
 		// Always count non-todo tool calls for the one-shot early nudge —

@@ -23,6 +23,7 @@ import {
 	type FermentStepStartedPayload,
 	type UserUnblockedPayload,
 } from "../ferment/domain-events.js"
+import { GOAL_EVENTS, type GoalEvaluatedPayload, type GoalLifecyclePayload } from "../goal/domain-events.js"
 import {
 	LOOP_GUARD_EVENTS,
 	type LoopGuardSubagentAbortPayload,
@@ -285,6 +286,49 @@ function onFermentStarted(raw: unknown): void {
 		ferment_name: payload.name,
 		phase_count: payload.phaseCount,
 		model: ctx.currentModel,
+	})
+}
+
+function goalTelemetryHandler(eventName: string): (raw: unknown) => void {
+	return (raw) => {
+		if (!isEnabled()) return
+		const ctx = _telemetryCtx
+		if (!ctx) return
+		const payload = raw as GoalLifecyclePayload
+		const attrs: TelemetryAttributes = {
+			goal_id: payload.goalId,
+			revision: payload.revision,
+			status: payload.status,
+			tokens_used: payload.tokensUsed,
+			time_used_ms: payload.timeUsedMs,
+			model: ctx.currentModel,
+		}
+		if (payload.tokenBudget !== undefined) attrs.token_budget = payload.tokenBudget
+		if (payload.completionConfidence) attrs.completion_confidence = payload.completionConfidence
+		if (payload.reason) attrs.reason = payload.reason
+		if (payload.continuationCount !== undefined) attrs.continuation_count = payload.continuationCount
+		ctx.emit(eventName, attrs)
+	}
+}
+
+function goalEvaluatedTelemetryHandler(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _telemetryCtx
+	if (!ctx) return
+	const payload = raw as Partial<GoalEvaluatedPayload> | undefined
+	if (!payload?.goalId || !payload.verdict) return
+	const usage = payload.usage
+	ctx.emit("goal.evaluated", {
+		goal_id: payload.goalId,
+		verdict: payload.verdict,
+		count: payload.count ?? 1,
+		evaluator_model: payload.model ?? "unknown",
+		input_tokens: usage?.input ?? 0,
+		output_tokens: usage?.output ?? 0,
+		cache_read_tokens: usage?.cacheRead ?? 0,
+		cache_write_tokens: usage?.cacheWrite ?? 0,
+		total_tokens: usage?.totalTokens ?? 0,
+		cost: usage?.costUsd ?? 0,
 	})
 }
 
@@ -674,6 +718,14 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(FERMENT_EVENTS.STEP_COMPLETED, onStepCompleted)
 		pi.events.on(FERMENT_EVENTS.STEP_FAILED, onStepFailed)
 		pi.events.on(FERMENT_EVENTS.STEERING, onFermentSteering)
+		pi.events.on(GOAL_EVENTS.STARTED, goalTelemetryHandler("goal.started"))
+		pi.events.on(GOAL_EVENTS.REPLACED, goalTelemetryHandler("goal.replaced"))
+		pi.events.on(GOAL_EVENTS.EDITED, goalTelemetryHandler("goal.edited"))
+		pi.events.on(GOAL_EVENTS.COMPLETED, goalTelemetryHandler("goal.completed"))
+		pi.events.on(GOAL_EVENTS.BLOCKED, goalTelemetryHandler("goal.blocked"))
+		pi.events.on(GOAL_EVENTS.PAUSED, goalTelemetryHandler("goal.paused"))
+		pi.events.on(GOAL_EVENTS.STALLED, goalTelemetryHandler("goal.stalled"))
+		pi.events.on(GOAL_EVENTS.EVALUATED, goalEvaluatedTelemetryHandler)
 		pi.events.on(FERMENT_EVENTS.SCOPING_RESUMED, onFermentScopingResumed)
 		pi.events.on(FERMENT_EVENTS.SCOPING_COMPLETE, onScopingComplete)
 		pi.events.on(FERMENT_EVENTS.USER_UNBLOCKED, onUserUnblocked)

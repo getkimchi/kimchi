@@ -28,16 +28,16 @@ export function discoverAcpSkillCommands(cwd: string, options: DiscoverAcpSkillC
 		byName.set(skill.name, skill)
 	}
 
-	for (const skill of discoverClaudeCodeSkills(cwd)) {
+	for (const skill of discoverClaudeCodeSkills(cwd, options.homeDir)) {
 		byName.set(skill.name, skill)
 	}
 
 	return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name))
 }
 
-function discoverClaudeCodeSkills(cwd: string): AcpSkillInfo[] {
+function discoverClaudeCodeSkills(cwd: string, homeDir?: string): AcpSkillInfo[] {
 	const skills: AcpSkillInfo[] = []
-	for (const dir of getClaudeCodeSkillResourcePaths(cwd)) {
+	for (const dir of getClaudeCodeSkillResourcePaths(cwd, { homeDir })) {
 		try {
 			const { skills: loaded } = loadSkillsFromDir({ dir, source: dir })
 			for (const skill of loaded) {

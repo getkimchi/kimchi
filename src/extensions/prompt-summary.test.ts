@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
-import promptSummaryExtension from "./prompt-summary.js"
+import promptSummaryExtension, { addPromptSummaryExtra, addPromptSummaryMetric } from "./prompt-summary.js"
 
 type Handler = (event?: unknown, ctx?: unknown) => void | Promise<void>
 
@@ -92,6 +92,23 @@ describe("prompt summary Agent token accounting", () => {
 		expect(message.details.subagents).toEqual({ input: 18, output: 9, cacheRead: 0, cacheWrite: 3 })
 	})
 
+	it("keeps queued metrics scoped to their session", async () => {
+		const harness = createPiHarness()
+		promptSummaryExtension(harness.pi)
+		addPromptSummaryMetric("session-a", "goal time", "1.2s")
+
+		await harness.emit("agent_start", {})
+		await harness.emit("agent_end", {}, { sessionManager: { getSessionId: () => "session-b" } })
+		await new Promise((resolve) => setTimeout(resolve, 0))
+		expect(harness.sent).toEqual([])
+
+		await harness.emit("agent_end", {}, { sessionManager: { getSessionId: () => "session-a" } })
+		await new Promise((resolve) => setTimeout(resolve, 0))
+		expect((harness.sent[0] as { details: Record<string, unknown> }).details.metrics).toEqual([
+			{ label: "goal time", value: "1.2s" },
+		])
+	})
+
 	it("drops the optional summary when the extension context is stale", async () => {
 		const harness = createPiHarness()
 		promptSummaryExtension(harness.pi as never)
@@ -109,6 +126,32 @@ describe("prompt summary Agent token accounting", () => {
 		await expect(harness.emit("agent_end", {}, staleCtx)).resolves.toBeUndefined()
 
 		expect(staleCtx.isIdle).toHaveBeenCalledOnce()
+		expect(harness.sent).toEqual([])
+	})
+})
+
+describe("prompt summary extras session scoping", () => {
+	it("does not leak extras queued by session A into session B", async () => {
+		const harness = createPiHarness()
+		promptSummaryExtension(harness.pi)
+		addPromptSummaryExtra("session-a", "session A note")
+
+		await harness.emit("agent_start", {})
+		await harness.emit("agent_end", {}, { sessionManager: { getSessionId: () => "session-b" } })
+		await new Promise((resolve) => setTimeout(resolve, 0))
+		expect(harness.sent).toEqual([])
+	})
+
+	it("cleans up per-session extras on session_shutdown", async () => {
+		const harness = createPiHarness()
+		promptSummaryExtension(harness.pi)
+		addPromptSummaryExtra("session-a", "session A note")
+
+		await harness.emit("session_shutdown", {}, { sessionManager: { getSessionId: () => "session-a" } })
+
+		await harness.emit("agent_start", {})
+		await harness.emit("agent_end", {}, { sessionManager: { getSessionId: () => "session-a" } })
+		await new Promise((resolve) => setTimeout(resolve, 0))
 		expect(harness.sent).toEqual([])
 	})
 })

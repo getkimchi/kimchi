@@ -10,6 +10,7 @@ export const CLAUDE_CODE_SKILLS_RESOURCE_ID = "extensions.claude-code-skills"
 
 interface ClaudeCodeSkillResourceOptions {
 	excludeSkillNames?: Iterable<string>
+	homeDir?: string
 }
 
 const SkillFrontmatterSchema = z
@@ -23,11 +24,10 @@ type SkillFrontmatter = z.infer<typeof SkillFrontmatterSchema>
 
 let claudeCodeSkillsCacheDir: string | undefined
 
-export function discoverClaudeCodeSkillDirs(cwd = process.cwd()): string[] {
+export function discoverClaudeCodeSkillDirs(cwd = process.cwd(), homeDir = homedir()): string[] {
 	const projectDir = resolve(cwd)
 	if (!existsSync(join(projectDir, ".claude"))) return []
 
-	const homeDir = homedir()
 	const dirs = [join(homeDir, ".claude", "skills")]
 	if (resolve(projectDir) !== resolve(homeDir)) {
 		dirs.push(join(projectDir, ".claude", "skills"))
@@ -49,7 +49,7 @@ export function getClaudeCodeSkillResourcePaths(
 ): string[] {
 	const excludedSkillNames = new Set(options.excludeSkillNames ?? [])
 	const paths: string[] = []
-	for (const dir of discoverClaudeCodeSkillDirs(cwd)) {
+	for (const dir of discoverClaudeCodeSkillDirs(cwd, options.homeDir)) {
 		paths.push(...materializeClaudeCodeSkillDir(dir, { excludeSkillNames: excludedSkillNames }))
 	}
 	return paths
