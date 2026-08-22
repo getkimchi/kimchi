@@ -8,9 +8,138 @@
  */
 
 import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
+import { pathToFileURL } from "node:url"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import type { MemoryScope } from "../personas/types.js"
+
+// ── Pluggable memory provider registry ─────────────────────────────────────
+
+/**
+ * Generic agent memory provider. External extensions cannot hook subagent
+ * system-prompt construction, so the harness exposes this registry: any
+ * memory backend connects by exporting a default-conforming provider from a
+ * module listed in `<agent-dir>/memory-providers.json` (or by calling
+ * registerMemoryProvider from in-tree code). resolveMemoryBlock tries each
+ * provider in order until one returns a block. When every provider returns
+ * null (disabled, unreachable, not applicable), file-based memory is used —
+ * full backwards compatibility.
+ *
+ * The harness keeps ZERO provider-specific code; this file is the entire
+ * integration surface.
+ */
+/** Resolution context passed to providers so they can honour scope and tool access. */
+export interface AgentMemoryContext {
+	/** Memory scope the agent was configured with (user/project/local). */
+	scope: MemoryScope
+	/** Whether the agent has write tools (read-only agents cannot maintain memory). */
+	hasWriteTools: boolean
+}
+
+export interface AgentMemoryProvider {
+	/** Stable display name (e.g. "openviking"). */
+	name: string
+	/**
+	 * Build the memory prompt block for the agent, or resolve null when the
+	 * provider is disabled/unreachable/not applicable (fallback continues).
+	 * The optional context lets providers tailor output to the memory scope
+	 * and respect read-only agents; plain two-argument implementations
+	 * stay compatible.
+	 */
+	buildBlock(agentName: string, cwd: string, context?: AgentMemoryContext): Promise<string | null>
+}
+
+const memoryProviders: AgentMemoryProvider[] = []
+
+/** Register an agent memory provider. Later registrations are tried last. */
+export function registerMemoryProvider(provider: AgentMemoryProvider): void {
+	memoryProviders.push(provider)
+}
+
+/** Registered providers in resolution order (primarily for tests). */
+export function getMemoryProviders(): readonly AgentMemoryProvider[] {
+	return memoryProviders
+}
+
+/** Remove all registered providers (primarily for tests). */
+export function clearMemoryProviders(): void {
+	memoryProviders.length = 0
+}
+
+// ── Config-driven provider loading ─────────────────────────────────────────
+
+/** Path of the provider manifest: `[{name, module: "/abs/path/module.ts|mjs"}]`. */
+export function resolveMemoryProvidersConfig(): string {
+	return join(getAgentDir(), "memory-providers.json")
+}
+
+let providersLoadPromise: Promise<void> | null = null
+
+/**
+ * Lazily import provider modules listed in memory-providers.json, once.
+ * Fail-open per module: invalid entries, unreadable config, and import
+ * failures are skipped so memory resolution never breaks.
+ */
+async function loadConfiguredProviders(): Promise<void> {
+	if (providersLoadPromise) return providersLoadPromise
+
+	providersLoadPromise = (async () => {
+		try {
+			const configPath = resolveMemoryProvidersConfig()
+			if (!existsSync(configPath)) return
+			if (isSymlink(configPath)) return
+
+			let list: unknown
+			try {
+				const parsed: unknown = JSON.parse(readFileSync(configPath, "utf8"))
+				list = Array.isArray(parsed) ? parsed : (parsed as { providers?: unknown })?.providers
+			} catch {
+				return
+			}
+			if (!Array.isArray(list)) return
+
+			for (const entry of list as Array<{ module?: unknown }>) {
+				const modulePath = entry?.module
+				if (typeof modulePath !== "string" || modulePath.length === 0) continue
+				// Validate before importing: only absolute, existing, non-symlink
+				// paths are usable, and the import goes through a file:// URL so
+				// platform paths (spaces, Windows drive letters) resolve correctly.
+				// Anything that can write the manifest can already run code here
+				// (any extension file could), so confinement is the manifest
+				// owner's responsibility — documented in the README.
+				if (!isAbsolute(modulePath)) continue
+				if (!existsSync(modulePath)) continue
+				if (isSymlink(modulePath)) continue
+				try {
+					const mod: unknown = await import(pathToFileURL(modulePath).href)
+					const provider = (mod as { default?: unknown })?.default ?? mod
+					if (
+						provider &&
+						typeof provider === "object" &&
+						typeof (provider as AgentMemoryProvider).name === "string" &&
+						typeof (provider as AgentMemoryProvider).buildBlock === "function"
+					) {
+						memoryProviders.push(provider as AgentMemoryProvider)
+					}
+				} catch {
+					// Skip unloadable provider modules.
+				}
+			}
+		} catch {
+			// Defensive: config or filesystem failures must never wedge the
+			// load promise (a rejected promise would re-throw forever). Reset
+			// so the next resolveMemoryBlock retries from scratch.
+			providersLoadPromise = null
+		}
+	})()
+
+	return providersLoadPromise
+}
+
+/** Reset lazy config load state (primarily for tests). */
+export function resetProviderLoadState(): void {
+	providersLoadPromise = null
+}
 
 /** Maximum lines to read from MEMORY.md */
 const MAX_MEMORY_LINES = 200
@@ -143,6 +272,35 @@ This memory persists across sessions. Use it to build up knowledge over time.`
 - You have Read, Write, and Edit tools available for managing memory files.`
 
 	return header + memoryContent + instructions
+}
+
+/**
+ * Resolve the memory block through the registered providers.
+ *
+ * Each provider is tried in registration order; the first non-null block
+ * wins. Provider failures are contained (fail-open) — a broken provider logs
+ * nothing and never breaks memory resolution. When every provider returns
+ * null, falls back to the file-based memory block (buildMemoryBlock or
+ * buildReadOnlyMemoryBlock depending on tool access).
+ */
+export async function resolveMemoryBlock(
+	agentName: string,
+	scope: MemoryScope,
+	cwd: string,
+	hasWriteTools: boolean,
+): Promise<string> {
+	await loadConfiguredProviders()
+	for (const provider of memoryProviders) {
+		try {
+			const block = await provider.buildBlock(agentName, cwd, { scope, hasWriteTools })
+			// Accept only non-empty strings: a provider returning undefined
+			// must not leak into the Promise<string> contract.
+			if (typeof block === "string" && block.length > 0) return block
+		} catch {
+			// Fail-open: a broken provider must not break memory resolution.
+		}
+	}
+	return hasWriteTools ? buildMemoryBlock(agentName, scope, cwd) : buildReadOnlyMemoryBlock(agentName, scope, cwd)
 }
 
 /**
