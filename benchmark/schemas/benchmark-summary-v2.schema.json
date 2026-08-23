@@ -382,6 +382,11 @@
             "type": "integer",
             "minimum": 0
           },
+          "cost_usd": {
+            "description": "Total agent cost for this trial, including Goal evaluator calls when present.",
+            "type": "number",
+            "minimum": 0
+          },
           "error": {
             "description": "Null for passed trials; otherwise an error summary.",
             "type": ["object", "null"],
@@ -392,6 +397,10 @@
                 "type": "string"
               },
               "message": {
+                "type": "string"
+              },
+              "source": {
+                "description": "Artifact containing the selected error evidence.",
                 "type": "string"
               }
             }

@@ -376,12 +376,12 @@ def test_kimchi_exit_error_has_structured_exit_code_and_output_tails(tmp_path: P
     assert f"Kimchi exited with code {os.EX_IOERR}" in str(error)
 
 
-def test_populate_context_bills_goal_evaluator_usage(tmp_path: Path) -> None:
+def test_populate_context_bills_goal_evaluator_usage_across_sessions(tmp_path: Path) -> None:
     logs_dir = tmp_path / "jobs" / "run-1" / "task__trial" / "agent"
     sessions_dir = logs_dir / "sessions"
     sessions_dir.mkdir(parents=True)
     # evaluatorUsage is cumulative per goal, so only the last entry counts.
-    (sessions_dir / "main.jsonl").write_text(
+    (sessions_dir / "z-original.jsonl").write_text(
         '{"type":"message","message":{"role":"assistant","usage":'
         '{"input":10,"output":3,"cacheRead":2,"cacheWrite":1,"cost":{"total":0.5}}}}\n'
         '{"type":"custom","customType":"kimchi_goal_state","data":{"op":"put","goal":'
@@ -391,15 +391,25 @@ def test_populate_context_bills_goal_evaluator_usage(tmp_path: Path) -> None:
         '{"id":"g1","evaluatorUsage":{"input":8,"output":5,"cacheRead":0,"cacheWrite":0,'
         '"totalTokens":13,"costUsd":0.25}}}}\n'
     )
+    # The newer snapshot sorts first to prove file order cannot let an older
+    # cumulative snapshot overwrite it.
+    (sessions_dir / "a-resumed.jsonl").write_text(
+        '{"type":"custom","customType":"kimchi_goal_state","data":{"op":"put","goal":'
+        '{"id":"g1","evaluatorUsage":{"input":10,"output":6,"cacheRead":0,"cacheWrite":0,'
+        '"costUsd":0.3}}}}\n'
+        '{"type":"custom","customType":"kimchi_goal_state","data":{"op":"put","goal":'
+        '{"id":"g2","evaluatorUsage":{"input":4,"output":2,"cacheRead":0,"cacheWrite":0,'
+        '"totalTokens":6,"costUsd":0.15}}}}\n'
+    )
 
     agent = Kimchi(logs_dir=logs_dir, model_name="kimchi-dev/kimi-k2.6")
     context = AgentContext()
     agent.populate_context_post_run(context)
 
-    assert context.n_input_tokens == 21
-    assert context.n_output_tokens == 8
+    assert context.n_input_tokens == 27
+    assert context.n_output_tokens == 11
     assert context.n_cache_tokens == 2
-    assert context.cost_usd == 0.75
+    assert context.cost_usd == pytest.approx(0.95)
 
 
 def test_populate_context_skips_unreadable_session_files(tmp_path: Path) -> None:

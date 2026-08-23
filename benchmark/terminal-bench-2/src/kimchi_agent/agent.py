@@ -991,9 +991,17 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
                     goal = (entry.data or {}).get("goal")
                     if isinstance(goal, dict) and isinstance(goal.get("evaluatorUsage"), dict):
                         with suppress(ValidationError):
-                            evaluator_usage[str(goal.get("id", ""))] = GoalEvaluatorUsage.model_validate(
-                                goal["evaluatorUsage"]
+                            goal_id = str(goal.get("id", ""))
+                            candidate = GoalEvaluatorUsage.model_validate(goal["evaluatorUsage"])
+                            current = evaluator_usage.get(goal_id)
+                            candidate_tokens = candidate.total_tokens or (
+                                candidate.input + candidate.cache_read + candidate.cache_write + candidate.output
                             )
+                            current_tokens = 0 if current is None else current.total_tokens or (
+                                current.input + current.cache_read + current.cache_write + current.output
+                            )
+                            if current is None or candidate_tokens > current_tokens:
+                                evaluator_usage[goal_id] = candidate
                     continue
                 if entry.type != "message" or entry.message.role != "assistant":
                     continue

@@ -119,6 +119,7 @@ class SessionScan:
     start: str | None = None
     end: str | None = None
     models: dict[tuple[str, str], ModelStats] = field(default_factory=dict)
+    goal_evaluators: dict[str, ModelStats] = field(default_factory=dict)
 
 
 @dataclass
@@ -135,8 +136,10 @@ class TrialSummary:
     trial_dir: Path
     start: str | None
     end: str | None
+    cost_usd: float | None = None
     error_category: str | None = None
     error_subcategory: str | None = None
+    error_source: str | None = None
     outcome: Outcome = Outcome.SCORED_FAIL
     agent_timeout_analysis: dict[str, Any] | None = None
 
@@ -146,10 +149,13 @@ class TrialSummary:
     def error(self) -> dict[str, str] | None:
         if self.outcome == Outcome.SCORED_PASS:
             return None
-        return {
+        result = {
             "type": self.error_subcategory or self.exception or "",
             "message": self.exception_message or self.exception or "",
         }
+        if self.error_source:
+            result["source"] = self.error_source
+        return result
 
     def to_summary_json(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -163,6 +169,8 @@ class TrialSummary:
         }
         if self.total_time_seconds is not None:
             result["duration_ms"] = self.total_time_seconds * 1000
+        if self.cost_usd is not None:
+            result["cost_usd"] = self.cost_usd
         result["error_category"] = self.error_category
         result["error_subcategory"] = self.error_subcategory
         result["verdict"] = self.outcome
@@ -475,6 +483,10 @@ def _usage_tuple(usage: dict[str, Any]) -> tuple[int, int, int, int]:
     )
 
 
+def model_token_total(stats: ModelStats) -> int:
+    return stats.input_tokens + stats.cache_read_tokens + stats.cache_write_tokens + stats.output_tokens
+
+
 def scan_session_file(path: Path, warnings: list[str]) -> SessionScan:
     scan = SessionScan()
     current_model: tuple[str, str] | None = None
@@ -496,6 +508,34 @@ def scan_session_file(path: Path, warnings: list[str]) -> SessionScan:
             model_id = entry.get("modelId")
             if isinstance(provider, str) and isinstance(model_id, str):
                 current_model = (provider or "unknown", model_id or "unknown")
+
+        if entry.get("type") == "custom" and entry.get("customType") == "kimchi_goal_state":
+            data = entry.get("data")
+            goal = data.get("goal") if isinstance(data, dict) else None
+            usage = goal.get("evaluatorUsage") if isinstance(goal, dict) else None
+            goal_id = goal.get("id") if isinstance(goal, dict) else None
+            if isinstance(usage, dict) and isinstance(goal_id, str):
+                evaluation = goal.get("lastEvaluation")
+                evaluator_model = evaluation.get("model") if isinstance(evaluation, dict) else None
+                # ponytail: benchmark trials pin one evaluator model; derive per-evaluation deltas if that changes.
+                evaluator_ref = (
+                    split_model_ref(evaluator_model)
+                    if isinstance(evaluator_model, str)
+                    else (current_model or ("unknown", "unknown"))
+                )
+                tokens = _usage_tuple(usage)
+                candidate = ModelStats(
+                    provider=evaluator_ref[0],
+                    model=evaluator_ref[1],
+                    llm_rounds=int_from_keys(goal, "evaluationCount"),
+                    input_tokens=tokens[0],
+                    cache_read_tokens=tokens[1],
+                    cache_write_tokens=tokens[2],
+                    output_tokens=tokens[3],
+                )
+                current = scan.goal_evaluators.get(goal_id)
+                if current is None or model_token_total(candidate) > model_token_total(current):
+                    scan.goal_evaluators[goal_id] = candidate
 
         message = entry.get("message")
         if not isinstance(message, dict) or message.get("role") != "assistant":
@@ -662,6 +702,17 @@ def merge_session_scans(scans: list[SessionScan]) -> SessionScan:
             target.cache_write_tokens += stats.cache_write_tokens
             target.output_tokens += stats.output_tokens
             target.tool_calls.update(stats.tool_calls)
+        for goal_id, stats in scan.goal_evaluators.items():
+            current = merged.goal_evaluators.get(goal_id)
+            if current is None or model_token_total(stats) > model_token_total(current):
+                merged.goal_evaluators[goal_id] = stats
+    for stats in merged.goal_evaluators.values():
+        target = model_stats(merged.models, stats.provider, stats.model)
+        target.llm_rounds += stats.llm_rounds
+        target.input_tokens += stats.input_tokens
+        target.cache_read_tokens += stats.cache_read_tokens
+        target.cache_write_tokens += stats.cache_write_tokens
+        target.output_tokens += stats.output_tokens
     return merged
 
 
@@ -680,8 +731,7 @@ def normalize_session_scan_models(scan: SessionScan, fallback_model: tuple[str, 
 
 
 def model_sort_key(stats: ModelStats) -> tuple[int, str, str]:
-    total_tokens = stats.input_tokens + stats.cache_read_tokens + stats.cache_write_tokens + stats.output_tokens
-    return -total_tokens, stats.provider, stats.model
+    return -model_token_total(stats), stats.provider, stats.model
 
 
 def is_trial_dir(path: Path) -> bool:
@@ -1003,9 +1053,11 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
         end=string_or_none(get_path(result, "verifier", "finished_at"))
         or string_or_none(get_path(result, "agent_execution", "finished_at"))
         or session_scan.end,
+        cost_usd=numeric_reward(get_path(result, "agent_result", "cost_usd")),
         outcome=outcome,
         error_category=error_category,
         error_subcategory=error_subcategory,
+        error_source=error_evidence.source,
         agent_timeout_analysis=agent_timeout_analysis,
     )
 

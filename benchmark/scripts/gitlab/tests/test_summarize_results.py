@@ -152,6 +152,7 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
 
         self.assertEqual(data["error"]["type"], "agent_request_aborted")
         self.assertEqual(data["error"]["message"], "error: Request was aborted.")
+        self.assertEqual(data["error"]["source"], "agent/session")
 
     def test_prefers_matching_wrapper_evidence_over_generic_session_noise(self) -> None:
         result = self.result_with_exception("NonZeroAgentExitCodeError", "stdout: Request was aborted.")
@@ -161,6 +162,7 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
 
         self.assertEqual(data["error"]["type"], "agent_request_aborted")
         self.assertEqual(data["error"]["message"], "stdout: Request was aborted.")
+        self.assertEqual(data["error"]["source"], "result.exception_info.exception_message")
 
     def test_classifies_agent_timeout(self) -> None:
         message = "Agent execution timed out after 900.0 seconds"
@@ -326,6 +328,15 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
         self.assertEqual(data["verdict"], "agent_timeout")
         self.assertIsNone(data["error_category"])
         self.assertIsNone(data["error_subcategory"])
+
+    def test_summarize_trial_reports_cost_and_raw_duration(self) -> None:
+        result = json.loads(json.dumps(BASE_RESULT))
+        result["agent_result"] = {"cost_usd": 1.25}
+
+        data = self.summarize(result).to_summary_json()
+
+        self.assertEqual(data["cost_usd"], 1.25)
+        self.assertEqual(data["duration_ms"], 69_000)
 
     def test_status_is_only_passed_or_failed(self) -> None:
         """status() must never return 'error' — two values only: passed or failed."""
@@ -1653,7 +1664,27 @@ class SummarySchemaValidationTest(unittest.TestCase):
             })
             sessions_dir = trial_dir / "agent" / "sessions"
             sessions_dir.mkdir(parents=True)
-            (sessions_dir / "main.jsonl").write_text("\n", encoding="utf-8")
+            (sessions_dir / "main.jsonl").write_text(
+                json.dumps({
+                    "type": "custom",
+                    "customType": "kimchi_goal_state",
+                    "data": {
+                        "goal": {
+                            "id": "goal-1",
+                            "evaluationCount": 1,
+                            "lastEvaluation": {"model": "kimchi-dev/kimi-k2.6"},
+                            "evaluatorUsage": {
+                                "input": 4,
+                                "cacheRead": 2,
+                                "cacheWrite": 1,
+                                "output": 3,
+                            },
+                        },
+                    },
+                })
+                + "\n",
+                encoding="utf-8",
+            )
 
             metadata_path = tmp_path / "run-metadata.json"
             write_json(metadata_path, {
@@ -1675,6 +1706,18 @@ class SummarySchemaValidationTest(unittest.TestCase):
                 summarize_results.write_summary(metadata_path, output_path, results_dir_override=results_dir)
 
             summary = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["trials"][0]["models"][0]["model"], "kimchi-dev/kimi-k2.6")
+            self.assertEqual(summary["trials"][0]["models"][0]["llm_rounds"], 1)
+            self.assertEqual(
+                summary["trials"][0]["models"][0]["tokens"],
+                {"input": 4, "cache_read": 2, "cache_write": 1, "output": 3},
+            )
+            summary["trials"][0]["cost_usd"] = 1.25
+            summary["trials"][0]["error"] = {
+                "type": "agent_error",
+                "message": "benchmark failed",
+                "source": "agent/session",
+            }
             schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
             try:
                 validate(instance=summary, schema=schema)
@@ -1793,6 +1836,70 @@ class ScanSessionFileTokenDedupTest(unittest.TestCase):
                 "content": content or [],
             },
         }
+
+    def test_goal_evaluator_usage_keeps_latest_snapshot_per_goal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def goal_entry(goal_id: str, count: int, usage: dict[str, int | float]) -> dict:
+                return {
+                    "type": "custom",
+                    "customType": "kimchi_goal_state",
+                    "data": {
+                        "goal": {
+                            "id": goal_id,
+                            "evaluationCount": count,
+                            "lastEvaluation": {"model": "moonshotai/kimi-k3"},
+                            "evaluatorUsage": usage,
+                        }
+                    },
+                }
+
+            newer = root / "a-newer.jsonl"
+            newer.write_text(
+                "\n".join(
+                    json.dumps(entry)
+                    for entry in [
+                        goal_entry(
+                            "g1",
+                            2,
+                            {"input": 10, "cacheRead": 2, "cacheWrite": 1, "output": 6},
+                        ),
+                        goal_entry(
+                            "g2",
+                            1,
+                            {"input": 4, "cacheRead": 1, "cacheWrite": 0, "output": 2},
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            stale = root / "z-stale.jsonl"
+            stale.write_text(
+                json.dumps(
+                    goal_entry(
+                        "g1",
+                        1,
+                        {"input": 8, "cacheRead": 0, "cacheWrite": 0, "output": 5},
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            warnings: list[str] = []
+            scan = summarize_results.merge_session_scans(
+                [summarize_results.scan_session_file(path, warnings) for path in sorted(root.glob("*.jsonl"))]
+            )
+
+            self.assertEqual(warnings, [])
+            stats = scan.models[("moonshotai", "kimi-k3")]
+            self.assertEqual(stats.llm_rounds, 3)
+            self.assertEqual(stats.input_tokens, 14)
+            self.assertEqual(stats.cache_read_tokens, 3)
+            self.assertEqual(stats.cache_write_tokens, 1)
+            self.assertEqual(stats.output_tokens, 8)
 
     def test_dedupes_consecutive_identical_usage_from_claude_code(self):
         """Two assistant entries with identical usage (thinking + tool_use split)
