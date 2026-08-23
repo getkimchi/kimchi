@@ -56,14 +56,13 @@ describe("ResourceManagerComponent", () => {
 	it("keeps the selected row after toggling a resource", () => {
 		const component = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, {} as Theme, vi.fn(), "hooks")
 
-		component.handleInput("\x1b[B")
-		expect(selectedIndex(component)).toBe(1)
-		expect(isResourceEnabled("hooks.rtk-rewrite")).toBe(true)
+		expect(selectedIndex(component)).toBe(0)
+		expect(isResourceEnabled("hooks.bash")).toBe(true)
 
 		component.handleInput(" ")
 
-		expect(isResourceEnabled("hooks.rtk-rewrite")).toBe(false)
-		expect(selectedIndex(component)).toBe(1)
+		expect(isResourceEnabled("hooks.bash")).toBe(false)
+		expect(selectedIndex(component)).toBe(0)
 	})
 })
 

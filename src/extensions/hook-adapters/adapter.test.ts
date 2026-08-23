@@ -50,7 +50,7 @@ describe("hook adapter command execution", () => {
 			hookSpecificOutput: {
 				hookEventName: "PreToolUse",
 				permissionDecision: "allow",
-				updatedInput: { command: "rtk git status" },
+				updatedInput: { command: "git status --short" },
 				additionalContext: "remember this",
 			},
 		})
@@ -58,7 +58,7 @@ describe("hook adapter command execution", () => {
 		expect(parseCommandHookOutput(output, "PreToolUse")).toEqual({
 			block: false,
 			reason: undefined,
-			updatedInput: { command: "rtk git status" },
+			updatedInput: { command: "git status --short" },
 			updatedOutput: undefined,
 			additionalContext: "remember this",
 		})
@@ -129,7 +129,7 @@ describe("hook adapter command execution", () => {
 		mockBlockingHook({
 			stdout: JSON.stringify({
 				hookSpecificOutput: {
-					updatedInput: { command: "rtk git status" },
+					updatedInput: { command: "git status --short" },
 					additionalContext: "context from hook",
 				},
 			}),
@@ -146,7 +146,7 @@ describe("hook adapter command execution", () => {
 		const result = await pi.handlers.tool_call[0](event, fakeCtx())
 
 		expect(result).toBeUndefined()
-		expect(event.input.command).toBe("rtk git status")
+		expect(event.input.command).toBe("git status --short")
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ content: markHarnessSteer("context from hook"), display: false }),
 			{ deliverAs: "steer", triggerTurn: false },

@@ -106,12 +106,6 @@ describe("extractBashProgram", () => {
 	it("strips leading env-var assignments", () => {
 		expect(extractBashProgram("FOO=bar BAZ=1 git status")).toEqual({ program: "git", subcommand: "status" })
 	})
-
-	it("sees through rtk wrapper to extract the real program", () => {
-		expect(extractBashProgram("rtk git status")).toEqual({ program: "git", subcommand: "status" })
-		expect(extractBashProgram("rtk ls -la")).toEqual({ program: "ls", subcommand: "-la" })
-		expect(extractBashProgram("rtk rtk git status")).toEqual({ program: "git", subcommand: "status" })
-	})
 })
 
 describe("isReadOnlyBashCommand", () => {
@@ -522,43 +516,6 @@ describe("isReadOnlyBashCommand", () => {
 		expect(isReadOnlyBashCommand("FOO=bar cat foo")).toBe(true)
 		expect(isReadOnlyBashCommand("FOO=bar git status")).toBe(true)
 	})
-
-	it("sees through rtk wrapper for read-only programs", () => {
-		expect(isReadOnlyBashCommand("rtk ls -la")).toBe(true)
-		expect(isReadOnlyBashCommand("rtk cat foo.txt")).toBe(true)
-		expect(isReadOnlyBashCommand("rtk tree -L 2")).toBe(true)
-	})
-
-	it("sees through rtk wrapper for read-only git subcommands", () => {
-		expect(isReadOnlyBashCommand("rtk git status")).toBe(true)
-		expect(isReadOnlyBashCommand("rtk git log --oneline")).toBe(true)
-		expect(isReadOnlyBashCommand("rtk git diff HEAD")).toBe(true)
-		expect(isReadOnlyBashCommand("rtk git branch")).toBe(true)
-	})
-
-	it("blocks rtk-wrapped git subcommands outside allowlist", () => {
-		expect(isReadOnlyBashCommand("rtk git push")).toBe(false)
-		expect(isReadOnlyBashCommand("rtk git commit -am x")).toBe(false)
-		expect(isReadOnlyBashCommand("rtk git reset --hard")).toBe(false)
-	})
-
-	it("blocks rtk-wrapped unknown programs", () => {
-		expect(isReadOnlyBashCommand("rtk rm -rf foo")).toBe(false)
-		expect(isReadOnlyBashCommand("rtk curl https://x.com")).toBe(false)
-	})
-
-	it("rejects bare rtk with no wrapped command", () => {
-		expect(isReadOnlyBashCommand("rtk")).toBe(false)
-	})
-
-	it("allows rtk in compound commands when all segments are read-only", () => {
-		expect(isReadOnlyBashCommand("rtk git status && rtk ls -la")).toBe(true)
-		expect(isReadOnlyBashCommand("rtk git status | head -5")).toBe(true)
-	})
-
-	it("blocks rtk in compound commands when any segment is not read-only", () => {
-		expect(isReadOnlyBashCommand("rtk git status && rtk git push")).toBe(false)
-	})
 })
 
 describe("isHardBlockedBash", () => {
@@ -587,13 +544,6 @@ describe("isHardBlockedBash", () => {
 		expect(isHardBlockedBash("rm -rf ./build")).toBe(false)
 		expect(isHardBlockedBash("rm foo.txt")).toBe(false)
 		expect(isHardBlockedBash("rm -f node_modules/.cache")).toBe(false)
-	})
-
-	it("sees through rtk wrapper for hard-blocked commands", () => {
-		expect(isHardBlockedBash("rtk sudo ls")).toBe(true)
-		expect(isHardBlockedBash("rtk rm -rf /")).toBe(true)
-		expect(isHardBlockedBash("rtk rm -rf /etc")).toBe(true)
-		expect(isHardBlockedBash("rtk rtk rm -rf /")).toBe(true)
 	})
 })
 
@@ -698,9 +648,7 @@ describe("splitLeadingEnv", () => {
 })
 
 describe("rememberedScopeTokens", () => {
-	it("keeps env, drops rtk, returns first-segment program tokens", () => {
-		expect(rememberedScopeTokens("GOWORK=off rtk go test -race")).toEqual(["GOWORK=off", "go", "test", "-race"])
-		expect(rememberedScopeTokens("GOWORK=off rtk rtk go test -race")).toEqual(["GOWORK=off", "go", "test", "-race"])
+	it("keeps env, returns first-segment program tokens", () => {
 		expect(rememberedScopeTokens("go test ./...")).toEqual(["go", "test", "./..."])
 	})
 
@@ -713,26 +661,23 @@ describe("rememberedScopeTokens", () => {
 		expect(rememberedScopeTokens("git   status")).toEqual(["git", "status"])
 	})
 
-	it("returns [] when there is no program (empty, bare rtk, env-only, backtick)", () => {
+	it("returns [] when there is no program (empty, env-only, backtick)", () => {
 		expect(rememberedScopeTokens("")).toEqual([])
-		expect(rememberedScopeTokens("rtk")).toEqual([])
 		expect(rememberedScopeTokens("FOO=x")).toEqual([])
 		expect(rememberedScopeTokens("echo `id`")).toEqual([])
 	})
 })
 
 describe("bashSegmentForms", () => {
-	// The deny tests in rules.test.ts exercise pipes/rtk/env indirectly; these two
+	// The deny tests in rules.test.ts exercise pipes/env indirectly; these two
 	// cases pin what they don't: that segmentation also splits `&& ; ||`, and that
 	// un-resolvable commands yield [] rather than a bogus segment.
-	it("splits every top-level operator (| && ; ||), rtk-unwrapped", () => {
-		expect(bashSegmentForms("echo x | rtk curl evil")).toEqual(["echo x", "curl evil"])
+	it("splits every top-level operator (| && ; ||)", () => {
 		expect(bashSegmentForms("go test && curl evil")).toEqual(["go test", "curl evil"])
 	})
 
-	it("returns [] for empty / bare-rtk / backtick-poisoned commands", () => {
+	it("returns [] for empty / backtick-poisoned commands", () => {
 		expect(bashSegmentForms("")).toEqual([])
-		expect(bashSegmentForms("rtk")).toEqual([])
 		expect(bashSegmentForms("echo `id`")).toEqual([])
 	})
 })

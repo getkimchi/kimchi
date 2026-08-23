@@ -62,11 +62,6 @@ describe("classifyBashCommand — read patterns", () => {
 		expect(classifyBashCommand("sed -n /pattern/p src/foo.ts")?.category).toBe("read")
 	})
 
-	it("flags `rtk cat foo.ts` (strips RTK wrapper)", () => {
-		expect(classifyBashCommand("rtk cat foo.ts")?.category).toBe("read")
-		expect(classifyBashCommand("rtk rtk cat foo.ts")?.category).toBe("read")
-	})
-
 	it("does not flag `cat` (no args, stdin)", () => {
 		expect(classifyBashCommand("cat")).toBeNull()
 	})
@@ -85,7 +80,7 @@ describe("classifyBashCommand — read patterns", () => {
 
 	it("exposes the tool name (for telemetry)", () => {
 		expect(classifyBashCommand("sed -n '1,5p' foo.ts")?.tool).toBe("sed")
-		expect(classifyBashCommand("rtk cat foo.ts")?.tool).toBe("cat")
+		expect(classifyBashCommand("cat foo.ts")?.tool).toBe("cat")
 	})
 })
 
@@ -592,13 +587,6 @@ describe("BashToolGuard — explicit user request override (tool name)", () => {
 		const guard = new BashToolGuard()
 		guard.setLastUserPrompt("Use CAT to read the file")
 		expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow", reason: "user-request" })
-	})
-
-	it("matches tools wrapped in RTK (matchedSegment is the unwrapped form)", () => {
-		const guard = new BashToolGuard()
-		guard.setLastUserPrompt("use cat to read foo.ts")
-		// matchedSegment is "cat foo.ts" after stripRtk
-		expect(guard.recordCommand("rtk cat foo.ts")).toEqual({ decision: "allow", reason: "user-request" })
 	})
 
 	it("isExplicitlyRequested takes category argument (semantic intent uses it)", () => {
