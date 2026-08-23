@@ -1,10 +1,12 @@
-import { readFileSync } from "node:fs"
+import { spawnSync } from "node:child_process"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { afterEach, beforeEach, expect, it } from "vitest"
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
-const patchedFile = resolve(projectRoot, "node_modules/@earendil-works/pi-ai/dist/utils/oauth/oauth-page.js")
+const patchedFile = resolve(projectRoot, "node_modules/@earendil-works/pi-ai/dist/auth/oauth/oauth-page.js")
 const patchedFileUrl = pathToFileURL(patchedFile).href
 const templateDir = resolve(projectRoot, "resources/oauth")
 
@@ -19,6 +21,20 @@ it("scripts/patch-pi-ai-oauth.js has been applied to node_modules", () => {
 	expect(source, "Run `pnpm install` (or `node scripts/patch-pi-ai-oauth.js`) first").toContain(
 		"KIMCHI_OAUTH_TEMPLATE_DIR",
 	)
+})
+
+it("does not create a stray file when the upstream target is missing", () => {
+	const cwd = mkdtempSync(resolve(tmpdir(), "kimchi-oauth-patch-"))
+	try {
+		const result = spawnSync(process.execPath, [resolve(projectRoot, "scripts/patch-pi-ai-oauth.js")], {
+			cwd,
+			encoding: "utf-8",
+		})
+		expect(result.status).toBe(1)
+		expect(existsSync(resolve(cwd, "node_modules/@earendil-works/pi-ai/dist/auth/oauth/oauth-page.js"))).toBe(false)
+	} finally {
+		rmSync(cwd, { recursive: true, force: true })
+	}
 })
 
 let originalTemplateDir: string | undefined

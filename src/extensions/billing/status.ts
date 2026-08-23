@@ -16,7 +16,10 @@ export interface BillingStatus {
 }
 
 export interface BillingWarning {
-	kind: "low" | "exhausted"
+	// "exhausted" is a hard stop (the server refuses the request); "rate-limited" still serves, just
+	// slower. Kept apart so the tip surfaces the second as a warning rather than an error — for a
+	// free-tier user a zero balance is a steady state, not a failure.
+	kind: "low" | "exhausted" | "rate-limited" | "community-inference-blocked"
 	message: string
 }
 
@@ -62,14 +65,24 @@ interface BillingApiConfig {
 interface RefreshBillingStatusOptions {
 	fetch?: typeof fetch
 	jsonTimeoutMs?: number
-	loadConfig?: typeof loadConfig
+	loadConfig?: () => Pick<ReturnType<typeof loadConfig>, "apiKey" | "llmEndpoint">
 	requestTimeoutMs?: number
+	/** "automatic" = coalesced + throttled (completion hook); "forced" = bypasses TTL (manual command, login). Defaults to "forced". */
+	mode?: BillingRefreshMode
 }
 
 export const LOW_CREDITS_THRESHOLD_USD = 5
-export const COMMUNITY_TIER_HEADER_NOTICE =
-	"You are using Community tier. For faster performance, upgrade to Coder at https://app.kimchi.dev/pricing"
+export const COMMUNITY_TIER_MESSAGES = {
+	available: "You are using Community tier. For faster performance, upgrade to Coder at https://app.kimchi.dev/pricing",
+	inferenceBlocked:
+		"You are using the Community tier. You can bring your own inference to the harness. To use Kimchi inference, upgrade to Coder at https://app.kimchi.dev/pricing.",
+} as const
 export const BILLING_EXHAUSTED_MESSAGE = "You ran out of credits. Top up at https://app.kimchi.dev/billing"
+// A zero balance is reached both by a paid subscriber demoted to free-tier limits and by a free
+// user whose included credits were never spendable, who was therefore rate limited all along. The
+// payload cannot tell the two apart, so the wording must hold for both.
+export const BILLING_RATE_LIMITED_MESSAGE =
+	"You just ran out of credits, you can still use Kimchi, but in a slower rate-limited mode. Buy credits on https://app.kimchi.dev/billing"
 const BILLING_REFRESH_TIMEOUT_MS = 5000
 
 const TIER_FIELDS = ["tier", "tier_name", "tierName"] as const
@@ -125,6 +138,11 @@ export function configureBillingCreditsApi(options: { apiKey?: string; llmEndpoi
 		latestBillingRefreshId++
 		latestBudgetRefreshId++
 		clearBillingStatus()
+		// Invalidate the coalesced in-flight refresh and reset the throttle —
+		// a credential change makes any pending fetch stale and should allow
+		// the next completion to trigger a fresh automatic refresh.
+		inFlightRefresh = undefined
+		lastRefreshAt = 0
 	}
 }
 
@@ -222,15 +240,67 @@ export async function refreshBillingSnapshot(
 	return currentBillingStatus
 }
 
+export type BillingRefreshMode = "automatic" | "forced"
+
+/** Minimum interval between automatic billing refreshes (completion hook). */
+export const AUTOMATIC_REFRESH_MIN_INTERVAL_MS = 30_000
+
+/** One shared in-flight refresh promise per process — coalesces concurrent callers. */
+let inFlightRefresh: Promise<BillingStatus | undefined> | undefined
+
+/** Timestamp of the last completed refresh (automatic or forced). */
+let lastRefreshAt = 0
+
 export async function refreshBillingStatusFromConfig(
 	options: RefreshBillingStatusOptions = {},
 ): Promise<BillingStatus | undefined> {
+	const mode: BillingRefreshMode = options.mode ?? "forced"
+
+	// Automatic mode: skip before loading config if we refreshed recently.
+	// If a forced refresh is already running, share it so callers still receive
+	// the newest snapshot without repeating synchronous config reads.
+	if (mode === "automatic" && Date.now() - lastRefreshAt < AUTOMATIC_REFRESH_MIN_INTERVAL_MS) {
+		return inFlightRefresh ?? currentBillingStatus
+	}
+
+	// Always sync credentials from config before checking coalescing state.
+	// Forced callers (login, API-key change) must update the billing API
+	// configuration even when an automatic refresh is already running —
+	// configureBillingCreditsApi invalidates any stale in-flight fetch via
+	// generation bump when credentials actually change.
 	try {
 		const config = (options.loadConfig ?? loadConfig)()
 		configureBillingCreditsApi({ apiKey: config.apiKey, llmEndpoint: config.llmEndpoint })
-		return await refreshBillingSnapshot(options)
-	} catch {
+	} catch (error) {
+		console.warn("[billing] failed to load config for billing refresh:", error)
 		return undefined
+	}
+
+	// Coalesce: if a refresh is already in flight, share it regardless of mode.
+	if (inFlightRefresh) return inFlightRefresh
+
+	const promise = (async () => {
+		try {
+			return await refreshBillingSnapshot(options)
+		} catch (error) {
+			console.warn("[billing] billing refresh failed:", error)
+			return undefined
+		}
+	})()
+
+	inFlightRefresh = promise
+	try {
+		const result = await promise
+		// Only bump the throttle timestamp for automatic refreshes that are
+		// still the active in-flight refresh. Forced refreshes (login, manual
+		// command) must not extend the automatic cooldown — otherwise the
+		// first post-completion automatic refresh would be throttled by the
+		// startup forced refresh. The identity guard also skips stale
+		// resolutions invalidated by configureBillingCreditsApi.
+		if (mode === "automatic" && inFlightRefresh === promise) lastRefreshAt = Date.now()
+		return result
+	} finally {
+		if (inFlightRefresh === promise) inFlightRefresh = undefined
 	}
 }
 
@@ -246,7 +316,12 @@ export function observeCreditsPayload(payload: unknown): BillingStatus | undefin
 export function getCommunityTierHeaderNotice(
 	status: BillingStatus | undefined = currentBillingStatus,
 ): string | undefined {
-	return status?.plan === "community" ? COMMUNITY_TIER_HEADER_NOTICE : undefined
+	if (status?.plan !== "community") return undefined
+	// Blocked Community users get actionable BYO guidance in the warning below the header. A depleted
+	// paid subscriber can also be reported as Community, so an upsell here would tell them to upgrade
+	// to the plan they already pay for.
+	if (isCreditsExhausted(status)) return undefined
+	return COMMUNITY_TIER_MESSAGES.available
 }
 
 export function getBillingWarnings(status: BillingStatus | undefined = currentBillingStatus): BillingWarning[] {
@@ -257,17 +332,28 @@ export function getBillingWarnings(status: BillingStatus | undefined = currentBi
 }
 
 function getCreditBillingWarning(status: BillingStatus | undefined): BillingWarning | undefined {
-	if (!status || !isPaidPlan(status)) return undefined
+	if (!status) return undefined
+	// Community users are blocked because their plan does not include Kimchi inference,
+	// not because they ran out of credits. Show the BYO/upgrade warning instead of the
+	// generic top-up warning, which would give them the wrong action.
+	if (isCommunityInferenceBlocked(status)) {
+		return { kind: "community-inference-blocked", message: COMMUNITY_TIER_MESSAGES.inferenceBlocked }
+	}
 
-	if (status.creditStatus === "ok") return undefined
-
-	const exhausted =
-		status.creditStatus === "exhausted" ||
-		(status.creditStatus === undefined &&
-			(status.restrictedMode === true || (typeof status.remainingCredits === "number" && status.remainingCredits <= 0)))
-	if (exhausted) {
+	// Server-declared: it named the balance spent, or has_credits=false says it is refusing
+	// requests outright. Never soften an explicit statement with an inference.
+	if (status.creditStatus === "exhausted" || status.restrictedMode === true) {
 		return { kind: "exhausted", message: BILLING_EXHAUSTED_MESSAGE }
 	}
+
+	// Inferred from the balance alone — all a demoted subscriber's payload carries.
+	if (typeof status.remainingCredits === "number" && status.remainingCredits <= 0) {
+		return { kind: "rate-limited", message: BILLING_RATE_LIMITED_MESSAGE }
+	}
+
+	if (!isPaidPlan(status)) return undefined
+
+	if (status.creditStatus === "ok") return undefined
 
 	const isLow =
 		status.creditStatus === "low" ||
@@ -285,6 +371,38 @@ function getCreditBillingWarning(status: BillingStatus | undefined): BillingWarn
 	}
 
 	return undefined
+}
+
+/**
+ * A Community user is considered blocked only when the backend reports both of these facts:
+ *
+ * - The organization is on the Community plan.
+ * - `has_credits` is explicitly `false`, meaning Kimchi inference requests will be rejected.
+ *
+ * The backend decides which Community organizations are blocked. The harness does not receive the
+ * organization's signup date or the reason for the decision, so it must not try to recreate that
+ * policy from the plan name or credit balance.
+ *
+ * A zero balance alone is not enough: an exhausted Coder subscriber may be reported as Community
+ * while still receiving slower, rate-limited inference. Likewise, `has_credits: false` alone is not
+ * enough because it can also describe an exhausted Teams user. Checking both values prevents either
+ * user from receiving the wrong message.
+ */
+function isCommunityInferenceBlocked(status: BillingStatus): boolean {
+	return status.plan === "community" && status.restrictedMode === true
+}
+
+/**
+ * Deliberately keyed on the balance before any tier or billing-status field.
+ *
+ * When a paid subscriber exhausts their credits the server demotes them to a free tier for rate
+ * limiting and then reports that demoted tier as their billing identity, so the payload arrives as
+ * `is_paid_tier: false` / `billing_status: "free_tier"` — indistinguishable from a user who never
+ * paid. `remaining` is the only field the demotion does not rewrite.
+ */
+function isCreditsExhausted(status: BillingStatus): boolean {
+	if (status.creditStatus === "exhausted" || status.restrictedMode === true) return true
+	return typeof status.remainingCredits === "number" && status.remainingCredits <= 0
 }
 
 export function getBillingStatusLine(

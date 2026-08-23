@@ -1,4 +1,5 @@
-// Branded OAuth callback pages for the Kimchi-account browser login.
+// Branded OAuth callback pages shared by the browser-based auth flows
+// (Kimchi-account CLI login, MCP server OAuth authorization).
 //
 // This mirrors the renderer that `scripts/patch-pi-ai-oauth.js` injects into
 // pi-ai's `oauth-page.js`: both read the SAME templates from
@@ -74,19 +75,26 @@ function renderPage(options: PageOptions): string {
 </html>`
 }
 
-export function oauthSuccessHtml(message: string): string {
+/** Optional page wording for flows that need something other than the default
+ * authentication copy (e.g. MCP authorization callbacks). */
+export interface PageOverrides {
+	title?: string
+	heading?: string
+}
+
+export function oauthSuccessHtml(message: string, overrides: PageOverrides = {}): string {
 	return renderPage({
-		title: "Authentication successful",
-		heading: "Authentication successful",
+		title: overrides.title ?? "Authentication successful",
+		heading: overrides.heading ?? "Authentication successful",
 		message,
 		template: "success",
 	})
 }
 
-export function oauthErrorHtml(message: string, details?: string): string {
+export function oauthErrorHtml(message: string, details?: string, overrides: PageOverrides = {}): string {
 	return renderPage({
-		title: "Authentication failed",
-		heading: "Authentication failed",
+		title: overrides.title ?? "Authentication failed",
+		heading: overrides.heading ?? "Authentication failed",
 		message,
 		details,
 		template: "error",

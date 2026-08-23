@@ -1,12 +1,15 @@
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai"
 import { describe, expect, it } from "vitest"
+import { isHarnessSteer } from "../steer-marker.js"
 import {
+	brandUnmarkedSteers,
 	ContinuationNudge,
 	DONE_SIGNAL,
 	EmptyTurnNudge,
 	type OrchestratorMessages,
 	stripStaleNudges,
 	stripUiOnlyMessages,
+	tagSelfEchoes,
 } from "./continuation-nudge.js"
 
 function makeAssistant(content: AssistantMessage["content"]): AssistantMessage {
@@ -175,6 +178,28 @@ describe("ContinuationNudge.evaluateTurn", () => {
 		expect(guard.evaluateTurn(aborted)).toBe(false)
 	})
 
+	it("does not nudge when the turn ended with a provider error (stopReason: error)", () => {
+		// Provider errors (e.g. content_filter, budget exhausted) must not
+		// trigger nudges — the nudge would re-queue a followUp message and
+		// cause the agent loop to retry indefinitely until budget is exhausted.
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const error = { ...textOnlyMessage, stopReason: "error" as const }
+		expect(guard.evaluateTurn(error)).toBe(false)
+	})
+
+	it("does not consume a nudge slot when the turn was a provider error", () => {
+		// An error turn must not decrement the per-cycle budget — a subsequent
+		// legitimate text-only turn in the same cycle should still get its nudge.
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const error = { ...textOnlyMessage, stopReason: "error" as const }
+		expect(guard.evaluateTurn(error)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
 	it("does not consume a nudge slot when the turn was aborted", () => {
 		// An aborted turn must not decrement the per-cycle budget — a subsequent
 		// legitimate text-only turn in the same cycle should still get its nudge.
@@ -234,6 +259,35 @@ describe("ContinuationNudge session-level tool tracking", () => {
 		guard.recordToolCall()
 		guard.resetForNewAgentRun() // simulate a /agent run boundary
 		expect(guard.hasToolBeenCalledThisSession()).toBe(true)
+	})
+
+	it("resetForModelSwitch clears the session-level tool latch", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		guard.recordToolCall()
+		guard.resetForNewUserInput()
+		expect(guard.hasToolBeenCalledThisSession()).toBe(true)
+
+		guard.resetForModelSwitch()
+
+		expect(guard.hasToolBeenCalledThisSession()).toBe(false)
+		expect(guard.hasToolBeenCalledThisCycle()).toBe(false)
+		expect(guard.hasToolBeenCalledThisRun()).toBe(false)
+		// A text-only turn after the model switch is treated like a fresh
+		// session and is not nudged.
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
+	it("resetForModelSwitch clears pending nudge response state", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		guard.evaluateTurn(textOnlyMessage)
+		expect(guard.isNudgeResponsePending()).toBe(true)
+
+		guard.resetForModelSwitch()
+
+		expect(guard.isNudgeResponsePending()).toBe(false)
+		expect(guard.isDoneSignalReceived()).toBe(false)
 	})
 
 	it("does not consume a nudge slot while no tools have been called this session", () => {
@@ -371,6 +425,17 @@ describe("ContinuationNudge Agent-pending suppression", () => {
 		// Simulate an unrelated user input arriving while an Agent is running.
 		guard.resetForNewUserInput()
 		// The nudge must still be suppressed — we are still waiting for the result.
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
+	it("resetForModelSwitch does NOT clear pending delegation count", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		guard.markDelegationCall()
+		// User switches models while an Agent result is still in flight.
+		guard.resetForModelSwitch()
+		// Delegated agents are independent of the orchestrator model, so the
+		// pending count must survive the switch to keep the nudge suppressed.
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
 	})
 
@@ -525,10 +590,45 @@ describe("EmptyTurnNudge", () => {
 		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
 	})
 
+	it("re-arms after resetForModelSwitch", () => {
+		const guard = new EmptyTurnNudge()
+		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+		expect(guard.evaluateTurn(emptyMessage)).toBe(false)
+		// A new model gets a fresh empty-turn budget even within the same cycle.
+		guard.resetForModelSwitch()
+		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+		expect(guard.evaluateTurn(emptyMessage)).toBe(false)
+	})
+
 	it("does not nudge when the user aborted the turn (stopReason: aborted)", () => {
 		const guard = new EmptyTurnNudge()
 		const aborted = { ...emptyMessage, stopReason: "aborted" as const }
 		expect(guard.evaluateTurn(aborted)).toBe(false)
+	})
+
+	describe("provider error suppression", () => {
+		// Provider errors (e.g. content_filter, budget exhausted) produce empty
+		// responses. Without this guard the nudge re-queues a followUp message,
+		// causing the agent loop to retry indefinitely until budget is exhausted.
+		it("does not nudge on an empty turn with stopReason: error", () => {
+			const guard = new EmptyTurnNudge()
+			const error = { ...emptyMessage, stopReason: "error" as const }
+			expect(guard.evaluateTurn(error)).toBe(false)
+		})
+
+		it("does not consume a nudge slot on error turns", () => {
+			const guard = new EmptyTurnNudge()
+			const error = { ...emptyMessage, stopReason: "error" as const }
+			expect(guard.evaluateTurn(error)).toBe(false)
+			expect(guard.evaluateTurn(error)).toBe(false)
+			expect(guard.evaluateTurn(error)).toBe(false)
+			// Full budget still available for a genuine empty turn.
+			expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+			expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+			expect(guard.evaluateTurn(emptyMessage)).toBe(false)
+		})
 	})
 })
 
@@ -591,5 +691,171 @@ describe("stripUiOnlyMessages", () => {
 		const messages: OrchestratorMessages = [makeUser("q"), other, textOnlyMessage]
 		const result = stripUiOnlyMessages(messages)
 		expect(result).toBe(messages)
+	})
+})
+
+describe("ContinuationNudge question suppression", () => {
+	it("does not nudge when the assistant's text ends with a question", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const asking = makeAssistant([{ type: "text", text: "Go ahead and commit this small ADR update?" }])
+		expect(guard.evaluateTurn(asking)).toBe(false)
+	})
+
+	it("does not nudge when the question is followed by a quote mark", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const asking = makeAssistant([{ type: "text", text: 'Are you sure you want to proceed?"' }])
+		expect(guard.evaluateTurn(asking)).toBe(false)
+	})
+
+	it("still nudges when the text contains a question but ends with a statement", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const mixed = makeAssistant([{ type: "text", text: "You asked about the ADR. I will delegate this to Nemotron." }])
+		expect(guard.evaluateTurn(mixed)).toBe(true)
+	})
+})
+
+describe("tagSelfEchoes", () => {
+	function makeUser(text: string): OrchestratorMessages[number] {
+		return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() }
+	}
+
+	function makeCustom(text: string): OrchestratorMessages[number] {
+		return {
+			role: "custom",
+			customType: "nudge",
+			content: [{ type: "text", text }],
+			display: false,
+			timestamp: Date.now(),
+		}
+	}
+
+	it("returns the same reference when no echo is present", () => {
+		const messages: OrchestratorMessages = [
+			makeUser("hello"),
+			makeAssistant([{ type: "text", text: "assistant reply" }]),
+			makeUser("follow-up"),
+		]
+		expect(tagSelfEchoes(messages)).toBe(messages)
+	})
+
+	it("annotates a user message that verbatim-echoes the previous assistant text", () => {
+		const echoText = "Want me to jot this as the recommendation into the report's follow-ups?"
+		const messages: OrchestratorMessages = [makeAssistant([{ type: "text", text: echoText }]), makeUser(echoText)]
+		const result = tagSelfEchoes(messages)
+		expect(result).not.toBe(messages)
+		const lastText = (result[1] as { content: { text: string }[] }).content[0].text
+		expect(isHarnessSteer(lastText)).toBe(true)
+		expect(lastText).toContain("verbatim echo")
+		expect(lastText).toContain(echoText)
+	})
+
+	it("annotates a custom message that verbatim-echoes the previous assistant text", () => {
+		const echoText = "Please confirm before I push."
+		const messages: OrchestratorMessages = [makeAssistant([{ type: "text", text: echoText }]), makeCustom(echoText)]
+		const result = tagSelfEchoes(messages)
+		expect(result).not.toBe(messages)
+		const lastText = (result[1] as { content: { text: string }[] }).content[0].text
+		expect(isHarnessSteer(lastText)).toBe(true)
+	})
+
+	it("ignores partial matches", () => {
+		const messages: OrchestratorMessages = [
+			makeAssistant([{ type: "text", text: "Want me to commit this?" }]),
+			makeUser("commit this"),
+		]
+		expect(tagSelfEchoes(messages)).toBe(messages)
+	})
+})
+
+describe("brandUnmarkedSteers", () => {
+	function makeCustomSteer(text: string, customType = "exploration-guard-steer"): OrchestratorMessages[number] {
+		return {
+			role: "custom",
+			customType,
+			content: text,
+			display: false,
+			timestamp: Date.now(),
+		} as OrchestratorMessages[number]
+	}
+
+	function makeBlockSteer(text: string, customType = "exploration-guard-steer"): OrchestratorMessages[number] {
+		return {
+			role: "custom",
+			customType,
+			content: [{ type: "text", text }],
+			display: false,
+			timestamp: Date.now(),
+		} as OrchestratorMessages[number]
+	}
+
+	it("wraps an unbranded custom message with string content", () => {
+		const messages: OrchestratorMessages = [makeCustomSteer("Act now.")]
+		const result = brandUnmarkedSteers(messages)
+		expect(result).not.toBe(messages)
+		const content = (result[0] as { content: string }).content
+		expect(isHarnessSteer(content)).toBe(true)
+		expect(content).toContain("Act now.")
+	})
+
+	it("wraps an unbranded custom message with array content into a single branded block", () => {
+		const messages: OrchestratorMessages = [makeBlockSteer("Act now.")]
+		const result = brandUnmarkedSteers(messages)
+		expect(result).not.toBe(messages)
+		const content = (result[0] as { content: { type: string; text: string }[] }).content
+		expect(content).toHaveLength(1)
+		expect(content[0].type).toBe("text")
+		expect(isHarnessSteer(content[0].text)).toBe(true)
+	})
+
+	it("leaves already-branded messages untouched (no double wrap)", () => {
+		const branded = makeCustomSteer("<system-reminder>\nAct now.\n</system-reminder>")
+		const messages: OrchestratorMessages = [branded]
+		const result = brandUnmarkedSteers(messages)
+		expect(result).toBe(messages)
+	})
+
+	it("skips UI-only custom types", () => {
+		const messages: OrchestratorMessages = [makeCustomSteer("summary text", "prompt-summary")]
+		expect(brandUnmarkedSteers(messages)).toBe(messages)
+	})
+
+	it("wraps an unbranded todo-state-shaped message", () => {
+		const messages: OrchestratorMessages = [makeCustomSteer("## Current Todos\n- a task", "todo-state")]
+		const result = brandUnmarkedSteers(messages)
+		expect(result).not.toBe(messages)
+		expect(isHarnessSteer((result[0] as { content: string }).content)).toBe(true)
+	})
+
+	it("skips empty-content custom messages (kimchi-session-branch shape)", () => {
+		const messages: OrchestratorMessages = [makeCustomSteer("   ", "kimchi-session-branch")]
+		expect(brandUnmarkedSteers(messages)).toBe(messages)
+	})
+
+	it("leaves user, assistant, and toolResult messages untouched", () => {
+		const user = {
+			role: "user",
+			content: [{ type: "text", text: "hi" }],
+			timestamp: Date.now(),
+		} as OrchestratorMessages[number]
+		const messages: OrchestratorMessages = [user, textOnlyMessage]
+		expect(brandUnmarkedSteers(messages)).toBe(messages)
+	})
+
+	it("returns the same array reference when nothing changes", () => {
+		const messages: OrchestratorMessages = [
+			makeCustomSteer("<system-reminder>\nbranded\n</system-reminder>"),
+			makeCustomSteer("", "kimchi-session-branch"),
+		]
+		expect(brandUnmarkedSteers(messages)).toBe(messages)
+	})
+
+	it("is idempotent", () => {
+		const messages: OrchestratorMessages = [makeCustomSteer("Act now."), makeBlockSteer("More.")]
+		const once = brandUnmarkedSteers(messages)
+		const twice = brandUnmarkedSteers(once)
+		expect(twice).toBe(once)
 	})
 })

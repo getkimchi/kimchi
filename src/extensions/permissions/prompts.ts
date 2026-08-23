@@ -1,9 +1,12 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { ERROR_FG, ORANGE_FG, RST, RST_FG, SUCCESS_FG } from "../../ansi.js"
+import { highlightCode } from "../tool-rendering.js"
 import { withWorkingHidden } from "../ui.js"
 import type { PermissionChoice, ToolPermissionPrompter } from "./prompter.js"
 import { numberedChoices, stripChoiceNumber } from "./select-utils.js"
 import { suggestScope } from "./session-memory.js"
-import type { Rule } from "./types.js"
+import type { RiskScore, Rule } from "./types.js"
 
 export { withWorkingHidden }
 
@@ -17,7 +20,6 @@ export type ApprovalOutcome =
 
 export interface CompoundSubcommand {
 	command: string
-	description: string
 }
 
 export type CompoundApprovalOutcome =
@@ -34,6 +36,8 @@ interface PromptOptions {
 	ctx: ExtensionContext
 	/** Extra context line shown above the choices (e.g. classifier reason). */
 	subtitle?: string
+	/** Risk score from the classifier LLM, for display in the prompt. */
+	riskScore?: RiskScore
 	/** Structured choices to present. Defaults to the standard per-tool choices. */
 	choices?: PermissionChoice[]
 	/** Signal to programmatically dismiss the prompt (e.g. when permission mode changes). */
@@ -48,6 +52,7 @@ export function terminalPrompter(ctx: ExtensionContext): ToolPermissionPrompter 
 				input: req.input,
 				ctx,
 				subtitle: req.subtitle,
+				riskScore: req.riskScore,
 				choices: req.choices,
 				signal: req.signal,
 			}),
@@ -89,13 +94,20 @@ export function buildPermissionChoices(toolName: string, input: Record<string, u
 }
 
 export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOutcome> {
-	const { ctx, toolName, input, subtitle } = opts
+	const { ctx, toolName, input, subtitle, riskScore } = opts
 	if (!ctx.hasUI) return { kind: "deny" }
 
-	const callDescription = describeCall(toolName, input)
+	const callDescription = await describeCallHighlighted(toolName, input)
 
-	const lines = [`The assistant wants to run: ${callDescription}`]
+	const lines: string[] = []
+	const termWidth = process.stdout.columns || 80
+	const badge = riskScore ? formatRiskBadge(riskScore) : ""
+	const wrapWidth = badge ? Math.max(20, termWidth - visibleWidth(badge) - 2) : Math.max(20, termWidth)
+	const wrappedCommand = wrapTextWithAnsi(callDescription, wrapWidth).join("\n")
+	lines.push(badge ? `${badge} ${wrappedCommand}` : wrappedCommand)
 	if (subtitle) lines.push(subtitle)
+	lines.push("")
+	lines.push(ctx.ui.theme.fg("accent", ctx.ui.theme.bold("Allow the assistant to run this?")))
 
 	const permissionChoices = opts.choices ?? buildPermissionChoices(toolName, input)
 	const choices = numberedChoices(permissionChoices.map((choice) => choice.label))
@@ -141,12 +153,20 @@ export async function promptForCompoundApproval(opts: {
 	const { ctx, commands } = opts
 	if (!ctx.hasUI) return { kind: "deny" }
 
-	const descriptions = commands.map((c) => c.description)
+	const termWidth = process.stdout.columns || 80
+	const descriptions = await Promise.all(
+		commands.map(async (cmd) => {
+			const highlighted = await describeCallHighlighted(opts.toolName, { command: cmd.command })
+			return wrapTextWithAnsi(highlighted, Math.max(20, termWidth)).join("\n")
+		}),
+	)
 	const lines = [
 		`The assistant wants to run a compound command with ${commands.length} subcommand(s):`,
 		...descriptions,
 	]
 	if (opts.subtitle) lines.push(opts.subtitle)
+	lines.push("")
+	lines.push(ctx.ui.theme.fg("accent", ctx.ui.theme.bold("Allow the assistant to run this?")))
 
 	const compoundChoices = [
 		"Run all (once)",
@@ -182,10 +202,11 @@ export async function promptForCompoundApproval(opts: {
 	return { kind: "deny" }
 }
 
-function describeCall(toolName: string, input: Record<string, unknown>): string {
+/** Describe a tool call as a single-line string (no highlighting). */
+export function describeCall(toolName: string, input: Record<string, unknown>): string {
 	const lower = toolName.toLowerCase()
 	if (lower === "bash" && typeof input.command === "string") {
-		return `bash(${truncate(input.command, 200)})`
+		return `bash(${input.command})`
 	}
 	if (typeof input.path === "string") {
 		return `${lower}(${truncate(input.path, 200)})`
@@ -198,8 +219,24 @@ function describeCall(toolName: string, input: Record<string, unknown>): string 
 	}
 }
 
+/** Like describeCall, but applies shiki syntax highlighting when the tool/language is supported. */
+export async function describeCallHighlighted(toolName: string, input: Record<string, unknown>): Promise<string> {
+	const lower = toolName.toLowerCase()
+	if (lower === "bash" && typeof input.command === "string") {
+		const highlighted = await highlightCode(input.command, "bash")
+		return `${RST}bash(${highlighted}${RST})`
+	}
+	return describeCall(toolName, input)
+}
+
 // Exported for testing
 export function truncate(s: string, max: number): string {
 	if (s.length <= max) return s
 	return `${s.slice(0, max - 1)}…`
+}
+
+/** Format the risk badge: colored symbol + label, e.g. "● high risk". */
+export function formatRiskBadge(score: RiskScore): string {
+	const color = score === "low" ? SUCCESS_FG : score === "medium" ? ORANGE_FG : ERROR_FG
+	return `${color}\u25CF ${score} risk${RST_FG}`
 }

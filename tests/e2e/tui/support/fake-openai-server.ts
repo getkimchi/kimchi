@@ -32,6 +32,10 @@ export interface FakeResponseRequest {
 export interface FakeResponseScript {
 	/** Optional predicate that reserves this script for matching chat requests. */
 	match?: (request: FakeResponseRequest) => boolean
+	/** Raw streamed deltas for tests that need exact SSE chunk boundaries. */
+	rawDeltas?: { delta: Record<string, unknown>; delayMs?: number }[]
+	/** Final streamed finish reason. Defaults to the existing tool-call-aware value. */
+	finishReason?: "stop" | "tool_calls"
 	/** Text chunks emitted as `delta.content` (the visible assistant response). */
 	stream?: string[]
 	/**
@@ -60,6 +64,22 @@ export interface FakeResponseScript {
 	headers?: Record<string, string>
 	/** Route this script to the subagent queue (consumed by subagent requests). */
 	forSubagent?: boolean
+	/**
+	 * Send an SSE chunk with `finish_reason: "error"` and the given error
+	 * message, simulating a provider-side error stop reason. The provider
+	 * surfaces this as `output.errorMessage`, which flows through to
+	 * `message_end` / `showError`. Use instead of `status: 500` when the test
+	 * needs the raw error string (e.g. vLLM internals) to reach the
+	 * classifier — HTTP 500 bodies are not included in the SDK's error
+	 * message.
+	 */
+	streamError?: string
+	/** Token usage reported in the final SSE chunk's `usage` field.
+	 * The openai-completions provider reads `prompt_tokens` and
+	 * `completion_tokens` to compute `totalTokens` on the assistant message.
+	 * Without this, the session has no usage data and compaction gates
+	 * (which read `totalTokens`) see 0 tokens. Defaults to a small value. */
+	usage?: { prompt_tokens: number; completion_tokens: number }
 }
 
 export interface RecordedRequest extends FakeResponseRequest {
@@ -295,6 +315,11 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 		return
 	}
 
+	for (const raw of script.rawDeltas ?? []) {
+		if (raw.delayMs) await sleep(raw.delayMs)
+		chunk([{ index: 0, delta: raw.delta, finish_reason: null }])
+	}
+
 	for (const text of script.stream ?? []) {
 		const delay = script.textDelayMs ?? script.delayMs
 		if (delay) await sleep(delay)
@@ -331,7 +356,38 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 		])
 	}
 
-	chunk([{ index: 0, delta: {}, finish_reason: script.toolCalls?.length ? "tool_calls" : "stop" }])
+	// If the script simulates a provider-side error stop reason, emit an
+	// SSE chunk with finish_reason: "error" and the raw error string in the
+	// delta. pi-ai maps this to stopReason: "error" with errorMessage set to
+	// the raw string, which flows through to message_end / showError. This is
+	// the path that carries the actual error text (e.g. vLLM internals).
+	if (script.streamError) {
+		chunk([{ index: 0, delta: { content: script.streamError }, finish_reason: "error" }])
+		res.write("data: [DONE]\n\n")
+		res.end()
+		return
+	}
+
+	const finalChunk: Record<string, unknown> = {
+		index: 0,
+		delta: {},
+		finish_reason: script.finishReason ?? (script.toolCalls?.length ? "tool_calls" : "stop"),
+	}
+	if (script.usage) {
+		writeSse(res, {
+			id: "chatcmpl_fake",
+			object: "chat.completion.chunk",
+			created: unixNow(),
+			model,
+			choices: [finalChunk],
+			usage: {
+				prompt_tokens: script.usage.prompt_tokens,
+				completion_tokens: script.usage.completion_tokens,
+			},
+		})
+	} else {
+		chunk([finalChunk])
+	}
 	res.write("data: [DONE]\n\n")
 	res.end()
 }

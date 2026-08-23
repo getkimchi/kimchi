@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { getTodoScopeKey, normalizeTodoScope, parseTodoScopeKey, registerTodoScopeKind } from "./scope.js"
+import {
+	getTodoScopeKey,
+	normalizeTodoScope,
+	parseTodoScopeKey,
+	registerTodoScopeKind,
+	validateExplicitTodoScope,
+} from "./scope.js"
 import type { TodoScope } from "./types.js"
 
 describe("todo scope helpers", () => {
@@ -38,5 +44,68 @@ describe("todo scope helpers", () => {
 		expect(scope).toEqual({ kind: "custom", id: "a/b" })
 		expect(getTodoScopeKey(scope as unknown as TodoScope)).toBe("custom:a%2Fb")
 		expect(parseTodoScopeKey("custom:a%2Fb")).toEqual({ kind: "custom", id: "a/b" })
+	})
+
+	describe("validateExplicitTodoScope", () => {
+		it("returns empty result for omitted/empty input (signals auto-routing)", () => {
+			expect(validateExplicitTodoScope(undefined)).toEqual({})
+			expect(validateExplicitTodoScope(null)).toEqual({})
+			expect(validateExplicitTodoScope("")).toEqual({})
+			expect(validateExplicitTodoScope("{}")).toEqual({})
+			expect(validateExplicitTodoScope({})).toEqual({})
+		})
+
+		it("accepts valid global scope", () => {
+			expect(validateExplicitTodoScope("global")).toEqual({ scope: { kind: "global" } })
+			expect(validateExplicitTodoScope({ kind: "global" })).toEqual({ scope: { kind: "global" } })
+		})
+
+		it("accepts valid ferment scope", () => {
+			expect(validateExplicitTodoScope({ kind: "ferment", phaseId: "phase-2" })).toEqual({
+				scope: { kind: "ferment", phaseId: "phase-2" },
+			})
+		})
+
+		it("accepts valid ferment-step scope", () => {
+			expect(validateExplicitTodoScope({ kind: "ferment-step", phaseId: "phase-2", stepId: "step-3" })).toEqual({
+				scope: { kind: "ferment-step", phaseId: "phase-2", stepId: "step-3" },
+			})
+		})
+
+		it("rejects unknown string scope with corrective message", () => {
+			const result = validateExplicitTodoScope("phase-1")
+			expect(result.scope).toBeUndefined()
+			expect(result.error).toContain("Unknown todo scope 'phase-1'")
+		})
+
+		it("rejects unknown kind", () => {
+			const result = validateExplicitTodoScope({ kind: "unknown" })
+			expect(result.scope).toBeUndefined()
+			expect(result.error).toContain("Unknown todo scope kind 'unknown'")
+		})
+
+		it("rejects ferment scope with missing phaseId", () => {
+			const result = validateExplicitTodoScope({ kind: "ferment" })
+			expect(result.scope).toBeUndefined()
+			expect(result.error).toContain("phaseId")
+		})
+
+		it("rejects ferment-step scope with missing stepId", () => {
+			const result = validateExplicitTodoScope({ kind: "ferment-step", phaseId: "phase-1" })
+			expect(result.scope).toBeUndefined()
+			expect(result.error).toContain("stepId")
+		})
+
+		it("rejects scope missing kind entirely", () => {
+			const result = validateExplicitTodoScope({ phaseId: "phase-1" })
+			expect(result.scope).toBeUndefined()
+			expect(result.error).toContain("missing 'kind'")
+		})
+
+		it("rejects non-string non-object input", () => {
+			const result = validateExplicitTodoScope(42)
+			expect(result.scope).toBeUndefined()
+			expect(result.error).toContain("expected an object or string")
+		})
 	})
 })

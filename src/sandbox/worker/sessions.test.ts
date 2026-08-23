@@ -56,7 +56,7 @@ describe("listSessions", () => {
 		expect(result.map((s) => s.name).sort()).toEqual(["alpha", "beta"])
 		const alpha = result.find((s) => s.name === "alpha")
 		expect(alpha).toMatchObject({ name: "alpha", agentMode: "PTY", alive: true })
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/session?clientType=${HARNESS_CLIENT_TYPE}`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/api/session?clientType=${HARNESS_CLIENT_TYPE}`)
 	})
 
 	it("returns an empty array when the worker has no sessions", async () => {
@@ -81,7 +81,7 @@ describe("listSessions", () => {
 })
 
 describe("getSession", () => {
-	it("hits /session/{name} and embeds the name", async () => {
+	it("hits /api/session/{name} and embeds the name", async () => {
 		const mockFetch = vi.fn().mockResolvedValue(jsonResponse(sessionFixture()))
 		const client = new WorkerClient(CREDS, { fetch: mockFetch })
 
@@ -89,14 +89,14 @@ describe("getSession", () => {
 
 		expect(result.name).toBe("foo")
 		expect(result.agentMode).toBe("PTY")
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/session/foo`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/api/session/foo`)
 	})
 
 	it("URL-encodes the session name", async () => {
 		const mockFetch = vi.fn().mockResolvedValue(jsonResponse(sessionFixture()))
 		const client = new WorkerClient(CREDS, { fetch: mockFetch })
 		await getSession(client, "a b/c")
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/session/a%20b%2Fc`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/api/session/a%20b%2Fc`)
 	})
 
 	it("surfaces 404 as WorkerError with status preserved", async () => {
@@ -125,7 +125,7 @@ describe("createSession", () => {
 		const result = await createSession(client, "foo", req)
 
 		expect(result.name).toBe("foo")
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/session/foo`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/api/session/foo`)
 		const init = mockFetch.mock.calls[0][1] as RequestInit
 		expect(init.method).toBe("POST")
 		expect(init.body).toBeInstanceOf(FormData)
@@ -192,7 +192,7 @@ describe("createSession large-repo regression", () => {
 	beforeEach(async () => {
 		serverDelayMs = 0
 		server = createServer((req, res) => {
-			if (req.method === "POST" && req.url?.startsWith("/session/")) {
+			if (req.method === "POST" && req.url?.startsWith("/api/session/")) {
 				req.on("data", () => {})
 				req.on("end", () => {
 					setTimeout(() => {
@@ -243,13 +243,13 @@ describe("createSession large-repo regression", () => {
 })
 
 describe("deleteSession", () => {
-	it("DELETEs /session/{name}", async () => {
+	it("DELETEs /api/session/{name}", async () => {
 		const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 200 }))
 		const client = new WorkerClient(CREDS, { fetch: mockFetch })
 
 		await deleteSession(client, "foo")
 
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/session/foo`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/api/session/foo`)
 		expect(mockFetch.mock.calls[0][1]).toMatchObject({ method: "DELETE" })
 	})
 

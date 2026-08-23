@@ -4,6 +4,7 @@ import { join } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
+import type { FermentCharter } from "../../ferment/types.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
 import { setActive } from "./state.js"
@@ -47,7 +48,10 @@ function makeRuntime(policy: "automated" | "manual"): {
  * resolves such a ferment to an `activate_phase` action, exercising the
  * contextual-nudge path used by `scheduleFermentWakeUp`.
  */
-function makePlannedRuntime(policy: "automated" | "manual"): {
+function makePlannedRuntime(
+	policy: "automated" | "manual",
+	charter?: FermentCharter,
+): {
 	runtime: FermentRuntime
 	fermentId: string
 } {
@@ -70,6 +74,7 @@ function makePlannedRuntime(policy: "automated" | "manual"): {
 		successCriteria: ["c"],
 		constraints: [],
 		assumptions: "a",
+		charter,
 		phases: [{ name: "P1", goal: "g", steps: [{ description: "s1" }] }],
 	})
 	if (!scoped.ok) throw new Error(scoped.error.message)
@@ -81,6 +86,33 @@ afterEach(() => {
 	for (const dir of tmpDirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true })
 	}
+})
+
+describe("continuation nudges — intent charter anchor", () => {
+	it("appends the compact charter to the wake-up nudge when the ferment has one", () => {
+		const pi = createPi()
+		const { runtime } = makePlannedRuntime("automated", {
+			intent: "Recreate the Tahoe desktop as a web app",
+			wowFactor: "It feels like the real OS",
+		})
+
+		scheduleFermentWakeUp(pi, runtime)
+
+		const call = vi.mocked(pi.sendMessage).mock.calls[0]?.[0] as { content: { type: string; text: string }[] }
+		expect(call.content[0].text).toContain("Charter:")
+		expect(call.content[0].text).toContain("Intent: Recreate the Tahoe desktop as a web app")
+		expect(call.content[0].text).toContain("Wow: It feels like the real OS")
+	})
+
+	it("omits the charter block when the ferment has none", () => {
+		const pi = createPi()
+		const { runtime } = makePlannedRuntime("automated")
+
+		scheduleFermentWakeUp(pi, runtime)
+
+		const call = vi.mocked(pi.sendMessage).mock.calls[0]?.[0] as { content: { type: string; text: string }[] }
+		expect(call.content[0].text).not.toContain("Charter:")
+	})
 })
 
 describe("scheduleNextFermentAction — scope nudge suppression", () => {

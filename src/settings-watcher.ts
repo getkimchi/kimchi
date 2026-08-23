@@ -1,4 +1,4 @@
-import { type FSWatcher, watch } from "node:fs"
+import { type FSWatcher, statSync, watch } from "node:fs"
 import { resolve } from "node:path"
 import { CONFIG_DIR_NAME, getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent"
 
@@ -106,6 +106,9 @@ export function __resetSettingsWatcherForTest(): void {
 		clearTimeout(debounceTimer)
 		debounceTimer = undefined
 	}
+	fileSignatures.clear()
+	globalSettingsPath = undefined
+	projectSettingsPath = undefined
 }
 
 type ThemeChangeListener = (newName: string | undefined, oldName: string | undefined) => void
@@ -125,9 +128,59 @@ function scheduleFire(): void {
 	debounceTimer.unref?.()
 }
 
+// macOS/bun `fs.watch` emits spurious change events on files that haven't
+// actually changed (a kqueue quirk; ~20/s has been observed on an idle
+// settings.json). Each event used to trigger `fire()` → rebuild the
+// SettingsManager (proper-lockfile acquire/release + readFileSync), which
+// alone burned 20-30% CPU at idle. To stop that, we record an mtime+size
+// signature for each watched file at arm time and on every successful fire;
+// `scheduleFire` only schedules a `fire` when one of those signatures actually
+// changed. Spurious events on an unchanged file are dropped before any rebuild.
+const fileSignatures = new Map<string, string>()
+
+function signatureOf(path: string): string | undefined {
+	try {
+		const st = statSync(path)
+		return `${st.mtimeMs}:${st.size}`
+	} catch {
+		return undefined
+	}
+}
+
+function recordSignature(path: string): void {
+	const sig = signatureOf(path)
+	if (sig !== undefined) fileSignatures.set(path, sig)
+	else fileSignatures.delete(path)
+}
+
+/** Returns true when `path`'s mtime/size differs from the last recorded
+ *  signature (or when it has never been recorded). */
+function signatureChanged(path: string): boolean {
+	return signatureOf(path) !== fileSignatures.get(path)
+}
+
+let globalSettingsPath: string | undefined
+let projectSettingsPath: string | undefined
+
+function eitherFileChanged(): boolean {
+	// No signature yet (first event after arm) → treat as changed so we seed.
+	return (
+		(globalSettingsPath !== undefined && signatureChanged(globalSettingsPath)) ||
+		(projectSettingsPath !== undefined && signatureChanged(projectSettingsPath))
+	)
+}
+
 function fire(): void {
 	debounceTimer = undefined
+	// Drop the cache only when a watched file's mtime/size actually changed.
+	// This is the fix for the idle-CPU busy loop: macOS `fs.watch` emits spurious
+	// change events on unchanged files (~20/s observed); without this gate each
+	// one rebuilt the SettingsManager (lockfile + readFileSync) — 20-30% CPU.
+	const changed = eitherFileChanged()
+	if (!changed) return
 	settingsManager = undefined
+	if (globalSettingsPath) recordSignature(globalSettingsPath)
+	if (projectSettingsPath) recordSignature(projectSettingsPath)
 	const current = getActiveThemeName()
 	if (current === lastSeenTheme) return
 	const previous = lastSeenTheme
@@ -166,24 +219,42 @@ function ensureWatchers(): void {
 		lastSeenTheme = getActiveThemeName()
 	}
 	if (!globalWatcher) {
-		globalWatcher = startWatch(resolve(getAgentDir(), "settings.json"), () => {
+		const path = resolve(getAgentDir(), "settings.json")
+		globalSettingsPath = path
+		globalWatcher = startWatch(path, () => {
 			globalWatcher = undefined
 			globalWatchBroken = true
 		})
 		if (globalWatcher) {
-			if (globalWatchBroken) scheduleFire()
+			if (globalWatchBroken) {
+				// Re-arming after a broken watcher: do NOT record the current
+				// signature — preserve the old one so the catch-up fire() can
+				// detect changes that happened while the watcher was dead.
+				scheduleFire()
+			} else {
+				recordSignature(path)
+			}
 			globalWatchBroken = false
 		} else {
 			globalWatchBroken = true
 		}
 	}
 	if (!projectWatcher) {
-		projectWatcher = startWatch(resolve(process.cwd(), CONFIG_DIR_NAME, "settings.json"), () => {
+		const path = resolve(process.cwd(), CONFIG_DIR_NAME, "settings.json")
+		projectSettingsPath = path
+		projectWatcher = startWatch(path, () => {
 			projectWatcher = undefined
 			projectWatchBroken = true
 		})
 		if (projectWatcher) {
-			if (projectWatchBroken) scheduleFire()
+			if (projectWatchBroken) {
+				// Re-arming after a broken watcher: do NOT record the current
+				// signature — preserve the old one so the catch-up fire() can
+				// detect changes that happened while the watcher was dead.
+				scheduleFire()
+			} else {
+				recordSignature(path)
+			}
 			projectWatchBroken = false
 		} else {
 			projectWatchBroken = true

@@ -6,13 +6,14 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import {
-	getCliModeArg,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
+	populateCliArgs,
 	stripExperimentalFeaturesArg,
+	stripMultiModelArgs,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
@@ -37,6 +38,8 @@ import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
+import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
+import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
@@ -48,13 +51,21 @@ import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
+import daemonExtension from "./extensions/daemon/index.js"
+import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
+import hiddenToolGuidanceExtension from "./extensions/hidden-tool-guidance.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import ideAdapterExtension from "./extensions/ide-adapter/index.js"
 import infrastructureBreakerExtension from "./extensions/infrastructure-breaker.js"
 import inputHistoryExtension from "./extensions/input-history.js"
+import {
+	applyInteractiveErrorSurfacePatch,
+	default as interactiveErrorSurfaceExtension,
+} from "./extensions/interactive-error-surface.js"
+import { applyInteractiveModelSessionPatch } from "./extensions/interactive-model-session.js"
 import kimchiHooksAdapter from "./extensions/kimchi-hooks/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import llmResponseLogExtension from "./extensions/llm-response-log.js"
@@ -65,9 +76,11 @@ import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
+import omitKimchiMaxTokensExtension from "./extensions/omit-kimchi-max-tokens.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
 import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-sanitizer.js"
+import packageInstallGuardExtension from "./extensions/package-install-guard.js"
 import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
@@ -76,6 +89,7 @@ import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
+import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
@@ -120,6 +134,7 @@ import {
 	readExperimentalModels,
 	updateModelsConfig,
 } from "./models.js"
+import { IS_ACP_MODE } from "./modes/acp/state.js"
 import {
 	augmentModelRolesWithOllama,
 	injectOllamaProvider,
@@ -127,6 +142,7 @@ import {
 	readOllamaModelsFromConfig,
 	resolveOllamaHost,
 } from "./ollama.js"
+import { syncPiAuth } from "./pi-auth.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
@@ -147,6 +163,11 @@ import { getVersion } from "./utils.js"
 installInfrastructureRetryPatch()
 installInlineCompactPatch()
 installPiNativeCompatibilityShim()
+// Wrap InteractiveMode.prototype.showError so retried provider errors are
+// suppressed / sanitized before reaching the terminal. Must run before any
+// InteractiveMode instance is constructed.
+applyInteractiveErrorSurfacePatch()
+applyInteractiveModelSessionPatch()
 
 function getSubcommand(args: string[]): string {
 	if (args.includes("--version") || args.includes("-v")) return "version"
@@ -182,11 +203,6 @@ if (telemetryConfig.enabled) {
 		subcommand: getSubcommand(originalArgs),
 	})
 }
-
-// ACP mode runs JSON-RPC over stdio; interactive mode runs the standard TUI
-// harness. Decide once at module load, before anything else runs.
-const cliMode = getCliModeArg(originalArgs)
-const acpMode = cliMode === "acp"
 
 // Monkey-patch AgentSession.prototype.exportToJsonl so ALL JSONL exports
 // (interactive, ACP, and teleport mode) get trace IDs injected inline.
@@ -249,6 +265,10 @@ try {
 		await main(originalArgs, { extensionFactories: [] })
 	} else {
 		const experimentalFeatures = isExperimentalFeaturesArg(originalArgs)
+		// Publish to the module-level flag so extensions (daemon tools,
+		// steering text) can gate on it — the CLI arg is stripped from the
+		// args that reach main(), so pi.getFlag can't discover it.
+		setExperimentalFeaturesEnabled(experimentalFeatures)
 		let config = loadConfig()
 
 		const envKey = process.env.KIMCHI_API_KEY || undefined
@@ -356,6 +376,7 @@ try {
 				throw err
 			}
 		}
+		await syncPiAuth(resolve(agentDir, "auth.json"), modelsJsonPath, currentApiKey)
 
 		// Must run before main() so the keybindings file is loaded with the
 		// override in place.
@@ -445,6 +466,13 @@ try {
 			process.exit(1)
 		}
 		const rawArgs = atFileArgs.args
+
+		// Parse Kimchi-local CLI flags once and strip virtual multi-model args
+		// before upstream pi-mono sees them (it does not recognize "multi-model"
+		// as a model id).
+		populateCliArgs(rawArgs)
+		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
+
 		const terminalIo = {
 			stdinIsTTY: process.stdin.isTTY === true,
 			stdoutIsTTY: process.stdout.isTTY === true,
@@ -499,11 +527,12 @@ try {
 
 		installGlobalFetchInstrumentation({
 			userAgent: `kimchi/${getVersion()}`,
-			onModelCompletionSettled: (originalFetch) => refreshBillingStatusFromConfig({ fetch: originalFetch }),
+			onModelCompletionSettled: (originalFetch) =>
+				refreshBillingStatusFromConfig({ fetch: originalFetch, mode: "automatic" }),
 		})
 
 		const interactiveStartupContext = {
-			nonInteractiveMode: acpMode,
+			nonInteractiveMode: IS_ACP_MODE,
 			...terminalIo,
 		}
 		const startupAuthState = createStartupAuthGateState()
@@ -527,6 +556,7 @@ try {
 			settingsTrustSyncExtension,
 			autoUpdateSettingsExtension,
 			startupUpdateExtension,
+			packageInstallGuardExtension,
 			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
@@ -543,8 +573,24 @@ try {
 			// dynamically on every bash call, so enable/disable from /resources
 			// takes effect immediately without a process restart.
 			bashDefaultTimeoutExtension,
+			// Background bash: MUST register before bashToolGuard so its background
+			// `execute` wins the first-registration-per-name race (runner.js).
+			// Carries BASH_TOOL_DESCRIPTION so the tool-guard's steering composes.
+			// Background mode is opt-in via `checkin_interval`; without it, bash
+			// runs synchronously as before.
+			bashBackgroundExtension,
+			// bash_control companion tool. While a background process awaits a
+			// continue/stop decision, other tool calls are hard-blocked with a
+			// steering reason; natural process exit releases the gate.
+			bashControlExtension,
+			// Session-surviving daemons: daemon + daemon_control tools.
+			// Deliberate last resort for services that must outlive the session —
+			// session_shutdown intentionally kills nothing here.
+			// EXPERIMENTAL: gated behind --enable-experimental-features.
+			...(experimentalFeatures ? [daemonExtension] : []),
 			bashToolGuardExtension,
 			bashTimeoutGuidanceExtension,
+			hiddenToolGuidanceExtension,
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 			] satisfies ManagedExtensionFactory[]),
@@ -604,6 +650,7 @@ try {
 			modelGuardExtension,
 			orphanToolResultRepairExtension,
 			orphanToolResultSanitizerExtension,
+			omitKimchiMaxTokensExtension,
 			piiRedactionExtension,
 			stripImagesExtension,
 			traceIdExtension,
@@ -612,15 +659,18 @@ try {
 			activityExtension,
 			infrastructureErrorTracker.extension,
 			infrastructureBreakerExtension,
+			interactiveErrorSurfaceExtension,
+			rateLimitNoticeExtension,
 		]
 
-		if (acpMode) {
+		if (IS_ACP_MODE) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
-			await runAcpMode({ extensionFactories, agentDir })
+			const { McpServerManager } = await import("./extensions/mcp-adapter/server-manager.js")
+			await runAcpMode({ extensionFactories, agentDir, mcpServerManager: new McpServerManager() })
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 			const { main } = await import("@earendil-works/pi-coding-agent")
-			await main(rawArgs, { extensionFactories })
+			await main(rawArgsWithoutMultiModel, { extensionFactories })
 		}
 		// Only reclassify runs that already failed (print mode sets exitCode 1);
 		// a clean interactive quit after a transient error stays a success.

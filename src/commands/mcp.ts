@@ -11,9 +11,10 @@
  * name for a *different* URL (e.g. the user edited the URL but kept the
  * name). If so, it probes under a throwaway `__probe_<uuid>` name and
  * cleans it up afterwards so the real server's stored tokens are never
- * overwritten. If no entry exists or the URL matches, the real name is used
- * so a repeat probe of an already-authorized server finds stored OAuth
- * tokens and skips the browser flow.
+ * overwritten. If no entry exists, the URL matches, or the entry is
+ * residue from an incomplete OAuth flow (no serverUrl), the real name is
+ * used — so a repeat probe of an already-authorized server finds stored
+ * OAuth tokens and an interrupted flow completes on the correct entry.
  *
  * Used by Kimchi Desktop's MCP server configuration UI to populate a
  * multiselect dropdown of available tools when the user picks
@@ -25,11 +26,11 @@
  * Exit:   0 on success (including needs-auth), 1 on error
  */
 
-import { randomUUID } from "node:crypto"
 import { Type } from "typebox"
 import { Value } from "typebox/value"
-import { getAuthEntry, removeAuthEntry } from "../extensions/mcp-adapter/mcp-auth.js"
+import { removeAuthEntry } from "../extensions/mcp-adapter/mcp-auth.js"
 import { authenticate, supportsOAuth } from "../extensions/mcp-adapter/mcp-auth-flow.js"
+import { resolveProbeName } from "../extensions/mcp-adapter/resolve-probe-name.js"
 import { McpServerManager } from "../extensions/mcp-adapter/server-manager.js"
 import type { McpTool, ServerEntry } from "../extensions/mcp-adapter/types.js"
 
@@ -134,7 +135,13 @@ async function runProbe(args: string[]): Promise<number> {
 		// is shared between the initial probe, authenticate(), and the retry.
 		// A repeat probe of an already-authorized server finds stored OAuth
 		// tokens on the first call and skips the browser flow entirely.
-		let result = await withTimeout(manager.probeTools(definition, probeName), timeoutMs, timeoutMsg)
+		let result = await withTimeout(manager.probeTools(probeName, definition), timeoutMs, timeoutMsg)
+		// probeTools returns errors inline via `result.error` (it does not throw
+		// on connect/tools failures) — surface those as exit-1 failures so the UI
+		// can display them, preserving the pre-unification contract.
+		if (result.error) {
+			return await emitError(result.error, null)
+		}
 
 		// If the server needs auth and OAuth is supported, attempt the full
 		// OAuth flow (browser redirect + callback) then retry the probe.
@@ -151,7 +158,10 @@ async function runProbe(args: string[]): Promise<number> {
 
 			// Retry probe after successful auth, reusing the same name so the
 			// token store has the credentials.
-			result = await withTimeout(manager.probeTools(definition, probeName), timeoutMs, timeoutMsg)
+			result = await withTimeout(manager.probeTools(probeName, definition), timeoutMs, timeoutMsg)
+			if (result.error) {
+				return await emitError(result.error, null)
+			}
 		}
 
 		const output: ProbeResult = {
@@ -175,33 +185,6 @@ async function runProbe(args: string[]): Promise<number> {
 			removeAuthEntry(probeName)
 		}
 	}
-}
-
-/**
- * Decide which name to use as the OAuth token-store key during a probe.
- *
- * The token store is keyed by server name. If an auth entry already exists
- * under `name` for a *different* URL — e.g. the user edited the server's URL
- * but kept the name — probing with the real name would overwrite the real
- * server's stored credentials. To avoid that, fall back to a throwaway
- * `__probe_<uuid>` name whenever the stored URL does not match the probe's
- * URL; the caller cleans it up with {@link removeAuthEntry} in its `finally`.
- *
- * When no entry exists (new server) or the URL matches (repeat probe of an
- * authorized server), the real name is used so that stored tokens are found
- * and OAuth is skipped on repeat probes.
- */
-function resolveProbeName(name: string, definition: ServerEntry): string {
-	const existing = getAuthEntry(name)
-	// No stored entry: new server — use the real name so the first probe
-	// persists tokens under it and a repeat probe finds them.
-	if (!existing) return name
-	// URL matches: repeat probe of an authorized server — reuse the name so
-	// stored tokens are found and the browser flow is skipped.
-	if (existing.serverUrl === definition.url) return name
-	// Entry exists for a different URL — isolate the probe's credentials under
-	// a throwaway name so the real server's tokens are never overwritten.
-	return `__probe_${randomUUID()}`
 }
 
 function readStdin(): Promise<string> {

@@ -7,13 +7,17 @@ import { setBillingStatusForTest } from "../extensions/billing/status.js"
 import * as FERMENT from "../extensions/ferment/index.js"
 import * as MULTI_MODEL from "../extensions/multi-model.js"
 import * as TAGS from "../extensions/tags.js"
+import type { Ferment } from "../ferment/types.js"
 import {
 	buildContextCompact,
+	buildControlsLineSegments,
 	buildModelAbbrev,
 	buildPhaseCompact,
 	buildScriptPayload,
+	renderFittedLine,
 	SHORTCUT_TAIL,
 	StatusLine,
+	StatusLineScript,
 } from "./status-line.js"
 
 // ── Mock status-line-config.ts ───────────────────────────────────────────────
@@ -86,11 +90,13 @@ function createMockStatusLineData(opts?: {
 	permissionsMode?: string
 	permissionsWarning?: string
 	updateAvailable?: string
+	lsp?: string
 }): ReadonlyFooterDataProvider {
 	const statuses = new Map<string, string>()
 	if (opts?.permissionsMode) statuses.set("permissions-mode", opts.permissionsMode)
 	if (opts?.permissionsWarning) statuses.set("permissions-warning", opts.permissionsWarning)
 	if (opts?.updateAvailable) statuses.set("update-available", opts.updateAvailable)
+	if (opts?.lsp) statuses.set("lsp", opts.lsp)
 	return {
 		getExtensionStatuses: vi.fn(() => statuses),
 	} as unknown as ReadonlyFooterDataProvider
@@ -132,6 +138,67 @@ function stubPlatform(value: NodeJS.Platform): () => void {
 	return () => Object.defineProperty(process, "platform", { value: original })
 }
 
+/** Build a typed Ferment mock without `as unknown as` casts. */
+function createFermentMock(overrides?: Partial<Ferment>): Ferment {
+	return {
+		id: "f-1",
+		name: "my-ferment",
+		status: "running",
+		worktree: { path: "/test" },
+		scoping: {},
+		phases: [],
+		decisions: [],
+		memories: [],
+		createdAt: new Date().toISOString(),
+		updatedAt: new Date().toISOString(),
+		...overrides,
+	}
+}
+
+/** Mock an active "my-ferment" in the running state with a manual stop policy. */
+function mockActiveFerment(): void {
+	vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(createFermentMock())
+	vi.spyOn(FERMENT, "getFermentContinuationPolicy").mockReturnValue("manual")
+}
+
+/** Shared setup for status-line behavioural tests. */
+function setupStatusLineTest(): { theme: Theme; restorePlatform: () => void } {
+	pinnedElements = []
+	vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
+	vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
+	vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
+	vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
+	vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+	vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
+	const theme = createMockTheme()
+	const restorePlatform = stubPlatform("darwin")
+	return { theme, restorePlatform }
+}
+
+/** Standard billing fixture: $5 credits, 13.73% of a $2k budget. */
+function setTestBilling(): void {
+	setBillingStatusForTest({
+		serverless: true,
+		plan: "coder",
+		isPaidTier: true,
+		remainingCredits: 5,
+		creditStatus: "low",
+		budget: {
+			period: { startTime: "2026-07-01T00:00:00Z", endTime: "2026-08-01T00:00:00Z" },
+			budgets: [
+				{
+					scope: "USER",
+					scopeId: "owner",
+					budgetLimitUsd: "2000.000000",
+					totalSpendUsd: "274.594050",
+					providerBudgets: [],
+				},
+			],
+		},
+		updatedAt: "2026-07-07T00:00:00.000Z",
+	})
+}
+
 /** CompactionContext stub using plain markers — used to unit-test the builder
  *  functions in isolation, with predictable visible output. The builders only
  *  rely on dim/accent for ANSI wrapping, so identity functions are safe here
@@ -140,7 +207,6 @@ const compactCtx = {
 	dim: (s: string) => s,
 	accent: (s: string) => s,
 	semantic: (name: string, s: string) => `[${name}:${s}]`,
-	showCommandHint: true,
 }
 
 describe("compact-form builders", () => {
@@ -344,12 +410,19 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 		expect(visible).toContain("default")
 	})
 
-	it("width 60: shortcuts stripped from unpinned, pinned content survives at far right", () => {
+	it("width 60: shortcut hints stripped, pinned phase sheds, core trio survives compact", () => {
 		withPinned(["context", "phase"], () => {
 			const { raw, visible } = renderAt(60, { percent: 50 })
 			expect(visibleWidth(raw)).toBeLessThanOrEqual(60)
+			// Core trio survives in compact form.
+			expect(visible).toContain("● default")
+			expect(visible).toContain("m-m (claude-opus-4-6)")
+			expect(visible).toContain("50% ctx")
+			// Shortcut hints are gone and the low-priority pinned phase shed —
+			// pinned is not immune to shedding (hardcoded priority wins).
 			expect(visible).not.toContain("ctrl+p")
-			expect(visible).toContain("explore")
+			expect(visible).not.toContain("shift+tab")
+			expect(visible).not.toContain("explore")
 		})
 	})
 
@@ -383,14 +456,7 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 	})
 
 	it("with an active ferment, shows ferment when pinned", () => {
-		const ferment = {
-			id: "f-1",
-			name: "my-ferment",
-			status: "running",
-			mode: "yolo",
-			phases: [],
-			activePhaseId: undefined,
-		} as unknown as ReturnType<typeof FERMENT.getActiveFerment>
+		const ferment = createFermentMock()
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(ferment)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getFermentContinuationPolicy").mockReturnValue("manual")
@@ -403,6 +469,24 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 			// Status line never overflows even at narrow width.
 			const narrow = renderAt(70)
 			expect(visibleWidth(narrow.raw)).toBeLessThanOrEqual(70)
+		})
+	})
+
+	it("keeps permissions and model first even when persisted settings pin them", () => {
+		const ferment = createFermentMock()
+		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(ferment)
+		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
+		vi.spyOn(FERMENT, "getFermentContinuationPolicy").mockReturnValue("manual")
+
+		withPinned(["permissions", "model"], () => {
+			const { visible } = renderAt(200)
+			const permIdx = visible.indexOf("● default")
+			const modelIdx = visible.indexOf("multi-model (claude-opus-4-6)")
+			const fermentIdx = visible.indexOf("Ferment: my-ferment")
+
+			expect(permIdx).toBe(0)
+			expect(modelIdx).toBeGreaterThan(permIdx)
+			expect(fermentIdx).toBeGreaterThan(modelIdx)
 		})
 	})
 })
@@ -558,12 +642,17 @@ describe("StatusLine segment coverage", () => {
 		withPinned(["budget"], () => {
 			const statusLine = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 			const visible = renderVisible(statusLine, 200)
-			const compact = renderVisible(statusLine, 42)
+			const compact = renderVisible(statusLine, 60)
+			const shed = renderVisible(statusLine, 42)
 
 			expect(visible).not.toContain("Credits:")
 			expect(visible).toContain("Budget: 13.73% ($274.59/$2k)")
+			// Narrower: budget shrinks to the percentage-only form …
 			expect(compact).toContain("Budget: 13.73%")
 			expect(compact).not.toContain("$274.59/$2k")
+			// … and sheds entirely before the core trio is touched.
+			expect(shed).not.toContain("Budget:")
+			expect(shed).toContain("m-m (claude-opus-4-6)")
 		})
 	})
 
@@ -689,8 +778,9 @@ describe("StatusLine regression tests", () => {
 	})
 
 	it("never produces an orphan ` ·  · ` double separator at any width", () => {
-		// Compaction never removes whole segments, so we should never see two
-		// adjacent separators. Truncation cuts the tail, not the middle.
+		// Shedding removes whole segments under pressure, but survivors are
+		// re-joined, so we should never see two adjacent separators.
+		// Truncation cuts the tail, not the middle.
 		vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["team:platform", "env:prod"])
 		const data = createMockStatusLineData({ permissionsMode: "● default" })
 		const sl = new StatusLine(createMockContext(), theme, data)
@@ -774,13 +864,24 @@ describe("status line pinning", () => {
 		})
 	})
 
-	it("pinned context shows full bar form (with █) at width=20", () => {
+	it("pinned context shows full bar form (with █) at wide width", () => {
 		withPinned(["context"], () => {
 			const sl = makeStatusLine({ percent: 50 })
-			const visible = stripAnsi(sl.render(20)[0])
+			const visible = stripAnsi(sl.render(200)[0])
 			// Full form includes the bar characters; compact form is just "N% ctx"
 			expect(visible).toContain("█")
 			expect(visible).toContain("░")
+		})
+	})
+
+	it("pinned context bar is the first thing sacrificed when space is tight", () => {
+		withPinned(["context"], () => {
+			const sl = makeStatusLine({ percent: 50 })
+			const visible = stripAnsi(sl.render(60)[0])
+			// The percentage survives; the bar doesn't.
+			expect(visible).toContain("50% ctx")
+			expect(visible).not.toContain("█")
+			expect(visible).not.toContain("░")
 		})
 	})
 
@@ -890,5 +991,219 @@ describe("status line pinning", () => {
 				expect(visibleWidth(raw), `width=${w}`).toBeLessThanOrEqual(w)
 			}
 		})
+	})
+})
+
+describe("status line priority shedding", () => {
+	let theme: Theme
+	let restorePlatform: () => void
+
+	const permissionsMode = "● default \x1b[2m→ shift+tab\x1b[0m"
+
+	beforeEach(() => {
+		const setup = setupStatusLineTest()
+		theme = setup.theme
+		restorePlatform = setup.restorePlatform
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+		restorePlatform()
+		pinnedElements = []
+	})
+
+	function renderVisible(width: number, ctxOpts?: MockContextOpts): string {
+		return renderVisibleWith(createMockStatusLineData({ permissionsMode }), width, ctxOpts)
+	}
+
+	function renderVisibleWith(data: ReadonlyFooterDataProvider, width: number, ctxOpts?: MockContextOpts): string {
+		const sl = new StatusLine(createMockContext(ctxOpts), theme, data)
+		const lines = sl.render(width)
+		return stripAnsi(lines[lines.length - 1])
+	}
+
+	it("sheds pinned phase before anything else as the width shrinks", () => {
+		withPinned(["context", "phase", "agents", "usage"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2)
+			const visible = renderVisible(85, { percent: 50 })
+			expect(visible).not.toContain("explore")
+			expect(visible).toContain("2 agents")
+			expect(visible).toContain("↑0 ↓0")
+			expect(visible).toContain("50% ctx")
+		})
+	})
+
+	it("sheds usage next", () => {
+		withPinned(["context", "phase", "agents", "usage"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2)
+			const visible = renderVisible(75, { percent: 50 })
+			expect(visible).not.toContain("explore")
+			expect(visible).not.toContain("↑0 ↓0")
+			expect(visible).toContain("2 agents")
+		})
+	})
+
+	it("sheds pinned agents before touching the core trio", () => {
+		withPinned(["context", "phase", "agents", "usage"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2)
+			const visible = renderVisible(60, { percent: 50 })
+			// Pinned is not immune: agents/usage/phase are all gone …
+			expect(visible).not.toContain("agent")
+			expect(visible).not.toContain("↑0")
+			expect(visible).not.toContain("explore")
+			// … while permissions, model and context survive compact.
+			expect(visible).toContain("● default")
+			expect(visible).toContain("m-m (claude-opus-4-6)")
+			expect(visible).toContain("50% ctx")
+		})
+	})
+
+	it("never sheds permissions, model, or context — even when only the core trio fits", () => {
+		withPinned(["context"], () => {
+			const visible = renderVisible(45, { percent: 50 })
+			expect(visible).toContain("● default")
+			expect(visible).toContain("m-m (claude-opus-4-6)")
+			expect(visible).toContain("50% ctx")
+			expect(visibleWidth(visible)).toBeLessThanOrEqual(45)
+		})
+	})
+
+	it("renders permissions and model first, ferment follows — never the other way around", () => {
+		mockActiveFerment()
+		const visible = renderVisible(200)
+		const permIdx = visible.indexOf("● default")
+		const modelIdx = visible.indexOf("multi-model (claude-opus-4-6)")
+		const fermentIdx = visible.indexOf("Ferment: my-ferment")
+		expect(permIdx).toBeGreaterThanOrEqual(0)
+		expect(modelIdx).toBeGreaterThan(permIdx)
+		expect(fermentIdx).toBeGreaterThan(modelIdx)
+	})
+
+	it("sheds the ferment before the model when space runs out", () => {
+		mockActiveFerment()
+		const visible = renderVisible(60)
+		expect(visible).not.toContain("my-ferment")
+		expect(visible).toContain("m-m (claude-opus-4-6)")
+		expect(visible).toContain("● default")
+	})
+
+	it("sheds lsp before any core segment", () => {
+		const data = createMockStatusLineData({ permissionsMode: "● default", lsp: "LSP:typescript-language-server" })
+		const wide = renderVisibleWith(data, 100)
+		expect(wide).toContain("typescript-language-server")
+
+		const narrow = renderVisibleWith(data, 70)
+		expect(narrow).not.toContain("typescript-language-server")
+		expect(narrow).toContain("m-m (claude-opus-4-6)")
+		expect(narrow).toContain("● default")
+	})
+})
+
+describe("script controls line (statusLine.command path)", () => {
+	let theme: Theme
+	let restorePlatform: () => void
+
+	const permissionsMode = "● default \x1b[2m→ shift+tab\x1b[0m"
+
+	beforeEach(() => {
+		const setup = setupStatusLineTest()
+		theme = setup.theme
+		restorePlatform = setup.restorePlatform
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+		setBillingStatusForTest(undefined)
+		restorePlatform()
+		pinnedElements = []
+	})
+
+	function controlsLine(width: number): { raw: string; visible: string } {
+		const data = createMockStatusLineData({ permissionsMode })
+		const segments = buildControlsLineSegments({ ctx: createMockContext(), theme, statusLineData: data })
+		const raw = renderFittedLine(segments, width, theme)
+		return { raw, visible: stripAnsi(raw) }
+	}
+
+	it("wide width: shows permissions, model, ferment, credits, budget — permissions and model lead", () => {
+		setTestBilling()
+		mockActiveFerment()
+		const { visible } = controlsLine(200)
+
+		expect(visible).toContain("● default → shift+tab")
+		expect(visible).toContain("multi-model (claude-opus-4-6)")
+		expect(visible).toContain("Ferment: my-ferment")
+		expect(visible).toContain("Credits: $5.00")
+		expect(visible).toContain("Budget: 13.73% ($274.59/$2k)")
+
+		const permIdx = visible.indexOf("● default")
+		const modelIdx = visible.indexOf("multi-model (claude-opus-4-6)")
+		const fermentIdx = visible.indexOf("Ferment: my-ferment")
+		expect(modelIdx).toBeGreaterThan(permIdx)
+		expect(fermentIdx).toBeGreaterThan(modelIdx)
+	})
+
+	it("excludes non-controls segments (agents, context) even when pinned in config", () => {
+		withPinned(["agents", "context"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2)
+			const { visible } = controlsLine(200)
+			expect(visible).not.toContain("agent")
+			expect(visible).not.toContain("ctx")
+		})
+	})
+
+	it("narrow width: sheds budget, credits, and ferment before the model", () => {
+		setTestBilling()
+		mockActiveFerment()
+		const { raw, visible } = controlsLine(60)
+
+		expect(visibleWidth(raw)).toBeLessThanOrEqual(60)
+		expect(visible).toContain("● default")
+		expect(visible).toContain("m-m (claude-opus-4-6)")
+		expect(visible).not.toContain("my-ferment")
+		expect(visible).not.toContain("Credits")
+		expect(visible).not.toContain("Budget:")
+	})
+
+	it("budget shrinks to the percentage-only form before shedding", () => {
+		setTestBilling()
+		const { visible } = controlsLine(80)
+		expect(visible).toContain("Budget: 13.73%")
+		expect(visible).not.toContain("$274.59/$2k")
+	})
+})
+
+describe("StatusLineScript", () => {
+	it("passes the render width to the controls callback", () => {
+		let received = -1
+		const sls = new StatusLineScript((width) => {
+			received = width
+			return "controls"
+		})
+		sls.render(73)
+		expect(received).toBe(73)
+	})
+
+	it("renders script lines first, then a blank line, then the controls line", () => {
+		const sls = new StatusLineScript(() => "controls")
+		sls.setLines(["one", "two"])
+		expect(sls.render(80)).toEqual(["one", "two", "", "controls"])
+	})
+
+	it("truncates each script line to the render width", () => {
+		const sls = new StatusLineScript(() => "controls")
+		sls.setLines(["short", "x".repeat(50)])
+		const lines = sls.render(20)
+		expect(lines[0]).toBe("short")
+		// truncateToWidth cuts with an ellipsis marker; the invariant that
+		// matters is "never wider than the render width".
+		expect(visibleWidth(lines[1])).toBeLessThanOrEqual(20)
+		expect(stripAnsi(lines[1])).toMatch(/^x+/)
+	})
+
+	it("omits the blank line and controls block when the callback returns null", () => {
+		const sls = new StatusLineScript(() => null)
+		sls.setLines(["one"])
+		expect(sls.render(80)).toEqual(["one"])
 	})
 })

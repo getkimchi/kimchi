@@ -29,6 +29,13 @@ export function createContext(
 		isIdle: vi.fn(),
 		getContextUsage: vi.fn().mockReturnValue(undefined),
 		...overrides,
+		model: overrides?.model
+			? {
+					provider: "kimchi-dev",
+					name: overrides.model.name ?? overrides?.model.id,
+					...overrides.model,
+				}
+			: undefined,
 		ui: {
 			input: vi.fn(),
 			select: vi.fn(),
@@ -42,6 +49,7 @@ export function createContext(
 		sessionManager: {
 			getSessionId: () => "test-session",
 			getEntries: () => [],
+			getHeader: () => null,
 			...overrides?.sessionManager,
 		} as SessionManager,
 	} as unknown as ExtensionContext

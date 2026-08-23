@@ -12,10 +12,18 @@ const STATIC_CATEGORIES: Record<string, ToolCategory> = {
 	edit: "write",
 	write: "write",
 	bash: "execute",
+	// daemon + daemon_control spawn/manage session-surviving processes —
+	// same risk class as bash (execute), so they inherit the same
+	// permission-mode treatment. (bash_control is `unknown` upstream;
+	// daemon tools are classified explicitly rather than inheriting that.)
+	daemon: "execute",
+	daemon_control: "execute",
 	web_search: "readOnly",
 	web_fetch: "readOnly",
 	questionnaire: "readOnly",
 	set_phase: "readOnly",
+	workflow_submit_result: "readOnly",
+	workflow_submit_questions: "readOnly",
 }
 
 const READ_ONLY_NAME_HINT = /^(read|get|list|search|query|describe|find|grep|ls|loki_|view|show)/i

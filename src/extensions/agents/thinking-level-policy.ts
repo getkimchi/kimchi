@@ -20,6 +20,7 @@ export const THINKING_LEVEL_ORDER: readonly ThinkingLevel[] = [
 	"medium",
 	"high",
 	"xhigh",
+	"max",
 ] as const
 
 const DELEGATION_THINKING_BASE: Record<ThinkingTaskScope, Record<ChunkComplexity, ThinkingLevel>> = {
@@ -56,7 +57,7 @@ export function thinkingScopeForSubagentType(subagentType: string): ThinkingTask
 	return SUBAGENT_TYPE_TO_SCOPE[subagentType]
 }
 
-export function bumpThinkingLevel(level: ThinkingLevel, steps = 1, ceiling: ThinkingLevel = "xhigh"): ThinkingLevel {
+export function bumpThinkingLevel(level: ThinkingLevel, steps = 1, ceiling: ThinkingLevel = "max"): ThinkingLevel {
 	const idx = THINKING_LEVEL_ORDER.indexOf(level)
 	const ceilIdx = THINKING_LEVEL_ORDER.indexOf(ceiling)
 	if (idx < 0 || steps <= 0) return level
@@ -77,7 +78,7 @@ export function resolveDelegationThinkingLevel(
 ): ThinkingLevel {
 	const base = DELEGATION_THINKING_BASE[scope][complexity]
 	if (retryRound <= 0) return base
-	const ceiling = THINKING_RETRY_CEILING[scope] ?? "xhigh"
+	const ceiling = THINKING_RETRY_CEILING[scope] ?? "max"
 	return bumpThinkingLevel(base, retryRound, ceiling)
 }
 

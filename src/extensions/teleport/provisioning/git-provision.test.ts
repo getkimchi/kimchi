@@ -31,7 +31,7 @@ describe("provisionGitIdentity", () => {
 
 		await provisionGitIdentity(client, { name: "Alice", email: "a@example.com" })
 
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/gitidentity`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/api/gitidentity`)
 		expect(JSON.parse((mockFetch.mock.calls[0][1] as RequestInit).body as string)).toEqual({
 			user: { name: "Alice", email: "a@example.com" },
 		})
@@ -43,15 +43,15 @@ describe("provisionGitCredential", () => {
 		const seen: Array<{ url: string; method: string }> = []
 		const mockFetch = vi.fn().mockImplementation((url: string, init: RequestInit) => {
 			seen.push({ url, method: init.method ?? "GET" })
-			if (url.endsWith("/secrets")) return Promise.resolve(new Response(null, { status: 204 }))
+			if (url.endsWith("/api/secrets")) return Promise.resolve(new Response(null, { status: 204 }))
 			return Promise.resolve(jsonResponse({ host: "github.com", user: "oauth2", secretRef: "git-token-github_com" }))
 		})
 		const client = new WorkerClient(CREDS, { fetch: mockFetch })
 
 		await provisionGitCredential(client, { gitHost: "github.com", gitToken: "ghp_x" })
 
-		expect(seen[0]).toEqual({ url: `${BASE}/secrets`, method: "PUT" })
-		expect(seen[1]).toEqual({ url: `${BASE}/gitidentity/github.com`, method: "POST" })
+		expect(seen[0]).toEqual({ url: `${BASE}/api/secrets`, method: "PUT" })
+		expect(seen[1]).toEqual({ url: `${BASE}/api/gitidentity/github.com`, method: "POST" })
 
 		const secretBody = JSON.parse((mockFetch.mock.calls[0][1] as RequestInit).body as string)
 		expect(secretBody.name).toBe("git-token-github_com")

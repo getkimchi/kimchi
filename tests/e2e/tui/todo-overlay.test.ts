@@ -1,6 +1,6 @@
 import { test } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
-import { INPUT_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
+import { INPUT_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -83,7 +83,7 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 	)
 })
 
-test("todo overlay reconciles stale active todos after non-todo work", async ({ terminal }) => {
+test("todo overlay stays visible after non-todo work and hides when clear_todos is called", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -119,7 +119,11 @@ test("todo overlay reconciles stale active todos after non-todo work", async ({ 
 						},
 					],
 				},
+				// Turn 3: terminal turn (no tool calls) — the reconciliation
+				// follow-up mechanism was removed (commit 3c7b939b). The
+				// overlay stays visible; the user must prompt again to clear.
 				{ stream: ["Work finished."] },
+				// Turn 4: user prompts to clear → model calls clear_todos.
 				{
 					toolCalls: [
 						{
@@ -137,8 +141,18 @@ test("todo overlay reconciles stale active todos after non-todo work", async ({ 
 			await waitForText(terminal, "2/3 done · 1 active", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("active todo overlay visible")
 
+			// After the terminal turn ("Work finished."), the overlay stays
+			// visible — the old reconciliation follow-up was removed.
+			await waitForText(terminal, "Work finished.", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			trace.step("terminal turn rendered — overlay stays visible")
+
+			// User explicitly prompts to clear todos → model calls clear_todos
+			// → overlay hides.
+			terminal.submit("clear the todos")
+			trace.step("submitted 'clear the todos'")
+
 			await waitForWidgetToHide(terminal)
-			trace.step("reconciliation follow-up cleared overlay")
+			trace.step("clear_todos executed — overlay hidden")
 		},
 	)
 })
@@ -154,7 +168,7 @@ test("todo overlay reconciles stale active todos after non-todo work", async ({ 
 async function waitForWidgetToHide(terminal: Terminal): Promise<void> {
 	const startedAt = Date.now()
 	let view = viewText(terminal)
-	while (Date.now() - startedAt < INPUT_TIMEOUT_MS) {
+	while (Date.now() - startedAt < STREAM_TIMEOUT_MS) {
 		if (!view.includes("Todos · Global") && !view.includes("done · 0 active")) return
 		await new Promise((resolve) => setTimeout(resolve, 100))
 		view = viewText(terminal)

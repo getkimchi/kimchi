@@ -1,0 +1,104 @@
+# Patch: Kimchi compatibility fixes for pi-ai 0.84.1
+#
+# Tracking: LLM-2564. No matching upstream issue exists yet; report these
+# changes to https://github.com/earendil-works/pi before the next upgrade.
+# Changes: accept JSON-encoded array/object tool arguments (including {} as
+# an empty array) and count LiteLLM cache_creation_tokens as cache writes.
+# Removal: delete each hunk when the pinned Pi release provides that behavior.
+#
+diff --git a/dist/api/openai-completions.js b/dist/api/openai-completions.js
+index 12416ccfa65c34e2c713302fe0dd5c01b1086900..ce56a36d59de3ad588f0e90f798b4abae5f329a4 100644
+--- a/dist/api/openai-completions.js
++++ b/dist/api/openai-completions.js
+@@ -1106,7 +1106,7 @@ function convertTools(tools, compat) {
+ function parseChunkUsage(rawUsage, model) {
+     const promptTokens = rawUsage.prompt_tokens || 0;
+     const cacheReadTokens = rawUsage.prompt_tokens_details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? 0;
+-    const cacheWriteTokens = rawUsage.prompt_tokens_details?.cache_write_tokens || 0;
++    const cacheWriteTokens = rawUsage.prompt_tokens_details?.cache_write_tokens ?? rawUsage.prompt_tokens_details?.cache_creation_tokens ?? 0;
+     // Follow documented OpenAI/OpenRouter semantics: cached_tokens is cache-read
+     // tokens (hits). OpenAI does not document or emit cache_write_tokens, but
+     // OpenRouter-compatible providers can include it as a separate write count.
+diff --git a/dist/utils/validation.js b/dist/utils/validation.js
+index bcd7991bb59163e6f2f2819827790227f8b69e8c..ca7058fa7e8d47247a50e3481234690c6708ebc7 100644
+--- a/dist/utils/validation.js
++++ b/dist/utils/validation.js
+@@ -1,7 +1,6 @@
+ import { Compile } from "typebox/compile";
+ import { Value } from "typebox/value";
+ const validatorCache = new WeakMap();
+-const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
+ function getSchemaTypes(schema) {
+     if (typeof schema.type === "string") {
+         return [schema.type];
+@@ -108,6 +107,31 @@ function coercePrimitiveByType(value, type) {
+             }
+             return value;
+         }
++        case "array": {
++            if (typeof value === "string") {
++                try {
++                    const parsed = JSON.parse(value);
++                    if (Array.isArray(parsed))
++                        return parsed;
++                }
++                catch { }
++            }
++            if (typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === 0) {
++                return [];
++            }
++            return value;
++        }
++        case "object": {
++            if (typeof value === "string") {
++                try {
++                    const parsed = JSON.parse(value);
++                    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed))
++                        return parsed;
++                }
++                catch { }
++            }
++            return value;
++        }
+         default:
+             return value;
+     }
+@@ -245,21 +269,25 @@ export function validateToolCall(tools, toolCall) {
+  * @throws Error with formatted message if validation fails
+  */
+ export function validateToolArguments(tool, toolCall) {
+-    const args = structuredClone(toolCall.arguments);
+-    Value.Convert(tool.parameters, args);
++    let args = coerceWithJsonSchema(structuredClone(toolCall.arguments), tool.parameters);
++    try {
++        Value.Convert(tool.parameters, args);
++    }
++    catch (conversionError) {
++        const cause = conversionError instanceof Error ? conversionError.message : String(conversionError);
++        throw new Error(`Validation failed for tool "${toolCall.name}": argument conversion failed: ${cause}\n\nReceived arguments:\n${JSON.stringify(toolCall.arguments, null, 2)}`);
++    }
+     const validator = getValidator(tool.parameters);
+-    if (!Object.getOwnPropertySymbols(tool.parameters).includes(TYPEBOX_KIND)) {
+-        const coerced = coerceWithJsonSchema(args, tool.parameters);
+-        if (coerced !== args) {
+-            if (typeof args === "object" && args !== null && typeof coerced === "object" && coerced !== null) {
+-                for (const key of Object.keys(args)) {
+-                    delete args[key];
+-                }
+-                Object.assign(args, coerced);
+-            }
+-            else {
+-                return validator.Check(coerced) ? coerced : args;
++    const coerced = coerceWithJsonSchema(args, tool.parameters);
++    if (coerced !== args) {
++        if (typeof args === "object" && args !== null && typeof coerced === "object" && coerced !== null) {
++            for (const key of Object.keys(args)) {
++                delete args[key];
+             }
++            Object.assign(args, coerced);
++        }
++        else {
++            return validator.Check(coerced) ? coerced : args;
+         }
+     }
+     if (validator.Check(args)) {

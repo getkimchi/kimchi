@@ -21,6 +21,19 @@ describe("classifyTool", () => {
 		expect(classifyTool("bash")).toBe("execute")
 	})
 
+	it("classifies daemon tools as execute (same risk class as bash)", () => {
+		expect(classifyTool("daemon")).toBe("execute")
+		expect(classifyTool("daemon_control")).toBe("execute")
+		expect(isReadOnlyTool("daemon")).toBe(false)
+		expect(isReadOnlyTool("daemon_control")).toBe(false)
+	})
+
+	it("classifies workflow output tools as read-only without widening the submit namespace", () => {
+		expect(classifyTool("workflow_submit_result")).toBe("readOnly")
+		expect(classifyTool("workflow_submit_questions")).toBe("readOnly")
+		expect(classifyTool("workflow_submit_deployment")).toBe("unknown")
+	})
+
 	it("heuristic classifies read-named custom tools as read-only", () => {
 		expect(classifyTool("search_logs")).toBe("readOnly")
 		expect(classifyTool("list_clusters")).toBe("readOnly")

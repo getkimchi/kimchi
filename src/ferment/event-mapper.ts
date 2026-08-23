@@ -111,6 +111,9 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 			) {
 				b.push("scoping_assumptions_set", { assumptions: post.scoping.assumptions })
 			}
+			if (post.charter && JSON.stringify(pre.charter) !== JSON.stringify(post.charter)) {
+				b.push("scoping_charter_set", { charter: post.charter })
+			}
 			if (pre.name !== post.name) {
 				b.push("ferment_renamed", { name: post.name })
 			}
@@ -219,7 +222,7 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 			// records as "verified", causing a hash chain mismatch on every
 			// successful verified completion. Folding through applyFermentEvent
 			// keeps the chain truthful.
-			b.push("step_completed", { phaseId: cmd.phaseId, stepId: cmd.stepId, completedAt: ctx.now })
+			b.push("step_completed", { phaseId: cmd.phaseId, stepId: cmd.stepId, completedAt: ctx.now, summary: cmd.summary })
 			if (cmd.grade) {
 				b.push("step_graded", {
 					phaseId: cmd.phaseId,
@@ -238,6 +241,7 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 				result: cmd.result,
 				verifiedAt: ctx.now,
 				exitCode: cmd.result.exitCode,
+				summary: cmd.summary,
 			})
 			return b.events
 

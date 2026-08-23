@@ -43,7 +43,7 @@ async function probeReadyOnce(opts: {
 	let timer: ReturnType<typeof setTimeout> | undefined
 	try {
 		const baseUrl = deriveBaseUrl(opts.wsUrl)
-		const url = `${baseUrl}/startupcompletedz`
+		const url = `${baseUrl}/api/startupcompletedz`
 
 		const ctrl = new AbortController()
 		timer = setTimeout(() => ctrl.abort(), opts.probeTimeoutMs)

@@ -104,6 +104,31 @@ describe("FermentEventStore", () => {
 			expect(types).toContain("ferment_planned")
 		})
 
+		it("scope command with a charter emits scoping_charter_set and round-trips via fold", () => {
+			const f = eventStore.create("Charter round-trip")
+
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Build it",
+				successCriteria: ["Tests pass"],
+				constraints: [],
+				charter: {
+					intent: "Recreate the Tahoe desktop",
+					wowFactor: "It looks like the real OS",
+				},
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+
+			const types = readEvents(tempDir, f.id).map((e) => e.type)
+			expect(types).toContain("scoping_charter_set")
+
+			// Fold from the event log (not the snapshot) must reproduce the charter.
+			const folded = eventStore.get(f.id)
+			expect(folded?.charter?.intent).toBe("Recreate the Tahoe desktop")
+			expect(folded?.charter?.wowFactor).toBe("It looks like the real OS")
+			expect(folded?.charter?.demoScript).toBeUndefined()
+		})
+
 		it("scope command with assumptions emits scoping_assumptions_set and round-trips via fold", () => {
 			const f = eventStore.create("Assumptions round-trip")
 

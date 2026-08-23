@@ -244,7 +244,7 @@ describe("kimchi mcp probe", () => {
 		const code = await runMcp(["probe", "--json"])
 		expect(code).toBe(0)
 		expect(out.json.error).toBeNull()
-		expect(mockProbeTools).toHaveBeenCalledWith(STDIO_SERVER, "github.com")
+		expect(mockProbeTools).toHaveBeenCalledWith("github.com", STDIO_SERVER)
 	})
 
 	it("returns 1 when unknown top-level properties are present", async () => {
@@ -351,7 +351,7 @@ describe("kimchi mcp probe", () => {
 			error: null,
 		})
 		expect(mockProbeTools).toHaveBeenCalledTimes(1)
-		expect(mockProbeTools).toHaveBeenCalledWith(STDIO_SERVER, SERVER_NAME)
+		expect(mockProbeTools).toHaveBeenCalledWith(SERVER_NAME, STDIO_SERVER)
 		expect(mockCloseAll).toHaveBeenCalledTimes(1)
 	})
 
@@ -388,8 +388,8 @@ describe("kimchi mcp probe", () => {
 		expect(mockAuthenticate).toHaveBeenCalledTimes(1)
 		expect(mockAuthenticate).toHaveBeenCalledWith(SERVER_NAME, OAUTH_SERVER.url, OAUTH_SERVER)
 		expect(mockProbeTools).toHaveBeenCalledTimes(2)
-		expect(mockProbeTools).toHaveBeenNthCalledWith(1, OAUTH_SERVER, SERVER_NAME)
-		expect(mockProbeTools).toHaveBeenNthCalledWith(2, OAUTH_SERVER, SERVER_NAME)
+		expect(mockProbeTools).toHaveBeenNthCalledWith(1, SERVER_NAME, OAUTH_SERVER)
+		expect(mockProbeTools).toHaveBeenNthCalledWith(2, SERVER_NAME, OAUTH_SERVER)
 		expect(out.json).toEqual({
 			tools: [{ name: "secure_tool", title: undefined, description: undefined }],
 			needsAuth: false,
@@ -413,7 +413,7 @@ describe("kimchi mcp probe", () => {
 		const code = await runMcp(["probe", "--json"])
 		expect(code).toBe(0)
 		expect(mockProbeTools).toHaveBeenCalledTimes(1)
-		expect(mockProbeTools).toHaveBeenCalledWith(OAUTH_SERVER, SERVER_NAME)
+		expect(mockProbeTools).toHaveBeenCalledWith(SERVER_NAME, OAUTH_SERVER)
 		expect(mockAuthenticate).not.toHaveBeenCalled()
 		expect(out.json).toEqual({
 			tools: [{ name: "secure_tool", title: undefined, description: undefined }],
@@ -571,6 +571,23 @@ describe("kimchi mcp probe", () => {
 		expect(parsed.error).toBeNull()
 	})
 
+	// --- inline-error routing (probeTools no longer throws) ------------
+
+	// After the merge, probeTools returns connect/tool errors inline via
+	// `result.error` instead of throwing. The CLI must still surface those as
+	// exit-1 failures so the UI can display them (preserving the pre-unification
+	// contract where a connection failure was a thrown error).
+	it("surfaces a probeTools inline error as exit code 1 without throwing", async () => {
+		mockProbeTools.mockResolvedValue({ tools: [], needsAuth: false, error: "Connection refused" })
+		mockStdin(probeInput(STDIO_SERVER))
+		const out = captureStdout()
+
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(1)
+		expect(out.json).toEqual({ tools: [], needsAuth: false, error: "Connection refused" })
+		expect(mockCloseAll).toHaveBeenCalledTimes(1)
+	})
+
 	// --- URL mismatch guard (OAuth token store key) ----------------------
 
 	it("uses the real name and does not clean up when an auth entry with a matching URL exists", async () => {
@@ -588,7 +605,7 @@ describe("kimchi mcp probe", () => {
 		expect(code).toBe(0)
 		expect(out.json.error).toBeNull()
 		// Real name used for both probe and (not invoked) auth.
-		expect(mockProbeTools).toHaveBeenCalledWith(OAUTH_SERVER, SERVER_NAME)
+		expect(mockProbeTools).toHaveBeenCalledWith(SERVER_NAME, OAUTH_SERVER)
 		expect(mockAuthenticate).not.toHaveBeenCalled()
 		// No cleanup — real credentials must survive the probe.
 		expect(mockRemoveAuthEntry).not.toHaveBeenCalled()
@@ -613,14 +630,14 @@ describe("kimchi mcp probe", () => {
 		expect(out.json.error).toBeNull()
 
 		// Both probeTools calls and authenticate received the throwaway name.
-		const firstCallArg = mockProbeTools.mock.calls[0]?.[1]
-		const secondCallArg = mockProbeTools.mock.calls[1]?.[1]
+		const firstCallArg = mockProbeTools.mock.calls[0]?.[0]
+		const secondCallArg = mockProbeTools.mock.calls[1]?.[0]
 		const authNameArg = mockAuthenticate.mock.calls[0]?.[0]
 		expect(firstCallArg).toMatch(/^__probe_[0-9a-f-]{36}$/)
 		expect(secondCallArg).toBe(firstCallArg)
 		expect(authNameArg).toBe(firstCallArg)
 		// The real name was never used as the token-store key.
-		expect(mockProbeTools).not.toHaveBeenCalledWith(OAUTH_SERVER, SERVER_NAME)
+		expect(mockProbeTools).not.toHaveBeenCalledWith(SERVER_NAME, OAUTH_SERVER)
 		expect(mockAuthenticate).not.toHaveBeenCalledWith(SERVER_NAME, OAUTH_SERVER.url, OAUTH_SERVER)
 		// Throwaway credentials cleaned up in the finally block.
 		expect(mockRemoveAuthEntry).toHaveBeenCalledTimes(1)
@@ -640,7 +657,7 @@ describe("kimchi mcp probe", () => {
 		const code = await runMcp(["probe", "--json"])
 		expect(code).toBe(0)
 		expect(out.json.error).toBeNull()
-		expect(mockProbeTools).toHaveBeenCalledWith(OAUTH_SERVER, SERVER_NAME)
+		expect(mockProbeTools).toHaveBeenCalledWith(SERVER_NAME, OAUTH_SERVER)
 		expect(mockRemoveAuthEntry).not.toHaveBeenCalled()
 	})
 
@@ -664,7 +681,7 @@ describe("kimchi mcp probe", () => {
 		expect(out.json.error).toBeNull()
 
 		// The real name (SERVER_NAME) was never passed as the token-store key.
-		const probeNames = mockProbeTools.mock.calls.map((c) => c[1])
+		const probeNames = mockProbeTools.mock.calls.map((c) => c[0])
 		expect(probeNames).not.toContain(SERVER_NAME)
 		expect(mockAuthenticate).not.toHaveBeenCalledWith(SERVER_NAME, OAUTH_SERVER.url, OAUTH_SERVER)
 		// Throwaway name was cleaned up exactly once.
@@ -686,7 +703,7 @@ describe("kimchi mcp probe", () => {
 		const code = await runMcp(["probe", "--json"])
 		expect(code).toBe(0)
 		expect(mockProbeTools).toHaveBeenCalledTimes(1)
-		expect(mockProbeTools).toHaveBeenCalledWith(OAUTH_SERVER, SERVER_NAME)
+		expect(mockProbeTools).toHaveBeenCalledWith(SERVER_NAME, OAUTH_SERVER)
 		expect(mockAuthenticate).not.toHaveBeenCalled()
 		expect(mockRemoveAuthEntry).not.toHaveBeenCalled()
 		expect(out.json).toEqual({
@@ -694,5 +711,26 @@ describe("kimchi mcp probe", () => {
 			needsAuth: false,
 			error: null,
 		})
+	})
+
+	it("uses the real name and does not clean up when the entry is from an incomplete OAuth flow", async () => {
+		// An OAuth flow that was started but never finished leaves an entry
+		// with only oauthState/codeVerifier — no serverUrl. Treating it as a
+		// URL mismatch would probe under a throwaway name whose OAuth tokens
+		// the finally block then deletes, leaving every subsequent probe with
+		// needsAuth: true. The real name must be reused so the flow can
+		// complete on the correct entry.
+		mockGetAuthEntry.mockReturnValue({ oauthState: "state-123" })
+		mockSupportsOAuth.mockReturnValue(true)
+		mockProbeTools.mockResolvedValue({ tools: [{ name: "secure_tool" }], needsAuth: false })
+
+		mockStdin(probeInput(OAUTH_SERVER))
+		const out = captureStdout()
+
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(0)
+		expect(out.json.error).toBeNull()
+		expect(mockProbeTools).toHaveBeenCalledWith(SERVER_NAME, OAUTH_SERVER)
+		expect(mockRemoveAuthEntry).not.toHaveBeenCalled()
 	})
 })

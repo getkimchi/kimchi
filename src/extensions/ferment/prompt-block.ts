@@ -8,6 +8,7 @@ import { SCOPING_DISCOVERY_GUIDANCE, SCOPING_EXPLORE_TOKEN_BUDGET } from "./cons
 import { formatDecisionsAndMemories, formatScopingContext } from "./format.js"
 import type { FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
+import { formatNoReplanningGuidance } from "./tool-helpers.js"
 import { CREATE_FERMENT_REDIRECT_MESSAGE } from "./tool-names.js"
 
 /** Pull the first line of an agent's description (typically a one-sentence role
@@ -53,7 +54,17 @@ function buildPlannerSupplement(
 
 ${SCOPING_DISCOVERY_GUIDANCE}
 
-On the first scoping turn after \`/ferment\`, draft \`title\`/\`goal\`/\`success_criteria\`/\`constraints\`/\`assumptions\`/\`phases\` from the user's free-form intent and call \`propose_ferment_scoping\` with all of them in ONE call. The title is required and should be a concise 3-5 word Ferment name.
+On the first scoping turn after \`/ferment\`, draft \`title\`/\`goal\`/\`success_criteria\`/\`constraints\`/\`assumptions\`/\`phases\`/\`charter\` from the user's free-form intent and call \`propose_ferment_scoping\` with all of them in ONE call. The title is required and should be a concise 3-5 word Ferment name.
+
+Before calling \`propose_ferment_scoping\`, run the meh-test and record it in \`self_critique\`: read your goal/success_criteria/constraints back as if presenting them to the user as THE summary of what they will get. If "meh — you missed the point" is a plausible reaction, the criteria are missing load-bearing dimensions of the request (appearance, feel, global coherence, tone) — strengthen the criteria or write down why the gap is deliberate.
+
+Named decisions are reviewable decisions: any way the plan narrows or reframes the literal request belongs in \`scope_deltas\` (e.g. "every app" → the 12 most-used apps, or full parity → functional core). Any constraint that substitutes or approximates the literal request (mock data, alternative assets, simplified behavior) belongs in \`constraint_costs\` with its visible cost. A substitution you did not record is one the reviewer cannot evaluate.
+
+Recommendations are decisions: whoever answers your scoping questions (the user or the judge) overwhelmingly takes the option you mark \`recommended: true\`. Recommend what best serves the user's original intent — never the cheapest, fastest, or safest option merely because it costs less effort.
+
+If the request references an existing artifact or named design to recreate, port, clone, migrate, or emulate, treat the reference as ground truth: observe it first (fetch/read/screenshot as feasible) and carry its key visual and behavioral facts into the charter's \`demo_script\`. Inventing substitutes (different iconography, layouts, palettes, behaviors) without recording each substitution in \`constraint_costs\` is how replicas quietly stop being replicas.
+
+Size steps by coupling: work where every part shapes every other part (one coherent artifact — a page, a core engine, a single narrative) belongs in fewer, larger steps at \`complex\` budget_tier; splitting coupled work into atomic steps causes constant mid-review re-planning. Independent siblings stay separate, cheap steps.
 
 Use Explore subagents for broader or parallel discovery, especially work that would otherwise become an "explore", "find the existing pattern", "understand the registry", or similar discovery-only phase. Keep each Explore prompt narrowly scoped to one independent area or question. If an Explore subagent aborts on the ${SCOPING_EXPLORE_TOKEN_BUDGET} token budget, do not retry the same broad task; use any partial result, spawn a narrower replacement only if that missing fact is plan-blocking, otherwise continue with direct targeted reads or record the uncertainty in \`assumptions\`. Do not make discovery-only work a user-approved phase when that discovery is needed to decide what the approved phases should be. The plan you propose should reflect the discovered files, patterns, constraints, and implementation layer.
 
@@ -101,10 +112,10 @@ After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation al
 			? `- NEVER write, edit, or read files yourself during step execution
 - NEVER implement a step inline — always delegate to a subagent worker
 - Spawn a subagent for every step regardless of whether you already know the answer — the subagent exists to produce verifiable evidence, not just to do work. No-op or trivially-known steps still require a subagent run.`
-			: `- You may execute steps directly (using bash, edit, write) OR delegate to a subagent — choose whichever is more efficient for the task at hand.
-- Prefer direct execution for narrow fixes, single-file edits, verification runs, and when a prior subagent already laid the groundwork you can build on.
-- Prefer delegation for parallel work, long-running builds, or when isolating a complex multi-file change into a clean context would help.
-- If a subagent aborts on a step, consider whether you can finish the remaining work directly rather than spawning another subagent that will re-discover the same context.`
+			: `- Execute steps directly with bash/edit/write — you hold the project context, and the deterministic verify gate plus phase graders supply the trust. Delegation is for exceptions, not the default.
+- Delegate to a linked subagent worker only for residue-heavy steps: long builds, large test-suite output, many large file reads, or independent parallel units (use run_in_background for those).
+- Measured rationale: direct execution completed 28 steps in 109 min at A/B grades (run 019ff530); forced delegation was slower per step at bench scale — workers re-establish context (~14 reads each) and hit budget caps on real builds.
+- If a worker aborts mid-step, resume it with resume_subagent, or finish directly when you already hold the context — do not spawn a duplicate that re-discovers the same work.`
 
 	return `
 
@@ -164,6 +175,31 @@ ${delegationRules}
 `
 }
 
+/**
+ * Renders a short, STATIC prelude for a planned/running ferment.
+ *
+ * Why: the planner supplement below is lifecycle-agnostic — it describes both
+ * the planning and implementation toolsets uniformly and never states the
+ * ferment's current position. After "Start as ferment" handoffs, /ferment
+ * resume, or post-compaction continuations, the model could not tell that
+ * scoping was already complete and wasted turns re-running discovery
+ * (`list_ferments`) and re-drafting the scope (`scope_ferment`), which the
+ * FSM then rejected. Stating that scoping is complete and that scoping calls
+ * will be rejected prevents that restart loop.
+ *
+ * Only STATIC content belongs here — content that does not change across
+ * step/phase transitions. Volatile details (active phase name, step progress,
+ * next-action hint) are injected per-turn via the transient `context` event
+ * by `registerFermentLifecycleContext` so the system prompt stays cache-stable
+ * across lifecycle transitions. See system-prompt-stability.test.ts.
+ */
+function buildCurrentStateSection(f: Ferment): string {
+	return [
+		"## Current lifecycle state",
+		`- Scoping is COMPLETE (ferment status "${f.status}"). ${formatNoReplanningGuidance({ backticks: true })} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
+	].join("\n")
+}
+
 function buildPausedWarning(f: Ferment): string {
 	return `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_ferment_phase, start_ferment_step, complete_ferment_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /ferment resume.`
 }
@@ -200,7 +236,8 @@ export function buildFermentPromptBlock(
 	if (!f) return undefined
 
 	const oneshot = pi.getFlag("ferment-oneshot") === true
-	const delegationMode: "strict" | "relaxed" = getMultiModelEnabled(ctx.sessionManager) ? "strict" : "relaxed"
+	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+	const delegationMode: "strict" | "relaxed" = multiModelEnabled ? "strict" : "relaxed"
 
 	switch (f.status) {
 		case "draft":
@@ -208,7 +245,7 @@ export function buildFermentPromptBlock(
 			return undefined
 		case "planned":
 		case "running":
-			return buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot, delegationMode).trim()
+			return `${buildCurrentStateSection(f)}\n${buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot, delegationMode).trim()}`
 		case "paused":
 			return buildPausedWarning(f).trim()
 		case "complete":

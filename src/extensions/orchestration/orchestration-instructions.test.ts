@@ -559,3 +559,42 @@ describe("Build phase directive (complex-chunk tier routing)", () => {
 		expect(result).not.toMatch(/standard-tier Builder by default.*retry/s)
 	})
 })
+
+describe("Trivial fix and triage exceptions", () => {
+	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+	it("includes trivial fix exception in build phase", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("#### Build phase")
+		expect(result).toContain("Trivial fix exception")
+		expect(result).toContain("trivial fix directly")
+		expect(result).toMatch(/2-3 edit\/write calls.*delegate a Fixer/s)
+	})
+
+	it("includes trivial fix exception for review NEEDS_FIXES", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("Trivial fix exception")
+		expect(result).toMatch(/NEEDS_FIXES.*delegate a fix agent by default/s)
+		expect(result).toMatch(/single obvious issue.*1-2 edits/s)
+	})
+
+	it("allows small triage after subagent abort instead of forcing immediate follow-up", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("Post-abort triage")
+		expect(result).toMatch(/at most 2-3 edit\/write calls/s)
+		expect(result).toMatch(/obvious one-line fix/s)
+		expect(result).toMatch(/more than trivial.*follow-up Agent/s)
+	})
+})

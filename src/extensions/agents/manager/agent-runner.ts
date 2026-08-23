@@ -5,10 +5,13 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
 	type AgentSessionEvent,
+	type CreateAgentSessionOptions,
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionAPI,
 	getAgentDir,
+	type InlineExtension,
+	type ModelRuntime,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
@@ -18,6 +21,7 @@ import { runAsAgentWorker } from "../../agent-worker-context.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
+import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
@@ -88,12 +92,11 @@ function getActiveSubagentToolNames(
 	})
 }
 
-/** Prefix applied to automated steering messages so the LLM does not attribute them to the user. */
-const ORCHESTRATOR_PREFIX = "[Orchestrator — automated system instruction, not a user message]\n\n"
+import { markOrchestratorSteer } from "../../steer-marker.js"
 
 /** Send a steering message that is clearly marked as coming from the orchestrator, not the user. */
 function steerAsOrchestrator(session: AgentSession, message: string): Promise<void> {
-	return session.steer(ORCHESTRATOR_PREFIX + message)
+	return session.steer(markOrchestratorSteer(message))
 }
 
 /** Default max turns. undefined = unlimited (no turn limit). */
@@ -250,6 +253,10 @@ export interface RunResult {
 	steered: boolean
 	turnsUsed?: number
 	maxTurns?: number
+}
+
+type ModelRegistryWithRuntime = {
+	runtime?: ModelRuntime
 }
 
 function collectResponseText(session: AgentSession) {
@@ -461,7 +468,12 @@ ${skillLines}`
 			: bashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
 	// successes must close the shared infrastructure breaker just like the parent's.
-	const extensionFactories = [telemetryExtension(readTelemetryConfig()), bashExtension, infrastructureBreakerExtension]
+	const extensionFactories: InlineExtension[] = [
+		telemetryExtension(readTelemetryConfig()),
+		bashExtension,
+		infrastructureBreakerExtension,
+		omitKimchiMaxTokensExtension,
+	]
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}
@@ -493,17 +505,19 @@ ${skillLines}`
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
 	const settingsManager = SettingsManager.create(effectiveCwd, agentDir)
+	const modelRuntime = (ctx.modelRegistry as unknown as ModelRegistryWithRuntime).runtime
+	if (!modelRuntime) throw new Error("Pi model registry runtime is unavailable")
 
-	const sessionOpts: Parameters<typeof createAgentSession>[0] = {
+	const sessionOpts: CreateAgentSessionOptions = {
 		cwd: effectiveCwd,
 		agentDir,
 		sessionManager: options.sessionFile
 			? SessionManager.open(options.sessionFile, options.sessionDir, effectiveCwd)
 			: SessionManager.inMemory(effectiveCwd),
 		settingsManager,
-		modelRegistry: ctx.modelRegistry,
 		model,
 		resourceLoader: loader,
+		modelRuntime,
 	}
 	if (effectiveExtensions === false) {
 		sessionOpts.tools = toolNames

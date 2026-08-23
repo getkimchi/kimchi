@@ -2,9 +2,44 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	AGENT_MODEL_PARAMETER_DESCRIPTION,
 	AGENT_TOOL_GUIDELINES,
+	buildAutoResumeNote,
 	resolveRoleModelRef,
+	setActiveManagerForTest,
+	shouldAutoResumeFermentWorker,
+	spawnGraderAgent,
 	summaryForStatus,
 } from "./index.js"
+
+describe("shouldAutoResumeFermentWorker", () => {
+	const base = {
+		status: "aborted",
+		abortReason: "max_turns" as const,
+		session: {},
+		taskRef: { kind: "ferment_step" },
+		resumeAttempts: [],
+	}
+	it("fires for a ferment step worker killed by turns or duration on first attempt", () => {
+		expect(shouldAutoResumeFermentWorker({ ...base })).toBe(true)
+		expect(shouldAutoResumeFermentWorker({ ...base, abortReason: "max_duration" as const })).toBe(true)
+	})
+	it("does NOT fire on second exhaustion, non-ferment agents, or non-budget aborts", () => {
+		expect(shouldAutoResumeFermentWorker({ ...base, resumeAttempts: [{}] })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, taskRef: { kind: "other" } })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, taskRef: undefined })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, abortReason: "token_budget" as const })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, abortReason: "inactivity" as const })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, status: "completed" })).toBe(false)
+		expect(shouldAutoResumeFermentWorker({ ...base, session: null })).toBe(false)
+	})
+})
+
+describe("buildAutoResumeNote", () => {
+	it("labels the limit from the PRE-resume abort reason (review regression: resume clears abortReason)", () => {
+		expect(buildAutoResumeNote("max_turns")).toContain("hit the turn limit")
+		expect(buildAutoResumeNote("max_duration")).toContain("hit the duration limit")
+		expect(buildAutoResumeNote(undefined)).toBe("")
+	})
+})
 
 describe("summaryForStatus", () => {
 	it("labels token-budget aborts distinctly from max-turn aborts", () => {
@@ -112,10 +147,13 @@ vi.mock("../orchestration/model-roles.js", () => ({
 }))
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { Component } from "@earendil-works/pi-tui"
+import { createContext } from "../__mocks__/context.js"
 import { getMultiModelEnabled } from "../multi-model.js"
-import { getAllowedMultiModelRefs } from "../orchestration/model-roles.js"
+import { getAllowedMultiModelRefs, getModelRoles } from "../orchestration/model-roles.js"
 import agentsExtension from "./index.js"
 import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
+import type { Theme } from "./ui/agent-widget.js"
 
 type CapturedHandler = (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>
 
@@ -337,6 +375,7 @@ function getRegisteredAgentTool(pi: ReturnType<typeof makeMockPi>): {
 		onUpdate: unknown,
 		ctx: unknown,
 	) => Promise<{ content: { type: string; text: string }[] }>
+	renderCall: (args: Record<string, unknown>, theme: Theme, context: { argsComplete: boolean }) => Component
 } {
 	const calls = (pi.registerTool as ReturnType<typeof vi.fn>).mock.calls
 	const tool = calls.map((c: unknown[]) => c[0]).find((t: unknown) => (t as { name?: string }).name === "Agent")
@@ -349,8 +388,30 @@ function getRegisteredAgentTool(pi: ReturnType<typeof makeMockPi>): {
 			onUpdate: unknown,
 			ctx: unknown,
 		) => Promise<{ content: { type: string; text: string }[] }>
+		renderCall: (args: Record<string, unknown>, theme: Theme, context: { argsComplete: boolean }) => Component
 	}
 }
+
+describe("Agent tool renderer", () => {
+	it("hides the bare Agent header until the streamed agent type is known", () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const tool = getRegisteredAgentTool(pi)
+		const theme: Theme = {
+			fg: (_color, text) => text,
+			bold: (text) => text,
+		}
+
+		expect(tool.renderCall({}, theme, { argsComplete: false }).render(80)).toEqual([])
+		expect(tool.renderCall({}, theme, { argsComplete: true }).render(80)[0]?.trimEnd()).toBe("▸ General Purpose")
+		expect(tool.renderCall({ subagent_type: "Explore" }, theme, { argsComplete: false }).render(80)[0]?.trimEnd()).toBe(
+			"▸ Explore",
+		)
+		expect(tool.renderCall({ subagent_type: "unknown" }, theme, { argsComplete: true }).render(80)[0]?.trimEnd()).toBe(
+			"▸ General Purpose",
+		)
+	})
+})
 
 describe("Agent tool multi-mode model guard", () => {
 	beforeEach(() => {
@@ -532,5 +593,111 @@ describe("resolveRoleModelRef", () => {
 
 	it("returns undefined for unknown agent types", () => {
 		expect(resolveRoleModelRef("Unknown")).toBeUndefined()
+	})
+})
+
+describe("spawnGraderAgent", () => {
+	// The file mocks model-roles.js; control the judge role explicitly through
+	// the mock rather than relying on the real settings.json/defaults.
+	const JUDGE_MODEL = { provider: "kimchi-dev", id: "judge-model", name: "judge-model" }
+	const PARENT_MODEL = { provider: "kimchi-dev", id: "parent-model", name: "Parent" }
+	const baseRoles = getModelRoles()
+	const rolesWithJudge = { ...baseRoles, judge: ["kimchi-dev/judge-model"] } as ReturnType<typeof getModelRoles>
+
+	beforeEach(() => {
+		vi.mocked(getModelRoles).mockReturnValue(rolesWithJudge)
+		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
+	})
+	afterEach(() => {
+		vi.mocked(getModelRoles).mockReturnValue(baseRoles)
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		setActiveManagerForTest(undefined)
+	})
+
+	it("spawns the Grader with the configured judge model, not the parent session model", async () => {
+		const registry = {
+			find: (provider: string, modelId: string) =>
+				[JUDGE_MODEL, PARENT_MODEL].find((m) => m.provider === provider && m.id === modelId),
+			// resolveModel prefers getAvailable; the Model<Api> mock type requires
+			// full models under getAll, so keep it shape-minimal via getAvailable.
+			getAvailable: () => [JUDGE_MODEL, PARENT_MODEL],
+		}
+		const ctx = createContext({ model: { id: "parent-model" }, modelRegistry: registry })
+		const spawnAndWait = vi.fn(
+			async (
+				_pi: unknown,
+				_ctx: unknown,
+				_type: string,
+				_prompt: string,
+				_options: { model?: unknown },
+			): Promise<{ result: string; status: string }> => ({ result: '{"grade":"A"}', status: "completed" }),
+		)
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+
+		const pi = makeMockPi()
+		await spawnGraderAgent(pi, ctx, "grade this ferment")
+
+		expect(spawnAndWait).toHaveBeenCalledTimes(1)
+		const [, , type, prompt, options] = spawnAndWait.mock.calls[0] as unknown[]
+		expect(type).toBe("Grader")
+		expect(prompt).toBe("grade this ferment")
+		// Provenance fix: the grader subagent must run on the judge-role model so
+		// the grade label (describeJudgeModel) matches the model that graded.
+		expect((options as { model?: unknown }).model).toBe(JUDGE_MODEL)
+	})
+
+	it("omits the model option when the judge role does not resolve in the registry", async () => {
+		const registry = {
+			find: () => undefined,
+			getAvailable: () => [],
+		}
+		const ctx = createContext({ modelRegistry: registry })
+		const spawnAndWait = vi.fn(
+			async (
+				_pi: unknown,
+				_ctx: unknown,
+				_type: string,
+				_prompt: string,
+				_options: { model?: unknown },
+			): Promise<{ result: string; status: string }> => ({ result: "", status: "completed" }),
+		)
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+
+		const pi = makeMockPi()
+		await spawnGraderAgent(pi, ctx, "grade this ferment")
+
+		expect(spawnAndWait).toHaveBeenCalledTimes(1)
+		const options = spawnAndWait.mock.calls[0]?.[4] as { model?: unknown }
+		// Undefined lets the agent runner fall back to the parent session model —
+		// the same fallback describeJudgeModel reports.
+		expect(options.model).toBeUndefined()
+	})
+
+	it("omits the model in single-model mode — the judge IS the session model", async () => {
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		const registry = {
+			find: (provider: string, modelId: string) =>
+				[JUDGE_MODEL, PARENT_MODEL].find((m) => m.provider === provider && m.id === modelId),
+			getAvailable: () => [JUDGE_MODEL, PARENT_MODEL],
+		}
+		const ctx = createContext({ model: { id: "parent-model" }, modelRegistry: registry })
+		const spawnAndWait = vi.fn(
+			async (
+				_pi: unknown,
+				_ctx: unknown,
+				_type: string,
+				_prompt: string,
+				_options: { model?: unknown },
+			): Promise<{ result: string; status: string }> => ({ result: "", status: "completed" }),
+		)
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+
+		const pi = makeMockPi()
+		await spawnGraderAgent(pi, ctx, "grade this ferment")
+
+		expect(spawnAndWait).toHaveBeenCalledTimes(1)
+		const options = spawnAndWait.mock.calls[0]?.[4] as { model?: unknown }
+		// Even though the judge role resolves, single-model mode must not use it.
+		expect(options.model).toBeUndefined()
 	})
 })

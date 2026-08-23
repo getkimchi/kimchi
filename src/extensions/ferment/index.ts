@@ -16,6 +16,7 @@ import type { Step } from "../../ferment/types.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { withBlocked } from "../herdr-events.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { registerTipProvider } from "../tips/registry.js"
@@ -25,6 +26,7 @@ import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
 import { decideContinuation } from "./continuation.js"
 import { registerFermentEvents } from "./events.js"
+import { registerFermentLifecycleContext } from "./lifecycle-context.js"
 import { deletePendingProposal } from "./pending-proposal-store.js"
 import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
 import { setPendingPlanReviewTrigger } from "./plan-review-trigger.js"
@@ -128,6 +130,8 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	// events for every state mutation without importing from telemetry.
 	runtime.events = pi.events
 
+	registerFermentLifecycleContext(pi, runtime)
+
 	const unregisterFermentTips = registerTipProvider(createFermentTipProvider(runtime))
 	let unregisterFermentTodoSync: (() => void) | undefined
 	let planReviewTimer: ReturnType<typeof setTimeout> | undefined
@@ -152,7 +156,15 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 		planReviewRunning = true
 		try {
-			const outcome = await promptPlanReview(ctx, { planMarkdown: review.planMarkdown })
+			// promptPlanReview is TUI-only and returns undefined without prompting
+			// in other modes — only activate the herdr blocked pair when it will
+			// actually wait on the user (see herdr-events.ts PROTOCOL).
+			const outcome =
+				ctx.mode === "tui"
+					? await withBlocked(pi.events, "Ferment plan review", () =>
+							promptPlanReview(ctx, { planMarkdown: review.planMarkdown }),
+						)
+					: await promptPlanReview(ctx, { planMarkdown: review.planMarkdown })
 			if (!outcome) {
 				// promptPlanReview resolved to undefined (e.g. UI dismissed without
 				// an explicit choice). Treat it the same as cancellation: clear the
@@ -235,6 +247,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	pi.on("session_start", (_event, _ctx) => {
 		ctx = _ctx
 		runtime.clearMidTurnOneshotWarnings()
+		runtime.clearMidTurnCompactionTracking()
 
 		// (Re)wire the ferment todo bridge to the current session id. The
 		// session-scoped todo store requires every store call to target a

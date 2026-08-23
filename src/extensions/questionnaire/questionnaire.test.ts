@@ -1,6 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { setExperimentalFeaturesEnabled } from "../experimental.js"
 import questionnaireExtension, { formatAnswerText, normalizeQuestionType } from "./questionnaire.js"
+
+afterEach(() => {
+	// Module-level singleton — restore the default-off state so other
+	// suites aren't polluted by tests that flipped it.
+	setExperimentalFeaturesEnabled(false)
+})
 
 function registeredQuestionnaireTool() {
 	let tool:
@@ -21,6 +28,7 @@ function registeredQuestionnaireTool() {
 		on: vi.fn(),
 		getActiveTools: vi.fn(() => []),
 		setActiveTools: vi.fn(),
+		events: { emit: vi.fn() },
 	} as unknown as ExtensionAPI
 	questionnaireExtension(pi)
 	if (!tool) throw new Error("questionnaire tool was not registered")
@@ -257,8 +265,11 @@ describe("questionnaire environment behavior", () => {
 		getActiveTools: ReturnType<typeof vi.fn>
 		setActiveTools: ReturnType<typeof vi.fn>
 		events: { emit: ReturnType<typeof vi.fn> }
+		getFlag: ReturnType<typeof vi.fn>
 		// Captures the registered session_start handler so tests can fire it.
 		_sessionStart: ((event: unknown, ctx: { hasUI: boolean }) => void) | null
+		// Captures the registered before_agent_start handler so tests can fire it.
+		_beforeAgentStart: ((event: { systemPrompt: string }, ctx: { hasUI: boolean }) => unknown) | null
 	}
 
 	function makePi(activeTools: string[] = ["questionnaire"]): FakePi {
@@ -268,10 +279,13 @@ describe("questionnaire environment behavior", () => {
 			getActiveTools: vi.fn(() => activeTools),
 			setActiveTools: vi.fn(),
 			events: { emit: vi.fn() },
+			getFlag: vi.fn(() => undefined),
 			_sessionStart: null,
+			_beforeAgentStart: null,
 		}
 		pi.on.mockImplementation((event: string, handler: (e: unknown, ctx: { hasUI: boolean }) => void) => {
-			if (event === "session_start") pi._sessionStart = handler
+			if (event === "session_start") pi._sessionStart = handler as FakePi["_sessionStart"]
+			if (event === "before_agent_start") pi._beforeAgentStart = handler as FakePi["_beforeAgentStart"]
 		})
 		return pi
 	}
@@ -318,6 +332,43 @@ describe("questionnaire environment behavior", () => {
 		// because the tool is already in the active set.
 		const writes = pi.setActiveTools.mock.calls
 		expect(writes).toEqual([])
+	})
+
+	// ─── before_agent_start: autonomous-mode prompt injection ────────────────
+
+	it("injects autonomous-mode instruction when headless and not ferment-oneshot", () => {
+		const pi = makePi(["questionnaire"])
+		pi.getFlag = vi.fn(() => undefined) // not ferment-oneshot
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+
+		const result = pi._beforeAgentStart?.({ systemPrompt: "BASE" }, { hasUI: false }) as
+			| { systemPrompt: string }
+			| undefined
+
+		if (!result) throw new Error("expected autonomous-mode prompt injection")
+		expect(result.systemPrompt).toContain("BASE")
+		expect(result.systemPrompt).toContain("Autonomous mode")
+		expect(result.systemPrompt).toContain("no human or judge")
+		expect(result.systemPrompt).toContain("Do NOT end your turn with questions")
+	})
+
+	it("does not inject when UI is attached (interactive session)", () => {
+		const pi = makePi(["questionnaire"])
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+
+		const result = pi._beforeAgentStart?.({ systemPrompt: "BASE" }, { hasUI: true })
+
+		expect(result).toBeUndefined()
+	})
+
+	it("does not inject when ferment-oneshot is true (judge handles questions)", () => {
+		const pi = makePi(["questionnaire"])
+		pi.getFlag = vi.fn((name: string) => (name === "ferment-oneshot" ? true : undefined))
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+
+		const result = pi._beforeAgentStart?.({ systemPrompt: "BASE" }, { hasUI: false })
+
+		expect(result).toBeUndefined()
 	})
 
 	it("execute returns a 'do not retry' steer when no UI is attached (defense-in-depth)", async () => {
@@ -391,6 +442,164 @@ describe("questionnaire environment behavior", () => {
 			ui: { custom: vi.fn() },
 		})
 
+		expect(pi.events.emit).not.toHaveBeenCalled()
+	})
+
+	// ─── herdr:blocked signaling ───────────────────────────────────────────────
+
+	it("keeps blocked active while the TUI form is pending and clears it after submission", async () => {
+		const pi = makePi(["questionnaire"])
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+		const tool = pi.registerTool.mock.calls[0]?.[0] as {
+			execute: (
+				toolCallId: string,
+				params: unknown,
+				signal: AbortSignal | undefined,
+				onUpdate: unknown,
+				ctx: unknown,
+			) => Promise<{ content: { text: string }[]; details: { cancelled: boolean } }>
+		}
+
+		let resolveForm!: (result: { questions: unknown[]; answers: unknown[]; cancelled: boolean }) => void
+		const custom = vi.fn(
+			() =>
+				new Promise<{ questions: unknown[]; answers: unknown[]; cancelled: boolean }>((resolve) => {
+					resolveForm = resolve
+				}),
+		)
+
+		const pending = tool.execute(
+			"call-1",
+			{ header: "Ship release", questions: [{ id: "ship", prompt: "Ship it?" }] },
+			undefined,
+			undefined,
+			{
+				hasUI: true,
+				ui: { custom },
+				mode: "tui",
+			},
+		)
+
+		const blockedCalls = () => pi.events.emit.mock.calls.filter(([channel]) => channel === "herdr:blocked")
+		expect(blockedCalls()).toEqual([["herdr:blocked", { active: true, label: "Questionnaire" }]])
+
+		resolveForm({ questions: [], answers: [], cancelled: false })
+		await pending
+
+		expect(blockedCalls()).toEqual([
+			["herdr:blocked", { active: true, label: "Questionnaire" }],
+			["herdr:blocked", { active: false }],
+		])
+	})
+
+	it("clears blocked when the form is cancelled", async () => {
+		const pi = makePi(["questionnaire"])
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+		const tool = pi.registerTool.mock.calls[0]?.[0] as {
+			execute: (
+				toolCallId: string,
+				params: unknown,
+				signal: AbortSignal | undefined,
+				onUpdate: unknown,
+				ctx: unknown,
+			) => Promise<{ content: { text: string }[]; details: { cancelled: boolean } }>
+		}
+
+		const custom = vi.fn(async () => ({ questions: [], answers: [], cancelled: true }))
+		const result = await tool.execute(
+			"call-1",
+			{ questions: [{ id: "ship", prompt: "Ship it?" }] },
+			undefined,
+			undefined,
+			{ hasUI: true, ui: { custom }, mode: "tui" },
+		)
+
+		expect(result.details.cancelled).toBe(true)
+		expect(pi.events.emit.mock.calls.filter(([channel]) => channel === "herdr:blocked")).toEqual([
+			["herdr:blocked", { active: true, label: "Questionnaire" }],
+			["herdr:blocked", { active: false }],
+		])
+	})
+
+	it("clears blocked when the form promise rejects", async () => {
+		const pi = makePi(["questionnaire"])
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+		const tool = pi.registerTool.mock.calls[0]?.[0] as {
+			execute: (
+				toolCallId: string,
+				params: unknown,
+				signal: AbortSignal | undefined,
+				onUpdate: unknown,
+				ctx: unknown,
+			) => Promise<{ content: { text: string }[]; details: { cancelled: boolean } }>
+		}
+
+		const custom = vi.fn(async () => {
+			throw new Error("form crashed")
+		})
+		await expect(
+			tool.execute("call-1", { questions: [{ id: "ship", prompt: "Ship it?" }] }, undefined, undefined, {
+				hasUI: true,
+				ui: { custom },
+				mode: "tui",
+			}),
+		).rejects.toThrow("form crashed")
+
+		expect(pi.events.emit.mock.calls.filter(([channel]) => channel === "herdr:blocked")).toEqual([
+			["herdr:blocked", { active: true, label: "Questionnaire" }],
+			["herdr:blocked", { active: false }],
+		])
+	})
+
+	it("balances blocked events through the non-tui fallback path", async () => {
+		const pi = makePi(["questionnaire"])
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+		const tool = pi.registerTool.mock.calls[0]?.[0] as {
+			execute: (
+				toolCallId: string,
+				params: unknown,
+				signal: AbortSignal | undefined,
+				onUpdate: unknown,
+				ctx: unknown,
+			) => Promise<{ content: { text: string }[]; details: { cancelled: boolean } }>
+		}
+		const { ctx } = makeCtx("rpc")
+
+		const result = await tool.execute(
+			"call-1",
+			{ questions: [{ id: "name", type: "text", label: "Name", prompt: "What is your name?" }] },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(result.details.cancelled).toBe(false)
+		expect(pi.events.emit.mock.calls.filter(([channel]) => channel === "herdr:blocked")).toEqual([
+			["herdr:blocked", { active: true, label: "Questionnaire" }],
+			["herdr:blocked", { active: false }],
+		])
+	})
+
+	it("emits no blocked events when there are no questions (immediate validation return)", async () => {
+		const pi = makePi(["questionnaire"])
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+		const tool = pi.registerTool.mock.calls[0]?.[0] as {
+			execute: (
+				toolCallId: string,
+				params: unknown,
+				signal: AbortSignal | undefined,
+				onUpdate: unknown,
+				ctx: unknown,
+			) => Promise<{ content: { text: string }[]; details: { cancelled: boolean } }>
+		}
+
+		const result = await tool.execute("call-1", { questions: [] }, undefined, undefined, {
+			hasUI: true,
+			ui: { custom: vi.fn() },
+			mode: "tui",
+		})
+
+		expect(result.content[0]?.text).toContain("No questions provided")
 		expect(pi.events.emit).not.toHaveBeenCalled()
 	})
 

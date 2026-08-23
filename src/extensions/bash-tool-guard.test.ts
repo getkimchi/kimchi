@@ -6,17 +6,23 @@
  * ExtensionAPI (session_start/tool_call handlers) live in
  * bash-tool-guard.integration.test.ts instead.
  */
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	applyDescriptionOverride,
-	BASH_TOOL_DESCRIPTION,
 	type BashCategory,
 	type BashGuardBlockResult,
 	type BashGuardWarnResult,
 	BashToolGuard,
+	bashToolDescription,
 	classifyBashCommand,
 	toolDescriptionOverride,
 } from "./bash-tool-guard.js"
+import { setExperimentalFeaturesEnabled } from "./experimental.js"
+
+afterEach(() => {
+	// Module-level singleton — restore default so suites don't leak state.
+	setExperimentalFeaturesEnabled(false)
+})
 
 describe("classifyBashCommand — read patterns", () => {
 	it("flags `cat <file>`", () => {
@@ -33,6 +39,7 @@ describe("classifyBashCommand — read patterns", () => {
 
 	it("flags `head -n 5 <file>`", () => {
 		expect(classifyBashCommand("head -n 5 src/foo.ts")?.category).toBe("read")
+		expect(classifyBashCommand("head -n 5 README")?.category).toBe("read")
 	})
 
 	it("flags `tail <file>`", () => {
@@ -174,8 +181,118 @@ describe("classifyBashCommand — negative (allowed bash)", () => {
 		["git status && git log", null], // legit compound
 		["mkdir -p dist", null],
 		["mv old new", null], // mv not yet guarded (could be a future enhancement)
+		["echo 'hello'", null], // echo with no redirect or backgrounding
+		["echo 'done' && echo 'world'", null], // && is logical AND, not backgrounding
 	])("does not flag %s", (cmd, expected) => {
 		expect(classifyBashCommand(cmd)).toBe(expected)
+	})
+})
+
+describe("classifyBashCommand — backgrounding patterns", () => {
+	it("flags `nohup python3 ... & echo PID=$!`", () => {
+		const result = classifyBashCommand(
+			'cd /app && nohup python3 -u pystan_analysis.py > /app/run.log 2>&1 & echo "PID=$!"',
+		)
+		expect(result?.category).toBe("background")
+		expect(result?.tool).toBe("nohup")
+	})
+
+	it("flags `nohup ... & disown; echo ...`", () => {
+		const result = classifyBashCommand('nohup python3 run.py > run.log 2>&1 & disown; echo "launched PID $!"')
+		expect(result?.category).toBe("background")
+		expect(result?.tool).toBe("nohup")
+	})
+
+	it("flags bare `disown`", () => {
+		const result = classifyBashCommand("python3 run.py & disown")
+		expect(result?.category).toBe("background")
+	})
+
+	it("flags `python3 ... > /app/run.log 2>&1 &`", () => {
+		const result = classifyBashCommand("cd /app && python3 -u run.py > /app/run.log 2>&1 &")
+		expect(result?.category).toBe("background")
+		expect(result?.tool).toBe("&")
+	})
+
+	it("flags subshell backgrounding `(... > /app/run.log 2>&1 &) echo ...`", () => {
+		const result = classifyBashCommand(
+			'(echo "START"; timeout 1200 python -u convert_masks.py; echo "EXIT=$?") > /app/run_full3.log 2>&1 &\necho "launched pid $!"',
+		)
+		expect(result?.category).toBe("background")
+		expect(result?.tool).toBe("&")
+	})
+
+	it("flags `& echo PID` pattern", () => {
+		const result = classifyBashCommand('python3 run.py & echo "PID=$!"')
+		expect(result?.category).toBe("background")
+	})
+
+	it("flags `& sleep 60` pattern", () => {
+		const result = classifyBashCommand("python3 run.py & sleep 60")
+		expect(result?.category).toBe("background")
+	})
+
+	it("flags `& wait` pattern", () => {
+		const result = classifyBashCommand("setsid bash -c 'echo hi' & wait")
+		expect(result?.category).toBe("background")
+	})
+
+	it("suggestion mentions timeout and bash_control", () => {
+		const result = classifyBashCommand("nohup python3 run.py &")
+		expect(result?.suggestion).toMatch(/timeout/)
+		expect(result?.suggestion).toMatch(/bash_control/)
+	})
+
+	it("does not flag `&&` (logical AND)", () => {
+		expect(classifyBashCommand("git status && git log")).toBeNull()
+		expect(classifyBashCommand("cd src && pnpm test")).toBeNull()
+		expect(classifyBashCommand("echo 'hello' && echo 'world'")).toBeNull()
+	})
+
+	it("does not treat file-descriptor redirection as backgrounding", () => {
+		expect(classifyBashCommand("gh pr view 1 2>&1")).toBeNull()
+		expect(classifyBashCommand("cmd >&2")).toBeNull()
+		expect(classifyBashCommand("gh pr view 1 2>&1 | head -n 5")).toBeNull()
+	})
+
+	it("does not treat combined stdout/stderr redirection as backgrounding", () => {
+		expect(classifyBashCommand("cmd &>run.log")?.category).toBe("write")
+		expect(classifyBashCommand("cmd &>>run.log")?.category).toBe("write")
+	})
+
+	it("distinguishes spaced background operators from combined redirects", () => {
+		expect(classifyBashCommand("sleep 10 & >run.log")?.category).toBe("background")
+		expect(classifyBashCommand("sleep 10 & >/dev/null")?.category).toBe("background")
+		expect(classifyBashCommand("sleep 10 & 2>/dev/null")?.category).toBe("background")
+	})
+
+	it("does not flag quoted or escaped ampersands", () => {
+		expect(classifyBashCommand('echo "A & B"')).toBeNull()
+		expect(classifyBashCommand("echo A \\& B")).toBeNull()
+	})
+
+	it("does not flag `> /dev/null` redirect without backgrounding", () => {
+		expect(classifyBashCommand("echo 'progress' > /dev/null")).toBeNull()
+	})
+
+	it("does not flag nohup inside quoted strings", () => {
+		expect(classifyBashCommand('echo "do not use nohup for this"')).toBeNull()
+	})
+
+	it("does not flag disown inside quoted strings", () => {
+		expect(classifyBashCommand('echo "the word disown appears here"')).toBeNull()
+	})
+
+	it("flags bare `&` at end of command", () => {
+		expect(classifyBashCommand("python3 run.py &")?.category).toBe("background")
+	})
+
+	it("flags `&` before comment", () => {
+		expect(classifyBashCommand("python3 run.py & # background")?.category).toBe("background")
+	})
+
+	it("flags `&` before subshell", () => {
+		expect(classifyBashCommand("python3 run.py & (other)")?.category).toBe("background")
 	})
 })
 
@@ -349,12 +466,13 @@ describe("BashToolGuard", () => {
 		expect(guard.getWarnThreshold("write")).toBe(3)
 	})
 
-	it.each<BashCategory>(["read", "edit", "write"])("tracks %s category independently", (category) => {
+	it.each<BashCategory>(["read", "edit", "write", "background"])("tracks %s category independently", (category) => {
 		const guard = new BashToolGuard()
 		const triggerByCategory: Record<BashCategory, string> = {
 			read: "cat foo.ts",
 			edit: "sed -i 's/a/b/' foo.ts",
 			write: "echo 'x' > foo.ts",
+			background: "nohup python3 run.py &",
 		}
 		const result = guard.recordCommand(triggerByCategory[category]) as BashGuardWarnResult
 		expect(result.category).toBe(category)
@@ -702,34 +820,65 @@ describe("BashToolGuard — semantic intent override (no tool name)", () => {
 // the system prompt block + session_start mutation.
 
 describe("BASH_TOOL_DESCRIPTION", () => {
+	// Content assertions run against the FULL description (with the daemon
+	// steer) — the public bashToolDescription() accessor with the flag on.
+	beforeEach(() => {
+		setExperimentalFeaturesEnabled(true)
+	})
 	it("describes what bash is for", () => {
-		expect(BASH_TOOL_DESCRIPTION).toMatch(/build|test|git|package/i)
+		expect(bashToolDescription()).toMatch(/build|test|git|package/i)
 	})
 
 	it("explicitly tells the model to use dedicated tools for file ops", () => {
-		expect(BASH_TOOL_DESCRIPTION).toContain("use `read`")
-		expect(BASH_TOOL_DESCRIPTION).toContain("use `edit`")
-		expect(BASH_TOOL_DESCRIPTION).toContain("use `write`")
-		expect(BASH_TOOL_DESCRIPTION).toContain("use `grep`")
-		expect(BASH_TOOL_DESCRIPTION).toContain("use `find`")
-		expect(BASH_TOOL_DESCRIPTION).toContain("use `ls`")
+		expect(bashToolDescription()).toContain("use `read`")
+		expect(bashToolDescription()).toContain("use `edit`")
+		expect(bashToolDescription()).toContain("use `write`")
+		expect(bashToolDescription()).toContain("use `grep`")
+		expect(bashToolDescription()).toContain("use `find`")
+		expect(bashToolDescription()).toContain("use `ls`")
 	})
 
 	it("preserves the upstream truncation behaviour", () => {
 		// The output truncation contract is important — dropping it would
 		// change runtime semantics. Verify the truncation info survives.
-		expect(BASH_TOOL_DESCRIPTION).toMatch(/truncat/i)
+		expect(bashToolDescription()).toMatch(/truncat/i)
 	})
 
 	it("documents that cd does not persist between bash tool calls", () => {
-		expect(BASH_TOOL_DESCRIPTION).toContain("does NOT persist")
-		expect(BASH_TOOL_DESCRIPTION).toContain("cd <dir> && <command>")
+		expect(bashToolDescription()).toContain("does NOT persist")
+		expect(bashToolDescription()).toContain("cd <dir> && <command>")
+	})
+
+	it("warns against piping output through tail/head to hide it", () => {
+		expect(bashToolDescription()).toMatch(/pipe.*tail.*head.*hide/i)
+	})
+
+	it("warns against backgrounding with nohup/disown/&", () => {
+		expect(bashToolDescription()).toContain("nohup")
+		expect(bashToolDescription()).toContain("disown")
+		expect(bashToolDescription()).toContain("background")
+	})
+
+	it("suggests using long timeout and checkin_interval for long-running commands", () => {
+		expect(bashToolDescription()).toMatch(/timeout=1800/)
+		expect(bashToolDescription()).toMatch(/checkin_interval/)
 	})
 })
 
 describe("toolDescriptionOverride", () => {
-	it("returns the override for the bash tool", () => {
-		expect(toolDescriptionOverride("bash")).toBe(BASH_TOOL_DESCRIPTION)
+	it("returns the override for the bash tool when experimental features are enabled", () => {
+		setExperimentalFeaturesEnabled(true)
+		expect(toolDescriptionOverride("bash")).toBe(bashToolDescription())
+	})
+
+	it("strips the daemon sentence when experimental features are disabled", () => {
+		setExperimentalFeaturesEnabled(false)
+		const override = toolDescriptionOverride("bash")
+		if (!override) throw new Error("expected bash description override")
+		expect(override).not.toContain("`daemon`")
+		expect(override).toContain(
+			"Managed background (timeout/checkin_interval + bash_control) is killed when the session ends.",
+		)
 	})
 
 	it("returns undefined for non-bash tools", () => {
@@ -743,9 +892,10 @@ describe("toolDescriptionOverride", () => {
 
 describe("applyDescriptionOverride", () => {
 	it("overrides the description for bash", () => {
+		setExperimentalFeaturesEnabled(true)
 		const tool = { name: "bash", description: "old description" }
 		const result = applyDescriptionOverride(tool)
-		expect(result.description).toBe(BASH_TOOL_DESCRIPTION)
+		expect(result.description).toBe(bashToolDescription())
 	})
 
 	it("does not mutate the input object", () => {

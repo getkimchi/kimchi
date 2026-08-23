@@ -774,7 +774,21 @@ describe("fermentExtension question dropdown", () => {
 		)
 
 		expect(ctx.ui.select).toHaveBeenCalledWith("What should we do?", ["Retry", "Skip", "Let me say something else"])
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("Skip", { deliverAs: "followUp" })
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_ui_confirmation",
+				display: false,
+				content: [
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringMatching(
+							/^<system-reminder>\nThe user selected "Skip" in the UI prompt\.\n<\/system-reminder>$/,
+						),
+					}),
+				],
+			}),
+			{ deliverAs: "followUp", triggerTurn: true },
+		)
 	})
 
 	it("passes through a running-state contextual option named like the default confirmation", async () => {
@@ -806,7 +820,21 @@ describe("fermentExtension question dropdown", () => {
 			"Pause",
 			"Let me say something else",
 		])
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("Yes, proceed", { deliverAs: "followUp" })
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_ui_confirmation",
+				display: false,
+				content: [
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringMatching(
+							/^<system-reminder>\nThe user selected "Yes, proceed" in the UI prompt\.\n<\/system-reminder>$/,
+						),
+					}),
+				],
+			}),
+			{ deliverAs: "followUp", triggerTurn: true },
+		)
 	})
 
 	it("uses a ferment-specific prompt at manual phase boundaries and stops without follow-up", async () => {
@@ -886,7 +914,21 @@ describe("fermentExtension question dropdown", () => {
 		)
 
 		expect(ctx.ui.select).toHaveBeenCalledWith("What should we do?", ["Continue", "Pause", "Let me say something else"])
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("Pause", { deliverAs: "followUp" })
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_ui_confirmation",
+				display: false,
+				content: [
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringMatching(
+							/^<system-reminder>\nThe user selected "Pause" in the UI prompt\.\n<\/system-reminder>$/,
+						),
+					}),
+				],
+			}),
+			{ deliverAs: "followUp", triggerTurn: true },
+		)
 		expect(pi.sendMessage).not.toHaveBeenCalledWith(
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
 			expect.anything(),
@@ -1368,7 +1410,21 @@ Does this plan look right?`,
 			"No, revise",
 			"Let me say something else",
 		])
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("No — please revise.", { deliverAs: "followUp" })
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_ui_confirmation",
+				display: false,
+				content: [
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringMatching(
+							/^<system-reminder>\nThe user answered "No, revise" in the UI prompt — revise the plan in your next response\.\n<\/system-reminder>$/,
+						),
+					}),
+				],
+			}),
+			{ deliverAs: "followUp", triggerTurn: true },
+		)
 	})
 
 	it("does not show a second draft confirmation after propose_ferment_scoping already asked", async () => {

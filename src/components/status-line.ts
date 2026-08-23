@@ -18,7 +18,7 @@ import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
-type SegmentId =
+export type SegmentId =
 	| "permissions"
 	| "model"
 	| "ferment"
@@ -47,7 +47,7 @@ type SegmentRaw =
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
 
 /** A single piece of the status line. */
-interface Segment {
+export interface Segment {
 	/** Stable identifier used by compaction steps to find this segment. */
 	id: SegmentId
 	/** Already-colorized text (includes ANSI). */
@@ -75,8 +75,6 @@ interface CompactionContext {
 	accent: (s: string) => string
 	/** Apply a named semantic color (e.g. "error", "warning") to a string. */
 	semantic: (color: string, s: string) => string
-	/** Set to `false` once the command hint should no longer be appended. */
-	showCommandHint: boolean
 }
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
@@ -167,7 +165,7 @@ export function buildScriptPayload(
 export class StatusLineScript implements Component {
 	private cachedLines: string[] = []
 
-	constructor(private getControlsLine: () => string | null) {}
+	constructor(private getControlsLine: (width: number) => string | null) {}
 
 	setLines(lines: string[]): void {
 		this.cachedLines = lines
@@ -176,10 +174,12 @@ export class StatusLineScript implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		const controls = this.getControlsLine()
 		const scriptLines = this.cachedLines.map((line) => truncateToWidth(line, width))
+		// The callback returns an already-fitted line (compaction ladder →
+		// priority shed → truncation applied inside), so no extra work here.
+		const controls = this.getControlsLine(width)
 		if (!controls) return scriptLines
-		return [...scriptLines, "", truncateToWidth(controls, width)]
+		return [...scriptLines, "", controls]
 	}
 }
 
@@ -281,14 +281,6 @@ function recompactSegment<K extends SegmentRaw["kind"]>(
 /** The ordered compaction steps */
 const STEPS: CompactionStep[] = [
 	{
-		name: "drop-command-hint",
-		apply: (_segs, ctx) => {
-			if (!ctx.showCommandHint) return false
-			ctx.showCommandHint = false
-			return true
-		},
-	},
-	{
 		name: "drop-context-bar",
 		apply: (segs, ctx) =>
 			recompactSegment(segs, "context", "context", (raw) => buildContextCompact(ctx, raw.percent, raw.pctColor)),
@@ -312,58 +304,334 @@ const STEPS: CompactionStep[] = [
 	},
 ]
 
-/** Render a line from segments, separator, and optional command hint. */
-function renderLine(
+/** Visible width of the line a segment array would render to. */
+function segmentsLineWidth(segments: Segment[], sepWidth: number): number {
+	if (segments.length === 0) return 0
+	return segments.reduce((sum, s) => sum + s.width, 0) + (segments.length - 1) * sepWidth
+}
+
+function joinSegments(segments: Segment[], sep: string): string {
+	return segments.map((s) => s.text).join(sep)
+}
+
+/** Whole-segment shedding order, applied after the compaction ladder when the
+ *  line still doesn't fit. Segments earlier in this list disappear first.
+ *
+ *  The core three — permissions, model, context — are deliberately NOT in this
+ *  list: they are the modes the user changes most frequently and must survive
+ *  any terminal width. Compaction still shrinks them (context bar → `N% ctx`,
+ *  shortcut hints stripped); only outright removal is off the table.
+ *
+ *  This order is hardcoded and beats user pinning: a pinned segment is a
+ *  display preference, not a survival guarantee. */
+const SHED_ORDER: SegmentId[] = ["lsp", "team", "tags", "phase", "usage", "agents", "credits", "budget", "ferment"]
+
+/** Fit segments into `width` columns: run the compaction ladder, then shed
+ *  whole segments in SHED_ORDER until the line fits. The input `segments`
+ *  array and the segment objects themselves are not mutated — a shallow copy
+ *  of each segment is compacted/shed internally. Returns the surviving
+ *  segments; if only core segments remain and still overflow, the caller is
+ *  responsible for tail-truncating the rendered line. */
+export function fitSegments(
 	segments: Segment[],
-	ctx: CompactionContext,
-	sep: string,
-	sepWidth: number,
-	commandHint: { text: string; width: number },
 	width: number,
-): { text: string; width: number } {
-	if (segments.length === 0) {
-		return { text: "", width: 0 }
+	ctx: CompactionContext,
+	sepWidth: number,
+	extraSteps: CompactionStep[] = [],
+): Segment[] {
+	const working = segments.map((s) => ({ ...s }))
+	const fits = () => segmentsLineWidth(working, sepWidth) <= width
+
+	if (fits()) return working
+
+	for (const step of [...STEPS, ...extraSteps]) {
+		step.apply(working, ctx)
+		if (fits()) return working
 	}
 
-	const joinedText = segments.map((s) => s.text).join(sep)
-	const joinedWidth = segments.reduce((sum, s) => sum + s.width, 0) + (segments.length - 1) * sepWidth
+	for (const id of SHED_ORDER) {
+		const i = working.findIndex((s) => s.id === id)
+		if (i === -1) continue
+		working.splice(i, 1)
+		if (fits()) return working
+	}
 
-	// Try to fit command hint if requested
-	if (ctx.showCommandHint && joinedWidth + 2 + commandHint.width <= width) {
-		const padding = width - joinedWidth - commandHint.width
+	return working
+}
+
+// ── Segment construction (shared by StatusLine and the script controls line) ─
+
+function dimText(theme: Theme, s: string): string {
+	return theme.fg("dim", s)
+}
+
+function accentText(theme: Theme, s: string): string {
+	return `${resolvedAccentFg(theme)}${s}${RST_FG}`
+}
+
+function semanticText(theme: Theme, color: "success" | "warning" | "error", s: string): string {
+	return `${resolvedSemanticFg(theme, color)}${s}${RST_FG}`
+}
+
+export function buildCompactionContext(theme: Theme): CompactionContext {
+	return {
+		dim: (s) => dimText(theme, s),
+		accent: (s) => accentText(theme, s),
+		semantic: (color, s) => semanticText(theme, color as "success" | "warning" | "error", s),
+	}
+}
+
+/** `abbrev-budget` needs the theme (via `formatBudgetStatusLine`), which
+ *  CompactionContext doesn't carry — so it can't live in the STEPS array. */
+function buildAbbrevBudgetStep(theme: Theme): CompactionStep {
+	return {
+		name: "abbrev-budget",
+		apply: (segs) =>
+			recompactSegment(segs, "budget", "budget", (raw) => {
+				const text = formatBudgetStatusLine(raw.percentage, theme)
+				return { id: "budget", text, width: visibleWidth(text), raw }
+			}),
+	}
+}
+
+/** Fit segments into `width` (compaction ladder → priority shed), join them
+ *  into one line, and tail-truncate if even the core survivors overflow.
+ *  Shared fitting logic for any line built from status-line segments. */
+export function renderFittedLine(segments: Segment[], width: number, theme: Theme): string {
+	const sep = ` ${dimText(theme, "·")} `
+	const survivors = fitWithBudgetStep(segments, width, theme)
+	return truncateToWidth(joinSegments(survivors, sep), width)
+}
+
+/** Fit segments using the full pipeline. Encapsulates the budget abbreviation
+ *  step so callers don't repeat the same `fitSegments` invocation shape. */
+function fitWithBudgetStep(segments: Segment[], width: number, theme: Theme): Segment[] {
+	const sep = ` ${dimText(theme, "·")} `
+	return fitSegments(segments, width, buildCompactionContext(theme), visibleWidth(sep), [buildAbbrevBudgetStep(theme)])
+}
+
+function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
+	const multiModel = getMultiModelEnabled(ctx.sessionManager)
+	const rawModelId = ctx.model?.id ?? "n/a"
+	const label = multiModel ? `multi-model (${rawModelId})` : rawModelId
+	const text = `${accentText(theme, label)} ${dimText(theme, "→ ctrl+p")}`
+	return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId: rawModelId } }
+}
+
+function buildUsageSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
+	if (!pinned) return null
+	let totalInput = 0
+	let totalOutput = 0
+	for (const entry of ctx.sessionManager.getEntries()) {
+		if (entry.type === "message") {
+			const msg = entry.message
+			if (msg?.role === "assistant" && msg.usage) {
+				totalInput += msg.usage.input ?? 0
+				totalOutput += msg.usage.output ?? 0
+			}
+		}
+	}
+	if (!totalInput && !totalOutput) {
+		const text = dimText(theme, "↑0 ↓0")
+		return { id: "usage", text, width: visibleWidth(text) }
+	}
+	const tokens = [totalInput ? `↑${formatCount(totalInput)}` : "", totalOutput ? `↓${formatCount(totalOutput)}` : ""]
+		.filter(Boolean)
+		.join(" ")
+	return { id: "usage", text: dimText(theme, tokens), width: visibleWidth(tokens) }
+}
+
+function buildContextSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
+	if (!pinned) return null
+	const contextUsage = ctx.getContextUsage()
+	const pct = contextUsage?.percent ?? 0
+
+	if (pct === 0) {
+		const bar = dimText(theme, "░".repeat(BAR_WIDTH))
+		const text = `${bar} ${accentText(theme, "0%")} ${dimText(theme, "ctx")}`
 		return {
-			text: `${joinedText}${" ".repeat(padding)}${commandHint.text}`,
-			width, // text fills exactly `width` columns
+			id: "context",
+			text,
+			width: visibleWidth(text),
+			raw: { kind: "context", percent: 0, pctColor: undefined },
 		}
 	}
 
-	return { text: joinedText, width: joinedWidth }
+	const filled = Math.max(0, Math.min(BAR_WIDTH, Math.round((pct / 100) * BAR_WIDTH)))
+	const bar = `${semanticText(theme, "success", "█".repeat(filled))}${dimText(theme, "░".repeat(BAR_WIDTH - filled))}`
+	const pctColor = pct > 90 ? "error" : pct > 70 ? "warning" : undefined
+	const pctStr = pctColor
+		? semanticText(theme, pctColor, `${Math.round(pct)}%`)
+		: accentText(theme, `${Math.round(pct)}%`)
+	const text = `${bar} ${pctStr} ${dimText(theme, "ctx")}`
+	return { id: "context", text, width: visibleWidth(text), raw: { kind: "context", percent: pct, pctColor } }
 }
 
-/** Main layout function — applies compaction steps in order, then truncates if
- *  the fully-compacted line still doesn't fit. We deliberately do not shed
- *  whole segments: disappearing elements look worse than a clean tail truncation. */
-function layoutStatusLine(
-	segments: Segment[],
-	width: number,
-	ctx: CompactionContext,
-	sep: string,
-	sepWidth: number,
-	commandHint: { text: string; width: number },
-): string {
-	// Initial attempt with no compaction.
-	let line = renderLine(segments, ctx, sep, sepWidth, commandHint, width)
-	if (line.width <= width) return line.text
+function buildPhaseSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
+	if (!pinned) return null
+	const phase = getCurrentPhase(ctx.sessionManager.getSessionId())
+	if (!phase) {
+		const text = `${dimText(theme, "phase:")}${dimText(theme, "—")}`
+		return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase: "—" } }
+	}
+	const text = `${dimText(theme, "phase:")}${accentText(theme, phase)}`
+	return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase } }
+}
 
-	// Apply each compaction step in order, re-rendering and stopping the first time we fit.
-	for (const step of STEPS) {
-		step.apply(segments, ctx)
-		line = renderLine(segments, ctx, sep, sepWidth, commandHint, width)
-		if (line.width <= width) return line.text
+type ParsedTag = { key: string; value: string }
+
+function buildTagsSegment(theme: Theme, parsed: ParsedTag[], pinned: boolean): Segment | null {
+	if (!pinned) return null
+	const display = parsed.filter((t) => t.key !== "team" && t.key !== "phase")
+	if (display.length === 0) {
+		const text = `${dimText(theme, "tags:")} ${dimText(theme, "—")}`
+		return { id: "tags", text, width: visibleWidth(text) }
+	}
+	const formatted = display.map((t) => dimText(theme, `${t.key}:${t.value}`)).join(dimText(theme, " "))
+	const text = `${dimText(theme, "tags:")}${formatted}`
+	return { id: "tags", text, width: visibleWidth(text) }
+}
+
+function buildTeamSegment(theme: Theme, parsed: ParsedTag[], pinned: boolean): Segment | null {
+	if (!pinned) return null
+	const team = parsed.find((t) => t.key === "team")
+	if (!team) {
+		const text = `${dimText(theme, "team:")} ${dimText(theme, "—")}`
+		return { id: "team", text, width: visibleWidth(text) }
+	}
+	const text = `${dimText(theme, "team:")}${accentText(theme, team.value)}`
+	return { id: "team", text, width: visibleWidth(text) }
+}
+
+function buildPermissionsSegment(
+	theme: Theme,
+	statusLineData: ReadonlyFooterDataProvider,
+	pinned: boolean,
+): Segment | null {
+	const mode = statusLineData.getExtensionStatuses().get("permissions-mode")
+	if (!mode) {
+		if (pinned) {
+			const text = `${dimText(theme, "● ")}${dimText(theme, "— ")}${dimText(theme, "→ shift+tab")}`
+			return { id: "permissions", text, width: visibleWidth(text) }
+		}
+		return null
+	}
+	return { id: "permissions", text: mode, width: visibleWidth(mode) }
+}
+
+function buildLspSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
+	const lspStatus = statusLineData.getExtensionStatuses().get("lsp")
+	if (!lspStatus) return null
+	// Style "LSP:" as dimmed label, server names as accent. Preserve the
+	// space after the colon so the label and value don't render run-together
+	// (e.g. "LSP:typescript-language-server" instead of "LSP: typescript-language-server").
+	const colonIdx = lspStatus.indexOf(":")
+	if (colonIdx === -1) return { id: "lsp", text: accentText(theme, lspStatus), width: visibleWidth(lspStatus) }
+	const label = dimText(theme, lspStatus.slice(0, colonIdx + 1))
+	const value = lspStatus.slice(colonIdx + 1).trimStart()
+	const text = value.length > 0 ? `${label} ${accentText(theme, value)}` : label
+	return { id: "lsp", text, width: visibleWidth(text) }
+}
+
+function buildCreditsSegment(theme: Theme, pinned: boolean): Segment | null {
+	if (!pinned) return null
+	const amount = getBillingStatusLine()?.amount
+	if (!amount) return null
+	const text = formatCreditsStatusLine(amount, theme)
+	return { id: "credits", text, width: visibleWidth(text) }
+}
+
+function buildBudgetSegment(theme: Theme, pinned: boolean): Segment | null {
+	if (!pinned) return null
+	const budget = getBillingStatusLine()?.budget
+	if (!budget) return null
+	const [percentage = budget] = budget.split(" ", 1)
+	const text = formatBudgetStatusLine(budget, theme)
+	return { id: "budget", text, width: visibleWidth(text), raw: { kind: "budget", percentage } }
+}
+
+function buildAgentsSegment(theme: Theme, pinned: boolean): Segment | null {
+	if (!pinned) return null
+	const count = getActiveAgentCount()
+	if (count === 0) {
+		const text = dimText(theme, "0 agents")
+		return { id: "agents", text, width: visibleWidth(text) }
+	}
+	const text = accentText(theme, `${count} agent${count === 1 ? "" : "s"}`)
+	return { id: "agents", text, width: visibleWidth(text) }
+}
+
+function buildFermentSegment(theme: Theme, pinned: boolean): Segment | null {
+	const display = formatFermentStatusLineDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
+		dim: (s) => dimText(theme, s),
+		accent: (s) => accentText(theme, s),
+	})
+	// No active ferment: only show the placeholder when the user has
+	// explicitly pinned the segment (so they can see it's wired up but
+	// idle). Unpinned, hide it entirely — "Ferment: —" is noise when no
+	// ferment is running.
+	if (!display) {
+		if (!pinned) return null
+		const text = `${dimText(theme, "Ferment:")} ${dimText(theme, "—")}`
+		return { id: "ferment", text, width: visibleWidth(text) }
 	}
 
-	// Fully compacted line still overflows — truncate the tail.
-	return truncateToWidth(line.text, width)
+	// Active ferment: always render, even when unpinned. The status line is
+	// the primary surface for ferment progress and must not be hidden by
+	// default. This matches the ScriptFooter path (ui.ts) which shows the
+	// ferment segment unconditionally when there is one.
+	return {
+		id: "ferment",
+		text: display.text,
+		width: display.width,
+		raw: { kind: "ferment", prefix: display.prefix, prefixWidth: display.prefixWidth },
+	}
+}
+
+export interface StatusLineBuildContext {
+	ctx: ExtensionContext
+	theme: Theme
+	statusLineData: ReadonlyFooterDataProvider
+}
+
+/** Build the full status-line segment pool in display order.
+ *  Permissions and model ALWAYS lead — they are the modes the user changes
+ *  most frequently, so no other segment (ferment name included) may push them
+ *  off the left edge. Everything else follows. */
+export function buildStatusLineSegments(
+	{ ctx, theme, statusLineData }: StatusLineBuildContext,
+	pinned: ReadonlySet<SegmentId>,
+): Segment[] {
+	const tags = getActiveTags(ctx.sessionManager)
+		.map(parseTag)
+		.filter((t): t is ParsedTag => t !== null)
+
+	return [
+		buildPermissionsSegment(theme, statusLineData, pinned.has("permissions")),
+		buildModelSegment(ctx, theme),
+		buildFermentSegment(theme, pinned.has("ferment")),
+		buildCreditsSegment(theme, pinned.has("credits")),
+		buildBudgetSegment(theme, pinned.has("budget")),
+		buildAgentsSegment(theme, pinned.has("agents")),
+		buildContextSegment(ctx, theme, pinned.has("context")),
+		buildUsageSegment(ctx, theme, pinned.has("usage")),
+		buildPhaseSegment(ctx, theme, pinned.has("phase")),
+		buildTagsSegment(theme, tags, pinned.has("tags")),
+		buildTeamSegment(theme, tags, pinned.has("team")),
+		buildLspSegment(theme, statusLineData),
+	].filter((s): s is Segment => s !== null)
+}
+
+/** Segments shown below a custom `statusLine.command` script's output
+ *  (StatusLineScript's controls line). A subset of the full pool: the script
+ *  usually covers context/usage itself, so the controls line carries
+ *  permissions, model, ferment, and billing — in pool order so permissions
+ *  and model lead — fitted through the same compaction/shed pipeline. */
+const CONTROLS_LINE_IDS: ReadonlySet<SegmentId> = new Set(["permissions", "model", "ferment", "credits", "budget"])
+const CONTROLS_LINE_PINNED: ReadonlySet<SegmentId> = new Set(["credits", "budget"])
+
+export function buildControlsLineSegments(buildCtx: StatusLineBuildContext): Segment[] {
+	return buildStatusLineSegments(buildCtx, CONTROLS_LINE_PINNED).filter((s) => CONTROLS_LINE_IDS.has(s.id))
 }
 
 export class StatusLine implements Component {
@@ -376,185 +644,7 @@ export class StatusLine implements Component {
 	invalidate(): void {}
 
 	private dim(s: string): string {
-		return this.theme.fg("dim", s)
-	}
-
-	private accent(s: string): string {
-		const ansi = resolvedAccentFg(this.theme)
-		return `${ansi}${s}${RST_FG}`
-	}
-
-	private modelSegment(): Segment {
-		const multiModel = getMultiModelEnabled(this.ctx.sessionManager)
-		const rawModelId = this.ctx.model?.id ?? "n/a"
-		const label = multiModel ? `multi-model (${rawModelId})` : rawModelId
-		const text = `${this.accent(label)} ${this.dim("→ ctrl+p")}`
-		return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId: rawModelId } }
-	}
-
-	private usageSegment(pinned = false): Segment | null {
-		if (!pinned) return null
-		let totalInput = 0
-		let totalOutput = 0
-		for (const entry of this.ctx.sessionManager.getEntries()) {
-			if (entry.type === "message") {
-				const msg = entry.message
-				if (msg?.role === "assistant" && msg.usage) {
-					totalInput += msg.usage.input ?? 0
-					totalOutput += msg.usage.output ?? 0
-				}
-			}
-		}
-		if (!totalInput && !totalOutput) {
-			const text = this.dim("↑0 ↓0")
-			return { id: "usage", text, width: visibleWidth(text) }
-		}
-		const tokens = [totalInput ? `↑${formatCount(totalInput)}` : "", totalOutput ? `↓${formatCount(totalOutput)}` : ""]
-			.filter(Boolean)
-			.join(" ")
-		return { id: "usage", text: this.dim(tokens), width: visibleWidth(tokens) }
-	}
-
-	private contextSegment(pinned = false): Segment | null {
-		if (!pinned) return null
-		const contextUsage = this.ctx.getContextUsage()
-		const pct = contextUsage?.percent ?? 0
-
-		if (pct === 0) {
-			const bar = this.dim("░".repeat(BAR_WIDTH))
-			const text = `${bar} ${this.accent("0%")} ${this.dim("ctx")}`
-			return {
-				id: "context",
-				text,
-				width: visibleWidth(text),
-				raw: { kind: "context", percent: 0, pctColor: undefined },
-			}
-		}
-
-		const filled = Math.max(0, Math.min(BAR_WIDTH, Math.round((pct / 100) * BAR_WIDTH)))
-		const fill = resolvedSemanticFg(this.theme, "success")
-		const bar = `${fill}${"█".repeat(filled)}${RST_FG}${this.dim("░".repeat(BAR_WIDTH - filled))}`
-		const pctColor = pct > 90 ? "error" : pct > 70 ? "warning" : undefined
-		const pctStr = pctColor
-			? `${resolvedSemanticFg(this.theme, pctColor)}${Math.round(pct)}%${RST_FG}`
-			: this.accent(`${Math.round(pct)}%`)
-		const text = `${bar} ${pctStr} ${this.dim("ctx")}`
-		return { id: "context", text, width: visibleWidth(text), raw: { kind: "context", percent: pct, pctColor } }
-	}
-
-	private phaseSegment(pinned = false): Segment | null {
-		if (!pinned) return null
-		const phase = getCurrentPhase(this.ctx.sessionManager.getSessionId())
-		if (!phase) {
-			const text = `${this.dim("phase:")}${this.dim("—")}`
-			return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase: "—" } }
-		}
-		const text = `${this.dim("phase:")}${this.accent(phase)}`
-		return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase } }
-	}
-
-	private tagsSegment(parsed: Array<{ key: string; value: string }>, pinned = false): Segment | null {
-		if (!pinned) return null
-		const display = parsed.filter((t) => t.key !== "team" && t.key !== "phase")
-		if (display.length === 0) {
-			const text = `${this.dim("tags:")} ${this.dim("—")}`
-			return { id: "tags", text, width: visibleWidth(text) }
-		}
-		const formatted = display.map((t) => this.dim(`${t.key}:${t.value}`)).join(this.dim(" "))
-		const text = `${this.dim("tags:")}${formatted}`
-		return { id: "tags", text, width: visibleWidth(text) }
-	}
-
-	private teamSegment(parsed: Array<{ key: string; value: string }>, pinned = false): Segment | null {
-		if (!pinned) return null
-		const team = parsed.find((t) => t.key === "team")
-		if (!team) {
-			const text = `${this.dim("team:")} ${this.dim("—")}`
-			return { id: "team", text, width: visibleWidth(text) }
-		}
-		const text = `${this.dim("team:")}${this.accent(team.value)}`
-		return { id: "team", text, width: visibleWidth(text) }
-	}
-
-	private permissionsSegment(pinned = false): Segment | null {
-		const mode = this.statusLineData.getExtensionStatuses().get("permissions-mode")
-		if (!mode) {
-			if (pinned) {
-				const text = `${this.dim("● ")}${this.dim("— ")}${this.dim("→ shift+tab")}`
-				return { id: "permissions", text, width: visibleWidth(text) }
-			}
-			return null
-		}
-		return { id: "permissions", text: mode, width: visibleWidth(mode) }
-	}
-
-	private lspSegment(): Segment | null {
-		const lspStatus = this.statusLineData.getExtensionStatuses().get("lsp")
-		if (!lspStatus) return null
-		// Style "LSP:" as dimmed label, server names as accent. Preserve the
-		// space after the colon so the label and value don't render run-together
-		// (e.g. "LSP:typescript-language-server" instead of "LSP: typescript-language-server").
-		const colonIdx = lspStatus.indexOf(":")
-		if (colonIdx === -1) return { id: "lsp", text: this.accent(lspStatus), width: visibleWidth(lspStatus) }
-		const label = this.dim(lspStatus.slice(0, colonIdx + 1))
-		const value = lspStatus.slice(colonIdx + 1).trimStart()
-		const text = value.length > 0 ? `${label} ${this.accent(value)}` : label
-		return { id: "lsp", text, width: visibleWidth(text) }
-	}
-
-	private creditsSegment(pinned = false): Segment | null {
-		if (!pinned) return null
-		const amount = getBillingStatusLine()?.amount
-		if (!amount) return null
-		const text = formatCreditsStatusLine(amount, this.theme)
-		return { id: "credits", text, width: visibleWidth(text) }
-	}
-
-	private budgetSegment(pinned = false): Segment | null {
-		if (!pinned) return null
-		const budget = getBillingStatusLine()?.budget
-		if (!budget) return null
-		const [percentage = budget] = budget.split(" ", 1)
-		const text = formatBudgetStatusLine(budget, this.theme)
-		return { id: "budget", text, width: visibleWidth(text), raw: { kind: "budget", percentage } }
-	}
-
-	private subagentSegment(pinned = false): Segment | null {
-		if (!pinned) return null
-		const count = getActiveAgentCount()
-		if (count === 0) {
-			const text = this.dim("0 agents")
-			return { id: "agents", text, width: visibleWidth(text) }
-		}
-		const text = this.accent(`${count} agent${count === 1 ? "" : "s"}`)
-		return { id: "agents", text, width: visibleWidth(text) }
-	}
-
-	private fermentSegment(pinned = false): Segment | null {
-		const display = formatFermentStatusLineDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
-			dim: (s) => this.dim(s),
-			accent: (s) => this.accent(s),
-		})
-		// No active ferment: only show the placeholder when the user has
-		// explicitly pinned the segment (so they can see it's wired up but
-		// idle). Unpinned, hide it entirely — "Ferment: —" is noise when no
-		// ferment is running.
-		if (!display) {
-			if (!pinned) return null
-			const text = `${this.dim("Ferment:")} ${this.dim("—")}`
-			return { id: "ferment", text, width: visibleWidth(text) }
-		}
-
-		// Active ferment: always render, even when unpinned. The status line is
-		// the primary surface for ferment progress and must not be hidden by
-		// default. This matches the ScriptFooter path (ui.ts) which shows the
-		// ferment segment unconditionally when there is one.
-		return {
-			id: "ferment",
-			text: display.text,
-			width: display.width,
-			raw: { kind: "ferment", prefix: display.prefix, prefixWidth: display.prefixWidth },
-		}
+		return dimText(this.theme, s)
 	}
 
 	private permissionsWarning(): string | null {
@@ -576,31 +666,12 @@ export class StatusLine implements Component {
 	render(width: number): string[] {
 		const config = readStatusLineConfig()
 		const pinnedSet = new Set<SegmentId>(config.pinned)
-
-		const tags = getActiveTags(this.ctx.sessionManager)
-			.map(parseTag)
-			.filter((t): t is { key: string; value: string } => t !== null)
-
-		const allSegments: Segment[] = [
-			this.fermentSegment(pinnedSet.has("ferment")),
-			this.permissionsSegment(pinnedSet.has("permissions")),
-			this.modelSegment(),
-			this.creditsSegment(pinnedSet.has("credits")),
-			this.budgetSegment(pinnedSet.has("budget")),
-			this.subagentSegment(pinnedSet.has("agents")),
-			this.contextSegment(pinnedSet.has("context")),
-			this.usageSegment(pinnedSet.has("usage")),
-			this.phaseSegment(pinnedSet.has("phase")),
-			this.tagsSegment(tags, pinnedSet.has("tags")),
-			this.teamSegment(tags, pinnedSet.has("team")),
-			this.lspSegment(),
-		].filter((s): s is Segment => s !== null)
-
-		const unpinnedSegments = allSegments.filter((s) => !pinnedSet.has(s.id))
-		const pinnedSegments = allSegments.filter((s) => pinnedSet.has(s.id))
+		const allSegments = buildStatusLineSegments(
+			{ ctx: this.ctx, theme: this.theme, statusLineData: this.statusLineData },
+			pinnedSet,
+		)
 
 		const sep = ` ${this.dim("·")} `
-		const sepWidth = visibleWidth(sep)
 
 		const hintText = this.dim("/ for commands")
 		const hintWidth = visibleWidth(hintText)
@@ -611,43 +682,29 @@ export class StatusLine implements Component {
 		const hintReserve = hintWidth + minHintGap
 		const contentBudget = Math.max(0, width - hintReserve)
 
-		const ctx: CompactionContext = {
-			dim: (s) => this.dim(s),
-			accent: (s) => this.accent(s),
-			semantic: (color, s) =>
-				`${resolvedSemanticFg(this.theme, color as "success" | "warning" | "error")}${s}${RST_FG}`,
-			showCommandHint: false, // hint is appended manually after all content
-		}
+		// Fit ALL segments as one pool against the full content budget. Pinned
+		// segments get no upfront reservation: the hardcoded compaction/shedding
+		// priority beats pinning, so a pinned low-priority segment sheds before
+		// the core permissions/model/context trio is touched.
+		const survivors = fitWithBudgetStep(allSegments, contentBudget, this.theme)
 
-		// Reserve space for pinned segments so the unpinned portion compacts correctly.
-		const getPinnedTotalWidth = () =>
-			pinnedSegments.length > 0
-				? pinnedSegments.reduce((sum, s) => sum + s.width, 0) + (pinnedSegments.length - 1) * sepWidth + sepWidth // one sep between unpinned and pinned
-				: 0
-		let pinnedTotalWidth = getPinnedTotalWidth()
-		if (pinnedTotalWidth > contentBudget) {
-			recompactSegment(pinnedSegments, "budget", "budget", (raw) => {
-				const text = formatBudgetStatusLine(raw.percentage, this.theme)
-				return { id: "budget", text, width: visibleWidth(text), raw }
-			})
-			pinnedTotalWidth = getPinnedTotalWidth()
-		}
-		const unpinnedBudget = Math.max(0, contentBudget - pinnedTotalWidth)
+		// Core segments (permissions/model) must always lead the line, even if a
+		// persisted config marks them as pinned. Pinning only affects display order
+		// for non-core segments.
+		const CORE_LEAD_IDS: Set<SegmentId> = new Set(["permissions", "model"])
 
-		const unpinnedLine = layoutStatusLine(unpinnedSegments, unpinnedBudget, ctx, sep, sepWidth, {
-			text: hintText,
-			width: hintWidth,
-		})
+		// Display order is unchanged: unpinned group left, pinned group right.
+		const unpinned = survivors.filter((s) => !pinnedSet.has(s.id) || CORE_LEAD_IDS.has(s.id))
+		const pinned = survivors.filter((s) => pinnedSet.has(s.id) && !CORE_LEAD_IDS.has(s.id))
 
 		// Build content: unpinned (left) then pinned (right).
 		let contentLine: string
-		if (unpinnedSegments.length > 0 && pinnedSegments.length > 0) {
-			const pinnedText = pinnedSegments.map((s) => s.text).join(sep)
-			contentLine = `${unpinnedLine}${sep}${pinnedText}`
-		} else if (pinnedSegments.length > 0) {
-			contentLine = pinnedSegments.map((s) => s.text).join(sep)
+		if (unpinned.length > 0 && pinned.length > 0) {
+			contentLine = `${joinSegments(unpinned, sep)}${sep}${joinSegments(pinned, sep)}`
+		} else if (pinned.length > 0) {
+			contentLine = joinSegments(pinned, sep)
 		} else {
-			contentLine = unpinnedLine
+			contentLine = joinSegments(unpinned, sep)
 		}
 
 		// Append hint at the far right when there is room; truncate if not.

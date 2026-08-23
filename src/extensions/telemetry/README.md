@@ -73,6 +73,30 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 
 > **Privacy:** Loop-guard events carry only structured fields — `detector` (which loop detector fired), `count` (per-session warn count), and `is_subagent`. Raw tool args, command text, and the human-readable reason string are intentionally **not** emitted, to avoid leaking user data or secrets.
 
+## Workflow Events
+
+Published by `@kimchi-dev/kimchi-workflows` on the **single** pi.events channel `workflow:telemetry` (an envelope: every payload carries an `event` discriminator), translated here by one handler (`handlers/workflows.ts`). The OTLP name is a mechanical derivation — `workflow.` + `event` with `_` → `.` — and payload fields pass through as attributes unchanged (minus `event`). Object-valued fields are flattened generically, one level, into dotted attributes: the error envelope `error: { message }` becomes `error.message`, and envelope fields the producer adds later (`error.retryable`, `error.kind`) ship with no change here. Unknown `event` values are forwarded the same way, so producer-side additions ship without a change here. The canonical contract (channel, event types, payload shapes) lives in the producer's `src/host/telemetry-events.ts`; `workflow-events.ts` here is a mirror.
+
+Common attributes: `run_id`, `workflow_name`, `at` (producer ISO timestamp). Step-scoped events add `step_name` — the leaf of the producer's node path, and the only piece of run structure exported (dynamic paths, static keys and resume keys deliberately stay in the producer's run log). Durations are producer-computed (`duration_ms`), so no subscriber-side state exists for them. Retry reasons are the producer's own telemetry vocabulary: `exception` | `invalid_output` | `budget_exceeded` | `provider_error` | `context_window` — the last two absorb agent-turn request failures, so there is no separate agent-error event.
+
+> **Correlation:** aggregate by (`run_id`, `workflow_name`, `step_name`) and no finer — there is no per-execution key, so under workflow concurrency (`parallel`/`foreach`) events of same-named steps are indistinguishable beyond timestamps. Never pair started/completed events by adjacency; `duration_ms` exists precisely so no pairing is needed. `workflow_name` is unique per project by convention only; it is `""` for a crash recorded by a stale-lock reclaim (join via `run_id`).
+
+| Event | When | Attributes beyond common |
+|-------|------|--------------------------|
+| `workflow.run.started` | Run begins | — |
+| `workflow.run.resumed` | Run resumed | — |
+| `workflow.run.blocked` | Run handed control back, waiting on a human | — |
+| `workflow.run.completed` | Run finished | `duration_ms` |
+| `workflow.run.failed` | Run failed terminally (incl. stale-lock reclaim) | `error.message` *(truncated to 300 chars)*, `duration_ms` |
+| `workflow.run.cancelled` | Run cancelled (incl. cold cancel of a blocked run) | — |
+| `workflow.step.started` | Step execution begins | — |
+| `workflow.step.retried` | Step attempt failed and is retried | `attempt`, `reason`, `error.message` *(truncated)* |
+| `workflow.step.completed` | Step succeeded | `duration_ms` |
+| `workflow.step.failed` | `optional` step exhausted retries, run continues — the health signal for shipped workflows | `error.message` *(truncated)*, `duration_ms` |
+| `workflow.step.cancelled` | Blocked step abandoned after a sibling failed | — |
+
+> **Privacy:** payloads are content-free at the source (asserted by test in the producer): no step inputs/outputs, no questionnaire text or answers, no log text, no node paths or session keys. Error messages name schemas/fields/tools, never values, and arrive pre-truncated.
+
 ## Cumulative Metrics (OTLP Sum)
 
 Accumulated across the whole session and flushed every 30s to the **metrics endpoint**.

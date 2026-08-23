@@ -1,11 +1,12 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { clearFermentCache } from "../../ferment/store.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
+import { formatSanitizedErrorMessage, isRetryableErrorStillPending } from "../../sanitized-error-message.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
-import { isStaleCtxError } from "../stale-ctx.js"
+import { markHarnessSteer } from "../steer-marker.js"
 import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
@@ -34,7 +35,7 @@ import { editPhaseProposal } from "./phase-editor.js"
 import { promptEditor, promptSelect } from "./prompt-ui.js"
 import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
-import { safeSendMessage, tryPiAction } from "./safe-send.js"
+import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { buildStalledPayload } from "./stalled-payload.js"
@@ -50,40 +51,6 @@ import { createApplyAndPersist } from "./tool-helpers.js"
 import { applyFermentRuntimeToolProfile, hasPendingPlanReview, setActiveFermentAndApplyProfile } from "./tool-scope.js"
 
 type AssistantContentPart = { type: string; text?: string; name?: string }
-
-// Telemetry wrapper: reads pi.getFlag(name), appends a ferment_breadcrumb with the
-// result/throw for /export visibility. Returns undefined on throw.
-function readFlag(pi: ExtensionAPI, name: string, location: string, fermentId: string | undefined): unknown {
-	let value: unknown = null
-	let errorMessage: string | null = null
-	try {
-		value = pi.getFlag?.(name) ?? null
-	} catch (err) {
-		errorMessage = err instanceof Error ? err.message : String(err)
-	}
-	const threw = errorMessage !== null
-	const staleCtx = threw && isStaleCtxError(errorMessage)
-	const payload = {
-		telemetry: "ferment_flag_read",
-		flag: name,
-		location,
-		fermentId: fermentId ?? null,
-		getFlagPresent: typeof pi.getFlag === "function",
-		value,
-		threw,
-		staleCtx,
-		error: errorMessage,
-	}
-	// Mirror the scheduler/nudge pattern: appendEntry on a ferment_breadcrumb
-	// so it is rendered in the /export HTML session transcript.
-	tryPiAction(() => {
-		pi.appendEntry("ferment_breadcrumb", {
-			text: `flag-read ${name} [${location}] ferment=${fermentId ?? "none"} threw=${threw} staleCtx=${staleCtx} value=${JSON.stringify(value)}${threw ? ` error=${JSON.stringify(errorMessage)}` : ""}`,
-			telemetry: payload,
-		})
-	})
-	return threw ? undefined : value
-}
 
 function isAssistantContentPart(value: unknown): value is AssistantContentPart {
 	return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string"
@@ -200,6 +167,28 @@ async function maybeRunManualBoundaryDropdown(
 	return true
 }
 
+const FERMENT_UI_CONFIRMATION_TYPE = "ferment_ui_confirmation"
+
+/**
+ * Mirror a user's UI confirmation/choice into the model context.
+ * Delivered as a branded custom message — never via `sendUserMessage`, which
+ * upstream flattens to indistinguishable user-role text (and is invisible to
+ * `brandUnmarkedSteers`). The text must DESCRIBE the user's action third-person;
+ * first-person consent mimicry ("Yes, proceed.") is not allowed — a later
+ * read must never mistake the mirror for a genuine user grant.
+ */
+function mirrorUserChoice(pi: ExtensionAPI, text: string): void {
+	safeSendMessage(
+		pi,
+		{
+			customType: FERMENT_UI_CONFIRMATION_TYPE,
+			content: [{ type: "text", text: markHarnessSteer(text) }],
+			display: false,
+		},
+		{ deliverAs: "followUp", triggerTurn: true },
+	)
+}
+
 async function maybeRunUserInputDropdown(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -220,15 +209,22 @@ async function maybeRunUserInputDropdown(
 	if (!choice) return true
 
 	let reply: string
+	/** True only when the payload is the user's own freeform text — must stay on
+	 *  the genuine user channel (`sendUserMessage`). Every other branch mirrors a
+	 *  UI action through the branded harness channel. */
+	let replyIsUserAuthored = false
 
 	if (choice === "Let me say something else") {
 		const custom = await promptEditor(ctx, "Your message:")
 		if (!custom) return true
 		reply = custom
+		replyIsUserAuthored = true
 	} else if (choice === prompt.noLabel) {
-		reply = prompt.isDraft ? "No — please revise." : "No, pause for now."
+		reply = prompt.isDraft
+			? 'The user answered "No, revise" in the UI prompt — revise the plan in your next response.'
+			: 'The user answered "No, pause" in the UI prompt — pause the ferment for now.'
 	} else if (prompt.contextualOptions?.includes(choice)) {
-		reply = choice
+		reply = `The user selected "${choice}" in the UI prompt.`
 	} else if (prompt.isDraft && choice === prompt.yesLabel) {
 		// Open the phase editor so the user can rename/reorder/delete/add
 		// before we persist. The pending phases are the LLM's proposal.
@@ -243,17 +239,18 @@ async function maybeRunUserInputDropdown(
 				runtime.markHumanInput()
 				const msg = err instanceof Error ? err.message : String(err)
 				ctx.ui?.notify?.(`Phase editor failed: ${msg} — plan not saved.`)
-				void pi.sendUserMessage(
-					"Phase editor errored before the user could confirm. Ask the user to retry confirmation explicitly.",
-					{ deliverAs: "followUp" },
+				mirrorUserChoice(
+					pi,
+					"The phase editor errored before the user could confirm. Ask the user to retry confirmation explicitly.",
 				)
 				return true
 			}
 			if (!result) {
 				runtime.markHumanInput()
-				void pi.sendUserMessage("User chose to keep editing the phases — revise the plan in your next response.", {
-					deliverAs: "followUp",
-				})
+				mirrorUserChoice(
+					pi,
+					"The user chose to keep editing the phases in the editor. Revise the plan in your next response.",
+				)
 				return true
 			}
 			edited = result
@@ -272,11 +269,15 @@ async function maybeRunUserInputDropdown(
 				"User confirmed the plan but you never called propose_ferment_scoping — there's nothing structured for the host to save. Call propose_ferment_scoping now with the same plan you just showed; propose_ferment_scoping will handle confirmation via its own dropdown — do not append a trailing question."
 		}
 	} else {
-		reply = "Yes, proceed."
+		reply = "The user confirmed in the UI prompt: proceed."
 	}
 
 	runtime.markHumanInput()
-	void pi.sendUserMessage(reply, { deliverAs: "followUp" })
+	if (replyIsUserAuthored) {
+		void pi.sendUserMessage(reply, { deliverAs: "followUp" })
+	} else {
+		mirrorUserChoice(pi, reply)
+	}
 	return true
 }
 
@@ -425,8 +426,11 @@ export function registerFermentEvents(
 		if (!f) return
 		if (f.status === "running" || f.status === "planned") {
 			try {
-				const isOneShot = readFlag(pi, "ferment-oneshot", "session_shutdown", f.id) === true
-				applyAndPersist(f.id, { type: isOneShot ? "abandon" : "pause" })
+				// The continuation policy is the source of truth — the ferment-oneshot
+				// flag is only set by the CLI --ferment-oneshot argument, not by the TUI
+				// /ferment one-shot slash command.
+				const isAutomated = runtime.isAutomatedContinuationEnabled()
+				applyAndPersist(f.id, { type: isAutomated ? "abandon" : "pause" })
 			} catch {
 				// If persistence fails during shutdown, we can't fix it here.
 				// The startup scanner will recover the stale state on next launch.
@@ -556,24 +560,32 @@ export function registerFermentEvents(
 
 		// Connection / provider / gateway failure: the model's turn ended with
 		// stopReason "error" after retries were exhausted (or the error was
-		// non-retryable). In interactive mode, pause the ferment so its state
-		// stays valid and surface a clear message to the user. In one-shot mode,
-		// keep the ferment running and inject a continuation nudge so the
+		// non-retryable). Under manual policy, pause the ferment so its state
+		// stays valid and surface a clear message to the user. Under automated
+		// policy, keep the ferment running and inject a continuation nudge so the
 		// orchestrator retries on the next turn — there is no user to resume.
 		if (stopReason === "error") {
-			const isOneShot = readFlag(pi, "ferment-oneshot", "turn_end_error", activeId) === true
+			// The continuation policy is the source of truth — the ferment-oneshot
+			// flag is only set by the CLI --ferment-oneshot argument, not by the TUI
+			// /ferment one-shot slash command.
+			const isAutomated = runtime.isAutomatedContinuationEnabled()
 
-			if (!isOneShot) {
+			if (!isAutomated) {
 				const errorMessage = getMessageStringField(event.message, "errorMessage")
 				const errorFerment = runtime.getActive()
+				// `turn_end` fires after the upstream retry loop has already exhausted
+				// (or the error was non-retryable). If a retryable error were somehow
+				// still pending, suppress the pause+notify so the retry spinner keeps
+				// the stage — the next turn_end will surface the final outcome.
+				if (errorMessage && isRetryableErrorStillPending(errorMessage, {})) {
+					return
+				}
 				if (errorFerment && (errorFerment.status === "running" || errorFerment.status === "planned")) {
 					const outcome = applyAndPersist(errorFerment.id, { type: "pause" })
 					if (outcome.ok) {
 						setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
-						const detail = errorMessage ? `: ${errorMessage}` : ""
-						ctx.ui.notify?.(
-							`Interrupted: "${outcome.ferment.name}" was paused due to an error${detail}. Run /ferment resume to continue.`,
-						)
+						const detail = errorMessage ? formatSanitizedErrorMessage(errorMessage, "ferment", { exhausted: true }) : ""
+						ctx.ui.notify?.(`Interrupted: "${outcome.ferment.name}" was paused due to an error. ${detail}`)
 					} else {
 						ctx.ui.notify?.(
 							`Connection error during "${errorFerment.name}" but pause failed: ${outcome.error.message}. Run /ferment pause manually.`,
@@ -589,12 +601,12 @@ export function registerFermentEvents(
 				resetScopingExploreTurns(activeId)
 			}
 
-			// One-shot error recovery: schedule a continuation turn directly via
+			// Automated error recovery: schedule a continuation turn directly via
 			// the scheduler. This is a transport/provider failure, not a model-chosen
 			// bare stop. Error recovery deliberately clears the lifecycle-stop retry
 			// budget above, then schedules the next action independently. This gives
 			// the unchanged obligation a fresh two-retry budget after transport recovers.
-			if (isOneShot) {
+			if (isAutomated) {
 				const errorFerment = runtime.getActive()
 				// One-shot error recovery fires only when the ferment is still live —
 				// paused/complete/abandoned ferments must not be auto-continued.

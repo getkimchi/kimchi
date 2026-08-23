@@ -23,7 +23,7 @@ import {
 import { addUsage, type LifetimeUsage } from "./usage.js"
 
 export type OnAgentComplete = (record: AgentRecord) => void
-export type OnAgentStart = (record: AgentRecord) => void
+export type OnAgentStart = (record: AgentRecord, ctx: ExtensionContext) => void
 export type OnAgentCompact = (record: AgentRecord, info: CompactionInfo) => void
 export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }
 
@@ -207,7 +207,7 @@ export class AgentManager {
 		record.startedAt = Date.now()
 		record.isBackground = options.isBackground ?? false
 		if (record.isBackground) this.runningBackground++
-		this.onStart?.(record)
+		this.onStart?.(record, ctx)
 
 		let detachParentSignal: (() => void) | undefined
 		if (options.signal) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { classifyLLMGatewayError, LLMGatewayError } from "./llm-gateway-error.js"
+import { classifyLLMGatewayError, formatWait, LLMGatewayError, parseRateLimitRetryAt } from "./llm-gateway-error.js"
 
 describe("classifyLLMGatewayError", () => {
 	it.each([
@@ -137,6 +137,17 @@ describe("classifyLLMGatewayError", () => {
 			httpStatusCode: 504,
 		},
 		{
+			name: "service is temporarily unavailable (HTTP 200 body)",
+			message: "The service is temporarily unavailable.",
+			reason: "provider_5xx",
+		},
+		{
+			name: "service unavailable (compact form)",
+			message: "503 Service Unavailable",
+			reason: "provider_5xx",
+			httpStatusCode: 503,
+		},
+		{
 			name: "hosted vLLM server disconnected",
 			message: "InternalServerError: Hosted_vllmException - Server disconnected",
 			reason: "provider_error",
@@ -174,6 +185,47 @@ describe("classifyLLMGatewayError", () => {
 
 	it.each([
 		{
+			name: "budget exhausted",
+			message: "budget exhausted",
+			reason: "budget_exhausted",
+		},
+		{
+			name: "api key budget exhausted",
+			message: "api key budget exhausted",
+			reason: "budget_exhausted",
+		},
+		{
+			name: "organization budget exhausted",
+			message: "organization budget exhausted",
+			reason: "budget_exhausted",
+		},
+		{
+			name: "team budget exhausted",
+			message: "team budget exhausted",
+			reason: "budget_exhausted",
+		},
+		{
+			name: "429 budget exhausted (classified before the generic 429 rule)",
+			message: "429 budget exhausted",
+			reason: "budget_exhausted",
+		},
+		{
+			name: "status code 429 budget exhausted",
+			message: "status code 429: budget exhausted",
+			reason: "budget_exhausted",
+			httpStatusCode: 429,
+		},
+		{
+			name: "billing budget exhausted",
+			message: "429 billing budget exhausted",
+			reason: "budget_exhausted",
+		},
+		{
+			name: "billing error with API key budget exhausted",
+			message: "billing error: API key budget exhausted",
+			reason: "budget_exhausted",
+		},
+		{
 			name: "empty tools array",
 			message:
 				"Value error, tools must not be an empty array. Either provide at least one tool or omit the field entirely.",
@@ -209,6 +261,16 @@ describe("classifyLLMGatewayError", () => {
 			message: "400 Bad Request",
 			reason: "bad_request",
 			httpStatusCode: 400,
+		},
+		{
+			name: "provider content_filter finish reason",
+			message: "Provider finish_reason: content_filter",
+			reason: "content_filter",
+		},
+		{
+			name: "content filter variant",
+			message: "Response filtered by content filter policy",
+			reason: "content_filter",
 		},
 		{
 			name: "bad request with hosted vLLM transport wording",
@@ -249,6 +311,8 @@ describe("classifyLLMGatewayError", () => {
 		"model returned 500 tokens before stopping",
 		"tool call unexpectedly missing argument",
 		"model response terminated by safety policy",
+		"response was filtered by the content policy",
+		"content was filtered for safety reasons",
 	])("ignores non-gateway provider verdicts: %s", (message) => {
 		expect(classifyLLMGatewayError(message)).toBeUndefined()
 	})
@@ -263,5 +327,48 @@ describe("classifyLLMGatewayError", () => {
 		"failed after 503 iterations of the loop",
 	])("does not classify a bare status number outside status context: %s", (message) => {
 		expect(classifyLLMGatewayError(message)).toBeUndefined()
+	})
+})
+
+describe("parseRateLimitRetryAt", () => {
+	const NOW = Date.parse("2026-08-05T12:00:00Z")
+	const EXPECTED = Date.parse("2026-08-05T16:27:33Z")
+
+	it.each([
+		{ name: "bare UTC stamp", stamp: "2026-08-05T16:27:33Z", expected: EXPECTED },
+		{ name: "sentence-final period", stamp: "2026-08-05T16:27:33Z.", expected: EXPECTED },
+		{ name: "trailing clause", stamp: "2026-08-05T16:27:33Z, retry later.", expected: EXPECTED },
+		{ name: "closing parenthesis", stamp: "2026-08-05T16:27:33Z)", expected: EXPECTED },
+		// The gateway reports UTC, so an unzoned stamp must not be read as local time.
+		{ name: "no zone", stamp: "2026-08-05T16:27:33", expected: EXPECTED },
+		{ name: "fractional seconds", stamp: "2026-08-05T16:27:33.123Z", expected: EXPECTED + 123 },
+		{ name: "explicit offset", stamp: "2026-08-05T18:27:33+02:00", expected: EXPECTED },
+	])("parses $name", ({ stamp, expected }) => {
+		expect(parseRateLimitRetryAt(`kimi-k2.7 model is rate limited until ${stamp}`, NOW)).toBe(expected)
+	})
+
+	it.each([
+		{ name: "a bare number", message: "rate limited until 5" },
+		{ name: "no deadline at all", message: "429 Too Many Requests" },
+		{ name: "an unparseable stamp", message: "rate limited until 2026-13-45T99:99:99Z" },
+		{ name: "a deadline already passed", message: "rate limited until 2026-08-05T11:00:00Z" },
+	])("returns undefined for $name", ({ message }) => {
+		expect(parseRateLimitRetryAt(message, NOW)).toBeUndefined()
+	})
+})
+
+describe("formatWait", () => {
+	it.each([
+		{ ms: 1_000, expected: "1 second" },
+		{ ms: 30_000, expected: "30 seconds" },
+		{ ms: 59_000, expected: "59 seconds" },
+		{ ms: 60_000, expected: "1 minute" },
+		{ ms: 90_000, expected: "2 minutes" },
+		{ ms: 59 * 60_000, expected: "59 minutes" },
+		{ ms: 60 * 60_000, expected: "1 hour" },
+		{ ms: 120 * 60_000, expected: "2 hours" },
+		{ ms: -5_000, expected: "0 seconds" },
+	])("formats $ms ms as $expected", ({ ms, expected }) => {
+		expect(formatWait(ms)).toBe(expected)
 	})
 })

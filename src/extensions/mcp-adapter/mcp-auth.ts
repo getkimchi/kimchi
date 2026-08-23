@@ -5,7 +5,9 @@
  * and PKCE state for MCP servers. Maintains backward compatibility with
  * per-server directory structure.
  *
- * Token storage location: ~/.pi/agent/mcp-oauth/<server>/tokens.json
+ * Token storage location: <agent-dir>/mcp-oauth/<server>/tokens.json
+ * (where <agent-dir> is determined by getAgentDir(), typically
+ * ~/.config/kimchi/harness/ when run via the CLI entry point)
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"

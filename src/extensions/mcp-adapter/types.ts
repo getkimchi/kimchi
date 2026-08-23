@@ -12,6 +12,30 @@ export type Transport = StdioClientTransport | SSEClientTransport | StreamableHT
 // Import sources for config
 export type ImportKind = "cursor" | "claude-code" | "claude-desktop" | "codex" | "windsurf" | "vscode"
 
+/**
+ * A tool discovered during a probe (transient connection).
+ * Mirrors McpTool but is a standalone type so the ACP wire format is stable
+ * regardless of future McpTool changes.
+ */
+export interface ProbeMcpTool {
+	name: string
+	title?: string
+	description?: string
+	inputSchema?: unknown
+	annotations?: ToolAnnotations
+}
+
+/**
+ * Result of probing an MCP server for available tools.
+ * Returned by McpServerManager.probeTools() and the _kimchi.dev/probe_mcp_server
+ * ACP extMethod handler.
+ */
+export interface ProbeResult {
+	tools: ProbeMcpTool[]
+	needsAuth: boolean
+	error: string | null
+}
+
 // Tool definition from MCP server
 export interface McpTool {
 	name: string

@@ -17,33 +17,53 @@ export interface PreloadedSkill {
 	content: string
 }
 
+export interface ListAvailableSkillNamesOptions {
+	/** Override for os.homedir(), useful for tests. Defaults to homedir(). */
+	readonly homeDir?: string
+}
+
+/** One skill discovered by {@link listAvailableSkillNames}. */
+export interface SkillListEntry {
+	name: string
+	description: string
+	filePath: string
+}
+
 /**
- * Discover all available skill names and descriptions from DEFAULT_SKILL_PATHS.
- * Returns a compact list of { name, description } pairs for injection into
- * sub-agent prompts when skills === true (the default).
- *
- * User custom skills (from .kimchi/skills/) are included since
- * DEFAULT_SKILL_PATHS scans all standard locations.
+ * Resolve kimchi's DEFAULT_SKILL_PATHS for a cwd. Absolute paths are kept as-is;
+ * paths starting with ".config/" resolve under the user's home directory; all
+ * others resolve relative to cwd.
  */
-export function listAvailableSkillNames(cwd: string): { name: string; description: string }[] {
-	const resolvedPaths = DEFAULT_SKILL_PATHS.map((p) => {
+export function resolveSkillPaths(cwd: string, home = homedir()): string[] {
+	return DEFAULT_SKILL_PATHS.map((p) => {
 		if (isAbsolute(p)) {
 			return p
 		}
 		if (p.startsWith(".config/")) {
-			return join(homedir(), p)
+			return join(home, p)
 		}
 		return join(cwd, p)
 	})
+}
 
-	const allSkills = new Map<string, { name: string; description: string }>()
-	for (const dir of resolvedPaths) {
+/**
+ * Discover all available skill names and descriptions from DEFAULT_SKILL_PATHS.
+ * Returns a compact list of { name, description, filePath } pairs for injection
+ * into sub-agent prompts when skills === true (the default).
+ *
+ * User custom skills (from .kimchi/skills/) are included since
+ * DEFAULT_SKILL_PATHS scans all standard locations.
+ */
+export function listAvailableSkillNames(cwd: string, options: ListAvailableSkillNamesOptions = {}): SkillListEntry[] {
+	const allSkills = new Map<string, SkillListEntry>()
+	for (const dir of resolveSkillPaths(cwd, options.homeDir)) {
 		try {
 			const { skills } = loadSkillsFromDir({ dir, source: dir })
 			for (const skill of skills) {
 				allSkills.set(skill.name, {
 					name: skill.name,
 					description: skill.description ?? "",
+					filePath: skill.filePath,
 				})
 			}
 		} catch (err) {
@@ -67,16 +87,7 @@ export function listAvailableSkillNames(cwd: string): { name: string; descriptio
 export function preloadSkills(skillNames: string[], cwd: string): PreloadedSkill[] {
 	if (skillNames.length === 0) return []
 
-	// Build resolved absolute paths from DEFAULT_SKILL_PATHS
-	const resolvedPaths = DEFAULT_SKILL_PATHS.map((p) => {
-		if (isAbsolute(p)) {
-			return p
-		}
-		if (p.startsWith(".config/")) {
-			return join(homedir(), p)
-		}
-		return join(cwd, p)
-	})
+	const resolvedPaths = resolveSkillPaths(cwd)
 
 	// Collect all skills from all paths using pi's official loader
 	const allSkills = new Map<string, Skill>()

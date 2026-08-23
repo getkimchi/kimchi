@@ -10,18 +10,22 @@ import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { LogoHeader } from "../components/logo.js"
-import { buildScriptPayload, readStatusLineCommand, StatusLine, StatusLineScript } from "../components/status-line.js"
+import {
+	buildControlsLineSegments,
+	buildScriptPayload,
+	readStatusLineCommand,
+	renderFittedLine,
+	StatusLine,
+	StatusLineScript,
+} from "../components/status-line.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { refreshGitBranch } from "../utils.js"
-import { getBillingStatusLine, getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
-import { formatBudgetStatusLine, formatCreditsStatusLine } from "./billing/status-line-format.js"
+import { getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
 import { isBareExitAlias } from "./exit-utils.js"
-import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
-import { formatFermentStatusLineDisplay } from "./ferment/status-line.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
-import { getOrchestratorModelId, getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
+import { getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
 import { isRawInputCaptureActive } from "./shared-input.js"
 import {
 	isSessionModeOnboardingStatusLineSuppressed,
@@ -113,6 +117,20 @@ function getEnabledModelIds(): Set<string> | null {
 let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
 let currentSessionIndicatorText: string | null = null
+let currentIdeSelectionIndicatorText: string | null = null
+
+// Own timer for the exit stage — upstream's lastSigintTime isn't updated when
+// the abort stage consumes the event, so we can't rely on it.
+let lastCtrlCTime = 0
+const CTRL_C_EXIT_WINDOW_MS = 500
+
+/** Cascade: text → clear, streaming → abort, otherwise → exit. */
+export type CtrlCAction = "clear" | "abort" | "exit"
+export function ctrlCCascadeDecision(hasText: boolean, isStreaming: boolean): CtrlCAction {
+	if (hasText) return "clear"
+	if (isStreaming) return "abort"
+	return "exit"
+}
 
 const branchPoller = createBranchPoller({
 	refreshBranch: (cb) => refreshGitBranch(cb),
@@ -157,6 +175,17 @@ export function setPasteImageHandler(handler: () => void): void {
  */
 export function setPendingImageIndicator(text: string | null): void {
 	currentEditor?.setPendingImageIndicator(text)
+}
+
+/**
+ * Show or clear the current IDE selection (e.g. `@src/foo.ts:10-20`) on the
+ * prompt's first row, as a separate segment from the pending-image indicator.
+ * Used by the ide-adapter extension to surface the live selection. Pass `null`
+ * to clear.
+ */
+export function setIdeSelectionIndicator(text: string | null): void {
+	currentIdeSelectionIndicatorText = text
+	currentEditor?.setIdeSelectionIndicator(text)
 }
 
 /**
@@ -317,23 +346,13 @@ export default function uiExtension(pi: ExtensionAPI) {
 				return new SuppressibleStatusLine(new StatusLine(ctx, theme, statusLineData), tui)
 			}
 			scriptCmd = cmd
-			const getControlsLine = (): string | null => {
-				const parts: string[] = []
-				const ferment = formatFermentStatusLineDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
-					dim: (s) => theme.fg("dim", s),
-					accent: (s) => `${resolvedAccentFg(theme)}${s}${RST_FG}`,
-				})
-				if (ferment) parts.push(ferment.text)
-				const perm = statusLineData.getExtensionStatuses().get("permissions-mode")
-				if (perm) parts.push(perm)
-				const billing = getBillingStatusLine()
-				if (billing?.amount) parts.push(formatCreditsStatusLine(billing.amount, theme))
-				if (billing?.budget) parts.push(formatBudgetStatusLine(billing.budget, theme))
-				const modelId = getMultiModelEnabled(ctx.sessionManager)
-					? `multi-model (${getOrchestratorModelId(sessionId)})`
-					: (ctx.model?.id ?? "n/a")
-				parts.push(`${resolvedAccentFg(theme)}${modelId}${RST_FG} ${theme.fg("dim", "→ ctrl+p")}`)
-				return parts.join(` ${theme.fg("dim", "·")} `)
+			// The controls line runs through the same segment pipeline as the
+			// built-in status line: permissions and model lead, the compaction
+			// ladder and priority shedding apply at narrow widths.
+			const getControlsLine = (width: number): string | null => {
+				const segments = buildControlsLineSegments({ ctx, theme, statusLineData })
+				if (segments.length === 0) return null
+				return renderFittedLine(segments, width, theme)
 			}
 			scriptStatusLine = new StatusLineScript(getControlsLine)
 			scriptTui = tui
@@ -370,6 +389,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 			if (currentSessionIndicatorText) {
 				editor.setSessionIndicator(currentSessionIndicatorText)
 			}
+			if (currentIdeSelectionIndicatorText !== null) {
+				editor.setIdeSelectionIndicator(currentIdeSelectionIndicatorText)
+			}
 			return editor
 		})
 
@@ -379,15 +401,40 @@ export default function uiExtension(pi: ExtensionAPI) {
 		if (unsubModelCycleInput) unsubModelCycleInput()
 		if (ctx.hasUI) {
 			unsubModelCycleInput = ctx.ui.onTerminalInput((data) => {
-				// In raw-mode terminals Ctrl+C arrives as \x03 rather than raising
-				// SIGINT.  The upstream TUI already maps Escape to abort, but does
-				// not handle Ctrl+C.  Bridge the gap so both keys cancel the active
-				// turn while the agent is working.
+				// Ctrl+C cascade: clear text → abort agent → exit app.
+				// The exit stage is handled here (not upstream) because the abort
+				// stage consumes the event, leaving upstream's lastSigintTime stale.
 				if (matchesKey(data, Key.ctrl("c")) && !isKeyRelease(data)) {
-					if (currentCtx && !currentCtx.isIdle()) {
-						currentCtx.abort()
+					const now = Date.now()
+					const hasText = (currentEditor?.getText().trim().length ?? 0) > 0
+					const streaming = currentCtx ? !currentCtx.isIdle() : false
+
+					switch (ctrlCCascadeDecision(hasText, streaming)) {
+						case "clear": {
+							// Let upstream clearEditor() via app.clear.
+							if (streaming) {
+								currentCtx?.ui.setStatus("__ctrl_c_hint", "Ctrl+C again to abort")
+							}
+							lastCtrlCTime = now
+							return undefined
+						}
+						case "abort": {
+							// Consume so upstream's handleCtrlC doesn't fire.
+							currentCtx?.abort()
+							currentCtx?.ui.setStatus("__ctrl_c_hint", undefined)
+							lastCtrlCTime = now
+							return { consume: true }
+						}
+						case "exit": {
+							// Check own timer; consume so upstream doesn't set a competing lastSigintTime.
+							currentCtx?.ui.setStatus("__ctrl_c_hint", undefined)
+							if (now - lastCtrlCTime < CTRL_C_EXIT_WINDOW_MS) {
+								currentCtx?.shutdown()
+							}
+							lastCtrlCTime = now
+							return { consume: true }
+						}
 					}
-					return undefined
 				}
 				if (matchesKey(data, "ctrl+p")) {
 					// Defer to a foreground UI that is forwarding raw terminal input
@@ -590,6 +637,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 	})
 	pi.on("turn_end", (_, ctx) => {
 		currentCtx = ctx
+		// Clear any lingering Ctrl+C hint — the agent is no longer streaming
+		// so the cascade's "press again to abort" guidance is stale.
+		if (ctx.hasUI) ctx.ui.setStatus("__ctrl_c_hint", undefined)
 		refresh("idle")
 		if (ctx.hasUI && turnStartMs > 0) {
 			clearTimeout(workedForTimer)

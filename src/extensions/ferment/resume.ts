@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
+import { emitFermentScopingResumed } from "./domain-events-emitter.js"
 import { clearLifecycleGuard } from "./lifecycle-obligation-guard.js"
 import { appendRefEntry, resetScopingStopNudgeCount } from "./nudge.js"
 import { loadPendingProposal } from "./pending-proposal-store.js"
@@ -84,6 +85,13 @@ export function resumeFerment(
 
 	setActiveFermentAndApplyProfile(pi, runtime, existing)
 	appendRefEntry(pi, existing.id)
+
+	// Restore the scoping baseline without publishing a second ferment.started.
+	// The telemetry subscriber keeps an existing in-process baseline intact and
+	// initializes a missing one from the persisted creation time after restart.
+	if (existing.status === "draft" && pi.events) {
+		emitFermentScopingResumed(pi.events, existing)
+	}
 
 	const wtCheck = checkWorktree(existing)
 	if (wtCheck.severity !== "ok" && wtCheck.message) {

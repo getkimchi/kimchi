@@ -27,6 +27,7 @@
 
 import type { TextContent } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ToolResultEvent } from "@earendil-works/pi-coding-agent"
+import { markHarnessSteer } from "./steer-marker.js"
 
 const TIMEOUT_PATTERN = /Command timed out after (\d+) seconds/
 
@@ -45,8 +46,11 @@ export function extractTimeoutSeconds(text: string): number | undefined {
 	return Number.isNaN(seconds) ? undefined : seconds
 }
 
+/** Tools whose timeout error messages this extension recognises. */
+const TIMEOUT_BEARING_TOOLS = new Set(["bash", "bash_control"])
+
 export function isBashTimeoutResult(event: ToolResultEvent): boolean {
-	if (event.toolName !== "bash") return false
+	if (!TIMEOUT_BEARING_TOOLS.has(event.toolName)) return false
 	if (!event.isError) return false
 	for (const block of event.content) {
 		if (block.type === "text" && TIMEOUT_PATTERN.test(block.text)) {
@@ -74,7 +78,7 @@ export default function bashTimeoutGuidanceExtension(pi: ExtensionAPI): void {
 		pi.sendMessage(
 			{
 				customType: "bash-timeout-guidance",
-				content: [{ type: "text", text: message }],
+				content: [{ type: "text", text: markHarnessSteer(message) }],
 				display: false,
 			},
 			{ deliverAs: "steer" },

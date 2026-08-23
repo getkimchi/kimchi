@@ -6,6 +6,7 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
+import { oauthErrorHtml, oauthSuccessHtml } from "../../utils/oauth-page.js"
 import {
 	getConfiguredOAuthCallbackPort,
 	getOAuthCallbackPort,
@@ -13,47 +14,14 @@ import {
 	setOAuthCallbackPort,
 } from "./mcp-oauth-provider.js"
 
-// HTML templates for callback responses
-const HTML_SUCCESS = `<!DOCTYPE html>
-<html>
-<head>
-  <title>Pi - Authorization Successful</title>
-  <style>
-    body { font-family: system-ui, -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #1a1a2e; color: #eee; }
-    .container { text-align: center; padding: 2rem; }
-    h1 { color: #4ade80; margin-bottom: 1rem; }
-    p { color: #aaa; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>Authorization Successful</h1>
-    <p>You can close this window and return to Pi.</p>
-  </div>
-  <script>setTimeout(() => window.close(), 2000);</script>
-</body>
-</html>`
-
-const HTML_ERROR = (error: string) => `<!DOCTYPE html>
-<html>
-<head>
-  <title>Pi - Authorization Failed</title>
-  <style>
-    body { font-family: system-ui, -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #1a1a2e; color: #eee; }
-    .container { text-align: center; padding: 2rem; }
-    h1 { color: #f87171; margin-bottom: 1rem; }
-    p { color: #aaa; }
-    .error { color: #fca5a5; font-family: monospace; margin-top: 1rem; padding: 1rem; background: rgba(248,113,113,0.1); border-radius: 0.5rem; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>Authorization Failed</h1>
-    <p>An error occurred during authorization.</p>
-    <div class="error">${error}</div>
-  </div>
-</body>
-</html>`
+// Branded OAuth callback pages come from the shared renderer (templates in
+// resources/oauth/, via KIMCHI_OAUTH_TEMPLATE_DIR); it also HTML-escapes the
+// provider-controlled error text. Falls back to a minimal unbranded page when
+// the template dir is not configured.
+const SUCCESS_MESSAGE = "You can close this window and return to Kimchi."
+const SUCCESS_PAGE = { title: "MCP Authorization Successful", heading: "MCP Authorization Successful" }
+const ERROR_MESSAGE = "An error occurred during MCP authorization."
+const ERROR_PAGE = { title: "MCP Authorization Failed", heading: "MCP Authorization Failed" }
 
 /** Pending authorization request */
 interface PendingAuth {
@@ -65,6 +33,13 @@ interface PendingAuth {
 /** Server singleton state */
 let server: Server | undefined
 const pendingAuths = new Map<string, PendingAuth>()
+let serverLifecycle = Promise.resolve()
+
+function serializeServerLifecycle(operation: () => Promise<void>): Promise<void> {
+	const result = serverLifecycle.then(operation, operation)
+	serverLifecycle = result.catch(() => {})
+	return result
+}
 
 /** Timeout for callback completion (5 minutes) */
 const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000
@@ -97,7 +72,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 	if (!state) {
 		const errorMsg = "Missing required state parameter - potential CSRF attack"
 		res.writeHead(400, { "Content-Type": "text/html" })
-		res.end(HTML_ERROR(errorMsg))
+		res.end(oauthErrorHtml(ERROR_MESSAGE, errorMsg, ERROR_PAGE))
 		return
 	}
 
@@ -106,7 +81,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 		const errorMsg = errorDescription || error
 		// Send HTTP response first before rejecting promise
 		res.writeHead(200, { "Content-Type": "text/html" })
-		res.end(HTML_ERROR(errorMsg))
+		res.end(oauthErrorHtml(ERROR_MESSAGE, errorMsg, ERROR_PAGE))
 		// Reject promise after response is sent (defer to allow test to attach handler)
 		if (pendingAuths.has(state)) {
 			// biome-ignore lint/style/noNonNullAssertion: asserted above
@@ -121,7 +96,15 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 	// Require authorization code
 	if (!code) {
 		res.writeHead(400, { "Content-Type": "text/html" })
-		res.end(HTML_ERROR("No authorization code provided"))
+		res.end(oauthErrorHtml(ERROR_MESSAGE, "No authorization code provided", ERROR_PAGE))
+		// Reject the pending auth so the flow fails fast instead of hanging until the timeout
+		if (pendingAuths.has(state)) {
+			// biome-ignore lint/style/noNonNullAssertion: asserted above
+			const pending = pendingAuths.get(state)!
+			clearTimeout(pending.timeout)
+			pendingAuths.delete(state)
+			setTimeout(() => pending.reject(new Error("No authorization code provided")), 0)
+		}
 		return
 	}
 
@@ -129,7 +112,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 	if (!pendingAuths.has(state)) {
 		const errorMsg = "Invalid or expired state parameter - potential CSRF attack"
 		res.writeHead(400, { "Content-Type": "text/html" })
-		res.end(HTML_ERROR(errorMsg))
+		res.end(oauthErrorHtml(ERROR_MESSAGE, errorMsg, ERROR_PAGE))
 		return
 	}
 
@@ -142,7 +125,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 	pending.resolve(code)
 
 	res.writeHead(200, { "Content-Type": "text/html" })
-	res.end(HTML_SUCCESS)
+	res.end(oauthSuccessHtml(SUCCESS_MESSAGE, SUCCESS_PAGE))
 }
 
 /**
@@ -150,7 +133,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
  * If strictPort is true, requires binding on the configured callback port.
  * If strictPort is false, scans forward for an available local port.
  */
-export async function ensureCallbackServer(options: EnsureCallbackServerOptions = {}): Promise<void> {
+async function ensureCallbackServerLocked(options: EnsureCallbackServerOptions): Promise<void> {
 	const configuredPort = getConfiguredOAuthCallbackPort()
 	const strictPort = options.strictPort === true
 
@@ -163,7 +146,7 @@ export async function ensureCallbackServer(options: EnsureCallbackServerOptions 
 			)
 		}
 
-		await stopCallbackServer()
+		await stopCallbackServerLocked()
 	}
 
 	const preferredPort = configuredPort
@@ -216,6 +199,23 @@ export async function ensureCallbackServer(options: EnsureCallbackServerOptions 
 	)
 }
 
+export function ensureCallbackServer(options: EnsureCallbackServerOptions = {}): Promise<void> {
+	return serializeServerLifecycle(() => ensureCallbackServerLocked(options))
+}
+
+export async function prepareCallback(
+	oauthState: string,
+	options: EnsureCallbackServerOptions = {},
+): Promise<{ callbackPromise: Promise<string> }> {
+	let callbackPromise: Promise<string> | undefined
+	await serializeServerLifecycle(async () => {
+		await ensureCallbackServerLocked(options)
+		callbackPromise = waitForCallback(oauthState)
+	})
+	if (!callbackPromise) throw new Error("OAuth callback registration failed")
+	return { callbackPromise }
+}
+
 /**
  * Wait for a callback with the given OAuth state.
  * Returns a promise that resolves with the authorization code.
@@ -248,7 +248,7 @@ export function cancelPendingCallback(oauthState: string): void {
 /**
  * Stop the callback server and reject all pending authorizations.
  */
-export async function stopCallbackServer(): Promise<void> {
+async function stopCallbackServerLocked(): Promise<void> {
 	if (server) {
 		await new Promise<void>((resolve) => {
 			server?.close(() => {
@@ -269,6 +269,10 @@ export async function stopCallbackServer(): Promise<void> {
 			pending.reject(new Error("OAuth callback server stopped"))
 		}
 	}, 0)
+}
+
+export function stopCallbackServer(): Promise<void> {
+	return serializeServerLifecycle(stopCallbackServerLocked)
 }
 
 /**

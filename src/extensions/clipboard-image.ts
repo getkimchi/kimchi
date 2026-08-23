@@ -225,6 +225,9 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		setImageCacheDir(dir)
 		clearAllImages()
 		updateIndicator()
+		// Linux clipboard detection shells out to wl-paste/xclip, so keep it on-demand.
+		// Polling wl-paste can create transient surfaces that steal focus on Wayland.
+		if (process.platform === "linux") return
 		checkClipboard()
 		clipboardPollId = setInterval(checkClipboard, CLIPBOARD_POLL_INTERVAL_MS)
 	})

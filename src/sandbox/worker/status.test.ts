@@ -42,7 +42,7 @@ describe("getStatus", () => {
 		const result = await getStatus(client)
 
 		expect(result).toEqual(fixture)
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/status`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/api/status`)
 		expect(mockFetch.mock.calls[0][1]).toMatchObject({
 			method: "GET",
 			headers: expect.objectContaining({ Authorization: "Bearer jwt-tok" }),

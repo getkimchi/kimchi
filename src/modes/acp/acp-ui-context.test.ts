@@ -512,22 +512,23 @@ describe("createAcpUIContext — input via elicitation", () => {
 		})
 	})
 
-	it("emits an agent_message_chunk warning when the client supports neither elicitation nor notifications", async () => {
-		const { conn, unstable_createElicitation, send } = makeConn()
+	it("falls back to notify when the client supports no elicitation and no _kimchi.dev methods", async () => {
+		const { conn, extNotification, unstable_createElicitation, send } = makeConn({
+			extNotification: vi.fn(async () => {}),
+		})
 		const real = createAcpUIContext(conn, "sess-1", undefined, send)
 		await expect(real.input("Workspace name", "type a name")).resolves.toBeUndefined()
 		expect(unstable_createElicitation).not.toHaveBeenCalled()
-		expect(send).toHaveBeenCalledTimes(1)
-		const params = send.mock.calls[0][0]
+		expect(extNotification).toHaveBeenCalledTimes(1)
+		const [method, params] = extNotification.mock.calls[0]
+		expect(method).toBe("_kimchi.dev/pi_notify")
 		expect(params).toEqual({
+			id: expect.any(String),
+			type: "extension_ui_request",
+			method: "notify",
 			sessionId: "sess-1",
-			update: {
-				content: {
-					text: '[ACP] input: Extension requested free-text input "Workspace name" but the client supports neither form elicitation nor notifications. The call was dropped.',
-					type: "text",
-				},
-				sessionUpdate: "agent_message_chunk",
-			},
+			message: 'Input requested: "Workspace name" (not supported by this client)',
+			notifyType: "warning",
 		})
 	})
 })

@@ -40,6 +40,7 @@ import { getCompactionEnabled } from "../../settings-watcher.js"
 import { isToolCallInFlight } from "../../tool-call-in-flight.js"
 import { COMPACTION_RESERVE_TOKENS } from "../compaction-thresholds.js"
 import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
+import { renderCharterCompact } from "./charter.js"
 import type { FermentRuntime } from "./runtime.js"
 import { safeSendMessage, tryPiAction } from "./safe-send.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
@@ -56,6 +57,10 @@ export interface StageCompactionOptions {
 	minKeepRecentTokens: number
 	/** Fraction of the model's context window kept as recent tokens (before the floor). */
 	keepRecentWindowFraction: number
+	/** Step-boundary compactions only fire when the context exceeds this fraction
+	 *  of the model's context window; below it they are skipped (phase
+	 *  boundaries always compact regardless). 0 disables the gate. */
+	stepContextGateFraction: number
 	/** Thinking level for the summarization call. */
 	thinkingLevel: ModelThinkingLevel
 }
@@ -68,6 +73,12 @@ export const DEFAULT_STAGE_COMPACTION_OPTIONS: Readonly<StageCompactionOptions> 
 	minContextTokens: 50_000,
 	minKeepRecentTokens: 20_000,
 	keepRecentWindowFraction: 0.05,
+	// Measured run 019ffa0b: 28 step compactions ≈ 34.5 min of 126-min wall
+	// (~74s each), one per step, mostly on 60–80K contexts far below any
+	// pressure level. Phase boundaries (7 in that run) carry the coherence
+	// value; steps compact only once the context actually stresses the window.
+	// The mid-turn pressure path remains the hard safety net above this gate.
+	stepContextGateFraction: 0.6,
 	// Compaction is pure summarization and never benefits from extended thinking.
 	thinkingLevel: "off",
 }
@@ -76,6 +87,10 @@ export interface FermentHandoffDetails {
 	fermentName: string
 	fermentGoal?: string
 	successCriteria?: string[]
+	/** Compact-rendered intent charter (see charter.ts) — keeps the original
+	 *  user intent in the model's view at every stage transition. Optional:
+	 *  ferments scoped before charters existed lack it. */
+	charter?: string
 	activePhaseName: string
 	activePhaseGoal: string
 	nextStepDescription?: string
@@ -247,6 +262,26 @@ function resolveCompactorModel(ctx: ExtensionContext): CompactorModelResolution 
 	}
 }
 
+/** Append the plan-anchor lines every ferment compaction prompt must preserve
+ *  (identity, success criteria, intent charter, open concerns). One home for
+ *  the block so the two instruction builders cannot drift apart. */
+function appendPlanAnchorLines(lines: string[], ferment: Ferment): void {
+	lines.push(`- Ferment: ${ferment.name}${ferment.goal ? ` — ${ferment.goal}` : ""}`)
+
+	if (ferment.successCriteria && ferment.successCriteria.length > 0) {
+		lines.push(`- Success criteria: ${ferment.successCriteria.join("; ")}`)
+	}
+
+	if (ferment.charter) {
+		lines.push("- Intent charter (preserve verbatim — it is the grading anchor for this ferment):")
+		for (const line of renderCharterCompact(ferment.charter).split("\n")) lines.push(`  ${line}`)
+	}
+
+	lines.push(
+		"- Open concerns: preserve any open concerns, known gaps, deferred fixes, or quality worries (things noticed but unresolved) — they must survive compaction alongside the plan. Do not drop one merely because it has no owner or fix yet.",
+	)
+}
+
 /** Build the custom instructions string passed to compaction. */
 export function buildCustomInstructions(ferment: Ferment, pending: PendingCompaction): string {
 	const completedPhase = findCompletedPhase(ferment, pending)
@@ -255,11 +290,7 @@ export function buildCustomInstructions(ferment: Ferment, pending: PendingCompac
 
 	const lines: string[] = ["Preserve ferment plan details in the summary:"]
 
-	lines.push(`- Ferment: ${ferment.name}${ferment.goal ? ` — ${ferment.goal}` : ""}`)
-
-	if (ferment.successCriteria && ferment.successCriteria.length > 0) {
-		lines.push(`- Success criteria: ${ferment.successCriteria.join("; ")}`)
-	}
+	appendPlanAnchorLines(lines, ferment)
 
 	// For step completions: show the phase that is still active.
 	// For phase completions: show the just-completed phase as "completed", then
@@ -310,11 +341,7 @@ export function buildMidTurnCustomInstructions(
 		"The context filled while a ferment step was in progress. Preserve the plan and resume the step:",
 	]
 
-	lines.push(`- Ferment: ${ferment.name}${ferment.goal ? ` — ${ferment.goal}` : ""}`)
-
-	if (ferment.successCriteria && ferment.successCriteria.length > 0) {
-		lines.push(`- Success criteria: ${ferment.successCriteria.join("; ")}`)
-	}
+	appendPlanAnchorLines(lines, ferment)
 
 	if (phase) {
 		lines.push(`- Active phase: ${phase.name} — ${phase.goal}`)
@@ -331,6 +358,30 @@ export function buildMidTurnCustomInstructions(
 	return lines.join("\n")
 }
 
+/** Detect a degenerate compaction summary: one that dropped every ferment
+ *  anchor even though the instruction builders mandate it. Observed in the
+ *  wild (Tahoe session analysis): a "No prior history / Turn Context (split
+ *  turn)" summary with no ferment context left the worker un-anchored for a
+ *  whole step until the stage handoff repaired it. Detection only — the
+ *  handoff is the repair channel. */
+export function isDegenerateCompactionSummary(summary: string, ferment: Ferment): boolean {
+	if (summary.includes(ferment.name)) return false
+	if (ferment.goal && summary.includes(ferment.goal)) return false
+	return true
+}
+
+/** Loud breadcrumb when a compaction result carried a degenerate summary.
+ *  Does NOT change control flow: the stage handoff that always follows a
+ *  compaction is the re-anchor repair channel. */
+function reportDegenerateSummaryIfAny(pi: ExtensionAPI, ferment: Ferment, result: CompactionResult): void {
+	if (!isDegenerateCompactionSummary(result.summary, ferment)) return
+	tryPiAction(() => {
+		pi.appendEntry("ferment_breadcrumb", {
+			text: `Degenerate compaction summary for ferment "${ferment.name}" — the summary dropped the ferment anchor; the stage handoff is the re-anchor for the next stage`,
+		})
+	})
+}
+
 export function buildHandoffDetails(
 	result: CompactionResult | undefined,
 	ferment: Ferment,
@@ -345,6 +396,7 @@ export function buildHandoffDetails(
 		fermentName: ferment.name,
 		fermentGoal: ferment.goal,
 		successCriteria: ferment.successCriteria,
+		charter: ferment.charter ? renderCharterCompact(ferment.charter) : undefined,
 		activePhaseName: activePhase?.name ?? "unknown",
 		activePhaseGoal: activePhase?.goal ?? "",
 		nextStepDescription: nextAction?.nextStepDescription,
@@ -551,6 +603,7 @@ async function triggerCompactionForPending(
 
 	function finishCompaction(result: CompactionResult): void {
 		runtime.clearCompactionInFlight(fermentId)
+		reportDegenerateSummaryIfAny(pi, ferment, result)
 		appendHandoffEntry(result)
 		scheduleContinuationBestEffort()
 	}
@@ -585,6 +638,23 @@ async function triggerCompactionForPending(
 			return true
 		}
 
+		// Step-only pressure gate: steps compact only once the context exceeds
+		// the configured fraction of the window; phase boundaries always compact
+		// (subject to the minimum-size gate above). Unknown window → gate off.
+		if (pending.kind === "step" && options.stepContextGateFraction > 0) {
+			const contextWindow = ctx.model?.contextWindow ?? 0
+			const stepGate = Math.floor(contextWindow * options.stepContextGateFraction)
+			if (contextWindow > 0 && contextTokens < stepGate) {
+				runtime.clearCompactionInFlight(fermentId)
+				const skipReason = `context ~${contextTokens.toLocaleString()} tokens is below the step-compaction threshold (${stepGate.toLocaleString()} tokens, ${options.stepContextGateFraction * 100}% of the ${contextWindow.toLocaleString()}-token window)`
+				appendHandoffEntry(undefined, skipReason)
+				tryPiAction(() => {
+					pi.appendEntry("ferment_breadcrumb", { text: `Stage compaction skipped: ${skipReason}` })
+				})
+				return true
+			}
+		}
+
 		// Append the handoff BEFORE compacting. At a stage boundary the session
 		// tail is assistant → toolResult, and upstream cannot place a compaction
 		// cut point after a toolResult — without a trailing custom_message entry,
@@ -596,6 +666,7 @@ async function triggerCompactionForPending(
 		const { result, error } = await invokeInlineCompaction(pi, ctx, customInstructions, options)
 		runtime.clearCompactionInFlight(fermentId)
 		if (result) {
+			reportDegenerateSummaryIfAny(pi, ferment, result)
 			tryPiAction(() => {
 				pi.appendEntry("ferment_breadcrumb", {
 					text: `Stage compaction complete: ${(result.tokensBefore ?? 0).toLocaleString()} tokens before compaction`,
@@ -650,6 +721,15 @@ async function triggerCompactionForPending(
  * mid-turn: an overrun there is a planning-quality signal, so it is recorded as
  * a planning failure instead of papered over.
  *
+ * Effect validation: suppress-abort inline compaction rewrites session state
+ * that the running agent loop (context snapshotted at run start) never reads,
+ * so a "successful" inline fire can leave the live context untouched — the
+ * 019ffb83 storm signature (6 consecutive fires, tokensBefore climbing past
+ * the model window). Each inline fire records usage at fire time; if the next
+ * trigger arrives before any below-threshold turn, the previous fire provably
+ * never shrank the wire, so the inline path is suppressed for that ferment and
+ * the aborting fallback (guaranteed effective on the new run) takes over.
+ *
  * @param totalTokens - Current session token count from the assistant usage event.
  */
 export async function maybeTriggerMidTurnFermentCompaction(
@@ -682,9 +762,21 @@ export async function maybeTriggerMidTurnFermentCompaction(
 
 	const model = ctx.model
 	if (!model) return
-	if (totalTokens <= compactionThreshold(model.contextWindow)) return
 
 	const activeFerment = runtime.getActive()
+	const threshold = compactionThreshold(model.contextWindow)
+
+	// Effect validation (run 019ffb83 storm): suppress-abort inline compaction
+	// replaces `agent.state.messages`, which the running agent loop never reads
+	// — a "successful" mid-turn fire can leave the wire context untouched.
+	// A fire's marker is cleared once a turn lands at/below the trigger
+	// threshold; a new trigger while the marker survives proves the previous
+	// fire never shrank the live context, so switch to the abort fallback.
+	if (activeFerment && totalTokens <= threshold) {
+		runtime.clearLastMidTurnFireTokens(activeFerment.id)
+	}
+	if (totalTokens <= threshold) return
+
 	if (!activeFerment) return
 	if (activeFerment.status !== "running") return
 
@@ -700,6 +792,22 @@ export async function maybeTriggerMidTurnFermentCompaction(
 	// toolResult appended after compaction. Defer — the context may be large,
 	// but emitting an orphan is worse; phase 1 still catches any that slip past.
 	if (isToolCallInFlightInSession(ctx)) return
+
+	// No-op detection: the previous inline fire's marker survived to a fresh
+	// trigger without an intervening below-threshold turn — the wire context
+	// never shrank. Suppress the inline path for this ferment and fall through
+	// to the aborting path, which is guaranteed to take effect (the aborted
+	// run restarts from the compacted session state).
+	const lastFireTokens = runtime.getLastMidTurnFireTokens(fermentId)
+	if (lastFireTokens !== undefined && !runtime.isMidTurnInlineSuppressed(fermentId)) {
+		runtime.markMidTurnInlineSuppressed(fermentId)
+		const suppressed = totalTokens > lastFireTokens ? "never dropped" : "still above threshold"
+		tryPiAction(() => {
+			pi.appendEntry("ferment_breadcrumb", {
+				text: `Mid-turn inline compaction no-op: previous fire at ${lastFireTokens.toLocaleString()} tokens ${suppressed} (still ~${totalTokens.toLocaleString()}) — suppressing inline path, using abort fallback`,
+			})
+		})
+	}
 
 	runtime.markCompactionInFlight(fermentId)
 
@@ -745,11 +853,16 @@ export async function maybeTriggerMidTurnFermentCompaction(
 	// Preferred path: transparent inline compaction (no run abort). Mirrors the
 	// stage-boundary path's invocation via the shared helper so the two cannot
 	// drift; the only differences are the mid-turn instructions and the
-	// step-resume continuation below.
-	if (typeof ctx.inlineCompact === "function") {
+	// step-resume continuation below. Skipped once the no-op detector has
+	// proven the inline path ineffectual for this ferment.
+	if (typeof ctx.inlineCompact === "function" && !runtime.isMidTurnInlineSuppressed(fermentId)) {
 		const { result, error } = await invokeInlineCompaction(pi, ctx, customInstructions, options)
 		if (result) {
 			runtime.clearCompactionInFlight(fermentId)
+			reportDegenerateSummaryIfAny(pi, activeFerment, result)
+			// Record fire-time usage so the next trigger can tell a real shrink
+			// (marker cleared below threshold) from a wiring no-op (marker survives).
+			runtime.setLastMidTurnFireTokens(fermentId, totalTokens)
 			resumeInProgressStep(result)
 		} else {
 			handleCompactionFailure(error)

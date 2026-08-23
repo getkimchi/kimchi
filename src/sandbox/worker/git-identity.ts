@@ -3,7 +3,7 @@ import { type CreateGitIdentityRequest, type GitIdentity, type UpdateGitIdentity
 
 /**
  * Set the global git user name/email on the sandbox via
- * `PUT /gitidentity` (worker runs `git config --global user.name/user.email`).
+ * `PUT /api/gitidentity` (worker runs `git config --global user.name/user.email`).
  * No-op if both are empty.
  */
 export async function setGitGlobalConfig(
@@ -15,15 +15,15 @@ export async function setGitGlobalConfig(
 	const user: { name?: string; email?: string } = {}
 	if (cfg.name) user.name = cfg.name
 	if (cfg.email) user.email = cfg.email
-	await client.putVoid("/gitidentity", { user }, signal)
+	await client.putVoid("/api/gitidentity", { user }, signal)
 }
 
 export async function listGitIdentities(client: WorkerClient, signal?: AbortSignal): Promise<GitIdentity[]> {
-	return client.get<GitIdentity[]>("/gitidentity", signal)
+	return client.get<GitIdentity[]>("/api/gitidentity", signal)
 }
 
 export async function getGitIdentity(client: WorkerClient, host: string, signal?: AbortSignal): Promise<GitIdentity> {
-	return client.get<GitIdentity>(`/gitidentity/${encodeURIComponent(host)}`, signal)
+	return client.get<GitIdentity>(`/api/gitidentity/${encodeURIComponent(host)}`, signal)
 }
 
 export async function createGitIdentity(
@@ -32,7 +32,7 @@ export async function createGitIdentity(
 	req: CreateGitIdentityRequest,
 	signal?: AbortSignal,
 ): Promise<GitIdentity> {
-	return client.post<GitIdentity>(`/gitidentity/${encodeURIComponent(host)}`, req, signal)
+	return client.post<GitIdentity>(`/api/gitidentity/${encodeURIComponent(host)}`, req, signal)
 }
 
 export async function updateGitIdentity(
@@ -41,11 +41,11 @@ export async function updateGitIdentity(
 	req: UpdateGitIdentityRequest,
 	signal?: AbortSignal,
 ): Promise<GitIdentity> {
-	return client.put<GitIdentity>(`/gitidentity/${encodeURIComponent(host)}`, req, signal)
+	return client.put<GitIdentity>(`/api/gitidentity/${encodeURIComponent(host)}`, req, signal)
 }
 
 export async function deleteGitIdentity(client: WorkerClient, host: string, signal?: AbortSignal): Promise<void> {
-	await client.del(`/gitidentity/${encodeURIComponent(host)}`, signal)
+	await client.del(`/api/gitidentity/${encodeURIComponent(host)}`, signal)
 }
 
 /**

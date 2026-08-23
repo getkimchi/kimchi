@@ -1,8 +1,10 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const {
+	AUTOMATIC_REFRESH_MIN_INTERVAL_MS,
 	BILLING_EXHAUSTED_MESSAGE,
-	COMMUNITY_TIER_HEADER_NOTICE,
+	BILLING_RATE_LIMITED_MESSAGE,
+	COMMUNITY_TIER_MESSAGES,
 	budgetEndpointFromLlmEndpoint,
 	configureBillingCreditsApi,
 	creditsEndpointFromLlmEndpoint,
@@ -48,12 +50,12 @@ describe("billing status", () => {
 		expect(formatBudgetLimit("0.000000")).toBe("unlimited")
 	})
 
-	it("maps the proxy Community tier to header upsell without paid warnings", () => {
+	it("shows BYO guidance as a warning when Community inference is blocked", () => {
 		observeCreditsPayload({
 			serverless: true,
-			tier: "community",
+			tier: "free-slow",
 			is_paid_tier: false,
-			billing_status: "depleted",
+			billing_status: "free_tier",
 			has_credits: false,
 			remaining: 0,
 		})
@@ -62,14 +64,93 @@ describe("billing status", () => {
 			serverless: true,
 			plan: "community",
 			isPaidTier: false,
-			creditStatus: "exhausted",
+			creditStatus: "ok",
+			restrictedMode: true,
 			remainingCredits: 0,
 		})
-		expect(getCommunityTierHeaderNotice()).toBe(
-			"You are using Community tier. For faster performance, upgrade to Coder at https://app.kimchi.dev/pricing",
-		)
-		expect(getBillingWarnings()[0]).toBeUndefined()
+		expect(getCommunityTierHeaderNotice()).toBeUndefined()
+		expect(getBillingWarnings()).toEqual([
+			{
+				kind: "community-inference-blocked",
+				message: COMMUNITY_TIER_MESSAGES.inferenceBlocked,
+			},
+		])
 		expect(getBillingStatusLine()).toEqual({ amount: "$0.00" })
+	})
+
+	// The reported failure: a Coder subscriber that exhausts its credits is demoted to a free tier for
+	// rate limiting, and the server reports that demoted tier as the billing identity. Every field
+	// except `remaining` describes a user who never paid.
+	it("warns about rate limiting when a demoted paid subscriber reports as free tier", () => {
+		observeCreditsPayload({
+			serverless: true,
+			tier: "community",
+			is_paid_tier: false,
+			billing_status: "free_tier",
+			has_credits: true,
+			remaining: "0",
+		})
+
+		expect(getBillingStatus()).toMatchObject({
+			plan: "community",
+			isPaidTier: false,
+			creditStatus: "ok",
+			restrictedMode: false,
+			remainingCredits: 0,
+		})
+		expect(getBillingWarnings()[0]).toEqual({ kind: "rate-limited", message: BILLING_RATE_LIMITED_MESSAGE })
+		expect(getCommunityTierHeaderNotice()).toBeUndefined()
+	})
+
+	// The warning kind turns on who said what: an explicit billing_status outranks the balance
+	// inference, so a server that declares depletion is never downgraded to the softer variant.
+	it("separates a server-declared depletion from an inferred zero balance", () => {
+		observeCreditsPayload({
+			serverless: true,
+			tier: "coder",
+			is_paid_tier: true,
+			billing_status: "depleted",
+			has_credits: false,
+			remaining: "0",
+		})
+		expect(getBillingWarnings()[0]?.kind).toBe("exhausted")
+
+		// Same declaration, but the payload omits has_credits entirely.
+		observeCreditsPayload({ serverless: false })
+		observeCreditsPayload({
+			serverless: true,
+			tier: "coder",
+			is_paid_tier: true,
+			billing_status: "depleted",
+			remaining: "0",
+		})
+		expect(getBillingWarnings()[0]?.kind).toBe("exhausted")
+
+		// Nothing declared: the balance is the only evidence, and the server is still serving.
+		observeCreditsPayload({ serverless: false })
+		observeCreditsPayload({
+			serverless: true,
+			tier: "community",
+			is_paid_tier: false,
+			billing_status: "free_tier",
+			has_credits: true,
+			remaining: "0",
+		})
+		expect(getBillingWarnings()[0]?.kind).toBe("rate-limited")
+	})
+
+	it("keeps the Community upsell while a free-tier user still has credits", () => {
+		observeCreditsPayload({
+			serverless: true,
+			tier: "community",
+			is_paid_tier: false,
+			billing_status: "free_tier",
+			has_credits: true,
+			remaining: "12",
+		})
+
+		expect(getCommunityTierHeaderNotice()).toBe(COMMUNITY_TIER_MESSAGES.available)
+		expect(getBillingWarnings()[0]).toBeUndefined()
 	})
 
 	it("still accepts internal free/free-slow tiers if proxy mapping is not deployed yet", () => {
@@ -88,7 +169,7 @@ describe("billing status", () => {
 			creditStatus: "ok",
 			remainingCredits: 2,
 		})
-		expect(getCommunityTierHeaderNotice()).toBe(COMMUNITY_TIER_HEADER_NOTICE)
+		expect(getCommunityTierHeaderNotice()).toBe(COMMUNITY_TIER_MESSAGES.available)
 		expect(getBillingWarnings()[0]).toBeUndefined()
 		expect(getBillingStatusLine()).toEqual({ amount: "$2.00" })
 	})
@@ -761,7 +842,7 @@ describe("billing status", () => {
 			has_credits: true,
 			remaining: "3",
 		})
-		expect(getCommunityTierHeaderNotice()).toBe(COMMUNITY_TIER_HEADER_NOTICE)
+		expect(getCommunityTierHeaderNotice()).toBe(COMMUNITY_TIER_MESSAGES.available)
 
 		observeCreditsPayload({
 			serverless: true,
@@ -786,6 +867,217 @@ describe("billing status", () => {
 		} finally {
 			unsubscribe()
 		}
+	})
+})
+
+describe("refreshBillingStatusFromConfig coordinator", () => {
+	beforeEach(() => {
+		configureBillingCreditsApi({})
+		setBillingStatusForTest(undefined)
+		vi.useFakeTimers()
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
+	function configureWithKey() {
+		configureBillingCreditsApi({ apiKey: "api-key", llmEndpoint: "https://llm.kimchi.dev/openai/v1" })
+	}
+
+	/** Mock loadConfig that returns the same credentials configureWithKey sets,
+	 * so refreshBillingStatusFromConfig doesn't overwrite them via the real
+	 * loadConfig() (which returns empty in CI where no config file exists). */
+	const mockLoadConfig = () => ({
+		apiKey: "api-key",
+		llmEndpoint: "https://llm.kimchi.dev/openai/v1",
+	})
+
+	function fetchImplReturning(remaining: string) {
+		return ((_input: RequestInfo | URL) =>
+			Promise.resolve(
+				new Response(
+					JSON.stringify({ serverless: true, tier: "coder", is_paid_tier: true, billing_status: "ok", remaining }),
+					{ status: 200 },
+				),
+			)) as typeof fetch
+	}
+
+	it("coalesces concurrent automatic refreshes into one request pair", async () => {
+		configureWithKey()
+		const calls: string[] = []
+		// Yield once per fetch so the response settles on a microtask, letting a
+		// second refresh call arrive while the first is still in flight.
+		const fetchImpl = ((input: RequestInfo | URL) => {
+			calls.push(String(input))
+			return new Promise<Response>((resolve) =>
+				queueMicrotask(() =>
+					resolve(
+						new Response(JSON.stringify({ serverless: true, is_paid_tier: true, remaining: "5" }), { status: 200 }),
+					),
+				),
+			)
+		}) as typeof fetch
+
+		const first = refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "automatic" })
+		// Start a second refresh before the first's fetch microtask runs.
+		const second = refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "automatic" })
+
+		await expect(first).resolves.toMatchObject({ remainingCredits: 5 })
+		await expect(second).resolves.toMatchObject({ remainingCredits: 5 })
+
+		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(1)
+		expect(calls.filter((url) => url.endsWith("/budget"))).toHaveLength(1)
+	})
+
+	it("throttles automatic refreshes inside the TTL to one snapshot", async () => {
+		configureWithKey()
+		const calls: string[] = []
+		const configLoader = vi.fn(() => ({
+			apiKey: "api-key",
+			llmEndpoint: "https://llm.kimchi.dev/openai/v1",
+		}))
+		const fetchImpl = ((input: RequestInfo | URL) => {
+			calls.push(String(input))
+			return Promise.resolve(
+				new Response(JSON.stringify({ serverless: true, is_paid_tier: true, remaining: "5" }), { status: 200 }),
+			)
+		}) as typeof fetch
+
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: configLoader, mode: "automatic" })
+		const firstSnapshot = getBillingStatus()
+
+		// Advance less than the TTL — second automatic refresh must be skipped
+		// before performing another synchronous config read.
+		vi.advanceTimersByTime(AUTOMATIC_REFRESH_MIN_INTERVAL_MS - 1_000)
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: configLoader, mode: "automatic" })
+
+		expect(configLoader).toHaveBeenCalledOnce()
+		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(1)
+		expect(getBillingStatus()).toBe(firstSnapshot)
+	})
+
+	it("allows a forced refresh to bypass the TTL", async () => {
+		configureWithKey()
+		const calls: string[] = []
+		const fetchImpl = ((input: RequestInfo | URL) => {
+			calls.push(String(input))
+			return Promise.resolve(
+				new Response(JSON.stringify({ serverless: true, is_paid_tier: true, remaining: "5" }), { status: 200 }),
+			)
+		}) as typeof fetch
+
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "automatic" })
+
+		vi.advanceTimersByTime(1_000)
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "forced" })
+
+		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(2)
+	})
+
+	it("runs an automatic refresh again after the TTL elapses", async () => {
+		configureWithKey()
+		const calls: string[] = []
+		const fetchImpl = ((input: RequestInfo | URL) => {
+			calls.push(String(input))
+			return Promise.resolve(
+				new Response(JSON.stringify({ serverless: true, is_paid_tier: true, remaining: "5" }), { status: 200 }),
+			)
+		}) as typeof fetch
+
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "automatic" })
+
+		vi.advanceTimersByTime(AUTOMATIC_REFRESH_MIN_INTERVAL_MS)
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "automatic" })
+
+		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(2)
+	})
+
+	it("does not throttle an automatic refresh after a forced refresh", async () => {
+		configureWithKey()
+		const calls: string[] = []
+		const fetchImpl = ((input: RequestInfo | URL) => {
+			calls.push(String(input))
+			return Promise.resolve(
+				new Response(JSON.stringify({ serverless: true, is_paid_tier: true, remaining: "5" }), { status: 200 }),
+			)
+		}) as typeof fetch
+
+		// A forced refresh (startup, login) must not set the automatic TTL —
+		// otherwise the first post-completion automatic refresh is throttled.
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "forced" })
+		vi.advanceTimersByTime(1_000)
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "automatic" })
+
+		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(2)
+	})
+
+	it("does not retry a failed automatic billing refresh", async () => {
+		configureWithKey()
+		const fetchImpl = ((_input: RequestInfo | URL) =>
+			Promise.resolve(new Response("nope", { status: 500 }))) as typeof fetch
+
+		await expect(
+			refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig, mode: "automatic" }),
+		).resolves.toBeUndefined()
+		expect(getBillingStatus()).toBeUndefined()
+	})
+
+	it("defaults to forced mode (manual command / login semantics)", async () => {
+		configureWithKey()
+		const fetchImpl = fetchImplReturning("5")
+
+		await refreshBillingStatusFromConfig({ fetch: fetchImpl, loadConfig: mockLoadConfig })
+		expect(getBillingStatus()).toMatchObject({ remainingCredits: 5 })
+	})
+
+	it("does not bump the throttle timestamp when credentials invalidate the in-flight refresh", async () => {
+		// Stable credentials across both calls so the second refresh's
+		// configureBillingCreditsApi is a no-op — otherwise a credential flip
+		// would reset lastRefreshAt=0 and mask the stale-timestamp bug.
+		const configWith = (apiKey: string) => () => ({
+			apiKey,
+			llmEndpoint: "https://llm.kimchi.dev/openai/v1",
+		})
+		// Seed with the old key so the mid-flight credential change is real.
+		configureBillingCreditsApi({ apiKey: "old-key", llmEndpoint: "https://llm.kimchi.dev/openai/v1" })
+
+		let resolveResponse!: (response: Response) => void
+		const pendingResponse = new Promise<Response>((resolve) => {
+			resolveResponse = resolve
+		})
+		const fetchImpl = ((_input: RequestInfo | URL) => pendingResponse) as typeof fetch
+
+		const refresh = refreshBillingStatusFromConfig({
+			fetch: fetchImpl,
+			mode: "automatic",
+			loadConfig: configWith("old-key"),
+		})
+		// Credential change mid-flight invalidates the coalesced refresh and
+		// resets the throttle (lastRefreshAt = 0).
+		configureBillingCreditsApi({ apiKey: "new-key", llmEndpoint: "https://llm.kimchi.dev/openai/v1" })
+		resolveResponse(
+			new Response(JSON.stringify({ serverless: true, is_paid_tier: true, remaining: "5" }), { status: 200 }),
+		)
+
+		await expect(refresh).resolves.toBeUndefined()
+
+		// A subsequent automatic refresh must NOT be throttled by the stale
+		// resolution — the credential reset must stand.
+		const calls: string[] = []
+		const nextFetch = ((input: RequestInfo | URL) => {
+			calls.push(String(input))
+			return Promise.resolve(
+				new Response(JSON.stringify({ serverless: true, is_paid_tier: true, remaining: "5" }), { status: 200 }),
+			)
+		}) as typeof fetch
+		await refreshBillingStatusFromConfig({
+			fetch: nextFetch,
+			mode: "automatic",
+			loadConfig: configWith("new-key"),
+		})
+
+		expect(calls.filter((url) => url.endsWith("/credits"))).toHaveLength(1)
 	})
 })
 

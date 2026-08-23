@@ -1260,15 +1260,15 @@ describe("readOllamaModelsFromConfig — defensive reads against malformed model
 
 /**
  * Why this block exists:
- *   src/modes/acp/server.ts:179 constructs `ModelRegistry.create(authStorage,
- *   join(agentDir, "models.json"))` from the persisted models.json that
+ *   production constructs a runtime-backed `ModelRegistry` from the persisted
+ *   models.json that
  *   `injectOllamaProvider` writes. Every other test in this file proves only
  *   that OUR code round-trips its own data — but the real failure mode we need
  *   to defend against is "we wrote a models.json block that pi-mono's registry
  *   silently drops, misreads, or refuses to register".
  *
- *   Approach chosen: use `ModelRegistry.create(authStorage, modelsJsonPath)`
- *   directly — the same call site that `modes/acp/server.ts` uses. This
+ *   Approach chosen: use `ModelRuntime.create({ modelsPath })` and wrap it in
+ *   `new ModelRegistry(runtime)`, matching Pi 0.84's public API. This
  *   drives the full load path (built-in model merging + custom-provider merge
  *   + per-model validation) that `--list-models` and the model picker share.
  *   We assert:
@@ -1277,7 +1277,7 @@ describe("readOllamaModelsFromConfig — defensive reads against malformed model
  *     - reasoning/inputs/contextWindow/maxTokens round-trip exactly
  *     - the API key fallback resolver returns our sentinel for Ollama
  *
- *   AuthStorage.inMemory() is used so no auth.json file is required.
+ *   InMemoryCredentialStore is used so no auth.json file is required.
  */
 describe("pi-mono ModelRegistry integration — persisted ollama block is accepted", () => {
 	let tmpDir: string
@@ -1324,6 +1324,20 @@ describe("pi-mono ModelRegistry integration — persisted ollama block is accept
 		])
 	}
 
+	async function createModelRegistry(modelsPath: string) {
+		const [{ ModelRegistry, ModelRuntime }, { InMemoryCredentialStore }] = await Promise.all([
+			import("@earendil-works/pi-coding-agent"),
+			import("@earendil-works/pi-ai"),
+		])
+		const runtime = await ModelRuntime.create({
+			credentials: new InMemoryCredentialStore(),
+			modelsPath,
+			modelsStorePath: join(tmpDir, "models-store.json"),
+			allowModelNetwork: false,
+		})
+		return new ModelRegistry(runtime)
+	}
+
 	it("registers the ollama provider and lists all discovered models", async () => {
 		// Start with a minimal models.json so `injectOllamaProvider` has a
 		// baseline to merge into — mirrors what cli.ts does in production.
@@ -1344,10 +1358,7 @@ describe("pi-mono ModelRegistry integration — persisted ollama block is accept
 
 		await injectOllamaProvider(modelsJsonPath, "http://localhost:11434", { fetch: probeFetch() })
 
-		// Now drive the SAME constructor the production ACP server uses.
-		const { AuthStorage, ModelRegistry } = await import("@earendil-works/pi-coding-agent")
-		const authStorage = AuthStorage.inMemory()
-		const registry = ModelRegistry.create(authStorage, modelsJsonPath)
+		const registry = await createModelRegistry(modelsJsonPath)
 
 		const allModels = registry.getAll()
 		const ollamaModels = allModels.filter((m) => m.provider === "ollama")
@@ -1376,8 +1387,7 @@ describe("pi-mono ModelRegistry integration — persisted ollama block is accept
 		)
 		await injectOllamaProvider(modelsJsonPath, "http://localhost:11434", { fetch: probeFetch() })
 
-		const { AuthStorage, ModelRegistry } = await import("@earendil-works/pi-coding-agent")
-		const registry = ModelRegistry.create(AuthStorage.inMemory(), modelsJsonPath)
+		const registry = await createModelRegistry(modelsJsonPath)
 
 		const llava = registry.find("ollama", "llava:13b")
 		const qwen = registry.find("ollama", "qwen2.5:14b")
@@ -1423,8 +1433,7 @@ describe("pi-mono ModelRegistry integration — persisted ollama block is accept
 		)
 		await injectOllamaProvider(modelsJsonPath, "http://localhost:11434", { fetch: probeFetch() })
 
-		const { AuthStorage, ModelRegistry } = await import("@earendil-works/pi-coding-agent")
-		const registry = ModelRegistry.create(AuthStorage.inMemory(), modelsJsonPath)
+		const registry = await createModelRegistry(modelsJsonPath)
 
 		const llava = registry.find("ollama", "llava:13b")
 		expect(llava?.baseUrl).toBe("http://localhost:11434/v1")
@@ -1459,8 +1468,7 @@ describe("pi-mono ModelRegistry integration — persisted ollama block is accept
 		const emptyFetch = makeFetchMock([(url) => (url.endsWith("/api/tags") ? okJson({ models: [] }) : null)])
 		await injectOllamaProvider(modelsJsonPath, "http://localhost:11434", { fetch: emptyFetch })
 
-		const { AuthStorage, ModelRegistry } = await import("@earendil-works/pi-coding-agent")
-		const registry = ModelRegistry.create(AuthStorage.inMemory(), modelsJsonPath)
+		const registry = await createModelRegistry(modelsJsonPath)
 
 		const ollamaModels = registry.getAll().filter((m) => m.provider === "ollama")
 		expect(ollamaModels).toEqual([])

@@ -492,7 +492,7 @@ const SetPhaseParams = Type.Object({
 		Type.String({
 			description:
 				"Optional thinking level to use when the orchestrator performs this phase itself (not delegating). Set per the Orchestration Thinking levels table.",
-			enum: ["off", "minimal", "low", "medium", "high", "xhigh"],
+			enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
 		}),
 	),
 })

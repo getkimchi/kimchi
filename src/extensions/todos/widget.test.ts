@@ -346,8 +346,10 @@ describe("todo widget helpers", () => {
 		}
 	})
 
-	it("detects ferment todos by content prefix even in global scope", () => {
-		// Edge case: ferment-formatted todos accidentally written to global scope
+	it("renders global-scope items with standard styling regardless of content prefix", () => {
+		// Edge case: ferment-formatted todos accidentally written to global scope.
+		// These should get standard global styling, NOT ferment-specific styling
+		// (the old content-prefix heuristic is removed; styling is scope-based).
 		applyWriteTodos(
 			{
 				scope: { kind: "global" },
@@ -361,10 +363,88 @@ describe("todo widget helpers", () => {
 
 		const lines = __test_buildTodoLines(theme, TEST_SESSION_ID)
 
-		// Even in global scope, ferment-formatted content gets detected
 		expect(lines[0]).toBe("Todos · Global")
-		expect(lines.some((line) => line.includes("Test"))).toBe(true) // Bold phase header
-		expect(lines.some((line) => line.includes("↳ Step 1"))).toBe(true) // Step with prefix
+		// Content appears but with standard global styling (not ferment accent/bold)
+		expect(lines.some((line) => line.includes("Test"))).toBe(true)
+		expect(lines.some((line) => line.includes("↳ Step 1"))).toBe(true)
+	})
+
+	it("shows all scopes together: ferment phase, step sub-tasks, and global", () => {
+		// Populate all three scopes simultaneously
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment", phaseId: "phase-1" },
+				todos: [
+					{ content: "[Phase 1] Build", status: "in_progress", activeForm: "Build" },
+					{ content: "↳ Write code", status: "completed" },
+					{ content: "↳ Run tests", status: "in_progress" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-2" },
+				todos: [
+					{ content: "check output", status: "pending" },
+					{ content: "fix lint", status: "in_progress" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+		applyWriteTodos(
+			{
+				scope: { kind: "global" },
+				todos: [{ content: "review PR", status: "pending" }],
+			},
+			TEST_SESSION_ID,
+		)
+
+		const lines = __test_buildTodoLines(theme, TEST_SESSION_ID)
+
+		// All three scope headers should appear
+		expect(lines).toContain("Todos · Ferment (phase-1)")
+		expect(lines).toContain("Todos · Step (phase-1/step-2)")
+		expect(lines).toContain("Todos · Global")
+
+		// Ferment phase todos
+		expect(lines.some((l) => l.includes("Build"))).toBe(true)
+		expect(lines.some((l) => l.includes("↳ Write code"))).toBe(true)
+		expect(lines.some((l) => l.includes("↳ Run tests"))).toBe(true)
+
+		// Step sub-tasks
+		expect(lines.some((l) => l.includes("check output"))).toBe(true)
+		expect(lines.some((l) => l.includes("fix lint"))).toBe(true)
+
+		// Global todo
+		expect(lines.some((l) => l.includes("review PR"))).toBe(true)
+	})
+
+	it("status bar counts todos across all scopes", () => {
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment", phaseId: "phase-1" },
+				todos: [
+					{ content: "[Phase 1] Build", status: "in_progress" },
+					{ content: "↳ Step 1", status: "completed" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+		applyWriteTodos(
+			{
+				scope: { kind: "global" },
+				todos: [{ content: "global task", status: "pending" }],
+			},
+			TEST_SESSION_ID,
+		)
+
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		syncTodoWidget(ctx)
+
+		// 3 total: 1 completed, 2 active (1 in_progress + 1 pending)
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", "1/3 done · 2 active -> F7")
 	})
 })
 

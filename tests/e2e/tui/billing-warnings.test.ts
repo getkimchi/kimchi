@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { waitForText } from "./support/assertions.js"
+import { fullText, INPUT_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -86,7 +86,81 @@ test("shows exhausted-credit warning from credits API after a model response", a
 	)
 })
 
-test("shows Community tier notice from the credits API in the startup header", async ({ terminal }) => {
+// A Coder subscriber that runs out of credits is demoted to a free tier for rate limiting, and the
+// credits API reports that demoted tier as the billing identity. Every field except `remaining`
+// describes a user who never paid, so the warning has to key on the balance.
+test("shows a rate-limit warning when a depleted Coder plan reports as free tier", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "billing-demoted-rate-limited",
+			creditsResponses: [
+				{
+					serverless: true,
+					tier: "coder",
+					is_paid_tier: true,
+					billing_status: "ok",
+					has_credits: true,
+					remaining: "10",
+				},
+				{
+					serverless: true,
+					tier: "community",
+					is_paid_tier: false,
+					billing_status: "free_tier",
+					has_credits: true,
+					remaining: "0",
+				},
+			],
+			responses: [{ stream: ["Done."] }],
+		},
+		async () => {
+			terminal.submit("Use remaining credits")
+
+			await expect(terminal.getByText("Done.", { full: true })).toBeVisible()
+			await waitForText(terminal, "slower rate-limited mode", { full: true })
+			await waitForText(terminal, "https://app.kimchi.dev/billing", { full: true })
+		},
+	)
+})
+
+test("explains BYO inference when the backend blocks a Community user", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "billing-community-inference-blocked",
+			creditsResponses: [
+				{
+					serverless: true,
+					tier: "free-slow",
+					is_paid_tier: false,
+					billing_status: "free_tier",
+					has_credits: false,
+					remaining: "0",
+				},
+			],
+			responses: [],
+		},
+		async () => {
+			await waitForText(terminal, "You are using the Community tier", { full: true })
+			await waitForText(terminal, "bring your own", { full: true })
+			await waitForText(terminal, "inference to the harness", { full: true })
+			await waitForText(terminal, "To use Kimchi inference", { full: true })
+			await waitForText(terminal, "upgrade", { full: true })
+			await waitForText(terminal, "https://app.kimchi.dev/pricing", { full: true })
+			expect(fullText(terminal)).not.toContain("You ran out of credits")
+			expect(fullText(terminal)).not.toContain("Top up at")
+			expect(fullText(terminal)).not.toContain("You are using Community tier")
+
+			const lines = fullText(terminal).split("\n")
+			const headerBottom = lines.findIndex((line) => line.startsWith("└"))
+			const blockedWarning = lines.findIndex((line) => line.includes("You are using the Community tier"))
+			expect(blockedWarning).toBeGreaterThan(headerBottom)
+		},
+	)
+})
+
+test("keeps the available Community notice while the backend still serves inference", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -145,7 +219,13 @@ test("shows caller budget in the footer and command, then refreshes a budget war
 			await waitForText(terminal, "Credits: $18.40", { full: true })
 			await waitForText(terminal, "Budget: 13.73% ($274.59/$2k)", { full: true })
 
-			terminal.submit("/budget")
+			// Type the command and wait for it to echo, then press Enter on its own.
+			// A one-shot submit can drop the command's leading `/`, which appears to
+			// happen when the Enter bytes merge with the command text in one pty read.
+			// Same approach as the theme-selector and todo-overlay tests.
+			terminal.write("/budget")
+			await waitForText(terminal, "/budget", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
 			await waitForText(terminal, "Budget  Jul 1–Aug 1 UTC", { full: true })
 			await waitForText(terminal, "Personal", { full: true })
 			await waitForText(terminal, "Organization per-user hard", { full: true })

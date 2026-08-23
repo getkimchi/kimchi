@@ -5,6 +5,7 @@
  * Handles OAuth client registration, token storage, and authorization redirection.
  */
 
+import { randomUUID } from "node:crypto"
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js"
 import type {
 	OAuthClientInformation,
@@ -240,17 +241,25 @@ export class McpOAuthProvider implements OAuthClientProvider {
 
 	/**
 	 * Get the stored OAuth state parameter.
-	 * @throws Error if no state is stored
+	 *
+	 * If no state is stored (e.g. when `probeTools()` creates a transport
+	 * directly without going through `startAuth()`), generates and saves
+	 * one on-the-fly so the SDK can include it in the authorization URL.
+	 *
+	 * @throws Error if `grantType` is `client_credentials`
 	 */
 	async state(): Promise<string> {
 		if (this.usesClientCredentials) {
 			throw new Error("state is not used for client_credentials flow")
 		}
-		const entry = await getAuthEntry(this.serverName)
-		if (!entry?.oauthState) {
-			throw new Error(`No OAuth state saved for MCP server: ${this.serverName}`)
+		const entry = getAuthEntry(this.serverName)
+		if (entry?.oauthState) {
+			return entry.oauthState
 		}
-		return entry.oauthState
+		// No state saved yet — generate one on-the-fly.
+		const state = randomUUID()
+		updateOAuthState(this.serverName, state)
+		return state
 	}
 
 	/**
