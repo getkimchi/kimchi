@@ -211,6 +211,10 @@ export async function runCommandHook(
 			timeout.unref?.()
 			child.once("exit", clearKillTimer)
 			child.once("close", clearKillTimer)
+			// A hook that ignores its stdin and exits makes the write fail with a
+			// broken pipe (EPIPE). That is benign here, so swallow it rather than
+			// letting it surface as an unhandled stream error that crashes the process.
+			child.stdin.on("error", () => {})
 			child.stdin.end(input)
 			child.unref()
 		} catch {
@@ -273,6 +277,10 @@ function runBlockingCommandHook(
 				child.kill()
 				settle({})
 			}, hook.timeoutMs)
+			// A hook that ignores its stdin and exits makes the write fail with a
+			// broken pipe (EPIPE). That is benign here, so swallow it rather than
+			// letting it surface as an unhandled stream error that crashes the process.
+			child.stdin.on("error", () => {})
 			child.stdin.end(input)
 		} catch {
 			settle({})

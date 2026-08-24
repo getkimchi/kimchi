@@ -1052,7 +1052,7 @@ function fakeChild() {
 	const stdoutHandlers: Array<(chunk: string) => void> = []
 	const stderrHandlers: Array<(chunk: string) => void> = []
 	const child = {
-		stdin: { end: vi.fn() },
+		stdin: { end: vi.fn(), on: vi.fn(() => child.stdin) },
 		stdout: {
 			setEncoding: vi.fn(),
 			on: vi.fn((event: string, handler: (chunk: string) => void) => {

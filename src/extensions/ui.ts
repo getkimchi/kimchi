@@ -248,6 +248,10 @@ function runScript(
 	child.stderr.on("data", (d: Buffer) => {
 		stderr += d.toString()
 	})
+	// A statusline script that ignores its stdin and exits makes the write fail
+	// with a broken pipe (EPIPE). That is benign here, so swallow it rather than
+	// letting it surface as an unhandled stream error that crashes the process.
+	child.stdin.on("error", () => {})
 	child.stdin.write(JSON.stringify(payload))
 	child.stdin.end()
 
