@@ -46,6 +46,8 @@ export const PLANNING_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"ls",
 	"web_fetch",
 	"web_search",
+	// Plan submission tool — available in both adhoc and ferment planning
+	"submit_plan",
 	// Phase tracker injected by the ferment planner supplement
 	"set_phase",
 	// Ferment planning tools
@@ -155,12 +157,13 @@ export function applyFermentToolProfile(pi: ExtensionAPI, profile: FermentToolPr
 
 export function applyFermentRuntimeToolProfile(pi: ExtensionAPI, runtime: FermentRuntime): void {
 	// If a plan review is pending (propose_ferment_scoping returned "Plan ready
-	// for review"), suppress ALL tools. This forces the model's next LLM call
-	// to be text-only (stopReason: "stop"), ending the turn so `agent_end` fires
-	// and the review dialog is shown via the setTimeout(0) in index.ts.
+	// for review"), suppress ALL tools except submit_plan. This forces the
+	// model's next LLM call to be text-only (stopReason: "stop"), ending the
+	// turn so `agent_end` fires and the review dialog is shown. submit_plan
+	// stays visible so the model can call it to trigger the review directly.
 	// Restored by the caller after confirmPendingScope() or review cancellation.
 	if (hasPendingPlanReview(runtime)) {
-		pi.setActiveTools([])
+		pi.setActiveTools(["submit_plan"])
 		return
 	}
 	applyFermentToolProfile(pi, profileForFerment(runtime.getActive()))

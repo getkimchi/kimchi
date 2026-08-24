@@ -1,4 +1,5 @@
 import { resolve } from "node:path"
+import { Type } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, SessionManager, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
@@ -8,12 +9,7 @@ import { isExistingDirectory } from "../../fs-paths.js"
 import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
-import {
-	derivePlanTitle,
-	savePlanMarkdown,
-	slugifyPlanName,
-	stripPlanCompletionMarkers,
-} from "../../shared/planning/plan-markdown.js"
+import { derivePlanTitle, savePlanMarkdown, slugifyPlanName } from "../../shared/planning/plan-markdown.js"
 import {
 	consumePlanReviewContext,
 	emitPlanReviewDecision,
@@ -21,14 +17,6 @@ import {
 	onPlanReviewDecision,
 	type PlanReviewDecisionPayload,
 } from "../../shared/planning/plan-review-bus.js"
-import {
-	contentHasToolCall,
-	extractTextFromContent,
-	hasPlanCompletionSignal,
-	isNudgeSuppressed,
-	PLAN_MODE_STOP_NUDGE,
-	shouldNudge,
-} from "../../shared/planning/planning-stop-nudge.js"
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -126,6 +114,7 @@ const PLAN_MODE_TOOLS = [
 	"web_fetch",
 	"mcp",
 	"questionnaire",
+	"submit_plan",
 	"bash",
 	...TODO_TOOL_NAMES,
 	// DAP debugger tools — available in plan mode by product decision: the
@@ -587,87 +576,152 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		maybePersistPermissionMode(ctx)
 	})
 
-	// When the agent produces <!-- PLAN_COMPLETE --> in plan mode, persist the plan
-	// file immediately (production-time save, overwrite-in-place) and show the approval menu.
-	pi.on("turn_end", async (event, ctx) => {
-		if (getRuntimePermissionMode().mode !== "plan") return
-
-		const message = event.message
-		if (message.role !== "assistant") return
-
-		const text = message.content
-			.filter((c) => c.type === "text")
-			.map((c) => (c as { type: "text"; text: string }).text)
-			.join("\n")
-
-		if (!text.includes("<!-- PLAN_COMPLETE -->") && !text.includes("<done>")) return
-
-		// Persist the plan the moment it is produced — before any approval
-		// choice and for headless/one-shot sessions too (both bypass the
-		// dropdown, but the plan still exists). Rework turns overwrite the same
-		// file: the slug is held per session so a title edit during rework does
-		// not fork the filename. Persistence is non-fatal but never silent —
-		// on failure the user is warned and the flow continues without a path.
-		const planText = stripPlanCompletionMarkers(text)
-		if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
-		let planPath: string | undefined
-		try {
-			planPath = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText })
-		} catch (err) {
-			const detail = err instanceof Error ? err.message : String(err)
-			if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
-			else console.error(`permissions: failed to save plan file: ${detail}`)
-		}
-
-		if (!ctx.hasUI) return
-
-		// Oneshot sessions bypass the dropdown entirely — the bench path auto-pilots
-		// the rest of the lifecycle through scope_ferment and friends, no user prompt needed.
-		if (pi.getFlag?.("ferment-oneshot") === true) return
-
-		// Emit plan-review request — TUI popup and plannotator both listen.
-		// Fire-and-forget: the TUI menu is shown below without awaiting, and
-		// plannotator's browser opens via the adapter. First decision wins.
-		emitPlanReviewRequest(
-			pi,
-			{
-				planContent: planText,
-				planFilePath: planPath,
-				source: "adhoc",
-			},
-			{ ctx, planPath, planText, rawText: text, activePlanSlug },
-		)
-
-		// AbortSignal lets the decision handler dismiss the menu when
-		// plannotator decides first (select returns undefined on abort).
-		const planMenuAbort = new AbortController()
-		onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
-			if (payload.planReviewSource !== "adhoc") return
-			if (payload.source !== "plannotator") return
-			planMenuAbort.abort()
-		})
-
-		const EXECUTE = "Execute the plan"
-		const DECLINE = "Rework the plan"
-		const START_AS_FERMENT = "Start as ferment"
-
-		void withBlocked(pi.events, "Plan complete", () =>
-			withWorkingHidden(ctx, () =>
-				ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, DECLINE, START_AS_FERMENT], {
-					signal: planMenuAbort.signal,
-				}),
-			),
-		).then((choice) => {
-			// select returns undefined when aborted — plannotator already decided.
-			if (choice === undefined) return
-			if (choice === EXECUTE) {
-				emitPlanReviewDecision(pi, { decision: "execute", source: "kimchi-tui", planReviewSource: "adhoc" })
-			} else if (choice === START_AS_FERMENT) {
-				emitPlanReviewDecision(pi, { decision: "start_ferment", source: "kimchi-tui", planReviewSource: "adhoc" })
-			} else {
-				emitPlanReviewDecision(pi, { decision: "rework", source: "kimchi-tui", planReviewSource: "adhoc" })
+	// submit_plan tool — replaces the <!-- PLAN_COMPLETE --> marker.
+	// Visible in both adhoc plan mode and ferment planning phase (via the
+	// tool catalog). The model calls it when the plan is ready for review.
+	// For ferment, the model should call propose_ferment_scoping first (to
+	// populate the structured scope), then submit_plan to trigger the review.
+	pi.registerTool({
+		name: "submit_plan",
+		label: "Submit Plan",
+		description:
+			"Submit your completed plan for user review. Call this only after the plan " +
+			"is fully written and all open questions are resolved. The plan will be " +
+			"saved to disk and the user will review it in a visual UI before execution. " +
+			"If the plan is denied with feedback, revise and call this again.",
+		parameters: Type.Object({
+			plan: Type.String({
+				description:
+					"The complete plan as markdown. Must follow the required structure: " +
+					"Goal, Constraints, Chunks (with Files Changed, Depends On, Accept When, " +
+					"Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.",
+			}),
+		}) as any,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const planText = (params as { plan?: string })?.plan
+			if (!planText?.trim()) {
+				return {
+					content: [{ type: "text", text: "Error: plan text is empty." }],
+					details: { submitted: false },
+				}
 			}
-		})
+
+			// Determine mode: adhoc plan mode or ferment planning
+			const mode = getRuntimePermissionMode().mode
+			const isAdhoc = mode === "plan"
+			const activeFerment = defaultFermentRuntime.getActive()
+			const isFermentPlanning =
+				!isAdhoc &&
+				activeFerment !== undefined &&
+				activeFerment.phases !== undefined &&
+				!activeFerment.phases.some((p) => p.status !== "planned")
+
+			if (!isAdhoc && !isFermentPlanning) {
+				return {
+					content: [{ type: "text", text: "Error: submit_plan is only available during planning." }],
+					details: { submitted: false },
+				}
+			}
+
+			// Save plan to disk (adhoc only — ferment plans are persisted via scoping)
+			let planPath: string | undefined
+			if (isAdhoc) {
+				if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
+				try {
+					planPath = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText })
+				} catch (err) {
+					const detail = err instanceof Error ? err.message : String(err)
+					if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
+					else console.error(`permissions: failed to save plan file: ${detail}`)
+				}
+			}
+
+			// For ferment: set the pending plan review so hasPendingPlanReview()
+			// suppresses tools (same as propose_ferment_scoping does today)
+			if (isFermentPlanning && activeFerment) {
+				defaultFermentRuntime.setPendingPlanReview({
+					fermentId: activeFerment.id,
+					planMarkdown: planText,
+				})
+			}
+
+			const reviewSource = isAdhoc ? "adhoc" : "ferment"
+			const fermentId = isFermentPlanning ? activeFerment?.id : undefined
+
+			// Non-TUI / oneshot: skip the menu, emit request only
+			if (!ctx.hasUI || pi.getFlag?.("ferment-oneshot") === true) {
+				emitPlanReviewRequest(
+					pi,
+					{ planContent: planText, planFilePath: planPath, source: reviewSource, fermentId },
+					{ ctx, planPath, planText, rawText: planText, activePlanSlug, fermentId },
+				)
+				return {
+					content: [{ type: "text", text: "Plan submitted." }],
+					details: { submitted: true },
+					terminate: true,
+				}
+			}
+
+			// Emit plan-review request — TUI popup and plannotator both listen.
+			// Fire-and-forget: the TUI menu is shown below without awaiting, and
+			// plannotator's browser opens via the adapter. First decision wins.
+			emitPlanReviewRequest(
+				pi,
+				{ planContent: planText, planFilePath: planPath, source: reviewSource, fermentId },
+				{ ctx, planPath, planText, rawText: planText, activePlanSlug, fermentId },
+			)
+
+			// AbortSignal lets the decision handler dismiss the menu when
+			// plannotator decides first (select returns undefined on abort).
+			const planMenuAbort = new AbortController()
+			onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
+				if (payload.planReviewSource !== reviewSource) return
+				if (payload.source !== "plannotator") return
+				planMenuAbort.abort()
+			})
+
+			const EXECUTE = "Execute the plan"
+			const DECLINE = "Rework the plan"
+			const START_AS_FERMENT = "Start as ferment"
+
+			void withBlocked(pi.events, "Plan complete", () =>
+				withWorkingHidden(ctx, () =>
+					ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, DECLINE, START_AS_FERMENT], {
+						signal: planMenuAbort.signal,
+					}),
+				),
+			).then((choice) => {
+				// select returns undefined when aborted — plannotator already decided.
+				if (choice === undefined) return
+				if (choice === EXECUTE) {
+					emitPlanReviewDecision(pi, {
+						decision: "execute",
+						source: "kimchi-tui",
+						planReviewSource: reviewSource,
+						fermentId,
+					})
+				} else if (choice === START_AS_FERMENT) {
+					emitPlanReviewDecision(pi, {
+						decision: "start_ferment",
+						source: "kimchi-tui",
+						planReviewSource: reviewSource,
+					})
+				} else {
+					emitPlanReviewDecision(pi, {
+						decision: "rework",
+						source: "kimchi-tui",
+						planReviewSource: reviewSource,
+						fermentId,
+					})
+				}
+			})
+
+			return {
+				content: [{ type: "text", text: "Plan submitted for review. Waiting for user decision." }],
+				details: { submitted: true },
+				terminate: true,
+			}
+		},
 	})
 
 	// Decision handler for adhoc plan reviews — handles decisions from both
@@ -856,56 +910,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			)
 		}
 		// "rework" = stay in plan mode, no action needed
-	})
-
-	// Plan-mode stop nudge: fires when the model made tool calls this turn but
-	// ended with stopReason "stop" without writing PLAN_COMPLETE.
-	// Logic lives in src/shared/planning/planning-stop-nudge.ts.
-	const planStopNudgeCounts = new Map<string, number>()
-
-	pi.on("turn_end", (event, ctx) => {
-		if (getRuntimePermissionMode().mode !== "plan") {
-			planStopNudgeCounts.clear()
-			return
-		}
-
-		const message = event.message
-		if (message.role !== "assistant") return
-
-		const stopReason = (message as { stopReason?: string }).stopReason
-		// Reset counter on non-stop turns (model still progressing).
-		if (stopReason !== "stop") {
-			planStopNudgeCounts.clear()
-			return
-		}
-
-		const content = message.content as unknown[]
-		const text = extractTextFromContent(content)
-
-		if (
-			!shouldNudge({
-				hasToolCall: contentHasToolCall(content),
-				stopReason,
-				completionSignalPresent: hasPlanCompletionSignal(text),
-			})
-		)
-			return
-
-		const sessionId = ctx.sessionManager.getSessionId()
-		const count = (planStopNudgeCounts.get(sessionId) ?? 0) + 1
-		planStopNudgeCounts.set(sessionId, count)
-
-		if (isNudgeSuppressed(count)) return
-
-		void pi.sendMessage(
-			{
-				customType: "plan_stop_nudge",
-				content: [{ type: "text", text: PLAN_MODE_STOP_NUDGE }],
-				display: false,
-				details: undefined,
-			},
-			{ triggerTurn: true },
-		)
 	})
 
 	pi.on("tool_call", async (event, ctx) => {

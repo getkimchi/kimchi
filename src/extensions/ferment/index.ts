@@ -326,15 +326,6 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	})
 
 	pi.on("agent_end", async (_event, ctx) => {
-		const review = runtime.getCurrentPendingPlanReview()
-		if (!planReviewRunning && review) {
-			clearPlanReviewTimer()
-			planReviewTimer = setTimeout(() => {
-				planReviewTimer = undefined
-				void runPendingPlanReview(ctx, review)
-			}, 0)
-		}
-
 		// Drain any remaining pending compactions at agent_end (catches the case
 		// where the ferment completes within a single agent run and the turn_end
 		// handler already cleared most pending entries).
