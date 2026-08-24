@@ -15,6 +15,13 @@ import {
 	stripPlanCompletionMarkers,
 } from "../../shared/planning/plan-markdown.js"
 import {
+	consumePlanReviewContext,
+	emitPlanReviewDecision,
+	emitPlanReviewRequest,
+	onPlanReviewDecision,
+	type PlanReviewDecisionPayload,
+} from "../../shared/planning/plan-review-bus.js"
+import {
 	contentHasToolCall,
 	extractTextFromContent,
 	hasPlanCompletionSignal,
@@ -618,23 +625,64 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// the rest of the lifecycle through scope_ferment and friends, no user prompt needed.
 		if (pi.getFlag?.("ferment-oneshot") === true) return
 
+		// Emit plan-review request — TUI popup and plannotator both listen.
+		// Fire-and-forget: the TUI menu is shown below without awaiting, and
+		// plannotator's browser opens via the adapter. First decision wins.
+		emitPlanReviewRequest(
+			pi,
+			{
+				planContent: planText,
+				planFilePath: planPath,
+				source: "adhoc",
+			},
+			{ ctx, planPath, planText, rawText: text, activePlanSlug },
+		)
+
+		// AbortSignal lets the decision handler dismiss the menu when
+		// plannotator decides first (select returns undefined on abort).
+		const planMenuAbort = new AbortController()
+		onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
+			if (payload.planReviewSource !== "adhoc") return
+			if (payload.source !== "plannotator") return
+			planMenuAbort.abort()
+		})
+
 		const EXECUTE = "Execute the plan"
 		const DECLINE = "Rework the plan"
 		const START_AS_FERMENT = "Start as ferment"
 
-		const choice = await withBlocked(pi.events, "Plan complete", () =>
+		void withBlocked(pi.events, "Plan complete", () =>
 			withWorkingHidden(ctx, () =>
-				ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, DECLINE, START_AS_FERMENT]),
+				ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, DECLINE, START_AS_FERMENT], {
+					signal: planMenuAbort.signal,
+				}),
 			),
-		)
+		).then((choice) => {
+			// select returns undefined when aborted — plannotator already decided.
+			if (choice === undefined) return
+			if (choice === EXECUTE) {
+				emitPlanReviewDecision(pi, { decision: "execute", source: "kimchi-tui", planReviewSource: "adhoc" })
+			} else if (choice === START_AS_FERMENT) {
+				emitPlanReviewDecision(pi, { decision: "start_ferment", source: "kimchi-tui", planReviewSource: "adhoc" })
+			} else {
+				emitPlanReviewDecision(pi, { decision: "rework", source: "kimchi-tui", planReviewSource: "adhoc" })
+			}
+		})
+	})
 
-		if (choice === EXECUTE) {
+	// Decision handler for adhoc plan reviews — handles decisions from both
+	// the TUI menu and plannotator's browser UI (first decision wins).
+	onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
+		if (payload.planReviewSource !== "adhoc") return
+		const reviewCtx = consumePlanReviewContext()
+		if (!reviewCtx) return
+		const { ctx, planPath, planText, rawText } = reviewCtx
+
+		if (payload.decision === "execute") {
 			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
 			executePlan(planPath, planText)
-			// The plan is approved and dispatched — the next planning round in
-			// this session derives a fresh slug so it gets its own file.
 			activePlanSlug = undefined
-		} else if (choice === START_AS_FERMENT) {
+		} else if (payload.decision === "start_ferment") {
 			// Converted into a ferment — same release as the execute path.
 			activePlanSlug = undefined
 			// ── Tool-swap contract ────────────────────────────────────────────────
@@ -676,7 +724,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// Goal / Constraints / Chunks become structured ferment fields;
 				// Verification Strategy / Decision Log / Risks are metadata and must
 				// not become implementation steps. (PR #683 review nit 3473746281.)
-				const parsed = parseSharedPlan(text)
+				const parsed = parseSharedPlan(rawText ?? planText)
 				// Create a storage instance scoped to ctx.cwd so the ferment artifact
 				// lands in the project's .kimchi/ferments/ directory, not process.cwd().
 				// defaultFermentRuntime.getStorage() always uses process.cwd(); in
@@ -696,7 +744,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					const draftName = parsed.goal.split("\n")[0] || "Plan from --plan mode"
 					const draft = createFerment(runtime, {
 						name: draftName,
-						goal: parsed.goal || text.trim(),
+						goal: parsed.goal || (rawText ?? planText).trim(),
 						hasUI: ctx.hasUI,
 						isOneShot: pi.getFlag("ferment-oneshot") === true,
 					})
@@ -796,8 +844,18 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				const message = err instanceof Error ? err.message : String(err)
 				ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
 			}
+		} else if (payload.decision === "feedback") {
+			safeSendMessage(
+				pi,
+				{
+					customType: "plannotator-feedback",
+					content: [{ type: "text", text: payload.feedback ?? "" }],
+					display: false,
+				},
+				{ triggerTurn: true },
+			)
 		}
-		// Decline or escape: stay in plan mode.
+		// "rework" = stay in plan mode, no action needed
 	})
 
 	// Plan-mode stop nudge: fires when the model made tool calls this turn but
