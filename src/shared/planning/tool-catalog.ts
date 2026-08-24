@@ -153,7 +153,7 @@ export const ADHOC_MODE_TOOLS: ToolEntry[] = [
  * and implementation-ferment. This is the only "write-like" tool visible
  * during planning (edit, write, bash-write are all suppressed).
  */
-export const SHARED_PLANNING_TOOLS: ToolEntry[] = [{ name: "submit_plan", modes: ["adhoc", "ferment"] }]
+export const SHARED_PLANNING_TOOLS: ToolEntry[] = [{ name: "submit_plan", modes: ["adhoc"] }]
 
 /**
  * Tools gated behind the ferment lifecycle.
@@ -280,7 +280,7 @@ export function getToolsForProfile(profile: ToolProfile): ToolEntry[] {
 
 		case "planning-ferment": {
 			const ferment = FERMENT_MODE_TOOLS.filter((t) => t.phases === undefined || t.phases.includes("planning"))
-			return [...SHARED_CORE_TOOLS, ...SHARED_PLANNING_TOOLS, ...ferment]
+			return [...SHARED_CORE_TOOLS, ...ferment]
 		}
 
 		case "implementation-ferment":

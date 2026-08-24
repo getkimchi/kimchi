@@ -606,54 +606,32 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				}
 			}
 
-			// Determine mode: adhoc plan mode or ferment planning
+			// Guard: must be in plan mode
 			const mode = getRuntimePermissionMode().mode
-			const isAdhoc = mode === "plan"
-			const activeFerment = defaultFermentRuntime.getActive()
-			const isFermentPlanning =
-				!isAdhoc &&
-				activeFerment !== undefined &&
-				activeFerment.phases !== undefined &&
-				!activeFerment.phases.some((p) => p.status !== "planned")
-
-			if (!isAdhoc && !isFermentPlanning) {
+			if (mode !== "plan") {
 				return {
-					content: [{ type: "text", text: "Error: submit_plan is only available during planning." }],
+					content: [{ type: "text", text: "Error: submit_plan is only available during plan mode." }],
 					details: { submitted: false },
 				}
 			}
 
-			// Save plan to disk (adhoc only — ferment plans are persisted via scoping)
+			// Save plan to disk
+			if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
 			let planPath: string | undefined
-			if (isAdhoc) {
-				if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
-				try {
-					planPath = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText })
-				} catch (err) {
-					const detail = err instanceof Error ? err.message : String(err)
-					if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
-					else console.error(`permissions: failed to save plan file: ${detail}`)
-				}
+			try {
+				planPath = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText })
+			} catch (err) {
+				const detail = err instanceof Error ? err.message : String(err)
+				if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
+				else console.error(`permissions: failed to save plan file: ${detail}`)
 			}
-
-			// For ferment: set the pending plan review so hasPendingPlanReview()
-			// suppresses tools (same as propose_ferment_scoping does today)
-			if (isFermentPlanning && activeFerment) {
-				defaultFermentRuntime.setPendingPlanReview({
-					fermentId: activeFerment.id,
-					planMarkdown: planText,
-				})
-			}
-
-			const reviewSource = isAdhoc ? "adhoc" : "ferment"
-			const fermentId = isFermentPlanning ? activeFerment?.id : undefined
 
 			// Non-TUI / oneshot: skip the menu, emit request only
 			if (!ctx.hasUI || pi.getFlag?.("ferment-oneshot") === true) {
 				emitPlanReviewRequest(
 					pi,
-					{ planContent: planText, planFilePath: planPath, source: reviewSource, fermentId },
-					{ ctx, planPath, planText, rawText: planText, activePlanSlug, fermentId },
+					{ planContent: planText, planFilePath: planPath, source: "adhoc" },
+					{ ctx, planPath, planText, rawText: planText, activePlanSlug },
 				)
 				return {
 					content: [{ type: "text", text: "Plan submitted." }],
@@ -667,15 +645,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// plannotator's browser opens via the adapter. First decision wins.
 			emitPlanReviewRequest(
 				pi,
-				{ planContent: planText, planFilePath: planPath, source: reviewSource, fermentId },
-				{ ctx, planPath, planText, rawText: planText, activePlanSlug, fermentId },
+				{ planContent: planText, planFilePath: planPath, source: "adhoc" },
+				{ ctx, planPath, planText, rawText: planText, activePlanSlug },
 			)
 
 			// AbortSignal lets the decision handler dismiss the menu when
 			// plannotator decides first (select returns undefined on abort).
 			const planMenuAbort = new AbortController()
 			onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
-				if (payload.planReviewSource !== reviewSource) return
+				if (payload.planReviewSource !== "adhoc") return
 				if (payload.source !== "plannotator") return
 				planMenuAbort.abort()
 			})
@@ -697,21 +675,19 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					emitPlanReviewDecision(pi, {
 						decision: "execute",
 						source: "kimchi-tui",
-						planReviewSource: reviewSource,
-						fermentId,
+						planReviewSource: "adhoc",
 					})
 				} else if (choice === START_AS_FERMENT) {
 					emitPlanReviewDecision(pi, {
 						decision: "start_ferment",
 						source: "kimchi-tui",
-						planReviewSource: reviewSource,
+						planReviewSource: "adhoc",
 					})
 				} else {
 					emitPlanReviewDecision(pi, {
 						decision: "rework",
 						source: "kimchi-tui",
-						planReviewSource: reviewSource,
-						fermentId,
+						planReviewSource: "adhoc",
 					})
 				}
 			})

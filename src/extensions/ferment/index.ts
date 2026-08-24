@@ -17,9 +17,10 @@ import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-regis
 import {
 	consumePlanReviewContext,
 	emitPlanReviewDecision,
-	emitPlanReviewRequest,
 	onPlanReviewDecision,
+	onPlanReviewRequest,
 	type PlanReviewDecisionPayload,
+	type PlanReviewRequestPayload,
 } from "../../shared/planning/plan-review-bus.js"
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -163,19 +164,6 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 		planReviewRunning = true
 		try {
-			// Emit plan-review request — TUI popup and plannotator both listen.
-			// Fire-and-forget: the TUI review is shown below without awaiting,
-			// and plannotator's browser opens via the adapter. First decision wins.
-			emitPlanReviewRequest(
-				pi,
-				{
-					planContent: review.planMarkdown,
-					source: "ferment",
-					fermentId: review.fermentId,
-				},
-				{ ctx, planText: review.planMarkdown, fermentId: review.fermentId },
-			)
-
 			// promptPlanReview is TUI-only and returns undefined without prompting
 			// in other modes — only activate the herdr blocked pair when it will
 			// actually wait on the user (see herdr-events.ts PROTOCOL).
@@ -299,6 +287,21 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				void runPendingPlanReview(triggerCtx, review)
 			}, 0)
 		}
+	})
+
+	// When propose_ferment_scoping emits a plan-review request (source=ferment),
+	// trigger the TUI popup. propose_ferment_scoping already set the pending
+	// review and persisted the proposal — this just shows the review UI.
+	onPlanReviewRequest(pi, (payload: PlanReviewRequestPayload) => {
+		if (payload.source !== "ferment") return
+		if (!ctx) return
+		const review = runtime.getCurrentPendingPlanReview()
+		if (!review || planReviewRunning) return
+		clearPlanReviewTimer()
+		planReviewTimer = setTimeout(() => {
+			planReviewTimer = undefined
+			void runPendingPlanReview(ctx!, review)
+		}, 0)
 	})
 
 	pi.on("session_start", (_event, _ctx) => {
