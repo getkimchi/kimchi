@@ -340,7 +340,8 @@ export function isHardBlockedBash(command: string): boolean {
 	if (/:\(\)\s*\{/.test(command)) return true
 
 	for (const segment of parseCommandSegments(command)) {
-		const tokens = segment.tokens
+		// See through RTK wrapper so `rtk rm -rf /` is still caught.
+		const tokens = stripRtk(segment.tokens)
 		const program = tokens[0]
 		if (!program) continue
 		if (HARD_BLOCK_PROGRAMS.has(program)) return true
@@ -428,14 +429,21 @@ export function splitCompoundCommand(command: string): string[] | null {
 	return segments.filter((s) => s.length > 0)
 }
 
-// Canonical first-segment tokens. parseCommandSegments already strips leading
-// FOO=bar assignments, shell-tokenizes (dropping quotes), and collapses whitespace.
-// Env-STRIPPING: used by extractBashProgram and the hard-block / read-only /
-// bare-rule-auto-rewrite callers, where env-transparency is correct. The
-// remembered-rule scope/match pair uses rememberedScopeTokens instead, which
-// PRESERVES env.
+// Canonical first-segment tokens with rtk wrappers removed. parseCommandSegments
+// already strips leading FOO=bar assignments, shell-tokenizes (dropping quotes), and
+// collapses whitespace; we additionally see through the rtk wrapper. Env-STRIPPING:
+// used by extractBashProgram and the hard-block / read-only / bare-rule-auto-rewrite
+// callers, where env-transparency is correct. The remembered-rule scope/match pair
+// uses rememberedScopeTokens instead, which PRESERVES env.
 export function bashCommandTokens(command: string): string[] {
-	return firstSegmentTokens(command)
+	const raw = firstSegmentTokens(command)
+	return stripRtk(raw)
+}
+
+export function stripRtk(tokens: string[]): string[] {
+	let first = 0
+	while (tokens[first] === "rtk") first++
+	return first === 0 ? tokens : tokens.slice(first)
 }
 
 export function extractBashProgram(command: string): { program: string; subcommand: string | undefined } {
@@ -464,30 +472,33 @@ export function splitLeadingEnv(command: string): { env: string[]; rest: string 
 }
 
 // Normalized first-segment tokens for remembered-rule scope and matching: leading
-// env assignments are PRESERVED (key and value), and quotes/whitespace are
-// normalized via parseCommandSegments. Returns [] when there is no program token
-// (empty, env-only, or backtick-poisoned). Distinct from bashCommandTokens, which
-// strips env for hard-block / read-only / auto-rewrite callers where
-// env-transparency is correct.
+// env assignments are PRESERVED (key and value), the rtk transparent wrapper is
+// stripped, and quotes/whitespace are normalized via parseCommandSegments. Returns
+// [] when there is no program token (empty, bare rtk, env-only, or backtick-
+// poisoned). Distinct from bashCommandTokens, which strips env for hard-block /
+// read-only / auto-rewrite callers where env-transparency is correct.
 export function rememberedScopeTokens(command: string): string[] {
 	const { env, rest } = splitLeadingEnv(command)
 	const tokens = parseCommandSegments(rest)[0]?.tokens ?? []
-	if (tokens.length === 0) return []
-	return [...env, ...tokens]
+	const prog = stripRtk(tokens)
+	if (prog.length === 0) return []
+	return [...env, ...prog]
 }
 
 // Canonical command form for each top-level segment that `parseCommandSegments`
-// resolves (split on `| ; && ||`), with env assignments dropped and quotes/
-// whitespace normalized. Used by DENY matching, which checks every segment so a
-// denied program behind a pipe still blocks. (allow matching stays single-segment
-// via rememberedScopeTokens — it must not widen an approval to a piped tail.)
-// NOTE: this inherits `parseCommandSegments` limits — command substitution
-// (`$(...)`, backticks) and path-qualified program names are not normalized, so
-// deny is not a complete sandbox. See isHardBlockedBash / the classifier for the
-// other layers.
+// resolves (split on `| ; && ||`), with the rtk wrapper(s) stripped, env
+// assignments dropped, and quotes/whitespace normalized. Used by DENY matching,
+// which checks every segment so a denied program behind a pipe still blocks.
+// (allow matching stays single-segment via rememberedScopeTokens — it must not
+// widen an approval to a piped tail.) NOTE: this inherits `parseCommandSegments`
+// limits — command substitution (`$(...)`, backticks) and path-qualified program
+// names are not normalized, so deny is not a complete sandbox. See isHardBlockedBash
+// / the classifier for the other layers.
 export function bashSegmentForms(command: string): string[] {
 	return parseCommandSegments(command)
-		.map((seg) => seg.tokens.join(" "))
+		.map((seg) => {
+			return stripRtk(seg.tokens).join(" ")
+		})
 		.filter((form) => form.length > 0)
 }
 
@@ -514,6 +525,14 @@ export function isReadOnlyBashCommand(command: string): boolean {
 function isSegmentReadOnly(tokens: string[]): boolean {
 	const program = tokens[0]
 	if (!program) return false
+
+	// RTK is a transparent wrapper (`rtk git status` → classify `git status`).
+	// Delegate to the wrapped command so read-only checks apply as if RTK
+	// were not present.  If there is no wrapped command, reject — bare `rtk`
+	// is not read-only.
+	if (program === "rtk") {
+		return tokens.length > 1 ? isSegmentReadOnly(tokens.slice(1)) : false
+	}
 
 	const allowedSubs = READ_ONLY_SUBCOMMANDS[program]
 	if (allowedSubs) {

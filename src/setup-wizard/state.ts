@@ -23,6 +23,7 @@ export interface WizardState {
 	mode: ConfigMode
 	scope: ConfigScope
 	selectedTools: ToolId[]
+	installRtk?: boolean
 	telemetryEnabled: boolean
 	cancelled: boolean
 	back: boolean
@@ -40,4 +41,5 @@ export interface WizardResult {
 	selectedTools: ToolId[]
 	/** Tools that were successfully configured (subset of selectedTools). */
 	configuredTools: ToolId[]
+	rtkInstalled?: boolean
 }

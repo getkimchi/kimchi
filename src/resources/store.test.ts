@@ -40,30 +40,30 @@ describe("resource store", () => {
 	it("defaults known resources from definitions", () => {
 		const path = tempSettingsPath()
 
-		expect(isResourceEnabled("hooks.bash", path)).toBe(true)
+		expect(isResourceEnabled("hooks.rtk-rewrite", path)).toBe(true)
 		expect(isResourceEnabled("extensions.pi-package-lookup", path)).toBe(false)
-		expect(getResourceOverride("hooks.bash", path)).toBeUndefined()
+		expect(getResourceOverride("hooks.rtk-rewrite", path)).toBeUndefined()
 	})
 
 	it("persists resource overrides without clobbering unrelated settings", () => {
 		const path = tempSettingsPath()
 		writeJson(path, { theme: "kimchi-minimal", resources: { "tools.web_fetch": false } })
 
-		setResourceOverride("hooks.bash", false, path)
+		setResourceOverride("hooks.rtk-rewrite", false, path)
 
 		expect(readResourceSettings(path).resources).toEqual({
 			"tools.web_fetch": false,
-			"hooks.bash": false,
+			"hooks.rtk-rewrite": false,
 		})
 		expect(JSON.parse(readFileSync(path, "utf-8")).theme).toBe("kimchi-minimal")
-		expect(isResourceEnabled("hooks.bash", path)).toBe(false)
+		expect(isResourceEnabled("hooks.rtk-rewrite", path)).toBe(false)
 	})
 
 	it("reads and lists valid resource ids only", () => {
 		const path = tempSettingsPath()
 		writeJson(path, {
 			resources: {
-				"hooks.bash": false,
+				"hooks.rtk-rewrite": false,
 				"extensions.mcp-adapter": true,
 				"unknown.bad": false,
 				"tools.web_search": "no",
@@ -71,12 +71,12 @@ describe("resource store", () => {
 		})
 
 		expect(readResourceSettings(path).resources).toEqual({
-			"hooks.bash": false,
+			"hooks.rtk-rewrite": false,
 			"extensions.mcp-adapter": true,
 		})
 		expect(listResourceSettings(path)).toEqual([
 			{ id: "extensions.mcp-adapter", enabled: true, overridden: true },
-			{ id: "hooks.bash", enabled: false, overridden: true },
+			{ id: "hooks.rtk-rewrite", enabled: false, overridden: true },
 		])
 	})
 

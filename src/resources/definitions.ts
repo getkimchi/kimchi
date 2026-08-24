@@ -15,6 +15,13 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		defaultEnabled: true,
 	},
 	{
+		id: "hooks.rtk-rewrite",
+		kind: "hooks",
+		label: "RTK rewrite",
+		description: "Rewrite Bash commands through rtk before execution.",
+		defaultEnabled: true,
+	},
+	{
 		id: "tools.web_search",
 		kind: "tools",
 		label: "Web search",

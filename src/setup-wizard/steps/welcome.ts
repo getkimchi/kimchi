@@ -14,6 +14,7 @@ export function runWelcomeStep(): void {
 		[
 			"This wizard will:",
 			"  · setup your Kimchi API key",
+			"  · install/update RTK for bash command rewriting",
 			"",
 			"Controls:",
 			"  ↑/↓     navigate options",
