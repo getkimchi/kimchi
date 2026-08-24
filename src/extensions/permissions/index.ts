@@ -9,6 +9,12 @@ import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
 import {
+	derivePlanTitle,
+	savePlanMarkdown,
+	slugifyPlanName,
+	stripPlanCompletionMarkers,
+} from "../../shared/planning/plan-markdown.js"
+import {
 	contentHasToolCall,
 	extractTextFromContent,
 	hasPlanCompletionSignal,
@@ -50,7 +56,6 @@ import {
 } from "./mode-controller.js"
 import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { type ModeChangeReason, PERMISSION_EVENTS, type PermissionDecision } from "./permissions-events.js"
-import { saveApprovedPlan } from "./plan-persistence.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import {
@@ -212,6 +217,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	let currentCtx: ExtensionContext | undefined
 	let preFermentMode: PermissionModeState | undefined
 	let cliMode: PermissionMode | undefined
+	// Session-held slug of the plan currently being drafted. Kept across rework
+	// turns so rewrites overwrite the same file even if the plan title changes;
+	// released when the plan is approved (execute / start-as-ferment) or the
+	// session restarts.
+	let activePlanSlug: string | undefined
 	let planModeApplied = false
 	let planModeHiddenTools: string[] = []
 	const planToolVisibility: ToolVisibilityAPI = createToolVisibility(pi)
@@ -340,7 +350,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	): void {
 		const from = getRuntimePermissionMode()
 		setRuntimePermissionMode(ctx, next, skipNotify)
-		if (current === "plan" && next.mode !== "plan") restoreToolsFromPlanMode()
+		if (current === "plan" && next.mode !== "plan") {
+			restoreToolsFromPlanMode()
+			activePlanSlug = undefined
+		}
 		if (next.mode === "plan") applyPlanModeTools()
 		// Dismiss all active permission prompts so tool_call handlers re-evaluate under the new mode.
 		for (const ctrl of activeAbortControllers) ctrl.abort()
@@ -426,6 +439,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		currentCtx = ctx
 		cliMode = undefined
+		activePlanSlug = undefined
 		const { errors } = doLoadConfig(ctx)
 
 		for (const err of errors) {
@@ -538,10 +552,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		maybePersistPermissionMode(ctx)
 	})
 
-	// When the agent produces <!-- PLAN_COMPLETE --> in plan mode, show the approval menu.
+	// When the agent produces <!-- PLAN_COMPLETE --> in plan mode, persist the plan
+	// file immediately (production-time save, overwrite-in-place) and show the approval menu.
 	pi.on("turn_end", async (event, ctx) => {
 		if (getRuntimePermissionMode().mode !== "plan") return
-		if (!ctx.hasUI) return
 
 		const message = event.message
 		if (message.role !== "assistant") return
@@ -552,6 +566,25 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			.join("\n")
 
 		if (!text.includes("<!-- PLAN_COMPLETE -->") && !text.includes("<done>")) return
+
+		// Persist the plan the moment it is produced — before any approval
+		// choice and for headless/one-shot sessions too (both bypass the
+		// dropdown, but the plan still exists). Rework turns overwrite the same
+		// file: the slug is held per session so a title edit during rework does
+		// not fork the filename. Persistence is non-fatal but never silent —
+		// on failure the user is warned and the flow continues without a path.
+		const planText = stripPlanCompletionMarkers(text)
+		if (!activePlanSlug) activePlanSlug = slugifyPlanName(derivePlanTitle(planText))
+		let planPath: string | undefined
+		try {
+			planPath = savePlanMarkdown({ cwd: ctx.cwd, name: activePlanSlug, planText })
+		} catch (err) {
+			const detail = err instanceof Error ? err.message : String(err)
+			if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
+			else console.error(`permissions: failed to save plan file: ${detail}`)
+		}
+
+		if (!ctx.hasUI) return
 
 		// Oneshot sessions bypass the dropdown entirely — the bench path auto-pilots
 		// the rest of the lifecycle through scope_ferment and friends, no user prompt needed.
@@ -568,15 +601,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		)
 
 		if (choice === EXECUTE) {
-			let planPath: string | undefined
-			try {
-				planPath = saveApprovedPlan(ctx.cwd, text)
-			} catch {
-				// Non-fatal: plan persistence is best-effort.
-			}
 			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
-			executePlan(planPath, text)
+			executePlan(planPath, planText)
+			// The plan is approved and dispatched — the next planning round in
+			// this session derives a fresh slug so it gets its own file.
+			activePlanSlug = undefined
 		} else if (choice === START_AS_FERMENT) {
+			// Converted into a ferment — same release as the execute path.
+			activePlanSlug = undefined
 			// ── Tool-swap contract ────────────────────────────────────────────────
 			// This is a SNAPSHOT SWAP that takes effect at the next turn boundary —
 			// there is no explicit handoff message and no model-visible notification.
@@ -712,6 +744,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 								text: markHarnessSteer(
 									[
 										`Handoff from plan mode: the plan you just presented was approved by the user ("Start as ferment") and converted into ferment "${activated.ferment.name}" (${activated.ferment.id}).`,
+										planPath ? `Approved plan saved to: ${planPath}` : undefined,
 										`The ferment is ALREADY scoped — goal, success criteria, and constraints are set — and ${activePhase ? `phase "${activePhase.id}" (${activePhase.steps.length} steps) is ACTIVE` : "its first phase is ACTIVE"}.`,
 										`${formatNoReplanningGuidance()} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
 										nextActionHint,

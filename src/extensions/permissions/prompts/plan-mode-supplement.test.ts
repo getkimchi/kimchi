@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { PLAN_LOCATION_NOTE } from "../../../shared/planning/plan-markdown.js"
 import planModeSupplement from "./plan-mode-supplement.js"
 
 describe("plan-mode-supplement", () => {
@@ -31,6 +32,10 @@ describe("plan-mode-supplement", () => {
 
 		it("contains plan completion marker", () => {
 			expect(planModeSupplement).toContain("PLAN_COMPLETE")
+		})
+
+		it("states that plans are auto-saved (shared location note)", () => {
+			expect(planModeSupplement).toContain(PLAN_LOCATION_NOTE)
 		})
 
 		it("declares read-only nature", () => {
