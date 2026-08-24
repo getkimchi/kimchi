@@ -26,6 +26,11 @@ interface PatchableInteractiveMode {
 }
 
 function isBrokenPipeError(error: unknown): boolean {
+	// A broken pipe surfaces as EPIPE for a regular pipe, and as ECONNRESET when the
+	// child's stdio is backed by a socket pair. Both mean the reader went away, so we
+	// treat them as the same benign case. This is deliberately broad: keeping the CLI
+	// alive on a stray reset is better than crashing it, and the error cannot be
+	// reliably attributed to a specific writer at the uncaught-exception layer.
 	const code = (error as NodeJS.ErrnoException | undefined)?.code
 	return code === "EPIPE" || code === "ECONNRESET"
 }

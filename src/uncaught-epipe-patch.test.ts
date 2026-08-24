@@ -1,3 +1,4 @@
+import { InteractiveMode } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { installUncaughtEpipePatch } from "./uncaught-epipe-patch.js"
 
@@ -33,5 +34,10 @@ describe("uncaught EPIPE patch", () => {
 		installUncaughtEpipePatch(modeClass)
 
 		expect(modeClass.prototype.uncaughtCrash).toBe(wrapped)
+	})
+
+	it("targets a method that still exists on the SDK, so an upstream rename fails here instead of silently disabling the guard", () => {
+		const proto = (InteractiveMode as unknown as { prototype: { uncaughtCrash?: unknown } }).prototype
+		expect(typeof proto.uncaughtCrash).toBe("function")
 	})
 })
