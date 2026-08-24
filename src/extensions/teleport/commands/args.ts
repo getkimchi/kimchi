@@ -12,8 +12,87 @@ export interface TeleportArgs {
 
 const SESSION_NAME_RE = /^[A-Za-z0-9\-_]+$/
 
-const FLAGS_WITH_VALUE = new Set(["--workspace", "--git-repo", "--branch"])
-const BOOLEAN_FLAGS = new Set(["--no-git-token", "--no-compact-hint", "--skip-session"])
+/**
+ * Single source of truth for /teleport flag metadata. The parser derives its
+ * value/boolean `Set`s from this array, and the autocomplete function reads the
+ * descriptions from it — so a new flag added here is immediately parsed and
+ * surfaced in the completion picker without touching a second location.
+ */
+export interface TeleportFlag {
+	/** Long form, e.g. "--allow-dirty". */
+	name: string
+	/** True for flags that take a value (`--workspace <id>`), false for booleans. */
+	takesValue: boolean
+	/** Short description shown in the autocomplete picker. */
+	description: string
+}
+
+export const TELEPORT_FLAGS: readonly TeleportFlag[] = [
+	{ name: "--workspace", takesValue: true, description: "Reuse an existing workspace (id or name)" },
+	{ name: "--git-repo", takesValue: true, description: "Clone from a git URL instead of rsyncing local files" },
+	{ name: "--branch", takesValue: true, description: "Branch to check out (requires --git-repo)" },
+	{ name: "--allow-dirty", takesValue: false, description: "Proceed with uncommitted changes" },
+	{ name: "--force", takesValue: false, description: "Override the 5 GB workspace size limit" },
+	{ name: "--no-git-token", takesValue: false, description: "Skip the git credentials prompt" },
+	{ name: "--no-compact-hint", takesValue: false, description: "Skip the pre-teleport compaction hint" },
+	{
+		name: "--skip-session",
+		takesValue: false,
+		description: "Start remote agent fresh without uploading session history",
+	},
+]
+
+const FLAGS_WITH_VALUE = new Set(TELEPORT_FLAGS.filter((f) => f.takesValue).map((f) => f.name))
+const BOOLEAN_FLAGS = new Set(TELEPORT_FLAGS.filter((f) => !f.takesValue).map((f) => f.name))
+
+/** Completion item returned by `getTeleportArgumentCompletions`. */
+export interface TeleportCompletion {
+	value: string
+	label: string
+	description?: string
+}
+
+/**
+ * Shown on an empty prefix (right after `/teleport `) so users immediately
+ * discover the positional session name and the two most common flags without
+ * having to type `--`. Once the user starts typing, these fall away and the
+ * standard dash-prefix flag filtering takes over.
+ */
+const TELEPORT_DISCOVERY_COMPLETIONS: readonly TeleportCompletion[] = [
+	{ value: "my-feature", label: "my-feature", description: "Sample session name (or type your own)" },
+	{ value: "--allow-dirty", label: "--allow-dirty", description: "Proceed with uncommitted changes" },
+	{ value: "--force", label: "--force", description: "Override the 5 GB workspace size limit" },
+]
+
+/**
+ * Suggest `/teleport` completions for the autocomplete picker.
+ *
+ * Three behaviors:
+ * 1. **Empty prefix** (`/teleport `) — returns only the three discovery
+ *    items (`my-feature`, `--allow-dirty`, `--force`) so users learn the most
+ *    common forms exist without being overwhelmed.
+ * 2. **Dash prefix** (`--<partial>`) — filters all 8 flags by case-insensitive
+ *    prefix. Value flags emit a trailing space so the cursor lands inside the
+ *    argument, mirroring `/ferment`'s `"switch "` / `"revise "` completions.
+ * 3. **Non-dash, non-empty** — returns all flags unfiltered so they're
+ *    discoverable while the user types a session name.
+ */
+export function getTeleportArgumentCompletions(prefix: string): TeleportCompletion[] | null {
+	const trimmed = prefix.trimStart()
+	if (trimmed === "") return [...TELEPORT_DISCOVERY_COMPLETIONS]
+
+	const allFlags: TeleportCompletion[] = TELEPORT_FLAGS.map((f) => ({
+		value: f.takesValue ? `${f.name} ` : f.name,
+		label: f.name,
+		description: f.description,
+	}))
+
+	if (!trimmed.startsWith("-")) return allFlags
+
+	const lower = trimmed.toLowerCase()
+	const matches = allFlags.filter((f) => f.label.toLowerCase().startsWith(lower))
+	return matches.length > 0 ? matches : null
+}
 
 /**
  * Parse `/teleport [name] [--workspace ID] [--git-repo URL] [--branch B]

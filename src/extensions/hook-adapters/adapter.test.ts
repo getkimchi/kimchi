@@ -513,11 +513,11 @@ describe("hook adapter command execution", () => {
 		expect(pi.sendUserMessage).not.toHaveBeenCalled()
 	})
 
-	it("runs PostToolUseFail hooks only for failed tool results", async () => {
+	it("runs PostToolUseFailure hooks only for failed tool results", async () => {
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {
 				PostToolUse: [{ hooks: [{ type: "command", command: "post-tool" }] }],
-				PostToolUseFail: [{ hooks: [{ type: "command", command: "post-tool-fail" }] }],
+				PostToolUseFailure: [{ hooks: [{ type: "command", command: "post-tool-fail" }] }],
 			},
 		})
 		const postHook = mockBlockingHook()
@@ -540,7 +540,7 @@ describe("hook adapter command execution", () => {
 		expect(mockSpawn).toHaveBeenCalledTimes(2)
 		expect(hookPayload(postHook).hook_event_name).toBe("PostToolUse")
 		const failPayload = hookPayload(failHook)
-		expect(failPayload.hook_event_name).toBe("PostToolUseFail")
+		expect(failPayload.hook_event_name).toBe("PostToolUseFailure")
 		expect(failPayload.is_error).toBe(true)
 
 		mockSpawn.mockClear()

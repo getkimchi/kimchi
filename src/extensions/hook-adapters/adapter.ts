@@ -354,7 +354,7 @@ async function runPostToolUse(
 	if (event.isError) {
 		result = mergeOptionalResults(
 			result,
-			await runMatchingHooks(definition, "PostToolUseFail", ctx, matcherCandidates(event.toolName), basePayload),
+			await runMatchingHooks(definition, "PostToolUseFailure", ctx, matcherCandidates(event.toolName), basePayload),
 		)
 	}
 	const skillName = skillNameFromReadPath(event)

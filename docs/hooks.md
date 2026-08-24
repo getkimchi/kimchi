@@ -137,7 +137,7 @@ Supported events:
 
 - `PreToolUse`
 - `PostToolUse`
-- `PostToolUseFail` — runs only when a tool result is an error (`PostToolUse` still runs for all results)
+- `PostToolUseFailure` — runs only when a tool result is an error (`PostToolUse` still runs for all results)
 - `PostToolBatch` — synthesized once per turn after all tool executions in that turn finish
 - `SessionStart`
 - `PreCompact`

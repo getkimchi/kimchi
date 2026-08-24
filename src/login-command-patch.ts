@@ -7,12 +7,15 @@
  */
 
 import {
+	CredentialSynchronizationError,
 	InteractiveMode,
 	ModelRegistry,
 	type ModelRuntime,
 	OAuthSelectorComponent,
 } from "@earendil-works/pi-coding-agent"
 import { Spacer, Text } from "@earendil-works/pi-tui"
+import { clearApiKey } from "./config.js"
+import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import {
 	createLoginChoiceSelector,
 	formatBrowserLoginMessage,
@@ -22,45 +25,27 @@ import {
 	performKimchiApiKeyLogin,
 	performKimchiBrowserLogin,
 	prePopulateSubscriptionModels,
+	syncKimchiAuth,
 } from "./extensions/login/flow.js"
 
 // ---------------------------------------------------------------------------
 // Intercept the upstream login flow to add the Kimchi browser auth choice
 // ---------------------------------------------------------------------------
 
-interface AuthStorage {
-	set(provider: string, credential: unknown): void
-	get(provider: string): unknown
-}
-
 interface ModelLike {
 	id: string
 	provider: string
 }
 
-/** Shape the login patch expects from `session.modelRuntime`. At runtime this is a
- * `ModelRuntime`; the patch wraps it in a `ModelRegistry` before passing it to the
- * flow functions that call `getAll()`. The local interface mirrors the subset of
- * `ModelRuntime` that the patch code accesses directly (e.g. `authStorage`). */
-interface SessionModelRuntime extends ModelRuntime {
-	authStorage: AuthStorage
-}
-
 interface SessionLike {
-	modelRuntime: SessionModelRuntime
+	modelRuntime: ModelRuntime
 	setModel(model: ModelLike): Promise<void>
 }
 
 /** Wraps `session.modelRuntime` (a `ModelRuntime`) in a `ModelRegistry` so the login
- * flow can call `getAll()`. `ModelRegistry` delegates `getAll`→`getModels` and
- * `getAvailable`→`getAvailableSnapshot`, but does not expose `authStorage`; copy it
- * from the runtime when present so the flow's credential-storage path still works. */
-function asLoginRegistry(runtime: SessionModelRuntime): ModelRegistry {
-	const registry = new ModelRegistry(runtime)
-	if (runtime.authStorage) {
-		;(registry as { authStorage?: AuthStorage }).authStorage = runtime.authStorage
-	}
-	return registry
+ * flow can use the public extension-facing registry API. */
+function asLoginRegistry(runtime: ModelRuntime): ModelRegistry {
+	return new ModelRegistry(runtime)
 }
 
 type ChatContainerLike = {
@@ -81,6 +66,8 @@ type LoginModeLike = {
 	showLoginDialog?: (providerId: string, providerName: string) => Promise<void>
 	showExtensionInput?: (title: string, placeholder?: string) => Promise<string | undefined>
 	getLoginProviderOptions?: (authType: "oauth" | "api_key") => AuthSelectorProvider[]
+	getLogoutProviderOptions?: () => Promise<AuthSelectorProvider[]>
+	updateAvailableProviderCount?: () => Promise<void>
 	session: SessionLike
 	ui?: UiLike
 }
@@ -316,7 +303,72 @@ async function patchedShowOAuthSelector(this: InteractiveMode, mode: "login" | "
 		showLoginChoiceSelector(this)
 		return
 	}
-	return oauthDelegate.original.call(this, mode)
+	return showLogoutSelector(this)
+}
+
+async function showLogoutSelector(im: InteractiveMode): Promise<void> {
+	const modeLike = im as unknown as LoginModeLike
+	if (!modeLike.showSelector || !modeLike.getLogoutProviderOptions || !modeLike.session?.modelRuntime) {
+		await oauthDelegate.original.call(im, "logout")
+		return
+	}
+
+	let providerOptions: AuthSelectorProvider[]
+	try {
+		providerOptions = await modeLike.getLogoutProviderOptions()
+	} catch (error) {
+		im.showError(`Could not read stored credentials: ${error instanceof Error ? error.message : String(error)}`)
+		return
+	}
+	if (providerOptions.length === 0) {
+		modeLike.showStatus?.("No stored credentials to remove.")
+		return
+	}
+
+	modeLike.showSelector((done) => {
+		const selector = new OAuthSelectorComponent(
+			"logout",
+			providerOptions,
+			async (providerId) => {
+				done()
+				const providerOption = providerOptions.find((provider) => provider.id === providerId)
+				if (!providerOption) return
+
+				try {
+					if (isKimchiProvider(providerOption.id)) {
+						clearApiKey()
+						await syncKimchiAuth(asLoginRegistry(modeLike.session.modelRuntime), "")
+						void refreshBillingStatusFromConfig({ mode: "forced" })
+						await modeLike.updateAvailableProviderCount?.()
+						modeLike.showStatus?.("Logged out of Kimchi")
+						return
+					}
+
+					await modeLike.session.modelRuntime.logout(providerOption.id, {
+						signal: AbortSignal.timeout(15_000),
+					})
+					await modeLike.updateAvailableProviderCount?.()
+					const message =
+						providerOption.authType === "oauth"
+							? `Logged out of ${providerOption.name}`
+							: `Removed stored API key for ${providerOption.name}. Environment variables and models.json config are unchanged.`
+					modeLike.showStatus?.(message)
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error)
+					im.showError(
+						error instanceof CredentialSynchronizationError
+							? `Credentials removed for ${providerOption.name}, but local model state could not be synchronized: ${message}`
+							: `Logout failed: ${message}`,
+					)
+				}
+			},
+			() => {
+				done()
+				modeLike.ui?.requestRender()
+			},
+		)
+		return { component: selector, focus: selector }
+	})
 }
 
 async function patchedHandleLoginCommand(this: InteractiveMode, providerRef?: string) {

@@ -6,17 +6,23 @@
  * ExtensionAPI (session_start/tool_call handlers) live in
  * bash-tool-guard.integration.test.ts instead.
  */
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	applyDescriptionOverride,
-	BASH_TOOL_DESCRIPTION,
 	type BashCategory,
 	type BashGuardBlockResult,
 	type BashGuardWarnResult,
 	BashToolGuard,
+	bashToolDescription,
 	classifyBashCommand,
 	toolDescriptionOverride,
 } from "./bash-tool-guard.js"
+import { setExperimentalFeaturesEnabled } from "./experimental.js"
+
+afterEach(() => {
+	// Module-level singleton — restore default so suites don't leak state.
+	setExperimentalFeaturesEnabled(false)
+})
 
 describe("classifyBashCommand — read patterns", () => {
 	it("flags `cat <file>`", () => {
@@ -802,49 +808,65 @@ describe("BashToolGuard — semantic intent override (no tool name)", () => {
 // the system prompt block + session_start mutation.
 
 describe("BASH_TOOL_DESCRIPTION", () => {
+	// Content assertions run against the FULL description (with the daemon
+	// steer) — the public bashToolDescription() accessor with the flag on.
+	beforeEach(() => {
+		setExperimentalFeaturesEnabled(true)
+	})
 	it("describes what bash is for", () => {
-		expect(BASH_TOOL_DESCRIPTION).toMatch(/build|test|git|package/i)
+		expect(bashToolDescription()).toMatch(/build|test|git|package/i)
 	})
 
 	it("explicitly tells the model to use dedicated tools for file ops", () => {
-		expect(BASH_TOOL_DESCRIPTION).toContain("use `read`")
-		expect(BASH_TOOL_DESCRIPTION).toContain("use `edit`")
-		expect(BASH_TOOL_DESCRIPTION).toContain("use `write`")
-		expect(BASH_TOOL_DESCRIPTION).toContain("use `grep`")
-		expect(BASH_TOOL_DESCRIPTION).toContain("use `find`")
-		expect(BASH_TOOL_DESCRIPTION).toContain("use `ls`")
+		expect(bashToolDescription()).toContain("use `read`")
+		expect(bashToolDescription()).toContain("use `edit`")
+		expect(bashToolDescription()).toContain("use `write`")
+		expect(bashToolDescription()).toContain("use `grep`")
+		expect(bashToolDescription()).toContain("use `find`")
+		expect(bashToolDescription()).toContain("use `ls`")
 	})
 
 	it("preserves the upstream truncation behaviour", () => {
 		// The output truncation contract is important — dropping it would
 		// change runtime semantics. Verify the truncation info survives.
-		expect(BASH_TOOL_DESCRIPTION).toMatch(/truncat/i)
+		expect(bashToolDescription()).toMatch(/truncat/i)
 	})
 
 	it("documents that cd does not persist between bash tool calls", () => {
-		expect(BASH_TOOL_DESCRIPTION).toContain("does NOT persist")
-		expect(BASH_TOOL_DESCRIPTION).toContain("cd <dir> && <command>")
+		expect(bashToolDescription()).toContain("does NOT persist")
+		expect(bashToolDescription()).toContain("cd <dir> && <command>")
 	})
 
 	it("warns against piping output through tail/head to hide it", () => {
-		expect(BASH_TOOL_DESCRIPTION).toMatch(/pipe.*tail.*head.*hide/i)
+		expect(bashToolDescription()).toMatch(/pipe.*tail.*head.*hide/i)
 	})
 
 	it("warns against backgrounding with nohup/disown/&", () => {
-		expect(BASH_TOOL_DESCRIPTION).toContain("nohup")
-		expect(BASH_TOOL_DESCRIPTION).toContain("disown")
-		expect(BASH_TOOL_DESCRIPTION).toContain("background")
+		expect(bashToolDescription()).toContain("nohup")
+		expect(bashToolDescription()).toContain("disown")
+		expect(bashToolDescription()).toContain("background")
 	})
 
 	it("suggests using long timeout and checkin_interval for long-running commands", () => {
-		expect(BASH_TOOL_DESCRIPTION).toMatch(/timeout=1800/)
-		expect(BASH_TOOL_DESCRIPTION).toMatch(/checkin_interval/)
+		expect(bashToolDescription()).toMatch(/timeout=1800/)
+		expect(bashToolDescription()).toMatch(/checkin_interval/)
 	})
 })
 
 describe("toolDescriptionOverride", () => {
-	it("returns the override for the bash tool", () => {
-		expect(toolDescriptionOverride("bash")).toBe(BASH_TOOL_DESCRIPTION)
+	it("returns the override for the bash tool when experimental features are enabled", () => {
+		setExperimentalFeaturesEnabled(true)
+		expect(toolDescriptionOverride("bash")).toBe(bashToolDescription())
+	})
+
+	it("strips the daemon sentence when experimental features are disabled", () => {
+		setExperimentalFeaturesEnabled(false)
+		const override = toolDescriptionOverride("bash")
+		if (!override) throw new Error("expected bash description override")
+		expect(override).not.toContain("`daemon`")
+		expect(override).toContain(
+			"Managed background (timeout/checkin_interval + bash_control) is killed when the session ends.",
+		)
 	})
 
 	it("returns undefined for non-bash tools", () => {
@@ -858,9 +880,10 @@ describe("toolDescriptionOverride", () => {
 
 describe("applyDescriptionOverride", () => {
 	it("overrides the description for bash", () => {
+		setExperimentalFeaturesEnabled(true)
 		const tool = { name: "bash", description: "old description" }
 		const result = applyDescriptionOverride(tool)
-		expect(result.description).toBe(BASH_TOOL_DESCRIPTION)
+		expect(result.description).toBe(bashToolDescription())
 	})
 
 	it("does not mutate the input object", () => {

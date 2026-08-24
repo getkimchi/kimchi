@@ -67,11 +67,29 @@ const MESSAGE_CYCLE_MS = 6000
 
 let _resumeFrameIdx = 0
 
-export function createWorkingAnimator(onUpdate: (char: string, message: string) => void): () => void {
+/**
+ * Reset the module-level frame index so tests start from the first animation
+ * frame deterministically. Production code should not call this.
+ */
+export function resetWorkingAnimatorForTest(): void {
+	_resumeFrameIdx = 0
+}
+
+export interface WorkingAnimator {
+	stop(): void
+	pause(): void
+	resume(): void
+}
+
+export function createWorkingAnimator(onUpdate: (char: string, message: string) => void): WorkingAnimator {
 	let frameIdx = _resumeFrameIdx
 	let spinIdx = 0
 	let dotIdx = 0
+	let running = false
 	let spinId: ReturnType<typeof setInterval> | undefined
+	let initId: ReturnType<typeof setTimeout> | undefined
+	let dotId: ReturnType<typeof setInterval> | undefined
+	let msgId: ReturnType<typeof setInterval> | undefined
 
 	function render() {
 		const f = COOKING_FRAMES[frameIdx]
@@ -88,30 +106,64 @@ export function createWorkingAnimator(onUpdate: (char: string, message: string) 
 		}, interval)
 	}
 
-	const initId = setTimeout(() => {
-		render()
-		restartSpin()
-	}, 0)
+	function scheduleTimers() {
+		initId = setTimeout(() => {
+			render()
+			restartSpin()
+		}, 0)
 
-	const dotId = setInterval(() => {
-		dotIdx = (dotIdx + 1) % DOT_STATES.length
-		render()
-	}, DOT_CYCLE_MS)
+		dotId = setInterval(() => {
+			dotIdx = (dotIdx + 1) % DOT_STATES.length
+			render()
+		}, DOT_CYCLE_MS)
 
-	const msgId = setInterval(() => {
-		frameIdx = (frameIdx + 1) % COOKING_FRAMES.length
-		spinIdx = 0
-		dotIdx = 0
-		_resumeFrameIdx = frameIdx
-		render()
-		restartSpin()
-	}, MESSAGE_CYCLE_MS)
+		msgId = setInterval(() => {
+			frameIdx = (frameIdx + 1) % COOKING_FRAMES.length
+			spinIdx = 0
+			dotIdx = 0
+			_resumeFrameIdx = frameIdx
+			render()
+			restartSpin()
+		}, MESSAGE_CYCLE_MS)
+	}
 
-	return () => {
-		clearTimeout(initId)
-		if (spinId) clearInterval(spinId)
-		clearInterval(dotId)
-		clearInterval(msgId)
-		_resumeFrameIdx = (frameIdx + 1) % COOKING_FRAMES.length
+	function clearAllTimers() {
+		if (initId !== undefined) {
+			clearTimeout(initId)
+			initId = undefined
+		}
+		if (spinId !== undefined) {
+			clearInterval(spinId)
+			spinId = undefined
+		}
+		if (dotId !== undefined) {
+			clearInterval(dotId)
+			dotId = undefined
+		}
+		if (msgId !== undefined) {
+			clearInterval(msgId)
+			msgId = undefined
+		}
+	}
+
+	scheduleTimers()
+	running = true
+
+	return {
+		stop() {
+			clearAllTimers()
+			_resumeFrameIdx = (frameIdx + 1) % COOKING_FRAMES.length
+			running = false
+		},
+		pause() {
+			if (!running) return
+			clearAllTimers()
+			running = false
+		},
+		resume() {
+			if (running) return
+			scheduleTimers()
+			running = true
+		},
 	}
 }

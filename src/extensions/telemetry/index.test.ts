@@ -232,6 +232,7 @@ describe("telemetryExtension integration", () => {
 			session_type: "coding",
 			source: "cli",
 			"telemetry.arch": expect.any(String),
+			"telemetry.cli_version": expect.any(String),
 			"telemetry.host_os": expect.any(String),
 			"telemetry.is_wsl": expect.any(String),
 			"telemetry.os": expect.any(String),

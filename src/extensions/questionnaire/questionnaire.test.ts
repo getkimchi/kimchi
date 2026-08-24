@@ -1,6 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { setExperimentalFeaturesEnabled } from "../experimental.js"
 import questionnaireExtension, { formatAnswerText, normalizeQuestionType } from "./questionnaire.js"
+
+afterEach(() => {
+	// Module-level singleton — restore the default-off state so other
+	// suites aren't polluted by tests that flipped it.
+	setExperimentalFeaturesEnabled(false)
+})
 
 function registeredQuestionnaireTool() {
 	let tool:
@@ -338,11 +345,11 @@ describe("questionnaire environment behavior", () => {
 			| { systemPrompt: string }
 			| undefined
 
-		expect(result).toBeDefined()
-		expect(result?.systemPrompt).toContain("BASE")
-		expect(result?.systemPrompt).toContain("Autonomous mode")
-		expect(result?.systemPrompt).toContain("no human or judge")
-		expect(result?.systemPrompt).toContain("Do NOT end your turn with questions")
+		if (!result) throw new Error("expected autonomous-mode prompt injection")
+		expect(result.systemPrompt).toContain("BASE")
+		expect(result.systemPrompt).toContain("Autonomous mode")
+		expect(result.systemPrompt).toContain("no human or judge")
+		expect(result.systemPrompt).toContain("Do NOT end your turn with questions")
 	})
 
 	it("does not inject when UI is attached (interactive session)", () => {

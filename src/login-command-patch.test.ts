@@ -5,8 +5,11 @@ import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest"
 import * as configModule from "./config.js"
 import * as loginPatch from "./login-command-patch.js"
 import * as modelsModule from "./models.js"
+import * as piAuthModule from "./pi-auth.js"
 
 const { oauthDelegate, warningDelegate } = loginPatch
+
+let synchronizedApiKey = ""
 
 vi.mock("@earendil-works/pi-ai/compat", async () => {
 	const actual = await vi.importActual("@earendil-works/pi-ai/compat")
@@ -25,7 +28,12 @@ beforeEach(() => {
 	// Auth tests should be independent of the developer machine's real config.
 	vi.spyOn(configModule, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof configModule.loadConfig>)
 	vi.spyOn(configModule, "writeApiKey").mockImplementation(() => {})
+	vi.spyOn(configModule, "clearApiKey").mockImplementation(() => {})
 	vi.spyOn(modelsModule, "updateModelsConfig").mockResolvedValue({ models: [] })
+	synchronizedApiKey = ""
+	vi.spyOn(piAuthModule, "syncPiAuth").mockImplementation(async (_authPath, _modelsPath, apiKey) => {
+		synchronizedApiKey = apiKey
+	})
 })
 
 afterEach(() => {
@@ -42,11 +50,10 @@ function makeFakeModelRegistry() {
 	const getAllMock = vi.fn().mockReturnValue([])
 	const getAvailableMock = vi.fn().mockReturnValue([])
 	return {
-		authStorage: {
-			set: vi.fn(),
-			get: vi.fn(),
-			remove: vi.fn(),
-		},
+		getAuth: vi.fn(async () =>
+			synchronizedApiKey ? { auth: { apiKey: synchronizedApiKey, headers: {} }, env: {} } : undefined,
+		),
+		logout: vi.fn().mockResolvedValue(undefined),
 		refresh: vi.fn(),
 		getModels: getAllMock,
 		getAvailableSnapshot: getAvailableMock,
@@ -67,6 +74,8 @@ function makeFakeInteractiveMode(registry: ReturnType<typeof makeFakeModelRegist
 		showLoginDialog: vi.fn().mockResolvedValue(undefined),
 		showExtensionInput: vi.fn(),
 		getLoginProviderOptions: vi.fn().mockReturnValue([]),
+		getLogoutProviderOptions: vi.fn().mockResolvedValue([]),
+		updateAvailableProviderCount: vi.fn().mockResolvedValue(undefined),
 		chatContainer: {
 			addChild: vi.fn((child: unknown) => children.push(child)),
 			children,
@@ -155,10 +164,11 @@ it("intercepts the user-facing /login command and runs Kimchi browser auth", asy
 	expect(fakeIm.showSelector).toHaveBeenCalledOnce()
 	expect(authSpy).toHaveBeenCalledOnce()
 	expect(fakeIm.showStatus).toHaveBeenCalledWith("Opening browser for Kimchi login...")
-	expect(registry.authStorage.set).toHaveBeenCalledWith("kimchi-dev", {
-		type: "api_key",
-		key: "test-token-123",
-	})
+	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
+		"/tmp/kimchi-login-test/auth.json",
+		"/tmp/kimchi-login-test/models.json",
+		"test-token-123",
+	)
 	expect(registry.refresh).toHaveBeenCalledOnce()
 	expect(fakeIm.session.setModel).toHaveBeenCalledWith({
 		id: "kimi-k2.6",
@@ -189,10 +199,11 @@ it("does not reuse a saved Kimchi key for explicit /login", async () => {
 	expect(fakeIm.showStatus).toHaveBeenCalledWith("Opening browser for Kimchi login...")
 	expect(fakeIm.showStatus).not.toHaveBeenCalledWith("Refreshing Kimchi models with existing login...")
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("fresh-token")
-	expect(registry.authStorage.set).toHaveBeenCalledWith("kimchi-dev", {
-		type: "api_key",
-		key: "fresh-token",
-	})
+	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/auth.json",
+		"/tmp/kimchi-api-login-test/models.json",
+		"fresh-token",
+	)
 	expect(fakeIm.session.setModel).toHaveBeenCalledWith({
 		id: "kimi-k2.6",
 		provider: "kimchi-dev",
@@ -283,7 +294,7 @@ it("shows error when browser auth fails", async () => {
 	await selectCurrentLoginOption(fakeIm)
 
 	expect(fakeIm.showError).toHaveBeenCalledWith("Kimchi login failed: Browser closed")
-	expect(registry.authStorage.set).not.toHaveBeenCalled()
+	expect(piAuthModule.syncPiAuth).not.toHaveBeenCalled()
 })
 
 it("prompts for Kimchi API key and endpoint with the default endpoint", async () => {
@@ -319,10 +330,11 @@ it("prompts for Kimchi API key and endpoint with the default endpoint", async ()
 			endpoint: "https://llm.kimchi.dev",
 		},
 	)
-	expect(registry.authStorage.set).toHaveBeenCalledWith("kimchi-dev", {
-		type: "api_key",
-		key: "api-key-123",
-	})
+	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/auth.json",
+		"/tmp/kimchi-api-login-test/models.json",
+		"api-key-123",
+	)
 	expect(fakeIm.session.setModel).toHaveBeenCalledWith({
 		id: "kimi-k2.6",
 		provider: "kimchi-dev",
@@ -356,10 +368,11 @@ it("uses a custom Kimchi endpoint for API-key model discovery and config persist
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-456", undefined, {
 		llmEndpoint: "https://custom.example/",
 	})
-	expect(registry.authStorage.set).toHaveBeenCalledWith("kimchi-dev", {
-		type: "api_key",
-		key: "api-key-456",
-	})
+	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/auth.json",
+		"/tmp/kimchi-api-login-test/models.json",
+		"api-key-456",
+	)
 	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "custom-model", provider: "kimchi-dev" })
 })
 
@@ -386,8 +399,7 @@ it("does not persist API-key login when model discovery rejects an invalid key",
 		"Invalid API key. Please check your key and try again. No changes were saved.",
 	)
 	expect(configModule.writeApiKey).not.toHaveBeenCalled()
-	expect(registry.authStorage.set).not.toHaveBeenCalled()
-	expect(registry.authStorage.remove).not.toHaveBeenCalled()
+	expect(piAuthModule.syncPiAuth).not.toHaveBeenCalled()
 	expect(registry.refresh).not.toHaveBeenCalled()
 	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
 })
@@ -412,20 +424,14 @@ it("does not persist API-key login when the endpoint is unreachable", async () =
 		"Kimchi endpoint is unreachable or temporarily unavailable (Failed to fetch models: network down). Check the endpoint and try again. No changes were saved.",
 	)
 	expect(configModule.writeApiKey).not.toHaveBeenCalled()
-	expect(registry.authStorage.set).not.toHaveBeenCalled()
-	expect(registry.authStorage.remove).not.toHaveBeenCalled()
+	expect(piAuthModule.syncPiAuth).not.toHaveBeenCalled()
 	expect(registry.refresh).not.toHaveBeenCalled()
 	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
 })
 
-it("rolls back every Kimchi provider credential when registry refresh rejects", async () => {
-	const previousRootCredential = { type: "api_key", key: "previous-root-key" }
-	const previousSubProviderCredential = { type: "api_key", key: "previous-sub-provider-key" }
+it("keeps the validated API key persisted when registry refresh rejects", async () => {
 	const registry = makeFakeModelRegistry()
 	registry.getAll.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev/castai" }])
-	registry.authStorage.get.mockImplementation((providerId: string) =>
-		providerId === "kimchi-dev" ? previousRootCredential : previousSubProviderCredential,
-	)
 	registry.refresh.mockRejectedValue(new Error("registry refresh failed"))
 
 	const fakeIm = makeFakeInteractiveMode(registry)
@@ -438,27 +444,22 @@ it("rolls back every Kimchi provider credential when registry refresh rejects", 
 	await waitForMockCall(fakeIm.showError)
 
 	expect(fakeIm.showError).toHaveBeenCalledWith(
-		"Kimchi model refresh failed: registry refresh failed. No changes were saved.",
+		"Kimchi model refresh failed: registry refresh failed. Your API key was saved; wait a moment and try again.",
 	)
-	expect(registry.authStorage.set).toHaveBeenNthCalledWith(1, "kimchi-dev", {
-		type: "api_key",
-		key: "api-key-123",
+	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/auth.json",
+		"/tmp/kimchi-api-login-test/models.json",
+		"api-key-123",
+	)
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-123", undefined, {
+		llmEndpoint: "https://llm.kimchi.dev",
 	})
-	expect(registry.authStorage.set).toHaveBeenNthCalledWith(2, "kimchi-dev/castai", {
-		type: "api_key",
-		key: "api-key-123",
-	})
-	expect(registry.authStorage.set).toHaveBeenNthCalledWith(3, "kimchi-dev", previousRootCredential)
-	expect(registry.authStorage.set).toHaveBeenNthCalledWith(4, "kimchi-dev/castai", previousSubProviderCredential)
-	expect(configModule.writeApiKey).not.toHaveBeenCalled()
 })
 
-it("rolls back API-key auth when fresh discovery succeeds but no Kimchi models become available", async () => {
+it("keeps the validated API key persisted when no Kimchi models become available", async () => {
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
 
-	const previousCredential = { type: "api_key", key: "previous-key" }
 	const registry = makeFakeModelRegistry()
-	registry.authStorage.get.mockReturnValue(previousCredential)
 	registry.getAvailable.mockReturnValue([{ id: "gpt-4", provider: "openai" }])
 
 	const fakeIm = makeFakeInteractiveMode(registry)
@@ -471,14 +472,16 @@ it("rolls back API-key auth when fresh discovery succeeds but no Kimchi models b
 	await waitForMockCall(fakeIm.showError)
 
 	expect(fakeIm.showError).toHaveBeenCalledWith(
-		"Kimchi API-key login found no available Kimchi models. No changes were saved.",
+		"Kimchi login did not configure any available models. Your API key was saved; try again.",
 	)
-	expect(registry.authStorage.set).toHaveBeenNthCalledWith(1, "kimchi-dev", {
-		type: "api_key",
-		key: "api-key-123",
+	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/auth.json",
+		"/tmp/kimchi-api-login-test/models.json",
+		"api-key-123",
+	)
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-123", undefined, {
+		llmEndpoint: "https://llm.kimchi.dev",
 	})
-	expect(registry.authStorage.set).toHaveBeenNthCalledWith(2, "kimchi-dev", previousCredential)
-	expect(configModule.writeApiKey).not.toHaveBeenCalled()
 	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
 })
 
@@ -640,24 +643,82 @@ it("does not crash when registry.getAvailable throws after subscription login", 
 	syncSpy.mockRestore()
 })
 
-it("passes through to original showOAuthSelector for 'logout' mode", async () => {
-	// Stub oauthDelegate.original so the logout delegation path is exercised
-	// without calling into the real upstream implementation (which requires a
-	// fully constructed InteractiveMode with private methods).
+it("clears every persisted Kimchi credential from the running session on logout", async () => {
+	const registry = makeFakeModelRegistry()
+	registry.getAll.mockReturnValue([
+		{ id: "sol", provider: "kimchi-dev" },
+		{ id: "claude", provider: "kimchi-dev/anthropic" },
+	])
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.getLogoutProviderOptions.mockResolvedValue([
+		{ id: "kimchi-dev", name: "Kimchi", authType: "api_key", status: { configured: true } },
+	])
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "logout")
+	fakeIm.selectorComponent.handleInput("\n")
+	await waitForMockCall(fakeIm.showStatus)
+
+	expect(configModule.clearApiKey).toHaveBeenCalledOnce()
+	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/auth.json",
+		"/tmp/kimchi-api-login-test/models.json",
+		"",
+	)
+	expect(registry.refresh).toHaveBeenCalledOnce()
+	expect(registry.logout).not.toHaveBeenCalled()
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("Logged out of Kimchi")
+})
+
+it("preserves upstream logout behavior for non-Kimchi providers", async () => {
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.getLogoutProviderOptions.mockResolvedValue([
+		{ id: "openai-codex", name: "OpenAI Codex", authType: "oauth", status: { configured: true } },
+	])
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "logout")
+	fakeIm.selectorComponent.handleInput("\n")
+	await waitForMockCall(registry.logout)
+
+	expect(registry.logout).toHaveBeenCalledWith("openai-codex", { signal: expect.any(AbortSignal) })
+	expect(configModule.clearApiKey).not.toHaveBeenCalled()
+	expect(piAuthModule.syncPiAuth).not.toHaveBeenCalled()
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("Logged out of OpenAI Codex")
+})
+
+it("delegates logout to upstream when required selector internals are unavailable", async () => {
 	const stub = vi.fn().mockResolvedValue(undefined)
 	const saved = oauthDelegate.original
 	oauthDelegate.original = stub
 
 	try {
 		const fakeIm = makeFakeInteractiveMode(makeFakeModelRegistry())
+		fakeIm.showSelector = undefined
+
 		// biome-ignore lint/suspicious/noExplicitAny: not present in public type
 		const patched = (InteractiveMode.prototype as any).showOAuthSelector
 		await patched.call(fakeIm, "logout")
+
 		expect(stub).toHaveBeenCalledOnce()
 		expect(stub).toHaveBeenCalledWith("logout")
 	} finally {
 		oauthDelegate.original = saved
 	}
+})
+
+it("reports when there are no stored credentials to remove", async () => {
+	const fakeIm = makeFakeInteractiveMode(makeFakeModelRegistry())
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "logout")
+
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("No stored credentials to remove.")
+	expect(fakeIm.showSelector).not.toHaveBeenCalled()
 })
 
 it("suppresses stale startup no-model warning after startup auth selected a model", () => {
