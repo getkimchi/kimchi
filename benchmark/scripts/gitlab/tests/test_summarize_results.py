@@ -172,8 +172,20 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
         data = summary.to_summary_json()
         # agent_timeout verdict is self-describing; error.type falls back to exception type
         self.assertEqual(data["verdict"], "agent_timeout")
+        self.assertTrue(data["timed_out_during_agent"])
         self.assertIsNone(data["error_category"])
         self.assertIn("timed out after 900.0 seconds", data["error"]["message"])
+
+    def test_timeout_marker_does_not_override_scored_verdict(self) -> None:
+        for reward, verdict in ((1, "scored_pass"), (0, "scored_fail")):
+            with self.subTest(reward=reward):
+                result = self.result_with_exception("AgentTimeoutError", "timed out")
+                result["verifier_result"] = {"rewards": {"reward": reward}}
+
+                data = self.summarize(result).to_summary_json()
+
+                self.assertEqual(data["verdict"], verdict)
+                self.assertTrue(data["timed_out_during_agent"])
 
     def test_classifies_agent_transport_error(self) -> None:
         message = "stdout: The socket connection was closed unexpectedly. For more information, pass `verbose: true`."
@@ -1602,6 +1614,7 @@ class WriteSummaryPrintsTableTest(unittest.TestCase):
             self.assertEqual(summary["totals"]["trials"]["recorded"], 3)
             self.assertEqual(summary["totals"]["trials"]["scored_pass"], 1)
             self.assertEqual(summary["totals"]["trials"]["agent_timeout"], 1)
+            self.assertEqual(summary["totals"]["trials"]["timed_out_during_agent"], 1)
             self.assertEqual(summary["totals"]["trials"]["scored_fail"], 1)
             self.assertEqual(summary["totals"]["tasks"]["expected"], 1)
             self.assertEqual(summary["totals"]["tasks"]["scored_pass"], 1)
@@ -1720,6 +1733,9 @@ class SummarySchemaValidationTest(unittest.TestCase):
             }
             schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
             try:
+                validate(instance=summary, schema=schema)
+                summary["totals"]["trials"].pop("timed_out_during_agent")
+                summary["trials"][0].pop("timed_out_during_agent")
                 validate(instance=summary, schema=schema)
             except ValidationError as exc:
                 self.fail(f"summary.json does not validate against v2 schema: {exc.message} at {list(exc.path)}")

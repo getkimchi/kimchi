@@ -141,6 +141,7 @@ class TrialSummary:
     error_subcategory: str | None = None
     error_source: str | None = None
     outcome: Outcome = Outcome.SCORED_FAIL
+    timed_out_during_agent: bool = False
     agent_timeout_analysis: dict[str, Any] | None = None
 
     def status(self) -> str:
@@ -174,6 +175,7 @@ class TrialSummary:
         result["error_category"] = self.error_category
         result["error_subcategory"] = self.error_subcategory
         result["verdict"] = self.outcome
+        result["timed_out_during_agent"] = self.timed_out_during_agent
         if self.agent_timeout_analysis is not None:
             result["agent_timeout_analysis"] = self.agent_timeout_analysis
         return result
@@ -1058,6 +1060,7 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
         error_category=error_category,
         error_subcategory=error_subcategory,
         error_source=error_evidence.source,
+        timed_out_during_agent=exception == "AgentTimeoutError",
         agent_timeout_analysis=agent_timeout_analysis,
     )
 
@@ -1347,6 +1350,7 @@ def build_summary(
                 "scored_pass": trial_counts.get(Outcome.SCORED_PASS, 0),
                 "scored_fail": trial_counts.get(Outcome.SCORED_FAIL, 0),
                 "agent_timeout": trial_counts.get(Outcome.AGENT_TIMEOUT, 0),
+                "timed_out_during_agent": sum(t.timed_out_during_agent for t in trials),
                 "error": trial_counts.get(Outcome.ERROR, 0),
             },
             "tasks": {

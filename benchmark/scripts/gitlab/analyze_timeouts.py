@@ -107,7 +107,7 @@ def string_or_none(value: Any) -> str | None:
 
 @dataclass
 class TimeoutTrial:
-    """A trial from summary.json with an agent_timeout verdict."""
+    """A trial from summary.json with agent-timeout evidence."""
 
     trial_id: str
     task: str
@@ -123,7 +123,7 @@ def find_timeout_trials(
     summary_path: Path,
     results_dir: Path,
 ) -> list[TimeoutTrial]:
-    """Read summary.json and return all agent_timeout trials with their directories."""
+    """Read summary.json and return trials with agent-timeout evidence."""
     summary = load_json(summary_path)
     if summary is None:
         return []
@@ -139,7 +139,7 @@ def find_timeout_trials(
     for entry in trials_data:
         if not isinstance(entry, dict):
             continue
-        if entry.get("verdict") != "agent_timeout":
+        if entry.get("timed_out_during_agent") is not True and entry.get("verdict") != "agent_timeout":
             continue
         trial_id = str(entry.get("trial_id") or "")
         if not trial_id:

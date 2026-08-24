@@ -471,6 +471,9 @@ def test_find_timeout_trials_filters_only_timeouts(tmp_path: Path) -> None:
     trial_dir = results_dir / "run-1" / "task-a__abc"
     trial_dir.mkdir(parents=True)
     write_json(trial_dir / "result.json", {"trial_name": "task-a__abc"})
+    marked_trial_dir = results_dir / "run-1" / "task-b__xyz"
+    marked_trial_dir.mkdir()
+    write_json(marked_trial_dir / "result.json", {"trial_name": "task-b__xyz"})
 
     summary_path = tmp_path / "summary.json"
     write_json(summary_path, {
@@ -478,14 +481,14 @@ def test_find_timeout_trials_filters_only_timeouts(tmp_path: Path) -> None:
             {"trial_id": "task-a__abc", "task": "task-a", "attempt": 1, "verdict": "agent_timeout",
              "agent_timeout_analysis": {"timeout_status": "inference_hang", "timeout_duration_sec": 600.0},
              "models": [{"model": "kimchi-dev/glm-5.2-fp8"}], "duration_ms": 600000},
-            {"trial_id": "task-b__xyz", "task": "task-b", "attempt": 1, "verdict": "scored_pass"},
+            {"trial_id": "task-b__xyz", "task": "task-b", "attempt": 1, "verdict": "scored_pass",
+             "timed_out_during_agent": True},
             {"trial_id": "task-c__def", "task": "task-c", "attempt": 1, "verdict": "scored_fail"},
         ],
     })
 
     trials = find_timeout_trials(summary_path, results_dir)
-    assert len(trials) == 1
-    assert trials[0].trial_id == "task-a__abc"
+    assert [trial.trial_id for trial in trials] == ["task-a__abc", "task-b__xyz"]
     assert trials[0].timeout_duration_sec == 600.0
 
 

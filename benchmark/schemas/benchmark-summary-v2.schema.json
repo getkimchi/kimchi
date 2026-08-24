@@ -89,6 +89,11 @@
               "type": "integer",
               "minimum": 0
             },
+            "timed_out_during_agent": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of trials whose raw result reported AgentTimeoutError, regardless of verdict."
+            },
             "error": {
               "type": "integer",
               "minimum": 0
@@ -418,6 +423,10 @@
             "description": "Internal outcome enum.",
             "type": "string",
             "enum": ["scored_pass", "scored_fail", "agent_timeout", "error"]
+          },
+          "timed_out_during_agent": {
+            "description": "Whether the raw result reported AgentTimeoutError, regardless of the exclusive verdict.",
+            "type": "boolean"
           },
           "agent_timeout_analysis": {
             "description": "Timeout diagnostics from scripts/analyze_timeouts.py. Present when verdict is agent_timeout.",
