@@ -38,9 +38,19 @@ RUN mkdir -p /usr/local/lib/docker/cli-plugins && \
       "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
-# Harbor dataset precache (uses uv; runs as part of build)
+# Ensure the cache dir exists even when the dataset isn't Harbor-hosted, so
+# the final-stage COPY of /root/.cache/harbor always has a source.
+RUN mkdir -p /root/.cache/harbor
+
+# Harbor dataset precache (uses uv; runs as part of build). Only
+# terminal-bench/* slugs live in the Harbor registry — deep-swe and
+# swebenchpro source their tasks elsewhere (git clone / Pier), so skip the
+# download for those instead of masking a guaranteed failure.
 RUN uv tool install harbor || true
-RUN uv run --python 3.14 harbor dataset download "${HARBOR_DATASET}" --cache || true
+RUN case "${HARBOR_DATASET}" in \
+      terminal-bench/*) uv run --python 3.14 harbor dataset download "${HARBOR_DATASET}" --cache ;; \
+      *) echo "Skipping Harbor dataset download for '${HARBOR_DATASET}' (not a Harbor registry dataset)" ;; \
+    esac
 
 # Install Pier (Harbor fork for DeepSWE tasks with pre_artifacts.sh support)
 RUN uv tool install datacurve-pier || true
