@@ -308,6 +308,30 @@ describe("DapSession", () => {
 			expect(captured.at(-1)?.command).toBe("continue")
 		})
 
+		it("returns a stop that arrived during configurationDone instead of resuming past it", async () => {
+			// Race regression: the debuggee is free-running while configurationDone
+			// completes, so a just-set breakpoint CAN be hit before the caller's
+			// continue() is sent. Clearing that stop and resuming would blow
+			// straight past the breakpoint. stepAndStop must return it instead.
+			const client = createMockClient(null)
+			const session = makeSession(client)
+			queueResponse("launch", {})
+			await session.launch({ program: "/tmp/app.js", cwd: CWD })
+			const stop = { reason: "breakpoint", threadId: 1, allThreadsStopped: false }
+			// Only-just-completed-launch state: the stopped event landed on the
+			// client while the launch handshake finished.
+			client.stoppedEvent = stop
+			client.threadId = 1
+			queueResponse("continue", {})
+
+			const event = await session.continue()
+
+			expect(event).toBe(stop)
+			// Must NOT have sent a continue request — the debuggee is already
+			// stopped; sending continue would resume past the breakpoint.
+			expect(captured.some((c) => c.command === "continue")).toBe(false)
+		})
+
 		it("stepIn sends stepIn and resolves with the stopped event", async () => {
 			const client = createMockClient(null)
 			const session = makeSession(client)

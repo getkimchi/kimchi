@@ -386,7 +386,7 @@ export function createLayer1Tools(deps: DapToolDeps): ToolDefinition[] {
 			name: "debug_locals",
 			label: "DAP: Get Locals",
 			description:
-				"Get local variables at the current stop or a specific frame. Returns variable names, values, and types.",
+				"Get local variables at the current stop or a specific frame. Returns variable names, values, and types. Variables with expandable children include a [ref N] marker — pass that ref as variables_reference to debug_set_variable to mutate them (references are valid only while the debuggee is paused at the current stop).",
 			promptSnippet: "Get local variables at the current frame",
 			parameters: LocalsSchema,
 			async execute(_toolCallId, params: Static<typeof LocalsSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
@@ -400,7 +400,8 @@ export function createLayer1Tools(deps: DapToolDeps): ToolDefinition[] {
 						const vars = await session.getVariables(scope.variablesReference)
 						for (const v of vars) {
 							const type = v.type ? ` (${v.type})` : ""
-							lines.push(`${v.name} = ${v.value}${type}`)
+							const ref = v.variablesReference > 0 ? ` [ref ${v.variablesReference}]` : ""
+							lines.push(`${v.name} = ${v.value}${type}${ref}`)
 							// Expand one level of nested variables (struct fields, slice
 							// elements) so the agent can inspect object fields without
 							// needing debug_eval (which fails on unexported fields in Go).
@@ -408,7 +409,8 @@ export function createLayer1Tools(deps: DapToolDeps): ToolDefinition[] {
 								const children = await session.getVariables(v.variablesReference)
 								for (const child of children) {
 									const childType = child.type ? ` (${child.type})` : ""
-									lines.push(`  ${v.name}.${child.name} = ${child.value}${childType}`)
+									const childRef = child.variablesReference > 0 ? ` [ref ${child.variablesReference}]` : ""
+									lines.push(`  ${v.name}.${child.name} = ${child.value}${childType}${childRef}`)
 								}
 							}
 						}
@@ -431,7 +433,7 @@ export function createLayer1Tools(deps: DapToolDeps): ToolDefinition[] {
 			name: "debug_eval",
 			label: "DAP: Evaluate Expression",
 			description:
-				"Evaluate an expression in the context of a frame (or the global context). Returns the stringified result. Use this to inspect variable values at a breakpoint — e.g. debug_eval(session_id, 'entry.generation') shows the actual runtime value instead of tracing it through code by hand. Supported expressions vary by adapter: for Go/dlv, field access works (e.g. 'cache.capacity', 'cache.items', 'cache.lru') and built-in functions work (e.g. 'len(cache.items)') but method calls on unexported fields fail (e.g. 'cache.lru.Len()'). If an expression fails, try evaluating just the variable name to see its fields, then use debug_locals to inspect them directly.",
+				"Evaluate an expression in the context of a frame (or the global context). Returns the stringified result. Structured results include a [ref N] marker you can pass as variables_reference to debug_set_variable (references are valid only while paused at the current stop). Use this to inspect variable values at a breakpoint — e.g. debug_eval(session_id, 'entry.generation') shows the actual runtime value instead of tracing it through code by hand. Supported expressions vary by adapter: for Go/dlv, field access works (e.g. 'cache.capacity', 'cache.items', 'cache.lru') and built-in functions work (e.g. 'len(cache.items)') but method calls on unexported fields fail (e.g. 'cache.lru.Len()'). If an expression fails, try evaluating just the variable name to see its fields, then use debug_locals to inspect them directly.",
 			promptSnippet: "Get the actual runtime value of an expression at a breakpoint",
 			parameters: EvalSchema,
 			async execute(_toolCallId, params: Static<typeof EvalSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
@@ -440,7 +442,8 @@ export function createLayer1Tools(deps: DapToolDeps): ToolDefinition[] {
 					const frameId = params.frame_id ?? (await getTopFrameId(session))
 					const result = await session.evaluate(params.expression, frameId)
 					const type = result.type ? ` (${result.type})` : ""
-					return textResult(`${result.result}${type}`)
+					const ref = result.variablesReference > 0 ? ` [ref ${result.variablesReference}]` : ""
+					return textResult(`${result.result}${type}${ref}`)
 				} catch (err) {
 					return errorResult((err as Error).message)
 				}
@@ -650,7 +653,7 @@ export function createLayer2Tools(deps: DapToolDeps): ToolDefinition[] {
 			name: "debug_trace_calls",
 			label: "DAP: Trace Call Sequence",
 			description:
-				"See which functions actually run and in what order — replaces reading code to trace execution flow. Runs the program to completion and collects structured call records (function name, args, return value) via __KIMCHI_TRACE__ sentinels in console output.",
+				"Collect pre-instrumented trace output. IMPORTANT: this tool does NOT instrument anything for you — it only parses lines the program already prints. It runs the program to completion and extracts structured call records (function name, args, return value) from __KIMCHI_TRACE__ JSON sentinels the program explicitly logs itself (e.g. console.log('__KIMCHI_TRACE__' + JSON.stringify({fn, args, result}))). If the program prints no such markers, the result says 'not instrumented' — add markers or use debug_state_at/debug_watch_change instead.",
 			promptSnippet: "Get the actual call sequence (replaces reading code to trace flow)",
 			parameters: TraceCallsSchema,
 			async execute(_toolCallId, params: Static<typeof TraceCallsSchema>, _signal, _onUpdate, _ctx: ExtensionContext) {
@@ -758,7 +761,14 @@ function formatLastErrorResult(r: DebugLastErrorResult): string {
 
 /** Format a DebugTraceCallsResult into a readable text block. */
 function formatTraceCallsResult(r: DebugTraceCallsResult): string {
-	if (r.calls.length === 0) return "No trace calls captured."
+	if (r.calls.length === 0) {
+		return (
+			"No trace calls captured — program is NOT INSTRUMENTED. " +
+			"This tool only parses pre-existing __KIMCHI_TRACE__ markers; it does not inject any. " +
+			"To trace calls, add markers like console.log('__KIMCHI_TRACE__' + JSON.stringify({fn, args, result})) " +
+			"at the functions of interest, or use debug_state_at / debug_watch_change instead."
+		)
+	}
 	const callLines = r.calls.map((c) => {
 		const parts = [
 			c.fn ? `fn=${c.fn}` : null,

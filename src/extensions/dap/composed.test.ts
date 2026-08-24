@@ -98,6 +98,7 @@ function createStubSession(id = "sess-aaa-bbb-ccc"): StubSession {
 		awaitLaunch: vi.fn().mockResolvedValue(undefined),
 		setExceptionBreakpoints: vi.fn().mockResolvedValue(undefined),
 		isLaunched: true,
+		isStopped: false,
 		isTerminated: false,
 		threadId: 1,
 		outputLines: [],
@@ -212,6 +213,23 @@ describe("debug_state_at", () => {
 		expect(result.locals).toEqual([])
 		expect(result.backtrace).toEqual([])
 		expect(result.stdout).toContain("ran to completion")
+	})
+
+	it("continues explicitly when the session is already paused instead of waiting forever", async () => {
+		// Regression: setBreakpoint clears the current stop, completeLaunch is
+		// a no-op on a completed session — previously waitForStop waited for a
+		// NEW stop without resuming, so an already-paused session timed out.
+		// Fix: capture paused state up-front and issue an explicit continue.
+		const stub = createStubSession()
+		// isStopped is a readonly getter on DapSession — patch via Object.assign.
+		Object.assign(stub, { isStopped: true })
+		stub.continue.mockResolvedValue(stop("breakpoint"))
+		const { deps } = createDeps(stub)
+
+		const result = await debugStateAt(deps, { sessionId: stub.id, file: "app.ts", line: 10 })
+
+		expect(stub.continue).toHaveBeenCalled()
+		expect(result.hit).toBe(true)
 	})
 
 	it("creates and terminates a new session when no sessionId is provided", async () => {

@@ -463,14 +463,21 @@ async function startMessageReader(client: DapClient, stateTarget?: DapClient): P
 						} else {
 							// stdio adapter — no parent TCP server to connect a child to.
 							// Reply success:true so the adapter doesn't hang waiting.
-							sendResponse(client, message.seq, true, undefined, undefined).catch(logSwallow("sendResponse"))
+							sendResponse(client, message.seq, message.command, true, undefined, undefined).catch(
+								logSwallow("sendResponse"),
+							)
 						}
 					} else {
 						// Server-initiated requests (e.g. runInTerminal) are unsupported.
 						// Reply success:false so the adapter falls back to internalConsole.
-						sendResponse(client, message.seq, false, undefined, `Unsupported server request: ${message.command}`).catch(
-							() => {},
-						)
+						sendResponse(
+							client,
+							message.seq,
+							message.command,
+							false,
+							undefined,
+							`Unsupported server request: ${message.command}`,
+						).catch(logSwallow("sendResponse"))
 					}
 				}
 
@@ -514,33 +521,43 @@ interface StartDebuggingArguments {
 	configuration?: Record<string, unknown>
 }
 
-/** Handle the js-debug `startDebugging` reverse-request: reply `success:true`,
- *  open a child TCP connection to the same adapter, run the initialize +
- *  launch + configurationDone handshake on it, and install it as
- *  `client.childClient` so `sendRequest` routes subsequent debug traffic to it.
- *  The child reader routes event-driven state to the PARENT client.
- *
- *  This is fire-and-forget from the reader loop's perspective: `childClientReady`
- *  is set synchronously so `sendRequest` callers await it before routing. */
+/** Handle the js-debug `startDebugging` reverse-request: open a child TCP
+ *  connection to the same adapter, run the initialize + launch +
+ *  configurationDone handshake on it, install it as `client.childClient`, and
+ *  only THEN reply `success:true` — acknowledging before the child is ready
+ *  would let the adapter send debug traffic against a child that may never
+ *  come up. On setup failure replies `success:false` and records
+ *  `client.childSetupError` so sendRequest rejects instead of silently
+ *  routing to the parent manager connection (which has no debuggee).
+ *  `childClientReady` is set synchronously so concurrent sendRequest callers
+ *  await it before routing. The child reader routes event-driven state to
+ *  the PARENT client. */
 async function handleStartDebuggingRequest(client: DapClient, message: DapRequest): Promise<void> {
-	// Acknowledge the reverse-request immediately so the parent adapter proceeds.
-	await sendResponse(client, message.seq, true, undefined, undefined)
 	const args = (message.arguments ?? {}) as StartDebuggingArguments
 	const configuration = args.configuration ?? {}
 	// Set the ready promise up-front so concurrent sendRequest callers await it.
-	client.childClientReady = (async () => {
-		try {
-			const child = await startChildSession(client, configuration)
-			client.childClient = child
-		} catch (err) {
-			// Child setup failed — leave childClient unset so requests fall back to
-			// the parent (which will surface the adapter's own error). The promise
-			// resolves rather than rejects so sendRequest doesn't rethrow on await.
-			client.childClientReady = undefined
-			void err
-		}
-	})()
-	await client.childClientReady
+	let resolveReady!: () => void
+	client.childClientReady = new Promise<void>((resolve) => {
+		resolveReady = resolve
+	})
+	try {
+		const child = await startChildSession(client, configuration)
+		client.childClient = child
+		await sendResponse(client, message.seq, message.command, true, undefined, undefined)
+	} catch (err) {
+		client.childSetupError = err instanceof Error ? err : new Error(String(err))
+		await sendResponse(
+			client,
+			message.seq,
+			message.command,
+			false,
+			undefined,
+			`startDebugging child setup failed: ${client.childSetupError.message}`,
+		)
+	} finally {
+		client.childClientReady = undefined
+		resolveReady()
+	}
 }
 
 /** A no-op subprocess handle for a child TCP connection — there is no separate
@@ -625,6 +642,7 @@ async function startChildSession(parent: DapClient, configuration: Record<string
 		supportsVariableType: false,
 		supportsVariablePaging: false,
 		supportsRunInTerminalRequest: false,
+		supportsStartDebuggingRequest: true,
 		supportsProgressReporting: false,
 		supportsInvalidatedEvent: false,
 		supportsMemoryReferences: false,
@@ -772,6 +790,7 @@ export class DapClientRegistry {
 					supportsVariableType: false,
 					supportsVariablePaging: false,
 					supportsRunInTerminalRequest: false,
+					supportsStartDebuggingRequest: true,
 					supportsProgressReporting: false,
 					supportsInvalidatedEvent: false,
 					supportsMemoryReferences: false,
@@ -853,6 +872,9 @@ export async function sendRequest(
 	if (client.childClient) {
 		return sendRequest(client.childClient, command, args, timeoutMs)
 	}
+	if (client.childSetupError) {
+		throw new Error(`DAP child session setup failed (startDebugging): ${client.childSetupError.message}`)
+	}
 	const seq = ++client.seq
 	const request: DapRequest = { seq, type: "request", command, arguments: args }
 
@@ -888,6 +910,7 @@ export async function sendRequest(
 export async function sendResponse(
 	client: DapClient,
 	requestSeq: number,
+	command: string,
 	success: boolean,
 	body?: unknown,
 	message?: string,
@@ -897,6 +920,7 @@ export async function sendResponse(
 		type: "response",
 		request_seq: requestSeq,
 		success,
+		command,
 		body,
 		message,
 	}

@@ -19,6 +19,9 @@ export interface DapResponse extends DapProtocolMessage {
 	type: "response"
 	request_seq: number
 	success: boolean
+	/** Required by the DAP spec: echoes the `command` from the request this
+	 *  response answers. Strict adapters reject responses without it. */
+	command: string
 	message?: string
 	body?: unknown
 }
@@ -260,10 +263,15 @@ export interface DapClient {
 	 *  client's stoppedEvent/outputLines/etc. */
 	childClient?: DapClient
 	/** Resolves once the child client has completed its initialize + launch +
-	 *  configurationDone handshake (or failed, in which case `childClient`
-	 *  remains unset). `sendRequest` awaits this before routing to the child so
-	 *  the child is fully ready before any debug request is sent. */
+	 *  configurationDone handshake (or failed — then `childClient` remains unset
+	 *  and `childSetupError` is set). `sendRequest` awaits this before routing
+	 *  to the child so the child is fully ready before any debug request is sent. */
 	childClientReady?: Promise<void>
+	/** Set when child-session setup (startDebugging handshake) failed. Unlike
+	 *  "no child requested", a failed child must NOT fall back to the parent
+	 *  connection — the parent manager has no debuggee, so routing breakpoints
+	 *  there would silently no-op. sendRequest rejects with this error. */
+	childSetupError?: Error
 }
 
 /** How the DAP client talks to the adapter subprocess.

@@ -284,19 +284,31 @@ export async function debugStateAt(deps: ComposedDeps, opts: DebugStateAtOptions
 	return withTimeoutAndCleanup(
 		timeoutMs,
 		async () => {
+			// Capture paused state BEFORE setBreakpoint — setting a breakpoint
+			// clears client.stoppedEvent by design (the caller wants the NEW
+			// stop, not the current one), so isStopped after that call is always
+			// false and the check would be useless there.
+			const wasStopped = session.isStopped
 			await session.setBreakpoint(opts.file, opts.line)
 			await session.completeLaunch()
 			let stop: StoppedEvent
 			try {
-				// After completeLaunch (configurationDone), the program starts running
-				// and stops at the breakpoint automatically. Wait for the stop event
-				// without sending a continue request (which dlv rejects when the
-				// program is already running).
-				stop = await session.waitForStop()
-				// If the program stopped at entry (stopOnEntry), continue to the
-				// actual breakpoint.
-				if (stop.reason === "entry") {
+				if (wasStopped) {
+					// Existing session already paused elsewhere (break-on-entry or a
+					// previous breakpoint): waiting for a fresh stop would time out
+					// without resuming — continue explicitly to reach the new breakpoint.
 					stop = await session.continue()
+				} else {
+					// After completeLaunch (configurationDone), the program starts
+					// running and stops at the breakpoint automatically. Wait for the
+					// stop event without sending a continue request (which dlv rejects
+					// when the program is already running).
+					stop = await session.waitForStop()
+					// If the program stopped at entry (stopOnEntry), continue to the
+					// actual breakpoint.
+					if (stop.reason === "entry") {
+						stop = await session.continue()
+					}
 				}
 			} catch (err) {
 				if (isTerminatedError(err)) {
@@ -408,9 +420,12 @@ export interface DebugTraceCallsOptions {
 	timeoutMs?: number
 }
 
-/** Launch the program and run it to completion. Parse all output lines
- *  containing the __KIMCHI_TRACE__ sentinel, extracting structured call
- *  records (fn, args, result) from the JSON payload that follows the sentinel.
+/** Run the program to completion and return the call trace it PRINTED.
+ *  This is marker parsing, not instrumentation: the function never injects
+ *  tracing code — it only extracts records from lines the program itself
+ *  logged as `<TRACE_SENTINEL><json>` (fn, args, result). A program that
+ *  prints no markers returns {calls: [], truncated: false} and the tool
+ *  layer surfaces an explicit "not instrumented" message.
  *  Returns {calls, truncated} where truncated is true if >1000 calls were
  *  captured. */
 export async function debugTraceCalls(

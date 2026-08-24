@@ -154,8 +154,10 @@ export class DapSession {
 		this.launchCompleted = true
 		// Wait for the `initialized` event before sending setExceptionBreakpoints
 		// and configurationDone. DAP spec requires this ordering: initialized →
-		// setBreakpoints/setExceptionBreakpoints → configurationDone.
-		await Promise.race([this.client.initializedPromise, new Promise((resolve) => setTimeout(resolve, 5000))])
+		// setBreakpoints/setExceptionBreakpoints → configurationDone. A timeout
+		// here throws (per review) — a hung handshake must fail loudly rather
+		// than leave a half-configured session running.
+		await this.waitForInitialized()
 		// Send setExceptionBreakpoints and configurationDone. For adapters that
 		// defer responses (debugpy), use short timeouts and don't block.
 		if (exceptionFilters && exceptionFilters.length > 0) {
@@ -200,10 +202,30 @@ export class DapSession {
 	// Breakpoints
 	// ---------------------------------------------------------------------------
 
+	/** Wait for the adapter's `initialized` event — the DAP spec only permits
+	 *  configuration requests (setBreakpoints, setExceptionBreakpoints, etc.)
+	 *  AFTER `initialized` arrives. Throws on timeout so a hung handshake fails
+	 *  loudly instead of silently degrading the session. */
+	private async waitForInitialized(timeoutMs = 5000): Promise<void> {
+		const timedOut = Symbol("initialized-timeout")
+		const result = await Promise.race([
+			this.client.initializedPromise.then(() => "initialized" as const),
+			new Promise((resolve) => setTimeout(() => resolve(timedOut), timeoutMs)),
+		])
+		if (result !== timedOut) return
+		throw new Error(
+			`DAP adapter did not emit 'initialized' within ${timeoutMs}ms — the launch handshake cannot be completed`,
+		)
+	}
+
 	/** Set a breakpoint at `line` in `file`. DAP `setBreakpoints` replaces the
 	 *  full set for a source, so we resend all tracked breakpoints for that file.
 	 *  Returns the verified status of the breakpoint just set. */
 	async setBreakpoint(file: string, line: number, condition?: string): Promise<Breakpoint> {
+		// Configuration requests are only legal after the adapter emits
+		// `initialized`; slow adapters reject or silently ignore early
+		// breakpoints. After completeLaunch() this resolves instantly.
+		await this.waitForInitialized()
 		// Clear the current stopped state — setting a breakpoint means the caller
 		// wants to continue to the new breakpoint, not return the current stop.
 		this.client.stoppedEvent = null
@@ -347,6 +369,11 @@ export class DapSession {
 	get isLaunched(): boolean {
 		return this.launched
 	}
+	/** True when the debuggee is currently paused (a stop event has been
+	 *  captured and not yet consumed by a continue/step). */
+	get isStopped(): boolean {
+		return this.client.stoppedEvent != null
+	}
 	get isTerminated(): boolean {
 		return this.terminated
 	}
@@ -396,7 +423,14 @@ export class DapSession {
 		// Skip the await entirely if already completed to avoid yielding control
 		// (which could let a terminated event be processed before the stop waiter
 		// is registered — a race observed in session.test.ts).
-		if (!this.launchCompleted) await this.completeLaunch()
+		if (!this.launchCompleted) {
+			await this.completeLaunch()
+			// A breakpoint/exception stop may already have arrived during
+			// configurationDone — the debuggee was free-running while the handshake
+			// completed. Preserve and return that stop; clearing it and resuming
+			// would blow straight past the very breakpoint the caller just set.
+			if (this.client.stoppedEvent) return this.client.stoppedEvent
+		}
 
 		// Clear the current stopped state — we're about to resume execution.
 		this.client.stoppedEvent = null

@@ -159,8 +159,9 @@ Python debugpy supports full Python eval — any valid Python expression works:
 const DAP_TS_SKILL = `### TypeScript/JavaScript Debugging with js-debug
 
 **What you can debug:**
-- Any .ts or .js file: \`debug_state_at({file: "app.ts", line: N})\`
-- Node.js programs: \`debug_launch({program: "app.ts"})\`
+- JavaScript files (.js/.mjs/.cjs) run directly: \`debug_state_at({file: "app.js", line: N})\`
+- TypeScript files (.ts) need a runtime that executes them — plain Node fails on type syntax. Options: compile first (\`tsc\`/esbuild) and debug the .js output (source maps link breakpoints back to .ts), or install tsx and launch with \`node_modules/.bin/tsx\` as the program, or Node 22.8+ with --experimental-strip-types. Breakpoints set in .ts source work when source maps exist (default).
+- Node.js programs: \`debug_launch({program: "app.js"})\`
 - js-debug uses a nested session architecture (startDebugging reverse-request). The client automatically handles this — you don't need to do anything special.
 
 **Where to set breakpoints — think about WHERE the bug manifests:**

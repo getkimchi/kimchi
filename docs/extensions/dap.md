@@ -124,6 +124,11 @@ One-call tools that handle the full launch→breakpoint→inspect→terminate li
 
 `debug_last_error` enriches the exception from the adapter's `exceptionInfo` DAP request (real type/message, e.g. `ZeroDivisionError`, not the generic stopped-event text), falling back to the stop text when the adapter doesn't support it.
 
+## Agent Documentation
+
+- [Agent skill: debugging with DAP tools](dap-skill.md) — when to debug vs read, tool selection, launch→debug→inspect workflow, failure playbooks
+- Language references (launchConfig, source mapping, expression differences): [Go / dlv](dap-reference-go.md), [Python / debugpy](dap-reference-python.md), [TypeScript / js-debug](dap-reference-typescript.md), [Native / lldb-dap](dap-reference-native.md)
+
 ## Permissions (plan mode)
 
 All 16 debug tools are visible in plan mode (explore/plan phases), including effect-full operations (`debug_set_variable`, `debug_restart`, `debug_terminate`): debugging is treated as investigation, and launching/stopping a debuggee does not modify project files. Security note: a launched debuggee executes arbitrary code and `debug_set_variable` mutates runtime memory, so plan mode is not strictly read-only while these tools are enabled. This is a deliberate product decision (debugging helps the agent investigate the code it is asked to plan a fix for) — revisit the allowlist in `permissions/index.ts` (`PLAN_MODE_TOOLS`) if a strict read-only plan phase is ever required.
