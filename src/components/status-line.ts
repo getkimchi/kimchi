@@ -325,7 +325,18 @@ function joinSegments(segments: Segment[], sep: string): string {
  *
  *  This order is hardcoded and beats user pinning: a pinned segment is a
  *  display preference, not a survival guarantee. */
-const SHED_ORDER: SegmentId[] = ["lsp", "team", "tags", "phase", "usage", "agents", "credits", "budget", "ferment"]
+const SHED_ORDER: SegmentId[] = [
+	"dap",
+	"lsp",
+	"team",
+	"tags",
+	"phase",
+	"usage",
+	"agents",
+	"credits",
+	"budget",
+	"ferment",
+]
 
 /** Fit segments into `width` columns: run the compaction ladder, then shed
  *  whole segments in SHED_ORDER until the line fits. The input `segments`
