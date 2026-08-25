@@ -124,10 +124,11 @@ One-call tools that handle the full launch→breakpoint→inspect→terminate li
 
 `debug_last_error` enriches the exception from the adapter's `exceptionInfo` DAP request (real type/message, e.g. `ZeroDivisionError`, not the generic stopped-event text), falling back to the stop text when the adapter doesn't support it.
 
-## Agent Documentation
+## Bundled Agent Skill
 
-- [Agent skill: debugging with DAP tools](dap-skill.md) — when to debug vs read, tool selection, launch→debug→inspect workflow, failure playbooks
-- Language references (launchConfig, source mapping, expression differences): [Go / dlv](dap-reference-go.md), [Python / debugpy](dap-reference-python.md), [TypeScript / js-debug](dap-reference-typescript.md), [Native / lldb-dap](dap-reference-native.md)
+The `dap-debugging` skill ships with the harness: on extension activation it is deployed (write-only-if-different, mirroring extensions/improve) to `~/.config/kimchi/harness/skills/dap-debugging/`, a path in `ALWAYS_SHOWN_SKILL_PATHS`, so it is available in every project session — not just this repo. The skill covers the debugging loop, breakpoint placement, how to find the interesting state, tool selection, and failure playbooks; four language references (`references/{go,python,typescript,native}.md`) document launch config, source-mapping rules, and expression-syntax differences per adapter.
+
+Source of truth: `src/extensions/dap/skill/` — plain Markdown files, no codegen. In dev they are read from the source tree; binary builds stage them via `scripts/copy-resources.js` into `dist/share/kimchi/skills/dap-debugging` and `deployDapSkill` resolves them through `resolveAuxiliaryFilesDir` (the same mechanism ssh-proxy uses).
 
 ## Permissions (plan mode)
 

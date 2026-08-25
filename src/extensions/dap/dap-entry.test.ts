@@ -34,6 +34,11 @@ vi.mock("./adapters.js", () => ({
 	allAdapters: vi.fn(() => adapterState.active),
 }))
 
+// Skill deployment writes to the user's home dir — keep it out of unit tests.
+vi.mock("./deploy-skill.js", () => ({
+	deployDapSkill: vi.fn(),
+}))
+
 // =============================================================================
 // Mock DAP client — no subprocess; shutdownAll/clearAllSessions are stubs
 // =============================================================================

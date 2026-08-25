@@ -42,8 +42,3 @@ Full Python eval — any valid expression works:
   versions.
 - Mutating globals needs `globals()['key'] = value`.
 - Multi-line statements may not persist intermediate variables.
-
-## Preferred workflow
-
-`debug_eval` freely — Python has none of Go's expression limits. One-shot
-inspection via `debug_state_at({file, line, evaluated: ["len(data)", "obj.__dict__"]})`.

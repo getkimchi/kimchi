@@ -21,11 +21,10 @@ and either setting `JS_DEBUG_PATH` or dropping it where the resolver looks.
 ## Nested sessions (startDebugging)
 
 `pwa-node` sends a `startDebugging` reverse-request to spawn the child
-debug session. The client opens a second TCP connection to the same server,
-initializes it, launches, runs `configurationDone`, and routes all debug
-traffic to the child (`client.childClient`). If child setup fails the
-session enters an explicit failed state — no silent fallback to the parent
-connection. You don't need to do anything special; it is transparent.
+debug session. The client opens a second TCP connection to the same server
+and routes all debug traffic to it. If child setup fails the session enters
+an explicit failed state — no silent fallback to the parent connection.
+Nothing special to do; it is transparent.
 
 ## Source mapping
 

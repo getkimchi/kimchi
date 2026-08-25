@@ -18,9 +18,9 @@ Always merged over the `program` the tool passes:
   **and the Go stdlib** with `-gcflags="all=-N -l"` (optimization/inlining
   off). Budget 30–60 s; pass a larger `timeout_ms` on the first run.
   Subsequent launches reuse the build cache and are fast.
-- If breakpoints don't hit, code may be **inlined** — dlv's debug mode
-  disables inlining, but a user-built binary passed through another path
-  needs `go build -gcflags="all=-N -l"` explicitly.
+- If breakpoints don't hit, code may be **inlined** — a user-built binary
+  passed through another path needs `go build -gcflags="all=-N -l"`
+  explicitly.
 
 ## Source mapping
 
@@ -52,10 +52,3 @@ Always merged over the `program` the tool passes:
   field access (`a.b.c`).
 - Map iteration order is fixed but unsorted.
 - Unexported (lowercase) fields *are* readable, just not callable.
-
-## Preferred workflow
-
-1. `debug_state_at({file, line, evaluated: [...]})` for one-shot state.
-2. Interactive: `debug_launch` → `debug_set_breakpoint` → `debug_continue`
-   → `debug_locals` → `step_over` loop.
-3. `debug_watch_change({file, line, expression})` to find who mutates a value.

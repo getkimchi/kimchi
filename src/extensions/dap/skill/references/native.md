@@ -53,10 +53,3 @@ LLDB's expression evaluator parses the source language:
   addresses. Debug with the debug build.
 - `variables_reference` expiry is adapter-specific; expand structures at the
   current stop only.
-
-## Preferred workflow
-
-Build with debug info → `debug_state_at({file, line})` against the built
-binary (pass its path to the composed tool via launch args/session) →
-`debug_locals` for struct/field dumps → `debug_eval` for targeted
-expression probes.
