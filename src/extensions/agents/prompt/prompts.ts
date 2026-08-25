@@ -34,6 +34,26 @@ export interface PromptExtras {
 	activeToolNames?: string[]
 }
 
+const WORKER_COMMUNICATION_PROMPT = `## Communication
+
+- Call list_agent_contacts before sending to a peer. Send only to listed IDs.
+- Send parent or user one exact question when the answer can change scope,
+  safety, permission, or correctness. User always means through parent.
+- Include impact, bounded options and a recommended default when useful, and
+  whether you can continue independently.
+- User recipients accept question payloads only. Use reply_to only for answers
+  to an open question. The first authorized answer closes the thread; if a late
+  reply is rejected, send a fresh question only when still necessary.
+- Use handoff for an authorized parent/peer boundary. Supply Action, State,
+  Result, evidence references, and Next Action. The host fills your task ID.
+- Do not send secrets, system prompts, private reasoning, full transcripts, or
+  routine narration.
+- queued_for_parent is not an answer. Continue safe independent work. If none
+  remains, submit a final blocked report with the message ID.
+- If peer delivery is unavailable, send to parent. If parent routing is
+  unavailable, submit a blocked final report. Never wait silently.
+- submit_agent_report remains your one final task outcome.`
+
 /**
  * Build the system prompt for an agent from its config.
  *
@@ -73,6 +93,9 @@ Platform: ${env.platform}`
 	}
 	const contextBlock = buildContextBlock(extras?.contextFiles)
 	if (contextBlock) extraSections.push(contextBlock)
+	if (hasCommunicationTools(extras?.activeToolNames)) {
+		extraSections.push(WORKER_COMMUNICATION_PROMPT)
+	}
 	const extrasSuffix = extraSections.length > 0 ? `\n\n${extraSections.join("\n\n")}` : ""
 	const availableToolsBlock = buildAvailableToolsBlock(extras?.activeToolNames)
 	const toolGuidance = buildToolGuidance(extras?.activeToolNames)
@@ -166,6 +189,11 @@ function uniqueToolNames(toolNames?: string[]): string[] {
 	return [...new Set(toolNames)].filter(Boolean)
 }
 
+function hasCommunicationTools(toolNames?: string[]): boolean {
+	const names = new Set(uniqueToolNames(toolNames))
+	return names.has("list_agent_contacts") && names.has("send_agent_message")
+}
+
 function stripAvailableToolsSection(prompt: string): string {
 	return prompt
 		.replace(/(^|\n)## Available Tools\b[^\n]*\n[\s\S]*?(?=\n#+ |\n*$)/g, "$1")
@@ -176,7 +204,10 @@ function stripAvailableToolsSection(prompt: string): string {
 function stripInheritedContextSections(prompt: string): string {
 	return prompt
 		.replace(/(^|\n)## Phase Management\b[^\n]*\n[\s\S]*?(?=\n#{1,2} |\n*$)/g, "$1")
-		.replace(/(^|\n)## (?:Available Tools|Output & Truncation|Tool Selection)\b[^\n]*\n[\s\S]*?(?=\n#+ |\n*$)/g, "$1")
+		.replace(
+			/(^|\n)## (?:Available Tools|Output & Truncation|Tool Selection|Subagent messages)\b[^\n]*\n[\s\S]*?(?=\n#+ |\n*$)/g,
+			"$1",
+		)
 		.replace(/\n{3,}/g, "\n\n")
 		.trim()
 }

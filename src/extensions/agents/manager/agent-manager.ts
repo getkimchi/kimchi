@@ -1,7 +1,23 @@
 import { randomUUID } from "node:crypto"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { AgentContact, AgentContactList, AgentMessageCapability } from "../message-tool.js"
+import {
+	AGENT_MESSAGE_LIMITS,
+	type AgentMessage,
+	type AgentMessageInput,
+	type AgentMessageReceipt,
+	type AgentMessageReservation,
+	type AgentMessageThread,
+	createAgentMessage,
+	createChildIdempotencyKey,
+	createParentReplyIdempotencyKey,
+	findOldestClosedThread,
+	validateAgentMessageInput,
+} from "../messages.js"
 import type {
+	AgentCommunicationMode,
+	AgentCommunicationScope,
 	AgentOutcome,
 	AgentRecord,
 	AgentResumeAttempt,
@@ -44,6 +60,9 @@ interface SpawnArgs {
 interface SpawnOptions {
 	description: string
 	visibility?: AgentVisibility
+	communication?: AgentCommunicationMode
+	/** Parent session ID, supplied by the host Agent tool when communication is enabled. */
+	rootSessionId?: string
 	model?: Model<Api>
 	maxTurns?: number
 	isolated?: boolean
@@ -70,6 +89,61 @@ interface SpawnOptions {
 	onAssistantUsage?: (usage: LifetimeUsage) => void
 	onCompaction?: (info: CompactionInfo) => void
 }
+
+interface MessageReceiptEntry {
+	agentId: string
+	promise: Promise<AgentMessageReceipt>
+}
+
+interface PendingMessageUsage {
+	count: number
+	bytes: number
+}
+
+interface PendingAgentMessage {
+	messageId: string
+	threadId: string
+	sourceAgentId: string
+	sourceTaskId: string
+	targetAgentId: string
+	rootSessionId: string
+	kind: AgentMessage["payload"]["kind"]
+	prompt: string
+	bytes: number
+	terminalized?: boolean
+}
+
+export interface AgentMessageBrokerStats {
+	receipts: number
+	threads: number
+	pendingMessages: number
+	pendingPayloadBytes: number
+}
+
+export type AgentParentNotification =
+	| { kind: "message"; message: AgentMessage }
+	| {
+			kind: "delivery_failure"
+			messageId: string
+			sourceAgentId: string
+			targetAgentId: string
+			reason: string
+			escapeHatch: string
+	  }
+
+export interface AgentMessageEvent {
+	messageId: string
+	threadId: string
+	sourceAgentId: string
+	targetType: AgentMessage["recipient"]["type"]
+	targetAgentId?: string
+	kind: AgentMessage["payload"]["kind"]
+	state: AgentMessageReceipt["status"]
+	bytes: number
+	sourceTaskId: string
+}
+
+export type AgentParentBridge = (notification: AgentParentNotification, rootSessionId: string) => boolean
 
 function formatTaskRef(ref: AgentTaskRef): string {
 	return JSON.stringify(ref)
@@ -121,6 +195,20 @@ export class AgentManager {
 	private agents = new Map<string, AgentRecord>()
 	private runtimeCleanups = new WeakMap<AgentRecord, () => void>()
 	private activeResumePromises = new WeakMap<AgentRecord, Promise<unknown>>()
+	private pendingDrainPromises = new WeakMap<AgentRecord, Promise<void>>()
+	private messageReceipts = new Map<string, MessageReceiptEntry>()
+	private receiptKeysByAgent = new Map<string, Set<string>>()
+	private messageAttemptCounts = new Map<string, Map<number, number>>()
+	private messageThreads = new Map<string, AgentMessageThread>()
+	private threadIdsByAgent = new Map<string, Set<string>>()
+	private pendingMessageUsage = new Map<string, PendingMessageUsage>()
+	private pendingMessages = new Map<string, PendingAgentMessage[]>()
+	private deliveryFailureKeys = new Map<string, string>()
+	private communicationRootSessionId?: string
+	private parentBridge?: AgentParentBridge
+	private userContactResolver?: (rootSessionId: string) => AgentContact
+	private onMessageEvent?: (event: AgentMessageEvent) => void
+	private communicationDisabled = false
 	private cleanupInterval: ReturnType<typeof setInterval>
 	private onComplete?: OnAgentComplete
 	private onStart?: OnAgentStart
@@ -155,12 +243,29 @@ export class AgentManager {
 	spawn(pi: ExtensionAPI, ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): string {
 		const effectiveOptions = applyLinkedWorkerLimits(options)
 		const id = randomUUID().slice(0, 17)
+		const communication = effectiveOptions.visibility === "system" ? undefined : effectiveOptions.communication
+		const rootSessionId = effectiveOptions.rootSessionId?.trim()
+		if (communication && effectiveOptions.isolated) {
+			throw new Error("Communication requires extension tools and cannot be used with isolated agents.")
+		}
+		if (communication && !rootSessionId) {
+			throw new Error("Communication requires a host-owned root session ID.")
+		}
 		const abortController = new AbortController()
 		const record: AgentRecord = {
 			id,
 			type,
 			description: effectiveOptions.description,
 			visibility: effectiveOptions.visibility ?? "user",
+			communication,
+			communicationScope:
+				communication && rootSessionId
+					? {
+							rootSessionId,
+							sourceAgentId: id,
+							taskId: `agent-task:${id}`,
+						}
+					: undefined,
 			status: effectiveOptions.isBackground ? "queued" : "running",
 			modelId: (effectiveOptions.model as { id?: string } | undefined)?.id,
 			toolUses: 0,
@@ -245,6 +350,7 @@ export class AgentManager {
 						},
 					}
 				: undefined,
+			agentMessage: this.createMessageCapability(record),
 			hardTurnLimit: record.taskRef?.kind === "ferment_step",
 			isolated: options.isolated,
 			inheritContext: options.inheritContext,
@@ -281,19 +387,22 @@ export class AgentManager {
 					}
 					record.pendingSteers = undefined
 				}
+				const drain = this.drainPendingMessages(record, session)
+				this.pendingDrainPromises.set(record, drain)
 				options.onSessionCreated?.(session)
 			},
 			onSystemPrompt: (prompt) => {
 				record.systemPrompt = prompt
 			},
 		})
-			.then(({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns }) => {
+			.then(async ({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns }) => {
+				await this.pendingDrainPromises.get(record)
+				record.session = session
 				if (record.status !== "stopped") {
-					record.status = aborted ? "aborted" : steered ? "steered" : "completed"
+					this.transitionToTerminalRecord(record, aborted ? "aborted" : steered ? "steered" : "completed")
 				}
 				record.abortReason = abortReason
 				record.result = responseText
-				record.session = session
 				record.lastTurnCount = turnsUsed
 				// Preserve the effective, normalized turn cap returned by the runner.
 				record.maxTurns = maxTurns ?? options.maxTurns
@@ -307,9 +416,10 @@ export class AgentManager {
 				}
 				return responseText
 			})
-			.catch((err) => {
+			.catch(async (err) => {
+				await this.pendingDrainPromises.get(record)
 				if (record.status !== "stopped") {
-					record.status = "error"
+					this.transitionToTerminalRecord(record, "error")
 					record.error = err instanceof Error ? err.message : String(err)
 				}
 				record.completedAt ??= Date.now()
@@ -324,6 +434,7 @@ export class AgentManager {
 			})
 			.finally(() => {
 				detach()
+				this.pendingDrainPromises.delete(record)
 				this.cleanupRecordRuntime(record)
 				record.promise = undefined
 			})
@@ -347,7 +458,7 @@ export class AgentManager {
 				if (this.runningBackground > beforeRunningBackground) {
 					this.runningBackground--
 				}
-				record.status = "error"
+				this.transitionToTerminalRecord(record, "error")
 				record.error = err instanceof Error ? err.message : String(err)
 				record.completedAt = Date.now()
 				this.onComplete?.(record)
@@ -481,7 +592,7 @@ export class AgentManager {
 		try {
 			const result = await resumePromise
 			if ((record.status as AgentRecord["status"]) !== "stopped") {
-				record.status = result.aborted ? "aborted" : result.steered ? "steered" : "completed"
+				this.transitionToTerminalRecord(record, result.aborted ? "aborted" : result.steered ? "steered" : "completed")
 			}
 			record.abortReason = result.abortReason
 			record.result = result.responseText
@@ -490,7 +601,7 @@ export class AgentManager {
 			record.completedAt = Date.now()
 		} catch (err) {
 			if ((record.status as AgentRecord["status"]) !== "stopped") {
-				record.status = "error"
+				this.transitionToTerminalRecord(record, "error")
 				record.error = err instanceof Error ? err.message : String(err)
 			}
 			record.completedAt = Date.now()
@@ -501,7 +612,7 @@ export class AgentManager {
 		}
 		attempt.completedAt = record.completedAt
 		attempt.outcome = classifyAgentOutcome(record)
-		attempt.reason = record.status === "error" ? "error" : record.abortReason
+		attempt.reason = record.error ? "error" : record.abortReason
 		record.latestOutcome = buildAgentOutcome(record)
 
 		return record
@@ -553,6 +664,870 @@ export class AgentManager {
 		return this.agents.get(id)
 	}
 
+	getCommunicationScope(agentId: string): AgentCommunicationScope | undefined {
+		const scope = this.agents.get(agentId)?.communicationScope
+		return scope ? { ...scope } : undefined
+	}
+
+	bindCommunicationRoot(rootSessionId: string): boolean {
+		const root = rootSessionId.trim()
+		if (
+			!root ||
+			this.communicationDisabled ||
+			(this.communicationRootSessionId && this.communicationRootSessionId !== root)
+		)
+			return false
+		this.communicationRootSessionId = root
+		this.communicationDisabled = false
+		return true
+	}
+
+	registerParentBridge(rootSessionId: string, bridge: AgentParentBridge): boolean {
+		if (!this.bindCommunicationRoot(rootSessionId)) return false
+		this.parentBridge = bridge
+		return true
+	}
+
+	setUserContactResolver(rootSessionId: string, resolver: (rootSessionId: string) => AgentContact): boolean {
+		if (!this.bindCommunicationRoot(rootSessionId)) return false
+		this.userContactResolver = resolver
+		return true
+	}
+
+	setMessageEventHandler(handler: ((event: AgentMessageEvent) => void) | undefined): void {
+		this.onMessageEvent = handler
+	}
+
+	disableCommunication(rootSessionId?: string): boolean {
+		if (rootSessionId && this.communicationRootSessionId !== rootSessionId) return false
+		this.parentBridge = undefined
+		this.userContactResolver = undefined
+		this.communicationDisabled = true
+		this.terminalizeAllPendingMessages("shutdown", false)
+		this.clearMessageBroker()
+		return true
+	}
+
+	getCommunicationContacts(agentId: string): AgentContactList {
+		const source = this.agents.get(agentId)
+		const root = source?.communicationScope?.rootSessionId
+		const active = Boolean(
+			source?.communication && root && !this.communicationDisabled && this.communicationRootSessionId === root,
+		)
+		const parent: AgentContact =
+			active && this.parentBridge
+				? { reachable: true, route: "parent" }
+				: { reachable: false, route: "unavailable", reason: "The parent communication route is unavailable." }
+		const user: AgentContact =
+			active && root !== undefined && this.userContactResolver
+				? this.userContactResolver(root)
+				: { reachable: false, route: "unavailable", reason: "The user route is unavailable." }
+		const peers = active
+			? this.listCommunicationPeers(agentId).map((record) => ({
+					agent_id: record.id,
+					task_id: record.communicationScope?.taskId,
+					persona: record.type,
+					description: record.description,
+					status: record.session ? record.status : "initializing",
+					reachable: true,
+					route: "parent" as const,
+				}))
+			: []
+		return { parent, user_via_parent: user, peers }
+	}
+
+	private createMessageCapability(record: AgentRecord): AgentMessageCapability | undefined {
+		const scope = record.communicationScope
+		if (!record.communication || !scope || record.visibility === "system") return undefined
+		const sourceAgentId = record.id
+		const rootSessionId = scope.rootSessionId
+		const taskId = scope.taskId
+		return {
+			listContacts: () => this.getCommunicationContacts(sourceAgentId),
+			sendMessage: (toolCallId, input) =>
+				this.sendChildMessage(sourceAgentId, rootSessionId, taskId, toolCallId, input),
+		}
+	}
+
+	private sendChildMessage(
+		sourceAgentId: string,
+		rootSessionId: string,
+		taskId: string,
+		toolCallId: string,
+		input: AgentMessageInput,
+	): Promise<AgentMessageReceipt> {
+		const validated = validateAgentMessageInput(input)
+		if (!validated.valid) return Promise.resolve({ status: "rejected", reason: validated.reason })
+		const { recipient, payload } = validated.value
+		if (recipient.type === "agent") {
+			if (payload.kind === "answer") {
+				const replyTo = "reply_to" in validated.value ? validated.value.reply_to : undefined
+				if (!replyTo) return Promise.resolve({ status: "rejected", reason: "Answers require reply_to." })
+				return this.reservePeerReply(
+					sourceAgentId,
+					replyTo,
+					recipient.agentId,
+					toolCallId,
+					validated.bytes,
+					(reservation) => {
+						const thread = this.messageThreads.get(replyTo)
+						const target = this.getAuthorizedPeer(sourceAgentId, recipient.agentId, rootSessionId)
+						if (!thread || !target) return { status: "unavailable", reason: "The peer route is unavailable." }
+						const message = createAgentMessage(reservation, randomUUID(), recipient, payload, {
+							replyTo,
+							threadId: thread.id,
+						})
+						return this.deliverPeerMessage(message, target, validated.bytes)
+					},
+				)
+			}
+			return this.reserveChildMessage(sourceAgentId, toolCallId, validated.bytes, (reservation) => {
+				const source = this.agents.get(sourceAgentId)
+				if (!this.hasActiveCommunicationSource(source, rootSessionId, taskId)) {
+					return { status: "unavailable", reason: "The parent communication route is unavailable." }
+				}
+				const target = this.getAuthorizedPeer(sourceAgentId, recipient.agentId, rootSessionId)
+				if (!target) return { status: "unavailable", reason: "The peer route is unavailable." }
+				const message = createAgentMessage(reservation, randomUUID(), recipient, payload)
+				return this.deliverPeerMessage(message, target, validated.bytes)
+			})
+		}
+		return this.reserveChildMessage(sourceAgentId, toolCallId, validated.bytes, (reservation) => {
+			const source = this.agents.get(sourceAgentId)
+			if (!this.hasActiveCommunicationSource(source, rootSessionId, taskId)) {
+				return { status: "unavailable", reason: "The parent communication route is unavailable." }
+			}
+			if (recipient.type === "user" && payload.kind !== "question") {
+				return { status: "rejected", reason: "The user route accepts questions only." }
+			}
+			const bridge = this.parentBridge
+			if (!bridge) return { status: "unavailable", reason: "The parent communication route is unavailable." }
+			const message = createAgentMessage(
+				reservation,
+				randomUUID(),
+				recipient,
+				payload,
+				"reply_to" in validated.value ? { replyTo: validated.value.reply_to } : undefined,
+			)
+			const thread = this.registerMessageThread(message)
+			if (!thread.accepted) return { status: "unavailable", reason: thread.reason }
+			if (!bridge({ kind: "message", message }, rootSessionId)) {
+				this.removeMessageThread(message.threadId)
+				return { status: "unavailable", reason: "The parent communication route is unavailable." }
+			}
+			const receipt: AgentMessageReceipt = {
+				messageId: message.id,
+				threadId: message.threadId,
+				status: "queued_for_parent",
+			}
+			this.emitMessageEvent(message, receipt.status, validated.bytes)
+			return receipt
+		})
+	}
+
+	private hasActiveCommunicationSource(
+		source: AgentRecord | undefined,
+		rootSessionId: string,
+		taskId: string,
+	): boolean {
+		return Boolean(
+			source?.communicationScope &&
+				source.communicationScope.rootSessionId === rootSessionId &&
+				source.communicationScope.taskId === taskId &&
+				!this.communicationDisabled &&
+				this.communicationRootSessionId === rootSessionId,
+		)
+	}
+
+	private getAuthorizedPeer(
+		sourceAgentId: string,
+		targetAgentId: string,
+		rootSessionId: string,
+	): AgentRecord | undefined {
+		if (this.communicationDisabled || this.communicationRootSessionId !== rootSessionId) return undefined
+		return this.listCommunicationPeers(sourceAgentId).find((record) => record.id === targetAgentId)
+	}
+
+	private deliverPeerMessage(message: AgentMessage, target: AgentRecord, bytes: number): Promise<AgentMessageReceipt> {
+		const delivery = this.createPendingDelivery(message, target.id, bytes)
+		const needsThread = message.payload.kind !== "answer"
+		if (!target.session) {
+			if (!this.tryReservePendingMessage(target.id, bytes)) {
+				return Promise.resolve({
+					status: "saturated",
+					reason: "Pending peer message storage is full.",
+					escapeHatch: "Send the message to the parent or submit a final report.",
+				})
+			}
+			if (needsThread) {
+				const thread = this.registerMessageThread(message)
+				if (!thread.accepted) {
+					this.releasePendingMessage(target.id, bytes)
+					return Promise.resolve({ status: "unavailable", reason: thread.reason })
+				}
+			}
+			this.addPendingMessage(delivery)
+			const receipt: AgentMessageReceipt = {
+				messageId: message.id,
+				threadId: message.threadId,
+				status: "queued_before_session",
+			}
+			this.emitMessageEvent(message, receipt.status, bytes)
+			return Promise.resolve(receipt)
+		}
+		if (needsThread) {
+			const thread = this.registerMessageThread(message)
+			if (!thread.accepted) return Promise.resolve({ status: "unavailable", reason: thread.reason })
+		}
+		return target.session.steer(delivery.prompt).then(
+			() => {
+				const receipt: AgentMessageReceipt = {
+					messageId: message.id,
+					threadId: message.threadId,
+					status: "queued_for_running_session",
+				}
+				this.emitMessageEvent(message, receipt.status, bytes)
+				return receipt
+			},
+			() => {
+				this.failPendingMessage(delivery, "steer_failed", true, false)
+				return { status: "unavailable", reason: "The peer route is unavailable." }
+			},
+		)
+	}
+
+	private createPendingDelivery(message: AgentMessage, targetAgentId: string, bytes: number): PendingAgentMessage {
+		return {
+			messageId: message.id,
+			threadId: message.threadId,
+			sourceAgentId: message.sourceAgentId,
+			sourceTaskId: message.sourceTaskId,
+			targetAgentId,
+			rootSessionId: message.rootSessionId,
+			kind: message.payload.kind,
+			prompt: `Host-mediated message from peer ${message.sourceAgentId}${message.replyTo ? ` replying to ${message.replyTo}` : ""}:\n${JSON.stringify(message.payload)}`,
+			bytes,
+		}
+	}
+
+	private addPendingMessage(message: PendingAgentMessage): void {
+		const messages = this.pendingMessages.get(message.targetAgentId) ?? []
+		messages.push(message)
+		this.pendingMessages.set(message.targetAgentId, messages)
+	}
+
+	private emitMessageEvent(message: AgentMessage, state: AgentMessageReceipt["status"], bytes: number): void {
+		this.onMessageEvent?.({
+			messageId: message.id,
+			threadId: message.threadId,
+			sourceAgentId: message.sourceAgentId,
+			targetType: message.recipient.type,
+			targetAgentId: message.recipient.type === "agent" ? message.recipient.agentId : undefined,
+			kind: message.payload.kind,
+			state,
+			bytes,
+			sourceTaskId: message.sourceTaskId,
+		})
+	}
+
+	private emitPendingMessageEvent(message: PendingAgentMessage, state: AgentMessageReceipt["status"]): void {
+		this.onMessageEvent?.({
+			messageId: message.messageId,
+			threadId: message.threadId,
+			sourceAgentId: message.sourceAgentId,
+			targetType: "agent",
+			targetAgentId: message.targetAgentId,
+			kind: message.kind,
+			state,
+			bytes: message.bytes,
+			sourceTaskId: message.sourceTaskId,
+		})
+	}
+
+	/** Returns only live peers authorized by the host-created batch group. */
+	listCommunicationPeers(agentId: string): AgentRecord[] {
+		const source = this.agents.get(agentId)
+		if (!source?.communicationScope || source.communication !== "group" || !source.groupId) return []
+		return [...this.agents.values()].filter(
+			(target) =>
+				target.id !== source.id &&
+				target.status !== "completed" &&
+				target.status !== "steered" &&
+				target.status !== "aborted" &&
+				target.status !== "stopped" &&
+				target.status !== "error" &&
+				target.communication === "group" &&
+				target.communicationScope?.rootSessionId === source.communicationScope?.rootSessionId &&
+				target.groupId === source.groupId,
+		)
+	}
+
+	isAuthorizedCommunicationPeer(sourceAgentId: string, targetAgentId: string): boolean {
+		return this.listCommunicationPeers(sourceAgentId).some((record) => record.id === targetAgentId)
+	}
+
+	/**
+	 * Atomically reserves a child tool-call key before starting the operation.
+	 * Callers receive the same in-flight receipt for repeated executions.
+	 */
+	reserveChildMessage(
+		agentId: string,
+		toolCallId: string,
+		payloadBytes: number,
+		operation: (reservation: AgentMessageReservation) => AgentMessageReceipt | Promise<AgentMessageReceipt>,
+	): Promise<AgentMessageReceipt> {
+		const record = this.agents.get(agentId)
+		const scope = record?.communicationScope
+		if (!record || !scope) {
+			return Promise.resolve({
+				status: "unavailable",
+				reason: "Agent communication is not enabled for this host-owned record.",
+			})
+		}
+
+		const sourceAttemptId = record.currentAttemptId
+		const idempotencyKey = createChildIdempotencyKey(scope, sourceAttemptId, toolCallId)
+		const cached = this.messageReceipts.get(idempotencyKey)
+		if (cached) return cached.promise
+		if (payloadBytes > AGENT_MESSAGE_LIMITS.maxPayloadBytes) {
+			return Promise.resolve({
+				status: "rejected",
+				reason: `Message payload exceeds ${AGENT_MESSAGE_LIMITS.maxPayloadBytes} bytes.`,
+			})
+		}
+
+		const attempts = this.messageAttemptCounts.get(agentId) ?? new Map<number, number>()
+		if ((attempts.get(sourceAttemptId) ?? 0) >= AGENT_MESSAGE_LIMITS.maxMessagesPerAttempt) {
+			return Promise.resolve({
+				status: "saturated",
+				reason: `Agent attempt reached the ${AGENT_MESSAGE_LIMITS.maxMessagesPerAttempt}-message limit.`,
+				escapeHatch: "Continue safe work or submit a final report.",
+			})
+		}
+		if (!this.canStoreReceipt(agentId)) {
+			return Promise.resolve({
+				status: "saturated",
+				reason: "Message receipt storage is full.",
+				escapeHatch: "Continue safe work or submit a final report.",
+			})
+		}
+
+		attempts.set(sourceAttemptId, (attempts.get(sourceAttemptId) ?? 0) + 1)
+		this.messageAttemptCounts.set(agentId, attempts)
+		return this.reserveReceipt(
+			agentId,
+			idempotencyKey,
+			{
+				idempotencyKey,
+				scope: { ...scope },
+				sourceAttemptId,
+			},
+			operation,
+		)
+	}
+
+	reserveParentReply(
+		messageId: string,
+		toolCallId: string,
+		operation: () => AgentMessageReceipt | Promise<AgentMessageReceipt>,
+	): Promise<AgentMessageReceipt> {
+		const thread = this.messageThreads.get(messageId)
+		if (!thread) return Promise.resolve({ status: "rejected", reason: "Unknown message thread." })
+		const idempotencyKey = createParentReplyIdempotencyKey(thread.rootSessionId, messageId, toolCallId)
+		const cached = this.messageReceipts.get(idempotencyKey)
+		if (cached) return cached.promise
+		if (thread.recipient.type === "agent") {
+			return Promise.resolve({ status: "rejected", reason: "Parent is not the expected responder." })
+		}
+		if (thread.state !== "open") return Promise.resolve({ status: "rejected", reason: "thread_closed" })
+		if (thread.messageCount >= AGENT_MESSAGE_LIMITS.maxMessagesPerThread) {
+			return Promise.resolve({ status: "saturated", reason: "Message thread reached its message limit." })
+		}
+		if (!this.canStoreReceipt(thread.sourceAgentId)) {
+			return Promise.resolve({
+				status: "saturated",
+				reason: "Message receipt storage is full.",
+				escapeHatch: "Use the agent's final report for remaining state.",
+			})
+		}
+		const scope = this.agents.get(thread.sourceAgentId)?.communicationScope
+		if (!scope) return Promise.resolve({ status: "unavailable", reason: "The source agent is no longer available." })
+		return this.reserveReceipt(
+			thread.sourceAgentId,
+			idempotencyKey,
+			{
+				idempotencyKey,
+				scope: { ...scope },
+				sourceAttemptId: this.agents.get(thread.sourceAgentId)?.currentAttemptId ?? 0,
+			},
+			() => {
+				const closed = this.closeThreadForAnswer(thread, "parent_answer")
+				if (!closed) return { status: "rejected", reason: "thread_closed" }
+				return operation()
+			},
+		)
+	}
+
+	async replyToAgentMessage(
+		rootSessionId: string,
+		messageId: string,
+		toolCallId: string,
+		answer: string,
+		options: { maxTurns: number; maxDuration: number; tokenBudget?: number },
+		signal?: AbortSignal,
+	): Promise<AgentMessageReceipt> {
+		if (signal?.aborted) return { status: "rejected", reason: "Message reply was aborted." }
+		if (
+			!Number.isInteger(options.maxTurns) ||
+			options.maxTurns <= 0 ||
+			!Number.isFinite(options.maxDuration) ||
+			options.maxDuration <= 0 ||
+			(options.tokenBudget != null &&
+				(!Number.isInteger(options.tokenBudget) || options.tokenBudget < MIN_TOKEN_BUDGET))
+		) {
+			return {
+				status: "rejected",
+				reason: `max_turns and max_duration must be positive; token_budget must be at least ${MIN_TOKEN_BUDGET}.`,
+			}
+		}
+		const answerBytes = Buffer.byteLength(answer, "utf8")
+		if (answerBytes > AGENT_MESSAGE_LIMITS.maxPayloadBytes) {
+			return {
+				status: "rejected",
+				reason: `Message payload exceeds ${AGENT_MESSAGE_LIMITS.maxPayloadBytes} bytes.`,
+			}
+		}
+		if (this.communicationDisabled || this.communicationRootSessionId !== rootSessionId) {
+			return { status: "rejected", reason: "This message reply is not authorized for the current root." }
+		}
+		const thread = this.messageThreads.get(messageId)
+		if (!thread || thread.rootSessionId !== rootSessionId) {
+			return { status: "rejected", reason: "This message reply is not authorized for the current root." }
+		}
+		return this.reserveParentReply(messageId, toolCallId, async () => {
+			const target = this.agents.get(thread.sourceAgentId)
+			if (
+				!target?.communicationScope ||
+				target.communicationScope.rootSessionId !== rootSessionId ||
+				target.communicationScope.taskId !== thread.sourceTaskId
+			) {
+				return { status: "unavailable", reason: "The source agent is no longer available." }
+			}
+			const delivery: PendingAgentMessage = {
+				messageId,
+				threadId: thread.id,
+				sourceAgentId: target.id,
+				sourceTaskId: thread.sourceTaskId,
+				targetAgentId: target.id,
+				rootSessionId,
+				kind: "answer",
+				prompt: `Host-mediated answer to your message ${messageId}:\n${answer}`,
+				bytes: answerBytes,
+			}
+			if (target.agentReport?.attempt_id === target.currentAttemptId && target.agentReport.status === "completed") {
+				return {
+					status: "unavailable",
+					reason:
+						this.getResumeBlockReason(target.id, "continuation") ?? "The source agent already completed its report.",
+				}
+			}
+			if (target.status === "running" || target.status === "queued") {
+				if (!target.session) {
+					if (!this.tryReservePendingMessage(target.id, delivery.bytes)) {
+						return {
+							status: "saturated",
+							reason: "Pending reply storage is full.",
+							escapeHatch: "Use the agent's final report for remaining state.",
+						}
+					}
+					this.addPendingMessage(delivery)
+					this.emitPendingMessageEvent(delivery, "queued_before_session")
+					return { messageId, threadId: thread.id, status: "queued_before_session" }
+				}
+				try {
+					await target.session.steer(delivery.prompt)
+					this.emitPendingMessageEvent(delivery, "queued_for_running_session")
+					return { messageId, threadId: thread.id, status: "queued_for_running_session" }
+				} catch {
+					this.failPendingMessage(delivery, "steer_failed", true, false)
+					return { status: "unavailable", reason: "The source agent is no longer reachable." }
+				}
+			}
+			if (target.status === "stopped") {
+				return { status: "unavailable", reason: "Stopped agents cannot be resumed by message reply." }
+			}
+			if (
+				target.status !== "completed" &&
+				target.status !== "steered" &&
+				target.status !== "aborted" &&
+				target.status !== "error"
+			) {
+				return { status: "unavailable", reason: "The source agent is no longer reachable." }
+			}
+			const blockReason = this.getResumeBlockReason(target.id, "continuation")
+			if (blockReason) return { status: "unavailable", reason: blockReason }
+			const resumed = await this.resume(target.id, delivery.prompt, {
+				signal,
+				maxTurns: options.maxTurns,
+				maxDuration: options.maxDuration,
+				tokenBudget: options.tokenBudget,
+				purpose: "continuation",
+			})
+			return {
+				messageId,
+				threadId: thread.id,
+				status: "resume_attempt_completed",
+				agentOutcome: resumed?.latestOutcome,
+			}
+		})
+	}
+
+	/**
+	 * Reserves a host-authorized peer answer. The caller still performs no transport here;
+	 * this contract only binds the responder and target before the first await.
+	 */
+	reservePeerReply(
+		responderAgentId: string,
+		messageId: string,
+		targetAgentId: string,
+		toolCallId: string,
+		payloadBytes: number,
+		operation: (reservation: AgentMessageReservation) => AgentMessageReceipt | Promise<AgentMessageReceipt>,
+	): Promise<AgentMessageReceipt> {
+		const responder = this.agents.get(responderAgentId)
+		const scope = responder?.communicationScope
+		if (!responder || !scope) {
+			return Promise.resolve({ status: "rejected", reason: "Peer reply is not authorized." })
+		}
+		if (!this.isStaticAuthorizedCommunicationPeer(responderAgentId, targetAgentId, scope.rootSessionId)) {
+			return Promise.resolve({ status: "rejected", reason: "Peer reply is not authorized." })
+		}
+		const sourceAttemptId = responder.currentAttemptId
+		const idempotencyKey = createChildIdempotencyKey(scope, sourceAttemptId, toolCallId)
+		const cached = this.messageReceipts.get(idempotencyKey)
+		if (cached) return cached.promise
+
+		const thread = this.messageThreads.get(messageId)
+		if (!thread) return Promise.resolve({ status: "rejected", reason: "Peer reply is not authorized." })
+		if (
+			thread.recipient.type !== "agent" ||
+			thread.recipient.agentId !== responderAgentId ||
+			thread.sourceAgentId !== targetAgentId ||
+			scope.rootSessionId !== thread.rootSessionId
+		) {
+			return Promise.resolve({ status: "rejected", reason: "Peer reply is not authorized." })
+		}
+		if (thread.state !== "open") return Promise.resolve({ status: "rejected", reason: "thread_closed" })
+		if (payloadBytes > AGENT_MESSAGE_LIMITS.maxPayloadBytes) {
+			return Promise.resolve({
+				status: "rejected",
+				reason: `Message payload exceeds ${AGENT_MESSAGE_LIMITS.maxPayloadBytes} bytes.`,
+			})
+		}
+		if (thread.messageCount >= AGENT_MESSAGE_LIMITS.maxMessagesPerThread) {
+			return Promise.resolve({ status: "saturated", reason: "Message thread reached its message limit." })
+		}
+
+		const attempts = this.messageAttemptCounts.get(responderAgentId) ?? new Map<number, number>()
+		if ((attempts.get(sourceAttemptId) ?? 0) >= AGENT_MESSAGE_LIMITS.maxMessagesPerAttempt) {
+			return Promise.resolve({
+				status: "saturated",
+				reason: `Agent attempt reached the ${AGENT_MESSAGE_LIMITS.maxMessagesPerAttempt}-message limit.`,
+				escapeHatch: "Send the question to the parent or submit a final report.",
+			})
+		}
+		if (!this.canStoreReceipt(responderAgentId)) {
+			return Promise.resolve({
+				status: "saturated",
+				reason: "Message receipt storage is full.",
+				escapeHatch: "Send the question to the parent or submit a final report.",
+			})
+		}
+
+		attempts.set(sourceAttemptId, (attempts.get(sourceAttemptId) ?? 0) + 1)
+		this.messageAttemptCounts.set(responderAgentId, attempts)
+		return this.reserveReceipt(
+			responderAgentId,
+			idempotencyKey,
+			{ idempotencyKey, scope: { ...scope }, sourceAttemptId },
+			(reservation) => {
+				const closed = this.closeThreadForAnswer(thread, "peer_answer")
+				if (!closed) return { status: "rejected", reason: "thread_closed" }
+				return operation(reservation)
+			},
+		)
+	}
+
+	private isStaticAuthorizedCommunicationPeer(
+		sourceAgentId: string,
+		targetAgentId: string,
+		rootSessionId: string,
+	): boolean {
+		const source = this.agents.get(sourceAgentId)
+		const target = this.agents.get(targetAgentId)
+		return Boolean(
+			!this.communicationDisabled &&
+				this.communicationRootSessionId === rootSessionId &&
+				source?.communication === "group" &&
+				source.communicationScope?.rootSessionId === rootSessionId &&
+				source.groupId &&
+				target?.communication === "group" &&
+				target.communicationScope?.rootSessionId === rootSessionId &&
+				target.groupId === source.groupId,
+		)
+	}
+
+	/** Stores only body-free thread metadata after a route has accepted a message. */
+	registerMessageThread(message: AgentMessage): { accepted: true } | { accepted: false; reason: string } {
+		const source = this.agents.get(message.sourceAgentId)
+		const scope = source?.communicationScope
+		if (
+			!scope ||
+			scope.rootSessionId !== message.rootSessionId ||
+			scope.sourceAgentId !== message.sourceAgentId ||
+			scope.taskId !== message.sourceTaskId ||
+			source.currentAttemptId !== message.sourceAttemptId
+		) {
+			return { accepted: false, reason: "Message identity does not match the live host-owned record." }
+		}
+		if (message.payload.kind === "answer") {
+			return { accepted: false, reason: "Answers must close their existing question thread." }
+		}
+		if (message.threadId !== message.id || this.messageThreads.has(message.threadId)) {
+			return { accepted: false, reason: "Initial messages require a new unique thread ID." }
+		}
+		const thread: AgentMessageThread =
+			message.payload.kind === "question"
+				? {
+						id: message.threadId,
+						rootSessionId: message.rootSessionId,
+						questionMessageId: message.id,
+						sourceAgentId: message.sourceAgentId,
+						sourceTaskId: message.sourceTaskId,
+						recipient: message.recipient,
+						expectedResponder: message.recipient.type === "agent" ? "agent" : "parent",
+						state: "open",
+						messageCount: 1,
+						createdAt: message.createdAt,
+					}
+				: {
+						id: message.threadId,
+						rootSessionId: message.rootSessionId,
+						questionMessageId: message.id,
+						sourceAgentId: message.sourceAgentId,
+						sourceTaskId: message.sourceTaskId,
+						recipient: message.recipient,
+						expectedResponder: message.recipient.type === "agent" ? "agent" : "parent",
+						state: "closed",
+						messageCount: 1,
+						createdAt: message.createdAt,
+						closedAt: message.createdAt,
+						closeReason: "single_message",
+					}
+		if (
+			thread.state === "open" &&
+			this.countOpenThreads(message.sourceAgentId) >= AGENT_MESSAGE_LIMITS.maxOpenQuestionsPerAgent
+		) {
+			return { accepted: false, reason: "Agent has too many open message questions." }
+		}
+		if (!this.canStoreThread(message.sourceAgentId)) {
+			return { accepted: false, reason: "Message thread storage is full." }
+		}
+
+		this.messageThreads.set(thread.id, thread)
+		const threadIds = this.threadIdsByAgent.get(message.sourceAgentId) ?? new Set<string>()
+		threadIds.add(thread.id)
+		this.threadIdsByAgent.set(message.sourceAgentId, threadIds)
+		return { accepted: true }
+	}
+
+	/** Generic terminal closure for lifecycle code; it never impersonates an answer. */
+	closeMessageThreadForTerminalState(
+		questionMessageId: string,
+		reason: string,
+	): { closed: true; thread: AgentMessageThread } | { closed: false; reason: string } {
+		const thread = this.messageThreads.get(questionMessageId)
+		if (!thread) return { closed: false, reason: "unknown_thread" }
+		if (thread.state !== "open") return { closed: false, reason: "thread_closed" }
+		thread.state = "closed"
+		thread.closedAt = Date.now()
+		thread.closeReason = reason
+		return { closed: true, thread: { ...thread } }
+	}
+
+	/** Capacity-only reservation for future body-free thread records. */
+	tryReserveThreadMessage(questionMessageId: string): boolean {
+		const thread = this.messageThreads.get(questionMessageId)
+		return thread?.state === "open" && this.reserveThreadMessage(thread)
+	}
+
+	getMessageThread(questionMessageId: string): AgentMessageThread | undefined {
+		const thread = this.messageThreads.get(questionMessageId)
+		return thread ? { ...thread } : undefined
+	}
+
+	private async drainPendingMessages(record: AgentRecord, session: AgentSession): Promise<void> {
+		while (true) {
+			const pending = this.pendingMessages.get(record.id)?.[0]
+			if (!pending) return
+			try {
+				await session.steer(pending.prompt)
+			} catch {
+				this.terminalizePendingForTarget(record.id, "steer_failed", true)
+				return
+			}
+			if (pending.terminalized) continue
+			this.removePendingMessage(pending)
+			this.emitPendingMessageEvent(pending, "queued_for_running_session")
+		}
+	}
+
+	private removePendingMessage(message: PendingAgentMessage): void {
+		const messages = this.pendingMessages.get(message.targetAgentId)
+		if (!messages) return
+		const index = messages.indexOf(message)
+		if (index < 0) return
+		messages.splice(index, 1)
+		if (messages.length === 0) this.pendingMessages.delete(message.targetAgentId)
+		this.releasePendingMessage(message.targetAgentId, message.bytes)
+	}
+
+	private terminalizePendingForTarget(targetAgentId: string, reason: string, notifyParent: boolean): void {
+		const messages = this.pendingMessages.get(targetAgentId)
+		if (!messages) return
+		this.pendingMessages.delete(targetAgentId)
+		for (const message of messages) this.failPendingMessage(message, reason, notifyParent, true)
+	}
+
+	private terminalizePendingFromSource(
+		sourceAgentId: string,
+		reason: string,
+		notifyParent: boolean,
+		onlyLiveResponderMessages = false,
+	): void {
+		for (const [targetAgentId, messages] of this.pendingMessages) {
+			const affected = messages.filter(
+				(message) =>
+					message.sourceAgentId === sourceAgentId && (!onlyLiveResponderMessages || message.kind === "question"),
+			)
+			if (affected.length === 0) continue
+			const remaining = messages.filter((message) => !affected.includes(message))
+			if (remaining.length === 0) this.pendingMessages.delete(targetAgentId)
+			else this.pendingMessages.set(targetAgentId, remaining)
+			for (const message of affected) this.failPendingMessage(message, reason, notifyParent, true)
+		}
+	}
+
+	private terminalizeAllPendingMessages(reason: string, notifyParent: boolean): void {
+		for (const targetAgentId of [...this.pendingMessages.keys()]) {
+			this.terminalizePendingForTarget(targetAgentId, reason, notifyParent)
+		}
+	}
+
+	private failPendingMessage(
+		message: PendingAgentMessage,
+		reason: string,
+		notifyParent: boolean,
+		releasePending: boolean,
+	): void {
+		if (message.terminalized) return
+		message.terminalized = true
+		if (releasePending) this.releasePendingMessage(message.targetAgentId, message.bytes)
+		this.closeMessageThreadForTerminalState(message.messageId, reason)
+		const failureKey = `${message.rootSessionId}:delivery-failure:${message.messageId}`
+		if (this.reserveDeliveryFailureKey(failureKey, message.sourceAgentId)) {
+			if (
+				notifyParent &&
+				!this.communicationDisabled &&
+				this.communicationRootSessionId === message.rootSessionId &&
+				this.parentBridge
+			) {
+				this.parentBridge(
+					{
+						kind: "delivery_failure",
+						messageId: message.messageId,
+						sourceAgentId: message.sourceAgentId,
+						targetAgentId: message.targetAgentId,
+						reason,
+						escapeHatch: "Send a new message to the parent or use the agent's final report.",
+					},
+					message.rootSessionId,
+				)
+			}
+		}
+		this.emitPendingMessageEvent(message, "unavailable")
+	}
+
+	private transitionToTerminalRecord(
+		record: AgentRecord,
+		status: Extract<AgentRecord["status"], "completed" | "steered" | "aborted" | "stopped" | "error">,
+	): void {
+		this.closeOpenPeerThreadsForAgent(record.id)
+		if (
+			status === "stopped" ||
+			!record.session ||
+			(record.agentReport?.attempt_id === record.currentAttemptId && record.agentReport.status === "completed")
+		) {
+			this.closeOpenParentThreadsForAgent(record.id, "participant_terminal")
+		}
+		this.terminalizePendingForTarget(record.id, "participant_terminal", true)
+		this.terminalizePendingFromSource(record.id, "participant_terminal", true, true)
+		record.status = status
+	}
+
+	private closeOpenPeerThreadsForAgent(agentId: string): void {
+		for (const thread of this.messageThreads.values()) {
+			if (
+				thread.state === "open" &&
+				thread.recipient.type === "agent" &&
+				(thread.sourceAgentId === agentId || thread.recipient.agentId === agentId)
+			) {
+				this.closeMessageThreadForTerminalState(thread.questionMessageId, "participant_terminal")
+			}
+		}
+	}
+
+	private closeOpenParentThreadsForAgent(agentId: string, reason: string): void {
+		for (const thread of this.messageThreads.values()) {
+			if (thread.state === "open" && thread.recipient.type !== "agent" && thread.sourceAgentId === agentId) {
+				this.closeMessageThreadForTerminalState(thread.questionMessageId, reason)
+			}
+		}
+	}
+
+	tryReservePendingMessage(targetAgentId: string, payloadBytes: number): boolean {
+		if (
+			payloadBytes > AGENT_MESSAGE_LIMITS.maxPayloadBytes ||
+			this.pendingPayloadBytes() + payloadBytes > AGENT_MESSAGE_LIMITS.maxPendingPayloadBytes
+		) {
+			return false
+		}
+		if (this.metadataRecordCount() >= AGENT_MESSAGE_LIMITS.maxMetadataRecords) return false
+		const usage = this.pendingMessageUsage.get(targetAgentId) ?? { count: 0, bytes: 0 }
+		if (usage.count >= AGENT_MESSAGE_LIMITS.maxPendingMessagesPerTarget) return false
+		usage.count++
+		usage.bytes += payloadBytes
+		this.pendingMessageUsage.set(targetAgentId, usage)
+		return true
+	}
+
+	releasePendingMessage(targetAgentId: string, payloadBytes: number): void {
+		const usage = this.pendingMessageUsage.get(targetAgentId)
+		if (!usage) return
+		usage.count--
+		usage.bytes = Math.max(0, usage.bytes - payloadBytes)
+		if (usage.count <= 0) this.pendingMessageUsage.delete(targetAgentId)
+	}
+
+	getMessageBrokerStats(): AgentMessageBrokerStats {
+		return {
+			receipts: this.messageReceipts.size,
+			threads: this.messageThreads.size,
+			pendingMessages: [...this.pendingMessageUsage.values()].reduce((count, usage) => count + usage.count, 0),
+			pendingPayloadBytes: this.pendingPayloadBytes(),
+		}
+	}
+
 	listAgents(): AgentRecord[] {
 		return [...this.agents.values()].sort((a, b) => b.startedAt - a.startedAt)
 	}
@@ -584,11 +1559,11 @@ export class AgentManager {
 	completeTransient(id: string): void {
 		const record = this.agents.get(id)
 		if (!record) return
-		record.status = "completed"
+		this.transitionToTerminalRecord(record, "completed")
 		record.completedAt = Date.now()
 		// Schedule removal after a short delay — long enough for the widget to
 		// render one final "✓ done" frame, but not so long it lingers in listAgents().
-		setTimeout(() => this.agents.delete(id), 2000)
+		setTimeout(() => this.removeRecord(id, record), 2000)
 	}
 
 	abort(id: string): boolean {
@@ -597,16 +1572,178 @@ export class AgentManager {
 
 		if (record.status === "queued") {
 			this.queue = this.queue.filter((q) => q.id !== id)
-			record.status = "stopped"
+			this.transitionToTerminalRecord(record, "stopped")
 			record.completedAt = Date.now()
 			return true
 		}
 
 		if (record.status !== "running") return false
 		record.abortController?.abort()
-		record.status = "stopped"
+		this.transitionToTerminalRecord(record, "stopped")
 		record.completedAt = Date.now()
 		return true
+	}
+
+	private reserveReceipt(
+		agentId: string,
+		idempotencyKey: string,
+		reservation: AgentMessageReservation,
+		operation: (reservation: AgentMessageReservation) => AgentMessageReceipt | Promise<AgentMessageReceipt>,
+	): Promise<AgentMessageReceipt> {
+		let resolve!: (receipt: AgentMessageReceipt) => void
+		const promise = new Promise<AgentMessageReceipt>((resolvePromise) => {
+			resolve = resolvePromise
+		})
+		this.messageReceipts.set(idempotencyKey, { agentId, promise })
+		const receiptKeys = this.receiptKeysByAgent.get(agentId) ?? new Set<string>()
+		receiptKeys.add(idempotencyKey)
+		this.receiptKeysByAgent.set(agentId, receiptKeys)
+
+		try {
+			const result = operation(reservation)
+			void Promise.resolve(result).then(resolve, () =>
+				resolve({ status: "unavailable", reason: "The host message route became unavailable." }),
+			)
+		} catch {
+			resolve({ status: "unavailable", reason: "The host message route became unavailable." })
+		}
+		return promise
+	}
+
+	private closeThreadForAnswer(thread: AgentMessageThread, reason: string): boolean {
+		if (thread.state !== "open" || !this.reserveThreadMessage(thread)) return false
+		thread.state = "closed"
+		thread.closedAt = Date.now()
+		thread.closeReason = reason
+		return true
+	}
+
+	private reserveThreadMessage(thread: AgentMessageThread): boolean {
+		if (thread.messageCount >= AGENT_MESSAGE_LIMITS.maxMessagesPerThread) return false
+		thread.messageCount++
+		return true
+	}
+
+	private canStoreReceipt(agentId: string): boolean {
+		const receiptKeys = this.receiptKeysByAgent.get(agentId)
+		return (
+			(receiptKeys?.size ?? 0) < AGENT_MESSAGE_LIMITS.maxReceiptsPerAgent &&
+			this.metadataRecordCount() < AGENT_MESSAGE_LIMITS.maxMetadataRecords
+		)
+	}
+
+	private canStoreThread(agentId: string): boolean {
+		const threadIds = this.threadIdsByAgent.get(agentId)
+		if ((threadIds?.size ?? 0) >= AGENT_MESSAGE_LIMITS.maxThreadsPerAgent && !this.evictOldestClosedThread(agentId)) {
+			return false
+		}
+		return this.metadataRecordCount() < AGENT_MESSAGE_LIMITS.maxMetadataRecords
+	}
+
+	private evictOldestClosedThread(agentId: string): boolean {
+		const threadIds = this.threadIdsByAgent.get(agentId)
+		if (!threadIds) return false
+		const oldest = findOldestClosedThread(
+			[...threadIds]
+				.map((threadId) => this.messageThreads.get(threadId))
+				.filter((thread): thread is AgentMessageThread => thread != null),
+		)
+		if (!oldest) return false
+		this.messageThreads.delete(oldest.id)
+		threadIds.delete(oldest.id)
+		if (threadIds.size === 0) this.threadIdsByAgent.delete(agentId)
+		return true
+	}
+
+	private removeMessageThread(threadId: string): void {
+		const thread = this.messageThreads.get(threadId)
+		if (!thread) return
+		this.messageThreads.delete(threadId)
+		const threadIds = this.threadIdsByAgent.get(thread.sourceAgentId)
+		if (!threadIds) return
+		threadIds.delete(threadId)
+		if (threadIds.size === 0) this.threadIdsByAgent.delete(thread.sourceAgentId)
+	}
+
+	private countOpenThreads(agentId: string): number {
+		const threadIds = this.threadIdsByAgent.get(agentId)
+		if (!threadIds) return 0
+		let count = 0
+		for (const threadId of threadIds) {
+			if (this.messageThreads.get(threadId)?.state === "open") count++
+		}
+		return count
+	}
+
+	private metadataRecordCount(): number {
+		return (
+			this.messageReceipts.size +
+			this.messageThreads.size +
+			[...this.pendingMessageUsage.values()].reduce((count, usage) => count + usage.count, 0) +
+			this.deliveryFailureKeys.size
+		)
+	}
+
+	private reserveDeliveryFailureKey(failureKey: string, sourceAgentId: string): boolean {
+		if (this.deliveryFailureKeys.has(failureKey)) return false
+		while (this.metadataRecordCount() >= AGENT_MESSAGE_LIMITS.maxMetadataRecords) {
+			if (!this.evictOldestClosedThreadGlobally() && !this.evictOldestDeliveryFailureKey()) {
+				return false
+			}
+		}
+		this.deliveryFailureKeys.set(failureKey, sourceAgentId)
+		return true
+	}
+
+	private evictOldestClosedThreadGlobally(): boolean {
+		const oldest = findOldestClosedThread([...this.messageThreads.values()])
+		if (!oldest) return false
+		this.removeMessageThread(oldest.id)
+		return true
+	}
+
+	private evictOldestDeliveryFailureKey(): boolean {
+		const oldest = this.deliveryFailureKeys.keys().next().value
+		if (!oldest) return false
+		this.deliveryFailureKeys.delete(oldest)
+		return true
+	}
+
+	private pendingPayloadBytes(): number {
+		return [...this.pendingMessageUsage.values()].reduce((bytes, usage) => bytes + usage.bytes, 0)
+	}
+
+	private clearMessageBrokerForAgent(agentId: string): void {
+		for (const key of this.receiptKeysByAgent.get(agentId) ?? []) this.messageReceipts.delete(key)
+		this.receiptKeysByAgent.delete(agentId)
+		this.messageAttemptCounts.delete(agentId)
+		for (const [threadId, thread] of this.messageThreads) {
+			if (
+				thread.sourceAgentId === agentId ||
+				(thread.recipient.type === "agent" && thread.recipient.agentId === agentId)
+			) {
+				this.messageThreads.delete(threadId)
+				this.threadIdsByAgent.get(thread.sourceAgentId)?.delete(threadId)
+			}
+		}
+		for (const [sourceAgentId, threadIds] of this.threadIdsByAgent) {
+			if (threadIds.size === 0) this.threadIdsByAgent.delete(sourceAgentId)
+		}
+		for (const [failureKey, sourceAgentId] of this.deliveryFailureKeys) {
+			if (sourceAgentId === agentId) this.deliveryFailureKeys.delete(failureKey)
+		}
+		this.pendingMessageUsage.delete(agentId)
+	}
+
+	private clearMessageBroker(): void {
+		this.messageReceipts.clear()
+		this.receiptKeysByAgent.clear()
+		this.messageAttemptCounts.clear()
+		this.messageThreads.clear()
+		this.threadIdsByAgent.clear()
+		this.pendingMessageUsage.clear()
+		this.pendingMessages.clear()
+		this.deliveryFailureKeys.clear()
 	}
 
 	private cleanupRecordRuntime(record: AgentRecord): void {
@@ -630,6 +1767,11 @@ export class AgentManager {
 	}
 
 	private removeRecord(id: string, record: AgentRecord): void {
+		this.closeOpenPeerThreadsForAgent(id)
+		this.closeOpenParentThreadsForAgent(id, "record_removed")
+		this.terminalizePendingForTarget(id, "record_removed", true)
+		this.terminalizePendingFromSource(id, "record_removed", true)
+		this.clearMessageBrokerForAgent(id)
 		this.cleanupRecordRuntime(record)
 		record.session?.dispose?.()
 		record.session = undefined
@@ -669,7 +1811,7 @@ export class AgentManager {
 		for (const queued of this.queue) {
 			const record = this.agents.get(queued.id)
 			if (record) {
-				record.status = "stopped"
+				this.transitionToTerminalRecord(record, "stopped")
 				record.completedAt = Date.now()
 				count++
 			}
@@ -678,7 +1820,7 @@ export class AgentManager {
 		for (const record of this.agents.values()) {
 			if (record.status === "running") {
 				record.abortController?.abort()
-				record.status = "stopped"
+				this.transitionToTerminalRecord(record, "stopped")
 				record.completedAt = Date.now()
 				count++
 			}
@@ -699,11 +1841,16 @@ export class AgentManager {
 
 	dispose() {
 		clearInterval(this.cleanupInterval)
+		this.parentBridge = undefined
+		this.userContactResolver = undefined
+		this.communicationDisabled = true
+		this.terminalizeAllPendingMessages("shutdown", false)
 		this.queue = []
 		for (const record of this.agents.values()) {
 			this.cleanupRecordRuntime(record)
 			record.session?.dispose()
 		}
+		this.clearMessageBroker()
 		this.agents.clear()
 	}
 }

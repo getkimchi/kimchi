@@ -100,6 +100,12 @@ vi.mock("./manager/agent-manager.js", () => {
 				getRunningCount: vi.fn().mockReturnValue(0),
 				hasRunning: vi.fn().mockReturnValue(false),
 				detachToBackground: vi.fn().mockReturnValue(false),
+				bindCommunicationRoot: vi.fn().mockReturnValue(true),
+				registerParentBridge: vi.fn().mockReturnValue(true),
+				setUserContactResolver: vi.fn().mockReturnValue(true),
+				setMessageEventHandler: vi.fn(),
+				disableCommunication: vi.fn().mockReturnValue(true),
+				replyToAgentMessage: vi.fn().mockResolvedValue({ status: "queued_for_running_session" }),
 			}
 			return manager
 		}),
@@ -111,6 +117,11 @@ vi.mock("./manager/agent-manager.js", () => {
 		}),
 	}
 })
+
+const mockFermentGetActiveId = vi.hoisted(() => vi.fn(() => undefined as string | undefined))
+vi.mock("../ferment/runtime.js", () => ({
+	createDefaultFermentRuntime: vi.fn(() => ({ getActiveId: mockFermentGetActiveId })),
+}))
 
 vi.mock("./telemetry/index.js", () => ({ trackSubagentSpawned: vi.fn().mockResolvedValue(undefined) }))
 vi.mock("./settings.js", () => ({
@@ -160,10 +171,14 @@ type CapturedHandler = (event?: unknown, ctx?: unknown) => unknown | Promise<unk
 function makeMockPi(): ExtensionAPI & {
 	_handlers: Map<string, CapturedHandler[]>
 	sendMessage: ReturnType<typeof vi.fn>
+	getFlag: ReturnType<typeof vi.fn>
+	getActiveTools: ReturnType<typeof vi.fn>
 	fireShutdown: () => Promise<void>
 } {
 	const handlers = new Map<string, CapturedHandler[]>()
 	const sendMessage = vi.fn()
+	const getFlag = vi.fn(() => undefined as boolean | undefined)
+	const getActiveTools = vi.fn(() => ["reply_to_agent_message"])
 	const events = { emit: vi.fn() }
 	const pi = {
 		on: vi.fn((event: string, handler: CapturedHandler) => {
@@ -175,6 +190,8 @@ function makeMockPi(): ExtensionAPI & {
 		registerMessageRenderer: vi.fn(),
 		registerCommand: vi.fn(),
 		sendMessage,
+		getFlag,
+		getActiveTools,
 		events,
 		appendEntry: vi.fn(),
 		sessionManager: {
@@ -188,6 +205,8 @@ function makeMockPi(): ExtensionAPI & {
 		...pi,
 		_handlers: handlers,
 		sendMessage,
+		getFlag,
+		getActiveTools,
 		fireShutdown: async () => {
 			for (const handler of handlers.get("session_shutdown") ?? []) await handler({})
 		},
@@ -195,6 +214,8 @@ function makeMockPi(): ExtensionAPI & {
 	return stub as unknown as ExtensionAPI & {
 		_handlers: Map<string, CapturedHandler[]>
 		sendMessage: ReturnType<typeof vi.fn>
+		getFlag: ReturnType<typeof vi.fn>
+		getActiveTools: ReturnType<typeof vi.fn>
 		fireShutdown: () => Promise<void>
 	}
 }
@@ -301,6 +322,278 @@ describe("session_shutdown nudge race (integration)", () => {
 	})
 })
 
+function latestHandler(pi: ReturnType<typeof makeMockPi>, event: string): CapturedHandler {
+	const handler = pi._handlers.get(event)?.at(-1)
+	if (!handler) throw new Error(`expected ${event} handler`)
+	return handler
+}
+
+function parentNotification(
+	rootSessionId: string,
+	recipient: { type: "parent" } | { type: "user" } = { type: "parent" },
+	payload:
+		| { kind: "status"; summary: string }
+		| { kind: "question"; question: string; impact: string; canContinue: boolean } = {
+		kind: "status",
+		summary: "secret body",
+	},
+) {
+	return {
+		kind: "message",
+		message: {
+			id: "message-1",
+			idempotencyKey: "root:agent:0:call-1",
+			threadId: "message-1",
+			rootSessionId,
+			sourceAgentId: "agent-1",
+			sourceTaskId: "agent-task:agent-1",
+			sourceAttemptId: 0,
+			recipient,
+			payload,
+			createdAt: 1,
+		},
+	}
+}
+
+describe("agent communication lifecycle", () => {
+	beforeEach(() => {
+		mockFermentGetActiveId.mockReset()
+		mockFermentGetActiveId.mockReturnValue(undefined)
+		vi.useRealTimers()
+		vi.clearAllMocks()
+	})
+
+	it("binds one root and resolves live user reachability for UI and headless modes", async () => {
+		const scenarios = [
+			{
+				name: "interactive TUI",
+				root: "root-tui",
+				hasUI: true,
+				mode: "tui",
+				flag: false,
+				activeFerment: undefined,
+				expected: { reachable: true, route: "questionnaire" },
+			},
+			{
+				name: "rpc with UI capability",
+				root: "root-rpc-ui",
+				hasUI: true,
+				mode: "rpc",
+				flag: true,
+				activeFerment: undefined,
+				expected: { reachable: true, route: "questionnaire" },
+			},
+			{
+				name: "headless one-shot with active Ferment",
+				root: "root-judge",
+				hasUI: false,
+				mode: "json",
+				flag: true,
+				activeFerment: "ferment-live",
+				expected: { reachable: true, route: "ferment_judge", ferment_id: "ferment-live" },
+			},
+			{
+				name: "headless one-shot without active Ferment",
+				root: "root-no-active",
+				hasUI: false,
+				mode: "json",
+				flag: true,
+				activeFerment: undefined,
+				expected: { reachable: false, route: "unavailable" },
+			},
+			{
+				name: "ordinary headless session",
+				root: "root-headless",
+				hasUI: false,
+				mode: "json",
+				flag: false,
+				activeFerment: "ferment-live",
+				expected: { reachable: false, route: "unavailable" },
+			},
+			{
+				name: "ordinary rpc session",
+				root: "root-rpc",
+				hasUI: false,
+				mode: "rpc",
+				flag: false,
+				activeFerment: "ferment-live",
+				expected: { reachable: false, route: "unavailable" },
+			},
+		]
+
+		for (const scenario of scenarios) {
+			mockFermentGetActiveId.mockReturnValue(scenario.activeFerment)
+			const pi = makeMockPi()
+			pi.getFlag.mockReturnValue(scenario.flag ? true : undefined)
+			agentsExtension(pi)
+			const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+			const sessionStart = latestHandler(pi, "session_start")
+			await sessionStart(
+				{},
+				makeMockCtx(makeMockModelRegistry([]), undefined, { ...scenario, rootSessionId: scenario.root }),
+			)
+
+			expect(manager.bindCommunicationRoot).toHaveBeenCalledWith(scenario.root)
+			const resolver = manager.setUserContactResolver.mock.calls.at(-1)?.[1]
+			expect(resolver?.(scenario.root), scenario.name).toMatchObject(scenario.expected)
+		}
+	})
+
+	it("fails closed on a conflicting root so neither bridge can reach Pi", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		manager.bindCommunicationRoot.mockReturnValueOnce(true).mockReturnValueOnce(false)
+		const sessionStart = latestHandler(pi, "session_start")
+
+		await sessionStart({}, makeMockCtx(makeMockModelRegistry([]), undefined, { rootSessionId: "root-1" }))
+		await sessionStart({}, makeMockCtx(makeMockModelRegistry([]), undefined, { rootSessionId: "root-2" }))
+
+		expect(manager.bindCommunicationRoot).toHaveBeenNthCalledWith(1, "root-1")
+		expect(manager.bindCommunicationRoot).toHaveBeenNthCalledWith(2, "root-2")
+		expect(manager.registerParentBridge).toHaveBeenCalledOnce()
+		expect(manager.setUserContactResolver).toHaveBeenCalledOnce()
+		expect(manager.disableCommunication).toHaveBeenCalledWith("root-1")
+		const bridge = manager.registerParentBridge.mock.calls[0]?.[1]
+		if (!bridge) throw new Error("expected parent bridge")
+		expect(bridge(parentNotification("root-2"), "root-2")).toBe(false)
+		expect(bridge(parentNotification("root-1"), "root-1")).toBe(false)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("disables and cleans the bridge on matching shutdown; wrong-root and post-shutdown calls never reach Pi", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const sessionStart = latestHandler(pi, "session_start")
+		await sessionStart({}, makeMockCtx(makeMockModelRegistry([]), undefined, { rootSessionId: "root-1" }))
+		const bridge = manager.registerParentBridge.mock.calls[0]?.[1]
+		if (!bridge) throw new Error("expected parent bridge")
+
+		expect(bridge(parentNotification("root-2"), "root-2")).toBe(false)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		await pi.fireShutdown()
+		expect(manager.disableCommunication).toHaveBeenCalledWith("root-1")
+		expect(bridge(parentNotification("root-1"), "root-1")).toBe(false)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("binds correlated replies to the executing parent root", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const reply = getRegisteredTool(pi, "reply_to_agent_message")
+		const ctx = makeMockCtx(makeMockModelRegistry([]), undefined, { rootSessionId: "root-1" })
+		const abortController = new AbortController()
+
+		const result = await reply.execute(
+			"reply-call",
+			{
+				message_id: "message-1",
+				answer: "Proceed with the safe default.",
+				max_turns: 2,
+				max_duration: 30,
+				token_budget: 2048,
+			},
+			abortController.signal,
+			undefined,
+			ctx,
+		)
+
+		expect(manager.replyToAgentMessage).toHaveBeenCalledWith(
+			"root-1",
+			"message-1",
+			"reply-call",
+			"Proceed with the safe default.",
+			{ maxTurns: 2, maxDuration: 30, tokenBudget: 2048 },
+			abortController.signal,
+		)
+		expect(result.content[0]?.text).toContain("queued_for_running_session")
+	})
+
+	it("renders coordinator guidance only while the reply tool is active", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const beforeAgentStart = latestHandler(pi, "before_agent_start")
+
+		const rendered = await beforeAgentStart({ systemPrompt: "BASE" }, undefined)
+		expect(rendered).toMatchObject({ systemPrompt: expect.stringContaining("## Subagent messages") })
+		const prompt = (rendered as { systemPrompt: string }).systemPrompt
+		expect(prompt).toContain("requestedAudience")
+		expect(prompt).toContain("`ferment_id`")
+		expect(prompt).toContain("Every accepted question ends through reply_to_agent_message")
+		expect(prompt).toContain("Never infer user reachability from TUI/RPC/ACP/headless mode names")
+
+		pi.getActiveTools.mockReturnValue([])
+		expect(await beforeAgentStart({ systemPrompt: "BASE" }, undefined)).toBeUndefined()
+	})
+
+	it("keeps parent and user routes distinct and rejects unavailable user delivery before Pi", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const sessionStart = latestHandler(pi, "session_start")
+		await sessionStart(
+			{},
+			makeMockCtx(makeMockModelRegistry([]), undefined, { rootSessionId: "root-ui", hasUI: true, mode: "rpc" }),
+		)
+		const bridge = manager.registerParentBridge.mock.calls.at(-1)?.[1]
+		if (!bridge) throw new Error("expected parent bridge")
+
+		expect(bridge(parentNotification("root-ui"), "root-ui")).toBe(true)
+		const parentContent = pi.sendMessage.mock.calls.at(-1)?.[0]?.content as string
+		expect(parentContent).toContain("requestedAudience=parent")
+		expect(parentContent).not.toContain("user_via_parent")
+
+		expect(
+			bridge(
+				parentNotification(
+					"root-ui",
+					{ type: "user" },
+					{
+						kind: "question",
+						question: "Which option?",
+						impact: "Changes scope",
+						canContinue: false,
+					},
+				),
+				"root-ui",
+			),
+		).toBe(true)
+		const userContent = pi.sendMessage.mock.calls.at(-1)?.[0]?.content as string
+		expect(userContent).toContain("requestedAudience=user")
+		expect(userContent).toContain('user_via_parent={"reachable":true,"route":"questionnaire"}')
+
+		const headless = makeMockPi()
+		agentsExtension(headless)
+		const headlessManager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const headlessStart = latestHandler(headless, "session_start")
+		headless.getFlag.mockReturnValue(undefined)
+		await headlessStart(
+			{},
+			makeMockCtx(makeMockModelRegistry([]), undefined, { rootSessionId: "root-headless", hasUI: false, mode: "rpc" }),
+		)
+		const headlessBridge = headlessManager.registerParentBridge.mock.calls.at(-1)?.[1]
+		if (!headlessBridge) throw new Error("expected headless parent bridge")
+		expect(
+			headlessBridge(
+				parentNotification(
+					"root-headless",
+					{ type: "user" },
+					{
+						kind: "question",
+						question: "Which option?",
+						impact: "Changes scope",
+						canContinue: false,
+					},
+				),
+				"root-headless",
+			),
+		).toBe(false)
+		expect(headless.sendMessage).not.toHaveBeenCalled()
+	})
+})
+
 // ---- Multi-mode model guard ----
 //
 // These tests exercise the registered Agent tool's execute() handler to
@@ -340,17 +633,21 @@ function makeMockModelRegistry(entries: MockModelEntry[]): unknown {
  * spinner/await-promise machinery which the AgentManager mock does not
  * fully satisfy.
  */
-function makeMockCtx(modelRegistry: unknown, parentModel?: unknown): unknown {
+function makeMockCtx(
+	modelRegistry: unknown,
+	parentModel?: unknown,
+	options: { rootSessionId?: string; hasUI?: boolean; mode?: string } = {},
+): unknown {
 	return {
 		ui: undefined,
-		mode: "json",
-		hasUI: false,
+		mode: options.mode ?? "json",
+		hasUI: options.hasUI ?? false,
 		cwd: "/tmp",
 		sessionManager: {
 			getBranch: () => [],
 			getSessionDir: () => "/tmp",
 			getSessionFile: () => "/tmp/session.json",
-			getSessionId: () => "test-session",
+			getSessionId: () => options.rootSessionId ?? "test-session",
 		},
 		modelRegistry,
 		model: parentModel,
@@ -389,6 +686,34 @@ function getRegisteredAgentTool(pi: ReturnType<typeof makeMockPi>): {
 			ctx: unknown,
 		) => Promise<{ content: { type: string; text: string }[] }>
 		renderCall: (args: Record<string, unknown>, theme: Theme, context: { argsComplete: boolean }) => Component
+	}
+}
+
+function getRegisteredTool(
+	pi: ReturnType<typeof makeMockPi>,
+	name: string,
+): {
+	execute: (
+		id: string,
+		params: Record<string, unknown>,
+		signal: AbortSignal | undefined,
+		onUpdate: unknown,
+		ctx: unknown,
+	) => Promise<{ content: { type: string; text: string }[] }>
+} {
+	const calls = (pi.registerTool as ReturnType<typeof vi.fn>).mock.calls
+	const tool = calls
+		.map((call: unknown[]) => call[0])
+		.find((candidate: unknown) => (candidate as { name?: string }).name === name)
+	expect(tool).toBeDefined()
+	return tool as {
+		execute: (
+			id: string,
+			params: Record<string, unknown>,
+			signal: AbortSignal | undefined,
+			onUpdate: unknown,
+			ctx: unknown,
+		) => Promise<{ content: { type: string; text: string }[] }>
 	}
 }
 
@@ -557,6 +882,75 @@ describe("Agent tool multi-mode model guard", () => {
 		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
 		const text = result.content[0]?.text ?? ""
 		expect(text).not.toContain("not allowed in multi-model mode")
+	})
+
+	it("passes an opted-in communication mode with the host root session ID", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const tool = getRegisteredAgentTool(pi)
+
+		await tool.execute(
+			"call-communication",
+			{
+				prompt: "do work",
+				description: "test",
+				subagent_type: "general-purpose",
+				run_in_background: true,
+				communication: "group",
+			},
+			undefined,
+			undefined,
+			makeMockCtx(makeMockModelRegistry([])),
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.anything(),
+			expect.anything(),
+			expect.anything(),
+			expect.objectContaining({ communication: "group", rootSessionId: "test-session" }),
+		)
+	})
+
+	it("rejects isolated communication and invalid modes before spawning", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const tool = getRegisteredAgentTool(pi)
+		const ctx = makeMockCtx(makeMockModelRegistry([]))
+
+		const isolated = await tool.execute(
+			"call-isolated-communication",
+			{
+				prompt: "do work",
+				description: "test",
+				subagent_type: "general-purpose",
+				run_in_background: true,
+				isolated: true,
+				communication: "parent",
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+		const invalid = await tool.execute(
+			"call-invalid-communication",
+			{
+				prompt: "do work",
+				description: "test",
+				subagent_type: "general-purpose",
+				run_in_background: true,
+				communication: "all",
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(isolated.content[0]?.text).toContain("cannot be used with isolated")
+		expect(invalid.content[0]?.text).toContain('must be either "parent" or "group"')
+		expect(managerInstance.spawn).not.toHaveBeenCalled()
 	})
 })
 

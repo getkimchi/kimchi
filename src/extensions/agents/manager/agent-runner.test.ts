@@ -122,6 +122,7 @@ import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
+import type { AgentMessageCapability } from "../message-tool.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
 import { type RunOptions, resumeAgent, runAgent } from "./agent-runner.js"
@@ -469,6 +470,146 @@ describe("runAgent — telemetry extension", () => {
 			workerReport: { submit, isAccepted: () => accepted },
 		})
 
+		expect(submit).toHaveBeenCalledOnce()
+		expect(abortSpy).toHaveBeenCalledOnce()
+		expect(result.aborted).toBe(false)
+	})
+
+	it("injects both communication tools only for an opted-in non-isolated worker", async () => {
+		const session = makeFakeSession({
+			activeToolNames: ["submit_agent_report", "list_agent_contacts", "send_agent_message"],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: true, skills: false }))
+		const capability: AgentMessageCapability = {
+			listContacts: vi.fn(() => ({ parent: { reachable: true }, user_via_parent: { reachable: false }, peers: [] })),
+			sendMessage: vi.fn().mockResolvedValue({ status: "queued_for_parent" }),
+		}
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "communicate", {
+			pi: pi as unknown as RunOptions["pi"],
+			workerReport: { submit: vi.fn(), isAccepted: vi.fn(() => false) },
+			agentMessage: capability,
+		})
+
+		const factories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
+		const registerTool = vi.fn()
+		for (const factory of factories)
+			runInlineExtension(factory, { registerTool, on: vi.fn() } as unknown as ExtensionAPI)
+		expect(registerTool.mock.calls.map(([tool]) => (tool as { name: string }).name)).toEqual([
+			"submit_agent_report",
+			"list_agent_contacts",
+			"send_agent_message",
+		])
+		expect(session.setActiveToolsByName).toHaveBeenCalledWith([
+			"list_agent_contacts",
+			"send_agent_message",
+			"submit_agent_report",
+		])
+	})
+
+	it("does not inject communication tools when the capability is absent or the run is isolated", async () => {
+		const ordinary = makeFakeSession()
+		const isolated = makeFakeSession()
+		mockCreateAgentSession
+			.mockResolvedValueOnce({
+				session: ordinary as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			})
+			.mockResolvedValueOnce({
+				session: isolated as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			})
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: true, skills: false }))
+		const capability: AgentMessageCapability = {
+			listContacts: vi.fn(() => ({ parent: { reachable: true }, user_via_parent: { reachable: false }, peers: [] })),
+			sendMessage: vi.fn(),
+		}
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "ordinary", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "isolated", {
+			pi: pi as unknown as RunOptions["pi"],
+			isolated: true,
+			agentMessage: capability,
+		})
+
+		expect(mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories).toHaveLength(4)
+		expect(mockDefaultResourceLoader.mock.calls[1]?.[0]?.extensionFactories).toHaveLength(4)
+		expect(ordinary.setActiveToolsByName).toHaveBeenCalledWith([])
+		expect(isolated.setActiveToolsByName).toHaveBeenCalledWith([])
+	})
+
+	it("allows multiple messages before the terminal worker report", async () => {
+		const abortSpy = vi.fn()
+		const submit = vi.fn(() => ({ accepted: true, message: "accepted" }))
+		const sendMessage = vi.fn().mockResolvedValue({ status: "queued_for_parent" })
+		const capability: AgentMessageCapability = {
+			listContacts: vi.fn(() => ({ parent: { reachable: true }, user_via_parent: { reachable: false }, peers: [] })),
+			sendMessage,
+		}
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			activeToolNames: ["submit_agent_report", "list_agent_contacts", "send_agent_message"],
+			promptAction: async (emit) => {
+				const registerTool = vi.fn()
+				const factories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
+				for (const factory of factories)
+					runInlineExtension(factory, { registerTool, on: vi.fn() } as unknown as ExtensionAPI)
+				const tools = new Map(registerTool.mock.calls.map(([tool]) => [(tool as { name: string }).name, tool]))
+				await (tools.get("send_agent_message") as { execute: (...args: unknown[]) => Promise<unknown> }).execute(
+					"message-1",
+					{
+						recipient: { type: "parent" },
+						payload: { kind: "status", summary: "first" },
+					},
+				)
+				await (tools.get("send_agent_message") as { execute: (...args: unknown[]) => Promise<unknown> }).execute(
+					"message-2",
+					{
+						recipient: { type: "parent" },
+						payload: { kind: "status", summary: "second" },
+					},
+				)
+				await (tools.get("submit_agent_report") as { execute: (...args: unknown[]) => Promise<unknown> }).execute(
+					"report-1",
+					{
+						status: "completed",
+						summary: "done",
+						steps_completed: ["communicated"],
+						remaining_steps: [],
+					},
+				)
+				emit({ type: "tool_execution_end", toolName: "submit_agent_report" })
+				await new Promise<void>((resolve) => queueMicrotask(resolve))
+			},
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: true, skills: false }))
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "communicate", {
+			pi: pi as unknown as RunOptions["pi"],
+			workerReport: { submit, isAccepted: () => true },
+			agentMessage: capability,
+		})
+
+		expect(sendMessage).toHaveBeenCalledTimes(2)
 		expect(submit).toHaveBeenCalledOnce()
 		expect(abortSpy).toHaveBeenCalledOnce()
 		expect(result.aborted).toBe(false)

@@ -31,6 +31,12 @@ import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
 import {
+	type AgentMessageCapability,
+	createAgentMessageExtension,
+	LIST_AGENT_CONTACTS_TOOL_NAME,
+	SEND_AGENT_MESSAGE_TOOL_NAME,
+} from "../message-tool.js"
+import {
 	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
 	getConfig,
@@ -235,6 +241,8 @@ export interface RunOptions {
 	maxDuration?: number
 	/** Host-bound report capability. Present only for Ferment-linked workers. */
 	workerReport?: WorkerReportCapability
+	/** Host-bound communication capability. Present only for opted-in workers. */
+	agentMessage?: AgentMessageCapability
 	/** Enforce maxTurns as a hard cap instead of allowing ordinary-agent grace turns. */
 	hardTurnLimit?: boolean
 	/** Registers a hard-fallback cleanup for runner-owned resources. */
@@ -367,6 +375,10 @@ async function runAgentInner(
 	}
 
 	let toolNames = getToolNamesForType(type)
+	const communicationCapability = options.isolated ? undefined : options.agentMessage
+	if (communicationCapability) {
+		toolNames = [...toolNames, LIST_AGENT_CONTACTS_TOOL_NAME, SEND_AGENT_MESSAGE_TOOL_NAME]
+	}
 
 	if (Array.isArray(skills)) {
 		const loaded = preloadSkills(skills, effectiveCwd)
@@ -476,6 +488,9 @@ ${skillLines}`
 	]
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
+	}
+	if (communicationCapability) {
+		extensionFactories.push(createAgentMessageExtension(communicationCapability))
 	}
 	const loader = new DefaultResourceLoader({
 		cwd: effectiveCwd,

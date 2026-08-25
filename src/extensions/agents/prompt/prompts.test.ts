@@ -85,6 +85,34 @@ Keep these parent rules.`
 		expect(output).not.toContain("set_phase")
 	})
 
+	it("strips coordinator-only subagent messages from an append-mode parent prompt", () => {
+		const appendAgent: AgentConfig = {
+			name: "Test-Append",
+			description: "Test append agent",
+			extensions: true,
+			skills: true,
+			systemPrompt: "",
+			promptMode: "append",
+		}
+		const output = buildAgentPrompt(
+			appendAgent,
+			FIXED_CWD,
+			FIXED_ENV,
+			`# Parent
+
+## Subagent messages
+Reply with reply_to_agent_message and use the coordinator-only user route.
+
+## Rules
+Keep these parent rules.`,
+			{ activeToolNames: ["read"] },
+		)
+
+		expect(output).not.toContain("## Subagent messages")
+		expect(output).not.toContain("reply_to_agent_message")
+		expect(output).toContain("Keep these parent rules.")
+	})
+
 	it("regenerates inherited tool guidance from append-mode agent tools", () => {
 		const appendAgent: AgentConfig = {
 			name: "Test-Restricted-Append",
@@ -326,6 +354,44 @@ describe("contextFiles injection", () => {
 		const agent = getRequired(AGENT_GENERAL_PURPOSE)
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
 		expect(output).not.toContain("## Project Guidelines")
+	})
+})
+
+describe("worker communication prompt", () => {
+	const agent: AgentConfig = {
+		name: "Communication-Test",
+		description: "test communication prompt gating",
+		extensions: true,
+		skills: false,
+		systemPrompt: "Do the assigned work.",
+		promptMode: "replace",
+	}
+
+	it("renders only when both communication tools are actually active", () => {
+		const build = (activeToolNames: string[]) =>
+			buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, undefined, { activeToolNames })
+
+		const both = build(["read", "list_agent_contacts", "send_agent_message"])
+		expect(both).toContain("## Communication")
+		expect(both).toContain("Call list_agent_contacts before sending to a peer")
+		expect(both).toContain("queued_for_parent is not an answer")
+		expect(both).toContain("submit_agent_report remains your one final task outcome")
+
+		for (const activeToolNames of [["read", "list_agent_contacts"], ["read", "send_agent_message"], ["read"], []]) {
+			expect(build(activeToolNames), activeToolNames.join(", ")).not.toContain("## Communication")
+		}
+	})
+
+	it("keeps opted-out, isolated, and system-style tool lists unguided", () => {
+		for (const activeToolNames of [
+			["read", "bash"],
+			["read", "bash", "submit_agent_report"],
+			["read", "bash", "reply_to_agent_message"],
+		]) {
+			const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, undefined, { activeToolNames })
+			expect(output).not.toContain("## Communication")
+			expect(output).not.toContain("direct user")
+		}
 	})
 })
 

@@ -159,6 +159,14 @@ export interface AgentConfig {
 
 export type JoinMode = "async" | "group" | "smart"
 export type AgentVisibility = "user" | "system"
+export type AgentCommunicationMode = "parent" | "group"
+
+/** Host-issued communication identity. Model task references are never authority. */
+export interface AgentCommunicationScope {
+	rootSessionId: string
+	sourceAgentId: string
+	taskId: string
+}
 
 export interface AgentRecord {
 	id: string
@@ -166,6 +174,10 @@ export interface AgentRecord {
 	description: string
 	/** user = visible in UI/notifications; system = hidden technical/background work. */
 	visibility: AgentVisibility
+	/** Opt-in communication capability. Absent for normal, isolated, and system agents. */
+	communication?: AgentCommunicationMode
+	/** Host-owned scope used by the broker; never constructed from child tool input. */
+	communicationScope?: AgentCommunicationScope
 	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error"
 	modelId?: string
 	abortReason?: AgentAbortReason

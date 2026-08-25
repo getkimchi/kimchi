@@ -334,10 +334,12 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 	// Substitute dynamic ids from previous tool results into scripted tool args.
 	const fermentId = extractFermentId(body)
 	const agentId = extractAgentId(body)
+	const messageId = extractMessageId(body)
 	for (const toolCall of script.toolCalls ?? []) {
 		const fn = { ...toolCall.function }
 		if (fermentId) fn.arguments = fn.arguments.replaceAll("__FERMENT_ID__", fermentId)
 		if (agentId) fn.arguments = fn.arguments.replaceAll("__AGENT_ID__", agentId)
+		if (messageId) fn.arguments = fn.arguments.replaceAll("__MESSAGE_ID__", messageId)
 		chunk([
 			{
 				index: 0,
@@ -411,6 +413,13 @@ function extractAgentId(body: unknown): string | undefined {
 		}
 	}
 	return extractAgentIdFromText(JSON.stringify(body ?? ""))
+}
+
+/** Pull the message ID from a prior tool receipt or parent notification. */
+function extractMessageId(body: unknown): string | undefined {
+	const text = JSON.stringify(body ?? "")
+	const matches = [...text.matchAll(/message(?:_id|Id)[\\"\s:=]+([A-Za-z0-9-]{8,})/g)]
+	return matches.at(-1)?.[1]
 }
 
 function extractAgentIdFromValue(value: unknown): string | undefined {

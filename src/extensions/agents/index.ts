@@ -24,6 +24,7 @@ import {
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
+import { createDefaultFermentRuntime } from "../ferment/runtime.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -37,7 +38,12 @@ import {
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
-import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
+import {
+	AgentManager,
+	type AgentMessageEvent,
+	type AgentParentNotification,
+	buildAgentOutcome,
+} from "./manager/agent-manager.js"
 import {
 	getAgentConversation,
 	getDefaultMaxTurns,
@@ -57,6 +63,7 @@ import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
 import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./manager/usage.js"
+import type { AgentContact } from "./message-tool.js"
 import { NudgeScheduler } from "./nudge-scheduler.js"
 import {
 	BUILTIN_TOOL_NAMES,
@@ -72,6 +79,7 @@ import { loadCustomAgents } from "./personas/custom-agents.js"
 import {
 	AGENT_GENERAL_PURPOSE,
 	type AgentAbortReason,
+	type AgentCommunicationMode,
 	type AgentConfig,
 	type AgentOutcome,
 	type AgentRecord,
@@ -393,6 +401,45 @@ export function shouldAutoResumeFermentWorker(record: AutoResumeShape): boolean 
 	)
 }
 
+interface ParentCommunicationContext {
+	rootSessionId: string
+	hasUI: boolean
+	active: boolean
+	getJudgeRoute: () => { fermentId: string } | undefined
+	getUserContact: () => AgentContact
+}
+
+const COORDINATOR_MESSAGE_PROMPT = `## Subagent messages
+
+- Branch on the delivered \`requestedAudience\`. For \`parent\`, answer from current
+  evidence or a safe authorized assumption without invoking a user route. For
+  \`user\`, consume the delivered \`user_via_parent\` capability: \`questionnaire\`
+  means ask through the UI; \`ferment_judge\` means call ask_user with its explicit
+  \`ferment_id\`; \`unavailable\` means choose the safest authorized assumption or a
+  blocker answer.
+- Reply with reply_to_agent_message and the original message ID. Supply explicit
+  max_turns and max_duration because a settled child needs bounded resume.
+- Every accepted question ends through reply_to_agent_message. If a user route
+  fails or becomes stale, send the safe-assumption or blocker answer through the
+  reply tool; never leave the thread open by only narrating the blocker.
+- Use steer_subagent only for urgent uncorrelated correction. Use
+  resume_subagent only for general continuation not tied to a message.
+- Never infer user reachability from TUI/RPC/ACP/headless mode names. Trust only
+  the supplied live capability. If a capability call fails or goes stale, send
+  the safe answer or blocker through reply_to_agent_message.
+- Do not broadcast. Parent-relay messages when agents are not listed peers.
+- A receipt is not completion. Verify final report and task state separately.`
+
+function formatParentAgentMessage(notification: AgentParentNotification, userContact?: AgentContact): string {
+	if (notification.kind === "delivery_failure") {
+		return `Agent message delivery failure: requestedAudience=parent message=${notification.messageId} source=${notification.sourceAgentId} target=${notification.targetAgentId} reason=${notification.reason}. ${notification.escapeHatch}`
+	}
+	const message = notification.message
+	const requestedAudience = message.recipient.type === "user" ? "user" : "parent"
+	const route = requestedAudience === "user" ? ` user_via_parent=${JSON.stringify(userContact)}` : ""
+	return `Agent message from ${message.sourceAgentId} message_id=${message.id} (${message.payload.kind}) requestedAudience=${requestedAudience}${route}: ${JSON.stringify(message.payload)}`
+}
+
 function getStatusInstruction(status: string, multiModelEnabled: boolean, abortReason?: AgentAbortReason): string {
 	if (status === "aborted" && abortReason === "token_budget") {
 		return "\nThe agent ran out of its token budget. Inspect the worker report before acting. Use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do not blindly retry the same prompt."
@@ -680,6 +727,15 @@ function readAgentTaskRef(params: Record<string, unknown>): AgentTaskRef | undef
 }
 
 export default function (pi: ExtensionAPI) {
+	const fermentRuntime = createDefaultFermentRuntime()
+	let parentCommunicationContext: ParentCommunicationContext | undefined
+
+	pi.on("before_agent_start", (event) => {
+		if (!pi.getActiveTools().includes("reply_to_agent_message")) return undefined
+		if (event.systemPrompt.includes("## Subagent messages")) return undefined
+		return { systemPrompt: `${event.systemPrompt}\n\n${COORDINATOR_MESSAGE_PROMPT}` }
+	})
+
 	pi.on("message_start", (event) => {
 		if (event.message.role === "user") budgetRetryBlock = undefined
 	})
@@ -965,8 +1021,75 @@ export default function (pi: ExtensionAPI) {
 		},
 	)
 	activeManager = manager
+	manager.setMessageEventHandler((event: AgentMessageEvent) => {
+		pi.events.emit("subagents:message", event)
+	})
 
 	pi.on("session_start", async (_event, ctx) => {
+		const rootSessionId = ctx.sessionManager.getSessionId()
+		const bound = manager.bindCommunicationRoot(rootSessionId)
+		if (!bound) {
+			const previousRootSessionId = parentCommunicationContext?.rootSessionId
+			if (parentCommunicationContext) parentCommunicationContext.active = false
+			parentCommunicationContext = undefined
+			manager.disableCommunication(previousRootSessionId)
+		}
+		if (bound) {
+			const context: ParentCommunicationContext = {
+				rootSessionId,
+				hasUI: ctx.hasUI,
+				active: true,
+				getJudgeRoute: () => {
+					if (!context.active || context.hasUI || pi.getFlag("ferment-oneshot") !== true) return undefined
+					const fermentId = fermentRuntime.getActiveId()
+					return fermentId ? { fermentId } : undefined
+				},
+				getUserContact: () => {
+					if (!context.active) return { reachable: false, route: "unavailable", reason: "The session is shut down." }
+					if (context.hasUI) return { reachable: true, route: "questionnaire" }
+					const judge = context.getJudgeRoute()
+					return judge
+						? { reachable: true, route: "ferment_judge", ferment_id: judge.fermentId }
+						: {
+								reachable: false,
+								route: "unavailable",
+								reason: "No live questionnaire or one-shot Ferment judge route is available.",
+							}
+				},
+			}
+			parentCommunicationContext = context
+			manager.registerParentBridge(rootSessionId, (notification, bridgeRoot) => {
+				const active = parentCommunicationContext
+				if (!active?.active || active.rootSessionId !== bridgeRoot || bridgeRoot !== rootSessionId) return false
+				const userContact =
+					notification.kind === "message" && notification.message.recipient.type === "user"
+						? active.getUserContact()
+						: undefined
+				if (
+					notification.kind === "message" &&
+					notification.message.recipient.type === "user" &&
+					!userContact?.reachable
+				)
+					return false
+				try {
+					pi.sendMessage(
+						{
+							customType: "agent-message",
+							content: formatParentAgentMessage(notification, userContact),
+							display: true,
+						},
+						{ deliverAs: "followUp", triggerTurn: true },
+					)
+					return true
+				} catch (err) {
+					if (isStaleCtxError(err)) return false
+					return false
+				}
+			})
+			manager.setUserContactResolver(rootSessionId, () => {
+				return context.getUserContact()
+			})
+		}
 		manager.clearCompleted()
 		// Re-discover custom agents using the new session's cwd, so a session
 		// that started in a different project picks up that project's
@@ -988,7 +1111,9 @@ export default function (pi: ExtensionAPI) {
 	activeWidget = widget
 	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (_event, _ctx) => {
+		if (parentCommunicationContext) parentCommunicationContext.active = false
+		manager.disableCommunication(parentCommunicationContext?.rootSessionId)
 		unsubCtrlB?.()
 		unsubCtrlB = undefined
 		unsubKill?.()
@@ -1173,6 +1298,12 @@ ${AGENT_TOOL_GUIDELINES}`,
 				isolated: Type.Optional(
 					Type.Boolean({
 						description: "If true, agent gets no extension/MCP tools - only built-in tools.",
+					}),
+				),
+				communication: Type.Optional(
+					Type.Union([Type.Literal("parent"), Type.Literal("group")], {
+						description:
+							"Opt in to host-mediated communication. parent allows parent/user-through-parent messages; group also permits host-authorized batch peers.",
 					}),
 				),
 				inherit_context: Type.Optional(
@@ -1372,6 +1503,12 @@ ${AGENT_TOOL_GUIDELINES}`,
 				const thinking = resolvedConfig.thinking
 				const inheritContext = resolvedConfig.inheritContext
 				const isolated = resolvedConfig.isolated
+				const requestedCommunication = params.communication
+				const communication: AgentCommunicationMode | undefined =
+					requestedCommunication === "parent" || requestedCommunication === "group" ? requestedCommunication : undefined
+				if (requestedCommunication != null && !communication) {
+					return textResult('communication must be either "parent" or "group".')
+				}
 				const taskRef = readAgentTaskRef(params)
 				if (taskRef && (params.max_turns == null || params.max_duration == null || params.token_budget == null)) {
 					return textResult(
@@ -1381,6 +1518,11 @@ ${AGENT_TOOL_GUIDELINES}`,
 				if (taskRef && isolated) {
 					return textResult(
 						"Agent task_ref cannot be used with isolated: true. Ferment-linked workers must have extension tools enabled so they can call submit_agent_report.",
+					)
+				}
+				if (communication && isolated) {
+					return textResult(
+						"Agent communication cannot be used with isolated: true because isolated agents have no extension tools.",
 					)
 				}
 				// The `visibility` field is intentionally NOT exposed in this tool's public schema -
@@ -1462,6 +1604,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 						id = manager.spawn(pi, ctx, subagentType, effectivePrompt, {
 							description: params.description as string,
 							visibility,
+							communication,
+							rootSessionId: ctx.sessionManager.getSessionId(),
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
 							maxTurns: effectiveMaxTurns,
 							tokenBudget: resolvedConfig.tokenBudget,
@@ -1608,6 +1752,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 					spawnedId = manager.spawn(pi, ctx, subagentType, effectivePrompt, {
 						description: params.description as string,
 						visibility,
+						communication,
+						rootSessionId: ctx.sessionManager.getSessionId(),
 						model: model as Parameters<typeof manager.spawn>[4]["model"],
 						maxTurns: effectiveMaxTurns,
 						tokenBudget: resolvedConfig.tokenBudget,
@@ -1791,6 +1937,39 @@ ${AGENT_TOOL_GUIDELINES}`,
 	)
 
 	registerResumeSubagentTool(pi, manager)
+
+	pi.registerTool(
+		defineTool({
+			name: "reply_to_agent_message",
+			label: "Reply to Agent Message",
+			description:
+				"Reply to one correlated agent message. The receipt confirms only queue acceptance or completion of a bounded continuation attempt.",
+			parameters: Type.Object({
+				message_id: Type.String(),
+				answer: Type.String(),
+				max_turns: Type.Integer({ minimum: 1 }),
+				max_duration: Type.Integer({ minimum: 1 }),
+				token_budget: Type.Optional(Type.Integer({ minimum: 1024 })),
+			}),
+			execute: async (toolCallId, params, signal, _onUpdate, ctx) =>
+				textResult(
+					JSON.stringify(
+						await manager.replyToAgentMessage(
+							ctx.sessionManager.getSessionId(),
+							params.message_id,
+							toolCallId,
+							params.answer,
+							{
+								maxTurns: params.max_turns,
+								maxDuration: params.max_duration,
+								tokenBudget: params.token_budget,
+							},
+							signal,
+						),
+					),
+				),
+		}),
+	)
 
 	// ---- get_subagent_result tool ----
 
