@@ -97,12 +97,4 @@ if (!isDev) {
 	}
 	mkdirSync(proxyHelperBinDest, { recursive: true })
 	cpSync(proxyHelperSrc, join(proxyHelperBinDest, proxyHelperName))
-
-	// Copy permanent project documentation (docs/) alongside the bundled assets so the
-	// compiled binary ships the markdown references (README/codex/ferment/etc.) that
-	// help text and AGENTS.md point users at.
-	const docsSrc = join(projectRoot, "docs")
-	const docsDest = join(projectRoot, "dist", "share", "kimchi", "docs")
-	mkdirSync(docsDest, { recursive: true })
-	cpSync(docsSrc, docsDest, { recursive: true })
 }

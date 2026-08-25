@@ -92,6 +92,6 @@ export async function printMergedHelp(): Promise<void> {
 	console.log(`  kimchi --continue                           ${dim("# resume the most recent session")}`)
 	console.log(`  kimchi claude -p "review this PR"           ${dim("# run Claude Code via Kimchi")}`)
 	console.log(
-		`  kimchi codex                                ${dim("# run Codex via Kimchi (run kimchi setup-tools first, see docs/codex.md)")}`,
+		`  kimchi codex                                ${dim("# run Codex via Kimchi (run kimchi setup-tools first)")}`,
 	)
 }
