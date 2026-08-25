@@ -384,6 +384,13 @@ describe("SkillManager", () => {
 			expect(bundled?.origin).toBe("bundled")
 		})
 
+		it("listInventory dedupes a harness skill that shadows a bundled one", async () => {
+			await bundledMgr.create("bundled-skill", "---\ndescription: y\n---\nHarness body.")
+			const inventory = await bundledMgr.listInventory()
+			expect(inventory.filter((s) => s.name === "bundled-skill")).toHaveLength(1)
+			expect(inventory.find((s) => s.name === "bundled-skill")?.origin).toBe("harness")
+		})
+
 		it("edit refuses to mutate a bundled skill", async () => {
 			const result = await bundledMgr.edit("bundled-skill", "---\ndescription: y\n---\nHacked.")
 			expect(result.success).toBe(false)

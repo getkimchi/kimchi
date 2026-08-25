@@ -76,7 +76,10 @@ function mapConfigPath(path: string, cwd: string, home: string): string {
 /**
  * Ordered skill roots, weakest first. Consumers that build a name→skill map
  * should let later occurrences override earlier ones, yielding the precedence
- * project > config > harness > bundled. Missing directories are skipped.
+ * project > config > harness > bundled. Missing `config` and `project`
+ * directories are skipped; the harness root is always included because it is
+ * the default writable root even when it has not been created yet, and the
+ * bundled root is included only when it resolves to an existing directory.
  */
 export function resolveSkillRoots(options: ResolveSkillRootsOptions): SkillRoot[] {
 	const home = options.homeDir ?? homedir()
