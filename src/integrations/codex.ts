@@ -4,7 +4,7 @@ import { writeJson } from "../config/json.js"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
 import type { ModelMetadata } from "../models.js"
-import { API_KEY_ENV, BASE_URL, PROVIDER_NAME } from "./constants.js"
+import { BASE_URL, PROVIDER_NAME } from "./constants.js"
 import { detectBinaryFactory } from "./detect.js"
 import { resolveModelRole } from "./models.js"
 import { register } from "./registry.js"
@@ -24,10 +24,10 @@ function tomlEscape(value: string): string {
 
 /**
  * Build the Codex config.toml body pointing at the kimchi proxy. The API
- * key is embedded directly via `experimental_bearer_token` so that Codex
- * works when launched directly (`codex`) — not just via `kimchi codex`.
+ * key is embedded directly as a static `Authorization` header so that
+ * Codex works when launched directly (`codex`) — not just via `kimchi codex`.
  *
- * @param apiKey     - Kimchi API key, written as the bearer token.
+ * @param apiKey     - Kimchi API key, written as a Bearer token in http_headers.
  * @param modelSlug  - Slug of the resolved "main" model, written to the top-level `model` key.
  * @param catalogPath - Resolved absolute path to the model catalog JSON file.
  */
@@ -42,7 +42,7 @@ model_catalog_json = "${escapedCatalogPath}"
 [model_providers.${PROVIDER_NAME}]
 name = "Kimchi Gateway"
 base_url = "${tomlEscape(BASE_URL)}"
-experimental_bearer_token = "${escapedKey}"
+http_headers = { Authorization = "Bearer ${escapedKey}" }
 wire_api = "responses"
 `
 }

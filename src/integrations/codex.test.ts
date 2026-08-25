@@ -19,7 +19,7 @@ describe("buildCodexToml", () => {
 		expect(out).toContain("[model_providers.kimchi]")
 		expect(out).toMatch(/name = "Kimchi Gateway"/)
 		expect(out).toMatch(/base_url = "https:\/\/llm\.kimchi\.dev\/openai\/v1"/)
-		expect(out).toMatch(/experimental_bearer_token = "test-key"/)
+		expect(out).toMatch(/http_headers = \{ Authorization = "Bearer test-key" \}/)
 		expect(out).toMatch(/wire_api = "responses"/)
 	})
 
@@ -41,7 +41,7 @@ describe("mergeCodexToml", () => {
 		const existing = `[model_providers.kimchi]
 name = "Kimchi Gateway"
 base_url = "https://llm.kimchi.dev/openai/v1"
-experimental_bearer_token = "old-key"
+http_headers = { Authorization = "Bearer old-key" }
 wire_api = "responses"
 `
 		const merged = mergeCodexToml(existing, fresh)
@@ -60,7 +60,7 @@ enabled = true
 [model_providers.kimchi]
 name = "Kimchi Gateway"
 base_url = "https://llm.kimchi.dev/openai/v1"
-experimental_bearer_token = "old-key"
+http_headers = { Authorization = "Bearer old-key" }
 wire_api = "responses"
 
 [features]
@@ -84,7 +84,7 @@ root = "/Users/me/code"
 		const existing = `[model_providers.kimchi]
 name = "Old Name"
 base_url = "https://old.example/v1"
-experimental_bearer_token = "old-key"
+http_headers = { Authorization = "Bearer old-key" }
 wire_api = "chat"
 
 [features]
@@ -403,7 +403,7 @@ model_catalog_json = "/old-catalog.json"
 [model_providers.kimchi]
 name = "Old"
 base_url = "https://old.example/v1"
-env_key = "OLD"
+http_headers = { Authorization = "Bearer old-key" }
 wire_api = "chat"
 
 [features]
