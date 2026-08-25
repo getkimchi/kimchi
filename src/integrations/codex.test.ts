@@ -265,6 +265,94 @@ describe("buildModelCatalog", () => {
 			expect(entry.experimental_supported_tools).toEqual([])
 		}
 	})
+
+	it("produces correct catalog for Slack-thread models (m3, k2.7, glm, deepseek, nemotron)", () => {
+		// The exact model set captured in the original Slack thread. Each entry
+		// carries the specific context window and reasoning capability that the
+		// catalog must reproduce verbatim.
+		const SLACK_THREAD_MODELS: readonly import("../models.js").ModelMetadata[] = [
+			{
+				slug: "minimax-m3",
+				display_name: "MiniMax M3",
+				provider: "kimchi",
+				reasoning: true,
+				input_modalities: ["text"],
+				is_serverless: true,
+				limits: { context_window: 1_048_576, max_output_tokens: 32_768 },
+			},
+			{
+				slug: "kimi-k2.7",
+				display_name: "Kimi K2.7",
+				provider: "kimchi",
+				reasoning: true,
+				input_modalities: ["text", "image"],
+				is_serverless: true,
+				limits: { context_window: 262_144, max_output_tokens: 32_768 },
+			},
+			{
+				slug: "glm-5.2-fp8",
+				display_name: "GLM 5.2 FP8",
+				provider: "kimchi",
+				reasoning: true,
+				input_modalities: ["text"],
+				is_serverless: true,
+				limits: { context_window: 1_048_576, max_output_tokens: 32_768 },
+			},
+			{
+				slug: "deepseek-v4-flash",
+				display_name: "DeepSeek V4 Flash",
+				provider: "kimchi",
+				reasoning: false,
+				input_modalities: ["text"],
+				is_serverless: true,
+				limits: { context_window: 1_048_576, max_output_tokens: 32_768 },
+			},
+			{
+				slug: "nemotron-3-ultra-fp4",
+				display_name: "Nemotron 3 Ultra FP4",
+				provider: "kimchi",
+				reasoning: false,
+				input_modalities: ["text"],
+				is_serverless: true,
+				limits: { context_window: 1_048_576, max_output_tokens: 32_768 },
+			},
+		]
+
+		const catalog = buildModelCatalog(SLACK_THREAD_MODELS)
+		expect(catalog.models).toHaveLength(5)
+
+		// Reasoning models — minimax-m3, kimi-k2.7, glm-5.2-fp8
+		const minimax = catalog.models.find((m) => m.slug === "minimax-m3")
+		expect(minimax?.context_window).toBe(1_048_576)
+		expect(minimax?.supports_reasoning_summaries).toBe(true)
+		expect(minimax?.support_verbosity).toBe(true)
+		expect(minimax?.supported_reasoning_levels).toHaveLength(3)
+
+		const kimi = catalog.models.find((m) => m.slug === "kimi-k2.7")
+		expect(kimi?.context_window).toBe(262_144)
+		expect(kimi?.supports_reasoning_summaries).toBe(true)
+		expect(kimi?.support_verbosity).toBe(true)
+		expect(kimi?.supported_reasoning_levels).toHaveLength(3)
+
+		const glm = catalog.models.find((m) => m.slug === "glm-5.2-fp8")
+		expect(glm?.context_window).toBe(1_048_576)
+		expect(glm?.supports_reasoning_summaries).toBe(true)
+		expect(glm?.support_verbosity).toBe(true)
+		expect(glm?.supported_reasoning_levels).toHaveLength(3)
+
+		// Non-reasoning models — deepseek-v4-flash, nemotron-3-ultra-fp4
+		const deepseek = catalog.models.find((m) => m.slug === "deepseek-v4-flash")
+		expect(deepseek?.context_window).toBe(1_048_576)
+		expect(deepseek?.supports_reasoning_summaries).toBe(false)
+		expect(deepseek?.support_verbosity).toBe(false)
+		expect(deepseek?.supported_reasoning_levels).toEqual([])
+
+		const nemotron = catalog.models.find((m) => m.slug === "nemotron-3-ultra-fp4")
+		expect(nemotron?.context_window).toBe(1_048_576)
+		expect(nemotron?.supports_reasoning_summaries).toBe(false)
+		expect(nemotron?.support_verbosity).toBe(false)
+		expect(nemotron?.supported_reasoning_levels).toEqual([])
+	})
 })
 
 describe("codex tool registration", () => {
