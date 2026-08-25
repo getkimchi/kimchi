@@ -24,20 +24,17 @@ function tomlEscape(value: string): string {
 
 /**
  * Build the Codex config.toml body pointing at the kimchi proxy. The API
- * key is referenced by env var (`env_key`) rather than embedded in the
- * file so the file can be shared without leaking credentials.
+ * key is embedded directly via `experimental_bearer_token` so that Codex
+ * works when launched directly (`codex`) — not just via `kimchi codex`.
  *
- * @param apiKey     - Reserved for parity with the other tool writers; Codex reads the key from $KIMCHI_API_KEY at runtime.
+ * @param apiKey     - Kimchi API key, written as the bearer token.
  * @param modelSlug  - Slug of the resolved "main" model, written to the top-level `model` key.
  * @param catalogPath - Resolved absolute path to the model catalog JSON file.
  */
 export function buildCodexToml(apiKey: string, modelSlug: string, catalogPath: string): string {
-	// apiKey is intentionally unused: Codex pulls it from the env var named
-	// by `env_key` below. Keeping it in the signature keeps the writer's
-	// shape identical to the other integrations.
-	void apiKey
 	const escapedSlug = tomlEscape(modelSlug)
 	const escapedCatalogPath = tomlEscape(catalogPath)
+	const escapedKey = tomlEscape(apiKey)
 	return `model_provider = "${PROVIDER_NAME}"
 model = "${escapedSlug}"
 model_catalog_json = "${escapedCatalogPath}"
@@ -45,7 +42,7 @@ model_catalog_json = "${escapedCatalogPath}"
 [model_providers.${PROVIDER_NAME}]
 name = "Kimchi Gateway"
 base_url = "${tomlEscape(BASE_URL)}"
-env_key = "${API_KEY_ENV}"
+experimental_bearer_token = "${escapedKey}"
 wire_api = "responses"
 `
 }

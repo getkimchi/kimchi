@@ -8,18 +8,18 @@ import { byId } from "./registry.js"
 
 describe("buildCodexToml", () => {
 	it("emits the three top-level keys Codex needs", () => {
-		const out = buildCodexToml("ignored-key", "kimi-k2.6", "/home/u/.codex/model_catalog.json")
+		const out = buildCodexToml("test-key", "kimi-k2.6", "/home/u/.codex/model_catalog.json")
 		expect(out).toMatch(/^model_provider = "kimchi"\n/m)
 		expect(out).toMatch(/^model = "kimi-k2\.6"\n/m)
 		expect(out).toMatch(/^model_catalog_json = "\/home\/u\/\.codex\/model_catalog\.json"\n/m)
 	})
 
 	it("emits the [model_providers.kimchi] table with the gateway endpoints", () => {
-		const out = buildCodexToml("ignored-key", "kimi-k2.6", "/catalog.json")
+		const out = buildCodexToml("test-key", "kimi-k2.6", "/catalog.json")
 		expect(out).toContain("[model_providers.kimchi]")
 		expect(out).toMatch(/name = "Kimchi Gateway"/)
 		expect(out).toMatch(/base_url = "https:\/\/llm\.kimchi\.dev\/openai\/v1"/)
-		expect(out).toMatch(/env_key = "KIMCHI_API_KEY"/)
+		expect(out).toMatch(/experimental_bearer_token = "test-key"/)
 		expect(out).toMatch(/wire_api = "responses"/)
 	})
 
@@ -41,7 +41,7 @@ describe("mergeCodexToml", () => {
 		const existing = `[model_providers.kimchi]
 name = "Kimchi Gateway"
 base_url = "https://llm.kimchi.dev/openai/v1"
-env_key = "KIMCHI_API_KEY"
+experimental_bearer_token = "old-key"
 wire_api = "responses"
 `
 		const merged = mergeCodexToml(existing, fresh)
@@ -60,7 +60,7 @@ enabled = true
 [model_providers.kimchi]
 name = "Kimchi Gateway"
 base_url = "https://llm.kimchi.dev/openai/v1"
-env_key = "KIMCHI_API_KEY"
+experimental_bearer_token = "old-key"
 wire_api = "responses"
 
 [features]
@@ -84,7 +84,7 @@ root = "/Users/me/code"
 		const existing = `[model_providers.kimchi]
 name = "Old Name"
 base_url = "https://old.example/v1"
-env_key = "OLD_ENV"
+experimental_bearer_token = "old-key"
 wire_api = "chat"
 
 [features]
@@ -93,7 +93,7 @@ multi_agent = true
 		const merged = mergeCodexToml(existing, fresh)
 		expect(merged).not.toContain("Old Name")
 		expect(merged).not.toContain("old.example")
-		expect(merged).not.toContain("OLD_ENV")
+		expect(merged).not.toContain("old-key")
 		expect(merged).not.toContain('wire_api = "chat"')
 		// The fresh block contains exactly one [model_providers.kimchi] header.
 		expect(merged.match(/\[model_providers\.kimchi\]/g)?.length).toBe(1)
