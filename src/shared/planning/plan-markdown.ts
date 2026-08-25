@@ -7,7 +7,7 @@
  * | Flow | Written when | Filename |
  * |---|---|---|
  * | adhoc plan mode | plan is produced (completion-marker `turn_end`) | `<slug-of-plan-title>.md` |
- * | ferment scoping | `propose_ferment_scoping` builds the plan | `<slug>-<first8(fermentId)>.md` |
+ * | ferment scoping | `propose_ferment_scoping` builds the plan | `ferment-<slug>-<first12(fermentId)>.md` |
  *
  * All files land under `<cwd>/.kimchi/plans/`. Saving is overwrite-in-place:
  * a reworked plan replaces the same file rather than creating a new one.
@@ -33,6 +33,25 @@ export const PLAN_DIR = ".kimchi/plans"
  */
 export const PLAN_LOCATION_NOTE =
 	"Completed plans are saved automatically by the harness to `.kimchi/plans/<slug>.md` — one file per plan, updated in place when the plan changes. Do not write plan files yourself."
+
+/**
+ * Context-aware plan persistence note for prompt injection. When the harness
+ * saves plans (plan permission mode, ferment scoping), use `persistence: "harness"`
+ * to tell the model not to write plan files itself. When an agent must write
+ * the plan file (e.g. delegated Plan agent in orchestration mode), use
+ * `persistence: "agent"` with the optional `activePlanPath` so the model knows
+ * the exact file to continue from after a resume or compaction.
+ */
+export function generatePlanPersistenceNote(opts: {
+	persistence: "harness" | "agent"
+	activePlanPath?: string
+}): string {
+	const location = opts.activePlanPath ?? "`.kimchi/plans/<slug>.md`"
+	if (opts.persistence === "harness") {
+		return `Completed plans are saved automatically by the harness to ${location} — one file per plan, updated in place when the plan changes. Do not write plan files yourself.`
+	}
+	return `Write the completed plan to ${location} — one file per plan, updated in place when the plan changes. The file path must be returned in the \`files\` array of your response.`
+}
 
 const PLAN_COMPLETE_MARKER = "<!-- PLAN_COMPLETE -->"
 const DONE_MARKER = "<done>"
@@ -84,12 +103,15 @@ export function stripPlanCompletionMarkers(text: string): string {
 }
 
 /**
- * Deterministic filename stem for a ferment's plan file: kebab-case ferment
- * name plus the first 8 chars of the ferment id. The id suffix keeps plans
- * from same-named ferments distinct; the slug keeps the filename readable.
+ * Deterministic filename stem for a ferment's plan file: `ferment-` prefix,
+ * kebab-case ferment name, and the first 12 chars of the ferment id. The
+ * `ferment-` prefix keeps ferment plans visually separate from adhoc plans.
+ * The 12-char id suffix avoids collisions between same-named ferments whose
+ * UUIDv7 ids share a time-based prefix (the first 8 chars can collide for
+ * ferments created close together).
  */
 export function fermentPlanFileName(fermentName: string, fermentId: string): string {
-	return `${slugifyPlanName(fermentName)}-${fermentId.slice(0, 8)}`
+	return `ferment-${slugifyPlanName(fermentName)}-${fermentId.slice(0, 12)}`
 }
 
 export interface SavePlanMarkdownOptions {

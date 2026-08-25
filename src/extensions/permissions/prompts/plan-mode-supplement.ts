@@ -1,4 +1,4 @@
-import { PLAN_LOCATION_NOTE } from "../../../shared/planning/plan-markdown.js"
+import { generatePlanPersistenceNote } from "../../../shared/planning/plan-markdown.js"
 import { SHARED_PLANNING_PROCESS } from "../../../shared/planning/shared-planning-process.js"
 
 const PLAN_COMPLETE_MARKER = "<!-- PLAN_COMPLETE -->"
@@ -40,4 +40,4 @@ STEP 5 (Plan):
 
 ## Plan File Persistence
 
-${PLAN_LOCATION_NOTE}`
+${generatePlanPersistenceNote({ persistence: "harness" })}`

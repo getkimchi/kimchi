@@ -70,7 +70,9 @@ describe("stripPlanCompletionMarkers", () => {
 
 describe("fermentPlanFileName", () => {
 	it("combines slug and first 8 chars of the ferment id", () => {
-		expect(fermentPlanFileName("Auth Refactor", "019e3a34-ac30-751e-931b-9ddb0c229da3")).toBe("auth-refactor-019e3a34")
+		expect(fermentPlanFileName("Auth Refactor", "019e3a34-ac30-751e-931b-9ddb0c229da3")).toBe(
+			"ferment-auth-refactor-019e3a34-ac3",
+		)
 	})
 })
 
@@ -106,10 +108,10 @@ describe("savePlanMarkdown", () => {
 	})
 
 	it("writes distinct files for distinct ferment plan names", () => {
-		savePlanMarkdown({ cwd: tmpDir, name: fermentPlanFileName("A", "11111111-aaaa"), planText: "a\n" })
-		savePlanMarkdown({ cwd: tmpDir, name: fermentPlanFileName("A", "22222222-bbbb"), planText: "b\n" })
+		savePlanMarkdown({ cwd: tmpDir, name: fermentPlanFileName("A", "11111111-aaaa-2222"), planText: "a\n" })
+		savePlanMarkdown({ cwd: tmpDir, name: fermentPlanFileName("A", "22222222-bbbb-3333"), planText: "b\n" })
 		const files = readdirSync(join(tmpDir, ".kimchi", "plans")).sort()
-		expect(files).toEqual(["a-11111111.md", "a-22222222.md"])
+		expect(files).toEqual(["ferment-a-11111111-aaa.md", "ferment-a-22222222-bbb.md"])
 	})
 
 	it("propagates filesystem errors instead of swallowing them", () => {

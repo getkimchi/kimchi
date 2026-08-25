@@ -1520,7 +1520,7 @@ describe("propose_ferment_scoping", () => {
 
 			const result = ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
 
-			const planFile = join(h.tempDir, ".kimchi", "plans", `headless-save-${id.slice(0, 8)}.md`)
+			const planFile = join(h.tempDir, ".kimchi", "plans", `ferment-headless-save-${id.slice(0, 12)}.md`)
 			expect(existsSync(planFile)).toBe(true)
 			const saved = readFileSync(planFile, "utf-8")
 			expect(saved).toContain("# Plan: Proposed Ferment")
@@ -1539,14 +1539,14 @@ describe("propose_ferment_scoping", () => {
 			const ctx = createContext({ cwd: h.tempDir })
 
 			ok(await h.call("propose_ferment_scoping", basePayload(id, { title: "First Draft" }), ctx))
-			const planFile = join(h.tempDir, ".kimchi", "plans", `overwrite-${id.slice(0, 8)}.md`)
+			const planFile = join(h.tempDir, ".kimchi", "plans", `ferment-overwrite-${id.slice(0, 12)}.md`)
 			expect(existsSync(planFile)).toBe(true)
 
 			// Re-propose with the same ferment id overwrites the same file slot.
 			const second = ok(await h.call("propose_ferment_scoping", basePayload(id, { goal: "Build a better thing" }), ctx))
 
 			const plansDir = join(h.tempDir, ".kimchi", "plans")
-			expect(readdirSync(plansDir)).toEqual([`overwrite-${id.slice(0, 8)}.md`])
+			expect(readdirSync(plansDir)).toEqual([`ferment-overwrite-${id.slice(0, 12)}.md`])
 			const saved = readFileSync(planFile, "utf-8")
 			expect(saved).toContain("Build a better thing")
 			expect(second).toContain(`Plan file: ${planFile}`)
@@ -1559,7 +1559,7 @@ describe("propose_ferment_scoping", () => {
 
 			ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
 
-			const planFile = join(h.tempDir, ".kimchi", "plans", `survive-confirm-${id.slice(0, 8)}.md`)
+			const planFile = join(h.tempDir, ".kimchi", "plans", `ferment-survive-confirm-${id.slice(0, 12)}.md`)
 			expect(existsSync(planFile)).toBe(true)
 			const savedBefore = readFileSync(planFile, "utf-8")
 
