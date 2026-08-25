@@ -133,10 +133,6 @@ export function buildHandoffNote(input: HandoffNoteInput): string {
 		// gitCredential carries only the host — never the token itself (secret).
 		`Git identity provisioned in sandbox: ${input.gitIdentityProvisioned ? "yes" : "no"}. Git credential: ${input.gitCredential ? `provisioned for ${input.gitCredential.host}` : "not provisioned"}.`,
 		"",
-		// Name devkit as the install path: the sandbox-side system prompt (see
-		// the sandbox-environment extension) carries the full devkit guidance for
-		// every sandbox session; this note only needs to replace the local-machine
-		// install assumptions baked into the replayed history.
 		`History is not fully replayable here: earlier turns may show tools, files, or authenticated commands from the previous machine that would fail now. Verify tool availability with \`command -v <tool>\` and install missing tools with \`devkit install <tool>\` before relying on earlier results.`,
 	)
 
