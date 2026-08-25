@@ -333,6 +333,19 @@ describe("prompt enrichment Claude Code skills", () => {
 		expect(result.systemPrompt).toContain("Use safe TypeScript patterns")
 	})
 
+	it("injects bundled skills shipped with the harness (no home-dir deploy)", async () => {
+		const cwd = join(dir, "project")
+		mkdirSync(cwd, { recursive: true })
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([])
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
+
+		// resources/skills/improve ships in-repo; the dev bundled root should surface it
+		expect(result.systemPrompt).toContain("<available_skills>")
+		expect(result.systemPrompt).toContain("<name>improve</name>")
+	})
+
 	it("contributes Kimchi project skills through resources_discover", async () => {
 		const cwd = join(dir, "project", "src")
 		const projectSkillPath = join(dir, "project", ".kimchi", "skills")
@@ -419,7 +432,8 @@ describe("prompt enrichment Claude Code skills", () => {
 
 		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
 
-		expect(result.systemPrompt).not.toContain("<available_skills>")
+		// Bundled harness skills legitimately render an <available_skills> section;
+		// the contract here is that the ancestor .claude skill is not injected.
 		expect(result.systemPrompt).not.toContain("typescript-safety")
 	})
 

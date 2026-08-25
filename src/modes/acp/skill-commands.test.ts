@@ -16,6 +16,7 @@ import {
 	buildSkillAvailableCommands,
 	buildSkillCommandPrompt,
 	buildSkillListBlock,
+	type DiscoverAcpSkillCommandsOptions,
 	discoverAcpSkillCommands,
 	tryParseSkillCommand,
 } from "./skill-commands.js"
@@ -27,15 +28,28 @@ describe("discoverAcpSkillCommands", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "acp-skills-"))
 	})
 
+	// Disable the bundled root and absolute-ize the skill paths so tests only see
+	// skills they create themselves (DEFAULT_SKILL_PATHS expand against the real home).
+	const testOpts = (): DiscoverAcpSkillCommandsOptions => ({
+		homeDir: tmpDir,
+		bundledDir: null,
+		includePackageDirs: false,
+		skillPaths: [
+			join(tmpDir, ".config", "kimchi", "harness", "skills"),
+			join(tmpDir, ".pi", "agent", "skills"),
+			join(tmpDir, ".claude", "skills"),
+		],
+	})
+
 	it("discovers native skills under DEFAULT_SKILL_PATHS relative to cwd", () => {
 		makeSkill(join(tmpDir, ".pi", "agent", "skills"), "test-pi", "Pi skill description")
-		const skills = discoverAcpSkillCommands(tmpDir, { homeDir: tmpDir })
+		const skills = discoverAcpSkillCommands(tmpDir, testOpts())
 		expect(skills).toContainEqual(expect.objectContaining({ name: "test-pi", description: "Pi skill description" }))
 	})
 
 	it("discovers native skills under ~/.config/kimchi/harness/skills", () => {
 		makeSkill(join(tmpDir, ".config", "kimchi", "harness", "skills"), "test-harness", "Harness skill description")
-		const skills = discoverAcpSkillCommands(tmpDir, { homeDir: tmpDir })
+		const skills = discoverAcpSkillCommands(tmpDir, testOpts())
 		expect(skills).toContainEqual(
 			expect.objectContaining({ name: "test-harness", description: "Harness skill description" }),
 		)
@@ -43,29 +57,37 @@ describe("discoverAcpSkillCommands", () => {
 
 	it("discovers Claude Code skills under .claude/skills", () => {
 		makeSkill(join(tmpDir, ".claude", "skills"), "test-claude", "Claude skill description")
-		const skills = discoverAcpSkillCommands(tmpDir, { homeDir: tmpDir })
+		const skills = discoverAcpSkillCommands(tmpDir, testOpts())
 		expect(skills).toContainEqual(
 			expect.objectContaining({ name: "test-claude", description: "Claude skill description" }),
 		)
 	})
 
+	it("discovers bundled skills (shipped with the harness) in the weakest slot", () => {
+		const bundled = join(tmpDir, "bundled-skills")
+		makeSkill(bundled, "improve", "Bundled skill description")
+		makeSkill(join(tmpDir, ".pi", "agent", "skills"), "improve", "User override")
+		const skills = discoverAcpSkillCommands(tmpDir, { ...testOpts(), bundledDir: bundled })
+		expect(skills).toContainEqual(expect.objectContaining({ name: "improve", description: "User override" }))
+	})
+
 	it("returns skills sorted by name", () => {
 		makeSkill(join(tmpDir, ".claude", "skills"), "zebra", "Zebra skill")
 		makeSkill(join(tmpDir, ".claude", "skills"), "alpha", "Alpha skill")
-		const skills = discoverAcpSkillCommands(tmpDir, { homeDir: tmpDir })
+		const skills = discoverAcpSkillCommands(tmpDir, testOpts())
 		expect(skills.map((s) => s.name)).toEqual(["alpha", "zebra"])
 	})
 
-	it("later sources override earlier sources on name collision", () => {
+	it("strongest source wins on name collision (matches prompt-enrichment's first-wins)", () => {
 		makeSkill(join(tmpDir, ".pi", "agent", "skills"), "shared", "Pi version")
 		makeSkill(join(tmpDir, ".claude", "skills"), "shared", "Claude version")
-		const skills = discoverAcpSkillCommands(tmpDir, { homeDir: tmpDir })
+		const skills = discoverAcpSkillCommands(tmpDir, testOpts())
 		const shared = skills.find((s) => s.name === "shared")
-		expect(shared?.description).toBe("Claude version")
+		expect(shared?.description).toBe("Pi version")
 	})
 
 	it("returns an empty array when no skill directories exist", () => {
-		const skills = discoverAcpSkillCommands(tmpDir, { homeDir: tmpDir })
+		const skills = discoverAcpSkillCommands(tmpDir, testOpts())
 		expect(skills).toEqual([])
 	})
 })
@@ -134,7 +156,12 @@ describe("tryParseSkillCommand", () => {
 describe("buildSkillListBlock", () => {
 	it("returns an empty string when no skills are discovered", () => {
 		const dir = mkdtempSync(join(tmpdir(), "acp-no-skills-"))
-		const block = buildSkillListBlock(dir, { homeDir: dir })
+		const block = buildSkillListBlock(dir, {
+			homeDir: dir,
+			bundledDir: null,
+			skillPaths: [],
+			includePackageDirs: false,
+		})
 		expect(block).toBe("")
 	})
 
@@ -143,7 +170,11 @@ describe("buildSkillListBlock", () => {
 		makeSkill(join(dir, ".pi", "agent", "skills"), "pi-skill", "Pi skill description")
 		makeSkill(join(dir, ".claude", "skills"), "claude-skill", "Claude skill description")
 
-		const block = buildSkillListBlock(dir)
+		const block = buildSkillListBlock(dir, {
+			bundledDir: null,
+			includePackageDirs: false,
+			skillPaths: [join(dir, ".pi", "agent", "skills"), join(dir, ".claude", "skills")],
+		})
 		expect(block).toContain("## Available Skills")
 		expect(block).toContain("Use the Skill tool")
 		expect(block).toContain("/skill:<name>")

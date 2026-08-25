@@ -36,18 +36,11 @@ import {
 	type Skill,
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
-import { isResourceEnabled } from "../../resources/store.js"
+import { resolvePromptSkillPaths } from "../../shared/skill-discovery/resolve-prompt-skill-paths.js"
 import { getKimchiProjectSkillPaths } from "../../skill-paths.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
-import {
-	CLAUDE_CODE_SKILLS_RESOURCE_ID,
-	getClaudeCodeSkillResourcePaths,
-	getConfiguredNativeSkillNames,
-	getConfiguredSkillResourcePaths,
-} from "../claude-code-skills/definition.js"
 import { bumpStallCounter } from "../ferment/todo-sync.js"
 import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
@@ -509,17 +502,10 @@ export default function (skillPaths: string[]) {
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
 			cachedContextFiles ??= [...loadGlobalContextFiles(), ...loadProjectContextFiles(ctx.cwd)]
 			if (cachedSkills === undefined) {
-				const configuredNativeSkillNames = getConfiguredNativeSkillNames(ctx.cwd, skillPaths)
-				const allSkillPaths = Array.from(
-					new Set([
-						...getKimchiProjectSkillPaths(ctx.cwd),
-						...getConfiguredSkillResourcePaths(ctx.cwd, skillPaths),
-						...(isResourceEnabled(CLAUDE_CODE_SKILLS_RESOURCE_ID)
-							? getClaudeCodeSkillResourcePaths(ctx.cwd, { excludeSkillNames: configuredNativeSkillNames })
-							: []),
-						...getInstalledPackageResourceDirs(ctx.cwd, "skills"),
-					]),
-				)
+				// Prompt-time skill path composition (which kinds participate and
+				// in what order) lives in shared/skill-discovery so this consumer and
+				// ACP skill-commands discover the same skills with the same rules.
+				const allSkillPaths = resolvePromptSkillPaths({ cwd: ctx.cwd, skillPaths })
 				cachedSkills = loadSkills({
 					cwd: ctx.cwd,
 					agentDir: getAgentDir(),

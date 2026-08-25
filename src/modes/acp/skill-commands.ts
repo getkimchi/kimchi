@@ -1,8 +1,8 @@
 import { readFile } from "node:fs/promises"
 import type { AvailableCommand } from "@agentclientprotocol/sdk"
 import { loadSkillsFromDir, stripFrontmatter } from "@earendil-works/pi-coding-agent"
-import { listAvailableSkillNames } from "../../extensions/agents/prompt/skill-loader.js"
-import { getClaudeCodeSkillResourcePaths } from "../../extensions/claude-code-skills/definition.js"
+import { DEFAULT_SKILL_PATHS } from "../../config.js"
+import { resolvePromptSkillPaths } from "../../shared/skill-discovery/resolve-prompt-skill-paths.js"
 
 export interface AcpSkillInfo {
 	readonly name: string
@@ -13,45 +13,53 @@ export interface AcpSkillInfo {
 export interface DiscoverAcpSkillCommandsOptions {
 	/** Override for os.homedir(), useful for tests. Defaults to homedir(). */
 	readonly homeDir?: string
+	/** Configured skill resource paths; defaults to DEFAULT_SKILL_PATHS. Override in tests for hermetic discovery. */
+	readonly skillPaths?: readonly string[]
+	/** Whether Claude Code skills participate; defaults to the extension's resource toggle. */
+	readonly includeClaudeCodeSkills?: boolean
+	/** Whether installed-package skill dirs participate; defaults to true. Tests disable for hermetic discovery. */
+	readonly includePackageDirs?: boolean
+	/** Override for the bundled skills dir; `null` disables it (set in tests for isolation). */
+	readonly bundledDir?: string | null
 }
 
 /**
  * Discover all skills that should be advertised as ACP slash commands for the
- * given working directory. Native skills from DEFAULT_SKILL_PATHS and Claude
- * Code skills under .claude/skills are both included; later sources override
- * earlier ones on name collisions.
+ * given working directory. Uses the same prompt-time composition as
+ * prompt-enrichment (project > configured > Claude Code > packages > bundled,
+ * strongest-first first-wins on name collisions) so the skills a user sees in
+ * the prompt and over ACP are always the same set.
  */
 export function discoverAcpSkillCommands(cwd: string, options: DiscoverAcpSkillCommandsOptions = {}): AcpSkillInfo[] {
 	const byName = new Map<string, AcpSkillInfo>()
 
-	for (const skill of listAvailableSkillNames(cwd, { homeDir: options.homeDir })) {
-		byName.set(skill.name, skill)
-	}
-
-	for (const skill of discoverClaudeCodeSkills(cwd)) {
-		byName.set(skill.name, skill)
-	}
-
-	return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name))
-}
-
-function discoverClaudeCodeSkills(cwd: string): AcpSkillInfo[] {
-	const skills: AcpSkillInfo[] = []
-	for (const dir of getClaudeCodeSkillResourcePaths(cwd)) {
+	for (const dir of resolvePromptSkillPaths({
+		cwd,
+		skillPaths: options.skillPaths ?? DEFAULT_SKILL_PATHS,
+		homeDir: options.homeDir,
+		bundledDir: options.bundledDir,
+		includeClaudeCodeSkills: options.includeClaudeCodeSkills,
+		includePackageDirs: options.includePackageDirs,
+	})) {
 		try {
-			const { skills: loaded } = loadSkillsFromDir({ dir, source: dir })
-			for (const skill of loaded) {
-				skills.push({
-					name: skill.name,
-					description: skill.description ?? "",
-					filePath: skill.filePath,
-				})
+			const { skills } = loadSkillsFromDir({ dir, source: dir })
+			for (const skill of skills) {
+				// Paths arrive strongest-first; keep the first occurrence (first-wins),
+				// matching pi's loadSkills collision semantics.
+				if (!byName.has(skill.name)) {
+					byName.set(skill.name, {
+						name: skill.name,
+						description: skill.description ?? "",
+						filePath: skill.filePath,
+					})
+				}
 			}
 		} catch {
 			// Directory missing or unreadable — skip silently.
 		}
 	}
-	return skills
+
+	return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name))
 }
 
 function skillCommandName(skillName: string): string {
@@ -74,7 +82,10 @@ export function buildSkillAvailableCommands(skills: readonly AcpSkillInfo[]): Av
  */
 export function buildSkillListBlock(
 	cwd: string,
-	options: Pick<DiscoverAcpSkillCommandsOptions, "homeDir"> = {},
+	options: Pick<
+		DiscoverAcpSkillCommandsOptions,
+		"homeDir" | "bundledDir" | "skillPaths" | "includeClaudeCodeSkills" | "includePackageDirs"
+	> = {},
 ): string {
 	const skills = discoverAcpSkillCommands(cwd, options)
 	if (skills.length === 0) return ""
