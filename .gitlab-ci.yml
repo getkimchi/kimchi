@@ -96,6 +96,7 @@ include:
       tasks: $[[ inputs.tasks ]]
       model: $[[ inputs.model ]]
       kimchi_ferment_oneshot: $[[ inputs.kimchi_ferment_oneshot ]]
+      kimchi_goal: $[[ inputs.kimchi_goal ]]
       analyze_results: $[[ inputs.analyze_results ]]
       retry_agent_timeout: $[[ inputs.retry_agent_timeout ]]
       parallelism: $[[ inputs.parallelism ]]

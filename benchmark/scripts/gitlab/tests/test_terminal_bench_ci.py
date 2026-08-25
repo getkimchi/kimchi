@@ -21,8 +21,11 @@ def _job_block(config: str, job_name: str, next_job_name: str) -> str:
 
 
 def test_deep_swe_forwards_goal_mode_to_chunk_runner() -> None:
+    root = ROOT_CI_CONFIG.read_text(encoding="utf-8")
+    deep_include = root[root.index("- local: /.gitlab/ci/deep-swe.yml") :]
     config = DEEP_CI_CONFIG.read_text(encoding="utf-8")
 
+    assert "kimchi_goal: $[[ inputs.kimchi_goal ]]" in deep_include
     assert 'KIMCHI_GOAL: "$[[ inputs.kimchi_goal ]]"' in config
 
 
