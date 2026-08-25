@@ -38,6 +38,8 @@ export interface PlanReviewDecisionPayload {
 	readonly source: PlanReviewDecisionSource
 	readonly planReviewSource: PlanReviewSource
 	readonly fermentId?: string
+	/** Ferment-only: user picked "start in auto mode" — run all stages without stopping. */
+	readonly auto?: boolean
 }
 
 export interface PlanReviewContext {

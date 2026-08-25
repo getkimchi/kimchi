@@ -17,6 +17,7 @@ import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-regis
 import {
 	consumePlanReviewContext,
 	emitPlanReviewDecision,
+	emitPlanReviewRequest,
 	onPlanReviewDecision,
 	onPlanReviewRequest,
 	type PlanReviewDecisionPayload,
@@ -163,11 +164,19 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		if (!isCurrentPendingReview(review)) return
 
 		planReviewRunning = true
+		// Unsubscribed when this review resolves; otherwise one listener would
+		// accumulate on the shared event bus for every review ever presented.
+		// `dismissReview` is assigned lazily by the prompt via onDismissRegister.
+		let dismissReview: (() => void) | undefined
+		const unsubscribeDismiss = onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
+			if (payload.planReviewSource !== "ferment") return
+			if (payload.source !== "plannotator") return
+			dismissReview?.()
+		})
 		try {
 			// promptPlanReview is TUI-only and returns undefined without prompting
 			// in other modes — only activate the herdr blocked pair when it will
 			// actually wait on the user (see herdr-events.ts PROTOCOL).
-			let dismissReview: (() => void) | undefined
 			const reviewPromise =
 				ctx.mode === "tui"
 					? withBlocked(pi.events, "Ferment plan review", () =>
@@ -180,17 +189,22 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 						)
 					: promptPlanReview(ctx, { planMarkdown: review.planMarkdown })
 
-			// Dismiss the TUI popup if plannotator decides first
-			onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
-				if (payload.planReviewSource !== "ferment") return
-				if (payload.source !== "plannotator") return
-				dismissReview?.()
-			})
-
 			// Fire-and-forget: emit a decision when the TUI resolves.
 			// The decision handler below acts on whichever surface decides first.
 			void reviewPromise.then((outcome) => {
-				if (!outcome || outcome.kind === "cancelled") {
+				unsubscribeDismiss()
+				if (!outcome) {
+					// No decision UI was presented (non-TUI or dismissed without a
+					// choice): clear the pending review and restore tools, but keep
+					// the persisted proposal for a later resume. planReviewRunning
+					// must reset here — no decision is emitted, so the decision
+					// handler never runs for this outcome.
+					runtime.clearPendingPlanReview(review.fermentId)
+					applyFermentRuntimeToolProfile(pi, runtime)
+					planReviewRunning = false
+					return
+				}
+				if (outcome.kind === "cancelled") {
 					emitPlanReviewDecision(pi, {
 						decision: "rework",
 						source: "kimchi-tui",
@@ -205,6 +219,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 						source: "kimchi-tui",
 						planReviewSource: "ferment",
 						fermentId: review.fermentId,
+						auto: outcome.kind === "start_auto",
 					})
 				} else if (outcome.kind === "feedback") {
 					emitPlanReviewDecision(pi, {
@@ -238,6 +253,10 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 			if (!scopeOutcome.ok) {
 				reviewCtx.ctx?.ui?.notify?.(`Failed to save plan: ${scopeOutcome.error.message}`, "error")
 				return
+			}
+			if (payload.auto) {
+				runtime.setContinuationPolicy("automated")
+				requestSharedStatusLineRender()
 			}
 			runtime.clearPendingPlanReview(fermentId)
 			applyFermentRuntimeToolProfile(pi, runtime)
@@ -281,11 +300,15 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	setPendingPlanReviewTrigger((triggerCtx) => {
 		const review = runtime.getCurrentPendingPlanReview()
 		if (!planReviewRunning && review) {
-			clearPlanReviewTimer()
-			planReviewTimer = setTimeout(() => {
-				planReviewTimer = undefined
-				void runPendingPlanReview(triggerCtx, review)
-			}, 0)
+			// Always emit — subscribers self-select. The onPlanReviewRequest
+			// listener below schedules runPendingPlanReview via planReviewTimer.
+			// In non-TUI, promptPlanReview returns undefined → clear-only branch
+			// restores tools without deleting the persisted proposal.
+			emitPlanReviewRequest(
+				pi,
+				{ planContent: review.planMarkdown, source: "ferment", fermentId: review.fermentId },
+				{ ctx: triggerCtx, planText: review.planMarkdown, fermentId: review.fermentId },
+			)
 		}
 	})
 
@@ -294,13 +317,14 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	// review and persisted the proposal — this just shows the review UI.
 	onPlanReviewRequest(pi, (payload: PlanReviewRequestPayload) => {
 		if (payload.source !== "ferment") return
-		if (!ctx) return
+		const sessionCtx = ctx
+		if (!sessionCtx) return
 		const review = runtime.getCurrentPendingPlanReview()
 		if (!review || planReviewRunning) return
 		clearPlanReviewTimer()
 		planReviewTimer = setTimeout(() => {
 			planReviewTimer = undefined
-			void runPendingPlanReview(ctx!, review)
+			void runPendingPlanReview(sessionCtx, review)
 		}, 0)
 	})
 

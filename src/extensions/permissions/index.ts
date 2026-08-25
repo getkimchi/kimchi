@@ -596,7 +596,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					"Goal, Constraints, Chunks (with Files Changed, Depends On, Accept When, " +
 					"Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.",
 			}),
-		}) as any,
+		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const planText = (params as { plan?: string })?.plan
 			if (!planText?.trim()) {
@@ -626,7 +626,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				else console.error(`permissions: failed to save plan file: ${detail}`)
 			}
 
-			// Non-TUI / oneshot: skip the menu, emit request only
+			// Non-TUI / oneshot: emit the review request then end the turn.
+			// Emitters always emit — subscribers self-select. The plannotator
+			// adapter skips subscribing in non-interactive sessions, so this
+			// is a no-op today, but future integrations (logging, CI reviewers,
+			// alternative UIs) can hook in without changes here.
 			if (!ctx.hasUI || pi.getFlag?.("ferment-oneshot") === true) {
 				emitPlanReviewRequest(
 					pi,
@@ -651,8 +655,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 			// AbortSignal lets the decision handler dismiss the menu when
 			// plannotator decides first (select returns undefined on abort).
+			// The listener is unsubscribed when the menu resolves — it is
+			// per-review and must not accumulate on the shared event bus.
 			const planMenuAbort = new AbortController()
-			onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
+			const unsubscribeAbortListener = onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
 				if (payload.planReviewSource !== "adhoc") return
 				if (payload.source !== "plannotator") return
 				planMenuAbort.abort()
@@ -669,6 +675,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					}),
 				),
 			).then((choice) => {
+				unsubscribeAbortListener()
 				// select returns undefined when aborted — plannotator already decided.
 				if (choice === undefined) return
 				if (choice === EXECUTE) {

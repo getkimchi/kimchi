@@ -9,7 +9,7 @@ interface MockCaptures {
 	resultHandler?: (data: unknown) => void
 }
 
-function createMockPi(captures: MockCaptures): ExtensionAPI {
+function createMockPi(captures: MockCaptures, opts?: { hasUI?: boolean; oneshot?: boolean }): ExtensionAPI {
 	const emit = vi.fn((channel: string, data: unknown) => {
 		captures.emitCalls.push({ channel, data })
 		// If this is a plannotator:request, capture nothing — the adapter
@@ -25,25 +25,33 @@ function createMockPi(captures: MockCaptures): ExtensionAPI {
 		return () => {}
 	})
 
-	const sessionStartHandlers: Array<() => Promise<void>> = []
-	const piOn = vi.fn((event: string, handler: () => Promise<void>) => {
+	const sessionStartHandlers: Array<(event: unknown, ctx: unknown) => Promise<void>> = []
+	const piOn = vi.fn((event: string, handler: (event: unknown, ctx: unknown) => Promise<void>) => {
 		if (event === "session_start") sessionStartHandlers.push(handler)
 	})
+
+	const getFlag = vi.fn((flag: string) => (flag === "ferment-oneshot" && opts?.oneshot ? true : false))
 
 	return {
 		events: { emit, on },
 		on: piOn,
+		getFlag,
 		_sessionStartHandlers: sessionStartHandlers,
+		_hasUI: opts?.hasUI ?? true,
 	} as unknown as ExtensionAPI
 }
 
-function setupExtension(): { pi: ExtensionAPI; captures: MockCaptures } {
+function setupExtension(opts?: { hasUI?: boolean; oneshot?: boolean }): { pi: ExtensionAPI; captures: MockCaptures } {
 	const captures: MockCaptures = { emitCalls: [] }
-	const pi = createMockPi(captures)
+	const pi = createMockPi(captures, opts)
 	plannotatorExtension(pi)
 	// Fire session_start to register listeners
-	const piWithHandlers = pi as unknown as { _sessionStartHandlers: Array<() => Promise<void>> }
-	piWithHandlers._sessionStartHandlers.forEach((h) => void h())
+	const piWithHandlers = pi as unknown as {
+		_sessionStartHandlers: Array<(event: unknown, ctx: unknown) => Promise<void>>
+		_hasUI: boolean
+	}
+	const mockCtx = { hasUI: piWithHandlers._hasUI, mode: "tui" }
+	piWithHandlers._sessionStartHandlers.forEach((h) => void h({}, mockCtx))
 	return { pi, captures }
 }
 
@@ -113,6 +121,31 @@ describe("plannotator adapter", () => {
 		})
 	})
 
+	describe("subscribe-side gating", () => {
+		it("does not subscribe when hasUI is false (headless/print mode)", () => {
+			const { pi, captures } = setupExtension({ hasUI: false })
+
+			emitPlanReviewRequest(pi, { planContent: "plan", source: "adhoc" }, { ctx: {} as never, planText: "plan" })
+
+			// No requestHandler should have been registered
+			expect(captures.requestHandler).toBeUndefined()
+
+			// Emitting a request should NOT produce a plannotator:request emit
+			const plannotatorEmit = captures.emitCalls.find((c) => c.channel === "plannotator:request")
+			expect(plannotatorEmit).toBeUndefined()
+		})
+
+		it("does not subscribe when ferment-oneshot flag is set", () => {
+			const { pi, captures } = setupExtension({ oneshot: true })
+
+			emitPlanReviewRequest(pi, { planContent: "plan", source: "adhoc" }, { ctx: {} as never, planText: "plan" })
+
+			expect(captures.requestHandler).toBeUndefined()
+			const plannotatorEmit = captures.emitCalls.find((c) => c.channel === "plannotator:request")
+			expect(plannotatorEmit).toBeUndefined()
+		})
+	})
+
 	describe("plannotator:review-result → kimchi:plan-review-decision", () => {
 		it("emits plan-review-decision with execute when plannotator approves", () => {
 			const { pi, captures } = setupExtension()
@@ -148,6 +181,23 @@ describe("plannotator adapter", () => {
 			expect(decisionEmit!.data).toMatchObject({
 				decision: "feedback",
 				feedback: "Add more detail to chunk 2",
+				source: "plannotator",
+				planReviewSource: "adhoc",
+			})
+		})
+
+		it("emits plan-review-decision with rework when plannotator denies without feedback", () => {
+			const { pi, captures } = setupExtension()
+
+			emitPlanReviewRequest(pi, { planContent: "plan", source: "adhoc" }, { ctx: {} as never, planText: "plan" })
+			captures.requestHandler!({ planContent: "plan", source: "adhoc" })
+
+			// Deny with blank feedback — must not become an empty feedback turn
+			captures.resultHandler!({ approved: false, feedback: "  " })
+
+			const decisionEmit = captures.emitCalls.find((c) => c.channel === "kimchi:plan-review-decision")
+			expect(decisionEmit!.data).toMatchObject({
+				decision: "rework",
 				source: "plannotator",
 				planReviewSource: "adhoc",
 			})

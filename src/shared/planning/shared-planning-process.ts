@@ -79,7 +79,7 @@ Synthesize everything — orient findings, interview answers, confirmed criteria
 and exploration results — into a structured plan.
 - Ensure completion criteria were confirmed with the user before finalizing.
 - Do NOT finalize the plan while any open question remains unresolved.
-- Call the \`submit_plan\` tool to submit the plan for user review.
+- Use your mode's completion mechanism to submit the plan for user review.
 
 Every plan must use this structure:
 
