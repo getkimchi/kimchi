@@ -103,6 +103,7 @@ setup-image:
     GCS_UPLOAD_REQUIRED: "true"
     BENCH_TASKS_ALL: "$[[ inputs.tasks_all ]]"
     KIMCHI_FERMENT_ONESHOT: "$[[ inputs.kimchi_ferment_oneshot ]]"
+    KIMCHI_GOAL: "$[[ inputs.kimchi_goal ]]"
     RUN_ID: "gitlab-p$CI_PIPELINE_ID"
     BENCH_CHUNK_INDEX: "$CHUNK"
     BENCH_CHUNK_COUNT: 3

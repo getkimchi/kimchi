@@ -20,6 +20,12 @@ def _job_block(config: str, job_name: str, next_job_name: str) -> str:
     return config[start:end]
 
 
+def test_deep_swe_forwards_goal_mode_to_chunk_runner() -> None:
+    config = DEEP_CI_CONFIG.read_text(encoding="utf-8")
+
+    assert 'KIMCHI_GOAL: "$[[ inputs.kimchi_goal ]]"' in config
+
+
 def test_analysis_consumes_hydrated_summary_archive_not_chunk_artifacts() -> None:
     config = CI_CONFIG.read_text(encoding="utf-8")
     summary = _job_block(
