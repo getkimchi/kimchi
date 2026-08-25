@@ -111,7 +111,7 @@ describe("runCodex", () => {
 		const exit = await runCodex([])
 
 		expect(exit).toBe(1)
-		expect(errSpy).toHaveBeenCalledWith("kimchi codex: codex is not installed or not on PATH")
+		expect(errSpy).toHaveBeenCalledWith("kimchi codex:", "codex is not installed or not on PATH")
 		errSpy.mockRestore()
 	})
 })

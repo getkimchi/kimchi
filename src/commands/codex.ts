@@ -13,13 +13,13 @@ import { prepareTool } from "./_helpers.js"
  * having to know Codex's flag set.
  */
 export async function runCodex(args: string[]): Promise<number> {
-	const prepped = await prepareTool("codex", "inject")
-	if (!prepped) return 1
-
 	try {
+		const prepped = await prepareTool("codex", "inject")
+		if (!prepped) return 1
+
 		return await runForeground("codex", args, { KIMCHI_API_KEY: prepped.apiKey })
 	} catch (err) {
-		console.error(`kimchi codex: ${(err as Error).message}`)
+		console.error("kimchi codex:", err instanceof Error ? err.message : String(err))
 		return 1
 	}
 }
