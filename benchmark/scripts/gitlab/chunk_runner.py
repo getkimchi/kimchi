@@ -65,11 +65,13 @@ from bench_config import (
     checkpoint_soft_deadline_seconds,
     checkpoint_upload_retries,
     checkpoints_enabled,
+    env_bool,
     is_multi_model,
     is_retryable,
     is_workflow_agent,
     load_docker_health_config,
     load_llm_params,
+    normalize_selected_tasks,
     parse_model,
     resolve_chunk_attempt_budget,
     resolve_thinking_level,
@@ -780,12 +782,9 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _env_bool(name: str, default: bool) -> bool:
-    raw = os.environ.get(name, str(default)).strip().lower()
-    if raw in ("true", "1", "yes"):
-        return True
-    if raw in ("false", "0", "no"):
-        return False
-    return default
+    # Delegates to the shared parser so every pipeline step agrees on what
+    # counts as true/false; kept as a named alias for the many call sites here.
+    return env_bool(name, default)
 
 
 def _probe_docker_daemon(
@@ -1953,6 +1952,16 @@ def main() -> int:
         selected_tasks = json.loads(raw_selected)
         if not selected_tasks:
             selected_tasks = _fetch_all_tasks(dataset, bench_dir=bench_dir)
+
+    # Normalise BEFORE the list is frozen into run metadata and sliced into
+    # per-chunk ownership. A source-qualified name (e.g.
+    # "terminal-bench/fix-git") can never be attributed to its own trial,
+    # whose recorded task_name is always stripped to the bare name, so the
+    # chunk would re-run an already-passing task until its attempt budget
+    # drained. Membership against the dataset is validated once at pipeline
+    # start by validate_task_selection.py, not here: this function must not
+    # read the dataset file when an explicit selection was provided.
+    selected_tasks = normalize_selected_tasks(selected_tasks)
 
     try:
         llm_params, llm_per_model_params = load_llm_params()

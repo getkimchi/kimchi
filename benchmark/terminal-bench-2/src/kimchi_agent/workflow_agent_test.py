@@ -257,7 +257,7 @@ async def test_launch_command_has_exactly_one_extension_flag(tmp_path: Path) -> 
 
     command = agent.agent_commands[0]
     assert command.count("-e ") == 1
-    assert f"-e {CONTAINER_EXTENSION_DIR} --print" in command
+    assert f"-e {CONTAINER_EXTENSION_DIR} --enable-experimental-features --print" in command
 
 
 async def test_moonshot_workflow_does_not_require_kimchi_api_key(
@@ -345,7 +345,7 @@ async def test_npm_spec_never_reaches_the_launch_command_as_a_raw_string(
         await agent.run("do the task", object(), AgentContext())
 
     command = agent.agent_commands[0]
-    assert f"-e {CONTAINER_EXTENSION_DIR} --print" in command
+    assert f"-e {CONTAINER_EXTENSION_DIR} --enable-experimental-features --print" in command
     assert "npm:" not in command
 
 

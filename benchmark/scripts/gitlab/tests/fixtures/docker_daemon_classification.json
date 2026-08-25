@@ -69,7 +69,7 @@
       }
     },
     "trial_log": "Agent failed before verifier execution.\nVerifier completed with reward 0.\n",
-    "expected": ["scored_fail", null, null]
+    "expected": ["error", "agent", "unknown_failed"]
   },
   {
     "name": "missing-reward-with-daemon-loss",

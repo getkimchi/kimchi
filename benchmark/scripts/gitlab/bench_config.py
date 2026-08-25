@@ -20,6 +20,7 @@ This module exposes two kinds of values:
 
 from __future__ import annotations
 
+import difflib
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -280,10 +281,119 @@ DEFAULT_SELECTED_TASKS_JSON = "[]"
 ENV_BENCH_TASKS_ALL = "BENCH_TASKS_ALL"
 DEFAULT_BENCH_TASKS_ALL = "false"
 
+
+def env_bool(name: str, default: bool = False) -> bool:
+    """Parse a boolean-ish environment variable (``true/1/yes``, ``false/0/no``).
+
+    Shared by chunk_runner, validate_task_selection and preload_task_images so
+    every step interprets flags like ``BENCH_TASKS_ALL`` identically. Unset
+    or unrecognised values fall back to ``default``.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    raw = raw.strip().lower()
+    if raw in ("true", "1", "yes"):
+        return True
+    if raw in ("false", "0", "no"):
+        return False
+    return default
+
+
+def bare_task_name(task: str) -> str:
+    """Strip any ``source/`` prefix Harbor qualifies a task name with.
+
+    Harbor records ``task_name`` as ``terminal-bench/fix-git`` while the trial
+    directory and every reconciliation key use the bare ``fix-git``. Trial-side
+    readers have always stripped this prefix
+    (``chunk_runner._task_name_from_result``,
+    ``summarize_results.summarize_trial``); the *selected*/expected side did
+    not, so a source-qualified ``tasks:`` pipeline input made a passing trial
+    unattributable to its own task. That desynchronised every consumer keyed by
+    task name: the chunk runner re-ran completed tasks until its attempt budget
+    drained, and the summary declared the chunk incomplete and failed.
+
+    Normalising on *read* (not only when parsing the input) matters because
+    ``selected_tasks`` is frozen into ``run-metadata.json`` for a run's whole
+    lifetime and restored from GCS by later jobs, so an already-stuck run
+    cannot be healed by fixing input parsing alone.
+
+    No dataset in ``datasets/*.json`` contains a ``/`` in any task name, so
+    stripping is unconditionally safe. SWE-bench Pro instance IDs separate
+    components with ``__`` rather than ``/`` and are unaffected.
+    """
+    return task.rsplit("/", 1)[-1]
+
+
+def normalize_selected_tasks(tasks: list[str]) -> list[str]:
+    """Normalise a selected-task list to bare names, preserving order.
+
+    Duplicates introduced by normalisation (e.g. selecting both ``fix-git``
+    and ``terminal-bench/fix-git``) collapse to a single entry: positional
+    chunk slicing must never hand the same task to two chunks.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for task in tasks:
+        bare = bare_task_name(task)
+        if bare in seen:
+            continue
+        seen.add(bare)
+        out.append(bare)
+    return out
+
+
+def validate_selected_tasks(tasks: list[str], known_tasks: list[str]) -> list[str]:
+    """Return normalised selected tasks, rejecting names absent from the dataset.
+
+    Fails at pipeline start instead of after a whole attempt budget of paid
+    retries: a task name matching nothing in the dataset can never produce a
+    trial, so every reconciliation pass reports it missing and the chunk
+    retries until its budget drains.
+
+    ``known_tasks`` is the dataset's task list; passing an empty list disables
+    the membership check (the dataset file could not be resolved) while still
+    normalising and rejecting structurally invalid names.
+    """
+    normalized = normalize_selected_tasks(tasks)
+    blank = [task for task in normalized if not task.strip()]
+    if blank:
+        raise ValueError(
+            f"{ENV_SELECTED_TASKS_JSON} contains {len(blank)} blank task name(s)"
+        )
+    if not known_tasks:
+        return normalized
+    known = {bare_task_name(task) for task in known_tasks}
+    unknown = [task for task in normalized if task not in known]
+    if unknown:
+        # Most unknown names are typos; make the failure self-healing.
+        suggestions = []
+        for task in unknown:
+            close = difflib.get_close_matches(task, known, n=1, cutoff=0.6)
+            if close:
+                suggestions.append(f"{task!r}: did you mean {close[0]!r}?")
+        hint = f" Suggestions — {'; '.join(suggestions)}" if suggestions else ""
+        raise ValueError(
+            f"{ENV_SELECTED_TASKS_JSON} selects {len(unknown)} task(s) that do not "
+            f"exist in the dataset: {unknown}.{hint}"
+        )
+    return normalized
+
 # --- Retry behavior ---
 ENV_BENCH_RETRY_AGENT_TIMEOUT = "BENCH_RETRY_AGENT_TIMEOUT"
 DEFAULT_BENCH_RETRY_AGENT_TIMEOUT = False
-NON_RETRYABLE_INFRA_SUBCATEGORIES = frozenset({"api_key_budget_exceeded"})
+# Terminal infra conditions: retrying never helps.
+# - api_key_budget_exceeded: hard spend cap on the API key.
+# - usage_limit_exceeded: Z.AI's rolling 5-hour windowed account quota.
+# - model_access_error: provider rejects the requested preset; the run
+#   configuration is deterministically broken, so retries only burn tokens.
+# Moonshot's account suspension is deliberately NOT here: the account top-up
+# mechanism makes recovery possible between chunk attempts.
+NON_RETRYABLE_INFRA_SUBCATEGORIES = frozenset({
+    "api_key_budget_exceeded",
+    "usage_limit_exceeded",
+    "model_access_error",
+})
 
 
 def validate_chunk_attempt_budget(value: object, *, source: str) -> int:

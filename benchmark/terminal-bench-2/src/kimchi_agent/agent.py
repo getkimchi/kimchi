@@ -873,6 +873,10 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         return (
             f"{shlex.quote(BINARY_PATH)} "
             f"{extension_flags}"
+            # Experimental features (e.g. the daemon tools for services that
+            # must outlive the agent session, which graders then connect to)
+            # are always enabled on benchmark runs.
+            f"--enable-experimental-features "
             f"--print --session {shlex.quote(CONTAINER_MAIN_SESSION)} "
             f"{model_flag}"
             f"{cli_flags}"

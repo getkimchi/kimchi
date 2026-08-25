@@ -244,10 +244,93 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
 
         self.assert_error(result, "agent_environment_error", "cannot find -llapack")
 
-    def test_scored_pass_remains_terminal_with_infra_exception(self) -> None:
+    def test_error_interrupted_attempt_exports_null_score_and_keeps_raw_reward(self) -> None:
+        """An error-interrupted attempt exports score=null beside its error verdict.
+
+        External consumers must never read a contradictory
+        {"verdict": "error", "score": 1.0} as pass evidence; the untouched raw
+        verifier reward stays in result.json as the audit source.
+        """
         result = self.result_with_exception(
             "NonZeroAgentExitCodeError",
             "KIMCHI_INFRA_ERROR: provider transport failure; exiting with code 74",
+        )
+        result["verifier_result"] = {"rewards": {"reward": 1}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "sample-task__abc123"
+            trial_dir.mkdir()
+            write_json(trial_dir / "result.json", result)
+            (trial_dir / "trial.log").write_text("", encoding="utf-8")
+
+            warnings: list[str] = []
+            summary = summarize_results.summarize_trial(trial_dir, 1, warnings)
+
+            self.assertFalse(summary.solved)
+            data = summary.to_summary_json()
+            self.assertEqual(data["status"], "failed")
+            self.assertEqual(data["verdict"], "error")
+            self.assertIsNone(data["score"])
+            self.assertEqual(data["error_category"], "infra")
+            self.assertEqual(data["error_subcategory"], "kimchi_infra_exit")
+
+            # The raw verifier payload in result.json is untouched for audit.
+            raw = json.loads((trial_dir / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(raw["verifier_result"]["rewards"]["reward"], 1)
+
+    def test_pre_enriched_error_interrupted_attempt_exports_null_score(self) -> None:
+        """The pre-enriched summary path trusts the verdict, not the raw reward."""
+        result = self.result_with_exception(
+            "NonZeroAgentExitCodeError",
+            "KIMCHI_INFRA_ERROR: provider transport failure; exiting with code 74",
+        )
+        result.update(
+            {
+                "verifier_result": {"rewards": {"reward": 1}},
+                "outcome": "error",
+                "error_category": "infra",
+                "error_subcategory": "kimchi_infra_exit",
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "sample-task__abc123"
+            trial_dir.mkdir()
+            write_json(trial_dir / "result.json", result)
+            (trial_dir / "trial.log").write_text("", encoding="utf-8")
+
+            warnings: list[str] = []
+            with mock.patch.object(summarize_results, "classify") as classify_mock:
+                summary = summarize_results.summarize_trial(trial_dir, 1, warnings)
+
+            classify_mock.assert_not_called()
+            self.assertFalse(summary.solved)
+            data = summary.to_summary_json()
+            self.assertEqual(data["verdict"], "error")
+            self.assertIsNone(data["score"])
+            self.assertEqual(data["error_category"], "infra")
+            self.assertEqual(data["error_subcategory"], "kimchi_infra_exit")
+
+    def test_clean_timeout_with_reward_keeps_exported_score(self) -> None:
+        """A clean wall-clock cutoff is an intentional scored cutoff: the score stands."""
+        result = self.result_with_exception(
+            "AgentTimeoutError",
+            "Agent execution timed out after 900.0 seconds",
+        )
+        result["verifier_result"] = {"rewards": {"reward": 0}}
+
+        summary = self.summarize(result)
+        data = summary.to_summary_json()
+
+        self.assertEqual(data["verdict"], "scored_fail")
+        self.assertEqual(data["score"], 0.0)
+        self.assertFalse(summary.solved)
+
+    def test_teardown_exception_keeps_exported_score(self) -> None:
+        """Post-verifier teardown failures never overwrite a completed score."""
+        result = self.result_with_exception(
+            "RuntimeError",
+            "docker compose down failed: Cannot connect to the Docker daemon at tcp://docker:2375",
         )
         result["verifier_result"] = {"rewards": {"reward": 1}}
 
@@ -256,9 +339,9 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
 
         self.assertEqual(data["status"], "passed")
         self.assertEqual(data["verdict"], "scored_pass")
+        self.assertEqual(data["score"], 1.0)
+        self.assertTrue(summary.solved)
         self.assertIsNone(data["error"])
-        self.assertIsNone(data["error_category"])
-        self.assertIsNone(data["error_subcategory"])
 
     def test_generic_exit_74_without_marker_is_not_infra_error(self) -> None:
         result = self.result_with_exception(

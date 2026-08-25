@@ -6,6 +6,7 @@ import pytest
 
 from bench_config import (
     DEFAULT_WORKFLOW_EXTENSION,
+    env_bool,
     is_kimchi_family,
     is_multi_model,
     is_retryable,
@@ -532,3 +533,28 @@ def test_thinking_level_validation_noop_cases() -> None:
     # Unknown moonshotai ids pass here; the adapter's static table rejects
     # them at launch.
     validate_thinking_level_for_model("moonshotai/kimi-k9", "medium")
+
+
+def test_env_bool_parses_truthy_forms(monkeypatch: pytest.MonkeyPatch) -> None:
+    for raw in ("true", "TRUE", " 1 ", "yes"):
+        monkeypatch.setenv("BENCH_TEST_FLAG", raw)
+        assert env_bool("BENCH_TEST_FLAG") is True
+
+
+def test_env_bool_parses_explicit_falsy_forms(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An explicit false must win over a true default.
+    for raw in ("false", "FALSE", "0", "no"):
+        monkeypatch.setenv("BENCH_TEST_FLAG", raw)
+        assert env_bool("BENCH_TEST_FLAG") is False
+        assert env_bool("BENCH_TEST_FLAG", True) is False
+
+
+def test_env_bool_unset_or_unrecognised_returns_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BENCH_TEST_FLAG", raising=False)
+    assert env_bool("BENCH_TEST_FLAG") is False
+    assert env_bool("BENCH_TEST_FLAG", True) is True
+
+    monkeypatch.setenv("BENCH_TEST_FLAG", "garbage")
+    assert env_bool("BENCH_TEST_FLAG", True) is True
