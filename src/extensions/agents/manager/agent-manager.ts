@@ -287,12 +287,13 @@ export class AgentManager {
 				record.systemPrompt = prompt
 			},
 		})
-			.then(({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns }) => {
+			.then(({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns, planPath }) => {
 				if (record.status !== "stopped") {
 					record.status = aborted ? "aborted" : steered ? "steered" : "completed"
 				}
 				record.abortReason = abortReason
-				record.result = responseText
+				const finalText = planPath ? `${responseText}\n\nPlan saved to: ${planPath}` : responseText
+				record.result = finalText
 				record.session = session
 				record.lastTurnCount = turnsUsed
 				// Preserve the effective, normalized turn cap returned by the runner.
@@ -305,7 +306,7 @@ export class AgentManager {
 					this.onComplete?.(record)
 					this.drainQueue()
 				}
-				return responseText
+				return finalText
 			})
 			.catch((err) => {
 				if (record.status !== "stopped") {
