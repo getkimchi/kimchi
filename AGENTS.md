@@ -20,7 +20,7 @@ You are editing the kimchi coding harness. This repo extends the pi-mono SDK (`@
 
 - **Auto-formatting**: `lint:fix` runs automatically after file edits (PostToolUse hook) — don't run manually
 - **Pre-commit**: `.husky/pre-commit` runs `pnpm run lint` — CI runs full `check` (lint + typecheck)
-- **Resource changes**: Run `./scripts/copy-resources.js --dev` after editing themes or export-html templates to sync them into `src/` for local dev runs. The default invocation (without `--dev`, used by `scripts/build-binary.js`) copies themes, export-html, docs/, and other assets into `dist/share/kimchi/` for the bundled binary
+- **README changes**: Run `./scripts/copy-resources.js --dev` after editing to propagate to dist/
 
 ## CLI arguments
 
