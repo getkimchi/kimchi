@@ -1139,3 +1139,68 @@ describe("continuation nudge turn_end handler", () => {
 		expect(result).toBeUndefined()
 	})
 })
+
+describe("debug prompts cleanup", () => {
+	beforeEach(() => {
+		delete process.env.KIMCHI_DEBUG_PROMPTS
+		delete process.env.KIMCHI_DEBUG_SESSION
+	})
+
+	afterEach(() => {
+		delete process.env.KIMCHI_DEBUG_PROMPTS
+		delete process.env.KIMCHI_DEBUG_SESSION
+	})
+
+	function buildExtensionWithDebugFlag(debugPrompts: boolean) {
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
+		const pi = {
+			appendEntry: vi.fn(),
+			registerFlag: () => {},
+			registerCommand: () => {},
+			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
+				handlers.set(event, handler)
+			},
+			getAllTools: () => [],
+			getActiveTools: () => [],
+			getFlag: (name: string) => (name === "debug-prompts" ? debugPrompts : undefined),
+		} as unknown as ExtensionAPI
+		promptEnrichmentExtension([])(pi)
+		return {
+			beforeAgentStart: handlers.get("before_agent_start"),
+		}
+	}
+
+	it("does not re-enable debug mode on a second turn when the flag is off", async () => {
+		const { beforeAgentStart } = buildExtensionWithDebugFlag(false)
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const ctx = createContext({ hasUI: false })
+
+		// First turn: flag is off, env vars are unset.
+		await beforeAgentStart({}, ctx)
+
+		// Second turn: flag is still off. With the buggy cleanup, the first
+		// turn would have left KIMCHI_DEBUG_SESSION as the string "undefined",
+		// which is truthy and would re-enable debug mode here.
+		await beforeAgentStart({}, ctx)
+
+		expect(process.env.KIMCHI_DEBUG_PROMPTS).toBeUndefined()
+		expect(process.env.KIMCHI_DEBUG_SESSION).toBeUndefined()
+	})
+
+	it("writes debug files and sets env vars when the flag is on", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-debug-prompts-"))
+		try {
+			const { beforeAgentStart } = buildExtensionWithDebugFlag(true)
+			if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+			const ctx = createContext({ cwd: dir, hasUI: false })
+			await beforeAgentStart({}, ctx)
+
+			expect(process.env.KIMCHI_DEBUG_PROMPTS).toBe("1")
+			expect(process.env.KIMCHI_DEBUG_SESSION).toBeDefined()
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+})

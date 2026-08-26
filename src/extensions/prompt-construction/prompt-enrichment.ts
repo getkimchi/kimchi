@@ -599,8 +599,8 @@ export default function (skillPaths: string[]) {
 					ctx.ui.notify(`[debug-prompts] ${filePath}`, "info")
 				}
 			} else {
-				process.env.KIMCHI_DEBUG_PROMPTS = undefined
-				process.env.KIMCHI_DEBUG_SESSION = undefined
+				delete process.env.KIMCHI_DEBUG_PROMPTS
+				delete process.env.KIMCHI_DEBUG_SESSION
 			}
 
 			return { systemPrompt }
