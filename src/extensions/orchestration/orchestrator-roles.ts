@@ -5,13 +5,20 @@
 import type { ModelRole, ModelRoles, RoleModelAssignment } from "./model-roles.js"
 import { modelIdFromRef, normalizeRoleModels } from "./model-roles.js"
 
-const ROLE_DELEGABLE: Record<ModelRole, keyof Omit<ModelRoles, "orchestrator" | "judge">> = {
+export const ROLE_DELEGABLE: Record<ModelRole, keyof Omit<ModelRoles, "orchestrator" | "judge">> = {
 	explore: "explorer",
 	research: "researcher",
 	plan: "planner",
 	build: "builder",
 	review: "reviewer",
 }
+
+/**
+ * Canonical role order for prompt assembly. Derived from `ROLE_DELEGABLE`
+ * so a newly added `ModelRole` cannot be silently omitted: the `Record<ModelRole, …>`
+ * above fails to typecheck until the new member is present here too.
+ */
+export const ROLE_ORDER: readonly ModelRole[] = Object.keys(ROLE_DELEGABLE) as ModelRole[]
 
 function matchesRef(candidate: string, refs: string[]): boolean {
 	return refs.some((r) => r === candidate || modelIdFromRef(r) === candidate)

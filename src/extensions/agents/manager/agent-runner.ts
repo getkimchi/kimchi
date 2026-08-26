@@ -470,7 +470,10 @@ ${skillLines}`
 
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
 
+	const modelId = (options.model as { id?: string } | undefined)?.id
 	const guidelineRole = agentConfig?.roles?.[0]
+	const guidelinesBlock = buildRoleGuidelinesSection(modelId, guidelineRole, getGuidelinesRegistry())
+	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
 
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
 	const MIN_TOKEN_BUDGET = 1024

@@ -1,6 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { AgentOutcomeKind, AgentRecord, SubagentType } from "./agents/personas/types.js"
-import { hasActiveFerment } from "./ferment/state.js"
 import { getMultiModelEnabled } from "./multi-model.js"
 import { markHarnessSteer } from "./steer-marker.js"
 
@@ -28,12 +27,16 @@ export interface OrchestratorWriteGuardOptions {
 
 export const STEER_MESSAGE_TYPE = "review-write-guard-steer"
 
-const STEER_MESSAGE =
-	"Delegation guard: you are editing implementation files after a subagent returned. " +
-	"The direct-edit allowance is only for one trivial fix requiring up to two small edit/write calls " +
-	"(a typo, missing import, or one-line config change). " +
-	"If this fix is growing beyond that scope — multiple files, test expectations, iteration loops — stop and " +
-	"delegate the remaining fixes to a build/fix agent instead: spawn an Agent with the fix task and the list of issues."
+function buildSteerMessage(allowance: number): string {
+	const calls = allowance === 1 ? "one small edit/write call" : `${allowance} small edit/write calls`
+	return (
+		"Delegation guard: you are editing implementation files after a subagent returned. " +
+		`The direct-edit allowance is only for one trivial fix requiring up to ${calls} ` +
+		"(a typo, missing import, or one-line config change). " +
+		"If this fix is growing beyond that scope — multiple files, test expectations, iteration loops — stop and " +
+		"delegate the remaining fixes to a build/fix agent instead: spawn an Agent with the fix task and the list of issues."
+	)
+}
 
 const BLOCK_REASON =
 	"BLOCKED: You have continued editing after being warned. " +
@@ -116,7 +119,7 @@ export class OrchestratorWriteGuard {
 		}
 		if (this.writeCount >= steerThreshold && !this.steered) {
 			this.steered = true
-			return { steer: STEER_MESSAGE }
+			return { steer: buildSteerMessage(steerThreshold) }
 		}
 
 		return undefined
@@ -220,20 +223,20 @@ function extractAgentOutcome(event: { details?: unknown }): AgentOutcomeSummary 
 
 /**
  * Whether the orchestrator is expected to delegate implementation work rather
- * than perform it.
+ * than perform it — the premise the guard enforces.
  *
- * Ferment resolves its delegation mode as `multiModelEnabled ? "strict" : "relaxed"`
- * (`ferment/oneshot.ts`, `ferment/prompt-block.ts`). Under `relaxed` the planner
- * supplement instructs the orchestrator to "execute steps directly with
- * bash/edit/write" and to delegate only residue-heavy steps, because direct
- * execution measured faster at bench scale. Arming the guard there would steer
- * and then hard-block the exact behaviour the prompt asks for, as soon as the
- * orchestrator delegated one step.
+ * That premise only holds in multi-model sessions. Single-model prompts tell
+ * the model the opposite: the base prompt says "do not spawn subagents with
+ * the `Agent` tool by default", and ferment's relaxed mode (single-model)
+ * instructs the planner to "execute steps directly with bash/edit/write".
+ * Arming the guard there steers and then hard-blocks the exact behaviour the
+ * prompt asks for, telling the model to "spawn a fix Agent" it was told not to
+ * spawn.
  *
- * So the guard applies everywhere except an active ferment in relaxed mode.
+ * Multi-model is therefore the whole condition: it is what makes ferment
+ * strict, and what makes delegation the default outside ferment.
  */
 function delegationRequired(ctx: ExtensionContext): boolean {
-	if (!hasActiveFerment()) return true
 	return getMultiModelEnabled(ctx.sessionManager)
 }
 

@@ -1,5 +1,6 @@
 import type { Ferment } from "../../ferment/types.js"
 import { SHARED_PLANNING_PROCESS } from "../../shared/planning/shared-planning-process.js"
+import { fermentDelegationMode } from "./delegation-mode.js"
 
 /**
  * Build the one-shot envelope sent to the planner. Shared by the `/ferment one-shot`
@@ -7,7 +8,7 @@ import { SHARED_PLANNING_PROCESS } from "../../shared/planning/shared-planning-p
  * exercise the identical instruction set.
  */
 export function buildOneshotNudge(ferment: Ferment, intent: string, multiModelEnabled: boolean): string {
-	const delegationMode: "strict" | "relaxed" = multiModelEnabled ? "strict" : "relaxed"
+	const delegationMode = fermentDelegationMode(multiModelEnabled)
 
 	const step2Delegation =
 		delegationMode === "strict"
