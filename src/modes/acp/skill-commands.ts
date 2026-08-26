@@ -1,8 +1,7 @@
 import { readFile } from "node:fs/promises"
 import type { AvailableCommand } from "@agentclientprotocol/sdk"
-import { loadSkillsFromDir, stripFrontmatter } from "@earendil-works/pi-coding-agent"
-import { DEFAULT_SKILL_PATHS } from "../../config.js"
-import { resolvePromptSkillPaths } from "../../shared/skill-discovery/resolve-prompt-skill-paths.js"
+import type { ResourceLoader } from "@earendil-works/pi-coding-agent"
+import { stripFrontmatter } from "@earendil-works/pi-coding-agent"
 
 export interface AcpSkillInfo {
 	readonly name: string
@@ -10,55 +9,24 @@ export interface AcpSkillInfo {
 	readonly filePath: string
 }
 
-export interface DiscoverAcpSkillCommandsOptions {
-	/** Override for os.homedir(), useful for tests. Defaults to homedir(). */
-	readonly homeDir?: string
-	/** Configured skill resource paths; defaults to DEFAULT_SKILL_PATHS. Override in tests for hermetic discovery. */
-	readonly skillPaths?: readonly string[]
-	/** Whether Claude Code skills participate; defaults to the extension's resource toggle. */
-	readonly includeClaudeCodeSkills?: boolean
-	/** Whether installed-package skill dirs participate; defaults to true. Tests disable for hermetic discovery. */
-	readonly includePackageDirs?: boolean
-	/** Override for the bundled skills dir; `null` disables it (set in tests for isolation). */
-	readonly bundledDir?: string | null
-}
-
 /**
- * Discover all skills that should be advertised as ACP slash commands for the
- * given working directory. Uses the same prompt-time composition as
- * prompt-enrichment (project > configured > Claude Code > packages > bundled,
- * strongest-first first-wins on name collisions) so the skills a user sees in
- * the prompt and over ACP are always the same set.
+ * Discover all skills that should be advertised as ACP slash commands. Reads
+ * from pi's resolved resource inventory so the ACP view matches the base
+ * prompt's skills section (same precedence, collision rules, trust, packages,
+ * and extension contributions) instead of re-deriving skill locations here.
  */
-export function discoverAcpSkillCommands(cwd: string, options: DiscoverAcpSkillCommandsOptions = {}): AcpSkillInfo[] {
+export function discoverAcpSkillCommands(loader: ResourceLoader): AcpSkillInfo[] {
+	const { skills } = loader.getSkills()
 	const byName = new Map<string, AcpSkillInfo>()
-
-	for (const dir of resolvePromptSkillPaths({
-		cwd,
-		skillPaths: options.skillPaths ?? DEFAULT_SKILL_PATHS,
-		homeDir: options.homeDir,
-		bundledDir: options.bundledDir,
-		includeClaudeCodeSkills: options.includeClaudeCodeSkills,
-		includePackageDirs: options.includePackageDirs,
-	})) {
-		try {
-			const { skills } = loadSkillsFromDir({ dir, source: dir })
-			for (const skill of skills) {
-				// Paths arrive strongest-first; keep the first occurrence (first-wins),
-				// matching pi's loadSkills collision semantics.
-				if (!byName.has(skill.name)) {
-					byName.set(skill.name, {
-						name: skill.name,
-						description: skill.description ?? "",
-						filePath: skill.filePath,
-					})
-				}
-			}
-		} catch {
-			// Directory missing or unreadable — skip silently.
+	for (const skill of skills) {
+		if (!byName.has(skill.name)) {
+			byName.set(skill.name, {
+				name: skill.name,
+				description: skill.description ?? "",
+				filePath: skill.filePath,
+			})
 		}
 	}
-
 	return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name))
 }
 
@@ -78,16 +46,10 @@ export function buildSkillAvailableCommands(skills: readonly AcpSkillInfo[]): Av
 
 /**
  * Build a compact markdown block listing available skills for injection into
- * the system prompt. Returns an empty string when no skills are discovered.
+ * the system prompt. Returns an empty string when the loader reports no skills.
  */
-export function buildSkillListBlock(
-	cwd: string,
-	options: Pick<
-		DiscoverAcpSkillCommandsOptions,
-		"homeDir" | "bundledDir" | "skillPaths" | "includeClaudeCodeSkills" | "includePackageDirs"
-	> = {},
-): string {
-	const skills = discoverAcpSkillCommands(cwd, options)
+export function buildSkillListBlock(loader: ResourceLoader): string {
+	const skills = discoverAcpSkillCommands(loader)
 	if (skills.length === 0) return ""
 
 	const lines = skills.map((s) => `- **${s.name}**: ${s.description || `Use the ${s.name} skill.`}`)

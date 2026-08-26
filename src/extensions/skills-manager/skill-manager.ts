@@ -154,6 +154,7 @@ interface SkillLocation {
 	skillDir: string
 	category: string
 	origin: SkillOrigin
+	readOnly: boolean
 }
 
 export interface SkillManagerOptions {
@@ -165,9 +166,9 @@ export interface SkillManagerOptions {
 	readonly bundledRoots?: readonly string[]
 }
 
-/** Refuse mutations on skills that originate from a read-only bundled root. */
+/** Refuse mutations on skills that do not live under the writable harness root. */
 function readonlyGuard(loc: SkillLocation): string | null {
-	if (loc.origin !== "bundled") return null
+	if (!loc.readOnly) return null
 	return `Skill is bundled with the harness (origin: ${loc.skillDir}) and is read-only. To customize it, copy it into the harness skills dir first.`
 }
 
@@ -175,9 +176,21 @@ export class SkillManager {
 	private skillsDir: string
 	private bundledRoots: readonly string[]
 
+	/**
+	 * @param skillsDir The single writable root this manager owns. Mutations
+	 * (edit/patch/delete/write_file/remove_file) are only allowed on skills
+	 * whose directory lives under this root; bundled and other read-only roots
+	 * are scanned for viewing and copying, but never modified in place.
+	 */
 	constructor(skillsDir: string, options?: SkillManagerOptions) {
 		this.skillsDir = skillsDir
 		this.bundledRoots = options?.bundledRoots ?? []
+	}
+
+	private _isUnderSkillsDir(skillDir: string): boolean {
+		const resolvedSkillDir = resolve(skillDir)
+		const resolvedSkillsDir = resolve(this.skillsDir)
+		return resolvedSkillDir === resolvedSkillsDir || resolvedSkillDir.startsWith(`${resolvedSkillsDir}${sep}`)
 	}
 
 	/**
@@ -189,7 +202,8 @@ export class SkillManager {
 	private async _findSkill(name: string): Promise<SkillLocation | null> {
 		const direct = join(this.skillsDir, name, "SKILL.md")
 		if (await this._exists(direct)) {
-			return { skillDir: join(this.skillsDir, name), category: "", origin: "harness" }
+			const skillDir = join(this.skillsDir, name)
+			return { skillDir, category: "", origin: "harness", readOnly: !this._isUnderSkillsDir(skillDir) }
 		}
 
 		let entries: string[] = []
@@ -202,14 +216,16 @@ export class SkillManager {
 		for (const sub of entries) {
 			const candidate = join(this.skillsDir, sub, name, "SKILL.md")
 			if (await this._exists(candidate)) {
-				return { skillDir: join(this.skillsDir, sub, name), category: sub, origin: "harness" }
+				const skillDir = join(this.skillsDir, sub, name)
+				return { skillDir, category: sub, origin: "harness", readOnly: !this._isUnderSkillsDir(skillDir) }
 			}
 		}
 
 		for (let i = this.bundledRoots.length - 1; i >= 0; i--) {
 			const candidate = join(this.bundledRoots[i], name, "SKILL.md")
 			if (await this._exists(candidate)) {
-				return { skillDir: join(this.bundledRoots[i], name), category: "", origin: "bundled" }
+				const skillDir = join(this.bundledRoots[i], name)
+				return { skillDir, category: "", origin: "bundled", readOnly: !this._isUnderSkillsDir(skillDir) }
 			}
 		}
 

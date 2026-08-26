@@ -17,7 +17,9 @@ import type {
 	ExtensionUIContext,
 	ModelRegistry,
 	SessionInfo as PiSessionInfo,
+	ResourceLoader,
 	SessionManager,
+	Skill,
 	Theme,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -180,6 +182,19 @@ class FakeAgentSession {
 		tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		cost: 0,
 	}
+	resourceLoader = {
+		getSkills: () => ({ skills: [] as Skill[], diagnostics: [] }),
+		getExtensions: () => ({ extensions: [], errors: [], runtime: undefined }),
+		getPrompts: () => ({ prompts: [], diagnostics: [] }),
+		getThemes: () => ({ themes: [], diagnostics: [] }),
+		getAgentsFiles: () => ({ agentsFiles: [] }),
+		getSystemPrompt: () => undefined,
+		getSystemPromptSource: () => undefined,
+		getAppendSystemPrompt: () => [],
+		getAppendSystemPromptSources: () => [],
+		extendResources: () => {},
+		reload: async () => {},
+	} as unknown as ResourceLoader
 	// Branch entries returned to the replay walker. Tests fill this with the
 	// shape buildSessionContext consumers expect (type:"message" + role).
 	branch: unknown[] = []
@@ -3230,22 +3245,47 @@ describe("loadSession available commands", () => {
 })
 
 describe("newSession skill commands", () => {
-	function makeSkillDir(): { dir: string; skillName: string } {
+	function makeSkillDir(): { dir: string; skillName: string; skill: Skill } {
 		const dir = mkdtempSync(join(tmpdir(), "acp-server-skills-"))
 		const skillName = "acp-test-skill"
 		const skillDir = join(dir, ".pi", "agent", "skills", skillName)
 		mkdirSync(skillDir, { recursive: true })
+		const filePath = join(skillDir, "SKILL.md")
 		writeFileSync(
-			join(skillDir, "SKILL.md"),
+			filePath,
 			`---\nname: ${skillName}\ndescription: ACP test skill\n---\nAlways use strict types.`,
 			"utf-8",
 		)
-		return { dir, skillName }
+		const skill = {
+			name: skillName,
+			description: "ACP test skill",
+			filePath,
+			baseDir: skillDir,
+			sourceInfo: { source: "test", path: skillDir, scope: "user", origin: "top-level" },
+		} as unknown as Skill
+		return { dir, skillName, skill }
+	}
+
+	function makeSkillLoader(skills: Skill[]): ResourceLoader {
+		return {
+			getSkills: () => ({ skills, diagnostics: [] }),
+			getExtensions: () => ({ extensions: [], errors: [], runtime: undefined }),
+			getPrompts: () => ({ prompts: [], diagnostics: [] }),
+			getThemes: () => ({ themes: [], diagnostics: [] }),
+			getAgentsFiles: () => ({ agentsFiles: [] }),
+			getSystemPrompt: () => undefined,
+			getSystemPromptSource: () => undefined,
+			getAppendSystemPrompt: () => [],
+			getAppendSystemPromptSources: () => [],
+			extendResources: () => {},
+			reload: async () => {},
+		} as unknown as ResourceLoader
 	}
 
 	it("advertises discovered skills as available commands", async () => {
-		const { dir, skillName } = makeSkillDir()
+		const { dir, skillName, skill } = makeSkillDir()
 		const fake = new FakeAgentSession("session-skill-cmd", dir)
+		fake.resourceLoader = makeSkillLoader([skill])
 		const factory: AcpSessionFactory = async () => asSession(fake)
 		const { conn, updates } = makeRecordingConn()
 		const agent = new KimchiAcpAgent(conn, {
@@ -3268,8 +3308,9 @@ describe("newSession skill commands", () => {
 	})
 
 	it("rewrites a skill command prompt to inject skill content", async () => {
-		const { dir, skillName } = makeSkillDir()
+		const { dir, skillName, skill } = makeSkillDir()
 		const fake = new FakeAgentSession("session-skill-invoke", dir)
+		fake.resourceLoader = makeSkillLoader([skill])
 		fake.promptImpl = async () => {
 			fake.emit(agentEnd())
 		}
