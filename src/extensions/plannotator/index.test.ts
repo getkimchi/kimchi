@@ -30,7 +30,7 @@ function createMockPi(captures: MockCaptures, opts?: { hasUI?: boolean; oneshot?
 		if (event === "session_start") sessionStartHandlers.push(handler)
 	})
 
-	const getFlag = vi.fn((flag: string) => (flag === "ferment-oneshot" && opts?.oneshot ? true : false))
+	const getFlag = vi.fn((flag: string) => !!(flag === "ferment-oneshot" && opts?.oneshot))
 
 	return {
 		events: { emit, on },

@@ -17,6 +17,13 @@ import {
 	onPlanReviewDecision,
 	type PlanReviewDecisionPayload,
 } from "../../shared/planning/plan-review-bus.js"
+import {
+	contentHasToolCall,
+	hasPlanSubmitToolCall,
+	isNudgeSuppressed,
+	PLAN_MODE_STOP_NUDGE,
+	shouldNudge,
+} from "../../shared/planning/planning-stop-nudge.js"
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -242,6 +249,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// released when the plan is approved (execute / start-as-ferment) or the
 	// session restarts.
 	let activePlanSlug: string | undefined
+	// Per-session count of plan-mode stall nudges (model stopped after tool
+	// calls without calling submit_plan). Reset when submit_plan is called,
+	// when the mode leaves plan, and on session restart.
+	let planStopNudgeCount = 0
 	let planModeApplied = false
 	let planModeHiddenTools: string[] = []
 	const planToolVisibility: ToolVisibilityAPI = createToolVisibility(pi)
@@ -373,6 +384,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (current === "plan" && next.mode !== "plan") {
 			restoreToolsFromPlanMode()
 			activePlanSlug = undefined
+			planStopNudgeCount = 0
 		}
 		if (next.mode === "plan") applyPlanModeTools()
 		// Dismiss all active permission prompts so tool_call handlers re-evaluate under the new mode.
@@ -464,6 +476,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		currentCtx = ctx
 		cliMode = undefined
 		activePlanSlug = undefined
+		planStopNudgeCount = 0
 		const { errors } = doLoadConfig(ctx)
 
 		for (const err of errors) {
@@ -576,7 +589,44 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		maybePersistPermissionMode(ctx)
 	})
 
-	// submit_plan tool — replaces the <!-- PLAN_COMPLETE --> marker.
+	// Plan-mode stall recovery: when the model made tool calls in plan mode and
+	// then ended the turn with stopReason "stop" without calling submit_plan,
+	// the session would stall silently — nudge it to resolve open questions and
+	// submit the plan. Capped per session; agent workers are excluded (they
+	// submit via submit_plan in their own terminate-on-tool-return flow).
+	pi.on("turn_end", (event) => {
+		if (isAgentWorker()) return
+		if (getRuntimePermissionMode().mode !== "plan") return
+		if (event.message.role !== "assistant") return
+		const content = Array.isArray(event.message.content) ? event.message.content : []
+		const toolNames = content
+			.filter((c) => (c as { type: string }).type === "toolCall" || (c as { type: string }).type === "tool_use")
+			.map((c) => (c as { name?: unknown }).name)
+			.filter((name): name is string => typeof name === "string")
+		if (hasPlanSubmitToolCall(toolNames)) {
+			// The review flow owns the turn now. Reset the stall budget so a
+			// rework round starts fresh.
+			planStopNudgeCount = 0
+			return
+		}
+		const stopReason = (event.message as { stopReason?: string }).stopReason
+		if (!shouldNudge({ hasToolCall: contentHasToolCall(content), stopReason, completionSignalPresent: false })) {
+			return
+		}
+		planStopNudgeCount++
+		if (isNudgeSuppressed(planStopNudgeCount)) return
+		safeSendMessage(
+			pi,
+			{
+				customType: "plan-mode-stop-nudge",
+				content: PLAN_MODE_STOP_NUDGE,
+				display: false,
+			},
+			{ triggerTurn: true, deliverAs: "steer" },
+		)
+	})
+
+	// submit_plan tool — the adhoc plan-mode completion signal.
 	// Visible in both adhoc plan mode and ferment planning phase (via the
 	// tool catalog). The model calls it when the plan is ready for review.
 	// For ferment, the model should call propose_ferment_scoping first (to
@@ -606,11 +656,20 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				}
 			}
 
-			// Guard: must be in plan mode
+			// Allowed contexts:
+			// 1. Adhoc plan mode (mode === "plan") — full review flow.
+			// 2. Agent workers (e.g. Plan persona subagents) — saves + terminates
+			//    with no review emit; the parent orchestrator is the plan's
+			//    evaluator.
 			const mode = getRuntimePermissionMode().mode
-			if (mode !== "plan") {
+			if (mode !== "plan" && !isAgentWorker()) {
 				return {
-					content: [{ type: "text", text: "Error: submit_plan is only available during plan mode." }],
+					content: [
+						{
+							type: "text",
+							text: "Error: submit_plan is only available during plan mode or in a Plan agent worker.",
+						},
+					],
 					details: { submitted: false },
 				}
 			}
@@ -624,6 +683,24 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				const detail = err instanceof Error ? err.message : String(err)
 				if (ctx.hasUI) ctx.ui.notify(`permissions: failed to save plan file: ${detail}`, "warning")
 				else console.error(`permissions: failed to save plan file: ${detail}`)
+			}
+
+			// Agent worker: silent submit. Saves the plan and terminates the turn
+			// with no review emit — workers have no review surface, the parent
+			// orchestrator evaluates the plan, and the plannotator adapter skips
+			// worker sessions. agent-runner surfaces planPath back to the parent
+			// from this tool result.
+			if (isAgentWorker()) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: planPath ? `Plan submitted and saved to ${planPath}.` : "Plan submitted.",
+						},
+					],
+					details: { submitted: true, source: "worker", planPath },
+					terminate: true,
+				}
 			}
 
 			// Non-TUI / oneshot: emit the review request then end the turn.

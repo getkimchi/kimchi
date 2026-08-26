@@ -6,7 +6,7 @@
  *
  * | Flow | Written when | Filename |
  * |---|---|---|
- * | adhoc plan mode | plan is produced (completion-marker `turn_end`) | `<slug-of-plan-title>.md` |
+ * | adhoc plan mode | plan is produced (`submit_plan` tool call) | `<slug-of-plan-title>.md` |
  * | ferment scoping | `propose_ferment_scoping` builds the plan | `ferment-<slug>-<first12(fermentId)>.md` |
  *
  * All files land under `<cwd>/.kimchi/plans/`. Saving is overwrite-in-place:
@@ -53,8 +53,6 @@ export function generatePlanPersistenceNote(opts: {
 	return `Write the completed plan to ${location} — one file per plan, updated in place when the plan changes. The file path must be returned in the \`files\` array of your response.`
 }
 
-const PLAN_COMPLETE_MARKER = "<!-- PLAN_COMPLETE -->"
-const DONE_MARKER = "<done>"
 const DEFAULT_SLUG = "untitled-plan"
 const MAX_SLUG_LENGTH = 48
 
@@ -88,21 +86,6 @@ export function derivePlanTitle(text: string): string {
 }
 
 /**
- * Remove the plan-completion markers (`<!-- PLAN_COMPLETE -->`, `<done>`)
- * from a plan text before persisting it. Markers are protocol signals, not
- * plan content. Only lines consisting solely of a marker are stripped; the
- * result ends in exactly one trailing newline (empty input yields "").
- */
-export function stripPlanCompletionMarkers(text: string): string {
-	const keptLines = text.split("\n").filter((line) => {
-		const trimmed = line.trim()
-		return trimmed !== PLAN_COMPLETE_MARKER && trimmed !== DONE_MARKER
-	})
-	const body = keptLines.join("\n").replace(/\s+$/, "")
-	return body ? `${body}\n` : ""
-}
-
-/**
  * Deterministic filename stem for a ferment's plan file: `ferment-` prefix,
  * kebab-case ferment name, and the first 12 chars of the ferment id. The
  * `ferment-` prefix keeps ferment plans visually separate from adhoc plans.
@@ -119,7 +102,7 @@ export interface SavePlanMarkdownOptions {
 	readonly cwd: string
 	/** Filename base; slugified via {@link slugifyPlanName} before use. */
 	readonly name: string
-	/** Markdown content to persist (completion markers already stripped by the caller). */
+	/** Markdown content to persist (written verbatim). */
 	readonly planText: string
 }
 

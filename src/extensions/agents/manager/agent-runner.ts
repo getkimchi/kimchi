@@ -17,12 +17,6 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
-import {
-	derivePlanTitle,
-	savePlanMarkdown,
-	slugifyPlanName,
-	stripPlanCompletionMarkers,
-} from "../../../shared/planning/plan-markdown.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
@@ -277,6 +271,30 @@ function collectResponseText(session: AgentSession) {
 		}
 	})
 	return { getText: () => text, unsubscribe }
+}
+
+/**
+ * Find the worker session's submit_plan tool result and return the saved plan
+ * path. Prefers the structured `details` payload (`{ submitted: true, planPath }`);
+ * falls back to the tool-result text ("Plan submitted and saved to <path>.") in
+ * case details were lost through session serialization.
+ */
+function extractSubmitPlanPath(session: AgentSession): string | undefined {
+	for (let i = session.messages.length - 1; i >= 0; i--) {
+		const msg = session.messages[i]
+		if (msg.role !== "toolResult" || msg.toolName !== "submit_plan") continue
+		const details = msg.details as { submitted?: boolean; planPath?: unknown } | undefined
+		if (details?.submitted === true && typeof details.planPath === "string" && details.planPath) {
+			return details.planPath
+		}
+		const text = msg.content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map((c) => c.text)
+			.join("\n")
+		const match = /^Plan submitted and saved to (.+)\.$/m.exec(text)
+		if (match?.[1]) return match[1]
+	}
+	return undefined
 }
 
 function getLastAssistantText(session: AgentSession): string {
@@ -811,20 +829,14 @@ ${skillLines}`
 
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
 
-	// When a Plan agent emits a completion marker, the harness saves the plan
-	// to .kimchi/plans/<slug>.md regardless of permission mode — delegated
-	// Plan agents run outside plan permission mode so the turn_end handler in
-	// permissions/index.ts does not fire for them.
+	// A Plan agent completes by calling the submit_plan tool, which saves the
+	// plan itself (see permissions/index.ts) and terminates the turn. Extract
+	// the saved path from the tool result so the parent orchestrator can
+	// surface it. Stays undefined for non-Plan agents and when no submit_plan
+	// call happened.
 	let planPath: string | undefined
-	if (type === "Plan" && responseText.includes("<!-- PLAN_COMPLETE -->")) {
-		const planText = stripPlanCompletionMarkers(responseText)
-		const slug = slugifyPlanName(derivePlanTitle(planText))
-		try {
-			planPath = savePlanMarkdown({ cwd: effectiveCwd, name: slug, planText })
-		} catch (err) {
-			const detail = err instanceof Error ? err.message : String(err)
-			console.error(`agent-runner: failed to save plan file: ${detail}`)
-		}
+	if (type === "Plan") {
+		planPath = extractSubmitPlanPath(session)
 	}
 
 	return {
