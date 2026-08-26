@@ -1,10 +1,12 @@
 import asyncio
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from harbor.agents.installed.base import NonZeroAgentExitCodeError
 from harbor.models.agent.context import AgentContext
 
 from kimchi_agent.agent import (
@@ -14,6 +16,9 @@ from kimchi_agent.agent import (
     KIMCHI_INFRA_BREAKER_THRESHOLD_ENV,
     Kimchi,
     KimchiExitError,
+    RetryableApiError,
+    _parse_goal_evaluator_usage,
+    _retryable_api_error_from_session_stream,
 )
 
 
@@ -31,6 +36,68 @@ class RecordingKimchi(Kimchi):
 
     async def exec_as_root(self, _environment, command: str, env=None, cwd=None, timeout_sec=None):
         self.root_commands.append(command)
+
+
+class FailingKimchi(Kimchi):
+    def __init__(self, *args, failure: NonZeroAgentExitCodeError, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.failure = failure
+
+    async def exec_as_agent(self, _environment, command: str, env=None, cwd=None, timeout_sec=None):
+        raise self.failure
+
+
+class FakeEnvironment:
+    def __init__(self, stream: str, return_code: int = 0):
+        self.stream = stream
+        self.return_code = return_code
+        self.commands: list[str] = []
+
+    async def exec(self, command: str, timeout_sec=None):
+        self.commands.append(command)
+        return SimpleNamespace(return_code=self.return_code, stdout=self.stream)
+
+
+def _classification_entry(
+    raw_message: str = "Moonshot quota exceeded; please retry later.",
+    *,
+    entry_id: str = "classification-1",
+    retryable: bool = True,
+    is_infrastructure: bool = True,
+    # Mirrors src/llm-gateway-error.ts::LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE.
+    exit_code: int | None = 74,
+    http_status_code: int | None = None,
+) -> str:
+    return json.dumps(
+        {
+            "type": "custom",
+            "id": entry_id,
+            # Mirrors src/infrastructure-error.ts::GATEWAY_CLASSIFICATION_AUDIT_TYPE.
+            "customType": "kimchi_error_classification",
+            "data": {
+                "rawMessage": raw_message,
+                "reason": "rate_limit",
+                "retryable": retryable,
+                "isInfrastructure": is_infrastructure,
+                "exitCode": exit_code,
+                "httpStatusCode": http_status_code,
+            },
+        }
+    )
+
+
+def _assistant_entry(*, parent_id: str = "classification-1", stop_reason: str = "error") -> str:
+    return json.dumps(
+        {
+            "type": "message",
+            "parentId": parent_id,
+            "message": {
+                "role": "assistant",
+                "stopReason": stop_reason,
+                "errorMessage": "Moonshot quota exceeded; please retry later.",
+            },
+        }
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -309,6 +376,181 @@ def test_kimchi_exit_error_has_structured_exit_code_and_output_tails(tmp_path: P
     assert "stderr line 0" not in error.stderr
     assert f"stderr line {KIMCHI_EXIT_OUTPUT_TAIL_LINES + 4}" in error.stderr
     assert f"Kimchi exited with code {os.EX_IOERR}" in str(error)
+
+
+async def test_retryable_provider_error_in_session_reclassifies_wrapped_kimchi_exit(tmp_path: Path) -> None:
+    stream = "\n".join([_classification_entry(), _assistant_entry()])
+    agent = FailingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        failure=NonZeroAgentExitCodeError("kimchi exited 1"),
+    )
+    environment = FakeEnvironment(stream)
+
+    with pytest.raises(RetryableApiError) as raised:
+        await agent.run("solve it", environment, AgentContext())
+
+    assert raised.value.status is None
+    assert "quota exceeded" in str(raised.value)
+    assert "cat /logs/agent/sessions/main.jsonl" in environment.commands
+
+
+def test_retryable_provider_error_uses_parent_id_linkage() -> None:
+    stream = "\n".join(
+        [
+            _classification_entry(),
+            json.dumps({"type": "custom", "id": "intervening", "customType": "other", "data": {}}),
+            _assistant_entry(),
+        ]
+    )
+
+    linked_error = _retryable_api_error_from_session_stream(stream)
+    assert linked_error is not None
+    assert linked_error.status is None
+    assert _retryable_api_error_from_session_stream(
+        "\n".join([_classification_entry(), _assistant_entry(parent_id="other")])
+    ) is None
+
+
+def test_retryable_session_error_is_cleared_by_later_non_error_assistant() -> None:
+    stream = "\n".join(
+        [
+            _classification_entry(),
+            _assistant_entry(),
+            _assistant_entry(parent_id="later", stop_reason="stop"),
+        ]
+    )
+
+    assert _retryable_api_error_from_session_stream(stream) is None
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "not json",
+        json.dumps({"type": "custom", "customType": "kimchi_error_classification", "data": "bad"}),
+        _classification_entry(retryable=False),
+        _classification_entry(is_infrastructure=False),
+        _classification_entry(exit_code=None, http_status_code=None),
+        _classification_entry(exit_code=1),
+    ],
+)
+def test_malformed_or_non_infra_classification_fails_closed(entry: str) -> None:
+    stream = "\n".join([entry, _assistant_entry()])
+
+    assert _retryable_api_error_from_session_stream(stream) is None
+
+
+def test_goal_evaluator_usage_model_rejects_invalid_numbers() -> None:
+    valid_usage = {
+        "input": 1,
+        "output": 2,
+        "cacheRead": 3,
+        "cacheWrite": 4,
+        "totalTokens": 10,
+        "costUsd": 0.25,
+    }
+
+    assert _parse_goal_evaluator_usage(valid_usage) is not None
+    assert _parse_goal_evaluator_usage({**valid_usage, "input": -1}) is None
+    assert _parse_goal_evaluator_usage({**valid_usage, "costUsd": float("inf")}) is None
+
+
+def test_populate_context_bills_goal_evaluator_usage(tmp_path: Path) -> None:
+    logs_dir = tmp_path / "jobs" / "run-1" / "task__trial" / "agent"
+    sessions_dir = logs_dir / "sessions"
+    sessions_dir.mkdir(parents=True)
+    (sessions_dir / "main.jsonl").write_text(
+        '{"type":"message","message":{"role":"assistant","usage":'
+        '{"input":10,"output":3,"cacheRead":2,"cacheWrite":1,"cost":{"total":0.5}}}}\n'
+        + evaluator_usage_entry("g1", 8)
+        + "\n"
+    )
+
+    agent = Kimchi(logs_dir=logs_dir, model_name="kimchi-dev/kimi-k2.6")
+    context = AgentContext()
+    agent.populate_context_post_run(context)
+
+    assert context.n_input_tokens == 21  # 10 + 2 + 1 assistant, plus 8 evaluator
+    assert context.n_output_tokens == 3
+    assert context.n_cache_tokens == 2
+    assert context.cost_usd == 1.3
+
+
+def test_populate_context_sums_evaluator_calls_across_sessions_and_goals(tmp_path: Path) -> None:
+    logs_dir = tmp_path / "jobs" / "run-1" / "task__trial" / "agent"
+    sessions_dir = logs_dir / "sessions"
+    sessions_dir.mkdir(parents=True)
+    (sessions_dir / "main.jsonl").write_text(
+        "\n".join(
+            [
+                evaluator_usage_entry("g1", 10),
+                evaluator_usage_entry("g1", 10),
+                evaluator_usage_entry("g1", 10),
+                evaluator_usage_entry("g2", 5),
+            ]
+        )
+        + "\n"
+    )
+    # A child session contributes its own evaluator calls.
+    (sessions_dir / "child.jsonl").write_text(evaluator_usage_entry("g1", 7) + "\n")
+
+    agent = Kimchi(logs_dir=logs_dir, model_name="kimchi-dev/kimi-k2.6")
+    context = AgentContext()
+    agent.populate_context_post_run(context)
+
+    # Every call is billable, including a replaced Goal and a child session.
+    assert context.n_input_tokens == 42
+    assert context.n_output_tokens == 0
+    assert context.n_cache_tokens == 0
+    assert context.cost_usd == 4.2
+
+
+def test_populate_context_ignores_malformed_evaluator_entries(tmp_path: Path) -> None:
+    logs_dir = tmp_path / "jobs" / "run-1" / "task__trial" / "agent"
+    sessions_dir = logs_dir / "sessions"
+    sessions_dir.mkdir(parents=True)
+    valid = json.loads(evaluator_usage_entry("g1", 4))
+    usage = valid["data"]["usage"]
+    malformed = [
+        {"op": "evaluator_usage", "goalId": "g1", "revision": 1, "usage": usage},
+        {"op": "evaluator_usage", "sessionId": "session-a", "goalId": "g1", "revision": 1, "usage": {"input": 99}},
+        {"op": "evaluator_usage", "sessionId": "session-a", "goalId": "g1", "revision": True, "usage": usage},
+    ]
+    entries = [{"type": "custom", "customType": "kimchi_goal_state", "data": data} for data in malformed]
+    entries.append(valid)
+    (sessions_dir / "main.jsonl").write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+
+    agent = Kimchi(logs_dir=logs_dir, model_name="kimchi-dev/kimi-k2.6")
+    context = AgentContext()
+    agent.populate_context_post_run(context)
+
+    assert context.n_input_tokens == 4
+    assert context.cost_usd == 0.4
+
+
+def evaluator_usage_entry(goal_id: str, input_tokens: int) -> str:
+    usage = {
+        "input": input_tokens,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": input_tokens,
+        "costUsd": input_tokens / 10,
+    }
+    return json.dumps(
+        {
+            "type": "custom",
+            "customType": "kimchi_goal_state",
+            "data": {
+                "op": "evaluator_usage",
+                "sessionId": "session-a",
+                "goalId": goal_id,
+                "revision": 1,
+                "usage": usage,
+            },
+        }
+    )
 
 
 def test_populate_context_skips_unreadable_session_files(tmp_path: Path) -> None:

@@ -425,6 +425,95 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		return Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
 	}
 
+	it("maps Goal lifecycle events to privacy-safe OTLP records", async () => {
+		const { handlers, events } = await setup()
+		const { GOAL_EVENTS } = await import("../goal/domain-events.js")
+		const lifecycleEvents = [
+			{ event: GOAL_EVENTS.STARTED, telemetry: "goal.started", status: "active" },
+			{ event: GOAL_EVENTS.REPLACED, telemetry: "goal.replaced", status: "active" },
+			{ event: GOAL_EVENTS.EDITED, telemetry: "goal.edited", status: "active" },
+			{ event: GOAL_EVENTS.COMPLETED, telemetry: "goal.completed", status: "complete" },
+			{ event: GOAL_EVENTS.BLOCKED, telemetry: "goal.blocked", status: "blocked" },
+			{ event: GOAL_EVENTS.PAUSED, telemetry: "goal.paused", status: "paused", reason: "user" },
+			{
+				event: GOAL_EVENTS.STALLED,
+				telemetry: "goal.stalled",
+				status: "paused",
+				reason: "no_progress",
+				continuationCount: 2,
+			},
+		] as const
+
+		for (const lifecycle of lifecycleEvents) {
+			events.emit(lifecycle.event, {
+				goalId: "g-001",
+				revision: 2,
+				status: lifecycle.status,
+				tokensUsed: 1200,
+				timeUsedMs: 3000,
+				tokenBudget: 5000,
+				completionConfidence: "tested",
+				...("reason" in lifecycle ? { reason: lifecycle.reason } : {}),
+				...("continuationCount" in lifecycle ? { continuationCount: lifecycle.continuationCount } : {}),
+			})
+		}
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const records = extractRecords()
+		for (const lifecycle of lifecycleEvents) {
+			const rec = records.find((candidate) => candidate.eventName === lifecycle.telemetry)
+			expect(rec).toBeDefined()
+			const attrs = attrsOf(rec as NonNullable<typeof rec>)
+			expect(attrs).toMatchObject({
+				goal_id: "g-001",
+				revision: "2",
+				tokens_used: "1200",
+				time_used_ms: "3000",
+				token_budget: "5000",
+				completion_confidence: "tested",
+			})
+			if ("reason" in lifecycle) expect(attrs.reason).toBe(lifecycle.reason)
+			if ("continuationCount" in lifecycle) expect(attrs.continuation_count).toBe("2")
+			expect(attrs.objective).toBeUndefined()
+		}
+	})
+
+	it("emits privacy-safe Goal evaluator totals without the reason", async () => {
+		const { handlers, events } = await setup()
+		const { GOAL_EVENTS } = await import("../goal/domain-events.js")
+		events.emit(GOAL_EVENTS.EVALUATED, {
+			goalId: "g-001",
+			verdict: "continue",
+			count: 2,
+			model: "test/judge",
+			reason: "private evaluator rationale",
+			usage: {
+				input: 20,
+				output: 10,
+				cacheRead: 4,
+				cacheWrite: 2,
+				totalTokens: 36,
+				costUsd: 0.66,
+			},
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((candidate) => candidate.eventName === "goal.evaluated")
+		expect(attrsOf(rec as NonNullable<typeof rec>)).toMatchObject({
+			goal_id: "g-001",
+			verdict: "continue",
+			count: "2",
+			evaluator_model: "test/judge",
+			input_tokens: "20",
+			output_tokens: "10",
+			cache_read_tokens: "4",
+			cache_write_tokens: "2",
+			total_tokens: "36",
+			cost: "0.66",
+		})
+		expect(attrsOf(rec as NonNullable<typeof rec>).reason).toBeUndefined()
+	})
+
 	it("ferment:started → ferment.started OTLP record with ferment_id, name, model", async () => {
 		const { handlers, events } = await setup()
 		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")

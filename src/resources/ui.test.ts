@@ -65,6 +65,28 @@ describe("ResourceManagerComponent", () => {
 		expect(isResourceEnabled("hooks.rtk-rewrite")).toBe(false)
 		expect(selectedIndex(component)).toBe(1)
 	})
+
+	it("shows experimental resources in their own tab without changing their persisted id", () => {
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as unknown as Theme
+		const component = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, theme, vi.fn(), "plugins")
+
+		component.handleInput("\t")
+		const experimentalTab = component.render(160).join("\n")
+
+		expect(experimentalTab).toContain("Experimental")
+		expect(experimentalTab).toContain("extensions.goal")
+		expect(isResourceEnabled("extensions.goal")).toBe(false)
+
+		component.handleInput(" ")
+
+		expect(isResourceEnabled("extensions.goal")).toBe(true)
+		const extensions = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, theme, vi.fn(), "extensions")
+		expect(extensions.render(160).join("\n")).not.toContain("extensions.goal")
+	})
 })
 
 function selectedIndex(component: unknown): number {

@@ -14,7 +14,7 @@ from harbor.models.trial.result import AgentInfo, ModelInfo
 from pydantic import ValidationError
 
 from kimchi_agent.config import KimchiAgentConfig
-from kimchi_agent.messages import SessionEntry
+from kimchi_agent.messages import GoalEvaluatorUsage, SessionEntry
 from kimchi_agent.release import BINARY_RELPATH, SHARE_RELPATH, GitHubClient
 
 if TYPE_CHECKING:
@@ -44,6 +44,76 @@ MULTI_MODEL = "multi-model"
 KIMCHI_INFRA_BREAKER_THRESHOLD_ENV = "KIMCHI_INFRA_BREAKER_THRESHOLD"
 KIMCHI_BENCHMARK_INFRA_BREAKER_DEFAULT_ATTEMPTS = "3"
 KIMCHI_EXIT_OUTPUT_TAIL_LINES = 20
+# Mirrors src/infrastructure-error.ts::GATEWAY_CLASSIFICATION_AUDIT_TYPE.
+KIMCHI_ERROR_CLASSIFICATION_TYPE = "kimchi_error_classification"
+# Mirrors src/llm-gateway-error.ts::LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE.
+KIMCHI_INFRA_ERROR_EXIT_CODE = 74
+RETRYABLE_API_ERROR_MESSAGE_LIMIT = 2_000
+
+
+class RetryableApiError(RuntimeError):
+    """Raised when Kimchi recorded a transient provider failure."""
+
+    def __init__(self, status: int | None, detail: str) -> None:
+        self.status = status
+        detail = detail.strip()
+        suffix = f": {detail}" if detail else ""
+        code = f" {status}" if status is not None else ""
+        super().__init__(f"Retryable provider error{code}{suffix}")
+
+
+def _parse_goal_evaluator_usage(value: object) -> GoalEvaluatorUsage | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        usage = GoalEvaluatorUsage.model_validate(value)
+    except ValidationError:
+        return None
+    if not GoalEvaluatorUsage.model_fields.keys() <= usage.model_fields_set:
+        return None
+    return usage
+
+
+def _retryable_api_error_from_classification(data: object) -> RetryableApiError | None:
+    if not isinstance(data, dict):
+        return None
+    if data.get("retryable") is not True or data.get("isInfrastructure") is not True:
+        return None
+    exit_code = data.get("exitCode")
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool) or exit_code != KIMCHI_INFRA_ERROR_EXIT_CODE:
+        return None
+
+    detail = data.get("rawMessage") if isinstance(data.get("rawMessage"), str) else ""
+    if len(detail) > RETRYABLE_API_ERROR_MESSAGE_LIMIT:
+        detail = f"{detail[:RETRYABLE_API_ERROR_MESSAGE_LIMIT]}..."
+    return RetryableApiError(None, detail)
+
+
+def _retryable_api_error_from_session_stream(stream: str) -> RetryableApiError | None:
+    classified_errors: dict[str, RetryableApiError] = {}
+    terminal_error: RetryableApiError | None = None
+    for line in stream.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("type") == "custom" and entry.get("customType") == KIMCHI_ERROR_CLASSIFICATION_TYPE:
+            entry_id = entry.get("id")
+            error = _retryable_api_error_from_classification(entry.get("data"))
+            if isinstance(entry_id, str) and error is not None:
+                classified_errors[entry_id] = error
+            continue
+        message = entry.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            parent_id = entry.get("parentId")
+            linked_error = classified_errors.get(parent_id) if isinstance(parent_id, str) else None
+            terminal_error = linked_error if message.get("stopReason") == "error" else None
+    return terminal_error
 
 
 def _coerce_bool_kwarg(value: object, name: str) -> bool:
@@ -326,6 +396,11 @@ class Kimchi(BaseInstalledAgent):
         except asyncio.CancelledError:
             await self._terminate_kimchi_process_group(environment)
             raise
+        except NonZeroAgentExitCodeError as exc:
+            retryable_error = await self._retryable_api_error_from_remote_session(environment)
+            if retryable_error is not None:
+                raise retryable_error from exc
+            raise
 
     def _kimchi_launch_command(self, instruction: str, cli_flags: str) -> str:
         runner = self._kimchi_command(cli_flags)
@@ -448,6 +523,19 @@ class Kimchi(BaseInstalledAgent):
                 extra={"error": str(exc)},
             )
 
+    async def _retryable_api_error_from_remote_session(
+        self,
+        environment: BaseEnvironment,
+    ) -> RetryableApiError | None:
+        try:
+            result = await environment.exec(f"cat {shlex.quote(CONTAINER_MAIN_SESSION)}", timeout_sec=10)
+        except Exception:
+            self.logger.debug("Failed to read Kimchi session for API error classification", exc_info=True)
+            return None
+        if result.return_code != 0 or not result.stdout:
+            return None
+        return _retryable_api_error_from_session_stream(result.stdout)
+
     def _auto_tags(self) -> dict[str, str]:
         # logs_dir is expected to be jobs/<run>/<task>__<trial>/agent. Derive
         # run / task / trial from that ancestry so they're injected automatically
@@ -494,9 +582,8 @@ class Kimchi(BaseInstalledAgent):
         total_cache_read_tokens = 0
         total_cache_write_tokens = 0
         total_cost = 0.0
-
-        # Aggregate main.jsonl + Agent child <timestamp>_<uuid>.jsonl siblings.
-        # Agent runs are separate sessions, so their usage isn't reflected in main.jsonl.
+        # Evaluator calls are journaled independently from assistant messages.
+        # Sum each immutable call once across the main and child sessions.
         for session_file in sorted(sessions_dir.glob("*.jsonl")):
             try:
                 lines = session_file.read_text().splitlines()
@@ -513,6 +600,32 @@ class Kimchi(BaseInstalledAgent):
                 try:
                     entry = SessionEntry.model_validate_json(line)
                 except ValidationError:
+                    continue
+                if entry.type == "custom" and entry.custom_type == "kimchi_goal_state":
+                    data = entry.data or {}
+                    if data.get("op") != "evaluator_usage":
+                        continue
+                    session_id = data.get("sessionId")
+                    goal_id = data.get("goalId")
+                    revision = data.get("revision")
+                    if (
+                        not isinstance(session_id, str)
+                        or not session_id.strip()
+                        or not isinstance(goal_id, str)
+                        or not goal_id.strip()
+                        or not isinstance(revision, int)
+                        or isinstance(revision, bool)
+                        or revision < 1
+                    ):
+                        continue
+                    usage = _parse_goal_evaluator_usage(data.get("usage"))
+                    if usage is None:
+                        continue
+                    total_input_tokens += usage.input
+                    total_output_tokens += usage.output
+                    total_cache_read_tokens += usage.cache_read
+                    total_cache_write_tokens += usage.cache_write
+                    total_cost += usage.cost_usd
                     continue
                 if entry.type != "message" or entry.message.role != "assistant":
                     continue

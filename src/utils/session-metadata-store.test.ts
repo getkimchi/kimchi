@@ -38,6 +38,7 @@ function makeConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 const EXPECTED_OS_KEYS = ["telemetry.arch", "telemetry.host_os", "telemetry.is_wsl", "telemetry.os"]
 const EXPECTED_CONFIG_KEYS = [
 	"config.agents_enabled",
+	"config.goal_enabled",
 	"config.mcp_server_count",
 	"config.model",
 	"config.model_roles.builder",
@@ -104,7 +105,7 @@ describe("session-metadata-store", () => {
 			expect(typeof meta.os["telemetry.host_os"]).toBe("string")
 			expect(typeof meta.os["telemetry.is_wsl"]).toBe("boolean")
 
-			// Config is a ConfigSnapshot (the 7 config.* keys).
+			// Config is a ConfigSnapshot (the 8 config.* keys).
 			expect(Object.keys(meta.config).sort()).toEqual(EXPECTED_CONFIG_KEYS)
 			expect(meta.config["config.search_provider"]).toBe("bm25")
 			expect(meta.config["config.telemetry_enabled"]).toBe(true)

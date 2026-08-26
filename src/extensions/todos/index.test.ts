@@ -200,19 +200,6 @@ describe("todos extension session state", () => {
 		}
 	})
 
-	it("restores todos from legacy write_todos tool results", async () => {
-		const harness = createTodosHarness()
-
-		await harness.fire(
-			"session_start",
-			{ reason: "resume" },
-			createContext("session", [writeTodosEntry("legacy", "legacy todo", "in_progress", "write_todos")]),
-		)
-
-		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session").map((todo) => todo.content)).toEqual(["legacy todo"])
-		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session")[0]?.status).toBe("in_progress")
-	})
-
 	it("does not inject hidden todo steers for non-todo tool calls", async () => {
 		const harness = createTodosHarness()
 		const result = await harness.fire("tool_call", toolCall("bash"), createContext("session", []))

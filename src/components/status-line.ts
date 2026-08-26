@@ -13,12 +13,14 @@ import { formatBudgetStatusLine, formatCreditsStatusLine } from "../extensions/b
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-line.js"
 import { formatCount } from "../extensions/format.js"
+import { GOAL_STATUS_KEY } from "../extensions/goal/constants.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
 export type SegmentId =
+	| "goal"
 	| "permissions"
 	| "model"
 	| "ferment"
@@ -531,6 +533,13 @@ function buildPermissionsSegment(
 	return { id: "permissions", text: mode, width: visibleWidth(mode) }
 }
 
+function buildGoalSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
+	const status = statusLineData.getExtensionStatuses().get(GOAL_STATUS_KEY)
+	if (!status) return null
+	const text = accentText(theme, status)
+	return { id: "goal", text, width: visibleWidth(text) }
+}
+
 function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
 	const dapStatus = statusLineData.getExtensionStatuses().get("dap")
 	if (!dapStatus) return null
@@ -634,6 +643,7 @@ export function buildStatusLineSegments(
 	return [
 		buildPermissionsSegment(theme, statusLineData, pinned.has("permissions")),
 		buildModelSegment(ctx, theme),
+		buildGoalSegment(theme, statusLineData),
 		buildFermentSegment(theme, pinned.has("ferment")),
 		buildCreditsSegment(theme, pinned.has("credits")),
 		buildBudgetSegment(theme, pinned.has("budget")),

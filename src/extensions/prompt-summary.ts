@@ -28,6 +28,11 @@ interface AgentToolDetails {
 	modelName?: string
 }
 
+interface PromptSummaryMetric {
+	label: string
+	value: string
+}
+
 interface PromptSummaryData {
 	elapsed: string
 	orchestrator: UsageTotals | null
@@ -36,12 +41,22 @@ interface PromptSummaryData {
 	subagentsByModel?: Array<{ model: string; totals: UsageTotals }>
 	total: UsageTotals
 	extras?: string[]
+	metrics?: PromptSummaryMetric[]
 }
 
-const pendingExtras: string[] = []
+const pendingExtrasBySession = new Map<string, string[]>()
+const pendingMetricsBySession = new Map<string, PromptSummaryMetric[]>()
 
-export function addPromptSummaryExtra(text: string): void {
-	pendingExtras.push(text)
+export function addPromptSummaryExtra(sessionId: string, text: string): void {
+	const extras = pendingExtrasBySession.get(sessionId) ?? []
+	extras.push(text)
+	pendingExtrasBySession.set(sessionId, extras)
+}
+
+export function addPromptSummaryMetric(sessionId: string, label: string, value: string): void {
+	const metrics = pendingMetricsBySession.get(sessionId) ?? []
+	metrics.push({ label, value })
+	pendingMetricsBySession.set(sessionId, metrics)
 }
 
 function emptyTotals(): UsageTotals {
@@ -103,11 +118,14 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 	const dash = theme.fg("dim", "- ")
 	const header = theme.bold(theme.fg("toolTitle", "Prompt summary"))
 	container.addChild(new Text(dash + header, 0, 0))
+	const metrics = data.metrics ?? []
+	const metricLabelWidth = Math.max(0, ...metrics.map(({ label }) => label.length + 1))
+	let labelWidth: number
 
 	if (!data.subagents) {
 		// No subagents — single compact row
 		const tokensLabel = data.orchestratorModel ? `main (${data.orchestratorModel}):` : "tokens"
-		const labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, tokensLabel.length + 1)
+		labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, tokensLabel.length + 1, metricLabelWidth)
 		container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(labelWidth)) + data.elapsed, 0, 0))
 		const t = data.total
 		let values = `↑${formatCount(t.input)}${COL_GAP}↓${formatCount(t.output)}`
@@ -131,11 +149,14 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 		}
 		rows.push({ label: "total:", totals: data.total })
 
-		const labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, ...rows.map((r) => r.label.length + 1))
+		labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, metricLabelWidth, ...rows.map((r) => r.label.length + 1))
 		container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(labelWidth)) + data.elapsed, 0, 0))
 		for (const line of formatUsageRows(rows, theme, labelWidth)) {
 			container.addChild(new Text(line, 0, 0))
 		}
+	}
+	for (const metric of metrics) {
+		container.addChild(new Text(INDENT + theme.fg("dim", metric.label.padEnd(labelWidth)) + metric.value, 0, 0))
 	}
 
 	for (const extra of data.extras ?? []) {
@@ -211,16 +232,19 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 			cacheRead: orchestrator.cacheRead + subagents.cacheRead,
 			cacheWrite: orchestrator.cacheWrite + subagents.cacheWrite,
 		}
-		if (grandTotal.input + grandTotal.output === 0) return
+		const sessionId = ctx.sessionManager.getSessionId()
+		const metrics = pendingMetricsBySession.get(sessionId) ?? []
+		const extras = pendingExtrasBySession.get(sessionId) ?? []
+		if (grandTotal.input + grandTotal.output === 0 && extras.length === 0 && metrics.length === 0) return
 
-		const extras = pendingExtras.splice(0)
+		pendingExtrasBySession.delete(sessionId)
+		pendingMetricsBySession.delete(sessionId)
 
 		const subagentsByModel =
 			subagentModelTotals.size > 0
 				? [...subagentModelTotals.entries()].map(([model, totals]) => ({ model, totals }))
 				: undefined
 
-		const sessionId = ctx.sessionManager.getSessionId()
 		const data: PromptSummaryData = {
 			elapsed: formatDuration(Date.now() - startedAt),
 			orchestrator: orchestrator.input + orchestrator.output > 0 ? { ...orchestrator } : null,
@@ -229,6 +253,7 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 			subagentsByModel,
 			total: grandTotal,
 			extras: extras.length > 0 ? extras : undefined,
+			metrics: metrics.length > 0 ? metrics : undefined,
 		}
 
 		// Poll until the agent is idle before sending — a plain setTimeout(0)
@@ -264,5 +289,10 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 			}
 		}
 		trySend()
+	})
+
+	pi.on("session_shutdown", (_event, ctx) => {
+		pendingMetricsBySession.delete(ctx.sessionManager.getSessionId())
+		pendingExtrasBySession.delete(ctx.sessionManager.getSessionId())
 	})
 }
