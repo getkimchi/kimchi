@@ -6,7 +6,7 @@
  * Subagent and single-model instructions live in `prompt-construction/system-prompt.ts`.
  */
 
-import { renderDelegationThinkingLevelTable, renderOrchestratorThinkingTable } from "../agents/thinking-level-policy.js"
+import { renderDelegationThinkingLevelTable } from "../agents/thinking-level-policy.js"
 import { renderAgentWorkerBudgetTable } from "../agents/worker-budget-policy.js"
 import type { ModelCustomMetadata } from "./model-metadata.js"
 import { resolveOrchestrationGuideline } from "./model-registry/guidelines/guidelines-resolver.js"
@@ -181,10 +181,6 @@ Always pass a \`thinking\` parameter on every Agent call — never omit it. Use 
 const THINKING_LEVELS = `### Thinking levels
 
 \`thinking\` controls extended reasoning for the orchestrator and each delegated worker. Levels (lowest to highest): off, minimal, low, medium, high, xhigh, max. Use the lowest level that fits the task — higher thinking costs more tokens and time.
-
-**Orchestrator (main thread):** keep thinking low while coordinating (spawning agents, reading artifact paths). Raise only when classifying the pipeline, self-validating a plan, or interpreting ambiguous subagent reports.
-
-${renderOrchestratorThinkingTable()}
 
 **Delegated workers:** pass \`thinking\` on every \`Agent\` call. Orchestrator-provided \`thinking\` overrides agent profile defaults. Map chunk \`complexity\` from the plan spec to the simple/complex column.
 

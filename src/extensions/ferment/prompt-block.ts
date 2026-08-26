@@ -26,7 +26,7 @@ function buildAgentsSection(): string {
 	return `\n\n**Available subagent types (pick one per start_ferment_step by step intent):**\n${lines.join("\n")}`
 }
 
-function buildPlannerSupplement(
+export function buildPlannerSupplement(
 	f: Ferment,
 	continuationPolicy: ContinuationPolicy,
 	isOneshot = false,
