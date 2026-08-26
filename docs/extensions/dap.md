@@ -126,9 +126,9 @@ One-call tools that handle the full launch→breakpoint→inspect→terminate li
 
 ## Bundled Agent Skill
 
-The `dap-debugging` skill ships with the harness: on extension activation it is deployed (write-only-if-different, mirroring extensions/improve) to `~/.config/kimchi/harness/skills/dap-debugging/`, a path in `ALWAYS_SHOWN_SKILL_PATHS`, so it is available in every project session — not just this repo. The skill covers the debugging loop, breakpoint placement, how to find the interesting state, tool selection, and failure playbooks; four language references (`references/{go,python,typescript,native}.md`) document launch config, source-mapping rules, and expression-syntax differences per adapter.
+The `dap-debugging` skill ships with the harness at `resources/skills/dap-debugging/` and is surfaced through the unified skill-discovery mechanism (via `resources_discover`): it is available in every project session — not just this repo. The skill covers the debugging loop, breakpoint placement, how to find the interesting state, tool selection, and failure playbooks; four language references (`references/{go,python,typescript,native}.md`) document launch config, source-mapping rules, and expression-syntax differences per adapter.
 
-Source of truth: `src/extensions/dap/skill/` — plain Markdown files, no codegen. In dev they are read from the source tree; binary builds stage them via `scripts/copy-resources.js` into `dist/share/kimchi/skills/dap-debugging` and `deployDapSkill` resolves them through `resolveAuxiliaryFilesDir` (the same mechanism ssh-proxy uses).
+Source of truth: `resources/skills/dap-debugging/` — plain Markdown files, no codegen. In dev they are read from the source tree; binary builds stage them via `scripts/copy-resources.js` into `dist/share/kimchi/skills` and the central skill-root resolver finds them through `resolveAuxiliaryFilesDir` (the same mechanism ssh-proxy uses).
 
 ## Permissions (plan mode)
 

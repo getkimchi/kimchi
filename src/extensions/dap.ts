@@ -24,7 +24,6 @@ import {
 	detectMissingAdapters,
 } from "./dap/adapters.js"
 import { DapClientRegistry } from "./dap/client.js"
-import { deployDapSkill } from "./dap/deploy-skill.js"
 import { DapSessionRegistry } from "./dap/session.js"
 import { createLayer1Tools, createLayer2Tools, type LaunchSessionOptions } from "./dap/tools.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
@@ -273,10 +272,8 @@ const DAP_PHP_SKILL = `### PHP Debugging with php-debug-adapter
 - Use \`debug_eval\` freely — PHP supports method calls in eval`
 
 export default function (pi: ExtensionAPI) {
-	// Deploy the bundled dap-debugging skill to the harness skills dir on activation
-	// (mirrors extensions/improve). Write-only-if-different so it is a no-op when
-	// current; keeps the agent-facing skill available in every project the harness opens.
-	deployDapSkill()
+	// The dap-debugging skill is now a bundled skill (resources/skills/dap-debugging/)
+	// surfaced via the unified resources_discover mechanism; no deploy step needed.
 
 	let cwd = ""
 	let activeAdapters = detectAdapters("")
