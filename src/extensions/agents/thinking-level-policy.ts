@@ -99,14 +99,3 @@ export function renderDelegationThinkingLevelTable(): string {
 		),
 	].join("\n")
 }
-
-export function renderOrchestratorThinkingTable(): string {
-	return [
-		"| Orchestrator activity | thinking |",
-		"|---|---:|",
-		"| Orientation, spawning agents, reading artifact paths | low |",
-		"| Pipeline selection and intent boundaries | medium |",
-		"| Plan self-validation or interpreting NEEDS_REVISION | high |",
-		"| Recovery after agent_outcome ≠ completed (retry) | medium → high |",
-	].join("\n")
-}
