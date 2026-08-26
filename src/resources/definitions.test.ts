@@ -84,6 +84,18 @@ describe("resource definitions", () => {
 		// required when the user flips the /resources toggle.
 		expect(resource?.restartRequired).toBeFalsy()
 	})
+
+	it("registers Kimchi Workflows as a default-off built-in extension", () => {
+		const resource = getResourceDefinitions().find((candidate) => candidate.id === "extensions.workflows")
+
+		expect(resource).toMatchObject({
+			kind: "extensions",
+			label: "Kimchi Workflows",
+			defaultEnabled: false,
+			restartRequired: true,
+			description: expect.stringContaining("/workflow"),
+		})
+	})
 })
 
 function writeJson(path: string, data: unknown): void {

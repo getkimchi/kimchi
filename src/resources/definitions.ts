@@ -86,6 +86,14 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		restartRequired: true,
 	},
 	{
+		id: "extensions.workflows",
+		kind: "extensions",
+		label: "Kimchi Workflows",
+		description: "Enable the /workflow command for authoring and running TypeScript workflows.",
+		defaultEnabled: false,
+		restartRequired: true,
+	},
+	{
 		id: PI_PACKAGE_LOOKUP_RESOURCE_ID,
 		kind: "extensions",
 		label: "Pi package lookup",
