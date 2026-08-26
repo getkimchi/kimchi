@@ -4,9 +4,10 @@
  * using a mock ExtensionAPI.
  */
 import type { ToolCallEventResult } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
+import { setMultiModelEnabled } from "./multi-model.js"
 import reviewWriteGuardExtension, { STEER_MESSAGE_TYPE } from "./review-write-guard.js"
 
 function createMockPI(options?: Parameters<typeof reviewWriteGuardExtension>[1]) {
@@ -398,6 +399,99 @@ describe("reviewWriteGuardExtension wiring", () => {
 		expect(pi.blockResult).toBeUndefined()
 		emit(pi, "tool_call", { toolName: "edit" }, ctx)
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.blockResult).toBeUndefined()
+	})
+})
+
+describe("reviewWriteGuardExtension delegation-mode policy", () => {
+	it("does not steer or block when delegation is not required (relaxed-mode ferment)", () => {
+		const pi = createMockPI({ isDelegationRequired: () => false })
+		emit(pi, "tool_result", { toolName: "Agent" })
+
+		// Relaxed ferment instructs the orchestrator to execute steps directly.
+		// Well past both the steer (2) and block (5) thresholds.
+		for (let i = 0; i < 8; i++) {
+			emit(pi, "tool_call", { toolName: "edit" })
+		}
+
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi.blockResult).toBeUndefined()
+	})
+
+	it("still steers and blocks when delegation is required (strict-mode ferment or no ferment)", () => {
+		const pi = createMockPI({ isDelegationRequired: () => true })
+		emit(pi, "tool_result", { toolName: "Agent" })
+
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+
+		for (let i = 0; i < 3; i++) {
+			emit(pi, "tool_call", { toolName: "edit" })
+		}
+		expect(pi.blockResult?.block).toBe(true)
+	})
+
+	it("disarms when a ferment activates mid-turn after the guard was already armed", () => {
+		let required = true
+		const pi = createMockPI({ isDelegationRequired: () => required })
+
+		// Armed under a delegation-required policy.
+		emit(pi, "tool_result", { toolName: "Agent" })
+		emit(pi, "tool_call", { toolName: "edit" })
+
+		// A relaxed-mode ferment activates; the next Agent return must reset,
+		// not re-arm, so the orchestrator is not left throttled.
+		required = false
+		emit(pi, "tool_result", { toolName: "Agent" })
+
+		for (let i = 0; i < 8; i++) {
+			emit(pi, "tool_call", { toolName: "edit" })
+		}
+		expect(pi.blockResult).toBeUndefined()
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+})
+
+describe("reviewWriteGuardExtension default delegation policy (no injected seam)", () => {
+	const originalFerment = process.env.KIMCHI_ACTIVE_FERMENT
+
+	afterEach(() => {
+		if (originalFerment === undefined) delete process.env.KIMCHI_ACTIVE_FERMENT
+		else process.env.KIMCHI_ACTIVE_FERMENT = originalFerment
+	})
+
+	it("arms when no ferment is active", () => {
+		delete process.env.KIMCHI_ACTIVE_FERMENT
+		const pi = createMockPI()
+		emit(pi, "tool_result", { toolName: "Agent" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("still arms while a ferment is active in strict (multi-model) delegation mode", () => {
+		process.env.KIMCHI_ACTIVE_FERMENT = "f-strict"
+		setMultiModelEnabled("test-session", true)
+		try {
+			const pi = createMockPI()
+			emit(pi, "tool_result", { toolName: "Agent" })
+			emit(pi, "tool_call", { toolName: "edit" })
+			emit(pi, "tool_call", { toolName: "edit" })
+			expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		} finally {
+			setMultiModelEnabled("test-session", false)
+		}
+	})
+
+	it("does not arm while a ferment is active in relaxed (single-model) delegation mode", () => {
+		process.env.KIMCHI_ACTIVE_FERMENT = "f-relaxed"
+		const pi = createMockPI()
+		emit(pi, "tool_result", { toolName: "Agent" })
+		for (let i = 0; i < 8; i++) {
+			emit(pi, "tool_call", { toolName: "edit" })
+		}
+		expect(pi.sendMessage).not.toHaveBeenCalled()
 		expect(pi.blockResult).toBeUndefined()
 	})
 })
