@@ -78,7 +78,7 @@ models always plan themselves.
 **Option A — plan then subagent:**
 Kimi writes the plan (interfaces, file paths, method signatures) to a spec
 file. Spawns one minimax-m2.7 subagent with the spec file attached for the
-build phase. After the subagent returns, kimi reads the output and verifies.
+builder role. After the subagent returns, kimi reads the output and verifies..
 Total: ~80k kimi (plan + verify) + ~300k minimax (build).
 
 **Option B — plan then model switch:**
@@ -105,7 +105,7 @@ Minimax does not have `plan` in its strengths. Per the orchestrator rules,
 standard-tier models must delegate planning.
 
 **Option A — subagent for plan, then build:**
-Spawn a kimi-k2.6 subagent for the plan phase. Kimi writes the spec to a
+Spawn a kimi-k2.6 subagent for the planning role. Kimi writes the spec to a
 file. Minimax reads the file, then builds. Total: ~80k kimi (subagent) +
 ~300k minimax (build).
 
@@ -215,7 +215,7 @@ Total: ~100k kimi + ~500k minimax.
 Spawn a kimi-k2.6 subagent for the plan. Minimax reads the spec file, then
 builds. Can spawn parallel minimax subagents for independent packages.
 Minimax self-reviews. Total: ~100k kimi + ~500k minimax. Similar cost but
-minimax loses the conversation context from the planning phase.
+minimax loses the conversation context from the planning round.
 
 **Option C — switch to kimi for plan, switch back, spawn parallel builds:**
 Switch to kimi. Kimi plans. Switch back to minimax. Minimax spawns 2-3
@@ -266,7 +266,7 @@ but minimax has better context continuity — it sees the plan inline instead
 of via a file attachment.
 
 **Optimal:** Option C. Three-model pipeline with model switching for the
-build phase. Nemotron is the cheapest explorer (1M context ingests the
+build role. Nemotron is the cheapest explorer (1M context ingests the
 entire project in one pass). Kimi plans from the exploration findings.
 Minimax builds with full context. This is the flagship scenario for the
 explore task — all three tiers exercised.
@@ -313,7 +313,7 @@ the explore task.
 
 ### Starting model: kimi-k2.6
 
-| Task | Phases | Execution | Subagents | Switches | Est. cost |
+| Task | Role Delegation | Execution | Subagents | Switches | Est. cost |
 |------|--------|-----------|-----------|----------|-----------|
 | Simple | build | switch to minimax, build | 0 | 1 | $ |
 | Complex | plan, build | kimi plans, switch to minimax for build | 0 | 1 | $$ |
@@ -323,7 +323,7 @@ the explore task.
 
 ### Starting model: minimax-m2.7
 
-| Task | Phases | Execution | Subagents | Switches | Est. cost |
+| Task | Role | Execution | Subagents | Switches | Est. cost |
 |------|--------|-----------|-----------|----------|-----------|
 | Simple | build | minimax builds directly | 0 | 0 | $ |
 | Complex | plan, build | switch to kimi for plan, switch back for build | 0 | 2 | $$ |
@@ -343,6 +343,6 @@ a spec. The trade-off is that all subsequent tokens carry the accumulated
 context prefix cost and work must be sequential.
 
 Subagents are better when:
-- Multiple independent tasks can run in parallel (mega task build phase)
+- Multiple independent tasks can run in parallel (mega task build role)
 - The subtask is fully self-contained and does not need prior conversation context
 - The parent model needs to continue doing other work while the subagent runs

@@ -2,7 +2,6 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { startNewInteractiveSessionWithModel } from "./interactive-model-session.js"
-import { findModelByRef, refFromModel, splitModelRef } from "./model-catalog/ref-utils.js"
 import {
 	contextFitsModel,
 	getLatestMessages,
@@ -12,6 +11,7 @@ import {
 	sessionHasImages,
 } from "./model-guard.js"
 import { setMultiModelEnabled } from "./multi-model.js"
+import { findModelByRef, refFromModel, splitModelRef } from "./orchestration/model-ref-utils.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
 import { getOrchestratorModel, getOrchestratorModelRef } from "./orchestration/model-roles.js"

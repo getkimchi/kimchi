@@ -60,7 +60,7 @@ describe("resolveOrchestrationInstructions", () => {
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("### Your roles")
-		expect(result).toContain("Perform a phase yourself only when Orchestration")
+		expect(result).toContain("Perform work yourself only when Orchestration")
 	})
 
 	it("uses DO/DONT directives in phase responsibilities", () => {
@@ -69,12 +69,12 @@ describe("resolveOrchestrationInstructions", () => {
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("Phase responsibilities")
-		expect(result).toContain("#### Plan phase")
-		expect(result).toContain("#### Build phase")
-		expect(result).toContain("#### Review phase")
-		expect(result).toContain("#### Explore phase")
-		expect(result).toContain("#### Research phase")
+		expect(result).toContain("Role responsibilities")
+		expect(result).toContain("#### Plan")
+		expect(result).toContain("#### Build")
+		expect(result).toContain("#### Review")
+		expect(result).toContain("#### Explore")
+		expect(result).toContain("#### Research")
 	})
 
 	it("exempts Explore from markdown artifact handoff rules", () => {
@@ -552,7 +552,7 @@ describe("Build phase directive (complex-chunk tier routing)", () => {
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("#### Build phase")
+		expect(result).toContain("#### Build")
 		// The directive must explicitly call out heavy-tier for complex chunks on the first attempt.
 		expect(result).toMatch(/complex chunk.*heavy-tier Builder/s)
 		// And it must NOT tell the orchestrator to start with standard-tier and only escalate on retry.
@@ -569,7 +569,7 @@ describe("Trivial fix and triage exceptions", () => {
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("#### Build phase")
+		expect(result).toContain("#### Build")
 		expect(result).toContain("Trivial fix exception")
 		expect(result).toContain("trivial fix directly")
 		expect(result).toMatch(/2-3 edit\/write calls.*delegate a Fixer/s)

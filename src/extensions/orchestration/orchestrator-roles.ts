@@ -2,11 +2,10 @@
  * Helpers for resolving which delegable roles an orchestrator model owns.
  */
 
-import type { Phase } from "./model-registry/types.js"
-import type { ModelRoles, RoleModelAssignment } from "./model-roles.js"
+import type { ModelRole, ModelRoles, RoleModelAssignment } from "./model-roles.js"
 import { modelIdFromRef, normalizeRoleModels } from "./model-roles.js"
 
-const PHASE_DELEGABLE_ROLE: Record<Phase, keyof Omit<ModelRoles, "orchestrator" | "judge">> = {
+const ROLE_DELEGABLE: Record<ModelRole, keyof Omit<ModelRoles, "orchestrator" | "judge">> = {
 	explore: "explorer",
 	research: "researcher",
 	plan: "planner",
@@ -41,19 +40,19 @@ export function resolveModelRoleNames(ref: string, roles?: ModelRoles): string[]
 }
 
 /**
- * Worker phase guidelines apply to the orchestrator only when it may perform
- * that phase itself per Orchestration. Build is always delegated; review
+ * Worker role guidelines apply to the orchestrator only when it may perform
+ * that role's work itself per Orchestration. Build is always delegated; review
  * guidance applies when the orchestrator also owns the reviewer role because
  * trivial, low-risk changes may be self-reviewed.
  */
-export function orchestratorShouldReceivePhaseGuidelines(
-	phase: Phase,
+export function orchestratorShouldReceiveRoleGuidelines(
+	role: ModelRole,
 	currentModelId: string | undefined,
 	roles?: ModelRoles,
 ): boolean {
 	if (!roles || !currentModelId) return false
-	if (phase === "build") return false
-	const needed = PHASE_DELEGABLE_ROLE[phase]
+	if (role === "build") return false
+	const needed = ROLE_DELEGABLE[role]
 	return resolveModelRoleNames(currentModelId, roles).includes(needed)
 }
 

@@ -46,8 +46,8 @@ afterEach(() => {
 // ── STATUS_LINE_ELEMENTS metadata ────────────────────────────────────────────
 
 describe("STATUS_LINE_ELEMENTS", () => {
-	it("has 11 entries", () => {
-		expect(STATUS_LINE_ELEMENTS).toHaveLength(11)
+	it("has 10 entries", () => {
+		expect(STATUS_LINE_ELEMENTS).toHaveLength(10)
 	})
 
 	it("every entry has id, label, description", () => {
@@ -67,7 +67,6 @@ describe("STATUS_LINE_ELEMENTS", () => {
 			"agents",
 			"context",
 			"usage",
-			"phase",
 			"tags",
 			"team",
 			"credits",

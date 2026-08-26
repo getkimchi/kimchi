@@ -22,11 +22,10 @@ import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from ".
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
 import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
-import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
-import type { Phase } from "../../orchestration/model-registry/types.js"
+import type { ModelRole } from "../../orchestration/model-roles.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
-import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
@@ -413,8 +412,8 @@ ${skillLines}`
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
 
 	const modelId = (options.model as { id?: string } | undefined)?.id
-	const guidelinePhase = agentConfig?.roles?.[0] as Phase | undefined
-	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, guidelinePhase, getGuidelinesRegistry())
+	const guidelineRole = agentConfig?.roles?.[0] as ModelRole | undefined
+	const guidelinesBlock = buildRoleGuidelinesSection(modelId, guidelineRole, getGuidelinesRegistry())
 	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
 
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
@@ -741,13 +740,6 @@ ${skillLines}`
 		process.env.KIMCHI_AGENT_PERSONA = agentConfig.name
 	}
 
-	const sessionId = ctx.sessionManager.getSessionId()
-	const prevPhase = getCurrentPhase(sessionId)
-	const personaPhase = agentConfig?.roles?.[0]
-	if (personaPhase) {
-		setCurrentPhase(sessionId, personaPhase)
-	}
-
 	try {
 		await session.prompt(effectivePrompt)
 	} finally {
@@ -766,9 +758,6 @@ ${skillLines}`
 			} else {
 				process.env.KIMCHI_AGENT_PERSONA = prevPersona
 			}
-		}
-		if (personaPhase) {
-			setCurrentPhase(sessionId, prevPhase)
 		}
 	}
 

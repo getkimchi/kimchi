@@ -1,4 +1,4 @@
-import type { Phase } from "../types.js"
+import type { ModelRole } from "../../model-roles.js"
 
 export const DEFAULT_EXPLORE_GUIDELINES = `During **explore** phase:
 - Goal: build a mental map, not a solution. Do NOT modify files. Do NOT write a plan yet.
@@ -58,7 +58,7 @@ export const DEFAULT_REVIEW_GUIDELINES = `During **review** phase:
 - Flag missing tests for behaviour the diff introduces or changes.
 - **Do NOT modify source files.** Do not apply fixes, do not refactor, do not commit changes. Your job is to report findings — never to act on them. The author or a separate build agent applies fixes.`
 
-export const DEFAULT_PHASE_GUIDELINES: Readonly<Record<Phase, string>> = {
+export const DEFAULT_ROLE_GUIDELINES: Readonly<Record<ModelRole, string>> = {
 	explore: DEFAULT_EXPLORE_GUIDELINES,
 	research: DEFAULT_RESEARCH_GUIDELINES,
 	plan: DEFAULT_PLAN_GUIDELINES,

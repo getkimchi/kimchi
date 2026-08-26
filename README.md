@@ -50,7 +50,7 @@ Kimchi operates in one of two modes:
 
 Use `ctrl+p` to cycle through models. The last entry in the cycle is `multi-model`. You can also open the `/model` picker and select a specific model or `multi-model` from the list.
 
-In single-model mode the orchestration system prompt (environment, tools, research rules, guidelines, phase tagging) stays active, but task classification and delegation are disabled. The subagent tool remains available if you explicitly ask the agent to delegate.
+In single-model mode the orchestration system prompt (environment, tools, research rules, guidelines, role routing) stays active, but task classification and delegation are disabled. The subagent tool remains available if you explicitly ask the agent to delegate.
 
 ### Model roles
 
@@ -82,7 +82,7 @@ Defaults are hardcoded in `DEFAULT_MODEL_ROLES`. Roles accept any `provider/mode
 
 #### How delegation works
 
-The orchestrator receives explicit per-phase directives generated from the role configuration. For each pipeline phase (plan, build, review, explore, research), the system prompt tells the orchestrator exactly what to do:
+The orchestrator receives explicit per-role directives generated from the role configuration. For each role (planner, builder, reviewer, explorer, researcher), the system prompt tells the orchestrator exactly what to do:
 
 - **Roles it owns** (its model ID appears in the role pool): "DO perform this work yourself."
 - **Roles it does not own**: "DO NOT perform this work yourself. Delegate to Agent(type: X, model: Y)." — with the concrete model IDs from the pool.
@@ -125,20 +125,6 @@ Metadata can also be managed interactively via `/multi-model` → "Edit model me
 
 Kimchi omits Pi's estimated `max_completion_tokens` and `max_tokens` fields from requests to managed Kimchi providers. The gateway determines how much output fits using the model's actual tokenizer; output-budget enforcement belongs at the gateway rather than in Pi's approximate client-side context calculation.
 
-### Phase tracking
-
-Kimchi tags every LLM request with a `phase:{name}` label for usage analytics and cost attribution. The orchestrator sets the phase as work progresses and it is displayed in the status line.
-
-| Phase | Description |
-|-------|-------------|
-| `explore` | Navigating the codebase, reading files to understand structure |
-| `plan` | Designing, breaking down tasks, writing specs |
-| `build` | Writing, modifying, or refactoring code |
-| `review` | Analyzing output, verifying correctness |
-| `research` | Investigating documentation, researching issues |
-
-Subagents inherit the current phase from the orchestrator but cannot change it.
-
 ## Tags
 
 Kimchi supports tagging LLM requests for usage tracking and cost attribution. Tags are included with every request and displayed in the status line, grouped by key with color coding.
@@ -166,10 +152,9 @@ export KIMCHI_TAGS="team:backend,project:api"
 
 ### Auto-tags
 
-Two tags are added automatically to every request and do not count toward the 10 tag limit:
+One tag is added to every request and does not count toward the 10 tag limit:
 
 - `model:{model_id}` -- the model handling the request
-- `phase:{phase}` -- the current work phase
 
 ### Persistence
 
@@ -571,7 +556,7 @@ The `benchmark/` directory contains tools for smoke-testing kimchi sessions and 
 
 - **Manual benchmarks** (`benchmark/manual/`) -- run predefined tasks against different models and compare results. See `benchmark/manual/README.md`.
 - **Terminal-bench-2** (`benchmark/terminal-bench-2/`) -- run the [terminal-bench](https://www.harborframework.com/) suite (89 tasks) against kimchi inside Docker containers. See `benchmark/terminal-bench-2/README.md`.
-- **Session audit** (`benchmark/audit-session/`) -- audit a completed session for phase discipline, code quality, architecture, testing, model alignment, and cost efficiency. See `benchmark/audit-session/README.md`.
+- **Session audit** (`benchmark/audit-session/`) -- audit a completed session for delegation discipline, code quality, architecture, testing, role-model alignment, and cost efficiency. See `benchmark/audit-session/README.md`.
 
 ## Release
 

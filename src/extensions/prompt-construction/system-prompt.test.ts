@@ -189,7 +189,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain('<tool name="Agent">')
 		})
 
-		it("keeps phase behaviour but omits phase tool instructions without set_phase", () => {
+		it("includes role guidelines without set_phase tool", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -200,7 +200,7 @@ describe("buildSystemPrompt", () => {
 
 			expect(result).not.toContain("Phase Tagging for Analytics")
 			expect(result).not.toContain("Call `set_phase`")
-			expect(result).toContain("### Phase-specific behaviour")
+			expect(result).toContain("## Working Practices")
 			expect(result).toContain("During **plan** phase")
 		})
 
@@ -331,13 +331,13 @@ describe("buildSystemPrompt", () => {
 			expect(envPos).toBeLessThan(contextPos)
 		})
 
-		it("omits phase management when no phase tool or owned phase behaviour applies", () => {
+		it("omits Working Practices when no roles apply", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				mode: "orchestrator",
 			})
-			expect(result).not.toContain("## Phase Management")
+			expect(result).not.toContain("## Working Practices")
 			expect(result).not.toContain("During **explore** phase")
 			expect(result).not.toContain("During **research** phase")
 			expect(result).not.toContain("During **plan** phase")
@@ -345,7 +345,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("During **review** phase")
 		})
 
-		it("includes phase behaviour the orchestrator may perform directly", () => {
+		it("includes working practices content the orchestrator may perform directly", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -354,7 +354,7 @@ describe("buildSystemPrompt", () => {
 				roles: DEFAULT_MODEL_ROLES,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("## Phase Management")
+			expect(result).toContain("## Working Practices")
 			expect(result).toContain("During **plan** phase")
 			expect(result).not.toContain("During **explore** phase")
 			expect(result).not.toContain("During **research** phase")
@@ -427,7 +427,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("MiniMax M2 family")
 		})
 
-		it("includes Phase Management section alongside model-specific orchestration notes", () => {
+		it("includes Working Practices section alongside model-specific orchestration notes", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -440,7 +440,7 @@ describe("buildSystemPrompt", () => {
 				},
 				mode: "orchestrator",
 			})
-			expect(result).toContain("## Phase Management")
+			expect(result).toContain("## Working Practices")
 			expect(result).toContain("During **plan** phase")
 			expect(result).toContain("### Model-specific notes")
 		})
@@ -490,7 +490,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("Model selection for delegation")
 		})
 
-		it("includes Phase Management section when phase and model are provided", () => {
+		it("includes Working Practices section when model is provided", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -498,8 +498,7 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "subagent",
 			})
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("During **build** phase")
+			expect(result).toContain("## Working Practices")
 			expect(result).toContain("Prefer `edit` over `write` for files >30 lines")
 		})
 
@@ -616,7 +615,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain('<tool name="Agent">')
 		})
 
-		it("includes Phase Management section when phase and model are provided", () => {
+		it("includes Working Practices section when model is provided", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -624,12 +623,11 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "single",
 			})
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("During **build** phase")
+			expect(result).toContain("## Working Practices")
 			expect(result).toContain("Prefer `edit` over `write` for files >30 lines")
 		})
 
-		it("includes default research nudges for a non-OSS model in research phase", () => {
+		it("includes Working Practices section for a non-OSS model", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -637,16 +635,16 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "single",
 			})
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("During **research** phase")
-			expect(result).toContain("version you are assuming")
-			expect(result).toContain("version/API assumption")
-			expect(result).toContain("do not bluff")
-			expect(result).toContain("Do not rely on training memory")
+			expect(result).toContain("## Working Practices")
+			expect(result).not.toContain("During **research** phase")
+			expect(result).not.toContain("version you are assuming")
+			expect(result).not.toContain("version/API assumption")
+			expect(result).not.toContain("do not bluff")
+			expect(result).not.toContain("Do not rely on training memory")
 			expect(result).not.toContain("AT MOST one")
 		})
 
-		it("includes default research guidelines for an OSS model in research phase", () => {
+		it("includes Working Practices section for an OSS model", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -654,17 +652,12 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "single",
 			})
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("During **research** phase")
-			expect(result).toContain("version you are assuming")
-			// Family-specific override (MiniMax) must reach the prompt, not just
-			// the default research text. This is the regression the
-			// consolidation commit ababd67 introduced by dumping DEFAULT_PHASE_GUIDELINES
-			// without resolving through the registry.
-			expect(result).toContain("hallucinating APIs")
+			expect(result).toContain("## Working Practices")
+			// Family-specific overrides are NOT in the static Working Practices section
+			expect(result).not.toContain("hallucinating APIs")
 		})
 
-		it("includes build-phase default nudge for an OSS model in build phase", () => {
+		it("includes Working Practices section for an OSS model (build checks)", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -672,14 +665,11 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "single",
 			})
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("During **build** phase")
-			expect(result).toContain("uncertain about a library API")
-			expect(result).toContain("assume your knowledge may be stale")
-			// Family-specific build override (MiniMax M2 family):
-			// "STAY IN SCOPE" targets M2's over-reaching failure mode.
-			expect(result).toContain("STAY IN SCOPE")
-			expect(result).toContain("do NOT hallucinate APIs")
+			expect(result).toContain("## Working Practices")
+			expect(result).not.toContain("uncertain about a library API")
+			expect(result).not.toContain("assume your knowledge may be stale")
+			expect(result).not.toContain("STAY IN SCOPE")
+			expect(result).not.toContain("do NOT hallucinate APIs")
 		})
 
 		it("makes subagent spawning opt-in and defaults to the current model", () => {

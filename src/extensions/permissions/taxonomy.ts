@@ -21,7 +21,6 @@ const STATIC_CATEGORIES: Record<string, ToolCategory> = {
 	web_search: "readOnly",
 	web_fetch: "readOnly",
 	questionnaire: "readOnly",
-	set_phase: "readOnly",
 	workflow_submit_result: "readOnly",
 	workflow_submit_questions: "readOnly",
 }
