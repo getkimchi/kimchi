@@ -3,18 +3,10 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { createInterface } from "node:readline"
+import type { RpcExtensionUIRequest, RpcResponse } from "@earendil-works/pi-coding-agent"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { type FakeOpenAiServer, startFakeOpenAiServer } from "../e2e/tui/support/fake-openai-server.js"
 import { BINARY_PATH, PACKAGE_DIR } from "./harness.js"
-
-interface RpcResponse {
-	readonly id?: string
-	readonly type: "response"
-	readonly command: string
-	readonly success: boolean
-	readonly data?: unknown
-	readonly error?: string
-}
 
 interface RunEvent {
 	readonly type: string
@@ -28,7 +20,13 @@ interface WorkflowFixture {
 
 interface RpcProcess {
 	request(type: string, fields?: Record<string, unknown>, timeoutMs?: number): Promise<RpcResponse>
+	getError(): string | undefined
 	stop(): Promise<void>
+}
+
+interface PendingRpcRequest {
+	resolve(response: RpcResponse): void
+	reject(error: Error): void
 }
 
 const REQUEST_TIMEOUT_MS = 120_000
@@ -75,10 +73,12 @@ export default createWorkflow({ name: "bundled-smoke" }).then(greet).commit()
 				const eventFile = await waitFor(
 					() => existsSync(runsDir) && readdirSync(runsDir).find((file) => file.startsWith("workflow-bundled-smoke-")),
 					"the bundled workflow run file",
+					fixture.rpc.getError,
 				)
 				const completed = await waitFor(
 					() => readEvents(join(runsDir, eventFile)).find((event) => event.type === "run-completed"),
 					"the bundled workflow to complete",
+					fixture.rpc.getError,
 				)
 				expect(completed.output).toEqual({
 					message: "hello from the bundle",
@@ -159,7 +159,8 @@ async function createFixture(
 	vi.stubEnv("PI_SKIP_VERSION_CHECK", "1")
 	vi.stubEnv("COREPACK_HOME", originalCorepackHome)
 	vi.stubEnv("XDG_CACHE_HOME", originalCacheHome)
-	vi.stubEnv("npm_config_offline", "true")
+	vi.stubEnv("npm_config_offline", undefined)
+	vi.stubEnv("npm_config_prefer_offline", "true")
 	vi.stubEnv("npm_config_store_dir", pnpmStore)
 	vi.stubEnv("KIMCHI_WORKFLOWS_PACKAGE_DIR", undefined)
 	let rpc: RpcProcess | undefined
@@ -187,28 +188,39 @@ async function startRpc(cwd: string): Promise<RpcProcess> {
 	child.stderr.on("data", (chunk: string) => {
 		stderr += chunk
 	})
-	const lines = createInterface({ input: child.stdout, crlfDelay: Number.POSITIVE_INFINITY })[Symbol.asyncIterator]()
+	const pendingRequests = new Map<string, PendingRpcRequest>()
+	const errorNotifications: string[] = []
 	const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()))
+	void readRpcOutput()
 
 	const rpc: RpcProcess = {
-		async request(type, fields = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+		request(type, fields = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
 			const id = `workflows-smoke-${nextId++}`
-			child.stdin.write(`${JSON.stringify({ id, type, ...fields })}\n`)
-			const deadline = Date.now() + timeoutMs
-			for (;;) {
-				const remaining = deadline - Date.now()
-				if (remaining <= 0) throw new Error(`Kimchi RPC ${type} timed out${stderr ? `\n${stderr}` : ""}`)
-				const result = await withTimeout(lines.next(), remaining, `Kimchi RPC ${type} timed out`)
-				if (result.done) throw new Error(`Kimchi RPC exited during ${type}${stderr ? `\n${stderr}` : ""}`)
-				let value: unknown
+			return new Promise<RpcResponse>((resolve, reject) => {
+				const timer = setTimeout(() => {
+					pendingRequests.delete(id)
+					reject(new Error(`Kimchi RPC ${type} timed out${rpcDiagnostics()}`))
+				}, timeoutMs)
+				pendingRequests.set(id, {
+					resolve: (response) => {
+						clearTimeout(timer)
+						resolve(response)
+					},
+					reject: (error) => {
+						clearTimeout(timer)
+						reject(error)
+					},
+				})
 				try {
-					value = JSON.parse(result.value)
+					child.stdin.write(`${JSON.stringify({ id, type, ...fields })}\n`)
 				} catch (error) {
-					throw new Error(`Kimchi RPC emitted non-JSON stdout: ${result.value}`, { cause: error })
+					pendingRequests.delete(id)
+					clearTimeout(timer)
+					reject(error instanceof Error ? error : new Error(String(error)))
 				}
-				if (isRpcResponse(value) && value.id === id) return value
-			}
+			})
 		},
+		getError: () => errorNotifications.at(-1),
 		async stop() {
 			if (child.exitCode !== null || child.signalCode !== null) return
 			child.kill("SIGTERM")
@@ -223,6 +235,38 @@ async function startRpc(cwd: string): Promise<RpcProcess> {
 		},
 	}
 
+	async function readRpcOutput(): Promise<void> {
+		try {
+			for await (const line of createInterface({ input: child.stdout, crlfDelay: Number.POSITIVE_INFINITY })) {
+				let value: unknown
+				try {
+					value = JSON.parse(line)
+				} catch (error) {
+					throw new Error(`Kimchi RPC emitted non-JSON stdout: ${line}`, { cause: error })
+				}
+				if (isRpcResponse(value) && value.id) {
+					const pending = pendingRequests.get(value.id)
+					if (pending) {
+						pendingRequests.delete(value.id)
+						pending.resolve(value)
+					}
+				} else if (isRpcErrorNotification(value)) {
+					errorNotifications.push(value.message)
+				}
+			}
+			throw new Error(`Kimchi RPC stdout closed${rpcDiagnostics()}`)
+		} catch (error) {
+			const failure = error instanceof Error ? error : new Error(String(error))
+			for (const pending of pendingRequests.values()) pending.reject(failure)
+			pendingRequests.clear()
+		}
+	}
+
+	function rpcDiagnostics(): string {
+		const errors = errorNotifications.length > 0 ? `\n${errorNotifications.join("\n")}` : ""
+		return `${errors}${stderr ? `\n${stderr}` : ""}`
+	}
+
 	try {
 		const ready = await rpc.request("get_state", {}, 30_000)
 		if (!ready.success) throw new Error(ready.error ?? "Kimchi RPC startup failed")
@@ -233,30 +277,37 @@ async function startRpc(cwd: string): Promise<RpcProcess> {
 	}
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-	return new Promise((resolve, reject) => {
-		const timer = setTimeout(() => reject(new Error(message)), timeoutMs)
-		promise.then(
-			(value) => {
-				clearTimeout(timer)
-				resolve(value)
-			},
-			(error: unknown) => {
-				clearTimeout(timer)
-				reject(error)
-			},
-		)
-	})
-}
-
-async function waitFor<T>(check: () => T | false | undefined, label: string): Promise<T> {
+async function waitFor<T>(
+	check: () => T | false | undefined,
+	label: string,
+	getError?: () => string | undefined,
+): Promise<T> {
 	const deadline = Date.now() + REQUEST_TIMEOUT_MS
 	while (Date.now() < deadline) {
+		const error = getError?.()
+		if (error) throw new Error(`Failed waiting for ${label}: ${error}`)
 		const value = check()
 		if (value !== false && value !== undefined) return value
 		await new Promise((resolve) => setTimeout(resolve, 50))
 	}
 	throw new Error(`Timed out waiting for ${label}`)
+}
+
+function isRpcErrorNotification(
+	value: unknown,
+): value is Extract<RpcExtensionUIRequest, { readonly method: "notify" }> {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"type" in value &&
+		value.type === "extension_ui_request" &&
+		"method" in value &&
+		value.method === "notify" &&
+		"notifyType" in value &&
+		value.notifyType === "error" &&
+		"message" in value &&
+		typeof value.message === "string"
+	)
 }
 
 function isRpcResponse(value: unknown): value is RpcResponse {
