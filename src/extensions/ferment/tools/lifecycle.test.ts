@@ -91,6 +91,9 @@ function createHarness() {
 	// Isolation: tests should set their own active ferment rather than inherit
 	// module-level state from earlier tests.
 	runtime.setActive(undefined)
+	// Same isolation for the module-level continuation policy: askUserForm's
+	// audience routing depends on it, so every harness starts manual.
+	runtime.setContinuationPolicy("manual")
 	return { storage, runtime, pi, fermentId: ferment.id }
 }
 

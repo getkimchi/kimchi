@@ -4,13 +4,13 @@
  * Replaces ad-hoc `ctx.ui?.select(...)` calls scattered across tool handlers
  * with one function that handles three audiences:
  *
- *   1. Interactive sessions (plan / exec / auto with a TUI attached) — routes
- *      to a richer TUI prompt. The user picks or writes; we return structured
- *      data.
- *   2. One-shot sessions (no human at the keyboard) — routes to the configured
- *      judge model that stands in for the user. The judge sees the ferment goal
- *      + success criteria + current phase/step + question + options, picks one
- *      with a rationale.
+ *   1. Interactive sessions (TUI attached, manual continuation policy) —
+ *      routes to a richer TUI prompt. The user picks or writes; we return
+ *      structured data.
+ *   2. Autonomous sessions (no human should be interrupted) — routes to the
+ *      configured judge model that stands in for the user. The judge sees the
+ *      ferment goal + success criteria + current phase/step + question +
+ *      options, picks one with a rationale.
  *   3. Headless with no judge available — returns `{ failed: true }` and the
  *      caller is responsible for handling (typically by abandoning the
  *      ferment in one-shot mode).
@@ -20,9 +20,12 @@
  * Internal callers (interactive dropdowns, escalation, propose_ferment_scoping) check
  * the `failed` flag and degrade gracefully.
  *
- * Detection of one-shot mode comes from the `ferment-oneshot` PI flag (set at
- * session boot by /ferment one-shot or --ferment-oneshot). The flag is
- * session-level, whereas a Ferment can outlive the session that created it.
+ * An autonomous session is either the `ferment-oneshot` PI flag (set at
+ * session boot by /ferment one-shot or --ferment-oneshot) or an automated
+ * continuation policy (/ferment auto). The flag is session-level, whereas a
+ * Ferment and its policy can outlive the session that created them; the
+ * policy is read live at routing time. In both cases questions must never
+ * block on a human — the judge decides.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
@@ -30,6 +33,7 @@ import { renderLabeledSuccessCriteria } from "../../ferment/success-criteria.js"
 import type { Ferment, ScopingQuestionType } from "../../ferment/types.js"
 import { withBlocked } from "../herdr-events.js"
 import { normalizeQuestionType, YES_NO_OPTIONS } from "../questionnaire/index.js"
+import { isAutonomousSession } from "./autonomy.js"
 import { FERMENT_EVENTS, type UserUnblockedPayload } from "./domain-events.js"
 import { type JudgeApiResult, judgeApiCall } from "./judge.js"
 import { promptForm } from "./prompt-ui.js"
@@ -109,10 +113,11 @@ export interface AskUserContext {
 	ctx: ExtensionContext
 	/** Optional. When provided, `askUser` calls `runtime.markHumanInput()`
 	 *  on user-answered responses so downstream signals (nudge throttling,
-	 *  prompt-block freshness) reflect the interaction. */
-	runtime?: Pick<FermentRuntime, "markHumanInput">
-	/** Optional audit sink: invoked once per judge-answered question (one-shot
-	 *  mode). Call sites with runtime access should pass
+	 *  prompt-block freshness) reflect the interaction, and reads the live
+	 *  continuation policy to route autonomous ferments to the judge. */
+	runtime?: Pick<FermentRuntime, "markHumanInput" | "getContinuationPolicy">
+	/** Optional audit sink: invoked once per judge-answered question
+	 *  (autonomous sessions). Call sites with runtime access should pass
 	 *  `createJudgeDecisionRecorder(runtime)` — without it, judge choices made
 	 *  on the user's behalf leave no trace in ferment artifacts. */
 	recordJudgeDecision?: (fermentId: string, prompt: string, answerLabel: string, rationale: string | undefined) => void
@@ -136,12 +141,6 @@ export function createJudgeDecisionRecorder(
 			console.error(`[ask-user] failed to record judge decision for ferment ${fermentId}:`, outcome.error)
 		}
 	}
-}
-
-/** True when the current PI session is the one-shot planner — no human is
- *  attached, so any question must route to the judge. */
-function isOneShotSession(pi: ExtensionAPI): boolean {
-	return pi.getFlag?.("ferment-oneshot") === true
 }
 
 export interface NormalizedScopingType {
@@ -556,19 +555,28 @@ export async function askJudgeForm(
 	}
 }
 
-export async function askUserForm(
-	title: string | undefined,
-	description: string | undefined,
-	questions: ReadonlyArray<AskUserQuestion>,
-	context: AskUserContext,
-): Promise<AskUserResponse> {
-	const validationError = validateFormQuestions(questions)
-	if (validationError) {
-		return { failed: true, reason: "invalid_choice", detail: validationError }
-	}
+/** Everything an audience route needs to handle one form. */
+interface AskUserFormState {
+	title: string | undefined
+	description: string | undefined
+	questions: ReadonlyArray<AskUserQuestion>
+	context: AskUserContext
+}
 
-	const oneShot = isOneShotSession(context.pi)
-	if (oneShot) {
+/** One audience candidate. `when` decides applicability from live session
+ *  state; `execute` fully handles the form when selected. */
+interface AskUserRoute {
+	name: string
+	when(state: AskUserFormState): boolean
+	execute(state: AskUserFormState): Promise<AskUserResponse>
+}
+
+/** Autonomous sessions: the judge model stands in for the user and nothing
+ *  ever blocks on a human. */
+const judgeRoute: AskUserRoute = {
+	name: "judge",
+	when: ({ context }) => isAutonomousSession(context.pi, context.runtime),
+	execute: async ({ title, description, questions, context }) => {
 		const response = await askJudgeForm(title, description, questions, context.ferment)
 		if (!response.failed && response.answered_by === "judge" && context.recordJudgeDecision) {
 			for (const answer of response.answers ?? []) {
@@ -586,14 +594,19 @@ export async function askUserForm(
 			}
 		}
 		return response
-	}
+	},
+}
 
-	const ui = context.ctx?.hasUI ? context.ctx.ui : undefined
-	if (ui) {
+/** Interactive sessions: render the richer TUI prompt and return structured
+ *  answers from the human. */
+const interactiveUiRoute: AskUserRoute = {
+	name: "interactive_ui",
+	when: ({ context }) => Boolean(context.ctx?.hasUI && context.ctx.ui),
+	execute: async ({ title, description, questions, context }) => {
 		const promptedAtMs = Date.now()
 		// Balanced-pair contract: see ../herdr-events.ts. The judge and no-UI
-		// paths above never block on a human, so they emit nothing. Static
-		// label (Privacy note in herdr-events.ts): `title` is agent-generated.
+		// routes never block on a human, so they emit nothing. Static label
+		// (Privacy note in herdr-events.ts): `title` is agent-generated.
 		const result = await withBlocked(context.pi.events, "Ferment question", () =>
 			promptForm(context.ctx, { title, description, questions }),
 		)
@@ -610,11 +623,41 @@ export async function askUserForm(
 			answers: mapPromptFormAnswers(questions, result.answers),
 			answered_by: "user",
 		}
-	}
+	},
+}
 
-	return {
+/** Terminal route — a form must always resolve, so this matches everything
+ *  and reports the failure callers degrade on. Must stay last. */
+const unavailableRoute: AskUserRoute = {
+	name: "unavailable",
+	when: () => true,
+	execute: async () => ({
 		failed: true,
 		reason: "no_ui_no_judge",
-		detail: "No TUI attached and not in one-shot mode — cannot route the questions to any audience.",
+		detail:
+			"No TUI attached and not in an autonomous session (one-shot or automated policy) — cannot route the questions to any audience.",
+	}),
+}
+
+/** Ordered audience routes: the first route whose `when` matches handles the
+ *  form. Priority changes = reorder entries; a new audience = insert a route
+ *  before `unavailableRoute`, which must stay last. */
+const ASK_USER_ROUTES: readonly AskUserRoute[] = [judgeRoute, interactiveUiRoute, unavailableRoute]
+
+export async function askUserForm(
+	title: string | undefined,
+	description: string | undefined,
+	questions: ReadonlyArray<AskUserQuestion>,
+	context: AskUserContext,
+): Promise<AskUserResponse> {
+	const validationError = validateFormQuestions(questions)
+	if (validationError) {
+		return { failed: true, reason: "invalid_choice", detail: validationError }
 	}
+
+	const state: AskUserFormState = { title, description, questions, context }
+	for (const route of ASK_USER_ROUTES) {
+		if (route.when(state)) return route.execute(state)
+	}
+	throw new Error("ASK_USER_ROUTES must end with a route whose `when` always matches")
 }

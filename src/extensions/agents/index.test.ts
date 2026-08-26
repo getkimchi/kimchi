@@ -119,8 +119,12 @@ vi.mock("./manager/agent-manager.js", () => {
 })
 
 const mockFermentGetActiveId = vi.hoisted(() => vi.fn(() => undefined as string | undefined))
+const mockFermentGetContinuationPolicy = vi.hoisted(() => vi.fn((): "manual" | "automated" => "manual"))
 vi.mock("../ferment/runtime.js", () => ({
-	createDefaultFermentRuntime: vi.fn(() => ({ getActiveId: mockFermentGetActiveId })),
+	createDefaultFermentRuntime: vi.fn(() => ({
+		getActiveId: mockFermentGetActiveId,
+		getContinuationPolicy: mockFermentGetContinuationPolicy,
+	})),
 }))
 
 vi.mock("./telemetry/index.js", () => ({ trackSubagentSpawned: vi.fn().mockResolvedValue(undefined) }))
@@ -359,12 +363,22 @@ describe("agent communication lifecycle", () => {
 	beforeEach(() => {
 		mockFermentGetActiveId.mockReset()
 		mockFermentGetActiveId.mockReturnValue(undefined)
+		mockFermentGetContinuationPolicy.mockReturnValue("manual")
 		vi.useRealTimers()
 		vi.clearAllMocks()
 	})
 
 	it("binds one root and resolves live user reachability for UI and headless modes", async () => {
-		const scenarios = [
+		const scenarios: Array<{
+			name: string
+			root: string
+			hasUI: boolean
+			mode: string
+			flag: boolean
+			activeFerment: string | undefined
+			policy?: "manual" | "automated"
+			expected: { reachable: boolean; route: string; ferment_id?: string }
+		}> = [
 			{
 				name: "interactive TUI",
 				root: "root-tui",
@@ -419,10 +433,41 @@ describe("agent communication lifecycle", () => {
 				activeFerment: "ferment-live",
 				expected: { reachable: false, route: "unavailable" },
 			},
+			{
+				name: "TUI with automated ferment policy routes user questions to the judge",
+				root: "root-tui-auto",
+				hasUI: true,
+				mode: "tui",
+				flag: false,
+				activeFerment: "ferment-live",
+				policy: "automated",
+				expected: { reachable: true, route: "ferment_judge", ferment_id: "ferment-live" },
+			},
+			{
+				name: "TUI with automated policy but no active Ferment falls back to the questionnaire",
+				root: "root-tui-auto-idle",
+				hasUI: true,
+				mode: "tui",
+				flag: false,
+				activeFerment: undefined,
+				policy: "automated",
+				expected: { reachable: true, route: "questionnaire" },
+			},
+			{
+				name: "headless automated ferment without one-shot flag routes to the judge",
+				root: "root-headless-auto",
+				hasUI: false,
+				mode: "json",
+				flag: false,
+				activeFerment: "ferment-live",
+				policy: "automated",
+				expected: { reachable: true, route: "ferment_judge", ferment_id: "ferment-live" },
+			},
 		]
 
 		for (const scenario of scenarios) {
 			mockFermentGetActiveId.mockReturnValue(scenario.activeFerment)
+			mockFermentGetContinuationPolicy.mockReturnValue(scenario.policy ?? "manual")
 			const pi = makeMockPi()
 			pi.getFlag.mockReturnValue(scenario.flag ? true : undefined)
 			agentsExtension(pi)

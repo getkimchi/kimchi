@@ -24,6 +24,7 @@ import {
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
+import { resolveAutonomousJudgeRoute } from "../ferment/autonomy.js"
 import { createDefaultFermentRuntime } from "../ferment/runtime.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
@@ -38,6 +39,7 @@ import {
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
+import { resolveUserContact } from "./contact-routing.js"
 import {
 	AgentManager,
 	type AgentMessageEvent,
@@ -413,10 +415,13 @@ const COORDINATOR_MESSAGE_PROMPT = `## Subagent messages
 
 - Branch on the delivered \`requestedAudience\`. For \`parent\`, answer from current
   evidence or a safe authorized assumption without invoking a user route. For
-  \`user\`, consume the delivered \`user_via_parent\` capability: \`questionnaire\`
-  means ask through the UI; \`ferment_judge\` means call ask_user with its explicit
-  \`ferment_id\`; \`unavailable\` means choose the safest authorized assumption or a
-  blocker answer.
+  \`user\`, first evaluate whether the decision genuinely belongs to the user
+  (scope, safety, permission, or a preference only they own). If you can answer
+  safely from current evidence or a safe authorized assumption, reply yourself
+  without invoking a user route. Only when the user must decide, consume the
+  delivered \`user_via_parent\` capability: \`questionnaire\` means ask through the
+  UI; \`ferment_judge\` means call ask_user with its explicit \`ferment_id\`;
+  \`unavailable\` means choose the safest authorized assumption or a blocker answer.
 - Reply with reply_to_agent_message and the original message ID. Supply explicit
   max_turns and max_duration because a settled child needs bounded resume.
 - Every accepted question ends through reply_to_agent_message. If a user route
@@ -1039,22 +1044,10 @@ export default function (pi: ExtensionAPI) {
 				rootSessionId,
 				hasUI: ctx.hasUI,
 				active: true,
-				getJudgeRoute: () => {
-					if (!context.active || context.hasUI || pi.getFlag("ferment-oneshot") !== true) return undefined
-					const fermentId = fermentRuntime.getActiveId()
-					return fermentId ? { fermentId } : undefined
-				},
+				getJudgeRoute: () => (context.active ? resolveAutonomousJudgeRoute(pi, fermentRuntime) : undefined),
 				getUserContact: () => {
 					if (!context.active) return { reachable: false, route: "unavailable", reason: "The session is shut down." }
-					if (context.hasUI) return { reachable: true, route: "questionnaire" }
-					const judge = context.getJudgeRoute()
-					return judge
-						? { reachable: true, route: "ferment_judge", ferment_id: judge.fermentId }
-						: {
-								reachable: false,
-								route: "unavailable",
-								reason: "No live questionnaire or one-shot Ferment judge route is available.",
-							}
+					return resolveUserContact({ hasUI: context.hasUI, judgeRoute: context.getJudgeRoute() })
 				},
 			}
 			parentCommunicationContext = context

@@ -210,6 +210,54 @@ describe("askUserForm routing", () => {
 		expect(result.failed).toBe(true)
 		expect(pi.events.emit).not.toHaveBeenCalledWith("herdr:blocked", expect.anything())
 	})
+
+	it("routes to the judge without touching the UI when the ferment policy is automated", async () => {
+		mockedJudgeApiCall.mockReset()
+		mockedJudgeApiCall.mockResolvedValue({
+			ok: true,
+			text: '{"answers":[{"id":"q1","value":"safe"}],"rationale":"Automated policy"}',
+		})
+		const select = vi.fn(async () => "safe")
+		const input = vi.fn(async () => "")
+		const result = await askUserForm(
+			"Title",
+			"Desc",
+			[{ id: "q1", type: "single", prompt: "Which?", options: [{ id: "safe", label: "Safe" }] }],
+			{
+				ferment: makeFerment(),
+				pi: makePi(),
+				ctx: createContext({ ui: { select, input } }),
+				runtime: { markHumanInput: vi.fn(), getContinuationPolicy: () => "automated" as const },
+			},
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answered_by).toBe("judge")
+		expect(select).not.toHaveBeenCalled()
+		expect(input).not.toHaveBeenCalled()
+	})
+
+	it("keeps the interactive UI path when the policy is manual even with runtime present", async () => {
+		mockedJudgeApiCall.mockReset()
+		const select = vi.fn(async () => "safe")
+		const input = vi.fn(async () => "")
+		const result = await askUserForm(
+			"Title",
+			"Desc",
+			[{ id: "q1", type: "single", prompt: "Which?", options: [{ id: "safe", label: "Safe" }] }],
+			{
+				ferment: makeFerment(),
+				pi: makePi(),
+				ctx: createContext({ ui: { select, input } }),
+				runtime: { markHumanInput: vi.fn(), getContinuationPolicy: () => "manual" as const },
+			},
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answered_by).toBe("user")
+		expect(select).toHaveBeenCalled()
+		expect(mockedJudgeApiCall).not.toHaveBeenCalled()
+	})
 })
 
 describe("toScopingQuestionType", () => {
