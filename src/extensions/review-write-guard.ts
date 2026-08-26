@@ -1,5 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { AgentOutcomeKind, AgentRecord, SubagentType } from "./agents/personas/types.js"
+import { hasActiveFerment } from "./ferment/state.js"
+import { getMultiModelEnabled } from "./multi-model.js"
 import { markHarnessSteer } from "./steer-marker.js"
 
 const IMPLEMENTATION_TOOLS = new Set(["edit", "write"])
@@ -216,8 +218,33 @@ function extractAgentOutcome(event: { details?: unknown }): AgentOutcomeSummary 
 	}
 }
 
-export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: OrchestratorWriteGuardOptions): void {
+/**
+ * Whether the orchestrator is expected to delegate implementation work rather
+ * than perform it.
+ *
+ * Ferment resolves its delegation mode as `multiModelEnabled ? "strict" : "relaxed"`
+ * (`ferment/oneshot.ts`, `ferment/prompt-block.ts`). Under `relaxed` the planner
+ * supplement instructs the orchestrator to "execute steps directly with
+ * bash/edit/write" and to delegate only residue-heavy steps, because direct
+ * execution measured faster at bench scale. Arming the guard there would steer
+ * and then hard-block the exact behaviour the prompt asks for, as soon as the
+ * orchestrator delegated one step.
+ *
+ * So the guard applies everywhere except an active ferment in relaxed mode.
+ */
+function delegationRequired(ctx: ExtensionContext): boolean {
+	if (!hasActiveFerment()) return true
+	return getMultiModelEnabled(ctx.sessionManager)
+}
+
+export interface ReviewWriteGuardExtensionOptions extends OrchestratorWriteGuardOptions {
+	/** Overrides the delegation-required policy. Testing seam. */
+	isDelegationRequired?: (ctx: ExtensionContext) => boolean
+}
+
+export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: ReviewWriteGuardExtensionOptions): void {
 	const guardMap = new Map<string, OrchestratorWriteGuard>()
+	const isDelegationRequired = options?.isDelegationRequired ?? delegationRequired
 
 	function getOrchestratorWriteGuard(ctx: ExtensionContext): OrchestratorWriteGuard {
 		const sessionId = ctx.sessionManager.getSessionId()
@@ -269,6 +296,10 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 			return { block: false }
 		}
 
+		// Relaxed-mode ferment: direct execution is the instructed path, so the
+		// guard must not steer or block it.
+		if (!isDelegationRequired(ctx)) return { block: false }
+
 		const guard = getOrchestratorWriteGuard(ctx)
 		const result = guard.checkToolCall(event.toolName)
 		if (!result) return { block: false }
@@ -291,6 +322,13 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 	pi.on("tool_result", (event, ctx) => {
 		if (event.toolName === "Agent") {
 			const guard = getOrchestratorWriteGuard(ctx)
+			// A ferment can activate mid-turn, after the guard was already armed.
+			// Reset rather than arm so the orchestrator is not left throttled under
+			// a policy that no longer applies to it.
+			if (!isDelegationRequired(ctx)) {
+				guard.reset()
+				return
+			}
 			guard.recordSubagentReturn(extractAgentOutcome(event))
 		}
 	})
