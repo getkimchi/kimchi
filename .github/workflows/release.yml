@@ -39,8 +39,14 @@ jobs:
       - name: Check (lint + type check)
         run: pnpm run check
 
+      - name: Check workflows
+        run: pnpm run check:workflows
+
       - name: Test
         run: pnpm run test
+
+      - name: Test workflows
+        run: pnpm run test:workflows
 
   build:
     needs: [checks]

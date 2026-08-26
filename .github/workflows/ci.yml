@@ -41,11 +41,17 @@ jobs:
       - name: Check (lint + type check)
         run: pnpm run check
 
+      - name: Check workflows
+        run: pnpm run check:workflows
+
       - name: Build binary
         run: pnpm run build:binary
 
       - name: Test
         run: KIMCHI_PROXY_HELPER=$(pwd)/bin/proxy-helper pnpm run test
+
+      - name: Test workflows
+        run: pnpm run test:workflows
 
       - name: Smoke tests
         run: pnpm run test:smoke
@@ -115,11 +121,17 @@ jobs:
       - name: Check (lint + type check)
         run: pnpm run check
 
+      - name: Check workflows
+        run: pnpm run check:workflows
+
       - name: Build binary
         run: pnpm run build:binary
 
       - name: Test
         run: pnpm run test
+
+      - name: Test workflows
+        run: pnpm run test:workflows
 
       - name: Smoke tests
         run: pnpm run test:smoke

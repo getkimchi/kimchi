@@ -21,9 +21,14 @@
 		"dev:setup": "bun run --preload ./src/set-package-dir.ts src/entry.ts setup",
 		"lint": "biome check src/ scripts/ tests/",
 		"lint:fix": "biome check --write src/ scripts/ tests/",
+		"lint:workflows": "biome check .kimchi/workflows/*.workflow.ts .kimchi/workflows/*.workflow.test.ts",
+		"lint:workflows:fix": "biome check --write .kimchi/workflows/*.workflow.ts .kimchi/workflows/*.workflow.test.ts",
 		"typecheck": "tsc --noEmit",
+		"typecheck:workflows": "tsc --noEmit --project tsconfig.workflows.json",
 		"check": "pnpm run lint && pnpm run typecheck",
+		"check:workflows": "pnpm run lint:workflows && pnpm run typecheck:workflows",
 		"test": "vitest run --dir src",
+		"test:workflows": "vitest run .kimchi/workflows/*.workflow.test.ts",
 		"test:smoke": "vitest run --config tests/smoke/vitest.config.ts",
 		"test:e2e:tui": "pnpm run build:binary && node scripts/run-tui-e2e.js",
 		"test:e2e:tui:debug": "pnpm run build:binary && node scripts/run-tui-e2e.js --debug",
@@ -32,7 +37,7 @@
 		"test:e2e:acp": "pnpm run build:binary && vitest run --config tests/e2e/acp/vitest.config.ts",
 		"postinstall": "node scripts/patch-pi-ai-oauth.js && node scripts/copy-resources.js --dev",
 		"prepare": "husky",
-		"verify": "pnpm run check && pnpm run build:binary && pnpm run test && pnpm run test:smoke"
+		"verify": "pnpm run check && pnpm run check:workflows && pnpm run build:binary && pnpm run test && pnpm run test:workflows && pnpm run test:smoke"
 	},
 	"piConfig": {
 		"name": "kimchi",
