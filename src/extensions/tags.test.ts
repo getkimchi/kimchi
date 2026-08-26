@@ -4,7 +4,6 @@ import { dirname, join } from "node:path"
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
-import { buildSystemPrompt, type EnvironmentInfo } from "./prompt-construction/system-prompt.js"
 
 vi.mock("node:os", async (importOriginal) => {
 	const { join } = await import("node:path")
@@ -17,7 +16,8 @@ vi.mock("node:os", async (importOriginal) => {
 
 import * as configTags from "../config/tags.js"
 import { isValidTag, parseTag } from "../config/tags.js"
-import tagsExtension, { getCurrentPhase, peekActiveTags, setCurrentPhase, TagManager } from "./tags.js"
+import { SLASH_COMMANDS } from "./slash-commands.js"
+import tagsExtension, { peekActiveTags, TagManager } from "./tags.js"
 
 const MOCK_HOME = join(tmpdir(), `kimchi-tags-mock-home-${process.pid}`)
 
@@ -74,20 +74,6 @@ function makeTagManager(sessionId = TEST_SESSION_ID) {
 		sessionManager,
 		appendEntry,
 	}
-}
-
-const testEnv: EnvironmentInfo = {
-	os: "Linux",
-	rawPlatform: "linux",
-	cpuArchitecture: "x64",
-	shell: "/bin/bash",
-	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
-	username: "testuser",
-	homeDir: "/home/testuser",
-	cwd: "/home/testuser/project",
-	documentsDir: "/home/testuser/project/.kimchi/docs",
-	localDate: "2026-01-01",
-	isGitRepo: false,
 }
 
 type Handler = (event: unknown, ctx: unknown) => unknown
@@ -236,66 +222,6 @@ describe("parseTag", () => {
 			expect(parseTag(tag)).toEqual(expected)
 		})
 	}
-})
-
-describe("tags system prompt block", () => {
-	const makeTagsPi = () => {
-		const pi = makePi()
-		tagsExtension(pi)
-		return pi
-	}
-	const setPhase = (pi: ReturnType<typeof makeTagsPi>, phase = "explore") =>
-		pi.tools.get("set_phase")?.execute("call-1", { phase }, undefined, undefined, createContext({ hasUI: false }))
-
-	it("registers phase tagging instructions with the extension that owns set_phase", async () => {
-		const pi = makeTagsPi()
-
-		try {
-			const result = buildSystemPrompt({
-				tools: [
-					{ name: "read", description: "Read file contents" },
-					{ name: "set_phase", description: "Set the current work phase" },
-				],
-				env: testEnv,
-				mode: "orchestrator",
-				sessionId: TEST_SESSION_ID,
-			})
-
-			expect(result).toContain("## Phase Management")
-			expect(result).toContain("Call `set_phase` when the work type changes")
-			expect(result).toContain("Subagents set their phase automatically from their persona")
-			expect(result).not.toContain("questionnaire")
-			expect(result.indexOf("## Phase Management")).toBeLessThan(result.indexOf("## Available Tools"))
-		} finally {
-			pi.fireShutdown()
-		}
-	})
-
-	it("set_phase changes the current phase", async () => {
-		const pi = makeTagsPi()
-
-		const result = await setPhase(pi)
-
-		expect(result).toMatchObject({
-			content: [{ type: "text", text: "Phase changed to: explore" }],
-			details: { phase: "explore" },
-		})
-		expect(pi.setThinkingLevel).not.toHaveBeenCalled()
-	})
-
-	it("set_phase updates thinking level when performing a phase itself", async () => {
-		const pi = makeTagsPi()
-
-		const result = await pi.tools
-			.get("set_phase")
-			?.execute("call-1", { phase: "plan", thinking: "high" }, undefined, undefined, createContext({ hasUI: false }))
-
-		expect(result).toMatchObject({
-			content: [{ type: "text", text: "Phase changed to: plan" }],
-			details: { phase: "plan", thinking: "high" },
-		})
-		expect(pi.setThinkingLevel).toHaveBeenCalledWith("high")
-	})
 })
 
 describe("TagManager persistence", () => {
@@ -522,65 +448,6 @@ function commandContext(sessionId: string) {
 	})
 }
 
-describe("getCurrentPhase", () => {
-	beforeEach(() => {
-		rmSync(MOCK_HOME, { recursive: true, force: true })
-		mkdirSync(MOCK_HOME, { recursive: true })
-		vi.stubEnv("KIMCHI_TAGS", "")
-	})
-
-	afterEach(() => {
-		rmSync(MOCK_HOME, { recursive: true, force: true })
-		vi.unstubAllEnvs()
-	})
-
-	it("returns undefined before a phase is set", () => {
-		expect(getCurrentPhase("fresh-session")).toBeUndefined()
-	})
-
-	it("returns the phase set for a specific session", () => {
-		setCurrentPhase("get-phase-session", "plan")
-		expect(getCurrentPhase("get-phase-session")).toBe("plan")
-	})
-
-	it("isolates phases between sessions", () => {
-		setCurrentPhase("get-phase-a", "plan")
-		setCurrentPhase("get-phase-b", "build")
-		expect(getCurrentPhase("get-phase-a")).toBe("plan")
-		expect(getCurrentPhase("get-phase-b")).toBe("build")
-	})
-})
-
-describe("setCurrentPhase", () => {
-	beforeEach(() => {
-		rmSync(MOCK_HOME, { recursive: true, force: true })
-		mkdirSync(MOCK_HOME, { recursive: true })
-		vi.stubEnv("KIMCHI_TAGS", "")
-	})
-
-	afterEach(() => {
-		rmSync(MOCK_HOME, { recursive: true, force: true })
-		vi.unstubAllEnvs()
-	})
-
-	it("sets a valid phase", () => {
-		setCurrentPhase("set-phase-session", "review")
-		expect(getCurrentPhase("set-phase-session")).toBe("review")
-	})
-
-	it("ignores invalid phases", () => {
-		setCurrentPhase("invalid-phase-session", "invalid")
-		expect(getCurrentPhase("invalid-phase-session")).toBeUndefined()
-	})
-
-	it("clears the phase when given undefined", () => {
-		setCurrentPhase("clear-phase-session", "build")
-		expect(getCurrentPhase("clear-phase-session")).toBe("build")
-		setCurrentPhase("clear-phase-session", undefined)
-		expect(getCurrentPhase("clear-phase-session")).toBeUndefined()
-	})
-})
-
 describe("peekActiveTags", () => {
 	beforeEach(() => {
 		rmSync(MOCK_HOME, { recursive: true, force: true })
@@ -653,3 +520,26 @@ describe("peekActiveTags", () => {
 		expect(peekActiveTags(makeSessionManager("tags-session-b"))).toEqual([])
 	})
 })
+
+describe("set_phase / phase absence regression", () => {
+	// Regression guard: after removing workflow phases, neither the tags extension
+	// nor the slash-commands catalog may register a "set_phase" tool or "phase" command.
+	it("tags extension does not register a set_phase tool", () => {
+		const pi = makePi()
+		tagsExtension(pi)
+		const toolNames = Array.from(pi.tools.keys())
+		expect(toolNames).not.toContain("set_phase")
+	})
+
+	it("tags extension does not register a phase slash command", () => {
+		const pi = makePi()
+		tagsExtension(pi)
+		const commandNames = Array.from(pi.commands.keys())
+		expect(commandNames).not.toContain("phase")
+	})
+
+	it("slash-commands catalog has no phase entry", () => {
+		expect(Object.keys(SLASH_COMMANDS)).not.toContain("phase")
+	})
+})
+

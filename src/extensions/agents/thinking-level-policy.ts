@@ -2,7 +2,7 @@ import type { ThinkingLevel } from "./personas/types.js"
 
 export type ChunkComplexity = "simple" | "complex"
 
-/** Delegation scopes aligned with Orchestration phases and agent types. */
+/** Delegation scopes aligned with agent personas and work types. */
 export type ThinkingTaskScope =
 	| "explore"
 	| "research"

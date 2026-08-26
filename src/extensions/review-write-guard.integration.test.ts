@@ -1,19 +1,13 @@
 /**
  * Integration tests for the reviewWriteGuardExtension wiring.
- * Tests the event handler registration (session_start, tool_call, tool_result)
+ * Tests the event handler registration (session_start, agent_start, tool_call, tool_result)
  * using a mock ExtensionAPI.
  */
 import type { ToolCallEventResult } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import reviewWriteGuardExtension, { STEER_MESSAGE_TYPE } from "./review-write-guard.js"
-
-let mockPhase: string | undefined = "review"
-
-vi.mock("./tags.js", () => ({
-	getCurrentPhase: () => mockPhase,
-}))
 
 function createMockPI(options?: Parameters<typeof reviewWriteGuardExtension>[1]) {
 	const pi = createExtensionApi()
@@ -44,48 +38,56 @@ describe("reviewWriteGuardExtension wiring", () => {
 	it("registers session_start handler that resets guard state", () => {
 		const pi = createMockPI()
 
-		// Exhaust the review trivial-fix allowance and trigger the steer.
-		mockPhase = "review"
+		// Record a subagent return and exhaust the steer threshold.
+		emit(pi, "tool_result", { toolName: "Agent" })
 		emit(pi, "tool_call", { toolName: "edit" })
 		emit(pi, "tool_call", { toolName: "edit" })
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
-
-		// Move to build phase and record a subagent return
-		mockPhase = "build"
-		emit(pi, "tool_result", { toolName: "Agent" })
 
 		// session_start should reset — emit it
 		emit(pi, "session_start", {})
 
-		// After reset, the review trivial-fix allowance is fresh again and the
-		// steer fires anew once the fresh allowance is exhausted.
-		mockPhase = "review"
+		// After reset, the guard is disarmed: edits pass freely until a new subagent return.
 		pi.sendMessage.mockClear()
 		emit(pi, "tool_call", { toolName: "edit" })
-		expect(pi.sendMessage).not.toHaveBeenCalled()
 		emit(pi, "tool_call", { toolName: "edit" })
-		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
 		expect(pi.blockResult).toBeUndefined()
 	})
 
-	it("tool_call for Agent in review phase does NOT block", () => {
+	it("agent_start resets counters so edits in a later user prompt are not blocked", () => {
+		const pi = createMockPI({ steerThreshold: 2, blockThreshold: 5 })
+
+		// Arm the guard and hit the steer threshold.
+		emit(pi, "tool_result", { toolName: "Agent" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+
+		// A new user prompt (agent_start) resets the guard — no hard block.
+		emit(pi, "agent_start", {})
+		pi.sendMessage.mockClear()
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi.blockResult).toBeUndefined()
+	})
+
+	it("tool_call for Agent does NOT block", () => {
 		const pi = createMockPI()
-		mockPhase = "review"
 		emit(pi, "tool_call", { toolName: "Agent" })
 		expect(pi.blockResult).toBeUndefined()
 	})
 
-	it("tool_call for edit during review phase allows the first edit (trivial fix exception)", () => {
+	it("tool_call for edit before any subagent return allows edits freely", () => {
 		const pi = createMockPI()
-		mockPhase = "review"
 		emit(pi, "tool_call", { toolName: "edit" })
 		expect(pi.blockResult).toBeUndefined()
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("tool_call for edit during review phase steers after two edits, but never blocks", () => {
+	it("tool_call for edit steers after threshold following a subagent return, but never blocks before block threshold", () => {
 		const pi = createMockPI()
-		mockPhase = "review"
+		emit(pi, "tool_result", { toolName: "Agent" })
 		emit(pi, "tool_call", { toolName: "edit" })
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		emit(pi, "tool_call", { toolName: "edit" })
@@ -99,35 +101,8 @@ describe("reviewWriteGuardExtension wiring", () => {
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 	})
 
-	it("tool_call for write during review phase steers after two writes", () => {
+	it("tool_result for Agent arms the guard", () => {
 		const pi = createMockPI()
-		mockPhase = "review"
-		emit(pi, "tool_call", { toolName: "write" })
-		emit(pi, "tool_call", { toolName: "write" })
-		expect(pi.blockResult).toBeUndefined()
-		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
-	})
-
-	it("does not renew the review allowance when an Agent returns", () => {
-		const pi = createMockPI()
-		mockPhase = "review"
-		emit(pi, "tool_call", { toolName: "edit" })
-		emit(pi, "tool_result", { toolName: "Agent" })
-
-		emit(pi, "tool_call", { toolName: "edit" })
-
-		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
-		expect(pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				content: [expect.objectContaining({ text: expect.stringContaining("up to two small edit/write calls") })],
-			}),
-			{ deliverAs: "steer" },
-		)
-	})
-
-	it("tool_result for Agent in build phase records subagent return", () => {
-		const pi = createMockPI()
-		mockPhase = "build"
 		emit(pi, "tool_result", { toolName: "Agent" })
 
 		// Now edit twice — should steer after threshold
@@ -144,32 +119,24 @@ describe("reviewWriteGuardExtension wiring", () => {
 		)
 	})
 
-	// NOTE: The extension's tool_call handler returns early for "Agent" without
-	// calling checkToolCall, so Agent tool calls do NOT reset state directly.
-	// State resets (recordSubagentReturn) happen when the subagent FINISHES
-	// (tool_result). A new subagent spawning does NOT reset state — it resets
-	// when that subagent returns.
 	it("state survives multiple edits without a new subagent return", () => {
 		const pi = createMockPI()
-		mockPhase = "build"
 
-		// Record subagent return — subagentReturnedInBuild = true
+		// Record subagent return — armed = true
 		emit(pi, "tool_result", { toolName: "Agent" })
 
 		// Multiple edits — state persists, steer fires after threshold
 		emit(pi, "tool_call", { toolName: "edit" })
 		emit(pi, "tool_call", { toolName: "edit" })
-		// After 2 edits above threshold, steer fires
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 
-		// Further edits — buildSteered = true, so no more steers (until block threshold)
+		// Further edits — steered = true, so no more steers (until block threshold)
 		emit(pi, "tool_call", { toolName: "edit" })
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 	})
 
-	it("blocks after block threshold edits in build phase", () => {
-		const pi = createMockPI({ buildPhaseThreshold: 2, buildPhaseBlockThreshold: 4 })
-		mockPhase = "build"
+	it("blocks after block threshold edits following a subagent return", () => {
+		const pi = createMockPI({ steerThreshold: 2, blockThreshold: 4 })
 
 		emit(pi, "tool_result", { toolName: "Agent" })
 		emit(pi, "tool_call", { toolName: "edit" }) // 1
@@ -180,9 +147,8 @@ describe("reviewWriteGuardExtension wiring", () => {
 		expect(pi.blockResult).toMatchObject({ block: true, reason: expect.stringContaining("BLOCKED") })
 	})
 
-	it("steer message is delivered via pi.sendMessage in build phase after threshold", () => {
-		const pi = createMockPI({ buildPhaseThreshold: 2 })
-		mockPhase = "build"
+	it("steer message is delivered via pi.sendMessage after threshold", () => {
+		const pi = createMockPI({ steerThreshold: 2 })
 
 		emit(pi, "tool_result", { toolName: "Agent" })
 		emit(pi, "tool_call", { toolName: "edit" })
@@ -197,9 +163,8 @@ describe("reviewWriteGuardExtension wiring", () => {
 		)
 	})
 
-	it("keeps build-phase state isolated between sessions", () => {
-		const pi = createMockPI({ buildPhaseThreshold: 2 })
-		mockPhase = "build"
+	it("keeps state isolated between sessions", () => {
+		const pi = createMockPI({ steerThreshold: 2 })
 
 		// Session A hits the steer threshold.
 		emit(
@@ -226,12 +191,11 @@ describe("reviewWriteGuardExtension wiring", () => {
 
 	it("extracts agentOutcome from tool_result details and applies triage thresholds", () => {
 		const pi = createMockPI({
-			buildPhaseThreshold: 2,
-			buildPhaseTriageThreshold: 4,
-			buildPhaseBlockThreshold: 5,
-			buildPhaseTriageBlockThreshold: 8,
+			steerThreshold: 2,
+			triageSteerThreshold: 4,
+			blockThreshold: 5,
+			triageBlockThreshold: 8,
 		})
-		mockPhase = "build"
 
 		emit(pi, "tool_result", {
 			toolName: "Agent",
@@ -262,12 +226,11 @@ describe("reviewWriteGuardExtension wiring", () => {
 
 	it("uses triage thresholds when agentOutcome is unknown", () => {
 		const pi = createMockPI({
-			buildPhaseThreshold: 2,
-			buildPhaseTriageThreshold: 4,
-			buildPhaseBlockThreshold: 5,
-			buildPhaseTriageBlockThreshold: 8,
+			steerThreshold: 2,
+			triageSteerThreshold: 4,
+			blockThreshold: 5,
+			triageBlockThreshold: 8,
 		})
-		mockPhase = "build"
 
 		emit(pi, "tool_result", {
 			toolName: "Agent",
@@ -296,8 +259,7 @@ describe("reviewWriteGuardExtension wiring", () => {
 	})
 
 	it("uses normal thresholds when agentOutcome indicates success", () => {
-		const pi = createMockPI({ buildPhaseThreshold: 2 })
-		mockPhase = "build"
+		const pi = createMockPI({ steerThreshold: 2 })
 
 		emit(pi, "tool_result", {
 			toolName: "Agent",
@@ -316,8 +278,7 @@ describe("reviewWriteGuardExtension wiring", () => {
 	})
 
 	it("does not reset guard state when the orchestrator spawns another Agent", () => {
-		const pi = createMockPI({ buildPhaseThreshold: 2 })
-		mockPhase = "build"
+		const pi = createMockPI({ steerThreshold: 2 })
 
 		// First subagent returns and arms the guard.
 		emit(pi, "tool_result", { toolName: "Agent" })
@@ -337,9 +298,83 @@ describe("reviewWriteGuardExtension wiring", () => {
 		})
 	})
 
+	it("guard disarms at user-prompt boundary and only throttles within the armed turn", () => {
+		// D3 negative test (§7 R1): proves three things in one lifecycle:
+		//  (a) after an Agent return, implementation calls under the armed
+		//      threshold are NOT steered or hard-blocked;
+		//  (b) an agent_start event resets the counter — the same calls in the
+		//      NEXT user prompt are again allowed (no carryover hard-block);
+		//  (c) exceeding the threshold within the same armed turn DOES produce
+		//      steering then blocking.
+		const pi = createMockPI({ steerThreshold: 2, blockThreshold: 4 })
+
+		// ── (a) subagent return arms the guard; under-threshold edits pass freely ──
+		emit(pi, "tool_result", { toolName: "Agent" })
+		emit(pi, "tool_call", { toolName: "edit" }) // 1 — under steer threshold
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi.blockResult).toBeUndefined()
+
+		// ── (c) exceeding the threshold within the SAME armed turn steers then blocks ──
+		emit(pi, "tool_call", { toolName: "edit" }) // 2 — steer fires
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: STEER_MESSAGE_TYPE }), {
+			deliverAs: "steer",
+		})
+		expect(pi.blockResult).toBeUndefined() // steer is not a block
+
+		emit(pi, "tool_call", { toolName: "edit" }) // 3 — past steer, under block
+		expect(pi.blockResult).toBeUndefined()
+
+		emit(pi, "tool_call", { toolName: "edit" }) // 4 — block threshold
+		expect(pi.blockResult).toMatchObject({ block: true, reason: expect.stringContaining("BLOCKED") })
+
+		// ── (b) agent_start resets — same calls in the NEXT user prompt are allowed again ──
+		pi.blockResult = undefined
+		pi.sendMessage.mockClear()
+		emit(pi, "agent_start", {})
+
+		// The guard is now disarmed; the same edit calls that were blocked
+		// moments ago pass without steering or blocking.
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi.blockResult).toBeUndefined()
+	})
+
+	it("steers on the 2nd edit after a delegation even when turn_start fires between the Agent result and the edits (real production event order)", () => {
+		// Regression for the turn_start-vs-agent_start reset bug (review issues 1+2).
+		// In production, runAgentLoop emits agent_start once per user prompt but
+		// re-emits turn_start at the start of EVERY inner-loop iteration
+		// (agent-loop.js:88-92: `if (!firstTurn) emit turn_start`).
+		// The real delegation event order is therefore:
+		//   turn_start -> tool_result(Agent) [arms guard] -> turn_start [next iter]
+		//   -> tool_call(edit) x2 [expect STEER on the 2nd].
+		// With the reset wired to turn_start, the second turn_start disarms the
+		// guard before any edit is checked, so checkToolCall returns undefined
+		// and the steer is unreachable. The reset must be on agent_start
+		// (per-user-prompt boundary) so the arm survives across iterations.
+		const pi = createMockPI()
+
+		// ── iteration 1: assistant message with an Agent tool call ──
+		emit(pi, "turn_start", {})
+		emit(pi, "tool_result", { toolName: "Agent" }) // arms the guard
+
+		// ── iteration 2: turn_start re-emitted, THEN the model edits ──
+		emit(pi, "turn_start", {})
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		emit(pi, "tool_call", { toolName: "edit" }) // 1st edit — under threshold
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi.blockResult).toBeUndefined()
+		emit(pi, "tool_call", { toolName: "edit" }) // 2nd edit — should STEER
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: STEER_MESSAGE_TYPE }), {
+			deliverAs: "steer",
+		})
+		expect(pi.blockResult).toBeUndefined()
+	})
+
 	it("evicts the session guard from the map on session_shutdown", () => {
-		const pi = createMockPI({ buildPhaseThreshold: 2 })
-		mockPhase = "build"
+		const pi = createMockPI({ steerThreshold: 2 })
 
 		const ctx = createContext({ sessionManager: { getSessionId: () => "session-evict" } })
 
@@ -353,14 +388,10 @@ describe("reviewWriteGuardExtension wiring", () => {
 		// Fire session_shutdown for the same session — guard should be evicted.
 		emit(pi, "session_shutdown", {}, ctx)
 
-		// A fresh subagent return + edit on the same session should behave like a
-		// new guard (subagentReturnedInBuild is true again, no leftover state).
-		// If the old guard had been reused, the second edit below would still be
-		// allowed (count reset by recordSubagentReturn), but the eviction proves
-		// the old instance is gone — assert by re-checking sessionStart behavior.
+		// A fresh session_start + subagent return on the same session should behave like a
+		// new guard (armed is true again, no leftover state).
 		emit(pi, "session_start", {}, ctx)
-		mockPhase = "review"
-		// The first review edit is silent; the second steers on a fresh guard.
+		emit(pi, "tool_result", { toolName: "Agent" }, ctx)
 		pi.sendMessage.mockClear()
 		emit(pi, "tool_call", { toolName: "edit" }, ctx)
 		expect(pi.sendMessage).not.toHaveBeenCalled()

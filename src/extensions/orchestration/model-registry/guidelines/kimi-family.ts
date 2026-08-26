@@ -1,15 +1,13 @@
 /**
- * Kimi family phase-guideline overrides.
+ * Kimi family role-guideline overrides.
  *
  * Sourced from:
- * - docs/phase-guidelines-research.md §3.2 (Kimi K2.5)
- * - docs/phase-guidelines-research.md §3.3 (Kimi K2.6)
  * - MoonshotAI/Kimi-K2.5 Issue #24 (infinite tool-call loop)
  * - Kilo-Org/kilocode PR #5722 (tool-calling reliability)
  * - Kimi K2.6 release notes (kimi-k2.org)
  *
  * Only guidelines that ADD to or OVERRIDE the defaults are listed here.
- * Lines already covered by default-phase-guidelines.ts have been removed.
+ * Lines already covered by default-role-guidelines.ts have been removed.
  */
 
 // ── Family-level (shared across all Kimi models) ──────────────────────

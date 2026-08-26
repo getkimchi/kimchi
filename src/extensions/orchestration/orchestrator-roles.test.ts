@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { DEFAULT_MODEL_ROLES } from "./model-roles.js"
 import {
-	orchestratorShouldReceivePhaseGuidelines,
+	orchestratorShouldReceiveRoleGuidelines,
 	resolveModelRoleNames,
 	shouldDelegatePlanning,
 	shouldDelegateReview,
@@ -13,30 +13,30 @@ describe("resolveModelRoleNames", () => {
 	})
 })
 
-describe("orchestratorShouldReceivePhaseGuidelines", () => {
+describe("orchestratorShouldReceiveRoleGuidelines", () => {
 	it("never includes build worker guidelines", () => {
-		expect(orchestratorShouldReceivePhaseGuidelines("build", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
+		expect(orchestratorShouldReceiveRoleGuidelines("build", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
 	})
 
 	it("includes review guidelines when orchestrator owns reviewer", () => {
-		expect(orchestratorShouldReceivePhaseGuidelines("review", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(true)
+		expect(orchestratorShouldReceiveRoleGuidelines("review", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(true)
 	})
 
 	it("omits review guidelines when orchestrator lacks reviewer", () => {
 		const roles = { ...DEFAULT_MODEL_ROLES, reviewer: "anthropic/claude-opus-4-7" }
-		expect(orchestratorShouldReceivePhaseGuidelines("review", "kimi-k2.7", roles)).toBe(false)
+		expect(orchestratorShouldReceiveRoleGuidelines("review", "kimi-k2.7", roles)).toBe(false)
 	})
 
 	it("includes plan guidelines when orchestrator owns planner", () => {
-		expect(orchestratorShouldReceivePhaseGuidelines("plan", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(true)
+		expect(orchestratorShouldReceiveRoleGuidelines("plan", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(true)
 	})
 
 	it("omits explore guidelines when orchestrator lacks explorer", () => {
-		expect(orchestratorShouldReceivePhaseGuidelines("explore", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
+		expect(orchestratorShouldReceiveRoleGuidelines("explore", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
 	})
 
 	it("omits guidelines when roles are missing", () => {
-		expect(orchestratorShouldReceivePhaseGuidelines("plan", "kimi-k2.7", undefined)).toBe(false)
+		expect(orchestratorShouldReceiveRoleGuidelines("plan", "kimi-k2.7", undefined)).toBe(false)
 	})
 })
 

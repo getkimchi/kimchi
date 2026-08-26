@@ -1,6 +1,6 @@
-# Session Phase Audit
+# Session Delegation Audit
 
-Audits a completed kimchi harness session, analyzing phase discipline, code quality, model alignment, and cost efficiency. Produces a graded report written to `.kimchi/audits/`.
+Audits a completed kimchi harness session, analyzing delegation discipline, code quality, role-model alignment, and cost efficiency. Produces a graded report written to `.kimchi/audits/`.
 
 ## Files
 
@@ -55,22 +55,22 @@ The agent grades the session across 6 dimensions:
 
 | Dimension | Weight | What it checks |
 |-----------|--------|----------------|
-| Phase Discipline | 15% | Logical phase ordering, timely transitions, phase-work alignment |
+| Delegation Discipline | 15% | Right persona at the right time, timely delegations, minimal self-performed work |
 | Architecture | 20% | Design decision timing, module boundaries, project conventions |
 | Code Quality | 20% | Lint results, naming, duplication, over-engineering |
 | Testing | 20% | Coverage, negative paths, test organization patterns |
-| Phase-Model Alignment | 10% | Expensive models for complex phases, cheap models for routine work |
-| Cost Efficiency | 15% | Per-phase cost breakdown, counterfactual analysis |
+| Role-Model Alignment | 10% | Expensive models for complex work, cheap models for routine execution |
+| Cost Efficiency | 15% | Per-segment cost breakdown, counterfactual analysis |
 
 ## Output
 
 The audit report is written to `.kimchi/audits/{sessionId}-{task}-{runner}-{model}-AUDIT.md` in the project directory. It includes:
 
 - Summary grade table
-- Phase timeline with duration, model, turn count, and cost per phase
+- Delegation timeline with duration, model, turn count, and cost per segment
 - Detailed findings per dimension
-- Tool usage breakdown by phase
-- Cost counterfactuals (opus-only, phase-optimized)
+- Tool usage breakdown by segment
+- Cost counterfactuals (opus-only, role-optimized)
 - Top 3 actionable improvements
 
 ## Example: benchmark a complex task then audit it
@@ -122,7 +122,7 @@ The audit agent writes its findings to:
 .kimchi/audits/session-20260511-124841-complex-AUDIT.md
 ```
 
-The report contains phase-by-phase cost breakdown, grade summary, and actionable improvements. Use it to decide whether to adjust model assignments, phase transitions, or task decomposition for future sessions.
+The report contains segment-by-segment cost breakdown, grade summary, and actionable improvements. Use it to decide whether to adjust model assignments, delegation decisions, or task decomposition for future sessions.
 
 ## How it works
 
@@ -137,14 +137,14 @@ The audit evaluates 13 dimensions of session quality. Sections 1–6 are graded;
 
 | # | Metric | Description |
 |---|--------|-------------|
-| 1 | Phase Discipline | Logical phase ordering, timely transitions, phase-work alignment |
+| 1 | Delegation Discipline | Right persona at the right time, timely delegations, minimal self-performed work |
 | 2 | Architecture & Design | Decision timing, module boundaries, project conventions |
 | 3 | Code Quality | Lint results, naming, duplication, over-engineering |
 | 4 | Testing Strategy | Coverage, negative paths, test organization patterns |
-| 5 | Phase-Model Alignment | Expensive models for complex phases, cheap for routine work |
-| 6 | Cost Efficiency | Per-phase cost breakdown, counterfactual analysis |
+| 5 | Role-Model Alignment | Expensive models for complex work, cheap for routine execution |
+| 6 | Cost Efficiency | Per-segment cost breakdown, counterfactual analysis |
 | 7 | Per-Turn Model Attribution | Active model per turn, provider, switch boundaries |
-| 8 | Routing Decision Rationale | What triggered each model switch (phase, tool call, explicit text) |
+| 8 | Routing Decision Rationale | What triggered each model switch (delegation, tool call, explicit text) |
 | 9 | Switching Latency | ms between model_change and first assistant message per model |
 | 10 | Subagent Lifecycle | Loops, budget usage, context completeness per subagent invocation |
 | 11 | Token Consumption per Task Class | Tokens/cost per class (explore, plan, build, review, research, orchestration) |

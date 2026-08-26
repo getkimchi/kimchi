@@ -1,13 +1,12 @@
 /**
- * Nemotron family phase-guideline overrides.
+ * Nemotron family role-guideline overrides.
  *
  * Sourced from:
- * - docs/phase-guidelines-research.md §3.4 (Nemotron 3 Ultra FP4)
  * - Nemotron model family overview (build.nvidia.com)
  * - Nemotron technical report (research.nvidia.com)
  *
  * Only guidelines that ADD to or OVERRIDE the defaults are listed here.
- * Lines already covered by default-phase-guidelines.ts have been removed.
+ * Lines already covered by default-role-guidelines.ts have been removed.
  */
 
 // ── Family-level (shared across all Nemotron models) ──────────────────
