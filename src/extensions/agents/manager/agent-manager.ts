@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { basename } from "node:path"
 import type { SessionNotification } from "@agentclientprotocol/sdk"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
@@ -372,9 +373,12 @@ export class AgentManager {
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 			signal: record.abortController?.signal,
 		})
-		// authenticateWorkspace() uses a PUT (create-or-update) call, so passing a
-		// random UUID is safe — it auto-provisions a new workspace when none exists.
-		const workspaceId = workspaces.length > 0 ? workspaces[0].id : randomUUID()
+		// Match a workspace whose name matches the current repo dir (same convention
+		// as /teleport, which names workspaces by basename(cwd)). If no match is
+		// found, mint a new one rather than reusing an unrelated workspace.
+		const dirName = basename(ctx.cwd) || "kimchi"
+		const byName = workspaces.find((w) => w.name.toLowerCase() === dirName.toLowerCase())
+		const workspaceId = byName?.id ?? randomUUID()
 
 		// Resolve git clone plan from the local repo so the sandbox gets a
 		// shallow clone of the repo (like /teleport --fast) instead of an empty dir.
@@ -399,6 +403,7 @@ export class AgentManager {
 			signal: record.abortController?.signal,
 			gitDetails,
 			localPath: ctx.cwd,
+			workspaceName: dirName,
 			callbacks: {
 				onTextDelta: (delta, fullText) => options.onTextDelta?.(delta, fullText),
 				onToolActivity: (activity) => {

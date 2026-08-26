@@ -33,6 +33,8 @@ export interface RemoteRunOptions {
 	gitDetails?: { repo: string; branch?: string; targetDirectory: string; noHistory?: boolean }
 	/** Local working directory to diff-sync on top of the clone (when gitDetails is set). */
 	localPath?: string
+	/** Workspace name passed to authenticateWorkspace (used for matching/reuse). */
+	workspaceName?: string
 }
 
 export interface RemoteRunResult {
@@ -79,7 +81,12 @@ export async function runRemoteAgent(
 		: (options.cwd ?? "/home/sandbox")
 
 	// 1. Authenticate
-	const creds: WorkspaceCredentials = await authenticateWorkspace(workspaceId, apiKey, "kimchi", { endpoint })
+	const creds: WorkspaceCredentials = await authenticateWorkspace(
+		workspaceId,
+		apiKey,
+		options.workspaceName ?? "kimchi",
+		{ endpoint },
+	)
 
 	// 2. Wait for sandbox readiness
 	await waitForWorkspaceReady({
