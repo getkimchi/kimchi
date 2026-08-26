@@ -258,6 +258,32 @@ describe("askUserForm routing", () => {
 		expect(select).toHaveBeenCalled()
 		expect(mockedJudgeApiCall).not.toHaveBeenCalled()
 	})
+
+	it("judge failure in an automated TUI session degrades to defaults without prompting or failing hard", async () => {
+		mockedJudgeApiCall.mockReset()
+		mockedJudgeApiCall.mockResolvedValue({ ok: false, reason: "no_registry" })
+		const select = vi.fn(async () => "safe")
+		const input = vi.fn(async () => "")
+		const result = await askUserForm(
+			"Title",
+			"Desc",
+			[{ id: "q1", type: "single", prompt: "Which?", options: [{ id: "safe", label: "Safe" }] }],
+			{
+				ferment: makeFerment(),
+				pi: makePi(),
+				ctx: createContext({ ui: { select, input } }),
+				runtime: { markHumanInput: vi.fn(), getContinuationPolicy: () => "automated" as const },
+			},
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		// Conservative judge fallback: no human prompt, no hard failure that
+		// could abandon the ferment, answer still attributed to the judge.
+		expect(result.answered_by).toBe("judge")
+		expect(result.rationale).toContain("Judge was unavailable")
+		expect(select).not.toHaveBeenCalled()
+		expect(input).not.toHaveBeenCalled()
+	})
 })
 
 describe("toScopingQuestionType", () => {
