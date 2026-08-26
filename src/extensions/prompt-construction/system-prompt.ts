@@ -11,7 +11,7 @@ import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-age
 import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
 import { resolveRoleGuideline } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
-import type { ModelRole, ModelRoles } from "../orchestration/model-roles.js"
+import type { ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
 import { orchestratorShouldReceiveRoleGuidelines, ROLE_ORDER } from "../orchestration/orchestrator-roles.js"
 import type { ContextFile } from "./context-files.js"
