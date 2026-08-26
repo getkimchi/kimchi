@@ -40,6 +40,9 @@ function createHarness() {
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => eventStorage }
 	const tools = new Map<string, RegisteredTool>()
 	let activeTools: string[] = []
+	// Real mini event-bus — propose_ferment_scoping emits plan-review requests
+	// over pi.events; without this the emit throws on a missing `.emit`.
+	const eventHandlers = new Map<string, ((data: unknown) => unknown)[]>()
 
 	const pi = {
 		on: vi.fn(),
@@ -49,6 +52,20 @@ function createHarness() {
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),
+		events: {
+			emit: vi.fn((channel: string, data: unknown) => {
+				for (const handler of eventHandlers.get(channel) ?? []) handler(data)
+			}),
+			on: vi.fn((channel: string, handler: (data: unknown) => unknown) => {
+				const list = eventHandlers.get(channel) ?? []
+				list.push(handler)
+				eventHandlers.set(channel, list)
+				return () => {
+					const idx = list.indexOf(handler)
+					if (idx !== -1) list.splice(idx, 1)
+				}
+			}),
+		},
 		getActiveTools: vi.fn(() => activeTools),
 		getAllTools: vi.fn(() => Array.from(tools.keys()).map((name) => ({ name }))),
 		setActiveTools: vi.fn((names: string[]) => {

@@ -393,13 +393,22 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			const cleanup = restoreEnv("OPENAI_API_KEY", "fake-key-for-testing")
 
 			try {
+				// pi-mono auth resolution reads the stored credentials file, not the
+				// OPENAI_API_KEY env var — availability requires a real auth entry
+				// on disk (probe: env stub alone leaves auth configured: false).
+				writeFileSync(
+					resolve(tempAgentDir, "auth.json"),
+					JSON.stringify({ openai: { type: "api_key", key: "fake-key" } }),
+				)
 				const modelsJson = {
 					providers: {
 						openai: {
+							baseUrl: "https://api.openai.com/v1",
 							models: [
 								{
 									id: "gpt-4o",
 									name: "GPT-4o",
+									api: "openai-responses",
 									input: ["text", "image"],
 								},
 							],
@@ -4736,9 +4745,29 @@ describe("ACP mode controller integration with permissions extension", () => {
 			},
 			getFlag: (name: string) => flags[name],
 			registerFlag: () => {},
+			registerTool: () => {},
 			sendMessage: () => {},
 			appendEntry: () => {},
-			events: { emit: () => {} },
+			events: (() => {
+				// Real mini event-bus: the plan-review decision channels route
+				// through events.emit → events.on; a stubbed emit-only object
+				// crashes the decision-handlers' on() registration.
+				const eventHandlers = new Map<string, ((data: unknown) => unknown)[]>()
+				return {
+					emit: (channel: string, data: unknown) => {
+						for (const handler of eventHandlers.get(channel) ?? []) handler(data)
+					},
+					on: (channel: string, handler: (data: unknown) => unknown) => {
+						const list = eventHandlers.get(channel) ?? []
+						list.push(handler)
+						eventHandlers.set(channel, list)
+						return () => {
+							const idx = list.indexOf(handler)
+							if (idx !== -1) list.splice(idx, 1)
+						}
+					},
+				}
+			})(),
 			getEnvironment: () => ({
 				environmentInfo: {
 					permittedTools: new Set(tools),

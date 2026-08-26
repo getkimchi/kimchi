@@ -353,6 +353,27 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	})
 
 	pi.on("agent_end", async (_event, ctx) => {
+		// Present a pending plan review when the turn ends. Reviews can exist
+		// without an in-turn emission (restored state, direct set), so this
+		// block emits the request — storing the review context the decision
+		// handler consumes — then schedules the popup directly. The
+		// planReviewTimer/planReviewRunning guards ensure we never re-emit or
+		// re-schedule when the in-turn proposal already opened (or queued) the
+		// same review, which would double-open plannotator's browser.
+		const review = runtime.getCurrentPendingPlanReview()
+		if (!planReviewRunning && !planReviewTimer && review) {
+			emitPlanReviewRequest(
+				pi,
+				{ planContent: review.planMarkdown, source: "ferment", fermentId: review.fermentId },
+				{ ctx, planText: review.planMarkdown, fermentId: review.fermentId },
+			)
+			clearPlanReviewTimer()
+			planReviewTimer = setTimeout(() => {
+				planReviewTimer = undefined
+				void runPendingPlanReview(ctx, review)
+			}, 0)
+		}
+
 		// Drain any remaining pending compactions at agent_end (catches the case
 		// where the ferment completes within a single agent run and the turn_end
 		// handler already cleared most pending entries).

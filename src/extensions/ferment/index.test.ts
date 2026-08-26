@@ -63,6 +63,11 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 	const commands = new Map<string, CommandHandler>()
 	const shortcuts = new Map<string, { description?: string; handler: ShortcutHandler }>()
 	const registeredFlags = new Set<string>()
+	// Real mini event-bus: the plan-review request/decision flow routes through
+	// events.emit → events.on channels; a vi.fn() stub would swallow every
+	// delivery, leaving TUI outcomes unable to reach the decision handler.
+	const eventHandlers = new Map<string, ((data: unknown) => unknown)[]>()
+
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
 			// `handlers` keeps the first registration per event for tests that fetch a
@@ -91,7 +96,20 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
-		events: { emit: vi.fn(), on: vi.fn(() => () => {}) },
+		events: {
+			emit: vi.fn((channel: string, data: unknown) => {
+				for (const handler of eventHandlers.get(channel) ?? []) handler(data)
+			}),
+			on: vi.fn((channel: string, handler: (data: unknown) => unknown) => {
+				const list = eventHandlers.get(channel) ?? []
+				list.push(handler)
+				eventHandlers.set(channel, list)
+				return () => {
+					const idx = list.indexOf(handler)
+					if (idx !== -1) list.splice(idx, 1)
+				}
+			}),
+		},
 	} as unknown as ExtensionAPI
 
 	fermentExtension(pi, runtime)
