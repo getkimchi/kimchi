@@ -1803,7 +1803,8 @@ async function createSessionSettings(cwd: string, options: RunAcpOptions, params
 	// all of them (see setStreamIdleTimeoutOverride).
 	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
 	// Cache the skill list block per session so we don't rediscover skills on
-	// every turn's system prompt rebuild.
+	// every turn's system prompt rebuild. Built lazily on first access; errors
+	// during loader access fall back to an empty block.
 	let cachedSkillListBlock: string | undefined
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,
@@ -1812,14 +1813,19 @@ async function createSessionSettings(cwd: string, options: RunAcpOptions, params
 		extensionFactories: options.extensionFactories,
 		appendSystemPromptOverride: () => {
 			if (cachedSkillListBlock === undefined) {
-				cachedSkillListBlock = buildSkillListBlock(resourceLoader)
+				try {
+					cachedSkillListBlock = buildSkillListBlock(resourceLoader)
+				} catch {
+					// If the loader isn't ready (e.g. during reload before skills
+					// are populated), return empty rather than crashing session
+					// startup — the block is non-essential.
+					cachedSkillListBlock = ""
+				}
 			}
 			// CLI flag content first, then _meta["kimchi.dev"].appendSystemPrompt,
 			// then the skill list block (matches upstream override behaviour).
-			return [
-				...(resolveAcpAppendSystemPrompt(params, options) ?? []),
-				...(cachedSkillListBlock ? [cachedSkillListBlock] : []),
-			]
+			const base = resolveAcpAppendSystemPrompt(params, options) ?? []
+			return [...base, ...(cachedSkillListBlock ? [cachedSkillListBlock] : [])]
 		},
 	})
 	await resourceLoader.reload()
