@@ -275,9 +275,9 @@ function collectResponseText(session: AgentSession) {
 
 /**
  * Find the worker session's submit_plan tool result and return the saved plan
- * path. Prefers the structured `details` payload (`{ submitted: true, planPath }`);
- * falls back to the tool-result text ("Plan submitted and saved to <path>.") in
- * case details were lost through session serialization.
+ * path from the structured `details` payload (`{ submitted: true, planPath }`).
+ * pi-mono preserves `details` on stored tool-result messages, so this is the
+ * sole extraction path.
  */
 function extractSubmitPlanPath(session: AgentSession): string | undefined {
 	for (let i = session.messages.length - 1; i >= 0; i--) {
@@ -287,12 +287,6 @@ function extractSubmitPlanPath(session: AgentSession): string | undefined {
 		if (details?.submitted === true && typeof details.planPath === "string" && details.planPath) {
 			return details.planPath
 		}
-		const text = msg.content
-			.filter((c): c is { type: "text"; text: string } => c.type === "text")
-			.map((c) => c.text)
-			.join("\n")
-		const match = /^Plan submitted and saved to (.+)\.$/m.exec(text)
-		if (match?.[1]) return match[1]
 	}
 	return undefined
 }

@@ -668,30 +668,6 @@ describe("runAgent — Plan agent plan persistence", () => {
 		expect(existsSync(result.planPath as string)).toBe(true)
 	})
 
-	it("falls back to parsing the tool-result text when details are missing", async () => {
-		const savedPath = join(tempCwd, ".kimchi", "plans", "plan-x.md")
-		const session = makeFakeSession({
-			promptAction: async (emit) => {
-				;(session.messages as unknown[]).push({
-					role: "toolResult",
-					toolName: "submit_plan",
-					content: [{ type: "text", text: `Plan submitted and saved to ${savedPath}.` }],
-					details: undefined,
-				})
-				emit({ type: "message_start" })
-				emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "done" } })
-				emit({ type: "turn_end" })
-			},
-		})
-		mockSession(session)
-
-		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Plan", "plan it", {
-			pi: pi as unknown as RunOptions["pi"],
-		})
-
-		expect(result.planPath).toBe(savedPath)
-	})
-
 	it("returns undefined planPath when the Plan agent made no submit_plan call", async () => {
 		const session = makeFakeSession({
 			promptAction: async (emit) => {
