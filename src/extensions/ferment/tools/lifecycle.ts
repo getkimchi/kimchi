@@ -28,6 +28,7 @@ import {
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
+import { fermentPlanFileName, savePlanMarkdown } from "../../../shared/planning/plan-markdown.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { withBlocked } from "../../herdr-events.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
@@ -1165,6 +1166,25 @@ ${renderGateGuidance("scope_ferment")}`,
 
 			// 4. Build clean markdown for final/headless tool output and local review UI.
 			const planEntry = buildPlanMarkdown(params)
+
+			// Persist the canonical plan file the moment it is produced. The
+			// filename is stable for this ferment so re-proposals overwrite the
+			// same file. Failures are non-fatal but warned so the review flow
+			// can continue without a path.
+			let planPath: string | undefined
+			try {
+				planPath = savePlanMarkdown({
+					cwd: ctx.cwd,
+					name: fermentPlanFileName(ferment.name, fermentId),
+					planText: planEntry,
+				})
+			} catch (err) {
+				const detail = err instanceof Error ? err.message : String(err)
+				if (ctx.hasUI) ctx.ui.notify(`ferment: failed to save plan file: ${detail}`, "warning")
+				else console.error(`ferment: failed to save plan file: ${detail}`)
+			}
+			const savedPlanNote = planPath ? `\n\nPlan file: ${planPath}` : ""
+
 			const formatPlanEntry = (suffix?: string): string => (suffix ? `${planEntry}\n\n${suffix}` : planEntry)
 			const planToolOk = (message: string, options: { includePlan?: boolean; suffix?: string } = {}) =>
 				toolOk(options.includePlan ? `${formatPlanEntry(options.suffix)}\n\n${message}` : message)
@@ -1174,9 +1194,12 @@ ${renderGateGuidance("scope_ferment")}`,
 				if (questions.length === 0) {
 					const scopeOutcome = confirmPendingScope(runtime, fermentId, params.phases, "propose_ferment_scoping", pi)
 					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment, multiModelEnabled)
-					return planToolOk(withNextActionHint("Plan saved.", scopeOutcome.outcome.ferment, multiModelEnabled), {
-						includePlan: true,
-					})
+					return planToolOk(
+						withNextActionHint(`Plan saved.${savedPlanNote}`, scopeOutcome.outcome.ferment, multiModelEnabled),
+						{
+							includePlan: true,
+						},
+					)
 				}
 				const recSummary = questions
 					.map((q) => {
@@ -1200,7 +1223,7 @@ ${renderGateGuidance("scope_ferment")}`,
 					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment, multiModelEnabled)
 					return planToolOk(
 						withNextActionHint(
-							`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+							`Plan saved.${savedPlanNote}\n\nFerment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
 							scopeOutcome.outcome.ferment,
 							multiModelEnabled,
 						),
@@ -1228,7 +1251,9 @@ ${renderGateGuidance("scope_ferment")}`,
 					proposeIterations: nextIterations,
 					savedAt: new Date().toISOString(),
 				})
-				return planToolOk("Plan ready for review. The review dialog will open when this turn finishes.")
+				return planToolOk(
+					`Plan ready for review.${savedPlanNote}\n\nThe review dialog will open when this turn finishes.`,
+				)
 			}
 
 			// 7. Tabbed question form + review loop.

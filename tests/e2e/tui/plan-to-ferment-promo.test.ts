@@ -174,7 +174,8 @@ test("plan-to-ferment promotion — side effects: plan file written + tool swap 
 
 			const planContent = readFileSync(join(plansDir, planFile), "utf-8")
 			expect(planContent.includes("Read the relevant source files")).toBe(true)
-			expect(planContent.includes("<!-- PLAN_COMPLETE -->")).toBe(true)
+			// Markers are stripped by savePlanMarkdown before persistence.
+			expect(planContent.includes("<!-- PLAN_COMPLETE -->")).toBe(false)
 			expect(planContent.includes("Make the targeted change")).toBe(true)
 			expect(planContent.includes("Run tests to verify")).toBe(true)
 			trace.step("approved plan file written and content verified")

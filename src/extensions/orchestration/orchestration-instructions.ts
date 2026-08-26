@@ -147,8 +147,8 @@ The review agent runs tests, checks lint, and verifies the implementation matche
 
 function buildAgentDelegation(delegatePlanning: boolean): string {
 	const planBullet = delegatePlanning
-		? "- When delegating `plan` before `build`, have the Plan agent write a Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided."
-		: "- When writing the plan yourself before `build`, write the Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided."
+		? "- When delegating `plan` before `build`, have the Plan agent write a Markdown spec file (full method signatures, file paths, interfaces) under `.kimchi/plans/<slug>.md` — the canonical plan location. Pass that file path to the build Agent — it must not rediscover what was already decided."
+		: "- When writing the plan yourself before `build`, write the Markdown spec file (full method signatures, file paths, interfaces) under `.kimchi/plans/<slug>.md` — the canonical plan location. Pass that file path to the build Agent — it must not rediscover what was already decided."
 
 	return `### Agent delegation
 
@@ -157,7 +157,7 @@ function buildAgentDelegation(delegatePlanning: boolean): string {
 - Write Agent prompts that are fully self-contained. Agents start with fresh context by default — include necessary instructions directly, or point them to a Markdown file containing larger context.
 ${planBullet}
 - Spawn independent subtasks in parallel with \`run_in_background: true\`: do NOT run more than 3 concurrent Agents.
-- After an Agent returns, TRUST its output unless the subagent itself reported errors or produced obviously incomplete work. Do NOT re-read source files just to verify a successful subagent's findings — this is the most common source of wasted orchestrator turns. For artifact-producing agents (Plan, Reviewer, Fixer, and Researcher when the research is non-trivial), have the subagent write its substantive output to a Markdown file in the Documents directory and return the file path. Read ONLY that file (or pass it to the next subagent). Explore is the exception: Explore agents return decision-ready findings directly in the Agent result and must not be asked to write Markdown files, reports, docs, notes, or scratch files. For build agents specifically: if the agent reports tests pass and compilation succeeds, move on to the next chunk or to review. Do NOT re-read the code it wrote. For correction tasks, call Agent again with the correction task rather than fixing inline.
+- After an Agent returns, TRUST its output unless the subagent itself reported errors or produced obviously incomplete work. Do NOT re-read source files just to verify a successful subagent's findings — this is the most common source of wasted orchestrator turns. For artifact-producing agents (Plan, Reviewer, Fixer, and Researcher when the research is non-trivial), have the subagent write its substantive output to the correct location and return the file path: Plan agents write specs to the canonical plan location (.kimchi/plans/<slug>.md); Reviewer, Fixer, and non-trivial Researcher agents write to a Markdown file in the Documents directory. Read ONLY that file (or pass it to the next subagent). Explore is the exception: Explore agents return decision-ready findings directly in the Agent result and must not be asked to write Markdown files, reports, docs, notes, or scratch files. For build agents specifically: if the agent reports tests pass and compilation succeeds, move on to the next chunk or to review. Do NOT re-read the code it wrote. For correction tasks, call Agent again with the correction task rather than fixing inline.
 - If an Agent call returns an error of any kind (including protocol violation, timeout, or exit error): do NOT attempt to implement or debug the work yourself. First assess whether the failure is retryable (e.g. transient timeouts or protocol violations) or not (e.g. missing files, permission errors, or invalid inputs). For retryable failures, call a replacement Agent with a corrected or simplified prompt — allow at most one retry per delegated step. For non-retryable failures, report the failure clearly and stop immediately without retrying.
 - **When a subagent returns agent_outcome.outcome other than "completed"**: the work is likely partial or invalid. Do NOT pick up the remaining work yourself — that defeats the purpose of delegation and wastes orchestrator tokens. Inspect agent_outcome.report before acting. Resume the same Agent only when remaining_steps are a direct continuation and preserving session context is valuable; use a changed-approach resume when the same thread still matters but the prior approach stalled; spawn a NEW follow-up Agent when remaining_steps have a clean narrower task boundary; run a short finalizer resume when the report is missing or the work appears finished but did not return completed; or stop/skip and report when blocked or unclear. Do not blindly retry the same prompt. **Include dependency context** in any replacement prompt: paste the public type signatures and function signatures of packages the follow-up agent will import (e.g. structs, interfaces, exported functions from earlier chunks) directly in the prompt so it does not waste turns re-reading files.
 - Do NOT call Agent for work you can do in a single tool call.
@@ -276,7 +276,7 @@ function buildPlanPhaseDirectives(ctx: PhaseDirectiveContext): string {
 			`- DO delegate plan drafting to Agent(type: "Plan", model: ${models}). A separate planner model is configured — use it.`,
 		)
 		lines.push(
-			"- Have the Plan agent write the Markdown spec (full method signatures, file paths, interfaces) to the Documents directory.",
+			"- Have the Plan agent write the Markdown spec (full method signatures, file paths, interfaces) under `.kimchi/plans/<slug>.md` — the canonical plan location.",
 		)
 		lines.push(
 			"- After the Plan agent returns: validate its spec by re-reading it against every requirement from the original task before proceeding to build. Do NOT proceed on an unvalidated spec.",
@@ -284,7 +284,7 @@ function buildPlanPhaseDirectives(ctx: PhaseDirectiveContext): string {
 	} else {
 		lines.push("- DO write the plan yourself. You are the planner model — no Plan agent is configured.")
 		lines.push(
-			"- Produce a Markdown spec file in the Documents directory and validate it by re-reading the spec against every requirement from the original task.",
+			"- Produce a Markdown spec file under `.kimchi/plans/<slug>.md` — the canonical plan location — and validate it by re-reading the spec against every requirement from the original task.",
 		)
 	}
 
@@ -442,7 +442,7 @@ ${ORCHESTRATION_ORIENTATION}`)
 
 Read **Your roles** above. The sections below tell you exactly what to DO and what NOT to do for each pipeline phase. Follow them literally.
 
-Pass durable artifacts as Markdown files in the Documents directory: plans/specs, review findings, verification reports, and non-trivial research notes. Explore findings are not durable artifacts; consume them directly from the Agent result.`)
+Pass durable artifacts as Markdown files in the Documents directory: review findings, verification reports, and non-trivial research notes. Plans and specs go to the canonical plan location (.kimchi/plans/<slug>.md); Explore findings are not durable artifacts — consume them directly from the Agent result.`)
 
 	const delegatePlanning = shouldDelegatePlanning(currentModelId, roles)
 

@@ -151,6 +151,16 @@ export class WorkerClient {
 		await checkResponse(resp, url)
 	}
 
+	/**
+	 * Releases any resources held by this client.
+	 *
+	 * `WorkerClient` is stateless (each request opens its own fetch connection),
+	 * so this is currently a no-op. The method exists so callers can explicitly
+	 * clean up and so future implementations that hold persistent connections
+	 * (keep-alive agents, websockets, etc.) have a clear disposal point.
+	 */
+	async close(): Promise<void> {}
+
 	#url(path: string): string {
 		return `${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`
 	}

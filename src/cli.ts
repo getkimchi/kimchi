@@ -93,6 +93,7 @@ import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-e
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
+import remoteRunExtension from "./extensions/remote-run/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
@@ -640,6 +641,7 @@ try {
 			reportBugExtension,
 			tagsExtension,
 			teleportExtension,
+			remoteRunExtension,
 			telemetryExtension(telemetryConfig),
 			sessionMetadataExtension(),
 			surveysExtension(),

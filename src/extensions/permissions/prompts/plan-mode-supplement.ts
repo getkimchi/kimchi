@@ -1,3 +1,4 @@
+import { generatePlanPersistenceNote } from "../../../shared/planning/plan-markdown.js"
 import { SHARED_PLANNING_PROCESS } from "../../../shared/planning/shared-planning-process.js"
 
 const PLAN_COMPLETE_MARKER = "<!-- PLAN_COMPLETE -->"
@@ -35,4 +36,8 @@ STEP 5 (Plan):
     ${DONE_MARKER}
 - Do NOT include these markers on intermediate drafts, while posing clarifying questions,
   or while any Open Question remains unresolved. The approval menu will not appear until all
-  Open Questions are cleared.`
+  Open Questions are cleared.
+
+## Plan File Persistence
+
+${generatePlanPersistenceNote({ persistence: "harness" })}`

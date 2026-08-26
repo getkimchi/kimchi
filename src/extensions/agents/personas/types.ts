@@ -202,6 +202,8 @@ export interface AgentRecord {
 	outputCleanup?: () => void
 	/** Whether this agent is (or has been converted to) a background agent. */
 	isBackground?: boolean
+	/** When true, this agent runs on a remote sandbox via ACP instead of locally. */
+	remote?: boolean
 	/** Resolver to call when this foreground agent is detached to background via Ctrl+B. */
 	detachResolver?: () => void
 	/** Removes the parent abort signal listener so the agent survives after detach. */

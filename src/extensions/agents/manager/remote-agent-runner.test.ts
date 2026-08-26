@@ -1,0 +1,421 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+// All external dependencies are mocked at the module level.
+vi.mock("../../../sandbox/cloud/auth.js", () => ({
+	authenticateWorkspace: vi.fn().mockResolvedValue({
+		connectToken: "test-token",
+		expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+		wsUrl: "wss://worker.example.com",
+		host: "worker.example.com",
+	}),
+}))
+
+vi.mock("../../../sandbox/cloud/readiness.js", () => ({
+	waitForWorkspaceReady: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock("../../../sandbox/worker/client.js", () => ({
+	WorkerClient: vi.fn().mockImplementation(() => ({
+		close: vi.fn().mockResolvedValue(undefined),
+	})),
+}))
+
+vi.mock("../../../sandbox/worker/sessions.js", () => ({
+	createSession: vi.fn().mockResolvedValue(undefined),
+	deleteSession: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock("../../teleport/provisioning/sync-local-changes.js", () => ({
+	syncLocalChangesAfterClone: vi.fn().mockResolvedValue(undefined),
+}))
+
+// Mock AcpSessionClient so we don't need a real WebSocket.
+// We capture the options passed to the constructor so tests can inspect callbacks.
+const mockInitialize = vi.fn().mockResolvedValue(undefined)
+const mockPrompt = vi.fn().mockResolvedValue({
+	stopReason: "end_turn",
+	usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
+})
+const mockClose = vi.fn()
+const mockCancel = vi.fn().mockResolvedValue(undefined)
+
+let capturedOptions: Record<string, unknown> | undefined
+
+vi.mock("../../../sandbox/worker/acp-client.js", () => ({
+	AcpSessionClient: vi.fn().mockImplementation((options: Record<string, unknown>) => {
+		capturedOptions = options
+		return {
+			initialize: mockInitialize,
+			prompt: mockPrompt,
+			close: mockClose,
+			cancel: mockCancel,
+		}
+	}),
+}))
+
+// Import after mocks are set up
+import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
+import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
+import { AcpSessionClient, type AcpSessionClientOptions } from "../../../sandbox/worker/acp-client.js"
+import { WorkerClient } from "../../../sandbox/worker/client.js"
+import { createSession, deleteSession } from "../../../sandbox/worker/sessions.js"
+import { syncLocalChangesAfterClone } from "../../teleport/provisioning/sync-local-changes.js"
+import { type RemoteRunOptions, runRemoteAgent } from "./remote-agent-runner.js"
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const WORKSPACE_ID = "ws-123"
+const PROMPT = "Fix the bug in auth.ts"
+
+function makeOptions(overrides: Partial<RemoteRunOptions> = {}): RemoteRunOptions {
+	return {
+		apiKey: "test-api-key",
+		signal: undefined,
+		cwd: "/home/sandbox",
+		callbacks: {
+			onTextDelta: vi.fn(),
+			onToolActivity: vi.fn(),
+			onTurnEnd: vi.fn(),
+			onAssistantUsage: vi.fn(),
+		},
+		...overrides,
+	}
+}
+
+beforeEach(() => {
+	vi.clearAllMocks()
+	capturedOptions = undefined
+	// Re-establish mock implementations after clearAllMocks resets them
+	vi.mocked(authenticateWorkspace).mockResolvedValue({
+		connectToken: "test-token",
+		expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+		wsUrl: "wss://worker.example.com",
+		host: "worker.example.com",
+	})
+	vi.mocked(waitForWorkspaceReady).mockResolvedValue(undefined)
+	vi.mocked(createSession).mockResolvedValue({
+		name: "test-session",
+		agentMode: "ACP",
+		yolo: true,
+		cwd: "/home/sandbox",
+		alive: true,
+		agentRunning: false,
+		clientConnected: false,
+		connectedThroughBridge: false,
+		freshClone: true,
+	})
+	vi.mocked(deleteSession).mockResolvedValue(undefined)
+	vi.mocked(syncLocalChangesAfterClone).mockResolvedValue(undefined)
+	// Re-establish the AcpSessionClient constructor mock — clearAllMocks
+	// resets the mockImplementation, so new AcpSessionClient() would return undefined.
+	vi.mocked(AcpSessionClient).mockImplementation((options: AcpSessionClientOptions) => {
+		capturedOptions = options as unknown as Record<string, unknown>
+		return {
+			initialize: mockInitialize,
+			prompt: mockPrompt,
+			close: mockClose,
+			cancel: mockCancel,
+		} as unknown as AcpSessionClient
+	})
+	vi.mocked(WorkerClient).mockImplementation(
+		() =>
+			({
+				close: vi.fn().mockResolvedValue(undefined),
+				// biome-ignore lint/suspicious/noExplicitAny: mock
+			}) as any,
+	)
+	mockInitialize.mockResolvedValue(undefined)
+	mockPrompt.mockResolvedValue({
+		stopReason: "end_turn",
+		usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
+	})
+	mockClose.mockReset()
+})
+
+afterEach(() => {
+	vi.restoreAllMocks()
+})
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe("runRemoteAgent", () => {
+	it("authenticates, creates session, initializes ACP client, sends prompt, and returns result", async () => {
+		const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
+
+		// 1. Authentication
+		expect(authenticateWorkspace).toHaveBeenCalledWith(WORKSPACE_ID, "test-api-key", "kimchi", { endpoint: undefined })
+
+		// 2. Readiness check
+		expect(waitForWorkspaceReady).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wsUrl: "wss://worker.example.com",
+				connectToken: "test-token",
+			}),
+		)
+
+		// 3. Session creation
+		expect(createSession).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.stringMatching(/^acp-[0-9a-f]{8}$/),
+			expect.objectContaining({ agentMode: "ACP", yolo: true, cwd: "/home/sandbox" }),
+			expect.objectContaining({ timeoutMs: 5 * 60_000 }),
+		)
+
+		// 4. ACP client
+		expect(AcpSessionClient).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sessionName: expect.stringMatching(/^acp-[0-9a-f]{8}$/),
+				credentials: expect.objectContaining({ wsUrl: "wss://worker.example.com" }),
+				cwd: "/home/sandbox",
+			}),
+		)
+		expect(mockInitialize).toHaveBeenCalledOnce()
+		expect(mockPrompt).toHaveBeenCalledWith(PROMPT)
+
+		// 5. Result
+		expect(result.stopReason).toBe("end_turn")
+		expect(result.usage).toEqual({ input: 100, output: 50, cacheRead: 0, cacheWrite: 0 })
+		expect(result.remoteSession.workspaceId).toBe(WORKSPACE_ID)
+		expect(result.remoteSession.wsUrl).toBe("wss://worker.example.com")
+		expect(result.remoteSession.host).toBe("worker.example.com")
+		expect(result.remoteSession.sessionName).toMatch(/^acp-[0-9a-f]{8}$/)
+	})
+
+	it("forwards callbacks to AcpSessionClient with onTextDelta wrapping", async () => {
+		const onTextDelta = vi.fn()
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ callbacks: { onTextDelta } }))
+
+		expect(capturedOptions).toBeDefined()
+		const callbacks = capturedOptions?.callbacks as
+			| { onTextDelta: (delta: string, fullText: string) => void }
+			| undefined
+		expect(callbacks).toBeDefined()
+		if (!callbacks) return
+		expect(typeof callbacks.onTextDelta).toBe("function")
+
+		// Simulate a text delta — the wrapper should update responseText and forward to inner callback
+		callbacks.onTextDelta("Hello", "Hello")
+		expect(onTextDelta).toHaveBeenCalledWith("Hello", "Hello")
+	})
+
+	it("captures accumulated response text via wrapped onTextDelta", async () => {
+		const onTextDelta = vi.fn()
+		// Make mock prompt simulate streaming by invoking the captured onTextDelta
+		// callback before resolving — mirrors real ACP behavior.
+		mockPrompt.mockImplementation(async () => {
+			const cb = capturedOptions?.callbacks as { onTextDelta: (delta: string, fullText: string) => void } | undefined
+			if (!cb) return
+			cb.onTextDelta("Hello ", "Hello ")
+			cb.onTextDelta("world", "Hello world")
+			return { stopReason: "end_turn", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } }
+		})
+
+		const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ callbacks: { onTextDelta } }))
+
+		expect(result.responseText).toBe("Hello world")
+	})
+
+	it("captures responseText even when no callbacks are provided", async () => {
+		// Make mock prompt simulate streaming by invoking the captured onTextDelta
+		// callback before resolving — mirrors real ACP behavior.
+		mockPrompt.mockImplementation(async () => {
+			const cb = capturedOptions?.callbacks as { onTextDelta: (delta: string, fullText: string) => void } | undefined
+			if (!cb) return
+			cb.onTextDelta("no callback text", "no callback text")
+			return { stopReason: "end_turn", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } }
+		})
+
+		const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ callbacks: undefined }))
+
+		expect(result.responseText).toBe("no callback text")
+	})
+
+	it("closes AcpSessionClient and deletes session on success", async () => {
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
+
+		expect(mockClose).toHaveBeenCalledOnce()
+		expect(deleteSession).toHaveBeenCalledWith(expect.anything(), expect.stringMatching(/^acp-/))
+	})
+
+	it("closes AcpSessionClient and deletes session on error", async () => {
+		mockPrompt.mockRejectedValue(new Error("prompt failed"))
+
+		await expect(runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())).rejects.toThrow("prompt failed")
+
+		// Cleanup must still happen
+		expect(mockClose).toHaveBeenCalledOnce()
+		expect(deleteSession).toHaveBeenCalledOnce()
+	})
+
+	it("closes WorkerClient when createSession throws", async () => {
+		vi.mocked(createSession).mockRejectedValue(new Error("create failed"))
+		const mockClientClose = vi.fn().mockResolvedValue(undefined)
+		vi.mocked(WorkerClient).mockImplementation(
+			() =>
+				({
+					close: mockClientClose,
+					// biome-ignore lint/suspicious/noExplicitAny: mock
+				}) as any,
+		)
+
+		await expect(runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())).rejects.toThrow("create failed")
+
+		// WorkerClient must still be closed even though createSession threw
+		expect(mockClientClose).toHaveBeenCalledOnce()
+	})
+
+	it("closes WorkerClient in the finally block", async () => {
+		const mockClientClose = vi.fn().mockResolvedValue(undefined)
+		vi.mocked(WorkerClient).mockImplementation(
+			() =>
+				({
+					close: mockClientClose,
+					// biome-ignore lint/suspicious/noExplicitAny: mock
+				}) as any,
+		)
+
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
+
+		expect(mockClientClose).toHaveBeenCalledOnce()
+	})
+
+	it("does not throw if session deletion fails during cleanup", async () => {
+		vi.mocked(deleteSession).mockRejectedValue(new Error("delete failed"))
+
+		// Should not throw — deleteSession error is swallowed
+		const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
+		expect(result.stopReason).toBe("end_turn")
+	})
+
+	it("passes endpoint option to authenticateWorkspace", async () => {
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ endpoint: "https://custom.endpoint" }))
+
+		expect(authenticateWorkspace).toHaveBeenCalledWith(
+			WORKSPACE_ID,
+			"test-api-key",
+			"kimchi",
+			expect.objectContaining({ endpoint: "https://custom.endpoint" }),
+		)
+	})
+
+	it("passes signal through to createSession and AcpSessionClient", async () => {
+		const controller = new AbortController()
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ signal: controller.signal }))
+
+		expect(createSession).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.anything(),
+			expect.anything(),
+			expect.objectContaining({ signal: controller.signal }),
+		)
+		expect(capturedOptions).toBeDefined()
+		expect(capturedOptions?.signal).toBe(controller.signal)
+	})
+
+	it("forwards onToolActivity, onTurnEnd, onAssistantUsage, onRawNotification callbacks", async () => {
+		const callbacks = {
+			onToolActivity: vi.fn(),
+			onTurnEnd: vi.fn(),
+			onAssistantUsage: vi.fn(),
+			onRawNotification: vi.fn(),
+		}
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ callbacks }))
+
+		const captured = capturedOptions?.callbacks as Record<string, (...args: unknown[]) => void> | undefined
+		expect(captured).toBeDefined()
+		if (!captured) return
+		expect(typeof captured.onToolActivity).toBe("function")
+		expect(typeof captured.onTurnEnd).toBe("function")
+		expect(typeof captured.onAssistantUsage).toBe("function")
+		expect(typeof captured.onRawNotification).toBe("function")
+
+		// Verify forwarding
+		captured.onToolActivity({ type: "end", toolName: "Read" })
+		expect(callbacks.onToolActivity).toHaveBeenCalledWith({ type: "end", toolName: "Read" })
+
+		captured.onTurnEnd(1)
+		expect(callbacks.onTurnEnd).toHaveBeenCalledWith(1)
+
+		const usage = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }
+		captured.onAssistantUsage(usage)
+		expect(callbacks.onAssistantUsage).toHaveBeenCalledWith(usage)
+
+		const rawNotif = { update: { sessionUpdate: "tool_call" } }
+		captured.onRawNotification(rawNotif)
+		expect(callbacks.onRawNotification).toHaveBeenCalledWith(rawNotif)
+	})
+
+	it("forwards gitDetails to createSession as details.git and sets cwd to the repo dir", async () => {
+		const gitDetails = {
+			repo: "https://github.com/getkimchi/kimchi.git",
+			branch: "main",
+			targetDirectory: "kimchi",
+			noHistory: true,
+		}
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ gitDetails }))
+
+		expect(createSession).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.stringMatching(/^acp-/),
+			expect.objectContaining({
+				agentMode: "ACP",
+				yolo: true,
+				cwd: "/home/sandbox/kimchi",
+				details: { git: gitDetails },
+			}),
+			expect.anything(),
+		)
+
+		// AcpSessionClient should also receive the repo dir as cwd
+		expect(capturedOptions).toBeDefined()
+		expect(capturedOptions?.cwd).toBe("/home/sandbox/kimchi")
+	})
+
+	it("omits details.git when no gitDetails are provided", async () => {
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
+
+		const sessionReq = vi.mocked(createSession).mock.calls[0]?.[2] as unknown as Record<string, unknown>
+		expect(sessionReq.details).toBeUndefined()
+	})
+
+	it("syncs local changes after createSession when gitDetails + localPath are provided", async () => {
+		const gitDetails = {
+			repo: "https://github.com/getkimchi/kimchi.git",
+			branch: "main",
+			targetDirectory: "kimchi",
+			noHistory: true,
+		}
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ gitDetails, localPath: "/work/kimchi" }))
+
+		expect(syncLocalChangesAfterClone).toHaveBeenCalledWith(
+			expect.objectContaining({
+				localPath: "/work/kimchi",
+				remotePath: "/home/sandbox/kimchi",
+				remoteHost: "worker.example.com",
+				freshClone: true,
+			}),
+		)
+	})
+
+	it("does not sync local changes when gitDetails is not provided", async () => {
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ localPath: "/work/kimchi" }))
+
+		expect(syncLocalChangesAfterClone).not.toHaveBeenCalled()
+	})
+
+	it("does not sync local changes when localPath is not provided", async () => {
+		const gitDetails = {
+			repo: "https://github.com/getkimchi/kimchi.git",
+			branch: "main",
+			targetDirectory: "kimchi",
+			noHistory: true,
+		}
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ gitDetails }))
+
+		expect(syncLocalChangesAfterClone).not.toHaveBeenCalled()
+	})
+})
