@@ -5,6 +5,7 @@ import { getAgentConfig, getDefaultAgentNames } from "../agents/personas/agent-t
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { SCOPING_DISCOVERY_GUIDANCE, SCOPING_EXPLORE_TOKEN_BUDGET } from "./constants.js"
+import { fermentDelegationMode } from "./delegation-mode.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "./format.js"
 import type { FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
@@ -231,7 +232,7 @@ export function buildFermentPromptBlock(
 
 	const oneshot = pi.getFlag("ferment-oneshot") === true
 	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
-	const delegationMode: "strict" | "relaxed" = multiModelEnabled ? "strict" : "relaxed"
+	const delegationMode = fermentDelegationMode(multiModelEnabled)
 
 	switch (f.status) {
 		case "draft":

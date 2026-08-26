@@ -10,9 +10,14 @@ import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { setMultiModelEnabled } from "./multi-model.js"
 import reviewWriteGuardExtension, { STEER_MESSAGE_TYPE } from "./review-write-guard.js"
 
+/**
+ * Mechanics harness: pins the delegation policy on so these tests exercise the
+ * guard's counting/threshold behaviour rather than the policy that gates it.
+ * Policy itself is covered by `createRealPolicyPI` below.
+ */
 function createMockPI(options?: Parameters<typeof reviewWriteGuardExtension>[1]) {
 	const pi = createExtensionApi()
-	reviewWriteGuardExtension(pi.api, options)
+	reviewWriteGuardExtension(pi.api, { isDelegationRequired: () => true, ...options })
 	const harness: typeof pi & { blockResult: ToolCallEventResult | undefined } = {
 		...pi,
 		blockResult: undefined,
@@ -453,45 +458,52 @@ describe("reviewWriteGuardExtension delegation-mode policy", () => {
 	})
 })
 
+/** Policy harness: no seam, so the real `delegationRequired` predicate runs. */
+function createRealPolicyPI() {
+	const pi = createExtensionApi()
+	reviewWriteGuardExtension(pi.api)
+	const harness: typeof pi & { blockResult: ToolCallEventResult | undefined } = { ...pi, blockResult: undefined }
+	return harness
+}
+
 describe("reviewWriteGuardExtension default delegation policy (no injected seam)", () => {
-	const originalFerment = process.env.KIMCHI_ACTIVE_FERMENT
-
 	afterEach(() => {
-		if (originalFerment === undefined) delete process.env.KIMCHI_ACTIVE_FERMENT
-		else process.env.KIMCHI_ACTIVE_FERMENT = originalFerment
+		setMultiModelEnabled("test-session", false)
 	})
 
-	it("arms when no ferment is active", () => {
-		delete process.env.KIMCHI_ACTIVE_FERMENT
-		const pi = createMockPI()
-		emit(pi, "tool_result", { toolName: "Agent" })
-		emit(pi, "tool_call", { toolName: "edit" })
-		emit(pi, "tool_call", { toolName: "edit" })
-		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
-	})
-
-	it("still arms while a ferment is active in strict (multi-model) delegation mode", () => {
-		process.env.KIMCHI_ACTIVE_FERMENT = "f-strict"
-		setMultiModelEnabled("test-session", true)
-		try {
-			const pi = createMockPI()
-			emit(pi, "tool_result", { toolName: "Agent" })
-			emit(pi, "tool_call", { toolName: "edit" })
-			emit(pi, "tool_call", { toolName: "edit" })
-			expect(pi.sendMessage).toHaveBeenCalledTimes(1)
-		} finally {
-			setMultiModelEnabled("test-session", false)
-		}
-	})
-
-	it("does not arm while a ferment is active in relaxed (single-model) delegation mode", () => {
-		process.env.KIMCHI_ACTIVE_FERMENT = "f-relaxed"
-		const pi = createMockPI()
+	it("does not arm in a single-model session (the prompt tells it not to delegate)", () => {
+		setMultiModelEnabled("test-session", false)
+		const pi = createRealPolicyPI()
 		emit(pi, "tool_result", { toolName: "Agent" })
 		for (let i = 0; i < 8; i++) {
 			emit(pi, "tool_call", { toolName: "edit" })
 		}
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		expect(pi.blockResult).toBeUndefined()
+	})
+
+	it("arms in a multi-model session, where delegation is the default", () => {
+		setMultiModelEnabled("test-session", true)
+		const pi = createRealPolicyPI()
+		emit(pi, "tool_result", { toolName: "Agent" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not arm for a relaxed-mode ferment, which is single-model by definition", () => {
+		process.env.KIMCHI_ACTIVE_FERMENT = "f-relaxed"
+		setMultiModelEnabled("test-session", false)
+		try {
+			const pi = createRealPolicyPI()
+			emit(pi, "tool_result", { toolName: "Agent" })
+			for (let i = 0; i < 8; i++) {
+				emit(pi, "tool_call", { toolName: "edit" })
+			}
+			expect(pi.sendMessage).not.toHaveBeenCalled()
+			expect(pi.blockResult).toBeUndefined()
+		} finally {
+			delete process.env.KIMCHI_ACTIVE_FERMENT
+		}
 	})
 })

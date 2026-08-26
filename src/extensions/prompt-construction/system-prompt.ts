@@ -13,7 +13,7 @@ import { resolveRoleGuideline } from "../orchestration/model-registry/guidelines
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 import type { ModelRole, ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
-import { orchestratorShouldReceiveRoleGuidelines } from "../orchestration/orchestrator-roles.js"
+import { orchestratorShouldReceiveRoleGuidelines, ROLE_ORDER } from "../orchestration/orchestrator-roles.js"
 import type { ContextFile } from "./context-files.js"
 import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { renderSystemPromptBlocks, type SuppressibleSection } from "./system-prompt-blocks.js"
@@ -344,8 +344,6 @@ export const WORKING_PRACTICES = `## Working Practices
 - If a tool call fails, diagnose the root cause before retrying — do not retry blindly.
 - Stay in scope: do NOT add features, refactors, or "improvements" beyond what the spec asks for.
 - If the same code pattern is needed >2 times, extract an abstraction first instead of duplicating.`
-
-const ROLE_ORDER: readonly ModelRole[] = ["explore", "research", "plan", "build", "review"]
 
 /**
  * Build the ## Working Practices section.
