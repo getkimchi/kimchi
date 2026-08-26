@@ -4,7 +4,6 @@ import json
 import os
 import secrets
 import shlex
-from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -43,6 +42,11 @@ from kimchi_agent.openrouter import (
     is_openrouter_model,
 )
 from kimchi_agent.release import BINARY_RELPATH, SHARE_RELPATH, GitHubClient
+from kimchi_agent.retryable_provider_error import (
+    RetryableApiError,
+    retryable_api_error_detail,
+    retryable_api_error_from_remote_file,
+)
 from kimchi_agent.zai import (
     ZAI_API_KEY_ENV,
     ZAI_ENDPOINT_ENV,
@@ -81,6 +85,10 @@ MULTI_MODEL = "multi-model"
 KIMCHI_INFRA_BREAKER_THRESHOLD_ENV = "KIMCHI_INFRA_BREAKER_THRESHOLD"
 KIMCHI_BENCHMARK_INFRA_BREAKER_DEFAULT_ATTEMPTS = "3"
 KIMCHI_EXIT_OUTPUT_TAIL_LINES = 20
+# Mirrors src/infrastructure-error.ts::GATEWAY_CLASSIFICATION_AUDIT_TYPE.
+KIMCHI_ERROR_CLASSIFICATION_TYPE = "kimchi_error_classification"
+# Mirrors src/llm-gateway-error.ts::LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE.
+KIMCHI_INFRA_ERROR_EXIT_CODE = 74
 
 # Benchmark-only extension for injecting LLM sampling parameters.
 # It lives in the benchmarks branch and is installed into the container's
@@ -140,6 +148,124 @@ def _decode_agent_kwarg(value: object) -> dict[str, Any]:
     if not isinstance(decoded, dict):
         raise ValueError("LLM params kwarg must decode to an object")
     return decoded
+
+
+def _parse_goal_evaluator_usage(value: object) -> GoalEvaluatorUsage | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        usage = GoalEvaluatorUsage.model_validate(value)
+    except ValidationError:
+        return None
+    if not GoalEvaluatorUsage.model_fields.keys() <= usage.model_fields_set:
+        return None
+    return usage
+
+
+def _retryable_api_error_from_classification(data: object) -> RetryableApiError | None:
+    if not isinstance(data, dict):
+        return None
+    if data.get("retryable") is not True or data.get("isInfrastructure") is not True:
+        return None
+    exit_code = data.get("exitCode")
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool) or exit_code != KIMCHI_INFRA_ERROR_EXIT_CODE:
+        return None
+
+    detail = data.get("rawMessage") if isinstance(data.get("rawMessage"), str) else ""
+    return RetryableApiError(None, retryable_api_error_detail(detail))
+
+
+def _retryable_api_error_from_session_stream(stream: str) -> RetryableApiError | None:
+    classified_errors: dict[str, RetryableApiError] = {}
+    terminal_error: RetryableApiError | None = None
+    for line in stream.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("type") == "custom" and entry.get("customType") == KIMCHI_ERROR_CLASSIFICATION_TYPE:
+            entry_id = entry.get("id")
+            error = _retryable_api_error_from_classification(entry.get("data"))
+            if isinstance(entry_id, str) and error is not None:
+                classified_errors[entry_id] = error
+            continue
+        message = entry.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            parent_id = entry.get("parentId")
+            linked_error = classified_errors.get(parent_id) if isinstance(parent_id, str) else None
+            terminal_error = linked_error if message.get("stopReason") == "error" else None
+    return terminal_error
+
+
+def _session_entry_topology(entry: SessionEntry) -> tuple[str, str | None] | None:
+    if not {"id", "parent_id"} <= entry.model_fields_set:
+        return None
+    if not isinstance(entry.id, str) or not entry.id.strip():
+        return None
+    if entry.parent_id is not None and (not isinstance(entry.parent_id, str) or not entry.parent_id.strip()):
+        return None
+    return entry.id, entry.parent_id
+
+
+def _legacy_ancestor_usage(
+    goal_id: str,
+    parent_id: str | None,
+    parents: dict[str, str | None],
+    duplicate_ids: set[str],
+    snapshots: dict[str, tuple[str, GoalEvaluatorUsage]],
+) -> GoalEvaluatorUsage | None:
+    seen: set[str] = set()
+    current_id = parent_id
+    while current_id is not None:
+        if current_id in seen or current_id in duplicate_ids or current_id not in parents:
+            return None
+        seen.add(current_id)
+        snapshot = snapshots.get(current_id)
+        if snapshot is not None and snapshot[0] == goal_id:
+            return snapshot[1]
+        current_id = parents[current_id]
+    return GoalEvaluatorUsage()
+
+
+def _positive_usage_delta(
+    current: GoalEvaluatorUsage, previous: GoalEvaluatorUsage
+) -> tuple[int, int, int, int, float]:
+    return (
+        max(0, current.input - previous.input),
+        max(0, current.output - previous.output),
+        max(0, current.cache_read - previous.cache_read),
+        max(0, current.cache_write - previous.cache_write),
+        max(0.0, current.cost_usd - previous.cost_usd),
+    )
+
+
+def _legacy_usage_deltas(
+    goal_id: str,
+    snapshots: list[tuple[GoalEvaluatorUsage, str | None, str | None, int]],
+    parents: dict[str, str | None],
+    duplicate_ids: set[str],
+    snapshots_by_id: dict[str, tuple[str, GoalEvaluatorUsage]],
+) -> list[tuple[int, int, int, int, float]]:
+    # Current historical Goal artifacts stored only cumulative evaluatorUsage
+    # snapshots on goal puts. Keep this path so those runs remain billable.
+    previous = GoalEvaluatorUsage()
+    deltas = []
+    for usage, entry_id, parent_id, _ in snapshots:
+        ancestor = (
+            _legacy_ancestor_usage(goal_id, parent_id, parents, duplicate_ids, snapshots_by_id)
+            if entry_id is not None
+            else None
+        )
+        # Without a complete graph, retain the old linear positive-delta fallback;
+        # it cannot distinguish a branch fork from a rewind.
+        deltas.append(_positive_usage_delta(usage, ancestor if ancestor is not None else previous))
+        previous = usage
+    return deltas
 
 
 def _coerce_bool_kwarg(value: object, name: str) -> bool:
@@ -654,6 +780,11 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         except asyncio.CancelledError:
             await self._terminate_kimchi_process_group(environment)
             raise
+        except NonZeroAgentExitCodeError as exc:
+            retryable_error = await self._retryable_api_error_from_remote_session(environment)
+            if retryable_error is not None:
+                raise retryable_error from exc
+            raise
 
     def _extension_paths(self) -> list[str]:
         """Paths/specs to load with ``-e``. Empty means no ``-e`` flag at all.
@@ -916,6 +1047,18 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
                 extra={"error": str(exc)},
             )
 
+    async def _retryable_api_error_from_remote_session(
+        self,
+        environment: BaseEnvironment,
+    ) -> RetryableApiError | None:
+        return await retryable_api_error_from_remote_file(
+            environment,
+            CONTAINER_MAIN_SESSION,
+            _retryable_api_error_from_session_stream,
+            self.logger,
+            "Kimchi session",
+        )
+
     def _auto_tags(self) -> dict[str, str]:
         # logs_dir is expected to be jobs/<run>/<task>__<trial>/agent. Derive
         # run / task / trial from that ancestry so they're injected automatically
@@ -969,7 +1112,17 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         total_cache_read_tokens = 0
         total_cache_write_tokens = 0
         total_cost = 0.0
-        evaluator_usage: dict[str, GoalEvaluatorUsage] = {}
+        # Evaluator calls are journaled independently from assistant messages. Keep
+        # immutable calls separate from legacy cumulative Goal snapshots.
+        legacy_evaluator_usage: dict[
+            tuple[str, str], list[tuple[GoalEvaluatorUsage, str | None, str | None, int]]
+        ] = {}
+        evaluator_usage_calls: dict[tuple[str, str], list[GoalEvaluatorUsage]] = {}
+        evaluator_usage_baselines: dict[tuple[str, str], GoalEvaluatorUsage] = {}
+        evaluator_usage_first_index: dict[tuple[str, str], int] = {}
+        session_parents: dict[str, dict[str, str | None]] = {}
+        session_duplicate_ids: dict[str, set[str]] = {}
+        legacy_snapshots_by_id: dict[str, dict[str, tuple[str, GoalEvaluatorUsage]]] = {}
 
         # rglob, not glob: an extension may nest per-step sessions under
         # sessions/<subdir>/, and a flat glob silently under-reports those
@@ -983,6 +1136,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
                     extra={"path": str(session_file), "error": str(exc)},
                 )
                 continue
+            entries: list[SessionEntry] = []
             for line in lines:
                 line = line.strip()
                 if not line:
@@ -991,21 +1145,77 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
                     entry = SessionEntry.model_validate_json(line)
                 except ValidationError:
                     continue
+                entries.append(entry)
+
+            parents: dict[str, str | None] = {}
+            duplicate_ids: set[str] = set()
+            seen_ids: set[str] = set()
+            for entry in entries:
+                if not isinstance(entry.id, str) or not entry.id.strip():
+                    continue
+                if entry.id in seen_ids:
+                    duplicate_ids.add(entry.id)
+                else:
+                    seen_ids.add(entry.id)
+                topology = _session_entry_topology(entry)
+                if topology is not None and entry.id not in parents:
+                    parents[entry.id] = topology[1]
+            session_name = str(session_file.relative_to(sessions_dir))
+            session_parents[session_name] = parents
+            session_duplicate_ids[session_name] = duplicate_ids
+            snapshots_by_id: dict[str, tuple[str, GoalEvaluatorUsage]] = {}
+            legacy_snapshots_by_id[session_name] = snapshots_by_id
+
+            for entry_index, entry in enumerate(entries):
                 if entry.type == "custom" and entry.custom_type == "kimchi_goal_state":
-                    goal = (entry.data or {}).get("goal")
+                    data = entry.data or {}
+                    if data.get("op") == "evaluator_usage":
+                        session_id = data.get("sessionId")
+                        goal_id = data.get("goalId")
+                        revision = data.get("revision")
+                        usage_data = data.get("usage")
+                        if (
+                            not isinstance(session_id, str)
+                            or not session_id.strip()
+                            or not isinstance(goal_id, str)
+                            or not goal_id.strip()
+                            or not isinstance(revision, int)
+                            or isinstance(revision, bool)
+                            or revision < 1
+                        ):
+                            continue
+                        usage = _parse_goal_evaluator_usage(usage_data)
+                        if usage is None:
+                            continue
+                        key = (session_name, goal_id)
+                        baseline_data = data.get("baselineUsage")
+                        if "baselineUsage" in data:
+                            baseline = _parse_goal_evaluator_usage(baseline_data)
+                            if baseline is None:
+                                continue
+                        else:
+                            baseline = None
+                        is_first_call = key not in evaluator_usage_calls
+                        if is_first_call:
+                            evaluator_usage_first_index[key] = entry_index
+                        evaluator_usage_calls.setdefault(key, []).append(usage)
+                        if is_first_call and baseline is not None:
+                            evaluator_usage_baselines[key] = baseline
+                        continue
+                    goal = data.get("goal")
                     if isinstance(goal, dict) and isinstance(goal.get("evaluatorUsage"), dict):
-                        with suppress(ValidationError):
-                            goal_id = str(goal.get("id", ""))
-                            candidate = GoalEvaluatorUsage.model_validate(goal["evaluatorUsage"])
-                            current = evaluator_usage.get(goal_id)
-                            candidate_tokens = candidate.total_tokens or (
-                                candidate.input + candidate.cache_read + candidate.cache_write + candidate.output
-                            )
-                            current_tokens = 0 if current is None else current.total_tokens or (
-                                current.input + current.cache_read + current.cache_write + current.output
-                            )
-                            if current is None or candidate_tokens > current_tokens:
-                                evaluator_usage[goal_id] = candidate
+                        goal_id = goal.get("id")
+                        if not isinstance(goal_id, str) or not goal_id.strip():
+                            continue
+                        usage = _parse_goal_evaluator_usage(goal["evaluatorUsage"])
+                        if usage is None:
+                            continue
+                        key = (session_name, goal_id)
+                        topology = _session_entry_topology(entry)
+                        entry_id, parent_id = topology if topology is not None else (None, None)
+                        legacy_evaluator_usage.setdefault(key, []).append((usage, entry_id, parent_id, entry_index))
+                        if topology is not None and entry_id not in snapshots_by_id:
+                            snapshots_by_id[entry_id] = (goal_id, usage)
                     continue
                 if entry.type != "message" or entry.message.role != "assistant":
                     continue
@@ -1016,12 +1226,50 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
                 total_cache_write_tokens += usage.cache_write
                 total_cost += usage.cost.total
 
-        for usage in evaluator_usage.values():
-            total_input_tokens += usage.input
-            total_output_tokens += usage.output
-            total_cache_read_tokens += usage.cache_read
-            total_cache_write_tokens += usage.cache_write
-            total_cost += usage.cost_usd
+        for key, calls in evaluator_usage_calls.items():
+            session_name, goal_id = key
+            parents = session_parents.get(session_name, {})
+            duplicate_ids = session_duplicate_ids.get(session_name, set())
+            snapshots_by_id = legacy_snapshots_by_id.get(session_name, {})
+            first_index = evaluator_usage_first_index[key]
+            prehistory = [snapshot for snapshot in legacy_evaluator_usage.get(key, []) if snapshot[3] < first_index]
+            if prehistory:
+                # Reconstructed prehistory is authoritative; never add its
+                # cumulative baseline a second time.
+                for delta in _legacy_usage_deltas(goal_id, prehistory, parents, duplicate_ids, snapshots_by_id):
+                    total_input_tokens += delta[0]
+                    total_output_tokens += delta[1]
+                    total_cache_read_tokens += delta[2]
+                    total_cache_write_tokens += delta[3]
+                    total_cost += delta[4]
+            else:
+                baseline = evaluator_usage_baselines.get(key)
+                if baseline is not None:
+                    total_input_tokens += baseline.input
+                    total_output_tokens += baseline.output
+                    total_cache_read_tokens += baseline.cache_read
+                    total_cache_write_tokens += baseline.cache_write
+                    total_cost += baseline.cost_usd
+            for usage in calls:
+                total_input_tokens += usage.input
+                total_output_tokens += usage.output
+                total_cache_read_tokens += usage.cache_read
+                total_cache_write_tokens += usage.cache_write
+                total_cost += usage.cost_usd
+
+        for key, snapshots in legacy_evaluator_usage.items():
+            if key in evaluator_usage_calls:
+                continue
+            session_name, goal_id = key
+            parents = session_parents.get(session_name, {})
+            duplicate_ids = session_duplicate_ids.get(session_name, set())
+            snapshots_by_id = legacy_snapshots_by_id.get(session_name, {})
+            for delta in _legacy_usage_deltas(goal_id, snapshots, parents, duplicate_ids, snapshots_by_id):
+                total_input_tokens += delta[0]
+                total_output_tokens += delta[1]
+                total_cache_read_tokens += delta[2]
+                total_cache_write_tokens += delta[3]
+                total_cost += delta[4]
 
         # pi-ai treats input, cacheRead, cacheWrite as disjoint summing to totalTokens
         # (see node_modules/.../pi-ai/dist/providers/anthropic.js). Sum all three for

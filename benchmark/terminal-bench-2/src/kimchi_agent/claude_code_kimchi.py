@@ -43,6 +43,12 @@ from kimchi_agent.openrouter import (
     resolve_openrouter_anthropic_base_url,
     split_openrouter_model,
 )
+from kimchi_agent.retryable_provider_error import (
+    RETRYABLE_API_ERROR_MESSAGE_LIMIT,
+    RETRYABLE_API_STATUSES,
+    RetryableApiError,
+    retryable_api_error_from_remote_file,
+)
 from kimchi_agent.zai import (
     ZAI_ANTHROPIC_ENDPOINT_ENV,
     ZAI_API_KEY_ENV,
@@ -66,11 +72,9 @@ CLAUDE_CODE_INSTALL_RETRY_DELAYS_SEC = (5, 15)
 # loop can handle). Callers can override via the API_TIMEOUT_MS passthrough.
 CLAUDE_CODE_DEFAULT_API_TIMEOUT_MS = "900000"
 K2_7_CODE_THINKING_TOKENS = "32000"
-RETRYABLE_API_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 524, 529})
 # Non-retryable API statuses that we still want to classify with full error
 # text (re-raised as typed exceptions so classify.py can match on them).
 NON_RETRYABLE_API_STATUSES = frozenset({403, 404})
-RETRYABLE_API_ERROR_MESSAGE_LIMIT = 2_000
 CLAUDE_PASSTHROUGH_ENV_PREFIXES = ("CLAUDE_CODE_", "OTEL_")
 CLAUDE_PASSTHROUGH_ENV_KEYS = {
     "API_TIMEOUT_MS",
@@ -117,16 +121,6 @@ FORCED_ENV_KEYS = {
     "FORCE_AUTO_BACKGROUND_TASKS",
     "IS_SANDBOX",
 }
-
-
-class RetryableApiError(RuntimeError):
-    """Raised when the agent failed because an upstream API returned a transient error."""
-
-    def __init__(self, status: int, detail: str) -> None:
-        self.status = status
-        detail = detail.strip()
-        suffix = f": {detail}" if detail else ""
-        super().__init__(f"Retryable API error {status}{suffix}")
 
 
 class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
@@ -495,18 +489,13 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
         self,
         environment: BaseEnvironment,
     ) -> RetryableApiError | None:
-        try:
-            result = await environment.exec(
-                f"cat {shlex.quote(CLAUDE_CODE_OUTPUT_PATH)}",
-                timeout_sec=10,
-            )
-        except Exception:
-            self.logger.debug("Failed to read Claude Code output for API error classification", exc_info=True)
-            return None
-
-        if result.return_code != 0 or not result.stdout:
-            return None
-        return self._retryable_api_error_from_stream(result.stdout)
+        return await retryable_api_error_from_remote_file(
+            environment,
+            CLAUDE_CODE_OUTPUT_PATH,
+            self._retryable_api_error_from_stream,
+            self.logger,
+            "Claude Code output",
+        )
 
     @classmethod
     def _non_retryable_api_error_from_event(cls, event: dict[str, Any]) -> NonZeroAgentExitCodeError | None:
@@ -562,21 +551,13 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
         Works around Harbor's stdout truncation (1000 chars) by reading the
         full output file that was tee'd to CLAUDE_CODE_OUTPUT_PATH.
         """
-        try:
-            result = await environment.exec(
-                f"cat {shlex.quote(CLAUDE_CODE_OUTPUT_PATH)}",
-                timeout_sec=10,
-            )
-        except Exception:
-            self.logger.debug(
-                "Failed to read Claude Code output for non-retryable API error classification",
-                exc_info=True,
-            )
-            return None
-
-        if result.return_code != 0 or not result.stdout:
-            return None
-        return self._non_retryable_api_error_from_stream(result.stdout)
+        return await retryable_api_error_from_remote_file(
+            environment,
+            CLAUDE_CODE_OUTPUT_PATH,
+            self._non_retryable_api_error_from_stream,
+            self.logger,
+            "Claude Code output",
+        )
 
     @with_prompt_template
     async def run(
