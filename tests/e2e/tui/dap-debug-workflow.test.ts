@@ -17,7 +17,7 @@ import { spawnSync } from "node:child_process"
 import { existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { viewText, waitForTurnToSettle } from "./support/assertions.js"
+import { viewText, waitForText, waitForTurnToSettle } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -70,9 +70,10 @@ test("DAP degraded state: debug_launch surfaces the missing-adapter error and st
 		},
 		async (fixture, trace) => {
 			// The DAP status footer shows the missing adapter as soon as
-			// session_start detection ran.
+			// session_start detection ran. Poll instead of snapshotting —
+			// the footer status is applied asynchronously.
 			trace.step("checking status footer for degraded DAP segment")
-			expect(viewText(terminal)).toContain("DAP: js-debug not installed")
+			await waitForText(terminal, "DAP: js-debug not installed", { full: false })
 
 			terminal.submit("debug app.js for me")
 			trace.step("submitted prompt")
