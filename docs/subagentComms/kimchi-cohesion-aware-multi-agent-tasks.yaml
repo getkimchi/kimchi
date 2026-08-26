@@ -1,0 +1,1129 @@
+schema_version: 1
+project: Kimchi Cohesion-Aware Multi-Agent Execution
+repository: getkimchi/kimchi
+repository_snapshot: 4cb2f4460db990f1db53bda1cf8c5f0352541f14
+design_document: kimchi-cohesion-aware-multi-agent-implementation-plan.md
+updated_at: '2026-08-16'
+status_values:
+- planned
+- in_progress
+- blocked
+- in_review
+- done
+- cancelled
+claim_protocol:
+- Read AGENTS.md and the implementation plan.
+- Claim only a task whose dependencies are done.
+- Set status, owner_agent, and started_at before editing.
+- Keep the task scope; create follow-up tasks for discovered work.
+- Record verification commands, evidence, and commits.
+- Set done only after every acceptance criterion passes.
+architecture_decisions:
+- id: AD-001
+  decision: Extend Ferment; do not create a second project lifecycle.
+- id: AD-002
+  decision: Task group is the unit of persistent agent ownership.
+- id: AD-003
+  decision: Use event-driven dependency scheduling, not global waves.
+- id: AD-004
+  decision: Publish stable boundaries before fan-out.
+- id: AD-005
+  decision: Use Action-State-Result handoffs.
+- id: AD-006
+  decision: Represent source changes as operations, not agent branches.
+- id: AD-007
+  decision: Separate complementary and competitive execution.
+- id: AD-008
+  decision: Ferment event log is initially authoritative; SQLite is a projection.
+- id: AD-009
+  decision: Read invalidation is fallback, not the normal path.
+- id: AD-010
+  decision: Roll out in shadow mode with measurable thresholds.
+milestones:
+- id: M0
+  title: Baseline and shadow instrumentation
+  exit_gate: Metrics and shadow plans are deterministic; disabled behavior is unchanged.
+- id: M1
+  title: Task groups, dependencies, scheduler, and handoffs
+  exit_gate: Persistent groups run dependency-ready work and replay correctly.
+- id: M2
+  title: Source snapshots, operations, and conflicts
+  exit_gate: CAS application and durable conflicts work without agent branch identity.
+- id: M3
+  title: Cohesion analysis
+  exit_gate: Deterministic grouping recommendations improve or preserve the cost-quality frontier.
+- id: M4
+  title: Execution scopes and competitive mode
+  exit_gate: Alternative attempts are staged, verifiable, and discardable.
+- id: M5
+  title: Sparse supervision and rollout
+  exit_gate: Bounded interventions and internal canary meet rollout thresholds.
+tasks:
+- id: KMA-001
+  title: Add coordination feature flags and settings validation
+  milestone: M0
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: S
+  dependencies: []
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/settings.ts
+    - src/coordination/settings.test.ts
+    modify:
+    - src/extensions/orchestration/model-roles.ts
+    - README.md
+  acceptance_criteria:
+  - Feature is disabled by default.
+  - Settings parse with safe defaults.
+  - One switch restores current Ferment behavior.
+  - Invalid worker/token limits fail with actionable errors.
+  tests:
+  - pnpm run test -- src/coordination/settings.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-002
+  title: Define coordination run metrics and telemetry events
+  milestone: M0
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: M
+  dependencies:
+  - KMA-001
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/metrics.ts
+    - src/coordination/metrics.test.ts
+    modify:
+    - src/extensions/telemetry/index.ts
+  acceptance_criteria:
+  - Metrics cover correctness, latency, tokens, handoffs, discard, conflicts, retries, and group utilization.
+  - Metrics are tagged by ferment and task group.
+  - Feature-disabled sessions do not emit misleading coordination metrics.
+  tests:
+  - pnpm run test -- src/coordination/metrics.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-003
+  title: Create coordination benchmark fixtures and runner
+  milestone: M0
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: L
+  dependencies:
+  - KMA-002
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - benchmark/coordination/runner.ts
+    - benchmark/coordination/metrics.ts
+    - benchmark/coordination/README.md
+    - benchmark/coordination/fixtures/
+    modify: []
+  acceptance_criteria:
+  - Runner compares single-agent, current parallel, and shadow-plan modes.
+  - Fixtures cover independent, boundary, hidden dependency, same-file overlap, and retry cases.
+  - Outputs machine-readable JSON and human summary.
+  tests:
+  - pnpm run typecheck
+  - Run benchmark smoke fixture twice and compare schema
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-004
+  title: Implement shadow coordination planner export
+  milestone: M0
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: M
+  dependencies:
+  - KMA-001
+  - KMA-002
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/shadow-plan.ts
+    - src/coordination/shadow-plan.test.ts
+    modify:
+    - src/extensions/ferment/runtime.ts
+    - src/extensions/ferment/commands.ts
+  acceptance_criteria:
+  - Produces groups, dependencies, boundaries, resource claims, and predicted worker count without changing execution.
+  - Plan is deterministic for fixed input.
+  - Export is inspectable from command or artifact.
+  tests:
+  - pnpm run test -- src/coordination/shadow-plan.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-101
+  title: Add core coordination domain types
+  milestone: M1
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: M
+  dependencies:
+  - KMA-004
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/types.ts
+    - src/coordination/types.test.ts
+    modify: []
+  acceptance_criteria:
+  - Defines task groups, dependencies, boundaries, assignments, operations refs, handoff refs, conflicts, and verification
+    records.
+  - Types use descriptive names and no checkout identity.
+  - Backward-compatible serialization version is explicit.
+  tests:
+  - pnpm run test -- src/coordination/types.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-102
+  title: Implement coordination events and pure reducer
+  milestone: M1
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: L
+  dependencies:
+  - KMA-101
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/events.ts
+    - src/coordination/reducer.ts
+    - src/coordination/reducer.test.ts
+    modify: []
+  acceptance_criteria:
+  - Every state change is represented by a typed event.
+  - Reducer is deterministic and validates legal transitions.
+  - Revision increments exactly once per accepted event.
+  - Property tests replay randomized valid streams.
+  tests:
+  - pnpm run test -- src/coordination/reducer.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-103
+  title: Integrate coordination event envelope with FermentEventStore
+  milestone: M1
+  status: planned
+  owner_role: builder
+  recommended_model_tier: heavy
+  estimated_effort: L
+  dependencies:
+  - KMA-102
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/extensions/ferment/coordination-adapter.ts
+    - src/extensions/ferment/coordination-adapter.test.ts
+    modify:
+    - src/ferment/types.ts
+    - src/ferment/event-store.ts
+  acceptance_criteria:
+  - Old Ferment logs and snapshots still load.
+  - Coordination events use existing lock and state hash chain.
+  - Stale expected revisions are rejected.
+  - Large artifacts are referenced, not embedded.
+  - Crash/replay tests cover append boundaries.
+  tests:
+  - pnpm run test -- src/extensions/ferment/coordination-adapter.test.ts
+  - pnpm run test -- src/ferment/event-store.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-104
+  title: Define planner schema and deterministic plan validator
+  milestone: M1
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: L
+  dependencies:
+  - KMA-101
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/plan-validator.ts
+    - src/coordination/plan-validator.test.ts
+    modify:
+    - src/extensions/ferment/tool-schemas.ts
+    - src/extensions/ferment/worker-prompt.ts
+  acceptance_criteria:
+  - Every step has one complementary owner.
+  - Hard/boundary dependency cycles are rejected.
+  - Boundary consumers reference declared producers or external boundaries.
+  - Unsafe overlapping exclusive writes are rejected or serialized.
+  - Validation errors are actionable.
+  tests:
+  - pnpm run test -- src/coordination/plan-validator.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-105
+  title: Implement readiness and deterministic priority
+  milestone: M1
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: M
+  dependencies:
+  - KMA-102
+  - KMA-104
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/readiness.ts
+    - src/coordination/priority.ts
+    - src/coordination/readiness.test.ts
+    modify: []
+  acceptance_criteria:
+  - Readiness enforces hard, boundary, conflict, resource, and budget blockers.
+  - Priority is stable for replay.
+  - Unrelated blocked groups do not block ready groups.
+  tests:
+  - pnpm run test -- src/coordination/readiness.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-106
+  title: Implement pure event-driven scheduler
+  milestone: M1
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: M
+  dependencies:
+  - KMA-105
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/scheduler.ts
+    - src/coordination/scheduler.test.ts
+    modify: []
+  acceptance_criteria:
+  - Scheduler starts up to configured capacity.
+  - No global wave behavior.
+  - Scheduler is pure and deterministic.
+  - Token and worker budgets are enforced.
+  tests:
+  - pnpm run test -- src/coordination/scheduler.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-107
+  title: Add persistent task-group Agent assignments
+  milestone: M1
+  status: planned
+  owner_role: builder
+  recommended_model_tier: heavy
+  estimated_effort: L
+  dependencies:
+  - KMA-103
+  - KMA-106
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/extensions/agents/manager/group-assignment.ts
+    - src/extensions/agents/manager/group-assignment.test.ts
+    modify:
+    - src/extensions/agents/personas/types.ts
+    - src/extensions/agents/index.ts
+    - src/extensions/ferment/agent-spawn-guard.ts
+  acceptance_criteria:
+  - AgentTaskRef supports ferment_task_group without breaking ferment_step.
+  - One active assignment per group.
+  - Completed/resumable worker is reused across group steps.
+  - Duplicate spawn is blocked.
+  - Missing sessions recover after restart.
+  tests:
+  - pnpm run test -- src/extensions/agents/manager/group-assignment.test.ts
+  - pnpm run test -- src/extensions/ferment/agent-spawn-guard.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-108
+  title: Implement Action-State-Result handoff protocol
+  milestone: M1
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: M
+  dependencies:
+  - KMA-101
+  - KMA-103
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/handoff.ts
+    - src/coordination/handoff.test.ts
+    modify:
+    - src/extensions/agents/personas/types.ts
+  acceptance_criteria:
+  - Handoff schema requires action, facts, evidence, result, and next state.
+  - Oversized or ungrounded handoffs are rejected.
+  - Full worker transcript is not copied into public history.
+  - Token/byte size is recorded.
+  tests:
+  - pnpm run test -- src/coordination/handoff.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-109
+  title: Route handoffs only to direct dependents and resume workers safely
+  milestone: M1
+  status: planned
+  owner_role: builder
+  recommended_model_tier: heavy
+  estimated_effort: L
+  dependencies:
+  - KMA-106
+  - KMA-107
+  - KMA-108
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/extensions/ferment/coordination-runtime.ts
+    - src/extensions/ferment/coordination-runtime.test.ts
+    modify:
+    - src/extensions/ferment/scheduler.ts
+    - src/extensions/ferment/safe-send.ts
+  acceptance_criteria:
+  - Future groups receive handoffs in initial context.
+  - Idle assigned workers are resumed.
+  - Running workers receive breaking events only at safe turn boundaries.
+  - Normal completion is not broadcast to unrelated workers.
+  - Unread handoffs survive restart.
+  tests:
+  - pnpm run test -- src/extensions/ferment/coordination-runtime.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-110
+  title: Add coordination tools, TUI views, and end-to-end flows
+  milestone: M1
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: XL
+  dependencies:
+  - KMA-109
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/extensions/ferment/tools/coordination.ts
+    - src/extensions/ferment/coordination-renderer.ts
+    - tests/e2e/tui/ferment-coordination-groups.test.ts
+    - tests/e2e/tui/ferment-boundary-unblocks.test.ts
+    modify:
+    - src/extensions/ferment/commands.ts
+    - src/extensions/ferment/index.ts
+  acceptance_criteria:
+  - Users can inspect groups, dependencies, boundaries, blockers, assignments, and handoffs.
+  - Boundary publication visibly unblocks direct consumers.
+  - Feature-off workflow matches current behavior.
+  - TUI tests use shared deterministic fixture.
+  tests:
+  - pnpm run test
+  - pnpm run test:e2e:tui
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-201
+  title: Implement content-addressed coordination blob store
+  milestone: M2
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: M
+  dependencies:
+  - KMA-103
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/source/blob-store.ts
+    - src/coordination/source/filesystem-cas-blob-store.ts
+    - src/coordination/source/filesystem-cas-blob-store.test.ts
+    modify: []
+  acceptance_criteria:
+  - Writes are atomic and addressed by SHA-256.
+  - Duplicate content is deduplicated.
+  - Checksum mismatch is detected.
+  - Storage stays under Ferment runtime directory.
+  tests:
+  - pnpm run test -- src/coordination/source/filesystem-cas-blob-store.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-202
+  title: Capture declared-scope source snapshots
+  milestone: M2
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: L
+  dependencies:
+  - KMA-201
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/source/snapshot.ts
+    - src/coordination/source/snapshot.test.ts
+    modify: []
+  acceptance_criteria:
+  - Captures repository HEAD when available and content hashes for declared resources.
+  - Supports added, deleted, binary, and renamed files.
+  - Dirty user state is represented explicitly.
+  - Same state produces same snapshot identity.
+  tests:
+  - pnpm run test -- src/coordination/source/snapshot.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-203
+  title: Capture ChangeOperation from before/after snapshots
+  milestone: M2
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: L
+  dependencies:
+  - KMA-202
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/source/operation-capture.ts
+    - src/coordination/source/operation-capture.test.ts
+    modify: []
+  acceptance_criteria:
+  - Produces deterministic file deltas and parent operation references.
+  - Stores large contents and patches by blob reference.
+  - Detects undeclared writes.
+  - Operation cannot publish without validated worker report.
+  tests:
+  - pnpm run test -- src/coordination/source/operation-capture.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-204
+  title: Implement compare-and-swap operation application
+  milestone: M2
+  status: planned
+  owner_role: builder
+  recommended_model_tier: heavy
+  estimated_effort: L
+  dependencies:
+  - KMA-203
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/source/operation-apply.ts
+    - src/coordination/source/operation-apply.test.ts
+    modify: []
+  acceptance_criteria:
+  - Applies all file changes atomically from the harness perspective.
+  - Any base hash mismatch prevents silent overwrite.
+  - Failures leave canonical files unchanged.
+  - Successful apply produces expected result snapshot.
+  tests:
+  - pnpm run test -- src/coordination/source/operation-apply.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-205
+  title: Add first-class conflict records and resolution events
+  milestone: M2
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: M
+  dependencies:
+  - KMA-204
+  - KMA-102
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/source/conflicts.ts
+    - src/coordination/source/conflicts.test.ts
+    modify:
+    - src/coordination/events.ts
+    - src/coordination/reducer.ts
+  acceptance_criteria:
+  - Source, boundary, resource, and verification conflicts are persistable.
+  - Resolution references a concrete operation or waiver decision.
+  - Open conflict blocks affected groups.
+  - Resolved conflict re-evaluates readiness.
+  tests:
+  - pnpm run test -- src/coordination/source/conflicts.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-206
+  title: Enforce resource claims on write and shell tools
+  milestone: M2
+  status: planned
+  owner_role: builder
+  recommended_model_tier: heavy
+  estimated_effort: XL
+  dependencies:
+  - KMA-104
+  - KMA-203
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/resource-claims.ts
+    - src/coordination/resource-claims.test.ts
+    - src/extensions/ferment/resource-claim-guard.ts
+    - src/extensions/ferment/resource-claim-guard.test.ts
+    modify:
+    - src/extensions/ferment/index.ts
+  acceptance_criteria:
+  - Parallel starts reject overlapping exclusive claims.
+  - edit/write outside declared scope are blocked or require a deviation decision.
+  - bash commands classify known exclusive resources.
+  - Ambiguous side effects are scanned and recorded.
+  tests:
+  - pnpm run test -- src/coordination/resource-claims.test.ts
+  - pnpm run test -- src/extensions/ferment/resource-claim-guard.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-207
+  title: Tie central verification and localized repair to operations
+  milestone: M2
+  status: planned
+  owner_role: builder
+  recommended_model_tier: heavy
+  estimated_effort: L
+  dependencies:
+  - KMA-205
+  - KMA-206
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/verification.ts
+    - src/coordination/verification.test.ts
+    modify:
+    - src/extensions/ferment/tools/steps.ts
+    - src/extensions/ferment/judge.ts
+  acceptance_criteria:
+  - Verification references exact operation IDs.
+  - Failure attribution uses changed resources and task claims.
+  - Only owning groups reopen by default.
+  - Repeated failure escalates model tier within configured limits.
+  tests:
+  - pnpm run test -- src/coordination/verification.test.ts
+  - pnpm run test -- src/extensions/ferment/tools/steps.integration.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-208
+  title: Add operation/conflict inspection tools and TUI E2E
+  milestone: M2
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: L
+  dependencies:
+  - KMA-207
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - tests/e2e/tui/ferment-operation-conflict.test.ts
+    modify:
+    - src/extensions/ferment/tools/coordination.ts
+    - src/extensions/ferment/coordination-renderer.ts
+  acceptance_criteria:
+  - Users and agents can inspect operation parents, changed files, evidence, and conflicts.
+  - Conflict resolution is visible and auditable.
+  - Restart preserves open conflicts and operation artifacts.
+  tests:
+  - pnpm run test:e2e:tui
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-301
+  title: Extract TypeScript import and package dependency graph
+  milestone: M3
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: L
+  dependencies:
+  - KMA-004
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/partition/typescript-import-graph.ts
+    - src/coordination/partition/typescript-import-graph.test.ts
+    modify: []
+  acceptance_criteria:
+  - Graph is deterministic.
+  - Handles tsconfig path aliases used by Kimchi.
+  - Fails closed to planner-only grouping on parse errors.
+  - Cache key includes source snapshot.
+  tests:
+  - pnpm run test -- src/coordination/partition/typescript-import-graph.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-302
+  title: Add LSP symbol-reference and test-overlap signals
+  milestone: M3
+  status: planned
+  owner_role: builder
+  recommended_model_tier: heavy
+  estimated_effort: L
+  dependencies:
+  - KMA-301
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/partition/signals.ts
+    - src/coordination/partition/signals.test.ts
+    modify:
+    - src/extensions/lsp/
+  acceptance_criteria:
+  - Signals are bounded and cached.
+  - LSP absence degrades gracefully.
+  - Test overlap and shared symbols are represented separately.
+  - No signal directly mutates the plan.
+  tests:
+  - pnpm run test -- src/coordination/partition/signals.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-303
+  title: Implement cohesion scorer, hub detection, and grouping recommendations
+  milestone: M3
+  status: planned
+  owner_role: builder
+  recommended_model_tier: heavy
+  estimated_effort: XL
+  dependencies:
+  - KMA-301
+  - KMA-302
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/partition/graph.ts
+    - src/coordination/partition/partitioner.ts
+    - src/coordination/partition/partitioner.test.ts
+    modify: []
+  acceptance_criteria:
+  - Overlapping writers merge or serialize.
+  - High-fanout unstable boundaries are isolated.
+  - Low-confidence result falls back to one group or planner review.
+  - Output obeys worker and minimum-group-size limits.
+  - Same inputs produce same groups.
+  tests:
+  - pnpm run test -- src/coordination/partition/partitioner.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-304
+  title: Integrate grouping recommendations into planning prompt and review
+  milestone: M3
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: M
+  dependencies:
+  - KMA-303
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/extensions/ferment/coordination-prompt.ts
+    - src/extensions/ferment/coordination-prompt.test.ts
+    modify:
+    - src/extensions/prompt-construction/
+  acceptance_criteria:
+  - Planner sees compact recommendations and evidence, not raw graph dumps.
+  - Human/orchestrator can accept, merge, or reject groups.
+  - Final plan still passes deterministic validator.
+  tests:
+  - pnpm run test -- src/extensions/ferment/coordination-prompt.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-305
+  title: Run shadow evaluation and tune grouping thresholds
+  milestone: M3
+  status: planned
+  owner_role: reviewer
+  recommended_model_tier: heavy
+  estimated_effort: L
+  dependencies:
+  - KMA-303
+  - KMA-304
+  - KMA-003
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - benchmark/coordination/results/README.md
+    modify:
+    - benchmark/coordination/metrics.ts
+  acceptance_criteria:
+  - Compares planner-only and cohesion-assisted plans.
+  - Reports correctness, wall clock, tokens, waste, and conflict rate.
+  - Threshold changes are documented with evidence.
+  - No default rollout without exit-gate approval.
+  tests:
+  - Run full coordination benchmark suite
+  - pnpm run verify
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-401
+  title: Define ExecutionScope and materializer contracts
+  milestone: M4
+  status: planned
+  owner_role: builder
+  recommended_model_tier: heavy
+  estimated_effort: M
+  dependencies:
+  - KMA-204
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/execution-scope.ts
+    - src/coordination/execution-scope.test.ts
+    modify: []
+  acceptance_criteria:
+  - API covers checkpoint, capture operation, discard, cleanup, and process ownership.
+  - No public API exposes worktree identity.
+  - Complementary and competitive requirements are explicit.
+  tests:
+  - pnpm run test -- src/coordination/execution-scope.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-402
+  title: Prototype staged or copy-on-write execution materializer
+  milestone: M4
+  status: planned
+  owner_role: builder
+  recommended_model_tier: heavy
+  estimated_effort: XL
+  dependencies:
+  - KMA-401
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/materializers/prototype/
+    modify: []
+  acceptance_criteria:
+  - Prototype captures file and process side effects.
+  - Canonical state remains unchanged until publish.
+  - Discard cleans processes and files.
+  - Benchmark compares startup and capture overhead against current isolation.
+  tests:
+  - Prototype-specific integration suite
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-403
+  title: Implement competitive fork-explore-select mode
+  milestone: M4
+  status: planned
+  owner_role: builder
+  recommended_model_tier: heavy
+  estimated_effort: XL
+  dependencies:
+  - KMA-402
+  - KMA-203
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/competitive.ts
+    - src/coordination/competitive.test.ts
+    modify:
+    - src/extensions/agents/index.ts
+  acceptance_criteria:
+  - Several attempts can run against one base snapshot.
+  - Only verified winner publishes.
+  - Losers are discarded and measured.
+  - First-winner policy is configurable and not used for complementary groups.
+  tests:
+  - pnpm run test -- src/coordination/competitive.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-404
+  title: Add execution-scope and competitive-mode E2E coverage
+  milestone: M4
+  status: planned
+  owner_role: builder
+  recommended_model_tier: standard
+  estimated_effort: L
+  dependencies:
+  - KMA-403
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - tests/e2e/tui/ferment-competitive-attempts.test.ts
+    modify: []
+  acceptance_criteria:
+  - User can inspect attempts and winner.
+  - Discarded attempt leaves no persistent mutation.
+  - Abort/restart cleanup is deterministic.
+  tests:
+  - pnpm run test:e2e:tui
+  - pnpm run verify
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-501
+  title: Define sparse supervisor triggers and intervention schema
+  milestone: M5
+  status: planned
+  owner_role: builder
+  recommended_model_tier: heavy
+  estimated_effort: M
+  dependencies:
+  - KMA-305
+  - KMA-205
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/supervisor/types.ts
+    - src/coordination/supervisor/triggers.ts
+    - src/coordination/supervisor/triggers.test.ts
+    modify: []
+  acceptance_criteria:
+  - Only explicit deterministic triggers invoke the supervisor.
+  - Intervention budget is enforced.
+  - Ordinary successful groups never invoke it.
+  - Interventions are persisted and costed.
+  tests:
+  - pnpm run test -- src/coordination/supervisor/triggers.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-502
+  title: Implement bounded supervisor interventions
+  milestone: M5
+  status: planned
+  owner_role: builder
+  recommended_model_tier: heavy
+  estimated_effort: L
+  dependencies:
+  - KMA-501
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/supervisor/runtime.ts
+    - src/coordination/supervisor/runtime.test.ts
+    modify:
+    - src/extensions/agents/index.ts
+  acceptance_criteria:
+  - Supports guidance, boundary clarification, group merge, model escalation, handoff, and user escalation.
+  - Cannot directly mutate source or mark groups complete.
+  - Every intervention has evidence and outcome.
+  tests:
+  - pnpm run test -- src/coordination/supervisor/runtime.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-503
+  title: Implement adaptive regrouping from communication and conflict signals
+  milestone: M5
+  status: planned
+  owner_role: builder
+  recommended_model_tier: heavy
+  estimated_effort: L
+  dependencies:
+  - KMA-502
+  - KMA-303
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - src/coordination/adaptive-regrouping.ts
+    - src/coordination/adaptive-regrouping.test.ts
+    modify: []
+  acceptance_criteria:
+  - Repeated cross-group communication or conflicts produce a merge recommendation.
+  - Running groups are not merged without checkpoint and approval policy.
+  - Future-run recommendations persist as metrics or memory, not hidden prompt text.
+  tests:
+  - pnpm run test -- src/coordination/adaptive-regrouping.test.ts
+  - pnpm run typecheck
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
+- id: KMA-504
+  title: Internal canary, documentation, and default-rollout decision
+  milestone: M5
+  status: planned
+  owner_role: reviewer
+  recommended_model_tier: heavy
+  estimated_effort: XL
+  dependencies:
+  - KMA-503
+  - KMA-404
+  owner_agent: null
+  started_at: null
+  completed_at: null
+  files:
+    create:
+    - docs/cohesion-aware-multi-agent-execution.md
+    - docs/coordination-operations.md
+    modify:
+    - README.md
+  acceptance_criteria:
+  - Canary compares all required modes and reports thresholds.
+  - Security and failure-recovery review is complete.
+  - Permanent docs describe settings, tools, operations, and rollback.
+  - Default enablement is a recorded evidence-based decision.
+  tests:
+  - pnpm run verify
+  - Run coordination benchmark suite
+  - Run TUI and ACP E2E suites
+  evidence: []
+  commits: []
+  blockers: []
+  notes: []
