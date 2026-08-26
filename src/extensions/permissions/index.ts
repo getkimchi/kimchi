@@ -250,9 +250,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// session restarts.
 	let activePlanSlug: string | undefined
 	// Per-session count of plan-mode stall nudges (model stopped after tool
-	// calls without calling submit_plan). Reset when submit_plan is called,
-	// when the mode leaves plan, and on session restart.
-	let planStopNudgeCount = 0
+	// calls without calling submit_plan). Keyed by session ID so concurrent
+	// sessions don't share a budget. Reset when submit_plan is called, when
+	// the mode leaves plan, and on session restart.
+	const planStopNudgeCounts = new Map<string, number>()
 	let planModeApplied = false
 	let planModeHiddenTools: string[] = []
 	const planToolVisibility: ToolVisibilityAPI = createToolVisibility(pi)
@@ -384,7 +385,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (current === "plan" && next.mode !== "plan") {
 			restoreToolsFromPlanMode()
 			activePlanSlug = undefined
-			planStopNudgeCount = 0
+			planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 		}
 		if (next.mode === "plan") applyPlanModeTools()
 		// Dismiss all active permission prompts so tool_call handlers re-evaluate under the new mode.
@@ -476,7 +477,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		currentCtx = ctx
 		cliMode = undefined
 		activePlanSlug = undefined
-		planStopNudgeCount = 0
+		planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 		const { errors } = doLoadConfig(ctx)
 
 		for (const err of errors) {
@@ -594,7 +595,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// the session would stall silently — nudge it to resolve open questions and
 	// submit the plan. Capped per session; agent workers are excluded (they
 	// submit via submit_plan in their own terminate-on-tool-return flow).
-	pi.on("turn_end", (event) => {
+	pi.on("turn_end", (event, ctx) => {
 		if (isAgentWorker()) return
 		if (getRuntimePermissionMode().mode !== "plan") return
 		if (event.message.role !== "assistant") return
@@ -606,15 +607,17 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (hasPlanSubmitToolCall(toolNames)) {
 			// The review flow owns the turn now. Reset the stall budget so a
 			// rework round starts fresh.
-			planStopNudgeCount = 0
+			planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 			return
 		}
 		const stopReason = (event.message as { stopReason?: string }).stopReason
 		if (!shouldNudge({ hasToolCall: contentHasToolCall(content), stopReason, completionSignalPresent: false })) {
 			return
 		}
-		planStopNudgeCount++
-		if (isNudgeSuppressed(planStopNudgeCount)) return
+		const sessionId = ctx.sessionManager.getSessionId()
+		const count = (planStopNudgeCounts.get(sessionId) ?? 0) + 1
+		planStopNudgeCounts.set(sessionId, count)
+		if (isNudgeSuppressed(count)) return
 		safeSendMessage(
 			pi,
 			{
@@ -703,32 +706,25 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				}
 			}
 
-			// Non-TUI / oneshot: emit the review request then end the turn.
-			// Emitters always emit — subscribers self-select. The plannotator
-			// adapter skips subscribing in non-interactive sessions, so this
-			// is a no-op today, but future integrations (logging, CI reviewers,
-			// alternative UIs) can hook in without changes here.
+			// Emit plan-review request once — TUI popup, plannotator browser, and
+			// future integrations all listen on the same channel. Subscribers
+			// self-select: the plannotator adapter skips non-interactive sessions.
+			emitPlanReviewRequest(
+				pi,
+				{ planContent: planText, planFilePath: planPath, source: "adhoc" },
+				{ ctx, planPath, planText, rawText: planText, activePlanSlug },
+			)
+
+			// Non-TUI / oneshot: no popup to show — end the turn. The emit above
+			// is a no-op today (adapter skips subscribing), but future integrations
+			// (logging, CI reviewers, alternative UIs) can hook in without changes.
 			if (!ctx.hasUI || pi.getFlag?.("ferment-oneshot") === true) {
-				emitPlanReviewRequest(
-					pi,
-					{ planContent: planText, planFilePath: planPath, source: "adhoc" },
-					{ ctx, planPath, planText, rawText: planText, activePlanSlug },
-				)
 				return {
 					content: [{ type: "text", text: "Plan submitted." }],
 					details: { submitted: true },
 					terminate: true,
 				}
 			}
-
-			// Emit plan-review request — TUI popup and plannotator both listen.
-			// Fire-and-forget: the TUI menu is shown below without awaiting, and
-			// plannotator's browser opens via the adapter. First decision wins.
-			emitPlanReviewRequest(
-				pi,
-				{ planContent: planText, planFilePath: planPath, source: "adhoc" },
-				{ ctx, planPath, planText, rawText: planText, activePlanSlug },
-			)
 
 			// AbortSignal lets the decision handler dismiss the menu when
 			// plannotator decides first (select returns undefined on abort).
@@ -751,30 +747,37 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						signal: planMenuAbort.signal,
 					}),
 				),
-			).then((choice) => {
-				unsubscribeAbortListener()
-				// select returns undefined when aborted — plannotator already decided.
-				if (choice === undefined) return
-				if (choice === EXECUTE) {
-					emitPlanReviewDecision(pi, {
-						decision: "execute",
-						source: "kimchi-tui",
-						planReviewSource: "adhoc",
-					})
-				} else if (choice === START_AS_FERMENT) {
-					emitPlanReviewDecision(pi, {
-						decision: "start_ferment",
-						source: "kimchi-tui",
-						planReviewSource: "adhoc",
-					})
-				} else {
-					emitPlanReviewDecision(pi, {
-						decision: "rework",
-						source: "kimchi-tui",
-						planReviewSource: "adhoc",
-					})
-				}
-			})
+			)
+				.then((choice) => {
+					unsubscribeAbortListener()
+					// select returns undefined when aborted — plannotator already decided.
+					if (choice === undefined) return
+					if (choice === EXECUTE) {
+						emitPlanReviewDecision(pi, {
+							decision: "execute",
+							source: "kimchi-tui",
+							planReviewSource: "adhoc",
+						})
+					} else if (choice === START_AS_FERMENT) {
+						emitPlanReviewDecision(pi, {
+							decision: "start_ferment",
+							source: "kimchi-tui",
+							planReviewSource: "adhoc",
+						})
+					} else {
+						emitPlanReviewDecision(pi, {
+							decision: "rework",
+							source: "kimchi-tui",
+							planReviewSource: "adhoc",
+						})
+					}
+				})
+				.catch(() => {
+					// select rejects when the AbortSignal fires (plannotator decided
+					// first) or on unexpected UI errors. Either way, ensure the
+					// abort-listener is cleaned up so it doesn't leak on the bus.
+					unsubscribeAbortListener()
+				})
 
 			return {
 				content: [{ type: "text", text: "Plan submitted for review. Waiting for user decision." }],

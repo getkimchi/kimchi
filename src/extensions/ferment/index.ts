@@ -191,46 +191,55 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 			// Fire-and-forget: emit a decision when the TUI resolves.
 			// The decision handler below acts on whichever surface decides first.
-			void reviewPromise.then((outcome) => {
-				unsubscribeDismiss()
-				if (!outcome) {
-					// No decision UI was presented (non-TUI or dismissed without a
-					// choice): clear the pending review and restore tools, but keep
-					// the persisted proposal for a later resume. planReviewRunning
-					// must reset here — no decision is emitted, so the decision
-					// handler never runs for this outcome.
-					runtime.clearPendingPlanReview(review.fermentId)
-					applyFermentRuntimeToolProfile(pi, runtime)
+			void reviewPromise
+				.then((outcome) => {
+					unsubscribeDismiss()
+					if (!outcome) {
+						// No decision UI was presented (non-TUI or dismissed without a
+						// choice): clear the pending review and restore tools, but keep
+						// the persisted proposal for a later resume. planReviewRunning
+						// must reset here — no decision is emitted, so the decision
+						// handler never runs for this outcome.
+						runtime.clearPendingPlanReview(review.fermentId)
+						applyFermentRuntimeToolProfile(pi, runtime)
+						planReviewRunning = false
+						return
+					}
+					if (outcome.kind === "cancelled") {
+						emitPlanReviewDecision(pi, {
+							decision: "rework",
+							source: "kimchi-tui",
+							planReviewSource: "ferment",
+							fermentId: review.fermentId,
+						})
+						return
+					}
+					if (outcome.kind === "start" || outcome.kind === "start_auto") {
+						emitPlanReviewDecision(pi, {
+							decision: "execute",
+							source: "kimchi-tui",
+							planReviewSource: "ferment",
+							fermentId: review.fermentId,
+							auto: outcome.kind === "start_auto",
+						})
+					} else if (outcome.kind === "feedback") {
+						emitPlanReviewDecision(pi, {
+							decision: "feedback",
+							feedback: outcome.text,
+							source: "kimchi-tui",
+							planReviewSource: "ferment",
+							fermentId: review.fermentId,
+						})
+					}
+				})
+				.catch(() => {
+					// If the TUI review promise rejects (unexpected error, not a
+					// plannotator-driven dismiss), clean up the dismiss listener and
+					// reset planReviewRunning so a failed popup doesn't leave ferment
+					// stuck waiting forever.
+					unsubscribeDismiss()
 					planReviewRunning = false
-					return
-				}
-				if (outcome.kind === "cancelled") {
-					emitPlanReviewDecision(pi, {
-						decision: "rework",
-						source: "kimchi-tui",
-						planReviewSource: "ferment",
-						fermentId: review.fermentId,
-					})
-					return
-				}
-				if (outcome.kind === "start" || outcome.kind === "start_auto") {
-					emitPlanReviewDecision(pi, {
-						decision: "execute",
-						source: "kimchi-tui",
-						planReviewSource: "ferment",
-						fermentId: review.fermentId,
-						auto: outcome.kind === "start_auto",
-					})
-				} else if (outcome.kind === "feedback") {
-					emitPlanReviewDecision(pi, {
-						decision: "feedback",
-						feedback: outcome.text,
-						source: "kimchi-tui",
-						planReviewSource: "ferment",
-						fermentId: review.fermentId,
-					})
-				}
-			})
+				})
 		} finally {
 			// planReviewRunning stays true until the decision handler clears it.
 			// The TUI prompt is fire-and-forget — the finally runs immediately.
