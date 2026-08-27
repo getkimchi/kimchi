@@ -24,14 +24,13 @@
 
 import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs"
-import { arch, homedir, version as osVersion, platform, release, tmpdir, userInfo } from "node:os"
-import { join, resolve } from "node:path"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { arch, homedir, version as osVersion, platform, release, userInfo } from "node:os"
+import { join } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
-import { resolveBundledSkillsDir, resolveHarnessSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
-import { getKimchiProjectSkillPaths } from "../../skill-paths.js"
+import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -77,65 +76,6 @@ function safeUsername(): string {
 	} catch {
 		return process.env.USER ?? process.env.USERNAME ?? "unknown"
 	}
-}
-
-/**
- * Create a filtered temp copy of the bundled skills dir containing only
- * skills whose names are NOT already present in a stronger path (the
- * harness dir pi loads natively, plus any earlier contributed paths).
- * This avoids collision warnings for bundled skills that were previously
- * deployed to the harness dir, while still contributing new bundled skills
- * (e.g. dap-debugging) that don't exist elsewhere.
- *
- * Returns the temp dir path, or undefined if all bundled skills are already
- * covered (in which case nothing is contributed).
- */
-function filterBundledSkills(bundledDir: string, existingSkillNames: Set<string>): string | undefined {
-	const bundledSkills = listSkillNames(bundledDir)
-	if (bundledSkills.length === 0) return undefined
-	const newSkills = bundledSkills.filter((name) => !existingSkillNames.has(name))
-	if (newSkills.length === 0) return undefined
-	const tempDir = mkdtempSync(join(tmpdir(), "kimchi-bundled-skills-"))
-	for (const name of newSkills) {
-		cpSync(join(bundledDir, name), join(tempDir, name), { recursive: true })
-	}
-	return tempDir
-}
-
-function listSkillNames(dir: string): string[] {
-	try {
-		return readdirSync(dir, { withFileTypes: true })
-			.filter((e) => e.isDirectory())
-			.map((e) => e.name)
-	} catch {
-		return []
-	}
-}
-
-function collectSkillNames(dir: string, out: Set<string>): void {
-	for (const name of listSkillNames(dir)) {
-		out.add(name)
-	}
-}
-
-/**
- * Filter contributed skill paths to only existing directories, deduped by
- * normalized path. Pi emits a warning diagnostic for every contributed path
- * that doesn't exist on disk — configured paths like `.pi/agent/skills` or
- * `.claude/skills` are optional locations, not requirements, so suppress the
- * noise by filtering before returning them from resources_discover.
- */
-function dedupeExistingSkillPaths(paths: readonly string[]): string[] {
-	const seen = new Set<string>()
-	const result: string[] = []
-	for (const p of paths) {
-		const normalized = resolve(p)
-		if (seen.has(normalized)) continue
-		if (!existsSync(normalized)) continue
-		seen.add(normalized)
-		result.push(p)
-	}
-	return result
 }
 
 function readGitRemote(cwd: string): string | undefined {
@@ -541,52 +481,14 @@ export default function (skillPathsFromConfig: string[]) {
 		let cachedGitRemote: string | undefined | null = null
 
 		pi.on("resources_discover", (event) => {
-			// Contribute Kimchi-only sources to pi's resource inventory so every
-			// downstream surface (base prompt skills section, /skill:<name>,
-			// autocomplete, /resources) sees them: ancestor .kimchi/skills project
-			// skills (intentional product behavior, trusted like user skills) and
-			// bundled skills shipped with the harness (weakest collision slot —
-			// pi's loader is first-wins and discovered paths append after
-			// defaults), and configured native skill dirs.
-			const skillPaths = [...getKimchiProjectSkillPaths(event.cwd)]
-			// Configured native skill dirs (kimchi config.json skillPaths, e.g.
-			// ~/.config/kimchi/harness/skills) — pi has no visibility into our
-			// config file, so we must contribute them or they silently vanish
-			// from /skill:*, autocomplete and /resources once the prompt reads
-			// pi's resolved inventory instead of composing paths itself.
-			// Configured native skill dirs (kimchi config.json skillPaths).
-			// Filter out the harness dir — pi loads it natively via includeDefaults
-			// (agentDir/skills), so contributing it again is redundant and can cause
-			// stale-file warnings after migration removes deployed bundled skills.
-			const harnessDir = resolveHarnessSkillsDir()
-			const configuredPaths = getConfiguredSkillResourcePaths(event.cwd, skillPathsFromConfig).filter(
-				(p) => resolve(p) !== resolve(harnessDir),
-			)
-			skillPaths.push(...configuredPaths)
-			// Collect skill names from all stronger paths (pi's includeDefaults
-			// loads the harness dir, plus the configured paths above) so bundled
-			// skills that already exist there can be silently skipped — only
-			// new bundled skills (e.g. dap-debugging) get contributed.
-			const existingSkillNames = new Set<string>()
-			collectSkillNames(harnessDir, existingSkillNames)
-			for (const p of configuredPaths) collectSkillNames(p, existingSkillNames)
-			for (const p of getKimchiProjectSkillPaths(event.cwd)) collectSkillNames(p, existingSkillNames)
-			// Bundled skills shipped with the harness — create a filtered temp copy
-			// containing only skills not already in a stronger path, so no
-			// collision warnings are emitted. The stronger copy wins (first-wins);
-			// bundled skills not present elsewhere are still contributed.
-			const bundledDir = resolveBundledSkillsDir()
-			if (bundledDir) {
-				const filtered = filterBundledSkills(bundledDir, existingSkillNames)
-				if (filtered) skillPaths.push(filtered)
-			}
-			// Filter out non-existent paths — pi emits a warning diagnostic for
-			// every contributed path that doesn't exist on disk. Configured
-			// paths like `.pi/agent/skills` or `.claude/skills` are optional
-			// locations, not requirements, so suppress the noise.
-			const existing = dedupeExistingSkillPaths(skillPaths)
-			if (existing.length === 0) return undefined
-			return { skillPaths: existing }
+			// Contribute Kimchi-only skill sources to pi's resource inventory so
+			// every downstream surface (base prompt skills section, /skill:<name>,
+			// autocomplete, /resources) sees them. All discovery, filtering, and
+			// collision-avoidance logic lives in resolveSkillPathsForDiscovery.
+			const extraPaths = getConfiguredSkillResourcePaths(event.cwd, skillPathsFromConfig)
+			const skillPaths = resolveSkillPathsForDiscovery(event.cwd, { extraPaths })
+			if (skillPaths.length === 0) return undefined
+			return { skillPaths }
 		})
 
 		pi.on("before_agent_start", async (event, ctx) => {
