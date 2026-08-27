@@ -1438,7 +1438,7 @@ describe("AgentManager communication broker", () => {
 			expect(manager.getCommunicationContacts(source)).toMatchObject({
 				parent: { reachable: true, route: "parent" },
 				user_via_parent: { reachable: true, route: "ferment_judge", ferment_id: "f-1" },
-				peers: [{ agent_id: peer, status: "initializing" }],
+				peers: [{ agent_id: peer, status: "initializing", route: "peer" }],
 			})
 
 			let capability: NonNullable<Parameters<typeof runAgent>[3]>["agentMessage"]

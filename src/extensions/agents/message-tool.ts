@@ -18,7 +18,7 @@ export interface AgentContact {
 	description?: string
 	status?: string
 	reachable: boolean
-	route?: "parent" | "questionnaire" | "ferment_judge" | "unavailable"
+	route?: "parent" | "peer" | "questionnaire" | "ferment_judge" | "unavailable"
 	ferment_id?: string
 	reason?: string
 }

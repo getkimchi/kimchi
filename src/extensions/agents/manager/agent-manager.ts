@@ -733,7 +733,7 @@ export class AgentManager {
 					description: record.description,
 					status: record.session ? record.status : "initializing",
 					reachable: true,
-					route: "parent" as const,
+					route: "peer" as const,
 				}))
 			: []
 		return { parent, user_via_parent: user, peers }

@@ -1100,8 +1100,7 @@ export default function (pi: ExtensionAPI) {
 						{ deliverAs: "followUp", triggerTurn: true },
 					)
 					return true
-				} catch (err) {
-					if (isStaleCtxError(err)) return false
+				} catch {
 					return false
 				}
 			})
