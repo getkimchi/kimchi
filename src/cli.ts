@@ -20,6 +20,8 @@ import { dispatchSubcommand } from "./commands/dispatch.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
+// Restores the user-selection signal when /model chooses the already-active model.
+import "./same-model-select-patch.js"
 // Patches InteractiveMode.prototype so a broken pipe (EPIPE/ECONNRESET) from a
 // child process does not crash the CLI. Load early for the same reason as above.
 import "./uncaught-epipe-patch.js"

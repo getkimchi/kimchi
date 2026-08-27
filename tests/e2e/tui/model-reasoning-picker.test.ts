@@ -1,0 +1,65 @@
+import { readFileSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { expect, test } from "@microsoft/tui-test"
+import { STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+
+test.use(TUI_TEST_CONFIG)
+
+test("model selection opens reasoning with a fresh default and preserves it on reselection", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "model-then-reasoning-picker",
+			models: [
+				{ slug: "basic", displayName: "Fake Basic", reasoning: false },
+				{ slug: "thinker", displayName: "Fake Thinker", reasoning: true },
+				{ slug: "thinker-two", displayName: "Fake Thinker Two", reasoning: true },
+			],
+			responses: [],
+			seedHome: (homeDir) => {
+				writeFileSync(
+					join(homeDir, ".config", "kimchi", "harness", "settings.json"),
+					JSON.stringify({
+						statusLine: { pinned: [] },
+						hideThinkingBlock: true,
+						defaultThinkingLevel: "medium",
+					}),
+				)
+			},
+		},
+		async (fixture, trace) => {
+			terminal.submit("/model fake/thinker")
+			await waitForText(terminal, "Moderate reasoning", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(viewText(terminal)).toMatch(/→ medium\s+Moderate reasoning/)
+			expect(viewText(terminal)).not.toMatch(/~\d+k tokens/)
+			trace.step("reasoning picker opened after model choice")
+
+			const settings = JSON.parse(readFileSync(join(fixture.agentDir, "settings.json"), "utf-8")) as {
+				defaultThinkingLevel?: string
+			}
+			expect(settings.defaultThinkingLevel).toBe("medium")
+
+			terminal.keyDown()
+			await waitForText(terminal, /→ high\s+Deep reasoning/, { timeoutMs: STREAM_TIMEOUT_MS })
+			terminal.write("\r")
+			await waitForText(terminal, "Model: thinker", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("High reasoning selected on the first model")
+
+			terminal.submit("/model fake/thinker-two")
+			await waitForText(terminal, /→ medium\s+Moderate reasoning/, { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(viewText(terminal)).not.toMatch(/~\d+k tokens/)
+			terminal.write("\r")
+			await waitForText(terminal, "Model: thinker-two", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("second model reset to default Normal reasoning")
+
+			terminal.submit("/model")
+			await waitForText(terminal, "Model Name: Fake Thinker Two", { timeoutMs: STREAM_TIMEOUT_MS })
+			terminal.write("\r")
+			await waitForText(terminal, "Moderate reasoning", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(viewText(terminal)).toMatch(/→ medium\s+Moderate reasoning/)
+			expect(viewText(terminal)).not.toMatch(/~\d+k tokens/)
+			trace.step("reasoning picker reopened after selecting the active model")
+		},
+	)
+})

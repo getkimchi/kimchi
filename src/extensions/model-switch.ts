@@ -1,5 +1,11 @@
-import type { Api, Model } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import {
+	type Api,
+	getSupportedThinkingLevels,
+	type Model,
+	type ModelThinkingLevel,
+	modelsAreEqual,
+} from "@earendil-works/pi-ai"
+import { type ExtensionAPI, type ExtensionContext, ThinkingSelectorComponent } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { startNewInteractiveSessionWithModel } from "./interactive-model-session.js"
 import { findModelByRef, refFromModel, splitModelRef } from "./model-catalog/ref-utils.js"
@@ -29,6 +35,34 @@ export async function withSuppressedModelSelectGuard<T>(fn: () => Promise<T>): P
 
 /** Recursion guard — true while our own revert is in progress. */
 let isRevertingModel = false
+
+async function selectThinkingLevel(
+	pi: ExtensionAPI,
+	model: Model<Api>,
+	previousModel: Model<Api> | undefined,
+	ctx: ExtensionContext,
+): Promise<void> {
+	if (!ctx.hasUI || ctx.mode !== "tui" || !model.reasoning) return
+	const levels = getSupportedThinkingLevels(model)
+	if (levels.length <= 1) return
+	const preferredLevel = modelsAreEqual(previousModel, model) ? pi.getThinkingLevel() : "medium"
+	const defaultLevel = levels.includes(preferredLevel) ? preferredLevel : (levels.at(-1) ?? preferredLevel)
+	let selected: ModelThinkingLevel | undefined
+	try {
+		selected = await ctx.ui.custom<ModelThinkingLevel | undefined>((_tui, _theme, _keybindings, done) => {
+			const selector = new ThinkingSelectorComponent(defaultLevel, levels, done, () => done(undefined))
+			const render = selector.render.bind(selector)
+			return Object.assign(selector, {
+				handleInput: (data: string) => selector.getSelectList().handleInput(data),
+				render: (width: number) => render(width).map((line) => line.replace(/ \(~\d+k tokens\)/g, "")),
+			})
+		})
+	} catch (error) {
+		console.warn("[model-switch] reasoning picker failed:", error)
+		return
+	}
+	if (selected !== undefined) pi.setThinkingLevel(selected)
+}
 
 /** Resets module state between tests. */
 export function __resetModelSwitchStateForTest(): void {
@@ -289,6 +323,7 @@ export default function modelSwitchExtension(
 			if (selectedRef !== orchRef) {
 				setMultiModelEnabled(sessionId, false)
 			}
+			await selectThinkingLevel(pi, event.model, event.previousModel, ctx)
 		}
 	})
 }
