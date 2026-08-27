@@ -1020,7 +1020,7 @@ describe("modelSwitchExtension", () => {
 			expect(setModel).not.toHaveBeenCalled()
 		})
 
-		it("uses Normal for a new model and the current level when reselecting the active model", async () => {
+		it("uses High for a new model and the current level when reselecting the active model", async () => {
 			const { pi, trigger, getThinkingLevel, setThinkingLevel } = createHarnessWithTrigger()
 			getThinkingLevel.mockReturnValue("max")
 			modelSwitchExtension(pi)
@@ -1053,12 +1053,12 @@ describe("modelSwitchExtension", () => {
 			const done = vi.fn()
 			const component = await factory(undefined, undefined, undefined, done)
 			expect(component).toBeInstanceOf(ThinkingSelectorComponent)
-			expect(component.getSelectList().getSelectedItem()?.value).toBe("medium")
+			expect(component.getSelectList().getSelectedItem()?.value).toBe("high")
 			const rendered = component.render(80).join("\n")
 			expect(rendered).toContain("Deep reasoning")
 			expect(rendered).not.toMatch(/~\d+k tokens/)
 			component.handleInput?.("\r")
-			expect(done).toHaveBeenCalledWith("medium")
+			expect(done).toHaveBeenCalledWith("high")
 			expect(setThinkingLevel).toHaveBeenCalledWith("max")
 
 			await trigger("model_select", { ...event, previousModel: model }, ctx)

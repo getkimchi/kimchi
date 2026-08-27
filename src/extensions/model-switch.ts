@@ -45,7 +45,7 @@ async function selectThinkingLevel(
 	if (!ctx.hasUI || ctx.mode !== "tui" || !model.reasoning) return
 	const levels = getSupportedThinkingLevels(model)
 	if (levels.length <= 1) return
-	const preferredLevel = modelsAreEqual(previousModel, model) ? pi.getThinkingLevel() : "medium"
+	const preferredLevel = modelsAreEqual(previousModel, model) ? pi.getThinkingLevel() : "high"
 	const defaultLevel = levels.includes(preferredLevel) ? preferredLevel : (levels.at(-1) ?? preferredLevel)
 	let selected: ModelThinkingLevel | undefined
 	try {
