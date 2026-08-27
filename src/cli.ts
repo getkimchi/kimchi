@@ -54,9 +54,11 @@ import behavioursExtension from "./extensions/behaviours/index.js"
 import budgetCommandExtension from "./extensions/billing/command.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import branchCommandExtension from "./extensions/branch-command.js"
+import cacheSummaryExtension from "./extensions/cache-summary.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
+import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
 import dapExtension from "./extensions/dap.js"
@@ -682,6 +684,8 @@ try {
 			piiRedactionExtension,
 			stripImagesExtension,
 			traceIdExtension,
+			contextAssemblyExtension,
+			cacheSummaryExtension,
 			requestTimingExtension,
 			llmResponseLogExtension,
 			activityExtension,
