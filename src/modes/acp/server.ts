@@ -59,6 +59,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import { getParsedCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
 import { defaultFermentRuntime } from "../../extensions/ferment/runtime.js"
@@ -114,6 +115,15 @@ import { asString, truncate } from "./utils.js"
 /** Auth method ID for Agent Auth (browser-based OAuth). Used in both
  * initialize() declaration and authenticate() validation to avoid typo drift. */
 const KIMCHI_AGENT_AUTH_METHOD_ID = "kimchi-agent"
+
+/** Resolve --plan/--auto/--yolo CLI flags into a PermissionMode. */
+function resolveCliPermissionMode(): PermissionMode | undefined {
+	const { options } = getParsedCliArgs()
+	if (options.plan) return "plan"
+	if (options.auto) return "auto"
+	if (options.yolo) return "yolo"
+	return undefined
+}
 
 /**
  * Produces an unbound AgentSession for a newSession request. The ACP agent owns
@@ -350,7 +360,12 @@ export class KimchiAcpAgent implements Agent {
 	private getInitialPermissionMode(session: AgentSession): PermissionModeState {
 		const cwd = session.sessionManager.getCwd()
 		const { loaded } = loadConfig({ cwd })
-		return resolveInitialPermissionMode(session.sessionManager, this.permissionsEnvFlag, undefined, loaded)
+		return resolveInitialPermissionMode(
+			session.sessionManager,
+			this.permissionsEnvFlag,
+			resolveCliPermissionMode(),
+			loaded,
+		)
 	}
 
 	constructor(

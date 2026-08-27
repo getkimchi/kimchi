@@ -47,6 +47,7 @@ vi.mock("../../models.js", () => ({
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
+import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
@@ -85,6 +86,9 @@ function cleanPermissionEnv(): void {
 			Reflect.deleteProperty(process.env, key)
 		}
 	}
+	// Reset the CLI args cache so permission mode flags (--plan/--auto/--yolo)
+	// set by one test don't leak into another via the module-level cache.
+	populateCliArgs([])
 }
 
 beforeEach(cleanPermissionEnv)
@@ -5280,6 +5284,52 @@ describe("session mode controller lifecycle", () => {
 
 		expect(process.env[key1]).toBeUndefined()
 		expect(process.env[key2]).toBeUndefined()
+	})
+})
+
+describe("ACP newSession CLI permission mode flags", () => {
+	it("--yolo flag sets initial permission mode to yolo", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		populateCliArgs(["--yolo"])
+
+		const fake = new FakeAgentSession("cli-yolo-1")
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		expect(res.configOptions?.[0].currentValue).toBe("yolo")
+
+		const controller = getSessionPermissionFlagController(res.sessionId)
+		expect(controller?.getMode()).toEqual({ mode: "yolo", source: "flag", initiatedBy: "user" })
+	})
+
+	it("CLI flag takes precedence over config defaultMode", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "acp-cli-flag-precedence-"))
+		const kimchiDir = join(tmpDir, ".kimchi")
+		mkdirSync(kimchiDir, { recursive: true })
+		writeFileSync(join(kimchiDir, "permissions.json"), JSON.stringify({ defaultMode: "plan" }))
+
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		populateCliArgs(["--yolo"])
+
+		try {
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async (params) => asSession(new FakeAgentSession("cli-precedence-1", params.cwd)),
+			})
+
+			const res = await agent.newSession({ cwd: tmpDir, mcpServers: [] })
+			// --yolo flag should win over config defaultMode "plan"
+			expect(res.configOptions?.[0].currentValue).toBe("yolo")
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
 	})
 })
 
