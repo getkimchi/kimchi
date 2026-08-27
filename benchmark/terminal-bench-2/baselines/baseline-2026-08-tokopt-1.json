@@ -1,0 +1,1991 @@
+{
+  "schema_version": 1,
+  "meta": {
+    "job_dirs": [
+      "chunk-0-16143535643-r1",
+      "chunk-1-16143535644-r1",
+      "chunk-2-16143535645-r1"
+    ],
+    "models": [
+      "kimchi-dev/kimi-k2.7"
+    ],
+    "agent_versions": [
+      "0.0.0"
+    ],
+    "dataset_refs": [
+      "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a"
+    ],
+    "skips": []
+  },
+  "summary": {
+    "task_count": 89,
+    "reward_mean": 0.7303,
+    "pass_count": 65,
+    "fail_count": 24,
+    "total_input_tokens": 188487386,
+    "total_output_tokens": 1774705,
+    "total_cache_tokens": 183232192,
+    "with_cache_summary": 89,
+    "with_context_assembly": 89
+  },
+  "tasks": {
+    "terminal-bench/adaptive-rejection-sampler": {
+      "trial": "adaptive-rejection-sampler__aYFs8kS",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 632694,
+      "n_output_tokens": 28967,
+      "n_cache_tokens": 614848,
+      "cost_usd": null,
+      "duration_s": 902.1,
+      "cache_cumulative": {
+        "input_tokens": 17846,
+        "output_tokens": 28967,
+        "cache_read_tokens": 614848,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/bn-fit-modify": {
+      "trial": "bn-fit-modify__RTi4anq",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 739673,
+      "n_output_tokens": 8870,
+      "n_cache_tokens": 716416,
+      "cost_usd": null,
+      "duration_s": 256.9,
+      "cache_cumulative": {
+        "input_tokens": 23257,
+        "output_tokens": 8870,
+        "cache_read_tokens": 716416,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/break-filter-js-from-html": {
+      "trial": "break-filter-js-from-html__9J5PsKF",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 2103121,
+      "n_output_tokens": 33938,
+      "n_cache_tokens": 2091840,
+      "cost_usd": null,
+      "duration_s": 998.3,
+      "cache_cumulative": {
+        "input_tokens": 11281,
+        "output_tokens": 33938,
+        "cache_read_tokens": 2091840,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/build-cython-ext": {
+      "trial": "build-cython-ext__xAeEY4S",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 3547668,
+      "n_output_tokens": 14476,
+      "n_cache_tokens": 3408640,
+      "cost_usd": null,
+      "duration_s": 605.0,
+      "cache_cumulative": {
+        "input_tokens": 139028,
+        "output_tokens": 14476,
+        "cache_read_tokens": 3408640,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/build-pmars": {
+      "trial": "build-pmars__2oydQQG",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 1520538,
+      "n_output_tokens": 5451,
+      "n_cache_tokens": 1481984,
+      "cost_usd": null,
+      "duration_s": 185.2,
+      "cache_cumulative": {
+        "input_tokens": 38554,
+        "output_tokens": 5451,
+        "cache_read_tokens": 1481984,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/build-pov-ray": {
+      "trial": "build-pov-ray__zgf5na9",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 1260766,
+      "n_output_tokens": 5732,
+      "n_cache_tokens": 1153536,
+      "cost_usd": null,
+      "duration_s": 163.3,
+      "cache_cumulative": {
+        "input_tokens": 107230,
+        "output_tokens": 5732,
+        "cache_read_tokens": 1153536,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/caffe-cifar-10": {
+      "trial": "caffe-cifar-10__EsSb4Hf",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 6279836,
+      "n_output_tokens": 19703,
+      "n_cache_tokens": 5883840,
+      "cost_usd": null,
+      "duration_s": 3196.1,
+      "cache_cumulative": {
+        "input_tokens": 395996,
+        "output_tokens": 19703,
+        "cache_read_tokens": 5883840,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/cancel-async-tasks": {
+      "trial": "cancel-async-tasks__iurN9BN",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 162736,
+      "n_output_tokens": 3233,
+      "n_cache_tokens": 161984,
+      "cost_usd": null,
+      "duration_s": 96.1,
+      "cache_cumulative": {
+        "input_tokens": 752,
+        "output_tokens": 3233,
+        "cache_read_tokens": 161984,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/chess-best-move": {
+      "trial": "chess-best-move__vfmfi5r",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 4355253,
+      "n_output_tokens": 28943,
+      "n_cache_tokens": 4217024,
+      "cost_usd": null,
+      "duration_s": 902.2,
+      "cache_cumulative": {
+        "input_tokens": 138229,
+        "output_tokens": 28943,
+        "cache_read_tokens": 4217024,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/circuit-fibsqrt": {
+      "trial": "circuit-fibsqrt__WLYAs7v",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 3872017,
+      "n_output_tokens": 51338,
+      "n_cache_tokens": 3828416,
+      "cost_usd": null,
+      "duration_s": 1412.2,
+      "cache_cumulative": {
+        "input_tokens": 43601,
+        "output_tokens": 51338,
+        "cache_read_tokens": 3828416,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/cobol-modernization": {
+      "trial": "cobol-modernization__DX44c3K",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 1667283,
+      "n_output_tokens": 21665,
+      "n_cache_tokens": 1614208,
+      "cost_usd": null,
+      "duration_s": 498.7,
+      "cache_cumulative": {
+        "input_tokens": 53075,
+        "output_tokens": 21665,
+        "cache_read_tokens": 1614208,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/code-from-image": {
+      "trial": "code-from-image__2rBYx3E",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 398760,
+      "n_output_tokens": 3567,
+      "n_cache_tokens": 393600,
+      "cost_usd": null,
+      "duration_s": 156.7,
+      "cache_cumulative": {
+        "input_tokens": 5160,
+        "output_tokens": 3567,
+        "cache_read_tokens": 393600,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/compile-compcert": {
+      "trial": "compile-compcert__PtEJPVm",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 1503815,
+      "n_output_tokens": 8215,
+      "n_cache_tokens": 1474560,
+      "cost_usd": null,
+      "duration_s": 1203.1,
+      "cache_cumulative": {
+        "input_tokens": 29255,
+        "output_tokens": 8215,
+        "cache_read_tokens": 1474560,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/configure-git-webserver": {
+      "trial": "configure-git-webserver__DNUp5Vh",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 1184536,
+      "n_output_tokens": 9460,
+      "n_cache_tokens": 1153408,
+      "cost_usd": null,
+      "duration_s": 237.4,
+      "cache_cumulative": {
+        "input_tokens": 31128,
+        "output_tokens": 9460,
+        "cache_read_tokens": 1153408,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/constraints-scheduling": {
+      "trial": "constraints-scheduling__qnt3wTX",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 243688,
+      "n_output_tokens": 5680,
+      "n_cache_tokens": 238592,
+      "cost_usd": null,
+      "duration_s": 159.4,
+      "cache_cumulative": {
+        "input_tokens": 5096,
+        "output_tokens": 5680,
+        "cache_read_tokens": 238592,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/count-dataset-tokens": {
+      "trial": "count-dataset-tokens__bgRUyWL",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 649310,
+      "n_output_tokens": 3489,
+      "n_cache_tokens": 626304,
+      "cost_usd": null,
+      "duration_s": 152.2,
+      "cache_cumulative": {
+        "input_tokens": 23006,
+        "output_tokens": 3489,
+        "cache_read_tokens": 626304,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/crack-7z-hash": {
+      "trial": "crack-7z-hash__4Nvju2N",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 759790,
+      "n_output_tokens": 2624,
+      "n_cache_tokens": 751296,
+      "cost_usd": null,
+      "duration_s": 204.5,
+      "cache_cumulative": {
+        "input_tokens": 8494,
+        "output_tokens": 2624,
+        "cache_read_tokens": 751296,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/custom-memory-heap-crash": {
+      "trial": "custom-memory-heap-crash__u7mYQ2A",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 2043307,
+      "n_output_tokens": 19329,
+      "n_cache_tokens": 1991808,
+      "cost_usd": null,
+      "duration_s": 599.7,
+      "cache_cumulative": {
+        "input_tokens": 51499,
+        "output_tokens": 19329,
+        "cache_read_tokens": 1991808,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/db-wal-recovery": {
+      "trial": "db-wal-recovery__YfSGzXZ",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 453589,
+      "n_output_tokens": 5298,
+      "n_cache_tokens": 444736,
+      "cost_usd": null,
+      "duration_s": 165.9,
+      "cache_cumulative": {
+        "input_tokens": 8853,
+        "output_tokens": 5298,
+        "cache_read_tokens": 444736,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/distribution-search": {
+      "trial": "distribution-search__ZemawjR",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 208897,
+      "n_output_tokens": 9835,
+      "n_cache_tokens": 204864,
+      "cost_usd": null,
+      "duration_s": 252.4,
+      "cache_cumulative": {
+        "input_tokens": 4033,
+        "output_tokens": 9835,
+        "cache_read_tokens": 204864,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/dna-assembly": {
+      "trial": "dna-assembly__7RpqZMH",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 1784810,
+      "n_output_tokens": 62028,
+      "n_cache_tokens": 1692800,
+      "cost_usd": null,
+      "duration_s": 1802.2,
+      "cache_cumulative": {
+        "input_tokens": 92010,
+        "output_tokens": 62028,
+        "cache_read_tokens": 1692800,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/dna-insert": {
+      "trial": "dna-insert__64LjPjL",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 1082244,
+      "n_output_tokens": 24452,
+      "n_cache_tokens": 1042368,
+      "cost_usd": null,
+      "duration_s": 702.4,
+      "cache_cumulative": {
+        "input_tokens": 39876,
+        "output_tokens": 24452,
+        "cache_read_tokens": 1042368,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/extract-elf": {
+      "trial": "extract-elf__b4dyxGJ",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 844264,
+      "n_output_tokens": 12842,
+      "n_cache_tokens": 742656,
+      "cost_usd": null,
+      "duration_s": 310.5,
+      "cache_cumulative": {
+        "input_tokens": 101608,
+        "output_tokens": 12842,
+        "cache_read_tokens": 742656,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/extract-moves-from-video": {
+      "trial": "extract-moves-from-video__EjKJsc7",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 3019383,
+      "n_output_tokens": 21052,
+      "n_cache_tokens": 2966464,
+      "cost_usd": null,
+      "duration_s": 1802.6,
+      "cache_cumulative": {
+        "input_tokens": 52919,
+        "output_tokens": 21052,
+        "cache_read_tokens": 2966464,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/feal-differential-cryptanalysis": {
+      "trial": "feal-differential-cryptanalysis__j6bg3uG",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 1391679,
+      "n_output_tokens": 24231,
+      "n_cache_tokens": 1371328,
+      "cost_usd": null,
+      "duration_s": 755.2,
+      "cache_cumulative": {
+        "input_tokens": 20351,
+        "output_tokens": 24231,
+        "cache_read_tokens": 1371328,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/feal-linear-cryptanalysis": {
+      "trial": "feal-linear-cryptanalysis__RFxk4pn",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 3209477,
+      "n_output_tokens": 43131,
+      "n_cache_tokens": 3150336,
+      "cost_usd": null,
+      "duration_s": 1200.5,
+      "cache_cumulative": {
+        "input_tokens": 59141,
+        "output_tokens": 43131,
+        "cache_read_tokens": 3150336,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/filter-js-from-html": {
+      "trial": "filter-js-from-html__sLhw2wL",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 791734,
+      "n_output_tokens": 17178,
+      "n_cache_tokens": 786944,
+      "cost_usd": null,
+      "duration_s": 436.4,
+      "cache_cumulative": {
+        "input_tokens": 4790,
+        "output_tokens": 17178,
+        "cache_read_tokens": 786944,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/financial-document-processor": {
+      "trial": "financial-document-processor__gNzrG6q",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 849730,
+      "n_output_tokens": 13467,
+      "n_cache_tokens": 814336,
+      "cost_usd": null,
+      "duration_s": 353.0,
+      "cache_cumulative": {
+        "input_tokens": 35394,
+        "output_tokens": 13467,
+        "cache_read_tokens": 814336,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/fix-code-vulnerability": {
+      "trial": "fix-code-vulnerability__4u8Hf3D",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 879037,
+      "n_output_tokens": 6496,
+      "n_cache_tokens": 854784,
+      "cost_usd": null,
+      "duration_s": 173.6,
+      "cache_cumulative": {
+        "input_tokens": 24253,
+        "output_tokens": 6496,
+        "cache_read_tokens": 854784,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/fix-git": {
+      "trial": "fix-git__pUv4xC9",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 302613,
+      "n_output_tokens": 2431,
+      "n_cache_tokens": 297856,
+      "cost_usd": null,
+      "duration_s": 83.8,
+      "cache_cumulative": {
+        "input_tokens": 4757,
+        "output_tokens": 2431,
+        "cache_read_tokens": 297856,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11393,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/fix-ocaml-gc": {
+      "trial": "fix-ocaml-gc__A6hCn2g",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 3203463,
+      "n_output_tokens": 21951,
+      "n_cache_tokens": 3091840,
+      "cost_usd": null,
+      "duration_s": 905.9,
+      "cache_cumulative": {
+        "input_tokens": 111623,
+        "output_tokens": 21951,
+        "cache_read_tokens": 3091840,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/gcode-to-text": {
+      "trial": "gcode-to-text__z8H5FYz",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 3043473,
+      "n_output_tokens": 27418,
+      "n_cache_tokens": 2975680,
+      "cost_usd": null,
+      "duration_s": 902.1,
+      "cache_cumulative": {
+        "input_tokens": 67793,
+        "output_tokens": 27418,
+        "cache_read_tokens": 2975680,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/git-leak-recovery": {
+      "trial": "git-leak-recovery__AGz6ZQR",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 382376,
+      "n_output_tokens": 2789,
+      "n_cache_tokens": 376576,
+      "cost_usd": null,
+      "duration_s": 97.7,
+      "cache_cumulative": {
+        "input_tokens": 5800,
+        "output_tokens": 2789,
+        "cache_read_tokens": 376576,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/git-multibranch": {
+      "trial": "git-multibranch__qrWf6gA",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 647708,
+      "n_output_tokens": 5785,
+      "n_cache_tokens": 634432,
+      "cost_usd": null,
+      "duration_s": 170.0,
+      "cache_cumulative": {
+        "input_tokens": 13276,
+        "output_tokens": 5785,
+        "cache_read_tokens": 634432,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/gpt2-codegolf": {
+      "trial": "gpt2-codegolf__yLD3WKG",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 741454,
+      "n_output_tokens": 31446,
+      "n_cache_tokens": 723904,
+      "cost_usd": null,
+      "duration_s": 902.1,
+      "cache_cumulative": {
+        "input_tokens": 17550,
+        "output_tokens": 31446,
+        "cache_read_tokens": 723904,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/headless-terminal": {
+      "trial": "headless-terminal__JRGG6Mi",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 312949,
+      "n_output_tokens": 4285,
+      "n_cache_tokens": 308544,
+      "cost_usd": null,
+      "duration_s": 128.6,
+      "cache_cumulative": {
+        "input_tokens": 4405,
+        "output_tokens": 4285,
+        "cache_read_tokens": 308544,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/hf-model-inference": {
+      "trial": "hf-model-inference__NYSoMeu",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 332447,
+      "n_output_tokens": 3446,
+      "n_cache_tokens": 326720,
+      "cost_usd": null,
+      "duration_s": 81.8,
+      "cache_cumulative": {
+        "input_tokens": 5727,
+        "output_tokens": 3446,
+        "cache_read_tokens": 326720,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/install-windows-3.11": {
+      "trial": "install-windows-3.11__DUVcyJQ",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 3075353,
+      "n_output_tokens": 12589,
+      "n_cache_tokens": 3010816,
+      "cost_usd": null,
+      "duration_s": 407.9,
+      "cache_cumulative": {
+        "input_tokens": 64537,
+        "output_tokens": 12589,
+        "cache_read_tokens": 3010816,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/kv-store-grpc": {
+      "trial": "kv-store-grpc__qq8gbtM",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 370649,
+      "n_output_tokens": 2527,
+      "n_cache_tokens": 358848,
+      "cost_usd": null,
+      "duration_s": 52.2,
+      "cache_cumulative": {
+        "input_tokens": 11801,
+        "output_tokens": 2527,
+        "cache_read_tokens": 358848,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/large-scale-text-editing": {
+      "trial": "large-scale-text-editing__PVT6gLz",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 395407,
+      "n_output_tokens": 6493,
+      "n_cache_tokens": 392000,
+      "cost_usd": null,
+      "duration_s": 193.1,
+      "cache_cumulative": {
+        "input_tokens": 3407,
+        "output_tokens": 6493,
+        "cache_read_tokens": 392000,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/largest-eigenval": {
+      "trial": "largest-eigenval__YUqqqxb",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 1540377,
+      "n_output_tokens": 39231,
+      "n_cache_tokens": 1492160,
+      "cost_usd": null,
+      "duration_s": 902.2,
+      "cache_cumulative": {
+        "input_tokens": 48217,
+        "output_tokens": 39231,
+        "cache_read_tokens": 1492160,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/llm-inference-batching-scheduler": {
+      "trial": "llm-inference-batching-scheduler__sKxZPhk",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 886639,
+      "n_output_tokens": 19392,
+      "n_cache_tokens": 835136,
+      "cost_usd": null,
+      "duration_s": 323.3,
+      "cache_cumulative": {
+        "input_tokens": 51503,
+        "output_tokens": 19392,
+        "cache_read_tokens": 835136,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/log-summary-date-ranges": {
+      "trial": "log-summary-date-ranges__QwpTzVu",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 145538,
+      "n_output_tokens": 1217,
+      "n_cache_tokens": 141760,
+      "cost_usd": null,
+      "duration_s": 23.9,
+      "cache_cumulative": {
+        "input_tokens": 3778,
+        "output_tokens": 1217,
+        "cache_read_tokens": 141760,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/mailman": {
+      "trial": "mailman__7fwFEMT",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 2295979,
+      "n_output_tokens": 17944,
+      "n_cache_tokens": 2250176,
+      "cost_usd": null,
+      "duration_s": 557.7,
+      "cache_cumulative": {
+        "input_tokens": 45803,
+        "output_tokens": 17944,
+        "cache_read_tokens": 2250176,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/make-doom-for-mips": {
+      "trial": "make-doom-for-mips__LzvMGdQ",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 6063184,
+      "n_output_tokens": 31462,
+      "n_cache_tokens": 5786240,
+      "cost_usd": null,
+      "duration_s": 902.2,
+      "cache_cumulative": {
+        "input_tokens": 276944,
+        "output_tokens": 31462,
+        "cache_read_tokens": 5786240,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/make-mips-interpreter": {
+      "trial": "make-mips-interpreter__XjR9Kae",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 10642533,
+      "n_output_tokens": 65877,
+      "n_cache_tokens": 10481216,
+      "cost_usd": null,
+      "duration_s": 1802.1,
+      "cache_cumulative": {
+        "input_tokens": 161317,
+        "output_tokens": 65877,
+        "cache_read_tokens": 10481216,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/mcmc-sampling-stan": {
+      "trial": "mcmc-sampling-stan__wUUiELB",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 3014129,
+      "n_output_tokens": 10229,
+      "n_cache_tokens": 2857280,
+      "cost_usd": null,
+      "duration_s": 1565.1,
+      "cache_cumulative": {
+        "input_tokens": 156849,
+        "output_tokens": 10229,
+        "cache_read_tokens": 2857280,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/merge-diff-arc-agi-task": {
+      "trial": "merge-diff-arc-agi-task__3RLp9eR",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 523230,
+      "n_output_tokens": 5720,
+      "n_cache_tokens": 505920,
+      "cost_usd": null,
+      "duration_s": 134.1,
+      "cache_cumulative": {
+        "input_tokens": 17310,
+        "output_tokens": 5720,
+        "cache_read_tokens": 505920,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/model-extraction-relu-logits": {
+      "trial": "model-extraction-relu-logits__kiG2FBM",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 222860,
+      "n_output_tokens": 23881,
+      "n_cache_tokens": 212864,
+      "cost_usd": null,
+      "duration_s": 902.2,
+      "cache_cumulative": {
+        "input_tokens": 9996,
+        "output_tokens": 23881,
+        "cache_read_tokens": 212864,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/modernize-scientific-stack": {
+      "trial": "modernize-scientific-stack__AvneWwg",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 168425,
+      "n_output_tokens": 2707,
+      "n_cache_tokens": 164544,
+      "cost_usd": null,
+      "duration_s": 107.9,
+      "cache_cumulative": {
+        "input_tokens": 3881,
+        "output_tokens": 2707,
+        "cache_read_tokens": 164544,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/mteb-leaderboard": {
+      "trial": "mteb-leaderboard__4NzYPhn",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 1712869,
+      "n_output_tokens": 6133,
+      "n_cache_tokens": 1647744,
+      "cost_usd": null,
+      "duration_s": 440.2,
+      "cache_cumulative": {
+        "input_tokens": 65125,
+        "output_tokens": 6133,
+        "cache_read_tokens": 1647744,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/mteb-retrieve": {
+      "trial": "mteb-retrieve__MBqxvAV",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 323335,
+      "n_output_tokens": 2872,
+      "n_cache_tokens": 312064,
+      "cost_usd": null,
+      "duration_s": 91.5,
+      "cache_cumulative": {
+        "input_tokens": 11271,
+        "output_tokens": 2872,
+        "cache_read_tokens": 312064,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/multi-source-data-merger": {
+      "trial": "multi-source-data-merger__kwixe6b",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 423096,
+      "n_output_tokens": 4817,
+      "n_cache_tokens": 415296,
+      "cost_usd": null,
+      "duration_s": 180.4,
+      "cache_cumulative": {
+        "input_tokens": 7800,
+        "output_tokens": 4817,
+        "cache_read_tokens": 415296,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/nginx-request-logging": {
+      "trial": "nginx-request-logging__UxrMH7X",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 366522,
+      "n_output_tokens": 3833,
+      "n_cache_tokens": 357760,
+      "cost_usd": null,
+      "duration_s": 71.8,
+      "cache_cumulative": {
+        "input_tokens": 8762,
+        "output_tokens": 3833,
+        "cache_read_tokens": 357760,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/openssl-selfsigned-cert": {
+      "trial": "openssl-selfsigned-cert__R4SWcDG",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 183350,
+      "n_output_tokens": 2104,
+      "n_cache_tokens": 181760,
+      "cost_usd": null,
+      "duration_s": 80.5,
+      "cache_cumulative": {
+        "input_tokens": 1590,
+        "output_tokens": 2104,
+        "cache_read_tokens": 181760,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/overfull-hbox": {
+      "trial": "overfull-hbox__D6ABtPm",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 1297198,
+      "n_output_tokens": 24906,
+      "n_cache_tokens": 1264640,
+      "cost_usd": null,
+      "duration_s": 725.9,
+      "cache_cumulative": {
+        "input_tokens": 32558,
+        "output_tokens": 24906,
+        "cache_read_tokens": 1264640,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/password-recovery": {
+      "trial": "password-recovery__N2EeQUG",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 1159783,
+      "n_output_tokens": 19563,
+      "n_cache_tokens": 1117888,
+      "cost_usd": null,
+      "duration_s": 344.9,
+      "cache_cumulative": {
+        "input_tokens": 41895,
+        "output_tokens": 19563,
+        "cache_read_tokens": 1117888,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/path-tracing": {
+      "trial": "path-tracing__4zLnk64",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 7432678,
+      "n_output_tokens": 71120,
+      "n_cache_tokens": 7215552,
+      "cost_usd": null,
+      "duration_s": 1802.1,
+      "cache_cumulative": {
+        "input_tokens": 217126,
+        "output_tokens": 71120,
+        "cache_read_tokens": 7215552,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/path-tracing-reverse": {
+      "trial": "path-tracing-reverse__ewV2hMb",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 11283872,
+      "n_output_tokens": 68724,
+      "n_cache_tokens": 11066048,
+      "cost_usd": null,
+      "duration_s": 1413.2,
+      "cache_cumulative": {
+        "input_tokens": 217824,
+        "output_tokens": 68724,
+        "cache_read_tokens": 11066048,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/polyglot-c-py": {
+      "trial": "polyglot-c-py__H5vQBsc",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 536234,
+      "n_output_tokens": 12094,
+      "n_cache_tokens": 530752,
+      "cost_usd": null,
+      "duration_s": 334.6,
+      "cache_cumulative": {
+        "input_tokens": 5482,
+        "output_tokens": 12094,
+        "cache_read_tokens": 530752,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/polyglot-rust-c": {
+      "trial": "polyglot-rust-c__KdwEu2t",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 1924147,
+      "n_output_tokens": 50435,
+      "n_cache_tokens": 1888064,
+      "cost_usd": null,
+      "duration_s": 902.1,
+      "cache_cumulative": {
+        "input_tokens": 36083,
+        "output_tokens": 50435,
+        "cache_read_tokens": 1888064,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/portfolio-optimization": {
+      "trial": "portfolio-optimization__XiGVrak",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 384740,
+      "n_output_tokens": 6152,
+      "n_cache_tokens": 377152,
+      "cost_usd": null,
+      "duration_s": 138.9,
+      "cache_cumulative": {
+        "input_tokens": 7588,
+        "output_tokens": 6152,
+        "cache_read_tokens": 377152,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/protein-assembly": {
+      "trial": "protein-assembly__BbifGUZ",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 3081754,
+      "n_output_tokens": 30772,
+      "n_cache_tokens": 2971712,
+      "cost_usd": null,
+      "duration_s": 693.4,
+      "cache_cumulative": {
+        "input_tokens": 110042,
+        "output_tokens": 30772,
+        "cache_read_tokens": 2971712,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/prove-plus-comm": {
+      "trial": "prove-plus-comm__SJiZfaz",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 130404,
+      "n_output_tokens": 834,
+      "n_cache_tokens": 129664,
+      "cost_usd": null,
+      "duration_s": 34.4,
+      "cache_cumulative": {
+        "input_tokens": 740,
+        "output_tokens": 834,
+        "cache_read_tokens": 129664,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11389,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/pypi-server": {
+      "trial": "pypi-server__4rQsbUf",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 481645,
+      "n_output_tokens": 3318,
+      "n_cache_tokens": 444864,
+      "cost_usd": null,
+      "duration_s": 75.5,
+      "cache_cumulative": {
+        "input_tokens": 36781,
+        "output_tokens": 3318,
+        "cache_read_tokens": 444864,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/pytorch-model-cli": {
+      "trial": "pytorch-model-cli__AfiHM3G",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 2027235,
+      "n_output_tokens": 6387,
+      "n_cache_tokens": 1959552,
+      "cost_usd": null,
+      "duration_s": 232.8,
+      "cache_cumulative": {
+        "input_tokens": 67683,
+        "output_tokens": 6387,
+        "cache_read_tokens": 1959552,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/pytorch-model-recovery": {
+      "trial": "pytorch-model-recovery__d6K7Kvc",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 608346,
+      "n_output_tokens": 12829,
+      "n_cache_tokens": 581696,
+      "cost_usd": null,
+      "duration_s": 280.6,
+      "cache_cumulative": {
+        "input_tokens": 26650,
+        "output_tokens": 12829,
+        "cache_read_tokens": 581696,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/qemu-alpine-ssh": {
+      "trial": "qemu-alpine-ssh__i6oouA7",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 2400160,
+      "n_output_tokens": 22753,
+      "n_cache_tokens": 2307904,
+      "cost_usd": null,
+      "duration_s": 851.8,
+      "cache_cumulative": {
+        "input_tokens": 92256,
+        "output_tokens": 22753,
+        "cache_read_tokens": 2307904,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/qemu-startup": {
+      "trial": "qemu-startup__5Qd7MTP",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 1473123,
+      "n_output_tokens": 8627,
+      "n_cache_tokens": 1439040,
+      "cost_usd": null,
+      "duration_s": 272.3,
+      "cache_cumulative": {
+        "input_tokens": 34083,
+        "output_tokens": 8627,
+        "cache_read_tokens": 1439040,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/query-optimize": {
+      "trial": "query-optimize__sHiCRMW",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 1023722,
+      "n_output_tokens": 10576,
+      "n_cache_tokens": 1008384,
+      "cost_usd": null,
+      "duration_s": 742.0,
+      "cache_cumulative": {
+        "input_tokens": 15338,
+        "output_tokens": 10576,
+        "cache_read_tokens": 1008384,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/raman-fitting": {
+      "trial": "raman-fitting__9acKBVG",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 551277,
+      "n_output_tokens": 10101,
+      "n_cache_tokens": 533248,
+      "cost_usd": null,
+      "duration_s": 247.8,
+      "cache_cumulative": {
+        "input_tokens": 18029,
+        "output_tokens": 10101,
+        "cache_read_tokens": 533248,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/regex-chess": {
+      "trial": "regex-chess__2cDU6mk",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 29048748,
+      "n_output_tokens": 184928,
+      "n_cache_tokens": 28553600,
+      "cost_usd": null,
+      "duration_s": 3602.2,
+      "cache_cumulative": {
+        "input_tokens": 495148,
+        "output_tokens": 184928,
+        "cache_read_tokens": 28553600,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/regex-log": {
+      "trial": "regex-log__EjpG4RD",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 311653,
+      "n_output_tokens": 17696,
+      "n_cache_tokens": 300544,
+      "cost_usd": null,
+      "duration_s": 273.7,
+      "cache_cumulative": {
+        "input_tokens": 11109,
+        "output_tokens": 17696,
+        "cache_read_tokens": 300544,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/reshard-c4-data": {
+      "trial": "reshard-c4-data__aig9EHs",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 1810043,
+      "n_output_tokens": 24922,
+      "n_cache_tokens": 1775552,
+      "cost_usd": null,
+      "duration_s": 707.1,
+      "cache_cumulative": {
+        "input_tokens": 34491,
+        "output_tokens": 24922,
+        "cache_read_tokens": 1775552,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/rstan-to-pystan": {
+      "trial": "rstan-to-pystan__vG3qx5Y",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 2610096,
+      "n_output_tokens": 15074,
+      "n_cache_tokens": 2548800,
+      "cost_usd": null,
+      "duration_s": 862.8,
+      "cache_cumulative": {
+        "input_tokens": 61296,
+        "output_tokens": 15074,
+        "cache_read_tokens": 2548800,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/sam-cell-seg": {
+      "trial": "sam-cell-seg__hrJ3x3H",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 2230235,
+      "n_output_tokens": 19126,
+      "n_cache_tokens": 2090816,
+      "cost_usd": null,
+      "duration_s": 702.7,
+      "cache_cumulative": {
+        "input_tokens": 139419,
+        "output_tokens": 19126,
+        "cache_read_tokens": 2090816,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/sanitize-git-repo": {
+      "trial": "sanitize-git-repo__SfMonmL",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 1521548,
+      "n_output_tokens": 11424,
+      "n_cache_tokens": 1413248,
+      "cost_usd": null,
+      "duration_s": 356.6,
+      "cache_cumulative": {
+        "input_tokens": 108300,
+        "output_tokens": 11424,
+        "cache_read_tokens": 1413248,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11915,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/schemelike-metacircular-eval": {
+      "trial": "schemelike-metacircular-eval__mX5RYQL",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 13424301,
+      "n_output_tokens": 95164,
+      "n_cache_tokens": 13186560,
+      "cost_usd": null,
+      "duration_s": 2402.1,
+      "cache_cumulative": {
+        "input_tokens": 237741,
+        "output_tokens": 95164,
+        "cache_read_tokens": 13186560,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/sparql-university": {
+      "trial": "sparql-university__qA9f2yJ",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 500305,
+      "n_output_tokens": 8975,
+      "n_cache_tokens": 480704,
+      "cost_usd": null,
+      "duration_s": 194.0,
+      "cache_cumulative": {
+        "input_tokens": 19601,
+        "output_tokens": 8975,
+        "cache_read_tokens": 480704,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/sqlite-db-truncate": {
+      "trial": "sqlite-db-truncate__tVMQW6s",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 243941,
+      "n_output_tokens": 4363,
+      "n_cache_tokens": 237632,
+      "cost_usd": null,
+      "duration_s": 116.6,
+      "cache_cumulative": {
+        "input_tokens": 6309,
+        "output_tokens": 4363,
+        "cache_read_tokens": 237632,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/sqlite-with-gcov": {
+      "trial": "sqlite-with-gcov__VyFHasu",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 973208,
+      "n_output_tokens": 3926,
+      "n_cache_tokens": 912512,
+      "cost_usd": null,
+      "duration_s": 190.6,
+      "cache_cumulative": {
+        "input_tokens": 60696,
+        "output_tokens": 3926,
+        "cache_read_tokens": 912512,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/torch-pipeline-parallelism": {
+      "trial": "torch-pipeline-parallelism__5CdXGMF",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 1460514,
+      "n_output_tokens": 24742,
+      "n_cache_tokens": 1402816,
+      "cost_usd": null,
+      "duration_s": 444.4,
+      "cache_cumulative": {
+        "input_tokens": 57698,
+        "output_tokens": 24742,
+        "cache_read_tokens": 1402816,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/torch-tensor-parallelism": {
+      "trial": "torch-tensor-parallelism__NHYt4sj",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 181905,
+      "n_output_tokens": 5736,
+      "n_cache_tokens": 180416,
+      "cost_usd": null,
+      "duration_s": 153.6,
+      "cache_cumulative": {
+        "input_tokens": 1489,
+        "output_tokens": 5736,
+        "cache_read_tokens": 180416,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/train-fasttext": {
+      "trial": "train-fasttext__pG76Szv",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 3501796,
+      "n_output_tokens": 12665,
+      "n_cache_tokens": 3401216,
+      "cost_usd": null,
+      "duration_s": 2177.4,
+      "cache_cumulative": {
+        "input_tokens": 100580,
+        "output_tokens": 12665,
+        "cache_read_tokens": 3401216,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/tune-mjcf": {
+      "trial": "tune-mjcf__oA8oMzy",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 310890,
+      "n_output_tokens": 4805,
+      "n_cache_tokens": 305984,
+      "cost_usd": null,
+      "duration_s": 135.6,
+      "cache_cumulative": {
+        "input_tokens": 4906,
+        "output_tokens": 4805,
+        "cache_read_tokens": 305984,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/video-processing": {
+      "trial": "video-processing__N4JMHXD",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 2164848,
+      "n_output_tokens": 29004,
+      "n_cache_tokens": 2096576,
+      "cost_usd": null,
+      "duration_s": 630.3,
+      "cache_cumulative": {
+        "input_tokens": 68272,
+        "output_tokens": 29004,
+        "cache_read_tokens": 2096576,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/vulnerable-secret": {
+      "trial": "vulnerable-secret__Mr6zw8F",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 269565,
+      "n_output_tokens": 3933,
+      "n_cache_tokens": 258944,
+      "cost_usd": null,
+      "duration_s": 154.9,
+      "cache_cumulative": {
+        "input_tokens": 10621,
+        "output_tokens": 3933,
+        "cache_read_tokens": 258944,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/winning-avg-corewars": {
+      "trial": "winning-avg-corewars__X6sSB5d",
+      "reward": 1.0,
+      "outcome": "scored_pass",
+      "n_input_tokens": 2030599,
+      "n_output_tokens": 26189,
+      "n_cache_tokens": 1980224,
+      "cost_usd": null,
+      "duration_s": 797.1,
+      "cache_cumulative": {
+        "input_tokens": 50375,
+        "output_tokens": 26189,
+        "cache_read_tokens": 1980224,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    },
+    "terminal-bench/write-compressor": {
+      "trial": "write-compressor__RcRibtA",
+      "reward": 0.0,
+      "outcome": "scored_fail",
+      "n_input_tokens": 1337280,
+      "n_output_tokens": 49573,
+      "n_cache_tokens": 1256832,
+      "cost_usd": null,
+      "duration_s": 902.1,
+      "cache_cumulative": {
+        "input_tokens": 80448,
+        "output_tokens": 49573,
+        "cache_read_tokens": 1256832,
+        "cache_write_tokens": 0,
+        "cost_dollars": 0
+      },
+      "context": {
+        "system_prompt_tokens_est": 11386,
+        "tool_surface_tokens_est": 11176,
+        "prefix_changes": 1
+      }
+    }
+  }
+}

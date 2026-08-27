@@ -5,6 +5,13 @@ baseline anchor**, not just the previous iteration — cumulative drift is the s
 that matters over months (see `.kimchi/plans/token-optimization.md`, Decision Log #6
 and Validation ladder).
 
+> **Primary anchor (2026-08):** the first instrumented full-dataset terminal-bench run
+> (89 tasks, reward 0.7303, `kimchi-dev/kimi-k2.7`) is committed at
+> `benchmark/terminal-bench-2/baselines/baseline-2026-08-tokopt-1.json` — richer than the
+> manual 2-session anchor originally planned here, because it includes verifier rewards
+> plus per-task cache/context instrumentation. The manual-benchmark anchor remains
+> optional; the protocol below applies to whatever anchors are added over time.
+
 ## The anchor
 
 - `baseline-2026-08-tokopt-1.json`, `baseline-2026-08-tokopt-2.json` — two
