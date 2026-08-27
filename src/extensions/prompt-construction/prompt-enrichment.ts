@@ -24,9 +24,9 @@
 
 import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs"
 import { arch, homedir, version as osVersion, platform, release, userInfo } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
@@ -76,6 +76,61 @@ function safeUsername(): string {
 		return userInfo().username
 	} catch {
 		return process.env.USER ?? process.env.USERNAME ?? "unknown"
+	}
+}
+
+/**
+ * Filter contributed skill paths to only existing directories, deduped by
+ * normalized path. Pi emits a warning diagnostic for every contributed path
+ * that doesn't exist on disk — configured paths like `.pi/agent/skills` or
+ * `.claude/skills` are optional locations, not requirements, so suppress the
+ * noise by filtering before returning them from resources_discover.
+ *
+ * Also skips the bundled skills dir when every skill it contains is already
+ * available in a stronger (earlier) path — this happens when the old deploy
+ * mechanism copied bundled skills into the harness dir. Without this check,
+ * pi emits a collision warning for each duplicated skill name.
+ */
+function dedupeExistingSkillPaths(paths: readonly string[]): string[] {
+	const seen = new Set<string>()
+	const result: string[] = []
+	const skillNamesFromStronger = new Set<string>()
+	for (const p of paths) {
+		const normalized = resolve(p)
+		if (seen.has(normalized)) continue
+		if (!existsSync(normalized)) continue
+		// Check if this is the bundled dir and all its skills are already
+		// covered by a stronger path — if so, skip it to avoid collisions.
+		if (result.length > 0 && isBundledDirFullyCovered(normalized, skillNamesFromStronger)) {
+			continue
+		}
+		seen.add(normalized)
+		result.push(p)
+		// Collect skill names from this path so weaker paths can check coverage.
+		collectSkillNames(normalized, skillNamesFromStronger)
+	}
+	return result
+}
+
+function isBundledDirFullyCovered(dir: string, coveredNames: Set<string>): boolean {
+	const bundledNames = listSkillNames(dir)
+	if (bundledNames.length === 0) return false
+	return bundledNames.every((name) => coveredNames.has(name))
+}
+
+function listSkillNames(dir: string): string[] {
+	try {
+		return readdirSync(dir, { withFileTypes: true })
+			.filter((e) => e.isDirectory())
+			.map((e) => e.name)
+	} catch {
+		return []
+	}
+}
+
+function collectSkillNames(dir: string, out: Set<string>): void {
+	for (const name of listSkillNames(dir)) {
+		out.add(name)
 	}
 }
 
@@ -498,8 +553,13 @@ export default function (skillPathsFromConfig: string[]) {
 			// from /skill:*, autocomplete and /resources once the prompt reads
 			// pi's resolved inventory instead of composing paths itself.
 			skillPaths.push(...getConfiguredSkillResourcePaths(event.cwd, skillPathsFromConfig))
-			if (skillPaths.length === 0) return undefined
-			return { skillPaths }
+			// Filter out non-existent paths — pi emits a warning diagnostic for
+			// every contributed path that doesn't exist on disk. Configured
+			// paths like `.pi/agent/skills` or `.claude/skills` are optional
+			// locations, not requirements, so suppress the noise.
+			const existing = dedupeExistingSkillPaths(skillPaths)
+			if (existing.length === 0) return undefined
+			return { skillPaths: existing }
 		})
 
 		pi.on("before_agent_start", async (event, ctx) => {
