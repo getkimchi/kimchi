@@ -32,7 +32,7 @@ function openAIStreamResponse(): Response {
 	})
 }
 
-describe("Kimchi max token request invariant", () => {
+describe("Kimchi managed request invariants", () => {
 	let tempDir: string
 	let modelsJsonPath: string
 
@@ -100,6 +100,36 @@ describe("Kimchi max token request invariant", () => {
 			{ model: { provider } },
 		)
 		expect(result).toEqual({})
+	})
+
+	it("sends Max as reasoning_effort=max", async () => {
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const provider = config.providers["kimchi-dev"]
+		const model: Model<"openai-completions"> = {
+			...provider.models[0],
+			provider: "kimchi-dev",
+			api: "openai-completions",
+			baseUrl: provider.baseUrl,
+		}
+		let sentPayload: Record<string, unknown> | undefined
+		const requestFetch: typeof fetch = async (_input, init) => {
+			sentPayload = JSON.parse(String(init?.body))
+			return openAIStreamResponse()
+		}
+
+		await streamSimple(
+			model,
+			{ messages: [{ role: "user", content: "reason deeply", timestamp: Date.now() }] },
+			{
+				apiKey: "test",
+				fetch: requestFetch,
+				reasoning: "max",
+				onPayload: (payload) => omitKimchiMaxTokens({ type: "before_provider_request", payload }, { model }),
+			},
+		).result()
+
+		expect(sentPayload).toMatchObject({ reasoning_effort: "max" })
 	})
 
 	it("leaves non-Kimchi provider payloads unchanged", () => {
