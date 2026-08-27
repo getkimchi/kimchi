@@ -24,8 +24,8 @@
 
 import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
-import { arch, homedir, version as osVersion, platform, release, userInfo } from "node:os"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs"
+import { arch, homedir, version as osVersion, platform, release, tmpdir, userInfo } from "node:os"
 import { join, resolve } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
@@ -80,36 +80,41 @@ function safeUsername(): string {
 }
 
 /**
- * Remove stale deployed copies of bundled skills from the harness dir.
- * The old deploy mechanism copied bundled skills (e.g. improve) into
- * ~/.config/kimchi/harness/skills/ — now that bundled skills ship from
- * resources/skills/ and are contributed via resources_discover, those stale
- * copies cause collision warnings. This is a one-time migration: it only
- * removes skills whose names match a bundled skill, and only if the harness
- * dir doesn't have a .usage.json marking them as user-created.
+ * Create a filtered temp copy of the bundled skills dir containing only
+ * skills whose names are NOT already present in a stronger path (the
+ * harness dir pi loads natively, plus any earlier contributed paths).
+ * This avoids collision warnings for bundled skills that were previously
+ * deployed to the harness dir, while still contributing new bundled skills
+ * (e.g. dap-debugging) that don't exist elsewhere.
+ *
+ * Returns the temp dir path, or undefined if all bundled skills are already
+ * covered (in which case nothing is contributed).
  */
-function removeStaleDeployedBundledSkills(harnessDir: string, bundledDir: string): void {
-	if (!existsSync(harnessDir) || !existsSync(bundledDir)) return
-	let bundledNames: string[]
+function filterBundledSkills(bundledDir: string, existingSkillNames: Set<string>): string | undefined {
+	const bundledSkills = listSkillNames(bundledDir)
+	if (bundledSkills.length === 0) return undefined
+	const newSkills = bundledSkills.filter((name) => !existingSkillNames.has(name))
+	if (newSkills.length === 0) return undefined
+	const tempDir = mkdtempSync(join(tmpdir(), "kimchi-bundled-skills-"))
+	for (const name of newSkills) {
+		cpSync(join(bundledDir, name), join(tempDir, name), { recursive: true })
+	}
+	return tempDir
+}
+
+function listSkillNames(dir: string): string[] {
 	try {
-		bundledNames = readdirSync(bundledDir, { withFileTypes: true })
+		return readdirSync(dir, { withFileTypes: true })
 			.filter((e) => e.isDirectory())
 			.map((e) => e.name)
 	} catch {
-		return
+		return []
 	}
-	for (const name of bundledNames) {
-		const harnessSkillDir = join(harnessDir, name)
-		if (!existsSync(harnessSkillDir)) continue
-		// Only remove if not user-created (no .usage.json with agent_created)
-		const usagePath = join(harnessSkillDir, ".usage.json")
-		if (existsSync(usagePath)) continue
-		try {
-			rmSync(harnessSkillDir, { recursive: true, force: true })
-		} catch {
-			// Best-effort cleanup — if removal fails, the collision warning is
-			// harmless (first-wins means the harness copy wins anyway).
-		}
+}
+
+function collectSkillNames(dir: string, out: Set<string>): void {
+	for (const name of listSkillNames(dir)) {
+		out.add(name)
 	}
 }
 
@@ -558,16 +563,22 @@ export default function (skillPathsFromConfig: string[]) {
 				(p) => resolve(p) !== resolve(harnessDir),
 			)
 			skillPaths.push(...configuredPaths)
-			// Bundled skills shipped with the harness — contributed last (weakest
-			// collision slot: pi's loader is first-wins). dedupeExistingSkillPaths
-			// skips this dir entirely when all its skills are already present in
-			// a stronger path (e.g. a stale copy from the old deploy mechanism).
+			// Collect skill names from all stronger paths (pi's includeDefaults
+			// loads the harness dir, plus the configured paths above) so bundled
+			// skills that already exist there can be silently skipped — only
+			// new bundled skills (e.g. dap-debugging) get contributed.
+			const existingSkillNames = new Set<string>()
+			collectSkillNames(harnessDir, existingSkillNames)
+			for (const p of configuredPaths) collectSkillNames(p, existingSkillNames)
+			for (const p of getKimchiProjectSkillPaths(event.cwd)) collectSkillNames(p, existingSkillNames)
+			// Bundled skills shipped with the harness — create a filtered temp copy
+			// containing only skills not already in a stronger path, so no
+			// collision warnings are emitted. The stronger copy wins (first-wins);
+			// bundled skills not present elsewhere are still contributed.
 			const bundledDir = resolveBundledSkillsDir()
 			if (bundledDir) {
-				// One-time migration: remove stale deployed copies of bundled skills
-				// from the harness dir (the old deploy mechanism wrote them there).
-				removeStaleDeployedBundledSkills(resolveHarnessSkillsDir(), bundledDir)
-				skillPaths.push(bundledDir)
+				const filtered = filterBundledSkills(bundledDir, existingSkillNames)
+				if (filtered) skillPaths.push(filtered)
 			}
 			// Filter out non-existent paths — pi emits a warning diagnostic for
 			// every contributed path that doesn't exist on disk. Configured
