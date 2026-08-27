@@ -143,6 +143,7 @@ describe("resolveClonePlan", () => {
 			{ match: "rev-parse --is-inside-work-tree", result: { stdout: "true\n", stderr: "" } },
 			{ match: "remote get-url origin", result: { stdout: `${originUrl}\n`, stderr: "" } },
 			{ match: "symbolic-ref --short HEAD", result: { stdout: "main\n", stderr: "" } },
+			{ match: "ls-remote --heads origin main", result: { stdout: "ref: refs/heads/main\n", stderr: "" } },
 		])
 		const plan = await resolveClonePlan("/fake", undefined, { exec })
 		expect(plan).toEqual({
@@ -152,12 +153,26 @@ describe("resolveClonePlan", () => {
 		})
 	})
 
-	it("unpushed branch: still returns branch (worker handles not-on-origin)", async () => {
+	it("unpushed branch: returns undefined branch when not on origin", async () => {
+		const url = "https://github.com/org/repo.git"
+		const exec = mockExec([
+			{ match: "rev-parse --is-inside-work-tree", result: { stdout: "true\n", stderr: "" } },
+			{ match: "remote get-url origin", result: { stdout: `${url}\n`, stderr: "" } },
+			{ match: "symbolic-ref --short HEAD", result: { stdout: "feature-branch\n", stderr: "" } },
+			{ match: "ls-remote --heads origin feature-branch", result: { stdout: "", stderr: "" } },
+		])
+		const plan = await resolveClonePlan("/fake", url, { exec })
+		expect(plan).toEqual({ url, httpsUrl: url })
+		expect(plan.branch).toBeUndefined()
+	})
+
+	it("ls-remote error: trusts the branch (network failure fallback)", async () => {
 		const url = "https://github.com/org/repo.git"
 		const exec = mockExec([
 			{ match: "rev-parse --is-inside-work-tree", result: { stdout: "true\n", stderr: "" } },
 			{ match: "remote get-url origin", result: { stdout: `${url}\n`, stderr: "" } },
 			{ match: "symbolic-ref --short HEAD", result: { stdout: "main\n", stderr: "" } },
+			{ match: "ls-remote --heads origin main", throw: new Error("network unreachable") },
 		])
 		const plan = await resolveClonePlan("/fake", url, { exec })
 		expect(plan).toEqual({ url, httpsUrl: url, branch: "main" })
@@ -180,6 +195,7 @@ describe("resolveClonePlan", () => {
 			{ match: "rev-parse --is-inside-work-tree", result: { stdout: "true\n", stderr: "" } },
 			{ match: "remote get-url origin", throw: new Error("fatal: No such remote 'origin'") },
 			{ match: "symbolic-ref --short HEAD", result: { stdout: "main\n", stderr: "" } },
+			{ match: "ls-remote --heads origin main", result: { stdout: "ref: refs/heads/main\n", stderr: "" } },
 		])
 		const plan = await resolveClonePlan("/fake", url, { exec })
 		expect(plan).toEqual({ url, httpsUrl: url, branch: "main" })
