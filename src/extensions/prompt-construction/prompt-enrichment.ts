@@ -545,14 +545,18 @@ export default function (skillPathsFromConfig: string[]) {
 			// pi's loader is first-wins and discovered paths append after
 			// defaults), and configured native skill dirs.
 			const skillPaths = [...getKimchiProjectSkillPaths(event.cwd)]
-			const bundledDir = resolveBundledSkillsDir()
-			if (bundledDir) skillPaths.push(bundledDir)
 			// Configured native skill dirs (kimchi config.json skillPaths, e.g.
 			// ~/.config/kimchi/harness/skills) — pi has no visibility into our
 			// config file, so we must contribute them or they silently vanish
 			// from /skill:*, autocomplete and /resources once the prompt reads
 			// pi's resolved inventory instead of composing paths itself.
 			skillPaths.push(...getConfiguredSkillResourcePaths(event.cwd, skillPathsFromConfig))
+			// Bundled skills shipped with the harness — contributed last (weakest
+			// collision slot: pi's loader is first-wins). dedupeExistingSkillPaths
+			// skips this dir entirely when all its skills are already present in
+			// a stronger path (e.g. a stale copy from the old deploy mechanism).
+			const bundledDir = resolveBundledSkillsDir()
+			if (bundledDir) skillPaths.push(bundledDir)
 			// Filter out non-existent paths — pi emits a warning diagnostic for
 			// every contributed path that doesn't exist on disk. Configured
 			// paths like `.pi/agent/skills` or `.claude/skills` are optional
