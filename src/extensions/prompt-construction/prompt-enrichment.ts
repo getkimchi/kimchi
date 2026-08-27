@@ -30,8 +30,7 @@ import { join } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
-import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
-import { getKimchiProjectSkillPaths } from "../../skill-paths.js"
+import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -482,22 +481,12 @@ export default function (skillPathsFromConfig: string[]) {
 		let cachedGitRemote: string | undefined | null = null
 
 		pi.on("resources_discover", (event) => {
-			// Contribute Kimchi-only sources to pi's resource inventory so every
-			// downstream surface (base prompt skills section, /skill:<name>,
-			// autocomplete, /resources) sees them: ancestor .kimchi/skills project
-			// skills (intentional product behavior, trusted like user skills) and
-			// bundled skills shipped with the harness (weakest collision slot —
-			// pi's loader is first-wins and discovered paths append after
-			// defaults), and configured native skill dirs.
-			const skillPaths = [...getKimchiProjectSkillPaths(event.cwd)]
-			const bundledDir = resolveBundledSkillsDir()
-			if (bundledDir) skillPaths.push(bundledDir)
-			// Configured native skill dirs (kimchi config.json skillPaths, e.g.
-			// ~/.config/kimchi/harness/skills) — pi has no visibility into our
-			// config file, so we must contribute them or they silently vanish
-			// from /skill:*, autocomplete and /resources once the prompt reads
-			// pi's resolved inventory instead of composing paths itself.
-			skillPaths.push(...getConfiguredSkillResourcePaths(event.cwd, skillPathsFromConfig))
+			// Contribute Kimchi-only skill sources to pi's resource inventory so
+			// every downstream surface (base prompt skills section, /skill:<name>,
+			// autocomplete, /resources) sees them. All discovery, filtering, and
+			// collision-avoidance logic lives in resolveSkillPathsForDiscovery.
+			const extraPaths = getConfiguredSkillResourcePaths(event.cwd, skillPathsFromConfig)
+			const skillPaths = resolveSkillPathsForDiscovery(event.cwd, { extraPaths })
 			if (skillPaths.length === 0) return undefined
 			return { skillPaths }
 		})
