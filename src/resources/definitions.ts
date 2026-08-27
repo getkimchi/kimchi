@@ -1,4 +1,4 @@
-import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../extensions/bash-default-timeout.js"
+import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../extensions/bash-timeout-constants.js"
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../extensions/claude-code-skills/definition.js"
 import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
