@@ -207,7 +207,7 @@ describe("agent message contract", () => {
 		).toBe(false)
 	})
 
-	it("canonicalizes duplicate-guard keys regardless of model key ordering", () => {
+	it("builds duplicate-guard keys from source, recipient, and payload", () => {
 		const recipient = { type: "agent", agentId: "agent-2" } as const
 		const a = createDuplicateMessageKey("agent-1", recipient, {
 			kind: "question",
@@ -215,13 +215,14 @@ describe("agent message contract", () => {
 			impact: "Blocks",
 			canContinue: true,
 		})
-		const reordered = createDuplicateMessageKey("agent-1", { agentId: "agent-2", type: "agent" }, {
-			canContinue: true,
-			impact: "Blocks",
-			question: "Proceed?",
-			kind: "question",
-		} as Parameters<typeof createDuplicateMessageKey>[2])
-		expect(a).toBe(reordered)
+		expect(a).toBe(
+			createDuplicateMessageKey("agent-1", recipient, {
+				kind: "question",
+				question: "Proceed?",
+				impact: "Blocks",
+				canContinue: true,
+			}),
+		)
 		expect(a.startsWith("agent-1|")).toBe(true)
 		expect(
 			createDuplicateMessageKey("agent-1", recipient, {
@@ -231,5 +232,6 @@ describe("agent message contract", () => {
 				canContinue: true,
 			}),
 		).not.toBe(a)
+		expect(createDuplicateMessageKey("agent-2", recipient, { kind: "status", summary: "x" })).not.toBe(a)
 	})
 })

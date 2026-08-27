@@ -199,29 +199,16 @@ export type AgentMessageInput =
 			payload: AgentStatusPayload | AgentHandoffInputPayload
 	  }
 
-/** Canonical JSON with recursively sorted keys, so the duplicate guard
- *  cannot be defeated by model key ordering. */
-function canonicalForDuplicateGuard(value: unknown): string {
-	if (Array.isArray(value)) return `[${value.map(canonicalForDuplicateGuard).join(",")}]`
-	if (value && typeof value === "object") {
-		return `{${Object.keys(value as Record<string, unknown>)
-			.sort()
-			.map((key) => `${JSON.stringify(key)}:${canonicalForDuplicateGuard((value as Record<string, unknown>)[key])}`)
-			.join(",")}}`
-	}
-	return JSON.stringify(value) ?? "null"
-}
-
-/** Identity of one send attempt for the loop guard: same source, same
- *  recipient, same semantic payload. Tool-call/idempotency identity is
- *  deliberately absent — retried tool calls are already deduped by receipt
- *  reservations; this catches identical NEW calls (model send-loops). */
-export function createDuplicateMessageKey<T extends AgentMessagePayload | AgentMessageInput["payload"]>(
+// ponytail: plain JSON.stringify — a model's repeated sends share key order,
+// so canonical sorting was cut; add it back if reordered resends ever defeat
+// the guard. Source stays first because agent cleanup eats keys by
+// `${agentId}|` prefix.
+export function createDuplicateMessageKey(
 	sourceAgentId: string,
 	recipient: AgentMessageRecipient,
-	payload: T,
+	payload: AgentMessagePayload | AgentMessageInput["payload"],
 ): string {
-	return `${sourceAgentId}|${canonicalForDuplicateGuard(recipient)}|${canonicalForDuplicateGuard(payload)}`
+	return `${sourceAgentId}|${JSON.stringify([recipient, payload])}`
 }
 
 export interface AgentMessage {

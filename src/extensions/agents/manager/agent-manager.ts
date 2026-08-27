@@ -1788,16 +1788,9 @@ export class AgentManager {
 	}
 
 	private evictOldestLoopGuardKey(): boolean {
-		let oldestKey: string | undefined
-		let oldestSeenAt = Number.POSITIVE_INFINITY
-		for (const [key, seenAt] of this.loopGuardKeys) {
-			if (seenAt < oldestSeenAt) {
-				oldestKey = key
-				oldestSeenAt = seenAt
-			}
-		}
-		if (oldestKey === undefined) return false
-		this.loopGuardKeys.delete(oldestKey)
+		const oldest = this.loopGuardKeys.keys().next().value
+		if (oldest === undefined) return false
+		this.loopGuardKeys.delete(oldest)
 		return true
 	}
 
