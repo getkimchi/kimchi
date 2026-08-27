@@ -1,12 +1,20 @@
 # Patch: Kimchi runtime and UI integrations for pi-coding-agent 0.84.1
 #
-# Tracking: LLM-2564. No matching upstream issue exists yet; report remaining
+# 1. LLM-2564
+# No matching upstream issue exists yet; report remaining
 # generic changes to https://github.com/earendil-works/pi before the next upgrade.
 # Retains Kimchi CLI/provider defaults, extension-triggered prompt handling,
 # forced compaction, model selection, extension UI helpers, and compact visuals.
 # Removal: delete each hunk once the pinned Pi release exposes equivalent APIs
 # or Kimchi no longer needs the branded behavior.
 #
+# 2. LLM-3185
+# Upstream issue for cwd-aware tool execution: https://github.com/earendil-works/pi/issues/8679
+# Remove the cwd-resolution hunks once the upstream release makes the built-in
+# tools respect ExtensionContext.cwd. Changes: make cwd-sensitive built-in tools
+# (read, write, edit, grep, find, ls, bash) use ctx.cwd from the execute ExtensionContext
+# when available, falling back to the cwd captured at tool creation time.
+
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index e66b528fe676bd24ee5ad95abaa6201418850678..a15fe8267bfe863a8becaadc0f894ace5db70767 100644
 --- a/dist/cli/args.js
@@ -170,7 +178,7 @@ index 7d93ba62bdb5d47e129751e8075cbb34620322ad..89c8147bdfcd8ce91ea6a51ea4822c81
              ? provider
              : withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt));
 diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
-index f274908793624a5870008ab738fa19ac6758165c..320acfb56155b8d9711b423824350b7630b8e8cb 100644
+index f274908793624a5870008ab738fa19ac6758165c..c697aeeb7a651ef86cccef4fec944f41ccede0ee 100644
 --- a/dist/core/tools/bash.js
 +++ b/dist/core/tools/bash.js
 @@ -81,6 +81,12 @@ export function createLocalBashOperations(options) {
@@ -186,8 +194,17 @@ index f274908793624a5870008ab738fa19ac6758165c..320acfb56155b8d9711b423824350b76
                      }, timeoutMs);
                  }
                  // Stream stdout and stderr.
+@@ -236,7 +242,7 @@ export function createBashToolDefinition(cwd, options) {
+         parameters: bashSchema,
+         async execute(_toolCallId, { command, timeout }, signal, onUpdate, ctx) {
+             const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
+-            const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook, exposeSessionEnvironment, ctx);
++            const spawnContext = resolveSpawnContext(resolvedCommand, ctx?.cwd || cwd, spawnHook, exposeSessionEnvironment, ctx);
+             const output = new OutputAccumulator({ tempFilePrefix: "pi-bash" });
+             let acceptingOutput = true;
+             let updateTimer;
 diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
-index 9e83601e93c81b87d52448b429f4817e6cf25bd5..a124622278d37c6372466b990a2240dae094e9c5 100644
+index 9e83601e93c81b87d52448b429f4817e6cf25bd5..77842d28d32ddd4b172ff0993d58b82ccf4913f0 100644
 --- a/dist/core/tools/edit.js
 +++ b/dist/core/tools/edit.js
 @@ -64,7 +64,7 @@ function validateEditInput(input) {
@@ -218,6 +235,112 @@ index 9e83601e93c81b87d52448b429f4817e6cf25bd5..a124622278d37c6372466b990a2240da
  }
  function buildEditCallComponent(component, args, theme, cwd) {
      component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
+@@ -175,9 +175,9 @@ export function createEditToolDefinition(cwd, options) {
+         parameters: editSchema,
+         renderShell: "self",
+         prepareArguments: prepareEditArguments,
+-        async execute(_toolCallId, input, signal, _onUpdate, _ctx) {
++        async execute(_toolCallId, input, signal, _onUpdate, ctx) {
+             const { path, edits } = validateEditInput(input);
+-            const absolutePath = resolveToCwd(path, cwd);
++            const absolutePath = resolveToCwd(path, ctx?.cwd || cwd);
+             return withFileMutationQueue(absolutePath, async () => {
+                 // Do not reject from an abort event listener here: that would release the
+                 // mutation queue while an in-flight filesystem operation may still finish.
+diff --git a/dist/core/tools/find.js b/dist/core/tools/find.js
+index 2e91d7dacb94bf5f018d4464ca46d2b1be689629..9a4e6d7a80af4465d0c8119b0f83bf3fef5a67e1 100644
+--- a/dist/core/tools/find.js
++++ b/dist/core/tools/find.js
+@@ -81,7 +81,7 @@ export function createFindToolDefinition(cwd, options) {
+         description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
+         promptSnippet: findToolSystemPromptContribution.snippet,
+         parameters: findSchema,
+-        async execute(_toolCallId, { pattern, path: searchDir, limit }, signal, _onUpdate, _ctx) {
++        async execute(_toolCallId, { pattern, path: searchDir, limit }, signal, _onUpdate, ctx) {
+             return new Promise((resolve, reject) => {
+                 if (signal?.aborted) {
+                     reject(new Error("Operation aborted"));
+@@ -104,7 +104,7 @@ export function createFindToolDefinition(cwd, options) {
+                 signal?.addEventListener("abort", onAbort, { once: true });
+                 (async () => {
+                     try {
+-                        const searchPath = resolveToCwd(searchDir || ".", cwd);
++                        const searchPath = resolveToCwd(searchDir || ".", ctx?.cwd || cwd);
+                         const effectiveLimit = limit ?? DEFAULT_LIMIT;
+                         const ops = customOps ?? defaultFindOperations;
+                         // If custom operations provide glob(), use that instead of fd.
+diff --git a/dist/core/tools/grep.js b/dist/core/tools/grep.js
+index 6bf8d30f6da2b78d8df60ddc59980e3ce47669d4..505a0f9e5a352e1d4dfa6093cf299b0fd456d7fd 100644
+--- a/dist/core/tools/grep.js
++++ b/dist/core/tools/grep.js
+@@ -81,7 +81,7 @@ export function createGrepToolDefinition(cwd, options) {
+         description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
+         promptSnippet: grepToolSystemPromptContribution.snippet,
+         parameters: grepSchema,
+-        async execute(_toolCallId, { pattern, path: searchDir, glob, ignoreCase, literal, context, limit, }, signal, _onUpdate, _ctx) {
++        async execute(_toolCallId, { pattern, path: searchDir, glob, ignoreCase, literal, context, limit, }, signal, _onUpdate, ctx) {
+             return new Promise((resolve, reject) => {
+                 if (signal?.aborted) {
+                     reject(new Error("Operation aborted"));
+@@ -101,7 +101,7 @@ export function createGrepToolDefinition(cwd, options) {
+                             settle(() => reject(new Error("ripgrep (rg) is not available and could not be downloaded")));
+                             return;
+                         }
+-                        const searchPath = resolveToCwd(searchDir || ".", cwd);
++                        const searchPath = resolveToCwd(searchDir || ".", ctx?.cwd || cwd);
+                         const ops = customOps ?? defaultGrepOperations;
+                         let isDirectory;
+                         try {
+diff --git a/dist/core/tools/ls.js b/dist/core/tools/ls.js
+index ad34121da4a020ad76e840d9fba35380b8d9e60e..8720da282a217da260a405fb476dcd1f23a2f938 100644
+--- a/dist/core/tools/ls.js
++++ b/dist/core/tools/ls.js
+@@ -63,7 +63,7 @@ export function createLsToolDefinition(cwd, options) {
+         description: `List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to ${DEFAULT_LIMIT} entries or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
+         promptSnippet: lsToolSystemPromptContribution.snippet,
+         parameters: lsSchema,
+-        async execute(_toolCallId, { path, limit }, signal, _onUpdate, _ctx) {
++        async execute(_toolCallId, { path, limit }, signal, _onUpdate, ctx) {
+             return new Promise((resolve, reject) => {
+                 if (signal?.aborted) {
+                     reject(new Error("Operation aborted"));
+@@ -73,7 +73,7 @@ export function createLsToolDefinition(cwd, options) {
+                 signal?.addEventListener("abort", onAbort, { once: true });
+                 (async () => {
+                     try {
+-                        const dirPath = resolveToCwd(path || ".", cwd);
++                        const dirPath = resolveToCwd(path || ".", ctx?.cwd || cwd);
+                         const effectiveLimit = limit ?? DEFAULT_LIMIT;
+                         // Check if path exists.
+                         if (!(await ops.exists(dirPath))) {
+diff --git a/dist/core/tools/read.js b/dist/core/tools/read.js
+index 9664aab002dd44b8e76097bed35b38cace9e1c22..56e876f0a669dd630452801b4b91a950ac10ad52 100644
+--- a/dist/core/tools/read.js
++++ b/dist/core/tools/read.js
+@@ -155,7 +155,7 @@ export function createReadToolDefinition(cwd, options) {
+                 signal?.addEventListener("abort", onAbort, { once: true });
+                 (async () => {
+                     try {
+-                        const absolutePath = await resolveReadPathAsync(path, cwd);
++                        const absolutePath = await resolveReadPathAsync(path, ctx?.cwd || cwd);
+                         if (aborted)
+                             return;
+                         // Check if file exists and is readable.
+diff --git a/dist/core/tools/write.js b/dist/core/tools/write.js
+index 36c3d7fd9c8e30555387498d4520be00391a3d0b..a6b116089913fc9eea6e7b2688c47ecfc2c0ff93 100644
+--- a/dist/core/tools/write.js
++++ b/dist/core/tools/write.js
+@@ -141,8 +141,8 @@ export function createWriteToolDefinition(cwd, options) {
+         promptSnippet: writeToolSystemPromptContribution.snippet,
+         promptGuidelines: [...writeToolSystemPromptContribution.guidelines],
+         parameters: writeSchema,
+-        async execute(_toolCallId, { path, content }, signal, _onUpdate, _ctx) {
+-            const absolutePath = resolveToCwd(path, cwd);
++        async execute(_toolCallId, { path, content }, signal, _onUpdate, ctx) {
++            const absolutePath = resolveToCwd(path, ctx?.cwd || cwd);
+             const dir = dirname(absolutePath);
+             return withFileMutationQueue(absolutePath, async () => {
+                 // Do not reject from an abort event listener here: that would release the
 diff --git a/dist/modes/interactive/components/branch-summary-message.js b/dist/modes/interactive/components/branch-summary-message.js
 index e23ca6db02a29814112dd4945bd868604eb6676f..d0f6fd7aeb79c6a20655805152a30970f1b4cc2a 100644
 --- a/dist/modes/interactive/components/branch-summary-message.js
