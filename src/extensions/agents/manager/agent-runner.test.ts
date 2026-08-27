@@ -569,6 +569,30 @@ describe("runAgent — Plan agent plan persistence", () => {
 		expect(result.planPath).toBe(planPath)
 	})
 
+	it("wires ExitPlanMode into the Plan child tool allowlist and loader", async () => {
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Plan", "plan it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockCreateAgentSession).toHaveBeenCalledWith(
+			expect.objectContaining({ tools: expect.arrayContaining(["ExitPlanMode"]) }),
+		)
+		const loaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		const factories = loaderOptions?.extensionFactories ?? []
+		const planFactory = factories[factories.length - 1]
+		const registerTool = vi.fn()
+		await runInlineExtension(planFactory, { registerTool } as unknown as ExtensionAPI)
+		expect(registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: "ExitPlanMode" }))
+	})
+
 	it("does not persist plain completion-marker text", async () => {
 		const planText = "Some text\n\n<!-- PLAN_COMPLETE -->\n"
 		const session = makeFakeSession({

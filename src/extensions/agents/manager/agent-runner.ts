@@ -15,7 +15,9 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import { Type } from "typebox"
 import { readTelemetryConfig } from "../../../config.js"
+import { derivePlanTitle, savePlanMarkdown } from "../../../shared/planning/plan-markdown.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
@@ -291,6 +293,45 @@ function getPlanPathFromToolResult(result: unknown): string | undefined {
 	return typeof planPath === "string" ? planPath : undefined
 }
 
+/**
+ * Register the plan-completion tool in a child session without loading the
+ * parent permissions extension. Child Plan agents have no approval UI; the
+ * orchestrator handles approval after receiving the persisted artifact.
+ */
+export function createSubagentPlanExitExtension(cwd: string): InlineExtension {
+	return (pi) => {
+		pi.registerTool({
+			name: "ExitPlanMode",
+			label: "Save Plan",
+			description: "Save the complete plan and return its path to the orchestrator.",
+			promptSnippet: "Save the completed plan",
+			parameters: Type.Object({
+				plan: Type.String({ description: "The complete plan in the shared structure." }),
+			}),
+			execute: async (_toolCallId, params) => {
+				const planText = params.plan.trim()
+				if (!planText) {
+					return {
+						content: [{ type: "text" as const, text: "Provide the complete plan in the `plan` argument." }],
+						details: null,
+					}
+				}
+
+				const planPath = savePlanMarkdown({
+					cwd,
+					name: derivePlanTitle(planText),
+					planText: `${planText}\n`,
+				})
+				return {
+					content: [{ type: "text" as const, text: `Plan saved to ${planPath}.` }],
+					details: { planPath },
+					terminate: true,
+				}
+			},
+		})
+	}
+}
+
 function usageDelta(total: LifetimeUsage | undefined, observed: LifetimeUsage): LifetimeUsage | undefined {
 	if (!total) return undefined
 	const delta = {
@@ -376,6 +417,9 @@ async function runAgentInner(
 	}
 
 	let toolNames = getToolNamesForType(type)
+	if (type === "Plan" && !toolNames.includes("ExitPlanMode")) {
+		toolNames = [...toolNames, "ExitPlanMode"]
+	}
 
 	if (Array.isArray(skills)) {
 		const loaded = preloadSkills(skills, effectiveCwd)
@@ -483,6 +527,7 @@ ${skillLines}`
 		infrastructureBreakerExtension,
 		omitKimchiMaxTokensExtension,
 	]
+	if (type === "Plan") extensionFactories.push(createSubagentPlanExitExtension(effectiveCwd))
 	// Personas that request DAP debugger tools (e.g. Debugger) need the dap
 	// extension registered in the child session: repo-native extensions wired
 	// directly in cli.ts are not discovered by a child DefaultResourceLoader.
