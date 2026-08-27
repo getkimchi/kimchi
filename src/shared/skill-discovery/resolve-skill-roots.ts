@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdtempSync, readdirSync } from "node:fs"
+import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -135,46 +135,55 @@ export function resolveSkillPathsForDiscovery(
 		configPaths: options?.configPaths ?? [],
 	})
 
+	const harnessDir = resolveHarnessSkillsDir(home)
+	const normalizedHarnessDir = resolve(harnessDir)
+
+	// First pass: collect skill names from all non-bundled roots + extraPaths
+	// so the bundled filter is robust to root ordering (resolveSkillRoots
+	// returns weakest-first, so bundled comes before project/config).
+	const skillNamesFromStronger = new Set<string>()
+	collectSkillNames(harnessDir, skillNamesFromStronger)
+	for (const root of roots) {
+		if (root.kind === "bundled" || root.kind === "harness") continue
+		if (!existsSync(root.dir)) continue
+		collectSkillNames(root.dir, skillNamesFromStronger)
+	}
+	for (const p of options?.extraPaths ?? []) {
+		if (resolve(p) === normalizedHarnessDir) continue
+		if (!existsSync(p)) continue
+		collectSkillNames(p, skillNamesFromStronger)
+	}
+
+	// Second pass: build the output path list.
 	const paths: string[] = []
 	const seen = new Set<string>()
-	const skillNamesFromStronger = new Set<string>()
-	const harnessDir = resolveHarnessSkillsDir(home)
-
-	// Seed with skill names pi loads via includeDefaults (harness dir).
-	collectSkillNames(harnessDir, skillNamesFromStronger)
 
 	for (const root of roots) {
-		// Skip the harness dir — pi loads it natively via includeDefaults.
 		if (root.kind === "harness") continue
 		const normalized = resolve(root.dir)
 		if (seen.has(normalized)) continue
 		if (!existsSync(normalized)) continue
 
 		if (root.kind === "bundled") {
-			// Create a filtered temp copy containing only skills not already
-			// in a stronger path, so no collision warnings are emitted.
 			const filtered = filterBundledSkills(normalized, skillNamesFromStronger)
 			if (filtered) {
+				seen.add(filtered)
 				paths.push(filtered)
-				collectSkillNames(filtered, skillNamesFromStronger)
 			}
 			continue
 		}
 
 		seen.add(normalized)
-		paths.push(root.dir)
-		collectSkillNames(normalized, skillNamesFromStronger)
+		paths.push(normalized)
 	}
 
-	// Add extra paths (e.g. configured skillPaths from kimchi config.json).
 	for (const p of options?.extraPaths ?? []) {
 		const normalized = resolve(p)
 		if (seen.has(normalized)) continue
-		if (resolve(p) === resolve(harnessDir)) continue
+		if (normalized === normalizedHarnessDir) continue
 		if (!existsSync(normalized)) continue
 		seen.add(normalized)
-		paths.push(p)
-		collectSkillNames(normalized, skillNamesFromStronger)
+		paths.push(normalized)
 	}
 
 	return paths
@@ -202,6 +211,9 @@ function filterBundledSkills(bundledDir: string, existingSkillNames: Set<string>
 	const newSkills = bundledSkills.filter((name) => !existingSkillNames.has(name))
 	if (newSkills.length === 0) return undefined
 	const tempDir = mkdtempSync(join(tmpdir(), "kimchi-bundled-skills-"))
+	process.once("exit", () => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
 	for (const name of newSkills) {
 		cpSync(join(bundledDir, name), join(tempDir, name), { recursive: true })
 	}
