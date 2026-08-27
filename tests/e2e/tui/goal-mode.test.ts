@@ -26,7 +26,9 @@ test("experimental goal evaluates continue, resumes work, then completes", async
 		stream: ["The plan is ready; implementation still remains."],
 	}
 	const continueEvaluationResponse: FakeResponseScript = {
-		stream: ['{"verdict":"continue","reason":"Implementation is not evidenced yet."}'],
+		stream: [
+			'{"verdict":"continue","checks":[{"requirement":"Implement feature A","met":false,"evidence":["m1"],"todoIds":[1]}],"reason":"Implementation is not evidenced yet."}',
+		],
 	}
 	const finishTodosResponse: FakeResponseScript = {
 		stream: ["Working toward the session goal.", " Verification is complete."],
@@ -51,7 +53,9 @@ test("experimental goal evaluates continue, resumes work, then completes", async
 		],
 	}
 	const metEvaluationResponse: FakeResponseScript = {
-		stream: ['{"verdict":"met","reason":"The Todo is completed and the transcript contains verification."}'],
+		stream: [
+			'{"verdict":"met","checks":[{"requirement":"Implement feature A","met":true,"evidence":["m1"],"todoIds":[1]}],"reason":"The Todo is completed and the transcript contains verification."}',
+		],
 	}
 
 	await runKimchiSession(
@@ -102,6 +106,43 @@ test("experimental goal evaluates continue, resumes work, then completes", async
 			await new Promise((resolve) => setTimeout(resolve, 2_000))
 			expect(chatRequests(fixture.fake.requests)).toHaveLength(6)
 			trace.step("continue then met evaluation completed without duplicate Goal UI")
+		},
+	)
+})
+
+test("experimental goal shows the reason when work is blocked", async ({ terminal }) => {
+	const blockedReason = "Needs a user-owned API token."
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "goal-mode-blocked",
+			seedHome: (homeDir) => enableGoalMode(homeDir),
+			responses: [
+				{
+					stream: ["I cannot continue without user input."],
+					toolCalls: [
+						{
+							id: "block-goal",
+							function: {
+								name: "update_goal",
+								arguments: JSON.stringify({ status: "blocked", reason: blockedReason }),
+							},
+						},
+					],
+				},
+			],
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
+
+			terminal.submit("/goal finish the authenticated setup")
+			await waitForText(terminal, "Goal blocked.", { timeoutMs: 5_000 })
+			terminal.submit("/goal")
+			await waitForText(terminal, "Status: blocked", { timeoutMs: 5_000 })
+			await waitForText(terminal, `Blocked reason: ${blockedReason}`, { timeoutMs: 5_000 })
+			await new Promise((resolve) => setTimeout(resolve, 500))
+			expect(chatRequests(fixture.fake.requests)).toHaveLength(1)
+			trace.step("blocked Goal reports its persisted reason without an evaluator call")
 		},
 	)
 })

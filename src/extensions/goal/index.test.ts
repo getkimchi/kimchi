@@ -832,7 +832,7 @@ describe("goal extension", () => {
 			status: "blocked",
 			reason: "needs user input",
 		})
-		expect(harness.currentGoal()?.status).toBe("blocked")
+		expect(harness.currentGoal()).toMatchObject({ status: "blocked", blockedReason: "needs user input" })
 		expect(harness.events.emit).toHaveBeenLastCalledWith(
 			GOAL_EVENTS.BLOCKED,
 			expect.objectContaining({ status: "blocked" }),
@@ -1013,6 +1013,7 @@ describe("goal extension", () => {
 
 		expect(harness.currentGoal()).toMatchObject({
 			status: "blocked",
+			blockedReason: "Needs a user-owned credential.",
 			lastEvaluation: { verdict: "impossible", reason: "Needs a user-owned credential." },
 		})
 		expect(harness.events.emit).toHaveBeenCalledWith(
@@ -1020,6 +1021,10 @@ describe("goal extension", () => {
 			expect.not.objectContaining({ reason: expect.anything() }),
 		)
 		expect(harness.appendEntry).toHaveBeenCalledTimes(2)
+
+		await harness.command("resume")
+		expect(harness.currentGoal()).toMatchObject({ status: "active" })
+		expect(harness.currentGoal()).not.toHaveProperty("blockedReason")
 	})
 
 	it("pauses resumably when the evaluator is unavailable", async () => {
@@ -1195,6 +1200,23 @@ describe("goal extension", () => {
 		expect(harness.currentGoal()).toBeUndefined()
 	})
 
+	it("drops a late evaluator result after pause and resume", async () => {
+		await harness.command("ship it")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		harness.setIdle(true)
+		const { release, settled, signal } = await holdEvaluation(harness)
+
+		await harness.command("pause")
+		expect(signal?.aborted).toBe(true)
+		await harness.command("resume")
+		expect(harness.currentGoal()).toMatchObject({ status: "active" })
+
+		release({ verdict: "continue", reason: "late result", model: "test/evaluator", usage: EVALUATOR_USAGE })
+		await settled
+		expect(harness.currentGoal()).toMatchObject({ status: "active" })
+		expect(harness.currentGoal()?.evaluationCount).toBeUndefined()
+	})
+
 	it("refuses to resume when required Goal or Todo tools are unavailable", async () => {
 		await harness.command("ship it")
 		await harness.command("pause")
@@ -1330,7 +1352,7 @@ describe("goal extension", () => {
 				details: {
 					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
 					scope: { kind: "global" },
-					todos: [{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working" }],
+					todos: [{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working", note: "No progress" }],
 					updatedAt: "2026-08-03T00:00:01.000Z",
 				},
 			},
@@ -1353,7 +1375,7 @@ describe("goal extension", () => {
 								content: "Do the work",
 								status: "in_progress",
 								activeForm: "Working",
-								note: `Cosmetic note ${turnIndex}`,
+								note: "No progress",
 							},
 						],
 						updatedAt: `2026-08-03T00:00:0${turnIndex + 1}.000Z`,
@@ -1561,6 +1583,99 @@ describe("goal extension", () => {
 
 		expect(harness.currentGoal()).toMatchObject({ status: "active" })
 		expect(harness.currentGoal()?.unchangedContinuationTurns).toBeUndefined()
+	})
+
+	it.each([
+		{ field: "content", value: "Do the remaining work" },
+		{ field: "activeForm", value: "Still working" },
+		{ field: "note", value: "revised" },
+	] as const)("counts active Todo $field revisions as progress", async ({ field, value }) => {
+		await harness.command("keep going")
+		await harness.fire("tool_execution_end", {
+			type: "tool_execution_end",
+			toolName: "create_todos",
+			isError: false,
+			result: {
+				details: {
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+					scope: { kind: "global" },
+					todos: [{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working" }],
+					updatedAt: "2026-08-03T00:00:00.000Z",
+				},
+			},
+		})
+
+		for (let turnIndex = 1; turnIndex <= 2; turnIndex += 1) {
+			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
+			await harness.fire("turn_end", terminalTurn())
+			await settleGoal(harness, "continue")
+		}
+		expect(harness.currentGoal()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
+
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
+		await harness.fire("tool_execution_end", {
+			type: "tool_execution_end",
+			toolName: "update_todos",
+			isError: false,
+			result: {
+				details: {
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+					scope: { kind: "global" },
+					todos: [{ id: 1, content: "Do the work", status: "in_progress", activeForm: "Working", [field]: value }],
+					updatedAt: "2026-08-03T00:00:03.000Z",
+				},
+			},
+		})
+		await harness.fire("turn_end", terminalTurn())
+		await settleGoal(harness, "continue")
+
+		expect(harness.currentGoal()).toMatchObject({ status: "active" })
+		expect(harness.currentGoal()?.unchangedContinuationTurns).toBeUndefined()
+	})
+
+	it("does not count reordering unchanged Todos or lessons as progress", async () => {
+		await harness.command("keep going")
+		await harness.fire("tool_execution_end", {
+			type: "tool_execution_end",
+			toolName: "create_todos",
+			isError: false,
+			result: {
+				details: {
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+					scope: { kind: "global" },
+					todos: [
+						{ id: 1, content: "Active item", status: "in_progress", activeForm: "Working on active item" },
+						{ id: 2, content: "First settled item", status: "completed", note: "Evidence: first check passed" },
+						{ id: 3, content: "Second settled item", status: "completed", note: "Evidence: second check passed" },
+					],
+					updatedAt: "2026-08-03T00:00:00.000Z",
+				},
+			},
+		})
+
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await harness.fire("tool_execution_end", {
+			type: "tool_execution_end",
+			toolName: "update_todos",
+			isError: false,
+			result: {
+				details: {
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+					scope: { kind: "global" },
+					todos: [
+						{ id: 3, content: "Second settled item", status: "completed", note: "Evidence: second check passed" },
+						{ id: 2, content: "First settled item", status: "completed", note: "Evidence: first check passed" },
+						{ id: 1, content: "Active item", status: "in_progress", activeForm: "Working on active item" },
+					],
+					updatedAt: "2026-08-03T00:00:01.000Z",
+				},
+			},
+		})
+		await harness.fire("turn_end", terminalTurn())
+		await settleGoal(harness, "continue")
+
+		expect(harness.currentGoal()).toMatchObject({ status: "active" })
+		expect(harness.currentGoal()?.unchangedContinuationTurns).toBe(1)
 	})
 
 	it("does not loop when goal tools are hidden", async () => {

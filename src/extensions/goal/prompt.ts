@@ -31,9 +31,9 @@ export function replaceGoalContextMessages(
 export function buildGoalContinuation(reassess = false, reason?: string): string {
 	const evaluation = reason ? ` Independent completion check: ${reason}` : ""
 	if (reassess) {
-		return `The goal checkpoint did not materially change. Reassess the current evidence and dead ends, choose a different next action, and update the canonical Todo state before continuing.${evaluation}`
+		return `The goal checkpoint did not materially change. Reassess the current evidence and dead ends, choose a different next action, and add, remove, revise, or reorder tactical Todos as needed while preserving every requirement of the full Goal objective before continuing.${evaluation}`
 	}
-	return `Continue the active goal from the current in-progress Todo. Make concrete progress and keep the canonical Todo state current.${evaluation}`
+	return `Continue the active goal from the current in-progress Todo. As evidence changes, add, remove, revise, or reorder tactical Todos as needed while preserving every requirement of the full Goal objective. Make concrete progress and keep the canonical Todo state current.${evaluation}`
 }
 
 /**

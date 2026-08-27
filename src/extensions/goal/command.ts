@@ -35,6 +35,7 @@ export function formatGoalSummary(goal: SessionGoal | undefined, liveElapsedMs =
 	return [
 		"Goal",
 		`Status: ${goal.status}`,
+		...(goal.status === "blocked" && goal.blockedReason ? [`Blocked reason: ${goal.blockedReason}`] : []),
 		`Revision: ${goal.revision}`,
 		`Objective: ${goal.objective}`,
 		`Usage: ${formatGoalAccounting(goal, liveElapsedMs)}`,

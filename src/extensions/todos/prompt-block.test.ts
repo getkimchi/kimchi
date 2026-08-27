@@ -247,6 +247,34 @@ describe("todo state prompt block (headless)", () => {
 		expect(md).toContain("- ▶ agent-written plan bullet")
 	})
 
+	it("preserves submitted order within ferment and step scopes", () => {
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment", phaseId: "phase-1" },
+				todos: [
+					{ id: 10, content: "[Phase 1] Build", status: "in_progress" },
+					{ id: 6, content: "↳ Later step", status: "pending" },
+					{ id: 2, content: "↳ Earlier step", status: "completed" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+		applyWriteTodos(
+			{
+				scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+				todos: [
+					{ id: 10, content: "First submitted", status: "pending" },
+					{ id: 2, content: "Second submitted", status: "completed" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+
+		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID) ?? ""
+		expect(md.indexOf("↳ Later step")).toBeLessThan(md.indexOf("↳ Earlier step"))
+		expect(md.indexOf("First submitted")).toBeLessThan(md.indexOf("Second submitted"))
+	})
+
 	it("groups global + multiple ferment phases together", () => {
 		applyWriteTodos(
 			{

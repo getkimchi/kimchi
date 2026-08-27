@@ -35,6 +35,7 @@ export interface SessionGoal {
 	revision: number
 	objective: string
 	status: GoalStatus
+	blockedReason?: string
 	completionConfidence?: GoalCompletionConfidence
 	evaluationCount?: number
 	lastEvaluation?: GoalEvaluation

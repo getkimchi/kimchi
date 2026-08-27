@@ -6,6 +6,7 @@ import type { TodoScope } from "./types.js"
 import {
 	__test_buildTodoLines,
 	__test_summarizeTodos,
+	collapseTodoWidget,
 	expandTodoWidget,
 	openTodoWidget,
 	resetTodoWidgetState,
@@ -62,21 +63,58 @@ describe("todo widget helpers", () => {
 		])
 	})
 
-	it("renders command positions instead of stored todo ids", () => {
+	it("renders submitted positions instead of stored todo ids", () => {
 		applyWriteTodos(
 			{
 				todos: [
-					{ id: 6, content: "trace-visible id", status: "in_progress" },
-					{ id: 10, content: "later id", status: "pending" },
+					{ id: 10, content: "first submitted", status: "in_progress" },
+					{ id: 6, content: "second submitted", status: "pending" },
 				],
 			},
 			TEST_SESSION_ID,
 		)
 
 		const lines = __test_buildTodoLines(theme, TEST_SESSION_ID)
-		expect(lines).toContain("  1.  ▶ trace-visible id")
-		expect(lines).toContain("  2.  ○ later id")
-		expect(lines).not.toContain("  6.  ▶ trace-visible id")
+		expect(lines).toContain("  1.  ▶ first submitted")
+		expect(lines).toContain("  2.  ○ second submitted")
+		expect(lines).not.toContain(" 10.  ▶ first submitted")
+		expect(lines.indexOf("  1.  ▶ first submitted")).toBeLessThan(lines.indexOf("  2.  ○ second submitted"))
+	})
+
+	it("preserves submitted order after collapse, reopen, and insertion", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: [
+					{ id: 10, content: "first submitted", status: "in_progress" },
+					{ id: 6, content: "second submitted", status: "pending" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+		openTodoWidget(ctx)
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+
+		collapseTodoWidget(ctx)
+		expect(instance.render(80)).toEqual([])
+
+		applyWriteTodos(
+			{
+				todos: [
+					{ id: 10, content: "first submitted", status: "in_progress" },
+					{ content: "inserted in the middle", status: "pending" },
+					{ id: 6, content: "second submitted", status: "pending" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+		openTodoWidget(ctx)
+
+		expect(instance.render(80)).toEqual(
+			expect.arrayContaining(["  1.  ▶ first submitted", "  2.  ○ inserted in the middle", "  3.  ○ second submitted"]),
+		)
 	})
 
 	it("auto-opens while active todos exist", () => {

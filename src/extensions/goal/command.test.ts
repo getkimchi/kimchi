@@ -71,6 +71,12 @@ describe("goal command", () => {
 		expect(formatGoalAccounting(evaluated)).toBe("<1m · 1.5k tokens")
 	})
 
+	it("shows the persisted blocked reason", () => {
+		expect(formatGoalSummary({ ...goal("blocked"), blockedReason: "needs user input" })).toContain(
+			"Blocked reason: needs user input",
+		)
+	})
+
 	it("formats accounting time in minutes and hours", () => {
 		expect(formatGoalDuration(249_000)).toBe("4m")
 		expect(formatGoalDuration(60 * 60_000)).toBe("1h")

@@ -261,7 +261,11 @@ function goalResponses() {
 				},
 			],
 		},
-		{ stream: ['{"verdict":"met","reason":"The completed Todo and verification are evidenced."}'] },
+		{
+			stream: [
+				'{"verdict":"met","checks":[{"requirement":"feature A is complete","met":true,"evidence":["m1"],"todoIds":[1]}],"reason":"The completed Todo and verification are evidenced."}',
+			],
+		},
 	]
 }
 

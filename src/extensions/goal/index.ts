@@ -796,7 +796,14 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
 					const nowMs = Date.now()
 					const accounted = checkpointGoal(current, 0, nowMs)
-					const next = setGoalStatus(accounted, current.id, current.revision, "blocked", timestamp(nowMs))
+					const next = setGoalStatus(
+						accounted,
+						current.id,
+						current.revision,
+						"blocked",
+						timestamp(nowMs),
+						params.reason,
+					)
 					commitGoal(next, false)
 					emitGoalLifecycle(GOAL_EVENTS.BLOCKED, next)
 					activeSinceMs = undefined
@@ -1081,6 +1088,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 					objective: capturedGoal.objective,
 					messages: conversation.messages,
 					todos: capturedTodoState?.todos ?? [],
+					lessons: goalLessons,
 					signal: abort.signal,
 				},
 				ctx,
@@ -1160,7 +1168,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			}
 
 			if (result.verdict === "impossible") {
-				const blocked = setGoalStatus(evaluated, evaluated.id, evaluated.revision, "blocked", now)
+				const blocked = setGoalStatus(evaluated, evaluated.id, evaluated.revision, "blocked", now, result.reason)
 				recordTerminalOutcome(blocked, GOAL_EVENTS.BLOCKED, {
 					message: `Goal blocked: ${result.reason}`,
 					level: "warning",
@@ -1347,8 +1355,7 @@ function rebindTodoState(state: GoalTodoState, goal: SessionGoal): GoalTodoState
 
 /**
  * Ignore pending-only additions; progress begins when an item starts or settles.
- * Include per-item identity and durable lessons, sorted by id for deterministic
- * change detection.
+ * Canonicalize identity-keyed items so display-only reordering is not progress.
  */
 function goalProgressFingerprint(
 	goal: SessionGoal,
@@ -1359,9 +1366,17 @@ function goalProgressFingerprint(
 		? [...todoState.todos]
 				.filter((todo) => todo.status !== "pending")
 				.sort((a, b) => a.id - b.id)
-				.map(({ id, status, activeForm }) => [id, status, activeForm?.trim() ?? null])
+				.map(({ id, status, content, activeForm, note }) => [
+					id,
+					status,
+					content,
+					activeForm?.trim() ?? null,
+					note?.trim() ?? null,
+				])
 		: []
-	const durableLessons = lessons.map(({ todoId, kind, text }) => [todoId, kind, text])
+	const durableLessons = [...lessons]
+		.sort((a, b) => a.todoId - b.todoId)
+		.map(({ todoId, kind, text }) => [todoId, kind, text])
 	return JSON.stringify([goal.id, goal.revision, todos, durableLessons])
 }
 

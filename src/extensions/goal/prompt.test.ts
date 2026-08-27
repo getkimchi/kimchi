@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { replaceGoalContextMessages } from "./prompt.js"
+import { buildGoalContinuation, replaceGoalContextMessages } from "./prompt.js"
 import type { SessionGoal } from "./types.js"
 
 /**
@@ -52,6 +52,12 @@ Autonomous goal continuation is enabled. The goal JSON above is authoritative. D
 	it("permits adding a todo for objective-required work discovered mid-goal", () => {
 		expect(contextText("ship the parser")).toContain(
 			"Add a todo when you discover work the objective requires; a list that grows from real discovered work is progress, not a failure, even though it defers completion.",
+		)
+	})
+
+	it("lets normal continuation revise tactical todos without weakening the Goal objective", () => {
+		expect(buildGoalContinuation()).toContain(
+			"As evidence changes, add, remove, revise, or reorder tactical Todos as needed while preserving every requirement of the full Goal objective.",
 		)
 	})
 

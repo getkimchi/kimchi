@@ -37,10 +37,11 @@ describe("goal reducer", () => {
 
 	it("rejects empty and overlong newly entered objectives", () => {
 		expect(() => createGoal(undefined, " \n ", "goal-a", T1)).toThrow("Goal objective cannot be empty")
-		expect(createGoal(undefined, "x".repeat(4_000), "goal-a", T1).objective).toHaveLength(4_000)
-		expect(() => createGoal(undefined, "x".repeat(4_001), "goal-a", T1)).toThrow("cannot exceed 4,000")
-		expect(() => editGoal(createGoal(undefined, "old", "goal-a", T1), "goal-a", 1, "x".repeat(4_001), T2)).toThrow(
-			"cannot exceed 4,000",
+		expect(createGoal(undefined, "x".repeat(4_346), "goal-a", T1).objective).toHaveLength(4_346)
+		expect(createGoal(undefined, "x".repeat(8_000), "goal-a", T1).objective).toHaveLength(8_000)
+		expect(() => createGoal(undefined, "x".repeat(8_001), "goal-a", T1)).toThrow("cannot exceed 8,000")
+		expect(() => editGoal(createGoal(undefined, "old", "goal-a", T1), "goal-a", 1, "x".repeat(8_001), T2)).toThrow(
+			"cannot exceed 8,000",
 		)
 	})
 
@@ -92,6 +93,32 @@ describe("goal reducer", () => {
 		expect(resumed).toMatchObject({ status: "budget_limited", tokenBudget: 1_500, tokensUsed: 1_500 })
 	})
 
+	it("normalizes and persists blocked reasons, then clears them on resume", () => {
+		const goal = createGoal(undefined, "old", "goal-a", T1)
+		const blocked = setGoalStatus(goal, "goal-a", 1, "blocked", T2, "  needs user input  ")
+
+		expect(blocked).toMatchObject({ status: "blocked", blockedReason: "needs user input" })
+		expect(restoreGoal([putGoalEntry(blocked)])).toEqual(blocked)
+
+		const resumed = setGoalStatus(blocked, "goal-a", 1, "active", T2)
+		expect(resumed).not.toHaveProperty("blockedReason")
+	})
+
+	it("defaults and bounds blocked reasons while ignoring them for other statuses", () => {
+		const goal = createGoal(undefined, "old", "goal-a", T1)
+
+		expect(setGoalStatus(goal, "goal-a", 1, "blocked", T2, "  ")).toMatchObject({
+			blockedReason: "Goal marked blocked.",
+		})
+		expect(setGoalStatus(goal, "goal-a", 1, "blocked", T2, "x".repeat(1_001)).blockedReason).toHaveLength(1_000)
+
+		const entry = {
+			...putGoalEntry(goal),
+			goal: { ...goal, blockedReason: "stale reason" },
+		}
+		expect(restoreGoal([entry])).not.toHaveProperty("blockedReason")
+	})
+
 	it("strips completionConfidence when restoring a goal that is not complete", () => {
 		const goal = createGoal(undefined, "old", "goal-a", T1)
 		const entry = {
@@ -121,8 +148,11 @@ describe("goal reducer", () => {
 		).toBeUndefined()
 	})
 
-	it("rejects persisted goals above the objective length limit", () => {
-		const persisted = { ...createGoal(undefined, "old", "goal-a", T1), objective: "x".repeat(4_001) }
+	it("restores objectives through 4,346 characters and rejects the new limit", () => {
+		const accepted = { ...createGoal(undefined, "old", "goal-a", T1), objective: "x".repeat(4_346) }
+		expect(restoreGoal([putGoalEntry(accepted)])).toEqual(accepted)
+
+		const persisted = { ...createGoal(undefined, "old", "goal-a", T1), objective: "x".repeat(8_001) }
 		expect(restoreGoal([putGoalEntry(persisted)])).toBeUndefined()
 	})
 

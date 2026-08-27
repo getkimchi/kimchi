@@ -10,7 +10,8 @@ import {
 	type SessionGoal,
 } from "./types.js"
 
-const MAX_GOAL_OBJECTIVE_LENGTH = 4_000
+const MAX_GOAL_OBJECTIVE_LENGTH = 8_000
+const MAX_BLOCKED_REASON_LENGTH = 1_000
 
 export type GoalState = SessionGoal | undefined
 
@@ -18,7 +19,7 @@ function normalizeObjective(value: unknown): string {
 	const objective = typeof value === "string" ? value.trim() : ""
 	if (!objective) throw new Error("Goal objective cannot be empty.")
 	if (objective.length > MAX_GOAL_OBJECTIVE_LENGTH) {
-		throw new Error("Goal objective cannot exceed 4,000 characters.")
+		throw new Error("Goal objective cannot exceed 8,000 characters.")
 	}
 	return objective
 }
@@ -60,14 +61,20 @@ export function setGoalStatus(
 	expectedRevision: number,
 	status: GoalStatus,
 	now: string,
+	blockedReason?: unknown,
 ): SessionGoal {
 	const current = requireCurrentGoal(state, expectedId, expectedRevision)
 	if (!GOAL_STATUSES.includes(status)) throw new Error(`Invalid goal status '${String(status)}'.`)
-	return {
+	const next = {
 		...current,
 		status: status === "active" && isOverBudget(current.tokenBudget, current.tokensUsed) ? "budget_limited" : status,
 		updatedAt: now,
 	}
+	if (next.status === "blocked") {
+		return { ...next, blockedReason: normalizeBlockedReason(blockedReason ?? current.blockedReason) }
+	}
+	const { blockedReason: _blockedReason, ...withoutBlockedReason } = next
+	return withoutBlockedReason
 }
 
 export function addGoalAccounting(
@@ -295,6 +302,7 @@ function parseGoal(value: unknown): SessionGoal | undefined {
 		!isNonEmptyString(value.objective) ||
 		value.objective.length > MAX_GOAL_OBJECTIVE_LENGTH ||
 		status === undefined ||
+		(value.blockedReason !== undefined && !isNonEmptyString(value.blockedReason)) ||
 		(value.completionConfidence !== undefined && completionConfidence === undefined) ||
 		// Evaluation fields are observability only: a malformed one is dropped
 		// rather than rejecting the whole entry, which would silently roll the
@@ -322,6 +330,9 @@ function parseGoal(value: unknown): SessionGoal | undefined {
 		revision: value.revision,
 		objective: value.objective,
 		status,
+		...(status === "blocked" && value.blockedReason !== undefined
+			? { blockedReason: normalizeBlockedReason(value.blockedReason) }
+			: {}),
 		...(completionConfidence && status === "complete" ? { completionConfidence } : {}),
 		...(value.evaluationCount === undefined ? {} : { evaluationCount: value.evaluationCount }),
 		...(lastEvaluation ? { lastEvaluation } : {}),
@@ -336,6 +347,11 @@ function parseGoal(value: unknown): SessionGoal | undefined {
 		createdAt: value.createdAt,
 		updatedAt: value.updatedAt,
 	}
+}
+
+function normalizeBlockedReason(value: unknown): string {
+	const reason = typeof value === "string" ? value.trim() : ""
+	return (reason || "Goal marked blocked.").slice(0, MAX_BLOCKED_REASON_LENGTH)
 }
 
 function parseGoalEvaluation(value: unknown): GoalEvaluation | undefined {

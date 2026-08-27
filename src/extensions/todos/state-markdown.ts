@@ -84,7 +84,7 @@ export function renderTodoStateMarkdown(sessionId: string): string | undefined {
 		}
 
 		if (scope.kind === "ferment") {
-			const todos = [...scopeState.todos].sort((a, b) => a.id - b.id)
+			const todos = [...scopeState.todos]
 			const header = todos.shift()
 			if (!header) continue
 			fermentScopes.push({ phaseId: scope.phaseId, header, steps: todos })
@@ -95,7 +95,7 @@ export function renderTodoStateMarkdown(sessionId: string): string | undefined {
 			stepScopes.push({
 				phaseId: scope.phaseId,
 				stepId: scope.stepId,
-				todos: [...scopeState.todos].sort((a, b) => a.id - b.id),
+				todos: [...scopeState.todos],
 			})
 		}
 	}
