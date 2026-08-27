@@ -60,21 +60,21 @@ describe("resolveOrchestrationInstructions", () => {
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("### Your roles")
-		expect(result).toContain("Perform a phase yourself only when Orchestration")
+		expect(result).toContain("Perform work yourself only when Orchestration")
 	})
 
-	it("uses DO/DONT directives in phase responsibilities", () => {
+	it("uses DO/DONT directives in role responsibilities", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("Phase responsibilities")
-		expect(result).toContain("#### Plan phase")
-		expect(result).toContain("#### Build phase")
-		expect(result).toContain("#### Review phase")
-		expect(result).toContain("#### Explore phase")
-		expect(result).toContain("#### Research phase")
+		expect(result).toContain("Role responsibilities")
+		expect(result).toContain("#### Plan")
+		expect(result).toContain("#### Build")
+		expect(result).toContain("#### Review")
+		expect(result).toContain("#### Explore")
+		expect(result).toContain("#### Research")
 	})
 
 	it("exempts Explore from markdown artifact handoff rules", () => {
@@ -206,7 +206,7 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("go test -race")
 	})
 
-	it("includes chunk complexity classification in plan and build phases", () => {
+	it("includes chunk complexity classification for planning and implementation", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
@@ -537,7 +537,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 	})
 })
 
-describe("Build phase directive (complex-chunk tier routing)", () => {
+describe("Builder directive (complex-chunk tier routing)", () => {
 	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
 
 	it("routes complex chunks to a heavy-tier Builder on first attempt, not as a retry", () => {
@@ -552,7 +552,7 @@ describe("Build phase directive (complex-chunk tier routing)", () => {
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("#### Build phase")
+		expect(result).toContain("#### Build")
 		// The directive must explicitly call out heavy-tier for complex chunks on the first attempt.
 		expect(result).toMatch(/complex chunk.*heavy-tier Builder/s)
 		// And it must NOT tell the orchestrator to start with standard-tier and only escalate on retry.
@@ -563,13 +563,13 @@ describe("Build phase directive (complex-chunk tier routing)", () => {
 describe("Trivial fix and triage exceptions", () => {
 	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
 
-	it("includes trivial fix exception in build phase", () => {
+	it("includes trivial fix exception for implementation", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("#### Build phase")
+		expect(result).toContain("#### Build")
 		expect(result).toContain("Trivial fix exception")
 		expect(result).toContain("trivial fix directly")
 		expect(result).toMatch(/2-3 edit\/write calls.*delegate a Fixer/s)

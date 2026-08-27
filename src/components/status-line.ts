@@ -15,7 +15,7 @@ import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-lin
 import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
-import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
+import { getActiveTags, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
 export type SegmentId =
@@ -25,7 +25,6 @@ export type SegmentId =
 	| "agents"
 	| "context"
 	| "usage"
-	| "phase"
 	| "tags"
 	| "team"
 	| "credits"
@@ -43,7 +42,6 @@ export type SegmentId =
 type SegmentRaw =
 	| { kind: "context"; percent: number; pctColor?: "error" | "warning" }
 	| { kind: "model"; multiModel: boolean; modelId: string }
-	| { kind: "phase"; phase: string }
 	| { kind: "budget"; percentage: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
 
@@ -159,7 +157,6 @@ export function buildScriptPayload(
 		multi_model: {
 			enabled: getMultiModelEnabled(ctx.sessionManager),
 		},
-		phase: getCurrentPhase(sessionId),
 	}
 }
 
@@ -213,19 +210,8 @@ export function buildModelAbbrev(ctx: CompactionContext, multiModel: boolean, mo
 	}
 }
 
-/** Compact form for phase: drops the "phase:" prefix, keeps just the value. */
-export function buildPhaseCompact(ctx: CompactionContext, phase: string): Segment {
-	const text = ctx.accent(phase)
-	return {
-		id: "phase",
-		text,
-		width: visibleWidth(text),
-		raw: { kind: "phase", phase },
-	}
-}
-
-/** Compaction action for ferment: drop the leading colorized `ferment:`
- *  substring in place. The rest of the segment is unchanged, so no rebuild. */
+/** Drop the `ferment:` prefix from the ferment segment's text, in place.
+ *  Returns true if a ferment segment was found and modified. */
 function dropFermentPrefix(segs: Segment[]): boolean {
 	const idx = segs.findIndex((s) => s.id === "ferment")
 	if (idx === -1) return false
@@ -296,10 +282,6 @@ const STEPS: CompactionStep[] = [
 		apply: (segs) => stripShortcutHintsAcross(segs, ["permissions", "model", "ferment"]),
 	},
 	{
-		name: "drop-phase-prefix",
-		apply: (segs, ctx) => recompactSegment(segs, "phase", "phase", (raw) => buildPhaseCompact(ctx, raw.phase)),
-	},
-	{
 		name: "drop-ferment-prefix",
 		apply: (segs) => dropFermentPrefix(segs),
 	},
@@ -325,18 +307,7 @@ function joinSegments(segments: Segment[], sep: string): string {
  *
  *  This order is hardcoded and beats user pinning: a pinned segment is a
  *  display preference, not a survival guarantee. */
-const SHED_ORDER: SegmentId[] = [
-	"dap",
-	"lsp",
-	"team",
-	"tags",
-	"phase",
-	"usage",
-	"agents",
-	"credits",
-	"budget",
-	"ferment",
-]
+const SHED_ORDER: SegmentId[] = ["dap", "lsp", "team", "tags", "usage", "agents", "credits", "budget", "ferment"]
 
 /** Fit segments into `width` columns: run the compaction ladder, then shed
  *  whole segments in SHED_ORDER until the line fits. The input `segments`
@@ -479,22 +450,11 @@ function buildContextSegment(ctx: ExtensionContext, theme: Theme, pinned: boolea
 	return { id: "context", text, width: visibleWidth(text), raw: { kind: "context", percent: pct, pctColor } }
 }
 
-function buildPhaseSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
-	if (!pinned) return null
-	const phase = getCurrentPhase(ctx.sessionManager.getSessionId())
-	if (!phase) {
-		const text = `${dimText(theme, "phase:")}${dimText(theme, "—")}`
-		return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase: "—" } }
-	}
-	const text = `${dimText(theme, "phase:")}${accentText(theme, phase)}`
-	return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase } }
-}
-
 type ParsedTag = { key: string; value: string }
 
 function buildTagsSegment(theme: Theme, parsed: ParsedTag[], pinned: boolean): Segment | null {
 	if (!pinned) return null
-	const display = parsed.filter((t) => t.key !== "team" && t.key !== "phase")
+	const display = parsed.filter((t) => t.key !== "team")
 	if (display.length === 0) {
 		const text = `${dimText(theme, "tags:")} ${dimText(theme, "—")}`
 		return { id: "tags", text, width: visibleWidth(text) }
@@ -640,7 +600,6 @@ export function buildStatusLineSegments(
 		buildAgentsSegment(theme, pinned.has("agents")),
 		buildContextSegment(ctx, theme, pinned.has("context")),
 		buildUsageSegment(ctx, theme, pinned.has("usage")),
-		buildPhaseSegment(ctx, theme, pinned.has("phase")),
 		buildTagsSegment(theme, tags, pinned.has("tags")),
 		buildTeamSegment(theme, tags, pinned.has("team")),
 		buildLspSegment(theme, statusLineData),

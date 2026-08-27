@@ -144,6 +144,8 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 export const ADHOC_MODE_TOOLS: ToolEntry[] = [
 	// interactive — model collects structured input from the user
 	{ name: "questionnaire", modes: ["adhoc"], routing: "interactive" },
+	// interactive — model presents the completed plan for approval
+	{ name: "ExitPlanMode", modes: ["adhoc"], routing: "interactive" },
 ]
 
 /**
@@ -159,9 +161,6 @@ export const ADHOC_MODE_TOOLS: ToolEntry[] = [
  */
 export const FERMENT_MODE_TOOLS: ToolEntry[] = [
 	// -- planning phase (before any phase is activated) --
-
-	// Phase tracker injected by the ferment planner supplement
-	{ name: "set_phase", modes: ["ferment"], phases: ["planning"] },
 
 	// Draft scoping surface
 	{ name: "propose_ferment_scoping", modes: ["ferment"], phases: ["planning"] },

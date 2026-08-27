@@ -84,10 +84,7 @@ or in a sibling package. This repo extends `@earendil-works/pi-coding-agent`
 (pi-mono), so re-implementing upstream features creates maintenance debt
 and divergence.
 
-Use the checklist below **during the Explore/Research/Plan phases** of your
-orchestration workflow. It does not replace your main orchestration
-pipeline; it replaces the normal Explore/Research/Plan content for
-feature-work sessions.
+Use the checklist below when orchestrating a feature-work session. It does not replace your main orchestration delegation pipeline; it replaces the normal Explore/Research/Plan content for feature-work sessions.
 
 ### Frame the capability
 

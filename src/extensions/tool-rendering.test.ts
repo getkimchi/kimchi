@@ -427,18 +427,6 @@ describe("mcpCallLabelAndSummary", () => {
 	})
 })
 
-describe("set_phase tool summary", () => {
-	it("summarizes set_phase calls with the phase value", () => {
-		const summary = summarizeOpenAiToolCall("set_phase", { phase: "plan" }, plainTheme, (path) => path)
-		expect(summary).toBe("plan")
-	})
-
-	it("summarizes set_phase calls with unknown phase fallback", () => {
-		const summary = summarizeOpenAiToolCall("set_phase", {}, plainTheme, (path) => path)
-		expect(summary).toBe("set phase")
-	})
-})
-
 describe("validation error display truncation", () => {
 	const validationErrorFor = (toolName: string, schemaError = "arguments: must match the tool schema") =>
 		[

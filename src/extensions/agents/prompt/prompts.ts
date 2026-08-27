@@ -24,7 +24,7 @@ export interface PromptExtras {
 	skillBlocks?: { name: string; content: string }[]
 	/** Compact skill name+description list for when skills === true. */
 	skillListBlock?: string
-	/** Model-specific phase guidelines resolved from the model registry. */
+	/** Model-specific role guidelines resolved from the model registry. */
 	guidelinesBlock?: string
 	/** Turn and token budget limits for agent self-regulation. */
 	budget?: BudgetInfo
@@ -175,7 +175,7 @@ function stripAvailableToolsSection(prompt: string): string {
 
 function stripInheritedContextSections(prompt: string): string {
 	return prompt
-		.replace(/(^|\n)## Phase Management\b[^\n]*\n[\s\S]*?(?=\n#{1,2} |\n*$)/g, "$1")
+		.replace(/(^|\n)## Working Practices\b[^\n]*\n[\s\S]*?(?=\n#{1,2} |\n*$)/g, "$1")
 		.replace(/(^|\n)## (?:Available Tools|Output & Truncation|Tool Selection)\b[^\n]*\n[\s\S]*?(?=\n#+ |\n*$)/g, "$1")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim()

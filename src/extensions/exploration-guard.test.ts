@@ -44,7 +44,7 @@ function simulateMixedTurn(guard: ExplorationGuard): string[] {
 function simulateNeutralTurn(guard: ExplorationGuard): string[] {
 	const steers: string[] = []
 	guard.turnStart()
-	guard.recordToolCall("set_phase")
+	guard.recordToolCall("set_model")
 	guard.turnEnd((text) => steers.push(text))
 	return steers
 }
@@ -52,7 +52,7 @@ function simulateNeutralTurn(guard: ExplorationGuard): string[] {
 function simulateNeutralPlusReadTurn(guard: ExplorationGuard): string[] {
 	const steers: string[] = []
 	guard.turnStart()
-	guard.recordToolCall("set_phase")
+	guard.recordToolCall("set_model")
 	guard.recordToolCall("read")
 	guard.turnEnd((text) => steers.push(text))
 	return steers

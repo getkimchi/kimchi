@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -79,11 +79,6 @@ vi.mock("../personas/default-agents.js", () => ({
 	DEFAULT_AGENTS: new Map(),
 }))
 
-vi.mock("../../tags.js", () => ({
-	getCurrentPhase: vi.fn().mockReturnValue(undefined),
-	setCurrentPhase: vi.fn(),
-}))
-
 vi.mock("../../memory/memory.js", () => ({
 	buildMemoryBlock: vi.fn().mockReturnValue(""),
 	buildReadOnlyMemoryBlock: vi.fn().mockReturnValue(""),
@@ -108,7 +103,18 @@ vi.mock("../../../config.js", () => ({
 }))
 
 vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", () => ({
-	buildPhaseGuidelinesSection: vi.fn().mockReturnValue(""),
+	buildRoleGuidelinesSection: vi.fn().mockReturnValue(""),
+}))
+
+// Fully mock tags.js so that IF agent-runner ever imports it, every call is tracked.
+// agent-runner.ts no longer imports tags.js (D11 deleted getCurrentPhase/setCurrentPhase),
+// so this mock is defensive — it catches regressions if a future edit re-introduces the import.
+vi.mock("../../tags.js", () => ({
+	default: vi.fn(),
+	isValidTag: vi.fn(),
+	parseTag: vi.fn(),
+	TagManager: vi.fn(),
+	getActiveTags: vi.fn(),
 }))
 
 import {
@@ -122,9 +128,8 @@ import {
 import { readTelemetryConfig } from "../../../config.js"
 import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
-import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
-import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
@@ -137,12 +142,10 @@ const mockGetAgentConfig = vi.mocked(getAgentConfig)
 const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
 const mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
 const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
-const mockBuildPhaseGuidelinesSection = vi.mocked(buildPhaseGuidelinesSection)
+const mockBuildRoleGuidelinesSection = vi.mocked(buildRoleGuidelinesSection)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
 const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
-const mockGetCurrentPhase = vi.mocked(getCurrentPhase)
-const mockSetCurrentPhase = vi.mocked(setCurrentPhase)
 
 type SessionEvent = { type: string; [k: string]: unknown }
 type Subscriber = (event: SessionEvent) => void
@@ -547,8 +550,51 @@ describe("runAgent — Plan agent plan persistence", () => {
 		vi.clearAllMocks()
 	})
 
-	it("saves the plan file when a Plan agent emits PLAN_COMPLETE", async () => {
-		const planText = "# My Plan\n\nDo the thing.\n\n<!-- PLAN_COMPLETE -->\n"
+	it("returns the saved plan path from a Plan agent's ExitPlanMode tool result", async () => {
+		const planPath = join(tempCwd, ".kimchi", "plans", "my-plan.md")
+		const session = makeFakeSession({
+			events: [{ type: "tool_execution_end", toolName: "ExitPlanMode", result: { details: { planPath } } }],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Plan", "plan it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(result.planPath).toBe(planPath)
+	})
+
+	it("wires ExitPlanMode into the Plan child tool allowlist and loader", async () => {
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Plan", "plan it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockCreateAgentSession).toHaveBeenCalledWith(
+			expect.objectContaining({ tools: expect.arrayContaining(["ExitPlanMode"]) }),
+		)
+		const loaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		const factories = loaderOptions?.extensionFactories ?? []
+		const planFactory = factories[factories.length - 1]
+		const registerTool = vi.fn()
+		await runInlineExtension(planFactory, { registerTool } as unknown as ExtensionAPI)
+		expect(registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: "ExitPlanMode" }))
+	})
+
+	it("does not persist plain completion-marker text", async () => {
+		const planText = "Some text\n\n<!-- PLAN_COMPLETE -->\n"
 		const session = makeFakeSession({
 			promptAction: async (emit) => {
 				emit({ type: "message_start" })
@@ -570,38 +616,8 @@ describe("runAgent — Plan agent plan persistence", () => {
 			pi: pi as unknown as RunOptions["pi"],
 		})
 
-		expect(result.planPath).toBeDefined()
-		const planPath = result.planPath as string
-		expect(existsSync(planPath)).toBe(true)
-		const content = readFileSync(planPath, "utf-8")
-		expect(content).toContain("Do the thing.")
-		expect(content).not.toContain("<!-- PLAN_COMPLETE -->")
-	})
-
-	it("does not save a plan when a non-Plan agent emits PLAN_COMPLETE", async () => {
-		const planText = "Some text\n\n<!-- PLAN_COMPLETE -->\n"
-		const session = makeFakeSession({
-			promptAction: async (emit) => {
-				emit({ type: "message_start" })
-				emit({
-					type: "message_update",
-					assistantMessageEvent: { type: "text_delta", delta: planText },
-				})
-				emit({ type: "turn_end" })
-			},
-		})
-		mockCreateAgentSession.mockResolvedValue({
-			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
-			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
-				ReturnType<typeof createAgentSession>
-			>["extensionsResult"],
-		})
-
-		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "plan it", {
-			pi: pi as unknown as RunOptions["pi"],
-		})
-
 		expect(result.planPath).toBeUndefined()
+		expect(existsSync(join(tempCwd, ".kimchi", "plans"))).toBe(false)
 	})
 })
 
@@ -1896,12 +1912,11 @@ describe("runAgent — includeContextFiles", () => {
 		expect(extras?.contextFiles).toBeUndefined()
 	})
 
-	it("resolves guidelines from agent persona role, not orchestrator phase", async () => {
+	it("resolves guidelines from the agent persona role", async () => {
 		mockGetAgentConfig.mockReturnValue(
 			makeAgentConfig({ name: "Builder", description: "Build agent", roles: ["build"] }),
 		)
-		mockBuildPhaseGuidelinesSection.mockReturnValue("## Model Guidelines\n\nBuilder guideline")
-		mockGetCurrentPhase.mockReturnValue("explore")
+		mockBuildRoleGuidelinesSection.mockReturnValue("## Model Guidelines\n\nBuilder guideline")
 
 		mockCreateAgentSession.mockResolvedValue({
 			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
@@ -1914,17 +1929,14 @@ describe("runAgent — includeContextFiles", () => {
 			pi: pi as unknown as RunOptions["pi"],
 		})
 
-		expect(mockBuildPhaseGuidelinesSection).toHaveBeenCalledWith(undefined, "build", expect.anything())
+		expect(mockBuildRoleGuidelinesSection).toHaveBeenCalledWith(undefined, "build", expect.anything())
 		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
 		expect(extras?.guidelinesBlock).toContain("Builder guideline")
-		expect(mockGetCurrentPhase).toHaveBeenCalledWith("session-1")
-		expect(mockSetCurrentPhase).toHaveBeenCalledWith("session-1", "build")
-		expect(mockSetCurrentPhase).toHaveBeenLastCalledWith("session-1", "explore")
 	})
 
 	it("omits guidelines when agent has no persona role", async () => {
 		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ name: "General-Purpose" }))
-		mockBuildPhaseGuidelinesSection.mockReturnValue("")
+		mockBuildRoleGuidelinesSection.mockReturnValue("")
 
 		mockCreateAgentSession.mockResolvedValue({
 			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
@@ -1937,7 +1949,7 @@ describe("runAgent — includeContextFiles", () => {
 			pi: pi as unknown as RunOptions["pi"],
 		})
 
-		expect(mockBuildPhaseGuidelinesSection).toHaveBeenCalledWith(undefined, undefined, expect.anything())
+		expect(mockBuildRoleGuidelinesSection).toHaveBeenCalledWith(undefined, undefined, expect.anything())
 	})
 })
 
@@ -2215,5 +2227,63 @@ describe("resumeAgent — inactivity steering", () => {
 		expect(session.steer).toHaveBeenCalledWith(expect.stringContaining("You appear to be stalled"))
 
 		vi.useRealTimers()
+	})
+})
+
+describe("runAgent — D11: subagent never mutates parent-session workflow state", () => {
+	// D11 regression: agent-runner.ts previously wrote the parent session's phase
+	// to the subagent's persona role via getCurrentPhase/setCurrentPhase, then restored
+	// it — a non-reentrant bug under run_in_background. Those imports and the
+	// save/restore blocks were deleted. This test proves the contract holds.
+	//
+	// We use a foreground run instead of run_in_background because the background
+	// path routes through agents/index.ts scheduling which adds non-determinism
+	// (timers, concurrency). runAgent is the shared core that both foreground and
+	// background paths call, so asserting on it covers the same code path without
+	// flakiness. The state-cleanliness contract is identical either way: agent-runner
+	// must not call any tags-module mutation function.
+
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetToolNamesForType.mockReturnValue([])
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("resolves guidelines from the persona role and never mutates parent-session tags/phase state", async () => {
+		mockGetAgentConfig.mockReturnValue(
+			makeAgentConfig({ name: "Builder", description: "Build agent", roles: ["build"] }),
+		)
+		mockBuildRoleGuidelinesSection.mockReturnValue("## Model Guidelines\n\nBuilder guideline")
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Builder", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		// Guidelines resolved from the persona role ("build"), not from any parent phase.
+		expect(mockBuildRoleGuidelinesSection).toHaveBeenCalledWith(undefined, "build", expect.anything())
+
+		// The real tags module must not export phase-mutation APIs — D11 deleted them.
+		const realTags = await vi.importActual<typeof import("../../tags.js")>("../../tags.js")
+		const exportedKeys = Object.keys(realTags)
+		expect(exportedKeys).not.toContain("getCurrentPhase")
+		expect(exportedKeys).not.toContain("setCurrentPhase")
+		expect(exportedKeys).not.toContain("setPhase")
+		expect(exportedKeys).not.toContain("getPhase")
 	})
 })

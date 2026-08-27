@@ -2,13 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import {
-	derivePlanTitle,
-	fermentPlanFileName,
-	savePlanMarkdown,
-	slugifyPlanName,
-	stripPlanCompletionMarkers,
-} from "./plan-markdown.js"
+import { derivePlanTitle, fermentPlanFileName, savePlanMarkdown, slugifyPlanName } from "./plan-markdown.js"
 
 describe("slugifyPlanName", () => {
 	it("converts a title to kebab-case", () => {
@@ -44,27 +38,6 @@ describe("derivePlanTitle", () => {
 
 	it("returns untitled-plan when neither is present", () => {
 		expect(derivePlanTitle("Some prose without structure.")).toBe("untitled-plan")
-	})
-})
-
-describe("stripPlanCompletionMarkers", () => {
-	it("removes both markers and ends with a single newline", () => {
-		const cleaned = stripPlanCompletionMarkers("# Plan\n\nBody.\n\n<!-- PLAN_COMPLETE -->\n")
-		expect(cleaned).toBe("# Plan\n\nBody.\n")
-	})
-
-	it("removes a standalone <done> marker", () => {
-		expect(stripPlanCompletionMarkers("# Plan\nBody\n\n<done>\n")).toBe("# Plan\nBody\n")
-	})
-
-	it("keeps inline marker-like text inside content", () => {
-		expect(stripPlanCompletionMarkers('emit "<done>" only on its own line\n')).toBe(
-			'emit "<done>" only on its own line\n',
-		)
-	})
-
-	it("returns empty string for marker-only input", () => {
-		expect(stripPlanCompletionMarkers("<!-- PLAN_COMPLETE -->\n")).toBe("")
 	})
 })
 

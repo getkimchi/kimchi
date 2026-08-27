@@ -30,8 +30,15 @@ describe("plan-mode-supplement", () => {
 			expect(planModeSupplement).toContain("questionnaire")
 		})
 
-		it("contains plan completion marker", () => {
-			expect(planModeSupplement).toContain("PLAN_COMPLETE")
+		it("uses ExitPlanMode for approval", () => {
+			expect(planModeSupplement).toContain("ExitPlanMode")
+			expect(planModeSupplement).not.toContain("PLAN_COMPLETE")
+			expect(planModeSupplement).not.toContain("<done>")
+		})
+
+		it("requires version and post-approval verification", () => {
+			expect(planModeSupplement).toContain("version assumption")
+			expect(planModeSupplement).toContain("after approval")
 		})
 
 		it("states that plans are auto-saved (shared location note)", () => {

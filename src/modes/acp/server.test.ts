@@ -4693,6 +4693,9 @@ describe("ACP mode controller integration with permissions extension", () => {
 			) => {
 				commands.set(name, command)
 			},
+			registerTool: (tool: { name: string }) => {
+				if (!tools.includes(tool.name)) tools.push(tool.name)
+			},
 			getAllTools: () => tools,
 			getActiveTools: () => activeTools,
 			setActiveTools: (names: string[]) => {

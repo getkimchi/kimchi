@@ -2,11 +2,11 @@
  * Orchestrator-mode prompt content for multi-model orchestration.
  *
  * Builds a single **Orchestration** chapter: team roster, role ownership,
- * workflow, phase responsibilities, delegation rules, budgets, and plan quality.
+ * workflow, role responsibilities, delegation rules, budgets, and plan quality.
  * Subagent and single-model instructions live in `prompt-construction/system-prompt.ts`.
  */
 
-import { renderDelegationThinkingLevelTable, renderOrchestratorThinkingTable } from "../agents/thinking-level-policy.js"
+import { renderDelegationThinkingLevelTable } from "../agents/thinking-level-policy.js"
 import { renderAgentWorkerBudgetTable } from "../agents/worker-budget-policy.js"
 import type { ModelCustomMetadata } from "./model-metadata.js"
 import { resolveOrchestrationGuideline } from "./model-registry/guidelines/guidelines-resolver.js"
@@ -45,9 +45,9 @@ export function resolveOrchestrationInstructions(
 // Orchestrator instruction building blocks (static parts)
 // ---------------------------------------------------------------------------
 
-const ORCHESTRATION_ORIENTATION = `Before starting long-running work — a sequence of exploration or implementation tool calls, a delegation to a subagent, or a multi-step plan — briefly orient the user: state what you intend to do and why in one or two sentences. For complex tasks, name the phases you will work through (for example: "I'll start by mapping the handlers, then propose fixes, then implement"). This is the user's window to interrupt if your approach is wrong — do not skip it.
+const ORCHESTRATION_ORIENTATION = `Before starting long-running work — a sequence of exploration or implementation tool calls, a delegation to a subagent, or a multi-step plan — briefly orient the user: state what you intend to do and why in one or two sentences. For complex tasks, name the steps you will work through (for example: "I'll start by mapping the handlers, then propose fixes, then implement"). This is the user's window to interrupt if your approach is wrong — do not skip it.
 
-After the orientation, reason through the workflow below (classification, pipeline selection, phase responsibilities) and proceed with the work. Do not narrate the meta-process (which step you are on, which phase you are in) — only the intent and observable progress.`
+After the orientation, reason through the workflow below (classification, step selection, role responsibilities) and proceed with the work. Do not narrate the meta-process (which step you are on) — only the intent and observable progress.`
 
 const STEP_1_CLASSIFY = `### Classify the task
 
@@ -56,9 +56,9 @@ Decide whether the task is **simple** or **complex**:
 - **Simple**: single-file change, no design decisions required, unambiguous what to write.
 - **Complex**: anything involving multiple files, a layered architecture, modifying existing code you haven't read, or any decision about structure or interfaces.`
 
-const STEP_2_PIPELINE = `### Select pipeline steps
+const STEP_2_PIPELINE = `### Select work steps
 
-From the following steps, select only the ones the task actually needs:
+From the following work types, select only the ones the task actually needs:
 
 - explore — reading files, tracing code, understanding the existing codebase before acting.
 - research — consulting external sources: documentation, internet resources, library APIs, versioning, guidelines, or anything not contained in this codebase.
@@ -66,21 +66,21 @@ From the following steps, select only the ones the task actually needs:
 - build — writing, modifying, or refactoring code.
 - review — verifying correctness, checking for bugs, confirming the implementation matches intent.
 
-Omit steps that add no value. A simple fix may need only build. A complex feature may need all phases. **Match the pipeline to the request**: if the user asks to review code, run explore + review — not plan + build + review. If the user asks to plan an approach, run explore + plan — not the full pipeline. If the user asks to explore or research, do only that. The mandatory plan->build->review pipeline applies only when the task involves writing or modifying code. **Greenfield projects** (empty directory, no existing code to read): skip explore entirely — there is nothing to explore. Merge any discovery work into the plan phase instead.
+Omit steps that add no value. A simple fix may need only build. A complex feature may need all steps. **Match the steps to the request**: if the user asks to review code, run explore + review — not plan + build + review. If the user asks to plan an approach, run explore + plan — not the full sequence. If the user asks to explore or research, do only that. The mandatory plan→build→review sequence applies only when the task involves writing or modifying code. **Greenfield projects** (empty directory, no existing code to read): skip explore entirely — there is nothing to explore. Merge any discovery work into the plan step instead.
 
-**Intent boundary — never exceed what was asked.** The selected pipeline is the scope ceiling. No agent — orchestrator or subagent — may perform actions that belong to a pipeline step not selected above. Concrete rules:
-- If the pipeline does not include **build**, no source files may be created, modified, or deleted. No commits may be made. Findings and suggestions are reported, never applied.
-- If the pipeline does not include **plan**, no spec or design document is produced — the task is executed or evaluated directly.
-- If the pipeline is **review-only** (explore + review), the output is a findings report. Do not fix, refactor, or apply any of the reported issues. Do not offer to apply fixes inline. Report what you found and stop.
-- If the pipeline is **explore-only** or **research-only**, produce a summary. Do not plan, build, or review.
+**Intent boundary — never exceed what was asked.** The selected steps are the scope ceiling. No agent — orchestrator or subagent — may perform actions that belong to a step not selected above. Concrete rules:
+- If the steps do not include **build**, no source files may be created, modified, or deleted. No commits may be made. Findings and suggestions are reported, never applied.
+- If the steps do not include **plan**, no spec or design document is produced — the task is executed or evaluated directly.
+- If the steps are **review-only** (explore + review), the output is a findings report. Do not fix, refactor, or apply any of the reported issues. Do not offer to apply fixes inline. Report what you found and stop.
+- If the steps are **explore-only** or **research-only**, produce a summary. Do not plan, build, or review.
 
 When delegating to subagents, include the intent boundary explicitly in the agent prompt so the subagent knows what it must not do.`
 
 const STEP_4_EXECUTE = `### Execute
 
-Run the selected pipeline steps in order. For steps you own, use your tools directly. For steps you delegate, call the Agent tool and wait for it to complete before proceeding unless you explicitly run it in the background. Never perform a step yourself while an Agent for that step is running or after you have delegated it.
+Run the selected steps in order. For steps you own, use your tools directly. For steps you delegate, call the Agent tool and wait for it to complete before proceeding unless you explicitly run it in the background. Never perform a step yourself while an Agent for that step is running or after you have delegated it.
 
-When Step 1 classified the task as **complex**, you MUST execute it as a phased pipeline — never lump everything into a single Agent call or do it all yourself. Each phase produces an artefact the next one consumes.`
+When Step 1 classified the task as **complex**, you MUST execute it as an ordered sequence — never lump everything into a single Agent call or do it all yourself. Each step produces an artefact the next one consumes.`
 
 const PLAN_SPEC_REQUIREMENTS = `The spec MUST break the work into **small, independently-buildable chunks** — each chunk is a single cohesive unit (typically 1–3 files) that can be verified independently. Keep implementation and its tests in the same chunk — the agent that writes the code has the best context to test it. Include for each chunk: the file paths, method signatures / interfaces, expected behaviour, acceptance criteria, and a **complexity** classification:
    - **simple** — straightforward CRUD, data structures, boilerplate, CLI wiring, simple input parsing. A standard-tier Builder can implement this from the spec alone.
@@ -93,7 +93,7 @@ Chunks must be ordered so each one can build on the previous.`
 function buildPlanVerification(delegatePlanning: boolean): string {
 	const validationClause = delegatePlanning
 		? "After validating the Plan agent's returned spec (see above)"
-		: "After self-validation (see Phase Guidelines)"
+		: "After self-validation (see Role Guidelines)"
 
 	return `**Plan verification (required for complex tasks, optional for simple):** ${validationClause}, decide whether the plan needs external verification.
 
@@ -128,7 +128,7 @@ The review agent runs tests, checks lint, and verifies the implementation matche
 
 **If the review agent times out or produces no output:** Retry ONCE with the same or a different standard-tier Reviewer. If the retry also fails, skip review and report to the user that review could not be completed. Do NOT attempt a third reviewer.
 
-**Handling review results:** After the review agent completes, read ONLY the review file — do NOT re-read source files yourself. If the verdict is APPROVED, the review phase is done — produce the final summary and stop. If the verdict is NEEDS_FIXES, delegate a fix agent by default: pass it the review file path and the spec file path. **Trivial fix exception:** if the reviewer identifies a single obvious issue that you can fix in 1-2 edits (e.g. a typo, missing import, or simple test expectation), you may apply it directly instead of spawning a Fixer. If the fix grows beyond that scope, stop and delegate.
+**Handling review results:** After the review agent completes, read ONLY the review file — do NOT re-read source files yourself. If the verdict is APPROVED, the review is done — produce the final summary and stop. If the verdict is NEEDS_FIXES, delegate a fix agent by default: pass it the review file path and the spec file path. **Trivial fix exception:** if the reviewer identifies a single obvious issue that you can fix in 1-2 edits (e.g. a typo, missing import, or simple test expectation), you may apply it directly instead of spawning a Fixer. If the fix grows beyond that scope, stop and delegate.
 
 **Fix agent contract:** Instruct the fix agent to: (1) read the review findings file, (2) apply all fixes, (3) run the full test suite (with race/thread-safety detection if applicable) and lint, (4) write a verification report to the Documents directory (e.g. \`.kimchi/docs/verification.md\`) containing:
 - **Test output**: pass/fail count, any failures
@@ -136,12 +136,10 @@ The review agent runs tests, checks lint, and verifies the implementation matche
 - **Verdict**: ALL_PASS or HAS_FAILURES
 
 **After the fix agent completes:** Read ONLY the verification file — this is the ONLY action you take. Do NOT re-read source files, do NOT run tests yourself, do NOT grep, do NOT smoke-test, do NOT write any file, do NOT build the binary, do NOT create test scripts. Then:
-- If the verdict is ALL_PASS -> review phase is complete. Produce ONE final summary message and stop. Do not repeat the summary.
+- If the verdict is ALL_PASS -> review is complete. Produce ONE final summary message and stop. Do not repeat the summary.
 - If the verdict is HAS_FAILURES -> this is fix round 1. Spawn ONE more fix agent with the remaining failures. When it returns its verification file, read it. That is fix round 2.
 - After round 2, STOP regardless of outcome. If failures remain, report them to the user as unresolved. Do NOT attempt a third round. Do NOT debug manually. Do NOT write smoke tests. Do NOT run the binary.
 - If remaining failures are tests that assert specific ordering of concurrently-executed operations (e.g. checking which goroutine/thread finishes first), these are non-deterministic test design flaws, not implementation bugs. Report them as known flaky tests and stop — do not attempt to fix non-deterministic ordering assertions.
-
-**Review phase turn budget:** The entire review phase (from \`set_phase(review)\` to final summary) should complete in at most 10 orchestrator turns. If you are approaching 10 turns in the review phase, stop immediately and produce the summary with whatever state you have.
 
 **Review verdicts are final**: Never edit a review report to change its verdict. If a flag is genuinely wrong, add a separate rationale note alongside the original review — do not alter the reviewer's output.`
 
@@ -152,7 +150,7 @@ function buildAgentDelegation(delegatePlanning: boolean): string {
 
 	return `### Agent delegation
 
-**Orchestrator discipline**: Between delegation calls, you may do at most 5 tool calls (e.g. reading the spec file, setting the phase, checking a subagent result). If you find yourself doing reads, edits, bash calls, or writes on implementation files, STOP — you are doing a subagent's job. Delegate it instead. **Post-abort triage**: When a subagent aborts (budget or turns), do NOT manually complete its remaining work. You may do a small amount of triage (at most 2-3 edit/write calls; reads and bash checks don't count) to understand the failure, verify state, or apply an obvious one-line fix. If the remaining work is more than trivial, spawn a follow-up Agent scoped to the unfinished portion. List what the aborted agent completed and what remains.
+**Orchestrator discipline**: Between delegation calls, you may do at most 5 tool calls (e.g. reading the spec file, checking a subagent result). If you find yourself doing reads, edits, bash calls, or writes on implementation files, STOP — you are doing a subagent's job. Delegate it instead. **Post-abort triage**: When a subagent aborts (budget or turns), do NOT manually complete its remaining work. You may do a small amount of triage (at most 2-3 edit/write calls; reads and bash checks don't count) to understand the failure, verify state, or apply an obvious one-line fix. If the remaining work is more than trivial, spawn a follow-up Agent scoped to the unfinished portion. List what the aborted agent completed and what remains.
 
 - Write Agent prompts that are fully self-contained. Agents start with fresh context by default — include necessary instructions directly, or point them to a Markdown file containing larger context.
 ${planBullet}
@@ -161,7 +159,7 @@ ${planBullet}
 - If an Agent call returns an error of any kind (including protocol violation, timeout, or exit error): do NOT attempt to implement or debug the work yourself. First assess whether the failure is retryable (e.g. transient timeouts or protocol violations) or not (e.g. missing files, permission errors, or invalid inputs). For retryable failures, call a replacement Agent with a corrected or simplified prompt — allow at most one retry per delegated step. For non-retryable failures, report the failure clearly and stop immediately without retrying.
 - **When a subagent returns agent_outcome.outcome other than "completed"**: the work is likely partial or invalid. Do NOT pick up the remaining work yourself — that defeats the purpose of delegation and wastes orchestrator tokens. Inspect agent_outcome.report before acting. Resume the same Agent only when remaining_steps are a direct continuation and preserving session context is valuable; use a changed-approach resume when the same thread still matters but the prior approach stalled; spawn a NEW follow-up Agent when remaining_steps have a clean narrower task boundary; run a short finalizer resume when the report is missing or the work appears finished but did not return completed; or stop/skip and report when blocked or unclear. Do not blindly retry the same prompt. **Include dependency context** in any replacement prompt: paste the public type signatures and function signatures of packages the follow-up agent will import (e.g. structs, interfaces, exported functions from earlier chunks) directly in the prompt so it does not waste turns re-reading files.
 - Do NOT call Agent for work you can do in a single tool call.
-- Do NOT use General-Purpose agents for implementation, review, exploration, research, or planning. Route work to the specialized agent for the corresponding phase. Use General-Purpose only for tasks that genuinely do not match any specialized persona.
+- Do NOT use General-Purpose agents for implementation, review, exploration, research, or planning. Route work to the specialized agent for the corresponding work type. Use General-Purpose only for tasks that genuinely do not match any specialized persona.
 - **When runtime state is the blocker** — a test keeps failing after static fixes, or a bug resists explanation from reading the code — delegate ONCE to Agent(type: "Debugger"). The Debugger agent uses DAP tools to inspect actual runtime values: a single breakpoint + eval shows ground truth in ~500 tokens where reading 5 files and reasoning costs ~50,000 and can still be wrong. Instruct it to first load the bundled **dap-debugging** skill (\`skill_view name="dap-debugging"\`, plus the \`references/<lang>.md\` matching the debuggee) — it encodes the debugging loop, breakpoint placement, and per-adapter expression rules. Do NOT delegate to Debugger proactively (speculation is not evidence), and never re-delegate with progressively less detail on a sustained run — if one debug pass returns no new signal, report what was ruled out and stop.
 - Use \`inherit_context: true\` only when the Agent needs the parent conversation history. Otherwise keep the default fresh context.
 - Inline images in your conversation are forwarded automatically to vision-capable Agents when needed. If no vision-capable model is available, the harness will automatically switch to one.
@@ -185,17 +183,13 @@ const THINKING_LEVELS = `### Thinking levels
 
 \`thinking\` controls extended reasoning for the orchestrator and each delegated worker. Levels (lowest to highest): off, minimal, low, medium, high, xhigh, max. Use the lowest level that fits the task — higher thinking costs more tokens and time.
 
-**Orchestrator (main thread):** keep thinking low while coordinating (spawning agents, reading artifact paths). Raise only when classifying the pipeline, self-validating a plan, or interpreting ambiguous subagent reports.
-
-${renderOrchestratorThinkingTable()}
-
 **Delegated workers:** pass \`thinking\` on every \`Agent\` call. Orchestrator-provided \`thinking\` overrides agent profile defaults. Map chunk \`complexity\` from the plan spec to the simple/complex column.
 
 ${renderDelegationThinkingLevelTable()}
 
-**Self-performed work:** when you decide to do a phase yourself instead of delegating, call \`set_phase\` with the same phase-scoped \`thinking\` level you would have passed to an Agent. Use the \`simple\` column for quick/small work and the \`complex\` column for multi-step or subtle work. This updates your own reasoning level for the phase; reset to a lower coordination level when you go back to delegating.
+**Self-performed work:** the user controls your own thinking level via the \`app.thinking.cycle\` keybinding. You cannot raise your own thinking level mid-session. If a step you decide to do yourself needs a higher thinking tier, delegate it to an Agent instead — the Agent accepts a \`thinking\` parameter that overrides its profile default.
 
-**Retry escalation:** when spawning a replacement or \`resume_subagent\` after \`budget_exhausted\` or a stalled approach, bump \`thinking\` one tier from the prior call (see retry column). If you are redoing self-performed work, bump the \`set_phase\` \`thinking\` value the same way. Do not exceed the per-scope ceiling shown in the retry column. Combine with model-tier escalation when appropriate.
+**Retry escalation:** when spawning a replacement or \`resume_subagent\` after \`budget_exhausted\` or a stalled approach, bump \`thinking\` one tier from the prior call (see retry column). Do not exceed the per-scope ceiling shown in the retry column. Combine with model-tier escalation when appropriate.
 
 **Non-reasoning models:** if the target model shows Extended thinking: no in Your team above, use \`off\` or the highest level the model supports — never request levels the model cannot run.`
 
@@ -244,10 +238,10 @@ A plan is "good" when an independent model can build from it without asking ques
 10. **Feasibility** — The plan fits within the token budgets allocated for each chunk. No chunk requires >150k tokens to build.`
 
 // ---------------------------------------------------------------------------
-// Phase responsibilities — per-phase DOs/DONTs (generated from roles)
+// Role responsibilities — per-role DOs/DONTs (generated from roles)
 // ---------------------------------------------------------------------------
 
-interface PhaseDirectiveContext {
+interface RoleDirectiveContext {
 	ownRoles: string[]
 	currentModelId?: string
 	roles?: ModelRoles
@@ -261,11 +255,11 @@ function modelListForRole(assignment: RoleModelAssignment): string {
 		.join(", ")
 }
 
-function buildPlanPhaseDirectives(ctx: PhaseDirectiveContext): string {
+function buildPlanRoleDirectives(ctx: RoleDirectiveContext): string {
 	const delegatePlanning = shouldDelegatePlanning(ctx.currentModelId, ctx.roles)
 	const lines: string[] = []
 
-	lines.push("#### Plan phase")
+	lines.push("#### Plan")
 	lines.push("")
 
 	if (delegatePlanning) {
@@ -295,17 +289,17 @@ function buildPlanPhaseDirectives(ctx: PhaseDirectiveContext): string {
 	lines.push(buildPlanVerification(delegatePlanning))
 	lines.push("")
 	lines.push(
-		"**Handling the verdict:** If APPROVED: proceed to build phase. If NEEDS_REVISION: fix or delegate the gaps, then return the full revised plan to the verifier with the changed sections clearly marked. Maximum one re-verification round; if still not approved, proceed with documented reservations.",
+		"**Handling the verdict:** If APPROVED: proceed to build. If NEEDS_REVISION: fix or delegate the gaps, then return the full revised plan to the verifier with the changed sections clearly marked. Maximum one re-verification round; if still not approved, proceed with documented reservations.",
 	)
 
 	return lines.join("\n")
 }
 
-function buildBuildPhaseDirectives(ctx: PhaseDirectiveContext): string {
+function buildBuildRoleDirectives(ctx: RoleDirectiveContext): string {
 	const lines: string[] = []
 	const models = ctx.roles ? modelListForRole(ctx.roles.builder) : "a Builder model"
 
-	lines.push("#### Build phase")
+	lines.push("#### Build")
 	lines.push("")
 	lines.push("- DO NOT build code yourself. Delegate one Agent call per chunk from the plan.")
 	lines.push(
@@ -328,12 +322,12 @@ function buildBuildPhaseDirectives(ctx: PhaseDirectiveContext): string {
 	return lines.join("\n")
 }
 
-function buildReviewPhaseDirectives(ctx: PhaseDirectiveContext): string {
+function buildReviewRoleDirectives(ctx: RoleDirectiveContext): string {
 	const delegateReview = shouldDelegateReview(ctx.currentModelId, ctx.roles)
 	const lines: string[] = []
 	const models = ctx.roles ? modelListForRole(ctx.roles.reviewer) : "a Reviewer model"
 
-	lines.push("#### Review phase")
+	lines.push("#### Review")
 	lines.push("")
 	if (delegateReview) {
 		lines.push(
@@ -361,11 +355,11 @@ function buildReviewPhaseDirectives(ctx: PhaseDirectiveContext): string {
 	return lines.join("\n")
 }
 
-function buildExplorePhaseDirectives(ctx: PhaseDirectiveContext): string {
+function buildExploreRoleDirectives(ctx: RoleDirectiveContext): string {
 	const owns = ctx.ownRoles.includes("explorer")
 	const lines: string[] = []
 
-	lines.push("#### Explore phase")
+	lines.push("#### Explore")
 	lines.push("")
 
 	if (owns) {
@@ -384,11 +378,11 @@ function buildExplorePhaseDirectives(ctx: PhaseDirectiveContext): string {
 	return lines.join("\n")
 }
 
-function buildResearchPhaseDirectives(ctx: PhaseDirectiveContext): string {
+function buildResearchRoleDirectives(ctx: RoleDirectiveContext): string {
 	const owns = ctx.ownRoles.includes("researcher")
 	const lines: string[] = []
 
-	lines.push("#### Research phase")
+	lines.push("#### Research")
 	lines.push("")
 	lines.push(
 		"- For quick factual lookups (library comparisons, version numbers, API references), call web_search directly — do not spawn an Agent.",
@@ -416,7 +410,7 @@ function buildOrchestrationChapter(
 ): string {
 	const ownRoles = currentModelId && roles ? resolveModelRoleNames(currentModelId, roles) : []
 
-	const ctx: PhaseDirectiveContext = { ownRoles, currentModelId, roles, registry, customConfigs }
+	const ctx: RoleDirectiveContext = { ownRoles, currentModelId, roles, registry, customConfigs }
 
 	const parts: string[] = []
 
@@ -439,19 +433,19 @@ ${ORCHESTRATION_ORIENTATION}`)
 	parts.push(STEP_1_CLASSIFY)
 	parts.push(STEP_2_PIPELINE)
 
-	parts.push(`### Phase responsibilities
+	parts.push(`### Role responsibilities
 
-Read **Your roles** above. The sections below tell you exactly what to DO and what NOT to do for each pipeline phase. Follow them literally.
+Read **Your roles** above. The sections below tell you exactly what to DO and what NOT to do for each work type. Follow them literally.
 
 Pass durable artifacts as Markdown files in the Documents directory: review findings, verification reports, and non-trivial research notes. Plans and specs go to the canonical plan location (.kimchi/plans/<slug>.md); Explore findings are not durable artifacts — consume them directly from the Agent result.`)
 
 	const delegatePlanning = shouldDelegatePlanning(currentModelId, roles)
 
-	parts.push(buildPlanPhaseDirectives(ctx))
-	parts.push(buildBuildPhaseDirectives(ctx))
-	parts.push(buildReviewPhaseDirectives(ctx))
-	parts.push(buildExplorePhaseDirectives(ctx))
-	parts.push(buildResearchPhaseDirectives(ctx))
+	parts.push(buildPlanRoleDirectives(ctx))
+	parts.push(buildBuildRoleDirectives(ctx))
+	parts.push(buildReviewRoleDirectives(ctx))
+	parts.push(buildExploreRoleDirectives(ctx))
+	parts.push(buildResearchRoleDirectives(ctx))
 
 	parts.push(STEP_4_EXECUTE)
 	parts.push(buildAgentDelegation(delegatePlanning))
@@ -621,7 +615,7 @@ function formatCurrentModelCapabilities(
 
 	if (owned.length > 0) {
 		lines.push(
-			`You have these roles: **${owned.join(", ")}**. Perform a phase yourself only when Orchestration **Phase responsibilities** says DO for that phase. Otherwise delegate.`,
+			`You have these roles: **${owned.join(", ")}**. Perform work yourself only when Orchestration **Role responsibilities** says DO for that role. Otherwise delegate.`,
 		)
 	}
 	if (delegated.length > 0) {

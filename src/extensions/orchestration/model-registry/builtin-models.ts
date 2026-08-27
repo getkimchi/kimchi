@@ -1,3 +1,4 @@
+import type { ModelRole } from "../model-roles.js"
 import { DEFAULT_ORCHESTRATION_GUIDELINES } from "./guidelines/default-orchestration-guidelines.js"
 import {
 	DEFAULT_BUILD_GUIDELINES,
@@ -5,7 +6,7 @@ import {
 	DEFAULT_PLAN_GUIDELINES,
 	DEFAULT_RESEARCH_GUIDELINES,
 	DEFAULT_REVIEW_GUIDELINES,
-} from "./guidelines/default-phase-guidelines.js"
+} from "./guidelines/default-role-guidelines.js"
 import {
 	KIMI_FAMILY_BUILD,
 	KIMI_FAMILY_ORCHESTRATION,
@@ -35,7 +36,7 @@ import {
 	NEMOTRON_FAMILY_ORCHESTRATION,
 	NEMOTRON_FAMILY_RESEARCH,
 } from "./guidelines/nemotron-family.js"
-import type { ModelCapabilities, Phase } from "./types.js"
+import type { ModelCapabilities } from "./types.js"
 
 /**
  * This map is a local capability knowledge-base keyed by model ID. It acts
@@ -103,11 +104,11 @@ function optionalGuidelines(...layers: string[]): string | undefined {
 }
 
 /** Build a guidelines record, omitting entries where all layers are empty. */
-function guidelinesMap(entries: Record<string, string[]>): Partial<Readonly<Record<Phase, string>>> | undefined {
+function guidelinesMap(entries: Record<string, string[]>): Partial<Readonly<Record<ModelRole, string>>> | undefined {
 	const result: Record<string, string> = {}
-	for (const [phase, layers] of Object.entries(entries)) {
+	for (const [role, layers] of Object.entries(entries)) {
 		const value = concatGuidelines(...layers)
-		if (value) result[phase] = value
+		if (value) result[role] = value
 	}
 	return Object.keys(result).length > 0 ? result : undefined
 }

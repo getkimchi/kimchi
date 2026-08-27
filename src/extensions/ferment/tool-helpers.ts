@@ -14,6 +14,7 @@ import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { publicToolNameForActionKind } from "./action-tool-names.js"
+import { fermentDelegationIsStrict } from "./delegation-mode.js"
 import { emitFermentDomainEvent } from "./domain-events-emitter.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 
@@ -86,7 +87,7 @@ export function formatNextActionHint(ferment: Ferment, multiModelEnabled: boolea
 		}
 		case "start_step": {
 			const label = stepLabel ?? `step "${action.stepId}"`
-			const relaxed = !multiModelEnabled
+			const relaxed = !fermentDelegationIsStrict(multiModelEnabled)
 			const startStepSuffix = relaxed
 				? ". Then execute the step directly — delegate to a linked Agent worker only for residue-heavy steps (long builds, big suites, many large reads, parallelizable work)."
 				: ", then immediately spawn an Agent worker for the implementation."
@@ -94,7 +95,7 @@ export function formatNextActionHint(ferment: Ferment, multiModelEnabled: boolea
 		}
 		case "complete_step": {
 			const label = stepLabel ?? `step "${action.stepId}"`
-			const relaxed = !multiModelEnabled
+			const relaxed = !fermentDelegationIsStrict(multiModelEnabled)
 			const completeStepSuffix = relaxed
 				? " If you executed the step directly (no subagent), omit worker_agent_id and include just the summary and gates."
 				: ""

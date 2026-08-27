@@ -122,7 +122,6 @@ beforeEach(() => {
 	vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 	vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
 	vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
-	vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
 	vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(false)
 })
 
@@ -215,7 +214,6 @@ describe("customize-status-line popover", () => {
 		const text = strip(makeComponent().render(80).join("\n"))
 		expect(text).toContain("● Context")
 		expect(text).toContain("● Agents")
-		expect(text).toContain("○ Phase")
 		expect(text).toContain("● Token I/O")
 	})
 

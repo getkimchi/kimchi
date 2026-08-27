@@ -130,7 +130,7 @@ Keep these parent rules.`
 		expect(output).toContain("Keep these parent rules.")
 	})
 
-	it("removes main-thread phase management while preserving persona-specific phase guidance", () => {
+	it("removes main-thread working practices while preserving persona-specific role guidance", () => {
 		const appendAgent: AgentConfig = {
 			name: "Test-Phase-Append",
 			description: "Test append agent phase guidance",
@@ -141,31 +141,31 @@ Keep these parent rules.`
 		}
 		const parentPrompt = `# Parent
 
-## Phase Management
+## Working Practices
 
 Call \`set_phase\` when the work type changes.
 
 ### Phase-specific behaviour
 
-During **plan** phase:
+When planning:
 - Write a plan.
 
 ## Rules
 Keep these parent rules.`
 		const output = buildAgentPrompt(appendAgent, FIXED_CWD, FIXED_ENV, parentPrompt, {
 			activeToolNames: ["read"],
-			guidelinesBlock: `## Phase Guidelines (build)
+			guidelinesBlock: `## Role Guidelines (build)
 
-During **build** phase:
+When implementing:
 - Implement the requested change.`,
 		})
 
-		expect(output).not.toContain("## Phase Management")
+		expect(output).not.toContain("## Working Practices")
 		expect(output).not.toContain("Call `set_phase`")
-		expect(output).not.toContain("During **plan** phase")
+		expect(output).not.toContain("When planning")
 		expect(output).toContain("Keep these parent rules.")
-		expect(output).toContain("## Phase Guidelines (build)")
-		expect(output).toContain("During **build** phase")
+		expect(output).toContain("## Role Guidelines (build)")
+		expect(output).toContain("When implementing")
 	})
 
 	it("Explore agent assembles expected prompt (replace mode)", () => {
@@ -238,7 +238,7 @@ During **build** phase:
 
 		// Plan-Agent-specific tool bindings (override the shared planning process).
 		expect(output).toContain("`questionnaire`")
-		expect(output).toContain("harness saves the plan")
+		expect(output).toContain("harness saves completed plans automatically")
 
 		// The shared planning process must be embedded verbatim. Asserting on the
 		// imported constant means any legitimate tweak to the shared process is
@@ -272,7 +272,7 @@ During **build** phase:
 			- Prefer official docs and primary sources (official docs, GitHub READMEs, RFCs) over forum posts. Avoid web_fetch unless the page is unindexed or the user gave a specific URL.
 			- Cross-reference multiple sources before concluding.
 			- Always cite sources (URL or file path with line range).
-			- If research output is non-trivial (more than one fact), save a short markdown note to the Documents directory and reference it from the next phase.
+			- If research output is non-trivial (more than one fact), save a short markdown note to the Documents directory and reference it for the orchestrator's next step.
 			- Stay read-only; never modify files.
 
 			Deliver a structured report: summary first, then supporting evidence with citations."
@@ -409,12 +409,12 @@ describe("includeCoreGuidelines", () => {
 		expect(output).toContain("Never guess, assume, or fabricate")
 		expect(output).toContain("Documents directory")
 		// Consolidated sections that subagents need: tool substitution,
-		// output capping, and consent. Phase Management is deliberately
-		// omitted — subagents do not manage phase lifecycle.
+		// output capping, and consent. Working Practices is deliberately
+		// omitted — subagents receive their own role-scoped guideline block.
 		expect(output).toContain("## Tool Selection")
 		expect(output).toContain("## Output & Truncation")
 		expect(output).toContain("## Consent & Irreversible Actions")
-		expect(output).not.toContain("## Phase Management")
+		expect(output).not.toContain("## Working Practices")
 	})
 
 	it("includes only guidance for tools available to a restricted replace-mode agent", () => {

@@ -17,10 +17,11 @@
 //
 // The assertion is on the child session's ACTIVE tool names.
 
-import { mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import {
 	createAgentSession,
 	DefaultResourceLoader,
@@ -30,6 +31,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { afterAll, describe, expect, it } from "vitest"
 import dapExtension from "../../dap.js"
+import { createSubagentPlanExitExtension } from "./agent-runner.js"
 
 /** Minimal model stub — the session never streams in this test, so the model
  *  and runtime only need to satisfy construction-time shape checks. */
@@ -157,6 +159,55 @@ describe("DAP tools in subagent sessions", () => {
 		const active = session.getActiveToolNames()
 		expect(active).toContain("read")
 		expect(active).not.toContain("debug_launch")
+
+		await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
+	})
+
+	it("activates child ExitPlanMode and persists the submitted plan", async () => {
+		const tmp = makeTmpDir()
+		const loader = new DefaultResourceLoader({
+			cwd: tmp,
+			agentDir: tmp,
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+			systemPromptOverride: () => "test",
+			appendSystemPromptOverride: () => [],
+			extensionFactories: [createSubagentPlanExitExtension(tmp)],
+		})
+		await loader.reload()
+
+		const walker = await createAgentSession({
+			cwd: tmp,
+			agentDir: tmp,
+			sessionManager: SessionManager.inMemory(tmp),
+			settingsManager: SettingsManager.create(tmp, tmp),
+			model: fakeModel,
+			modelRuntime: {} as ModelRuntime,
+			resourceLoader: loader,
+			tools: ["read", "ExitPlanMode"],
+		})
+		const session = walker.session
+		await session.bindExtensions({
+			onError: (err) => {
+				throw new Error(err.error ?? err.extensionPath)
+			},
+		})
+
+		expect(session.getActiveToolNames()).toContain("ExitPlanMode")
+		const tool = session.getToolDefinition("ExitPlanMode")
+		expect(tool).toBeDefined()
+		if (!tool) throw new Error("ExitPlanMode was not registered")
+
+		const planText = "# Child Plan\n\n## Goal\nPersist this plan."
+		const result = await tool.execute("exit-plan", { plan: planText }, undefined, undefined, {} as ExtensionContext)
+		const planPath = join(tmp, ".kimchi", "plans", "child-plan.md")
+		expect(result.details).toEqual({ planPath })
+		expect(result.terminate).toBe(true)
+		expect(existsSync(planPath)).toBe(true)
+		expect(readFileSync(planPath, "utf8")).toBe(`${planText}\n`)
 
 		await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 	})

@@ -15,13 +15,9 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import { Type } from "typebox"
 import { readTelemetryConfig } from "../../../config.js"
-import {
-	derivePlanTitle,
-	savePlanMarkdown,
-	slugifyPlanName,
-	stripPlanCompletionMarkers,
-} from "../../../shared/planning/plan-markdown.js"
+import { derivePlanTitle, savePlanMarkdown } from "../../../shared/planning/plan-markdown.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
@@ -29,11 +25,9 @@ import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
 import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
-import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
-import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
-import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
@@ -291,6 +285,53 @@ function getLastAssistantText(session: AgentSession): string {
 	return ""
 }
 
+function getPlanPathFromToolResult(result: unknown): string | undefined {
+	if (!result || typeof result !== "object" || !("details" in result)) return undefined
+	const details = result.details
+	if (!details || typeof details !== "object" || !("planPath" in details)) return undefined
+	const planPath = details.planPath
+	return typeof planPath === "string" ? planPath : undefined
+}
+
+/**
+ * Register the plan-completion tool in a child session without loading the
+ * parent permissions extension. Child Plan agents have no approval UI; the
+ * orchestrator handles approval after receiving the persisted artifact.
+ */
+export function createSubagentPlanExitExtension(cwd: string): InlineExtension {
+	return (pi) => {
+		pi.registerTool({
+			name: "ExitPlanMode",
+			label: "Save Plan",
+			description: "Save the complete plan and return its path to the orchestrator.",
+			promptSnippet: "Save the completed plan",
+			parameters: Type.Object({
+				plan: Type.String({ description: "The complete plan in the shared structure." }),
+			}),
+			execute: async (_toolCallId, params) => {
+				const planText = params.plan.trim()
+				if (!planText) {
+					return {
+						content: [{ type: "text" as const, text: "Provide the complete plan in the `plan` argument." }],
+						details: null,
+					}
+				}
+
+				const planPath = savePlanMarkdown({
+					cwd,
+					name: derivePlanTitle(planText),
+					planText: `${planText}\n`,
+				})
+				return {
+					content: [{ type: "text" as const, text: `Plan saved to ${planPath}.` }],
+					details: { planPath },
+					terminate: true,
+				}
+			},
+		})
+	}
+}
+
 function usageDelta(total: LifetimeUsage | undefined, observed: LifetimeUsage): LifetimeUsage | undefined {
 	if (!total) return undefined
 	const delta = {
@@ -376,6 +417,9 @@ async function runAgentInner(
 	}
 
 	let toolNames = getToolNamesForType(type)
+	if (type === "Plan" && !toolNames.includes("ExitPlanMode")) {
+		toolNames = [...toolNames, "ExitPlanMode"]
+	}
 
 	if (Array.isArray(skills)) {
 		const loaded = preloadSkills(skills, effectiveCwd)
@@ -422,8 +466,8 @@ ${skillLines}`
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
 
 	const modelId = (options.model as { id?: string } | undefined)?.id
-	const guidelinePhase = agentConfig?.roles?.[0] as Phase | undefined
-	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, guidelinePhase, getGuidelinesRegistry())
+	const guidelineRole = agentConfig?.roles?.[0]
+	const guidelinesBlock = buildRoleGuidelinesSection(modelId, guidelineRole, getGuidelinesRegistry())
 	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
 
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
@@ -483,6 +527,7 @@ ${skillLines}`
 		infrastructureBreakerExtension,
 		omitKimchiMaxTokensExtension,
 	]
+	if (type === "Plan") extensionFactories.push(createSubagentPlanExitExtension(effectiveCwd))
 	// Personas that request DAP debugger tools (e.g. Debugger) need the dap
 	// extension registered in the child session: repo-native extensions wired
 	// directly in cli.ts are not discovered by a child DefaultResourceLoader.
@@ -619,6 +664,7 @@ ${skillLines}`
 	}
 
 	let currentMessageText = ""
+	let planPath: string | undefined
 	const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
 		inactivity.lastActivityAt = Date.now()
 		if (inactivity.steered) inactivity.steered = false
@@ -668,6 +714,10 @@ ${skillLines}`
 		}
 		if (event.type === "tool_execution_end") {
 			options.onToolActivity?.({ type: "end", toolName: event.toolName })
+			if (type === "Plan" && event.toolName === "ExitPlanMode") {
+				const reportedPlanPath = getPlanPathFromToolResult(event.result)
+				if (reportedPlanPath) planPath = reportedPlanPath
+			}
 			if (event.toolName === WORKER_REPORT_TOOL_NAME && options.workerReport?.isAccepted()) {
 				reportAccepted = true
 				queueMicrotask(() => hardAbort(session))
@@ -758,13 +808,6 @@ ${skillLines}`
 		process.env.KIMCHI_AGENT_PERSONA = agentConfig.name
 	}
 
-	const sessionId = ctx.sessionManager.getSessionId()
-	const prevPhase = getCurrentPhase(sessionId)
-	const personaPhase = agentConfig?.roles?.[0]
-	if (personaPhase) {
-		setCurrentPhase(sessionId, personaPhase)
-	}
-
 	try {
 		await session.prompt(effectivePrompt)
 	} finally {
@@ -783,9 +826,6 @@ ${skillLines}`
 			} else {
 				process.env.KIMCHI_AGENT_PERSONA = prevPersona
 			}
-		}
-		if (personaPhase) {
-			setCurrentPhase(sessionId, prevPhase)
 		}
 	}
 
@@ -808,22 +848,6 @@ ${skillLines}`
 	}
 
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
-
-	// When a Plan agent emits a completion marker, the harness saves the plan
-	// to .kimchi/plans/<slug>.md regardless of permission mode — delegated
-	// Plan agents run outside plan permission mode so the turn_end handler in
-	// permissions/index.ts does not fire for them.
-	let planPath: string | undefined
-	if (type === "Plan" && responseText.includes("<!-- PLAN_COMPLETE -->")) {
-		const planText = stripPlanCompletionMarkers(responseText)
-		const slug = slugifyPlanName(derivePlanTitle(planText))
-		try {
-			planPath = savePlanMarkdown({ cwd: effectiveCwd, name: slug, planText })
-		} catch (err) {
-			const detail = err instanceof Error ? err.message : String(err)
-			console.error(`agent-runner: failed to save plan file: ${detail}`)
-		}
-	}
 
 	return {
 		responseText,

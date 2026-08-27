@@ -10,7 +10,7 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [options] [session-file]
 
-Audit a kimchi harness session for phase quality and cost efficiency.
+Audit a kimchi harness session for delegation quality and cost efficiency.
 Runs the audit agent in non-interactive mode using Opus.
 
 Arguments:

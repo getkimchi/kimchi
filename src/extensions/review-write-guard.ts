@@ -1,48 +1,46 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { AgentOutcomeKind, AgentRecord, SubagentType } from "./agents/personas/types.js"
+import { fermentDelegationIsStrict } from "./ferment/delegation-mode.js"
+import { getMultiModelEnabled } from "./multi-model.js"
 import { markHarnessSteer } from "./steer-marker.js"
-import { getCurrentPhase } from "./tags.js"
 
 const IMPLEMENTATION_TOOLS = new Set(["edit", "write"])
-const REVIEW_PHASE_ALLOWANCE = 2
 
 export interface OrchestratorWriteGuardOptions {
 	/** Tools that count as implementation work. Default: edit, write. */
 	implementationTools?: Set<string>
-	/** Number of implementation tool calls after a successful subagent return in build phase before a steer fires. Default: 2 */
-	buildPhaseThreshold?: number
-	/** Number of implementation tool calls after a successful subagent return in build phase before a hard block fires. Default: 5 */
-	buildPhaseBlockThreshold?: number
+	/** Number of implementation tool calls after a successful subagent return before a steer fires. Default: 2 */
+	steerThreshold?: number
+	/** Number of implementation tool calls after a successful subagent return before a hard block fires. Default: 5 */
+	blockThreshold?: number
 	/**
 	 * Number of implementation tool calls after a failed/stopped/aborted subagent return
 	 * before a steer fires. Default: 3 — higher than the success threshold because the
 	 * orchestrator is doing triage, not stealing a successful worker's output.
 	 */
-	buildPhaseTriageThreshold?: number
+	triageSteerThreshold?: number
 	/**
 	 * Number of implementation tool calls after a failed/stopped/aborted subagent return
 	 * before a hard block fires. Default: 6.
 	 */
-	buildPhaseTriageBlockThreshold?: number
+	triageBlockThreshold?: number
 }
 
 export const STEER_MESSAGE_TYPE = "review-write-guard-steer"
 
-const REVIEW_STEER_MESSAGE =
-	"Delegation guard: you are editing implementation files during the review phase. " +
-	"The direct-edit allowance is only for one trivial fix requiring up to two small edit/write calls " +
-	"(a typo, missing import, or one-line config change). " +
-	"If this fix is growing beyond that scope — multiple files, test expectations, iteration loops — stop and " +
-	"delegate the remaining fixes to a build/fix agent instead: spawn an Agent with the fix task and the list of issues. " +
-	"Do not flip to build phase just for this."
+function buildSteerMessage(allowance: number): string {
+	const calls = allowance === 1 ? "one small edit/write call" : `${allowance} small edit/write calls`
+	return (
+		"Delegation guard: you are editing implementation files after a subagent returned. " +
+		`The direct-edit allowance is only for one trivial fix requiring up to ${calls} ` +
+		"(a typo, missing import, or one-line config change). " +
+		"If this fix is growing beyond that scope — multiple files, test expectations, iteration loops — stop and " +
+		"delegate the remaining fixes to a build/fix agent instead: spawn an Agent with the fix task and the list of issues."
+	)
+}
 
-const BUILD_STEER_MESSAGE =
-	"Delegation guard: you are editing files that a subagent produced. " +
-	"The orchestrator should not fix subagent output directly — it wastes orchestrator tokens. " +
-	"Spawn a fix Agent with the test failures and let it handle the corrections."
-
-const BUILD_BLOCK_REASON =
-	"BLOCKED: You have continued editing subagent output after being warned. " +
+const BLOCK_REASON =
+	"BLOCKED: You have continued editing after being warned. " +
 	"The orchestrator must not do a subagent's job. Spawn a fix Agent with the remaining work."
 
 /** Subagent outcome shape exposed in the Agent tool's result details. */
@@ -74,124 +72,71 @@ function isTriageOutcome(outcome: AgentOutcomeSummary | undefined): boolean {
 }
 
 export class OrchestratorWriteGuard {
-	private readonly ctx: ExtensionContext
-
 	private readonly implementationTools: Set<string>
-	private readonly buildPhaseThreshold: number
-	private readonly buildPhaseBlockThreshold: number
-	private readonly buildPhaseTriageThreshold: number
-	private readonly buildPhaseTriageBlockThreshold: number
-	private subagentReturnedInBuild = false
+	private readonly steerThreshold: number
+	private readonly blockThreshold: number
+	private readonly triageSteerThreshold: number
+	private readonly triageBlockThreshold: number
+	private armed = false
 	private lastSubagentSuccessful = false
-	private buildWriteCount = 0
-	private buildSteered = false
-	private reviewWriteCount = 0
-	private reviewSteered = false
-	private lastPhase: ReturnType<typeof getCurrentPhase>
+	private writeCount = 0
+	private steered = false
 
-	constructor(ctx: ExtensionContext, options: OrchestratorWriteGuardOptions = {}) {
-		this.ctx = ctx
-
+	constructor(options: OrchestratorWriteGuardOptions = {}) {
 		this.implementationTools = options.implementationTools ?? new Set(IMPLEMENTATION_TOOLS)
-		this.buildPhaseThreshold = options.buildPhaseThreshold ?? 2
-		this.buildPhaseBlockThreshold = options.buildPhaseBlockThreshold ?? 5
-		this.buildPhaseTriageThreshold = options.buildPhaseTriageThreshold ?? 3
-		this.buildPhaseTriageBlockThreshold = options.buildPhaseTriageBlockThreshold ?? 6
-		if (this.buildPhaseThreshold >= this.buildPhaseBlockThreshold) {
-			throw new Error("buildPhaseBlockThreshold must be greater than buildPhaseThreshold")
+		this.steerThreshold = options.steerThreshold ?? 2
+		this.blockThreshold = options.blockThreshold ?? 5
+		this.triageSteerThreshold = options.triageSteerThreshold ?? 3
+		this.triageBlockThreshold = options.triageBlockThreshold ?? 6
+		if (this.steerThreshold >= this.blockThreshold) {
+			throw new Error("blockThreshold must be greater than steerThreshold")
 		}
-		if (this.buildPhaseTriageThreshold >= this.buildPhaseTriageBlockThreshold) {
-			throw new Error("buildPhaseTriageBlockThreshold must be greater than buildPhaseTriageThreshold")
+		if (this.triageSteerThreshold >= this.triageBlockThreshold) {
+			throw new Error("triageBlockThreshold must be greater than triageSteerThreshold")
 		}
-		if (this.buildPhaseTriageThreshold <= this.buildPhaseThreshold) {
-			throw new Error("buildPhaseTriageThreshold must be greater than buildPhaseThreshold")
+		if (this.triageSteerThreshold <= this.steerThreshold) {
+			throw new Error("triageSteerThreshold must be greater than steerThreshold")
 		}
-		if (this.buildPhaseTriageBlockThreshold <= this.buildPhaseBlockThreshold) {
-			throw new Error("buildPhaseTriageBlockThreshold must be greater than buildPhaseBlockThreshold")
+		if (this.triageBlockThreshold <= this.blockThreshold) {
+			throw new Error("triageBlockThreshold must be greater than blockThreshold")
 		}
 	}
 
 	reset(): void {
-		this.resetBuildState()
-		this.resetReviewState()
-		this.lastPhase = undefined
-	}
-
-	private resetBuildState(): void {
-		this.subagentReturnedInBuild = false
+		this.armed = false
 		this.lastSubagentSuccessful = false
-		this.buildWriteCount = 0
-		this.buildSteered = false
-	}
-
-	private resetReviewState(): void {
-		this.reviewWriteCount = 0
-		this.reviewSteered = false
-	}
-
-	private syncPhase(phase: ReturnType<typeof getCurrentPhase>): void {
-		if (phase === this.lastPhase) return
-		if (this.lastPhase === "review") this.resetReviewState()
-		if (this.lastPhase === "build") this.resetBuildState()
-		this.lastPhase = phase
+		this.writeCount = 0
+		this.steered = false
 	}
 
 	checkToolCall(toolName: string): { block: true; reason: string } | { steer: string } | undefined {
-		const phase = getCurrentPhase(this.ctx.sessionManager.getSessionId())
-		this.syncPhase(phase)
+		if (!this.armed || !this.implementationTools.has(toolName)) return undefined
 
-		if (phase === "review" && this.implementationTools.has(toolName)) {
-			// Trivial fix exception: the orchestration instructions allow direct edits
-			// for a single obvious issue after NEEDS_FIXES. Edit count is a weak proxy
-			// for scope (a small fix may need several iteration rounds), so we steer
-			// once the allowance is reached instead of hard-blocking — a hard block here
-			// either forces overkill delegation for truly trivial fixes or strands a
-			// half-applied fix mid-iteration.
-			this.reviewWriteCount++
-			if (this.reviewWriteCount >= REVIEW_PHASE_ALLOWANCE && !this.reviewSteered) {
-				this.reviewSteered = true
-				return { steer: REVIEW_STEER_MESSAGE }
-			}
-			return undefined
+		this.writeCount++
+		const { steerThreshold, blockThreshold } = this.currentThresholds()
+
+		if (this.writeCount >= blockThreshold) {
+			return { block: true, reason: BLOCK_REASON }
 		}
-
-		if (phase === "build" && this.implementationTools.has(toolName)) {
-			if (!this.subagentReturnedInBuild) return undefined
-
-			this.buildWriteCount++
-			const { steerThreshold, blockThreshold } = this.currentThresholds()
-
-			if (this.buildWriteCount >= blockThreshold) {
-				return { block: true, reason: BUILD_BLOCK_REASON }
-			}
-			if (this.buildWriteCount >= steerThreshold && !this.buildSteered) {
-				this.buildSteered = true
-				return { steer: BUILD_STEER_MESSAGE }
-			}
+		if (this.writeCount >= steerThreshold && !this.steered) {
+			this.steered = true
+			return { steer: buildSteerMessage(steerThreshold) }
 		}
 
 		return undefined
 	}
 
 	recordSubagentReturn(outcome?: AgentOutcomeSummary): void {
-		const phase = getCurrentPhase(this.ctx.sessionManager.getSessionId())
-		this.syncPhase(phase)
-		if (phase !== "build") {
-			// A subagent return in a non-build phase should not arm the guard for a
-			// later build phase. Preserve review-phase state so Agent returns cannot
-			// renew the direct-edit allowance within the same review phase.
-			this.resetBuildState()
-			return
-		}
-
-		this.buildWriteCount = 0
-		this.buildSteered = false
+		// Arm on any subagent return. The guard stays armed for the remainder
+		// of this user turn; pi.on("agent_start") resets at the next user prompt.
+		this.armed = true
+		this.writeCount = 0
+		this.steered = false
 
 		if (isTriageOutcome(outcome)) {
 			// Subagent did not complete successfully. The orchestrator is doing triage
 			// on partial/failed/stopped worker output; allow more direct edits before
 			// steering again. Keep the guard armed but use the higher triage thresholds.
-			this.subagentReturnedInBuild = true
 			this.lastSubagentSuccessful = false
 			return
 		}
@@ -199,39 +144,37 @@ export class OrchestratorWriteGuard {
 		if (!isSuccessfulOutcome(outcome)) {
 			// Unknown or non-success outcome: use triage thresholds rather than disarming,
 			// so legacy/partial runtime outcomes still get some guard protection.
-			this.subagentReturnedInBuild = true
 			this.lastSubagentSuccessful = false
 			return
 		}
 
-		this.subagentReturnedInBuild = true
 		this.lastSubagentSuccessful = true
 	}
 
 	getState(): {
-		subagentReturnedInBuild: boolean
+		armed: boolean
 		lastSubagentSuccessful: boolean
-		buildWriteCount: number
-		buildSteered: boolean
+		writeCount: number
+		steered: boolean
 	} {
 		return {
-			subagentReturnedInBuild: this.subagentReturnedInBuild,
+			armed: this.armed,
 			lastSubagentSuccessful: this.lastSubagentSuccessful,
-			buildWriteCount: this.buildWriteCount,
-			buildSteered: this.buildSteered,
+			writeCount: this.writeCount,
+			steered: this.steered,
 		}
 	}
 
 	private currentThresholds(): { steerThreshold: number; blockThreshold: number } {
 		if (!this.lastSubagentSuccessful) {
 			return {
-				steerThreshold: this.buildPhaseTriageThreshold,
-				blockThreshold: this.buildPhaseTriageBlockThreshold,
+				steerThreshold: this.triageSteerThreshold,
+				blockThreshold: this.triageBlockThreshold,
 			}
 		}
 		return {
-			steerThreshold: this.buildPhaseThreshold,
-			blockThreshold: this.buildPhaseBlockThreshold,
+			steerThreshold: this.steerThreshold,
+			blockThreshold: this.blockThreshold,
 		}
 	}
 }
@@ -279,14 +222,46 @@ function extractAgentOutcome(event: { details?: unknown }): AgentOutcomeSummary 
 	}
 }
 
-export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: OrchestratorWriteGuardOptions): void {
+function isBackgroundAcknowledgement(event: { details?: unknown }): boolean {
+	const details = event.details
+	if (!details || typeof details !== "object") return false
+	const record = details as Record<string, unknown>
+	return record.status === "background" && !record.agentOutcome
+}
+
+/**
+ * Whether the orchestrator is expected to delegate implementation work rather
+ * than perform it — the premise the guard enforces.
+ *
+ * That premise only holds in multi-model sessions. Single-model prompts tell
+ * the model the opposite: the base prompt says "do not spawn subagents with
+ * the `Agent` tool by default", and ferment's relaxed mode (single-model)
+ * instructs the planner to "execute steps directly with bash/edit/write".
+ * Arming the guard there steers and then hard-blocks the exact behaviour the
+ * prompt asks for, telling the model to "spawn a fix Agent" it was told not to
+ * spawn.
+ *
+ * Multi-model is therefore the whole condition: it is what makes ferment
+ * strict, and what makes delegation the default outside ferment.
+ */
+function delegationRequired(ctx: ExtensionContext): boolean {
+	return fermentDelegationIsStrict(getMultiModelEnabled(ctx.sessionManager))
+}
+
+export interface ReviewWriteGuardExtensionOptions extends OrchestratorWriteGuardOptions {
+	/** Overrides the delegation-required policy. Testing seam. */
+	isDelegationRequired?: (ctx: ExtensionContext) => boolean
+}
+
+export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: ReviewWriteGuardExtensionOptions): void {
 	const guardMap = new Map<string, OrchestratorWriteGuard>()
+	const isDelegationRequired = options?.isDelegationRequired ?? delegationRequired
 
 	function getOrchestratorWriteGuard(ctx: ExtensionContext): OrchestratorWriteGuard {
 		const sessionId = ctx.sessionManager.getSessionId()
 		let guard = guardMap.get(sessionId)
 		if (!guard) {
-			guard = new OrchestratorWriteGuard(ctx, options)
+			guard = new OrchestratorWriteGuard(options)
 			guardMap.set(sessionId, guard)
 		}
 		return guard
@@ -301,6 +276,25 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 		guardMap.delete(ctx.sessionManager.getSessionId())
 	})
 
+	// Reset counters at the user-prompt boundary so the guard does not hard-block
+	// edits in a later user turn after a delegation. Without this, the counter
+	// would persist armed state across user prompts, trapping the user at the
+	// block threshold with no escape hatch.
+	//
+	// NOTE: this MUST be `agent_start`, not `turn_start`. pi-agent-core's
+	// runAgentLoop emits `agent_start` once per user prompt (agent-loop.js:67)
+	// but re-emits `turn_start` on EVERY inner-loop iteration (agent-loop.js:88-92:
+	// `if (!firstTurn) emit turn_start`). A delegation turn therefore looks like:
+	//   agent_start -> turn_start -> tool_result(Agent) [arms] -> turn_start [next iter]
+	// so resetting on `turn_start` would disarm the guard between the Agent
+	// result and the orchestrator's subsequent edits, making the steer/block
+	// paths unreachable in the intended flow. `agent_start` is the only event
+	// that fires once per user prompt and survives across iterations.
+	pi.on("agent_start", (_event, ctx) => {
+		const guard = guardMap.get(ctx.sessionManager.getSessionId())
+		if (guard) guard.reset()
+	})
+
 	pi.on("tool_call", (event, ctx) => {
 		if (!event.toolName) return
 
@@ -308,10 +302,14 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 		// here: spawning a new subagent must not create a disarm gap where the
 		// orchestrator could edit freely while waiting for that subagent to return.
 		// The guard resets its per-return counters only when a subagent actually
-		// finishes (tool_result) or when the session/phase changes.
+		// finishes (tool_result) or at the user-prompt boundary (agent_start).
 		if (event.toolName === "Agent") {
 			return { block: false }
 		}
+
+		// Relaxed-mode ferment: direct execution is the instructed path, so the
+		// guard must not steer or block it.
+		if (!isDelegationRequired(ctx)) return { block: false }
 
 		const guard = getOrchestratorWriteGuard(ctx)
 		const result = guard.checkToolCall(event.toolName)
@@ -334,8 +332,32 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 
 	pi.on("tool_result", (event, ctx) => {
 		if (event.toolName === "Agent") {
+			// A background Agent result is only an acknowledgement that work was
+			// queued. The terminal outcome arrives via get_subagent_result.
+			if (isBackgroundAcknowledgement(event)) return
 			const guard = getOrchestratorWriteGuard(ctx)
+			// A ferment can activate mid-turn, after the guard was already armed.
+			// Reset rather than arm so the orchestrator is not left throttled under
+			// a policy that no longer applies to it.
+			if (!isDelegationRequired(ctx)) {
+				guard.reset()
+				return
+			}
 			guard.recordSubagentReturn(extractAgentOutcome(event))
+			return
+		}
+
+		// Only a terminal get_subagent_result carries a worker outcome. Ignore
+		// status-only polling results so running/queued workers cannot arm the guard.
+		if (event.toolName === "get_subagent_result") {
+			const outcome = extractAgentOutcome(event)
+			if (!outcome) return
+			const guard = getOrchestratorWriteGuard(ctx)
+			if (!isDelegationRequired(ctx)) {
+				guard.reset()
+				return
+			}
+			guard.recordSubagentReturn(outcome)
 		}
 	})
 }
