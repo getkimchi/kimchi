@@ -7,6 +7,7 @@ import {
 	createAgentMessage,
 	createAgentMessageThread,
 	createChildIdempotencyKey,
+	createDuplicateMessageKey,
 	createParentReplyIdempotencyKey,
 	findOldestClosedThread,
 	serializedAgentMessageBytes,
@@ -182,5 +183,53 @@ describe("agent message contract", () => {
 		)
 		expect(createAgentMessageThread(accepted)).toMatchObject({ state: "open", expectedResponder: "parent" })
 		expect(["queued_for_parent", "queued_before_session", "queued_for_running_session"]).not.toContain("delivered")
+	})
+
+	it("accepts a decline only as a peer reply with reply_to", () => {
+		expect(
+			Value.Check(AgentMessageInputSchema, {
+				recipient: { type: "agent", agentId: "agent-2" },
+				payload: { kind: "decline", reason: "Out of scope" },
+				reply_to: "message-1",
+			}),
+		).toBe(true)
+		expect(
+			Value.Check(AgentMessageInputSchema, {
+				recipient: { type: "agent", agentId: "agent-2" },
+				payload: { kind: "decline" },
+			}),
+		).toBe(false)
+		expect(
+			Value.Check(AgentMessageInputSchema, {
+				recipient: { type: "parent" },
+				payload: { kind: "decline", reason: "No" },
+			}),
+		).toBe(false)
+	})
+
+	it("canonicalizes duplicate-guard keys regardless of model key ordering", () => {
+		const recipient = { type: "agent", agentId: "agent-2" } as const
+		const a = createDuplicateMessageKey("agent-1", recipient, {
+			kind: "question",
+			question: "Proceed?",
+			impact: "Blocks",
+			canContinue: true,
+		})
+		const reordered = createDuplicateMessageKey("agent-1", { agentId: "agent-2", type: "agent" }, {
+			canContinue: true,
+			impact: "Blocks",
+			question: "Proceed?",
+			kind: "question",
+		} as Parameters<typeof createDuplicateMessageKey>[2])
+		expect(a).toBe(reordered)
+		expect(a.startsWith("agent-1|")).toBe(true)
+		expect(
+			createDuplicateMessageKey("agent-1", recipient, {
+				kind: "question",
+				question: "Changed?",
+				impact: "Blocks",
+				canContinue: true,
+			}),
+		).not.toBe(a)
 	})
 })

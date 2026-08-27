@@ -16,6 +16,9 @@ export const AGENT_MESSAGE_LIMITS = {
 	maxHandoffEvidence: 16,
 	maxQuestionOptions: 8,
 	maxQuestionOptionLength: 256,
+	/** Send-side loop guard: identical source-to-recipient payloads inside this
+	 *  window are dropped as accidental model send-loops. */
+	duplicateMessageWindowMs: 120_000,
 } as const
 
 export const ParentAgentMessageRecipientSchema = Type.Object(
@@ -64,6 +67,14 @@ export const AgentAnswerPayloadSchema = Type.Object(
 	{ additionalProperties: false },
 )
 
+export const AgentDeclinePayloadSchema = Type.Object(
+	{
+		kind: Type.Literal("decline"),
+		reason: Type.Optional(Type.String()),
+	},
+	{ additionalProperties: false },
+)
+
 export const AgentStatusPayloadSchema = Type.Object(
 	{
 		kind: Type.Literal("status"),
@@ -107,6 +118,7 @@ const AgentHandoffInputPayloadSchema = Type.Object(
 export const AgentMessagePayloadSchema = Type.Union([
 	AgentQuestionPayloadSchema,
 	AgentAnswerPayloadSchema,
+	AgentDeclinePayloadSchema,
 	AgentStatusPayloadSchema,
 	AgentHandoffPayloadSchema,
 ])
@@ -122,7 +134,7 @@ const ChildQuestionParamsSchema = Type.Object(
 const ChildAnswerParamsSchema = Type.Object(
 	{
 		recipient: PeerAgentMessageRecipientSchema,
-		payload: AgentAnswerPayloadSchema,
+		payload: Type.Union([AgentAnswerPayloadSchema, AgentDeclinePayloadSchema]),
 		reply_to: Type.String(),
 	},
 	{ additionalProperties: false },
@@ -155,6 +167,7 @@ export type AgentQuestionPayload = {
 }
 
 export type AgentAnswerPayload = { kind: "answer"; answer: string; evidence?: string[] }
+export type AgentDeclinePayload = { kind: "decline"; reason?: string }
 export type AgentStatusPayload = { kind: "status"; summary: string; nextAction?: string }
 export type AgentHandoffPayload = {
 	kind: "handoff"
@@ -167,15 +180,49 @@ export type AgentHandoffPayload = {
 	nextAction: string
 }
 export type AgentHandoffInputPayload = Omit<AgentHandoffPayload, "sourceTaskId">
-export type AgentMessagePayload = AgentQuestionPayload | AgentAnswerPayload | AgentStatusPayload | AgentHandoffPayload
+export type AgentMessagePayload =
+	| AgentQuestionPayload
+	| AgentAnswerPayload
+	| AgentDeclinePayload
+	| AgentStatusPayload
+	| AgentHandoffPayload
 
 export type AgentMessageInput =
 	| { recipient: AgentMessageRecipient; payload: AgentQuestionPayload }
-	| { recipient: Extract<AgentMessageRecipient, { type: "agent" }>; payload: AgentAnswerPayload; reply_to: string }
+	| {
+			recipient: Extract<AgentMessageRecipient, { type: "agent" }>
+			payload: AgentAnswerPayload | AgentDeclinePayload
+			reply_to: string
+	  }
 	| {
 			recipient: Exclude<AgentMessageRecipient, { type: "user" }>
 			payload: AgentStatusPayload | AgentHandoffInputPayload
 	  }
+
+/** Canonical JSON with recursively sorted keys, so the duplicate guard
+ *  cannot be defeated by model key ordering. */
+function canonicalForDuplicateGuard(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonicalForDuplicateGuard).join(",")}]`
+	if (value && typeof value === "object") {
+		return `{${Object.keys(value as Record<string, unknown>)
+			.sort()
+			.map((key) => `${JSON.stringify(key)}:${canonicalForDuplicateGuard((value as Record<string, unknown>)[key])}`)
+			.join(",")}}`
+	}
+	return JSON.stringify(value) ?? "null"
+}
+
+/** Identity of one send attempt for the loop guard: same source, same
+ *  recipient, same semantic payload. Tool-call/idempotency identity is
+ *  deliberately absent — retried tool calls are already deduped by receipt
+ *  reservations; this catches identical NEW calls (model send-loops). */
+export function createDuplicateMessageKey<T extends AgentMessagePayload | AgentMessageInput["payload"]>(
+	sourceAgentId: string,
+	recipient: AgentMessageRecipient,
+	payload: T,
+): string {
+	return `${sourceAgentId}|${canonicalForDuplicateGuard(recipient)}|${canonicalForDuplicateGuard(payload)}`
+}
 
 export interface AgentMessage {
 	id: string

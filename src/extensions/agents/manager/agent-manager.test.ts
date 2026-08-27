@@ -1105,9 +1105,9 @@ describe("AgentManager communication broker", () => {
 
 			const pending = deferred<{ status: "queued_for_running_session" }>()
 			const operation = vi.fn(() => pending.promise)
-			const first = manager.reserveParentReply("parent-question", "reply-1", operation)
-			const replay = manager.reserveParentReply("parent-question", "reply-1", operation)
-			const late = await manager.reserveParentReply("parent-question", "reply-2", operation)
+			const first = manager.reserveParentReply("parent-question", "reply-1", "parent_answer", operation)
+			const replay = manager.reserveParentReply("parent-question", "reply-1", "parent_answer", operation)
+			const late = await manager.reserveParentReply("parent-question", "reply-2", "parent_answer", operation)
 
 			expect(replay).toBe(first)
 			expect(operation).toHaveBeenCalledOnce()
@@ -1142,28 +1142,28 @@ describe("AgentManager communication broker", () => {
 			expect(manager.registerMessageThread(question)).toEqual({ accepted: true })
 
 			await expect(
-				manager.reservePeerReply(otherPeer, "peer-question", source, "peer-reply-1", 1, () => ({
+				manager.reservePeerReply(otherPeer, "peer-question", source, "peer-reply-1", 1, "answer", () => ({
 					status: "queued_for_running_session",
 				})),
 			).resolves.toEqual({ status: "rejected", reason: "Peer reply is not authorized." })
 			await expect(
-				manager.reservePeerReply(peer, "peer-question", "wrong-source", "peer-reply-2", 1, () => ({
+				manager.reservePeerReply(peer, "peer-question", "wrong-source", "peer-reply-2", 1, "answer", () => ({
 					status: "queued_for_running_session",
 				})),
 			).resolves.toEqual({ status: "rejected", reason: "Peer reply is not authorized." })
 			await expect(
-				manager.reservePeerReply(otherPeer, "unknown-question", source, "peer-reply-unknown", 1, () => ({
+				manager.reservePeerReply(otherPeer, "unknown-question", source, "peer-reply-unknown", 1, "answer", () => ({
 					status: "queued_for_running_session",
 				})),
 			).resolves.toEqual({ status: "rejected", reason: "Peer reply is not authorized." })
 			await expect(
-				manager.reservePeerReply(peer, "peer-question", source, "peer-reply-3", 1, () => ({
+				manager.reservePeerReply(peer, "peer-question", source, "peer-reply-3", 1, "answer", () => ({
 					status: "queued_for_running_session",
 				})),
 			).resolves.toEqual({ status: "queued_for_running_session" })
 			expect(manager.getMessageThread("peer-question")).toMatchObject({ state: "closed", messageCount: 2 })
 			await expect(
-				manager.reservePeerReply(peer, "peer-question", source, "peer-reply-late", 1, () => ({
+				manager.reservePeerReply(peer, "peer-question", source, "peer-reply-late", 1, "answer", () => ({
 					status: "queued_for_running_session",
 				})),
 			).resolves.toEqual({ status: "rejected", reason: "thread_closed" })
@@ -1470,7 +1470,7 @@ describe("AgentManager communication broker", () => {
 			expect(activeBridge).toHaveBeenCalledOnce()
 			const receipt = await capability?.sendMessage("call-1", {
 				recipient: { type: "parent" },
-				payload: { kind: "status", summary: "progress" },
+				payload: { kind: "status", summary: "progress after bridge swap" },
 			})
 			expect(receipt).toMatchObject({ status: "queued_for_parent" })
 			const sent = activeBridge.mock.calls[0]?.[0]
@@ -1599,6 +1599,154 @@ describe("AgentManager communication broker", () => {
 			).resolves.toMatchObject({ status: "unavailable" })
 			expect(bridge).not.toHaveBeenCalled()
 			expect(events).not.toHaveBeenCalled()
+		} finally {
+			manager.dispose()
+		}
+	})
+
+	it("drops duplicate identical payloads inside the loop-guard window", async () => {
+		vi.useFakeTimers()
+		const manager = new AgentManager(undefined, 4)
+		try {
+			manager.bindCommunicationRoot("root-1")
+			manager.registerParentBridge("root-1", () => true)
+			let capability: NonNullable<Parameters<typeof runAgent>[3]>["agentMessage"]
+			mockRunAgent.mockImplementationOnce((_ctx, _type, _prompt, options) => {
+				capability = options.agentMessage
+				return new Promise(() => {})
+			})
+			manager.spawn(fakePi(), fakeCtx(), "Explore", "source", {
+				description: "source",
+				communication: "group",
+				rootSessionId: "root-1",
+			})
+			if (!capability) throw new Error("expected communication capability")
+			const cap = capability
+			let call = 0
+			const sendQuestion = () =>
+				cap.sendMessage(`call-${call++}`, {
+					recipient: { type: "parent" },
+					payload: { kind: "question", question: "Proceed?", impact: "Blocks", canContinue: true },
+				})
+
+			const first = await sendQuestion()
+			expect(first.reason ?? "").not.toContain("Duplicate")
+			const duplicate = await sendQuestion()
+			expect(duplicate).toMatchObject({
+				status: "rejected",
+				reason: expect.stringContaining("Duplicate message dropped"),
+			})
+
+			const different = await cap.sendMessage(`call-${call++}`, {
+				recipient: { type: "parent" },
+				payload: { kind: "question", question: "Different?", impact: "Blocks", canContinue: true },
+			})
+			expect(different.reason ?? "").not.toContain("Duplicate")
+
+			vi.setSystemTime(Date.now() + AGENT_MESSAGE_LIMITS.duplicateMessageWindowMs + 1_000)
+			const afterWindow = await sendQuestion()
+			expect(afterWindow.reason ?? "").not.toContain("Duplicate")
+		} finally {
+			manager.dispose()
+			vi.useRealTimers()
+		}
+	})
+
+	it("closes the question thread when the recipient declines", async () => {
+		const manager = new AgentManager(undefined, 4)
+		try {
+			manager.bindCommunicationRoot("root-1")
+			const sourceRun = deferred<Awaited<ReturnType<typeof runAgent>>>()
+			const targetRun = deferred<Awaited<ReturnType<typeof runAgent>>>()
+			let sourceCapability: NonNullable<Parameters<typeof runAgent>[3]>["agentMessage"]
+			let targetCapability: NonNullable<Parameters<typeof runAgent>[3]>["agentMessage"]
+			mockRunAgent.mockImplementationOnce((_ctx, _type, _prompt, options) => {
+				sourceCapability = options.agentMessage
+				return sourceRun.promise
+			})
+			mockRunAgent.mockImplementationOnce((_ctx, _type, _prompt, options) => {
+				targetCapability = options.agentMessage
+				return targetRun.promise
+			})
+			const source = manager.spawn(fakePi(), fakeCtx(), "Explore", "source", {
+				description: "source",
+				communication: "group",
+				rootSessionId: "root-1",
+			})
+			const target = manager.spawn(fakePi(), fakeCtx(), "Explore", "target", {
+				description: "target",
+				communication: "group",
+				rootSessionId: "root-1",
+			})
+			const sourceRecord = manager.getRecord(source)
+			const targetRecord = manager.getRecord(target)
+			if (!sourceCapability || !targetCapability || !sourceRecord || !targetRecord) {
+				throw new Error("expected live communication capabilities")
+			}
+			sourceRecord.groupId = "batch-1"
+			targetRecord.groupId = "batch-1"
+			const sourceSteer = vi.fn().mockResolvedValue(undefined)
+			sourceRecord.status = "running"
+			sourceRecord.session = { steer: sourceSteer, dispose: vi.fn() } as unknown as AgentSession
+			const targetSteer = vi.fn().mockResolvedValue(undefined)
+			targetRecord.status = "running"
+			targetRecord.session = { steer: targetSteer, dispose: vi.fn() } as unknown as AgentSession
+
+			const pending = await sourceCapability.sendMessage("peer-question", {
+				recipient: { type: "agent", agentId: target },
+				payload: { kind: "question", question: "Proceed?", impact: "Blocks", canContinue: true },
+			})
+			expect(pending).toMatchObject({ status: "queued_for_running_session" })
+			await vi.waitFor(() => expect(targetSteer).toHaveBeenCalled())
+
+			await expect(
+				targetCapability.sendMessage("peer-decline", {
+					recipient: { type: "agent", agentId: source },
+					payload: { kind: "decline", reason: "Out of my scope" },
+					reply_to: pending.messageId ?? "",
+				}),
+			).resolves.toMatchObject({ status: "queued_for_running_session" })
+			expect(sourceSteer).toHaveBeenCalledWith(expect.stringContaining("Out of my scope"))
+
+			const afterClose = await targetCapability.sendMessage("peer-decline-2", {
+				recipient: { type: "agent", agentId: source },
+				payload: { kind: "decline", reason: "still out of scope" },
+				reply_to: pending.messageId ?? "",
+			})
+			expect(afterClose).toMatchObject({ status: "rejected", reason: "thread_closed" })
+		} finally {
+			manager.dispose()
+		}
+	})
+
+	it("closes the thread with a parent decline that frees the child to continue", async () => {
+		const manager = new AgentManager(undefined, 0)
+		try {
+			manager.bindCommunicationRoot("root-1")
+			const source = spawnCommunicatingAgent(manager, "parent")
+			const record = manager.getRecord(source)
+			if (!record) throw new Error("expected source record")
+			const steer = vi.fn().mockResolvedValue(undefined)
+			record.status = "running"
+			record.session = { steer, dispose: vi.fn() } as unknown as AgentSession
+			const question = createInitialMessage(manager, source, "decline-question", { type: "parent" }, "question")
+			expect(manager.registerMessageThread(question)).toEqual({ accepted: true })
+
+			await expect(
+				manager.replyToAgentMessage("root-1", "decline-question", "decline-reply", "Out of scope", {
+					maxTurns: 1,
+					maxDuration: 30,
+					answerKind: "decline",
+				}),
+			).resolves.toMatchObject({ status: "queued_for_running_session" })
+			expect(steer).toHaveBeenCalledWith(expect.stringContaining("Host-mediated decline"))
+			expect(steer).toHaveBeenCalledWith(expect.stringContaining("canContinue"))
+
+			const afterClose = await manager.replyToAgentMessage("root-1", "decline-question", "decline-reply-2", "later", {
+				maxTurns: 1,
+				maxDuration: 30,
+			})
+			expect(afterClose).toMatchObject({ status: "rejected", reason: "thread_closed" })
 		} finally {
 			manager.dispose()
 		}
@@ -2198,7 +2346,7 @@ describe("AgentManager communication broker", () => {
 					}
 					await vi.waitFor(() => expect(manager.getMessageThread(questionId)).toMatchObject({ state: "closed" }))
 					await expect(
-						manager.reservePeerReply(target, questionId, source, `late-${questionId}`, 1, () => ({
+						manager.reservePeerReply(target, questionId, source, `late-${questionId}`, 1, "answer", () => ({
 							status: "queued_for_running_session",
 						})),
 					).resolves.toEqual({ status: "rejected", reason: "thread_closed" })

@@ -550,7 +550,7 @@ describe("agent communication lifecycle", () => {
 			"message-1",
 			"reply-call",
 			"Proceed with the safe default.",
-			{ maxTurns: 2, maxDuration: 30, tokenBudget: 2048 },
+			{ maxTurns: 2, maxDuration: 30, tokenBudget: 2048, answerKind: "answer" },
 			abortController.signal,
 		)
 		expect(result.content[0]?.text).toContain("queued_for_running_session")
@@ -567,6 +567,9 @@ describe("agent communication lifecycle", () => {
 		expect(prompt).toContain("requestedAudience")
 		expect(prompt).toContain("`ferment_id`")
 		expect(prompt).toContain("Every accepted question ends through reply_to_agent_message")
+		expect(prompt).toContain('answer_kind to "decline"')
+		expect(prompt).toContain("never as the user")
+		expect(prompt).toContain("a denied action must never be relayed through a peer")
 		expect(prompt).toContain("Never infer user reachability from TUI/RPC/ACP/headless mode names")
 
 		pi.getActiveTools.mockReturnValue([])

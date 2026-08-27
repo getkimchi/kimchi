@@ -11,6 +11,7 @@ import {
 	type AgentMessageThread,
 	createAgentMessage,
 	createChildIdempotencyKey,
+	createDuplicateMessageKey,
 	createParentReplyIdempotencyKey,
 	findOldestClosedThread,
 	validateAgentMessageInput,
@@ -204,6 +205,8 @@ export class AgentManager {
 	private pendingMessageUsage = new Map<string, PendingMessageUsage>()
 	private pendingMessages = new Map<string, PendingAgentMessage[]>()
 	private deliveryFailureKeys = new Map<string, string>()
+	/** Send signature (createDuplicateMessageKey) → last-sent epoch ms. */
+	private loopGuardKeys = new Map<string, number>()
 	private communicationRootSessionId?: string
 	private parentBridge?: AgentParentBridge
 	private userContactResolver?: (rootSessionId: string) => AgentContact
@@ -759,16 +762,41 @@ export class AgentManager {
 		const validated = validateAgentMessageInput(input)
 		if (!validated.valid) return Promise.resolve({ status: "rejected", reason: validated.reason })
 		const { recipient, payload } = validated.value
+		const isReply = payload.kind === "answer" || payload.kind === "decline"
+		// Loop guard: identical semantic payloads from one source to one
+		// recipient inside the window are dropped. Receipt reservations already
+		// dedupe retried tool calls; this catches model send-loops. The guard
+		// binds only to real delivery attempts — failover statuses below stay
+		// retryable because retrying a terminal failure is an escape hatch.
+		const guardKey = isReply ? undefined : createDuplicateMessageKey(sourceAgentId, recipient, payload)
+		if (guardKey && this.isDuplicateSend(guardKey, Date.now())) {
+			return Promise.resolve({
+				status: "rejected",
+				reason:
+					`Duplicate message dropped: an identical payload was sent within the last ` +
+					`${AGENT_MESSAGE_LIMITS.duplicateMessageWindowMs / 1000}s. Do not re-send; use the first attempt's outcome.`,
+			})
+		}
+		const recordOutcome = (delivery: Promise<AgentMessageReceipt>): Promise<AgentMessageReceipt> => {
+			if (!guardKey) return delivery
+			return delivery.then((receipt) => {
+				if (receipt.status !== "rejected" && receipt.status !== "unavailable" && receipt.status !== "saturated") {
+					this.recordSendSignature(guardKey, Date.now())
+				}
+				return receipt
+			})
+		}
 		if (recipient.type === "agent") {
-			if (payload.kind === "answer") {
+			if (isReply) {
 				const replyTo = "reply_to" in validated.value ? validated.value.reply_to : undefined
-				if (!replyTo) return Promise.resolve({ status: "rejected", reason: "Answers require reply_to." })
+				if (!replyTo) return Promise.resolve({ status: "rejected", reason: "Answers and declines require reply_to." })
 				return this.reservePeerReply(
 					sourceAgentId,
 					replyTo,
 					recipient.agentId,
 					toolCallId,
 					validated.bytes,
+					payload.kind,
 					(reservation) => {
 						const thread = this.messageThreads.get(replyTo)
 						const target = this.getAuthorizedPeer(sourceAgentId, recipient.agentId, rootSessionId)
@@ -781,48 +809,52 @@ export class AgentManager {
 					},
 				)
 			}
-			return this.reserveChildMessage(sourceAgentId, toolCallId, validated.bytes, (reservation) => {
+			return recordOutcome(
+				this.reserveChildMessage(sourceAgentId, toolCallId, validated.bytes, (reservation) => {
+					const source = this.agents.get(sourceAgentId)
+					if (!this.hasActiveCommunicationSource(source, rootSessionId, taskId)) {
+						return { status: "unavailable", reason: "The parent communication route is unavailable." }
+					}
+					const target = this.getAuthorizedPeer(sourceAgentId, recipient.agentId, rootSessionId)
+					if (!target) return { status: "unavailable", reason: "The peer route is unavailable." }
+					const message = createAgentMessage(reservation, randomUUID(), recipient, payload)
+					return this.deliverPeerMessage(message, target, validated.bytes)
+				}),
+			)
+		}
+		return recordOutcome(
+			this.reserveChildMessage(sourceAgentId, toolCallId, validated.bytes, (reservation) => {
 				const source = this.agents.get(sourceAgentId)
 				if (!this.hasActiveCommunicationSource(source, rootSessionId, taskId)) {
 					return { status: "unavailable", reason: "The parent communication route is unavailable." }
 				}
-				const target = this.getAuthorizedPeer(sourceAgentId, recipient.agentId, rootSessionId)
-				if (!target) return { status: "unavailable", reason: "The peer route is unavailable." }
-				const message = createAgentMessage(reservation, randomUUID(), recipient, payload)
-				return this.deliverPeerMessage(message, target, validated.bytes)
-			})
-		}
-		return this.reserveChildMessage(sourceAgentId, toolCallId, validated.bytes, (reservation) => {
-			const source = this.agents.get(sourceAgentId)
-			if (!this.hasActiveCommunicationSource(source, rootSessionId, taskId)) {
-				return { status: "unavailable", reason: "The parent communication route is unavailable." }
-			}
-			if (recipient.type === "user" && payload.kind !== "question") {
-				return { status: "rejected", reason: "The user route accepts questions only." }
-			}
-			const bridge = this.parentBridge
-			if (!bridge) return { status: "unavailable", reason: "The parent communication route is unavailable." }
-			const message = createAgentMessage(
-				reservation,
-				randomUUID(),
-				recipient,
-				payload,
-				"reply_to" in validated.value ? { replyTo: validated.value.reply_to } : undefined,
-			)
-			const thread = this.registerMessageThread(message)
-			if (!thread.accepted) return { status: "unavailable", reason: thread.reason }
-			if (!bridge({ kind: "message", message }, rootSessionId)) {
-				this.removeMessageThread(message.threadId)
-				return { status: "unavailable", reason: "The parent communication route is unavailable." }
-			}
-			const receipt: AgentMessageReceipt = {
-				messageId: message.id,
-				threadId: message.threadId,
-				status: "queued_for_parent",
-			}
-			this.emitMessageEvent(message, receipt.status, validated.bytes)
-			return receipt
-		})
+				if (recipient.type === "user" && payload.kind !== "question") {
+					return { status: "rejected", reason: "The user route accepts questions only." }
+				}
+				const bridge = this.parentBridge
+				if (!bridge) return { status: "unavailable", reason: "The parent communication route is unavailable." }
+				const message = createAgentMessage(
+					reservation,
+					randomUUID(),
+					recipient,
+					payload,
+					"reply_to" in validated.value ? { replyTo: validated.value.reply_to } : undefined,
+				)
+				const thread = this.registerMessageThread(message)
+				if (!thread.accepted) return { status: "unavailable", reason: thread.reason }
+				if (!bridge({ kind: "message", message }, rootSessionId)) {
+					this.removeMessageThread(message.threadId)
+					return { status: "unavailable", reason: "The parent communication route is unavailable." }
+				}
+				const receipt: AgentMessageReceipt = {
+					messageId: message.id,
+					threadId: message.threadId,
+					status: "queued_for_parent",
+				}
+				this.emitMessageEvent(message, receipt.status, validated.bytes)
+				return receipt
+			}),
+		)
 	}
 
 	private hasActiveCommunicationSource(
@@ -850,7 +882,7 @@ export class AgentManager {
 
 	private deliverPeerMessage(message: AgentMessage, target: AgentRecord, bytes: number): Promise<AgentMessageReceipt> {
 		const delivery = this.createPendingDelivery(message, target.id, bytes)
-		const needsThread = message.payload.kind !== "answer"
+		const needsThread = message.payload.kind !== "answer" && message.payload.kind !== "decline"
 		if (!target.session) {
 			if (!this.tryReservePendingMessage(target.id, bytes)) {
 				return Promise.resolve({
@@ -1029,6 +1061,7 @@ export class AgentManager {
 	reserveParentReply(
 		messageId: string,
 		toolCallId: string,
+		closeReason: "parent_answer" | "parent_decline",
 		operation: () => AgentMessageReceipt | Promise<AgentMessageReceipt>,
 	): Promise<AgentMessageReceipt> {
 		const thread = this.messageThreads.get(messageId)
@@ -1061,7 +1094,7 @@ export class AgentManager {
 				sourceAttemptId: this.agents.get(thread.sourceAgentId)?.currentAttemptId ?? 0,
 			},
 			() => {
-				const closed = this.closeThreadForAnswer(thread, "parent_answer")
+				const closed = this.closeThreadForAnswer(thread, closeReason)
 				if (!closed) return { status: "rejected", reason: "thread_closed" }
 				return operation()
 			},
@@ -1073,7 +1106,7 @@ export class AgentManager {
 		messageId: string,
 		toolCallId: string,
 		answer: string,
-		options: { maxTurns: number; maxDuration: number; tokenBudget?: number },
+		options: { maxTurns: number; maxDuration: number; tokenBudget?: number; answerKind?: "answer" | "decline" },
 		signal?: AbortSignal,
 	): Promise<AgentMessageReceipt> {
 		if (signal?.aborted) return { status: "rejected", reason: "Message reply was aborted." }
@@ -1104,82 +1137,90 @@ export class AgentManager {
 		if (!thread || thread.rootSessionId !== rootSessionId) {
 			return { status: "rejected", reason: "This message reply is not authorized for the current root." }
 		}
-		return this.reserveParentReply(messageId, toolCallId, async () => {
-			const target = this.agents.get(thread.sourceAgentId)
-			if (
-				!target?.communicationScope ||
-				target.communicationScope.rootSessionId !== rootSessionId ||
-				target.communicationScope.taskId !== thread.sourceTaskId
-			) {
-				return { status: "unavailable", reason: "The source agent is no longer available." }
-			}
-			const delivery: PendingAgentMessage = {
-				messageId,
-				threadId: thread.id,
-				sourceAgentId: target.id,
-				sourceTaskId: thread.sourceTaskId,
-				targetAgentId: target.id,
-				rootSessionId,
-				kind: "answer",
-				prompt: `Host-mediated answer to your message ${messageId}:\n${answer}`,
-				bytes: answerBytes,
-			}
-			if (target.agentReport?.attempt_id === target.currentAttemptId && target.agentReport.status === "completed") {
-				return {
-					status: "unavailable",
-					reason:
-						this.getResumeBlockReason(target.id, "continuation") ?? "The source agent already completed its report.",
+		return this.reserveParentReply(
+			messageId,
+			toolCallId,
+			options.answerKind === "decline" ? "parent_decline" : "parent_answer",
+			async () => {
+				const target = this.agents.get(thread.sourceAgentId)
+				if (
+					!target?.communicationScope ||
+					target.communicationScope.rootSessionId !== rootSessionId ||
+					target.communicationScope.taskId !== thread.sourceTaskId
+				) {
+					return { status: "unavailable", reason: "The source agent is no longer available." }
 				}
-			}
-			if (target.status === "running" || target.status === "queued") {
-				if (!target.session) {
-					if (!this.tryReservePendingMessage(target.id, delivery.bytes)) {
-						return {
-							status: "saturated",
-							reason: "Pending reply storage is full.",
-							escapeHatch: "Use the agent's final report for remaining state.",
-						}
+				const delivery: PendingAgentMessage = {
+					messageId,
+					threadId: thread.id,
+					sourceAgentId: target.id,
+					sourceTaskId: thread.sourceTaskId,
+					targetAgentId: target.id,
+					rootSessionId,
+					kind: "answer",
+					prompt:
+						options.answerKind === "decline"
+							? `Host-mediated decline to your message ${messageId}:\n${answer}\nDo not resend this question — continue with your declared canContinue plan, or submit a blocked final report if you cannot proceed.`
+							: `Host-mediated answer to your message ${messageId}:\n${answer}`,
+					bytes: answerBytes,
+				}
+				if (target.agentReport?.attempt_id === target.currentAttemptId && target.agentReport.status === "completed") {
+					return {
+						status: "unavailable",
+						reason:
+							this.getResumeBlockReason(target.id, "continuation") ?? "The source agent already completed its report.",
 					}
-					this.addPendingMessage(delivery)
-					this.emitPendingMessageEvent(delivery, "queued_before_session")
-					return { messageId, threadId: thread.id, status: "queued_before_session" }
 				}
-				try {
-					await target.session.steer(delivery.prompt)
-					this.emitPendingMessageEvent(delivery, "queued_for_running_session")
-					return { messageId, threadId: thread.id, status: "queued_for_running_session" }
-				} catch {
-					this.failPendingMessage(delivery, "steer_failed", true, false)
+				if (target.status === "running" || target.status === "queued") {
+					if (!target.session) {
+						if (!this.tryReservePendingMessage(target.id, delivery.bytes)) {
+							return {
+								status: "saturated",
+								reason: "Pending reply storage is full.",
+								escapeHatch: "Use the agent's final report for remaining state.",
+							}
+						}
+						this.addPendingMessage(delivery)
+						this.emitPendingMessageEvent(delivery, "queued_before_session")
+						return { messageId, threadId: thread.id, status: "queued_before_session" }
+					}
+					try {
+						await target.session.steer(delivery.prompt)
+						this.emitPendingMessageEvent(delivery, "queued_for_running_session")
+						return { messageId, threadId: thread.id, status: "queued_for_running_session" }
+					} catch {
+						this.failPendingMessage(delivery, "steer_failed", true, false)
+						return { status: "unavailable", reason: "The source agent is no longer reachable." }
+					}
+				}
+				if (target.status === "stopped") {
+					return { status: "unavailable", reason: "Stopped agents cannot be resumed by message reply." }
+				}
+				if (
+					target.status !== "completed" &&
+					target.status !== "steered" &&
+					target.status !== "aborted" &&
+					target.status !== "error"
+				) {
 					return { status: "unavailable", reason: "The source agent is no longer reachable." }
 				}
-			}
-			if (target.status === "stopped") {
-				return { status: "unavailable", reason: "Stopped agents cannot be resumed by message reply." }
-			}
-			if (
-				target.status !== "completed" &&
-				target.status !== "steered" &&
-				target.status !== "aborted" &&
-				target.status !== "error"
-			) {
-				return { status: "unavailable", reason: "The source agent is no longer reachable." }
-			}
-			const blockReason = this.getResumeBlockReason(target.id, "continuation")
-			if (blockReason) return { status: "unavailable", reason: blockReason }
-			const resumed = await this.resume(target.id, delivery.prompt, {
-				signal,
-				maxTurns: options.maxTurns,
-				maxDuration: options.maxDuration,
-				tokenBudget: options.tokenBudget,
-				purpose: "continuation",
-			})
-			return {
-				messageId,
-				threadId: thread.id,
-				status: "resume_attempt_completed",
-				agentOutcome: resumed?.latestOutcome,
-			}
-		})
+				const blockReason = this.getResumeBlockReason(target.id, "continuation")
+				if (blockReason) return { status: "unavailable", reason: blockReason }
+				const resumed = await this.resume(target.id, delivery.prompt, {
+					signal,
+					maxTurns: options.maxTurns,
+					maxDuration: options.maxDuration,
+					tokenBudget: options.tokenBudget,
+					purpose: "continuation",
+				})
+				return {
+					messageId,
+					threadId: thread.id,
+					status: "resume_attempt_completed",
+					agentOutcome: resumed?.latestOutcome,
+				}
+			},
+		)
 	}
 
 	/**
@@ -1192,6 +1233,7 @@ export class AgentManager {
 		targetAgentId: string,
 		toolCallId: string,
 		payloadBytes: number,
+		payloadKind: "answer" | "decline",
 		operation: (reservation: AgentMessageReservation) => AgentMessageReceipt | Promise<AgentMessageReceipt>,
 	): Promise<AgentMessageReceipt> {
 		const responder = this.agents.get(responderAgentId)
@@ -1251,7 +1293,7 @@ export class AgentManager {
 			idempotencyKey,
 			{ idempotencyKey, scope: { ...scope }, sourceAttemptId },
 			(reservation) => {
-				const closed = this.closeThreadForAnswer(thread, "peer_answer")
+				const closed = this.closeThreadForAnswer(thread, payloadKind === "decline" ? "peer_decline" : "peer_answer")
 				if (!closed) return { status: "rejected", reason: "thread_closed" }
 				return operation(reservation)
 			},
@@ -1290,8 +1332,8 @@ export class AgentManager {
 		) {
 			return { accepted: false, reason: "Message identity does not match the live host-owned record." }
 		}
-		if (message.payload.kind === "answer") {
-			return { accepted: false, reason: "Answers must close their existing question thread." }
+		if (message.payload.kind === "answer" || message.payload.kind === "decline") {
+			return { accepted: false, reason: "Answers and declines must close their existing question thread." }
 		}
 		if (message.threadId !== message.id || this.messageThreads.has(message.threadId)) {
 			return { accepted: false, reason: "Initial messages require a new unique thread ID." }
@@ -1680,7 +1722,8 @@ export class AgentManager {
 			this.messageReceipts.size +
 			this.messageThreads.size +
 			[...this.pendingMessageUsage.values()].reduce((count, usage) => count + usage.count, 0) +
-			this.deliveryFailureKeys.size
+			this.deliveryFailureKeys.size +
+			this.loopGuardKeys.size
 		)
 	}
 
@@ -1709,6 +1752,55 @@ export class AgentManager {
 		return true
 	}
 
+	/**
+	 * Loop guard: true when the identical source→recipient payload already
+	 * delivered inside the window.
+	 */
+	private isDuplicateSend(key: string, now: number): boolean {
+		const seenAt = this.loopGuardKeys.get(key)
+		return seenAt !== undefined && now - seenAt < AGENT_MESSAGE_LIMITS.duplicateMessageWindowMs
+	}
+
+	/** Records a delivered send for the loop guard. Fails silently at the
+	 *  metadata ceiling — the guard is advisory and must never suppress a
+	 *  legitimate send (mirrors failure-notification omission). */
+	private recordSendSignature(key: string, now: number): void {
+		this.pruneExpiredLoopGuardKeys(now)
+		if (!this.loopGuardKeys.has(key)) {
+			while (this.metadataRecordCount() >= AGENT_MESSAGE_LIMITS.maxMetadataRecords) {
+				if (
+					!this.evictOldestLoopGuardKey() &&
+					!this.evictOldestClosedThreadGlobally() &&
+					!this.evictOldestDeliveryFailureKey()
+				) {
+					return
+				}
+			}
+		}
+		this.loopGuardKeys.set(key, now)
+	}
+
+	private pruneExpiredLoopGuardKeys(now: number): void {
+		if (this.loopGuardKeys.size === 0) return
+		for (const [key, seenAt] of this.loopGuardKeys) {
+			if (now - seenAt >= AGENT_MESSAGE_LIMITS.duplicateMessageWindowMs) this.loopGuardKeys.delete(key)
+		}
+	}
+
+	private evictOldestLoopGuardKey(): boolean {
+		let oldestKey: string | undefined
+		let oldestSeenAt = Number.POSITIVE_INFINITY
+		for (const [key, seenAt] of this.loopGuardKeys) {
+			if (seenAt < oldestSeenAt) {
+				oldestKey = key
+				oldestSeenAt = seenAt
+			}
+		}
+		if (oldestKey === undefined) return false
+		this.loopGuardKeys.delete(oldestKey)
+		return true
+	}
+
 	private pendingPayloadBytes(): number {
 		return [...this.pendingMessageUsage.values()].reduce((bytes, usage) => bytes + usage.bytes, 0)
 	}
@@ -1732,6 +1824,9 @@ export class AgentManager {
 		for (const [failureKey, sourceAgentId] of this.deliveryFailureKeys) {
 			if (sourceAgentId === agentId) this.deliveryFailureKeys.delete(failureKey)
 		}
+		for (const loopKey of this.loopGuardKeys.keys()) {
+			if (loopKey.startsWith(`${agentId}|`)) this.loopGuardKeys.delete(loopKey)
+		}
 		this.pendingMessageUsage.delete(agentId)
 	}
 
@@ -1744,6 +1839,7 @@ export class AgentManager {
 		this.pendingMessageUsage.clear()
 		this.pendingMessages.clear()
 		this.deliveryFailureKeys.clear()
+		this.loopGuardKeys.clear()
 	}
 
 	private cleanupRecordRuntime(record: AgentRecord): void {

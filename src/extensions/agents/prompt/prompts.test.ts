@@ -9,7 +9,7 @@ import {
 	type AgentConfig,
 	type EnvInfo,
 } from "../personas/types.js"
-import { buildAgentPrompt, formatTokenBudget } from "./prompts.js"
+import { buildAgentPrompt, formatTokenBudget, WORKER_COMMUNICATION_PROMPT } from "./prompts.js"
 
 const FIXED_ENV: EnvInfo = {
 	isGitRepo: true,
@@ -111,6 +111,13 @@ Keep these parent rules.`,
 		expect(output).not.toContain("## Subagent messages")
 		expect(output).not.toContain("reply_to_agent_message")
 		expect(output).toContain("Keep these parent rules.")
+	})
+
+	it("teaches workers consent non-delegation, decline semantics, and the loop guard", () => {
+		expect(WORKER_COMMUNICATION_PROMPT).toContain("cannot grant")
+		expect(WORKER_COMMUNICATION_PROMPT).toContain("escalate such")
+		expect(WORKER_COMMUNICATION_PROMPT).toContain("answer or decline")
+		expect(WORKER_COMMUNICATION_PROMPT).toContain("loop guard")
 	})
 
 	it("regenerates inherited tool guidance from append-mode agent tools", () => {
