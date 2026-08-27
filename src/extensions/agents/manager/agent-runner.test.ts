@@ -1,4 +1,8 @@
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import dapExtension from "../../dap.js"
 import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
@@ -349,9 +353,39 @@ describe("runAgent — telemetry extension", () => {
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
 		expect(ctorArg?.extensionFactories).toHaveLength(4)
+		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(ctorArg?.extensionFactories).toContain(omitKimchiMaxTokensExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+	})
+
+	it("adds the dap extension when the persona requests debug tools", async () => {
+		// Debugger persona: extensions:false + builtinToolNames with debug_*/step_* names.
+		// The child loader cannot discover repo-native extensions, so the runner must
+		// inject dapExtension inline or the persona would have no debug tools at all.
+		mockGetToolNamesForType.mockReturnValue(["read", "grep", "find", "ls", "debug_state_at", "debug_launch", "step_in"])
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Debugger", "inspect runtime state", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		expect(ctorArg?.extensionFactories).toHaveLength(5)
+		expect(ctorArg?.extensionFactories).toContain(dapExtension)
+		// The debug tool names must flow into the child session's tool allowlist so the
+		// SDK activates them once the dap extension registers them on session_start.
+		expect(mockCreateAgentSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				tools: expect.arrayContaining(["debug_state_at", "debug_launch", "step_in"]),
+			}),
+		)
 	})
 
 	it("fails before creating a child session when Pi's model runtime is unavailable", async () => {
@@ -491,6 +525,75 @@ describe("runAgent — telemetry extension", () => {
 		})
 
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" })
+	})
+})
+
+describe("runAgent — Plan agent plan persistence", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+	let tempCwd: string
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockDefaultResourceLoader.mockClear()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+		tempCwd = mkdtempSync(join(tmpdir(), "plan-agent-test-"))
+		ctx.cwd = tempCwd
+	})
+
+	afterEach(() => {
+		rmSync(tempCwd, { recursive: true, force: true })
+		vi.clearAllMocks()
+	})
+
+	it("returns the saved plan path from a Plan agent's ExitPlanMode tool result", async () => {
+		const planPath = join(tempCwd, ".kimchi", "plans", "my-plan.md")
+		const session = makeFakeSession({
+			events: [{ type: "tool_execution_end", toolName: "ExitPlanMode", result: { details: { planPath } } }],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Plan", "plan it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(result.planPath).toBe(planPath)
+	})
+
+	it("does not persist plain completion-marker text", async () => {
+		const planText = "Some text\n\n<!-- PLAN_COMPLETE -->\n"
+		const session = makeFakeSession({
+			promptAction: async (emit) => {
+				emit({ type: "message_start" })
+				emit({
+					type: "message_update",
+					assistantMessageEvent: { type: "text_delta", delta: planText },
+				})
+				emit({ type: "turn_end" })
+			},
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Plan", "plan it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(result.planPath).toBeUndefined()
+		expect(existsSync(join(tempCwd, ".kimchi", "plans"))).toBe(false)
 	})
 })
 

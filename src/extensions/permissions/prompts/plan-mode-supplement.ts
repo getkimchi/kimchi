@@ -1,7 +1,5 @@
+import { generatePlanPersistenceNote } from "../../../shared/planning/plan-markdown.js"
 import { SHARED_PLANNING_PROCESS } from "../../../shared/planning/shared-planning-process.js"
-
-const PLAN_COMPLETE_MARKER = "<!-- PLAN_COMPLETE -->"
-const DONE_MARKER = "<done>"
 
 export default `Plan mode is active. You have read-only access to this codebase: you can read files, search, list directories, and run read-only shell commands. You cannot edit, write, or run any command that changes state.
 
@@ -25,14 +23,13 @@ STEP 3 (Completion Criteria):
 
 STEP 5 (Plan):
 - Draft the plan directly within this conversation using the structure defined above.
-- Emit exactly one completion marker when ALL of the following are true:
-  1. The plan is written in full (Goal, Constraints, Chunks, Verification Strategy, Decision Log, Risks).
-  2. All Open Questions are resolved — none remain unanswered.
-  3. You are not waiting on any clarification from the user.
-  Use one of these markers on its own line at the end of your response:
-    ${PLAN_COMPLETE_MARKER}
-  or simply:
-    ${DONE_MARKER}
-- Do NOT include these markers on intermediate drafts, while posing clarifying questions,
-  or while any Open Question remains unresolved. The approval menu will not appear until all
-  Open Questions are cleared.`
+- Verify every library, runtime, or build-tool version assumption with web_search/web_fetch,
+  or record it as an explicit assumption in the Decision Log and ask the user to confirm it.
+- When the plan is complete, all Open Questions are resolved, and you are not waiting for
+  clarification, call ExitPlanMode with the complete plan. Do not call it for intermediate drafts.
+- For complex work (3+ files, new architecture, or genuine uncertainty), verification happens
+  after approval on the execution path; do not invent a second planning phase or reviewer here.
+
+## Plan File Persistence
+
+${generatePlanPersistenceNote({ persistence: "harness" })}`

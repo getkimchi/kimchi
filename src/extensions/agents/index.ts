@@ -55,6 +55,7 @@ import {
 } from "./manager/budget-retry-guard.js"
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
+import { streamRemoteToOutputFile } from "./manager/remote-output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
 import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./manager/usage.js"
 import { NudgeScheduler } from "./nudge-scheduler.js"
@@ -511,6 +512,43 @@ function buildNotificationDetails(
 }
 
 let activeManager: AgentManager | undefined
+
+/** Returns the active AgentManager (set during agents extension init). */
+export function getActiveManager(): AgentManager | undefined {
+	return activeManager
+}
+
+/** Options for spawnRemoteAgent. */
+export interface SpawnRemoteAgentOptions {
+	/** Called with the agent id as soon as it is spawned, before the promise resolves.
+	 *  Use this to register abort handlers that need the id during the startup phase. */
+	onSpawn?: (id: string) => void
+}
+
+/** Spawn function type — set during agents extension init. */
+let spawnRemoteAgentFn:
+	| ((
+			pi: ExtensionAPI,
+			ctx: ExtensionContext,
+			prompt: string,
+			description: string,
+			opts?: SpawnRemoteAgentOptions,
+	  ) => Promise<{ id: string; result: string }>)
+	| undefined
+
+/** Spawns a foreground remote agent with full UI streaming support.
+ *  Returns the agent id (for targeted abort) and the result text.
+ *  Pass `onSpawn` to get the agent id before the promise resolves. */
+export async function spawnRemoteAgent(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	prompt: string,
+	description: string,
+	opts?: SpawnRemoteAgentOptions,
+): Promise<{ id: string; result: string }> {
+	if (!spawnRemoteAgentFn) throw new Error("Agent manager not initialized")
+	return spawnRemoteAgentFn(pi, ctx, prompt, description, opts)
+}
 
 /** Test seam: inject a fake manager so spawnGraderAgent can be unit-tested
  *  without booting the agents extension. */
@@ -986,6 +1024,55 @@ export default function (pi: ExtensionAPI) {
 
 	const widget = new AgentWidget(manager, agentActivity)
 	activeWidget = widget
+
+	spawnRemoteAgentFn = async (pi, ctx, promptText, desc, opts) => {
+		widget.setUICtx(ctx.ui as UICtx)
+		const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(1)
+		const parentSessionDir = ctx.sessionManager.getSessionDir()
+
+		// Build transcript-writing callbacks BEFORE spawn so they're captured
+		// in spawnOpts — no post-spawn mutation needed.
+		const {
+			callbacks: transcriptCallbacks,
+			setOutputPath,
+			flushRemaining,
+		} = streamRemoteToOutputFile(bgCallbacks, ctx.cwd)
+
+		const spawnOpts = {
+			description: desc,
+			isBackground: false,
+			remote: true,
+			maxTurns: 1,
+			...transcriptCallbacks,
+		}
+		const id = manager.spawn(pi, ctx, "Remote-Runner", promptText, spawnOpts)
+
+		const record = manager.getRecord(id)
+		if (record) {
+			record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
+			writeInitialEntry(record.outputFile, id, promptText, ctx.cwd)
+			setOutputPath(record.outputFile, id)
+		}
+		agentActivity.set(id, bgState)
+		widget.ensureTimer()
+		widget.update()
+
+		// Notify the caller of the agent id immediately so abort handlers
+		// (e.g. Ctrl+X) can target this agent during the startup phase.
+		opts?.onSpawn?.(id)
+
+		const rec = manager.getRecord(id)
+		if (!rec?.promise) return { id, result: "" }
+		try {
+			const result = await rec.promise
+			return { id, result }
+		} finally {
+			// Flush any buffered transcript entries on completion or error so
+			// nothing is lost if the remote run is aborted or fails mid-stream.
+			flushRemaining()
+		}
+	}
+
 	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
 	pi.on("session_shutdown", async () => {

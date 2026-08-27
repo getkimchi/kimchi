@@ -13,13 +13,7 @@
  * directly" alongside a guard that blocks direct edits is a contradiction the
  * model cannot resolve.
  */
-export type FermentDelegationMode = "strict" | "relaxed"
-
-export function fermentDelegationMode(multiModelEnabled: boolean): FermentDelegationMode {
-	return multiModelEnabled ? "strict" : "relaxed"
-}
-
 /** True when the planner is expected to delegate rather than implement. */
 export function fermentDelegationIsStrict(multiModelEnabled: boolean): boolean {
-	return fermentDelegationMode(multiModelEnabled) === "strict"
+	return multiModelEnabled
 }

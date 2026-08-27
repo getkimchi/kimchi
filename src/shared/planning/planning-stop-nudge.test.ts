@@ -6,7 +6,6 @@ import {
 	FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE,
 	FERMENT_SCOPING_STOP_NUDGE_ONESHOT,
 	hasFermentScopingCompletionSignal,
-	hasPlanCompletionSignal,
 	isNudgeSuppressed,
 	MAX_PLANNING_STOP_NUDGES,
 	PLAN_MODE_STOP_NUDGE,
@@ -15,25 +14,21 @@ import {
 
 describe("shouldNudge", () => {
 	it("returns true when all conditions met: tool call, stop reason, no completion signal", () => {
-		expect(shouldNudge({ hasToolCall: true, stopReason: "stop", completionSignalPresent: false })).toBe(true)
+		expect(shouldNudge({ hasToolCall: true, stopReason: "stop" })).toBe(true)
 	})
 
 	it("returns false when no tool calls were made", () => {
-		expect(shouldNudge({ hasToolCall: false, stopReason: "stop", completionSignalPresent: false })).toBe(false)
+		expect(shouldNudge({ hasToolCall: false, stopReason: "stop" })).toBe(false)
 	})
 
 	it("returns false when stopReason is not 'stop'", () => {
-		expect(shouldNudge({ hasToolCall: true, stopReason: "end_turn", completionSignalPresent: false })).toBe(false)
-		expect(shouldNudge({ hasToolCall: true, stopReason: undefined, completionSignalPresent: false })).toBe(false)
-		expect(shouldNudge({ hasToolCall: true, stopReason: "tool_use", completionSignalPresent: false })).toBe(false)
-	})
-
-	it("returns false when completion signal is present", () => {
-		expect(shouldNudge({ hasToolCall: true, stopReason: "stop", completionSignalPresent: true })).toBe(false)
+		expect(shouldNudge({ hasToolCall: true, stopReason: "end_turn" })).toBe(false)
+		expect(shouldNudge({ hasToolCall: true, stopReason: undefined })).toBe(false)
+		expect(shouldNudge({ hasToolCall: true, stopReason: "tool_use" })).toBe(false)
 	})
 
 	it("returns false when all conditions are false", () => {
-		expect(shouldNudge({ hasToolCall: false, stopReason: "end_turn", completionSignalPresent: true })).toBe(false)
+		expect(shouldNudge({ hasToolCall: false, stopReason: "end_turn" })).toBe(false)
 	})
 })
 
@@ -51,28 +46,6 @@ describe("isNudgeSuppressed", () => {
 
 	it("allows count 0", () => {
 		expect(isNudgeSuppressed(0)).toBe(false)
-	})
-})
-
-describe("hasPlanCompletionSignal", () => {
-	it("detects <!-- PLAN_COMPLETE --> marker", () => {
-		expect(hasPlanCompletionSignal("Here is the plan.\n\n<!-- PLAN_COMPLETE -->")).toBe(true)
-	})
-
-	it("detects <done> marker", () => {
-		expect(hasPlanCompletionSignal("Plan complete.\n<done>")).toBe(true)
-	})
-
-	it("returns false for text without any marker", () => {
-		expect(hasPlanCompletionSignal("Here is the plan but it is not done.")).toBe(false)
-	})
-
-	it("returns false for empty string", () => {
-		expect(hasPlanCompletionSignal("")).toBe(false)
-	})
-
-	it("detects marker embedded in longer text", () => {
-		expect(hasPlanCompletionSignal("Some text <!-- PLAN_COMPLETE --> more text")).toBe(true)
 	})
 })
 
@@ -140,8 +113,9 @@ describe("contentHasToolCall", () => {
 })
 
 describe("PLAN_MODE_STOP_NUDGE", () => {
-	it("references the completion marker", () => {
-		expect(PLAN_MODE_STOP_NUDGE).toContain("<!-- PLAN_COMPLETE -->")
+	it("references the plan exit tool", () => {
+		expect(PLAN_MODE_STOP_NUDGE).toContain("ExitPlanMode")
+		expect(PLAN_MODE_STOP_NUDGE).not.toContain("PLAN_COMPLETE")
 	})
 
 	it("references the questionnaire tool", () => {

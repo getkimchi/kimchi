@@ -201,7 +201,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("Phase Tagging for Analytics")
 			expect(result).not.toContain("Call `set_phase`")
 			expect(result).toContain("## Working Practices")
-			expect(result).toContain("During **plan** phase")
+			expect(result).toContain("When planning")
 		})
 
 		it("handles empty tools list", () => {
@@ -338,11 +338,11 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			expect(result).not.toContain("## Working Practices")
-			expect(result).not.toContain("During **explore** phase")
-			expect(result).not.toContain("During **research** phase")
-			expect(result).not.toContain("During **plan** phase")
-			expect(result).not.toContain("During **build** phase")
-			expect(result).not.toContain("During **review** phase")
+			expect(result).not.toContain("When exploring")
+			expect(result).not.toContain("When researching")
+			expect(result).not.toContain("When planning")
+			expect(result).not.toContain("When implementing")
+			expect(result).not.toContain("When reviewing")
 		})
 
 		it("includes working practices content the orchestrator may perform directly", () => {
@@ -355,11 +355,11 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			expect(result).toContain("## Working Practices")
-			expect(result).toContain("During **plan** phase")
-			expect(result).not.toContain("During **explore** phase")
-			expect(result).not.toContain("During **research** phase")
-			expect(result).not.toContain("During **build** phase")
-			expect(result).toContain("During **review** phase")
+			expect(result).toContain("When planning")
+			expect(result).not.toContain("When exploring")
+			expect(result).not.toContain("When researching")
+			expect(result).not.toContain("When implementing")
+			expect(result).toContain("When reviewing")
 		})
 
 		it("uses orchestrator-specific core guidelines", () => {
@@ -441,7 +441,7 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			expect(result).toContain("## Working Practices")
-			expect(result).toContain("During **plan** phase")
+			expect(result).toContain("When planning")
 			expect(result).toContain("### Model-specific notes")
 		})
 	})
@@ -636,7 +636,7 @@ describe("buildSystemPrompt", () => {
 				mode: "single",
 			})
 			expect(result).toContain("## Working Practices")
-			expect(result).not.toContain("During **research** phase")
+			expect(result).not.toContain("When researching")
 			expect(result).not.toContain("version you are assuming")
 			expect(result).not.toContain("version/API assumption")
 			expect(result).not.toContain("do not bluff")

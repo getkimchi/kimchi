@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { generatePlanPersistenceNote } from "../../../shared/planning/plan-markdown.js"
 import planModeSupplement from "./plan-mode-supplement.js"
 
 describe("plan-mode-supplement", () => {
@@ -29,8 +30,19 @@ describe("plan-mode-supplement", () => {
 			expect(planModeSupplement).toContain("questionnaire")
 		})
 
-		it("contains plan completion marker", () => {
-			expect(planModeSupplement).toContain("PLAN_COMPLETE")
+		it("uses ExitPlanMode for approval", () => {
+			expect(planModeSupplement).toContain("ExitPlanMode")
+			expect(planModeSupplement).not.toContain("PLAN_COMPLETE")
+			expect(planModeSupplement).not.toContain("<done>")
+		})
+
+		it("requires version and post-approval verification", () => {
+			expect(planModeSupplement).toContain("version assumption")
+			expect(planModeSupplement).toContain("after approval")
+		})
+
+		it("states that plans are auto-saved (shared location note)", () => {
+			expect(planModeSupplement).toContain(generatePlanPersistenceNote({ persistence: "harness" }))
 		})
 
 		it("declares read-only nature", () => {

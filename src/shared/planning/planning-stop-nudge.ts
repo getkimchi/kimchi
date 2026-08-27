@@ -3,7 +3,7 @@
  *
  * Used by:
  * - Plan mode (permissions extension): the model made tool calls, then ended
- *   with stopReason "stop" without writing PLAN_COMPLETE.
+ *   with stopReason "stop" without calling ExitPlanMode.
  * - Ferment scoping (ferment extension): the model made tool calls during
  *   draft scoping, then ended with stopReason "stop" without calling
  *   scope_ferment or propose_ferment_scoping.
@@ -25,16 +25,11 @@ export const MAX_PLANNING_STOP_NUDGES = 2
  * Returns true when:
  * - The turn had at least one tool call (pure text turns are a different stall)
  * - stopReason is "stop" (model chose to end, not end_turn / tool_use)
- * - The completion signal is absent from the turn text
+ * - The plan-exit tool was not called (tool calls are inspected by the caller)
  */
-export function shouldNudge(opts: {
-	hasToolCall: boolean
-	stopReason: string | undefined
-	completionSignalPresent: boolean
-}): boolean {
+export function shouldNudge(opts: { hasToolCall: boolean; stopReason: string | undefined }): boolean {
 	if (!opts.hasToolCall) return false
 	if (opts.stopReason !== "stop") return false
-	if (opts.completionSignalPresent) return false
 	return true
 }
 
@@ -50,13 +45,13 @@ import { markHarnessSteer } from "../../extensions/steer-marker.js"
 
 /**
  * Nudge text for plan mode (interactive, non-worker session).
- * Instructs the model to finish writing the plan and emit PLAN_COMPLETE.
+ * Instructs the model to finish writing the plan and call ExitPlanMode.
  */
 export const PLAN_MODE_STOP_NUDGE = markHarnessSteer(
 	"You stopped without completing the plan. Continue now:\n" +
 		"- If you still have open questions, use the questionnaire tool to resolve them.\n" +
-		"- If the plan is ready, write it out in full using the Goal / Constraints / Chunks / Verification Strategy / Decision Log / Risks structure, then end your response with <!-- PLAN_COMPLETE --> on its own line.\n" +
-		"- Do NOT stop again until you have written <!-- PLAN_COMPLETE -->.",
+		"- If the plan is ready, write it out in full using the Goal / Constraints / Chunks / Verification Strategy / Decision Log / Risks structure, then call ExitPlanMode with the complete plan.\n" +
+		"- Do NOT stop again until you have called ExitPlanMode.",
 )
 
 /**
@@ -86,13 +81,6 @@ export const FERMENT_SCOPING_STOP_NUDGE_ONESHOT = markHarnessSteer(
  * Kept for backwards compatibility with callers that don't know their mode yet.
  */
 export const FERMENT_SCOPING_STOP_NUDGE = FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE
-
-/**
- * Returns true if the turn text contains a known plan-mode completion signal.
- */
-export function hasPlanCompletionSignal(text: string): boolean {
-	return text.includes("<!-- PLAN_COMPLETE -->") || text.includes("<done>")
-}
 
 /**
  * Tool names whose presence in a turn signals ferment scoping progress.

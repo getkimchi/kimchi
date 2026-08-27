@@ -26,12 +26,12 @@ function fakeMetadata(slug: string): ModelMetadata {
 
 const ALL_KNOWN_METADATA = ALL_KNOWN_IDS.map(fakeMetadata)
 
-describe("phase guideline resolution", () => {
+describe("role guideline resolution", () => {
 	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
 
 	it("returns default guideline when no model is specified", () => {
 		const result = resolveRoleGuideline("build", undefined, registry)
-		expect(result).toContain("During **build** phase")
+		expect(result).toContain("When implementing")
 	})
 
 	it("returns model-specific guideline when model has one", () => {
@@ -42,14 +42,14 @@ describe("phase guideline resolution", () => {
 		expect(result).toContain("mutex-based concurrency")
 	})
 
-	it("returns default guideline for phases with no model override", () => {
+	it("returns default guideline for roles with no model override", () => {
 		const result = resolveRoleGuideline("explore", "minimax-m2.7", registry)
-		expect(result).toContain("During **explore** phase")
+		expect(result).toContain("When exploring")
 	})
 
 	it("returns default guideline for unknown model IDs", () => {
 		const result = resolveRoleGuideline("plan", "nonexistent-model", registry)
-		expect(result).toContain("During **plan** phase")
+		expect(result).toContain("When planning")
 	})
 
 	it("composes family and per-model layers for kimi-k2.6 plan", () => {
@@ -95,21 +95,21 @@ describe("phase guideline resolution", () => {
 
 		it("kimi-k2.6 research composes default and family research layers", () => {
 			const result = resolveRoleGuideline("research", "kimi-k2.6", registry)
-			expect(result).toContain("During **research** phase (Kimi family)")
+			expect(result).toContain("When researching (Kimi family)")
 			expect(result).toContain("version assumption")
 			expect(result).toContain("Do not treat a library or kit")
 		})
 
 		it("minimax-m3 research composes default and family research layers", () => {
 			const result = resolveRoleGuideline("research", "minimax-m3", registry)
-			expect(result).toContain("During **research** phase (MiniMax family)")
+			expect(result).toContain("When researching (MiniMax family)")
 			expect(result).toContain("hallucinating APIs")
 			expect(result).toContain("Do not treat named libraries")
 		})
 
 		it("nemotron-3-ultra-fp4 research composes default and family research layers", () => {
 			const result = resolveRoleGuideline("research", "nemotron-3-ultra-fp4", registry)
-			expect(result).toContain("During **research** phase (Nemotron family)")
+			expect(result).toContain("When researching (Nemotron family)")
 			expect(result).toContain("training data is older")
 			expect(result).toContain("Do not treat named libraries")
 		})
@@ -182,24 +182,24 @@ describe("guideline section building", () => {
 		expect(result).toBe("")
 	})
 
-	it("builds phase guidelines section with model content", () => {
+	it("builds role guidelines section with model content", () => {
 		const result = buildRoleGuidelinesSection("minimax-m3", "build", registry)
 		expect(result).toContain("## Role Guidelines (build)")
 		expect(result).toContain("Outline-then-diff")
 	})
 
-	it("returns empty string when no phase", () => {
+	it("returns empty string when no role", () => {
 		const result = buildRoleGuidelinesSection("minimax-m2.7", undefined, registry)
 		expect(result).toBe("")
 	})
 
-	it("returns default guideline for phases with no model override", () => {
+	it("returns default guideline for roles with no model override", () => {
 		const result = buildRoleGuidelinesSection("minimax-m2.7", "explore", registry)
 		expect(result).toContain("## Role Guidelines (explore)")
-		expect(result).toContain("During **explore** phase")
+		expect(result).toContain("When exploring")
 	})
 
-	it("omits worker phase guidelines for orchestrator without the matching role", () => {
+	it("omits worker role guidelines for orchestrator without the matching role", () => {
 		const result = buildRoleGuidelinesSection("kimi-k2.7", "explore", registry, {
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
@@ -210,7 +210,7 @@ describe("guideline section building", () => {
 	it("returns default guideline for unknown model", () => {
 		const result = buildRoleGuidelinesSection("nonexistent-model", "build", registry)
 		expect(result).toContain("## Role Guidelines (build)")
-		expect(result).toContain("During **build** phase")
+		expect(result).toContain("When implementing")
 	})
 })
 
@@ -219,12 +219,12 @@ describe("builtin-model guideline content", () => {
 
 	it("kimi-k2.5 build: returns default (ignored model)", () => {
 		const result = resolveRoleGuideline("build", "kimi-k2.5", registry)
-		expect(result).toContain("During **build** phase")
+		expect(result).toContain("When implementing")
 	})
 
 	it("kimi-k2.5 explore: returns default (ignored model)", () => {
 		const result = resolveRoleGuideline("explore", "kimi-k2.5", registry)
-		expect(result).toContain("During **explore** phase")
+		expect(result).toContain("When exploring")
 	})
 
 	it("kimi-k2.6 plan: contains family and per-model layers", () => {
@@ -265,12 +265,12 @@ describe("builtin-model guideline content", () => {
 
 	it("claude-opus-4-6 plan: returns default (ignored model)", () => {
 		const result = resolveRoleGuideline("plan", "claude-opus-4-6", registry)
-		expect(result).toContain("During **plan** phase")
+		expect(result).toContain("When planning")
 	})
 
 	it("claude-opus-4-6 explore: returns default (ignored model)", () => {
 		const result = resolveRoleGuideline("explore", "claude-opus-4-6", registry)
-		expect(result).toContain("During **explore** phase")
+		expect(result).toContain("When exploring")
 	})
 
 	it("build guideline warns against interactive CLI commands and prescribes non-interactive flags", () => {

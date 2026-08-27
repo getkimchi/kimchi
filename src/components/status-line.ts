@@ -30,6 +30,7 @@ export type SegmentId =
 	| "credits"
 	| "budget"
 	| "lsp"
+	| "dap"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -306,7 +307,7 @@ function joinSegments(segments: Segment[], sep: string): string {
  *
  *  This order is hardcoded and beats user pinning: a pinned segment is a
  *  display preference, not a survival guarantee. */
-const SHED_ORDER: SegmentId[] = ["lsp", "team", "tags", "usage", "agents", "credits", "budget", "ferment"]
+const SHED_ORDER: SegmentId[] = ["dap", "lsp", "team", "tags", "usage", "agents", "credits", "budget", "ferment"]
 
 /** Fit segments into `width` columns: run the compaction ladder, then shed
  *  whole segments in SHED_ORDER until the line fits. The input `segments`
@@ -490,6 +491,19 @@ function buildPermissionsSegment(
 	return { id: "permissions", text: mode, width: visibleWidth(mode) }
 }
 
+function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
+	const dapStatus = statusLineData.getExtensionStatuses().get("dap")
+	if (!dapStatus) return null
+	// Same label/value styling as the LSP segment: dim the "DAP:" label,
+	// accent the adapter state that follows.
+	const colonIdx = dapStatus.indexOf(":")
+	if (colonIdx === -1) return { id: "dap", text: accentText(theme, dapStatus), width: visibleWidth(dapStatus) }
+	const label = dimText(theme, dapStatus.slice(0, colonIdx + 1))
+	const value = dapStatus.slice(colonIdx + 1).trimStart()
+	const text = value.length > 0 ? `${label} ${accentText(theme, value)}` : label
+	return { id: "dap", text, width: visibleWidth(text) }
+}
+
 function buildLspSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
 	const lspStatus = statusLineData.getExtensionStatuses().get("lsp")
 	if (!lspStatus) return null
@@ -589,6 +603,7 @@ export function buildStatusLineSegments(
 		buildTagsSegment(theme, tags, pinned.has("tags")),
 		buildTeamSegment(theme, tags, pinned.has("team")),
 		buildLspSegment(theme, statusLineData),
+		buildDapSegment(theme, statusLineData),
 	].filter((s): s is Segment => s !== null)
 }
 

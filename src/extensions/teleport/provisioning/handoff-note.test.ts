@@ -130,7 +130,8 @@ describe("buildHandoffNote", () => {
 	it("points the agent at concrete ways to check and install tools", () => {
 		const note = buildHandoffNote({ ...base, workspace: { kind: "none" } })
 		expect(note).toContain("command -v")
-		expect(note).toContain("package manager")
+		expect(note).toContain("devkit install <tool>")
+		expect(note).not.toContain("package manager")
 		expect(note).toContain("History is not fully replayable here")
 	})
 })

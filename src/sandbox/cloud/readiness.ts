@@ -2,7 +2,11 @@ import { deriveBaseUrl } from "../worker/client.js"
 import type { WaitForWorkspaceReadyOptions } from "./types.js"
 import { RemoteNetworkError } from "./types.js"
 
-const DEFAULT_READY_TIMEOUT_MS = 90_000
+// First-time workspace creation is a cold start: the control plane must provision
+// the sandbox and attach the agentgateway policy before traffic is routable.
+// That routinely takes minutes, so allow up to 5 min (matches the createSession
+// timeout in remote-agent-runner.ts). Warm workspaces resolve far faster than this.
+const DEFAULT_READY_TIMEOUT_MS = 5 * 60_000
 const DEFAULT_POLL_INTERVAL_MS = 1_500
 const DEFAULT_PROBE_TIMEOUT_MS = 5_000
 

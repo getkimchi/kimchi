@@ -283,6 +283,50 @@ describe("reviewWriteGuardExtension wiring", () => {
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 	})
 
+	it("does not arm on a background Agent acknowledgement", () => {
+		const pi = createMockPI({ steerThreshold: 1 })
+
+		emit(pi, "tool_result", {
+			toolName: "Agent",
+			result: undefined,
+			details: { status: "background", agentId: "agent-1" },
+		})
+		emit(pi, "tool_call", { toolName: "edit" })
+
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi.blockResult).toBeUndefined()
+	})
+
+	it("arms only when get_subagent_result carries a terminal outcome", () => {
+		const pi = createMockPI({ steerThreshold: 1, triageSteerThreshold: 3 })
+
+		// A status-only poll must not count as a worker return.
+		emit(pi, "tool_result", {
+			toolName: "get_subagent_result",
+			result: undefined,
+			details: { status: "running", agentId: "agent-1" },
+		})
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+
+		// A failed terminal result arms triage thresholds, not success thresholds.
+		emit(pi, "tool_result", {
+			toolName: "get_subagent_result",
+			result: undefined,
+			details: {
+				status: "error",
+				agentId: "agent-1",
+				agentOutcome: { status: "error", outcome: "failed", subagentType: "Builder" },
+			},
+		})
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		emit(pi, "tool_call", { toolName: "edit" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
 	it("does not reset guard state when the orchestrator spawns another Agent", () => {
 		const pi = createMockPI({ steerThreshold: 2 })
 

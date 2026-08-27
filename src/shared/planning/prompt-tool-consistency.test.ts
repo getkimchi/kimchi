@@ -96,12 +96,12 @@ describe("prompt/tool consistency", () => {
 	// That still catches the case that matters: a tool named in prose that no
 	// ferment profile grants at all — which is what a removed tool becomes.
 	it("ferment planning prose only names tools that exist somewhere in the ferment lifecycle", () => {
-		const prompt = buildPlannerSupplement(makeFerment(), "manual", false, "strict")
+		const prompt = buildPlannerSupplement(makeFerment(), "manual", false, true)
 		assertNoHiddenToolsNamed(prompt, "implementation-ferment", "ferment planner supplement (strict)")
 	})
 
 	it("ferment planning prose in relaxed delegation mode names only ferment-lifecycle tools", () => {
-		const prompt = buildPlannerSupplement(makeFerment(), "manual", false, "relaxed")
+		const prompt = buildPlannerSupplement(makeFerment(), "manual", false, false)
 		assertNoHiddenToolsNamed(prompt, "implementation-ferment", "ferment planner supplement (relaxed)")
 	})
 
@@ -118,8 +118,8 @@ describe("prompt/tool consistency", () => {
 
 	const PROMPT_SOURCES: Array<[string, string]> = [
 		["plan-mode supplement", planModeSupplement],
-		["ferment planner supplement (strict)", buildPlannerSupplement(makeFerment(), "manual", false, "strict")],
-		["ferment planner supplement (relaxed)", buildPlannerSupplement(makeFerment(), "manual", false, "relaxed")],
+		["ferment planner supplement (strict)", buildPlannerSupplement(makeFerment(), "manual", false, true)],
+		["ferment planner supplement (relaxed)", buildPlannerSupplement(makeFerment(), "manual", false, false)],
 		["plan role guidelines", DEFAULT_PLAN_GUIDELINES],
 	]
 

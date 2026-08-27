@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { AgentOutcomeKind, AgentRecord, SubagentType } from "./agents/personas/types.js"
+import { fermentDelegationIsStrict } from "./ferment/delegation-mode.js"
 import { getMultiModelEnabled } from "./multi-model.js"
 import { markHarnessSteer } from "./steer-marker.js"
 
@@ -221,6 +222,13 @@ function extractAgentOutcome(event: { details?: unknown }): AgentOutcomeSummary 
 	}
 }
 
+function isBackgroundAcknowledgement(event: { details?: unknown }): boolean {
+	const details = event.details
+	if (!details || typeof details !== "object") return false
+	const record = details as Record<string, unknown>
+	return record.status === "background" && !record.agentOutcome
+}
+
 /**
  * Whether the orchestrator is expected to delegate implementation work rather
  * than perform it — the premise the guard enforces.
@@ -237,7 +245,7 @@ function extractAgentOutcome(event: { details?: unknown }): AgentOutcomeSummary 
  * strict, and what makes delegation the default outside ferment.
  */
 function delegationRequired(ctx: ExtensionContext): boolean {
-	return getMultiModelEnabled(ctx.sessionManager)
+	return fermentDelegationIsStrict(getMultiModelEnabled(ctx.sessionManager))
 }
 
 export interface ReviewWriteGuardExtensionOptions extends OrchestratorWriteGuardOptions {
@@ -324,6 +332,9 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Re
 
 	pi.on("tool_result", (event, ctx) => {
 		if (event.toolName === "Agent") {
+			// A background Agent result is only an acknowledgement that work was
+			// queued. The terminal outcome arrives via get_subagent_result.
+			if (isBackgroundAcknowledgement(event)) return
 			const guard = getOrchestratorWriteGuard(ctx)
 			// A ferment can activate mid-turn, after the guard was already armed.
 			// Reset rather than arm so the orchestrator is not left throttled under
@@ -333,6 +344,20 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Re
 				return
 			}
 			guard.recordSubagentReturn(extractAgentOutcome(event))
+			return
+		}
+
+		// Only a terminal get_subagent_result carries a worker outcome. Ignore
+		// status-only polling results so running/queued workers cannot arm the guard.
+		if (event.toolName === "get_subagent_result") {
+			const outcome = extractAgentOutcome(event)
+			if (!outcome) return
+			const guard = getOrchestratorWriteGuard(ctx)
+			if (!isDelegationRequired(ctx)) {
+				guard.reset()
+				return
+			}
+			guard.recordSubagentReturn(outcome)
 		}
 	})
 }

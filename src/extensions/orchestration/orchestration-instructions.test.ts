@@ -63,7 +63,7 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("Perform work yourself only when Orchestration")
 	})
 
-	it("uses DO/DONT directives in phase responsibilities", () => {
+	it("uses DO/DONT directives in role responsibilities", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
@@ -206,7 +206,7 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("go test -race")
 	})
 
-	it("includes chunk complexity classification in plan and build phases", () => {
+	it("includes chunk complexity classification for planning and implementation", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
@@ -537,7 +537,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 	})
 })
 
-describe("Build phase directive (complex-chunk tier routing)", () => {
+describe("Builder directive (complex-chunk tier routing)", () => {
 	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
 
 	it("routes complex chunks to a heavy-tier Builder on first attempt, not as a retry", () => {
@@ -563,7 +563,7 @@ describe("Build phase directive (complex-chunk tier routing)", () => {
 describe("Trivial fix and triage exceptions", () => {
 	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
 
-	it("includes trivial fix exception in build phase", () => {
+	it("includes trivial fix exception for implementation", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,

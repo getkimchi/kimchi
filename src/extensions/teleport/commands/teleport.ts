@@ -31,6 +31,7 @@ import { provisionHarnessConfig } from "../provisioning/harness-config.js"
 import { buildChangedFilesList, buildIncludeList } from "../provisioning/include-list.js"
 import { deriveSandboxDest, deriveSandboxDestFromRepoUrl, repoBasename } from "../provisioning/paths.js"
 import { formatRsyncFailure, runRsync } from "../provisioning/rsync-runner.js"
+import { syncLocalChangesAfterClone } from "../provisioning/sync-local-changes.js"
 import { STATUS_KEY, type TeleportContext } from "../types.js"
 import { formatBytes } from "../ui/format-bytes.js"
 import { promptTeleportHelp } from "../ui/help-modal.js"
@@ -429,42 +430,23 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		// Fast success: rsync only the local working-tree diff over the
 		// fresh clone.
 		if (cloneProvisioned && clonePlan && remoteDest) {
-			const freshClone = initialSession.freshClone ?? false
-			if (!freshClone) {
-				warn(ctx, "Remote dir already existed — skipping pruning of extra remote files")
-			}
-			const fastFilesFrom = await fastFilesFromP
-			if (fastFilesFrom.length === 0) {
-				progress.setStepDetail("No local changes to sync")
-			} else {
-				progress.setStepDetail("Syncing local changes")
-				try {
-					await runRsync({
-						localPath: ctx.cwd,
-						remotePath: remoteDest,
-						isSourceDirectory: true,
-						remoteHost: creds.host,
-						remoteUser: SANDBOX_USER,
-						authToken: creds.connectToken,
-						signal,
-						deleteExtraneous: freshClone,
-						excludeFilters: [".git/", ".env", ".env.*", ".envrc", ".kimchi/"],
-						precomputeTotal: true,
-						precomputedTotalBytes: estimatedUploadBytes,
-						filesFrom: fastFilesFrom,
-						onPhase: (phase: "estimate" | "mkdir" | "rsync") => {
-							if (phase === "mkdir") progress.setStepDetail("preparing remote directory…")
-							else if (phase === "rsync") progress.setStepDetail("starting transfer…")
-						},
-						onCumulativeProgress: ({ transferredBytes, totalBytes, pct }) => {
-							progress.setStepDetail(`${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)} (${pct}%)`)
-						},
-					})
-				} catch (err) {
-					if (signal.aborted) throw err
-					warn(ctx, formatRsyncFailure(err))
-				}
-			}
+			await syncLocalChangesAfterClone({
+				localPath: ctx.cwd,
+				remotePath: remoteDest,
+				remoteHost: creds.host,
+				authToken: creds.connectToken,
+				freshClone: initialSession.freshClone ?? false,
+				signal,
+				onWarn: (msg) => warn(ctx, msg),
+				onStatus: (msg) => progress.setStepDetail(msg),
+				onPhase: (phase) => {
+					if (phase === "mkdir") progress.setStepDetail("preparing remote directory…")
+					else if (phase === "rsync") progress.setStepDetail("starting transfer…")
+				},
+				onCumulativeProgress: ({ transferredBytes, totalBytes, pct }) => {
+					progress.setStepDetail(`${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)} (${pct}%)`)
+				},
+			})
 		}
 		if (sessionFileWithHandoffNote) removeTempDir(dirname(sessionFileWithHandoffNote))
 		progress.complete("Session ready")

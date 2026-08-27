@@ -1,6 +1,6 @@
 import type { Ferment } from "../../ferment/types.js"
 import { SHARED_PLANNING_PROCESS } from "../../shared/planning/shared-planning-process.js"
-import { fermentDelegationMode } from "./delegation-mode.js"
+import { fermentDelegationIsStrict } from "./delegation-mode.js"
 
 /**
  * Build the one-shot envelope sent to the planner. Shared by the `/ferment one-shot`
@@ -8,12 +8,11 @@ import { fermentDelegationMode } from "./delegation-mode.js"
  * exercise the identical instruction set.
  */
 export function buildOneshotNudge(ferment: Ferment, intent: string, multiModelEnabled: boolean): string {
-	const delegationMode = fermentDelegationMode(multiModelEnabled)
+	const delegationIsStrict = fermentDelegationIsStrict(multiModelEnabled)
 
-	const step2Delegation =
-		delegationMode === "strict"
-			? "- spawn an Agent worker with the exact task_ref returned by start_ferment_step and explicit max_turns, max_duration, and token_budget — always set all three to the selected limits returned by the tool"
-			: "- either spawn an Agent worker with the exact task_ref returned by start_ferment_step and explicit max_turns, max_duration, and token_budget, OR execute the step directly using bash/edit/write. Choose whichever is more efficient. When delegating, always set all three limits to the selected values returned by the tool."
+	const step2Delegation = delegationIsStrict
+		? "- spawn an Agent worker with the exact task_ref returned by start_ferment_step and explicit max_turns, max_duration, and token_budget — always set all three to the selected limits returned by the tool"
+		: "- either spawn an Agent worker with the exact task_ref returned by start_ferment_step and explicit max_turns, max_duration, and token_budget, OR execute the step directly using bash/edit/write. Choose whichever is more efficient. When delegating, always set all three limits to the selected values returned by the tool."
 
 	const turnDiscipline = `## Turn discipline
 

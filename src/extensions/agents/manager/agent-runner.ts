@@ -19,6 +19,7 @@ import { readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
+import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
 import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
@@ -251,6 +252,8 @@ export interface RunResult {
 	steered: boolean
 	turnsUsed?: number
 	maxTurns?: number
+	/** Absolute path to the saved plan file, if the agent produced a plan. */
+	planPath?: string
 }
 
 type ModelRegistryWithRuntime = {
@@ -278,6 +281,14 @@ function getLastAssistantText(session: AgentSession): string {
 		if (text) return text
 	}
 	return ""
+}
+
+function getPlanPathFromToolResult(result: unknown): string | undefined {
+	if (!result || typeof result !== "object" || !("details" in result)) return undefined
+	const details = result.details
+	if (!details || typeof details !== "object" || !("planPath" in details)) return undefined
+	const planPath = details.planPath
+	return typeof planPath === "string" ? planPath : undefined
 }
 
 function usageDelta(total: LifetimeUsage | undefined, observed: LifetimeUsage): LifetimeUsage | undefined {
@@ -472,6 +483,14 @@ ${skillLines}`
 		infrastructureBreakerExtension,
 		omitKimchiMaxTokensExtension,
 	]
+	// Personas that request DAP debugger tools (e.g. Debugger) need the dap
+	// extension registered in the child session: repo-native extensions wired
+	// directly in cli.ts are not discovered by a child DefaultResourceLoader.
+	// The extension registers its tools on the child's session_start, and the
+	// SDK activates them because their names are in the session's tool allowlist.
+	if (toolNames.some((n) => n.startsWith("debug_") || n.startsWith("step_"))) {
+		extensionFactories.push(dapExtension)
+	}
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}
@@ -600,6 +619,7 @@ ${skillLines}`
 	}
 
 	let currentMessageText = ""
+	let planPath: string | undefined
 	const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
 		inactivity.lastActivityAt = Date.now()
 		if (inactivity.steered) inactivity.steered = false
@@ -649,6 +669,10 @@ ${skillLines}`
 		}
 		if (event.type === "tool_execution_end") {
 			options.onToolActivity?.({ type: "end", toolName: event.toolName })
+			if (type === "Plan" && event.toolName === "ExitPlanMode") {
+				const reportedPlanPath = getPlanPathFromToolResult(event.result)
+				if (reportedPlanPath) planPath = reportedPlanPath
+			}
 			if (event.toolName === WORKER_REPORT_TOOL_NAME && options.workerReport?.isAccepted()) {
 				reportAccepted = true
 				queueMicrotask(() => hardAbort(session))
@@ -779,6 +803,7 @@ ${skillLines}`
 	}
 
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
+
 	return {
 		responseText,
 		session,
@@ -787,6 +812,7 @@ ${skillLines}`
 		steered: softLimitReached,
 		turnsUsed: turnCount,
 		maxTurns: effectiveMaxTurns,
+		planPath,
 	}
 }
 
