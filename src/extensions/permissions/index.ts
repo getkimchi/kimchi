@@ -40,6 +40,9 @@ import { getMultiModelEnabled } from "../multi-model.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
 import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
+import { buildRemotePlanPrompt } from "../remote-run/prompt-builder.js"
+import { handleRemoteCompletion } from "../remote-run/post-completion.js"
+import { isRemoteRunEnabled, runForegroundRemoteAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
@@ -621,11 +624,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const EXECUTE = "Execute the plan"
 		const DECLINE = "Rework the plan"
 		const START_AS_FERMENT = "Start as ferment"
+		const START_IN_CLOUD = "Start execution in cloud"
+
+		const options = [EXECUTE, DECLINE, START_AS_FERMENT]
+		if (isRemoteRunEnabled()) options.push(START_IN_CLOUD)
 
 		const choice = await withBlocked(pi.events, "Plan complete", () =>
-			withWorkingHidden(ctx, () =>
-				ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, DECLINE, START_AS_FERMENT]),
-			),
+			withWorkingHidden(ctx, () => ctx.ui.select("Plan complete. How would you like to proceed?", options)),
 		)
 
 		if (choice === EXECUTE) {
@@ -795,6 +800,23 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				defaultFermentRuntime.setActive(undefined)
 				const message = err instanceof Error ? err.message : String(err)
 				ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
+			}
+		} else if (choice === START_IN_CLOUD) {
+			// Spawn a foreground remote agent to execute the plan in a cloud sandbox.
+			// Mode switches to auto immediately; the call blocks until the remote
+			// agent completes (or is killed via Ctrl+X). The result is injected
+			// into the local session as a steer message so the local agent has
+			// context for follow-up work.
+			activePlanSlug = undefined
+			pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
+			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+			const cloudPrompt = buildRemotePlanPrompt(planText, { origin: "plan-mode" })
+			const cloudDescription = `cloud: ${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
+			try {
+				const { result, transcriptPath, id } = await runForegroundRemoteAgent(pi, ctx, cloudPrompt, cloudDescription)
+				await handleRemoteCompletion(pi, ctx, result, "plan", { transcriptPath, agentId: id })
+			} catch {
+				// Error notification already handled inside runForegroundRemoteAgent.
 			}
 		}
 		// Decline or escape: stay in plan mode.

@@ -165,6 +165,23 @@ export class AcpSessionClient {
 		)
 		this._sessionId = newSessionResponse.sessionId
 
+		// Set permission mode to yolo after session creation. The ACP server's
+		// initial mode resolution doesn't read the --yolo CLI flag (it reads
+		// env vars and config), so we explicitly set it here via the ACP
+		// setSessionConfigOption method. This is the same mechanism used by
+		// the ACP config option dropdown.
+		await this._withAbortRejection(
+			this._withTimeout(
+				this._connection.setSessionConfigOption({
+					sessionId: this._sessionId,
+					configId: "permissions-mode",
+					value: "yolo",
+				}),
+				30_000,
+				"setSessionConfigOption",
+			),
+		)
+
 		if (this._aborted) {
 			await this.cancel()
 			return
@@ -279,7 +296,7 @@ export class AcpSessionClient {
 				ws.on("message", (data: unknown) => {
 					const text = typeof data === "string" ? data : textDecoder.decode(data as ArrayBuffer)
 					const trimmed = text.trim()
-					if (!trimmed?.startsWith("{")) return
+					if (!trimmed || !trimmed.startsWith("{")) return
 					controller.enqueue(textEncoder.encode(`${text}\n`))
 				})
 

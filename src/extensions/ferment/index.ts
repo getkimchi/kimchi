@@ -18,6 +18,9 @@ import * as PromptSupplementRegistry from "../../shared/planning/prompt-suppleme
 import { isAgentWorker } from "../agent-worker-context.js"
 import { withBlocked } from "../herdr-events.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
+import { buildRemotePlanPrompt } from "../remote-run/prompt-builder.js"
+import { handleRemoteCompletion } from "../remote-run/post-completion.js"
+import { runForegroundRemoteAgent } from "../remote-run/runner.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { registerTipProvider } from "../tips/registry.js"
 import { registerAgentSpawnGuard } from "./agent-spawn-guard.js"
@@ -205,6 +208,29 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 					fermentId: review.fermentId,
 					tag: "Plan review start",
 				})
+				return
+			}
+
+			if (outcome.kind === "start_cloud") {
+				// Confirm pending scope so the ferment is saved locally, then spawn
+				// a foreground remote agent to execute the plan in a cloud sandbox.
+				// The local ferment is left as-is (scoped, not activated) — the
+				// remote agent creates its own ferment from the plan text.
+				const scopeOutcome = confirmPendingScope(runtime, review.fermentId, undefined, "turn_end", pi)
+				if (!scopeOutcome.ok) {
+					ctx?.ui?.notify?.(`Failed to save plan: ${scopeOutcome.error.message}`, "error")
+					return
+				}
+				runtime.clearPendingPlanReview(review.fermentId)
+				applyFermentRuntimeToolProfile(pi, runtime)
+				const cloudPrompt = buildRemotePlanPrompt(review.planMarkdown, { origin: "ferment" })
+				const cloudDescription = `cloud: ${review.planMarkdown.slice(0, 60)}${review.planMarkdown.length > 60 ? "..." : ""}`
+				try {
+					const { result, transcriptPath, id } = await runForegroundRemoteAgent(pi, ctx, cloudPrompt, cloudDescription)
+					await handleRemoteCompletion(pi, ctx, result, "ferment plan", { transcriptPath, agentId: id })
+				} catch {
+					// Error notification already handled inside runForegroundRemoteAgent.
+				}
 				return
 			}
 
