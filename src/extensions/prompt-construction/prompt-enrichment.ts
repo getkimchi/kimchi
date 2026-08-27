@@ -24,7 +24,7 @@
 
 import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { arch, homedir, version as osVersion, platform, release, userInfo } from "node:os"
 import { join, resolve } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
@@ -80,64 +80,57 @@ function safeUsername(): string {
 }
 
 /**
+ * Remove stale deployed copies of bundled skills from the harness dir.
+ * The old deploy mechanism copied bundled skills (e.g. improve) into
+ * ~/.config/kimchi/harness/skills/ — now that bundled skills ship from
+ * resources/skills/ and are contributed via resources_discover, those stale
+ * copies cause collision warnings. This is a one-time migration: it only
+ * removes skills whose names match a bundled skill, and only if the harness
+ * dir doesn't have a .usage.json marking them as user-created.
+ */
+function removeStaleDeployedBundledSkills(harnessDir: string, bundledDir: string): void {
+	if (!existsSync(harnessDir) || !existsSync(bundledDir)) return
+	let bundledNames: string[]
+	try {
+		bundledNames = readdirSync(bundledDir, { withFileTypes: true })
+			.filter((e) => e.isDirectory())
+			.map((e) => e.name)
+	} catch {
+		return
+	}
+	for (const name of bundledNames) {
+		const harnessSkillDir = join(harnessDir, name)
+		if (!existsSync(harnessSkillDir)) continue
+		// Only remove if not user-created (no .usage.json with agent_created)
+		const usagePath = join(harnessSkillDir, ".usage.json")
+		if (existsSync(usagePath)) continue
+		try {
+			rmSync(harnessSkillDir, { recursive: true, force: true })
+		} catch {
+			// Best-effort cleanup — if removal fails, the collision warning is
+			// harmless (first-wins means the harness copy wins anyway).
+		}
+	}
+}
+
+/**
  * Filter contributed skill paths to only existing directories, deduped by
  * normalized path. Pi emits a warning diagnostic for every contributed path
  * that doesn't exist on disk — configured paths like `.pi/agent/skills` or
  * `.claude/skills` are optional locations, not requirements, so suppress the
  * noise by filtering before returning them from resources_discover.
- *
- * Also skips the bundled skills dir when every skill it contains is already
- * available in a stronger path. "Stronger" includes pi's own default loading
- * from `agentDir/skills` (the harness dir), which runs before extension-
- * contributed paths — without this check, pi emits a collision warning for
- * each bundled skill name that was previously deployed into the harness dir.
  */
 function dedupeExistingSkillPaths(paths: readonly string[]): string[] {
 	const seen = new Set<string>()
 	const result: string[] = []
-	// Seed with skill names pi loads via includeDefaults (agentDir/skills),
-	// so the bundled dir can be skipped when those skills are already present
-	// in the harness dir.
-	const skillNamesFromStronger = new Set<string>()
-	const harnessDir = resolveHarnessSkillsDir()
-	collectSkillNames(harnessDir, skillNamesFromStronger)
 	for (const p of paths) {
 		const normalized = resolve(p)
 		if (seen.has(normalized)) continue
 		if (!existsSync(normalized)) continue
-		// Check if this is the bundled dir and all its skills are already
-		// covered by a stronger path — if so, skip it to avoid collisions.
-		if (result.length > 0 && isBundledDirFullyCovered(normalized, skillNamesFromStronger)) {
-			continue
-		}
 		seen.add(normalized)
 		result.push(p)
-		// Collect skill names from this path so weaker paths can check coverage.
-		collectSkillNames(normalized, skillNamesFromStronger)
 	}
 	return result
-}
-
-function isBundledDirFullyCovered(dir: string, coveredNames: Set<string>): boolean {
-	const bundledNames = listSkillNames(dir)
-	if (bundledNames.length === 0) return false
-	return bundledNames.every((name) => coveredNames.has(name))
-}
-
-function listSkillNames(dir: string): string[] {
-	try {
-		return readdirSync(dir, { withFileTypes: true })
-			.filter((e) => e.isDirectory())
-			.map((e) => e.name)
-	} catch {
-		return []
-	}
-}
-
-function collectSkillNames(dir: string, out: Set<string>): void {
-	for (const name of listSkillNames(dir)) {
-		out.add(name)
-	}
 }
 
 function readGitRemote(cwd: string): string | undefined {
@@ -562,7 +555,12 @@ export default function (skillPathsFromConfig: string[]) {
 			// skips this dir entirely when all its skills are already present in
 			// a stronger path (e.g. a stale copy from the old deploy mechanism).
 			const bundledDir = resolveBundledSkillsDir()
-			if (bundledDir) skillPaths.push(bundledDir)
+			if (bundledDir) {
+				// One-time migration: remove stale deployed copies of bundled skills
+				// from the harness dir (the old deploy mechanism wrote them there).
+				removeStaleDeployedBundledSkills(resolveHarnessSkillsDir(), bundledDir)
+				skillPaths.push(bundledDir)
+			}
 			// Filter out non-existent paths — pi emits a warning diagnostic for
 			// every contributed path that doesn't exist on disk. Configured
 			// paths like `.pi/agent/skills` or `.claude/skills` are optional
