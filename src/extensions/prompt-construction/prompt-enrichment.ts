@@ -549,7 +549,15 @@ export default function (skillPathsFromConfig: string[]) {
 			// config file, so we must contribute them or they silently vanish
 			// from /skill:*, autocomplete and /resources once the prompt reads
 			// pi's resolved inventory instead of composing paths itself.
-			skillPaths.push(...getConfiguredSkillResourcePaths(event.cwd, skillPathsFromConfig))
+			// Configured native skill dirs (kimchi config.json skillPaths).
+			// Filter out the harness dir — pi loads it natively via includeDefaults
+			// (agentDir/skills), so contributing it again is redundant and can cause
+			// stale-file warnings after migration removes deployed bundled skills.
+			const harnessDir = resolveHarnessSkillsDir()
+			const configuredPaths = getConfiguredSkillResourcePaths(event.cwd, skillPathsFromConfig).filter(
+				(p) => resolve(p) !== resolve(harnessDir),
+			)
+			skillPaths.push(...configuredPaths)
 			// Bundled skills shipped with the harness — contributed last (weakest
 			// collision slot: pi's loader is first-wins). dedupeExistingSkillPaths
 			// skips this dir entirely when all its skills are already present in

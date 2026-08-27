@@ -395,7 +395,7 @@ describe("prompt enrichment skills", () => {
 		expect(result).toEqual(expect.objectContaining({ skillPaths: expect.arrayContaining([configuredSkills]) }))
 	})
 
-	it("contributes home-relative configured skill paths through resources_discover", async () => {
+	it("does not contribute the harness dir (pi loads it via includeDefaults)", async () => {
 		const cwd = join(dir, "project")
 		const configuredSkills = ".config/kimchi/harness/skills"
 		const expanded = join(dir, "home", configuredSkills)
@@ -403,9 +403,12 @@ describe("prompt enrichment skills", () => {
 		const { resourcesDiscover } = buildPromptExtensionWithHandlers([configuredSkills])
 		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
 
-		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined)
+		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined) as
+			| { skillPaths?: string[] }
+			| undefined
 
-		expect(result).toEqual(expect.objectContaining({ skillPaths: expect.arrayContaining([expanded]) }))
+		const paths = result?.skillPaths ?? []
+		expect(paths).not.toContain(expanded)
 	})
 
 	it("sanitizes configured Claude Code skill paths through resources_discover", async () => {
