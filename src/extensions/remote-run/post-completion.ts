@@ -126,6 +126,7 @@ async function syncRemoteChanges(ctx: ExtensionContext): Promise<void> {
 			remoteHost: creds.host,
 			remoteUser: SANDBOX_USER,
 			authToken: creds.connectToken,
+			excludeGlobs: [".git/"],
 			signal: undefined,
 			onPhase: () => {},
 		})
