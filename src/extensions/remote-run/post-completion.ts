@@ -14,11 +14,11 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { loadConfig } from "../../config.js"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
 import { listWorkspaces } from "../../sandbox/cloud/workspaces.js"
-import { withBlocked } from "../herdr-events.js"
 import { withWorkingHidden } from "../ferment/prompt-ui.js"
-import { runRsync } from "../teleport/provisioning/rsync-runner.js"
-import { SANDBOX_USER } from "../teleport/provisioning/constants.js"
+import { withBlocked } from "../herdr-events.js"
 import { markHarnessSteer } from "../steer-marker.js"
+import { SANDBOX_USER } from "../teleport/provisioning/constants.js"
+import { runRsync } from "../teleport/provisioning/rsync-runner.js"
 
 const REVIEW = "Review the result and continue locally"
 const SYNC = "Sync remote changes"
@@ -28,18 +28,14 @@ const DONE = "Done"
 /**
  * Shows a post-completion dropdown after the remote cloud agent finishes.
  * Handles the user's choice: inject result, sync changes, or do nothing.
- *
- * @param pi - Extension API
- * @param ctx - Extension context
- * @param result - The remote agent's result text
- * @param promptPrefix - Prefix for the injected steer message (e.g. "plan" or "ferment plan")
  */
 export async function handleRemoteCompletion(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	result: string,
 	promptPrefix: string,
-	opts?: { transcriptPath?: string; agentId?: string },
+	transcriptPath: string | undefined,
+	agentId: string | undefined,
 ): Promise<void> {
 	if (!ctx.hasUI) return
 
@@ -49,7 +45,6 @@ export async function handleRemoteCompletion(
 		),
 	)
 
-	// No selection (escape/dismiss) → treat as Done
 	if (!choice || choice === DONE) return
 
 	if (choice === SYNC) {
@@ -57,25 +52,23 @@ export async function handleRemoteCompletion(
 		return
 	}
 
-	// REVIEW or CUSTOM — inject result and trigger a local turn
 	const actionText = choice === CUSTOM ? await promptForCustomAction(ctx) : undefined
-	if (choice === CUSTOM && !actionText) return // user cancelled input
+	if (choice === CUSTOM && !actionText) return
 
-	const transcriptInfo = opts?.transcriptPath
-		? `\n\nFull transcript of the remote agent's run (tool calls, outputs, text): ${opts.transcriptPath}`
+	const transcriptInfo = transcriptPath
+		? `\n\nFull transcript of the remote agent's run (tool calls, outputs, text): ${transcriptPath}`
 		: ""
-	const agentInfo = opts?.agentId
-		? `\nAgent ID: ${opts.agentId} (use get_subagent_result with this ID for structured access to the agent's output)`
+	const agentInfo = agentId
+		? `\nAgent ID: ${agentId} (use get_subagent_result with this ID for structured access to the agent's output)`
 		: ""
-
-	const steer = actionText
-		? `The remote cloud agent completed execution of the approved ${promptPrefix}. Here is its result:\n\n---\n\n${result}${transcriptInfo}${agentInfo}\n\n---\n\nThe user wants you to: ${actionText}`
-		: `The remote cloud agent completed execution of the approved ${promptPrefix}. Here is its result:\n\n---\n\n${result}${transcriptInfo}${agentInfo}`
+	const actionSuffix = actionText ? `\n\n---\n\nThe user wants you to: ${actionText}` : ""
 
 	pi.sendMessage(
 		{
 			customType: "remote_plan_result",
-			content: markHarnessSteer(steer),
+			content: markHarnessSteer(
+				`The remote cloud agent completed execution of the approved ${promptPrefix}. Here is its result:\n\n---\n\n${result}${transcriptInfo}${agentInfo}${actionSuffix}`,
+			),
 			display: false,
 		},
 		{ triggerTurn: true },
@@ -109,12 +102,7 @@ async function syncRemoteChanges(ctx: ExtensionContext): Promise<void> {
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 		})
 
-		// Determine the remote path — same as agent-manager: /home/sandbox/<repo-basename>.
-		// Trailing slash on the source ("down" direction) is critical: without it,
-		// rsync creates a nested directory (ctx.cwd/kimchi/) instead of syncing
-		// the contents into ctx.cwd directly.
-		const repoDir = basename(ctx.cwd) || "kimchi"
-		const remotePath = `/home/sandbox/${repoDir}/`
+		const remotePath = `/home/sandbox/${dirName}/`
 
 		ctx.ui.notify("Syncing changes from remote sandbox…", "info")
 
@@ -127,7 +115,6 @@ async function syncRemoteChanges(ctx: ExtensionContext): Promise<void> {
 			remoteUser: SANDBOX_USER,
 			authToken: creds.connectToken,
 			excludeGlobs: [".git/"],
-			signal: undefined,
 			onPhase: () => {},
 		})
 
@@ -140,8 +127,9 @@ async function syncRemoteChanges(ctx: ExtensionContext): Promise<void> {
 }
 
 async function promptForCustomAction(ctx: ExtensionContext): Promise<string | undefined> {
-	const text = await withWorkingHidden(ctx.ui, () =>
-		ctx.ui.input?.("What would you like the agent to do next?") ?? Promise.resolve(undefined),
+	const text = await withWorkingHidden(
+		ctx.ui,
+		() => ctx.ui.input?.("What would you like the agent to do next?") ?? Promise.resolve(undefined),
 	)
 	return text?.trim() || undefined
 }

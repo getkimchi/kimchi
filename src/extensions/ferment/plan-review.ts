@@ -34,12 +34,9 @@ const CLOUD_DECISION_OPTION = "Start execution in cloud"
 /** Returns the decision options for the plan review dialog, conditionally
  *  including the cloud execution option when KIMCHI_REMOTE_RUN is set. */
 function getDecisionOptions(): string[] {
-	const options: string[] = [...BASE_DECISION_OPTIONS]
-	if (isRemoteRunEnabled()) {
-		// Insert after "Start execution in auto mode", before "Let me say something".
-		options.splice(2, 0, CLOUD_DECISION_OPTION)
-	}
-	return options
+	return isRemoteRunEnabled()
+		? [BASE_DECISION_OPTIONS[0], BASE_DECISION_OPTIONS[1], CLOUD_DECISION_OPTION, BASE_DECISION_OPTIONS[2]]
+		: [...BASE_DECISION_OPTIONS]
 }
 
 export function setPendingPlanReview(review: PendingPlanReview): void {

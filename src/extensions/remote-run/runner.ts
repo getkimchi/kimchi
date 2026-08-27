@@ -41,9 +41,6 @@ export async function runForegroundRemoteAgent(
 	description: string,
 	opts?: SpawnRemoteAgentOptions,
 ): Promise<{ id: string; result: string; transcriptPath?: string }> {
-	// Per-invocation agent id — set via onSpawn before the promise resolves.
-	// Kept in the closure so concurrent invocations (e.g. after a Ctrl+B
-	// detach) cannot overwrite each other's state.
 	let agentId: string | undefined
 
 	const killUnsub = ctx.ui.onTerminalInput((data) => {
@@ -64,9 +61,8 @@ export async function runForegroundRemoteAgent(
 	try {
 		const { result } = await spawnRemoteAgent(pi, ctx, prompt, description, opts)
 
+		const transcriptPath = getActiveManager()?.getRecord(agentId ?? "")?.outputFile
 		const preview = result.length > 500 ? `${result.slice(0, 500)}...` : result
-		const record = getActiveManager()?.getRecord(agentId ?? "")
-		const transcriptPath = record?.outputFile
 		const transcriptNote = transcriptPath ? `\nFull transcript: ${transcriptPath}` : ""
 		ctx.ui.notify(`${preview || "Remote agent completed with no output."}${transcriptNote}`, "info")
 		if (transcriptPath) console.error(`[remote-run] transcript: ${transcriptPath}`)

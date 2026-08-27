@@ -40,8 +40,8 @@ import { getMultiModelEnabled } from "../multi-model.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
 import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
-import { buildRemotePlanPrompt } from "../remote-run/prompt-builder.js"
 import { handleRemoteCompletion } from "../remote-run/post-completion.js"
+import { buildRemotePlanPrompt } from "../remote-run/prompt-builder.js"
 import { isRemoteRunEnabled, runForegroundRemoteAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
@@ -814,7 +814,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			const cloudDescription = `cloud: ${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
 			try {
 				const { result, transcriptPath, id } = await runForegroundRemoteAgent(pi, ctx, cloudPrompt, cloudDescription)
-				await handleRemoteCompletion(pi, ctx, result, "plan", { transcriptPath, agentId: id })
+				await handleRemoteCompletion(pi, ctx, result, "plan", transcriptPath, id)
 			} catch {
 				// Error notification already handled inside runForegroundRemoteAgent.
 			}
