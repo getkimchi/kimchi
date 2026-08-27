@@ -570,6 +570,10 @@ describe("agent communication lifecycle", () => {
 		expect(prompt).toContain('answer_kind to "decline"')
 		expect(prompt).toContain("never as the user")
 		expect(prompt).toContain("a denied action must never be relayed through a peer")
+		expect(prompt).toContain("## Subagent tasks")
+		expect(prompt).toContain('one verifiable sentence ("Change X so that Y")')
+		expect(prompt).toContain("Escape hatches")
+		expect(prompt).toContain('submit_agent_report naming the exit reason ("blocked: <cause>")')
 		expect(prompt).toContain("Never infer user reachability from TUI/RPC/ACP/headless mode names")
 
 		pi.getActiveTools.mockReturnValue([])

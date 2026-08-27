@@ -442,6 +442,25 @@ const COORDINATOR_MESSAGE_PROMPT = `## Subagent messages
 - Do not broadcast. Parent-relay messages when agents are not listed peers.
 - A receipt is not completion. Verify final report and task state separately.`
 
+/** Coordinator-side contract for prompting subagents: structure every task
+ *  prompt with these parts so agents get usable context, a verifiable goal,
+ *  an output contract, and defined exits instead of open-ended narration. */
+const COORDINATOR_TASK_PROMPT = `## Subagent tasks
+
+Structure every Agent task prompt with these parts, in this order. Skip a part
+only when it would be empty.
+
+- Goal: one verifiable sentence ("Change X so that Y"), never "look into X".
+- Context: facts the agent cannot cheaply rediscover — entry files,
+  conventions, decisions already made, constraints. Do not narrate your own
+  process.
+- Tasks: the bounded working set; name files when known. Nothing outside it.
+- Output: the report contract — what to state, evidence as file:line
+  citations, nothing else (no transcripts, logs, or narration).
+- Escape hatches: do not stall or guess. Ask through send_agent_message with a
+  declared canContinue; the first answer or decline closes the thread; still
+  blocked → submit_agent_report naming the exit reason ("blocked: <cause>").`
+
 function formatParentAgentMessage(notification: AgentParentNotification, userContact?: AgentContact): string {
 	if (notification.kind === "delivery_failure") {
 		return `Agent message delivery failure: requestedAudience=parent message=${notification.messageId} source=${notification.sourceAgentId} target=${notification.targetAgentId} reason=${notification.reason}. ${notification.escapeHatch}`
@@ -745,7 +764,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event) => {
 		if (!pi.getActiveTools().includes("reply_to_agent_message")) return undefined
 		if (event.systemPrompt.includes("## Subagent messages")) return undefined
-		return { systemPrompt: `${event.systemPrompt}\n\n${COORDINATOR_MESSAGE_PROMPT}` }
+		return { systemPrompt: `${event.systemPrompt}\n\n${COORDINATOR_MESSAGE_PROMPT}\n\n${COORDINATOR_TASK_PROMPT}` }
 	})
 
 	pi.on("message_start", (event) => {
