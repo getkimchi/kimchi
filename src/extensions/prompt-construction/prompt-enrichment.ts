@@ -30,7 +30,7 @@ import { join, resolve } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
-import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
+import { resolveBundledSkillsDir, resolveHarnessSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getKimchiProjectSkillPaths } from "../../skill-paths.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
@@ -87,14 +87,20 @@ function safeUsername(): string {
  * noise by filtering before returning them from resources_discover.
  *
  * Also skips the bundled skills dir when every skill it contains is already
- * available in a stronger (earlier) path — this happens when the old deploy
- * mechanism copied bundled skills into the harness dir. Without this check,
- * pi emits a collision warning for each duplicated skill name.
+ * available in a stronger path. "Stronger" includes pi's own default loading
+ * from `agentDir/skills` (the harness dir), which runs before extension-
+ * contributed paths — without this check, pi emits a collision warning for
+ * each bundled skill name that was previously deployed into the harness dir.
  */
 function dedupeExistingSkillPaths(paths: readonly string[]): string[] {
 	const seen = new Set<string>()
 	const result: string[] = []
+	// Seed with skill names pi loads via includeDefaults (agentDir/skills),
+	// so the bundled dir can be skipped when those skills are already present
+	// in the harness dir.
 	const skillNamesFromStronger = new Set<string>()
+	const harnessDir = resolveHarnessSkillsDir()
+	collectSkillNames(harnessDir, skillNamesFromStronger)
 	for (const p of paths) {
 		const normalized = resolve(p)
 		if (seen.has(normalized)) continue
