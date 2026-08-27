@@ -11,6 +11,13 @@ export const CLASSIFIER_REQUEST_TAG = "source:classifier"
 export const CLASSIFIER_PRIMARY_MODEL_ID = "deepseek-v4-flash"
 export const CLASSIFIER_FALLBACK_MODEL_ID = "minimax-m3"
 
+/** Max tokens for Stage 1 (fast) classifier — just enough for a JSON verdict. */
+const STAGE1_MAX_TOKENS = 64
+
+/** Prompt suffix appended to the system prompt for Stage 1 (fast) classification. */
+const STAGE1_PROMPT_SUFFIX =
+	'\n\nRespond with ONLY a JSON object: {"verdict":"safe"} or {"verdict":"requires-confirmation"}. No reasoning needed. Be conservative — if unsure, return requires-confirmation.'
+
 export interface ClassifyInput {
 	toolName: string
 	input: Record<string, unknown>
@@ -40,6 +47,17 @@ export async function classifyToolCall(
 
 	if (signal?.aborted) return unavailable("classifier aborted")
 
+	// Stage 1 (fast): lightweight classifier call with minimal output.
+	// If it returns "safe", skip Stage 2 entirely — no second GPU call needed.
+	if (signal?.aborted) return unavailable("classifier aborted")
+	const stage1Result = await runClassifierFast(primaryModel, auth, call, options, signal)
+	if (stage1Result.ok && stage1Result.verdict === "safe") {
+		return { ...stage1Result, stage: 1 }
+	}
+
+	// Stage 2 (full reasoning): the existing full classifier call with retries
+	// and fallback. Used when Stage 1 does not return safe (either
+	// requires-confirmation or parse failure).
 	const maxAttempts = 3
 	let lastResult: InternalResult = unavailable("classifier unavailable")
 
@@ -50,7 +68,7 @@ export async function classifyToolCall(
 		}
 
 		const result = await runClassifier(primaryModel, auth, call, options, signal)
-		if (result.ok) return result
+		if (result.ok) return { ...result, stage: 2 }
 
 		if (!result.retryable) return result
 
@@ -67,6 +85,91 @@ export async function classifyToolCall(
 	}
 
 	return lastResult
+}
+
+/**
+ * Stage 1 (fast): lightweight classifier call with minimal prompt suffix and
+ * low max_tokens. Returns immediately if the verdict is "safe". Falls through
+ * to Stage 2 on any other outcome or failure.
+ */
+async function runClassifierFast(
+	model: Model<Api>,
+	auth: Awaited<ReturnType<ModelRegistry["getApiKeyAndHeaders"]>>,
+	call: ClassifyInput,
+	options: ClassifierOptions,
+	signal?: AbortSignal,
+): Promise<InternalResult> {
+	if (!auth.ok || !auth.apiKey) return unavailable("no API key for classifier")
+	if (signal?.aborted) return unavailable("classifier aborted")
+
+	const controller = new AbortController()
+	const timeoutHandle = setTimeout(() => controller.abort(), options.timeoutMs)
+	const onOuterAbort = () => controller.abort()
+	signal?.addEventListener("abort", onOuterAbort)
+
+	try {
+		const response = await complete(
+			model,
+			{
+				systemPrompt: classifierSystemPrompt + STAGE1_PROMPT_SUFFIX,
+				messages: [
+					{
+						role: "user",
+						content: [{ type: "text", text: buildUserPrompt(call) }],
+						timestamp: Date.now(),
+					},
+				],
+			},
+			{
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+				signal: controller.signal,
+				maxTokens: STAGE1_MAX_TOKENS,
+				onPayload: (payload: unknown) => {
+					if (payload && typeof payload === "object") {
+						const p = payload as Record<string, unknown>
+						const existing = Array.isArray(p.tags) ? (p.tags as string[]) : []
+						p.tags = [CLASSIFIER_REQUEST_TAG, ...existing]
+					}
+					return omitKimchiMaxTokensFromPayload(payload, model.provider)
+				},
+			},
+		)
+
+		if (response.stopReason === "aborted" || response.stopReason === "error") {
+			// Stage 1 failures are non-fatal — fall through to Stage 2.
+			return {
+				verdict: "requires-confirmation",
+				reason: "stage 1 failed, falling through",
+				ok: false,
+				retryable: false,
+			}
+		}
+
+		const text = response.content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map((c) => c.text)
+			.join("\n")
+
+		const result = parseClassifierOutput(text)
+		if (result.ok && result.verdict === "safe") {
+			return { ...result, retryable: false }
+		}
+
+		// Stage 1 returned requires-confirmation or failed to parse — fall through.
+		return {
+			verdict: "requires-confirmation",
+			reason: "stage 1 inconclusive, falling through",
+			ok: false,
+			retryable: false,
+		}
+	} catch (_err) {
+		// Stage 1 errors are non-fatal — fall through to Stage 2.
+		return { verdict: "requires-confirmation", reason: "stage 1 error, falling through", ok: false, retryable: false }
+	} finally {
+		clearTimeout(timeoutHandle)
+		signal?.removeEventListener("abort", onOuterAbort)
+	}
 }
 
 async function runClassifier(

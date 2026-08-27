@@ -38,6 +38,8 @@ export interface ClassifierResult {
 	ok: boolean
 	/** Risk score from the classifier LLM. Undefined when the classifier was not called or failed. */
 	riskScore?: RiskScore
+	/** Which classification stage produced this result: 1 = fast stage, 2 = full reasoning stage. Undefined when classifier was not called or failed before parsing. */
+	stage?: 1 | 2
 }
 
 export interface PermissionsConfig {

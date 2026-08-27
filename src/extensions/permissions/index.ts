@@ -89,6 +89,51 @@ export function isWithinKimchiPlans(filePath: string, cwd: string): boolean {
 }
 
 /**
+ * Protected path patterns that must NEVER be auto-approved by the in-CWD
+ * fast path, even when they resolve within ctx.cwd. These paths can contain
+ * secrets, modify shell behaviour, or corrupt agent/harness state.
+ */
+const PROTECTED_PATH_PATTERNS: readonly RegExp[] = [
+	/(^|\/)\.git\//, // git internals
+	/(^|\/)\.env$/, // env files
+	/(^|\/)\.env\./, // env variants (.env.local, .env.production, etc.)
+	/(^|\/)\.kimchi\//, // kimchi harness state
+	/(^|\/)\.claude\//, // claude config
+	/(^|\/)\.bashrc$/, // shell config
+	/(^|\/)\.zshrc$/,
+	/(^|\/)\.profile$/,
+]
+
+/**
+ * Check whether a resolved file path targets a protected location that
+ * should not be auto-approved by the in-CWD fast path.
+ */
+function isProtectedPath(resolvedPath: string): boolean {
+	return PROTECTED_PATH_PATTERNS.some((re) => re.test(resolvedPath))
+}
+
+/**
+ * In-CWD file edit fast path: when in auto mode and the tool is write or edit,
+ * check whether the target file resolves within ctx.cwd. If it does (and is
+ * not a protected path), auto-approve without invoking the LLM classifier.
+ * This avoids a GPU call for the agent's primary safe operation.
+ */
+function isInCwdFileEdit(toolName: string, input: Record<string, unknown>, cwd: string): boolean {
+	if (toolName !== "write" && toolName !== "edit") return false
+
+	const filePath =
+		typeof input.file_path === "string" ? input.file_path : typeof input.path === "string" ? input.path : ""
+	if (!filePath) return false
+
+	const resolved = resolve(cwd, filePath)
+	const normalizedCwd = cwd.endsWith("/") ? cwd : `${cwd}/`
+
+	if (!resolved.startsWith(normalizedCwd)) return false
+	if (isProtectedPath(resolved)) return false
+	return true
+}
+
+/**
  * DANGER: Bypass flag that disables ALL permission checks.
  * WARNING: This skips denylist, rules, classifier, and prompts.
  * For throwaway/sandboxed environments ONLY.
@@ -913,6 +958,20 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// through the classifier; prompts without a frontend fail closed.
 			const promptAvailable = canPrompt(ctx)
 			if (mode === "auto" || !promptAvailable) {
+				// Fast path: in auto mode, file edits within ctx.cwd are the agent's
+				// primary safe operation and should not cost a GPU classifier call.
+				// Protected paths (.git/, .env, .kimchi/, etc.) still fall through
+				// to the classifier even when inside cwd.
+				if (mode === "auto" && isInCwdFileEdit(toolName, input, ctx.cwd)) {
+					pi.events.emit("notification", {
+						notification_type: "permission_auto_approved",
+						tool_name: event.toolName,
+						tool_use_id: event.toolCallId,
+						reason: "in-cwd file edit fast path",
+					})
+					return undefined
+				}
+
 				const verdict = await classifyToolCall(
 					ctx.modelRegistry,
 					{ toolName, input, cwd: ctx.cwd },
