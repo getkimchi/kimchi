@@ -174,7 +174,7 @@ List 3-5 files most critical for implementing this plan:
 			{
 				name: AGENT_RESEARCHER,
 				displayName: AGENT_RESEARCHER,
-				description: "Web and docs research agent — finds answers with cited sources",
+				description: "Web/docs researcher — answers with cited sources",
 				builtinToolNames: READ_ONLY_TOOLS,
 				extensions: true,
 				skills: false,
@@ -203,7 +203,7 @@ Deliver a structured report: summary first, then supporting evidence with citati
 			{
 				name: AGENT_BUILDER,
 				displayName: AGENT_BUILDER,
-				description: "Code implementation agent — writes, modifies, and verifies code",
+				description: "Code implementation — writes, modifies, verifies code",
 				extensions: true,
 				skills: true,
 				roles: ["build"],
@@ -246,7 +246,7 @@ If compilation fails or tests fail, report the failures clearly and stop. The or
 			{
 				name: AGENT_REVIEWER,
 				displayName: AGENT_REVIEWER,
-				description: "Code review agent — verifies correctness and writes findings",
+				description: "Code review — verifies correctness, writes findings",
 				builtinToolNames: [...READ_ONLY_TOOLS, "write"],
 				disallowedTools: ["edit"],
 				extensions: true,
@@ -299,7 +299,7 @@ Be specific. If a test fails, quote the failure. If logic is wrong, explain why 
 			{
 				name: AGENT_FIXER,
 				displayName: AGENT_FIXER,
-				description: "Fix agent — applies review findings and verifies fixes",
+				description: "Apply review findings, verify fixes",
 				extensions: true,
 				skills: true,
 				roles: ["build"],
@@ -340,7 +340,7 @@ Your verification file MUST contain:
 			{
 				name: AGENT_DEBUGGER,
 				displayName: AGENT_DEBUGGER,
-				description: "Debugger — inspects runtime state via DAP tools to diagnose bugs",
+				description: "Runtime-state inspection via DAP tools to diagnose bugs",
 				builtinToolNames: [
 					"read",
 					"grep",
@@ -430,7 +430,7 @@ Always terminate debug sessions with \`debug_terminate\` when done.`,
 			{
 				name: AGENT_GRADER,
 				displayName: AGENT_GRADER,
-				description: "Ferment grader — independently verifies agent claims and assigns a letter grade",
+				description: "Ferment grader — verifies agent claims, assigns a letter grade",
 				builtinToolNames: [...READ_ONLY_TOOLS],
 				disallowedTools: ["edit", "write", "Agent", "resume_subagent", "get_subagent_result", "steer_subagent"],
 				extensions: false,

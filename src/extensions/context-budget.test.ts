@@ -43,7 +43,7 @@ const BUDGET = {
 	total: 4900,
 	/** Total canonical tool surface (recorded 2026-08-27 post-Chunk-2: 9438 est across
 	 *  44 tools after the Agent-suite diet; ~5% headroom. Phase 1 chunks 3+ lower it. */
-	toolSurface: 10600,
+	toolSurface: 9900,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
 }

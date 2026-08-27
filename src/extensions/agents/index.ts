@@ -142,19 +142,12 @@ export function resolveRoleModelRef(subagentType: string): string | undefined {
 const SUBAGENT_SHUTDOWN_WAIT_MS = 5_000
 
 export const AGENT_TOOL_GUIDELINES = `Guidelines:
-- Follow the **Orchestration** section for workflow, delegation, model selection, budgets, Explore-agent prompt shaping, and artifact handoff.
-- If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
-- For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
-- Keep each Agent call focused on a single outcome. Split large tasks into smaller, independent Agent calls.
-- Agent types: Explore (read-only fact-finding), Plan (spec writing), Researcher (cited web/docs research), Builder (implementation), Reviewer (findings report), Fixer (apply review fixes), General-Purpose (fallback when none of the specialized personas fit).
-- Provide clear, detailed prompts so the agent can work autonomously.
-- Agent results are returned as text — summarize them for the user.
-- Use resume_subagent to continue a previous agent's work; get_subagent_result for background status; steer_subagent for mid-run steering.
-- Use thinking to request an extended thinking level on Agent calls per the Orchestration **Thinking levels** table.
-- Use token_budget, max_duration, and inherit_context per the Orchestration section.`
+- Follow the **Orchestration** section (workflow, delegation, models, budgets, Explore-agent prompt shaping).
+- One call per task, detailed prompt; run_in_background for parallelism.
+- Follow-ups: resume_subagent (continue), get_subagent_result (poll), steer_subagent (redirect).`
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
-	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Partial model IDs such as "kimi" or "nemotron" are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only the models configured in the multi-model roles may be used.'
+	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId". Partial model IDs (e.g. "kimi") are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only role-configured models may be used.'
 
 function textResult<T = AgentDetails>(msg: string, details?: T) {
 	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }
@@ -1170,12 +1163,9 @@ export default function (pi: ExtensionAPI) {
 		})
 
 		return [
-			"Default agents:",
+			"Agent types:",
 			...defaultDescs,
 			...(customDescs.length > 0 ? ["", "Custom agents:", ...customDescs] : []),
-			"",
-			`Custom agents can be defined in .kimchi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global) - they are picked up automatically. Project-level agents override global ones. Creating a .md file with the same name as a default agent overrides it.`,
-			`Global user instructions (applied to every session) can be placed in the global ${getAgentDir()}/AGENTS.md. Project-level AGENTS.md or CLAUDE.md files in the working directory tree are combined with it.`,
 		].join("\n")
 	}
 
@@ -1203,11 +1193,8 @@ export default function (pi: ExtensionAPI) {
 		defineTool({
 			name: "Agent",
 			label: "Agent",
-			description: `Launch a new agent to handle complex, multi-step tasks autonomously.
+			description: `Launch an agent to run a complex multi-step task autonomously.
 
-The Agent tool launches specialized agents that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.
-
-Available agent types:
 ${typeListText}
 
 ${AGENT_TOOL_GUIDELINES}`,
@@ -1219,7 +1206,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 					description: "A short (3-5 word) description of the task (shown in UI).",
 				}),
 				subagent_type: Type.String({
-					description: `The type of specialized agent to use. Available types: ${getAvailableTypes().join(", ")}. Custom agents from .kimchi/agents/*.md (project) or ${getAgentDir()}/agents/*.md (global) are also available.`,
+					description:
+						"Agent type (see list above); custom agents come from .kimchi/agents/*.md (project) or the global agents dir.",
 				}),
 				model: Type.Optional(
 					Type.String({
@@ -1229,7 +1217,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				thinking: Type.Optional(
 					Type.String({
 						description:
-							"Requested thinking level: off, minimal, low, medium, high, xhigh, max. Orchestrator-provided values override agent profile defaults. Omit only when Orchestration does not require an explicit level.",
+							"Thinking effort: off, minimal, low, medium, high, xhigh, max. Overrides agent profile defaults.",
 					}),
 				),
 				max_turns: Type.Optional(
@@ -2045,14 +2033,13 @@ ${AGENT_TOOL_GUIDELINES}`,
 			name: "steer_subagent",
 			label: "Steer Agent",
 			description:
-				"Send a steering message to a running agent. The message will interrupt the agent after its current tool execution " +
-				"and be injected into its conversation, allowing you to redirect its work mid-run. Only works on running agents.",
+				"Send a steering message to a running agent; it is injected into the agent's conversation after the current tool completes.",
 			parameters: Type.Object({
 				agent_id: Type.String({
-					description: "The agent ID to steer (must be currently running).",
+					description: "The running agent's ID.",
 				}),
 				message: Type.String({
-					description: "The steering message to send. This will appear as a user message in the agent's conversation.",
+					description: "Steering message (appears as a user message in the agent's conversation).",
 				}),
 			}),
 			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {

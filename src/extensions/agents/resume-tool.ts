@@ -27,7 +27,7 @@ export function registerResumeSubagentTool(pi: ExtensionAPI, manager: AgentManag
 				purpose: Type.Optional(
 					Type.Union([Type.Literal("continuation"), Type.Literal("continue"), Type.Literal("finalize_report")], {
 						description:
-							'Use "continuation" for follow-up work ("continue" is accepted as a compatibility alias). Use finalize_report only when task work is already finished and the worker only needs to submit its report.',
+							'"continuation" = follow-up work (or "continue" alias); "finalize_report" = work done, worker only submits its report.',
 					}),
 				),
 			}),
