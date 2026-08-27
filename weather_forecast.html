@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vilnius Weather Forecast</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: linear-gradient(135deg, #89cff0 0%, #4a69bd 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; color: #212121; }
+.container { display: flex; flex-wrap: wrap; gap: 24px; justify-content: center; max-width: 900px; width: 100%; }
+.card { background: rgba(255,255,255,0.95); border-radius: 24px; padding: 32px; box-shadow: 0 12px 40px rgba(0,0,0,0.15); flex: 1 1 320px; min-width: 280px; backdrop-filter: blur(8px); }
+h2 { font-size: 1.4rem; margin-bottom: 8px; color: #2c3e50; }
+h3 { font-size: 1.1rem; margin-bottom: 16px; color: #546e7a; font-weight: 500; }
+.icon { font-size: 4.5rem; text-align: center; margin: 12px 0; line-height: 1; }
+.temp { font-size: 4rem; font-weight: 800; text-align: center; margin: 8px 0; letter-spacing: -1px; }
+.temps { font-size: 2.4rem; font-weight: 700; text-align: center; margin: 8px 0; }
+.high, .low { font-weight: 800; }
+.conditions { text-align: center; font-size: 1.25rem; color: #455a64; margin-bottom: 20px; }
+.details { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; margin-top: 16px; }
+.detail { background: rgba(236,239,241,0.7); border-radius: 12px; padding: 12px; text-align: center; }
+.detail span { display: block; font-size: 0.8rem; color: #78909c; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+.detail strong { display: block; font-size: 1rem; color: #37474f; }
+.precip { margin-top: 16px; text-align: center; }
+.precip span { font-size: 1rem; color: #546e7a; }
+.bar { background: rgba(207,216,220,0.6); border-radius: 10px; height: 12px; margin-top: 8px; overflow: hidden; }
+.fill { background: linear-gradient(90deg, #4fc3f7, #0288d1); height: 100%; border-radius: 10px; min-width: 4px; }
+@media (max-width: 640px) { .card { padding: 24px; } .temp { font-size: 3rem; } .temps { font-size: 1.8rem; } }
+</style>
+</head>
+<body>
+<div class="container">
+<div class="card current">
+<h2>Current Weather</h2>
+<div class="icon">⛅</div>
+<div class="temp" style="color: #fb8c00">22.2°C</div>
+<div class="conditions">Partly cloudy</div>
+<div class="details">
+<div class="detail"><span>Feels like</span><strong>20.8°C</strong></div>
+<div class="detail"><span>Humidity</span><strong>41%</strong></div>
+<div class="detail"><span>Wind</span><strong>6.5 km/h NE <span style="display:inline-block;transform:rotate(50deg);">➤</span></strong></div>
+</div>
+</div>
+<div class="card tomorrow">
+<h2>Tomorrow's Forecast</h2>
+<h3>2026-08-28</h3>
+<div class="icon">⛅</div>
+<div class="temps"><span class="high" style="color: #fb8c00">22.9°C</span> / <span class="low" style="color: #1e88e5">14.7°C</span></div>
+<div class="conditions">Partly cloudy</div>
+<div class="precip"><span>💧 0.00 mm (0% chance)</span><div class="bar"><div class="fill" style="width:0%"></div></div></div>
+<div class="details">
+<div class="detail"><span>Max wind</span><strong>16.2 km/h</strong></div>
+<div class="detail"><span>Sunrise</span><strong>06:18</strong></div>
+<div class="detail"><span>Sunset</span><strong>20:21</strong></div>
+</div>
+</div>
+</div>
+</body>
+</html>

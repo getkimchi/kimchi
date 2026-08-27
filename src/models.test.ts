@@ -1,7 +1,6 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	injectExperimentalProvider,
@@ -86,7 +85,7 @@ describe("updateModelsConfig", () => {
 				maxTokens: 262144,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				provider: "ai-enabler",
-				thinkingLevelMap: { off: "none", max: "max" },
+				thinkingLevelMap: { off: "none" },
 			},
 		])
 	})
@@ -150,7 +149,7 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
 	})
 
-	it("maps ai-enabler thinking levels required by the upstream selector", async () => {
+	it("sets thinkingLevelMap for ai-enabler models so thinking=off sends reasoning_effort=none", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI] }),
@@ -159,12 +158,9 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		const model = config.providers["kimchi-dev"].models[0]
-		expect(model.thinkingLevelMap).toEqual({
+		expect(config.providers["kimchi-dev"].models[0].thinkingLevelMap).toEqual({
 			off: "none",
-			max: "max",
 		})
-		expect(getSupportedThinkingLevels(model)).toContain("max")
 	})
 
 	it("sets compat for claude-* models regardless of upstream provider (e.g. azure_ai)", async () => {

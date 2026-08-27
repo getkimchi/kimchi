@@ -107,7 +107,6 @@ import {
 	tryParseSkillCommand,
 } from "./skill-commands.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
-import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
 import { asString, truncate } from "./utils.js"
 
@@ -140,12 +139,6 @@ export type AcpSessionLoader = (params: LoadSessionRequest) => Promise<AgentSess
 export interface RunAcpOptions {
 	extensionFactories: ExtensionFactory[]
 	agentDir: string
-	/**
-	 * Content of the `--append-system-prompt` CLI flag, forwarded verbatim to
-	 * every session's DefaultResourceLoader. When a client also sends
-	 * `_meta["kimchi.dev"].appendSystemPrompt`, meta content is appended after this.
-	 */
-	appendSystemPrompt?: string[]
 	/** Override for tests. Defaults to the pi-coding-agent-backed factory. */
 	sessionFactory?: AcpSessionFactory
 	/** Override for tests. Defaults to {@link defaultSessionLister}. */
@@ -158,42 +151,6 @@ export interface RunAcpOptions {
 	 * it; production code constructs a real McpServerManager.
 	 */
 	mcpServerManager?: McpServerManager
-}
-
-/**
- * Per-turn usage accumulator. pi-mono chains multiple agent.prompt /
- * agent.continue calls per turn, each producing an AssistantMessage with its
- * own pi-ai `usage`; ACP's (v1/experimental) PromptResponse.usage expects a
- * single summary, so message_end events fold their usage into this record and
- * finalizeTurn emits the summed totals. `messages` counts the assistant
- * usage records folded in — it gates the optional PromptResponse.usage field
- * (omitted when no usage data was collected, e.g. a cancel before the first
- * message).
- */
-type TurnUsage = {
-	input: number
-	output: number
-	cacheRead: number
-	cacheWrite: number
-	reasoning: number
-	/** Sum of the provider-computed usage.totalTokens across the chain. */
-	total: number
-	/** true once any provider actually reported a reasoning/thought count. */
-	sawReasoning: boolean
-	messages: number
-}
-
-function emptyTurnUsage(): TurnUsage {
-	return {
-		input: 0,
-		output: 0,
-		cacheRead: 0,
-		cacheWrite: 0,
-		reasoning: 0,
-		total: 0,
-		sawReasoning: false,
-		messages: 0,
-	}
 }
 
 type TurnContext = {
@@ -218,7 +175,6 @@ type TurnContext = {
 	 * event resolves add-vs-modify from preWriteContents.
 	 */
 	pendingFileChanges: Map<string, PendingFileChange[]>
-	usage: TurnUsage
 	resolve: (res: PromptResponse) => void
 	reject: (err: unknown) => void
 }
@@ -537,7 +493,7 @@ export class KimchiAcpAgent implements Agent {
 				contentIndexToBlockId: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
-				skillCommands: new Map(discoverAcpSkillCommands(session.resourceLoader).map((s) => [s.name, s])),
+				skillCommands: new Map(discoverAcpSkillCommands(session.sessionManager.getCwd()).map((s) => [s.name, s])),
 			}
 			registerAcpPrompter(
 				sessionId,
@@ -807,7 +763,7 @@ export class KimchiAcpAgent implements Agent {
 				contentIndexToBlockId: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
-				skillCommands: new Map(discoverAcpSkillCommands(session.resourceLoader).map((s) => [s.name, s])),
+				skillCommands: new Map(discoverAcpSkillCommands(session.sessionManager.getCwd()).map((s) => [s.name, s])),
 			}
 			registerAcpPrompter(
 				sid,
@@ -921,7 +877,6 @@ export class KimchiAcpAgent implements Agent {
 			lastStreamedContent: new Map(),
 			preWriteContents: new Map(),
 			pendingFileChanges: new Map(),
-			usage: emptyTurnUsage(),
 			resolve: turnResolve,
 			reject: turnReject,
 		}
@@ -1137,35 +1092,6 @@ export class KimchiAcpAgent implements Agent {
 					return
 				}
 
-				return
-			}
-			case "message_end": {
-				if (!turn) return
-				const msg = event.message
-				if (msg.role !== "assistant") return
-				const usage = msg.usage
-				if (usage) {
-					// `|| 0` guards against providers emitting undefined/NaN for a
-					// field the type declares required — one bad message must not
-					// poison the whole turn's totals.
-					turn.usage.input += usage.input || 0
-					turn.usage.output += usage.output || 0
-					turn.usage.cacheRead += usage.cacheRead || 0
-					turn.usage.cacheWrite += usage.cacheWrite || 0
-					turn.usage.total += usage.totalTokens || 0
-					// reasoning is a SUBSET of output (pi-ai 0.84 Usage docs) — summed
-					// separately for thoughtTokens only, never re-added to totals.
-					if (typeof usage.reasoning === "number" && Number.isFinite(usage.reasoning)) {
-						turn.usage.reasoning += usage.reasoning
-						turn.usage.sawReasoning = true
-					}
-					turn.usage.messages++
-					// Live context-window refresh: a message_end carrying usage means
-					// the session's estimate just moved. Emit here (subject to
-					// emitUsageUpdate's undefined/null skip) so clients track the
-					// context window across chained steps, not just at turn end.
-					this.emitUsageUpdate(entry)
-				}
 				return
 			}
 			case "tool_execution_start": {
@@ -1566,16 +1492,15 @@ export class KimchiAcpAgent implements Agent {
 	private emitUsageUpdate(entry: SessionRecord): void {
 		const session = entry.session
 		const ctx = session.getContextUsage()
-		// Per the issue doc: skip when getContextUsage() returns undefined or
-		// tokens is null (e.g. right after compaction). ACP requires both `used`
-		// and `size`, so there is no null-safe emission.
-		if (!ctx || ctx.tokens === null) return
+		const used = ctx?.tokens ?? session.getSessionStats().tokens.total
+		const size = session.model?.contextWindow ?? ctx?.contextWindow
+		if (used == null || !size) return
 		this.send({
 			sessionId: session.sessionId,
 			update: {
 				sessionUpdate: "usage_update",
-				used: ctx.tokens,
-				size: ctx.contextWindow,
+				used,
+				size,
 			},
 		})
 	}
@@ -1587,24 +1512,7 @@ export class KimchiAcpAgent implements Agent {
 		try {
 			this.emitUsageUpdate(entry)
 		} finally {
-			const response: PromptResponse = { stopReason }
-			// usage is v1/experimental-only on PromptResponse (v2 drops it in favor
-			// of usage_update session events) and is omitted when the turn produced
-			// no usage data (e.g. cancelled before the first assistant message).
-			// totalTokens is emitted because the pinned ACP SDK's experimental Usage
-			// type marks it required, even though the ticket's v1 field table drops it.
-			if (turn.usage.messages > 0) {
-				const u = turn.usage
-				response.usage = {
-					inputTokens: u.input,
-					outputTokens: u.output,
-					cachedReadTokens: u.cacheRead,
-					cachedWriteTokens: u.cacheWrite,
-					...(u.sawReasoning ? { thoughtTokens: u.reasoning } : {}),
-					totalTokens: u.total,
-				}
-			}
-			turn.resolve(response)
+			turn.resolve({ stopReason })
 		}
 	}
 
@@ -1870,7 +1778,7 @@ function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
  * timeout, and load resources. Both the session loader and factory
  * diverge only in how they obtain a SessionManager.
  */
-async function createSessionSettings(cwd: string, options: RunAcpOptions, params: { _meta?: unknown }) {
+async function createSessionSettings(cwd: string, options: RunAcpOptions) {
 	// Construct untrusted first: pi's SettingsManager.create defaults
 	// projectTrusted to TRUE, which would let an untrusted repo's
 	// .pi/settings.json influence HTTP behavior (e.g. disable the idle
@@ -1888,8 +1796,7 @@ async function createSessionSettings(cwd: string, options: RunAcpOptions, params
 	// all of them (see setStreamIdleTimeoutOverride).
 	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
 	// Cache the skill list block per session so we don't rediscover skills on
-	// every turn's system prompt rebuild. Built lazily on first access; errors
-	// during loader access fall back to an empty block.
+	// every turn's system prompt rebuild.
 	let cachedSkillListBlock: string | undefined
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,
@@ -1898,27 +1805,16 @@ async function createSessionSettings(cwd: string, options: RunAcpOptions, params
 		extensionFactories: options.extensionFactories,
 		appendSystemPromptOverride: () => {
 			if (cachedSkillListBlock === undefined) {
-				try {
-					cachedSkillListBlock = buildSkillListBlock(resourceLoader)
-				} catch {
-					// If the loader isn't ready (e.g. during reload before skills
-					// are populated), return empty rather than crashing session
-					// startup — the block is non-essential.
-					cachedSkillListBlock = ""
-				}
+				cachedSkillListBlock = buildSkillListBlock(cwd)
 			}
-			// CLI flag content first, then _meta["kimchi.dev"].appendSystemPrompt,
-			// then the skill list block (matches upstream override behaviour).
-			const base = resolveAcpAppendSystemPrompt(params, options) ?? []
-			return [...base, ...(cachedSkillListBlock ? [cachedSkillListBlock] : [])]
+			return cachedSkillListBlock ? [cachedSkillListBlock] : []
 		},
 	})
 	await resourceLoader.reload()
 	return { settingsManager, resourceLoader }
 }
 
-/** Exported for tests: the production session loader used by {@link KimchiAcpAgent}. */
-export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
+function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 	return async (params: LoadSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd
 		// Mirror defaultSessionLister: encode cwd inline because pi doesn't
@@ -1993,7 +1889,7 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			const msg = err instanceof Error ? err.message : String(err)
 			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
 		}
-		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
+		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,
@@ -2005,11 +1901,10 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 	}
 }
 
-/** Exported for tests: the production session factory used by {@link KimchiAcpAgent}. */
-export function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
+function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 	return async (params: NewSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
-		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
+		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,

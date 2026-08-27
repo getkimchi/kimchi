@@ -117,20 +117,5 @@ export async function resolveClonePlan(
 		.then(({ stdout }) => stdout.trim() || undefined)
 		.catch(() => undefined)
 
-	// Verify the branch exists on origin before passing it to the sandbox.
-	// The sandbox worker clones from origin — if the branch is local-only
-	// (unpushed), `git clone --branch <name>` fails and the fallback creates
-	// the branch at whatever HEAD the sandbox was left on, which may be a
-	// different branch entirely. Returning undefined makes the sandbox use
-	// the default branch, which is safer than silently checking out the wrong
-	// code.
-	let safeBranch = branch
-	if (branch) {
-		const onRemote = await gitExec(["ls-remote", "--heads", "origin", branch])
-			.then(({ stdout }) => stdout.trim().length > 0)
-			.catch(() => true) // on error, trust the branch (network issues, etc.)
-		if (!onRemote) safeBranch = undefined
-	}
-
-	return { url, httpsUrl, branch: safeBranch }
+	return { url, httpsUrl, branch }
 }

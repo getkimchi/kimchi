@@ -814,7 +814,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			const cloudDescription = `cloud: ${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
 			try {
 				const { result, transcriptPath, id } = await runForegroundRemoteAgent(pi, ctx, cloudPrompt, cloudDescription)
-				await handleRemoteCompletion(pi, ctx, result, "plan", transcriptPath, id)
+				await handleRemoteCompletion(pi, ctx, result, "plan", { transcriptPath, agentId: id })
 			} catch {
 				// Error notification already handled inside runForegroundRemoteAgent.
 			}

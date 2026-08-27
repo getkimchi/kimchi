@@ -1,5 +1,5 @@
 import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk"
-import type { AgentSession, ResourceLoader } from "@earendil-works/pi-coding-agent"
+import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { AVAILABLE_EXT_METHODS } from "../capabilities.js"
 import { type AcpSessionFactory, KimchiAcpAgent } from "../server.js"
@@ -23,19 +23,6 @@ class FakeAgentSession {
 	}
 	setSessionName = vi.fn()
 	extensionRunner = { emit: async () => {} }
-	resourceLoader = {
-		getSkills: () => ({ skills: [], diagnostics: [] }),
-		getExtensions: () => ({ extensions: [], errors: [], runtime: undefined }),
-		getPrompts: () => ({ prompts: [], diagnostics: [] }),
-		getThemes: () => ({ themes: [], diagnostics: [] }),
-		getAgentsFiles: () => ({ agentsFiles: [] }),
-		getSystemPrompt: () => undefined,
-		getSystemPromptSource: () => undefined,
-		getAppendSystemPrompt: () => [],
-		getAppendSystemPromptSources: () => [],
-		extendResources: () => {},
-		reload: async () => {},
-	} as unknown as ResourceLoader
 
 	constructor(sessionId: string) {
 		this.sessionId = sessionId

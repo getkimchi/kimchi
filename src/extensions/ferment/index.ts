@@ -227,7 +227,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				const cloudDescription = `cloud: ${review.planMarkdown.slice(0, 60)}${review.planMarkdown.length > 60 ? "..." : ""}`
 				try {
 					const { result, transcriptPath, id } = await runForegroundRemoteAgent(pi, ctx, cloudPrompt, cloudDescription)
-					await handleRemoteCompletion(pi, ctx, result, "ferment plan", transcriptPath, id)
+					await handleRemoteCompletion(pi, ctx, result, "ferment plan", { transcriptPath, agentId: id })
 				} catch {
 					// Error notification already handled inside runForegroundRemoteAgent.
 				}

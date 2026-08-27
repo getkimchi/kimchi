@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises"
 import type { AvailableCommand } from "@agentclientprotocol/sdk"
-import type { ResourceLoader } from "@earendil-works/pi-coding-agent"
-import { stripFrontmatter } from "@earendil-works/pi-coding-agent"
+import { loadSkillsFromDir, stripFrontmatter } from "@earendil-works/pi-coding-agent"
+import { listAvailableSkillNames } from "../../extensions/agents/prompt/skill-loader.js"
+import { getClaudeCodeSkillResourcePaths } from "../../extensions/claude-code-skills/definition.js"
 
 export interface AcpSkillInfo {
 	readonly name: string
@@ -9,25 +10,48 @@ export interface AcpSkillInfo {
 	readonly filePath: string
 }
 
+export interface DiscoverAcpSkillCommandsOptions {
+	/** Override for os.homedir(), useful for tests. Defaults to homedir(). */
+	readonly homeDir?: string
+}
+
 /**
- * Discover all skills that should be advertised as ACP slash commands. Reads
- * from pi's resolved resource inventory so the ACP view matches the base
- * prompt's skills section (same precedence, collision rules, trust, packages,
- * and extension contributions) instead of re-deriving skill locations here.
+ * Discover all skills that should be advertised as ACP slash commands for the
+ * given working directory. Native skills from DEFAULT_SKILL_PATHS and Claude
+ * Code skills under .claude/skills are both included; later sources override
+ * earlier ones on name collisions.
  */
-export function discoverAcpSkillCommands(loader: ResourceLoader): AcpSkillInfo[] {
-	const { skills } = loader.getSkills()
+export function discoverAcpSkillCommands(cwd: string, options: DiscoverAcpSkillCommandsOptions = {}): AcpSkillInfo[] {
 	const byName = new Map<string, AcpSkillInfo>()
-	for (const skill of skills) {
-		if (!byName.has(skill.name)) {
-			byName.set(skill.name, {
-				name: skill.name,
-				description: skill.description ?? "",
-				filePath: skill.filePath,
-			})
+
+	for (const skill of listAvailableSkillNames(cwd, { homeDir: options.homeDir })) {
+		byName.set(skill.name, skill)
+	}
+
+	for (const skill of discoverClaudeCodeSkills(cwd)) {
+		byName.set(skill.name, skill)
+	}
+
+	return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name))
+}
+
+function discoverClaudeCodeSkills(cwd: string): AcpSkillInfo[] {
+	const skills: AcpSkillInfo[] = []
+	for (const dir of getClaudeCodeSkillResourcePaths(cwd)) {
+		try {
+			const { skills: loaded } = loadSkillsFromDir({ dir, source: dir })
+			for (const skill of loaded) {
+				skills.push({
+					name: skill.name,
+					description: skill.description ?? "",
+					filePath: skill.filePath,
+				})
+			}
+		} catch {
+			// Directory missing or unreadable — skip silently.
 		}
 	}
-	return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name))
+	return skills
 }
 
 function skillCommandName(skillName: string): string {
@@ -46,10 +70,13 @@ export function buildSkillAvailableCommands(skills: readonly AcpSkillInfo[]): Av
 
 /**
  * Build a compact markdown block listing available skills for injection into
- * the system prompt. Returns an empty string when the loader reports no skills.
+ * the system prompt. Returns an empty string when no skills are discovered.
  */
-export function buildSkillListBlock(loader: ResourceLoader): string {
-	const skills = discoverAcpSkillCommands(loader)
+export function buildSkillListBlock(
+	cwd: string,
+	options: Pick<DiscoverAcpSkillCommandsOptions, "homeDir"> = {},
+): string {
+	const skills = discoverAcpSkillCommands(cwd, options)
 	if (skills.length === 0) return ""
 
 	const lines = skills.map((s) => `- **${s.name}**: ${s.description || `Use the ${s.name} skill.`}`)

@@ -17,9 +17,7 @@ import type {
 	ExtensionUIContext,
 	ModelRegistry,
 	SessionInfo as PiSessionInfo,
-	ResourceLoader,
 	SessionManager,
-	Skill,
 	Theme,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -75,7 +73,6 @@ import {
 	userMessageText,
 } from "./server.js"
 import { getAcpClientInfo, resetAcpClientInfo } from "./state.js"
-import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 
 function cleanPermissionEnv(): void {
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
@@ -184,19 +181,6 @@ class FakeAgentSession {
 		tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		cost: 0,
 	}
-	resourceLoader = {
-		getSkills: () => ({ skills: [] as Skill[], diagnostics: [] }),
-		getExtensions: () => ({ extensions: [], errors: [], runtime: undefined }),
-		getPrompts: () => ({ prompts: [], diagnostics: [] }),
-		getThemes: () => ({ themes: [], diagnostics: [] }),
-		getAgentsFiles: () => ({ agentsFiles: [] }),
-		getSystemPrompt: () => undefined,
-		getSystemPromptSource: () => undefined,
-		getAppendSystemPrompt: () => [],
-		getAppendSystemPromptSources: () => [],
-		extendResources: () => {},
-		reload: async () => {},
-	} as unknown as ResourceLoader
 	// Branch entries returned to the replay walker. Tests fill this with the
 	// shape buildSessionContext consumers expect (type:"message" + role).
 	branch: unknown[] = []
@@ -1167,7 +1151,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect((usageUpdates[0].update as { used: number; size: number }).size).toBe(200_000)
 	})
 
-	it("does not emit usage_update when getContextUsage tokens is null (post-compaction)", async () => {
+	it("falls back to getSessionStats total when getContextUsage tokens is null", async () => {
 		const { conn, updates } = makeRecordingConn()
 		const localFake = new FakeAgentSession("session-usage-fallback")
 		localFake.model = { provider: "test", id: "m", name: "M", input: ["text"], contextWindow: 128_000 }
@@ -1196,8 +1180,9 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const usageUpdates = updates.filter(
 			(u) => (u.update as { sessionUpdate?: string }).sessionUpdate === "usage_update",
 		)
-		// Per the issue doc: skip when tokens is null — no fallback to getSessionStats.
-		expect(usageUpdates).toHaveLength(0)
+		expect(usageUpdates).toHaveLength(1)
+		expect((usageUpdates[0].update as { used: number; size: number }).used).toBe(10_000)
+		expect((usageUpdates[0].update as { used: number; size: number }).size).toBe(128_000)
 	})
 
 	it("does not emit usage_update when size is unavailable (no contextWindow)", async () => {
@@ -1579,235 +1564,6 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		])
 		expect(resA.stopReason).toBe("end_turn")
 		expect(resB.stopReason).toBe("end_turn")
-	})
-})
-
-// Usage reporting (issue #03): the ACP server accumulates pi-ai Usage across
-// pi-mono's chained prompt/continue calls — each chain step emits its own
-// assistant message_end with its own usage object — folds the sum into the
-// (experimental) PromptResponse.usage, and pairs assistant message_end
-// events with usage_update sessionUpdates mapped from
-// session.getContextUsage(). Both pieces are gated: PromptResponse.usage is
-// omitted when the turn collected no usage, and usage_update is skipped when
-// the estimate is undefined or its token count is null (post-compaction).
-describe("KimchiAcpAgent usage reporting", () => {
-	let fake: FakeAgentSession
-	let agent: KimchiAcpAgent
-	let sessionId: string
-	let updates: SessionNotification[]
-
-	beforeEach(async () => {
-		fake = new FakeAgentSession("session-usage")
-		const { conn, updates: rec } = makeRecordingConn()
-		updates = rec
-		agent = new KimchiAcpAgent(conn, {
-			extensionFactories: [],
-			agentDir: "/tmp/fake-agent-dir",
-			sessionFactory: async () => asSession(fake),
-		})
-		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-		sessionId = res.sessionId
-	})
-
-	const usageUpdates = () => updates.filter((u) => u.update.sessionUpdate === "usage_update")
-
-	// Builds the assistant message_end event pi-mono emits after an LLM
-	// response. totalTokens is computed the way providers do (pi-ai 0.84
-	// Usage docs): input + output + cacheRead + cacheWrite, where `reasoning`
-	// is a subset of `output` and must never be re-added.
-	function assistantUsageEvent(usage: {
-		input: number
-		output: number
-		cacheRead?: number
-		cacheWrite?: number
-		reasoning?: number
-	}): AgentSessionEvent {
-		const cacheRead = usage.cacheRead ?? 0
-		const cacheWrite = usage.cacheWrite ?? 0
-		const message: AssistantMessage = {
-			role: "assistant",
-			content: [{ type: "text", text: "reply" }],
-			api: "anthropic-messages",
-			provider: "anthropic",
-			model: "claude",
-			usage: {
-				input: usage.input,
-				output: usage.output,
-				cacheRead,
-				cacheWrite,
-				...(usage.reasoning !== undefined ? { reasoning: usage.reasoning } : {}),
-				totalTokens: usage.input + usage.output + cacheRead + cacheWrite,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "stop",
-			timestamp: 0,
-		}
-		return { type: "message_end", message }
-	}
-
-	it("sums pi-ai usage across chained assistant messages into PromptResponse.usage", async () => {
-		fake.promptImpl = async () => {
-			fake.emit({ type: "agent_start" })
-			fake.emit(assistantUsageEvent({ input: 100, output: 20, cacheRead: 5, cacheWrite: 3, reasoning: 7 }))
-			// Second chain step (e.g. agent.continue after a tool call or follow-up).
-			fake.emit(assistantUsageEvent({ input: 50, output: 10, cacheRead: 2, cacheWrite: 1, reasoning: 3 }))
-			fake.emit(agentEnd())
-		}
-
-		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
-
-		expect(result.stopReason).toBe("end_turn")
-		expect(result.usage).toEqual({
-			inputTokens: 150,
-			outputTokens: 30,
-			cachedReadTokens: 7,
-			cachedWriteTokens: 4,
-			thoughtTokens: 10,
-			// msg1: 100+20+5+3=128, msg2: 50+10+2+1=63 — reasoning (7, 3) is a
-			// subset of output and must not be double-counted.
-			totalTokens: 191,
-		})
-	})
-
-	it("omits thoughtTokens when no provider reported a reasoning count", async () => {
-		fake.promptImpl = async () => {
-			fake.emit({ type: "agent_start" })
-			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
-			fake.emit(agentEnd())
-		}
-
-		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
-
-		expect(result.usage?.inputTokens).toBe(100)
-		expect(result.usage?.outputTokens).toBe(20)
-		expect(result.usage).not.toHaveProperty("thoughtTokens")
-	})
-
-	it("emits usage_update with size/used on assistant message_end and again at turn end", async () => {
-		fake.contextUsage = { tokens: 1234, contextWindow: 200000, percent: 0.617 }
-		fake.promptImpl = async () => {
-			fake.emit({ type: "agent_start" })
-			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
-			fake.emit(agentEnd())
-		}
-
-		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
-
-		const usage = usageUpdates()
-		// One live update on the assistant message_end, one final update at
-		// finalizeTurn — both reflect the same getContextUsage() snapshot here.
-		expect(usage).toHaveLength(2)
-		expect(usage[0].sessionId).toBe(sessionId)
-		expect(usage[1].sessionId).toBe(sessionId)
-		for (const u of usage) {
-			expect(u.update).toMatchObject({ sessionUpdate: "usage_update", size: 200000, used: 1234 })
-		}
-		// PromptResponse.usage is independent of the context-window estimate.
-		expect(result.usage?.inputTokens).toBe(100)
-	})
-
-	it("refreshes the context indicator after each chained assistant message", async () => {
-		fake.contextUsage = { tokens: 1234, contextWindow: 200000, percent: 0.617 }
-		fake.promptImpl = async () => {
-			fake.emit({ type: "agent_start" })
-			fake.emit(assistantUsageEvent({ input: 100, output: 20, cacheRead: 5, cacheWrite: 3 }))
-			// Second chain step (e.g. agent.continue after a tool call).
-			fake.emit(assistantUsageEvent({ input: 50, output: 10, cacheRead: 2, cacheWrite: 1 }))
-			fake.emit(agentEnd())
-		}
-
-		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
-
-		// One usage_update per assistant message_end (2), plus the final
-		// turn-end emission — the indicator follows the turn live instead of
-		// updating only once at the end.
-		expect(usageUpdates()).toHaveLength(3)
-	})
-
-	it("skips usage_update when getContextUsage returns undefined", async () => {
-		fake.contextUsage = undefined
-		fake.promptImpl = async () => {
-			fake.emit({ type: "agent_start" })
-			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
-			fake.emit(agentEnd())
-		}
-
-		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
-
-		expect(usageUpdates()).toHaveLength(0)
-		// Per-turn summing must not depend on the context-window estimate.
-		expect(result.usage?.inputTokens).toBe(100)
-	})
-
-	it("skips usage_update when the context estimate has null tokens (post-compaction)", async () => {
-		fake.contextUsage = { tokens: null, contextWindow: 200000, percent: null }
-		fake.promptImpl = async () => {
-			fake.emit({ type: "agent_start" })
-			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
-			fake.emit(agentEnd())
-		}
-
-		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
-
-		expect(usageUpdates()).toHaveLength(0)
-	})
-
-	it("never emits usage_update during streaming (message_update deltas)", async () => {
-		fake.contextUsage = { tokens: 500, contextWindow: 200000, percent: 0.25 }
-		fake.promptImpl = async () => {
-			fake.emit({ type: "agent_start" })
-			fake.emit({
-				type: "message_update",
-				assistantMessageEvent: {
-					type: "text_delta",
-					delta: "streaming ",
-					contentIndex: 0,
-					partial: {} as unknown as AssistantMessage,
-				},
-				message: {} as unknown as AssistantMessage,
-			})
-			fake.emit({
-				type: "message_update",
-				assistantMessageEvent: {
-					type: "text_delta",
-					delta: "text",
-					contentIndex: 0,
-					partial: {} as unknown as AssistantMessage,
-				},
-				message: {} as unknown as AssistantMessage,
-			})
-			fake.emit(agentEnd())
-		}
-
-		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
-
-		// Streaming chunks arrived, but no assistant message_end with usage
-		// ever fired, so PromptResponse.usage is undefined. Exactly one
-		// usage_update fires — the final emitUsageUpdate at turn end
-		// (contextUsage is set); none in response to the deltas themselves.
-		expect(updates.some((u) => u.update.sessionUpdate === "agent_message_chunk")).toBe(true)
-		expect(result.usage).toBeUndefined()
-		expect(usageUpdates()).toHaveLength(1)
-	})
-
-	it("omits PromptResponse.usage when the turn is cancelled before any assistant message", async () => {
-		let cancelSeen = false
-		fake.promptImpl = async () => {
-			// Wait until cancel() runs so the turn context is marked cancelled
-			// before promptImpl resolves.
-			while (!cancelSeen) await delay(5)
-		}
-		fake.abortImpl = async () => {
-			cancelSeen = true
-		}
-
-		const pending = agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
-		await delay(10)
-		await agent.cancel({ sessionId })
-		const result = await pending
-
-		expect(result.stopReason).toBe("cancelled")
-		expect(result.usage).toBeUndefined()
 	})
 })
 
@@ -3827,47 +3583,22 @@ describe("loadSession available commands", () => {
 })
 
 describe("newSession skill commands", () => {
-	function makeSkillDir(): { dir: string; skillName: string; skill: Skill } {
+	function makeSkillDir(): { dir: string; skillName: string } {
 		const dir = mkdtempSync(join(tmpdir(), "acp-server-skills-"))
 		const skillName = "acp-test-skill"
 		const skillDir = join(dir, ".pi", "agent", "skills", skillName)
 		mkdirSync(skillDir, { recursive: true })
-		const filePath = join(skillDir, "SKILL.md")
 		writeFileSync(
-			filePath,
+			join(skillDir, "SKILL.md"),
 			`---\nname: ${skillName}\ndescription: ACP test skill\n---\nAlways use strict types.`,
 			"utf-8",
 		)
-		const skill = {
-			name: skillName,
-			description: "ACP test skill",
-			filePath,
-			baseDir: skillDir,
-			sourceInfo: { source: "test", path: skillDir, scope: "user", origin: "top-level" },
-		} as unknown as Skill
-		return { dir, skillName, skill }
-	}
-
-	function makeSkillLoader(skills: Skill[]): ResourceLoader {
-		return {
-			getSkills: () => ({ skills, diagnostics: [] }),
-			getExtensions: () => ({ extensions: [], errors: [], runtime: undefined }),
-			getPrompts: () => ({ prompts: [], diagnostics: [] }),
-			getThemes: () => ({ themes: [], diagnostics: [] }),
-			getAgentsFiles: () => ({ agentsFiles: [] }),
-			getSystemPrompt: () => undefined,
-			getSystemPromptSource: () => undefined,
-			getAppendSystemPrompt: () => [],
-			getAppendSystemPromptSources: () => [],
-			extendResources: () => {},
-			reload: async () => {},
-		} as unknown as ResourceLoader
+		return { dir, skillName }
 	}
 
 	it("advertises discovered skills as available commands", async () => {
-		const { dir, skillName, skill } = makeSkillDir()
+		const { dir, skillName } = makeSkillDir()
 		const fake = new FakeAgentSession("session-skill-cmd", dir)
-		fake.resourceLoader = makeSkillLoader([skill])
 		const factory: AcpSessionFactory = async () => asSession(fake)
 		const { conn, updates } = makeRecordingConn()
 		const agent = new KimchiAcpAgent(conn, {
@@ -3890,9 +3621,8 @@ describe("newSession skill commands", () => {
 	})
 
 	it("rewrites a skill command prompt to inject skill content", async () => {
-		const { dir, skillName, skill } = makeSkillDir()
+		const { dir, skillName } = makeSkillDir()
 		const fake = new FakeAgentSession("session-skill-invoke", dir)
-		fake.resourceLoader = makeSkillLoader([skill])
 		fake.promptImpl = async () => {
 			fake.emit(agentEnd())
 		}
@@ -7027,64 +6757,5 @@ describe("userMessageText", () => {
 	it("returns empty string for null / non-array user content", () => {
 		expect(userMessageText(null)).toBe("")
 		expect(userMessageText(42)).toBe("")
-	})
-})
-
-describe("resolveAcpAppendSystemPrompt", () => {
-	const noOptions = {}
-
-	it("returns undefined when neither CLI flag nor ACP meta is present (backward compat)", () => {
-		expect(resolveAcpAppendSystemPrompt({}, noOptions)).toBeUndefined()
-		expect(resolveAcpAppendSystemPrompt({ _meta: {} }, noOptions)).toBeUndefined()
-		expect(resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": {} } }, noOptions)).toBeUndefined()
-	})
-
-	it("threads _meta['kimchi.dev'].appendSystemPrompt through for newSession", () => {
-		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "You are a worker under AO supervision." } } }
-		expect(resolveAcpAppendSystemPrompt(params, noOptions)).toEqual(["You are a worker under AO supervision."])
-	})
-
-	it("threads _meta['kimchi.dev'].appendSystemPrompt through identically for loadSession", () => {
-		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "Loaded sessions get the same prompt." } } }
-		expect(resolveAcpAppendSystemPrompt(params, noOptions)).toEqual(["Loaded sessions get the same prompt."])
-	})
-
-	it("appends meta content after CLI flag content when both are present", () => {
-		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "meta prompt" } } }
-		expect(resolveAcpAppendSystemPrompt(params, { appendSystemPrompt: ["cli one", "cli two"] })).toEqual([
-			"cli one",
-			"cli two",
-			"meta prompt",
-		])
-	})
-
-	it("returns CLI flag content unchanged when no meta is present", () => {
-		expect(resolveAcpAppendSystemPrompt({}, { appendSystemPrompt: ["cli only"] })).toEqual(["cli only"])
-	})
-
-	it("ignores non-string, empty, and whitespace-only meta appendSystemPrompt values", () => {
-		expect(
-			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { appendSystemPrompt: 42 } } }, noOptions),
-		).toBeUndefined()
-		expect(
-			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { appendSystemPrompt: "" } } }, noOptions),
-		).toBeUndefined()
-		expect(
-			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { appendSystemPrompt: "   \n  " } } }, noOptions),
-		).toBeUndefined()
-	})
-
-	it("ignores the plain systemPrompt key — the meta value appends, it never replaces", () => {
-		// The plain `systemPrompt` name is reserved: if a replace-the-system-prompt
-		// API is ever exposed over _meta, it gets its own distinctly named key.
-		expect(
-			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { systemPrompt: "ignored" } } }, noOptions),
-		).toBeUndefined()
-	})
-
-	it("tolerates non-object _meta and non-object kimchi.dev payloads", () => {
-		expect(resolveAcpAppendSystemPrompt({ _meta: "nope" }, noOptions)).toBeUndefined()
-		expect(resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": "nope" } }, noOptions)).toBeUndefined()
-		expect(resolveAcpAppendSystemPrompt({ _meta: null }, noOptions)).toBeUndefined()
 	})
 })

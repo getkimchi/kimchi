@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { viewText, waitForText, waitForTurnToSettle } from "./support/assertions.js"
+import { viewText, waitForTurnToSettle } from "./support/assertions.js"
 import type { KimchiFixture } from "./support/kimchi-fixture.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
@@ -44,11 +44,9 @@ test("LSP degraded state shows status-bar segment and omits prompt in a Go proje
 			},
 		},
 		async (fixture, trace) => {
-			// Wait for the status line to render the degraded LSP segment. The
-			// footer statuses are applied asynchronously during session_start, so
-			// poll instead of snapshotting.
+			// Wait for the status line to render the degraded LSP segment.
 			trace.step("checking status line for degraded LSP status")
-			await waitForText(terminal, LSP_DEGRADED_STATUS_LINE, { full: false })
+			expect(viewText(terminal)).toContain(LSP_DEGRADED_STATUS_LINE)
 
 			// Submit a prompt to trigger before_agent_start (which fires the
 			// one-time warning) and settle the turn.
@@ -77,16 +75,13 @@ test("LSP segment absent when no project markers are present", async ({ terminal
 			env: { KIMCHI_LSP_BINARIES: "typescript-language-server,gopls" },
 		},
 		async (fixture, trace) => {
-			// Snapshotting immediately would race the asynchronously-applied
-			// footer statuses (a negative assertion passes trivially if checked
-			// before they land). Settle a turn first, then assert absence.
+			trace.step("checking status line for absence of LSP segment")
+			expect(viewText(terminal)).not.toContain("LSP:")
+
 			terminal.submit("hello")
 			trace.step("submitted prompt")
 			await waitForTurnToSettle(fixture.fake.requests)
 			trace.step("settled")
-
-			trace.step("checking status line for absence of LSP segment")
-			expect(viewText(terminal)).not.toContain("LSP:")
 
 			// No markers → no server active → prompt block omitted.
 			expect(anyRequestContains(fixture, LSP_PROMPT_PHRASE)).toBe(false)
@@ -112,10 +107,7 @@ test("LSP active state shows status-bar segment and includes prompt in a TS proj
 		},
 		async (fixture, trace) => {
 			trace.step("checking status line for active LSP status")
-			// Poll instead of snapshotting: the LSP (and any other extension)
-			// footer statuses are applied asynchronously during session_start,
-			// so an immediate read can race the render.
-			await waitForText(terminal, LSP_ACTIVE_STATUS_LINE, { full: false })
+			expect(viewText(terminal)).toContain(LSP_ACTIVE_STATUS_LINE)
 
 			terminal.submit("hello")
 			trace.step("submitted prompt")

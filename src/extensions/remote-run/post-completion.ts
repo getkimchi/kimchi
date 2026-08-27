@@ -28,14 +28,18 @@ const DONE = "Done"
 /**
  * Shows a post-completion dropdown after the remote cloud agent finishes.
  * Handles the user's choice: inject result, sync changes, or do nothing.
+ *
+ * @param pi - Extension API
+ * @param ctx - Extension context
+ * @param result - The remote agent's result text
+ * @param promptPrefix - Prefix for the injected steer message (e.g. "plan" or "ferment plan")
  */
 export async function handleRemoteCompletion(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	result: string,
 	promptPrefix: string,
-	transcriptPath: string | undefined,
-	agentId: string | undefined,
+	opts?: { transcriptPath?: string; agentId?: string },
 ): Promise<void> {
 	if (!ctx.hasUI) return
 
@@ -45,6 +49,7 @@ export async function handleRemoteCompletion(
 		),
 	)
 
+	// No selection (escape/dismiss) → treat as Done
 	if (!choice || choice === DONE) return
 
 	if (choice === SYNC) {
@@ -52,23 +57,24 @@ export async function handleRemoteCompletion(
 		return
 	}
 
+	// REVIEW or CUSTOM — inject result and trigger a local turn
 	const actionText = choice === CUSTOM ? await promptForCustomAction(ctx) : undefined
-	if (choice === CUSTOM && !actionText) return
+	if (choice === CUSTOM && !actionText) return // user cancelled input
 
-	const transcriptInfo = transcriptPath
-		? `\n\nFull transcript of the remote agent's run (tool calls, outputs, text): ${transcriptPath}`
+	const transcriptInfo = opts?.transcriptPath
+		? `\n\nFull transcript of the remote agent's run (tool calls, outputs, text): ${opts.transcriptPath}`
 		: ""
-	const agentInfo = agentId
-		? `\nAgent ID: ${agentId} (use get_subagent_result with this ID for structured access to the agent's output)`
+	const agentInfo = opts?.agentId
+		? `\nAgent ID: ${opts.agentId} (use get_subagent_result with this ID for structured access to the agent's output)`
 		: ""
 	const actionSuffix = actionText ? `\n\n---\n\nThe user wants you to: ${actionText}` : ""
+
+	const steer = `The approved ${promptPrefix} was executed by a remote cloud agent on a Linux sandbox. The plan has ALREADY been executed — do not re-plan or re-execute it. The code changes made by the remote agent are NOT in your local working tree unless the user synced them. Here is the remote agent's result:\n\n---\n\n${result}${transcriptInfo}${agentInfo}${actionSuffix}`
 
 	pi.sendMessage(
 		{
 			customType: "remote_plan_result",
-			content: markHarnessSteer(
-				`The remote cloud agent completed execution of the approved ${promptPrefix}. Here is its result:\n\n---\n\n${result}${transcriptInfo}${agentInfo}${actionSuffix}`,
-			),
+			content: markHarnessSteer(steer),
 			display: false,
 		},
 		{ triggerTurn: true },
@@ -102,7 +108,12 @@ async function syncRemoteChanges(ctx: ExtensionContext): Promise<void> {
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 		})
 
-		const remotePath = `/home/sandbox/${dirName}/`
+		// Determine the remote path — same as agent-manager: /home/sandbox/<repo-basename>.
+		// Trailing slash on the source ("down" direction) is critical: without it,
+		// rsync creates a nested directory (ctx.cwd/kimchi/) instead of syncing
+		// the contents into ctx.cwd directly.
+		const repoDir = basename(ctx.cwd) || "kimchi"
+		const remotePath = `/home/sandbox/${repoDir}/`
 
 		ctx.ui.notify("Syncing changes from remote sandbox…", "info")
 
@@ -114,7 +125,7 @@ async function syncRemoteChanges(ctx: ExtensionContext): Promise<void> {
 			remoteHost: creds.host,
 			remoteUser: SANDBOX_USER,
 			authToken: creds.connectToken,
-			excludeGlobs: [".git/"],
+			signal: undefined,
 			onPhase: () => {},
 		})
 

@@ -148,84 +148,40 @@ export function formatPreview(content: string, maxLines = 50): string {
 	return result
 }
 
-export type SkillOrigin = "harness" | "bundled"
-
 interface SkillLocation {
 	skillDir: string
 	category: string
-	origin: SkillOrigin
-	readOnly: boolean
-}
-
-export interface SkillManagerOptions {
-	/**
-	 * Read-only roots scanned when a skill is not found in the harness dir
-	 * (e.g. the bundled skills shipped with the harness). Listed weakest first;
-	 * mutations targeting a bundled origin are refused.
-	 */
-	readonly bundledRoots?: readonly string[]
-}
-
-/** Refuse mutations on skills that do not live under the writable harness root. */
-function readonlyGuard(loc: SkillLocation): string | null {
-	if (!loc.readOnly) return null
-	return `Skill is bundled with the harness (origin: ${loc.skillDir}) and is read-only. To customize it, copy it into the harness skills dir first.`
 }
 
 export class SkillManager {
 	private skillsDir: string
-	private bundledRoots: readonly string[]
 
-	/**
-	 * @param skillsDir The single writable root this manager owns. Mutations
-	 * (edit/patch/delete/write_file/remove_file) are only allowed on skills
-	 * whose directory lives under this root; bundled and other read-only roots
-	 * are scanned for viewing and copying, but never modified in place.
-	 */
-	constructor(skillsDir: string, options?: SkillManagerOptions) {
+	constructor(skillsDir: string) {
 		this.skillsDir = skillsDir
-		this.bundledRoots = options?.bundledRoots ?? []
-	}
-
-	private _isUnderSkillsDir(skillDir: string): boolean {
-		const resolvedSkillDir = resolve(skillDir)
-		const resolvedSkillsDir = resolve(this.skillsDir)
-		return resolvedSkillDir === resolvedSkillsDir || resolvedSkillDir.startsWith(`${resolvedSkillsDir}${sep}`)
 	}
 
 	/**
 	 * Locate a skill directory by name.
-	 * 1. Check <skillsDir>/<name>/SKILL.md directly (harness origin).
+	 * 1. Check <skillsDir>/<name>/SKILL.md directly.
 	 * 2. Scan immediate subdirectories of skillsDir for <sub>/<name>/SKILL.md.
-	 * 3. Fall back to bundled roots, strongest (later) root first.
 	 */
 	private async _findSkill(name: string): Promise<SkillLocation | null> {
 		const direct = join(this.skillsDir, name, "SKILL.md")
 		if (await this._exists(direct)) {
-			const skillDir = join(this.skillsDir, name)
-			return { skillDir, category: "", origin: "harness", readOnly: !this._isUnderSkillsDir(skillDir) }
+			return { skillDir: join(this.skillsDir, name), category: "" }
 		}
 
 		let entries: string[] = []
 		try {
 			entries = await readdir(this.skillsDir)
 		} catch {
-			entries = []
+			return null
 		}
 
 		for (const sub of entries) {
 			const candidate = join(this.skillsDir, sub, name, "SKILL.md")
 			if (await this._exists(candidate)) {
-				const skillDir = join(this.skillsDir, sub, name)
-				return { skillDir, category: sub, origin: "harness", readOnly: !this._isUnderSkillsDir(skillDir) }
-			}
-		}
-
-		for (let i = this.bundledRoots.length - 1; i >= 0; i--) {
-			const candidate = join(this.bundledRoots[i], name, "SKILL.md")
-			if (await this._exists(candidate)) {
-				const skillDir = join(this.bundledRoots[i], name)
-				return { skillDir, category: "", origin: "bundled", readOnly: !this._isUnderSkillsDir(skillDir) }
+				return { skillDir: join(this.skillsDir, sub, name), category: sub }
 			}
 		}
 
@@ -246,32 +202,16 @@ export class SkillManager {
 		return loc !== null
 	}
 
-	async listInventory(): Promise<
-		Array<{ name: string; category?: string; path: string; agent_created: boolean; origin: SkillOrigin }>
-	> {
-		const inventory: Array<{
-			name: string
-			category?: string
-			path: string
-			agent_created: boolean
-			origin: SkillOrigin
-		}> = []
-		await this._scanDir(this.skillsDir, undefined, "harness", inventory)
-		for (const bundled of this.bundledRoots) {
-			// Harness entries shadow bundled ones by name (mirrors _findSkill); skip
-			// a bundled entry when a harness entry of the same name already exists.
-			const bundledInventory: typeof inventory = []
-			await this._scanDir(bundled, undefined, "bundled", bundledInventory)
-			inventory.push(...bundledInventory.filter((entry) => !inventory.some((existing) => existing.name === entry.name)))
-		}
+	async listInventory(): Promise<Array<{ name: string; category?: string; path: string; agent_created: boolean }>> {
+		const inventory: Array<{ name: string; category?: string; path: string; agent_created: boolean }> = []
+		await this._scanDir(this.skillsDir, undefined, inventory)
 		return inventory
 	}
 
 	private async _scanDir(
 		dir: string,
 		category: string | undefined,
-		origin: SkillOrigin,
-		out: Array<{ name: string; category?: string; path: string; agent_created: boolean; origin: SkillOrigin }>,
+		out: Array<{ name: string; category?: string; path: string; agent_created: boolean }>,
 	): Promise<void> {
 		let entries: string[] = []
 		try {
@@ -299,10 +239,10 @@ export class SkillManager {
 						} catch {
 							// No .usage.json or parse error → not agent-created
 						}
-						out.push({ name: entry, category, path: full, agent_created: agentCreated, origin })
+						out.push({ name: entry, category, path: full, agent_created: agentCreated })
 					} catch {
 						// Not a skill dir, recurse into subdirs
-						await this._scanDir(full, entry, origin, out)
+						await this._scanDir(full, entry, out)
 					}
 				}
 			} catch {
@@ -366,8 +306,6 @@ export class SkillManager {
 	async edit(name: string, content: string): Promise<SkillManageResult> {
 		const loc = await this._findSkill(name)
 		if (!loc) return { success: false, error: `Skill '${name}' not found.` }
-		const readOnlyReason = readonlyGuard(loc)
-		if (readOnlyReason) return { success: false, error: readOnlyReason }
 
 		const fmError = await validateFrontmatter(content)
 		if (fmError) {
@@ -386,8 +324,6 @@ export class SkillManager {
 	async patch(name: string, oldString: string, newString: string, filePath?: string): Promise<SkillManageResult> {
 		const loc = await this._findSkill(name)
 		if (!loc) return { success: false, error: `Skill '${name}' not found.` }
-		const readOnlyReason = readonlyGuard(loc)
-		if (readOnlyReason) return { success: false, error: readOnlyReason }
 
 		const targetPath = filePath ? join(loc.skillDir, filePath) : join(loc.skillDir, "SKILL.md")
 
@@ -442,8 +378,6 @@ export class SkillManager {
 	async delete(name: string, _absorbedInto?: string): Promise<SkillManageResult> {
 		const loc = await this._findSkill(name)
 		if (!loc) return { success: false, error: `Skill '${name}' not found.` }
-		const readOnlyReason = readonlyGuard(loc)
-		if (readOnlyReason) return { success: false, error: readOnlyReason }
 
 		const archiveDir = join(this.skillsDir, ".archive")
 		const archivePath = join(archiveDir, `${name}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)
@@ -464,8 +398,6 @@ export class SkillManager {
 	async writeFile(name: string, filePath: string, fileContent: string): Promise<SkillManageResult> {
 		const loc = await this._findSkill(name)
 		if (!loc) return { success: false, error: `Skill '${name}' not found.` }
-		const readOnlyReason = readonlyGuard(loc)
-		if (readOnlyReason) return { success: false, error: readOnlyReason }
 
 		const pathError = validateFilePath(filePath, loc.skillDir)
 		if (pathError) return { success: false, error: pathError }
@@ -482,8 +414,6 @@ export class SkillManager {
 	async removeFile(name: string, filePath: string): Promise<SkillManageResult> {
 		const loc = await this._findSkill(name)
 		if (!loc) return { success: false, error: `Skill '${name}' not found.` }
-		const readOnlyReason = readonlyGuard(loc)
-		if (readOnlyReason) return { success: false, error: readOnlyReason }
 
 		const targetPath = join(loc.skillDir, filePath)
 		if (!(await this._exists(targetPath))) {
