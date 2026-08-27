@@ -17,7 +17,9 @@ import type {
 	ExtensionUIContext,
 	ModelRegistry,
 	SessionInfo as PiSessionInfo,
+	ResourceLoader,
 	SessionManager,
+	Skill,
 	Theme,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -65,6 +67,7 @@ import {
 	type AcpSessionLoader,
 	assertSessionHasModel,
 	buildSessionModelState,
+	fileChangeToDiffContent,
 	initializeHeadlessTheme,
 	KimchiAcpAgent,
 	stripAnsi,
@@ -72,6 +75,7 @@ import {
 	userMessageText,
 } from "./server.js"
 import { getAcpClientInfo, resetAcpClientInfo } from "./state.js"
+import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 
 function cleanPermissionEnv(): void {
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
@@ -180,6 +184,19 @@ class FakeAgentSession {
 		tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		cost: 0,
 	}
+	resourceLoader = {
+		getSkills: () => ({ skills: [] as Skill[], diagnostics: [] }),
+		getExtensions: () => ({ extensions: [], errors: [], runtime: undefined }),
+		getPrompts: () => ({ prompts: [], diagnostics: [] }),
+		getThemes: () => ({ themes: [], diagnostics: [] }),
+		getAgentsFiles: () => ({ agentsFiles: [] }),
+		getSystemPrompt: () => undefined,
+		getSystemPromptSource: () => undefined,
+		getAppendSystemPrompt: () => [],
+		getAppendSystemPromptSources: () => [],
+		extendResources: () => {},
+		reload: async () => {},
+	} as unknown as ResourceLoader
 	// Branch entries returned to the replay walker. Tests fill this with the
 	// shape buildSessionContext consumers expect (type:"message" + role).
 	branch: unknown[] = []
@@ -1150,7 +1167,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect((usageUpdates[0].update as { used: number; size: number }).size).toBe(200_000)
 	})
 
-	it("falls back to getSessionStats total when getContextUsage tokens is null", async () => {
+	it("does not emit usage_update when getContextUsage tokens is null (post-compaction)", async () => {
 		const { conn, updates } = makeRecordingConn()
 		const localFake = new FakeAgentSession("session-usage-fallback")
 		localFake.model = { provider: "test", id: "m", name: "M", input: ["text"], contextWindow: 128_000 }
@@ -1179,9 +1196,8 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const usageUpdates = updates.filter(
 			(u) => (u.update as { sessionUpdate?: string }).sessionUpdate === "usage_update",
 		)
-		expect(usageUpdates).toHaveLength(1)
-		expect((usageUpdates[0].update as { used: number; size: number }).used).toBe(10_000)
-		expect((usageUpdates[0].update as { used: number; size: number }).size).toBe(128_000)
+		// Per the issue doc: skip when tokens is null — no fallback to getSessionStats.
+		expect(usageUpdates).toHaveLength(0)
 	})
 
 	it("does not emit usage_update when size is unavailable (no contextWindow)", async () => {
@@ -1563,6 +1579,235 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		])
 		expect(resA.stopReason).toBe("end_turn")
 		expect(resB.stopReason).toBe("end_turn")
+	})
+})
+
+// Usage reporting (issue #03): the ACP server accumulates pi-ai Usage across
+// pi-mono's chained prompt/continue calls — each chain step emits its own
+// assistant message_end with its own usage object — folds the sum into the
+// (experimental) PromptResponse.usage, and pairs assistant message_end
+// events with usage_update sessionUpdates mapped from
+// session.getContextUsage(). Both pieces are gated: PromptResponse.usage is
+// omitted when the turn collected no usage, and usage_update is skipped when
+// the estimate is undefined or its token count is null (post-compaction).
+describe("KimchiAcpAgent usage reporting", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+
+	beforeEach(async () => {
+		fake = new FakeAgentSession("session-usage")
+		const { conn, updates: rec } = makeRecordingConn()
+		updates = rec
+		agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	const usageUpdates = () => updates.filter((u) => u.update.sessionUpdate === "usage_update")
+
+	// Builds the assistant message_end event pi-mono emits after an LLM
+	// response. totalTokens is computed the way providers do (pi-ai 0.84
+	// Usage docs): input + output + cacheRead + cacheWrite, where `reasoning`
+	// is a subset of `output` and must never be re-added.
+	function assistantUsageEvent(usage: {
+		input: number
+		output: number
+		cacheRead?: number
+		cacheWrite?: number
+		reasoning?: number
+	}): AgentSessionEvent {
+		const cacheRead = usage.cacheRead ?? 0
+		const cacheWrite = usage.cacheWrite ?? 0
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "reply" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: usage.input,
+				output: usage.output,
+				cacheRead,
+				cacheWrite,
+				...(usage.reasoning !== undefined ? { reasoning: usage.reasoning } : {}),
+				totalTokens: usage.input + usage.output + cacheRead + cacheWrite,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	it("sums pi-ai usage across chained assistant messages into PromptResponse.usage", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20, cacheRead: 5, cacheWrite: 3, reasoning: 7 }))
+			// Second chain step (e.g. agent.continue after a tool call or follow-up).
+			fake.emit(assistantUsageEvent({ input: 50, output: 10, cacheRead: 2, cacheWrite: 1, reasoning: 3 }))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		expect(result.stopReason).toBe("end_turn")
+		expect(result.usage).toEqual({
+			inputTokens: 150,
+			outputTokens: 30,
+			cachedReadTokens: 7,
+			cachedWriteTokens: 4,
+			thoughtTokens: 10,
+			// msg1: 100+20+5+3=128, msg2: 50+10+2+1=63 — reasoning (7, 3) is a
+			// subset of output and must not be double-counted.
+			totalTokens: 191,
+		})
+	})
+
+	it("omits thoughtTokens when no provider reported a reasoning count", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		expect(result.usage?.inputTokens).toBe(100)
+		expect(result.usage?.outputTokens).toBe(20)
+		expect(result.usage).not.toHaveProperty("thoughtTokens")
+	})
+
+	it("emits usage_update with size/used on assistant message_end and again at turn end", async () => {
+		fake.contextUsage = { tokens: 1234, contextWindow: 200000, percent: 0.617 }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		const usage = usageUpdates()
+		// One live update on the assistant message_end, one final update at
+		// finalizeTurn — both reflect the same getContextUsage() snapshot here.
+		expect(usage).toHaveLength(2)
+		expect(usage[0].sessionId).toBe(sessionId)
+		expect(usage[1].sessionId).toBe(sessionId)
+		for (const u of usage) {
+			expect(u.update).toMatchObject({ sessionUpdate: "usage_update", size: 200000, used: 1234 })
+		}
+		// PromptResponse.usage is independent of the context-window estimate.
+		expect(result.usage?.inputTokens).toBe(100)
+	})
+
+	it("refreshes the context indicator after each chained assistant message", async () => {
+		fake.contextUsage = { tokens: 1234, contextWindow: 200000, percent: 0.617 }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20, cacheRead: 5, cacheWrite: 3 }))
+			// Second chain step (e.g. agent.continue after a tool call).
+			fake.emit(assistantUsageEvent({ input: 50, output: 10, cacheRead: 2, cacheWrite: 1 }))
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		// One usage_update per assistant message_end (2), plus the final
+		// turn-end emission — the indicator follows the turn live instead of
+		// updating only once at the end.
+		expect(usageUpdates()).toHaveLength(3)
+	})
+
+	it("skips usage_update when getContextUsage returns undefined", async () => {
+		fake.contextUsage = undefined
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		expect(usageUpdates()).toHaveLength(0)
+		// Per-turn summing must not depend on the context-window estimate.
+		expect(result.usage?.inputTokens).toBe(100)
+	})
+
+	it("skips usage_update when the context estimate has null tokens (post-compaction)", async () => {
+		fake.contextUsage = { tokens: null, contextWindow: 200000, percent: null }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20 }))
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		expect(usageUpdates()).toHaveLength(0)
+	})
+
+	it("never emits usage_update during streaming (message_update deltas)", async () => {
+		fake.contextUsage = { tokens: 500, contextWindow: 200000, percent: 0.25 }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta: "streaming ",
+					contentIndex: 0,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta: "text",
+					contentIndex: 0,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		// Streaming chunks arrived, but no assistant message_end with usage
+		// ever fired, so PromptResponse.usage is undefined. Exactly one
+		// usage_update fires — the final emitUsageUpdate at turn end
+		// (contextUsage is set); none in response to the deltas themselves.
+		expect(updates.some((u) => u.update.sessionUpdate === "agent_message_chunk")).toBe(true)
+		expect(result.usage).toBeUndefined()
+		expect(usageUpdates()).toHaveLength(1)
+	})
+
+	it("omits PromptResponse.usage when the turn is cancelled before any assistant message", async () => {
+		let cancelSeen = false
+		fake.promptImpl = async () => {
+			// Wait until cancel() runs so the turn context is marked cancelled
+			// before promptImpl resolves.
+			while (!cancelSeen) await delay(5)
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
+		}
+
+		const pending = agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+		await delay(10)
+		await agent.cancel({ sessionId })
+		const result = await pending
+
+		expect(result.stopReason).toBe("cancelled")
+		expect(result.usage).toBeUndefined()
 	})
 })
 
@@ -2999,6 +3244,358 @@ describe("KimchiAcpAgent tool execution stream", () => {
 	})
 })
 
+// Ticket #04 — Per-Turn Diffs. The edit and write tools carry the diff data in
+// their own arguments (edit: args.edits[]; write: args.content + pre-write file
+// content read at tool_execution_start). tool_execution_end for those tools
+// must attach ACP `diff` content blocks to the terminal tool_call_update — in
+// addition to the existing text/image content, never replacing it. Read-only
+// tools emit no diffs. Args only travel on tool_execution_start, so the server
+// captures FileChange data there and emits it at tool_execution_end.
+describe("KimchiAcpAgent per-turn diffs", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+	let tmpDir: string
+
+	beforeEach(async () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "kimchi-acp-diff-"))
+		fake = new FakeAgentSession("session-diff", tmpDir)
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const rec = makeRecordingConn()
+		updates = rec.updates
+		agent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+		const res = await agent.newSession({ cwd: tmpDir, mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true })
+	})
+
+	// Upstream toolCallIds are rewritten to session-unique ACP ids (kt.<tool>.N)
+	// on the wire; the pi id survives in _meta.piToolCallId — key off that.
+	const terminalContent = (piToolCallId: string): unknown[] => {
+		const terminal = updates.find(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" &&
+				(u.update as { _meta?: { piToolCallId?: string } })._meta?.piToolCallId === piToolCallId &&
+				((u.update as { status?: string }).status === "completed" ||
+					(u.update as { status?: string }).status === "failed"),
+		)
+		expect(terminal).toBeDefined()
+		return (terminal?.update as { content: unknown[] }).content
+	}
+
+	it("emits one diff content block for an edit tool call with a single edit", async () => {
+		const target = join(tmpDir, "a.txt")
+		writeFileSync(target, "hello world")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-edit-1",
+				toolName: "edit",
+				args: { path: target, edits: [{ oldText: "hello", newText: "goodbye" }] },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-edit-1",
+				toolName: "edit",
+				result: { content: [{ type: "text", text: "Edited a.txt" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		// Existing text content preserved; the diff block is additional content.
+		expect(terminalContent("tc-edit-1")).toEqual([
+			{ type: "content", content: { type: "text", text: "Edited a.txt" } },
+			{ type: "diff", path: target, oldText: "hello", newText: "goodbye" },
+		])
+	})
+
+	// pi's edit tool accepts a legacy single-edit arg shape {path, oldText,
+	// newText} (no edits array) and normalizes it internally. A legacy-shape
+	// call must still emit its diff rather than silently producing none.
+	it("emits a diff for an edit tool call using the legacy single-edit arg shape", async () => {
+		const target = join(tmpDir, "legacy.txt")
+		writeFileSync(target, "old text")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-edit-legacy",
+				toolName: "edit",
+				args: { path: target, oldText: "old text", newText: "new text" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-edit-legacy",
+				toolName: "edit",
+				result: { content: [{ type: "text", text: "Edited legacy.txt" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const content = terminalContent("tc-edit-legacy") as Array<{ type: string }>
+		const diffs = content.filter((b) => b.type === "diff")
+		expect(diffs).toEqual([{ type: "diff", path: target, oldText: "old text", newText: "new text" }])
+	})
+
+	it("emits one diff content block per edit for an edit tool call with multiple edits", async () => {
+		const target = join(tmpDir, "multi.txt")
+		writeFileSync(target, "one two")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-edit-2",
+				toolName: "edit",
+				args: {
+					path: target,
+					edits: [
+						{ oldText: "one", newText: "1" },
+						{ oldText: "two", newText: "2" },
+					],
+				},
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-edit-2",
+				toolName: "edit",
+				result: { content: [{ type: "text", text: "Edited multi.txt" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const content = terminalContent("tc-edit-2") as Array<{ type: string }>
+		const diffs = content.filter((b) => b.type === "diff")
+		expect(diffs).toEqual([
+			{ type: "diff", path: target, oldText: "one", newText: "1" },
+			{ type: "diff", path: target, oldText: "two", newText: "2" },
+		])
+		// Text content preserved alongside the diffs.
+		expect(content.some((b) => b.type === "content")).toBe(true)
+	})
+
+	// Relative path exercises the server-side cwd resolution for the pre-write
+	// read; the emitted diff path stays verbatim from args.path.
+	it("emits a diff with oldText null for a write tool call creating a new file", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-new",
+				toolName: "write",
+				args: { path: "brand-new.txt", content: "fresh content" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-new",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote brand-new.txt" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const content = terminalContent("tc-write-new") as Array<{ type: string }>
+		const diffs = content.filter((b) => b.type === "diff")
+		expect(diffs).toEqual([{ type: "diff", path: "brand-new.txt", newText: "fresh content", oldText: null }])
+	})
+
+	// Overwrite: tool_execution_start must read the existing file into
+	// TurnContext.preWriteContents so the diff carries it as oldText.
+	it("emits a diff with the previous content as oldText for a write tool call overwriting a file", async () => {
+		const target = join(tmpDir, "existing.txt")
+		writeFileSync(target, "before content")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-over",
+				toolName: "write",
+				args: { path: target, content: "after content" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-over",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "Wrote existing.txt" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const content = terminalContent("tc-write-over") as Array<{ type: string }>
+		const diffs = content.filter((b) => b.type === "diff")
+		expect(diffs).toEqual([{ type: "diff", path: target, oldText: "before content", newText: "after content" }])
+	})
+
+	// pi's write tool resolves args.path with stripAtPrefix +
+	// normalizeUnicodeSpaces before touching disk. The pre-write read must
+	// match that resolution or an overwrite of "@notes.txt" / "a b.txt" (typed
+	// as "a\u00A0b.txt") would be misclassified as a new-file 'add'.
+	it("resolves @-prefixed and unicode-space write paths for the pre-write read", async () => {
+		const atTarget = join(tmpDir, "notes.txt")
+		writeFileSync(atTarget, "at before")
+		const spaceTarget = join(tmpDir, "my file.txt")
+		writeFileSync(spaceTarget, "space before")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-at",
+				toolName: "write",
+				args: { path: "@notes.txt", content: "at after" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-at",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "ok" }] },
+				isError: false,
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-write-nbsp",
+				toolName: "write",
+				// No-break space as typed by an LLM mimicking the on-disk name.
+				args: { path: "my\u00A0file.txt", content: "space after" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-write-nbsp",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "ok" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		// Emitted diff paths stay verbatim from args.path; only the pre-write
+		// READ uses the normalized path.
+		const atDiffs = (terminalContent("tc-write-at") as Array<{ type: string }>).filter((b) => b.type === "diff")
+		expect(atDiffs).toEqual([{ type: "diff", path: "@notes.txt", oldText: "at before", newText: "at after" }])
+		const nbspDiffs = (terminalContent("tc-write-nbsp") as Array<{ type: string }>).filter((b) => b.type === "diff")
+		expect(nbspDiffs).toEqual([
+			{ type: "diff", path: "my\u00A0file.txt", oldText: "space before", newText: "space after" },
+		])
+	})
+
+	it("emits no diff content blocks for read-only tool calls", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			for (const [toolCallId, toolName, args] of [
+				["tc-bash", "bash", { command: "true" }],
+				["tc-read", "read", { path: join(tmpDir, "a.txt") }],
+				["tc-grep", "grep", { pattern: "foo" }],
+			] as const) {
+				fake.emit({ type: "tool_execution_start", toolCallId, toolName, args })
+				fake.emit({
+					type: "tool_execution_end",
+					toolCallId,
+					toolName,
+					result: { content: [{ type: "text", text: "ok" }] },
+					isError: false,
+				})
+			}
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		for (const toolCallId of ["tc-bash", "tc-read", "tc-grep"]) {
+			const content = terminalContent(toolCallId) as Array<{ type: string }>
+			expect(content.some((b) => b.type === "diff")).toBe(false)
+		}
+	})
+
+	// A failed mutation must not surface a diff — the client would otherwise
+	// render a change that never landed.
+	it("emits no diff content blocks when the edit/write tool call failed", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-edit-fail",
+				toolName: "edit",
+				args: { path: join(tmpDir, "a.txt"), edits: [{ oldText: "x", newText: "y" }] },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-edit-fail",
+				toolName: "edit",
+				result: { content: [{ type: "text", text: "boom" }] },
+				isError: true,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const content = terminalContent("tc-edit-fail") as Array<{ type: string }>
+		expect(content.some((b) => b.type === "diff")).toBe(false)
+	})
+})
+
+// Pure adapter coverage for the FileChange → v1 Diff mapping, including the
+// delete branch the edit/write tools never produce today.
+describe("fileChangeToDiffContent", () => {
+	it("maps add to a diff with oldText null", () => {
+		expect(fileChangeToDiffContent({ operation: "add", path: "/a.txt", newText: "new" })).toEqual({
+			type: "diff",
+			path: "/a.txt",
+			newText: "new",
+			oldText: null,
+		})
+	})
+
+	it("maps modify to a diff carrying both texts", () => {
+		expect(fileChangeToDiffContent({ operation: "modify", path: "/a.txt", oldText: "old", newText: "new" })).toEqual({
+			type: "diff",
+			path: "/a.txt",
+			oldText: "old",
+			newText: "new",
+		})
+	})
+
+	it("maps delete to a diff omitting newText", () => {
+		expect(fileChangeToDiffContent({ operation: "delete", path: "/a.txt", oldText: "gone" })).toEqual({
+			type: "diff",
+			path: "/a.txt",
+			oldText: "gone",
+		})
+	})
+})
+
 // Coverage for assertSessionHasModel: ACP clients (Zed) should see authRequired
 // (-32000), not a generic internal error, when the model is unavailable — that
 // error code routes to the client's auth UI instead of an opaque failure toast.
@@ -3230,22 +3827,47 @@ describe("loadSession available commands", () => {
 })
 
 describe("newSession skill commands", () => {
-	function makeSkillDir(): { dir: string; skillName: string } {
+	function makeSkillDir(): { dir: string; skillName: string; skill: Skill } {
 		const dir = mkdtempSync(join(tmpdir(), "acp-server-skills-"))
 		const skillName = "acp-test-skill"
 		const skillDir = join(dir, ".pi", "agent", "skills", skillName)
 		mkdirSync(skillDir, { recursive: true })
+		const filePath = join(skillDir, "SKILL.md")
 		writeFileSync(
-			join(skillDir, "SKILL.md"),
+			filePath,
 			`---\nname: ${skillName}\ndescription: ACP test skill\n---\nAlways use strict types.`,
 			"utf-8",
 		)
-		return { dir, skillName }
+		const skill = {
+			name: skillName,
+			description: "ACP test skill",
+			filePath,
+			baseDir: skillDir,
+			sourceInfo: { source: "test", path: skillDir, scope: "user", origin: "top-level" },
+		} as unknown as Skill
+		return { dir, skillName, skill }
+	}
+
+	function makeSkillLoader(skills: Skill[]): ResourceLoader {
+		return {
+			getSkills: () => ({ skills, diagnostics: [] }),
+			getExtensions: () => ({ extensions: [], errors: [], runtime: undefined }),
+			getPrompts: () => ({ prompts: [], diagnostics: [] }),
+			getThemes: () => ({ themes: [], diagnostics: [] }),
+			getAgentsFiles: () => ({ agentsFiles: [] }),
+			getSystemPrompt: () => undefined,
+			getSystemPromptSource: () => undefined,
+			getAppendSystemPrompt: () => [],
+			getAppendSystemPromptSources: () => [],
+			extendResources: () => {},
+			reload: async () => {},
+		} as unknown as ResourceLoader
 	}
 
 	it("advertises discovered skills as available commands", async () => {
-		const { dir, skillName } = makeSkillDir()
+		const { dir, skillName, skill } = makeSkillDir()
 		const fake = new FakeAgentSession("session-skill-cmd", dir)
+		fake.resourceLoader = makeSkillLoader([skill])
 		const factory: AcpSessionFactory = async () => asSession(fake)
 		const { conn, updates } = makeRecordingConn()
 		const agent = new KimchiAcpAgent(conn, {
@@ -3268,8 +3890,9 @@ describe("newSession skill commands", () => {
 	})
 
 	it("rewrites a skill command prompt to inject skill content", async () => {
-		const { dir, skillName } = makeSkillDir()
+		const { dir, skillName, skill } = makeSkillDir()
 		const fake = new FakeAgentSession("session-skill-invoke", dir)
+		fake.resourceLoader = makeSkillLoader([skill])
 		fake.promptImpl = async () => {
 			fake.emit(agentEnd())
 		}
@@ -6404,5 +7027,64 @@ describe("userMessageText", () => {
 	it("returns empty string for null / non-array user content", () => {
 		expect(userMessageText(null)).toBe("")
 		expect(userMessageText(42)).toBe("")
+	})
+})
+
+describe("resolveAcpAppendSystemPrompt", () => {
+	const noOptions = {}
+
+	it("returns undefined when neither CLI flag nor ACP meta is present (backward compat)", () => {
+		expect(resolveAcpAppendSystemPrompt({}, noOptions)).toBeUndefined()
+		expect(resolveAcpAppendSystemPrompt({ _meta: {} }, noOptions)).toBeUndefined()
+		expect(resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": {} } }, noOptions)).toBeUndefined()
+	})
+
+	it("threads _meta['kimchi.dev'].appendSystemPrompt through for newSession", () => {
+		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "You are a worker under AO supervision." } } }
+		expect(resolveAcpAppendSystemPrompt(params, noOptions)).toEqual(["You are a worker under AO supervision."])
+	})
+
+	it("threads _meta['kimchi.dev'].appendSystemPrompt through identically for loadSession", () => {
+		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "Loaded sessions get the same prompt." } } }
+		expect(resolveAcpAppendSystemPrompt(params, noOptions)).toEqual(["Loaded sessions get the same prompt."])
+	})
+
+	it("appends meta content after CLI flag content when both are present", () => {
+		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "meta prompt" } } }
+		expect(resolveAcpAppendSystemPrompt(params, { appendSystemPrompt: ["cli one", "cli two"] })).toEqual([
+			"cli one",
+			"cli two",
+			"meta prompt",
+		])
+	})
+
+	it("returns CLI flag content unchanged when no meta is present", () => {
+		expect(resolveAcpAppendSystemPrompt({}, { appendSystemPrompt: ["cli only"] })).toEqual(["cli only"])
+	})
+
+	it("ignores non-string, empty, and whitespace-only meta appendSystemPrompt values", () => {
+		expect(
+			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { appendSystemPrompt: 42 } } }, noOptions),
+		).toBeUndefined()
+		expect(
+			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { appendSystemPrompt: "" } } }, noOptions),
+		).toBeUndefined()
+		expect(
+			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { appendSystemPrompt: "   \n  " } } }, noOptions),
+		).toBeUndefined()
+	})
+
+	it("ignores the plain systemPrompt key — the meta value appends, it never replaces", () => {
+		// The plain `systemPrompt` name is reserved: if a replace-the-system-prompt
+		// API is ever exposed over _meta, it gets its own distinctly named key.
+		expect(
+			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { systemPrompt: "ignored" } } }, noOptions),
+		).toBeUndefined()
+	})
+
+	it("tolerates non-object _meta and non-object kimchi.dev payloads", () => {
+		expect(resolveAcpAppendSystemPrompt({ _meta: "nope" }, noOptions)).toBeUndefined()
+		expect(resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": "nope" } }, noOptions)).toBeUndefined()
+		expect(resolveAcpAppendSystemPrompt({ _meta: null }, noOptions)).toBeUndefined()
 	})
 })

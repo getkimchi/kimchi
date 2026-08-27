@@ -14,6 +14,25 @@ const namesOf = (entries: ToolEntry[]): string[] => entries.map((t) => t.name)
 const TODO_TOOL_NAMES = ["create_todos", "update_todos", "add_todo", "mark_todo", "clear_todos"]
 const WORKFLOW_OUTPUT_TOOL_NAMES = ["workflow_submit_result", "workflow_submit_questions"]
 
+const DAP_TOOL_NAMES = [
+	"debug_launch",
+	"debug_set_breakpoint",
+	"debug_continue",
+	"debug_locals",
+	"debug_eval",
+	"debug_backtrace",
+	"debug_terminate",
+	"step_in",
+	"step_over",
+	"step_out",
+	"debug_state_at",
+	"debug_last_error",
+	"debug_trace_calls",
+	"debug_watch_change",
+	"debug_set_variable",
+	"debug_restart",
+]
+
 const TOOL_NAMES = {
 	sharedCore: [
 		"read",
@@ -25,6 +44,7 @@ const TOOL_NAMES = {
 		"web_search",
 		...WORKFLOW_OUTPUT_TOOL_NAMES,
 		"mcp",
+		...DAP_TOOL_NAMES,
 		...TODO_TOOL_NAMES,
 	],
 	adhocOnly: ["questionnaire"],
@@ -55,7 +75,7 @@ const TOOL_NAMES = {
 }
 
 describe("SHARED_CORE_TOOLS", () => {
-	it("contains read-only discovery, workflow output, MCP, and todo tools", () => {
+	it("contains read-only discovery, workflow output, MCP, debug, and todo tools", () => {
 		expect(SHARED_CORE_TOOLS).toHaveLength(TOOL_NAMES.sharedCore.length)
 		for (const name of TOOL_NAMES.sharedCore) {
 			expect(SHARED_CORE_TOOLS).toContainEqual(expect.objectContaining({ name }))

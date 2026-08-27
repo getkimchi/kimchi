@@ -16,9 +16,16 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
+import {
+	derivePlanTitle,
+	savePlanMarkdown,
+	slugifyPlanName,
+	stripPlanCompletionMarkers,
+} from "../../../shared/planning/plan-markdown.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
+import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
 import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
@@ -261,6 +268,8 @@ export interface RunResult {
 	steered: boolean
 	turnsUsed?: number
 	maxTurns?: number
+	/** Absolute path to the saved plan file, if the agent produced a plan. */
+	planPath?: string
 }
 
 type ModelRegistryWithRuntime = {
@@ -486,6 +495,14 @@ ${skillLines}`
 		infrastructureBreakerExtension,
 		omitKimchiMaxTokensExtension,
 	]
+	// Personas that request DAP debugger tools (e.g. Debugger) need the dap
+	// extension registered in the child session: repo-native extensions wired
+	// directly in cli.ts are not discovered by a child DefaultResourceLoader.
+	// The extension registers its tools on the child's session_start, and the
+	// SDK activates them because their names are in the session's tool allowlist.
+	if (toolNames.some((n) => n.startsWith("debug_") || n.startsWith("step_"))) {
+		extensionFactories.push(dapExtension)
+	}
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}
@@ -806,6 +823,23 @@ ${skillLines}`
 	}
 
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
+
+	// When a Plan agent emits a completion marker, the harness saves the plan
+	// to .kimchi/plans/<slug>.md regardless of permission mode — delegated
+	// Plan agents run outside plan permission mode so the turn_end handler in
+	// permissions/index.ts does not fire for them.
+	let planPath: string | undefined
+	if (type === "Plan" && responseText.includes("<!-- PLAN_COMPLETE -->")) {
+		const planText = stripPlanCompletionMarkers(responseText)
+		const slug = slugifyPlanName(derivePlanTitle(planText))
+		try {
+			planPath = savePlanMarkdown({ cwd: effectiveCwd, name: slug, planText })
+		} catch (err) {
+			const detail = err instanceof Error ? err.message : String(err)
+			console.error(`agent-runner: failed to save plan file: ${detail}`)
+		}
+	}
+
 	return {
 		responseText,
 		session,
@@ -814,6 +848,7 @@ ${skillLines}`
 		steered: softLimitReached,
 		turnsUsed: turnCount,
 		maxTurns: effectiveMaxTurns,
+		planPath,
 	}
 }
 

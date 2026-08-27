@@ -80,6 +80,15 @@ for (const file of kimchiThemeFiles) {
 if (!isDev) {
 	cpSync(join(projectRoot, "package.json"), join(projectRoot, "dist", "share", "kimchi", "package.json"))
 
+	// Stage bundled skills (resources/skills) so the central skill-root
+	// resolver finds them via resolveAuxiliaryFilesDir in the compiled binary.
+	const bundledSkillsSrc = join(projectRoot, "resources", "skills")
+	const bundledSkillsDest = join(projectRoot, "dist", "share", "kimchi", "skills")
+	if (existsSync(bundledSkillsSrc)) {
+		mkdirSync(bundledSkillsDest, { recursive: true })
+		cpSync(bundledSkillsSrc, bundledSkillsDest, { recursive: true })
+	}
+
 	// Copy custom OAuth page templates
 	const oauthSrc = join(projectRoot, "resources", "oauth")
 	const oauthDest = join(projectRoot, "dist", "share", "kimchi", "oauth")

@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto"
+import { basename } from "node:path"
+import type { SessionNotification } from "@agentclientprotocol/sdk"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { loadConfig } from "../../../config.js"
+import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
+import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
+import { repoBasename } from "../../teleport/provisioning/paths.js"
 import type { AgentContact, AgentContactList, AgentMessageCapability } from "../message-tool.js"
 import {
 	AGENT_MESSAGE_LIMITS,
@@ -33,10 +39,12 @@ import type { WorkerReportSubmission } from "../worker-report.js"
 import {
 	MIN_FINALIZE_TOKEN_BUDGET,
 	MIN_TOKEN_BUDGET,
+	type RunResult,
 	resumeAgent,
 	runAgent,
 	type ToolActivity,
 } from "./agent-runner.js"
+import { runRemoteAgent } from "./remote-agent-runner.js"
 import { addUsage, type LifetimeUsage } from "./usage.js"
 
 export type OnAgentComplete = (record: AgentRecord) => void
@@ -49,6 +57,9 @@ const DEFAULT_MAX_CONCURRENT = 4
 const DEFAULT_MAX_CONTINUATION_RESUMES = 2
 const DEFAULT_MAX_REPORT_FINALIZERS = 1
 const REPORT_FINALIZATION_LIMITS = { maxTurns: 2, maxDuration: 30, tokenBudget: 8192 } as const
+
+/** Result shape returned by `_runRemote()`, mirroring `RunResult` from agent-runner.ts. */
+type RemoteRunResult = Omit<RunResult, "session"> & { session: undefined }
 
 interface SpawnArgs {
 	pi: ExtensionAPI
@@ -70,6 +81,8 @@ interface SpawnOptions {
 	inheritContext?: boolean
 	thinkingLevel?: ThinkingLevel
 	isBackground?: boolean
+	/** When true, runs on a remote sandbox via ACP instead of locally. */
+	remote?: boolean
 	/**
 	 * Skip the maxConcurrent queue check for this spawn — start immediately even
 	 * if the configured concurrency limit would otherwise queue it.
@@ -88,6 +101,7 @@ interface SpawnOptions {
 	onSessionCreated?: (session: AgentSession) => void
 	onTurnEnd?: (turnCount: number) => void
 	onAssistantUsage?: (usage: LifetimeUsage) => void
+	onRawNotification?: (params: SessionNotification) => void
 	onCompaction?: (info: CompactionInfo) => void
 }
 
@@ -281,6 +295,7 @@ export class AgentManager {
 			resumeAttempts: [],
 			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			compactionCount: 0,
+			remote: effectiveOptions.remote,
 		}
 		this.agents.set(id, record)
 
@@ -332,80 +347,85 @@ export class AgentManager {
 			record.detachFromParent = undefined
 		}
 
-		const promise = runAgent(ctx, type, prompt, {
-			pi,
-			model: options.model,
-			maxTurns: options.maxTurns,
-			tokenBudget: options.tokenBudget,
-			inactivityTimeout: options.inactivityTimeout,
-			maxDuration: options.maxDuration,
-			workerReport: record.taskRef
-				? {
-						isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
-						submit: (report) => {
-							const accepted = this.submitReport(id, report) != null
-							return {
-								accepted,
-								message: accepted
-									? "Agent report recorded. Worker run complete."
-									: "Agent report rejected because this worker is no longer active.",
-							}
+		const promise = (
+			record.remote
+				? this._runRemote(record, prompt, options, ctx)
+				: runAgent(ctx, type, prompt, {
+						pi,
+						model: options.model,
+						maxTurns: options.maxTurns,
+						tokenBudget: options.tokenBudget,
+						inactivityTimeout: options.inactivityTimeout,
+						maxDuration: options.maxDuration,
+						workerReport: record.taskRef
+							? {
+									isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
+									submit: (report) => {
+										const accepted = this.submitReport(id, report) != null
+										return {
+											accepted,
+											message: accepted
+												? "Agent report recorded. Worker run complete."
+												: "Agent report rejected because this worker is no longer active.",
+										}
+									},
+								}
+							: undefined,
+						hardTurnLimit: record.taskRef?.kind === "ferment_step",
+						isolated: options.isolated,
+						inheritContext: options.inheritContext,
+						thinkingLevel: options.thinkingLevel,
+						sessionFile: options.sessionFile,
+						sessionDir: options.sessionDir,
+						signal: record.abortController?.signal,
+						onToolActivity: (activity) => {
+							if (activity.type === "end") record.toolUses++
+							options.onToolActivity?.(activity)
 						},
-					}
-				: undefined,
-			agentMessage: this.createMessageCapability(record),
-			hardTurnLimit: record.taskRef?.kind === "ferment_step",
-			isolated: options.isolated,
-			inheritContext: options.inheritContext,
-			thinkingLevel: options.thinkingLevel,
-			sessionFile: options.sessionFile,
-			sessionDir: options.sessionDir,
-			signal: record.abortController?.signal,
-			onToolActivity: (activity) => {
-				if (activity.type === "end") record.toolUses++
-				options.onToolActivity?.(activity)
-			},
-			onTurnEnd: (turnCount) => {
-				record.lastTurnCount = turnCount
-				options.onTurnEnd?.(turnCount)
-			},
-			onTextDelta: options.onTextDelta,
-			onAssistantUsage: (usage) => {
-				addUsage(record.lifetimeUsage, usage)
-				options.onAssistantUsage?.(usage)
-			},
-			onCompaction: (info) => {
-				record.compactionCount++
-				this.onCompact?.(record, info)
-				options.onCompaction?.(info)
-			},
-			onRuntimeCleanupRegistered: (cleanup) => {
-				this.runtimeCleanups.set(record, cleanup)
-			},
-			onSessionCreated: (session) => {
-				record.session = session
-				if (record.pendingSteers?.length) {
-					for (const msg of record.pendingSteers) {
-						session.steer(msg).catch(() => {})
-					}
-					record.pendingSteers = undefined
-				}
-				const drain = this.drainPendingMessages(record, session)
-				this.pendingDrainPromises.set(record, drain)
-				options.onSessionCreated?.(session)
-			},
-			onSystemPrompt: (prompt) => {
-				record.systemPrompt = prompt
-			},
-		})
-			.then(async ({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns }) => {
+						agentMessage: this.createMessageCapability(record),
+						onTurnEnd: (turnCount) => {
+							record.lastTurnCount = turnCount
+							options.onTurnEnd?.(turnCount)
+						},
+						onTextDelta: options.onTextDelta,
+						onAssistantUsage: (usage) => {
+							addUsage(record.lifetimeUsage, usage)
+							options.onAssistantUsage?.(usage)
+						},
+						onCompaction: (info) => {
+							record.compactionCount++
+							this.onCompact?.(record, info)
+							options.onCompaction?.(info)
+						},
+						onRuntimeCleanupRegistered: (cleanup) => {
+							this.runtimeCleanups.set(record, cleanup)
+						},
+						onSessionCreated: (session) => {
+							record.session = session
+							if (record.pendingSteers?.length) {
+								for (const msg of record.pendingSteers) {
+									session.steer(msg).catch(() => {})
+								}
+								record.pendingSteers = undefined
+							}
+							const drain = this.drainPendingMessages(record, session)
+							this.pendingDrainPromises.set(record, drain)
+							options.onSessionCreated?.(session)
+						},
+						onSystemPrompt: (prompt) => {
+							record.systemPrompt = prompt
+						},
+					})
+		)
+			.then(async ({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns, planPath }) => {
 				await this.pendingDrainPromises.get(record)
 				record.session = session
 				if (record.status !== "stopped") {
 					this.transitionToTerminalRecord(record, aborted ? "aborted" : steered ? "steered" : "completed")
 				}
 				record.abortReason = abortReason
-				record.result = responseText
+				const finalText = planPath ? `${responseText}\n\nPlan saved to: ${planPath}` : responseText
+				record.result = finalText
 				record.lastTurnCount = turnsUsed
 				// Preserve the effective, normalized turn cap returned by the runner.
 				record.maxTurns = maxTurns ?? options.maxTurns
@@ -417,7 +437,7 @@ export class AgentManager {
 					this.onComplete?.(record)
 					this.drainQueue()
 				}
-				return responseText
+				return finalText
 			})
 			.catch(async (err) => {
 				await this.pendingDrainPromises.get(record)
@@ -443,6 +463,90 @@ export class AgentManager {
 			})
 
 		record.promise = promise
+	}
+
+	/**
+	 * Runs a remote agent via ACP on a sandbox worker.
+	 *
+	 * v1 limitation: only a subset of SpawnOptions is honored — signal, callbacks, and
+	 * cwd are forwarded, but maxTurns, tokenBudget, inactivityTimeout, maxDuration,
+	 * model, isolated, inheritContext, and thinkingLevel are intentionally ignored.
+	 * Remote runs are single-turn (maxTurns: 1) with yolo: true. Multi-turn support,
+	 * budget enforcement, and timeout guards are planned for a follow-up PR.
+	 */
+	private async _runRemote(
+		record: AgentRecord,
+		prompt: string,
+		options: SpawnOptions,
+		ctx: ExtensionContext,
+	): Promise<RemoteRunResult> {
+		const apiKey = loadConfig().apiKey
+		if (!apiKey) throw new Error("No API key configured. Run `kimchi login`.")
+
+		const workspaces = await listWorkspaces(apiKey, {
+			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			signal: record.abortController?.signal,
+		})
+		// Match a workspace whose name matches the current repo dir (same convention
+		// as /teleport, which names workspaces by basename(cwd)). If no match is
+		// found, mint a new one rather than reusing an unrelated workspace.
+		const dirName = basename(ctx.cwd) || "kimchi"
+		const byName = workspaces.find((w) => w.name.toLowerCase() === dirName.toLowerCase())
+		const workspaceId = byName?.id ?? randomUUID()
+
+		// Resolve git clone plan from the local repo so the sandbox gets a
+		// shallow clone of the repo (like /teleport --fast) instead of an empty dir.
+		// If cwd isn't a git repo or has no origin, this is a no-op.
+		let gitDetails: { repo: string; branch?: string; targetDirectory: string; noHistory?: boolean } | undefined
+		try {
+			const clonePlan = await resolveClonePlan(ctx.cwd, undefined, { signal: record.abortController?.signal })
+			gitDetails = {
+				repo: clonePlan.httpsUrl,
+				branch: clonePlan.branch,
+				targetDirectory: repoBasename(clonePlan.url),
+				noHistory: true,
+			}
+		} catch {
+			// Not a git repo or no origin — proceed without git details.
+			gitDetails = undefined
+		}
+
+		const result = await runRemoteAgent(workspaceId, prompt, {
+			apiKey,
+			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			signal: record.abortController?.signal,
+			gitDetails,
+			localPath: ctx.cwd,
+			workspaceName: dirName,
+			callbacks: {
+				onTextDelta: (delta, fullText) => options.onTextDelta?.(delta, fullText),
+				onToolActivity: (activity) => {
+					if (activity.type === "end") record.toolUses++
+					options.onToolActivity?.(activity)
+				},
+				onTurnEnd: (turnCount) => {
+					record.lastTurnCount = turnCount
+					options.onTurnEnd?.(turnCount)
+				},
+				onAssistantUsage: (usage) => {
+					addUsage(record.lifetimeUsage, usage)
+					options.onAssistantUsage?.(usage)
+				},
+				onRawNotification: (params) => {
+					options.onRawNotification?.(params)
+				},
+			},
+		})
+
+		return {
+			responseText: result.responseText,
+			session: undefined,
+			aborted: result.stopReason === "cancelled",
+			abortReason: undefined,
+			steered: false,
+			turnsUsed: 1,
+			maxTurns: undefined,
+		}
 	}
 
 	private drainQueue() {

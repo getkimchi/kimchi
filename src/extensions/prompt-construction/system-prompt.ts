@@ -171,9 +171,9 @@ Your final response must be a single JSON object with no other text before or af
 \`\`\`
 
 - \`summary\`: one paragraph (at most 5 sentences) covering what was done, any critical decisions, and any blockers.
-- \`files\`: array of absolute paths to every file written to the Documents directory. Empty array if none.
+- \`files\`: array of absolute paths to every file written to the Documents directory or to the canonical plan location (.kimchi/plans/<slug>.md). Empty array if none.
 
-Write all substantive output (plans, specs, research notes, findings) to files in the Documents directory — never inline in the summary. Do NOT add any text before or after the JSON. Do NOT wrap it in a markdown code fence.`
+Write substantive output (research notes, findings, verification reports) to files in the Documents directory, and final plans/specs to the canonical plan location (.kimchi/plans/<slug>.md) — never inline in the summary. Do NOT add any text before or after the JSON. Do NOT wrap it in a markdown code fence.`
 
 // ---------------------------------------------------------------------------
 // Single-model instructions
@@ -191,7 +191,7 @@ Do not spawn subagents with the \`Agent\` tool by default — only do so when th
 }
 
 export const DOCUMENTS_SECTION =
-	"The Documents directory is shown in the Environment section. Use it for **all** intermediate and output files: plans, specs, research notes, findings, or any file passed between agents. Never write working documents to the project directory or a temporary directory."
+	"The Documents directory is shown in the Environment section. Use it for transient working documents: research notes, findings, verification reports, or any file passed between agents. Final plans and specs go to the canonical plan location (.kimchi/plans/<slug>.md). Never write working documents to the project directory or a temporary directory."
 
 export const CORE_GUIDELINES = `- Be concise in your responses. Do not repeat what you just did or summarize completed steps — act and move on.
 - Before starting any task, gather all necessary context: understand the requirements, naming conventions, frameworks and libraries already in use, and how to run and test the code. Use your tools to read existing code rather than assuming.

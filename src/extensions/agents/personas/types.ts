@@ -82,6 +82,7 @@ export const AGENT_BUILDER = "Builder"
 export const AGENT_REVIEWER = "Reviewer"
 export const AGENT_FIXER = "Fixer"
 export const AGENT_GRADER = "Grader"
+export const AGENT_DEBUGGER = "Debugger"
 
 /** Names of the embedded default agents (in canonical display order). */
 export const DEFAULT_AGENT_NAMES = [
@@ -93,6 +94,7 @@ export const DEFAULT_AGENT_NAMES = [
 	AGENT_REVIEWER,
 	AGENT_FIXER,
 	AGENT_GRADER,
+	AGENT_DEBUGGER,
 ] as const
 
 /** Memory scope for persistent agent memory. */
@@ -214,6 +216,8 @@ export interface AgentRecord {
 	outputCleanup?: () => void
 	/** Whether this agent is (or has been converted to) a background agent. */
 	isBackground?: boolean
+	/** When true, this agent runs on a remote sandbox via ACP instead of locally. */
+	remote?: boolean
 	/** Resolver to call when this foreground agent is detached to background via Ctrl+B. */
 	detachResolver?: () => void
 	/** Removes the parent abort signal listener so the agent survives after detach. */

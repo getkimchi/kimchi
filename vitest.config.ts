@@ -5,6 +5,16 @@ const stubPath = fileURLToPath(new URL("./src/__mocks__/earendil-clipboard-image
 
 export default defineConfig({
 	test: {
+		// Ignore git worktree copies used for bench/repro runs so targeted test
+		// commands don't execute the same suite multiple times.
+		exclude: [
+			"**/node_modules/**",
+			"**/dist/**",
+			"**/cypress/**",
+			"**/.{idea,git,github,output,temp}/**",
+			"**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build}.config.*",
+			".worktrees/**",
+		],
 		env: {
 			// Pin locale so toLocaleString() produces consistent comma-separated
 			// numbers across developer machines and CI regardless of system locale.

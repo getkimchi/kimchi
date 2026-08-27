@@ -12,6 +12,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import type { ClientSideConnection } from "@agentclientprotocol/sdk"
 import * as acp from "@agentclientprotocol/sdk"
+import { onTestFailed } from "vitest"
 import {
 	type FakeOpenAiServer,
 	type FakeResponseScript,
@@ -241,6 +242,20 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 
 	let client: RecordingClient | null = null
 
+	// Dump the full client/server state on ANY test failure (not just fixture
+	// start failures) — scenario timeouts are otherwise invisible in CI logs.
+	// Registered as soon as the fixture exists so the artifact exists even if
+	// the failure happens mid-test; harmless when no test context is active
+	// (e.g. direct use outside vitest subscriptions).
+	try {
+		onTestFailed((ctx) => {
+			recordArtifact("fail", ctx.task.result?.errors?.[0])
+		})
+	} catch (hookError) {
+		// Not inside a test context — artifacts still written on start failure.
+		process.stderr.write(`[acp-e2e] onTestFailed registration skipped: ${String(hookError).slice(0, 200)}\n`)
+	}
+
 	try {
 		const configDir = join(homeDir, ".config", "kimchi")
 		const agentDir = join(configDir, "harness")
@@ -413,7 +428,14 @@ function formatJson(value: unknown): string {
 
 function formatError(error: unknown): string {
 	if (error instanceof Error) return `${error.name}: ${error.message}\n\n${error.stack ?? "(no stack)"}`
-	return String(error)
+	// Vitest serializes runner errors to plain objects (no Error prototype),
+	// and some of those objects can throw on String() coercion — stringify
+	// defensively instead of relying on implicit conversion.
+	try {
+		return JSON.stringify(error, null, "\t")
+	} catch {
+		return Object.prototype.toString.call(error)
+	}
 }
 
 export { FAKE_TOOL_CALL_ID, PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS }
