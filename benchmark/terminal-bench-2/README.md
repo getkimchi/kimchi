@@ -42,22 +42,43 @@ export KIMCHI_API_KEY=...
 cd benchmark/terminal-bench-2
 uv run --python 3.14 harbor run \
   --agent kimchi_agent:Kimchi \
-  --env docker \
   --model kimchi-dev/kimi-k2.7 \
-  --ae "KIMCHI_API_KEY=$KIMCHI_API_KEY" \
   -d terminal-bench/terminal-bench-2-1 \
-  --jobs-dir jobs \
   -i terminal-bench/fix-git
 ```
 
-The command creates the Python environment with `uv`, downloads the dataset and task image when needed, uploads your local Kimchi build into the task container, and runs the verifier. The first run takes longer because those artifacts are not cached yet.
+The command creates the Python environment with `uv`, downloads the dataset and task image when needed, uploads your local Kimchi build into the task container, and runs the verifier. Harbor uses Docker and writes results to `jobs/` by default. Kimchi reads the exported `KIMCHI_API_KEY` from the host environment and forwards it to the task container, so `--ae` is not needed. The first run takes longer because those artifacts are not cached yet.
 
-On Apple Silicon, change the end of the command to:
+On Apple Silicon, add `--disable-verification` to this command.
+
+## Run the full suite
+
+Drop the `-i` selector to run the entire suite. Harbor runs four trials concurrently by default.
+
+From the repository root:
 
 ```bash
-  --jobs-dir jobs \
-  -i terminal-bench/fix-git \
-  --disable-verification
+cd benchmark/terminal-bench-2
+uv run --python 3.14 harbor run \
+  --agent kimchi_agent:Kimchi \
+  --model kimchi-dev/kimi-k2.7 \
+  -d terminal-bench/terminal-bench-2-1
+```
+
+## Run the full suite with five attempts per task
+
+This runs five attempts per task with ten concurrent trials:
+
+From the repository root:
+
+```bash
+cd benchmark/terminal-bench-2
+uv run --python 3.14 harbor run \
+  --agent kimchi_agent:Kimchi \
+  --model kimchi-dev/kimi-k2.7 \
+  -d terminal-bench/terminal-bench-2-1 \
+  -n 10 \
+  -k 5
 ```
 
 ## Run the latest release
@@ -93,7 +114,7 @@ Change or append these Harbor options to the command:
 | `-n <count>` | Concurrent trials |
 | `--timeout-multiplier <value>` | Scale task timeouts |
 
-For three attempts of the setup task, use `-i terminal-bench/fix-git -k 3`. Use `-l 5` for the first five tasks. For the full dataset, remove `-i` and `-l` and add `-n 8`.
+For three attempts of the setup task, use `-i terminal-bench/fix-git -k 3`. Use `-l 5` for the first five tasks. For the full dataset, remove `-i` and `-l` and add `-n 10`.
 
 A full run can take hours and make many model calls. Start with one task and one attempt before increasing either count.
 
@@ -108,7 +129,7 @@ The tutorial writes runs to `jobs/<timestamp>/`. Each trial directory contains:
 
 ## Common failures
 
-- `KIMCHI_API_KEY is required`: export it and pass it with `--ae` as shown.
+- `KIMCHI_API_KEY is required`: export it in the shell that runs Harbor. Use `--ae "KIMCHI_API_KEY=$KIMCHI_API_KEY"` only when you need to pass or override it explicitly.
 - `Model ... not found`: choose a current model from `kimchi --list-models`.
 - `Bun has crashed` with `qemu: uncaught target signal`: Docker is using QEMU on Apple Silicon. Switch Docker Desktop to Apple Virtualization Framework with Rosetta, or run on Linux x86_64. `--disable-verification` does not fix an agent crash.
 - `harbor: command not found`: invoke it through `uv run --python 3.14`.
