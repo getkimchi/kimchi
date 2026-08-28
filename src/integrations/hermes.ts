@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process"
+import { spawnSync } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -22,42 +22,64 @@ export const HERMES_VERSION_MIN = "2026.1.0"
 export const HERMES_VERSION_REGEX = /Hermes\s+(\d{4}\.\d+\.\d+)/
 
 /**
- * Build the Hermes provider block — the JSON dropped at
- * `models.providers.kimchi`. Same shape whether we write it via the CLI
- * batch flag or directly into ~/.hermes/config.yaml. Pure so we can
- * snapshot-test it without exec or fs.
+ * Build the top-level `model` block Hermes uses to pick an active inference
+ * provider. Same shape whether we write it via the CLI batch flag or
+ * directly into ~/.hermes/config.yaml. Pure so we can snapshot-test it
+ * without exec or fs.
  *
  * `apiKey` deliberately points at `${KIMCHI_API_KEY}` rather than the raw
  * key so the YAML can be checked into version control without leaking
  * credentials; the daemon resolves the env var from ~/.hermes/.env at
  * launch time.
  *
+ * `default` uses the `<provider>/<slug>` convention Hermes expects when
+ * `provider: "custom"`.
+ *
  * @param models - Live `ModelMetadata[]` fetched from the API.
  */
-export function buildHermesProviderBlock(models: readonly ModelMetadata[]): Record<string, unknown> {
+export function buildHermesModelConfig(models: readonly ModelMetadata[]): Record<string, unknown> {
+	if (models.length === 0) throw new Error("No models available — is the API key valid?")
+
+	const resolved = resolveAllModelRoles(models, ["main"] as readonly ModelRole[])
+	const mainSlug = resolved.main?.slug ?? models[0].slug
+
 	return {
-		baseUrl: BASE_URL,
-		apiKey: `\${${API_KEY_ENV}}`,
-		api: "openai-completions",
-		models: models.map((m) => ({
-			id: `${PROVIDER_NAME}/${m.slug}`,
-			name: (m.display_name ?? "").trim().length > 0 ? m.display_name : m.slug,
-			reasoning: m.reasoning,
-			input: m.input_modalities,
-			contextWindow: m.limits.context_window,
-			maxTokens: m.limits.max_output_tokens,
-		})),
+		provider: "custom",
+		base_url: BASE_URL,
+		api_key: `\${${API_KEY_ENV}}`,
+		default: `${PROVIDER_NAME}/${mainSlug}`,
 	}
 }
 
-/** Map of `<provider>/<slug>` → `{ alias: displayName }` for agents.defaults.models. */
-export function buildHermesModelsCatalog(models: readonly ModelMetadata[]): Record<string, unknown> {
-	const out: Record<string, unknown> = {}
-	for (const m of models) {
-		const alias = (m.display_name ?? "").trim().length > 0 ? m.display_name : m.slug
-		out[`${PROVIDER_NAME}/${m.slug}`] = { alias }
+/**
+ * Build the `fallback_providers` list Hermes uses when the primary model
+ * can't be reached. Each entry uses `key_env` (not `api_key`) so Hermes
+ * reads the credential from ~/.hermes/.env at runtime. Falls back through
+ * the `coding` and `sub` role slots; entries are deduped.
+ *
+ * @param models - Live `ModelMetadata[]` fetched from the API.
+ */
+export function buildHermesFallbackProviders(models: readonly ModelMetadata[]): Array<Record<string, unknown>> {
+	if (models.length === 0) throw new Error("No models available — is the API key valid?")
+
+	const resolved = resolveAllModelRoles(models, ["main", "coding", "sub"] as readonly ModelRole[])
+	const mainSlug = resolved.main?.slug
+	const slugs = ([resolved.coding, resolved.sub] as Array<ModelMetadata | undefined>)
+		.filter((m): m is ModelMetadata => m !== undefined)
+		.map((m) => m.slug)
+		.filter((slug) => slug !== mainSlug)
+
+	const deduped: string[] = []
+	for (const slug of slugs) {
+		if (!deduped.includes(slug)) deduped.push(slug)
 	}
-	return out
+
+	return deduped.map((slug) => ({
+		provider: "custom",
+		model: `${PROVIDER_NAME}/${slug}`,
+		base_url: BASE_URL,
+		key_env: API_KEY_ENV,
+	}))
 }
 
 /** Detection: ~/.hermes/ dir present OR `hermes` on PATH. */
@@ -102,15 +124,6 @@ export function writeHermesEnv(apiKey: string): void {
 	writeFileAtomic(envPath, `${lines.join("\n")}\n`)
 }
 
-function isHermesGatewayRunning(execFile: typeof execFileSync = execFileSync): boolean {
-	try {
-		const out = execFile("hermes", ["gateway", "status"], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] })
-		return out.includes("running")
-	} catch {
-		return false
-	}
-}
-
 function runHermesCmd(args: string[]): void {
 	const result = spawnSync("hermes", args, { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] })
 	if (result.status !== 0) {
@@ -123,44 +136,24 @@ function runHermesCmd(args: string[]): void {
 async function writeHermesViaCLI(apiKey: string, models: readonly ModelMetadata[]): Promise<void> {
 	if (models.length === 0) throw new Error("No models available — is the API key valid?")
 
-	const providerBlock = buildHermesProviderBlock(models)
-	const modelsCatalog = buildHermesModelsCatalog(models)
+	const modelConfig = buildHermesModelConfig(models)
+	const fallbackProviders = buildHermesFallbackProviders(models)
 
-	const resolved = resolveAllModelRoles(models, ["main", "coding", "sub"] as readonly ModelRole[])
-	const primary = resolved.main ? `${PROVIDER_NAME}/${resolved.main.slug}` : `${PROVIDER_NAME}/${models[0].slug}`
-	const fallbacks = ([resolved.coding, resolved.sub] as Array<ModelMetadata | undefined>)
-		.filter((m): m is ModelMetadata => m !== undefined)
-		.map((m) => `${PROVIDER_NAME}/${m.slug}`)
-
-	runHermesCmd(["config", "set", "models.providers.kimchi", JSON.stringify(providerBlock)])
-	runHermesCmd(["config", "set", "agents.defaults.model.primary", primary])
-	// Merge fields that may conflict with existing user config.
-	runHermesMerge("agents.defaults.model.fallbacks", (existing) => mergeFallbacks(existing, fallbacks))
-	runHermesMerge("agents.defaults.models", (existing) => mergeModelsCatalog(existing, modelsCatalog))
+	// Set each model.* key individually — `hermes config set model <json>`
+	// stringifies the whole object under `model.default` instead of expanding
+	// nested keys, so we use dot-path setters.
+	runHermesCmd(["config", "set", "model.provider", String(modelConfig.provider)])
+	runHermesCmd(["config", "set", "model.base_url", String(modelConfig.base_url)])
+	runHermesCmd(["config", "set", "model.api_key", String(modelConfig.api_key)])
+	runHermesCmd(["config", "set", "model.default", String(modelConfig.default)])
+	runHermesCmd(["config", "set", "fallback_providers", JSON.stringify(fallbackProviders)])
 
 	writeHermesEnv(apiKey)
-
-	if (isHermesGatewayRunning()) {
-		// Pick up the new config without prompting the user to restart.
-		runHermesCmd(["gateway", "restart"])
-	} else {
-		// Fresh install — run `hermes onboard` to scaffold the workspace and
-		// install the daemon. --auth-choice skip: we already configured the
-		// kimchi provider; choosing custom-api-key would create a duplicate
-		// provider that overrides our settings.
-		runHermesCmd([
-			"onboard",
-			"--non-interactive",
-			"--accept-risk",
-			"--auth-choice",
-			"skip",
-			"--install-daemon",
-			"--skip-channels",
-			"--skip-skills",
-			"--skip-search",
-			"--skip-ui",
-		])
-	}
+	// We intentionally do not restart a running Hermes gateway here. In
+	// container/headless environments `hermes gateway restart` can hang or
+	// restart the process under the current shell, blocking setup-tools.
+	// The provider/model config is persisted to ~/.hermes/config.yaml and
+	// will be picked up the next time the user starts Hermes.
 }
 
 /** Configure Hermes by writing YAML directly when no CLI is available. */
@@ -182,29 +175,8 @@ async function writeHermesDirect(scope: ConfigScope, apiKey: string, models: rea
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err
 	}
 
-	const modelsRoot = asObject(existing.models)
-	const providers = asObject(modelsRoot.providers)
-	providers[PROVIDER_NAME] = buildHermesProviderBlock(models)
-	modelsRoot.providers = providers
-	existing.models = modelsRoot
-
-	const resolved = resolveAllModelRoles(models, ["main", "coding", "sub"] as readonly ModelRole[])
-	const mainSlug = resolved.main?.slug ?? models[0].slug
-	const fallbacks = ([resolved.coding, resolved.sub] as Array<ModelMetadata | undefined>)
-		.filter((m): m is ModelMetadata => m !== undefined)
-		.map((m) => `${PROVIDER_NAME}/${m.slug}`)
-
-	const agents = asObject(existing.agents)
-	const defaults = asObject(agents.defaults)
-	// Merge into model config to preserve existing keys like temperature, max_tokens.
-	const modelMap = asObject(defaults.model)
-	modelMap.primary = `${PROVIDER_NAME}/${mainSlug}`
-	modelMap.fallbacks = mergeFallbacks(modelMap.fallbacks, fallbacks)
-	defaults.model = modelMap
-
-	defaults.models = mergeModelsCatalog(defaults.models, buildHermesModelsCatalog(models))
-	agents.defaults = defaults
-	existing.agents = agents
+	existing.model = buildHermesModelConfig(models)
+	existing.fallback_providers = buildHermesFallbackProviders(models)
 
 	writeFileAtomic(path, stringifyYaml(existing))
 	writeHermesEnv(apiKey)
@@ -233,22 +205,6 @@ async function writeHermes(
 	}
 }
 
-/** Read a config value via `hermes config get --json`; returns `null` if the path is missing or unreadable. */
-function openHermesConfigGet(path: string): unknown | null {
-	try {
-		const result = spawnSync("hermes", ["config", "get", path, "--json"], {
-			encoding: "utf-8",
-			stdio: ["ignore", "pipe", "pipe"],
-		})
-		if (result.status !== 0) return null
-		const raw = (result.stdout ?? "").trim()
-		if (!raw) return null
-		return JSON.parse(raw)
-	} catch {
-		return null
-	}
-}
-
 /** Narrow an unknown value to a plain object, defaulting to `{}` for any other type. */
 export function asObject(v: unknown): Record<string, unknown> {
 	return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
@@ -265,13 +221,6 @@ export function mergeModelsCatalog(existing: unknown, catalog: Record<string, un
 	return { ...asObject(existing), ...catalog }
 }
 
-/** Read existing value, merge it, and write back. */
-function runHermesMerge(path: string, merger: (existing: unknown) => unknown): void {
-	const existing = openHermesConfigGet(path)
-	const merged = merger(existing)
-	runHermesCmd(["config", "set", path, JSON.stringify(merged)])
-}
-
 register({
 	id: "hermes",
 	name: "Hermes",
@@ -279,7 +228,7 @@ register({
 	configPath: HERMES_CONFIG_PATH,
 	binaryName: "hermes",
 	installUrl: "https://hermes-agent.nousresearch.com/install.sh",
-	installArgs: ["--no-prompt", "--no-onboard"],
+	installArgs: ["--skip-setup", "--non-interactive", "--skip-browser", "--no-skills"],
 	isInstalled: detectHermes,
 	write: writeHermes,
 })

@@ -8,8 +8,8 @@ import { TEST_MODELS } from "./__fixtures__/models.js"
 import { findBinary } from "./detect.js"
 import {
 	asObject,
-	buildHermesModelsCatalog,
-	buildHermesProviderBlock,
+	buildHermesFallbackProviders,
+	buildHermesModelConfig,
 	HERMES_CONFIG_PATH,
 	HERMES_VERSION_MIN,
 	HERMES_VERSION_REGEX,
@@ -28,66 +28,82 @@ vi.mock("node:child_process", async () => {
 	const actual = await vi.importActual("node:child_process")
 	return {
 		...actual,
-		execFileSync: vi.fn(),
 		spawnSync: vi.fn(),
 	}
 })
 
-describe("buildHermesProviderBlock", () => {
-	it("uses the kimchi base URL and ${KIMCHI_API_KEY} placeholder", () => {
-		const block = buildHermesProviderBlock(TEST_MODELS) as {
-			baseUrl: string
-			apiKey: string
-			api: string
-			models: unknown[]
+describe("buildHermesModelConfig", () => {
+	it("uses the custom provider, kimchi base URL and ${KIMCHI_API_KEY} placeholder", () => {
+		const config = buildHermesModelConfig(TEST_MODELS) as {
+			provider: string
+			base_url: string
+			api_key: string
+			default: string
 		}
-		expect(block.baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
-		expect(block.apiKey).toBe("${KIMCHI_API_KEY}")
-		expect(block.api).toBe("openai-completions")
-		expect(block.models.length).toBe(TEST_MODELS.length)
+		expect(config.provider).toBe("custom")
+		expect(config.base_url).toBe("https://llm.kimchi.dev/openai/v1")
+		expect(config.api_key).toBe("${KIMCHI_API_KEY}")
+		expect(config.default).toBe("kimchi/kimi-k2.6")
 	})
 
-	it("includes per-model id/name/contextWindow/maxTokens", () => {
-		const block = buildHermesProviderBlock(TEST_MODELS) as {
-			models: Array<{ id: string; name: string; contextWindow: number; maxTokens: number }>
-		}
-		const main = block.models.find((m) => m.id === "kimchi/kimi-k2.6")
-		expect(main).toBeDefined()
-		expect(main?.name).toBe("Kimi K2.6")
-		expect(main?.contextWindow).toBe(262_144)
-		expect(main?.maxTokens).toBe(32_768)
+	it("throws when given an empty model list", () => {
+		expect(() => buildHermesModelConfig([])).toThrow(/No models/)
 	})
 
-	it("falls back to slug when display_name is empty", () => {
-		const modelsWithEmptyName = [
-			{ ...TEST_MODELS[0], display_name: "" },
-			{ ...TEST_MODELS[1], display_name: "   " },
-		]
-		const block = buildHermesProviderBlock(modelsWithEmptyName) as {
-			models: Array<{ id: string; name: string }>
+	it("falls back to the first model when the main role cannot be resolved", () => {
+		const onlyTextModel = {
+			...TEST_MODELS[0],
+			slug: "lonely-text-model",
+			input_modalities: ["text"] as Array<"text" | "image">,
 		}
-		expect(block.models[0].name).toBe(modelsWithEmptyName[0].slug)
-		expect(block.models[1].name).toBe(modelsWithEmptyName[1].slug)
+		// Build a list where every model is text-only and not vision-capable;
+		// resolveModelRole still picks the first serverless model.
+		const config = buildHermesModelConfig([onlyTextModel]) as { default: string }
+		expect(config.default.startsWith("kimchi/")).toBe(true)
 	})
 })
 
-describe("buildHermesModelsCatalog", () => {
-	it("maps each model id to its display alias", () => {
-		const catalog = buildHermesModelsCatalog(TEST_MODELS)
-		expect(catalog["kimchi/kimi-k2.6"]).toEqual({ alias: "Kimi K2.6" })
-		expect(catalog["kimchi/kimi-k2.5"]).toEqual({ alias: "Kimi K2.5" })
-		expect(catalog["kimchi/nemotron-3-ultra-fp4"]).toEqual({ alias: "Nemotron 3 Ultra FP4" })
-		expect(catalog["kimchi/minimax-m2.7"]).toEqual({ alias: "MiniMax M2.7" })
+describe("buildHermesFallbackProviders", () => {
+	it("emits one entry per non-main fallback role using key_env", () => {
+		const fallbacks = buildHermesFallbackProviders(TEST_MODELS)
+		expect(fallbacks).toEqual([
+			{
+				provider: "custom",
+				model: "kimchi/nemotron-3-ultra-fp4",
+				base_url: "https://llm.kimchi.dev/openai/v1",
+				key_env: "KIMCHI_API_KEY",
+			},
+			{
+				provider: "custom",
+				model: "kimchi/minimax-m2.7",
+				base_url: "https://llm.kimchi.dev/openai/v1",
+				key_env: "KIMCHI_API_KEY",
+			},
+		])
 	})
 
-	it("falls back to slug when display_name is empty", () => {
-		const modelsWithEmptyName = [
-			{ ...TEST_MODELS[0], display_name: "" },
-			{ ...TEST_MODELS[1], display_name: "   " },
+	it("never uses api_key (uses key_env so Hermes reads ~/.hermes/.env at runtime)", () => {
+		const fallbacks = buildHermesFallbackProviders(TEST_MODELS) as Array<Record<string, unknown>>
+		for (const entry of fallbacks) {
+			expect(entry.api_key).toBeUndefined()
+			expect(entry.key_env).toBe("KIMCHI_API_KEY")
+		}
+	})
+
+	it("dedupes when coding and sub resolve to the same model", () => {
+		// Only one non-main serverless model — both `coding` and `sub`
+		// roles resolve to it, so the list must dedupe.
+		const modelsWithDuplicates: typeof TEST_MODELS = [
+			TEST_MODELS[0], // kimi-k2.6 (main, vision-capable serverless)
+			TEST_MODELS[2], // nemotron-3-ultra-fp4 (only non-main serverless)
 		]
-		const catalog = buildHermesModelsCatalog(modelsWithEmptyName)
-		expect(catalog["kimchi/kimi-k2.6"]).toEqual({ alias: "kimi-k2.6" })
-		expect(catalog["kimchi/kimi-k2.5"]).toEqual({ alias: "kimi-k2.5" })
+		const fallbacks = buildHermesFallbackProviders(modelsWithDuplicates) as Array<{ model: string }>
+		const models = fallbacks.map((f) => f.model)
+		expect(models).toEqual(["kimchi/nemotron-3-ultra-fp4"])
+	})
+
+	it("throws when given an empty model list", () => {
+		expect(() => buildHermesFallbackProviders([])).toThrow(/No models/)
 	})
 })
 
@@ -140,7 +156,7 @@ describe("hermes tool registration", () => {
 		const tool = byId("hermes")
 		expect(tool).toBeDefined()
 		expect(tool?.installUrl).toBe("https://hermes-agent.nousresearch.com/install.sh")
-		expect(tool?.installArgs).toEqual(["--no-prompt", "--no-onboard"])
+		expect(tool?.installArgs).toEqual(["--skip-setup", "--non-interactive", "--skip-browser", "--no-skills"])
 		expect(tool?.configPath).toBe(HERMES_CONFIG_PATH)
 	})
 	it("write() rejects an empty API key", async () => {
@@ -232,7 +248,31 @@ describe("writeHermesDirect integration", () => {
 		vi.mocked(findBinary).mockClear()
 	})
 
-	it("writes valid YAML that preserves existing user config keys like temperature and fallbacks", async () => {
+	it("writes a config.yaml with the model + fallback_providers shape Hermes recognises", async () => {
+		const tool = byId("hermes")
+		await tool?.write("global", "test-key-123", TEST_MODELS)
+
+		const written = parseYaml(readFileSync(join(tmp, ".hermes", "config.yaml"), "utf-8")) as Record<string, unknown>
+		const model = written.model as Record<string, unknown>
+		expect(model.provider).toBe("custom")
+		expect(model.base_url).toBe("https://llm.kimchi.dev/openai/v1")
+		expect(model.api_key).toBe("${KIMCHI_API_KEY}")
+		expect(model.default).toBe("kimchi/kimi-k2.6")
+
+		const fallbacks = written.fallback_providers as Array<Record<string, unknown>>
+		expect(Array.isArray(fallbacks)).toBe(true)
+		expect(fallbacks.length).toBeGreaterThan(0)
+		const models = fallbacks.map((f) => f.model as string)
+		expect(models).toContain("kimchi/nemotron-3-ultra-fp4")
+		expect(models).toContain("kimchi/minimax-m2.7")
+		for (const entry of fallbacks) {
+			expect(entry.provider).toBe("custom")
+			expect(entry.key_env).toBe("KIMCHI_API_KEY")
+			expect(entry.api_key).toBeUndefined()
+		}
+	})
+
+	it("preserves unrelated existing user config keys when merging", async () => {
 		const configDir = join(tmp, ".hermes")
 		mkdirSync(configDir, { recursive: true })
 		const existing = `agents:
@@ -244,6 +284,7 @@ describe("writeHermesDirect integration", () => {
     models:
       other/model:
         alias: Other
+custom_user_key: keep-me
 `
 		writeFileSync(join(configDir, "config.yaml"), existing, "utf-8")
 
@@ -251,25 +292,17 @@ describe("writeHermesDirect integration", () => {
 		await tool?.write("global", "test-key-123", TEST_MODELS)
 
 		const written = parseYaml(readFileSync(join(configDir, "config.yaml"), "utf-8")) as Record<string, unknown>
+		// The new top-level model/fallback_providers keys must be present.
+		expect((written.model as Record<string, unknown>).default).toBe("kimchi/kimi-k2.6")
+		expect(Array.isArray(written.fallback_providers)).toBe(true)
+		// Unrelated user keys must survive untouched.
+		expect(written.custom_user_key).toBe("keep-me")
 		const agents = (written.agents as Record<string, unknown>).defaults as Record<string, unknown>
-		const model = agents.model as Record<string, unknown>
-
-		expect(model.temperature).toBe(0.7)
-		const fallbacks = model.fallbacks as string[]
-		expect(fallbacks).toContain("other/model")
-		expect(fallbacks).toContain("kimchi/nemotron-3-ultra-fp4")
-		expect(fallbacks).toContain("kimchi/minimax-m2.7")
-
-		const models = agents.models as Record<string, unknown>
-		expect(models["other/model"]).toEqual({ alias: "Other" })
-		expect(models["kimchi/kimi-k2.6"]).toBeDefined()
-
-		const providers = ((written.models as Record<string, unknown>).providers as Record<string, unknown>)
-			.kimchi as Record<string, unknown>
-		expect(providers).toBeDefined()
-		expect(providers.baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
-		expect(providers.apiKey).toBe("${KIMCHI_API_KEY}")
-		expect(providers.api).toBe("openai-completions")
+		const userModel = agents.model as Record<string, unknown>
+		expect(userModel.temperature).toBe(0.7)
+		expect(userModel.fallbacks).toEqual(["other/model"])
+		const userCatalog = agents.models as Record<string, unknown>
+		expect(userCatalog["other/model"]).toEqual({ alias: "Other" })
 	})
 
 	it("creates a fresh config.yaml when none exists", async () => {
@@ -278,10 +311,10 @@ describe("writeHermesDirect integration", () => {
 
 		const configPath = join(tmp, ".hermes", "config.yaml")
 		const written = parseYaml(readFileSync(configPath, "utf-8")) as Record<string, unknown>
-		const agents = (written.agents as Record<string, unknown>).defaults as Record<string, unknown>
-		const model = agents.model as Record<string, unknown>
-		expect(typeof model.primary).toBe("string")
-		expect((model.primary as string).startsWith("kimchi/")).toBe(true)
+		const model = written.model as Record<string, unknown>
+		expect(model.provider).toBe("custom")
+		expect(typeof model.default).toBe("string")
+		expect((model.default as string).startsWith("kimchi/")).toBe(true)
 
 		const envContent = readFileSync(join(tmp, ".hermes", ".env"), "utf-8")
 		expect(envContent).toBe("KIMCHI_API_KEY=test-key-123\n")
@@ -297,21 +330,9 @@ describe("writeHermesViaCLI integration", () => {
 		prevHome = process.env.HOME
 		process.env.HOME = tmp
 		vi.mocked(findBinary).mockReturnValue("/usr/bin/hermes")
-		vi.mocked(childProcess.execFileSync).mockReturnValue("not running")
-		vi.mocked(childProcess.spawnSync).mockImplementation((_cmd: unknown, args: unknown) => {
-			const cmdArgs = args as string[]
-			if (cmdArgs[0] === "config" && cmdArgs[1] === "get" && cmdArgs[2] === "agents.defaults.model.fallbacks") {
-				return { status: 0, stdout: JSON.stringify(["existing/model"]), stderr: "" } as ReturnType<
-					typeof childProcess.spawnSync
-				>
-			}
-			if (cmdArgs[0] === "config" && cmdArgs[1] === "get" && cmdArgs[2] === "agents.defaults.models") {
-				return { status: 0, stdout: JSON.stringify({ "other/model": { alias: "Other" } }), stderr: "" } as ReturnType<
-					typeof childProcess.spawnSync
-				>
-			}
-			return { status: 0, stdout: "", stderr: "" } as ReturnType<typeof childProcess.spawnSync>
-		})
+		vi.mocked(childProcess.spawnSync).mockReturnValue({ status: 0, stdout: "", stderr: "" } as ReturnType<
+			typeof childProcess.spawnSync
+		>)
 	})
 
 	afterEach(() => {
@@ -319,40 +340,49 @@ describe("writeHermesViaCLI integration", () => {
 		else process.env.HOME = prevHome
 		rmSync(tmp, { recursive: true, force: true })
 		vi.mocked(findBinary).mockClear()
-		vi.mocked(childProcess.execFileSync).mockClear()
 		vi.mocked(childProcess.spawnSync).mockClear()
 	})
 
-	it("preserves existing fallbacks and other keys via CLI merge", async () => {
+	it("calls hermes config set for each model.* key and fallback_providers", async () => {
 		const tool = byId("hermes")
 		await tool?.write("global", "test-key-123", TEST_MODELS)
 
 		const calls = vi.mocked(childProcess.spawnSync).mock.calls
-		const fallbackSetCall = calls.find((c) => {
-			const args = c[1] as string[] | undefined
-			return args && args[0] === "config" && args[1] === "set" && args[2] === "agents.defaults.model.fallbacks"
-		})
-		expect(fallbackSetCall).toBeDefined()
-		const mergedFallbacks = JSON.parse((fallbackSetCall?.[1] as string[])[3])
-		expect(mergedFallbacks).toContain("existing/model")
-		expect(mergedFallbacks).toContain("kimchi/nemotron-3-ultra-fp4")
+		const configSet = (path: string) =>
+			calls.find((c) => {
+				const args = c[1] as string[] | undefined
+				return args && args[0] === "config" && args[1] === "set" && args[2] === path
+			})
 
-		const modelsSetCall = calls.find((c) => {
-			const args = c[1] as string[] | undefined
-			return args && args[0] === "config" && args[1] === "set" && args[2] === "agents.defaults.models"
-		})
-		expect(modelsSetCall).toBeDefined()
-		const mergedModels = JSON.parse((modelsSetCall?.[1] as string[])[3]) as Record<string, unknown>
-		expect(mergedModels["other/model"]).toEqual({ alias: "Other" })
-		expect(mergedModels["kimchi/kimi-k2.6"]).toBeDefined()
-		expect(mergedModels["kimchi/nemotron-3-ultra-fp4"]).toBeDefined()
+		expect(configSet("model.provider")?.[1]).toEqual(["config", "set", "model.provider", "custom"])
+		expect(configSet("model.base_url")?.[1]).toEqual([
+			"config",
+			"set",
+			"model.base_url",
+			"https://llm.kimchi.dev/openai/v1",
+		])
+		expect(configSet("model.api_key")?.[1]).toEqual(["config", "set", "model.api_key", "${KIMCHI_API_KEY}"])
+		expect(configSet("model.default")?.[1]).toEqual(["config", "set", "model.default", "kimchi/kimi-k2.6"])
+
+		const fallbackSetCall = configSet("fallback_providers")
+		expect(fallbackSetCall).toBeDefined()
+		const fallbackPayload = JSON.parse((fallbackSetCall?.[1] as string[])[3]) as Array<Record<string, unknown>>
+		expect(Array.isArray(fallbackPayload)).toBe(true)
+		expect(fallbackPayload.length).toBeGreaterThan(0)
+		const models = fallbackPayload.map((f) => f.model as string)
+		expect(models).toContain("kimchi/nemotron-3-ultra-fp4")
+		expect(models).toContain("kimchi/minimax-m2.7")
+		for (const entry of fallbackPayload) {
+			expect(entry.provider).toBe("custom")
+			expect(entry.key_env).toBe("KIMCHI_API_KEY")
+			expect(entry.api_key).toBeUndefined()
+		}
 
 		const envContent = readFileSync(join(tmp, ".hermes", ".env"), "utf-8")
 		expect(envContent).toBe("KIMCHI_API_KEY=test-key-123\n")
 	})
 
-	it("runs hermes gateway restart when the gateway is already running", async () => {
-		vi.mocked(childProcess.execFileSync).mockReturnValue("gateway: running\n")
+	it("does not restart or onboard the Hermes gateway", async () => {
 		const tool = byId("hermes")
 		await tool?.write("global", "test-key-123", TEST_MODELS)
 
@@ -361,11 +391,31 @@ describe("writeHermesViaCLI integration", () => {
 			const args = c[1] as string[] | undefined
 			return args && args[0] === "gateway" && args[1] === "restart"
 		})
-		expect(restartCall).toBeDefined()
+		expect(restartCall).toBeUndefined()
 		const onboardCall = calls.find((c) => {
 			const args = c[1] as string[] | undefined
 			return args && args[0] === "onboard"
 		})
 		expect(onboardCall).toBeUndefined()
+	})
+
+	it("does not write to the legacy models.providers / agents.defaults paths", async () => {
+		const tool = byId("hermes")
+		await tool?.write("global", "test-key-123", TEST_MODELS)
+
+		const calls = vi.mocked(childProcess.spawnSync).mock.calls
+		const legacyCall = calls.find((c) => {
+			const args = c[1] as string[] | undefined
+			return (
+				args &&
+				args[0] === "config" &&
+				args[1] === "set" &&
+				(args[2] === "models.providers.kimchi" ||
+					args[2] === "agents.defaults.model.primary" ||
+					args[2] === "agents.defaults.model.fallbacks" ||
+					args[2] === "agents.defaults.models")
+			)
+		})
+		expect(legacyCall).toBeUndefined()
 	})
 })
