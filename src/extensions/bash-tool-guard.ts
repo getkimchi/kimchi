@@ -199,6 +199,8 @@ DO NOT background processes with \`&\`, \`nohup\`, or \`disown\` — they escape
 Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.
 
 Each command runs in a fresh shell rooted at the session working directory; \`cd\` does NOT persist between bash tool calls. Use absolute paths, or chain \`cd <dir> && <command>\` within a single call.
+
+When you need to install a tool or library, prefer pre-built packages (apt, brew, pip, npm, cargo install) over compiling from source — only build from source when no package exists or you need a specific build configuration. Compiling from source is slow, wastes wall-clock, and often produces the same result a package manager would.
 `.trim()
 
 /**

@@ -876,6 +876,14 @@ describe("BASH_TOOL_DESCRIPTION", () => {
 	it("warns against commands that could conflict with a running process", () => {
 		expect(bashToolDescription()).toContain("avoid commands or edits that could conflict")
 	})
+
+	it("tells the model to prefer pre-built packages over compiling from source", () => {
+		expect(bashToolDescription()).toContain("prefer pre-built packages")
+		expect(bashToolDescription()).toContain("over compiling from source")
+		expect(bashToolDescription()).toContain("apt")
+		expect(bashToolDescription()).toContain("brew")
+		expect(bashToolDescription()).toContain("pip")
+	})
 })
 
 describe("toolDescriptionOverride", () => {
