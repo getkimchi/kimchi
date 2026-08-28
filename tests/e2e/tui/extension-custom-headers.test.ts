@@ -21,6 +21,7 @@ test("telemetry injects session and turn headers into LLM requests", async ({ te
 			const request = fixture.fake.requests.find((item) => item.url.startsWith("/openai/v1/chat/completions"))
 			expect(request).toBeDefined()
 			expect(request?.headers["x-session-id"]).toBeTruthy()
+			expect(request?.headers["x-conversation-id"]).toBeTruthy()
 			expect(request?.headers["x-turn-index"]).toMatch(/^\d+$/)
 		},
 	)

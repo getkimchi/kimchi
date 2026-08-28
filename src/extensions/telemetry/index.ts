@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto"
 import type { Message } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { TelemetryConfig } from "../../config.js"
+import { getConversationId, isAgentWorker, resetConversationId } from "../agent-worker-context.js"
 import {
 	BASH_TOOL_GUARD_EVENTS,
 	type BashToolGuardAllowedByUserRequestPayload,
@@ -696,6 +697,9 @@ export default function telemetryExtension(config: TelemetryConfig) {
 
 		pi.on("session_start", async (_event, ctx) => {
 			resetBashGuardCounts()
+			// Regenerate conversation id on /new (main agent only — subagents
+			// get their own id via runAsAgentWorker's AsyncLocalStorage).
+			if (!isAgentWorker()) resetConversationId()
 			handleSessionStart(telemetryCtx, ctx)
 		})
 		pi.on("session_shutdown", async (event, ctx) => {
@@ -740,6 +744,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		})
 		pi.on("before_provider_headers", (event) => {
 			event.headers["X-Session-Id"] = telemetryCtx.telemetryId
+			event.headers["X-Conversation-Id"] = getConversationId()
 			// 0 means "before first turn" (sentinel); backend should treat it accordingly.
 			event.headers["X-Turn-Index"] = String(telemetryCtx.turnIndex)
 
