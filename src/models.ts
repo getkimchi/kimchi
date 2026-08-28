@@ -195,15 +195,14 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// - supportsUsageInStreaming: true so stream_options.include_usage is sent
 	//
 	// ai-enabler models don't support chat_template_kwargs, so we rely on the
-	// default `openai` thinkingFormat which sends `reasoning_effort`. Setting
-	// thinkingLevelMap.off = "none" ensures that the off level sends
-	// reasoning_effort: "none" instead of omitting it, which would leave
-	// thinking enabled by default.
+	// default `openai` thinkingFormat which sends `reasoning_effort`. The map
+	// disables thinking with `none` and advertises max to Pi's selector.
 	const compat =
 		m.provider === "anthropic" || m.slug.startsWith("claude-")
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
 			: undefined
-	const thinkingLevelMap = m.provider === "ai-enabler" ? { off: "none" as const } : undefined
+	const thinkingLevelMap: PiModelConfig["thinkingLevelMap"] =
+		m.provider === "ai-enabler" ? { off: "none", max: "max" } : undefined
 	return {
 		id: m.slug,
 		name: m.display_name.trim().length > 0 ? m.display_name : m.slug,

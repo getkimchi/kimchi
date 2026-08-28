@@ -23,6 +23,7 @@ export type SegmentId =
 	| "goal"
 	| "permissions"
 	| "model"
+	| "thinking"
 	| "ferment"
 	| "agents"
 	| "context"
@@ -335,6 +336,7 @@ const SHED_ORDER: SegmentId[] = [
 	"phase",
 	"usage",
 	"agents",
+	"thinking",
 	"credits",
 	"budget",
 	"ferment",
@@ -430,6 +432,12 @@ function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
 	const label = multiModel ? `multi-model (${rawModelId})` : rawModelId
 	const text = `${accentText(theme, label)} ${dimText(theme, "→ ctrl+p")}`
 	return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId: rawModelId } }
+}
+
+function buildThinkingSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
+	if (!pinned) return null
+	const text = `${dimText(theme, "thinking:")}${accentText(theme, ctx.thinkingLevel ?? "—")}`
+	return { id: "thinking", text, width: visibleWidth(text) }
 }
 
 function buildUsageSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
@@ -643,6 +651,7 @@ export function buildStatusLineSegments(
 	return [
 		buildPermissionsSegment(theme, statusLineData, pinned.has("permissions")),
 		buildModelSegment(ctx, theme),
+		buildThinkingSegment(ctx, theme, pinned.has("thinking")),
 		buildGoalSegment(theme, statusLineData),
 		buildFermentSegment(theme, pinned.has("ferment")),
 		buildCreditsSegment(theme, pinned.has("credits")),

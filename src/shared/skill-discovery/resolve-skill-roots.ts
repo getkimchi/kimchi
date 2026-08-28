@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs"
-import { homedir } from "node:os"
-import { dirname, isAbsolute, join } from "node:path"
+import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
+import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { resolveAuxiliaryFilesDir } from "../../auxiliary-files/resolver.js"
 import { findNearestAncestorSkillDir } from "../../skill-paths.js"
@@ -97,4 +97,125 @@ export function resolveSkillRoots(options: ResolveSkillRootsOptions): SkillRoot[
 	if (projectDir) roots.push({ dir: projectDir, kind: "project" })
 
 	return roots
+}
+
+/**
+ * Resolve skill roots and return a flat list of skill paths suitable for
+ * contributing to pi's resource inventory via resources_discover.
+ *
+ * - Non-existent paths are filtered out (pi warns about them).
+ * - The harness dir is excluded because pi loads it natively via
+ *   includeDefaults (agentDir/skills) — contributing it again is redundant.
+ * - Bundled skills already present in a stronger path (harness, config, or
+ *   project) are silently skipped via a filtered temp copy, so no collision
+ *   warnings are emitted. New bundled skills not present elsewhere are still
+ *   contributed.
+ *
+ * @param cwd Working directory for project ancestor search.
+ * @param homeDir Override for os.homedir() (tests).
+ * @param bundledDir Override for the bundled skills dir; null disables it.
+ * @param configPaths Override for config-style skill paths.
+ * @param extraPaths Additional paths to include (e.g. configured skillPaths
+ *   from kimchi config.json that pi doesn't see).
+ */
+export function resolveSkillPathsForDiscovery(
+	cwd: string,
+	options?: {
+		homeDir?: string
+		bundledDir?: string | null
+		configPaths?: readonly string[]
+		extraPaths?: readonly string[]
+	},
+): string[] {
+	const home = options?.homeDir ?? homedir()
+	const roots = resolveSkillRoots({
+		cwd,
+		homeDir: home,
+		bundledDir: options?.bundledDir,
+		configPaths: options?.configPaths ?? [],
+	})
+
+	const harnessDir = resolveHarnessSkillsDir(home)
+	const normalizedHarnessDir = resolve(harnessDir)
+
+	// First pass: collect skill names from all non-bundled roots + extraPaths
+	// so the bundled filter is robust to root ordering (resolveSkillRoots
+	// returns weakest-first, so bundled comes before project/config).
+	const skillNamesFromStronger = new Set<string>()
+	collectSkillNames(harnessDir, skillNamesFromStronger)
+	for (const root of roots) {
+		if (root.kind === "bundled" || root.kind === "harness") continue
+		if (!existsSync(root.dir)) continue
+		collectSkillNames(root.dir, skillNamesFromStronger)
+	}
+	for (const p of options?.extraPaths ?? []) {
+		if (resolve(p) === normalizedHarnessDir) continue
+		if (!existsSync(p)) continue
+		collectSkillNames(p, skillNamesFromStronger)
+	}
+
+	// Second pass: build the output path list.
+	const paths: string[] = []
+	const seen = new Set<string>()
+
+	for (const root of roots) {
+		if (root.kind === "harness") continue
+		const normalized = resolve(root.dir)
+		if (seen.has(normalized)) continue
+		if (!existsSync(normalized)) continue
+
+		if (root.kind === "bundled") {
+			const filtered = filterBundledSkills(normalized, skillNamesFromStronger)
+			if (filtered) {
+				seen.add(filtered)
+				paths.push(filtered)
+			}
+			continue
+		}
+
+		seen.add(normalized)
+		paths.push(normalized)
+	}
+
+	for (const p of options?.extraPaths ?? []) {
+		const normalized = resolve(p)
+		if (seen.has(normalized)) continue
+		if (normalized === normalizedHarnessDir) continue
+		if (!existsSync(normalized)) continue
+		seen.add(normalized)
+		paths.push(normalized)
+	}
+
+	return paths
+}
+
+function listSkillNames(dir: string): string[] {
+	try {
+		return readdirSync(dir, { withFileTypes: true })
+			.filter((e) => e.isDirectory())
+			.map((e) => e.name)
+	} catch {
+		return []
+	}
+}
+
+function collectSkillNames(dir: string, out: Set<string>): void {
+	for (const name of listSkillNames(dir)) {
+		out.add(name)
+	}
+}
+
+function filterBundledSkills(bundledDir: string, existingSkillNames: Set<string>): string | undefined {
+	const bundledSkills = listSkillNames(bundledDir)
+	if (bundledSkills.length === 0) return undefined
+	const newSkills = bundledSkills.filter((name) => !existingSkillNames.has(name))
+	if (newSkills.length === 0) return undefined
+	const tempDir = mkdtempSync(join(tmpdir(), "kimchi-bundled-skills-"))
+	process.once("exit", () => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+	for (const name of newSkills) {
+		cpSync(join(bundledDir, name), join(tempDir, name), { recursive: true })
+	}
+	return tempDir
 }

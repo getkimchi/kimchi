@@ -279,7 +279,7 @@ export class AcpSessionClient {
 				ws.on("message", (data: unknown) => {
 					const text = typeof data === "string" ? data : textDecoder.decode(data as ArrayBuffer)
 					const trimmed = text.trim()
-					if (!trimmed || !trimmed.startsWith("{")) return
+					if (!trimmed?.startsWith("{")) return
 					controller.enqueue(textEncoder.encode(`${text}\n`))
 				})
 
