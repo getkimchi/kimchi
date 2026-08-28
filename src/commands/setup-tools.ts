@@ -1,5 +1,6 @@
 // Side-effect imports register each integration. Without these, all()
 // and byId() in the integrations registry return nothing.
+import "../integrations/hermes.js"
 import "../integrations/claude-code.js"
 import "../integrations/cursor.js"
 import "../integrations/gsd2.js"
