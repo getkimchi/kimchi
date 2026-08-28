@@ -30,7 +30,7 @@ import {
 // initialized (otherwise TDZ ReferenceError).
 import "./bash-default-timeout.js"
 import bashControlExtension from "./bash-background/bash-control-extension.js"
-import { createLayer1Tools, createLayer2Tools, type DapToolDeps } from "./dap/tools.js"
+import { createLayer1Tools, createLayer2Tools, DAP_ALWAYS_VISIBLE_TOOL_NAMES, type DapToolDeps } from "./dap/tools.js"
 
 export const CHARS_PER_TOKEN = 4
 
@@ -135,7 +135,7 @@ interface ExtensionSource {
 	source: string
 }
 
-const EXTENSION_SOURCES: ExtensionSource[] = [
+export const EXTENSION_SOURCES: ExtensionSource[] = [
 	{ module: "./todos/index.js", source: "todos" },
 	{ module: "./web-search/index.js", source: "web-search" },
 	{ module: "./web-fetch/index.js", source: "web-fetch" },
@@ -234,8 +234,14 @@ export async function measureCanonicalToolSurface(): Promise<ToolSurfaceResult> 
 	const exclusions = [...EXPECTED_UNRENDERABLE]
 	await measureBuiltinTools(tools)
 	await measureExtensionTools(tools, exclusions)
+	// DAP tools are measured at their session-start surface: with the Phase 1
+	// Chunk 3 deferral, only the always-visible set (debug_launch + one-shots)
+	// is advertised until a debug session becomes active. The 11 session tools
+	// are registered but hidden, so they are not part of the canonical surface.
 	for (const tool of [...createLayer1Tools(dapDeps()), ...createLayer2Tools(dapDeps())]) {
-		tools.set(tool.name, entry("extension:dap", tool))
+		if ((DAP_ALWAYS_VISIBLE_TOOL_NAMES as readonly string[]).includes(tool.name)) {
+			tools.set(tool.name, entry("extension:dap", tool))
+		}
 	}
 	return {
 		tools: [...tools.values()].sort((a, b) => b.tokensEstimated - a.tokensEstimated),

@@ -41,9 +41,9 @@ const BUDGET = {
 	skillsCatalog: 80,
 	/** Total canonical system-prompt + skills surface. */
 	total: 4900,
-	/** Total canonical tool surface (recorded 2026-08-27 post-Chunk-2: 9438 est across
-	 *  44 tools after the Agent-suite diet; ~5% headroom. Phase 1 chunks 3+ lower it. */
-	toolSurface: 9900,
+	/** Total canonical tool surface (recorded 2026-08-28 post-Chunk-3: 8357 est across
+	 *  33 tools after the DAP session-tool deferral; ~4% headroom). */
+	toolSurface: 8700,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
 }
