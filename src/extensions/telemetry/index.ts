@@ -1,9 +1,8 @@
-import { randomBytes } from "node:crypto"
+import { randomBytes, randomUUID } from "node:crypto"
 
 import type { Message } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { TelemetryConfig } from "../../config.js"
-import { getConversationId, isAgentWorker, resetConversationId } from "../agent-worker-context.js"
 import {
 	BASH_TOOL_GUARD_EVENTS,
 	type BashToolGuardAllowedByUserRequestPayload,
@@ -658,6 +657,11 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		const telemetryCtx = new TelemetryContext(config)
 		_telemetryCtx = telemetryCtx
 
+		// Per-session conversation id. Each extension instance belongs to one
+		// AgentSession, so this closure variable is naturally scoped to that
+		// session — including subagents, which get their own extension instance.
+		let conversationId = randomUUID()
+
 		// Watch the settings file for changes and emit telemetry on modification.
 		// Bound to ctx.emit so changes flow through the same OTLP pipeline. The
 		// returned stop fn is invoked on session_shutdown to close the fs.watch
@@ -697,9 +701,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 
 		pi.on("session_start", async (_event, ctx) => {
 			resetBashGuardCounts()
-			// Regenerate conversation id on /new (main agent only — subagents
-			// get their own id via runAsAgentWorker's AsyncLocalStorage).
-			if (!isAgentWorker()) resetConversationId()
+			conversationId = randomUUID()
 			handleSessionStart(telemetryCtx, ctx)
 		})
 		pi.on("session_shutdown", async (event, ctx) => {
@@ -744,7 +746,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		})
 		pi.on("before_provider_headers", (event) => {
 			event.headers["X-Session-Id"] = telemetryCtx.telemetryId
-			event.headers["X-Conversation-Id"] = getConversationId()
+			event.headers["X-Conversation-Id"] = conversationId
 			// 0 means "before first turn" (sentinel); backend should treat it accordingly.
 			event.headers["X-Turn-Index"] = String(telemetryCtx.turnIndex)
 

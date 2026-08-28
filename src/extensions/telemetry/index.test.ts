@@ -378,7 +378,7 @@ describe("telemetryExtension integration", () => {
 		expect(event.headers.traceparent).toBeUndefined()
 	})
 
-	it("before_provider_headers injects X-Conversation-Id as a valid UUID", async () => {
+	it("before_provider_headers injects X-Conversation-Id as a UUID", async () => {
 		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)
 		await getHandler(handlers, "session_start")({}, ctx)
