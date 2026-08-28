@@ -52,6 +52,7 @@ vi.mock("./mcp-adapter/metadata-cache.js", async (importOriginal) => {
 	}
 })
 
+import { withPrintGate } from "./print-mode.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "./prompt-construction/system-prompt.js"
 
 const CHARS_PER_TOKEN = 4
@@ -71,6 +72,11 @@ const BUDGET = {
 	 *  exceed this by the five gated lsp_* tools (~666 est) — that is by design,
 	 *  see LSP_TOOL_NAMES in lsp.ts. */
 	toolSurface: 7100,
+	/** Print-mode slice (recorded 2026-08-28 post-Chunk-7: 6021 est across 24
+	 *  tools — the canonical surface minus questionnaire (526) and set_phase
+	 *  (217), which the registration gates drop in headless --print runs;
+	 *  ~5% headroom). */
+	printToolSurface: 6300,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
 }
@@ -217,5 +223,22 @@ describe("context budget", () => {
 			total,
 			`canonical tool surface grew beyond budget\n${breakdown}\nTo fix: shrink definitions, gate/defer availability, or raise BUDGET.toolSurface deliberately in this PR.`,
 		).toBeLessThanOrEqual(BUDGET.toolSurface)
+	})
+
+	it("print-mode slice drops interactive/ferment-mode tools (token-optimization Chunk 7)", async () => {
+		const { tools } = await withPrintGate({ print: true }, () => measureCanonicalToolSurface())
+
+		const names = new Set(tools.map((tool) => tool.name))
+		// The interactive surface is the canonical 26-tool set above; in print
+		// mode the registration gates must remove exactly these two.
+		expect(names.has("questionnaire"), "questionnaire must be gated out of --print sessions").toBe(false)
+		expect(names.has("set_phase"), "set_phase must be gated out of --print sessions").toBe(false)
+		expect(tools.length).toBe(24)
+
+		const total = tools.reduce((sum, tool) => sum + tool.tokensEstimated, 0)
+		expect(
+			total,
+			`print-mode tool surface exceeded budget\nprint surface: ${total} est (budget ${BUDGET.printToolSurface}) across ${tools.length} tools\nTo fix: shrink definitions or raise BUDGET.printToolSurface deliberately in this PR.`,
+		).toBeLessThanOrEqual(BUDGET.printToolSurface)
 	})
 })

@@ -8,6 +8,8 @@ import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-codin
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import {
 	getParsedCliArgs,
+	hasFermentOneshotArg,
+	hasPrintFlag,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isExplicitAutoModelSelection,
@@ -97,6 +99,7 @@ import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup
 import piiRedactionExtension from "./extensions/pii-redaction/index.js"
 import plannotatorExtension from "./extensions/plannotator/index.js"
 import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/index.js"
+import { setPrintGate } from "./extensions/print-mode.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
@@ -285,6 +288,12 @@ try {
 		// args that reach main(), so pi.getFlag can't discover it.
 		setExperimentalFeaturesEnabled(experimentalFeatures)
 		installAutoModelAdapters()
+		// Token-optimization Phase 1 Chunk 7: publish the print-mode gate the
+		// same way so interactive-only (questionnaire) and ferment-mode-only
+		// (set_phase, list_ferments, ferment suite) tools stay out of headless
+		// --print sessions. The ferment-oneshot argv scan is the load-bearing
+		// composition: a headless one-shot planner still needs the suite.
+		setPrintGate(hasPrintFlag(originalArgs), hasFermentOneshotArg(originalArgs))
 		let config = loadConfig()
 
 		const envKey = process.env.KIMCHI_API_KEY || undefined

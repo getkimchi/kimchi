@@ -39,6 +39,7 @@ import { createContext } from "./__mocks__/context.js"
 import { EXTENSION_SOURCES } from "./context-budget-tools.js"
 import { DAP_ALWAYS_VISIBLE_TOOL_NAMES, DAP_SESSION_TOOL_NAMES } from "./dap/tools.js"
 import type { DapAdapterConfig } from "./dap/types.js"
+import { withPrintGate } from "./print-mode.js"
 import { getDisabledToolNames } from "./prompt-construction/tool-visibility.js"
 
 // =============================================================================
@@ -391,6 +392,30 @@ describe("tool exposure at session start", () => {
 		// …but never advertised at session start.
 		const deferredInActive = [...EXPECTED_DEFERRED_BY_DESIGN].filter((n) => visible.has(n))
 		expect(deferredInActive).toEqual([])
+	})
+
+	it("print mode drops questionnaire + set_phase at registration (Chunk 7)", async () => {
+		await withPrintGate({ print: true }, async () => {
+			const harness = createExposureHarness()
+			await instantiateAllExtensions(harness)
+
+			// Registration gates: unlike deferred tools, these are NOT registered
+			// in --print mode — not merely hidden.
+			expect(harness.registered.has("questionnaire"), "questionnaire must not register in --print").toBe(false)
+			expect(harness.registered.has("set_phase"), "set_phase must not register in --print").toBe(false)
+
+			// The remaining visible surface is the interactive spec minus the two
+			// gate-outs; deferred spec is unchanged.
+			const expectedVisible = new Set(
+				[...EXPECTED_SESSION_START_VISIBLE].filter((n) => n !== "questionnaire" && n !== "set_phase"),
+			)
+			const visible = new Set(harness.active)
+			expect(visible).toEqual(expectedVisible)
+			expect(visible.size).toBe(24)
+			for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
+				expect(harness.registered.has(name), `${name} must stay registered in --print`).toBe(true)
+			}
+		})
 	})
 
 	it("drift guard: every registered tool is either visible or explicitly deferred, and vice versa", async () => {

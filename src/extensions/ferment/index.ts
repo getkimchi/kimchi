@@ -26,6 +26,7 @@ import {
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { withBlocked } from "../herdr-events.js"
+import { shouldSuppressFermentModeTools } from "../print-mode.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { registerTipProvider } from "../tips/registry.js"
@@ -457,9 +458,20 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	})
 
 	// ─── Tool registrations ───────────────────────────────────────────────────
-	registerLifecycleTools(pi, runtime)
-	registerPhaseTools(pi, runtime)
-	registerStepTools(pi, runtime)
-	registerKnowledgeTools(pi, runtime)
+	// Token-optimization Phase 1 Chunk 7: in a plain --print session with no
+	// ferment one-shot in flight there is no audience for the ferment suite
+	// (list_ferments, lifecycle, phase, step, knowledge tools — including
+	// ask_user, which headless-non-oneshot sessions cannot route to any
+	// audience). Suppress the suite so it never enters the advertised surface
+	// of demonstrate non-interactive runs. A --print run launched WITH
+	// -oneshot=true keeps everything: that session IS the one-shot
+	// planner, and its toolset composes via shouldSuppressFermentModeTools().
+	// The spawn guard is an event guard, not tool surface — always registered.
+	if (!shouldSuppressFermentModeTools()) {
+		registerLifecycleTools(pi, runtime)
+		registerPhaseTools(pi, runtime)
+		registerStepTools(pi, runtime)
+		registerKnowledgeTools(pi, runtime)
+	}
 	registerAgentSpawnGuard(pi, runtime)
 }
