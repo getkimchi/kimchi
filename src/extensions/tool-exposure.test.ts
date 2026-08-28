@@ -114,6 +114,10 @@ interface ExposureHarness {
 	/** Every setActiveTools call, in order (transition log). */
 	activeTransitions: string[][]
 	fire: (event: string, payload?: unknown) => Promise<void>
+	/** Fire an event where handlers receive the event object (e.g. tool_result,
+	 *  whose handlers read event.toolName — `fire` passes the name string as the
+	 *  first arg, which only suits name-only handlers like session_start). */
+	fireEvent: (event: string, eventObject: unknown) => Promise<void>
 }
 
 function createExposureHarness(): ExposureHarness & { pi: ExtensionAPI } {
@@ -164,11 +168,18 @@ function createExposureHarness(): ExposureHarness & { pi: ExtensionAPI } {
 		}
 	}
 
+	const fireEvent = async (event: string, eventObject: unknown) => {
+		for (const handler of handlers.get(event) ?? []) {
+			await handler(eventObject as never, undefined)
+		}
+	}
+
 	return {
 		registered,
 		active,
 		activeTransitions,
 		fire,
+		fireEvent,
 		pi: api as unknown as ExtensionAPI,
 	}
 }
@@ -200,16 +211,15 @@ function sessionStartPayload(): ExtensionContext {
 
 const UPSTREAM_BUILTINS = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const
 
-/** Tools the extensions register that are NOT exercised via session_start in
- *  this harness (bash-control registers inside its own factory). */
+/** bash_control is deferred in main sessions (Chunk 4): registered but
+ *  hidden at session start, revealed on the first background bash handle. */
 const BASH_CONTROL_TOOLS = ["bash_control"] as const
 
 /** Every tool that must be advertised at session start, from the canonical
- *  measurement (2026-08-28: 33 tools / 8,357 est). Kept as a literal spec —
+ *  measurement (2026-08-28 post-Chunk-4: 32 tools / ~7,881 est). Kept as a literal spec —
  *  deriving it from the same factories would make this test circular. */
 const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	...UPSTREAM_BUILTINS,
-	...BASH_CONTROL_TOOLS,
 	// todos
 	"create_todos",
 	"update_todos",
@@ -240,9 +250,9 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 ])
 
 /** Deferral spec: tools that are REGISTERED but hidden at session start. A
- *  future deferral (bash_control, mcp with no servers, …) must add itself
+ *  future deferral (mcp with no servers, …) must add itself
  *  here — the drift-guard tests below enforce it. */
-const EXPECTED_DEFERRED_BY_DESIGN = new Set<string>([...DAP_SESSION_TOOL_NAMES])
+const EXPECTED_DEFERRED_BY_DESIGN = new Set<string>([...DAP_SESSION_TOOL_NAMES, ...BASH_CONTROL_TOOLS])
 
 /** Extensions that register tools at session_start, mirroring the budget
  *  measurement + the DAP extension (the real subject of the Chunk 3 deferral).
@@ -303,13 +313,13 @@ describe("tool exposure at session start", () => {
 		workerState.isWorker = false
 	})
 
-	it("advertises exactly the documented 33-tool surface and hides the 11 deferred DAP tools", async () => {
+	it("advertises exactly the documented 32-tool surface and hides the 12 deferred tools", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
 		const visible = new Set(harness.active)
 		expect(visible).toEqual(EXPECTED_SESSION_START_VISIBLE)
-		expect(visible.size).toBe(33)
+		expect(visible.size).toBe(32)
 
 		// Deferred tools are still REGISTERED (availability preserved)…
 		for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
@@ -349,7 +359,7 @@ describe("tool exposure at session start", () => {
 
 		const votes = new Set(getDisabledToolNames(harness.pi))
 		expect(votes).toEqual(EXPECTED_DEFERRED_BY_DESIGN)
-		expect(votes.size).toBe(11)
+		expect(votes.size).toBe(12)
 	})
 
 	it("DAP reveal round-trip exposes the 11 session tools exactly once when a session starts", async () => {
@@ -375,6 +385,38 @@ describe("tool exposure at session start", () => {
 
 		// Second launch: guard prevents a second visibility transition.
 		await launchTool.execute("call-2", { program: "app.ts" }, undefined, undefined, sessionStartPayload())
+		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
+	})
+
+	it("bash_control reveal round-trip exposes it exactly once on the first background handle", async () => {
+		const harness = createExposureHarness()
+		await instantiateAllExtensions(harness)
+
+		expect(harness.active.has("bash_control"), "bash_control hidden before any background handle").toBe(false)
+
+		// A bash result carrying a background handle reveals bash_control
+		// (the gate handler observes the handle; reveal happens in the same seam).
+		await harness.fireEvent("tool_result", {
+			toolName: "bash",
+			toolCallId: "c1",
+			input: { command: "long build" },
+			content: [{ type: "text", text: "still running" }],
+			isError: false,
+			details: { handle: "h1", checkin: true, exited: false },
+		})
+
+		expect(harness.active.has("bash_control"), "bash_control visible after the first background handle").toBe(true)
+		const transitionsAfterReveal = harness.activeTransitions.length
+
+		// A second handle must not re-transition visibility (one-way reveal).
+		await harness.fireEvent("tool_result", {
+			toolName: "bash",
+			toolCallId: "c2",
+			input: { command: "another long build" },
+			content: [{ type: "text", text: "still running" }],
+			isError: false,
+			details: { handle: "h2", checkin: true, exited: false },
+		})
 		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
 	})
 

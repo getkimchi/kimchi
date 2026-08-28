@@ -30,6 +30,7 @@ import {
 // initialized (otherwise TDZ ReferenceError).
 import "./bash-default-timeout.js"
 import bashControlExtension from "./bash-background/bash-control-extension.js"
+import { BASH_CONTROL_TOOL_NAME } from "./bash-background/bash-control-tool.js"
 import { createLayer1Tools, createLayer2Tools, DAP_ALWAYS_VISIBLE_TOOL_NAMES, type DapToolDeps } from "./dap/tools.js"
 
 export const CHARS_PER_TOKEN = 4
@@ -167,6 +168,10 @@ async function measureBuiltinTools(out: Map<string, ToolSurfaceEntry>): Promise<
 	bashControlExtension(bashControlApi as never)
 	await fireBashControl("session_start")
 	for (const tool of bashTools.values()) {
+		// bash_control is deferred (token-optimization Phase 1 Chunk 4):
+		// registered but hidden at session start until the first background
+		// bash handle exists, so it is not part of the canonical surface.
+		if (tool.name === BASH_CONTROL_TOOL_NAME) continue
 		out.set(tool.name, entry("extension:bash-control", tool))
 	}
 }

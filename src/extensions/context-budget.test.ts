@@ -41,9 +41,9 @@ const BUDGET = {
 	skillsCatalog: 80,
 	/** Total canonical system-prompt + skills surface. */
 	total: 4900,
-	/** Total canonical tool surface (recorded 2026-08-28 post-Chunk-3: 8357 est across
-	 *  33 tools after the DAP session-tool deferral; ~4% headroom). */
-	toolSurface: 8700,
+	/** Total canonical tool surface (recorded 2026-08-28 post-Chunk-4: 7881 est across
+	 *  32 tools after the DAP session-tool + bash_control deferrals; ~5% headroom). */
+	toolSurface: 8300,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
 }
