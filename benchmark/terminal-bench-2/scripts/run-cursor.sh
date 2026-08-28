@@ -18,7 +18,7 @@ BENCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$BENCH_DIR"
 
 HARBOR_ARGS=(
-    --agent-import-path kimchi_agent:CursorAgent
+    --agent kimchi_agent:CursorAgent
     --env docker
     --model "${MODEL:-cursor/composer-2.5}"
     --ae "CURSOR_API_KEY=$CURSOR_API_KEY"

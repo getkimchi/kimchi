@@ -29,7 +29,7 @@ cd "$BENCH_DIR"
 RETRY_CONFIG="${RETRY_CONFIG:-$BENCH_DIR/config/retry.yaml}"
 
 HARBOR_ARGS=(
-    --agent-import-path kimchi_agent:ClaudeCodeKimchi
+    --agent kimchi_agent:ClaudeCodeKimchi
     --env docker
     --model "$MODEL"
     --config "$RETRY_CONFIG"

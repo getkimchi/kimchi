@@ -55,7 +55,7 @@ For example:
 ```bash
 export ZAI_API_KEY=...
 uv run --python 3.14 harbor run \
-  --agent-import-path kimchi_agent:Kimchi \
+  --agent kimchi_agent:Kimchi \
   --env docker \
   --model zai/glm-5.3 \
   --ae "ZAI_API_KEY=$ZAI_API_KEY" \

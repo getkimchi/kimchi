@@ -25,7 +25,7 @@ require_model_api_key "$MODEL" kimchi-dev openrouter moonshotai zai
 cd "$BENCH_DIR"
 
 HARBOR_ARGS=(
-    --agent-import-path kimchi_agent:PiKimchi
+    --agent kimchi_agent:PiKimchi
     --env docker
     --model "$MODEL"
     --ae "$MODEL_API_KEY_ENV=${!MODEL_API_KEY_ENV}"

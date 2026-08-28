@@ -21,7 +21,7 @@ cd "$BENCH_DIR"
 unset KIMCHI_CODE_BINARY
 
 exec uv run --python 3.14 harbor run \
-    --agent-import-path kimchi_agent:Kimchi \
+    --agent kimchi_agent:Kimchi \
     --env docker \
     --model "$MODEL" \
     --ae "$MODEL_API_KEY_ENV=${!MODEL_API_KEY_ENV}" \

@@ -15,7 +15,7 @@ BENCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$BENCH_DIR"
 
 HARBOR_ARGS=(
-    --agent-import-path kimchi_agent:GsdKimchi
+    --agent kimchi_agent:GsdKimchi
     --env docker
     --model "${MODEL:-kimchi-dev/kimi-k2.7}"
     --ae "KIMCHI_API_KEY=$KIMCHI_API_KEY"

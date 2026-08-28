@@ -14,7 +14,7 @@ killing the trial. ``patch_docker_environment_retry()`` wraps ``start()``
 with a bounded retry using exponential backoff with jitter.
 
 Scope: this only takes effect for trials whose agent is imported through
-``kimchi_agent`` (i.e. run via ``--agent-import-path kimchi_agent:...``),
+``kimchi_agent`` (i.e. run via ``--agent kimchi_agent:...``),
 because importing any ``kimchi_agent`` submodule is what triggers
 ``kimchi_agent/__init__.py`` to apply this patch. Stock harbor agents
 invoked without going through this package are unaffected. If harbor ever
