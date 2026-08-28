@@ -32,6 +32,7 @@ import "./bash-default-timeout.js"
 import bashControlExtension from "./bash-background/bash-control-extension.js"
 import { BASH_CONTROL_TOOL_NAME } from "./bash-background/bash-control-tool.js"
 import { createLayer1Tools, createLayer2Tools, DAP_ALWAYS_VISIBLE_TOOL_NAMES, type DapToolDeps } from "./dap/tools.js"
+import { LSP_TOOL_NAMES } from "./lsp.js"
 
 export const CHARS_PER_TOKEN = 4
 
@@ -141,6 +142,9 @@ export const EXTENSION_SOURCES: ExtensionSource[] = [
 	{ module: "./web-search/index.js", source: "web-search" },
 	{ module: "./web-fetch/index.js", source: "web-fetch" },
 	{ module: "./questionnaire/questionnaire.js", source: "questionnaire" },
+	// lsp registers its five tools unconditionally, but the Chunk 6 detection
+	// gate hides them at session_start when no language server matches the cwd;
+	// LSP_TOOL_NAMES are filtered out of the canonical surface below.
 	{ module: "./lsp.js", source: "lsp" },
 	{ module: "./agents/index.js", source: "agents" },
 	// Config-gated (token-optimization Phase 1 Chunk 5): with zero configured
@@ -250,6 +254,16 @@ export async function measureCanonicalToolSurface(): Promise<ToolSurfaceResult> 
 		if ((DAP_ALWAYS_VISIBLE_TOOL_NAMES as readonly string[]).includes(tool.name)) {
 			tools.set(tool.name, entry("extension:dap", tool))
 		}
+	}
+	// Token-optimization Phase 1 Chunk 6: the five lsp_* tools are detection-gated
+	// — registered but hidden at session_start when no language server matches the
+	// session cwd. The canonical surface assumes the no-server state (a session in a
+	// directory without project markers/PATH binaries), so filter them out. Any
+	// buffer that surfaces them locally (e.g. this repo's own dev sessions, which
+	// DO match typescript-language-server) exceeds the canonical measurement by
+	// exactly their est — recorded in the budget test's lsp slice.
+	for (const name of LSP_TOOL_NAMES) {
+		tools.delete(name)
 	}
 	return {
 		tools: [...tools.values()].sort((a, b) => b.tokensEstimated - a.tokensEstimated),

@@ -64,10 +64,13 @@ const BUDGET = {
 	skillsCatalog: 80,
 	/** Total canonical system-prompt + skills surface. */
 	total: 4900,
-	/** Total canonical tool surface (recorded 2026-08-28 post-Chunk-5: 7430 est across
-	 *  31 tools after the DAP session-tool + bash_control deferrals and the mcp
-	 *  zero-server registration gate; ~6% headroom). */
-	toolSurface: 7900,
+	/** Total canonical tool surface (recorded 2026-08-28 post-Chunk-6: 6764 est across
+	 *  26 tools after the DAP session-tool + bash_control deferrals, the mcp
+	 *  zero-server registration gate, and the lsp no-server detection gate;
+	 *  ~5% headroom). Dev sessions in a repo WITH a detected language server will
+	 *  exceed this by the five gated lsp_* tools (~666 est) — that is by design,
+	 *  see LSP_TOOL_NAMES in lsp.ts. */
+	toolSurface: 7100,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
 }

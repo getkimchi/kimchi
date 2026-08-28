@@ -12,6 +12,9 @@
 //     surface reduced
 //   - the mcp gateway is config-gated (Chunk 5): not registered at all when
 //     zero MCP servers are configured (a dedicated test asserts the on-state)
+//   - the five lsp_* tools are detection-gated (Chunk 6): registered but
+//     hidden via a visibility vote when no language server is detected for
+//     the session cwd (a dedicated test asserts the detected state)
 //   - the visibility votes (getDisabledToolNames) equal the declared deferral
 //     spec — the drift guard: a new deferral must declare itself here
 //   - the DAP + bash_control reveal round-trips expose their tools exactly once
@@ -121,6 +124,27 @@ const workerState = vi.hoisted(() => ({ isWorker: false }))
 vi.mock("./agent-worker-context.js", () => ({
 	isAgentWorker: () => workerState.isWorker,
 }))
+
+// =============================================================================
+// Mock LSP server detection — pin zero detected servers so the Chunk 6
+// visibility gate hides the five lsp_* tools deterministically. Detection
+// otherwise hits the real filesystem (project markers) and PATH (`which`),
+// and this dev machine HAS typescript-language-server installed — ambient
+// host state must not leak into the spec. serverForFile/findRoot keep their
+// real implementations (pure path logic; not exercised at session_start).
+// =============================================================================
+
+const lspServerState = vi.hoisted(() => ({
+	active: [] as Array<{ name: string }>,
+}))
+vi.mock("./lsp/servers.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./lsp/servers.js")>()
+	return {
+		...original,
+		detectServers: () => lspServerState.active,
+		detectMissingCandidates: () => [],
+	}
+})
 
 const dapExtension = (await import("./dap.js")).default
 
@@ -261,12 +285,6 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	"web_search",
 	"web_fetch",
 	"questionnaire",
-	// lsp
-	"lsp_diagnostics",
-	"lsp_hover",
-	"lsp_definition",
-	"lsp_references",
-	"lsp_rename",
 	// agents
 	"Agent",
 	"resume_subagent",
@@ -284,7 +302,18 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
  *  deferral must add itself here — the drift-guard tests below enforce it.
  *  (Config-gated tools like mcp don't belong here: in their off state they
  *  are unregistered, not hidden.) */
-const EXPECTED_DEFERRED_BY_DESIGN = new Set<string>([...DAP_SESSION_TOOL_NAMES, ...BASH_CONTROL_TOOLS])
+
+/** The five lsp_* tools are detection-gated (token-optimization Phase 1
+ *  Chunk 6): registered at session start but hidden via a visibility vote
+ *  when no language server is detected for the session cwd. They share the
+ *  visibility-vote mechanics with the deferrals above, so they are asserted
+ *  in the same drift-guard bucket. */
+const LSP_TOOL_NAMES = ["lsp_diagnostics", "lsp_hover", "lsp_definition", "lsp_references", "lsp_rename"] as const
+const EXPECTED_DEFERRED_BY_DESIGN = new Set<string>([
+	...DAP_SESSION_TOOL_NAMES,
+	...BASH_CONTROL_TOOLS,
+	...LSP_TOOL_NAMES,
+])
 
 /** Extensions that register tools at session_start, mirroring the budget
  *  measurement + the DAP extension (the real subject of the Chunk 3 deferral).
@@ -336,6 +365,7 @@ const JS_DEBUG: DapAdapterConfig = {
 describe("tool exposure at session start", () => {
 	beforeEach(() => {
 		mcpConfigState.servers = {}
+		lspServerState.active = []
 		adapterState.active = [JS_DEBUG]
 		clientState.sessionAfterCreate = {
 			id: "test-session",
@@ -346,13 +376,13 @@ describe("tool exposure at session start", () => {
 		workerState.isWorker = false
 	})
 
-	it("advertises exactly the documented 31-tool surface and hides the 12 deferred tools", async () => {
+	it("advertises exactly the documented 26-tool surface and hides the 17 deferred tools", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
 		const visible = new Set(harness.active)
 		expect(visible).toEqual(EXPECTED_SESSION_START_VISIBLE)
-		expect(visible.size).toBe(31)
+		expect(visible.size).toBe(26)
 
 		// Deferred tools are still REGISTERED (availability preserved)…
 		for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
@@ -392,7 +422,18 @@ describe("tool exposure at session start", () => {
 
 		const votes = new Set(getDisabledToolNames(harness.pi))
 		expect(votes).toEqual(EXPECTED_DEFERRED_BY_DESIGN)
-		expect(votes.size).toBe(12)
+		expect(votes.size).toBe(17)
+	})
+
+	it("lsp tools stay advertised when a language server is detected (Chunk 6 gate on)", async () => {
+		lspServerState.active = [{ name: "typescript-language-server" }]
+		const harness = createExposureHarness()
+		await instantiateAllExtensions(harness)
+
+		for (const name of LSP_TOOL_NAMES) {
+			expect(harness.registered.has(name), `${name} must be registered`).toBe(true)
+			expect(harness.active.has(name), `${name} must be advertised when a server is detected`).toBe(true)
+		}
 	})
 
 	it("mcp gateway registers and is advertised when a server is configured (Chunk 5 gate on)", async () => {
@@ -466,7 +507,7 @@ describe("tool exposure at session start", () => {
 		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
 	})
 
-	it("agent workers keep full DAP visibility (carve-out)", async () => {
+	it("agent workers keep full DAP + bash_control visibility (carve-out)", async () => {
 		workerState.isWorker = true
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
@@ -474,7 +515,15 @@ describe("tool exposure at session start", () => {
 		for (const name of [...DAP_ALWAYS_VISIBLE_TOOL_NAMES, ...DAP_SESSION_TOOL_NAMES]) {
 			expect(harness.active.has(name), `${name} must stay visible in workers`).toBe(true)
 		}
-		expect(getDisabledToolNames(harness.pi).size).toBe(0)
-		expect(harness.activeTransitions).toHaveLength(0)
+		// The tactical deferrals (DAP session tools + bash_control) are carved
+		// out of workers — they must not hold disable votes here. The LSP gate
+		// (Chunk 6) is environmental, not tactical: in a no-server session the
+		// lsp tools can only ever answer "No LSP server available", so the gate
+		// deliberately applies to workers too. Assert the carve-outs precisely
+		// instead of a blanket zero-vote count.
+		const disabled = getDisabledToolNames(harness.pi)
+		for (const name of [...DAP_SESSION_TOOL_NAMES, ...BASH_CONTROL_TOOLS]) {
+			expect(disabled.has(name), `${name} must not be hidden in workers`).toBe(false)
+		}
 	})
 })
