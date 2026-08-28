@@ -100,6 +100,9 @@ export class AcpSessionClient {
 	private _abortListener: (() => void) | undefined
 	/** Reject function for the currently-pending initialize()/prompt() promise. */
 	private _pendingReject: ((err: Error) => void) | undefined
+	/** Maps toolCallId → title so tool_call_update events with null title
+	 *  can resolve to the original tool name from the initial tool_call. */
+	private _toolCallTitles = new Map<string, string>()
 
 	constructor(options: AcpSessionClientOptions) {
 		this._options = options
@@ -423,11 +426,16 @@ export class AcpSessionClient {
 				break
 			}
 			case "tool_call": {
-				this._dispatchToolActivity(cb, update.status, update.title)
+				if (update.title) {
+					this._toolCallTitles.set(update.toolCallId, update.title)
+				}
+				this._dispatchToolActivity(cb, update.status, update.toolCallId, update.title)
 				break
 			}
 			case "tool_call_update": {
-				this._dispatchToolActivity(cb, update.status, update.title ?? "tool")
+				// tool_call_update may omit title — resolve from the initial tool_call.
+				const title = update.title ?? this._toolCallTitles.get(update.toolCallId)
+				this._dispatchToolActivity(cb, update.status, update.toolCallId, title)
 				break
 			}
 			default:
@@ -440,12 +448,14 @@ export class AcpSessionClient {
 	private _dispatchToolActivity(
 		cb: AcpSessionCallbacks,
 		status: ToolCallStatus | null | undefined,
-		title: string,
+		toolCallId: string,
+		title: string | undefined,
 	): void {
 		if (status === "in_progress") {
-			cb.onToolActivity?.({ type: "start", toolName: title })
+			cb.onToolActivity?.({ type: "start", toolName: title ?? toolCallId })
 		} else if (status === "completed" || status === "failed") {
-			cb.onToolActivity?.({ type: "end", toolName: title })
+			cb.onToolActivity?.({ type: "end", toolName: title ?? toolCallId })
+			this._toolCallTitles.delete(toolCallId)
 		}
 	}
 

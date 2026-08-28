@@ -70,7 +70,7 @@ describe("runCloudAgent", () => {
 		const ctx = makeCtx()
 		vi.mocked(spawnRemoteAgent).mockResolvedValue({ id: "agent-1", result: "done" })
 
-		const opts = { background: true, onSpawn: vi.fn() }
+		const opts = { background: true }
 		await runCloudAgent(pi, ctx, "hello", "desc", opts)
 
 		expect(spawnRemoteAgent).toHaveBeenCalledWith(pi, ctx, "hello", "desc", opts)

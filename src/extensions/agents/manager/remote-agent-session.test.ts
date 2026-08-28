@@ -131,7 +131,7 @@ describe("RemoteAgentSession", () => {
 			})
 		})
 
-		it("replaces last assistant message when full text is accumulated", () => {
+		it("updates text in place when full text is accumulated", () => {
 			const session = new RemoteAgentSession()
 			session.appendAssistantText("Hello")
 			session.appendAssistantText("Hello world")
@@ -143,6 +143,30 @@ describe("RemoteAgentSession", () => {
 				content: [{ type: "text", text: "Hello world done" }],
 			})
 		})
+
+		it("trims leading newlines from assistant text", () => {
+			const session = new RemoteAgentSession()
+			session.appendAssistantText("\n\nHello world")
+			expect(session.messages[0].content).toEqual([{ type: "text", text: "Hello world" }])
+		})
+
+		it("preserves toolCall parts when updating text after a tool call", () => {
+			const session = new RemoteAgentSession()
+			// Simulate ACP: onTextDelta sends full accumulated text
+			session.appendAssistantText("thinking...")
+			session.recordToolCallStart("bash")
+			session.recordToolCallEnd("bash")
+			// ACP sends full accumulated text including pre-tool text;
+			// appendAssistantText slices from _textOffset to get only post-tool text
+			session.appendAssistantText("thinking...Done")
+
+			// Last assistant message should have the post-tool text
+			const last = session.messages[session.messages.length - 1]
+			expect(last.role).toBe("assistant")
+			const parts = last.content as Array<{ type: string; text?: string; name?: string }>
+			const textPart = parts.find((p) => p.type === "text")
+			expect(textPart?.text).toBe("Done")
+		})
 	})
 
 	describe("turnCount", () => {
@@ -152,6 +176,187 @@ describe("RemoteAgentSession", () => {
 			session.incrementTurnCount()
 			session.incrementTurnCount()
 			expect(session.turnCount).toBe(2)
+		})
+	})
+
+	describe("setUserPrompt", () => {
+		it("adds a user message as the first message", () => {
+			const session = new RemoteAgentSession()
+			session.setUserPrompt("build the thing")
+			expect(session.messages).toHaveLength(1)
+			expect(session.messages[0]).toEqual({ role: "user", content: "build the thing" })
+		})
+
+		it("does not add a duplicate user message on second call", () => {
+			const session = new RemoteAgentSession()
+			session.setUserPrompt("first")
+			session.setUserPrompt("second")
+			expect(session.messages).toHaveLength(1)
+			expect(session.messages[0]).toEqual({ role: "user", content: "first" })
+		})
+
+		it("emits a message_start event", () => {
+			const session = new RemoteAgentSession()
+			const listener = vi.fn()
+			session.subscribe(listener)
+			session.setUserPrompt("hello")
+			expect(listener).toHaveBeenCalledTimes(1)
+			expect(listener.mock.calls[0][0]).toMatchObject({ type: "message_start" })
+		})
+	})
+
+	describe("appendAssistantText emits events", () => {
+		it("emits message_update on each text append", () => {
+			const session = new RemoteAgentSession()
+			const listener = vi.fn()
+			session.subscribe(listener)
+
+			session.appendAssistantText("Hello")
+			expect(listener).toHaveBeenCalledTimes(1)
+			expect(listener.mock.calls[0][0]).toMatchObject({ type: "message_update" })
+
+			session.appendAssistantText("Hello world")
+			expect(listener).toHaveBeenCalledTimes(2)
+		})
+	})
+
+	describe("recordToolCallStart", () => {
+		it("adds a toolCall to an existing assistant message", () => {
+			const session = new RemoteAgentSession()
+			session.appendAssistantText("thinking...")
+			session.recordToolCallStart("bash")
+
+			expect(session.messages).toHaveLength(1)
+			const content = session.messages[0].content as Array<{ type: string; name?: string; id?: string }>
+			expect(content).toHaveLength(2)
+			expect(content[1]).toMatchObject({ type: "toolCall", name: "bash", id: "tc-1", arguments: {} })
+		})
+
+		it("creates a new assistant message when none exists", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("read")
+			expect(session.messages).toHaveLength(1)
+			expect(session.messages[0].role).toBe("assistant")
+		})
+
+		it("emits tool_execution_start", () => {
+			const session = new RemoteAgentSession()
+			const listener = vi.fn()
+			session.subscribe(listener)
+			session.recordToolCallStart("bash")
+			expect(listener).toHaveBeenCalledTimes(1)
+			expect(listener.mock.calls[0][0]).toMatchObject({ type: "tool_execution_start", toolName: "bash" })
+		})
+
+		describe("deduplication", () => {
+			it("skips duplicate in_progress for the same tool name", () => {
+				const session = new RemoteAgentSession()
+				const listener = vi.fn()
+				session.subscribe(listener)
+
+				session.recordToolCallStart("bash")
+				session.recordToolCallStart("bash") // ACP re-sends in_progress
+
+				expect(listener).toHaveBeenCalledTimes(1)
+				const parts = session.messages[0].content as Array<{ type: string; name?: string }>
+				const toolCalls = parts.filter((p) => p.type === "toolCall")
+				expect(toolCalls).toHaveLength(1)
+			})
+
+			it("allows the same tool name after the previous call ends", () => {
+				const session = new RemoteAgentSession()
+
+				session.recordToolCallStart("bash")
+				session.recordToolCallEnd("bash")
+				session.recordToolCallStart("bash")
+
+				const assistantMsgs = session.messages.filter((m) => m.role === "assistant")
+				const toolCalls = assistantMsgs.flatMap((m) =>
+					(m.content as Array<{ type: string; name?: string }>).filter((p) => p.type === "toolCall"),
+				)
+				expect(toolCalls).toHaveLength(2)
+			})
+
+			it('skips fallback "tool" name when a real tool is pending', () => {
+				const session = new RemoteAgentSession()
+				const listener = vi.fn()
+				session.subscribe(listener)
+
+				session.recordToolCallStart("pnpm run typecheck")
+				session.recordToolCallStart("pnpm run typecheck") // duplicate in_progress
+
+				expect(listener).toHaveBeenCalledTimes(1)
+				const parts = session.messages[0].content as Array<{ type: string; name?: string }>
+				const toolCalls = parts.filter((p) => p.type === "toolCall")
+				expect(toolCalls).toHaveLength(1)
+				expect(toolCalls[0].name).toBe("pnpm run typecheck")
+			})
+		})
+	})
+
+	describe("recordToolCallEnd", () => {
+		it("adds a toolResult message", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("bash")
+			session.recordToolCallEnd("bash")
+
+			expect(session.messages).toHaveLength(2)
+			expect(session.messages[1]).toMatchObject({
+				role: "toolResult",
+				toolCallId: "tc-1",
+				toolName: "bash",
+				content: [{ type: "text", text: "(completed)" }],
+				isError: false,
+			})
+		})
+
+		it("marks error results", () => {
+			const session = new RemoteAgentSession()
+			session.recordToolCallStart("bash")
+			session.recordToolCallEnd("bash", true)
+
+			const msg = session.messages[1]
+			expect(msg.isError).toBe(true)
+			const result = msg.content as Array<{ type: string; text: string }>
+			expect(result[0].text).toBe("(tool failed)")
+		})
+
+		it("emits tool_execution_end", () => {
+			const session = new RemoteAgentSession()
+			const listener = vi.fn()
+			session.subscribe(listener)
+			session.recordToolCallEnd("bash")
+			expect(listener).toHaveBeenCalledTimes(1)
+			expect(listener.mock.calls[0][0]).toMatchObject({ type: "tool_execution_end", toolName: "bash" })
+		})
+	})
+
+	describe("full conversation flow", () => {
+		it("builds a complete transcript from user prompt through tool calls", () => {
+			const session = new RemoteAgentSession()
+			const listener = vi.fn()
+			session.subscribe(listener)
+
+			session.setUserPrompt("do stuff")
+			// Simulate ACP: onTextDelta sends full accumulated text per turn
+			session.appendAssistantText("I'll run a command")
+			session.recordToolCallStart("bash")
+			session.recordToolCallEnd("bash")
+			// ACP sends full text including pre-tool text; sliced to post-tool text
+			session.appendAssistantText("I'll run a commandDone")
+
+			expect(session.messages).toHaveLength(4)
+			expect(session.messages[0].role).toBe("user")
+			expect(session.messages[1].role).toBe("assistant")
+			expect(session.messages[2].role).toBe("toolResult")
+			expect(session.messages[3].role).toBe("assistant")
+			// The post-tool assistant message should only have post-tool text
+			const postToolParts = session.messages[3].content as Array<{ type: string; text?: string }>
+			const textPart = postToolParts.find((p) => p.type === "text")
+			expect(textPart?.text).toBe("Done")
+			// listener called for every mutation except the initial user prompt
+			// (setUserPrompt emits message_start)
+			expect(listener).toHaveBeenCalledTimes(5)
 		})
 	})
 

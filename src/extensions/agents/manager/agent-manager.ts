@@ -404,6 +404,10 @@ export class AgentManager {
 		const remoteSession = new RemoteAgentSession()
 		record.session = remoteSession as unknown as AgentSession
 
+		// Seed the transcript with the user prompt so ConversationViewer shows it
+		// immediately, before any assistant text arrives.
+		remoteSession.setUserPrompt(prompt)
+
 		const result = await runRemoteAgent(workspaceId, prompt, {
 			apiKey,
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
@@ -420,7 +424,12 @@ export class AgentManager {
 					options.onTextDelta?.(delta, fullText)
 				},
 				onToolActivity: (activity) => {
-					if (activity.type === "end") record.toolUses++
+					if (activity.type === "start") {
+						remoteSession.recordToolCallStart(activity.toolName)
+					} else {
+						remoteSession.recordToolCallEnd(activity.toolName)
+						record.toolUses++
+					}
 					options.onToolActivity?.(activity)
 				},
 				onTurnEnd: (turnCount) => {

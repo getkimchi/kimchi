@@ -521,9 +521,6 @@ export function getActiveManager(): AgentManager | undefined {
 
 /** Options for spawnRemoteAgent. */
 export interface SpawnRemoteAgentOptions {
-	/** Called with the agent id as soon as it is spawned, before the promise resolves.
-	 *  Use this to register abort handlers that need the id during the startup phase. */
-	onSpawn?: (id: string) => void
 	/** When true, spawn as a background agent — returns immediately with the agent ID.
 	 *  The caller will be notified on completion. Default: false (foreground). */
 	background?: boolean
@@ -542,7 +539,7 @@ let spawnRemoteAgentFn:
 
 /** Spawns a foreground remote agent with full UI streaming support.
  *  Returns the agent id (for targeted abort) and the result text.
- *  Pass `onSpawn` to get the agent id before the promise resolves. */
+ */
 export async function spawnRemoteAgent(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -1081,10 +1078,6 @@ export default function (pi: ExtensionAPI) {
 		agentActivity.set(id, bgState)
 		widget.ensureTimer()
 		widget.update()
-
-		// Notify the caller of the agent id immediately so abort handlers
-		// (e.g. Ctrl+X) can target this agent during the startup phase.
-		opts?.onSpawn?.(id)
 
 		// Background mode: return immediately — the caller will be notified on completion.
 		if (opts?.background) {

@@ -792,7 +792,7 @@ describe("AcpSessionClient", () => {
 			await vi.waitFor(() => {
 				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
 					type: "start",
-					toolName: "tool",
+					toolName: "tc-1",
 				})
 			})
 
@@ -839,6 +839,67 @@ describe("AcpSessionClient", () => {
 
 			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
 			await p
+			client.close()
+		})
+
+		it("resolves null-title tool_call_update from initial tool_call title", async () => {
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const p = client.prompt("hello")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+			const promptReq = findRequest(getSentMessages(socket), "session/prompt")
+
+			// Initial tool_call with a real title
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call",
+						toolCallId: "tc-1",
+						title: "pnpm run typecheck",
+						status: "in_progress",
+					},
+				}),
+			)
+			await vi.waitFor(() => {
+				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
+					type: "start",
+					toolName: "pnpm run typecheck",
+				})
+			})
+
+			// Update with null title — should resolve to the original
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					update: {
+						sessionUpdate: "tool_call_update",
+						toolCallId: "tc-1",
+						status: "completed",
+					},
+				}),
+			)
+			await vi.waitFor(() => {
+				expect(callbacks.onToolActivity).toHaveBeenCalledWith({
+					type: "end",
+					toolName: "pnpm run typecheck",
+				})
+			})
+
+			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
+			await p
+
 			client.close()
 		})
 
