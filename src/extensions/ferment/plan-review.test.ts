@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../remote-run/runner.js", () => ({
 	isRemoteRunEnabled: vi.fn(() => false),
-	runForegroundRemoteAgent: vi.fn(),
+	runCloudAgent: vi.fn(),
 }))
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {

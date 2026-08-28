@@ -18,9 +18,8 @@ import * as PromptSupplementRegistry from "../../shared/planning/prompt-suppleme
 import { isAgentWorker } from "../agent-worker-context.js"
 import { withBlocked } from "../herdr-events.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
-import { handleRemoteCompletion } from "../remote-run/post-completion.js"
 import { buildRemotePlanPrompt } from "../remote-run/prompt-builder.js"
-import { runForegroundRemoteAgent } from "../remote-run/runner.js"
+import { runCloudAgent } from "../remote-run/runner.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { registerTipProvider } from "../tips/registry.js"
 import { registerAgentSpawnGuard } from "./agent-spawn-guard.js"
@@ -226,10 +225,9 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				const cloudPrompt = buildRemotePlanPrompt(review.planMarkdown, { origin: "ferment" })
 				const cloudDescription = `cloud: ${review.planMarkdown.slice(0, 60)}${review.planMarkdown.length > 60 ? "..." : ""}`
 				try {
-					const { result, transcriptPath, id } = await runForegroundRemoteAgent(pi, ctx, cloudPrompt, cloudDescription)
-					await handleRemoteCompletion(pi, ctx, result, "ferment plan", { transcriptPath, agentId: id })
+					await runCloudAgent(pi, ctx, cloudPrompt, cloudDescription, { background: true })
 				} catch {
-					// Error notification already handled inside runForegroundRemoteAgent.
+					// Error notification already handled inside runCloudAgent.
 				}
 				return
 			}

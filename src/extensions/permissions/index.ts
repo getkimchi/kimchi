@@ -40,9 +40,8 @@ import { getMultiModelEnabled } from "../multi-model.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
 import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
-import { handleRemoteCompletion } from "../remote-run/post-completion.js"
 import { buildRemotePlanPrompt } from "../remote-run/prompt-builder.js"
-import { isRemoteRunEnabled, runForegroundRemoteAgent } from "../remote-run/runner.js"
+import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
@@ -813,10 +812,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			const cloudPrompt = buildRemotePlanPrompt(planText, { origin: "plan-mode" })
 			const cloudDescription = `cloud: ${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
 			try {
-				const { result, transcriptPath, id } = await runForegroundRemoteAgent(pi, ctx, cloudPrompt, cloudDescription)
-				await handleRemoteCompletion(pi, ctx, result, "plan", { transcriptPath, agentId: id })
+				await runCloudAgent(pi, ctx, cloudPrompt, cloudDescription, { background: true })
 			} catch {
-				// Error notification already handled inside runForegroundRemoteAgent.
+				// Error notification already handled inside runCloudAgent.
 			}
 		}
 		// Decline or escape: stay in plan mode.

@@ -3,13 +3,13 @@
  *
  * Only registered when `KIMCHI_REMOTE_RUN` env var is set, preventing
  * accidental invocation. Spawns a foreground remote agent via the shared
- * `runForegroundRemoteAgent()` helper, which handles the full lifecycle:
+ * `runCloudAgent()` helper, which handles the full lifecycle:
  * Ctrl+X kill handler, spawn, notification, and cleanup.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { getActiveManager } from "../agents/index.js"
-import { runForegroundRemoteAgent } from "./runner.js"
+import { runCloudAgent } from "./runner.js"
 
 export default function remoteRunExtension(pi: ExtensionAPI): void {
 	if (!process.env.KIMCHI_REMOTE_RUN) return
@@ -25,9 +25,9 @@ export default function remoteRunExtension(pi: ExtensionAPI): void {
 
 			const description = `remote: ${prompt.slice(0, 60)}${prompt.length > 60 ? "..." : ""}`
 			try {
-				await runForegroundRemoteAgent(pi, ctx, prompt, description)
+				await runCloudAgent(pi, ctx, prompt, description, { background: true })
 			} catch {
-				// Error notification already handled inside runForegroundRemoteAgent.
+				// Error notification already handled inside runCloudAgent.
 			}
 		},
 	})

@@ -418,4 +418,47 @@ describe("runRemoteAgent", () => {
 
 		expect(syncLocalChangesAfterClone).not.toHaveBeenCalled()
 	})
+
+	describe("onReady callback", () => {
+		it("is called after initialize() and before prompt()", async () => {
+			const callOrder: string[] = []
+			mockInitialize.mockImplementation(async () => {
+				callOrder.push("initialize")
+			})
+			mockPrompt.mockImplementation(async () => {
+				callOrder.push("prompt")
+				return { stopReason: "end_turn", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } }
+			})
+			const onReady = vi.fn(() => {
+				callOrder.push("onReady")
+			})
+
+			await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ onReady }))
+
+			expect(callOrder).toEqual(["initialize", "onReady", "prompt"])
+		})
+
+		it("passes the AcpSessionClient and session metadata", async () => {
+			const onReady = vi.fn()
+			await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ onReady }))
+
+			expect(onReady).toHaveBeenCalledTimes(1)
+			const [client, meta] = onReady.mock.calls[0]
+			// client should have prompt/close/cancel methods (the mock instance)
+			expect(typeof client.prompt).toBe("function")
+			expect(typeof client.close).toBe("function")
+			expect(meta).toEqual({
+				workspaceId: WORKSPACE_ID,
+				sessionName: expect.stringMatching(/^acp-[0-9a-f]{8}$/),
+				wsUrl: "wss://worker.example.com",
+				host: "worker.example.com",
+			})
+		})
+
+		it("is not called when omitted", async () => {
+			// Should not throw — onReady is optional
+			const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
+			expect(result.stopReason).toBe("end_turn")
+		})
+	})
 })

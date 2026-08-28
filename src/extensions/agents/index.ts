@@ -34,6 +34,7 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
+import { handleRemoteCompletion } from "../remote-run/post-completion.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
@@ -523,6 +524,9 @@ export interface SpawnRemoteAgentOptions {
 	/** Called with the agent id as soon as it is spawned, before the promise resolves.
 	 *  Use this to register abort handlers that need the id during the startup phase. */
 	onSpawn?: (id: string) => void
+	/** When true, spawn as a background agent — returns immediately with the agent ID.
+	 *  The caller will be notified on completion. Default: false (foreground). */
+	background?: boolean
 }
 
 /** Spawn function type — set during agents extension init. */
@@ -533,7 +537,7 @@ let spawnRemoteAgentFn:
 			prompt: string,
 			description: string,
 			opts?: SpawnRemoteAgentOptions,
-	  ) => Promise<{ id: string; result: string }>)
+	  ) => Promise<{ id: string; result: string; backgrounded?: boolean }>)
 	| undefined
 
 /** Spawns a foreground remote agent with full UI streaming support.
@@ -545,7 +549,7 @@ export async function spawnRemoteAgent(
 	prompt: string,
 	description: string,
 	opts?: SpawnRemoteAgentOptions,
-): Promise<{ id: string; result: string }> {
+): Promise<{ id: string; result: string; backgrounded?: boolean }> {
 	if (!spawnRemoteAgentFn) throw new Error("Agent manager not initialized")
 	return spawnRemoteAgentFn(pi, ctx, prompt, description, opts)
 }
@@ -558,6 +562,10 @@ export function setActiveManagerForTest(manager: AgentManager | undefined): void
 let activeWidget: { ensureTimer: () => void; update: () => void; markFinished: (id: string) => void } | undefined
 let budgetRetryBlock: BudgetRetryBlock | undefined
 const budgetRetryCandidates = new Map<string, BudgetRetryCandidate>()
+
+/** Tracks remote background agents that should trigger handleRemoteCompletion
+ *  on completion instead of the normal nudge path. */
+const remoteBackgrounded = new Set<string>()
 
 function blockBudgetRetryIfNeeded(record: AgentRecord, candidate: BudgetRetryCandidate | undefined): void {
 	const block = createBudgetRetryBlockFromCompletion(candidate, record)
@@ -974,6 +982,22 @@ export default function (pi: ExtensionAPI) {
 				return
 			}
 
+			// Remote agents spawned as background get the post-completion dropdown
+			// (Review / Sync / Done) instead of the normal nudge path.
+			if (remoteBackgrounded.has(record.id)) {
+				remoteBackgrounded.delete(record.id)
+				if (currentCtx) {
+					void handleRemoteCompletion(pi, currentCtx, record.result ?? "", "plan", {
+						transcriptPath: record.outputFile,
+						agentId: record.id,
+					})
+				}
+				agentActivity.delete(record.id)
+				widget.markFinished(record.id)
+				widget.update()
+				return
+			}
+
 			const result = groupJoin.onAgentComplete(record)
 			if (result === "pass") {
 				sendIndividualNudge(record)
@@ -1021,6 +1045,7 @@ export default function (pi: ExtensionAPI) {
 	let unsubCtrlB: (() => void) | undefined
 	let unsubKill: (() => void) | undefined
 	let currentUi: ExtensionUIContext | undefined
+	let currentCtx: ExtensionContext | undefined
 
 	const widget = new AgentWidget(manager, agentActivity)
 	activeWidget = widget
@@ -1040,7 +1065,7 @@ export default function (pi: ExtensionAPI) {
 
 		const spawnOpts = {
 			description: desc,
-			isBackground: false,
+			isBackground: opts?.background ?? false,
 			remote: true,
 			maxTurns: 1,
 			...transcriptCallbacks,
@@ -1061,11 +1086,61 @@ export default function (pi: ExtensionAPI) {
 		// (e.g. Ctrl+X) can target this agent during the startup phase.
 		opts?.onSpawn?.(id)
 
+		// Background mode: return immediately — the caller will be notified on completion.
+		if (opts?.background) {
+			remoteBackgrounded.add(id)
+			return { id, result: "", backgrounded: true }
+		}
+
+		// Set up detach resolver so Ctrl+B can background the remote agent mid-run.
+		let detachResolve!: () => void
+		const detachPromise = new Promise<void>((r) => {
+			detachResolve = r
+		})
+		if (record) record.detachResolver = detachResolve
+
 		const rec = manager.getRecord(id)
 		if (!rec?.promise) return { id, result: "" }
 		try {
+			const raceResult = await Promise.race([
+				rec.promise.then(() => "completed" as const),
+				detachPromise.then(() => "detached" as const),
+			])
+
+			if (raceResult === "detached") {
+				// Remote agent was backgrounded via Ctrl+B.
+				// _runRemote's promise is still in flight — it will resolve naturally
+				// and the completion path in startAgent handles cleanup + notification.
+				remoteBackgrounded.add(id)
+				flushRemaining()
+				widget.ensureTimer()
+				widget.update()
+
+				pi.events.emit("subagents:backgrounded", {
+					id,
+					type: "Remote-Runner",
+					description: desc,
+					visibility: "user",
+				})
+
+				const outputFile = record?.outputFile ?? ""
+				return {
+					id,
+					backgrounded: true,
+					result:
+						`Agent sent to background by the user (Ctrl+B).\n` +
+						`Agent ID: ${id}\n` +
+						`Type: Remote-Runner\n` +
+						`Description: ${desc}\n` +
+						`${outputFile ? `Output file: ${outputFile}\n` : ""}` +
+						`The agent continues running in the background. You will be notified when it completes.`,
+				}
+			}
+
+			// Normal completion path
+			if (record) record.detachResolver = undefined
 			const result = await rec.promise
-			return { id, result }
+			return { id, result, backgrounded: false }
 		} finally {
 			// Flush any buffered transcript entries on completion or error so
 			// nothing is lost if the remote run is aborted or fails mid-stream.
@@ -1081,8 +1156,10 @@ export default function (pi: ExtensionAPI) {
 		unsubKill?.()
 		unsubKill = undefined
 		currentUi = undefined
+		currentCtx = undefined
 		manager.abortAll()
 		budgetRetryCandidates.clear()
+		remoteBackgrounded.clear()
 		if (batchFinalizeTimer) {
 			clearTimeout(batchFinalizeTimer)
 			batchFinalizeTimer = undefined
@@ -1104,6 +1181,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_execution_start", async (_event, ctx) => {
 		widget.setUICtx(ctx.ui as UICtx)
 		widget.onTurnStart()
+		currentCtx = ctx
 
 		if (ctx.hasUI) {
 			const newUi = ctx.ui as ExtensionUIContext

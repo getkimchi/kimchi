@@ -35,6 +35,15 @@ export interface RemoteRunOptions {
 	localPath?: string
 	/** Workspace name passed to authenticateWorkspace (used for matching/reuse). */
 	workspaceName?: string
+	/**
+	 * Called after `acpClient.initialize()` and before `acpClient.prompt()`,
+	 * giving the caller access to the live AcpSessionClient so it can be
+	 * wrapped in a RemoteAgentSession adapter.
+	 */
+	onReady?: (
+		acpClient: AcpSessionClient,
+		meta: { workspaceId: string; sessionName: string; wsUrl: string; host: string },
+	) => void
 }
 
 export interface RemoteRunResult {
@@ -150,6 +159,17 @@ export async function runRemoteAgent(
 		}
 
 		await acpClient.initialize()
+
+		// Expose the client to the caller so they can wrap it in RemoteAgentSession.
+		// Fired after initialize() (client is usable) and before prompt() (the run hasn't started).
+		if (options.onReady) {
+			options.onReady(acpClient, {
+				workspaceId,
+				sessionName,
+				wsUrl: creds.wsUrl,
+				host: creds.host,
+			})
+		}
 
 		// 5. Send prompt
 		const result = await acpClient.prompt(prompt)
