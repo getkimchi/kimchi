@@ -1,3 +1,4 @@
+import { modelsAreEqual } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { clearFermentCache } from "../../ferment/store.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
@@ -521,6 +522,8 @@ export function registerFermentEvents(
 	})
 
 	pi.on("model_select", (event, ctx) => {
+		// A same-model reselect (reasoning picker flow) leaves judge context unchanged.
+		if (modelsAreEqual(event.previousModel, event.model)) return
 		runtime.captureJudgeContext(event.model, ctx?.modelRegistry)
 	})
 

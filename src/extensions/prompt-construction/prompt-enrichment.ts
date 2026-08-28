@@ -27,7 +27,7 @@ import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { arch, homedir, version as osVersion, platform, release, userInfo } from "node:os"
 import { join } from "node:path"
-import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
+import { type AssistantMessage, modelsAreEqual, type ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/resolve-skill-roots.js"
@@ -281,6 +281,9 @@ export default function (skillPathsFromConfig: string[]) {
 			})
 
 			pi.on("model_select", async (event, ctx) => {
+				// A same-model reselect (reasoning picker flow) is not a switch.
+				if (modelsAreEqual(event.previousModel, event.model)) return
+
 				notifyIfDeprecated(ctx)
 
 				// A user-initiated model switch (UI picker, /model, or cycling)

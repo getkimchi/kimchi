@@ -42,7 +42,13 @@ async function selectThinkingLevel(
 	previousModel: Model<Api> | undefined,
 	ctx: ExtensionContext,
 ): Promise<void> {
-	if (!ctx.hasUI || ctx.mode !== "tui" || !model.reasoning) return
+	if (
+		!ctx.hasUI ||
+		ctx.mode !== "tui" ||
+		!model.reasoning ||
+		(model.compat && "supportsReasoningEffort" in model.compat && model.compat.supportsReasoningEffort === false)
+	)
+		return
 	const levels = getSupportedThinkingLevels(model)
 	if (levels.length <= 1) return
 	const preferredLevel = modelsAreEqual(previousModel, model) ? pi.getThinkingLevel() : "high"
@@ -51,10 +57,12 @@ async function selectThinkingLevel(
 	try {
 		selected = await ctx.ui.custom<ModelThinkingLevel | undefined>((_tui, _theme, _keybindings, done) => {
 			const selector = new ThinkingSelectorComponent(defaultLevel, levels, done, () => done(undefined))
-			const render = selector.render.bind(selector)
+			const selectList = selector.getSelectList()
+			const render = selectList.render.bind(selectList)
+			// Pi omits descriptions at 40 columns; keep this picker label-only at every terminal width.
+			selectList.render = (width: number) => render(Math.min(width, 40))
 			return Object.assign(selector, {
-				handleInput: (data: string) => selector.getSelectList().handleInput(data),
-				render: (width: number) => render(width).map((line) => line.replace(/ \(~\d+k tokens\)/g, "")),
+				handleInput: (data: string) => selectList.handleInput(data),
 			})
 		})
 	} catch (error) {
@@ -248,6 +256,16 @@ export default function modelSwitchExtension(
 		if (event.source === "restore") return
 		// Nothing to revert to
 		if (!event.previousModel) return
+
+		// Reselecting the active model is not a switch: the guards below protect
+		// against switching *into* an unfit model, and the user is already on it.
+		// Offer the reasoning picker and skip the rest.
+		if (modelsAreEqual(event.previousModel, event.model)) {
+			if (event.source === "set") {
+				await selectThinkingLevel(pi, event.model, event.previousModel, ctx)
+			}
+			return
+		}
 
 		const sessionId = ctx.sessionManager.getSessionId()
 		const usage = ctx.getContextUsage?.()

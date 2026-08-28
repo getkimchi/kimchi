@@ -1055,8 +1055,8 @@ describe("modelSwitchExtension", () => {
 			expect(component).toBeInstanceOf(ThinkingSelectorComponent)
 			expect(component.getSelectList().getSelectedItem()?.value).toBe("high")
 			const rendered = component.render(80).join("\n")
-			expect(rendered).toContain("Deep reasoning")
-			expect(rendered).not.toMatch(/~\d+k tokens/)
+			expect(rendered).toContain("→ high")
+			expect(rendered).not.toMatch(/\b(?:No|Very brief|Light|Moderate|Deep|Extra-high|Maximum) reasoning\b/)
 			component.handleInput?.("\r")
 			expect(done).toHaveBeenCalledWith("high")
 			expect(setThinkingLevel).toHaveBeenCalledWith("max")
@@ -1089,6 +1089,82 @@ describe("modelSwitchExtension", () => {
 			)
 
 			expect(custom).not.toHaveBeenCalled()
+		})
+
+		it("does not open the reasoning picker when effort selection is unsupported", async () => {
+			const { pi, trigger } = createHarnessWithTrigger()
+			modelSwitchExtension(pi)
+			const custom = vi.fn()
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: {
+						id: "fixed-reasoning-model",
+						provider: "kimchi-dev",
+						input: ["text", "image"],
+						contextWindow: 262_144,
+						reasoning: true,
+						compat: { supportsReasoningEffort: false },
+					},
+					previousModel: { id: "adjustable-reasoning-model", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "set",
+				},
+				createContext({ tokens: 10_000, hasUI: true, mode: "tui", ui: { custom } }),
+			)
+
+			expect(custom).not.toHaveBeenCalled()
+		})
+
+		it("does not open the reasoning picker when only one level is supported", async () => {
+			const { pi, trigger } = createHarnessWithTrigger()
+			modelSwitchExtension(pi)
+			const custom = vi.fn()
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: {
+						id: "fixed-reasoning-model",
+						provider: "kimchi-dev",
+						input: ["text"],
+						contextWindow: 100_000,
+						reasoning: true,
+						thinkingLevelMap: { minimal: null, low: null, medium: null, high: null },
+					},
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "set",
+				},
+				createContext({ tokens: 10_000, hasUI: true, mode: "tui", ui: { custom } }),
+			)
+
+			expect(custom).not.toHaveBeenCalled()
+		})
+
+		it("skips the context and vision guards when reselecting the active model", async () => {
+			const { pi, trigger, setModel } = createHarnessWithTrigger()
+			modelSwitchExtension(pi)
+			const custom = vi.fn().mockResolvedValue("high")
+			const select = vi.fn()
+			const model = {
+				id: "minimax-m2.7",
+				provider: "kimchi-dev",
+				input: ["text"],
+				contextWindow: 100_000,
+				reasoning: true,
+				thinkingLevelMap: { max: "max" },
+			}
+			// Tokens exceed the model's safe window — the overflow guard must fire
+			// for a real switch but not when the user reselects the active model.
+			await trigger(
+				"model_select",
+				{ type: "model_select", model, previousModel: model, source: "set" },
+				createContext({ tokens: 95_000, hasUI: true, mode: "tui", ui: { custom, select } }),
+			)
+
+			expect(setModel).not.toHaveBeenCalled()
+			expect(select).not.toHaveBeenCalled()
+			expect(custom).toHaveBeenCalledOnce()
 		})
 
 		it("keeps the current level when the reasoning picker is cancelled or fails", async () => {

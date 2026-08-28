@@ -21,6 +21,16 @@ const KIMI: unknown = {
 	limits: { context_window: 262144, max_output_tokens: 262144 },
 }
 
+const GPT_LUNA: unknown = {
+	slug: "gpt-5.6-luna",
+	display_name: "GPT-5.6 Luna",
+	provider: "ai-enabler",
+	reasoning: true,
+	input_modalities: ["text"],
+	is_serverless: true,
+	limits: { context_window: 200000, max_output_tokens: 128000 },
+}
+
 const GLM: unknown = {
 	slug: "glm-5-fp8",
 	display_name: "GLM-5 FP8",
@@ -86,7 +96,7 @@ describe("updateModelsConfig", () => {
 				maxTokens: 262144,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				provider: "ai-enabler",
-				thinkingLevelMap: { off: "none", max: "max" },
+				compat: { supportsReasoningEffort: false },
 			},
 		])
 	})
@@ -138,7 +148,7 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev/anthropic"].headers["X-Provider-Type"]).toBe("anthropic")
 	})
 
-	it("does not set compat for non-anthropic ai-enabler models", async () => {
+	it("marks fixed-effort AI Enabler models as not adjustable", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI] }),
@@ -147,13 +157,13 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
+		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({ supportsReasoningEffort: false })
 	})
 
-	it("maps ai-enabler thinking levels required by the upstream selector", async () => {
+	it("maps adjustable GPT thinking levels required by the upstream selector", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
-			json: async () => ({ models: [KIMI] }),
+			json: async () => ({ models: [GPT_LUNA] }),
 		} as Response)
 
 		await updateModelsConfig(modelsJsonPath, "test-key")

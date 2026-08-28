@@ -30,9 +30,8 @@ test("model selection opens reasoning on High and preserves it on reselection", 
 		},
 		async (fixture, trace) => {
 			terminal.submit("/model fake/thinker")
-			await waitForText(terminal, "Deep reasoning", { timeoutMs: STREAM_TIMEOUT_MS })
-			expect(viewText(terminal)).toMatch(/→ high\s+Deep reasoning/)
-			expect(viewText(terminal)).not.toMatch(/~\d+k tokens/)
+			await waitForText(terminal, /→ high[ \t]*$/m, { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(viewText(terminal)).not.toMatch(/\b(?:No|Very brief|Light|Moderate|Deep|Extra-high|Maximum) reasoning\b/)
 			trace.step("reasoning picker opened after model choice")
 
 			const settings = JSON.parse(readFileSync(join(fixture.agentDir, "settings.json"), "utf-8")) as {
@@ -43,14 +42,13 @@ test("model selection opens reasoning on High and preserves it on reselection", 
 			expect(settings.kimchiHighThinkingDefaultApplied).toBe(true)
 
 			terminal.keyUp()
-			await waitForText(terminal, /→ medium\s+Moderate reasoning/, { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, /→ medium[ \t]*$/m, { timeoutMs: STREAM_TIMEOUT_MS })
 			terminal.write("\r")
 			await waitForText(terminal, "Model: thinker", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("Normal reasoning selected on the first model")
 
 			terminal.submit("/model fake/thinker-two")
-			await waitForText(terminal, /→ high\s+Deep reasoning/, { timeoutMs: STREAM_TIMEOUT_MS })
-			expect(viewText(terminal)).not.toMatch(/~\d+k tokens/)
+			await waitForText(terminal, /→ high[ \t]*$/m, { timeoutMs: STREAM_TIMEOUT_MS })
 			terminal.write("\r")
 			await waitForText(terminal, "Model: thinker-two", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("second model reset to default High reasoning")
@@ -58,9 +56,7 @@ test("model selection opens reasoning on High and preserves it on reselection", 
 			terminal.submit("/model")
 			await waitForText(terminal, "Model Name: Fake Thinker Two", { timeoutMs: STREAM_TIMEOUT_MS })
 			terminal.write("\r")
-			await waitForText(terminal, "Deep reasoning", { timeoutMs: STREAM_TIMEOUT_MS })
-			expect(viewText(terminal)).toMatch(/→ high\s+Deep reasoning/)
-			expect(viewText(terminal)).not.toMatch(/~\d+k tokens/)
+			await waitForText(terminal, /→ high[ \t]*$/m, { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("reasoning picker reopened after selecting the active model")
 		},
 	)

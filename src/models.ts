@@ -196,13 +196,18 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 	//
 	// ai-enabler models don't support chat_template_kwargs, so we rely on the
 	// default `openai` thinkingFormat which sends `reasoning_effort`. The map
-	// disables thinking with `none` and advertises max to Pi's selector.
+	// disables thinking with `none` and advertises max to Pi's selector for
+	// GPT models, the AI Enabler family that supports adjustable effort.
+	const supportsReasoningEffort = m.provider === "ai-enabler" && m.slug.startsWith("gpt-")
 	const compat =
 		m.provider === "anthropic" || m.slug.startsWith("claude-")
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
-			: undefined
-	const thinkingLevelMap: PiModelConfig["thinkingLevelMap"] =
-		m.provider === "ai-enabler" ? { off: "none", max: "max" } : undefined
+			: m.provider === "ai-enabler" && m.reasoning && !supportsReasoningEffort
+				? ({ supportsReasoningEffort: false } as const)
+				: undefined
+	const thinkingLevelMap: PiModelConfig["thinkingLevelMap"] = supportsReasoningEffort
+		? { off: "none", max: "max" }
+		: undefined
 	return {
 		id: m.slug,
 		name: m.display_name.trim().length > 0 ? m.display_name : m.slug,
