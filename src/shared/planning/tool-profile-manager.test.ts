@@ -13,7 +13,12 @@ import {
 } from "./tool-profile-manager.js"
 
 /** Build a fresh mock ExtensionAPI. */
-const makeMockPi = (overrides: { allTools?: Array<{ name: string }>; events?: { on: (c: string, h: (d: unknown) => void) => () => void; emit: (c: string, d: unknown) => void } } = {}): ExtensionAPI => {
+const makeMockPi = (
+	overrides: {
+		allTools?: Array<{ name: string }>
+		events?: { on: (c: string, h: (d: unknown) => void) => () => void; emit: (c: string, d: unknown) => void }
+	} = {},
+): ExtensionAPI => {
 	const on = vi.fn()
 	const getAllTools = vi.fn(() => overrides.allTools ?? [])
 	// The cooperative visibility layer calls pi.getActiveTools() and
