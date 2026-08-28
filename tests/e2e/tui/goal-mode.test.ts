@@ -26,6 +26,7 @@ test("experimental goal evaluates continue, resumes work, then completes", async
 		stream: ["The plan is ready; implementation still remains."],
 	}
 	const continueEvaluationResponse: FakeResponseScript = {
+		match: isGoalEvaluatorRequest,
 		stream: [
 			'{"verdict":"continue","checks":[{"requirement":"Implement feature A","met":false,"evidence":["m1"],"todoIds":[1]}],"reason":"Implementation is not evidenced yet."}',
 		],
@@ -36,7 +37,14 @@ test("experimental goal evaluates continue, resumes work, then completes", async
 		toolCalls: [
 			{
 				id: "finish-goal-todo",
-				function: { name: "mark_todo", arguments: JSON.stringify({ id: 1, status: "completed" }) },
+				function: {
+					name: "mark_todo",
+					arguments: JSON.stringify({
+						id: 1,
+						status: "completed",
+						note: "Evidence: scripted verification completed",
+					}),
+				},
 			},
 		],
 	}
@@ -53,8 +61,9 @@ test("experimental goal evaluates continue, resumes work, then completes", async
 		],
 	}
 	const metEvaluationResponse: FakeResponseScript = {
+		match: isGoalEvaluatorRequest,
 		stream: [
-			'{"verdict":"met","checks":[{"requirement":"Implement feature A","met":true,"evidence":["m1"],"todoIds":[1]}],"reason":"The Todo is completed and the transcript contains verification."}',
+			'{"verdict":"met","checks":[{"requirement":"Implement feature A","met":true,"evidence":["l1"],"todoIds":[1]}],"reason":"The Todo is completed and the retained evidence records verification."}',
 		],
 	}
 
@@ -64,12 +73,12 @@ test("experimental goal evaluates continue, resumes work, then completes", async
 			artifactName: "goal-mode",
 			seedHome: (homeDir) => enableGoalMode(homeDir),
 			responses: [
+				continueEvaluationResponse,
+				metEvaluationResponse,
 				planningResponse,
 				planningStopResponse,
-				continueEvaluationResponse,
 				finishTodosResponse,
 				completionResponse,
-				metEvaluationResponse,
 			],
 		},
 		async (fixture, trace) => {
@@ -174,7 +183,7 @@ function goalSnapshot(request: FakeResponseRequest): {
 	tokenBudget?: number
 } {
 	const context = collectStrings(request.body).find((value) => value.includes("<kimchi_session_goal>"))
-	const match = context?.match(/<kimchi_session_goal>\s*(\{[\s\S]*?\})\s*Autonomous goal continuation/)
+	const match = context?.match(/<kimchi_session_goal>\s*(\{[\s\S]*?\})\s*Autonomous Goal continuation/)
 	if (!match) throw new Error(`No canonical goal context found in request: ${JSON.stringify(request.body)}`)
 	return JSON.parse(match[1])
 }
@@ -184,4 +193,8 @@ function collectStrings(value: unknown): string[] {
 	if (Array.isArray(value)) return value.flatMap(collectStrings)
 	if (value && typeof value === "object") return Object.values(value).flatMap(collectStrings)
 	return []
+}
+
+function isGoalEvaluatorRequest(request: FakeResponseRequest): boolean {
+	return collectStrings(request.body).some((value) => value.includes("<goal_evaluator>"))
 }

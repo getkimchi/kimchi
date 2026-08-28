@@ -20,12 +20,34 @@ const MAX_REASON_CHARS = 1_000
 const REASONING_MAX_TOKENS = 4_096
 const PLAIN_MAX_TOKENS = 1_024
 
-const EVALUATOR_SYSTEM_PROMPT = `You independently decide whether a persistent coding goal should continue.
+const EVALUATOR_SYSTEM_PROMPT = `<goal_evaluator>
+You independently decide whether a persistent coding Goal should continue.
 
-Return exactly one JSON object and no markdown:
+<output_contract>
+- Return exactly one JSON object and no markdown:
 {"verdict":"continue|met|impossible","checks":[{"requirement":"one objective requirement","met":true,"evidence":["m12"],"todoIds":[1]}],"reason":"concise evidence-based reason"}
+</output_contract>
 
-Each observable transcript entry is prefixed with a stable ID such as [m12], and durable Goal lessons are prefixed with IDs such as [l3]. Hidden thinking is omitted; cite only IDs shown in the supplied context. Check each requirement separately and include one check per objective requirement. Include every current settled Todo ID covered by the checks. Choose met only when every check is met, cites at least one shown evidence ID, and covers every current settled Todo. A met verdict without complete, valid checks is treated as continue. Do not treat plans, claims, tool calls, file edits, or a command's exit status alone as proof that the requested behavior is correct; require the actual result or verification evidence. Missing or ambiguous evidence means continue. Choose impossible only when progress requires unavailable user input or an external state change; an unavailable preferred tool or check means continue when another approach is possible. Never call tools.`
+<evidence_policy>
+- Observable transcript entries have IDs such as [m12]. Durable Goal lessons have IDs such as [l3]. Cite only shown IDs.
+- Only tool results and lessons labelled evidence can support met. User or assistant claims, plans, tool calls, file edits, decision or dead-end lessons, and command exit status alone are not proof.
+- Judge evidence against the objective's full scope and likely failure modes, not only supplied examples or self-selected checks.
+</evidence_policy>
+
+<completion_checks>
+- Check each requirement separately.
+- Include every settled Todo ID covered by the checks.
+- Every met check needs retained evidence. Partial, missing, or ambiguous evidence means continue.
+</completion_checks>
+
+<verdict_policy>
+- met: every requirement is met and every settled Todo is covered.
+- continue: work can still progress. Name the first unmet requirement and its exact missing or weak evidence.
+- impossible: progress requires unavailable user input or an external state change. A missing preferred tool or check is not enough when another approach exists.
+</verdict_policy>
+
+Never call tools.
+</goal_evaluator>`
 
 export type GoalEvaluatorVerdict = "continue" | "met" | "impossible"
 
@@ -200,10 +222,12 @@ export async function evaluateGoal(input: GoalEvaluationInput, ctx: ExtensionCon
 		const parsed = parseGoalEvaluatorOutput(contentParts(response.content))
 		if (parsed) {
 			const decision = { verdict: parsed.verdict, reason: parsed.reason }
-			if (parsed.verdict === "met" && !isSupportedMet(parsed.checks, evidenceIds, input.todos)) {
+			const unsupportedReason =
+				parsed.verdict === "met" ? unsupportedMetReason(parsed.checks, evidenceIds, input.todos) : undefined
+			if (unsupportedReason) {
 				return {
 					verdict: "continue",
-					reason: "Valid completion evidence is missing; continue verification.",
+					reason: unsupportedReason,
 					model: modelRef,
 					usage,
 				}
@@ -245,28 +269,31 @@ function contentParts(content: unknown): string {
 		.trim()
 }
 
-function isSupportedMet(
+function unsupportedMetReason(
 	checks: GoalEvaluatorCheck[] | undefined,
 	evidenceIds: ReadonlySet<string>,
 	todos: readonly TodoItem[],
-): boolean {
-	if (
-		checks === undefined ||
-		checks.length === 0 ||
-		!checks.every(
-			(check) =>
-				check.met &&
-				check.evidence.length > 0 &&
-				check.evidence.every((evidenceId) => evidenceIds.has(evidenceId)) &&
-				check.todoIds.every((todoId) => todos.some((todo) => todo.id === todoId)),
-		)
-	)
-		return false
-
+): string | undefined {
+	if (!checks?.length) return "Completion checks are missing; verify each objective requirement with retained evidence."
+	const todoIds = new Set(todos.map((todo) => todo.id))
+	for (const check of checks) {
+		const requirement = JSON.stringify(check.requirement.slice(0, 200))
+		if (!check.met) return `Requirement ${requirement} is not met; continue work and verify it.`
+		if (check.evidence.length === 0)
+			return `Requirement ${requirement} has no retained evidence; run a relevant check and surface its result.`
+		if (check.evidence.some((evidenceId) => !evidenceIds.has(evidenceId)))
+			return `Requirement ${requirement} cites evidence that is not retained as authoritative; gather and surface current observable evidence.`
+		const unknownTodoId = check.todoIds.find((todoId) => !todoIds.has(todoId))
+		if (unknownTodoId !== undefined)
+			return `Requirement ${requirement} cites unknown Todo ${unknownTodoId}; reconcile the Todo list and completion checks.`
+	}
 	const coveredTodoIds = new Set(checks.flatMap((check) => check.todoIds))
-	return todos
-		.filter((todo) => todo.status === "completed" || todo.status === "blocked")
-		.every((todo) => coveredTodoIds.has(todo.id))
+	const uncoveredTodo = todos.find(
+		(todo) => (todo.status === "completed" || todo.status === "blocked") && !coveredTodoIds.has(todo.id),
+	)
+	return uncoveredTodo
+		? `Settled Todo ${uncoveredTodo.id} is not covered by a completion check; verify it against the objective.`
+		: undefined
 }
 
 function renderTodoState(todos: readonly TodoItem[]): string | undefined {
@@ -296,12 +323,13 @@ function renderGoalLessons(lessons: readonly GoalLesson[] | undefined): {
 		const id = `l${lesson.todoId}`
 		return {
 			id,
+			kind: lesson.kind,
 			text: `[${id}] [lesson todo ${lesson.todoId} ${lesson.kind}] ${lesson.text.slice(0, MAX_REASON_CHARS)}`,
 		}
 	})
 	return {
 		text: entries.map((entry) => entry.text).join("\n\n"),
-		evidenceIds: new Set(entries.map((entry) => entry.id)),
+		evidenceIds: new Set(entries.filter((entry) => entry.kind === "evidence").map((entry) => entry.id)),
 	}
 }
 
@@ -314,31 +342,36 @@ function renderRecentTranscript(messages: ReadonlyArray<AgentEndEvent["messages"
 	text: string
 	evidenceIds: ReadonlySet<string>
 } {
-	const kept: Array<{ id: string; text: string }> = []
+	const kept: Array<{ id: string; text: string; evidence: boolean }> = []
 	let length = 0
 	for (let i = messages.length - 1; i >= 0; i--) {
-		const rendered = renderMessage(messages[i])
+		const message = messages[i]
+		const rendered = renderMessage(message)
 		if (!rendered) continue
 		const id = `m${i + 1}`
 		const text = `[${id}] ${rendered}`
 		const separatorLength = kept.length > 0 ? 2 : 0
 		if (length + separatorLength + text.length <= MAX_TRANSCRIPT_CHARS) {
-			kept.push({ id, text })
+			kept.push({ id, text, evidence: isToolResult(message) })
 			length += separatorLength + text.length
 			continue
 		}
 		if (kept.length === 0) {
 			const prefix = `[${id}] `
 			const available = Math.max(0, MAX_TRANSCRIPT_CHARS - prefix.length)
-			kept.push({ id, text: `${prefix}${rendered.slice(-available)}` })
+			kept.push({ id, text: `${prefix}${rendered.slice(-available)}`, evidence: isToolResult(message) })
 		}
 		break
 	}
 	const ordered = kept.reverse()
 	return {
 		text: ordered.map((entry) => entry.text).join("\n\n"),
-		evidenceIds: new Set(ordered.map((entry) => entry.id)),
+		evidenceIds: new Set(ordered.filter((entry) => entry.evidence).map((entry) => entry.id)),
 	}
+}
+
+function isToolResult(message: AgentEndEvent["messages"][number]): boolean {
+	return (message as unknown as Record<string, unknown>).role === "toolResult"
 }
 
 function renderMessage(message: AgentEndEvent["messages"][number]): string {

@@ -1050,6 +1050,7 @@ describe("goal extension", () => {
 		await settleGoal(harness, "continue")
 		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
 		expect(continuations(harness)).toHaveLength(1)
+		expect(continuations(harness)[0]?.content).toContain("Independent completion check: More work is required.")
 		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("goal", "Goal running · <1m · 0 tokens")
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })

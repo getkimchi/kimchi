@@ -151,7 +151,16 @@ describe("Goal evaluator", () => {
 			systemPrompt: expect.stringContaining("Check each requirement separately"),
 		})
 		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
-			systemPrompt: expect.stringContaining("a command's exit status alone"),
+			systemPrompt: expect.stringContaining("command exit status alone"),
+		})
+		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
+			systemPrompt: expect.stringContaining("objective's full scope and likely failure modes"),
+		})
+		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
+			systemPrompt: expect.stringContaining("Only tool results and lessons labelled evidence"),
+		})
+		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
+			systemPrompt: expect.stringContaining("<evidence_policy>"),
 		})
 	})
 
@@ -195,7 +204,7 @@ describe("Goal evaluator", () => {
 			),
 		).resolves.toMatchObject({
 			verdict: "continue",
-			reason: "Valid completion evidence is missing; continue verification.",
+			reason: "Settled Todo 2 is not covered by a completion check; verify it against the objective.",
 		})
 	})
 
@@ -217,7 +226,7 @@ describe("Goal evaluator", () => {
 			),
 		).resolves.toMatchObject({
 			verdict: "continue",
-			reason: "Valid completion evidence is missing; continue verification.",
+			reason: 'Requirement "tests pass" cites unknown Todo 99; reconcile the Todo list and completion checks.',
 		})
 	})
 
@@ -240,6 +249,41 @@ describe("Goal evaluator", () => {
 			),
 		).resolves.toMatchObject({ verdict: "met" })
 		expect(sentGoalPrompt()).toContain("[l7] [lesson todo 7 evidence] Focused verification passed")
+	})
+
+	it("does not treat assistant claims or non-evidence lessons as completion evidence", async () => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"requirement":"tests pass","met":true,"evidence":["m1"],"todoIds":[]}],"reason":"claimed"}',
+			),
+		)
+		await expect(
+			evaluateGoal(
+				{ objective: "ship it", messages: [transcriptMessage("assistant", "tests passed")], todos: [] },
+				evaluatorContext(),
+			),
+		).resolves.toMatchObject({
+			verdict: "continue",
+			reason:
+				'Requirement "tests pass" cites evidence that is not retained as authoritative; gather and surface current observable evidence.',
+		})
+
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"requirement":"tests pass","met":true,"evidence":["l7"],"todoIds":[]}],"reason":"claimed"}',
+			),
+		)
+		await expect(
+			evaluateGoal(
+				{
+					objective: "ship it",
+					messages: [],
+					todos: [],
+					lessons: [{ todoId: 7, kind: "decision", text: "Assume the tests pass" }],
+				},
+				evaluatorContext(),
+			),
+		).resolves.toMatchObject({ verdict: "continue" })
 	})
 
 	it("keeps only the newest bounded durable lessons and truncates their text", async () => {
@@ -303,19 +347,32 @@ describe("Goal evaluator", () => {
 		expect(completeMock).not.toHaveBeenCalled()
 	})
 
-	it("downgrades syntactically valid met verdicts without complete evidence", async () => {
+	it("explains why syntactically valid met verdicts lack completion evidence", async () => {
 		const messages = [transcriptMessage("toolResult", "tests passed", { toolName: "bash" })]
-		for (const response of [
-			'{"verdict":"met","reason":"claimed"}',
-			'{"verdict":"met","checks":[{"requirement":"tests pass","met":true,"evidence":["m99"],"todoIds":[]}],"reason":"claimed"}',
-			'{"verdict":"met","checks":[{"requirement":"tests pass","met":false,"evidence":["m1"],"todoIds":[]}],"reason":"claimed"}',
-		]) {
+		for (const [response, reason] of [
+			[
+				'{"verdict":"met","reason":"claimed"}',
+				"Completion checks are missing; verify each objective requirement with retained evidence.",
+			],
+			[
+				'{"verdict":"met","checks":[{"requirement":"tests pass","met":true,"evidence":["m99"],"todoIds":[]}],"reason":"claimed"}',
+				'Requirement "tests pass" cites evidence that is not retained as authoritative; gather and surface current observable evidence.',
+			],
+			[
+				'{"verdict":"met","checks":[{"requirement":"tests pass","met":false,"evidence":["m1"],"todoIds":[]}],"reason":"claimed"}',
+				'Requirement "tests pass" is not met; continue work and verify it.',
+			],
+			[
+				'{"verdict":"met","checks":[{"requirement":"tests pass","met":true,"evidence":[],"todoIds":[]}],"reason":"claimed"}',
+				'Requirement "tests pass" has no retained evidence; run a relevant check and surface its result.',
+			],
+		] as const) {
 			completeMock.mockResolvedValueOnce(assistant(response))
 			await expect(
 				evaluateGoal({ objective: "ship it", messages, todos: [] }, evaluatorContext()),
 			).resolves.toMatchObject({
 				verdict: "continue",
-				reason: "Valid completion evidence is missing; continue verification.",
+				reason,
 			})
 		}
 	})
@@ -343,7 +400,8 @@ describe("Goal evaluator", () => {
 			evaluateGoal({ objective: "ship it", messages: [message], todos: [] }, evaluatorContext()),
 		).resolves.toMatchObject({
 			verdict: "continue",
-			reason: "Valid completion evidence is missing; continue verification.",
+			reason:
+				'Requirement "tests pass" cites evidence that is not retained as authoritative; gather and surface current observable evidence.',
 		})
 		expect(sentTranscript()).toMatch(/^\[m1\] /)
 	})

@@ -201,7 +201,7 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 			}
 
 			if (req.method === "POST" && req.url?.startsWith("/openai/v1/chat/completions")) {
-				const script = pickResponseScript(body, mainQueue, subagentQueue)
+				const script = pickResponseScript(request, mainQueue, subagentQueue)
 				await writeChatCompletion(res, script, body)
 				return
 			}
@@ -477,17 +477,20 @@ function isSubagentRequest(body: unknown): boolean {
  * single-queue behaviour.
  */
 function pickResponseScript(
-	body: unknown,
+	request: FakeResponseRequest,
 	mainQueue: FakeResponseScript[],
 	subagentQueue: FakeResponseScript[],
 ): FakeResponseScript {
-	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(body)
+	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(request.body)
 	const primary = useSubagent ? subagentQueue : mainQueue
-	if (primary.length > 0) {
-		return primary.shift() ?? { stream: ["fake response"] }
-	}
 	const fallback = useSubagent ? mainQueue : subagentQueue
-	return fallback.shift() ?? { stream: ["fake response"] }
+	return takeResponseScript(primary, request) ?? takeResponseScript(fallback, request) ?? { stream: ["fake response"] }
+}
+
+function takeResponseScript(queue: FakeResponseScript[], request: FakeResponseRequest): FakeResponseScript | undefined {
+	const matched = queue.findIndex((script) => script.match?.(request))
+	const index = matched >= 0 ? matched : queue.findIndex((script) => !script.match)
+	return index >= 0 ? queue.splice(index, 1)[0] : undefined
 }
 
 function unixNow(): number {

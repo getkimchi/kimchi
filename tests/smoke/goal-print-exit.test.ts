@@ -6,6 +6,7 @@ import { expect, it } from "vitest"
 import {
 	DEFAULT_MODEL,
 	type FakeOpenAiServer,
+	type FakeResponseRequest,
 	resolveModels,
 	startFakeOpenAiServer,
 } from "../e2e/tui/support/fake-openai-server.js"
@@ -240,13 +241,23 @@ function goalResponses() {
 			],
 		},
 		{ stream: ["Planning ended before implementation."] },
-		{ stream: ['{"verdict":"continue","reason":"Implementation is not evidenced yet."}'] },
+		{
+			match: isGoalEvaluatorRequest,
+			stream: ['{"verdict":"continue","reason":"Implementation is not evidenced yet."}'],
+		},
 		{
 			stream: ["Implementing and verifying."],
 			toolCalls: [
 				{
 					id: "finish-goal-todo",
-					function: { name: "mark_todo", arguments: JSON.stringify({ id: 1, status: "completed" }) },
+					function: {
+						name: "mark_todo",
+						arguments: JSON.stringify({
+							id: 1,
+							status: "completed",
+							note: "Evidence: scripted verification completed",
+						}),
+					},
 				},
 			],
 		},
@@ -262,11 +273,16 @@ function goalResponses() {
 			],
 		},
 		{
+			match: isGoalEvaluatorRequest,
 			stream: [
-				'{"verdict":"met","checks":[{"requirement":"feature A is complete","met":true,"evidence":["m1"],"todoIds":[1]}],"reason":"The completed Todo and verification are evidenced."}',
+				'{"verdict":"met","checks":[{"requirement":"feature A is complete","met":true,"evidence":["l1"],"todoIds":[1]}],"reason":"The completed Todo and retained evidence record verification."}',
 			],
 		},
 	]
+}
+
+function isGoalEvaluatorRequest(request: FakeResponseRequest): boolean {
+	return JSON.stringify(request.body).includes("<goal_evaluator>")
 }
 
 function unparseableEvaluatorResponses() {
