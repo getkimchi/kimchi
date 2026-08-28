@@ -20,10 +20,6 @@ class KimchiAgentConfig(BaseSettings):
             "If unset, the latest GitHub release is fetched."
         ),
     )
-    api_key: str = Field(
-        validation_alias="KIMCHI_API_KEY",
-        description="Kimchi LLM gateway API key forwarded to kimchi at runtime.",
-    )
     github_token: str | None = Field(
         default=None,
         validation_alias="GITHUB_TOKEN",
@@ -43,14 +39,4 @@ class KimchiAgentConfig(BaseSettings):
     def _must_exist(cls, v: Path | None) -> Path | None:
         if v is not None and not v.is_file():
             raise ValueError(f"KIMCHI_CODE_BINARY={v} does not exist or is not a regular file")
-        return v
-
-    @field_validator("api_key")
-    @classmethod
-    def _api_key_non_empty(cls, v: str) -> str:
-        if not v:
-            raise ValueError(
-                "KIMCHI_API_KEY is required to run kimchi. "
-                "Export it on the host and forward it with `harbor run --ae KIMCHI_API_KEY=$KIMCHI_API_KEY`."
-            )
         return v

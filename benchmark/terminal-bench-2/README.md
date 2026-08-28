@@ -11,7 +11,7 @@ The agent starts `kimchi` in its own process group and records the process-group
 - Docker running locally
 - `uv` (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 - `pnpm` — only if you use `./scripts/run-local.sh` (it cross-builds the Linux binary from the working tree)
-- `KIMCHI_API_KEY` exported on the host — kimchi routes every request through `https://llm.kimchi.dev/openai/v1`; no provider-specific keys are needed
+- The API key for the selected model route: `KIMCHI_API_KEY` for `kimchi-dev/*`, `OPENROUTER_API_KEY` for `openrouter/*`, `ANTHROPIC_API_KEY` for `anthropic/*`, `OPENAI_API_KEY` for `openai/*`, or `MOONSHOT_API_KEY` for `moonshotai/*`
 
 ### Apple Silicon (M-series Macs) — read before iterating locally
 
@@ -40,9 +40,52 @@ You will hit one of two failure modes:
 | `./scripts/run-release.sh` | Downloads the latest release from `castai/kimchi` |
 | `./scripts/run-opencode-kimchi.sh` | Installs OpenCode in the task container and configures it to use the Kimchi gateway |
 | `./scripts/run-claude-code-kimchi.sh` | Installs Claude Code in the task container and configures it to use the Kimchi gateway |
+| `./scripts/run-claude-code.sh` | Installs Claude Code in the task container and uses the standard Anthropic API (no gateway) |
+| `./scripts/run-cursor.sh` | Installs Cursor Agent CLI (`cursor-agent`) in the task container, uses Cursor's own cloud backend (no gateway) |
+| `./scripts/run-codex.sh` | Uses Harbor's built-in Codex adapter with the native OpenAI API (no gateway) |
 | `./scripts/run-gsd-kimchi.sh` | Installs GSD in the task container and configures it to use one selected Kimchi model |
+| `./scripts/run-pi-kimchi.sh` | Installs the bare `pi` CLI (upstream `@earendil-works/pi-coding-agent`) in the task container, with the `pi-kimchi-provider` extension routing model calls through the Kimchi gateway |
+| `./scripts/run-workflow.sh` | Cross-builds `kimchi` and runs one named `kimchi-workflows` workflow through it (default `ferment-oneshot`) instead of kimchi's chat loop |
+| `./scripts/run-pi-workflow.sh` | The same workflow engine hosted by **stock `pi`** — no kimchi binary is built or used anywhere in this path (default workflow `deep-solve`). See `workflows/README.md`, "Which adapter can run which workflow" |
+| `./scripts/build-pi-bundle.sh` | Not a run script: stages an offline install bundle (node + `pi` + `pi-kimchi-provider`) that the two pi agents upload instead of installing over the network. Required for tasks with `allow_internet = false`; `run-pi-workflow.sh` builds it for you |
 
-All helper scripts target the `terminal-bench/terminal-bench-2` dataset. Extra arguments are forwarded to `harbor run`, so everything below works for any script.
+All helper scripts target the `terminal-bench/terminal-bench-2-1` dataset by default. Extra arguments are forwarded to `harbor run`, so everything below works for any script.
+
+## Terminal Bench 2.1
+
+Terminal Bench 2.1 (`terminal-bench/terminal-bench-2-1` on Harbor Hub) is a more-verified iteration of 2.0 with 26 modified tasks. It is the default dataset — same `kimchi_agent`, same shared `benchmark/terminal-bench-2/` project root. All scripts and CI defaults point at 2.1; selecting 2.0 changes only the dataset, results directory, and GCS path.
+
+### Local runs
+
+2.1 is the default for all helper scripts — no env var needed:
+
+```bash
+./scripts/run-local.sh -i terminal-bench/fix-git
+```
+
+To run the original 2.0 dataset, set `DATASET=terminal-bench/terminal-bench-2`:
+
+```bash
+DATASET=terminal-bench/terminal-bench-2 ./scripts/run-local.sh -i terminal-bench/fix-git
+```
+
+### Results directory
+
+`--jobs-dir` is derived from `DATASET` as `benchmark/${DATASET#terminal-bench/}/jobs`, so the default 2.1 run writes results to `benchmark/terminal-bench-2-1/jobs/<timestamp>/...` while a 2.0 run writes to `benchmark/terminal-bench-2/jobs/...`.
+
+Override explicitly with `JOBS_DIR`:
+
+```bash
+JOBS_DIR=/tmp/tb2-jobs DATASET=terminal-bench/terminal-bench-2 ./scripts/run-local.sh ...
+```
+
+### GCS path
+
+Uploads land under `runs/benchmark=terminal-bench-2-1/coding_agent=<agent>/model_provider=<prov>/model=<model>/configuration=<cfg>/date=<YYYY-MM-DD>/run=<RUN_ID>/` — fully separated from 2.0's `runs/benchmark=terminal-bench-2/...` prefix. This is driven by the existing `_build_gcs_key_prefix()` reading `BENCHMARK_NAME` from env; no change to the prefix function.
+
+### 2.1 is the default
+
+Terminal Bench 2.1 is the default everywhere: local scripts and the `DATASET` / `BENCHMARK_NAME` / `BENCHMARK_RESULTS_DIR` defaults all point at 2.1. 2.0 is available as an opt-in — selecting it changes the dataset, results directory, and GCS path; it does not alter 2.1 behavior.
 
 ### Running a task
 
@@ -53,7 +96,7 @@ export KIMCHI_API_KEY=...
 
 ### Running the full dataset
 
-Drop `-i` to run all 89 tasks in `terminal-bench/terminal-bench-2`:
+Drop `-i` to run all tasks in `terminal-bench/terminal-bench-2-1`:
 
 ```bash
 ./scripts/run-local.sh -n 8
@@ -79,10 +122,34 @@ Each task declares its own per-attempt timeouts in `task.toml` (typically 10-15 
 ### Picking a model
 
 ```bash
-MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-local.sh -i terminal-bench/fix-git
+MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-local.sh -i terminal-bench/fix-git
 ```
 
-`MODEL` must be `<provider>/<id>`. Available `kimchi-dev` models include `kimi-k2.5`, `glm-5-fp8`, `minimax-m2.7`, `nemotron-3-super-fp4` (run `kimchi --list-models` for the live list). The qualifier is required because kimchi's built-in catalog also registers some IDs (notably `kimi-k2.5`) under the `opencode` provider — without `kimchi-dev/` the resolver picks `opencode` and fails auth with the kimchi key.
+`MODEL` must be `<provider>/<id>`. The qualifier is required because kimchi's built-in catalog also registers some IDs under the `opencode` provider — without `kimchi-dev/` the resolver picks `opencode` and fails auth with the kimchi key.
+
+> **Check the model exists before you trust a run.** `kimchi --list-models` is the live list; the
+> catalog changes and this file goes stale. A retired id does **not** fail loudly — kimchi prints
+> `Warning: Model "<id>" not found for provider "kimchi-dev". Using custom model id.` on stderr, then
+> every request fails and each agent turn returns an **empty** reply. Under a plain `--print` run that
+> looks like a bad model; under a workflow it looks like every step failing with
+> `the reply was not valid JSON (received: )`, which reads as an agent bug and is not one.
+> `kimi-k2.5` and `kimi-k2.6` were both defaults here after they had been retired, and cost a full
+> debugging cycle each.
+
+Verified present at the time of writing (`kimchi --list-models`): `kimi-k2.7`, `glm-5.2-fp8`,
+`minimax-m3`, `deepseek-v4-flash`, `nemotron-3-ultra-fp4`, plus the `kimchi-dev/anthropic` family.
+
+### Native Moonshot API
+
+The GitLab benchmark pipeline accepts `moonshotai/kimi-k2.7-code` and
+`moonshotai/kimi-k3`. These models bypass the Kimchi gateway and require the
+`MOONSHOT_API_KEY` CI/CD variable. They work with the `kimchi`, `pi`,
+`kimchi-workflow`, `pi-workflow`, `claude-code`, and `opencode` agents.
+
+For OpenCode, `OPENCODE_SMALL_MODEL` defaults to the selected benchmark model.
+An explicit small model must use the same provider prefix as `MODEL`; for
+example, `moonshotai/kimi-k3` may use `moonshotai/kimi-k2.7-code`, but not a
+`kimchi-dev/*` model.
 
 ### OpenCode with the Kimchi gateway
 
@@ -90,10 +157,12 @@ Use `run-opencode-kimchi.sh` when the benchmark should evaluate the OpenCode sca
 
 ```bash
 export KIMCHI_API_KEY=...
-MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
+MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
 ```
 
-The script requires `KIMCHI_API_KEY` in the host environment and forwards it to Harbor with `--ae KIMCHI_API_KEY=$KIMCHI_API_KEY`; you do not need to pass that `--ae` manually when using the script.
+The script resolves the credential from `MODEL`: `KIMCHI_API_KEY` for
+`kimchi-dev/*`, `OPENROUTER_API_KEY` for `openrouter/*`, and
+`MOONSHOT_API_KEY` for `moonshotai/*`. You do not need to pass `--ae` manually.
 
 The OpenCode adapter accepts any `kimchi-dev/<model-id>` returned by Kimchi's model metadata endpoint (`/v1/models/metadata?include_in_cli=true`). It writes an OpenCode provider config for the selected model at runtime, using the live model limits and reasoning flag, then runs OpenCode in JSON mode. Reasoning-capable models include `--thinking`:
 
@@ -104,15 +173,15 @@ opencode --model=<MODEL> run --format=json --thinking --dangerously-skip-permiss
 To change models, change only `MODEL`:
 
 ```bash
-MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
+MODEL=kimchi-dev/minimax-m3 ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
 ```
 
-By default OpenCode uses the benchmark model for `small_model` too, keeping the whole run on the selected model. To use a cheaper Kimchi model for summary/title work, set `OPENCODE_SMALL_MODEL=kimchi-dev/<model-id>`; the adapter registers that model from the same metadata endpoint.
+By default OpenCode uses the benchmark model for `small_model` too, keeping the whole run on the selected model. To use a cheaper model for summary/title work, set `OPENCODE_SMALL_MODEL=<same-provider>/<model-id>`; the adapter rejects a provider that differs from `MODEL`.
 
 By default Harbor installs the latest `opencode-ai` package. Pin OpenCode for reproducible runs with `OPENCODE_VERSION`:
 
 ```bash
-OPENCODE_VERSION=1.14.33 MODEL=kimchi-dev/kimi-k2.5 \
+OPENCODE_VERSION=1.14.33 MODEL=kimchi-dev/kimi-k2.7 \
   ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
 ```
 
@@ -122,7 +191,7 @@ Use `run-claude-code-kimchi.sh` when the benchmark should evaluate the Claude Co
 
 ```bash
 export KIMCHI_API_KEY=...
-MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
+MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
 ```
 
 The Claude Code adapter accepts any `kimchi-dev/<model-id>` returned by Kimchi's model metadata endpoint (`/v1/models/metadata?include_in_cli=true`). It configures Claude Code with Kimchi's Anthropic-compatible endpoint (`https://llm.kimchi.dev/anthropic`), maps `KIMCHI_API_KEY` to `ANTHROPIC_AUTH_TOKEN`, clears `ANTHROPIC_API_KEY`, and pins Claude Code's default Sonnet/Opus/Haiku/subagent aliases to the selected model.
@@ -130,15 +199,85 @@ The Claude Code adapter accepts any `kimchi-dev/<model-id>` returned by Kimchi's
 To change models, change only `MODEL`:
 
 ```bash
-MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
+MODEL=kimchi-dev/minimax-m3 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
 ```
 
 By default Harbor installs the latest Claude Code package. Pin Claude Code for reproducible runs with `CLAUDE_CODE_VERSION`:
 
 ```bash
-CLAUDE_CODE_VERSION=2.1.144 MODEL=kimchi-dev/kimi-k2.5 \
+CLAUDE_CODE_VERSION=2.1.144 MODEL=kimchi-dev/kimi-k2.7 \
   ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
 ```
+
+### Claude Code (standard release)
+
+Use `run-claude-code.sh` when the benchmark should evaluate the Claude Code scaffold against the **native Anthropic API** — no Kimchi gateway, no model metadata fetching. The model must be an Anthropic model ID with the `anthropic/` prefix.
+
+```bash
+export ANTHROPIC_API_KEY=...
+./scripts/run-claude-code.sh -i terminal-bench/fix-git
+```
+
+The script forwards `ANTHROPIC_API_KEY` to the container via `--ae` and lets harbor's built-in `ClaudeCode` agent handle auth, model resolution, and install. The `anthropic/` prefix is stripped automatically — `anthropic/claude-sonnet-5` becomes `ANTHROPIC_MODEL=claude-sonnet-5`.
+
+To change models, set `MODEL`:
+
+```bash
+MODEL=anthropic/claude-opus-4-8 ./scripts/run-claude-code.sh -i terminal-bench/fix-git
+```
+
+Pin Claude Code for reproducible runs with `CLAUDE_CODE_VERSION`:
+
+```bash
+CLAUDE_CODE_VERSION=2.1.144 ./scripts/run-claude-code.sh -i terminal-bench/fix-git
+```
+
+The retry config (`config/retry.yaml`) is included by default so transient Anthropic API errors (429, 500, 502, 503, 504, 524) are retried with exponential backoff. Override the max retry count with `CLAUDE_CODE_API_MAX_RETRIES`.
+
+### Codex
+
+Use `run-codex.sh` to evaluate the Codex CLI against the native OpenAI API. The integration delegates installation, execution, native session capture, and ATIF conversion to Harbor's built-in Codex adapter.
+
+```bash
+export OPENAI_API_KEY=...
+./scripts/run-codex.sh -i terminal-bench/fix-git
+```
+
+The default model is `openai/gpt-5.6-luna`. Other direct OpenAI models use the same route:
+
+```bash
+MODEL=openai/gpt-5.6-terra ./scripts/run-codex.sh -i terminal-bench/fix-git
+MODEL=openai/gpt-5.6-sol ./scripts/run-codex.sh -i terminal-bench/fix-git
+```
+
+On Apple Silicon, skip the unreliable emulated verifier when checking only the Codex integration and artifacts:
+
+```bash
+./scripts/run-codex.sh --disable-verification -i terminal-bench/fix-git
+```
+
+Each completed trial retains the native Codex rollout under `agent/sessions/` and Harbor's normalized `ATIF-v1.7` output at `agent/trajectory.json`. The benchmark pipeline uses the trajectory for model, token, cache, LLM-round, and tool-call reporting while retaining the native session for auditing.
+
+### Cursor Agent CLI
+
+Use `run-cursor.sh` when the benchmark should evaluate the Cursor Agent CLI scaffold. The `cursor-agent` CLI talks to Cursor's own cloud backend — it does **not** route through the Kimchi gateway. This means a `CURSOR_API_KEY` from a Cursor account is required instead of `KIMCHI_API_KEY`.
+
+```bash
+export CURSOR_API_KEY=...
+./scripts/run-cursor.sh -i terminal-bench/fix-git
+```
+
+Cursor's hosted catalog includes both proprietary models (Composer 2.5, Grok 4.5) and OSS models (GLM 5.2, Kimi K2.7 Code). Model names use the `cursor/` prefix:
+
+```bash
+MODEL=cursor/glm-5.2 ./scripts/run-cursor.sh -i terminal-bench/fix-git
+MODEL=cursor/kimi-k2.7-code ./scripts/run-cursor.sh -i terminal-bench/fix-git
+MODEL=cursor/composer-2.5 ./scripts/run-cursor.sh -i terminal-bench/fix-git
+```
+
+The adapter is a thin subclass of Harbor's upstream `CursorCli` — it adds git install + baseline commit and install retry, then delegates to the base class for model selection, run, output parsing, and cost computation. The `cursor/` prefix is stripped automatically and the slug is passed to `--model=<slug>`.
+
+**Routing asymmetry:** Unlike the Kimchi-gateway agents, which route model calls directly to `llm.kimchi.dev`, `cursor-agent` always talks to Cursor's own backend. Cross-scaffold comparison with Cursor is at the model level (the same model family, e.g. GLM 5.2), not at the inference-path level.
 
 ### GSD with the Kimchi gateway
 
@@ -146,7 +285,7 @@ Use `run-gsd-kimchi.sh` when the benchmark should evaluate the GSD scaffold whil
 
 ```bash
 export KIMCHI_API_KEY=...
-MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-gsd-kimchi.sh -i terminal-bench/fix-git
+MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-gsd-kimchi.sh -i terminal-bench/fix-git
 ```
 
 The GSD adapter accepts any `kimchi-dev/<model-id>` returned by Kimchi's model metadata endpoint (`/v1/models/metadata?include_in_cli=true`). It installs `gsd-pi@latest` by default, writes a temporary GSD home with only the selected model, writes minimal GSD preferences that route every role to that model, and runs GSD in non-interactive print mode:
@@ -160,13 +299,13 @@ GSD's text output is captured at `agent/gsd.txt`, the resolved version at `agent
 To change models, change only `MODEL`:
 
 ```bash
-MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-gsd-kimchi.sh -i terminal-bench/fix-git
+MODEL=kimchi-dev/minimax-m3 ./scripts/run-gsd-kimchi.sh -i terminal-bench/fix-git
 ```
 
 Override the GSD package version with `GSD_VERSION`:
 
 ```bash
-GSD_VERSION=3.0.0 MODEL=kimchi-dev/kimi-k2.5 \
+GSD_VERSION=3.0.0 MODEL=kimchi-dev/kimi-k2.7 \
   ./scripts/run-gsd-kimchi.sh -i terminal-bench/fix-git
 ```
 
@@ -175,7 +314,7 @@ GSD_VERSION=3.0.0 MODEL=kimchi-dev/kimi-k2.5 \
 To benchmark a model on its own, bypassing kimchi's multi-model orchestration, pass `--model <provider>/<id>` to select a specific model. The helper scripts do this by default through `MODEL`, which starts kimchi in single-model mode.
 
 ```bash
-MODEL=kimchi-dev/kimi-k2.6 ./scripts/run-local.sh -n 8 -k 3
+MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-local.sh -n 8 -k 3
 ```
 
 Do not use `--agent-kwarg disable-multi-model=true`; the adapter accepts that legacy kwarg for compatibility, but current kimchi has no `--multi-model` CLI flag.
@@ -227,7 +366,7 @@ Caveats:
 
 kimchi attaches tags from `KIMCHI_TAGS` to every outgoing LLM request payload and telemetry event, which lets you slice usage/tokens/cost server-side by run, experiment, or branch.
 
-The agent auto-injects `run:<timestamp>`, `task:<task_id>`, and `trial:<task_id>__<suffix>` derived from the trial directory layout (`jobs/<timestamp>/<task>__<trial>/`). You don't need to set these yourself — they're correct across globs (`-i 'terminal-bench/build-*'`), full-dataset runs, and parallel attempts (`-k N`, `-n N`).
+The agent auto-injects `run_id:<RUN_ID>`, `task:<task_id>`, and `trial:<task_id>__<suffix>` derived from the trial directory layout (`jobs/<run>/<task>__<trial>/`). Set `RUN_ID` in CI so the tag matches `kimchi_benchmark_runs.run_id`. For local runs without `RUN_ID`, the agent generates a random `local-<hex>` identifier so each run is still uniquely traceable. The other two tags are correct across globs (`-i 'terminal-bench/build-*'`), full-dataset runs, and parallel attempts (`-k N`, `-n N`).
 
 To add custom tags, forward `KIMCHI_TAGS` with `--ae`:
 
@@ -237,7 +376,7 @@ To add custom tags, forward `KIMCHI_TAGS` with `--ae`:
   --ae "KIMCHI_TAGS=bench:terminal-bench-2,experiment:baseline"
 ```
 
-User-supplied values win on key collision: passing `--ae KIMCHI_TAGS=task:custom` overrides the auto-injected `task:<task_id>`.
+User-supplied values win on key collision: passing `--ae KIMCHI_TAGS=task:custom` overrides the auto-injected `task:<task_id>`. The same applies to `run_id` — local overrides win over the auto-emitted or generated value.
 
 Tag format is `key:value`, comma-separated; keys and values are alphanumeric plus `.`, `_`, `-`, max 64 chars each side. Invalid tags are dropped silently. Per-trial token/cost totals also land in `jobs/<timestamp>/<task>__<trial_id>/result.json` regardless of tags, so for local-only aggregation you can just group result files by the `KIMCHI_TAGS` value you ran them with.
 
@@ -250,10 +389,19 @@ Tag format is `key:value`, comma-separated; keys and values are alphanumeric plu
 | `KIMCHI_API_KEY` | yes | Bearer token for `llm.kimchi.dev`; forwarded to the agent via `--ae` |
 | `KIMCHI_CODE_BINARY` | no | Host path to a prebuilt Linux `kimchi` binary (produced by `pnpm run build:binary-linux-x64` at `dist/bin/kimchi`). The agent uploads the binary's grandparent directory (the build/tarball root containing `bin/` + `share/kimchi/`), so the auxiliary files travel with it. When set, the agent skips the GitHub release download. `./scripts/run-local.sh` sets this for you. |
 | `GITHUB_TOKEN` | no | Raises GitHub API rate limits when fetching the latest release. Not required for public repos |
-| `MODEL` | no | Default `kimchi-dev/kimi-k2.5`. See "Picking a model" for the `<provider>/<id>` requirement |
+| `MODEL` | no | Default `kimchi-dev/kimi-k2.7`. See "Picking a model" for the `<provider>/<id>` requirement |
 | `OPENCODE_VERSION` | no | Pins the OpenCode version used by `run-opencode-kimchi.sh` |
-| `CLAUDE_CODE_VERSION` | no | Pins the Claude Code version used by `run-claude-code-kimchi.sh` |
+| `CLAUDE_CODE_VERSION` | no | Pins the Claude Code version used by `run-claude-code-kimchi.sh` and `run-claude-code.sh` |
+| `ANTHROPIC_API_KEY` | for `run-claude-code.sh` | Anthropic API key for the standard Claude Code release; forwarded to the agent via `--ae` |
+| `CURSOR_API_KEY` | for `run-cursor.sh` | Cursor API key for the Cursor Agent CLI; forwarded to the agent via `--ae` |
+| `OPENAI_API_KEY` | for `run-codex.sh` | OpenAI API key for Codex; forwarded to the agent via `--ae` and redacted from benchmark artifacts |
 | `GSD_VERSION` | no | Overrides the GSD package version used by `run-gsd-kimchi.sh`; default install target is `gsd-pi@latest` |
+| `PI_VERSION` | no | Pins the `@earendil-works/pi-coding-agent` version used by `run-pi-kimchi.sh`; default is `@latest` |
+| `WORKFLOW` | no | The workflow's declared **name** (not a filename) for `run-workflow.sh` / `run-pi-workflow.sh`. Defaults: `ferment-oneshot` and `deep-solve` respectively |
+| `EXTENSION` | no | `kimchi-workflows` spec for those two scripts: `npm:<pkg>@<version-or-dist-tag>` or `dir:<host path>`. Resolved on the host and uploaded — task images ship no node toolchain, so an in-container resolve cannot work |
+| `PI_BUNDLE_DIR` | no | Where the offline pi bundle lives. Default `benchmark/terminal-bench-2/.cache/pi-bundle`; absent or unrunnable (musl images), both pi agents fall back to the network install |
+| `SKIP_PI_BUNDLE` | no | Set to skip building the bundle in `run-pi-workflow.sh` and force the in-container network install |
+| `TB_AGENT_TIMEOUT_SEC` | no | Forces one agent-phase budget for every task instead of the per-task value `PiWorkflowAgent` reconstructs. A debugging aid — a wrong value here silently mis-schedules every stage of `deep-solve` |
 
 ## Results
 
