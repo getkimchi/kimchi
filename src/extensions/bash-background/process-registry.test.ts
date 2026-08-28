@@ -12,7 +12,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { BashOperations } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { createProcessRegistry, OutputRingBuffer, type TailSnapshot } from "./process-registry.js"
+import { createProcessRegistry, elapsedSecondsSince, OutputRingBuffer, type TailSnapshot } from "./process-registry.js"
 
 // ─── Fake BashOperations ─────────────────────────────────────────────────────
 
@@ -156,6 +156,33 @@ describe("createProcessRegistry — spawn", () => {
 		expect(entry?.state).toBe("running")
 		expect(entry?.exitCode).toBeNull()
 		await registry.shutdown()
+	})
+})
+
+describe("createProcessRegistry — spawnedAtMs / elapsed", () => {
+	it("captures spawnedAtMs at spawn time", async () => {
+		const now = Date.UTC(2025, 0, 1, 12, 0, 0)
+		vi.setSystemTime(now)
+		const ops = createFakeOps(0)
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "sleep 1", "/tmp", undefined, {
+			intervalSeconds: 15,
+			deadlineMs: now + 60_000,
+		})
+		const entry = registry.getEntry(handle)
+		expect(entry?.spawnedAtMs).toBe(now)
+		expect(elapsedSecondsSince(entry?.spawnedAtMs ?? now)).toBe(0)
+		vi.setSystemTime(now + 30_000)
+		expect(elapsedSecondsSince(entry?.spawnedAtMs ?? now)).toBe(30)
+		vi.useRealTimers()
+		await registry.shutdown()
+	})
+
+	it("elapsedSecondsSince never goes negative under clock skew", () => {
+		// If Date.now() somehow runs backwards, the floor at 0 prevents a
+		// negative duration from reaching the model.
+		const future = Date.UTC(2030, 0, 1)
+		expect(elapsedSecondsSince(future + 10_000)).toBe(0)
 	})
 })
 

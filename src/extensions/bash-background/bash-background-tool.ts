@@ -22,7 +22,13 @@ import type { BashOperations, BashToolDetails, BashToolOptions, ToolDefinition }
 import { createBashToolDefinition, createLocalBashOperations } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
 import { awaitCheckin } from "./checkin.js"
-import { createProcessRegistry, type ProcessRegistry, type TailSnapshot } from "./process-registry.js"
+import {
+	createProcessRegistry,
+	elapsedSecondsSince,
+	type ProcessRegistry,
+	type TailSnapshot,
+} from "./process-registry.js"
+import { exitedStatusText, runningStatusText } from "./status-text.js"
 import { throwIfTerminal } from "./terminal-status.js"
 
 /** Short-task threshold: timeouts at or below this run synchronously. */
@@ -46,6 +52,8 @@ export interface BackgroundBashToolDetails extends BashToolDetails {
 	checkin?: boolean
 	/** Reason the process stopped, if any ("stop" | "deadline" | "aborted" | …). */
 	reason?: string | null
+	/** Whole seconds the process has run (from spawn). Omitted when no handle is known. */
+	elapsedSeconds?: number
 }
 
 /** Extended schema: upstream {command, timeout?} + checkin_interval? */
@@ -87,7 +95,7 @@ export function createBackgroundBashToolDefinition(
 
 	const description =
 		wrapped.description +
-		" Long-running commands run in the background: you receive a tail-window of output plus a process handle at each checkin (default every 15s, or every checkin_interval seconds when provided), then drive it to completion with the bash_control tool. For commands expected to run several minutes (builds, installs, training), set a longer checkin_interval (e.g. 60–120s) to avoid waking up every 15s; the cadence can also be changed later via bash_control's checkin_interval. Always set a timeout appropriate to the command — do not shorten it artificially."
+		" Long-running commands run in the background: you receive a tail-window of output plus a process handle at each checkin (default every 15s, or every checkin_interval seconds when provided), then drive it to completion with the bash_control tool. While a process runs, other tools remain available — do independent work instead of calling bash_control just to wait, but avoid commands or edits that could conflict with the running process (same files, package managers, ports, builds). Call bash_control when you need output sooner, a deadline extension, or to stop the process. For commands expected to run several minutes (builds, installs, training), set a longer checkin_interval (e.g. 60–120s) to avoid waking up every 15s; the cadence can also be changed later via bash_control's checkin_interval. Always set a timeout appropriate to the command — do not shorten it artificially."
 
 	async function execute(
 		toolCallId: string,
@@ -170,22 +178,29 @@ export function createBackgroundBashToolDefinition(
 
 			// Success exit — return plain output with truncation details if present.
 			const truncated = final?.truncation?.truncated === true
+			const elapsed = elapsedSecondsSince(registry.getEntry(handle)?.spawnedAtMs ?? Date.now())
+			const truncationSuffix =
+				truncated && final?.fullOutputPath ? `\n\n[Output truncated. Full output: ${final.fullOutputPath}]` : ""
 			return {
 				content: [
 					{
 						type: "text",
-						text:
-							truncated && final?.fullOutputPath
-								? `${fullOutput}\n\n[Output truncated. Full output: ${final.fullOutputPath}]`
-								: fullOutput,
+						text: `${fullOutput}${truncationSuffix}\n\n${exitedStatusText(snapshot.exitCode, elapsed)}`,
 					},
 				],
-				details: truncated ? { truncation: final?.truncation, fullOutputPath: final?.fullOutputPath } : undefined,
+				details: {
+					...(truncated ? { truncation: final?.truncation, fullOutputPath: final?.fullOutputPath } : {}),
+					handle,
+					exited: true,
+					exitCode: snapshot.exitCode,
+					elapsedSeconds: elapsed,
+				},
 			}
 		}
 
 		// Process still running — return tail window + handle for bash_control.
-		const statusLine = `\n\n[Background process running — call bash_control with handle ${handle} to continue or stop]`
+		const elapsed = elapsedSecondsSince(registry.getEntry(handle)?.spawnedAtMs ?? Date.now())
+		const statusLine = `\n\n${runningStatusText(handle, elapsed, false)}`
 
 		return {
 			content: [{ type: "text", text: `${snapshot.text}${statusLine}` }],
@@ -195,6 +210,7 @@ export function createBackgroundBashToolDefinition(
 				exitCode: null,
 				checkin: true,
 				reason: null,
+				elapsedSeconds: elapsed,
 			},
 		}
 	}

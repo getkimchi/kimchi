@@ -247,12 +247,16 @@ describe("createBackgroundBashToolDefinition — background checkin path (timeou
 		ops.emit("done output\n")
 		await ops.exit(0)
 		const result = await execPromise
-		// Success exit before first checkin: returns plain output like upstream.
-		// No handle, no checkin flag, no status line.
+		// Success exit before first checkin: returns output plus the elapsed
+		// status line. No handle (not tracked), no checkin flag, no running
+		// status line offering bash_control.
 		expect((result.content[0] as { text: string }).text).toContain("done output")
-		expect((result.content[0] as { text: string }).text).not.toContain("Process exited")
+		expect((result.content[0] as { text: string }).text).toContain("Process exited")
+		expect((result.content[0] as { text: string }).text).toContain("ran for 0s")
 		expect((result.content[0] as { text: string }).text).not.toContain("bash_control")
-		expect(result.details?.handle).toBeUndefined()
+		expect(result.details?.handle).toEqual(expect.any(String))
 		expect(result.details?.checkin).toBeFalsy()
+		expect(result.details?.elapsedSeconds).toBe(0)
+		expect(result.details?.exited).toBe(true)
 	})
 })

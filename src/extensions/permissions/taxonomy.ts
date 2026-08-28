@@ -12,6 +12,12 @@ const STATIC_CATEGORIES: Record<string, ToolCategory> = {
 	edit: "write",
 	write: "write",
 	bash: "execute",
+	// LSP tools: read-only inspection vs. write-capable rename.
+	lsp_diagnostics: "readOnly",
+	lsp_hover: "readOnly",
+	lsp_definition: "readOnly",
+	lsp_references: "readOnly",
+	lsp_rename: "write",
 	// daemon + daemon_control spawn/manage session-surviving processes —
 	// same risk class as bash (execute), so they inherit the same
 	// permission-mode treatment. (bash_control is `unknown` upstream;

@@ -258,6 +258,8 @@ class OutputAccumulator {
 
 export interface ProcessEntry {
 	readonly handle: string
+	/** Wall-clock ms (Date.now()) when the process was spawned. Used to report elapsed time. */
+	readonly spawnedAtMs: number
 	state: ProcessState
 	exitCode: number | null
 	reason: string | null
@@ -371,6 +373,15 @@ export interface ProcessRegistry {
 	readonly size: number
 }
 
+/**
+ * Elapsed whole seconds since `spawnedAtMs`, floored at zero so a clock
+ * skew can never produce a negative duration. Reads Date.now() directly so
+ * tests can control it with fake system time.
+ */
+export function elapsedSecondsSince(spawnedAtMs: number): number {
+	return Math.max(0, Math.floor((Date.now() - spawnedAtMs) / 1000))
+}
+
 export function createProcessRegistry(): ProcessRegistry {
 	const entries = new Map<string, ProcessEntry>()
 	const spillPaths = new Set<string>()
@@ -430,6 +441,7 @@ export function createProcessRegistry(): ProcessRegistry {
 
 		const entry: ProcessEntry = {
 			handle,
+			spawnedAtMs: Date.now(),
 			state: "running",
 			exitCode: null,
 			reason: null,

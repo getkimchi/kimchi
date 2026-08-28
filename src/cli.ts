@@ -585,9 +585,11 @@ try {
 			// Background mode is opt-in via `checkin_interval`; without it, bash
 			// runs synchronously as before.
 			bashBackgroundExtension,
-			// bash_control companion tool. While a background process awaits a
-			// continue/stop decision, other tool calls are hard-blocked with a
-			// steering reason; natural process exit releases the gate.
+			// bash_control companion tool. Tracks background bash processes for
+			// lifecycle notices and concurrency context (non-blocking): other tool
+			// calls are allowed while a process runs; write/execute calls get a
+			// once-per-turn conflict steer, and a normal completion with tracked
+			// handles gets one bounded follow-up.
 			bashControlExtension,
 			// Session-surviving daemons: daemon + daemon_control tools.
 			// Deliberate last resort for services that must outlive the session —

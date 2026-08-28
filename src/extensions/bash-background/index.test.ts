@@ -17,16 +17,29 @@ import { getSessionRegistry, setSessionRegistry } from "./session-registry.js"
 
 type AnyHandler = (event: unknown, ctx: ExtensionContext) => unknown
 
-function makeFakePi(): ExtensionAPI & { emit(event: string, payload: unknown, ctx?: unknown): Promise<void> } {
+interface RegisteredTool {
+	name: string
+	description: string
+	execute: unknown
+}
+
+function makeFakePi(): ExtensionAPI & {
+	registeredTools: Map<string, RegisteredTool>
+	emit(event: string, payload: unknown, ctx?: unknown): Promise<void>
+} {
 	const handlers = new Map<string, AnyHandler[]>()
+	const registeredTools = new Map<string, RegisteredTool>()
 	const fake = {
 		handlers,
+		registeredTools,
 		on(event: string, handler: AnyHandler) {
 			const list = handlers.get(event) ?? []
 			list.push(handler)
 			handlers.set(event, list)
 		},
-		registerTool(_tool: { name: string }) {},
+		registerTool(tool: RegisteredTool) {
+			registeredTools.set(tool.name, tool)
+		},
 		async emit(event: string, payload: unknown, ctx?: unknown) {
 			for (const h of handlers.get(event) ?? []) {
 				await h(payload, ctx as ExtensionContext)
@@ -34,6 +47,7 @@ function makeFakePi(): ExtensionAPI & { emit(event: string, payload: unknown, ct
 		},
 	}
 	return fake as unknown as ExtensionAPI & {
+		registeredTools: Map<string, RegisteredTool>
 		emit(event: string, payload: unknown, ctx?: unknown): Promise<void>
 	}
 }
@@ -78,5 +92,43 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 
 		await pi.emit("session_shutdown", {})
 		expect(getSessionRegistry()).toBeUndefined()
+	})
+})
+
+describe("bashBackgroundExtension — production description composition", () => {
+	afterEach(() => {
+		setSessionRegistry(undefined)
+	})
+
+	it("registers the bash tool with the non-blocking guidance from bashToolDescription", async () => {
+		const pi = makeFakePi()
+		bashBackgroundExtension(pi)
+
+		await pi.emit("session_start", {}, { cwd: "/tmp" })
+
+		const bash = pi.registeredTools.get("bash")
+		expect(bash).toBeDefined()
+		// The production-registered description must carry the non-blocking
+		// guidance so the model knows other tools stay available while a
+		// process runs.
+		expect(bash?.description).toContain("other tools stay available")
+		expect(bash?.description).toContain("do independent work")
+		expect(bash?.description).toContain("instead of calling bash_control just to wait")
+		expect(bash?.description).toContain("avoid commands or edits that could conflict")
+
+		await pi.emit("session_shutdown", {})
+	})
+
+	it("registers the bash tool with the background-execute function", async () => {
+		const pi = makeFakePi()
+		bashBackgroundExtension(pi)
+
+		await pi.emit("session_start", {}, { cwd: "/tmp" })
+
+		const bash = pi.registeredTools.get("bash")
+		expect(bash).toBeDefined()
+		expect(typeof bash?.execute).toBe("function")
+
+		await pi.emit("session_shutdown", {})
 	})
 })

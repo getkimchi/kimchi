@@ -28,6 +28,17 @@ describe("classifyTool", () => {
 		expect(isReadOnlyTool("daemon_control")).toBe(false)
 	})
 
+	it("classifies the repo's LSP tools: read-only inspection vs write-capable rename", () => {
+		expect(classifyTool("lsp_diagnostics")).toBe("readOnly")
+		expect(classifyTool("lsp_hover")).toBe("readOnly")
+		expect(classifyTool("lsp_definition")).toBe("readOnly")
+		expect(classifyTool("lsp_references")).toBe("readOnly")
+		expect(isReadOnlyTool("lsp_diagnostics")).toBe(true)
+		// lsp_rename mutates symbols across files — write-capable.
+		expect(classifyTool("lsp_rename")).toBe("write")
+		expect(isReadOnlyTool("lsp_rename")).toBe(false)
+	})
+
 	it("classifies workflow output tools as read-only without widening the submit namespace", () => {
 		expect(classifyTool("workflow_submit_result")).toBe("readOnly")
 		expect(classifyTool("workflow_submit_questions")).toBe("readOnly")

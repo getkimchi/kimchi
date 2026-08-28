@@ -863,6 +863,19 @@ describe("BASH_TOOL_DESCRIPTION", () => {
 		expect(bashToolDescription()).toMatch(/timeout=1800/)
 		expect(bashToolDescription()).toMatch(/checkin_interval/)
 	})
+
+	it("tells the model other tools stay available while a process runs", () => {
+		expect(bashToolDescription()).toContain("other tools stay available")
+	})
+
+	it("steers the model toward independent work instead of polling bash_control", () => {
+		expect(bashToolDescription()).toContain("do independent work")
+		expect(bashToolDescription()).toContain("instead of calling bash_control just to wait")
+	})
+
+	it("warns against commands that could conflict with a running process", () => {
+		expect(bashToolDescription()).toContain("avoid commands or edits that could conflict")
+	})
 })
 
 describe("toolDescriptionOverride", () => {

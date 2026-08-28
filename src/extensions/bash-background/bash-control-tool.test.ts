@@ -165,6 +165,7 @@ describe("bash_control — action 'continue'", () => {
 		expect(result.details.handle).toBe(handle)
 		expect(result.details.exited).toBe(false)
 		expect(result.details.action).toBe("continue")
+		expect(result.details.elapsedSeconds).toBe(1)
 		expect((result.content[0] as { text: string }).text).toContain("second output")
 		expect((result.content[0] as { text: string }).text).toContain("bash_control")
 		// Cleanup
@@ -197,7 +198,9 @@ describe("bash_control — action 'continue'", () => {
 		const result = await callExecute(tool, { handle, action: "continue" })
 		expect(result.details.exited).toBe(true)
 		expect(result.details.exitCode).toBe(0)
+		expect(result.details.elapsedSeconds).toBe(0)
 		expect((result.content[0] as { text: string }).text).toContain("done output")
+		expect((result.content[0] as { text: string }).text).toContain("ran for 0s")
 	})
 
 	it("extend_seconds of 0 or omitted keeps the existing deadline", async () => {
@@ -222,8 +225,10 @@ describe("bash_control — action 'stop'", () => {
 		expect(result.details.action).toBe("stop")
 		expect(result.details.exited).toBe(true)
 		expect(result.details.reason).toBe("stop")
+		expect(result.details.elapsedSeconds).toBe(0)
 		expect((result.content[0] as { text: string }).text).toContain("final output")
 		expect((result.content[0] as { text: string }).text).toContain("Process stopped")
+		expect((result.content[0] as { text: string }).text).toContain("ran for 0s")
 	})
 
 	it("stop on an already-exited process returns final output", async () => {

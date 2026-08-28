@@ -334,10 +334,12 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 	// Substitute dynamic ids from previous tool results into scripted tool args.
 	const fermentId = extractFermentId(body)
 	const agentId = extractAgentId(body)
+	const bashHandle = extractBashHandle(body)
 	for (const toolCall of script.toolCalls ?? []) {
 		const fn = { ...toolCall.function }
 		if (fermentId) fn.arguments = fn.arguments.replaceAll("__FERMENT_ID__", fermentId)
 		if (agentId) fn.arguments = fn.arguments.replaceAll("__AGENT_ID__", agentId)
+		if (bashHandle) fn.arguments = fn.arguments.replaceAll("__BASH_HANDLE__", bashHandle)
 		chunk([
 			{
 				index: 0,
@@ -390,6 +392,22 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 	}
 	res.write("data: [DONE]\n\n")
 	res.end()
+}
+
+/** Pull the background bash process handle from a prior bash tool result. */
+function extractBashHandle(body: unknown): string | undefined {
+	const messages = asRecord(body).messages
+	if (!Array.isArray(messages)) return undefined
+	for (const message of [...messages].reverse()) {
+		const record = asRecord(message)
+		if (record.role !== "tool") continue
+		const text = readMessageContent(record.content)
+		// The background bash result includes a parenthetical `(handle <uuid>)`
+		// in its status line.
+		const match = text.match(/\(handle ([0-9a-fA-F-]{8,})\)/)
+		if (match) return match[1]
+	}
+	return undefined
 }
 
 /** Pull the ferment id the host put in the scoping nudge (`ferment_id: "<uuid>"`). */

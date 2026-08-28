@@ -21,7 +21,9 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
 import { awaitCheckin } from "./checkin.js"
+import { elapsedSecondsSince } from "./process-registry.js"
 import { getSessionRegistry } from "./session-registry.js"
+import { exitedStatusText, runningStatusText, stoppedStatusText } from "./status-text.js"
 import { throwIfTerminal } from "./terminal-status.js"
 
 const bashControlSchema = Type.Object({
@@ -62,6 +64,8 @@ export interface BashControlDetails {
 	checkin?: boolean
 	/** Reason the process stopped, if any ("stop" | "deadline" | "aborted" | …). */
 	reason?: string | null
+	/** Whole seconds the process has run (from spawn). Omitted when no handle is known. */
+	elapsedSeconds?: number
 }
 
 export const BASH_CONTROL_TOOL_NAME = "bash_control"
@@ -70,10 +74,10 @@ export const BASH_CONTROL_TOOL_DESCRIPTION = `Control a background bash process 
 
 After the \`bash\` tool spawns a long-running command in the background and returns a \`handle\` at a checkin, call this tool to decide what happens next:
 
-- action "continue": keep the process running and receive the next tail-window of output at the next checkin. Optionally pass \`extend_seconds\` to push the deadline out first (preventing an imminent auto-kill), and/or \`checkin_interval\` to change how often you are woken with status updates — for long builds, prefer a longer interval (e.g. 60–300s) over polling every 15s.
+- action "continue": keep the process running and receive the next tail-window of output at the next checkin. Optionally pass \`extend_seconds\` to push the deadline out first (preventing an imminent auto-kill), and/or \`checkin_interval\` to change how often you are woken with status updates — for long builds, prefer a longer interval (e.g. 60–300s) over polling every 15s. \`continue\` blocks until the next checkin or process exit — use it when another status wait is actually useful, not merely to poll.
 - action "stop": kill the process immediately and return its final tail-window of output plus exit code.
 
-Use this tool only when a \`bash\` result includes a \`handle\` in its details (i.e. the command is still running in the background). For commands that ran synchronously (timeout <= 5), there is no handle and no need to call this tool.`
+Other tools remain available while a background process runs, so you do not need to call this tool just to wait — do independent work and call bash_control when you need output sooner, a deadline extension, or to stop the process. Use this tool only when a \`bash\` result includes a \`handle\` in its details (i.e. the command is still running in the background). For commands that ran synchronously (timeout <= 5), there is no handle and no need to call this tool.`
 
 /**
  * Build the `bash_control` ToolDefinition.
@@ -144,6 +148,7 @@ export function createBashControlToolDefinition(
 
 		// ── stop ────────────────────────────────────────────────────────
 		if (action === "stop") {
+			const elapsed = elapsedSecondsSince(entry.spawnedAtMs)
 			await registry.kill(handle)
 			const final = registry.finalSnapshot(handle)
 			const snapshot = registry.snapshotTail(handle)
@@ -151,14 +156,13 @@ export function createBashControlToolDefinition(
 			await registry.remove(handle).catch(() => {})
 			const stoppedOutput = final?.content ?? snapshot.text
 			const truncated = final?.truncation?.truncated === true
+			const truncationSuffix =
+				truncated && final?.fullOutputPath ? `\n\n[Output truncated. Full output: ${final.fullOutputPath}]` : ""
 			return {
 				content: [
 					{
 						type: "text",
-						text:
-							truncated && final?.fullOutputPath
-								? `${stoppedOutput}\n\n[Process stopped${finalExitCode !== null ? `; exit code ${finalExitCode}` : ""}. Output truncated. Full output: ${final.fullOutputPath}]`
-								: `${stoppedOutput}\n\n[Process stopped${finalExitCode !== null ? `; exit code ${finalExitCode}` : ""}]`,
+						text: `${stoppedOutput}${truncationSuffix}\n\n${stoppedStatusText(finalExitCode, elapsed)}`,
 					},
 				],
 				details: {
@@ -167,6 +171,7 @@ export function createBashControlToolDefinition(
 					exitCode: finalExitCode,
 					action: "stop",
 					reason: snapshot.reason ?? "stop",
+					elapsedSeconds: elapsed,
 					...(truncated ? { truncation: final?.truncation, fullOutputPath: final?.fullOutputPath } : {}),
 				},
 			}
@@ -176,19 +181,21 @@ export function createBashControlToolDefinition(
 		// If the process already exited (e.g. between the previous checkin and
 		// this call), return the final output immediately.
 		if (entry.state !== "running") {
+			const elapsed = elapsedSecondsSince(entry.spawnedAtMs)
 			const final = registry.finalSnapshot(handle)
 			const snapshot = registry.snapshotTail(handle)
 			await registry.remove(handle).catch(() => {})
 			const fullOutput = final?.content ?? snapshot.text
 			throwIfTerminal(snapshot, fullOutput, entry.deadlineSeconds)
 			return {
-				content: [{ type: "text", text: fullOutput }],
+				content: [{ type: "text", text: `${fullOutput}\n\n${exitedStatusText(snapshot.exitCode, elapsed)}` }],
 				details: {
 					handle,
 					exited: true,
 					exitCode: snapshot.exitCode,
 					action: "continue",
 					reason: snapshot.reason,
+					elapsedSeconds: elapsed,
 				},
 			}
 		}
@@ -223,24 +230,27 @@ export function createBashControlToolDefinition(
 		}
 		const exited = snapshot.state !== "running"
 		if (exited) {
+			const elapsed = elapsedSecondsSince(entry.spawnedAtMs)
 			const final = registry.finalSnapshot(handle)
 			await registry.remove(handle).catch(() => {})
 			const fullOutput = final?.content ?? snapshot.text
 			throwIfTerminal(snapshot, fullOutput, entry.deadlineSeconds)
 			return {
-				content: [{ type: "text", text: fullOutput }],
+				content: [{ type: "text", text: `${fullOutput}\n\n${exitedStatusText(snapshot.exitCode, elapsed)}` }],
 				details: {
 					handle,
 					exited: true,
 					exitCode: snapshot.exitCode,
 					action: "continue",
 					reason: snapshot.reason,
+					elapsedSeconds: elapsed,
 				},
 			}
 		}
 
 		// Process still running — return tail window + handle.
-		const statusLine = `\n\n[Background process still running — call bash_control again with handle ${handle} to continue or stop]`
+		const elapsed = elapsedSecondsSince(entry.spawnedAtMs)
+		const statusLine = `\n\n${runningStatusText(handle, elapsed, true)}`
 
 		return {
 			content: [{ type: "text", text: `${snapshot.text}${statusLine}` }],
@@ -251,6 +261,7 @@ export function createBashControlToolDefinition(
 				action: "continue",
 				checkin: true,
 				reason: null,
+				elapsedSeconds: elapsed,
 			},
 		}
 	}
