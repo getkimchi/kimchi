@@ -91,5 +91,25 @@ describe("buildProxyDescription", () => {
 
 			expect(desc).not.toContain("Servers:")
 		})
+
+		it("does not label cached-but-empty servers as lazy", () => {
+			const config = makeConfig({
+				"empty-cached": { command: "npx", args: ["-y", "empty"] },
+				"lazy-server": { command: "npx", args: ["-y", "lazy"] },
+			})
+			const cache = makeCache({
+				"empty-cached": {
+					configHash: "abc",
+					tools: [],
+					resources: [],
+					cachedAt: Date.now(),
+				},
+			})
+
+			const desc = buildProxyDescription(config, cache, [])
+
+			expect(desc).not.toContain("empty-cached")
+			expect(desc).toContain("lazy-server (lazy)")
+		})
 	})
 })
