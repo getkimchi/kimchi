@@ -7,12 +7,15 @@
 // verifies WHO is advertised at session start:
 //   - the active-tool set after every extension's session_start must EXACTLY
 //     match a documented exposure spec (no tool silently missing or appearing)
-//   - deferred tools (Chunk 3: 11 session-scoped DAP tools) are still
-//     REGISTERED but hidden — availability preserved, surface reduced
+//   - deferred tools (Chunk 3: 11 session-scoped DAP tools; Chunk 4:
+//     bash_control) are still REGISTERED but hidden — availability preserved,
+//     surface reduced
+//   - the mcp gateway is config-gated (Chunk 5): not registered at all when
+//     zero MCP servers are configured (a dedicated test asserts the on-state)
 //   - the visibility votes (getDisabledToolNames) equal the declared deferral
 //     spec — the drift guard: a new deferral must declare itself here
-//   - the DAP reveal round-trip exposes session tools exactly once
-//   - agent workers are carved out (full DAP visibility)
+//   - the DAP + bash_control reveal round-trips expose their tools exactly once
+//   - agent workers are carved out (full DAP + bash_control visibility)
 //
 // Harness: ONE capture pi shared by all extension factories (mirroring a real
 // session), with a stateful active-tool set — the real visibility layer
@@ -34,6 +37,34 @@ import { EXTENSION_SOURCES } from "./context-budget-tools.js"
 import { DAP_ALWAYS_VISIBLE_TOOL_NAMES, DAP_SESSION_TOOL_NAMES } from "./dap/tools.js"
 import type { DapAdapterConfig } from "./dap/types.js"
 import { getDisabledToolNames } from "./prompt-construction/tool-visibility.js"
+
+// =============================================================================
+// Mock MCP config — pin zero configured servers so the Chunk 5 registration
+// gate rolls mcp-adapter up off the canonical surface deterministically
+// (ambient ~/.config/kimchi/harness/mcp.json state must not leak into the
+// spec). The metadata cache is also stubbed: with zero servers the factory
+// would otherwise purge and rewrite the developer machine's real cache file.
+// =============================================================================
+
+const mcpConfigState = vi.hoisted(() => ({
+	servers: {} as Record<string, unknown>,
+}))
+vi.mock("./mcp-adapter/config.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./mcp-adapter/config.js")>()
+	return {
+		...original,
+		loadMcpConfig: () => ({ config: { mcpServers: mcpConfigState.servers }, warnings: [] }),
+	}
+})
+vi.mock("./mcp-adapter/metadata-cache.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./mcp-adapter/metadata-cache.js")>()
+	return {
+		...original,
+		loadMetadataCache: () => undefined,
+		overwriteMetadataCache: () => {},
+		flushMetadataCache: () => {},
+	}
+})
 
 // =============================================================================
 // Mock adapter registry — controlled from tests via adapterState.active
@@ -241,17 +272,18 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	"resume_subagent",
 	"get_subagent_result",
 	"steer_subagent",
-	// mcp-adapter / tags / skills
-	"mcp",
+	// tags / skills (the mcp gateway is config-gated — Chunk 5: it registers
+	// only when >=1 MCP server is configured; see the gate-on test below)
 	"set_phase",
 	"Skill",
 	// dap — always-visible set (deferred session tools below)
 	...DAP_ALWAYS_VISIBLE_TOOL_NAMES,
 ])
 
-/** Deferral spec: tools that are REGISTERED but hidden at session start. A
- *  future deferral (mcp with no servers, …) must add itself
- *  here — the drift-guard tests below enforce it. */
+/** Deferral spec: tools REGISTERED but hidden at session start. A future
+ *  deferral must add itself here — the drift-guard tests below enforce it.
+ *  (Config-gated tools like mcp don't belong here: in their off state they
+ *  are unregistered, not hidden.) */
 const EXPECTED_DEFERRED_BY_DESIGN = new Set<string>([...DAP_SESSION_TOOL_NAMES, ...BASH_CONTROL_TOOLS])
 
 /** Extensions that register tools at session_start, mirroring the budget
@@ -303,6 +335,7 @@ const JS_DEBUG: DapAdapterConfig = {
 
 describe("tool exposure at session start", () => {
 	beforeEach(() => {
+		mcpConfigState.servers = {}
 		adapterState.active = [JS_DEBUG]
 		clientState.sessionAfterCreate = {
 			id: "test-session",
@@ -313,13 +346,13 @@ describe("tool exposure at session start", () => {
 		workerState.isWorker = false
 	})
 
-	it("advertises exactly the documented 32-tool surface and hides the 12 deferred tools", async () => {
+	it("advertises exactly the documented 31-tool surface and hides the 12 deferred tools", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
 		const visible = new Set(harness.active)
 		expect(visible).toEqual(EXPECTED_SESSION_START_VISIBLE)
-		expect(visible.size).toBe(32)
+		expect(visible.size).toBe(31)
 
 		// Deferred tools are still REGISTERED (availability preserved)…
 		for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
@@ -360,6 +393,19 @@ describe("tool exposure at session start", () => {
 		const votes = new Set(getDisabledToolNames(harness.pi))
 		expect(votes).toEqual(EXPECTED_DEFERRED_BY_DESIGN)
 		expect(votes.size).toBe(12)
+	})
+
+	it("mcp gateway registers and is advertised when a server is configured (Chunk 5 gate on)", async () => {
+		mcpConfigState.servers = {
+			// Spawn fails fast (ENOENT) and is caught inside initializeMcp — the
+			// registration/advertisement under test happens before init runs.
+			"gate-test": { command: "definitely-not-a-real-kimchi-exposure-command" },
+		}
+		const harness = createExposureHarness()
+		await instantiateAllExtensions(harness)
+
+		expect(harness.registered.has("mcp"), "mcp must be registered with >=1 configured server").toBe(true)
+		expect(harness.active.has("mcp"), "mcp must be advertised with >=1 configured server").toBe(true)
 	})
 
 	it("DAP reveal round-trip exposes the 11 session tools exactly once when a session starts", async () => {

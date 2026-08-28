@@ -143,6 +143,9 @@ export const EXTENSION_SOURCES: ExtensionSource[] = [
 	{ module: "./questionnaire/questionnaire.js", source: "questionnaire" },
 	{ module: "./lsp.js", source: "lsp" },
 	{ module: "./agents/index.js", source: "agents" },
+	// Config-gated (token-optimization Phase 1 Chunk 5): with zero configured
+	// MCP servers the adapter registers no tools at all — mocked zero in
+	// context-budget.test.ts, so this module contributes nothing there.
 	{ module: "./mcp-adapter/index.js", source: "mcp-adapter" },
 	{ module: "./tags.js", source: "tags(set_phase)" },
 	{ module: "./claude-code-skills/index.js", source: "claude-code-skills(skill)" },

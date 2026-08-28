@@ -27,8 +27,31 @@
 import { readdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { measureCanonicalToolSurface } from "./context-budget-tools.js"
+
+// Pin the mcp-adapter to zero configured servers (token-optimization Phase 1
+// Chunk 5): with no servers the adapter registers nothing, so the canonical
+// surface must not depend on the ambient machine's mcp.json. The metadata
+// cache is stubbed too — with zero servers the factory would otherwise purge
+// and rewrite the developer machine's real mcp-cache.json.
+vi.mock("./mcp-adapter/config.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./mcp-adapter/config.js")>()
+	return {
+		...original,
+		loadMcpConfig: () => ({ config: { mcpServers: {} }, warnings: [] }),
+	}
+})
+vi.mock("./mcp-adapter/metadata-cache.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./mcp-adapter/metadata-cache.js")>()
+	return {
+		...original,
+		loadMetadataCache: () => undefined,
+		overwriteMetadataCache: () => {},
+		flushMetadataCache: () => {},
+	}
+})
+
 import { buildSystemPrompt, type EnvironmentInfo } from "./prompt-construction/system-prompt.js"
 
 const CHARS_PER_TOKEN = 4
@@ -41,9 +64,10 @@ const BUDGET = {
 	skillsCatalog: 80,
 	/** Total canonical system-prompt + skills surface. */
 	total: 4900,
-	/** Total canonical tool surface (recorded 2026-08-28 post-Chunk-4: 7881 est across
-	 *  32 tools after the DAP session-tool + bash_control deferrals; ~5% headroom). */
-	toolSurface: 8300,
+	/** Total canonical tool surface (recorded 2026-08-28 post-Chunk-5: 7430 est across
+	 *  31 tools after the DAP session-tool + bash_control deferrals and the mcp
+	 *  zero-server registration gate; ~6% headroom). */
+	toolSurface: 7900,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
 }
