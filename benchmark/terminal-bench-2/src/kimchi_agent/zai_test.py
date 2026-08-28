@@ -111,3 +111,44 @@ def test_thinking_level_accepted(level: str | None) -> None:
 def test_thinking_level_pi_would_clamp_is_rejected(level: str) -> None:
     with pytest.raises(ValueError, match="silently clamp"):
         zai.build_models_config("glm-5.2", thinking_level=level)
+
+
+def test_glm_5_3_config_shape() -> None:
+    config = zai.build_models_config("glm-5.3")
+
+    model = config["providers"]["zai"]["models"][0]
+    assert model["id"] == "glm-5.3"
+    assert model["name"] == "GLM-5.3"
+    assert model["reasoning"] is True
+    assert model["input"] == ["text"]
+    assert model["contextWindow"] == 1_000_000
+    assert model["maxTokens"] == 131_072
+    assert model["provider"] == "zai"
+    assert model["compat"] == {"supportsReasoningEffort": True}
+    # low, high, and max reach the model distinctly; the rest are nulled.
+    assert model["thinkingLevelMap"] == {
+        "minimal": None,
+        "low": "low",
+        "medium": None,
+        "high": "high",
+        "xhigh": None,
+        "max": "max",
+    }
+
+
+def test_glm_5_3_supported_thinking_levels() -> None:
+    # GLM-5.3 cannot disable reasoning, so "off" is not offered.
+    model = zai.zai_model("glm-5.3")
+    assert model.supported_thinking_levels == ("low", "high", "max")
+
+
+@pytest.mark.parametrize("level", ["low", "high", "max", None])
+def test_glm_5_3_thinking_level_accepted(level: str | None) -> None:
+    config = zai.build_models_config("glm-5.3", thinking_level=level)
+    assert config["providers"]["zai"]["models"][0]["id"] == "glm-5.3"
+
+
+@pytest.mark.parametrize("level", ["minimal", "medium", "xhigh", "off"])
+def test_glm_5_3_thinking_level_pi_would_clamp_is_rejected(level: str) -> None:
+    with pytest.raises(ValueError, match="silently clamp"):
+        zai.build_models_config("glm-5.3", thinking_level=level)

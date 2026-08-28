@@ -112,13 +112,13 @@ class PiKimchiTest(unittest.IsolatedAsyncioTestCase):
             agent = RecordingPiKimchi(
                 logs_dir=Path(tmp),
                 model_name="kimchi-dev/kimi-k2.5",
-                version="0.79.10",
+                version="0.84.1",
                 **{"extension-source-dir": ext_dir},
             )
 
             await agent.install(FakeEnvironment())
 
-        self.assertIn("npm install -g @earendil-works/pi-coding-agent@0.79.10", agent.agent_commands[1])
+        self.assertIn("npm install -g @earendil-works/pi-coding-agent@0.84.1", agent.agent_commands[1])
 
     async def test_install_fails_when_extension_dir_missing_and_no_token(self) -> None:
         old_token = os.environ.pop("GITHUB_TOKEN", None)

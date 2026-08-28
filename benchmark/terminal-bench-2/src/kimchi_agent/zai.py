@@ -4,7 +4,8 @@ Z.AI is routed directly (no OpenRouter), giving GLM benchmarks a reproducible
 fp8 endpoint without presets. Unlike :mod:`kimchi_agent.openrouter` there is
 no HTTP catalogue or preset machinery: Z.AI publishes no OpenRouter-style
 discovery endpoint, so model metadata is a static table verified against
-docs.z.ai (https://docs.z.ai/guides/llm/glm-5.2, 2026-08-13).
+docs.z.ai (https://docs.z.ai/guides/llm/glm-5.2, 2026-08-13;
+https://docs.z.ai/guides/llm/glm-5.3, 2026-08-25).
 
 Two API surfaces exist:
 
@@ -40,6 +41,21 @@ _PI_OPT_IN_THINKING_LEVELS = ("xhigh", "max")
 _GLM_5_2_THINKING_LEVEL_MAP: dict[str, str | None] = {
     "minimal": None,
     "low": None,
+    "medium": None,
+    "high": "high",
+    "xhigh": None,
+    "max": "max",
+}
+
+# GLM-5.3 reasoning efforts on the direct API
+# (https://docs.z.ai/guides/llm/glm-5.3): low, high, and max. Reasoning is
+# always enabled and cannot be disabled — a request with thinking disabled
+# fails — so "off" is excluded via off_supported=False and levels without an
+# equivalent are mapped to None; both are rejected before the run starts
+# instead of silently clamping.
+_GLM_5_3_THINKING_LEVEL_MAP: dict[str, str | None] = {
+    "minimal": None,
+    "low": "low",
     "medium": None,
     "high": "high",
     "xhigh": None,
@@ -97,6 +113,7 @@ class ZaiModel:
         max_output_tokens: int,
         reasoning: bool,
         thinking_level_map: dict[str, str | None] | None,
+        off_supported: bool = True,
     ) -> None:
         self.id = model_id
         self.name = name
@@ -104,6 +121,7 @@ class ZaiModel:
         self.max_output_tokens = max_output_tokens
         self.reasoning = reasoning
         self.thinking_level_map = thinking_level_map
+        self.off_supported = off_supported
 
     @property
     def supported_thinking_levels(self) -> tuple[str, ...]:
@@ -111,10 +129,12 @@ class ZaiModel:
 
         Mirrors pi's ``getSupportedThinkingLevels``: ``off``..``high`` are
         available unless mapped to ``null``, while ``xhigh`` and ``max`` need
-        an explicit non-null entry.
+        an explicit non-null entry. ``off`` itself is dropped when the model
+        cannot disable reasoning (``off_supported=False``); sending a
+        thinking-disabled request to such a model fails at the API.
         """
         level_map = self.thinking_level_map
-        supported = ["off"]
+        supported = ["off"] if self.off_supported else []
         for level in _PI_THINKING_LEVELS:
             if level_map is not None and level in level_map:
                 if level_map[level] is not None:
@@ -172,6 +192,18 @@ ZAI_MODELS: dict[str, ZaiModel] = {
         max_output_tokens=131_072,
         reasoning=True,
         thinking_level_map=_GLM_5_2_THINKING_LEVEL_MAP,
+    ),
+    "glm-5.3": ZaiModel(
+        model_id="glm-5.3",
+        name="GLM-5.3",
+        # docs.z.ai/guides/llm/glm-5.3 — 1M context, 128K max output, thinking
+        # always enabled (disabling it fails the request), reasoning_effort
+        # values low/high/max (default max).
+        context_window=1_000_000,
+        max_output_tokens=131_072,
+        reasoning=True,
+        thinking_level_map=_GLM_5_3_THINKING_LEVEL_MAP,
+        off_supported=False,
     ),
 }
 

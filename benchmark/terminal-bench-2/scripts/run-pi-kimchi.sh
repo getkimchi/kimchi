@@ -11,13 +11,13 @@
 # completions through the OpenAI-compatible endpoint.
 #
 # Usage examples:
-#   MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-pi-kimchi.sh -i terminal-bench/fix-git
-#   MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-pi-kimchi.sh -i terminal-bench/fix-git -k 3
-#   PI_VERSION=0.79.10 MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-pi-kimchi.sh -i terminal-bench/fix-git
+#   MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-pi-kimchi.sh -i terminal-bench/fix-git
+#   MODEL=kimchi-dev/minimax-m3 ./scripts/run-pi-kimchi.sh -i terminal-bench/fix-git -k 3
+#   PI_VERSION=0.84.1 MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-pi-kimchi.sh -i terminal-bench/fix-git
 set -euo pipefail
 
 DATASET="${DATASET:-terminal-bench/terminal-bench-2-1}"
-MODEL="${MODEL:-kimchi-dev/kimi-k2.5}"
+MODEL="${MODEL:-kimchi-dev/kimi-k2.7}"
 
 BENCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$BENCH_DIR/scripts/model_api_key.sh"

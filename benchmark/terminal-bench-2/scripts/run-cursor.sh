@@ -10,7 +10,7 @@
 #   MODEL=cursor/kimi-k2.7-code ./scripts/run-cursor.sh -i terminal-bench/fix-git -k 3
 set -euo pipefail
 
-DATASET="terminal-bench/terminal-bench-2"
+DATASET="${DATASET:-terminal-bench/terminal-bench-2-1}"
 
 : "${CURSOR_API_KEY:?set CURSOR_API_KEY in env}"
 

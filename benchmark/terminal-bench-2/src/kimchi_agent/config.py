@@ -3,7 +3,7 @@ from pathlib import Path
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-DEFAULT_GITHUB_REPO = "castai/kimchi"
+DEFAULT_GITHUB_REPO = "getkimchi/kimchi"
 
 
 class KimchiAgentConfig(BaseSettings):

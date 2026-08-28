@@ -213,7 +213,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
 
     Binary source:
         1. If ``KIMCHI_CODE_BINARY`` is set on the host, that file is uploaded.
-        2. Otherwise, the latest GitHub release from ``castai/kimchi`` is
+        2. Otherwise, the latest GitHub release from ``getkimchi/kimchi`` is
            downloaded, sha256-verified, and extracted on the host, then uploaded.
 
     ``kimchi-dev/*`` models route through the Kimchi LLM gateway using

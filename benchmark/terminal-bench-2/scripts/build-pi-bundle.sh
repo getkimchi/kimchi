@@ -12,7 +12,7 @@
 # run says it is testing.
 #
 #   ./scripts/build-pi-bundle.sh
-#   PI_VERSION=0.4.2 ./scripts/build-pi-bundle.sh
+#   PI_VERSION=0.84.1 ./scripts/build-pi-bundle.sh
 #
 # Env: PI_VERSION (default latest), NODE_VERSION, PI_KIMCHI_PROVIDER_DIR.
 set -euo pipefail
