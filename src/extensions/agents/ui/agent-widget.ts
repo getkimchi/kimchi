@@ -242,7 +242,8 @@ export class AgentWidget {
 		parts.push(duration)
 
 		const modelTag = a.modelId ? ` ${theme.fg("dim", `[${a.modelId}]`)}` : ""
-		return `${icon} ${theme.fg("dim", name)}${modelTag}  ${theme.fg("dim", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}${statusText}`
+		const descLine = truncateLine(a.description)
+		return `${icon} ${theme.fg("dim", name)}${modelTag}  ${theme.fg("dim", descLine)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}${statusText}`
 	}
 
 	private renderWidget(theme: Theme, width: number): string[] {
@@ -296,9 +297,12 @@ export class AgentWidget {
 			const bgHint = !hintShown && !a.isBackground ? `  ${theme.fg("muted", "(ctrl+b to run in background)")}` : ""
 			if (bgHint) hintShown = true
 			const killHint = a.id === killTargetId ? `  ${theme.fg("muted", "(ctrl+x to kill)")}` : ""
+			// Sanitize description to a single line — cloud agent prompts can contain
+			// multi-line markdown that would break the widget's line-based layout.
+			const descLine = truncateLine(a.description)
 			runningLines.push([
 				truncate(
-					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modelTag}${bgTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
+					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modelTag}${bgTag}  ${theme.fg("muted", descLine)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
 				),
 				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`) + bgHint + killHint),
 			])
