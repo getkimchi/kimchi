@@ -29,6 +29,10 @@ const DONE = "Done"
  * Shows a post-completion dropdown after the remote cloud agent finishes.
  * Handles the user's choice: inject result, sync changes, or do nothing.
  *
+ * The remote agent's result and transcript path are ALWAYS injected into the
+ * local agent's context via a steer message — even when the user picks "Sync"
+ * or "Done" — so the agent always knows where to find the full transcript.
+ *
  * @param pi - Extension API
  * @param ctx - Extension context
  * @param result - The remote agent's result text
@@ -41,7 +45,10 @@ export async function handleRemoteCompletion(
 	promptPrefix: string,
 	opts?: { transcriptPath?: string; agentId?: string },
 ): Promise<void> {
-	if (!ctx.hasUI) return
+	if (!ctx.hasUI) {
+		injectRemoteResult(pi, result, promptPrefix, opts)
+		return
+	}
 
 	const choice = await withBlocked(pi.events, "Remote execution complete", () =>
 		withWorkingHidden(ctx.ui, () =>
@@ -50,10 +57,17 @@ export async function handleRemoteCompletion(
 	)
 
 	// No selection (escape/dismiss) → treat as Done
-	if (!choice || choice === DONE) return
+	if (!choice || choice === DONE) {
+		injectRemoteResult(pi, result, promptPrefix, opts)
+		return
+	}
 
 	if (choice === SYNC) {
 		await syncRemoteChanges(ctx)
+		injectRemoteResult(pi, result, promptPrefix, opts, {
+			actionSuffix:
+				"\n\n---\n\nThe user synced the remote changes to their local working tree. Review the synced files if needed.",
+		})
 		return
 	}
 
@@ -61,13 +75,30 @@ export async function handleRemoteCompletion(
 	const actionText = choice === CUSTOM ? await promptForCustomAction(ctx) : undefined
 	if (choice === CUSTOM && !actionText) return // user cancelled input
 
+	injectRemoteResult(pi, result, promptPrefix, opts, {
+		actionSuffix: actionText ? `\n\n---\n\nThe user wants you to: ${actionText}` : undefined,
+	})
+}
+
+/**
+ * Injects the remote agent's result into the local session as a steer message.
+ * The transcript path and agent ID are always included when available so the
+ * local agent can locate the full transcript for follow-up questions.
+ */
+function injectRemoteResult(
+	pi: ExtensionAPI,
+	result: string,
+	promptPrefix: string,
+	opts?: { transcriptPath?: string; agentId?: string },
+	extra?: { actionSuffix?: string },
+): void {
 	const transcriptInfo = opts?.transcriptPath
 		? `\n\nFull transcript of the remote agent's run (tool calls, outputs, text): ${opts.transcriptPath}`
 		: ""
 	const agentInfo = opts?.agentId
 		? `\nAgent ID: ${opts.agentId} (use get_subagent_result with this ID for structured access to the agent's output)`
 		: ""
-	const actionSuffix = actionText ? `\n\n---\n\nThe user wants you to: ${actionText}` : ""
+	const actionSuffix = extra?.actionSuffix ?? ""
 
 	const steer = `The approved ${promptPrefix} was executed by a remote cloud agent on a Linux sandbox. The plan has ALREADY been executed — do not re-plan or re-execute it. The code changes made by the remote agent are NOT in your local working tree unless the user synced them. Here is the remote agent's result:\n\n---\n\n${result}${transcriptInfo}${agentInfo}${actionSuffix}`
 

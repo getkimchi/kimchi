@@ -17,7 +17,7 @@ import { getActiveManager, type SpawnRemoteAgentOptions, spawnRemoteAgent } from
 import { getDisplayName } from "../agents/ui/agent-widget.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 
-/** Returns true when KIMCHI_REMOTE_RUN env var is truthy. */
+/** Returns true when KIMCHI_REMOTE_RUN env var is set. */
 export function isRemoteRunEnabled(): boolean {
 	return !!process.env.KIMCHI_REMOTE_RUN
 }
@@ -62,10 +62,11 @@ export async function runForegroundRemoteAgent(
 	})
 
 	try {
-		const { result } = await spawnRemoteAgent(pi, ctx, prompt, description, opts)
+		const { id: spawnedId, result } = await spawnRemoteAgent(pi, ctx, prompt, description, opts)
+		agentId = spawnedId
 
 		const preview = result.length > 500 ? `${result.slice(0, 500)}...` : result
-		const record = getActiveManager()?.getRecord(agentId ?? "")
+		const record = getActiveManager()?.getRecord(agentId)
 		const transcriptPath = record?.outputFile
 		const transcriptNote = transcriptPath ? `\nFull transcript: ${transcriptPath}` : ""
 		ctx.ui.notify(`${preview || "Remote agent completed with no output."}${transcriptNote}`, "info")

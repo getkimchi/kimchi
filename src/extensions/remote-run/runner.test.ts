@@ -9,12 +9,12 @@ vi.mock("../agents/index.js", () => ({
 	spawnRemoteAgent: vi.fn(),
 }))
 
-vi.mock("../agents/ui/agent-widget.js", () => ({
-	getDisplayName: vi.fn(() => "Remote-Runner"),
-}))
-
 vi.mock("../shared-input.js", () => ({
 	isRawInputCaptureActive: vi.fn(() => false),
+}))
+
+vi.mock("../agents/ui/agent-widget.js", () => ({
+	getDisplayName: vi.fn(() => "Remote-Runner"),
 }))
 
 const { spawnRemoteAgent } = await import("../agents/index.js")
@@ -132,5 +132,35 @@ describe("runForegroundRemoteAgent", () => {
 		// The mock returns a function — we can verify it was called by checking
 		// that the spy's return value (the unsub) was invoked.
 		// Since the mock returns a real unsub function, we trust the finally block.
+	})
+
+	it("returns transcriptPath from the agent record's outputFile", async () => {
+		const pi = makePi()
+		const ctx = makeCtx()
+		vi.mocked(spawnRemoteAgent).mockResolvedValue({ id: "agent-42", result: "done" })
+		const { getActiveManager } = await import("../agents/index.js")
+		vi.mocked(getActiveManager).mockReturnValue({
+			getRecord: vi.fn(() => ({ outputFile: "/tmp/transcripts/agent-42.jsonl" })),
+		} as unknown as ReturnType<typeof getActiveManager>)
+
+		const res = await runForegroundRemoteAgent(pi, ctx, "hello", "desc")
+
+		expect(res.id).toBe("agent-42")
+		expect(res.transcriptPath).toBe("/tmp/transcripts/agent-42.jsonl")
+	})
+
+	it("returns undefined transcriptPath when record is not found", async () => {
+		const pi = makePi()
+		const ctx = makeCtx()
+		vi.mocked(spawnRemoteAgent).mockResolvedValue({ id: "agent-missing", result: "done" })
+		const { getActiveManager } = await import("../agents/index.js")
+		vi.mocked(getActiveManager).mockReturnValue({
+			getRecord: vi.fn(() => undefined),
+		} as unknown as ReturnType<typeof getActiveManager>)
+
+		const res = await runForegroundRemoteAgent(pi, ctx, "hello", "desc")
+
+		expect(res.id).toBe("agent-missing")
+		expect(res.transcriptPath).toBeUndefined()
 	})
 })
