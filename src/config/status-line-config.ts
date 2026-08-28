@@ -5,6 +5,7 @@ import { readJson, writeJson } from "./json.js"
 export type StatusLineElementId =
 	| "permissions"
 	| "model"
+	| "thinking"
 	| "ferment"
 	| "agents"
 	| "context"
@@ -19,7 +20,7 @@ export type StatusLineConfig = { pinned: StatusLineElementId[] }
 
 const STATUS_LINE_KEY = "statusLine"
 
-export const DEFAULT_STATUS_LINE_PINNED: StatusLineElementId[] = ["agents", "context", "usage"]
+export const DEFAULT_STATUS_LINE_PINNED: StatusLineElementId[] = ["thinking", "agents", "context", "usage"]
 
 /** All status line elements for the settings UI.
  *  canPin=false marks elements that are always visible and cannot be toggled. */
@@ -40,6 +41,11 @@ export const STATUS_LINE_ELEMENTS: Array<{
 		label: "Model",
 		description: "Active model or multi-model  → ctrl+p",
 		canPin: false,
+	},
+	{
+		id: "thinking",
+		label: "Thinking level",
+		description: "Current model thinking level",
 	},
 	{
 		id: "ferment",

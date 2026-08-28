@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type {
@@ -543,6 +543,154 @@ describe("plan mode assumption detection", () => {
 
 		// The dropdown must NOT have been shown — oneshot sessions bypass it.
 		expect(ctx.ui.select).not.toHaveBeenCalled()
+	})
+
+	describe("plan file persistence", () => {
+		const PLAN_V1 =
+			"# Plan: Cache Layer\n\n## Goal\nAdd caching layer.\n\n## Chunks\n\n### Chunk 1: Add cache primitive\n- **Accept When**: round-trip works\n\n<!-- PLAN_COMPLETE -->\n"
+		const PLAN_V2 =
+			"# Plan: Cache Layer\n\n## Goal\nAdd caching layer with TTL.\n\n## Chunks\n\n### Chunk 1: Add cache primitive\n- **Accept When**: round-trip works\n\n<!-- PLAN_COMPLETE -->\n"
+
+		it("saves the plan file when the plan is produced, before the approval choice", async () => {
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-"))
+			try {
+				const ctx = createMockContext(["Rework the plan"])
+				ctx.cwd = tmpDir
+				await fireTurnEnd(harness, PLAN_V1, ctx)
+
+				const plansDir = join(tmpDir, ".kimchi", "plans")
+				expect(readdirSync(plansDir)).toEqual(["plan-cache-layer.md"])
+				const saved = readFileSync(join(plansDir, "plan-cache-layer.md"), "utf-8")
+				expect(saved).not.toContain("PLAN_COMPLETE")
+				expect(saved).toContain("## Goal\nAdd caching layer.")
+				// The approval dropdown is still shown after the save.
+				expect(ctx.ui.select).toHaveBeenCalled()
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
+
+		it("saves the plan file in headless sessions without showing the dropdown", async () => {
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-headless-"))
+			try {
+				const ctx = createMockContext([])
+				Object.assign(ctx, { hasUI: false })
+				ctx.cwd = tmpDir
+				await fireTurnEnd(harness, PLAN_V1, ctx)
+
+				const plansDir = join(tmpDir, ".kimchi", "plans")
+				expect(readdirSync(plansDir)).toEqual(["plan-cache-layer.md"])
+				expect(ctx.ui.select).not.toHaveBeenCalled()
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
+
+		it("overwrites the same file on rework instead of creating a new one", async () => {
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-rework-"))
+			try {
+				const ctx1 = createMockContext(["Rework the plan"])
+				ctx1.cwd = tmpDir
+				await fireTurnEnd(harness, PLAN_V1, ctx1)
+				const ctx2 = createMockContext(["Rework the plan"])
+				ctx2.cwd = tmpDir
+				await fireTurnEnd(harness, PLAN_V2, ctx2)
+
+				const plansDir = join(tmpDir, ".kimchi", "plans")
+				expect(readdirSync(plansDir)).toEqual(["plan-cache-layer.md"])
+				const saved = readFileSync(join(plansDir, "plan-cache-layer.md"), "utf-8")
+				expect(saved).toContain("Add caching layer with TTL.")
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
+
+		it("execute references the saved plan path and a new planning round gets a fresh file", async () => {
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-execute-"))
+			try {
+				const ctx = createMockContext(["Execute the plan"])
+				ctx.cwd = tmpDir
+				await fireTurnEnd(harness, PLAN_V1, ctx)
+
+				const planFile = join(tmpDir, ".kimchi", "plans", "plan-cache-layer.md")
+				expect(existsSync(planFile)).toBe(true)
+				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+					expect.objectContaining({
+						customType: "plan-execute",
+						content: expect.stringContaining(`Approved plan saved to: ${planFile}`),
+					}),
+					expect.anything(),
+				)
+
+				// After execute the session slug is released; switch back to plan
+				// mode and emit a differently titled plan to verify a fresh file.
+				const command = harness.commands.get("permissions")
+				await command?.handler("mode plan", createMockContext([]))
+				const OTHER_PLAN = "# Plan: Rate Limits\n\n## Goal\nAdd rate limits.\n\n<!-- PLAN_COMPLETE -->\n"
+				const ctx2 = createMockContext(["Rework the plan"])
+				ctx2.cwd = tmpDir
+				await fireTurnEnd(harness, OTHER_PLAN, ctx2)
+				expect(readdirSync(join(tmpDir, ".kimchi", "plans")).sort()).toEqual([
+					"plan-cache-layer.md",
+					"plan-rate-limits.md",
+				])
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
+
+		it("Start as ferment handoff references the saved plan path", async () => {
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-ferment-"))
+			try {
+				const ctx = createMockContext(["Start as ferment"])
+				ctx.cwd = tmpDir
+				await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
+
+				const planFile = join(tmpDir, ".kimchi", "plans", "plan.md")
+				expect(existsSync(planFile)).toBe(true)
+				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+					expect.objectContaining({
+						customType: "ferment_handoff",
+						content: expect.arrayContaining([
+							expect.objectContaining({
+								text: expect.stringContaining(`Approved plan saved to: ${planFile}`),
+							}),
+						]),
+					}),
+					expect.anything(),
+				)
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
+
+		it("warns but continues when the plan file cannot be saved", async () => {
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-fail-"))
+			try {
+				// .kimchi exists as a regular file → recursive mkdir of .kimchi/plans fails.
+				writeFileSync(join(tmpDir, ".kimchi"), "not a directory")
+				const ctx = createMockContext(["Rework the plan"])
+				ctx.cwd = tmpDir
+				await fireTurnEnd(harness, PLAN_V1, ctx)
+
+				expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("failed to save plan file"), "warning")
+				expect(ctx.ui.select).toHaveBeenCalled()
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true })
+			}
+		})
 	})
 
 	// Shared-plan fixture following the planning-process structure (Goal /

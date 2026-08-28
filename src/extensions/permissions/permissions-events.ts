@@ -23,6 +23,7 @@ export const PERMISSION_EVENTS = {
 	BEFORE_PROMPT: "permissions:before_prompt",
 	AFTER_DECISION: "permissions:after_decision",
 	CONFIG_LOADED: "permissions:config_loaded",
+	PLAN_APPROVED: "permissions:plan_approved",
 } as const
 
 export type PermissionEventChannel = (typeof PERMISSION_EVENTS)[keyof typeof PERMISSION_EVENTS]
@@ -78,6 +79,17 @@ export interface PermissionAfterDecisionPayload {
 		behavior: "allow" | "deny"
 		source: RuleSource
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Plan approved
+// ---------------------------------------------------------------------------
+
+/** Emitted when the user approves a plan-mode plan (the "Execute the plan"
+ *  path). Subscribers use this to gate plan-progress reporting: pre-approval
+ *  planning todos are the agent's scratchpad, not the plan itself. */
+export interface PermissionPlanApprovedPayload {
+	planPath?: string
 }
 
 // ---------------------------------------------------------------------------
