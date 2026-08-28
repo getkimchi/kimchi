@@ -146,6 +146,19 @@ export const ADHOC_MODE_TOOLS: ToolEntry[] = [
 	{ name: "questionnaire", modes: ["adhoc"], routing: "interactive" },
 ]
 
+const ADHOC_ONLY_TOOL_NAMES = new Set(ADHOC_MODE_TOOLS.map((t) => t.name))
+
+/**
+ * True when the tool is declared adhoc-only in the catalog (e.g.
+ * `questionnaire`), meaning it must NOT be re-surfaced by ferment profiles
+ * whose base is `getAllTools()`. The ferment interactive-question surface is
+ * `ask_user`; both being visible would give the model two competing ways to
+ * ask the user.
+ */
+export function isAdhocOnlyToolName(name: string): boolean {
+	return ADHOC_ONLY_TOOL_NAMES.has(name)
+}
+
 /**
  * Plan-submission tool available in both adhoc plan mode and ferment
  * planning phase. The model calls it when the plan is ready for user
