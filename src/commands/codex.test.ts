@@ -17,6 +17,23 @@ import { prepareTool } from "./_helpers.js"
 import { runCodex } from "./codex.js"
 
 describe("runCodex", () => {
+	function mockPrepped(overrides: Partial<{ apiKey: string }> = {}) {
+		return {
+			apiKey: overrides.apiKey ?? "test-key",
+			tool: {
+				id: "codex" as const,
+				name: "Codex",
+				description: "",
+				configPath: "~/.codex/config.toml",
+				binaryName: "codex",
+				isInstalled: () => true,
+				// biome-ignore lint/suspicious/noExplicitAny: test stub
+				write: vi.fn() as any,
+			},
+			models: [],
+		}
+	}
+
 	beforeEach(() => {
 		vi.clearAllMocks()
 	})
@@ -41,20 +58,7 @@ describe("runCodex", () => {
 	})
 
 	it("forwards args and injects KIMCHI_API_KEY when prepareTool succeeds", async () => {
-		vi.mocked(prepareTool).mockResolvedValue({
-			apiKey: "test-key",
-			tool: {
-				id: "codex",
-				name: "Codex",
-				description: "",
-				configPath: "~/.codex/config.toml",
-				binaryName: "codex",
-				isInstalled: () => true,
-				// biome-ignore lint/suspicious/noExplicitAny: test stub
-				write: vi.fn() as any,
-			},
-			models: [],
-		})
+		vi.mocked(prepareTool).mockResolvedValue(mockPrepped())
 		vi.mocked(runForeground).mockResolvedValue(0)
 
 		const exit = await runCodex(["exec", "--", "hello"])
@@ -69,20 +73,7 @@ describe("runCodex", () => {
 	})
 
 	it("returns the child's exit code when runForeground resolves", async () => {
-		vi.mocked(prepareTool).mockResolvedValue({
-			apiKey: "test-key",
-			tool: {
-				id: "codex",
-				name: "Codex",
-				description: "",
-				configPath: "~/.codex/config.toml",
-				binaryName: "codex",
-				isInstalled: () => true,
-				// biome-ignore lint/suspicious/noExplicitAny: test stub
-				write: vi.fn() as any,
-			},
-			models: [],
-		})
+		vi.mocked(prepareTool).mockResolvedValue(mockPrepped())
 		vi.mocked(runForeground).mockResolvedValue(42)
 
 		const exit = await runCodex([])
@@ -91,20 +82,7 @@ describe("runCodex", () => {
 	})
 
 	it("returns 1 and logs the error when runForeground throws", async () => {
-		vi.mocked(prepareTool).mockResolvedValue({
-			apiKey: "test-key",
-			tool: {
-				id: "codex",
-				name: "Codex",
-				description: "",
-				configPath: "~/.codex/config.toml",
-				binaryName: "codex",
-				isInstalled: () => true,
-				// biome-ignore lint/suspicious/noExplicitAny: test stub
-				write: vi.fn() as any,
-			},
-			models: [],
-		})
+		vi.mocked(prepareTool).mockResolvedValue(mockPrepped())
 		vi.mocked(runForeground).mockRejectedValue(new Error("codex is not installed or not on PATH"))
 		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 

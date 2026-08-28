@@ -1,6 +1,6 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync } from "node:fs"
 import { dirname } from "node:path"
-import { writeJson } from "../config/json.js"
+import { writeFileAtomic, writeJson } from "../config/json.js"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
 import type { ModelMetadata } from "../models.js"
@@ -67,7 +67,7 @@ interface CodexModelEntry {
 	base_instructions: string
 	supports_tools: boolean
 	supports_parallel_tool_calls: boolean
-	experimental_supported_tools: never[]
+	experimental_supported_tools: string[]
 	supports_reasoning_summaries: boolean
 	support_verbosity: boolean
 	supported_reasoning_levels: CodexReasoningLevel[]
@@ -155,6 +155,16 @@ export function mergeCodexToml(existingText: string, freshToml: string): string 
 			continue
 		}
 
+		// Match [[array.of.tables]] headers. These are user-owned sections
+		// (e.g. [[projects]]) — never part of the kimchi provider block.
+		const arrayHeaderMatch = line.match(/^\s*\[\[(.+)\]\]\s*$/)
+		if (arrayHeaderMatch) {
+			inKimchiProviderSection = false
+			inAnySection = true
+			kept.push(line)
+			continue
+		}
+
 		// Body of the kimchi provider section: skip until the next header.
 		if (inKimchiProviderSection) continue
 
@@ -210,7 +220,7 @@ async function writeCodex(
 	const freshToml = buildCodexToml(apiKey, mainSlug, catalogPath)
 	const merged = mergeCodexToml(existingText, freshToml)
 
-	writeFileSync(configPath, merged, "utf-8")
+	writeFileAtomic(configPath, merged)
 	writeJson(catalogPath, buildModelCatalog(models))
 }
 

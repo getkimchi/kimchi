@@ -99,6 +99,29 @@ multi_agent = true
 		expect(merged.match(/\[model_providers\.kimchi\]/g)?.length).toBe(1)
 	})
 
+	it("preserves [[array.of.tables]] sections following the kimchi provider block", () => {
+		const fresh = buildCodexToml("k", "kimi-k2.6", "/catalog.json")
+		const existing = `[model_providers.kimchi]
+name = "Old"
+base_url = "https://old.example/v1"
+http_headers = { Authorization = "Bearer old-key" }
+wire_api = "chat"
+
+[[projects]]
+name = "my-project"
+path = "/Users/me/code"
+
+[features]
+multi_agent = true
+`
+		const merged = mergeCodexToml(existing, fresh)
+		expect(merged).toContain("[[projects]]")
+		expect(merged).toContain('name = "my-project"')
+		expect(merged).toContain("[features]")
+		expect(merged).not.toContain("old.example")
+		expect(merged).not.toContain("old-key")
+	})
+
 	it("strips old top-level kimchi keys", () => {
 		const fresh = buildCodexToml("k", "kimi-k2.6", "/new-catalog.json")
 		const existing = `model_provider = "kimchi"
