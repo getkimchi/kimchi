@@ -9,6 +9,7 @@ import { runClaude } from "./claude.js"
 import { runConfig } from "./config.js"
 import { runCursor } from "./cursor.js"
 import { runGsd2 } from "./gsd2.js"
+import { runHermes } from "./hermes.js"
 import { runLogin } from "./login.js"
 import { runMcp } from "./mcp.js"
 import { runOpenClaw } from "./openclaw.js"
@@ -28,6 +29,7 @@ export const COMMANDS: CommandDefinition[] = [
 	{ name: "cursor", summary: "Configure Cursor to use Kimchi", run: runCursor },
 	{ name: "openclaw", summary: "Configure OpenClaw to use Kimchi", run: runOpenClaw },
 	{ name: "gsd2", summary: "Install / configure GSD2 with Kimchi", run: runGsd2 },
+	{ name: "hermes", summary: "Configure Hermes to use Kimchi", run: runHermes },
 	{ name: "update", summary: "Check for and install Kimchi/package updates", run: runUpdate },
 	{ name: "config", summary: "Inspect or change kimchi config (e.g. telemetry)", run: runConfig },
 	{ name: "resources", summary: "Enable or disable Kimchi hooks, tools, extensions, and plugins", run: runResources },
