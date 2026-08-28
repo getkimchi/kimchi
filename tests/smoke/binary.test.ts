@@ -8,6 +8,7 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
+	writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -123,6 +124,35 @@ describe("binary smoke tests", () => {
 			.flatMap(readSessionEntries)
 
 		expect(newEntries).toContainEqual(expect.objectContaining({ type: "session_info", name: prompt }))
+	})
+
+	describe("runtime config autoloading", () => {
+		let workDir: string
+
+		beforeEach(() => {
+			workDir = mkdtempSync(join(tmpdir(), "kimchi-smoke-runtime-config-"))
+		})
+
+		afterEach(() => {
+			rmSync(workDir, { recursive: true, force: true })
+		})
+
+		it("does not load .env from the working directory", () => {
+			writeFileSync(join(workDir, ".env"), "KIMCHI_TELEMETRY_ENABLED=0\n", "utf-8")
+
+			const result = runBinary({ args: ["config", "telemetry"], cwd: workDir })
+
+			expect(result.stdout.trim()).toBe("Telemetry: enabled (from config)")
+		})
+
+		it("does not load bunfig.toml from the working directory", () => {
+			writeFileSync(join(workDir, "bunfig.toml"), 'preload = ["./disable-telemetry.js"]\n', "utf-8")
+			writeFileSync(join(workDir, "disable-telemetry.js"), 'process.env.KIMCHI_TELEMETRY_ENABLED = "0"\n', "utf-8")
+
+			const result = runBinary({ args: ["config", "telemetry"], cwd: workDir })
+
+			expect(result.stdout.trim()).toBe("Telemetry: enabled (from config)")
+		})
 	})
 
 	describe("--export", () => {
