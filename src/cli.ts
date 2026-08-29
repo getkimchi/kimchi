@@ -60,6 +60,7 @@ import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
+import herdrReporterExtension from "./extensions/herdr-reporter.js"
 import hiddenToolGuidanceExtension from "./extensions/hidden-tool-guidance.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import ideAdapterExtension from "./extensions/ide-adapter/index.js"
@@ -559,6 +560,9 @@ try {
 			// First so its session_start handler syncs project trust onto the
 			// settings watcher before any other handler reads settings.
 			settingsTrustSyncExtension,
+			// Always-on lifecycle reporter — surfaces agent state to herdr (an
+			// out-of-process UI). No-op when HERDR_ENV is unset.
+			herdrReporterExtension,
 			autoUpdateSettingsExtension,
 			startupUpdateExtension,
 			packageInstallGuardExtension,
