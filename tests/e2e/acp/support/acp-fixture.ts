@@ -14,8 +14,11 @@ import type { ClientSideConnection } from "@agentclientprotocol/sdk"
 import * as acp from "@agentclientprotocol/sdk"
 import { onTestFailed } from "vitest"
 import {
+	DEFAULT_MODEL,
+	type FakeModel,
 	type FakeOpenAiServer,
 	type FakeResponseScript,
+	resolveModels,
 	startFakeOpenAiServer,
 } from "../../tui/support/fake-openai-server.js"
 
@@ -53,6 +56,12 @@ export interface AcpFixture {
 
 export interface AcpFixtureOptions {
 	responses: FakeResponseScript[]
+	models?: FakeModel[]
+	routerResponses?: unknown[]
+	providerId?: string
+	defaultProvider?: string
+	defaultModel?: string
+	extraArgs?: string[]
 	/**
 	 * Extra capabilities merged on top of the always-present fs baseline.
 	 * Defaults to `{}` (just the fs baseline — matches `verify-acp.mjs`).
@@ -201,8 +210,23 @@ function textOf(update: acp.SessionUpdate): string | undefined {
 }
 
 export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<AcpFixture> {
-	const { artifactName, responses, clientCapabilities, clientMeta, extensionPath } = options
-	const fake = await startFakeOpenAiServer({ responses })
+	const {
+		artifactName,
+		responses,
+		models,
+		routerResponses,
+		providerId = "fake",
+		defaultProvider,
+		defaultModel,
+		extraArgs = [],
+		clientCapabilities,
+		clientMeta,
+		extensionPath,
+	} = options
+	const fake = await startFakeOpenAiServer({ responses, models, routerResponses })
+	const configuredModels = models
+		? resolveModels(models)
+		: [{ ...DEFAULT_MODEL, contextWindow: 64_000, maxTokens: 1024 }]
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-acp-home-"))
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-acp-work-"))
 
@@ -282,24 +306,22 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			JSON.stringify(
 				{
 					providers: {
-						fake: {
+						[providerId]: {
 							baseUrl: `${fake.baseUrl}/openai/v1`,
 							apiKey: "fake",
 							api: "openai-completions",
 							authHeader: true,
 							headers: { "User-Agent": "kimchi/acp-e2e" },
-							models: [
-								{
-									id: "basic",
-									name: "Fake Basic",
-									reasoning: false,
-									input: ["text"],
-									contextWindow: 64_000,
-									maxTokens: 1024,
-									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-									provider: "openai",
-								},
-							],
+							models: configuredModels.map((model) => ({
+								id: model.slug,
+								name: model.displayName,
+								reasoning: model.reasoning,
+								input: model.input,
+								contextWindow: model.contextWindow,
+								maxTokens: model.maxTokens,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+								provider: model.provider,
+							})),
 						},
 					},
 				},
@@ -308,13 +330,20 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			),
 			"utf-8",
 		)
+		if (defaultProvider && defaultModel) {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ defaultProvider, defaultModel }, null, "\t"),
+				"utf-8",
+			)
+		}
 
 		// pi-coding-agent auto-loads `${agentDir}/extensions/*.js` on every session.
 		const extPath = extensionPath ?? TEST_EXTENSION_PATH
 		const extSource = readFileSync(extPath, "utf-8")
 		writeFileSync(join(agentDir, "extensions", "test-ui-extension.js"), extSource, "utf-8")
 
-		proc = spawn(BINARY_PATH, ["--mode", "acp"], {
+		proc = spawn(BINARY_PATH, ["--mode", "acp", ...extraArgs], {
 			stdio: ["pipe", "pipe", "inherit"],
 			env: {
 				...process.env,
@@ -328,6 +357,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				// deterministic.
 				KIMCHI_NO_UPDATE_CHECK: "1",
 				KIMCHI_RTK_AUTO_INSTALL: "0",
+				KIMCHI_ROUTER_ENDPOINT: fake.baseUrl,
 			},
 			cwd: workDir,
 		})
