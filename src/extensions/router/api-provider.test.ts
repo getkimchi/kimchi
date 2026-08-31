@@ -93,7 +93,7 @@ describe("Auto model API provider", () => {
 		)
 	})
 
-	it("removes Auto's reasoning preference when the concrete model does not support it", async () => {
+	it("does not forward the UI-selected reasoning option to a model that cannot use it", async () => {
 		const auto = model("auto", AUTO_MODEL_API)
 		const target = model("concrete", TARGET_API, false)
 		setAutoRoutingState(SESSION_ID, { status: "resolved", model: target })
@@ -138,6 +138,17 @@ describe("Auto model API provider", () => {
 		expect(isRetryableAssistantError(result)).toBe(false)
 		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "unresolved" })
 		expect(targetStream).not.toHaveBeenCalled()
+	})
+
+	it("reports a dedicated model application failure", async () => {
+		const auto = model("auto", AUTO_MODEL_API)
+		setAutoRoutingState(SESSION_ID, { status: "failed", reason: "model_update_failed" })
+		const provider = getApiProvider(AUTO_MODEL_API)
+		if (!provider) throw new Error("Auto API provider was not registered")
+
+		const result = await provider.streamSimple(auto, { messages: [] }, { sessionId: SESSION_ID }).result()
+
+		expect(result.errorMessage).toContain("Auto could not apply the routed model")
 	})
 
 	it("uses Pi's model-request signal to cancel a staged routing attempt", async () => {

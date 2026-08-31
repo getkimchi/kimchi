@@ -75,6 +75,8 @@ function failureDetail(reason: AutoFailureReason): string {
 			return "the prompt has no text for routing"
 		case "no_auth":
 			return "the Kimchi credential is unavailable"
+		case "model_update_failed":
+			return "the routed model could not be applied"
 		case "malformed":
 			return "the router returned an invalid response"
 		case "network":
@@ -84,6 +86,11 @@ function failureDetail(reason: AutoFailureReason): string {
 		case "interrupted":
 			return "the earlier routing attempt was interrupted"
 	}
+}
+
+function failureMessage(reason: AutoFailureReason): string {
+	if (reason === "model_update_failed") return "Auto could not apply the routed model."
+	return `Auto is unavailable: ${failureDetail(reason)}.`
 }
 
 function errorStream(model: Model<Api>, reason: AutoFailureReason) {
@@ -105,7 +112,7 @@ function errorStream(model: Model<Api>, reason: AutoFailureReason) {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason,
-		errorMessage: `Auto is unavailable: ${failureDetail(reason)}. Submit another prompt to retry Auto, or select a concrete model with /model.`,
+		errorMessage: `${failureMessage(reason)} Submit another prompt to retry Auto, or select a concrete model with /model.`,
 		timestamp: Date.now(),
 	}
 	queueMicrotask(() => stream.push({ type: "error", reason: stopReason, error: message }))
@@ -140,7 +147,7 @@ async function resolvedTarget(
 	return state.model
 }
 
-/** Remove Auto's session-level reasoning preference when the concrete target cannot honor it. */
+/** Clear the UI-selected reasoning option when the routed model does not support reasoning. */
 function optionsForTarget<T extends StreamOptions>(target: Model<Api>, options: T | undefined): T | undefined {
 	if (!options || target.reasoning || !("reasoning" in options)) return options
 	return { ...options, reasoning: undefined }

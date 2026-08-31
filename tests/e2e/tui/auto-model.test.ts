@@ -89,6 +89,21 @@ async function waitForAbortedRequest(
 	throw new Error(`Timed out waiting for the request to ${path} to be aborted`)
 }
 
+async function navigateToSetting(terminal: import("@microsoft/tui-test").Terminal, label: string): Promise<void> {
+	for (let index = 0; index < 30; index += 1) {
+		const cursorLine = viewText(terminal)
+			.split("\n")
+			.find((line) => line.includes("→"))
+		if (cursorLine?.includes(label)) {
+			terminal.submit("")
+			return
+		}
+		terminal.keyDown()
+		await new Promise((resolve) => setTimeout(resolve, 50))
+	}
+	throw new Error(`Could not navigate to setting "${label}"`)
+}
+
 function requestModel(body: unknown): string | undefined {
 	return body && typeof body === "object" && "model" in body && typeof body.model === "string" ? body.model : undefined
 }
@@ -174,6 +189,44 @@ test("Auto routes once and keeps the selected concrete model for the session", a
 			const settings = JSON.parse(readFileSync(join(fixture.agentDir, "settings.json"), "utf-8"))
 			expect(settings.defaultProvider).toBe("kimchi-dev")
 			expect(settings.defaultModel).toBe("auto")
+		},
+	)
+})
+
+test("Auto exposes only off after routing to a model without reasoning", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "auto-model-non-reasoning-controls",
+			providerId: "kimchi-dev",
+			initialModel: "auto",
+			extraArgs: ["--enable-experimental-features"],
+			models: MODELS,
+			routerResponses: [ROUTED_ROUTER_RESPONSE],
+			responses: [{ stream: ["Non-reasoning reply."] }],
+		},
+		async (fixture) => {
+			terminal.submit("Route to the plain model")
+			await waitForText(terminal, "Non-reasoning reply.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForTurnToSettle(fixture.fake.requests)
+
+			terminal.write("/settings")
+			await waitForText(terminal, "/settings", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			terminal.submit("")
+			await waitForText(terminal, "Auto-compact", { timeoutMs: INPUT_TIMEOUT_MS })
+			await navigateToSetting(terminal, "Thinking level")
+			await waitForText(terminal, "Enter to select · Esc to go back", { timeoutMs: INPUT_TIMEOUT_MS })
+
+			terminal.keyDown()
+			terminal.submit("")
+			await waitForText(terminal, "Enter/Space to change · Esc to cancel", { timeoutMs: INPUT_TIMEOUT_MS })
+			const thinkingLine = viewText(terminal)
+				.split("\n")
+				.find((line) => line.includes("Thinking level"))
+			expect(thinkingLine).toMatch(/Thinking level\s+off/)
+
+			terminal.keyEscape()
+			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 		},
 	)
 })

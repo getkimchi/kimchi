@@ -1,3 +1,4 @@
+import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionFactory, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs, MULTI_MODEL_ID } from "../../cli-args.js"
 import { setMultiModelEnabled } from "../multi-model.js"
@@ -33,6 +34,29 @@ function routeFailureReason(reason: "cancelled" | "timeout" | "network" | "http"
 	return reason === "http" ? "router_http" : reason
 }
 
+type ReasoningCapabilities = Pick<Model<Api>, "reasoning" | "thinkingLevelMap">
+
+function hasTargetReasoningCapabilities(autoModel: ReasoningCapabilities, target: ReasoningCapabilities): boolean {
+	return autoModel.reasoning === target.reasoning && autoModel.thinkingLevelMap === target.thinkingLevelMap
+}
+
+function autoModelForTarget<TApi extends Api>(autoModel: Model<TApi>, target: ReasoningCapabilities): Model<TApi> {
+	return {
+		...autoModel,
+		reasoning: target.reasoning,
+		thinkingLevelMap: target.thinkingLevelMap,
+	}
+}
+
+async function syncAutoReasoningCapabilities<TApi extends Api>(
+	pi: ExtensionAPI,
+	autoModel: Model<TApi>,
+	target: ReasoningCapabilities,
+): Promise<boolean> {
+	if (hasTargetReasoningCapabilities(autoModel, target)) return true
+	return pi.setModel(autoModelForTarget(autoModel, target))
+}
+
 export interface AutoModelExtensionOptions {
 	/** Require a vision-capable recommendation for context forwarded as image paths. */
 	requiresVision?: boolean
@@ -64,20 +88,40 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 					return
 				}
 			}
-			if (!isAutoModel(ctx.model)) {
+			let autoModel = ctx.model
+			if (!isAutoModel(autoModel)) {
 				if (!sessionSelectsAuto(entries)) {
 					clearAutoRoutingState(sessionId)
 					return
 				}
-				const autoModel = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, AUTO_MODEL_ID)
+				autoModel = ctx.modelRegistry.find(AUTO_MODEL_PROVIDER, AUTO_MODEL_ID)
 				if (!autoModel) {
 					clearAutoRoutingState(sessionId)
 					return
 				}
-				await pi.setModel(autoModel)
 			}
 			setMultiModelEnabled(sessionId, false)
-			hydrateAutoRoutingState(sessionId, entries, ctx.modelRegistry)
+			const state = hydrateAutoRoutingState(sessionId, entries, ctx.modelRegistry)
+			const sessionAutoModel = state.status === "resolved" ? autoModelForTarget(autoModel, state.model) : autoModel
+			const currentModel = ctx.model
+			if (
+				!currentModel ||
+				!isAutoModel(currentModel) ||
+				(state.status === "resolved" && !hasTargetReasoningCapabilities(currentModel, state.model))
+			) {
+				await pi.setModel(sessionAutoModel)
+			}
+		})
+
+		pi.on("model_select", async (event, ctx) => {
+			if (!isAutoModel(event.model)) return
+			const sessionId = ctx.sessionManager.getSessionId()
+			let state = getAutoRoutingState(sessionId)
+			if (state.status === "unresolved") {
+				state = hydrateAutoRoutingState(sessionId, ctx.sessionManager.getEntries(), ctx.modelRegistry)
+			}
+			if (state.status !== "resolved") return
+			await syncAutoReasoningCapabilities(pi, event.model, state.model)
 		})
 
 		pi.on("input", (event, ctx) => {
@@ -92,7 +136,8 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 		})
 
 		pi.on("before_agent_start", (event, ctx) => {
-			if (!isAutoModel(ctx.model)) return
+			const autoModel = ctx.model
+			if (!isAutoModel(autoModel)) return
 			const sessionId = ctx.sessionManager.getSessionId()
 			if (getAutoRoutingState(sessionId).status === "unresolved") {
 				hydrateAutoRoutingState(sessionId, ctx.sessionManager.getEntries(), ctx.modelRegistry)
@@ -128,6 +173,9 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 
 				const resolution = resolveRecommendation(route.recommendation, ctx, requiresVision)
 				if (!resolution.ok) return fail(resolution.reason)
+				if (!(await syncAutoReasoningCapabilities(pi, autoModel, resolution.model))) {
+					return fail("model_update_failed")
+				}
 
 				const state = { status: "resolved", model: resolution.model } satisfies AutoRoutingState
 				setAutoRoutingState(sessionId, state)

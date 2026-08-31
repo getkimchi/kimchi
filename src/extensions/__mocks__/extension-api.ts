@@ -9,6 +9,7 @@ export function createExtensionApi(): {
 	getHandlers<E, R = undefined>(event: string): ExtensionHandler<E, R>[]
 	sendMessage: ReturnType<typeof vi.fn<ExtensionAPI["sendMessage"]>>
 	appendEntry: ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>
+	setModel: ReturnType<typeof vi.fn<ExtensionAPI["setModel"]>>
 	emitEvent: ReturnType<typeof vi.fn>
 } {
 	const handlers = new Map<string, RegisteredHandler[]>()
@@ -19,6 +20,7 @@ export function createExtensionApi(): {
 	})
 	const sendMessage = vi.fn<ExtensionAPI["sendMessage"]>()
 	const appendEntry = vi.fn<ExtensionAPI["appendEntry"]>()
+	const setModel = vi.fn<ExtensionAPI["setModel"]>(async () => true)
 	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
 	const registerTool = vi.fn<ExtensionAPI["registerTool"]>()
 	const emitEvent = vi.fn()
@@ -30,6 +32,7 @@ export function createExtensionApi(): {
 			registerTool,
 			sendMessage,
 			appendEntry,
+			setModel,
 			events: { emit: emitEvent },
 		} as unknown as ExtensionAPI,
 		getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R> {
@@ -42,6 +45,7 @@ export function createExtensionApi(): {
 		},
 		sendMessage,
 		appendEntry,
+		setModel,
 		emitEvent,
 	}
 }

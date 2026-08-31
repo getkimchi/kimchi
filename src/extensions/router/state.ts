@@ -9,6 +9,7 @@ export type AutoFailureReason =
 	| "empty_prompt"
 	| "interrupted"
 	| "malformed"
+	| "model_update_failed"
 	| "network"
 	| "no_auth"
 	| "redaction_failed"

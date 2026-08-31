@@ -49,9 +49,9 @@ The interface continues to show Auto as your selected model before and after rou
 auto
 ```
 
-Kimchi displays an “Auto is ready” notification when routing finishes, without revealing the selected model. From that point onward, the concrete model's capabilities and limits apply, including vision support, context window, reasoning support, and provider availability.
+After routing, the concrete model's capabilities and limits apply without revealing its identity, including vision support, context window, reasoning support, and provider availability.
 
-Auto is a virtual model, but its reasoning-level control remains available as a session preference. After routing, Kimchi applies that preference when the selected model supports configurable reasoning and ignores it when the model does not.
+Before routing, Auto exposes reasoning levels as a session preference. After routing, the available controls follow the selected model's supported levels. If that model does not support reasoning, Kimchi changes the session level to `off` and only offers `off` in the settings UI.
 
 ## Failures and retries
 

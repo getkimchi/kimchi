@@ -1,6 +1,7 @@
 import type { Model } from "@earendil-works/pi-ai"
 import type {
 	BeforeAgentStartEvent,
+	ExtensionEvent,
 	InputEvent,
 	SessionEntry,
 	SessionStartEvent,
@@ -12,18 +13,25 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { clearAutoRoutingAttempt, consumeAutoRoutingAttempt } from "./api-provider.js"
 import autoModelExtension, { createAutoModelExtension } from "./index.js"
 import { ROUTER_IMAGE_METADATA } from "./router-query.js"
-import { AUTO_RESOLUTION_ENTRY, clearAutoRoutingState, getAutoRoutingState, resolvedEntry } from "./state.js"
+import {
+	AUTO_RESOLUTION_ENTRY,
+	clearAutoRoutingState,
+	getAutoRoutingState,
+	resolvedEntry,
+	setAutoRoutingState,
+} from "./state.js"
 
 const SESSION_ID = "auto-session"
+type ModelSelectEvent = Extract<ExtensionEvent, { type: "model_select" }>
 
-function model(id: string, input: ("text" | "image")[] = ["text"]): Model<string> {
+function model(id: string, input: ("text" | "image")[] = ["text"], reasoning = true): Model<string> {
 	return {
 		id,
 		name: id,
 		api: id === "auto" ? "kimchi-auto" : "openai-completions",
 		provider: "kimchi-dev",
 		baseUrl: "https://llm.kimchi.dev/openai/v1",
-		reasoning: true,
+		reasoning,
 		input,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 128000,
@@ -175,6 +183,29 @@ describe("Auto model extension", () => {
 		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "resolved", model: target })
 	})
 
+	it("restores Auto with the resolved model's reasoning capability", async () => {
+		const target = model("plain", ["text"], false)
+		const auto = model("auto", ["text", "image"])
+		const entries = [custom(resolvedEntry(target))]
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const ctx = createContext({
+			model: target,
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => entries },
+			modelRegistry: {
+				find: (provider, id) => [auto, target].find((item) => item.provider === provider && item.id === id),
+				getAvailable: () => [target],
+			},
+		})
+
+		await extension.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		expect(extension.setModel).toHaveBeenCalledOnce()
+		expect(extension.setModel).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "auto", api: "kimchi-auto", reasoning: false, thinkingLevelMap: undefined }),
+		)
+	})
+
 	it("routes once and records the concrete model without showing a notification", async () => {
 		const { getHandler, appendEntry, ctx, target } = harness()
 		vi.stubGlobal(
@@ -203,6 +234,94 @@ describe("Auto model extension", () => {
 		})
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "resolved", model: target })
+	})
+
+	it("applies the routed model's reasoning capability to the Auto session", async () => {
+		const { getHandler, setModel, ctx, target } = harness(model("plain", ["text"], false))
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({
+				ok: true,
+				json: async () => ({ best_model: target.id, probabilities: { [target.id]: 1 } }),
+			})),
+		)
+		await getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		await getHandler<BeforeAgentStartEvent>("before_agent_start")(beforeEvent(), ctx)
+		await consumeAutoRoutingAttempt(SESSION_ID)
+
+		expect(setModel).toHaveBeenCalledOnce()
+		expect(setModel).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "auto", api: "kimchi-auto", reasoning: false, thinkingLevelMap: undefined }),
+		)
+	})
+
+	it("uses the routed model's supported thinking levels for Auto controls", async () => {
+		const target = model("reasoning")
+		target.thinkingLevelMap = { off: "none", low: "low", max: null }
+		const { getHandler, setModel, ctx } = harness(target)
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({
+				ok: true,
+				json: async () => ({ best_model: target.id, probabilities: { [target.id]: 1 } }),
+			})),
+		)
+		await getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		await getHandler<BeforeAgentStartEvent>("before_agent_start")(beforeEvent(), ctx)
+		await consumeAutoRoutingAttempt(SESSION_ID)
+
+		expect(setModel).toHaveBeenCalledOnce()
+		expect(setModel).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: "auto",
+				reasoning: true,
+				thinkingLevelMap: { off: "none", low: "low", max: null },
+			}),
+		)
+	})
+
+	it("reports a model update failure when routed capabilities cannot be applied", async () => {
+		const { getHandler, setModel, ctx, target } = harness(model("plain", ["text"], false))
+		setModel.mockResolvedValue(false)
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({
+				ok: true,
+				json: async () => ({ best_model: target.id, probabilities: { [target.id]: 1 } }),
+			})),
+		)
+		await getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		await getHandler<BeforeAgentStartEvent>("before_agent_start")(beforeEvent(), ctx)
+
+		await expect(consumeAutoRoutingAttempt(SESSION_ID)).resolves.toEqual({
+			status: "failed",
+			reason: "model_update_failed",
+		})
+	})
+
+	it("restores resolved reasoning capabilities when Auto is selected again", async () => {
+		const target = model("plain", ["text"], false)
+		const auto = model("auto", ["text", "image"])
+		const extension = createExtensionApi()
+		autoModelExtension(extension.api)
+		const ctx = createContext({
+			model: auto,
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+		})
+		setAutoRoutingState(SESSION_ID, { status: "resolved", model: target })
+
+		await extension.getHandler<ModelSelectEvent>("model_select")(
+			{ type: "model_select", model: auto, previousModel: target, source: "set" },
+			ctx,
+		)
+
+		expect(extension.setModel).toHaveBeenCalledOnce()
+		expect(extension.setModel).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "auto", api: "kimchi-auto", reasoning: false, thinkingLevelMap: undefined }),
+		)
 	})
 
 	it("does not persist a router failure and retries on the next user prompt", async () => {
