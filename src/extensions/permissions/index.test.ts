@@ -1182,6 +1182,219 @@ describe("permissions workflow output tool classification", () => {
 	})
 })
 
+describe("permissions in-cwd file edit fast path", () => {
+	beforeEach(() => {
+		vi.mocked(classifyToolCall).mockClear()
+	})
+
+	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
+		vi.unstubAllEnvs()
+	})
+
+	it("auto-approves edit within cwd without invoking classifier", async () => {
+		const harness = createPermissionsHarness(["edit"], { auto: true })
+		const ctx = createClassifierContext()
+		ctx.cwd = "/test"
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			{ toolName: "edit", toolCallId: "tc-1", input: { file_path: "/test/src/index.ts" } },
+			ctx,
+		)
+
+		expect(result).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("auto-approves write within cwd without invoking classifier", async () => {
+		const harness = createPermissionsHarness(["write"], { auto: true })
+		const ctx = createClassifierContext()
+		ctx.cwd = "/test"
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			{ toolName: "write", toolCallId: "tc-2", input: { file_path: "/test/src/new.ts", content: "x" } },
+			ctx,
+		)
+
+		expect(result).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("auto-approves edit with relative path within cwd", async () => {
+		const harness = createPermissionsHarness(["edit"], { auto: true })
+		const ctx = createClassifierContext()
+		ctx.cwd = "/test"
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			{ toolName: "edit", toolCallId: "tc-3", input: { file_path: "src/index.ts" } },
+			ctx,
+		)
+
+		expect(result).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("does NOT auto-approve edits outside cwd — falls through to classifier", async () => {
+		const harness = createPermissionsHarness(["edit"], { auto: true })
+		const ctx = createClassifierContext()
+		ctx.cwd = "/test"
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			{ toolName: "edit", toolCallId: "tc-4", input: { file_path: "/etc/passwd" } },
+			ctx,
+		)
+
+		expect(result).toBeUndefined() // classifier mock returns safe
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it("does NOT auto-approve edits to .git/ paths even within cwd", async () => {
+		const harness = createPermissionsHarness(["edit"], { auto: true })
+		const ctx = createClassifierContext()
+		ctx.cwd = "/test"
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.fire(
+			"tool_call",
+			{ toolName: "edit", toolCallId: "tc-5", input: { file_path: "/test/.git/config" } },
+			ctx,
+		)
+
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it("does NOT auto-approve edits to .env files even within cwd", async () => {
+		const harness = createPermissionsHarness(["edit"], { auto: true })
+		const ctx = createClassifierContext()
+		ctx.cwd = "/test"
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.fire("tool_call", { toolName: "edit", toolCallId: "tc-6", input: { file_path: "/test/.env" } }, ctx)
+
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it("does NOT auto-approve edits to .env.* variants even within cwd", async () => {
+		const harness = createPermissionsHarness(["edit"], { auto: true })
+		const ctx = createClassifierContext()
+		ctx.cwd = "/test"
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.fire(
+			"tool_call",
+			{ toolName: "edit", toolCallId: "tc-7", input: { file_path: "/test/.env.local" } },
+			ctx,
+		)
+
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it("does NOT auto-approve edits to .kimchi/ paths even within cwd", async () => {
+		const harness = createPermissionsHarness(["edit"], { auto: true })
+		const ctx = createClassifierContext()
+		ctx.cwd = "/test"
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.fire(
+			"tool_call",
+			{ toolName: "edit", toolCallId: "tc-8", input: { file_path: "/test/.kimchi/config.json" } },
+			ctx,
+		)
+
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it("does NOT auto-approve edits to .claude/ paths even within cwd", async () => {
+		const harness = createPermissionsHarness(["edit"], { auto: true })
+		const ctx = createClassifierContext()
+		ctx.cwd = "/test"
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.fire(
+			"tool_call",
+			{ toolName: "edit", toolCallId: "tc-9", input: { file_path: "/test/.claude/settings.json" } },
+			ctx,
+		)
+
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it("does NOT auto-approve edits to shell config files even within cwd", async () => {
+		const harness = createPermissionsHarness(["edit"], { auto: true })
+		const ctx = createClassifierContext()
+		ctx.cwd = "/test"
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.fire(
+			"tool_call",
+			{ toolName: "edit", toolCallId: "tc-10", input: { file_path: "/test/.bashrc" } },
+			ctx,
+		)
+
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it("does NOT auto-approve edits with path traversal outside cwd", async () => {
+		const harness = createPermissionsHarness(["edit"], { auto: true })
+		const ctx = createClassifierContext()
+		ctx.cwd = "/test"
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.fire(
+			"tool_call",
+			{ toolName: "edit", toolCallId: "tc-11", input: { file_path: "/test/../../etc/passwd" } },
+			ctx,
+		)
+
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it("does NOT auto-approve in default mode — fast path is auto-mode only", async () => {
+		const harness = createPermissionsHarness(["edit"])
+		const ctx = createMockContext(["Yes — just this call"])
+		ctx.cwd = "/test"
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.fire(
+			"tool_call",
+			{ toolName: "edit", toolCallId: "tc-12", input: { file_path: "/test/src/index.ts" } },
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1) // prompted the user
+	})
+
+	it("emits a permission_auto_approved notification on fast path", async () => {
+		const harness = createPermissionsHarness(["edit"], { auto: true })
+		const ctx = createClassifierContext()
+		ctx.cwd = "/test"
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.fire(
+			"tool_call",
+			{ toolName: "edit", toolCallId: "tc-13", input: { file_path: "/test/src/index.ts" } },
+			ctx,
+		)
+
+		const emitMock = (harness.pi as unknown as { events: { emit: ReturnType<typeof vi.fn> } }).events.emit
+		expect(emitMock).toHaveBeenCalledWith("notification", {
+			notification_type: "permission_auto_approved",
+			tool_name: "edit",
+			tool_use_id: "tc-13",
+			reason: "in-cwd file edit fast path",
+		})
+	})
+})
+
 describe("permissions notification emission", () => {
 	afterEach(() => {
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)

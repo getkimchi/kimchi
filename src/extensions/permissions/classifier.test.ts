@@ -51,7 +51,7 @@ describe("classifyToolCall", () => {
 		vi.useRealTimers()
 	})
 
-	it("returns safe verdict on first attempt", async () => {
+	it("returns safe verdict on Stage 1 without calling Stage 2", async () => {
 		completeMock.mockResolvedValue(
 			fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
 		)
@@ -65,7 +65,96 @@ describe("classifyToolCall", () => {
 		expect(result.verdict).toBe("safe")
 		expect(result.riskScore).toBe("low")
 		expect(result.ok).toBe(true)
+		expect(result.stage).toBe(1)
 		expect(completeMock).toHaveBeenCalledTimes(1)
+	})
+
+	it("Stage 1 safe skips Stage 2 entirely", async () => {
+		completeMock.mockResolvedValueOnce(
+			fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","reason":"stage1"}' }),
+		)
+
+		const result = await classifyToolCall(
+			fakeRegistry(),
+			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
+			{ timeoutMs: 5000 },
+		)
+
+		expect(result.verdict).toBe("safe")
+		expect(result.stage).toBe(1)
+		expect(completeMock).toHaveBeenCalledTimes(1)
+	})
+
+	it("Stage 1 requires-confirmation falls through to Stage 2", async () => {
+		completeMock
+			.mockResolvedValueOnce(
+				fakeResponse({ stopReason: "stop", content: '{"verdict":"requires-confirmation","reason":"stage1 unsure"}' }),
+			)
+			.mockResolvedValueOnce(
+				fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"stage2 safe"}' }),
+			)
+
+		const result = await classifyToolCall(
+			fakeRegistry(),
+			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
+			{ timeoutMs: 5000 },
+		)
+
+		expect(result.verdict).toBe("safe")
+		expect(result.stage).toBe(2)
+		expect(completeMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("Stage 1 parse failure falls through to Stage 2", async () => {
+		completeMock
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "stop", content: "garbage text" }))
+			.mockResolvedValueOnce(
+				fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"ok"}' }),
+			)
+
+		const result = await classifyToolCall(
+			fakeRegistry(),
+			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
+			{ timeoutMs: 5000 },
+		)
+
+		expect(result.verdict).toBe("safe")
+		expect(result.stage).toBe(2)
+		expect(completeMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("Stage 1 error falls through to Stage 2", async () => {
+		completeMock
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "error", errorMessage: "stage1 error" }))
+			.mockResolvedValueOnce(
+				fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"ok"}' }),
+			)
+
+		const result = await classifyToolCall(
+			fakeRegistry(),
+			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
+			{ timeoutMs: 5000 },
+		)
+
+		expect(result.verdict).toBe("safe")
+		expect(result.stage).toBe(2)
+		expect(completeMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("Stage 1 uses maxTokens=64 in request options", async () => {
+		let capturedOptions: unknown
+		completeMock.mockImplementation((_model: unknown, _context: unknown, options: unknown) => {
+			capturedOptions = options
+			return fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","reason":"fine"}' })
+		})
+
+		await classifyToolCall(
+			fakeRegistry(),
+			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
+			{ timeoutMs: 5000 },
+		)
+
+		expect((capturedOptions as { maxTokens?: number }).maxTokens).toBe(64)
 	})
 
 	it("keeps classifier tags while omitting Pi token limits for Kimchi", async () => {
@@ -85,7 +174,9 @@ describe("classifyToolCall", () => {
 		expect(sentPayload).toEqual({ tags: ["source:classifier", "existing"] })
 	})
 
-	it("retries up to 3 times on abort before giving up", async () => {
+	it("retries up to 3 times on abort before giving up (Stage 2)", async () => {
+		// Stage 1 fails (aborted → non-fatal fallthrough)
+		// Stage 2 retries 3 times, all aborted
 		completeMock.mockResolvedValue(fakeResponse({ stopReason: "aborted" }))
 
 		const promise = classifyToolCall(
@@ -101,15 +192,18 @@ describe("classifyToolCall", () => {
 		expect(result.ok).toBe(false)
 		expect(result.reason).toContain("classifier timeout")
 		expect(result.reason).toContain(CLASSIFIER_PRIMARY_MODEL_ID)
-		expect(completeMock).toHaveBeenCalledTimes(3)
+		// Stage1(1) + Stage2 retries(3) = 4
+		expect(completeMock).toHaveBeenCalledTimes(4)
 	})
 
-	it("succeeds on 2nd attempt after first abort", async () => {
+	it("succeeds on 2nd Stage 2 attempt after first abort", async () => {
+		// Stage 1 aborted (non-fatal) + Stage 2 first attempt aborted + Stage 2 second succeeds
 		completeMock
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" })) // Stage 1
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" })) // Stage 2 attempt 1
 			.mockResolvedValueOnce(
 				fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
-			)
+			) // Stage 2 attempt 2
 
 		const promise = classifyToolCall(
 			fakeRegistry(),
@@ -123,16 +217,18 @@ describe("classifyToolCall", () => {
 		expect(result.verdict).toBe("safe")
 		expect(result.riskScore).toBe("low")
 		expect(result.ok).toBe(true)
-		expect(completeMock).toHaveBeenCalledTimes(2)
+		expect(result.stage).toBe(2)
+		expect(completeMock).toHaveBeenCalledTimes(3)
 	})
 
-	it("succeeds on 3rd attempt after two aborts", async () => {
+	it("succeeds on 3rd Stage 2 attempt after two aborts", async () => {
 		completeMock
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" })) // Stage 1
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" })) // Stage 2 attempt 1
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" })) // Stage 2 attempt 2
 			.mockResolvedValueOnce(
 				fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
-			)
+			) // Stage 2 attempt 3
 
 		const promise = classifyToolCall(
 			fakeRegistry(),
@@ -146,17 +242,19 @@ describe("classifyToolCall", () => {
 		expect(result.verdict).toBe("safe")
 		expect(result.riskScore).toBe("low")
 		expect(result.ok).toBe(true)
-		expect(completeMock).toHaveBeenCalledTimes(3)
+		expect(result.stage).toBe(2)
+		expect(completeMock).toHaveBeenCalledTimes(4)
 	})
 
-	it("calls fallback model after 3 retryable failures and returns its result", async () => {
+	it("calls fallback model after 3 Stage 2 retryable failures", async () => {
 		completeMock
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
-			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" })) // Stage 1
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" })) // Stage 2 attempt 1
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" })) // Stage 2 attempt 2
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" })) // Stage 2 attempt 3
 			.mockResolvedValueOnce(
 				fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","riskScore":"low","reason":"fine"}' }),
-			)
+			) // Fallback
 
 		const promise = classifyToolCall(
 			fakeRegistry([fakeModel(CLASSIFIER_PRIMARY_MODEL_ID), fakeModel(CLASSIFIER_FALLBACK_MODEL_ID)]),
@@ -170,7 +268,7 @@ describe("classifyToolCall", () => {
 		expect(result.verdict).toBe("safe")
 		expect(result.riskScore).toBe("low")
 		expect(result.ok).toBe(true)
-		expect(completeMock).toHaveBeenCalledTimes(4)
+		expect(completeMock).toHaveBeenCalledTimes(5)
 	})
 
 	it("returns last result when no fallback model is provided", async () => {
@@ -187,7 +285,8 @@ describe("classifyToolCall", () => {
 
 		expect(result.verdict).toBe("requires-confirmation")
 		expect(result.ok).toBe(false)
-		expect(completeMock).toHaveBeenCalledTimes(3)
+		// Stage1(1) + Stage2 retries(3) = 4
+		expect(completeMock).toHaveBeenCalledTimes(4)
 	})
 
 	it("returns 'classifier aborted' when signal aborts during final attempt", async () => {
@@ -198,8 +297,8 @@ describe("classifyToolCall", () => {
 		let callCount = 0
 		completeMock.mockImplementation(() => {
 			callCount++
-			if (callCount === 3) {
-				// Simulate the outer signal aborting during the final classifier call
+			if (callCount === 4) {
+				// Simulate the outer signal aborting during the final Stage 2 attempt
 				controller.abort()
 			}
 			return fakeResponse({ stopReason: "aborted" })
@@ -215,7 +314,8 @@ describe("classifyToolCall", () => {
 		await vi.runAllTimersAsync()
 		const result = await promise
 
-		expect(completeMock).toHaveBeenCalledTimes(3)
+		// Stage1(1) + Stage2 retries(3) = 4
+		expect(completeMock).toHaveBeenCalledTimes(4)
 		expect(result.verdict).toBe("requires-confirmation")
 		expect(result.ok).toBe(false)
 		expect(result.reason).toBe("classifier aborted")
@@ -236,8 +336,11 @@ describe("classifyToolCall", () => {
 		expect(result.reason).toBe("classifier aborted")
 	})
 
-	it("does not retry on error and returns requires-confirmation", async () => {
-		completeMock.mockResolvedValue(fakeResponse({ stopReason: "error", errorMessage: "rate limit exceeded" }))
+	it("does not retry on error and returns requires-confirmation (Stage 2)", async () => {
+		// Stage 1 fails non-fatally, Stage 2 returns error
+		completeMock
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "error", errorMessage: "stage1 error" }))
+			.mockResolvedValue(fakeResponse({ stopReason: "error", errorMessage: "rate limit exceeded" }))
 
 		const result = await classifyToolCall(
 			fakeRegistry(),
@@ -245,13 +348,14 @@ describe("classifyToolCall", () => {
 			{ timeoutMs: 5000 },
 		)
 
-		expect(completeMock).toHaveBeenCalledTimes(1)
+		expect(completeMock).toHaveBeenCalledTimes(2)
 		expect(result.verdict).toBe("requires-confirmation")
 		expect(result.ok).toBe(false)
 		expect(result.reason).toContain("classifier error: rate limit exceeded")
 	})
 
-	it("still falls back to unparseable when text is garbage", async () => {
+	it("still falls back to unparseable when text is garbage (Stage 2)", async () => {
+		// Stage 1 garbage (non-fatal), Stage 2 also garbage
 		completeMock.mockResolvedValue(fakeResponse({ stopReason: "stop", content: "not json at all" }))
 
 		const result = await classifyToolCall(
