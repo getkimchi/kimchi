@@ -9,6 +9,7 @@
  * - "Done" — no further action
  */
 
+import { basename } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
@@ -16,9 +17,8 @@ import { withWorkingHidden } from "../ferment/prompt-ui.js"
 import { withBlocked } from "../herdr-events.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { SANDBOX_USER } from "../teleport/provisioning/constants.js"
-import { DIFF_RSYNC_EXCLUDES } from "../teleport/provisioning/sync-local-changes.js"
 import { runRsync } from "../teleport/provisioning/rsync-runner.js"
-import { basename } from "node:path"
+import { DIFF_RSYNC_EXCLUDES } from "../teleport/provisioning/sync-local-changes.js"
 
 const REVIEW = "Review the result and continue locally"
 const SYNC = "Sync remote changes"
@@ -165,12 +165,9 @@ async function syncRemoteChanges(ctx: ExtensionContext, remoteSession?: RemoteSe
 
 		// The session was deleted after the run, but the workspace is still
 		// alive — re-authenticate to get a fresh token for the same workspace.
-		const creds = await authenticateWorkspace(
-			remoteSession.workspaceId,
-			apiKey,
-			basename(ctx.cwd) || "kimchi",
-			{ endpoint: process.env.KIMCHI_REMOTE_ENDPOINT },
-		)
+		const creds = await authenticateWorkspace(remoteSession.workspaceId, apiKey, basename(ctx.cwd) || "kimchi", {
+			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+		})
 
 		// Trailing slash on the source ("down" direction) is critical: without it,
 		// rsync creates a nested directory (ctx.cwd/kimchi/) instead of syncing

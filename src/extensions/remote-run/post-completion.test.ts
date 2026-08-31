@@ -233,10 +233,7 @@ describe("handleRemoteCompletion", () => {
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan")
 
-			expect(ctx.ui.notify).toHaveBeenCalledWith(
-				expect.stringContaining("remote session metadata is missing"),
-				"error",
-			)
+			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("remote session metadata is missing"), "error")
 			expect(authenticateWorkspace).not.toHaveBeenCalled()
 			expect(runRsync).not.toHaveBeenCalled()
 			// Result is still injected even after sync failure
@@ -251,10 +248,7 @@ describe("handleRemoteCompletion", () => {
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan", { remoteSession })
 
-			expect(ctx.ui.notify).toHaveBeenCalledWith(
-				expect.stringContaining("rsync connection refused"),
-				"error",
-			)
+			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("rsync connection refused"), "error")
 			// Result is still injected even after sync failure
 			expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 		})
