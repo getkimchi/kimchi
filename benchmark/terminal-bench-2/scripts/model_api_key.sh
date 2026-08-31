@@ -14,6 +14,7 @@ require_model_api_key() {
         openrouter/*) MODEL_ROUTE="openrouter"; MODEL_API_KEY_ENV="OPENROUTER_API_KEY" ;;
         anthropic/*) MODEL_ROUTE="anthropic"; MODEL_API_KEY_ENV="ANTHROPIC_API_KEY" ;;
         openai/*) MODEL_ROUTE="openai"; MODEL_API_KEY_ENV="OPENAI_API_KEY" ;;
+        deepseek/*) MODEL_ROUTE="deepseek"; MODEL_API_KEY_ENV="KIMCHI_API_KEY" ;;
         kimchi-dev/*) MODEL_ROUTE="kimchi-dev"; MODEL_API_KEY_ENV="KIMCHI_API_KEY" ;;
         multi-model) MODEL_ROUTE="multi-model"; MODEL_API_KEY_ENV="KIMCHI_API_KEY" ;;
         *)

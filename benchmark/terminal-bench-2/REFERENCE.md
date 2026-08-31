@@ -131,6 +131,7 @@ coding-agent scaffolds:
 | `scripts/run-claude-code.sh` | Claude Code with the native Anthropic API |
 | `scripts/run-codex.sh` | Codex with the native OpenAI API |
 | `scripts/run-cursor.sh` | Cursor Agent with Cursor's API |
+| `scripts/run-deepseek.sh` | DeepSeek Harness (dsh) through the Kimchi gateway |
 | `scripts/run-gsd-kimchi.sh` | GSD |
 | `scripts/run-pi-kimchi.sh` | Stock Pi with the Kimchi provider extension |
 | `scripts/run-workflow.sh` | Kimchi running a `kimchi-workflows` workflow |

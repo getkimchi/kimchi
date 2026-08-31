@@ -2,6 +2,13 @@ from kimchi_agent.agent import Kimchi
 from kimchi_agent.claude_code_kimchi import ClaudeCodeKimchi
 from kimchi_agent.claude_code_standard import ClaudeCodeStandard
 from kimchi_agent.cursor_agent import CursorAgent
+from kimchi_agent.deepseek_agent import (
+    DeepSeekAgent,
+    DeepSeekCreatorAgent,
+    DeepSeekMinimalAgent,
+    DeepSeekPtcAgent,
+    DeepSeekStandardAgent,
+)
 from kimchi_agent.docker_retry import patch_docker_environment_retry
 from kimchi_agent.gsd_kimchi import GsdKimchi
 from kimchi_agent.opencode_kimchi import OpenCodeKimchi
@@ -13,6 +20,11 @@ __all__ = [
     "ClaudeCodeKimchi",
     "ClaudeCodeStandard",
     "CursorAgent",
+    "DeepSeekAgent",
+    "DeepSeekCreatorAgent",
+    "DeepSeekMinimalAgent",
+    "DeepSeekPtcAgent",
+    "DeepSeekStandardAgent",
     "GsdKimchi",
     "Kimchi",
     "OpenCodeKimchi",

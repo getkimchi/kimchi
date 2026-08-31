@@ -127,6 +127,10 @@ The tutorial writes runs to `jobs/<timestamp>/`. Each trial directory contains:
 - `config.json` with the trial configuration
 - `agent/sessions/*.jsonl` with Kimchi and subagent sessions
 
+## Other coding-agent scaffolds
+
+The project also contains Harbor adapters for comparing the model with other coding-agent scaffolds, including DeepSeek Harness (`dsh`, adapter at `scripts/run-deepseek.sh`), Cursor, Claude Code, GSD, OpenCode, and Codex. The deepseek adapter routes LLM inference through the Kimchi gateway using `KIMCHI_API_KEY`. See [REFERENCE.md](REFERENCE.md) for the full list and details.
+
 ## Common failures
 
 - `KIMCHI_API_KEY is required`: export it in the shell that runs Harbor. Use `--ae "KIMCHI_API_KEY=$KIMCHI_API_KEY"` only when you need to pass or override it explicitly.
