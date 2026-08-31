@@ -94,6 +94,8 @@ interface ModelsMetadataResponse {
 	models: ModelMetadata[]
 }
 
+const AI_ENABLER_REASONING_EFFORT_MODELS = new Set(["deepseek-v4-flash", "deepseek-v4-flash-0731"])
+
 function sortModels(models: ModelMetadata[]): ModelMetadata[] {
 	const serverless = models.filter((m) => m.is_serverless)
 	const rest = models.filter((m) => !m.is_serverless)
@@ -194,15 +196,19 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// - cacheControlFormat: "anthropic" so pi injects cache_control markers
 	// - supportsUsageInStreaming: true so stream_options.include_usage is sent
 	//
-	// ai-enabler models don't support chat_template_kwargs, so we rely on the
-	// default `openai` thinkingFormat which sends `reasoning_effort`. The map
-	// disables thinking with `none` and advertises max to Pi's selector.
+	// AI Enabler models don't support chat_template_kwargs, so adjustable models
+	// use the default `openai` thinkingFormat, which sends `reasoning_effort`.
+	const supportsReasoningEffort =
+		m.provider === "ai-enabler" && m.reasoning && AI_ENABLER_REASONING_EFFORT_MODELS.has(m.slug)
 	const compat =
 		m.provider === "anthropic" || m.slug.startsWith("claude-")
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
-			: undefined
-	const thinkingLevelMap: PiModelConfig["thinkingLevelMap"] =
-		m.provider === "ai-enabler" ? { off: "none", max: "max" } : undefined
+			: m.provider === "ai-enabler" && m.reasoning
+				? { supportsReasoningEffort }
+				: undefined
+	const thinkingLevelMap: PiModelConfig["thinkingLevelMap"] = supportsReasoningEffort
+		? { off: "none", max: "max" }
+		: undefined
 	return {
 		id: m.slug,
 		name: m.display_name.trim().length > 0 ? m.display_name : m.slug,
