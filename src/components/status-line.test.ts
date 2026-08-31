@@ -858,12 +858,13 @@ describe("status line pinning", () => {
 		return new StatusLine(createMockContext(opts), theme, createMockStatusLineData())
 	}
 
-	it("shows Auto with its effective model after routing", () => {
+	it("keeps Auto as the displayed model after routing", () => {
 		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
 
 		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
 
-		expect(visible).toContain("auto (kimi-k2.6) → ctrl+p")
+		expect(visible).toContain("auto → ctrl+p")
+		expect(visible).not.toContain("kimi-k2.6")
 	})
 
 	it("shows only Auto before routing resolves", () => {

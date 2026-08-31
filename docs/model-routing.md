@@ -43,13 +43,13 @@ For example, suppose the router ranks models A, B, and C. If A is outside your `
 
 Skipping an ineligible candidate from the ranked response is part of the routing decision, not a fallback after inference.
 
-The interface continues to show Auto as your selected model. Before routing, the footer shows `auto`. After a model is selected, it shows both names, for example:
+The interface continues to show Auto as your selected model before and after routing:
 
 ```text
-auto (kimi-k2.7)
+auto
 ```
 
-Kimchi also displays a notification when the model is selected. From that point onward, the concrete model's capabilities and limits apply, including vision support, context window, reasoning support, and provider availability.
+Kimchi displays an “Auto is ready” notification when routing finishes, without revealing the selected model. From that point onward, the concrete model's capabilities and limits apply, including vision support, context window, reasoning support, and provider availability.
 
 Auto is a virtual model, but its reasoning-level control remains available as a session preference. After routing, Kimchi applies that preference when the selected model supports configurable reasoning and ignores it when the model does not.
 

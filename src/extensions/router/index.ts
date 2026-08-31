@@ -85,7 +85,7 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 			const state = getAutoRoutingState(ctx.sessionManager.getSessionId())
 			if (state.status !== "resolved" || state.model.input.includes("image")) return
 			ctx.ui.notify(
-				`Auto resolved to ${state.model.provider}/${state.model.id}, which does not support images. Select a vision model with /model, or use /strip-images for existing images.`,
+				"Auto cannot process images in this session. Select a vision model with /model, or use /strip-images for existing images.",
 				"warning",
 			)
 			return { action: "handled" }
@@ -132,7 +132,7 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 				const state = { status: "resolved", model: resolution.model } satisfies AutoRoutingState
 				setAutoRoutingState(sessionId, state)
 				pi.appendEntry(AUTO_RESOLUTION_ENTRY, resolvedEntry(resolution.model))
-				ctx.ui.notify(`Auto selected ${resolution.model.provider}/${resolution.model.id} for this session`, "info")
+				ctx.ui.notify("Auto is ready for this session", "info")
 				return state
 			})
 		})

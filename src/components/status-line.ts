@@ -15,8 +15,6 @@ import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-lin
 import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
-import { isAutoModel } from "../extensions/router/constants.js"
-import { getEffectiveModel } from "../extensions/router/state.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
@@ -429,12 +427,7 @@ function fitWithBudgetStep(segments: Segment[], width: number, theme: Theme): Se
 function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
 	const multiModel = getMultiModelEnabled(ctx.sessionManager)
 	const selectedModelId = ctx.model?.id ?? "n/a"
-	const effectiveModel = getEffectiveModel(ctx)
-	const displayedModelId =
-		isAutoModel(ctx.model) && effectiveModel && !isAutoModel(effectiveModel)
-			? `${selectedModelId} (${effectiveModel.id})`
-			: selectedModelId
-	const modelId = multiModel ? selectedModelId : displayedModelId
+	const modelId = selectedModelId
 	const label = multiModel ? `multi-model (${modelId})` : modelId
 	const text = `${accentText(theme, label)} ${dimText(theme, "→ ctrl+p")}`
 	return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId } }

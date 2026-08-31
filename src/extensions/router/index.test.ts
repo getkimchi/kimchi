@@ -174,7 +174,7 @@ describe("Auto model extension", () => {
 		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "resolved", model: target })
 	})
 
-	it("routes once, records the concrete model, and reuses it for later prompts", async () => {
+	it("routes once, records the concrete model, and keeps its identity out of the notification", async () => {
 		const { getHandler, appendEntry, ctx, target } = harness()
 		vi.stubGlobal(
 			"fetch",
@@ -200,6 +200,8 @@ describe("Auto model extension", () => {
 			provider: "kimchi-dev",
 			modelId: target.id,
 		})
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Auto is ready for this session", "info")
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining(target.id), "info")
 		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "resolved", model: target })
 	})
 
@@ -347,5 +349,6 @@ describe("Auto model extension", () => {
 		expect(result).toEqual({ action: "handled" })
 		expect(fetch).toHaveBeenCalledOnce()
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/strip-images"), "warning")
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining(target.id), "warning")
 	})
 })
