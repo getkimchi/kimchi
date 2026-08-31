@@ -74,27 +74,37 @@ export async function handleRemoteCompletion(
 	)
 
 	// No selection (escape/dismiss) → treat as Done
-	if (!choice || choice === DONE) {
+	if (!choice) {
 		injectRemoteResult(pi, result, promptPrefix, opts)
 		return
 	}
 
-	if (choice === SYNC) {
-		await syncRemoteChanges(ctx, opts?.remoteSession)
-		injectRemoteResult(pi, result, promptPrefix, opts, {
-			actionSuffix:
-				"\n\n---\n\nThe user synced the remote changes to their local working tree. Review the synced files if needed.",
-		})
-		return
+	switch (choice) {
+		case DONE: {
+			injectRemoteResult(pi, result, promptPrefix, opts)
+			return
+		}
+		case SYNC: {
+			await syncRemoteChanges(ctx, opts?.remoteSession)
+			injectRemoteResult(pi, result, promptPrefix, opts, {
+				actionSuffix:
+					"\n\n---\n\nThe user synced the remote changes to their local working tree. Review the synced files if needed.",
+			})
+			return
+		}
+		case CUSTOM: {
+			const actionText = await promptForCustomAction(ctx)
+			if (!actionText) return // user cancelled input
+			injectRemoteResult(pi, result, promptPrefix, opts, {
+				actionSuffix: `\n\n---\n\nThe user wants you to: ${actionText}`,
+			})
+			return
+		}
+		case REVIEW: {
+			injectRemoteResult(pi, result, promptPrefix, opts)
+			return
+		}
 	}
-
-	// REVIEW or CUSTOM — inject result and trigger a local turn
-	const actionText = choice === CUSTOM ? await promptForCustomAction(ctx) : undefined
-	if (choice === CUSTOM && !actionText) return // user cancelled input
-
-	injectRemoteResult(pi, result, promptPrefix, opts, {
-		actionSuffix: actionText ? `\n\n---\n\nThe user wants you to: ${actionText}` : undefined,
-	})
 }
 
 /**
