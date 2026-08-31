@@ -448,6 +448,8 @@ export class AgentManager {
 			},
 		})
 
+		record.remoteSession = result.remoteSession
+
 		return {
 			responseText: result.responseText,
 			session: remoteSession as unknown as AgentSession,

@@ -9,21 +9,38 @@
  * - "Done" — no further action
  */
 
-import { basename } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
-import { listWorkspaces } from "../../sandbox/cloud/workspaces.js"
 import { withWorkingHidden } from "../ferment/prompt-ui.js"
 import { withBlocked } from "../herdr-events.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { SANDBOX_USER } from "../teleport/provisioning/constants.js"
+import { DIFF_RSYNC_EXCLUDES } from "../teleport/provisioning/sync-local-changes.js"
 import { runRsync } from "../teleport/provisioning/rsync-runner.js"
+import { basename } from "node:path"
 
 const REVIEW = "Review the result and continue locally"
 const SYNC = "Sync remote changes"
 const CUSTOM = "Type your own action"
 const DONE = "Done"
+
+/** Remote session metadata passed from _runRemote for connection reuse in sync. */
+export interface RemoteSessionMeta {
+	workspaceId: string
+	sessionName: string
+	wsUrl: string
+	host: string
+	cwd: string
+}
+
+/** Options for handleRemoteCompletion. */
+export interface HandleRemoteCompletionOpts {
+	transcriptPath?: string
+	agentId?: string
+	/** Remote session metadata — when present, sync reuses the connection directly. */
+	remoteSession?: RemoteSessionMeta
+}
 
 /**
  * Shows a post-completion dropdown after the remote cloud agent finishes.
@@ -43,7 +60,7 @@ export async function handleRemoteCompletion(
 	ctx: ExtensionContext,
 	result: string,
 	promptPrefix: string,
-	opts?: { transcriptPath?: string; agentId?: string },
+	opts?: HandleRemoteCompletionOpts,
 ): Promise<void> {
 	if (!ctx.hasUI) {
 		injectRemoteResult(pi, result, promptPrefix, opts)
@@ -63,7 +80,7 @@ export async function handleRemoteCompletion(
 	}
 
 	if (choice === SYNC) {
-		await syncRemoteChanges(ctx)
+		await syncRemoteChanges(ctx, opts?.remoteSession)
 		injectRemoteResult(pi, result, promptPrefix, opts, {
 			actionSuffix:
 				"\n\n---\n\nThe user synced the remote changes to their local working tree. Review the synced files if needed.",
@@ -89,7 +106,7 @@ function injectRemoteResult(
 	pi: ExtensionAPI,
 	result: string,
 	promptPrefix: string,
-	opts?: { transcriptPath?: string; agentId?: string },
+	opts?: HandleRemoteCompletionOpts,
 	extra?: { actionSuffix?: string },
 ): void {
 	const transcriptInfo = opts?.transcriptPath
@@ -114,37 +131,45 @@ function injectRemoteResult(
 
 /**
  * Syncs changes from the remote sandbox back to the local working directory.
- * Re-authenticates with the same workspace the remote agent used (matched by
- * repo basename, same convention as agent-manager._runRemote).
+ *
+ * Reuses the connection metadata (workspaceId, host, cwd) from the original
+ * remote run — no workspace listing, no re-authentication, no basename
+ * guessing. The remoteSession metadata is always set by _runRemote in the
+ * normal flow.
+ *
+ * The downward rsync always excludes `.git/`, secrets, and harness state
+ * (`DIFF_RSYNC_EXCLUDES`) so the local repository is never corrupted or
+ * polluted with internal files.
  */
-async function syncRemoteChanges(ctx: ExtensionContext): Promise<void> {
+async function syncRemoteChanges(ctx: ExtensionContext, remoteSession?: RemoteSessionMeta): Promise<void> {
 	try {
+		if (!remoteSession) {
+			ctx.ui.notify(
+				"Cannot sync: remote session metadata is missing. The remote run may have failed before recording connection details.",
+				"error",
+			)
+			return
+		}
+
 		const apiKey = loadConfig().apiKey
 		if (!apiKey) {
 			ctx.ui.notify("No API key configured. Run `kimchi login`.", "error")
 			return
 		}
 
-		const dirName = basename(ctx.cwd) || "kimchi"
-		const workspaces = await listWorkspaces(apiKey, {
-			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
-		})
-		const workspace = workspaces.find((w) => w.name.toLowerCase() === dirName.toLowerCase())
-		if (!workspace) {
-			ctx.ui.notify(`No workspace found matching "${dirName}". Cannot sync.`, "error")
-			return
-		}
+		// The session was deleted after the run, but the workspace is still
+		// alive — re-authenticate to get a fresh token for the same workspace.
+		const creds = await authenticateWorkspace(
+			remoteSession.workspaceId,
+			apiKey,
+			basename(ctx.cwd) || "kimchi",
+			{ endpoint: process.env.KIMCHI_REMOTE_ENDPOINT },
+		)
 
-		const creds = await authenticateWorkspace(workspace.id, apiKey, dirName, {
-			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
-		})
-
-		// Determine the remote path — same as agent-manager: /home/sandbox/<repo-basename>.
 		// Trailing slash on the source ("down" direction) is critical: without it,
 		// rsync creates a nested directory (ctx.cwd/kimchi/) instead of syncing
 		// the contents into ctx.cwd directly.
-		const repoDir = basename(ctx.cwd) || "kimchi"
-		const remotePath = `/home/sandbox/${repoDir}/`
+		const remotePath = remoteSession.cwd.endsWith("/") ? remoteSession.cwd : `${remoteSession.cwd}/`
 
 		ctx.ui.notify("Syncing changes from remote sandbox…", "info")
 
@@ -156,6 +181,8 @@ async function syncRemoteChanges(ctx: ExtensionContext): Promise<void> {
 			remoteHost: creds.host,
 			remoteUser: SANDBOX_USER,
 			authToken: creds.connectToken,
+			excludeFilters: [...DIFF_RSYNC_EXCLUDES],
+			deleteExtraneous: false,
 			signal: undefined,
 			onPhase: () => {},
 		})

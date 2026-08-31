@@ -25,7 +25,8 @@ export interface RemoteRunOptions {
 	endpoint?: string
 	/** Abort signal — aborts the remote session. */
 	signal?: AbortSignal
-	/** Working directory for the remote session (sandbox path). Defaults to "/home/sandbox". */
+	/** Working directory for the remote session (sandbox path). When omitted,
+	 *  the worker assigns a unique /home/sandbox/<sessionName> directory. */
 	cwd?: string
 	/** Event callbacks — same shape as RunOptions callbacks from agent-runner.ts. */
 	callbacks?: AcpSessionCallbacks
@@ -42,7 +43,7 @@ export interface RemoteRunOptions {
 	 */
 	onReady?: (
 		acpClient: AcpSessionClient,
-		meta: { workspaceId: string; sessionName: string; wsUrl: string; host: string },
+		meta: { workspaceId: string; sessionName: string; wsUrl: string; host: string; cwd: string },
 	) => void
 }
 
@@ -53,12 +54,14 @@ export interface RemoteRunResult {
 	stopReason: string
 	/** Token usage for the turn (if reported by the agent). */
 	usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
-	/** Remote session metadata for reconnection/steer/resume. */
+	/** Remote session metadata for reconnection/steer/resume/sync. */
 	remoteSession: {
 		workspaceId: string
 		sessionName: string
 		wsUrl: string
 		host: string
+		/** The unique remote working directory (e.g. /home/sandbox/kimchi-acp-a1b2c3d4). */
+		cwd: string
 	}
 }
 
@@ -82,12 +85,20 @@ export async function runRemoteAgent(
 ): Promise<RemoteRunResult> {
 	const { apiKey, endpoint, signal, callbacks } = options
 	const sessionName = `acp-${randomUUID().slice(0, 8)}`
-	// When git details are provided, the worker clones the repo to
-	// /home/sandbox/<targetDirectory>/ — point the session cwd there
-	// so the agent starts inside the repo, not in an empty dir.
-	const cwd = options.gitDetails
-		? `/home/sandbox/${options.gitDetails.targetDirectory}`
-		: (options.cwd ?? "/home/sandbox")
+
+	// The worker assigns a unique working directory when cwd is omitted:
+	// /home/sandbox/<sessionName>. We mirror that same convention here so
+	// the AcpSessionClient, sync, and post-completion handler all agree on
+	// the path. We don't send cwd in the session request — letting the
+	// worker own the path ensures consistency with its clone bootstrapper,
+	// bridge cwd, and session config.
+	//
+	// We also strip targetDirectory from gitDetails: with the worker's
+	// commit 57d4c6c, DirName is wired from TargetDirectory into the clone
+	// bootstrapper, so sending it would nest (cwd/targetDirectory). With it
+	// empty, the clone goes directly into the session's cwd — fresh clone
+	// every time, no stale files from prior runs.
+	const cwd = `/home/sandbox/${sessionName}`
 
 	// 1. Authenticate
 	const creds: WorkspaceCredentials = await authenticateWorkspace(
@@ -130,14 +141,20 @@ export async function runRemoteAgent(
 	let stopReason = "end_turn"
 
 	try {
-		const sessionReq: { agentMode: "ACP"; yolo: true; cwd: string; details?: { git: RemoteRunOptions["gitDetails"] } } =
-			{
-				agentMode: "ACP",
-				yolo: true,
-				cwd,
-			}
+		const sessionReq: { agentMode: "ACP"; yolo: true; details?: { git: RemoteRunOptions["gitDetails"] } } = {
+			agentMode: "ACP",
+			yolo: true,
+		}
 		if (options.gitDetails) {
-			sessionReq.details = { git: options.gitDetails }
+			sessionReq.details = {
+				git: {
+					...options.gitDetails,
+					// Omit targetDirectory so the worker clones directly into the
+					// session's cwd (assigned by the worker as
+					// /home/sandbox/<sessionName>). No nesting, fresh clone.
+					targetDirectory: "",
+				},
+			}
 		}
 		const session = await createSession(client, sessionName, sessionReq, {
 			signal,
@@ -168,6 +185,7 @@ export async function runRemoteAgent(
 				sessionName,
 				wsUrl: creds.wsUrl,
 				host: creds.host,
+				cwd,
 			})
 		}
 
@@ -184,6 +202,7 @@ export async function runRemoteAgent(
 				sessionName,
 				wsUrl: creds.wsUrl,
 				host: creds.host,
+				cwd,
 			},
 		}
 	} finally {

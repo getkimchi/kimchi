@@ -1,17 +1,21 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { handleRemoteCompletion } from "./post-completion.js"
+import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
+import { runRsync } from "../teleport/provisioning/rsync-runner.js"
+import { handleRemoteCompletion, type RemoteSessionMeta } from "./post-completion.js"
 
 // Mock all external dependencies — we only care about the steer message
 // that gets injected into the local session via pi.sendMessage.
 vi.mock("../../config.js", () => ({ loadConfig: vi.fn(() => ({ apiKey: "fake-key" })) }))
 vi.mock("../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: vi.fn() }))
-vi.mock("../../sandbox/cloud/workspaces.js", () => ({ listWorkspaces: vi.fn(() => []) }))
 vi.mock("../ferment/prompt-ui.js", () => ({ withWorkingHidden: vi.fn((_ui, fn) => fn()) }))
 vi.mock("../herdr-events.js", () => ({ withBlocked: vi.fn((_events, _label, fn) => fn()) }))
 vi.mock("../steer-marker.js", () => ({ markHarnessSteer: (s: string) => s }))
 vi.mock("../teleport/provisioning/constants.js", () => ({ SANDBOX_USER: "sandbox" }))
 vi.mock("../teleport/provisioning/rsync-runner.js", () => ({ runRsync: vi.fn() }))
+vi.mock("../teleport/provisioning/sync-local-changes.js", () => ({
+	DIFF_RSYNC_EXCLUDES: [".git/", ".env", ".env.*", ".envrc", ".kimchi/"],
+}))
 
 function makeCtx(hasUI = true): ExtensionContext {
 	return {
@@ -168,5 +172,97 @@ describe("handleRemoteCompletion", () => {
 		})
 
 		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	describe("syncRemoteChanges", () => {
+		const remoteSession: RemoteSessionMeta = {
+			workspaceId: "ws-remote-1",
+			sessionName: "acp-a1b2c3d4",
+			wsUrl: "wss://worker.example.com",
+			host: "worker.example.com",
+			cwd: "/home/sandbox/kimchi-acp-a1b2c3d4",
+		}
+
+		beforeEach(() => {
+			vi.mocked(authenticateWorkspace).mockResolvedValue({
+				connectToken: "fresh-token",
+				expiresAt: "",
+				wsUrl: "wss://worker.example.com",
+				host: "worker.example.com",
+			})
+			vi.mocked(runRsync).mockResolvedValue({
+				fileCount: 5,
+				totalBytes: 12_345,
+				durationMs: 1500,
+			})
+		})
+
+		it("uses remoteSession metadata directly — authenticates with known workspaceId", async () => {
+			const pi = makePi()
+			const ctx = makeCtx()
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync remote changes")
+
+			await handleRemoteCompletion(pi, ctx, "remote result", "plan", { remoteSession })
+
+			// Should authenticate with the remoteSession's workspaceId
+			expect(authenticateWorkspace).toHaveBeenCalledWith(
+				"ws-remote-1",
+				"fake-key",
+				"kimchi",
+				expect.objectContaining({ endpoint: undefined }),
+			)
+		})
+
+		it("rsyncs from the unique remoteSession.cwd with .git and secrets excluded", async () => {
+			const pi = makePi()
+			const ctx = makeCtx()
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync remote changes")
+
+			await handleRemoteCompletion(pi, ctx, "remote result", "plan", { remoteSession })
+
+			expect(runRsync).toHaveBeenCalledWith(
+				expect.objectContaining({
+					localPath: "/repo/kimchi",
+					remotePath: "/home/sandbox/kimchi-acp-a1b2c3d4/",
+					direction: "down",
+					remoteHost: "worker.example.com",
+					deleteExtraneous: false,
+					excludeFilters: [".git/", ".env", ".env.*", ".envrc", ".kimchi/"],
+				}),
+			)
+		})
+
+		it("notifies error and does not sync when remoteSession is absent", async () => {
+			const pi = makePi()
+			const ctx = makeCtx()
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync remote changes")
+
+			await handleRemoteCompletion(pi, ctx, "remote result", "plan")
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				expect.stringContaining("remote session metadata is missing"),
+				"error",
+			)
+			expect(authenticateWorkspace).not.toHaveBeenCalled()
+			expect(runRsync).not.toHaveBeenCalled()
+			// Result is still injected even after sync failure
+			expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		})
+
+		it("notifies error when sync fails", async () => {
+			const pi = makePi()
+			const ctx = makeCtx()
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync remote changes")
+			vi.mocked(runRsync).mockRejectedValue(new Error("rsync connection refused"))
+
+			await handleRemoteCompletion(pi, ctx, "remote result", "plan", { remoteSession })
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				expect.stringContaining("rsync connection refused"),
+				"error",
+			)
+			// Result is still injected even after sync failure
+			expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		})
 	})
 })

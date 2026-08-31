@@ -206,6 +206,14 @@ export interface AgentRecord {
 	isBackground?: boolean
 	/** When true, this agent runs on a remote sandbox via ACP instead of locally. */
 	remote?: boolean
+	/** Remote session metadata (workspace, host, cwd) — set by _runRemote, used by post-completion sync. */
+	remoteSession?: {
+		workspaceId: string
+		sessionName: string
+		wsUrl: string
+		host: string
+		cwd: string
+	}
 	/** Resolver to call when this foreground agent is detached to background via Ctrl+B. */
 	detachResolver?: () => void
 	/** Removes the parent abort signal listener so the agent survives after detach. */

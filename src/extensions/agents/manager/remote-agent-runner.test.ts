@@ -73,7 +73,6 @@ function makeOptions(overrides: Partial<RemoteRunOptions> = {}): RemoteRunOption
 	return {
 		apiKey: "test-api-key",
 		signal: undefined,
-		cwd: "/home/sandbox",
 		callbacks: {
 			onTextDelta: vi.fn(),
 			onToolActivity: vi.fn(),
@@ -157,32 +156,37 @@ describe("runRemoteAgent", () => {
 			}),
 		)
 
-		// 3. Session creation
+		// 3. Session creation — cwd is NOT sent; the worker assigns /home/sandbox/<sessionName>
+		const sessionNameMatch = expect.stringMatching(/^acp-[0-9a-f]{8}$/)
 		expect(createSession).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.stringMatching(/^acp-[0-9a-f]{8}$/),
-			expect.objectContaining({ agentMode: "ACP", yolo: true, cwd: "/home/sandbox" }),
+			sessionNameMatch,
+			expect.objectContaining({
+				agentMode: "ACP",
+				yolo: true,
+			}),
 			expect.objectContaining({ timeoutMs: 5 * 60_000 }),
 		)
 
-		// 4. ACP client
+		// 4. ACP client — cwd matches the unique session directory
 		expect(AcpSessionClient).toHaveBeenCalledWith(
 			expect.objectContaining({
-				sessionName: expect.stringMatching(/^acp-[0-9a-f]{8}$/),
+				sessionName: sessionNameMatch,
 				credentials: expect.objectContaining({ wsUrl: "wss://worker.example.com" }),
-				cwd: "/home/sandbox",
+				cwd: expect.stringMatching(/^\/home\/sandbox\/acp-[0-9a-f]{8}$/),
 			}),
 		)
 		expect(mockInitialize).toHaveBeenCalledOnce()
 		expect(mockPrompt).toHaveBeenCalledWith(PROMPT)
 
-		// 5. Result
+		// 5. Result — remoteSession includes the unique cwd
 		expect(result.stopReason).toBe("end_turn")
 		expect(result.usage).toEqual({ input: 100, output: 50, cacheRead: 0, cacheWrite: 0 })
 		expect(result.remoteSession.workspaceId).toBe(WORKSPACE_ID)
 		expect(result.remoteSession.wsUrl).toBe("wss://worker.example.com")
 		expect(result.remoteSession.host).toBe("worker.example.com")
 		expect(result.remoteSession.sessionName).toMatch(/^acp-[0-9a-f]{8}$/)
+		expect(result.remoteSession.cwd).toMatch(/^\/home\/sandbox\/acp-[0-9a-f]{8}$/)
 	})
 
 	it("forwards callbacks to AcpSessionClient with onTextDelta wrapping", async () => {
@@ -349,7 +353,7 @@ describe("runRemoteAgent", () => {
 		expect(callbacks.onRawNotification).toHaveBeenCalledWith(rawNotif)
 	})
 
-	it("forwards gitDetails to createSession as details.git and sets cwd to the repo dir", async () => {
+	it("forwards gitDetails to createSession with targetDirectory cleared so clone goes into session cwd", async () => {
 		const gitDetails = {
 			repo: "https://github.com/getkimchi/kimchi.git",
 			branch: "main",
@@ -364,15 +368,21 @@ describe("runRemoteAgent", () => {
 			expect.objectContaining({
 				agentMode: "ACP",
 				yolo: true,
-				cwd: "/home/sandbox/kimchi",
-				details: { git: gitDetails },
+				details: {
+					git: {
+						repo: gitDetails.repo,
+						branch: gitDetails.branch,
+						targetDirectory: "",
+						noHistory: true,
+					},
+				},
 			}),
 			expect.anything(),
 		)
 
-		// AcpSessionClient should also receive the repo dir as cwd
+		// AcpSessionClient receives the unique session cwd
 		expect(capturedOptions).toBeDefined()
-		expect(capturedOptions?.cwd).toBe("/home/sandbox/kimchi")
+		expect(capturedOptions?.cwd).toMatch(/^\/home\/sandbox\/acp-[0-9a-f]{8}$/)
 	})
 
 	it("omits details.git when no gitDetails are provided", async () => {
@@ -382,7 +392,7 @@ describe("runRemoteAgent", () => {
 		expect(sessionReq.details).toBeUndefined()
 	})
 
-	it("syncs local changes after createSession when gitDetails + localPath are provided", async () => {
+	it("syncs local changes after createSession with unique remotePath when gitDetails + localPath are provided", async () => {
 		const gitDetails = {
 			repo: "https://github.com/getkimchi/kimchi.git",
 			branch: "main",
@@ -394,7 +404,7 @@ describe("runRemoteAgent", () => {
 		expect(syncLocalChangesAfterClone).toHaveBeenCalledWith(
 			expect.objectContaining({
 				localPath: "/work/kimchi",
-				remotePath: "/home/sandbox/kimchi",
+				remotePath: expect.stringMatching(/^\/home\/sandbox\/acp-[0-9a-f]{8}$/),
 				remoteHost: "worker.example.com",
 				freshClone: true,
 			}),
@@ -452,6 +462,7 @@ describe("runRemoteAgent", () => {
 				sessionName: expect.stringMatching(/^acp-[0-9a-f]{8}$/),
 				wsUrl: "wss://worker.example.com",
 				host: "worker.example.com",
+				cwd: expect.stringMatching(/^\/home\/sandbox\/acp-[0-9a-f]{8}$/),
 			})
 		})
 

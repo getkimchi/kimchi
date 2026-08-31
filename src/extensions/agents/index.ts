@@ -987,6 +987,7 @@ export default function (pi: ExtensionAPI) {
 					void handleRemoteCompletion(pi, currentCtx, record.result ?? "", "plan", {
 						transcriptPath: record.outputFile,
 						agentId: record.id,
+						remoteSession: record.remoteSession,
 					})
 				}
 				agentActivity.delete(record.id)
