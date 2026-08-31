@@ -179,7 +179,8 @@ class DeepSeekAgent(KimchiGatewayMixin, HarborCompatMixin, BaseInstalledAgent):
                 # SSE deltas.  dsh's check `!== void 0` passes for null, overwriting
                 # the tool name to null -> empty string -> "unknown tool".  Fix:
                 # change the guard to `!= null` which skips both undefined and null.
-                "translate_js=\"$(npm root -g)/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-llm-deepseek/lib/index.js\" && "
+                "translate_js=\"$(npm root -g)/@deepseek-ai/dsh/node_modules/"
+                "@deepseek-ai/dsh-llm-deepseek/lib/index.js\" && "
                 "if [ -f \"$translate_js\" ]; then "
                 "  sed -i 's/call.function?.name !== void 0/call.function?.name != null/g' \"$translate_js\"; "
                 "fi && "
@@ -464,10 +465,10 @@ class DeepSeekAgent(KimchiGatewayMixin, HarborCompatMixin, BaseInstalledAgent):
 
 __all__ = [
     "DeepSeekAgent",
-    "DeepSeekStandardAgent",
-    "DeepSeekPtcAgent",
-    "DeepSeekMinimalAgent",
     "DeepSeekCreatorAgent",
+    "DeepSeekMinimalAgent",
+    "DeepSeekPtcAgent",
+    "DeepSeekStandardAgent",
 ]
 
 
