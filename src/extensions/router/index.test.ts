@@ -377,7 +377,9 @@ describe("Auto model extension", () => {
 
 		expect(result).toEqual({ action: "handled" })
 		expect(fetch).toHaveBeenCalledOnce()
-		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/strip-images"), "warning")
-		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining(target.id), "warning")
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Auto cannot process images in this session. Select a vision model with /model, or use /strip-images for existing images.",
+			"warning",
+		)
 	})
 })

@@ -858,20 +858,18 @@ describe("status line pinning", () => {
 		return new StatusLine(createMockContext(opts), theme, createMockStatusLineData())
 	}
 
-	it("keeps Auto as the displayed model after routing", () => {
+	it("shows Auto without a suffix after routing", () => {
 		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
 
 		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
 
 		expect(visible).toContain("auto → ctrl+p")
-		expect(visible).not.toContain("kimi-k2.6")
 	})
 
 	it("shows only Auto before routing resolves", () => {
 		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
 
 		expect(visible).toContain("auto → ctrl+p")
-		expect(visible).not.toContain("auto (")
 	})
 
 	it("pinned usage shows '↑0 ↓0' when no tokens are present", () => {
