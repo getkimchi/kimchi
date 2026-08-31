@@ -63,7 +63,7 @@ describe("handleRemoteCompletion", () => {
 		expect(content).toContain("remote result text")
 	})
 
-	it("injects transcript path even when user picks Done", async () => {
+	it("does not inject result when user picks Done", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
 		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Done")
@@ -73,10 +73,7 @@ describe("handleRemoteCompletion", () => {
 			agentId: "agent-done",
 		})
 
-		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
-		const msg = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][0]
-		const content = typeof msg.content === "string" ? msg.content : String(msg.content)
-		expect(content).toContain("/tmp/transcripts/agent-done.jsonl")
+		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("injects transcript path even when user picks Sync", async () => {
@@ -96,7 +93,7 @@ describe("handleRemoteCompletion", () => {
 		expect(content).toContain("synced the remote changes")
 	})
 
-	it("injects transcript path even when user dismisses (no selection)", async () => {
+	it("does not inject result when user dismisses (no selection)", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
 		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
@@ -106,10 +103,7 @@ describe("handleRemoteCompletion", () => {
 			agentId: "agent-dismiss",
 		})
 
-		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
-		const msg = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][0]
-		const content = typeof msg.content === "string" ? msg.content : String(msg.content)
-		expect(content).toContain("/tmp/transcripts/agent-dismiss.jsonl")
+		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("injects result even when transcriptPath is undefined", async () => {

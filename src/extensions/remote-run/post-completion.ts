@@ -74,14 +74,10 @@ export async function handleRemoteCompletion(
 	)
 
 	// No selection (escape/dismiss) → treat as Done
-	if (!choice) {
-		injectRemoteResult(pi, result, promptPrefix, opts)
-		return
-	}
+	if (!choice) return
 
 	switch (choice) {
 		case DONE: {
-			injectRemoteResult(pi, result, promptPrefix, opts)
 			return
 		}
 		case SYNC: {
