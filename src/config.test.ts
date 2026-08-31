@@ -6,6 +6,7 @@ import {
 	buildSkillPathOptions,
 	checkConfigFilePermissions,
 	clearApiKey,
+	ensureDefaultThinkingLevel,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
 	loadConfig,
@@ -905,6 +906,35 @@ describe("ensureHideThinkingBlockDefault", () => {
 		const visible = { hideThinkingBlock: false }
 		expect(ensureHideThinkingBlockDefault(visible)).toBe(false)
 		expect(visible.hideThinkingBlock).toBe(false)
+	})
+})
+
+describe("ensureDefaultThinkingLevel", () => {
+	it("seeds high when the key is absent", () => {
+		const settings: Record<string, unknown> = { statusLine: { pinned: [] } }
+		expect(ensureDefaultThinkingLevel(settings)).toBe(true)
+		expect(settings.defaultThinkingLevel).toBe("high")
+		expect(settings.kimchiHighThinkingDefaultApplied).toBe(true)
+	})
+
+	it("migrates the legacy medium default to high", () => {
+		const settings: Record<string, unknown> = { defaultThinkingLevel: "medium" }
+		expect(ensureDefaultThinkingLevel(settings)).toBe(true)
+		expect(settings.defaultThinkingLevel).toBe("high")
+		expect(settings.kimchiHighThinkingDefaultApplied).toBe(true)
+	})
+
+	it("leaves an explicit non-medium thinking level alone", () => {
+		const settings: Record<string, unknown> = { defaultThinkingLevel: "low" }
+		expect(ensureDefaultThinkingLevel(settings)).toBe(true)
+		expect(settings.defaultThinkingLevel).toBe("low")
+		expect(settings.kimchiHighThinkingDefaultApplied).toBe(true)
+	})
+
+	it("preserves a later explicit medium choice", () => {
+		const settings = { defaultThinkingLevel: "medium", kimchiHighThinkingDefaultApplied: true }
+		expect(ensureDefaultThinkingLevel(settings)).toBe(false)
+		expect(settings.defaultThinkingLevel).toBe("medium")
 	})
 })
 

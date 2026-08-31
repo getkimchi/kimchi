@@ -1,5 +1,11 @@
-import type { ExtensionAPI, ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	initTheme,
+	type ModelRegistry,
+	ThinkingSelectorComponent,
+} from "@earendil-works/pi-coding-agent"
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import createModelGuardExtension, {
 	__resetImagesDetectedForTest,
@@ -44,6 +50,10 @@ interface Harness {
 		opts?: { currentModel?: ModelEntry; imagesPresent?: boolean },
 	) => Promise<{ content: Array<{ type: string; text: string }>; details: unknown }>
 }
+
+beforeAll(() => {
+	initTheme("default")
+})
 
 const MODELS: ModelEntry[] = [
 	{ id: "kimi-k2.6", provider: "kimchi-dev", name: "Kimi K2.6", input: ["text", "image"], contextWindow: 200_000 },
@@ -122,6 +132,8 @@ function createHarnessWithTrigger(options: { setModelResult?: boolean } = {}) {
 		handlers.get(event)?.add(handler)
 	}
 	const setModel = vi.fn(async () => setModelResult)
+	const getThinkingLevel = vi.fn<ExtensionAPI["getThinkingLevel"]>(() => "high")
+	const setThinkingLevel = vi.fn()
 	const trigger = async (event: string, data: unknown, ctx: unknown) => {
 		const set = handlers.get(event)
 		if (set) for (const h of set) await h(data, ctx)
@@ -129,11 +141,13 @@ function createHarnessWithTrigger(options: { setModelResult?: boolean } = {}) {
 	const pi = {
 		on,
 		setModel,
+		getThinkingLevel,
+		setThinkingLevel,
 		registerTool: vi.fn(),
 		registerCommand: vi.fn(),
 		appendEntry: vi.fn(),
 	} as unknown as ExtensionAPI
-	return { pi, trigger, setModel }
+	return { pi, trigger, setModel, getThinkingLevel, setThinkingLevel }
 }
 
 /** Returns a mock ExtensionContext for triggering context events. */
@@ -931,11 +945,13 @@ describe("modelSwitchExtension", () => {
 				modelProvider: string
 				hasUI: boolean
 				mode: ExtensionContext["mode"]
+				thinkingLevel: ExtensionContext["thinkingLevel"]
 				compact: ExtensionContext["compact"]
 				ui: {
-					notify: (...args: unknown[]) => unknown
+					notify?: (...args: unknown[]) => unknown
 					select?: (...args: unknown[]) => unknown
 					input?: (...args: unknown[]) => unknown
+					custom?: (...args: unknown[]) => unknown
 				}
 			}> = {},
 		) => {
@@ -947,7 +963,7 @@ describe("modelSwitchExtension", () => {
 				getContextUsage: () => ({ tokens }),
 				sessionManager: { getSessionId: () => "test-session" },
 				hasUI,
-				ui: { notify: vi.fn(), select: vi.fn(), input: vi.fn(), ...overrides.ui },
+				ui: { notify: vi.fn(), select: vi.fn(), input: vi.fn(), custom: vi.fn(), ...overrides.ui },
 				...overrides,
 			} as ExtensionContext
 		}
@@ -1004,21 +1020,206 @@ describe("modelSwitchExtension", () => {
 			expect(setModel).not.toHaveBeenCalled()
 		})
 
-		it("allows source=cycle when tokens fit", async () => {
+		it("uses High for a new model and the current level when reselecting the active model", async () => {
+			const { pi, trigger, getThinkingLevel, setThinkingLevel } = createHarnessWithTrigger()
+			getThinkingLevel.mockReturnValue("max")
+			modelSwitchExtension(pi)
+			const custom = vi.fn().mockResolvedValue("max")
+			const model = {
+				id: "minimax-m2.7",
+				provider: "kimchi-dev",
+				input: ["text"],
+				contextWindow: 100_000,
+				reasoning: true,
+				thinkingLevelMap: { max: "max" },
+			}
+			const event = {
+				type: "model_select",
+				model,
+				previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+				source: "set",
+			}
+			const ctx = createContext({
+				tokens: 10_000,
+				hasUI: true,
+				mode: "tui",
+				thinkingLevel: "high",
+				ui: { custom },
+			})
+			await trigger("model_select", event, ctx)
+
+			expect(custom).toHaveBeenCalledOnce()
+			const factory = custom.mock.calls[0]?.[0]
+			const done = vi.fn()
+			const component = await factory(undefined, undefined, undefined, done)
+			expect(component).toBeInstanceOf(ThinkingSelectorComponent)
+			expect(component.getSelectList().getSelectedItem()?.value).toBe("high")
+			const rendered = component.render(80).join("\n")
+			expect(rendered).toContain("→ high")
+			expect(rendered).not.toMatch(/\b(?:No|Very brief|Light|Moderate|Deep|Extra-high|Maximum) reasoning\b/)
+			component.handleInput?.("\r")
+			expect(done).toHaveBeenCalledWith("high")
+			expect(setThinkingLevel).toHaveBeenCalledWith("max")
+
+			await trigger("model_select", { ...event, previousModel: model }, ctx)
+			const reselectFactory = custom.mock.calls[1]?.[0]
+			const reselected = await reselectFactory(undefined, undefined, undefined, vi.fn())
+			expect(reselected.getSelectList().getSelectedItem()?.value).toBe("max")
+		})
+
+		it("does not open the reasoning picker for a non-reasoning model", async () => {
 			const { pi, trigger } = createHarnessWithTrigger()
 			modelSwitchExtension(pi)
-			const setModel = pi.setModel as ReturnType<typeof vi.fn>
+			const custom = vi.fn()
 			await trigger(
 				"model_select",
 				{
 					type: "model_select",
-					model: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"], contextWindow: 100_000 },
+					model: {
+						id: "minimax-m2.7",
+						provider: "kimchi-dev",
+						input: ["text"],
+						contextWindow: 100_000,
+						reasoning: false,
+					},
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "set",
+				},
+				createContext({ tokens: 10_000, hasUI: true, mode: "tui", ui: { custom } }),
+			)
+
+			expect(custom).not.toHaveBeenCalled()
+		})
+
+		it("does not open the reasoning picker when effort selection is unsupported", async () => {
+			const { pi, trigger } = createHarnessWithTrigger()
+			modelSwitchExtension(pi)
+			const custom = vi.fn()
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: {
+						id: "fixed-reasoning-model",
+						provider: "kimchi-dev",
+						input: ["text", "image"],
+						contextWindow: 262_144,
+						reasoning: true,
+						compat: { supportsReasoningEffort: false },
+					},
+					previousModel: { id: "adjustable-reasoning-model", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "set",
+				},
+				createContext({ tokens: 10_000, hasUI: true, mode: "tui", ui: { custom } }),
+			)
+
+			expect(custom).not.toHaveBeenCalled()
+		})
+
+		it("does not open the reasoning picker when only one level is supported", async () => {
+			const { pi, trigger } = createHarnessWithTrigger()
+			modelSwitchExtension(pi)
+			const custom = vi.fn()
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: {
+						id: "fixed-reasoning-model",
+						provider: "kimchi-dev",
+						input: ["text"],
+						contextWindow: 100_000,
+						reasoning: true,
+						thinkingLevelMap: { minimal: null, low: null, medium: null, high: null },
+					},
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "set",
+				},
+				createContext({ tokens: 10_000, hasUI: true, mode: "tui", ui: { custom } }),
+			)
+
+			expect(custom).not.toHaveBeenCalled()
+		})
+
+		it("skips the context and vision guards when reselecting the active model", async () => {
+			const { pi, trigger, setModel } = createHarnessWithTrigger()
+			modelSwitchExtension(pi)
+			const custom = vi.fn().mockResolvedValue("high")
+			const select = vi.fn()
+			const model = {
+				id: "minimax-m2.7",
+				provider: "kimchi-dev",
+				input: ["text"],
+				contextWindow: 100_000,
+				reasoning: true,
+				thinkingLevelMap: { max: "max" },
+			}
+			// Tokens exceed the model's safe window — the overflow guard must fire
+			// for a real switch but not when the user reselects the active model.
+			await trigger(
+				"model_select",
+				{ type: "model_select", model, previousModel: model, source: "set" },
+				createContext({ tokens: 95_000, hasUI: true, mode: "tui", ui: { custom, select } }),
+			)
+
+			expect(setModel).not.toHaveBeenCalled()
+			expect(select).not.toHaveBeenCalled()
+			expect(custom).toHaveBeenCalledOnce()
+		})
+
+		it("keeps the current level when the reasoning picker is cancelled or fails", async () => {
+			const { pi, trigger, setThinkingLevel } = createHarnessWithTrigger()
+			modelSwitchExtension(pi)
+			const custom = vi.fn().mockResolvedValue(undefined)
+			const event = {
+				type: "model_select",
+				model: {
+					id: "minimax-m2.7",
+					provider: "kimchi-dev",
+					input: ["text"],
+					contextWindow: 100_000,
+					reasoning: true,
+				},
+				previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+				source: "set",
+			}
+			const ctx = createContext({ tokens: 10_000, hasUI: true, mode: "tui", ui: { custom } })
+			await trigger("model_select", event, ctx)
+
+			expect(custom).toHaveBeenCalledOnce()
+			expect(setThinkingLevel).not.toHaveBeenCalled()
+
+			const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+			custom.mockRejectedValueOnce(new Error("terminal closed"))
+			await expect(trigger("model_select", event, ctx)).resolves.toBeUndefined()
+			expect(warning).toHaveBeenCalledWith("[model-switch] reasoning picker failed:", expect.any(Error))
+			expect(setThinkingLevel).not.toHaveBeenCalled()
+			warning.mockRestore()
+		})
+
+		it("allows source=cycle when tokens fit", async () => {
+			const { pi, trigger } = createHarnessWithTrigger()
+			modelSwitchExtension(pi)
+			const setModel = pi.setModel as ReturnType<typeof vi.fn>
+			const custom = vi.fn()
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: {
+						id: "minimax-m2.7",
+						provider: "kimchi-dev",
+						input: ["text"],
+						contextWindow: 100_000,
+						reasoning: true,
+					},
 					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					source: "cycle",
 				},
-				createContext({ tokens: 10_000 }),
+				createContext({ tokens: 10_000, hasUI: true, mode: "tui", ui: { custom } }),
 			)
 			expect(setModel).not.toHaveBeenCalled()
+			expect(custom).not.toHaveBeenCalled()
 		})
 
 		it("skips when source is restore", async () => {

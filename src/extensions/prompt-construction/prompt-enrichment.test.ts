@@ -1036,6 +1036,26 @@ describe("continuation nudge turn_end handler", () => {
 		expect(sendMessageCalls.length).toBe(0)
 	})
 
+	it("still nudges when the user reselects the active model", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Previous model called a tool during the session.
+		await fire("tool_execution_start", {})
+
+		// Reselecting the active model (reasoning picker flow) is not a switch,
+		// so the session-level latch must survive.
+		const model = { id: "kimi-k2.7", provider: "kimchi-dev" }
+		await fire("model_select", { model, previousModel: model, source: "set" })
+
+		await fire("input", { source: "user" })
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]),
+		})
+
+		// Latch preserved: the continuation nudge still fires.
+		expect(sendMessageCalls.length).toBe(1)
+	})
+
 	it("does not nudge after a model cycle when the previous model called tools", async () => {
 		const { fire, sendMessageCalls } = buildNudgeHandlers()
 

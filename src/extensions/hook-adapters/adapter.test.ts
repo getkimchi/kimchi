@@ -768,6 +768,21 @@ describe("hook adapter command execution", () => {
 		expect(mockSpawn).not.toHaveBeenCalled()
 	})
 
+	it("does not run ModelSelect hooks for a same-model reselect", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				ModelSelect: [{ hooks: [{ type: "command", command: "model-select" }] }],
+			},
+		})
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		const model = { id: "same-model", provider: "fake" }
+		await pi.handlers.model_select[0]({ type: "model_select", model, previousModel: model, source: "set" }, fakeCtx())
+
+		expect(mockSpawn).not.toHaveBeenCalled()
+	})
+
 	it("runs observer hooks for TurnStart, MessageEnd, ModelSelect, and UserBash", async () => {
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {

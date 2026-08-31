@@ -21,6 +21,22 @@ const KIMI: unknown = {
 	limits: { context_window: 262144, max_output_tokens: 262144 },
 }
 
+const KIMI_27: unknown = {
+	...(KIMI as object),
+	slug: "kimi-k2.7",
+	display_name: "Kimi K2.7",
+}
+
+const DEEPSEEK: unknown = {
+	slug: "deepseek-v4-flash",
+	display_name: "DeepSeek V4 Flash",
+	provider: "ai-enabler",
+	reasoning: true,
+	input_modalities: ["text"],
+	is_serverless: true,
+	limits: { context_window: 1_000_000, max_output_tokens: 384_000 },
+}
+
 const GLM: unknown = {
 	slug: "glm-5-fp8",
 	display_name: "GLM-5 FP8",
@@ -86,7 +102,7 @@ describe("updateModelsConfig", () => {
 				maxTokens: 262144,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				provider: "ai-enabler",
-				thinkingLevelMap: { off: "none", max: "max" },
+				compat: { supportsReasoningEffort: false },
 			},
 		])
 	})
@@ -138,22 +154,28 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev/anthropic"].headers["X-Provider-Type"]).toBe("anthropic")
 	})
 
-	it("does not set compat for non-anthropic ai-enabler models", async () => {
+	it.each([
+		["Kimi 2.7", KIMI_27],
+		["GLM", GLM],
+	])("marks fixed-effort %s models as not adjustable", async (_name, model) => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
-			json: async () => ({ models: [KIMI] }),
+			json: async () => ({ models: [model] }),
 		} as Response)
 
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
+		const generatedModel = config.providers["kimchi-dev"].models[0]
+		expect(generatedModel.reasoning).toBe(true)
+		expect(generatedModel.compat).toEqual({ supportsReasoningEffort: false })
+		expect(generatedModel).not.toHaveProperty("thinkingLevelMap")
 	})
 
-	it("maps ai-enabler thinking levels required by the upstream selector", async () => {
+	it("maps adjustable AI Enabler thinking levels required by the upstream selector", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
-			json: async () => ({ models: [KIMI] }),
+			json: async () => ({ models: [DEEPSEEK] }),
 		} as Response)
 
 		await updateModelsConfig(modelsJsonPath, "test-key")

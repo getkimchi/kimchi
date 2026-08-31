@@ -102,6 +102,18 @@ export const RETRY_DEFAULTS = {
 /** What older kimchi versions wrote into pi's settings.json on every startup. */
 const LEGACY_KIMCHI_MAX_RETRIES = 10
 
+const HIGH_THINKING_DEFAULT_APPLIED = "kimchiHighThinkingDefaultApplied"
+
+/** Apply Kimchi's high default once, including settings carrying Pi's legacy medium default. */
+export function ensureDefaultThinkingLevel(settings: Record<string, unknown>): boolean {
+	if (settings[HIGH_THINKING_DEFAULT_APPLIED] === true) return false
+	if (settings.defaultThinkingLevel === undefined || settings.defaultThinkingLevel === "medium") {
+		settings.defaultThinkingLevel = "high"
+	}
+	settings[HIGH_THINKING_DEFAULT_APPLIED] = true
+	return true
+}
+
 /**
  * Returns the `retry` block to write into pi's settings.json, or undefined if
  * the existing block should be left alone. A missing block gets the defaults.

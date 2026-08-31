@@ -20,12 +20,15 @@ import { dispatchSubcommand } from "./commands/dispatch.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
+// Restores the user-selection signal when /model chooses the already-active model.
+import "./same-model-select-patch.js"
 // Patches InteractiveMode.prototype so a broken pipe (EPIPE/ECONNRESET) from a
 // child process does not crash the CLI. Load early for the same reason as above.
 import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
+	ensureDefaultThinkingLevel,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
 	loadConfig,
@@ -407,7 +410,7 @@ try {
 			if ((err as NodeJS.ErrnoException).code === "ENOENT") {
 				writeFileSync(
 					settingsPath,
-					`${JSON.stringify({ quietStartup: true, theme: "kimchi-minimal", retry: RETRY_DEFAULTS, hideThinkingBlock: true }, null, 2)}\n`,
+					`${JSON.stringify({ quietStartup: true, theme: "kimchi-minimal", retry: RETRY_DEFAULTS, hideThinkingBlock: true, defaultThinkingLevel: "high", kimchiHighThinkingDefaultApplied: true }, null, 2)}\n`,
 				)
 			} else {
 				console.error(`Warning: could not read ${settingsPath}: ${(err as Error).message}`)
@@ -418,6 +421,7 @@ try {
 		try {
 			const existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
 			let changed = ensureHideThinkingBlockDefault(existing)
+			if (ensureDefaultThinkingLevel(existing)) changed = true
 			if (ensureQuietStartupDefault(existing)) changed = true
 			const upgraded = upgradeLegacyRetrySettings(existing.retry)
 			if (upgraded) {

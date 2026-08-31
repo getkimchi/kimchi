@@ -1,5 +1,11 @@
-import type { Api, Model } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import {
+	type Api,
+	getSupportedThinkingLevels,
+	type Model,
+	type ModelThinkingLevel,
+	modelsAreEqual,
+} from "@earendil-works/pi-ai"
+import { type ExtensionAPI, type ExtensionContext, ThinkingSelectorComponent } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { startNewInteractiveSessionWithModel } from "./interactive-model-session.js"
 import { findModelByRef, refFromModel, splitModelRef } from "./model-catalog/ref-utils.js"
@@ -29,6 +35,42 @@ export async function withSuppressedModelSelectGuard<T>(fn: () => Promise<T>): P
 
 /** Recursion guard — true while our own revert is in progress. */
 let isRevertingModel = false
+
+async function selectThinkingLevel(
+	pi: ExtensionAPI,
+	model: Model<Api>,
+	previousModel: Model<Api> | undefined,
+	ctx: ExtensionContext,
+): Promise<void> {
+	if (
+		!ctx.hasUI ||
+		ctx.mode !== "tui" ||
+		!model.reasoning ||
+		(model.compat && "supportsReasoningEffort" in model.compat && model.compat.supportsReasoningEffort === false)
+	)
+		return
+	const levels = getSupportedThinkingLevels(model)
+	if (levels.length <= 1) return
+	const preferredLevel = modelsAreEqual(previousModel, model) ? pi.getThinkingLevel() : "high"
+	const defaultLevel = levels.includes(preferredLevel) ? preferredLevel : (levels.at(-1) ?? preferredLevel)
+	let selected: ModelThinkingLevel | undefined
+	try {
+		selected = await ctx.ui.custom<ModelThinkingLevel | undefined>((_tui, _theme, _keybindings, done) => {
+			const selector = new ThinkingSelectorComponent(defaultLevel, levels, done, () => done(undefined))
+			const selectList = selector.getSelectList()
+			const render = selectList.render.bind(selectList)
+			// Pi omits descriptions at 40 columns; keep this picker label-only at every terminal width.
+			selectList.render = (width: number) => render(Math.min(width, 40))
+			return Object.assign(selector, {
+				handleInput: (data: string) => selectList.handleInput(data),
+			})
+		})
+	} catch (error) {
+		console.warn("[model-switch] reasoning picker failed:", error)
+		return
+	}
+	if (selected !== undefined) pi.setThinkingLevel(selected)
+}
 
 /** Resets module state between tests. */
 export function __resetModelSwitchStateForTest(): void {
@@ -215,6 +257,16 @@ export default function modelSwitchExtension(
 		// Nothing to revert to
 		if (!event.previousModel) return
 
+		// Reselecting the active model is not a switch: the guards below protect
+		// against switching *into* an unfit model, and the user is already on it.
+		// Offer the reasoning picker and skip the rest.
+		if (modelsAreEqual(event.previousModel, event.model)) {
+			if (event.source === "set") {
+				await selectThinkingLevel(pi, event.model, event.previousModel, ctx)
+			}
+			return
+		}
+
 		const sessionId = ctx.sessionManager.getSessionId()
 		const usage = ctx.getContextUsage?.()
 
@@ -289,6 +341,7 @@ export default function modelSwitchExtension(
 			if (selectedRef !== orchRef) {
 				setMultiModelEnabled(sessionId, false)
 			}
+			await selectThinkingLevel(pi, event.model, event.previousModel, ctx)
 		}
 	})
 }

@@ -516,6 +516,25 @@ describe("registerFermentEvents", () => {
 		expect(captureJudgeContext).toHaveBeenCalledWith(newModel, modelRegistry)
 	})
 
+	it("model_select ignores a same-model reselect", () => {
+		const captureJudgeContext = vi.fn()
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			captureJudgeContext,
+		}
+		const { handlers, pi } = createPi()
+		registerFermentEvents(pi, runtime)
+
+		const handler = handlers.get("model_select")
+		if (!handler) throw new Error("model_select handler was not registered")
+
+		const model = { id: "same-model", provider: "fake" } as unknown as Model<Api>
+		const modelRegistry = {} as ModelRegistry
+		handler({ model, previousModel: model }, createContext({ modelRegistry }))
+
+		expect(captureJudgeContext).not.toHaveBeenCalled()
+	})
+
 	it("transitions profile from planning to implementation when activate_ferment_phase succeeds", async () => {
 		// Build a Ferment with all phases in "planned" status.
 		const basePhase: Phase = {

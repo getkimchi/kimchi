@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process"
+import { modelsAreEqual } from "@earendil-works/pi-ai"
 import type {
 	AgentEndEvent,
 	BeforeAgentStartEvent,
@@ -147,6 +148,8 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 			await runObserver(definition, "MessageEnd", ctx, messagePayload(event.message))
 		})
 		pi.on("model_select", async (event, ctx) => {
+			// A same-model reselect (reasoning picker flow) is not a model change.
+			if (modelsAreEqual(event.previousModel, event.model)) return
 			await runObserver(definition, "ModelSelect", ctx, {
 				model: modelIdValue(event.model),
 				previous_model: modelIdValue(event.previousModel),
