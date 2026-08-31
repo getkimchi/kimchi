@@ -1,7 +1,7 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { writeDirectToolsConfig } from "./config.js"
 import type { McpConfig, ServerProvenance } from "./types.js"
 
@@ -172,6 +172,60 @@ describe("writeDirectToolsConfig", () => {
 			expect(srv.args).toEqual(["my-server", "--flag"])
 			expect(srv.env).toEqual({ FOO: "bar" })
 			expect(srv.directTools).toBe(true)
+		})
+	})
+})
+
+// ─── loadMcpConfig ────────────────────────────────────────────────────────────
+// IMPORT_PATHS is computed once at module-eval time from homedir(), so each test
+// that exercises imports must re-evaluate config.ts after pointing HOME at a temp
+// dir. We do this with vi.resetModules() + a dynamic import.
+describe("loadMcpConfig", () => {
+	describe("codex import", () => {
+		let originalHome: string | undefined
+		let tempHome: string
+
+		beforeEach(() => {
+			originalHome = process.env.HOME
+			tempHome = mkdtempSync(join(tmpdir(), "mcp-codex-home-"))
+			process.env.HOME = tempHome
+		})
+
+		afterEach(() => {
+			if (originalHome === undefined) delete process.env.HOME
+			else process.env.HOME = originalHome
+			rmSync(tempHome, { recursive: true, force: true })
+		})
+
+		it("merges codex MCP servers from ~/.codex/config.json when imports includes codex", async () => {
+			// 1. Write a ~/.codex/config.json containing at least one server entry.
+			mkdirSync(join(tempHome, ".codex"), { recursive: true })
+			writeFileSync(
+				join(tempHome, ".codex", "config.json"),
+				JSON.stringify({
+					mcpServers: {
+						"my-server": { command: "node", args: ["server.js"] },
+					},
+				}),
+				"utf-8",
+			)
+
+			// 2. Main config requests the codex import.
+			const mainConfigPath = join(tempHome, "mcp.json")
+			writeFileSync(mainConfigPath, JSON.stringify({ imports: ["codex"], mcpServers: {} }), "utf-8")
+
+			// 3. Re-evaluate config.ts so IMPORT_PATHS resolves against the temp HOME.
+			vi.resetModules()
+			const { loadMcpConfig } = await import("./config.js")
+			const { config, warnings } = loadMcpConfig(mainConfigPath)
+
+			// 4. Assert the codex MCP servers are merged into the result.
+			expect(warnings).toEqual([])
+			expect(config.mcpServers["my-server"]).toBeDefined()
+			expect(config.mcpServers["my-server"]).toMatchObject({
+				command: "node",
+				args: ["server.js"],
+			})
 		})
 	})
 })

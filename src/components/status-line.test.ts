@@ -61,6 +61,7 @@ function createMockTheme(): Theme {
 interface MockContextOpts {
 	percent?: number
 	modelId?: string
+	thinkingLevel?: ExtensionContext["thinkingLevel"]
 	/** Assistant messages to include in the session, for usage-segment tests. */
 	assistantMessages?: Array<{ input: number; output: number }>
 }
@@ -74,6 +75,7 @@ function createMockContext(opts?: MockContextOpts): ExtensionContext {
 	}))
 	return {
 		model: { id: modelId, name: modelId },
+		thinkingLevel: opts?.thinkingLevel,
 		cwd: "/test",
 		getContextUsage: vi.fn(() => ({ tokens: 0, percent, contextWindow: 100000 })),
 		sessionManager: {
@@ -399,6 +401,13 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 			expect(visible).toContain("/ for commands")
 			expect(visibleWidth(raw)).toBe(160)
 			expect(visible.endsWith("/ for commands")).toBe(true)
+		})
+	})
+
+	it("shows the current thinking level when pinned", () => {
+		withPinned(["thinking"], () => {
+			const { visible } = renderAt(160, { thinkingLevel: "max" })
+			expect(visible).toContain("thinking:max")
 		})
 	})
 

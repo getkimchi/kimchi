@@ -19,7 +19,7 @@ export const DEFAULT_RESEARCH_GUIDELINES = `During **research** phase:
 
 export const DEFAULT_PLAN_GUIDELINES = `During **plan** phase:
 - Design BEFORE coding: file paths, interfaces, function signatures, data flow.
-- Save the spec as a markdown file in the Documents directory. The build phase reads from there — do not redo discovery in build.
+- Final plans and specs belong at the canonical plan location \`.kimchi/plans/<slug>.md\` — one file per plan, updated in place. The Documents directory stays for research notes, review findings, and verification reports; do not put final plans or specs there.
 - List every file that will be created, modified, or deleted, with concrete paths.
 - Identify test files that need creation or update. State the testing strategy.
 - Call out non-obvious decisions and the alternatives you rejected — one line each.

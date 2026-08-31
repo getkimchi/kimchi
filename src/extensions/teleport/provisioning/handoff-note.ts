@@ -133,7 +133,7 @@ export function buildHandoffNote(input: HandoffNoteInput): string {
 		// gitCredential carries only the host — never the token itself (secret).
 		`Git identity provisioned in sandbox: ${input.gitIdentityProvisioned ? "yes" : "no"}. Git credential: ${input.gitCredential ? `provisioned for ${input.gitCredential.host}` : "not provisioned"}.`,
 		"",
-		`History is not fully replayable here: earlier turns may show tools, files, or authenticated commands from the previous machine that would fail now. Verify tool availability with \`command -v <tool>\` and install missing tools via the sandbox package manager before relying on earlier results.`,
+		`History is not fully replayable here: earlier turns may show tools, files, or authenticated commands from the previous machine that would fail now. Verify tool availability with \`command -v <tool>\` and install missing tools with \`devkit install <tool>\` before relying on earlier results.`,
 	)
 
 	return lines.join("\n")

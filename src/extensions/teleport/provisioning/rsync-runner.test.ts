@@ -210,6 +210,67 @@ describe("buildRsyncArgv", () => {
 		expect(argv).toContain("--dry-run")
 	})
 
+	it("appends -f filter rules after the list-mode args and before -e (files-from mode)", () => {
+		const argv = buildRsyncArgv({
+			localPath: "/src",
+			remotePath: "/dest",
+			remoteHost: "h",
+			remoteUser: "u",
+			proxyCommand: "node /p %h %p",
+			knownHostsFile: "/k",
+			listMode: { kind: "files-from", file: "/tmp/files-from" },
+			excludeFilters: [".git/"],
+		})
+		expect(argv).toEqual([
+			"-az",
+			"--progress",
+			"--stats",
+			"--partial",
+			"--files-from",
+			"/tmp/files-from",
+			"-f",
+			"- .git/",
+			"-e",
+			"ssh -o ProxyCommand='node /p %h %p' -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile='/k' -o BatchMode=yes -o ServerAliveInterval=15",
+			"--delete",
+			"/src",
+			"u@h:/dest",
+		])
+	})
+
+	it("appends one -f pair per excludeFilters entry in exclude-from mode too", () => {
+		const argv = buildRsyncArgv({
+			localPath: "/a",
+			remotePath: "/b",
+			remoteHost: "h",
+			remoteUser: "u",
+			proxyCommand: "node /p %h %p",
+			knownHostsFile: "/k",
+			listMode: { kind: "exclude-from", file: "/e" },
+			excludeFilters: [".git/", "*.wip"],
+		})
+		const excludeFromIdx = argv.indexOf("--exclude-from")
+		const firstFIdx = argv.indexOf("-f")
+		const sshIdx = argv.indexOf("-e")
+		expect(excludeFromIdx).toBeGreaterThan(-1)
+		expect(firstFIdx).toBeGreaterThan(excludeFromIdx)
+		expect(sshIdx).toBeGreaterThan(firstFIdx)
+		expect(argv.slice(firstFIdx, sshIdx)).toEqual(["-f", "- .git/", "-f", "- *.wip"])
+	})
+
+	it("omits -f entirely when excludeFilters is unset", () => {
+		const argv = buildRsyncArgv({
+			localPath: "/a",
+			remotePath: "/b",
+			remoteHost: "h",
+			remoteUser: "u",
+			proxyCommand: "node /p %h %p",
+			knownHostsFile: "/k",
+			listMode: { kind: "files-from", file: "/f" },
+		})
+		expect(argv).not.toContain("-f")
+	})
+
 	it("uses --files-from when the caller passes that list mode", () => {
 		const argv = buildRsyncArgv({
 			localPath: "/a",

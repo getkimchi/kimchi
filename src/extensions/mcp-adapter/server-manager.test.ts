@@ -56,6 +56,16 @@ vi.mock("./logger.js", () => ({
 	logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 
+// Mock metadata-cache — capture calls to saveMetadataCache and computeServerHash
+const { mockSaveMetadataCache, mockComputeServerHash } = vi.hoisted(() => ({
+	mockSaveMetadataCache: vi.fn(),
+	mockComputeServerHash: vi.fn(),
+}))
+vi.mock("./metadata-cache.js", () => ({
+	saveMetadataCache: mockSaveMetadataCache,
+	computeServerHash: mockComputeServerHash,
+}))
+
 // Import after mocks
 import { supportsOAuth } from "./mcp-auth-flow.js"
 import { McpServerManager } from "./server-manager.js"
@@ -411,5 +421,98 @@ describe("McpServerManager.probeTools SSE fallback", () => {
 		expect(result.tools).toEqual([])
 		expect(result.error).toBe("spawn failed")
 		expect(mockConnect).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("McpServerManager.probeTools cache writing", () => {
+	beforeEach(() => {
+		mockConnect.mockReset()
+		mockListTools.mockReset()
+		mockClose.mockReset()
+		mockSetNotificationHandler.mockReset()
+		mockSaveMetadataCache.mockReset()
+		mockComputeServerHash.mockReset()
+		vi.mocked(supportsOAuth).mockReset()
+		vi.mocked(supportsOAuth).mockReturnValue(false)
+		mockClose.mockResolvedValue(undefined)
+		mockComputeServerHash.mockReturnValue("test-hash")
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("writes probe results to metadata cache on successful probe", async () => {
+		mockConnect.mockResolvedValue(undefined)
+		mockListTools.mockResolvedValue({
+			tools: [
+				{ name: "tool_a", description: "Does A", inputSchema: { type: "object" } },
+				{ name: "tool_b", description: "Does B", annotations: { readOnlyHint: true } },
+			],
+			nextCursor: undefined,
+		})
+
+		const manager = new McpServerManager()
+		await manager.probeTools("cache-test", { command: "echo" })
+
+		expect(mockSaveMetadataCache).toHaveBeenCalledTimes(1)
+		const cacheArg = mockSaveMetadataCache.mock.calls[0][0]
+		expect(cacheArg.version).toBe(1)
+		expect(cacheArg.servers["cache-test"]).toBeDefined()
+		expect(cacheArg.servers["cache-test"].configHash).toBe("test-hash")
+		expect(cacheArg.servers["cache-test"].tools).toHaveLength(2)
+		expect(cacheArg.servers["cache-test"].tools[0]).toEqual({
+			name: "tool_a",
+			description: "Does A",
+			inputSchema: { type: "object" },
+			annotations: undefined,
+		})
+		expect(cacheArg.servers["cache-test"].resources).toEqual([])
+		expect(cacheArg.servers["cache-test"].cachedAt).toBeGreaterThan(0)
+	})
+
+	it("writes cache after SSE fallback succeeds", async () => {
+		mockConnect.mockRejectedValueOnce(new Error("Invalid content type")).mockResolvedValueOnce(undefined)
+		mockListTools.mockResolvedValue({ tools: [{ name: "sse_tool" }], nextCursor: undefined })
+
+		const manager = new McpServerManager()
+		await manager.probeTools("sse-cache-test", { url: "https://mcp.example.com/sse" })
+
+		expect(mockSaveMetadataCache).toHaveBeenCalledTimes(1)
+		expect(mockSaveMetadataCache.mock.calls[0][0].servers["sse-cache-test"]).toBeDefined()
+	})
+
+	it("does not write cache when probe returns needsAuth", async () => {
+		vi.mocked(supportsOAuth).mockReturnValue(true)
+		mockConnect.mockRejectedValue(new UnauthorizedError("Unauthorized"))
+
+		const manager = new McpServerManager()
+		await manager.probeTools("auth-test", { url: "https://mcp.example.com", auth: "oauth" })
+
+		expect(mockSaveMetadataCache).not.toHaveBeenCalled()
+	})
+
+	it("does not write cache when probe returns an error", async () => {
+		mockConnect.mockRejectedValue(new Error("Connection refused"))
+
+		const manager = new McpServerManager()
+		await manager.probeTools("err-test", { command: "echo" })
+
+		expect(mockSaveMetadataCache).not.toHaveBeenCalled()
+	})
+
+	it("saveMetadataCache merges with existing entries (does not overwrite)", async () => {
+		mockConnect.mockResolvedValue(undefined)
+		mockListTools.mockResolvedValue({ tools: [{ name: "tool_a" }], nextCursor: undefined })
+
+		const manager = new McpServerManager()
+		await manager.probeTools("new-server", { command: "echo" })
+
+		// saveMetadataCache already does a read-merge-write internally — verify
+		// it was called with only the new server, not a full cache overwrite.
+		expect(mockSaveMetadataCache).toHaveBeenCalledTimes(1)
+		const cacheArg = mockSaveMetadataCache.mock.calls[0][0]
+		expect(Object.keys(cacheArg.servers)).toEqual(["new-server"])
+		expect(cacheArg.servers["new-server"]).toBeDefined()
 	})
 })

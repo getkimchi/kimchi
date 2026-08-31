@@ -28,26 +28,13 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { arch, homedir, version as osVersion, platform, release, userInfo } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
-import {
-	type ExtensionAPI,
-	type ExtensionContext,
-	getAgentDir,
-	loadSkills,
-	type Skill,
-} from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
-import { isResourceEnabled } from "../../resources/store.js"
-import { getKimchiProjectSkillPaths } from "../../skill-paths.js"
+import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
-import {
-	CLAUDE_CODE_SKILLS_RESOURCE_ID,
-	getClaudeCodeSkillResourcePaths,
-	getConfiguredNativeSkillNames,
-	getConfiguredSkillResourcePaths,
-} from "../claude-code-skills/definition.js"
+import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
 import { bumpStallCounter } from "../ferment/todo-sync.js"
 import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
@@ -213,7 +200,7 @@ export function isSubagent(): boolean {
 	return isAgentWorker()
 }
 
-export default function (skillPaths: string[]) {
+export default function (skillPathsFromConfig: string[]) {
 	return (pi: ExtensionAPI) => {
 		const subagentMode = isSubagent()
 
@@ -491,11 +478,15 @@ export default function (skillPaths: string[]) {
 		const cachedHomeDir = homedir()
 
 		let cachedContextFiles: ContextFile[] | undefined
-		let cachedSkills: Skill[] | undefined
 		let cachedGitRemote: string | undefined | null = null
 
 		pi.on("resources_discover", (event) => {
-			const skillPaths = getKimchiProjectSkillPaths(event.cwd)
+			// Contribute Kimchi-only skill sources to pi's resource inventory so
+			// every downstream surface (base prompt skills section, /skill:<name>,
+			// autocomplete, /resources) sees them. All discovery, filtering, and
+			// collision-avoidance logic lives in resolveSkillPathsForDiscovery.
+			const extraPaths = getConfiguredSkillResourcePaths(event.cwd, skillPathsFromConfig)
+			const skillPaths = resolveSkillPathsForDiscovery(event.cwd, { extraPaths })
 			if (skillPaths.length === 0) return undefined
 			return { skillPaths }
 		})
@@ -508,25 +499,13 @@ export default function (skillPaths: string[]) {
 			const activeToolNames = new Set(pi.getActiveTools())
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
 			cachedContextFiles ??= [...loadGlobalContextFiles(), ...loadProjectContextFiles(ctx.cwd)]
-			if (cachedSkills === undefined) {
-				const configuredNativeSkillNames = getConfiguredNativeSkillNames(ctx.cwd, skillPaths)
-				const allSkillPaths = Array.from(
-					new Set([
-						...getKimchiProjectSkillPaths(ctx.cwd),
-						...getConfiguredSkillResourcePaths(ctx.cwd, skillPaths),
-						...(isResourceEnabled(CLAUDE_CODE_SKILLS_RESOURCE_ID)
-							? getClaudeCodeSkillResourcePaths(ctx.cwd, { excludeSkillNames: configuredNativeSkillNames })
-							: []),
-						...getInstalledPackageResourceDirs(ctx.cwd, "skills"),
-					]),
-				)
-				cachedSkills = loadSkills({
-					cwd: ctx.cwd,
-					agentDir: getAgentDir(),
-					skillPaths: allSkillPaths,
-					includeDefaults: false,
-				}).skills
-			}
+			// Read skills from pi's resolved resource inventory (system prompt
+			// options) so the rebuilt prompt advertises exactly what pi
+			// loaded — honoring settings.json, --skill/--no-skills, trust,
+			// packages, precedence and collision rules — rather than a second,
+			// divergent view composed here. Kimchi-specific sources reach pi
+			// through resources_discover above.
+			const skills = event.systemPromptOptions?.skills ?? []
 
 			const now = new Date()
 			const isGitRepo = existsSync(join(ctx.cwd, ".git", "HEAD"))
@@ -562,7 +541,7 @@ export default function (skillPaths: string[]) {
 				tools: tools as readonly ToolInfo[],
 				env,
 				contextFiles: cachedContextFiles,
-				skills: cachedSkills,
+				skills: skills,
 				currentModelId: mode === "orchestrator" ? getOrchestratorModelId(sessionId) : ctx.model?.id,
 				registry: registry,
 				mode,
@@ -599,8 +578,8 @@ export default function (skillPaths: string[]) {
 					ctx.ui.notify(`[debug-prompts] ${filePath}`, "info")
 				}
 			} else {
-				process.env.KIMCHI_DEBUG_PROMPTS = undefined
-				process.env.KIMCHI_DEBUG_SESSION = undefined
+				delete process.env.KIMCHI_DEBUG_PROMPTS
+				delete process.env.KIMCHI_DEBUG_SESSION
 			}
 
 			return { systemPrompt }

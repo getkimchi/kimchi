@@ -318,6 +318,97 @@ describe("telemetryExtension integration", () => {
 		expect(headers["X-Session-Id"]).toBeTruthy()
 		expect(headers["X-Turn-Index"]).toBe("4")
 	})
+
+	it("before_provider_headers injects W3C traceparent derived from session id", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		const sessionId = event.headers["X-Session-Id"]
+		const traceparent = event.headers.traceparent
+		expect(traceparent).toBeDefined()
+		const [version, traceId, spanId, flags] = traceparent.split("-")
+		expect(version).toBe("00")
+		expect(traceId).toBe(sessionId.replace(/-/g, "").toLowerCase())
+		expect(traceId).toMatch(/^[0-9a-f]{32}$/)
+		expect(spanId).toMatch(/^[0-9a-f]{16}$/)
+		expect(flags).toBe("01")
+	})
+
+	it("before_provider_headers generates a fresh span id on each request", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event1 = { headers: {} as Record<string, string> }
+		const event2 = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event1)
+		getHandler(handlers, "before_provider_headers")(event2)
+
+		const spanId1 = event1.headers.traceparent.split("-")[2]
+		const spanId2 = event2.headers.traceparent.split("-")[2]
+		expect(spanId1).not.toBe(spanId2)
+	})
+
+	it("before_provider_headers preserves an existing traceparent header", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const existingTraceparent = "00-11111111111111111111111111111111-2222222222222222-01"
+		const event = { headers: { traceparent: existingTraceparent } as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers.traceparent).toBe(existingTraceparent)
+	})
+
+	it("before_provider_headers preserves an existing traceparent header regardless of case", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const existingTraceparent = "00-11111111111111111111111111111111-2222222222222222-01"
+		const event = { headers: { Traceparent: existingTraceparent } as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers.Traceparent).toBe(existingTraceparent)
+		expect(event.headers.traceparent).toBeUndefined()
+	})
+
+	it("before_provider_headers injects X-Conversation-Id as a UUID", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		const convId = event.headers["X-Conversation-Id"]
+		expect(typeof convId).toBe("string")
+		expect(convId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+	})
+
+	it("session_start regenerates X-Conversation-Id", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event1 = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event1)
+		const beforeId = event1.headers["X-Conversation-Id"]
+
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event2 = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event2)
+		const afterId = event2.headers["X-Conversation-Id"]
+
+		expect(afterId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+		expect(afterId).not.toBe(beforeId)
+	})
 })
 
 // ---------------------------------------------------------------------------

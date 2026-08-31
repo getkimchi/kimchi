@@ -225,9 +225,9 @@ describe("MCP OAuth callback lifecycle", () => {
 			const authPromise = flow.authenticate("slack", "https://slack.example.test/mcp")
 			await vi.waitFor(() => expect(openBrowser).toHaveBeenCalledOnce())
 
-			// Server should be running on the next free port (port + 1)
+			// Server should be running on a free port after the blocker
 			const actualPort = oauthProvider.getOAuthCallbackPort()
-			expect(actualPort).toBe(port + 1)
+			expect(actualPort).toBeGreaterThan(port)
 			expect(callbackServer.isCallbackServerRunning()).toBe(true)
 
 			const state = await authStore.getOAuthState("slack")

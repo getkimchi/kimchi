@@ -4,7 +4,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { AgentSession } from "@earendil-works/pi-coding-agent"
+import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import {
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
@@ -20,6 +20,9 @@ import { dispatchSubcommand } from "./commands/dispatch.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
+// Patches InteractiveMode.prototype so a broken pipe (EPIPE/ECONNRESET) from a
+// child process does not crash the CLI. Load early for the same reason as above.
+import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
@@ -52,6 +55,7 @@ import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
+import dapExtension from "./extensions/dap.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
@@ -90,6 +94,7 @@ import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-e
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
+import remoteRunExtension from "./extensions/remote-run/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
@@ -568,6 +573,7 @@ try {
 			explorationGuardExtension,
 			reviewWriteGuardExtension,
 			lspExtension,
+			dapExtension,
 			// Always registered — the tool_call handler checks isResourceEnabled
 			// dynamically on every bash call, so enable/disable from /resources
 			// takes effect immediately without a process restart.
@@ -635,6 +641,7 @@ try {
 			reportBugExtension,
 			tagsExtension,
 			teleportExtension,
+			remoteRunExtension,
 			telemetryExtension(telemetryConfig),
 			sessionMetadataExtension(),
 			surveysExtension(),
@@ -664,7 +671,12 @@ try {
 		if (IS_ACP_MODE) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			const { McpServerManager } = await import("./extensions/mcp-adapter/server-manager.js")
-			await runAcpMode({ extensionFactories, agentDir, mcpServerManager: new McpServerManager() })
+			await runAcpMode({
+				extensionFactories,
+				agentDir,
+				mcpServerManager: new McpServerManager(),
+				appendSystemPrompt: parsePiArgs(rawArgs).appendSystemPrompt,
+			})
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 			const { main } = await import("@earendil-works/pi-coding-agent")

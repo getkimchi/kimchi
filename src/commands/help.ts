@@ -91,4 +91,7 @@ export async function printMergedHelp(): Promise<void> {
 	console.log(`  kimchi -p "explain src/cli.ts"              ${dim("# one-shot prompt, no session")}`)
 	console.log(`  kimchi --continue                           ${dim("# resume the most recent session")}`)
 	console.log(`  kimchi claude -p "review this PR"           ${dim("# run Claude Code via Kimchi")}`)
+	console.log(
+		`  kimchi codex                                ${dim("# run Codex via Kimchi (run kimchi setup-tools first)")}`,
+	)
 }

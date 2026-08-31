@@ -7,6 +7,7 @@ import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js"
 import { logger } from "./logger.js"
 import { supportsOAuth } from "./mcp-auth-flow.js"
 import { McpOAuthProvider } from "./mcp-oauth-provider.js"
+import { type CachedTool, computeServerHash, type ServerCacheEntry, saveMetadataCache } from "./metadata-cache.js"
 import { resolveNpxBinary } from "./npx-resolver.js"
 import type {
 	McpResource,
@@ -412,6 +413,7 @@ export class McpServerManager {
 
 		try {
 			const result = await this.connectAndList(client, transport, name, deadline)
+			this.writeProbeToCache(name, definition, result.tools)
 			return result
 		} catch (error) {
 			// SSE fallback for HTTP servers: if StreamableHTTP connect fails with a
@@ -424,6 +426,7 @@ export class McpServerManager {
 
 				try {
 					const result = await this.connectAndList(client, transport, name, deadline)
+					this.writeProbeToCache(name, definition, result.tools)
 					return result
 				} catch (sseError) {
 					if (sseError instanceof UnauthorizedError) return this.authProbeResult()
@@ -462,6 +465,33 @@ export class McpServerManager {
 		}))
 
 		return { tools: probeTools, needsAuth: false, error: null }
+	}
+
+	/**
+	 * Write discovered tools to the metadata cache after a successful probe.
+	 * Best-effort — cache write failures are swallowed so they never fail the
+	 * probe itself.
+	 */
+	private writeProbeToCache(name: string, definition: ServerDefinition, tools: ProbeMcpTool[]): void {
+		try {
+			const cachedTools: CachedTool[] = tools.map((t) => ({
+				name: t.name,
+				description: t.description,
+				inputSchema: t.inputSchema,
+				annotations: t.annotations,
+			}))
+			const entry: ServerCacheEntry = {
+				configHash: computeServerHash(definition),
+				tools: cachedTools,
+				resources: [],
+				cachedAt: Date.now(),
+			}
+			saveMetadataCache({ version: 1, servers: { [name]: entry } })
+		} catch (error) {
+			logger.debug(
+				`MCP: failed to write probe cache for ${name}: ${error instanceof Error ? error.message : String(error)}`,
+			)
+		}
 	}
 
 	/**

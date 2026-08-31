@@ -2,7 +2,20 @@
 .harbor/
 .ruff_cache/
 jobs/
+# Offline pi install bundle (scripts/build-pi-bundle.sh): a node runtime, the pi
+# CLI and a node_modules tree — hundreds of MB of downloaded binaries, rebuilt
+# on demand and never a source of truth.
+.cache/
 __pycache__/
 *.egg-info/
 dist/
 build/
+node_modules/
+package-lock.json
+# ...except workflows/, which now depends on the PUBLISHED
+# @kimchi-dev/kimchi-workflows rather than a sibling checkout. Its lockfile
+# resolves entirely from the registry (no `file:` entries, so no machine-local
+# paths), which makes `npm ci` reproducible — and reproducibility is the point:
+# a typecheck or test run against a different engine build than the one a trial
+# loads proves nothing about that trial.
+!workflows/package-lock.json

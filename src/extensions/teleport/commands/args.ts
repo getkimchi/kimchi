@@ -8,6 +8,7 @@ export interface TeleportArgs {
 	noGitToken?: boolean
 	noCompactHint?: boolean
 	skipSession?: boolean
+	fast?: boolean
 }
 
 const SESSION_NAME_RE = /^[A-Za-z0-9\-_]+$/
@@ -33,6 +34,11 @@ export const TELEPORT_FLAGS: readonly TeleportFlag[] = [
 	{ name: "--branch", takesValue: true, description: "Branch to check out (requires --git-repo)" },
 	{ name: "--allow-dirty", takesValue: false, description: "Proceed with uncommitted changes" },
 	{ name: "--force", takesValue: false, description: "Override the 5 GB workspace size limit" },
+	{
+		name: "--fast",
+		takesValue: false,
+		description: "Clone server-side + rsync only local diff (faster for large repos)",
+	},
 	{ name: "--no-git-token", takesValue: false, description: "Skip the git credentials prompt" },
 	{ name: "--no-compact-hint", takesValue: false, description: "Skip the pre-teleport compaction hint" },
 	{
@@ -97,7 +103,8 @@ export function getTeleportArgumentCompletions(prefix: string): TeleportCompleti
 /**
  * Parse `/teleport [name] [--workspace ID] [--git-repo URL] [--branch B]
  *                  [--allow-dirty] [--force] [--no-git-token] [--no-compact-hint]
- *                  [--skip-session]`.
+ *                  [--skip-session]
+ *                  [--fast]`.
  *
  * A malformed input (a `--flag=` with no key, a stray `--`) throws so the
  * command surfaces a clear refusal.
@@ -154,6 +161,10 @@ export function parseTeleportArgs(raw: string): TeleportArgs {
 			}
 			if (flag === "--skip-session") {
 				args.skipSession = true
+				continue
+			}
+			if (flag === "--fast") {
+				args.fast = true
 				continue
 			}
 			if (BOOLEAN_FLAGS.has(flag)) {

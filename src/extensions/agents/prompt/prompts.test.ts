@@ -228,7 +228,7 @@ During **build** phase:
 
 		// Top-level structure — these substrings lock the agent's identity and
 		// the Plan-Agent-specific sections that wrap the shared process.
-		expect(output).toContain("# Plan Agent — Write Access Scoped to .kimchi/plans/")
+		expect(output).toContain("# Plan Agent\n")
 		expect(output).toContain("You are a planning specialist")
 		expect(output).toContain("STRICTLY PROHIBITED")
 		expect(output).toContain("# Planning Process")
@@ -238,7 +238,7 @@ During **build** phase:
 
 		// Plan-Agent-specific tool bindings (override the shared planning process).
 		expect(output).toContain("`questionnaire`")
-		expect(output).toContain(".kimchi/plans/")
+		expect(output).toContain("harness saves the plan")
 
 		// The shared planning process must be embedded verbatim. Asserting on the
 		// imported constant means any legitimate tweak to the shared process is
