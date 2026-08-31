@@ -112,7 +112,7 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 					return { status: "failed", reason }
 				}
 
-				const query = await prepareRouterQuery(event.prompt)
+				const query = await prepareRouterQuery(event.prompt, { containsImages: requiresVision })
 				if (!query.ok) return fail(query.reason)
 
 				let config: RouterConfig | undefined

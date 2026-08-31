@@ -11,6 +11,7 @@ import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { clearAutoRoutingAttempt, consumeAutoRoutingAttempt } from "./api-provider.js"
 import autoModelExtension, { createAutoModelExtension } from "./index.js"
+import { ROUTER_IMAGE_METADATA } from "./router-query.js"
 import { AUTO_RESOLUTION_ENTRY, clearAutoRoutingState, getAutoRoutingState, resolvedEntry } from "./state.js"
 
 const SESSION_ID = "auto-session"
@@ -301,6 +302,35 @@ describe("Auto model extension", () => {
 		})
 
 		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "unresolved" })
+		expect(fetch).toHaveBeenCalledWith(
+			expect.any(URL),
+			expect.objectContaining({
+				body: JSON.stringify({ query: `implement the feature\n\n${ROUTER_IMAGE_METADATA}` }),
+			}),
+		)
+	})
+
+	it("routes an image-only initial prompt using image metadata", async () => {
+		const { getHandler, ctx, target } = harness()
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({
+				ok: true,
+				json: async () => ({ best_model: target.id, probabilities: { [target.id]: 1 } }),
+			})),
+		)
+		await getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
+
+		await getHandler<BeforeAgentStartEvent>("before_agent_start")(
+			beforeEvent({ prompt: "", images: [{ type: "image", data: "abc", mimeType: "image/png" }] }),
+			ctx,
+		)
+
+		await expect(consumeAutoRoutingAttempt(SESSION_ID)).resolves.toEqual({ status: "resolved", model: target })
+		expect(fetch).toHaveBeenCalledWith(
+			expect.any(URL),
+			expect.objectContaining({ body: JSON.stringify({ query: ROUTER_IMAGE_METADATA }) }),
+		)
 	})
 
 	it("requires a vision model when configured for forwarded image paths", async () => {

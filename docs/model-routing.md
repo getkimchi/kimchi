@@ -76,14 +76,14 @@ Each local subagent that inherits Auto has its own session and chooses a model i
 
 ## Prompts, redaction, and images
 
-The router receives the full text of the prompt that triggers routing. Kimchi does not apply a client-side token limit, and it does not shorten the prompt sent to the selected model.
+The router receives the full text of the prompt that triggers routing. When the effective prompt contains images, Kimchi appends `[Routing metadata: the prompt contains images.]` to the router copy. Kimchi does not apply a client-side token limit, and it does not shorten or otherwise change the prompt sent to the selected model.
 
 When PII redaction is enabled, the router copy receives the same PII and secret redaction policy as normal provider traffic. If that copy cannot be redacted safely, routing stops.
 
 The router never receives image bytes. Kimchi still uses the presence of an image when checking candidate capabilities:
 
 - for an initial prompt with text and images, candidates without vision support are skipped;
-- an image-only initial prompt cannot be routed because Auto requires prompt text for the router;
+- an image-only initial prompt routes using the image metadata marker;
 - after Auto resolves to a vision-capable model, later image prompts continue normally;
 - after Auto resolves to a text-only model, a later image prompt is blocked without rerouting.
 
