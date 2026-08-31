@@ -1,52 +1,52 @@
 import {
-	GOAL_COMPLETION_CONFIDENCES,
-	GOAL_EVALUATION_VERDICTS,
-	GOAL_STATUSES,
-	type GoalEvaluation,
-	type GoalEvaluatorUsage,
-	type GoalEvaluatorUsageJournalEntry,
-	type GoalJournalEntry,
-	type GoalStatus,
-	type SessionGoal,
+	FERMENT_V2_COMPLETION_CONFIDENCES,
+	FERMENT_V2_EVALUATION_VERDICTS,
+	FERMENT_V2_STATUSES,
+	type FermentV2Evaluation,
+	type FermentV2EvaluatorUsage,
+	type FermentV2EvaluatorUsageJournalEntry,
+	type FermentV2JournalEntry,
+	type FermentV2Status,
+	type SessionFermentV2,
 } from "./types.js"
 
-const MAX_GOAL_OBJECTIVE_LENGTH = 8_000
+const MAX_FERMENT_V2_OBJECTIVE_LENGTH = 8_000
 const MAX_BLOCKED_REASON_LENGTH = 1_000
 
-export type GoalState = SessionGoal | undefined
+export type FermentV2State = SessionFermentV2 | undefined
 
 function normalizeObjective(value: unknown): string {
 	const objective = typeof value === "string" ? value.trim() : ""
-	if (!objective) throw new Error("Goal objective cannot be empty.")
-	if (objective.length > MAX_GOAL_OBJECTIVE_LENGTH) {
-		throw new Error("Goal objective cannot exceed 8,000 characters.")
+	if (!objective) throw new Error("Ferment V2 objective cannot be empty.")
+	if (objective.length > MAX_FERMENT_V2_OBJECTIVE_LENGTH) {
+		throw new Error("Ferment V2 objective cannot exceed 8,000 characters.")
 	}
 	return objective
 }
 
-export function createGoal(
-	state: GoalState,
+export function createFermentV2(
+	state: FermentV2State,
 	objective: unknown,
 	id: string,
 	now: string,
 	tokenBudget?: number,
-): SessionGoal {
-	if (state) throw new Error("A goal already exists.")
-	return newGoal(objective, id, now, tokenBudget)
+): SessionFermentV2 {
+	if (state) throw new Error("A Ferment V2 already exists.")
+	return newFermentV2(objective, id, now, tokenBudget)
 }
 
-export function replaceGoal(objective: unknown, id: string, now: string, tokenBudget?: number): SessionGoal {
-	return newGoal(objective, id, now, tokenBudget)
+export function replaceFermentV2(objective: unknown, id: string, now: string, tokenBudget?: number): SessionFermentV2 {
+	return newFermentV2(objective, id, now, tokenBudget)
 }
 
-export function editGoal(
-	state: GoalState,
+export function editFermentV2(
+	state: FermentV2State,
 	expectedId: string,
 	expectedRevision: number,
 	objective: unknown,
 	now: string,
-): SessionGoal {
-	const current = requireCurrentGoal(state, expectedId, expectedRevision)
+): SessionFermentV2 {
+	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
 	return {
 		...current,
 		revision: current.revision + 1,
@@ -55,16 +55,16 @@ export function editGoal(
 	}
 }
 
-export function setGoalStatus(
-	state: GoalState,
+export function setFermentV2Status(
+	state: FermentV2State,
 	expectedId: string,
 	expectedRevision: number,
-	status: GoalStatus,
+	status: FermentV2Status,
 	now: string,
 	blockedReason?: unknown,
-): SessionGoal {
-	const current = requireCurrentGoal(state, expectedId, expectedRevision)
-	if (!GOAL_STATUSES.includes(status)) throw new Error(`Invalid goal status '${String(status)}'.`)
+): SessionFermentV2 {
+	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
+	if (!FERMENT_V2_STATUSES.includes(status)) throw new Error(`Invalid Ferment V2 status '${String(status)}'.`)
 	const next = {
 		...current,
 		status: status === "active" && isOverBudget(current.tokenBudget, current.tokensUsed) ? "budget_limited" : status,
@@ -77,16 +77,18 @@ export function setGoalStatus(
 	return withoutBlockedReason
 }
 
-export function addGoalAccounting(
-	state: GoalState,
+export function addFermentV2Accounting(
+	state: FermentV2State,
 	expectedId: string,
 	tokensUsed: number,
 	timeUsedMs: number,
 	now: string,
-): SessionGoal {
-	if (!state) throw new Error("Goal accounting rejected: no current goal exists.")
+): SessionFermentV2 {
+	if (!state) throw new Error("Ferment V2 accounting rejected: no current Ferment V2 exists.")
 	if (state.id !== expectedId) {
-		throw new Error(`Goal accounting rejected: expected goal ${expectedId}, but the current goal is ${state.id}.`)
+		throw new Error(
+			`Ferment V2 accounting rejected: expected Ferment V2 ${expectedId}, but the current Ferment V2 is ${state.id}.`,
+		)
 	}
 	const nextTokensUsed = state.tokensUsed + nonNegativeInteger(tokensUsed, "token usage")
 	return {
@@ -99,15 +101,15 @@ export function addGoalAccounting(
 	}
 }
 
-export function recordGoalEvaluation(
-	state: GoalState,
+export function recordFermentV2Evaluation(
+	state: FermentV2State,
 	expectedId: string,
 	expectedRevision: number,
-	evaluation: GoalEvaluation,
-	usage: SessionGoal["evaluatorUsage"],
+	evaluation: FermentV2Evaluation,
+	usage: SessionFermentV2["evaluatorUsage"],
 	now: string,
-): SessionGoal {
-	const current = requireCurrentGoal(state, expectedId, expectedRevision)
+): SessionFermentV2 {
+	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
 	return {
 		...current,
 		evaluationCount: (current.evaluationCount ?? 0) + 1,
@@ -119,99 +121,99 @@ export function recordGoalEvaluation(
 
 /**
  * Sets the persisted consecutive-agent-error-turn streak that backs
- * getGoalSettings().maxConsecutiveErrors (settings.ts), omitting the field
+ * getFermentV2Settings().maxConsecutiveErrors (settings.ts), omitting the field
  * once the streak is back to zero. Returns the same object when the count
- * already matches, mirroring addGoalAccounting's no-op-on-no-change shape so
+ * already matches, mirroring addFermentV2Accounting's no-op-on-no-change shape so
  * callers can tell whether a commit is actually needed by reference
  * equality.
  */
-export function setGoalConsecutiveErrorTurns(
-	state: GoalState,
+export function setFermentV2ConsecutiveErrorTurns(
+	state: FermentV2State,
 	expectedId: string,
 	expectedRevision: number,
 	count: number,
 	now: string,
-): SessionGoal {
-	const current = requireCurrentGoal(state, expectedId, expectedRevision)
+): SessionFermentV2 {
+	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
 	return withCounterField(current, "consecutiveErrorTurns", count, now)
 }
 
 /**
  * Sets the persisted no-progress continuation streak that backs
- * getGoalSettings().maxUnchangedContinuations (settings.ts). Same shape as
- * setGoalConsecutiveErrorTurns.
+ * getFermentV2Settings().maxUnchangedContinuations (settings.ts). Same shape as
+ * setFermentV2ConsecutiveErrorTurns.
  */
-export function setGoalUnchangedContinuationTurns(
-	state: GoalState,
+export function setFermentV2UnchangedContinuationTurns(
+	state: FermentV2State,
 	expectedId: string,
 	expectedRevision: number,
 	count: number,
 	now: string,
-): SessionGoal {
-	const current = requireCurrentGoal(state, expectedId, expectedRevision)
+): SessionFermentV2 {
+	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
 	return withCounterField(current, "unchangedContinuationTurns", count, now)
 }
 
 function withCounterField(
-	goal: SessionGoal,
+	fermentV2: SessionFermentV2,
 	field: "consecutiveErrorTurns" | "unchangedContinuationTurns",
 	count: number,
 	now: string,
-): SessionGoal {
+): SessionFermentV2 {
 	const next = nonNegativeInteger(
 		count,
 		field === "consecutiveErrorTurns" ? "consecutive error turns" : "unchanged continuation turns",
 	)
-	if ((goal[field] ?? 0) === next) return goal
-	const { [field]: _drop, ...rest } = goal
+	if ((fermentV2[field] ?? 0) === next) return fermentV2
+	const { [field]: _drop, ...rest } = fermentV2
 	return next === 0 ? { ...rest, updatedAt: now } : { ...rest, [field]: next, updatedAt: now }
 }
 
-export function clearGoal(state: GoalState, expectedId: string, expectedRevision: number): undefined {
-	requireCurrentGoal(state, expectedId, expectedRevision)
+export function clearFermentV2(state: FermentV2State, expectedId: string, expectedRevision: number): undefined {
+	requireCurrentFermentV2(state, expectedId, expectedRevision)
 	return undefined
 }
 
-export function restoreGoal(entries: readonly unknown[]): GoalState {
-	let state: GoalState
+export function restoreFermentV2(entries: readonly unknown[]): FermentV2State {
+	let state: FermentV2State
 	for (const value of entries) {
-		const entry = parseGoalJournalEntry(value)
+		const entry = parseFermentV2JournalEntry(value)
 		if (!entry) continue
 		if (entry.op === "put") {
-			state = entry.goal
-		} else if (entry.op === "clear" && state?.id === entry.goalId && state.revision === entry.revision) {
+			state = entry.fermentV2
+		} else if (entry.op === "clear" && state?.id === entry.fermentV2Id && state.revision === entry.revision) {
 			state = undefined
 		}
 	}
 	return state
 }
 
-export function putGoalEntry(goal: SessionGoal): GoalJournalEntry {
-	return { schemaVersion: 1, op: "put", goal }
+export function putFermentV2Entry(fermentV2: SessionFermentV2): FermentV2JournalEntry {
+	return { schemaVersion: 1, op: "put", fermentV2 }
 }
 
-export function putGoalEvaluatorUsageEntry(
+export function putFermentV2EvaluatorUsageEntry(
 	sessionId: string,
-	goalId: string,
+	fermentV2Id: string,
 	revision: number,
-	usage: GoalEvaluatorUsage,
-): GoalEvaluatorUsageJournalEntry {
+	usage: FermentV2EvaluatorUsage,
+): FermentV2EvaluatorUsageJournalEntry {
 	return {
 		schemaVersion: 1,
 		op: "evaluator_usage",
 		sessionId,
-		goalId,
+		fermentV2Id,
 		revision,
 		usage,
 	}
 }
 
-export function clearGoalEntry(goal: SessionGoal, clearedAt: string): GoalJournalEntry {
+export function clearFermentV2Entry(fermentV2: SessionFermentV2, clearedAt: string): FermentV2JournalEntry {
 	return {
 		schemaVersion: 1,
 		op: "clear",
-		goalId: goal.id,
-		revision: goal.revision,
+		fermentV2Id: fermentV2.id,
+		revision: fermentV2.revision,
 		clearedAt,
 	}
 }
@@ -220,20 +222,24 @@ function isOverBudget(tokenBudget: number | undefined, tokensUsed: number): bool
 	return tokenBudget !== undefined && tokensUsed >= tokenBudget
 }
 
-function requireCurrentGoal(state: GoalState, expectedId: string, expectedRevision: number): SessionGoal {
-	if (!state) throw new Error("Goal update rejected: no current goal exists.")
+function requireCurrentFermentV2(
+	state: FermentV2State,
+	expectedId: string,
+	expectedRevision: number,
+): SessionFermentV2 {
+	if (!state) throw new Error("Ferment V2 update rejected: no current Ferment V2 exists.")
 	if (state.id !== expectedId || state.revision !== expectedRevision) {
 		throw new Error(
-			`Goal update rejected: expected goal ${expectedId} revision ${expectedRevision}, but the current goal is ${state.id} revision ${state.revision}. Read the current goal and continue against the latest objective.`,
+			`Ferment V2 update rejected: expected Ferment V2 ${expectedId} revision ${expectedRevision}, but the current Ferment V2 is ${state.id} revision ${state.revision}. Read the current Ferment V2 and continue against the latest objective.`,
 		)
 	}
 	return state
 }
 
-function newGoal(objective: unknown, id: string, now: string, tokenBudget?: number): SessionGoal {
-	if (!id.trim()) throw new Error("Goal ID cannot be empty.")
+function newFermentV2(objective: unknown, id: string, now: string, tokenBudget?: number): SessionFermentV2 {
+	if (!id.trim()) throw new Error("Ferment V2 ID cannot be empty.")
 	if (tokenBudget !== undefined && !isPositiveInteger(tokenBudget)) {
-		throw new Error("Goal token budget must be a positive integer.")
+		throw new Error("Ferment V2 token budget must be a positive integer.")
 	}
 	return {
 		schemaVersion: 1,
@@ -249,22 +255,22 @@ function newGoal(objective: unknown, id: string, now: string, tokenBudget?: numb
 	}
 }
 
-function parseGoalJournalEntry(value: unknown): GoalJournalEntry | undefined {
+function parseFermentV2JournalEntry(value: unknown): FermentV2JournalEntry | undefined {
 	if (!isRecord(value) || value.schemaVersion !== 1) return undefined
 	if (value.op === "put") {
-		const goal = parseGoal(value.goal)
-		return goal ? { schemaVersion: 1, op: "put", goal } : undefined
+		const fermentV2 = parseFermentV2(value.fermentV2)
+		return fermentV2 ? { schemaVersion: 1, op: "put", fermentV2 } : undefined
 	}
 	if (
 		value.op === "clear" &&
-		isNonEmptyString(value.goalId) &&
+		isNonEmptyString(value.fermentV2Id) &&
 		isPositiveInteger(value.revision) &&
 		isNonEmptyString(value.clearedAt)
 	) {
 		return {
 			schemaVersion: 1,
 			op: "clear",
-			goalId: value.goalId,
+			fermentV2Id: value.fermentV2Id,
 			revision: value.revision,
 			clearedAt: value.clearedAt,
 		}
@@ -272,7 +278,7 @@ function parseGoalJournalEntry(value: unknown): GoalJournalEntry | undefined {
 	if (
 		value.op === "evaluator_usage" &&
 		isNonEmptyString(value.sessionId) &&
-		isNonEmptyString(value.goalId) &&
+		isNonEmptyString(value.fermentV2Id) &&
 		isPositiveInteger(value.revision)
 	) {
 		const usage = parseUsage(value.usage)
@@ -281,7 +287,7 @@ function parseGoalJournalEntry(value: unknown): GoalJournalEntry | undefined {
 			schemaVersion: 1,
 			op: "evaluator_usage",
 			sessionId: value.sessionId,
-			goalId: value.goalId,
+			fermentV2Id: value.fermentV2Id,
 			revision: value.revision,
 			usage,
 		}
@@ -289,31 +295,33 @@ function parseGoalJournalEntry(value: unknown): GoalJournalEntry | undefined {
 	return undefined
 }
 
-function parseGoal(value: unknown): SessionGoal | undefined {
+function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 	if (!isRecord(value)) return undefined
-	const status = GOAL_STATUSES.find((candidate) => candidate === value.status)
-	const completionConfidence = GOAL_COMPLETION_CONFIDENCES.find((candidate) => candidate === value.completionConfidence)
-	const lastEvaluation = parseGoalEvaluation(value.lastEvaluation)
+	const status = FERMENT_V2_STATUSES.find((candidate) => candidate === value.status)
+	const completionConfidence = FERMENT_V2_COMPLETION_CONFIDENCES.find(
+		(candidate) => candidate === value.completionConfidence,
+	)
+	const lastEvaluation = parseFermentV2Evaluation(value.lastEvaluation)
 	const evaluatorUsage = parseUsage(value.evaluatorUsage)
 	if (
 		value.schemaVersion !== 1 ||
 		!isNonEmptyString(value.id) ||
 		!isPositiveInteger(value.revision) ||
 		!isNonEmptyString(value.objective) ||
-		value.objective.length > MAX_GOAL_OBJECTIVE_LENGTH ||
+		value.objective.length > MAX_FERMENT_V2_OBJECTIVE_LENGTH ||
 		status === undefined ||
 		(value.blockedReason !== undefined && !isNonEmptyString(value.blockedReason)) ||
 		(value.completionConfidence !== undefined && completionConfidence === undefined) ||
 		// Evaluation fields are observability only: a malformed one is dropped
 		// rather than rejecting the whole entry, which would silently roll the
-		// restored goal back to an older revision.
+		// restored Ferment V2 back to an older revision.
 		(value.evaluationCount !== undefined && !isNonNegativeInteger(value.evaluationCount)) ||
 		// Unlike evaluationCount, these two gate a safety pause (limits are
-		// getGoalSettings().maxConsecutiveErrors / maxUnchangedContinuations,
+		// getFermentV2Settings().maxConsecutiveErrors / maxUnchangedContinuations,
 		// settings.ts): silently dropping a malformed value back to zero would
 		// defeat the stall guard the same way the bug they exist to fix does,
 		// so a malformed counter rejects the whole entry instead, falling back
-		// to the last validly-persisted goal.
+		// to the last validly-persisted Ferment V2.
 		(value.consecutiveErrorTurns !== undefined && !isNonNegativeInteger(value.consecutiveErrorTurns)) ||
 		(value.unchangedContinuationTurns !== undefined && !isNonNegativeInteger(value.unchangedContinuationTurns)) ||
 		(value.tokensUsed !== undefined && !isNonNegativeInteger(value.tokensUsed)) ||
@@ -351,12 +359,12 @@ function parseGoal(value: unknown): SessionGoal | undefined {
 
 function normalizeBlockedReason(value: unknown): string {
 	const reason = typeof value === "string" ? value.trim() : ""
-	return (reason || "Goal marked blocked.").slice(0, MAX_BLOCKED_REASON_LENGTH)
+	return (reason || "Ferment V2 marked blocked.").slice(0, MAX_BLOCKED_REASON_LENGTH)
 }
 
-function parseGoalEvaluation(value: unknown): GoalEvaluation | undefined {
+function parseFermentV2Evaluation(value: unknown): FermentV2Evaluation | undefined {
 	if (!isRecord(value)) return undefined
-	const verdict = GOAL_EVALUATION_VERDICTS.find((candidate) => candidate === value.verdict)
+	const verdict = FERMENT_V2_EVALUATION_VERDICTS.find((candidate) => candidate === value.verdict)
 	if (!verdict || !isNonEmptyString(value.reason) || !isNonEmptyString(value.evaluatedAt)) return undefined
 	if (value.model !== undefined && !isNonEmptyString(value.model)) return undefined
 	return {
@@ -371,7 +379,7 @@ function nonNegativeNumberField(value: unknown): number | undefined {
 	return isNonNegativeNumber(value) ? value : undefined
 }
 
-function parseUsage(value: unknown): SessionGoal["evaluatorUsage"] {
+function parseUsage(value: unknown): SessionFermentV2["evaluatorUsage"] {
 	if (!isRecord(value)) return undefined
 	const input = nonNegativeNumberField(value.input)
 	const output = nonNegativeNumberField(value.output)
@@ -393,9 +401,9 @@ function parseUsage(value: unknown): SessionGoal["evaluatorUsage"] {
 }
 
 export function addUsage(
-	left: SessionGoal["evaluatorUsage"],
-	right: NonNullable<SessionGoal["evaluatorUsage"]>,
-): NonNullable<SessionGoal["evaluatorUsage"]> {
+	left: SessionFermentV2["evaluatorUsage"],
+	right: NonNullable<SessionFermentV2["evaluatorUsage"]>,
+): NonNullable<SessionFermentV2["evaluatorUsage"]> {
 	if (!left) return right
 	return {
 		input: left.input + right.input,
@@ -428,6 +436,6 @@ function isNonNegativeNumber(value: unknown): value is number {
 }
 
 function nonNegativeInteger(value: number, label: string): number {
-	if (!isNonNegativeInteger(value)) throw new Error(`Goal ${label} must be a non-negative integer.`)
+	if (!isNonNegativeInteger(value)) throw new Error(`Ferment V2 ${label} must be a non-negative integer.`)
 	return value
 }

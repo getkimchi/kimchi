@@ -89,14 +89,14 @@ function createMockContext(opts?: MockContextOpts): ExtensionContext {
 }
 
 function createMockStatusLineData(opts?: {
-	goal?: string
+	fermentV2?: string
 	permissionsMode?: string
 	permissionsWarning?: string
 	updateAvailable?: string
 	lsp?: string
 }): ReadonlyFooterDataProvider {
 	const statuses = new Map<string, string>()
-	if (opts?.goal) statuses.set("goal", opts.goal)
+	if (opts?.fermentV2) statuses.set("ferment-v2", opts.fermentV2)
 	if (opts?.permissionsMode) statuses.set("permissions-mode", opts.permissionsMode)
 	if (opts?.permissionsWarning) statuses.set("permissions-warning", opts.permissionsWarning)
 	if (opts?.updateAvailable) statuses.set("update-available", opts.updateAvailable)
@@ -395,11 +395,11 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 		expect(visible.endsWith("/ for commands")).toBe(true)
 	})
 
-	it("shows Goal feedback in the status line without an emoji", () => {
-		statusLineData = createMockStatusLineData({ goal: "Goal running · 1h 5m · 1.5k tokens" })
+	it("shows Ferment V2 feedback in the status line without an emoji", () => {
+		statusLineData = createMockStatusLineData({ fermentV2: "Fermenting · 1h 5m · 1.5k tokens" })
 		const { visible } = renderAt(160)
 
-		expect(visible).toContain("Goal running · 1h 5m · 1.5k tokens")
+		expect(visible).toContain("Fermenting · 1h 5m · 1.5k tokens")
 		expect(visible).not.toContain("🎯")
 	})
 
@@ -474,16 +474,16 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 		}
 	})
 
-	it("permissions indicator survives truncation with an active goal (regression)", () => {
-		// Permissions are safety-relevant and must survive truncation when Goal is active.
+	it("permissions indicator survives truncation with active Ferment V2 (regression)", () => {
+		// Permissions are safety-relevant and must survive truncation when Ferment V2 is active.
 		statusLineData = createMockStatusLineData({
 			permissionsMode: "● default \x1b[2m→ shift+tab\x1b[0m",
-			goal: "Goal running · 1h 5m · 1.5k tokens",
+			fermentV2: "Fermenting · 1h 5m · 1.5k tokens",
 		})
 		const { raw, visible } = renderAt(50)
 
 		expect(visibleWidth(raw)).toBeLessThanOrEqual(50)
-		expect(visible).toContain("Goal")
+		expect(visible).toContain("Fermenting")
 		expect(visible).toContain("●")
 		expect(visible).toContain("default")
 	})

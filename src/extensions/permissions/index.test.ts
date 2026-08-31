@@ -15,7 +15,7 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
-import { GOAL_TOOL_NAMES } from "../goal/constants.js"
+import { FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
@@ -1069,12 +1069,12 @@ describe("permissions internal tool classification", () => {
 		vi.unstubAllEnvs()
 	})
 
-	it("allows goal state tools without permission prompts", async () => {
-		const harness = createPermissionsHarness([...GOAL_TOOL_NAMES])
+	it("allows Ferment V2 state tools without permission prompts", async () => {
+		const harness = createPermissionsHarness([...FERMENT_V2_TOOL_NAMES])
 		const ctx = createMockContext([])
 		await harness.fire("session_start", {}, ctx)
 
-		for (const toolName of GOAL_TOOL_NAMES) {
+		for (const toolName of FERMENT_V2_TOOL_NAMES) {
 			await expect(harness.fire("tool_call", { toolName, input: {} }, ctx)).resolves.toBeUndefined()
 		}
 		expect(ctx.ui.select).not.toHaveBeenCalled()

@@ -5,10 +5,10 @@ import { errorMessage } from "../error-message.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles, normalizeRoleModels, splitModelRef } from "../orchestration/model-roles.js"
 import type { TodoItem } from "../todos/types.js"
-import { type GoalLesson, MAX_GOAL_LESSONS } from "./lessons.js"
+import { type FermentV2Lesson, MAX_FERMENT_V2_LESSONS } from "./lessons.js"
 import { isRecord } from "./reducer.js"
-import { getGoalSettings } from "./settings.js"
-import type { GoalEvaluatorUsage } from "./types.js"
+import { getFermentV2Settings } from "./settings.js"
+import type { FermentV2EvaluatorUsage } from "./types.js"
 
 export const MAX_TRANSCRIPT_CHARS = 16_000
 export const MAX_TODO_STATE_CHARS = 8_000
@@ -20,8 +20,8 @@ const MAX_REASON_CHARS = 1_000
 const REASONING_MAX_TOKENS = 4_096
 const PLAIN_MAX_TOKENS = 1_024
 
-const EVALUATOR_SYSTEM_PROMPT = `<goal_evaluator>
-You independently decide whether a persistent coding Goal should continue.
+const EVALUATOR_SYSTEM_PROMPT = `<ferment_v2_evaluator>
+You independently decide whether a persistent coding Ferment V2 should continue.
 
 <output_contract>
 - Return exactly one JSON object and no markdown:
@@ -29,7 +29,7 @@ You independently decide whether a persistent coding Goal should continue.
 </output_contract>
 
 <evidence_policy>
-- Observable transcript entries have IDs such as [m12]. Durable Goal lessons have IDs such as [l3]. Cite only shown IDs.
+- Observable transcript entries have IDs such as [m12]. Durable Ferment V2 lessons have IDs such as [l3]. Cite only shown IDs.
 - Only tool results and lessons labelled evidence can support met. User or assistant claims, plans, tool calls, file edits, decision or dead-end lessons, and command exit status alone are not proof.
 - Judge evidence against the objective's full scope and likely failure modes, not only supplied examples or self-selected checks.
 </evidence_policy>
@@ -47,29 +47,29 @@ You independently decide whether a persistent coding Goal should continue.
 </verdict_policy>
 
 Never call tools.
-</goal_evaluator>`
+</ferment_v2_evaluator>`
 
-export type GoalEvaluatorVerdict = "continue" | "met" | "impossible"
+export type FermentV2EvaluatorVerdict = "continue" | "met" | "impossible"
 
-export type GoalEvaluationResult =
-	| { verdict: GoalEvaluatorVerdict; reason: string; model: string; usage: GoalEvaluatorUsage }
-	| { verdict: "unavailable"; reason: string; model?: string; usage?: GoalEvaluatorUsage }
+export type FermentV2EvaluationResult =
+	| { verdict: FermentV2EvaluatorVerdict; reason: string; model: string; usage: FermentV2EvaluatorUsage }
+	| { verdict: "unavailable"; reason: string; model?: string; usage?: FermentV2EvaluatorUsage }
 
-interface GoalEvaluatorCheck {
+interface FermentV2EvaluatorCheck {
 	requirement: string
 	met: boolean
 	evidence: string[]
 	todoIds: number[]
 }
 
-interface ParsedGoalEvaluatorOutput {
-	verdict: GoalEvaluatorVerdict
+interface ParsedFermentV2EvaluatorOutput {
+	verdict: FermentV2EvaluatorVerdict
 	reason: string
-	checks?: GoalEvaluatorCheck[]
+	checks?: FermentV2EvaluatorCheck[]
 }
 
 /** Pi-ai's `Usage` never leaves this module; everything downstream sees the narrowed shape. */
-function toGoalEvaluatorUsage(usage: Usage): GoalEvaluatorUsage {
+function toFermentV2EvaluatorUsage(usage: Usage): FermentV2EvaluatorUsage {
 	return {
 		input: usage.input,
 		output: usage.output,
@@ -80,17 +80,17 @@ function toGoalEvaluatorUsage(usage: Usage): GoalEvaluatorUsage {
 	}
 }
 
-export interface GoalEvaluationInput {
+export interface FermentV2EvaluationInput {
 	objective: string
 	messages: ReadonlyArray<AgentEndEvent["messages"][number]>
 	todos: readonly TodoItem[]
-	/** Bounded durable evidence restored from the Goal journal/context. */
-	lessons?: readonly GoalLesson[]
-	/** Aborted when the goal is paused, cleared, or the session shuts down. */
+	/** Bounded durable evidence restored from the Ferment V2 journal/context. */
+	lessons?: readonly FermentV2Lesson[]
+	/** Aborted when the Ferment V2 is paused, cleared, or the session shuts down. */
 	signal?: AbortSignal
 }
 
-export function resolveGoalEvaluatorModel(ctx: ExtensionContext): Model<Api> | undefined {
+export function resolveFermentV2EvaluatorModel(ctx: ExtensionContext): Model<Api> | undefined {
 	const sessionModel = ctx.model
 	if (!getMultiModelEnabled(ctx.sessionManager)) return sessionModel
 	const assignment = normalizeRoleModels(getModelRoles().judge)[0]
@@ -98,7 +98,7 @@ export function resolveGoalEvaluatorModel(ctx: ExtensionContext): Model<Api> | u
 	return (ref ? ctx.modelRegistry.find(ref.provider, ref.modelId) : undefined) ?? sessionModel
 }
 
-export function parseGoalEvaluatorOutput(raw: string): ParsedGoalEvaluatorOutput | undefined {
+export function parseFermentV2EvaluatorOutput(raw: string): ParsedFermentV2EvaluatorOutput | undefined {
 	for (const candidate of jsonObjects(raw)) {
 		const value = candidate as unknown
 		if (!isRecord(value)) continue
@@ -116,9 +116,9 @@ export function parseGoalEvaluatorOutput(raw: string): ParsedGoalEvaluatorOutput
 	return undefined
 }
 
-function parseChecks(value: unknown): GoalEvaluatorCheck[] | undefined {
+function parseChecks(value: unknown): FermentV2EvaluatorCheck[] | undefined {
 	if (!Array.isArray(value)) return undefined
-	const checks: GoalEvaluatorCheck[] = []
+	const checks: FermentV2EvaluatorCheck[] = []
 	for (const candidate of value) {
 		if (!isRecord(candidate) || typeof candidate.requirement !== "string" || !candidate.requirement.trim())
 			return undefined
@@ -167,13 +167,16 @@ function* jsonObjects(raw: string): Generator<unknown> {
 	}
 }
 
-export async function evaluateGoal(input: GoalEvaluationInput, ctx: ExtensionContext): Promise<GoalEvaluationResult> {
+export async function evaluateFermentV2(
+	input: FermentV2EvaluationInput,
+	ctx: ExtensionContext,
+): Promise<FermentV2EvaluationResult> {
 	const sessionModelRef = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined
 	let modelRef = sessionModelRef
 	let deadline: AbortSignal | undefined
 	let evaluationTimeoutMs: number | undefined
 	try {
-		const model = resolveGoalEvaluatorModel(ctx)
+		const model = resolveFermentV2EvaluatorModel(ctx)
 		if (!model) return { verdict: "unavailable", reason: "No evaluator model is available." }
 		modelRef = `${model.provider}/${model.id}`
 		const todoState = renderTodoState(input.todos)
@@ -188,7 +191,7 @@ export async function evaluateGoal(input: GoalEvaluationInput, ctx: ExtensionCon
 		if (!auth.ok) return { verdict: "unavailable", reason: "Evaluator authentication is unavailable.", model: modelRef }
 
 		const transcript = renderRecentTranscript(input.messages)
-		const lessons = renderGoalLessons(input.lessons)
+		const lessons = renderFermentV2Lessons(input.lessons)
 		const evidenceIds = new Set([...transcript.evidenceIds, ...lessons.evidenceIds])
 		const context = {
 			systemPrompt: EVALUATOR_SYSTEM_PROMPT,
@@ -198,7 +201,7 @@ export async function evaluateGoal(input: GoalEvaluationInput, ctx: ExtensionCon
 					content: [
 						{
 							type: "text" as const,
-							text: `Objective:\n${input.objective}\n\nCurrent Todo state:\n${todoState}\n\nDurable Goal lessons:\n${lessons.text || "(none)"}\n\nRecent transcript:\n${transcript.text}`,
+							text: `Objective:\n${input.objective}\n\nCurrent Todo state:\n${todoState}\n\nDurable Ferment V2 lessons:\n${lessons.text || "(none)"}\n\nRecent transcript:\n${transcript.text}`,
 						},
 					],
 					timestamp: Date.now(),
@@ -207,7 +210,7 @@ export async function evaluateGoal(input: GoalEvaluationInput, ctx: ExtensionCon
 		}
 
 		// Keep the deadline separate so a timeout is distinguishable from caller cancellation.
-		evaluationTimeoutMs = getGoalSettings().evaluationTimeoutMs
+		evaluationTimeoutMs = getFermentV2Settings().evaluationTimeoutMs
 		deadline = AbortSignal.timeout(evaluationTimeoutMs)
 		const signal = input.signal ? AbortSignal.any([deadline, input.signal]) : deadline
 		const response = await completeSimple(model, context, {
@@ -218,8 +221,8 @@ export async function evaluateGoal(input: GoalEvaluationInput, ctx: ExtensionCon
 			samplingParams: model.provider === "moonshotai" ? { response_format: { type: "json_object" } } : undefined,
 			signal,
 		})
-		const usage = toGoalEvaluatorUsage(response.usage)
-		const parsed = parseGoalEvaluatorOutput(contentParts(response.content))
+		const usage = toFermentV2EvaluatorUsage(response.usage)
+		const parsed = parseFermentV2EvaluatorOutput(contentParts(response.content))
 		if (parsed) {
 			const decision = { verdict: parsed.verdict, reason: parsed.reason }
 			const unsupportedReason =
@@ -270,7 +273,7 @@ function contentParts(content: unknown): string {
 }
 
 function unsupportedMetReason(
-	checks: GoalEvaluatorCheck[] | undefined,
+	checks: FermentV2EvaluatorCheck[] | undefined,
 	evidenceIds: ReadonlySet<string>,
 	todos: readonly TodoItem[],
 ): string | undefined {
@@ -315,11 +318,11 @@ function renderTodoState(todos: readonly TodoItem[]): string | undefined {
 	return undefined
 }
 
-function renderGoalLessons(lessons: readonly GoalLesson[] | undefined): {
+function renderFermentV2Lessons(lessons: readonly FermentV2Lesson[] | undefined): {
 	text: string
 	evidenceIds: ReadonlySet<string>
 } {
-	const entries = (lessons ?? []).slice(-MAX_GOAL_LESSONS).map((lesson) => {
+	const entries = (lessons ?? []).slice(-MAX_FERMENT_V2_LESSONS).map((lesson) => {
 		const id = `l${lesson.todoId}`
 		return {
 			id,

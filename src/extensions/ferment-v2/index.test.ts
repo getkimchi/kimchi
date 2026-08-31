@@ -11,27 +11,27 @@ import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION } from "../todos/types.js"
 import {
-	GET_GOAL_TOOL_NAME,
-	GOAL_CONTEXT_MESSAGE_TYPE,
-	GOAL_CONTROL_MESSAGE_TYPE,
-	GOAL_CUSTOM_ENTRY_TYPE,
-	GOAL_TOOL_NAMES,
-	UPDATE_GOAL_TOOL_NAME,
+	FERMENT_V2_CONTEXT_MESSAGE_TYPE,
+	FERMENT_V2_CONTROL_MESSAGE_TYPE,
+	FERMENT_V2_CUSTOM_ENTRY_TYPE,
+	FERMENT_V2_TOOL_NAMES,
+	GET_FERMENT_V2_TOOL_NAME,
+	UPDATE_FERMENT_V2_TOOL_NAME,
 } from "./constants.js"
-import { GOAL_EVENTS } from "./domain-events.js"
-import { evaluateGoal } from "./evaluator.js"
-import goalExtension from "./index.js"
-import { DEFAULT_GOAL_SETTINGS, getGoalSettings } from "./settings.js"
-import type { GoalJournalEntry, SessionGoal } from "./types.js"
+import { FERMENT_V2_EVENTS } from "./domain-events.js"
+import { evaluateFermentV2 } from "./evaluator.js"
+import fermentV2Extension from "./index.js"
+import { DEFAULT_FERMENT_V2_SETTINGS, getFermentV2Settings } from "./settings.js"
+import type { FermentV2JournalEntry, SessionFermentV2 } from "./types.js"
 
-vi.mock("./evaluator.js", () => ({ evaluateGoal: vi.fn() }))
+vi.mock("./evaluator.js", () => ({ evaluateFermentV2: vi.fn() }))
 vi.mock("./settings.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./settings.js")>()
-	return { ...actual, getGoalSettings: vi.fn() }
+	return { ...actual, getFermentV2Settings: vi.fn() }
 })
 
-const evaluateGoalMock = vi.mocked(evaluateGoal)
-const goalSettingsMock = vi.mocked(getGoalSettings)
+const evaluateFermentV2Mock = vi.mocked(evaluateFermentV2)
+const fermentV2SettingsMock = vi.mocked(getFermentV2Settings)
 const EVALUATOR_USAGE = {
 	input: 10,
 	output: 5,
@@ -62,17 +62,17 @@ type ToolConfig = {
 	}>
 }
 
-describe("goal extension", () => {
+describe("Ferment V2 extension", () => {
 	let harness: ReturnType<typeof createHarness>
 
 	beforeEach(async () => {
-		evaluateGoalMock.mockResolvedValue({
+		evaluateFermentV2Mock.mockResolvedValue({
 			verdict: "continue",
 			reason: "More work is required.",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
 		})
-		goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS })
+		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS })
 		harness = createHarness()
 		await harness.fire("session_start", { type: "session_start", reason: "new" })
 	})
@@ -83,47 +83,50 @@ describe("goal extension", () => {
 	})
 
 	it("registers the commands, completions, tools, and empty-state behavior", async () => {
-		expect([...harness.commands.keys()]).toEqual(["goal"])
-		expect([...harness.tools.keys()]).toEqual([...GOAL_TOOL_NAMES])
-		expect(harness.tools.get(UPDATE_GOAL_TOOL_NAME)?.promptGuidelines).toContain(
+		expect([...harness.commands.keys()]).toEqual(["ferment-v2"])
+		expect([...harness.tools.keys()]).toEqual([...FERMENT_V2_TOOL_NAMES])
+		expect(harness.tools.get(UPDATE_FERMENT_V2_TOOL_NAME)?.promptGuidelines).toContain(
 			"Claim complete only after current evidence proves every requirement is met. Report blocked only when the objective cannot be completed without user or external action after trying viable alternatives; one unavailable preferred tool or check is not a blockage.",
 		)
 		expect(
 			harness.commands
-				.get("goal")
+				.get("ferment-v2")
 				?.getArgumentCompletions?.("re")
 				?.map((entry) => entry.value),
 		).toEqual(["resume"])
-		expect(harness.commands.get("goal")?.getArgumentCompletions?.("ed")?.[0]).toMatchObject({
+		expect(harness.commands.get("ferment-v2")?.getArgumentCompletions?.("ed")?.[0]).toMatchObject({
 			value: "edit ",
 			label: "edit",
 		})
 
 		await harness.command("")
-		expect(harness.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("No goal is currently set"), "info")
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(
+			expect.stringContaining("No Ferment V2 is currently set"),
+			"info",
+		)
 
-		const result = await harness.tool(GET_GOAL_TOOL_NAME, {})
-		expect(result.details.goal).toBeNull()
+		const result = await harness.tool(GET_FERMENT_V2_TOOL_NAME, {})
+		expect(result.details.fermentV2).toBeNull()
 	})
 
-	it("publishes no status when no goal exists", async () => {
-		expect(harness.ui.setStatus).toHaveBeenCalledWith("goal", undefined)
-		expect(harness.ui.setStatus).not.toHaveBeenCalledWith("goal", expect.any(String))
+	it("publishes no status when no Ferment V2 exists", async () => {
+		expect(harness.ui.setStatus).toHaveBeenCalledWith("ferment-v2", undefined)
+		expect(harness.ui.setStatus).not.toHaveBeenCalledWith("ferment-v2", expect.any(String))
 	})
 
-	it("creates a goal, persists it, and confirms unfinished replacement", async () => {
+	it("creates a Ferment V2, persists it, and confirms unfinished replacement", async () => {
 		await harness.command("ship feature A")
-		const first = harness.currentGoal()
+		const first = harness.currentFermentV2()
 
 		expect(first).toMatchObject({ revision: 1, objective: "ship feature A", status: "active" })
 		expect(harness.events.emit).toHaveBeenCalledWith(
-			GOAL_EVENTS.STARTED,
-			expect.objectContaining({ goalId: first?.id, revision: 1, status: "active" }),
+			FERMENT_V2_EVENTS.STARTED,
+			expect.objectContaining({ fermentV2Id: first?.id, revision: 1, status: "active" }),
 		)
 		expect(harness.events.emit.mock.lastCall?.[1]).not.toHaveProperty("objective")
 		expect(harness.appendEntry).toHaveBeenCalledWith(
-			GOAL_CUSTOM_ENTRY_TYPE,
-			expect.objectContaining({ op: "put", goal: expect.objectContaining({ id: first?.id }) }),
+			FERMENT_V2_CUSTOM_ENTRY_TYPE,
+			expect.objectContaining({ op: "put", fermentV2: expect.objectContaining({ id: first?.id }) }),
 		)
 		expect(harness.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ display: false, details: expect.objectContaining({ revision: 1 }) }),
@@ -134,20 +137,20 @@ describe("goal extension", () => {
 
 		harness.ui.confirm.mockResolvedValueOnce(false)
 		await harness.command("ship feature B")
-		expect(harness.currentGoal()?.id).toBe(first?.id)
+		expect(harness.currentFermentV2()?.id).toBe(first?.id)
 
 		harness.ui.confirm.mockResolvedValueOnce(true)
 		await harness.command("ship feature B")
-		const replacement = harness.currentGoal()
+		const replacement = harness.currentFermentV2()
 		expect(replacement).toMatchObject({ revision: 1, objective: "ship feature B", status: "active" })
 		expect(replacement?.id).not.toBe(first?.id)
 		expect(harness.events.emit).toHaveBeenLastCalledWith(
-			GOAL_EVENTS.REPLACED,
-			expect.objectContaining({ goalId: replacement?.id, revision: 1, status: "active" }),
+			FERMENT_V2_EVENTS.REPLACED,
+			expect.objectContaining({ fermentV2Id: replacement?.id, revision: 1, status: "active" }),
 		)
 	})
 
-	it("waits for a headless goal turn before resolving the command", async () => {
+	it("waits for a headless Ferment V2 turn before resolving the command", async () => {
 		const headlessHarness = createHarness({ hasUI: false })
 
 		let resolved = false
@@ -158,7 +161,7 @@ describe("goal extension", () => {
 		expect(resolved).toBe(false)
 		expect(headlessHarness.waitForIdle).not.toHaveBeenCalled()
 
-		await settleGoal(headlessHarness, "unavailable")
+		await settleFermentV2(headlessHarness, "unavailable")
 		await command
 		expect(resolved).toBe(true)
 	})
@@ -172,55 +175,55 @@ describe("goal extension", () => {
 		await vi.waitFor(() => expect(headlessHarness.sendMessage).toHaveBeenCalledOnce())
 
 		await headlessHarness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		const result = await headlessHarness.tool(UPDATE_GOAL_TOOL_NAME, {
+		const result = await headlessHarness.tool(UPDATE_FERMENT_V2_TOOL_NAME, {
 			status: "blocked",
 			reason: "needs user input",
 		})
 		expect(result.terminate).toBe(true)
-		expect(headlessHarness.currentGoal()).toMatchObject({ status: "blocked", tokensUsed: 0 })
+		expect(headlessHarness.currentFermentV2()).toMatchObject({ status: "blocked", tokensUsed: 0 })
 		expect(resolved).toBe(false)
 
 		await headlessHarness.fire("turn_end", terminalTurn("stop", { input: 7, output: 3 }))
 		await command
 		expect(resolved).toBe(true)
-		expect(headlessHarness.currentGoal()).toMatchObject({ status: "blocked", tokensUsed: 10 })
+		expect(headlessHarness.currentFermentV2()).toMatchObject({ status: "blocked", tokensUsed: 10 })
 		expect(headlessHarness.branch.at(-1)?.type).toBe("custom")
-		expect((headlessHarness.branch.at(-1) as { data: GoalJournalEntry }).data).toMatchObject({
+		expect((headlessHarness.branch.at(-1) as { data: FermentV2JournalEntry }).data).toMatchObject({
 			op: "put",
-			goal: { status: "blocked", tokensUsed: 10 },
+			fermentV2: { status: "blocked", tokensUsed: 10 },
 		})
 	})
 
-	it("rejects goal creation when required Goal or Todo tools are unavailable", async () => {
+	it("rejects Ferment V2 creation when required Ferment V2 or Todo tools are unavailable", async () => {
 		const headlessHarness = createHarness({ hasUI: false })
 		headlessHarness.setActiveTools([])
 
 		await headlessHarness.command("ship feature A")
 		expect(headlessHarness.sendMessage).not.toHaveBeenCalled()
-		expect(headlessHarness.currentGoal()).toBeUndefined()
+		expect(headlessHarness.currentFermentV2()).toBeUndefined()
 		expect(headlessHarness.ui.notify).toHaveBeenCalledWith(
-			"Goal requires the Goal and Todo tools to be enabled before it can run.",
+			"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
 			"warning",
 		)
 	})
 
-	it("rejects goal replacement before asking when required tools are unavailable", async () => {
+	it("rejects Ferment V2 replacement before asking when required tools are unavailable", async () => {
 		await harness.command("ship feature A")
-		const first = harness.currentGoal()
+		const first = harness.currentFermentV2()
 		harness.ui.confirm.mockClear()
 		harness.setActiveTools([])
 
 		await harness.command("ship feature B")
 
 		expect(harness.ui.confirm).not.toHaveBeenCalled()
-		expect(harness.currentGoal()?.id).toBe(first?.id)
+		expect(harness.currentFermentV2()?.id).toBe(first?.id)
 		expect(harness.ui.notify).toHaveBeenCalledWith(
-			"Goal requires the Goal and Todo tools to be enabled before it can run.",
+			"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
 			"warning",
 		)
 	})
 
-	it("resolves a headless waiter when the goal tools go away mid-evaluation", async () => {
+	it("resolves a headless waiter when the Ferment V2 tools go away mid-evaluation", async () => {
 		const headless = createHarness({ hasUI: false })
 
 		let resolved = false
@@ -230,7 +233,7 @@ describe("goal extension", () => {
 		await vi.waitFor(() => expect(headless.sendMessage).toHaveBeenCalledOnce())
 		expect(resolved).toBe(false)
 
-		// The pre-evaluator canEvaluateGoal check passes here (tools are still
+		// The pre-evaluator canEvaluateFermentV2 check passes here (tools are still
 		// available), so the evaluator call proceeds and only the post-evaluator
 		// twin ever sees the tools go away.
 		const { release, settled } = await holdEvaluation(headless)
@@ -248,7 +251,7 @@ describe("goal extension", () => {
 		const winner = await Promise.race([command, timeout])
 		if (timer) clearTimeout(timer)
 
-		// If this regresses, the post-evaluator canEvaluateGoal failure never
+		// If this regresses, the post-evaluator canEvaluateFermentV2 failure never
 		// resolves the waiter (unlike its pre-evaluator twin), and the headless
 		// command hangs forever instead of the race above timing out.
 		expect(winner).not.toBe(TIMED_OUT)
@@ -262,69 +265,69 @@ describe("goal extension", () => {
 
 		dateNow.mockReturnValue(61_000)
 		await harness.command("second")
-		expect(harness.currentGoal()).toMatchObject({ objective: "second", timeUsedMs: 0 })
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("goal", "Goal active · <1m · 0 tokens")
+		expect(harness.currentFermentV2()).toMatchObject({ objective: "second", timeUsedMs: 0 })
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "Ferment V2 active · <1m · 0 tokens")
 
 		dateNow.mockReturnValue(121_000)
 		await harness.fire("turn_end", terminalTurn())
-		expect(harness.currentGoal()).toMatchObject({ timeUsedMs: 0 })
+		expect(harness.currentFermentV2()).toMatchObject({ timeUsedMs: 0 })
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: 121_000 })
 		dateNow.mockReturnValue(181_000)
 		await harness.fire("turn_end", terminalTurn())
-		expect(harness.currentGoal()).toMatchObject({ timeUsedMs: 60_000 })
+		expect(harness.currentFermentV2()).toMatchObject({ timeUsedMs: 60_000 })
 	})
 
-	it("replaces a complete goal without confirmation", async () => {
+	it("replaces a complete Ferment V2 without confirmation", async () => {
 		await harness.command("first")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
-		await harness.tool(UPDATE_GOAL_TOOL_NAME, {
+		await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, {
 			status: "complete",
 			completion_confidence: "tested",
 		})
-		await settleGoal(harness, "met")
+		await settleFermentV2(harness, "met")
 		harness.ui.confirm.mockClear()
 
 		await harness.command("second")
 
 		expect(harness.ui.confirm).not.toHaveBeenCalled()
-		expect(harness.currentGoal()).toMatchObject({ objective: "second", revision: 1, status: "active" })
+		expect(harness.currentFermentV2()).toMatchObject({ objective: "second", revision: 1, status: "active" })
 	})
 
 	it("shows running feedback and reports final elapsed time and tokens", async () => {
 		const dateNow = vi.spyOn(Date, "now").mockReturnValue(1_000)
 		await harness.command("ship it")
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("goal", "Goal active · <1m · 0 tokens")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "Ferment V2 active · <1m · 0 tokens")
 		expect(harness.ui.setWidget).not.toHaveBeenCalled()
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1_000 })
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("goal", "Goal running · <1m · 0 tokens")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "Fermenting · <1m · 0 tokens")
 		dateNow.mockReturnValue(3_500)
 		await harness.fire("turn_end", terminalTurn("stop", { input: 1_200, output: 300 }))
-		expect(harness.currentGoal()).toMatchObject({ tokensUsed: 1_500, timeUsedMs: 2_500 })
+		expect(harness.currentFermentV2()).toMatchObject({ tokensUsed: 1_500, timeUsedMs: 2_500 })
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: 3_500 })
 		dateNow.mockReturnValue(4_500)
 		await completeVisibleTodo(harness)
-		const goal = requireGoal(harness.currentGoal())
-		await harness.tool(UPDATE_GOAL_TOOL_NAME, {
-			goalId: goal.id,
-			revision: goal.revision,
+		const fermentV2 = requireFermentV2(harness.currentFermentV2())
+		await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, {
+			fermentV2Id: fermentV2.id,
+			revision: fermentV2.revision,
 			status: "complete",
 			completion_confidence: "proven",
 		})
 		await harness.fire("turn_end", terminalTurn("stop", { input: 200, output: 50 }))
-		await settleGoal(harness, "met")
+		await settleFermentV2(harness, "met")
 
-		expect(harness.currentGoal()).toMatchObject({
+		expect(harness.currentFermentV2()).toMatchObject({
 			status: "complete",
 			completionConfidence: "proven",
 			tokensUsed: 1_750,
 			timeUsedMs: 3_500,
 		})
-		expect(harness.ui.notify).toHaveBeenCalledWith("Goal complete.", "info")
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("goal", undefined)
+		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 complete.", "info")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", undefined)
 	})
 
 	it("treats missing usage fields as zero", async () => {
@@ -333,28 +336,28 @@ describe("goal extension", () => {
 
 		await harness.fire("turn_end", terminalTurn("stop", { input: 25 }))
 
-		expect(harness.currentGoal()?.tokensUsed).toBe(25)
+		expect(harness.currentFermentV2()?.tokensUsed).toBe(25)
 	})
 
-	it("allows work tools but requires visible settled todos before ending every goal revision", async () => {
+	it("allows work tools but requires visible settled todos before ending every Ferment V2 revision", async () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 
 		expect(await harness.fire("tool_call", { type: "tool_call", toolName: "bash", input: {} })).toBeUndefined()
 		expect(
-			await harness.fire("tool_call", { type: "tool_call", toolName: GET_GOAL_TOOL_NAME, input: {} }),
+			await harness.fire("tool_call", { type: "tool_call", toolName: GET_FERMENT_V2_TOOL_NAME, input: {} }),
 		).toBeUndefined()
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "blocked", reason: "needs user input" },
 			}),
 		).toBeUndefined()
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "complete" },
 			}),
 		).toMatchObject({ block: true, reason: expect.stringContaining("visible tactical todo") })
@@ -367,7 +370,7 @@ describe("goal extension", () => {
 				details: {
 					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
 					scope: { kind: "global" },
-					todos: [{ id: 1, content: "Implement the goal", status: "in_progress" }],
+					todos: [{ id: 1, content: "Implement the Ferment V2", status: "in_progress" }],
 					updatedAt: "2026-08-03T00:00:01.000Z",
 				},
 			},
@@ -376,7 +379,7 @@ describe("goal extension", () => {
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "complete" },
 			}),
 		).toMatchObject({ block: true, reason: expect.stringContaining("settle every item") })
@@ -389,7 +392,7 @@ describe("goal extension", () => {
 				details: {
 					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
 					scope: { kind: "global" },
-					todos: [{ id: 1, content: "Implement the goal", status: "completed" }],
+					todos: [{ id: 1, content: "Implement the Ferment V2", status: "completed" }],
 					updatedAt: "2026-08-03T00:00:02.000Z",
 				},
 			},
@@ -397,7 +400,7 @@ describe("goal extension", () => {
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "complete" },
 			}),
 		).toBeUndefined()
@@ -417,20 +420,20 @@ describe("goal extension", () => {
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "complete" },
 			}),
 		).toMatchObject({ block: true, reason: expect.stringContaining("without clearing") })
 
 		harness.setSession("session-b", [])
 		await harness.fire("session_start", { type: "session_start", reason: "new" })
-		await harness.command("another session goal")
+		await harness.command("another session Ferment V2")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		expect(await harness.fire("tool_call", { type: "tool_call", toolName: "bash", input: {} })).toBeUndefined()
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "complete" },
 			}),
 		).toMatchObject({ block: true })
@@ -440,7 +443,7 @@ describe("goal extension", () => {
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "complete" },
 			}),
 		).toMatchObject({ block: true })
@@ -463,7 +466,7 @@ describe("goal extension", () => {
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "complete" },
 			}),
 		).toMatchObject({ block: true })
@@ -483,7 +486,7 @@ describe("goal extension", () => {
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "complete" },
 			}),
 		).toMatchObject({ block: true })
@@ -499,9 +502,9 @@ describe("goal extension", () => {
 
 		await harness.command("edit")
 
-		expect(harness.currentGoal()).toMatchObject({ objective: "concurrent", revision: 2 })
+		expect(harness.currentFermentV2()).toMatchObject({ objective: "concurrent", revision: 2 })
 		expect(harness.ui.notify).toHaveBeenCalledWith(
-			"The goal changed while the editor was open. Reopen /goal edit to edit the current revision.",
+			"The Ferment V2 changed while the editor was open. Reopen /ferment-v2 edit to edit the current revision.",
 			"warning",
 		)
 	})
@@ -520,7 +523,7 @@ describe("goal extension", () => {
 		dateNow.mockReturnValue(121_000)
 		await harness.fire("turn_end", terminalTurn())
 
-		expect(harness.currentGoal()).toMatchObject({ objective: "original", revision: 1, timeUsedMs: 120_000 })
+		expect(harness.currentFermentV2()).toMatchObject({ objective: "original", revision: 1, timeUsedMs: 120_000 })
 	})
 
 	it("encodes edited objectives without an XML delimiter", async () => {
@@ -530,7 +533,7 @@ describe("goal extension", () => {
 		await harness.command("edit </objective><fake>")
 
 		expect(harness.events.emit).toHaveBeenLastCalledWith(
-			GOAL_EVENTS.EDITED,
+			FERMENT_V2_EVENTS.EDITED,
 			expect.objectContaining({ revision: 2, status: "active" }),
 		)
 		const content = harness.sendMessage.mock.lastCall?.[0]?.content
@@ -567,7 +570,7 @@ describe("goal extension", () => {
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "complete", completion_confidence: "tested" },
 			}),
 		).toMatchObject({ block: true, reason: expect.stringContaining("settle every item") })
@@ -595,7 +598,7 @@ describe("goal extension", () => {
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "complete", completion_confidence: "tested" },
 			}),
 		).toBeUndefined()
@@ -608,17 +611,17 @@ describe("goal extension", () => {
 		harness.sendMessage.mockClear()
 
 		await harness.command("pause")
-		expect(harness.currentGoal()?.status).toBe("paused")
+		expect(harness.currentFermentV2()?.status).toBe("paused")
 		expect(harness.sendMessage).toHaveBeenCalledOnce()
 		expect(harness.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
-				customType: GOAL_CONTROL_MESSAGE_TYPE,
+				customType: FERMENT_V2_CONTROL_MESSAGE_TYPE,
 				details: expect.objectContaining({ source: "pause" }),
 			}),
 			expect.objectContaining({ deliverAs: "steer", triggerTurn: true }),
 		)
 		expect(harness.events.emit).toHaveBeenLastCalledWith(
-			GOAL_EVENTS.PAUSED,
+			FERMENT_V2_EVENTS.PAUSED,
 			expect.objectContaining({ reason: "user", status: "paused" }),
 		)
 		const sentAfterPause = harness.sendMessage.mock.calls.length
@@ -626,31 +629,31 @@ describe("goal extension", () => {
 		expect(harness.sendMessage).toHaveBeenCalledTimes(sentAfterPause)
 
 		await harness.command("resume")
-		expect(harness.currentGoal()?.status).toBe("active")
+		expect(harness.currentFermentV2()?.status).toBe("active")
 		expect(harness.sendMessage.mock.lastCall?.[0]).toMatchObject({
 			details: expect.objectContaining({ source: "resume" }),
 		})
 
 		harness.sendMessage.mockClear()
 		await harness.command("clear")
-		expect(harness.currentGoal()).toBeUndefined()
+		expect(harness.currentFermentV2()).toBeUndefined()
 		expect(harness.sendMessage).toHaveBeenCalledOnce()
 		expect(harness.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
-				customType: GOAL_CONTROL_MESSAGE_TYPE,
+				customType: FERMENT_V2_CONTROL_MESSAGE_TYPE,
 				details: expect.objectContaining({ source: "clear" }),
 			}),
 			expect.objectContaining({ deliverAs: "steer", triggerTurn: true }),
 		)
 		expect(harness.latestJournal()).toMatchObject({ op: "clear" })
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("goal", undefined)
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", undefined)
 
 		await harness.fire("session_start", { type: "session_start", reason: "resume" })
-		expect(harness.currentGoal()).toBeUndefined()
-		expect((await harness.tool(GET_GOAL_TOOL_NAME, {})).details.goal).toBeNull()
+		expect(harness.currentFermentV2()).toBeUndefined()
+		expect((await harness.tool(GET_FERMENT_V2_TOOL_NAME, {})).details.fermentV2).toBeNull()
 	})
 
-	it("schedules a continuation turn when resuming a session with an active goal", async () => {
+	it("schedules a continuation turn when resuming a session with an active Ferment V2", async () => {
 		await harness.command("ship it")
 		// Simulate a hard kill: no session_shutdown fired, journal branch untouched.
 		// A fresh harness stands in for the new process re-attaching to the same
@@ -661,9 +664,9 @@ describe("goal extension", () => {
 		resumed.setSession("session-a", capturedBranch)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
-		expect(resumed.currentGoal()?.status).toBe("active")
+		expect(resumed.currentFermentV2()?.status).toBe("active")
 		expect(resumed.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ customType: GOAL_CONTROL_MESSAGE_TYPE }),
+			expect.objectContaining({ customType: FERMENT_V2_CONTROL_MESSAGE_TYPE }),
 			expect.objectContaining({ triggerTurn: true }),
 		)
 	})
@@ -676,7 +679,7 @@ describe("goal extension", () => {
 		resumed.setSession("session-a", capturedBranch)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
-		expect(resumed.currentGoal()?.status).toBe("active")
+		expect(resumed.currentFermentV2()?.status).toBe("active")
 		expect(resumed.sendMessage).not.toHaveBeenCalled()
 	})
 
@@ -693,19 +696,19 @@ describe("goal extension", () => {
 		expect(resumed.sendMessage).toHaveBeenCalledTimes(1)
 	})
 
-	it("does not schedule a continuation turn when resuming a non-active goal", async () => {
+	it("does not schedule a continuation turn when resuming a non-active Ferment V2", async () => {
 		await harness.command("ship it")
 		harness.setIdle(false)
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await harness.command("pause")
-		expect(harness.currentGoal()?.status).toBe("paused")
+		expect(harness.currentFermentV2()?.status).toBe("paused")
 		const capturedBranch = [...harness.branch]
 
 		const resumed = createHarness()
 		resumed.setSession("session-a", capturedBranch)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
-		expect(resumed.currentGoal()?.status).toBe("paused")
+		expect(resumed.currentFermentV2()?.status).toBe("paused")
 		expect(resumed.sendMessage).not.toHaveBeenCalled()
 	})
 
@@ -718,12 +721,12 @@ describe("goal extension", () => {
 		resumed.setPending(true)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
-		expect(resumed.currentGoal()?.status).toBe("active")
+		expect(resumed.currentFermentV2()?.status).toBe("active")
 		expect(resumed.sendMessage).not.toHaveBeenCalled()
 	})
 
 	// session_start resumes via a deferred timer so an embedder's prompt can set
-	// isStreaming first; goalIsBusy then skips the competing kick.
+	// isStreaming first; fermentV2IsBusy then skips the competing kick.
 	it("does not schedule a continuation turn on resume when the session is already busy", async () => {
 		await harness.command("ship it")
 		const capturedBranch = [...harness.branch]
@@ -733,7 +736,7 @@ describe("goal extension", () => {
 		resumed.setIdle(false)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
-		expect(resumed.currentGoal()?.status).toBe("active")
+		expect(resumed.currentFermentV2()?.status).toBe("active")
 		expect(resumed.sendMessage).not.toHaveBeenCalled()
 	})
 
@@ -754,7 +757,7 @@ describe("goal extension", () => {
 			await firePromise
 
 			expect(resumed.sendMessage).toHaveBeenCalledWith(
-				expect.objectContaining({ customType: GOAL_CONTROL_MESSAGE_TYPE }),
+				expect.objectContaining({ customType: FERMENT_V2_CONTROL_MESSAGE_TYPE }),
 				expect.objectContaining({ triggerTurn: true }),
 			)
 		} finally {
@@ -767,18 +770,18 @@ describe("goal extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
 
-		const result = await harness.tool(UPDATE_GOAL_TOOL_NAME, {
+		const result = await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, {
 			status: "complete",
 			completion_confidence: "tested",
 		})
 
 		expect(result.content[0].text).toContain("completion claimed")
 		expect(result.terminate).toBe(true)
-		expect(harness.currentGoal()?.status).toBe("active")
-		await settleGoal(harness, "met")
-		expect(harness.currentGoal()?.status).toBe("complete")
+		expect(harness.currentFermentV2()?.status).toBe("active")
+		await settleFermentV2(harness, "met")
+		expect(harness.currentFermentV2()?.status).toBe("complete")
 		expect(harness.events.emit).toHaveBeenLastCalledWith(
-			GOAL_EVENTS.COMPLETED,
+			FERMENT_V2_EVENTS.COMPLETED,
 			expect.objectContaining({ completionConfidence: "tested", status: "complete" }),
 		)
 	})
@@ -788,12 +791,12 @@ describe("goal extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
 
-		const missing = await harness.tool(UPDATE_GOAL_TOOL_NAME, { status: "complete" })
+		const missing = await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, { status: "complete" })
 		expect(missing.terminate).toBe(true)
-		expect(harness.currentGoal()?.status).toBe("active")
-		await settleGoal(harness, "met")
-		expect(harness.currentGoal()?.status).toBe("complete")
-		expect(harness.currentGoal()?.completionConfidence).toBeUndefined()
+		expect(harness.currentFermentV2()?.status).toBe("active")
+		await settleFermentV2(harness, "met")
+		expect(harness.currentFermentV2()?.status).toBe("complete")
+		expect(harness.currentFermentV2()?.completionConfidence).toBeUndefined()
 	})
 
 	it("keeps low self-reported confidence without treating it as the verdict", async () => {
@@ -801,14 +804,14 @@ describe("goal extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
 
-		const partial = await harness.tool(UPDATE_GOAL_TOOL_NAME, {
+		const partial = await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, {
 			status: "complete",
 			completion_confidence: "partial",
 		})
 		expect(partial.terminate).toBe(true)
-		expect(harness.currentGoal()?.status).toBe("active")
-		await settleGoal(harness, "met")
-		expect(harness.currentGoal()).toMatchObject({ status: "complete", completionConfidence: "partial" })
+		expect(harness.currentFermentV2()?.status).toBe("active")
+		await settleFermentV2(harness, "met")
+		expect(harness.currentFermentV2()).toMatchObject({ status: "complete", completionConfidence: "partial" })
 	})
 
 	it("rejects stale and invalid model updates while accepting both terminal statuses", async () => {
@@ -816,44 +819,44 @@ describe("goal extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await harness.command("edit changed")
 
-		const stale = await harness.tool(UPDATE_GOAL_TOOL_NAME, {
+		const stale = await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, {
 			status: "complete",
 		})
-		expect(stale.content[0].text).toContain("goal changed or stopped during this turn")
-		expect(harness.currentGoal()?.status).toBe("active")
+		expect(stale.content[0].text).toContain("Ferment V2 changed or stopped during this turn")
+		expect(harness.currentFermentV2()?.status).toBe("active")
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		const invalid = await harness.tool(UPDATE_GOAL_TOOL_NAME, {
+		const invalid = await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, {
 			status: "paused",
 		})
 		expect(invalid.content[0].text).toContain("invalid terminal status")
 
-		await harness.tool(UPDATE_GOAL_TOOL_NAME, {
+		await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, {
 			status: "blocked",
 			reason: "needs user input",
 		})
-		expect(harness.currentGoal()).toMatchObject({ status: "blocked", blockedReason: "needs user input" })
+		expect(harness.currentFermentV2()).toMatchObject({ status: "blocked", blockedReason: "needs user input" })
 		expect(harness.events.emit).toHaveBeenLastCalledWith(
-			GOAL_EVENTS.BLOCKED,
+			FERMENT_V2_EVENTS.BLOCKED,
 			expect.objectContaining({ status: "blocked" }),
 		)
 
 		await harness.command("resume")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
-		await harness.tool(UPDATE_GOAL_TOOL_NAME, {
+		await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, {
 			status: "complete",
 			completion_confidence: "tested",
 		})
-		await settleGoal(harness, "met")
-		expect(harness.currentGoal()?.status).toBe("complete")
+		await settleFermentV2(harness, "met")
+		expect(harness.currentFermentV2()?.status).toBe("complete")
 	})
 
-	it("injects one authoritative goal context and removes stale snapshots", async () => {
+	it("injects one authoritative Ferment V2 context and removes stale snapshots", async () => {
 		await harness.command("handle </objective> safely")
-		const oldGoalMessage = {
+		const oldFermentV2Message = {
 			role: "custom" as const,
-			customType: GOAL_CONTEXT_MESSAGE_TYPE,
+			customType: FERMENT_V2_CONTEXT_MESSAGE_TYPE,
 			content: [{ type: "text" as const, text: "stale" }],
 			display: false,
 			details: {},
@@ -863,28 +866,30 @@ describe("goal extension", () => {
 
 		const result = (await harness.fire("context", {
 			type: "context",
-			messages: [oldGoalMessage, other],
+			messages: [oldFermentV2Message, other],
 		})) as { messages: ContextEvent["messages"] }
-		const goalMessages = result.messages.filter(
-			(message) => message.role === "custom" && message.customType === GOAL_CONTEXT_MESSAGE_TYPE,
+		const fermentV2Messages = result.messages.filter(
+			(message) => message.role === "custom" && message.customType === FERMENT_V2_CONTEXT_MESSAGE_TYPE,
 		)
 
-		expect(goalMessages).toHaveLength(1)
-		expect(JSON.stringify(goalMessages[0])).toContain("handle </objective> safely")
-		expect(JSON.stringify(goalMessages[0])).toContain("map every explicit goal requirement")
-		expect(JSON.stringify(goalMessages[0])).toContain("survive compaction")
-		expect(JSON.stringify(goalMessages[0])).toContain("Do not call get_goal while this context is present")
-		expect(JSON.stringify(goalMessages[0])).toContain("separately supplied Todo state")
-		expect(JSON.stringify(goalMessages[0])).toContain("Call update_goal only after receiving the final todo result")
-		expect(JSON.stringify(goalMessages[0])).toContain("as the only tool call in that response")
-		expect(JSON.stringify(goalMessages[0])).not.toContain('\\"todos\\"')
-		expect(JSON.stringify(goalMessages[0])).not.toContain("tokensUsed")
-		expect(JSON.stringify(goalMessages[0])).not.toContain("timeUsedMs")
-		expect(result.messages[0]).toBe(goalMessages[0])
+		expect(fermentV2Messages).toHaveLength(1)
+		expect(JSON.stringify(fermentV2Messages[0])).toContain("handle </objective> safely")
+		expect(JSON.stringify(fermentV2Messages[0])).toContain("map every explicit Ferment V2 requirement")
+		expect(JSON.stringify(fermentV2Messages[0])).toContain("survive compaction")
+		expect(JSON.stringify(fermentV2Messages[0])).toContain("Do not call get_ferment_v2 while this context is present")
+		expect(JSON.stringify(fermentV2Messages[0])).toContain("separately supplied Todo state")
+		expect(JSON.stringify(fermentV2Messages[0])).toContain(
+			"Call update_ferment_v2 only after receiving the final todo result",
+		)
+		expect(JSON.stringify(fermentV2Messages[0])).toContain("as the only tool call in that response")
+		expect(JSON.stringify(fermentV2Messages[0])).not.toContain('\\"todos\\"')
+		expect(JSON.stringify(fermentV2Messages[0])).not.toContain("tokensUsed")
+		expect(JSON.stringify(fermentV2Messages[0])).not.toContain("timeUsedMs")
+		expect(result.messages[0]).toBe(fermentV2Messages[0])
 		expect(result.messages).toContain(other)
 	})
 
-	it("keeps the goal context stable while only accounting changes", async () => {
+	it("keeps the Ferment V2 context stable while only accounting changes", async () => {
 		vi.spyOn(Date, "now").mockReturnValue(1_000)
 		await harness.command("keep the handoff stable")
 		const userMessage = { role: "user" as const, content: [{ type: "text" as const, text: "start" }], timestamp: 1 }
@@ -892,8 +897,8 @@ describe("goal extension", () => {
 			type: "context",
 			messages: [userMessage],
 		})) as { messages: ContextEvent["messages"] }
-		const firstGoalIndex = first.messages.findIndex(
-			(message) => message.role === "custom" && message.customType === GOAL_CONTEXT_MESSAGE_TYPE,
+		const firstFermentV2Index = first.messages.findIndex(
+			(message) => message.role === "custom" && message.customType === FERMENT_V2_CONTEXT_MESSAGE_TYPE,
 		)
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1_000 })
@@ -909,7 +914,7 @@ describe("goal extension", () => {
 			messages: [...first.messages, nextUserMessage],
 		})) as { messages: ContextEvent["messages"] }
 
-		expect(second.messages[firstGoalIndex]).toEqual(first.messages[firstGoalIndex])
+		expect(second.messages[firstFermentV2Index]).toEqual(first.messages[firstFermentV2Index])
 		expect(second.messages).toContain(nextUserMessage)
 	})
 
@@ -943,10 +948,10 @@ describe("goal extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
 		harness.setPending(true)
 		harness.sendMessage.mockClear()
-		evaluateGoalMock.mockClear()
+		evaluateFermentV2Mock.mockClear()
 		await harness.fire("agent_end", { type: "agent_end", messages: [] })
 		await harness.fire("agent_settled", { type: "agent_settled" })
-		expect(evaluateGoalMock).not.toHaveBeenCalled()
+		expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 
@@ -974,7 +979,7 @@ describe("goal extension", () => {
 		})
 		expect(harness.appendEntry.mock.calls[0]?.[1]).not.toHaveProperty("reason")
 		expect(harness.appendEntry.mock.calls[0]?.[1]).not.toHaveProperty("objective")
-		expect(harness.currentGoal()?.evaluationCount).toBeUndefined()
+		expect(harness.currentFermentV2()?.evaluationCount).toBeUndefined()
 	})
 
 	it("keeps evaluator met active until the current revision has a completed visible Todo", async () => {
@@ -982,8 +987,8 @@ describe("goal extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		harness.sendMessage.mockClear()
 
-		await settleGoal(harness, "met")
-		expect(harness.currentGoal()).toMatchObject({
+		await settleFermentV2(harness, "met")
+		expect(harness.currentFermentV2()).toMatchObject({
 			status: "active",
 			evaluationCount: 1,
 			lastEvaluation: { verdict: "met" },
@@ -993,15 +998,15 @@ describe("goal extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
 		harness.appendEntry.mockClear()
-		await settleGoal(harness, "met")
-		expect(harness.currentGoal()).toMatchObject({ status: "complete", evaluationCount: 2 })
+		await settleFermentV2(harness, "met")
+		expect(harness.currentFermentV2()).toMatchObject({ status: "complete", evaluationCount: 2 })
 		expect(harness.appendEntry).toHaveBeenCalledTimes(2)
 	})
 
 	it("blocks on impossible and preserves the evaluator reason without telemetering it", async () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		evaluateGoalMock.mockResolvedValueOnce({
+		evaluateFermentV2Mock.mockResolvedValueOnce({
 			verdict: "impossible",
 			reason: "Needs a user-owned credential.",
 			model: "test/evaluator",
@@ -1011,34 +1016,34 @@ describe("goal extension", () => {
 		await harness.fire("agent_end", { type: "agent_end", messages: [] })
 		await harness.fire("agent_settled", { type: "agent_settled" })
 
-		expect(harness.currentGoal()).toMatchObject({
+		expect(harness.currentFermentV2()).toMatchObject({
 			status: "blocked",
 			blockedReason: "Needs a user-owned credential.",
 			lastEvaluation: { verdict: "impossible", reason: "Needs a user-owned credential." },
 		})
 		expect(harness.events.emit).toHaveBeenCalledWith(
-			GOAL_EVENTS.EVALUATED,
+			FERMENT_V2_EVENTS.EVALUATED,
 			expect.not.objectContaining({ reason: expect.anything() }),
 		)
 		expect(harness.appendEntry).toHaveBeenCalledTimes(2)
 
 		await harness.command("resume")
-		expect(harness.currentGoal()).toMatchObject({ status: "active" })
-		expect(harness.currentGoal()).not.toHaveProperty("blockedReason")
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
+		expect(harness.currentFermentV2()).not.toHaveProperty("blockedReason")
 	})
 
 	it("pauses resumably when the evaluator is unavailable", async () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		harness.appendEntry.mockClear()
-		await settleGoal(harness, "unavailable")
+		await settleFermentV2(harness, "unavailable")
 
-		expect(harness.currentGoal()).toMatchObject({
+		expect(harness.currentFermentV2()).toMatchObject({
 			status: "paused",
 			evaluationCount: 1,
 			lastEvaluation: { verdict: "unavailable", reason: "No evaluator model is available." },
 		})
-		expect(harness.ui.notify).toHaveBeenCalledWith("Goal paused: No evaluator model is available.", "warning")
+		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused: No evaluator model is available.", "warning")
 		expect(harness.appendEntry).toHaveBeenCalledTimes(1)
 	})
 
@@ -1047,20 +1052,20 @@ describe("goal extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		harness.sendMessage.mockClear()
 
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
 		expect(continuations(harness)).toHaveLength(1)
 		expect(continuations(harness)[0]?.content).toContain("Independent completion check: More work is required.")
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("goal", "Goal running · <1m · 0 tokens")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "Fermenting · <1m · 0 tokens")
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
 		harness.sendMessage.mockClear()
-		await settleGoal(harness, "impossible")
+		await settleFermentV2(harness, "impossible")
 		expect(harness.sendMessage).not.toHaveBeenCalled()
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("goal", "Goal blocked · <1m · 0 tokens")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "Ferment V2 blocked · <1m · 0 tokens")
 	})
 
-	it("counts substantive tool use only while the goal is active", async () => {
+	it("counts substantive tool use only while the Ferment V2 is active", async () => {
 		await harness.command("ship it")
 		await harness.command("pause")
 
@@ -1074,16 +1079,16 @@ describe("goal extension", () => {
 
 		await harness.command("resume")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 
 		// Work done while paused must not count as progress after the resume.
-		expect(harness.currentGoal()?.status).toBe("paused")
+		expect(harness.currentFermentV2()?.status).toBe("paused")
 		expect(harness.events.emit).toHaveBeenLastCalledWith(
-			GOAL_EVENTS.STALLED,
+			FERMENT_V2_EVENTS.STALLED,
 			expect.objectContaining({ reason: "no_progress" }),
 		)
 	})
@@ -1095,14 +1100,14 @@ describe("goal extension", () => {
 
 		for (let turnIndex = 1; turnIndex <= 3; turnIndex++) {
 			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
-			await harness.tool(UPDATE_GOAL_TOOL_NAME, { status: "complete", completion_confidence: "proven" })
-			await settleGoal(harness, "continue")
+			await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, { status: "complete", completion_confidence: "proven" })
+			await settleFermentV2(harness, "continue")
 		}
 
 		// A repeated claim is not progress: the stall guard must still fire.
-		expect(harness.currentGoal()?.status).toBe("paused")
+		expect(harness.currentFermentV2()?.status).toBe("paused")
 		expect(harness.events.emit).toHaveBeenLastCalledWith(
-			GOAL_EVENTS.STALLED,
+			FERMENT_V2_EVENTS.STALLED,
 			expect.objectContaining({ reason: "no_progress" }),
 		)
 	})
@@ -1111,28 +1116,28 @@ describe("goal extension", () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await completeVisibleTodo(harness)
-		await harness.tool(UPDATE_GOAL_TOOL_NAME, { status: "complete", completion_confidence: "proven" })
+		await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, { status: "complete", completion_confidence: "proven" })
 
-		await settleGoal(harness, "continue")
-		expect(harness.currentGoal()).toMatchObject({ status: "active" })
+		await settleFermentV2(harness, "continue")
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		await settleGoal(harness, "met")
-		expect(harness.currentGoal()).toMatchObject({ status: "complete", completionConfidence: "proven" })
+		await settleFermentV2(harness, "met")
+		expect(harness.currentFermentV2()).toMatchObject({ status: "complete", completionConfidence: "proven" })
 	})
 
 	it("reports each evaluation's own usage rather than the running total", async () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 
-		const evaluated = harness.events.emit.mock.calls.filter(([name]) => name === GOAL_EVENTS.EVALUATED)
+		const evaluated = harness.events.emit.mock.calls.filter(([name]) => name === FERMENT_V2_EVENTS.EVALUATED)
 		expect(evaluated).toHaveLength(2)
-		// Summing the events must equal the goal's cumulative evaluator spend.
+		// Summing the events must equal the Ferment V2's cumulative evaluator spend.
 		for (const [, payload] of evaluated) expect(payload).toMatchObject({ usage: EVALUATOR_USAGE })
-		expect(harness.currentGoal()?.evaluatorUsage?.totalTokens).toBe(EVALUATOR_USAGE.totalTokens * 2)
+		expect(harness.currentFermentV2()?.evaluatorUsage?.totalTokens).toBe(EVALUATOR_USAGE.totalTokens * 2)
 	})
 
 	it("does not label an agent error as an evaluator verdict", async () => {
@@ -1149,7 +1154,7 @@ describe("goal extension", () => {
 		expect(content).not.toContain("Independent completion check")
 	})
 
-	it("blocks a headless edit until the goal reaches a terminal state", async () => {
+	it("blocks a headless edit until the Ferment V2 reaches a terminal state", async () => {
 		const headless = createHarness({ hasUI: false })
 		const create = headless.command("ship it")
 		await vi.waitFor(() => expect(headless.sendMessage).toHaveBeenCalledOnce())
@@ -1158,10 +1163,10 @@ describe("goal extension", () => {
 		const edit = headless.command("edit ship it properly").then(() => {
 			editResolved = true
 		})
-		await vi.waitFor(() => expect(headless.currentGoal()?.revision).toBe(2))
+		await vi.waitFor(() => expect(headless.currentFermentV2()?.revision).toBe(2))
 		expect(editResolved).toBe(false)
 
-		await settleGoal(headless, "unavailable")
+		await settleFermentV2(headless, "unavailable")
 		await Promise.all([create, edit])
 		expect(editResolved).toBe(true)
 	})
@@ -1181,8 +1186,8 @@ describe("goal extension", () => {
 
 		release({ verdict: "continue", reason: "More work is required.", model: "test/evaluator", usage: EVALUATOR_USAGE })
 		await settled
-		// The aborted evaluation must not resurrect the paused goal.
-		expect(harness.currentGoal()?.status).toBe("paused")
+		// The aborted evaluation must not resurrect the paused Ferment V2.
+		expect(harness.currentFermentV2()?.status).toBe("paused")
 	})
 
 	it("does not start a coding-agent turn when cleared while only the evaluator is deciding", async () => {
@@ -1198,7 +1203,7 @@ describe("goal extension", () => {
 
 		release({ verdict: "continue", reason: "More work is required.", model: "test/evaluator", usage: EVALUATOR_USAGE })
 		await settled
-		expect(harness.currentGoal()).toBeUndefined()
+		expect(harness.currentFermentV2()).toBeUndefined()
 	})
 
 	it("drops a late evaluator result after pause and resume", async () => {
@@ -1210,32 +1215,32 @@ describe("goal extension", () => {
 		await harness.command("pause")
 		expect(signal?.aborted).toBe(true)
 		await harness.command("resume")
-		expect(harness.currentGoal()).toMatchObject({ status: "active" })
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
 
 		release({ verdict: "continue", reason: "late result", model: "test/evaluator", usage: EVALUATOR_USAGE })
 		await settled
-		expect(harness.currentGoal()).toMatchObject({ status: "active" })
-		expect(harness.currentGoal()?.evaluationCount).toBeUndefined()
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
+		expect(harness.currentFermentV2()?.evaluationCount).toBeUndefined()
 	})
 
-	it("refuses to resume when required Goal or Todo tools are unavailable", async () => {
+	it("refuses to resume when required Ferment V2 or Todo tools are unavailable", async () => {
 		await harness.command("ship it")
 		await harness.command("pause")
 		harness.sendMessage.mockClear()
-		harness.setActiveTools([...GOAL_TOOL_NAMES])
+		harness.setActiveTools([...FERMENT_V2_TOOL_NAMES])
 
 		await harness.command("resume")
 
-		expect(harness.currentGoal()?.status).toBe("paused")
+		expect(harness.currentFermentV2()?.status).toBe("paused")
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 		expect(harness.ui.notify).toHaveBeenCalledWith(
-			"Goal requires the Goal and Todo tools to be enabled before it can run.",
+			"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
 			"warning",
 		)
-		expect(harness.ui.notify).not.toHaveBeenCalledWith("Goal resumed.", "info")
+		expect(harness.ui.notify).not.toHaveBeenCalledWith("Ferment V2 resumed.", "info")
 	})
 
-	it("discards an evaluator result for a stale Goal revision", async () => {
+	it("discards an evaluator result for a stale Ferment V2 revision", async () => {
 		await harness.command("old objective")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		const { release, settled } = await holdEvaluation(harness)
@@ -1249,11 +1254,11 @@ describe("goal extension", () => {
 		})
 		await settled
 
-		expect(harness.currentGoal()).toMatchObject({ revision: 2, objective: "new objective" })
-		expect(harness.currentGoal()?.evaluationCount).toBeUndefined()
+		expect(harness.currentFermentV2()).toMatchObject({ revision: 2, objective: "new objective" })
+		expect(harness.currentFermentV2()?.evaluationCount).toBeUndefined()
 	})
 
-	it("cancels an in-flight evaluation when the goal is replaced", async () => {
+	it("cancels an in-flight evaluation when the Ferment V2 is replaced", async () => {
 		await harness.command("old objective")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		const { release, settled, signal } = await holdEvaluation(harness)
@@ -1271,7 +1276,7 @@ describe("goal extension", () => {
 		await settled
 	})
 
-	it("cancels an in-flight evaluation when the goal is edited", async () => {
+	it("cancels an in-flight evaluation when the Ferment V2 is edited", async () => {
 		await harness.command("old objective")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		const { release, settled, signal } = await holdEvaluation(harness)
@@ -1288,10 +1293,10 @@ describe("goal extension", () => {
 		await settled
 	})
 
-	it("aborts an evaluation held across a session_tree rewind that lands on the same goal revision", async () => {
+	it("aborts an evaluation held across a session_tree rewind that lands on the same Ferment V2 revision", async () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		// Journaled like the other replay tests: restoreGoalRuntime rebuilds
+		// Journaled like the other replay tests: restoreFermentV2Runtime rebuilds
 		// todoStateFor from branch entries, so the settled Todo has to actually be
 		// there for the post-rewind "met" path to be reachable at all.
 		harness.setBranch([
@@ -1299,14 +1304,14 @@ describe("goal extension", () => {
 			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
 				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
 				scope: { kind: "global" },
-				todos: [{ id: 1, content: "Finish the goal", status: "completed" }],
+				todos: [{ id: 1, content: "Finish the Ferment V2", status: "completed" }],
 				updatedAt: "2026-08-03T00:00:01.000Z",
 			}),
 		])
 
 		const { release, settled, signal } = await holdEvaluation(harness)
 
-		// A rewind landing back on the same goal id/revision: the post-await
+		// A rewind landing back on the same Ferment V2 id/revision: the post-await
 		// identity check alone can't tell this apart from a live evaluation.
 		await harness.fire("session_tree", { type: "session_tree", oldLeafId: "before", newLeafId: "after" })
 
@@ -1320,9 +1325,9 @@ describe("goal extension", () => {
 		})
 		await settled
 
-		// The stale "met" verdict must not resurrect and complete a goal whose
+		// The stale "met" verdict must not resurrect and complete a Ferment V2 whose
 		// conversation was just rewound away from.
-		expect(harness.currentGoal()?.status).not.toBe("complete")
+		expect(harness.currentFermentV2()?.status).not.toBe("complete")
 	})
 
 	it("aborts an in-flight evaluation when session_start switches to a different session", async () => {
@@ -1393,13 +1398,13 @@ describe("goal extension", () => {
 		const continued = continuations(harness)
 		expect(continued).toHaveLength(2)
 		expect(continued[1]?.content).toContain("Reassess the current evidence and dead ends")
-		expect(harness.currentGoal()?.status).toBe("paused")
+		expect(harness.currentFermentV2()?.status).toBe("paused")
 		expect(harness.events.emit).toHaveBeenLastCalledWith(
-			GOAL_EVENTS.STALLED,
+			FERMENT_V2_EVENTS.STALLED,
 			expect.objectContaining({ reason: "no_progress", continuationCount: 3, status: "paused" }),
 		)
 		expect(harness.ui.notify).toHaveBeenCalledWith(
-			"Goal paused after 3 unchanged continuation turns without substantive tool use.",
+			"Ferment V2 paused after 3 unchanged continuation turns without substantive tool use.",
 			"warning",
 		)
 	})
@@ -1408,11 +1413,11 @@ describe("goal extension", () => {
 		await harness.command("keep going")
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 
-		expect(harness.currentGoal()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
 
 		// Reattach to the same journal after a restart; persisted guard counters must survive replay.
 		const capturedBranch = [...harness.branch]
@@ -1422,17 +1427,17 @@ describe("goal extension", () => {
 		resumed.sendMessage.mockClear()
 
 		await resumed.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
-		await settleGoal(resumed, "continue")
+		await settleFermentV2(resumed, "continue")
 
-		expect(resumed.currentGoal()?.status).toBe("paused")
+		expect(resumed.currentFermentV2()?.status).toBe("paused")
 		expect(resumed.events.emit).toHaveBeenLastCalledWith(
-			GOAL_EVENTS.STALLED,
+			FERMENT_V2_EVENTS.STALLED,
 			expect.objectContaining({ reason: "no_progress", continuationCount: 3, status: "paused" }),
 		)
 	})
 
 	it("pauses when every turn only appends a fresh not-yet-started todo", async () => {
-		// The `<kimchi_session_goal>` prompt now explicitly invites adding a todo
+		// The `<kimchi_session_ferment_v2>` prompt now explicitly invites adding a todo
 		// for newly discovered work. Mere list growth must not reset the
 		// no-progress guard, or an agent stuck "add a todo, plan, add a todo,
 		// plan" would never trip it.
@@ -1459,12 +1464,12 @@ describe("goal extension", () => {
 				},
 			})
 			await harness.fire("turn_end", terminalTurn())
-			await settleGoal(harness, "continue")
+			await settleFermentV2(harness, "continue")
 		}
 
-		expect(harness.currentGoal()?.status).toBe("paused")
+		expect(harness.currentFermentV2()?.status).toBe("paused")
 		expect(harness.events.emit).toHaveBeenLastCalledWith(
-			GOAL_EVENTS.STALLED,
+			FERMENT_V2_EVENTS.STALLED,
 			expect.objectContaining({ reason: "no_progress", continuationCount: 3, status: "paused" }),
 		)
 	})
@@ -1488,7 +1493,7 @@ describe("goal extension", () => {
 			},
 		})
 		await harness.fire("turn_end", terminalTurn())
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
 		await harness.fire("tool_execution_end", {
@@ -1508,9 +1513,9 @@ describe("goal extension", () => {
 			},
 		})
 		await harness.fire("turn_end", terminalTurn())
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 
-		expect(harness.currentGoal()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
 
 		// Starting the first item -- pending to in_progress -- is a real state
 		// transition, not mere growth, so it must reset the counter.
@@ -1532,10 +1537,10 @@ describe("goal extension", () => {
 			},
 		})
 		await harness.fire("turn_end", terminalTurn())
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 
-		expect(harness.currentGoal()).toMatchObject({ status: "active" })
-		expect(harness.currentGoal()?.unchangedContinuationTurns).toBeUndefined()
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
+		expect(harness.currentFermentV2()?.unchangedContinuationTurns).toBeUndefined()
 	})
 
 	it("counts settling a todo as progress and resets the no-progress counter", async () => {
@@ -1558,10 +1563,10 @@ describe("goal extension", () => {
 		for (let turnIndex = 1; turnIndex <= 2; turnIndex += 1) {
 			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
 			await harness.fire("turn_end", terminalTurn())
-			await settleGoal(harness, "continue")
+			await settleFermentV2(harness, "continue")
 		}
 
-		expect(harness.currentGoal()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
 
 		// Settling the item -- in_progress to completed -- is a real state
 		// transition, so it must reset the counter even though the list didn't grow.
@@ -1580,10 +1585,10 @@ describe("goal extension", () => {
 			},
 		})
 		await harness.fire("turn_end", terminalTurn())
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 
-		expect(harness.currentGoal()).toMatchObject({ status: "active" })
-		expect(harness.currentGoal()?.unchangedContinuationTurns).toBeUndefined()
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
+		expect(harness.currentFermentV2()?.unchangedContinuationTurns).toBeUndefined()
 	})
 
 	it.each([
@@ -1609,9 +1614,9 @@ describe("goal extension", () => {
 		for (let turnIndex = 1; turnIndex <= 2; turnIndex += 1) {
 			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
 			await harness.fire("turn_end", terminalTurn())
-			await settleGoal(harness, "continue")
+			await settleFermentV2(harness, "continue")
 		}
-		expect(harness.currentGoal()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
 		await harness.fire("tool_execution_end", {
@@ -1628,10 +1633,10 @@ describe("goal extension", () => {
 			},
 		})
 		await harness.fire("turn_end", terminalTurn())
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 
-		expect(harness.currentGoal()).toMatchObject({ status: "active" })
-		expect(harness.currentGoal()?.unchangedContinuationTurns).toBeUndefined()
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
+		expect(harness.currentFermentV2()?.unchangedContinuationTurns).toBeUndefined()
 	})
 
 	it("does not count reordering unchanged Todos or lessons as progress", async () => {
@@ -1673,37 +1678,37 @@ describe("goal extension", () => {
 			},
 		})
 		await harness.fire("turn_end", terminalTurn())
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 
-		expect(harness.currentGoal()).toMatchObject({ status: "active" })
-		expect(harness.currentGoal()?.unchangedContinuationTurns).toBe(1)
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
+		expect(harness.currentFermentV2()?.unchangedContinuationTurns).toBe(1)
 	})
 
-	it("does not loop when goal tools are hidden", async () => {
+	it("does not loop when Ferment V2 tools are hidden", async () => {
 		await harness.command("keep going")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		harness.sendMessage.mockClear()
 
 		harness.setActiveTools([])
-		evaluateGoalMock.mockClear()
+		evaluateFermentV2Mock.mockClear()
 		harness.appendEntry.mockClear()
 		await harness.fire("agent_end", { type: "agent_end", messages: [] })
 		await harness.fire("agent_settled", { type: "agent_settled" })
-		expect(evaluateGoalMock).not.toHaveBeenCalled()
+		expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 		expect(harness.appendEntry).not.toHaveBeenCalled()
-		expect(harness.currentGoal()?.status).toBe("active")
-		expect(harness.currentGoal()?.evaluationCount).toBeUndefined()
+		expect(harness.currentFermentV2()?.status).toBe("active")
+		expect(harness.currentFermentV2()?.evaluationCount).toBeUndefined()
 	})
 
 	it("does not start when only part of the Todo toolset is visible", async () => {
-		harness.setActiveTools([...GOAL_TOOL_NAMES, TODO_TOOL_NAMES[0]])
+		harness.setActiveTools([...FERMENT_V2_TOOL_NAMES, TODO_TOOL_NAMES[0]])
 		await harness.command("keep going")
 
 		expect(harness.sendMessage).not.toHaveBeenCalled()
-		expect(harness.currentGoal()).toBeUndefined()
+		expect(harness.currentFermentV2()).toBeUndefined()
 		expect(harness.ui.notify).toHaveBeenCalledWith(
-			"Goal requires the Goal and Todo tools to be enabled before it can run.",
+			"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
 			"warning",
 		)
 	})
@@ -1717,21 +1722,21 @@ describe("goal extension", () => {
 
 		await harness.fire("turn_end", terminalTurn("aborted"))
 
-		expect(harness.currentGoal()).toMatchObject({ status: "paused", timeUsedMs: 60_000 })
+		expect(harness.currentFermentV2()).toMatchObject({ status: "paused", timeUsedMs: 60_000 })
 		expect(harness.events.emit).toHaveBeenLastCalledWith(
-			GOAL_EVENTS.PAUSED,
+			FERMENT_V2_EVENTS.PAUSED,
 			expect.objectContaining({ reason: "agent_aborted", status: "paused" }),
 		)
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("goal", "Goal paused · 1m · 0 tokens")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "Ferment V2 paused · 1m · 0 tokens")
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 		dateNow.mockReturnValue(121_000)
-		expect((await harness.tool(GET_GOAL_TOOL_NAME, {})).details.goal).toMatchObject({ timeUsedMs: 60_000 })
+		expect((await harness.tool(GET_FERMENT_V2_TOOL_NAME, {})).details.fermentV2).toMatchObject({ timeUsedMs: 60_000 })
 	})
 
 	it("continues after failures and pauses after three consecutive failures", async () => {
 		await harness.command("keep going")
 		harness.sendMessage.mockClear()
-		evaluateGoalMock.mockClear()
+		evaluateFermentV2Mock.mockClear()
 
 		for (let turnIndex = 1; turnIndex <= 3; turnIndex++) {
 			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
@@ -1740,22 +1745,22 @@ describe("goal extension", () => {
 			harness.appendEntry.mockClear()
 			await harness.fire("agent_end", { type: "agent_end", messages: [] })
 			await harness.fire("agent_settled", { type: "agent_settled" })
-			if (turnIndex < 3) expect(harness.currentGoal()?.status).toBe("active")
+			if (turnIndex < 3) expect(harness.currentFermentV2()?.status).toBe("active")
 			expect(harness.appendEntry).toHaveBeenCalledTimes(1)
 		}
 
-		expect(evaluateGoalMock).not.toHaveBeenCalled()
+		expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
 		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
 		for (const [message] of harness.sendMessage.mock.calls) {
 			expect(message.details).toMatchObject({ source: "agent_error", revision: 1 })
 		}
-		expect(harness.currentGoal()?.evaluationCount).toBeUndefined()
-		expect(harness.currentGoal()?.status).toBe("paused")
+		expect(harness.currentFermentV2()?.evaluationCount).toBeUndefined()
+		expect(harness.currentFermentV2()?.status).toBe("paused")
 		expect(harness.events.emit).toHaveBeenLastCalledWith(
-			GOAL_EVENTS.PAUSED,
+			FERMENT_V2_EVENTS.PAUSED,
 			expect.objectContaining({ reason: "agent_errors", status: "paused" }),
 		)
-		expect(harness.ui.notify).toHaveBeenCalledWith("Goal paused after 3 consecutive agent errors.", "warning")
+		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused after 3 consecutive agent errors.", "warning")
 	})
 
 	it("counts retry attempts once at the settled run boundary", async () => {
@@ -1769,16 +1774,16 @@ describe("goal extension", () => {
 			await harness.fire("agent_end", { type: "agent_end", messages: [] })
 		}
 
-		expect(harness.currentGoal()).toMatchObject({ status: "active" })
-		expect(harness.currentGoal()?.consecutiveErrorTurns).toBeUndefined()
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
+		expect(harness.currentFermentV2()?.consecutiveErrorTurns).toBeUndefined()
 
 		harness.appendEntry.mockClear()
 		await harness.fire("agent_settled", { type: "agent_settled" })
 
-		expect(harness.currentGoal()).toMatchObject({ status: "active", consecutiveErrorTurns: 1 })
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active", consecutiveErrorTurns: 1 })
 		expect(harness.appendEntry).toHaveBeenCalledTimes(1)
 		expect(harness.sendMessage).toHaveBeenCalledOnce()
-		expect(harness.events.emit).not.toHaveBeenCalledWith(GOAL_EVENTS.PAUSED, expect.anything())
+		expect(harness.events.emit).not.toHaveBeenCalledWith(FERMENT_V2_EVENTS.PAUSED, expect.anything())
 	})
 
 	it("resolves a headless waiter when an agent-error continuation cannot be queued", async () => {
@@ -1800,12 +1805,12 @@ describe("goal extension", () => {
 		await command
 
 		expect(resolved).toBe(true)
-		expect(headless.currentGoal()).toMatchObject({ status: "active", consecutiveErrorTurns: 1 })
+		expect(headless.currentFermentV2()).toMatchObject({ status: "active", consecutiveErrorTurns: 1 })
 	})
 
 	it("pauses after three consecutive agent-error turns split across a session restart", async () => {
 		await harness.command("keep going")
-		evaluateGoalMock.mockClear()
+		evaluateFermentV2Mock.mockClear()
 
 		for (let turnIndex = 1; turnIndex <= 2; turnIndex++) {
 			await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
@@ -1814,8 +1819,8 @@ describe("goal extension", () => {
 			await harness.fire("agent_settled", { type: "agent_settled" })
 		}
 
-		expect(harness.currentGoal()).toMatchObject({ status: "active", consecutiveErrorTurns: 2 })
-		expect(evaluateGoalMock).not.toHaveBeenCalled()
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active", consecutiveErrorTurns: 2 })
+		expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
 
 		// Reattach to the same journal after a restart; persisted error streaks must survive replay.
 		const capturedBranch = [...harness.branch]
@@ -1829,44 +1834,44 @@ describe("goal extension", () => {
 		await resumed.fire("agent_end", { type: "agent_end", messages: [] })
 		await resumed.fire("agent_settled", { type: "agent_settled" })
 
-		expect(resumed.currentGoal()?.status).toBe("paused")
+		expect(resumed.currentFermentV2()?.status).toBe("paused")
 		expect(resumed.events.emit).toHaveBeenLastCalledWith(
-			GOAL_EVENTS.PAUSED,
+			FERMENT_V2_EVENTS.PAUSED,
 			expect.objectContaining({ reason: "agent_errors", status: "paused" }),
 		)
-		expect(resumed.ui.notify).toHaveBeenCalledWith("Goal paused after 3 consecutive agent errors.", "warning")
+		expect(resumed.ui.notify).toHaveBeenCalledWith("Ferment V2 paused after 3 consecutive agent errors.", "warning")
 	})
 
-	it("still resets the stall-guard counters on an explicit /goal resume", async () => {
+	it("still resets the stall-guard counters on an explicit /ferment-v2 resume", async () => {
 		await harness.command("keep going")
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await harness.fire("turn_end", terminalTurn("error"))
 		await harness.fire("agent_end", { type: "agent_end", messages: [] })
 		await harness.fire("agent_settled", { type: "agent_settled" })
-		expect(harness.currentGoal()).toMatchObject({ status: "active", consecutiveErrorTurns: 1 })
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active", consecutiveErrorTurns: 1 })
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
 		await harness.fire("turn_end", terminalTurn("stop"))
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 		// A non-error turn already resets the error streak on its own.
-		expect(harness.currentGoal()).toMatchObject({ status: "active", unchangedContinuationTurns: 1 })
-		expect(harness.currentGoal()?.consecutiveErrorTurns).toBeUndefined()
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 1 })
+		expect(harness.currentFermentV2()?.consecutiveErrorTurns).toBeUndefined()
 
 		await harness.command("pause")
 		await harness.command("resume")
 
 		// Explicit resume resets the no-progress counter; session replay must not.
-		expect(harness.currentGoal()).toMatchObject({ status: "active" })
-		expect(harness.currentGoal()?.consecutiveErrorTurns).toBeUndefined()
-		expect(harness.currentGoal()?.unchangedContinuationTurns).toBeUndefined()
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
+		expect(harness.currentFermentV2()?.consecutiveErrorTurns).toBeUndefined()
+		expect(harness.currentFermentV2()?.unchangedContinuationTurns).toBeUndefined()
 
 		// Confirm the reset was journaled: two more turns reach 2, not the pause threshold.
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
-		await settleGoal(harness, "continue")
+		await settleFermentV2(harness, "continue")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 4, timestamp: Date.now() })
-		await settleGoal(harness, "continue")
-		expect(harness.currentGoal()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
+		await settleFermentV2(harness, "continue")
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
 	})
 
 	it("persists a genuine progress reset across a session restart, not just increments", async () => {
@@ -1876,12 +1881,12 @@ describe("goal extension", () => {
 		await harness.fire("turn_end", terminalTurn("error"))
 		await harness.fire("agent_end", { type: "agent_end", messages: [] })
 		await harness.fire("agent_settled", { type: "agent_settled" })
-		expect(harness.currentGoal()).toMatchObject({ status: "active", consecutiveErrorTurns: 1 })
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active", consecutiveErrorTurns: 1 })
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
 		await harness.fire("turn_end", terminalTurn("stop"))
-		await settleGoal(harness, "continue")
-		expect(harness.currentGoal()?.consecutiveErrorTurns).toBeUndefined()
+		await settleFermentV2(harness, "continue")
+		expect(harness.currentFermentV2()?.consecutiveErrorTurns).toBeUndefined()
 
 		const capturedBranch = [...harness.branch]
 		const resumed = createHarness()
@@ -1896,19 +1901,19 @@ describe("goal extension", () => {
 		await resumed.fire("turn_end", terminalTurn("error"))
 		await resumed.fire("agent_end", { type: "agent_end", messages: [] })
 		await resumed.fire("agent_settled", { type: "agent_settled" })
-		expect(resumed.currentGoal()).toMatchObject({ status: "active", consecutiveErrorTurns: 1 })
+		expect(resumed.currentFermentV2()).toMatchObject({ status: "active", consecutiveErrorTurns: 1 })
 
 		await resumed.fire("turn_start", { type: "turn_start", turnIndex: 4, timestamp: Date.now() })
 		await resumed.fire("turn_end", terminalTurn("error"))
 		await resumed.fire("agent_end", { type: "agent_end", messages: [] })
 		await resumed.fire("agent_settled", { type: "agent_settled" })
-		expect(resumed.currentGoal()).toMatchObject({ status: "active", consecutiveErrorTurns: 2 })
+		expect(resumed.currentFermentV2()).toMatchObject({ status: "active", consecutiveErrorTurns: 2 })
 
 		await resumed.fire("turn_start", { type: "turn_start", turnIndex: 5, timestamp: Date.now() })
 		await resumed.fire("turn_end", terminalTurn("error"))
 		await resumed.fire("agent_end", { type: "agent_end", messages: [] })
 		await resumed.fire("agent_settled", { type: "agent_settled" })
-		expect(resumed.currentGoal()?.status).toBe("paused")
+		expect(resumed.currentFermentV2()?.status).toBe("paused")
 	})
 
 	it("stops continuation when the token budget is reached", async () => {
@@ -1920,45 +1925,48 @@ describe("goal extension", () => {
 		await harness.fire("agent_end", { type: "agent_end", messages: [budgetTurn.message] })
 		await harness.fire("turn_end", budgetTurn)
 		harness.appendEntry.mockClear()
-		evaluateGoalMock.mockClear()
+		evaluateFermentV2Mock.mockClear()
 		await harness.fire("agent_settled", { type: "agent_settled" })
 
-		expect(harness.currentGoal()).toMatchObject({ status: "budget_limited", tokenBudget: 100, tokensUsed: 100 })
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("goal", "Goal budget reached · <1m · 100/100 tokens")
-		expect(harness.ui.notify).toHaveBeenCalledWith("Goal stopped after reaching its 100 token budget.", "warning")
-		expect(evaluateGoalMock).not.toHaveBeenCalled()
+		expect(harness.currentFermentV2()).toMatchObject({ status: "budget_limited", tokenBudget: 100, tokensUsed: 100 })
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith(
+			"ferment-v2",
+			"Ferment V2 budget reached · <1m · 100/100 tokens",
+		)
+		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 stopped after reaching its 100 token budget.", "warning")
+		expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
 		expect(harness.appendEntry).not.toHaveBeenCalled()
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("refuses to resume a goal that is paused but still over its token budget", async () => {
+	it("refuses to resume a Ferment V2 that is paused but still over its token budget", async () => {
 		// An aborted turn can both push tokensUsed past the budget and force a
 		// pause in the same turn_end (budget_limited is overwritten by paused),
-		// leaving a goal that is paused yet already over budget.
+		// leaving a Ferment V2 that is paused yet already over budget.
 		await harness.command("--tokens 100 keep going")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await harness.fire("turn_end", terminalTurn("aborted", { input: 80, output: 20 }))
-		expect(harness.currentGoal()).toMatchObject({ status: "paused", tokenBudget: 100, tokensUsed: 100 })
+		expect(harness.currentFermentV2()).toMatchObject({ status: "paused", tokenBudget: 100, tokensUsed: 100 })
 
 		harness.sendMessage.mockClear()
 		harness.ui.notify.mockClear()
 
 		await harness.command("resume")
 
-		expect(harness.currentGoal()).toMatchObject({ status: "budget_limited", tokenBudget: 100, tokensUsed: 100 })
+		expect(harness.currentFermentV2()).toMatchObject({ status: "budget_limited", tokenBudget: 100, tokensUsed: 100 })
 		expect(harness.ui.notify).toHaveBeenCalledWith(
-			"Goal token budget is exhausted. Start a replacement goal with a new budget.",
+			"Ferment V2 token budget is exhausted. Start a replacement Ferment V2 with a new budget.",
 			"warning",
 		)
-		expect(harness.ui.notify).not.toHaveBeenCalledWith("Goal resumed.", "info")
+		expect(harness.ui.notify).not.toHaveBeenCalledWith("Ferment V2 resumed.", "info")
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("settles a headless resume instead of hanging when the goal is paused but over budget", async () => {
+	it("settles a headless resume instead of hanging when the Ferment V2 is paused but over budget", async () => {
 		await harness.command("--tokens 100 keep going")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await harness.fire("turn_end", terminalTurn("aborted", { input: 80, output: 20 }))
-		expect(harness.currentGoal()).toMatchObject({ status: "paused", tokenBudget: 100, tokensUsed: 100 })
+		expect(harness.currentFermentV2()).toMatchObject({ status: "paused", tokenBudget: 100, tokensUsed: 100 })
 
 		const capturedBranch = [...harness.branch]
 		const headless = createHarness({ hasUI: false })
@@ -1979,11 +1987,11 @@ describe("goal extension", () => {
 		if (timer) clearTimeout(timer)
 
 		// If this regresses, the resume command hangs forever (an unresolvable
-		// waiter is created after the goal is already terminal) and the race
+		// waiter is created after the Ferment V2 is already terminal) and the race
 		// above times out instead of the command winning.
 		expect(winner).not.toBe(TIMED_OUT)
 		expect(resolved).toBe(true)
-		expect(headless.currentGoal()).toMatchObject({ status: "budget_limited", tokenBudget: 100, tokensUsed: 100 })
+		expect(headless.currentFermentV2()).toMatchObject({ status: "budget_limited", tokenBudget: 100, tokensUsed: 100 })
 		expect(headless.sendMessage).not.toHaveBeenCalled()
 	})
 
@@ -1997,7 +2005,7 @@ describe("goal extension", () => {
 			harness.fire("agent_end", { type: "agent_end", messages: [] }),
 		])
 
-		expect(harness.currentGoal()?.revision).toBe(2)
+		expect(harness.currentFermentV2()?.revision).toBe(2)
 		for (const [message] of harness.sendMessage.mock.calls) {
 			expect(message.details).toMatchObject({ revision: 2 })
 		}
@@ -2007,19 +2015,19 @@ describe("goal extension", () => {
 		await harness.command("revision one")
 		const revision1Entry = harness.branch.at(-1)
 		await harness.command("edit revision two")
-		expect(harness.currentGoal()?.revision).toBe(2)
+		expect(harness.currentFermentV2()?.revision).toBe(2)
 
 		harness.setBranch(revision1Entry ? [revision1Entry] : [])
 		await harness.fire("session_tree", { type: "session_tree", oldLeafId: "b", newLeafId: "a" })
-		expect(harness.currentGoal()).toMatchObject({ objective: "revision one", revision: 1 })
+		expect(harness.currentFermentV2()).toMatchObject({ objective: "revision one", revision: 1 })
 
 		harness.setSession("fork-session", revision1Entry ? [revision1Entry] : [])
 		await harness.fire("session_start", { type: "session_start", reason: "fork" })
 		await harness.command("edit fork objective")
-		expect(harness.currentGoal()).toMatchObject({ objective: "fork objective", revision: 2 })
+		expect(harness.currentFermentV2()).toMatchObject({ objective: "fork objective", revision: 2 })
 	})
 
-	it("accepts settled todos restored after the current goal revision", async () => {
+	it("accepts settled todos restored after the current Ferment V2 revision", async () => {
 		await harness.command("restore the session")
 		harness.setBranch([
 			...harness.branch,
@@ -2037,13 +2045,13 @@ describe("goal extension", () => {
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "complete" },
 			}),
 		).toBeUndefined()
 	})
 
-	it("requires restored todos to be reconciled after editing the same goal", async () => {
+	it("requires restored todos to be reconciled after editing the same Ferment V2", async () => {
 		await harness.command("revision one")
 		harness.setBranch([
 			...harness.branch,
@@ -2062,13 +2070,13 @@ describe("goal extension", () => {
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "complete" },
 			}),
 		).toMatchObject({ block: true, reason: expect.stringContaining("settle every item") })
 	})
 
-	it("restores the latest goal and settled todos across repeated compactions", async () => {
+	it("restores the latest Ferment V2 and settled todos across repeated compactions", async () => {
 		await harness.command("revision one")
 		harness.setBranch([...harness.branch, compactionEntry("first summary")])
 		await harness.command("edit revision two")
@@ -2098,7 +2106,7 @@ describe("goal extension", () => {
 		})) as { messages: ContextEvent["messages"] }
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 
-		expect(harness.currentGoal()).toMatchObject({ objective: "revision two", revision: 2 })
+		expect(harness.currentFermentV2()).toMatchObject({ objective: "revision two", revision: 2 })
 		expect(JSON.stringify(context.messages)).toContain("revision two")
 		expect(JSON.stringify(context.messages)).not.toContain("Verifying revision two")
 		expect(JSON.stringify(context.messages)).not.toContain("focused verification remains")
@@ -2131,7 +2139,7 @@ describe("goal extension", () => {
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "complete" },
 			}),
 		).toBeUndefined()
@@ -2168,15 +2176,15 @@ describe("goal extension", () => {
 			type: "context",
 			messages: [{ role: "user", content: [{ type: "text", text: "continue" }], timestamp: Date.now() }],
 		})) as { messages: ContextEvent["messages"] }
-		const goalContext = context.messages.find(
-			(message) => message.role === "custom" && message.customType === GOAL_CONTEXT_MESSAGE_TYPE,
+		const fermentV2Context = context.messages.find(
+			(message) => message.role === "custom" && message.customType === FERMENT_V2_CONTEXT_MESSAGE_TYPE,
 		)
-		const goalContextText = JSON.stringify(goalContext)
+		const fermentV2ContextText = JSON.stringify(fermentV2Context)
 
-		expect(goalContextText).toContain("lessons")
-		expect(goalContextText).toContain("decision")
-		expect(goalContextText).toContain("reuse the native session journal")
-		expect(goalContextText).not.toContain("Choose the persistence path")
+		expect(fermentV2ContextText).toContain("lessons")
+		expect(fermentV2ContextText).toContain("decision")
+		expect(fermentV2ContextText).toContain("reuse the native session journal")
+		expect(fermentV2ContextText).not.toContain("Choose the persistence path")
 
 		await harness.command("edit a replacement objective")
 		await harness.fire("session_tree", { type: "session_tree", oldLeafId: "after", newLeafId: "edited" })
@@ -2188,8 +2196,8 @@ describe("goal extension", () => {
 		expect(JSON.stringify(editedContext.messages)).toContain("reuse the native session journal")
 	})
 
-	it("keeps goals and todo completion isolated while switching sessions", async () => {
-		await harness.command("session A goal")
+	it("keeps Ferment V2 instances and todo completion isolated while switching sessions", async () => {
+		await harness.command("session A Ferment V2")
 		harness.setBranch([
 			...harness.branch,
 			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
@@ -2203,17 +2211,17 @@ describe("goal extension", () => {
 
 		harness.setSession("session-b", [])
 		await harness.fire("session_start", { type: "session_start", reason: "new" })
-		await harness.command("session B goal")
+		await harness.command("session B Ferment V2")
 		const sessionBBranch = [...harness.branch]
 
 		harness.setSession("session-a", sessionABranch)
 		await harness.fire("session_start", { type: "session_start", reason: "resume" })
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		expect(harness.currentGoal()?.objective).toBe("session A goal")
+		expect(harness.currentFermentV2()?.objective).toBe("session A Ferment V2")
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "complete" },
 			}),
 		).toBeUndefined()
@@ -2221,11 +2229,11 @@ describe("goal extension", () => {
 		harness.setSession("session-b", sessionBBranch)
 		await harness.fire("session_start", { type: "session_start", reason: "resume" })
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		expect(harness.currentGoal()?.objective).toBe("session B goal")
+		expect(harness.currentFermentV2()?.objective).toBe("session B Ferment V2")
 		expect(
 			await harness.fire("tool_call", {
 				type: "tool_call",
-				toolName: UPDATE_GOAL_TOOL_NAME,
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
 				input: { status: "complete" },
 			}),
 		).toMatchObject({ block: true, reason: expect.stringContaining("visible tactical todo") })
@@ -2236,15 +2244,15 @@ describe("goal extension", () => {
 			await harness.command("ship it")
 			harness.sendMessage.mockClear()
 			// Idle is false (the agent looks busy), but the stale ctx thrown from
-			// isIdle() must still win: goalIsBusy catches it and reports "not busy",
+			// isIdle() must still win: fermentV2IsBusy catches it and reports "not busy",
 			// so pause must not attempt to steer a run that no longer exists.
 			harness.setIdle(false)
 			harness.setIdleError(new Error("This extension ctx is stale: session torn down"))
 
 			await harness.command("pause")
 
-			expect(harness.currentGoal()?.status).toBe("paused")
-			expect(harness.ui.notify).toHaveBeenCalledWith("Goal paused.", "info")
+			expect(harness.currentFermentV2()?.status).toBe("paused")
+			expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused.", "info")
 			expect(harness.sendMessage).not.toHaveBeenCalled()
 		})
 
@@ -2254,14 +2262,14 @@ describe("goal extension", () => {
 
 			const resumed = createHarness()
 			resumed.setSession("session-a", capturedBranch)
-			// Idle stays at its default true, so goalIsBusy returns normally (not
-			// busy) and goalResumeBlocked reaches hasPendingMessages(), which is the
+			// Idle stays at its default true, so fermentV2IsBusy returns normally (not
+			// busy) and fermentV2ResumeBlocked reaches hasPendingMessages(), which is the
 			// call this error targets.
 			resumed.setPendingMessagesError(new Error("This extension ctx is stale: session torn down"))
 
 			await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
-			expect(resumed.currentGoal()?.status).toBe("active")
+			expect(resumed.currentFermentV2()?.status).toBe("active")
 			expect(resumed.sendMessage).not.toHaveBeenCalled()
 		})
 
@@ -2271,11 +2279,11 @@ describe("goal extension", () => {
 			await harness.fire("agent_end", { type: "agent_end", messages: [] })
 			harness.setPendingMessagesError(new Error("This extension ctx is stale: session torn down"))
 			harness.sendMessage.mockClear()
-			evaluateGoalMock.mockClear()
+			evaluateFermentV2Mock.mockClear()
 
 			await harness.fire("agent_settled", { type: "agent_settled" })
 
-			expect(evaluateGoalMock).not.toHaveBeenCalled()
+			expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
 			expect(harness.sendMessage).not.toHaveBeenCalled()
 		})
 
@@ -2289,40 +2297,40 @@ describe("goal extension", () => {
 
 			await harness.command("pause")
 
-			expect(harness.currentGoal()?.status).toBe("paused")
-			expect(harness.ui.notify).toHaveBeenCalledWith("Goal paused.", "info")
+			expect(harness.currentFermentV2()?.status).toBe("paused")
+			expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused.", "info")
 		})
 	})
 
 	describe("configurable policy settings", () => {
 		it("pauses at the configured maxUnchangedContinuations count, not the default", async () => {
-			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, maxUnchangedContinuations: 2 })
+			fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, maxUnchangedContinuations: 2 })
 			await harness.command("keep going")
 			harness.sendMessage.mockClear()
 
 			await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-			await settleGoal(harness, "continue")
-			expect(harness.currentGoal()).toMatchObject({ status: "active", unchangedContinuationTurns: 1 })
+			await settleFermentV2(harness, "continue")
+			expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 1 })
 
 			await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
-			await settleGoal(harness, "continue")
+			await settleFermentV2(harness, "continue")
 
-			expect(harness.currentGoal()?.status).toBe("paused")
+			expect(harness.currentFermentV2()?.status).toBe("paused")
 			expect(harness.events.emit).toHaveBeenLastCalledWith(
-				GOAL_EVENTS.STALLED,
+				FERMENT_V2_EVENTS.STALLED,
 				expect.objectContaining({ reason: "no_progress", continuationCount: 2, status: "paused" }),
 			)
 			expect(harness.ui.notify).toHaveBeenCalledWith(
-				"Goal paused after 2 unchanged continuation turns without substantive tool use.",
+				"Ferment V2 paused after 2 unchanged continuation turns without substantive tool use.",
 				"warning",
 			)
 		})
 
 		it("pauses at the configured maxConsecutiveErrors count, not the default", async () => {
-			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, maxConsecutiveErrors: 2 })
+			fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, maxConsecutiveErrors: 2 })
 			await harness.command("keep going")
 			harness.sendMessage.mockClear()
-			evaluateGoalMock.mockClear()
+			evaluateFermentV2Mock.mockClear()
 
 			for (let turnIndex = 1; turnIndex <= 2; turnIndex++) {
 				await harness.fire("turn_start", { type: "turn_start", turnIndex, timestamp: Date.now() })
@@ -2330,55 +2338,55 @@ describe("goal extension", () => {
 				harness.appendEntry.mockClear()
 				await harness.fire("agent_end", { type: "agent_end", messages: [] })
 				await harness.fire("agent_settled", { type: "agent_settled" })
-				if (turnIndex < 2) expect(harness.currentGoal()?.status).toBe("active")
+				if (turnIndex < 2) expect(harness.currentFermentV2()?.status).toBe("active")
 			}
 
-			expect(evaluateGoalMock).not.toHaveBeenCalled()
-			expect(harness.currentGoal()?.status).toBe("paused")
+			expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
+			expect(harness.currentFermentV2()?.status).toBe("paused")
 			expect(harness.events.emit).toHaveBeenLastCalledWith(
-				GOAL_EVENTS.PAUSED,
+				FERMENT_V2_EVENTS.PAUSED,
 				expect.objectContaining({ reason: "agent_errors", status: "paused" }),
 			)
-			expect(harness.ui.notify).toHaveBeenCalledWith("Goal paused after 2 consecutive agent errors.", "warning")
+			expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused after 2 consecutive agent errors.", "warning")
 		})
 
 		it("does not schedule a resume continuation on session_start when autoResume is disabled", async () => {
 			await harness.command("ship it")
 			const capturedBranch = [...harness.branch]
 
-			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, autoResume: false })
+			fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, autoResume: false })
 			const resumed = createHarness()
 			resumed.setSession("session-a", capturedBranch)
 			await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
-			expect(resumed.currentGoal()?.status).toBe("active")
+			expect(resumed.currentFermentV2()?.status).toBe("active")
 			expect(resumed.sendMessage).not.toHaveBeenCalled()
 		})
 
-		it("applies defaultTokenBudget to /goal <objective> without --tokens", async () => {
-			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, defaultTokenBudget: 500 })
+		it("applies defaultTokenBudget to /ferment-v2 <objective> without --tokens", async () => {
+			fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, defaultTokenBudget: 500 })
 
 			await harness.command("ship it")
 
-			expect(harness.currentGoal()).toMatchObject({ tokenBudget: 500 })
+			expect(harness.currentFermentV2()).toMatchObject({ tokenBudget: 500 })
 		})
 
 		it("lets an explicit --tokens win over a configured defaultTokenBudget", async () => {
-			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, defaultTokenBudget: 500 })
+			fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, defaultTokenBudget: 500 })
 
 			await harness.command("--tokens 250 ship it")
 
-			expect(harness.currentGoal()).toMatchObject({ tokenBudget: 250 })
+			expect(harness.currentFermentV2()).toMatchObject({ tokenBudget: 250 })
 		})
 
-		it("still lets an explicit --tokens win when replacing a goal under a configured default", async () => {
-			goalSettingsMock.mockReturnValue({ ...DEFAULT_GOAL_SETTINGS, defaultTokenBudget: 500 })
+		it("still lets an explicit --tokens win when replacing a Ferment V2 under a configured default", async () => {
+			fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, defaultTokenBudget: 500 })
 
 			await harness.command("first")
-			expect(harness.currentGoal()).toMatchObject({ tokenBudget: 500 })
+			expect(harness.currentFermentV2()).toMatchObject({ tokenBudget: 500 })
 
 			await harness.command("--tokens 250 second")
-			expect(harness.currentGoal()).toMatchObject({ objective: "second", tokenBudget: 250 })
+			expect(harness.currentFermentV2()).toMatchObject({ objective: "second", tokenBudget: 250 })
 		})
 	})
 })
@@ -2391,7 +2399,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 	let branch: SessionEntry[] = []
 	let idle = true
 	let pending = false
-	let activeTools: string[] = [...GOAL_TOOL_NAMES, ...TODO_TOOL_NAMES]
+	let activeTools: string[] = [...FERMENT_V2_TOOL_NAMES, ...TODO_TOOL_NAMES]
 
 	let idleError: Error | undefined
 	let pendingMessagesError: Error | undefined
@@ -2402,7 +2410,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 		setStatus: vi.fn(),
 		setWidget: vi.fn(),
 	}
-	const appendEntry = vi.fn((customType: string, data: GoalJournalEntry) => {
+	const appendEntry = vi.fn((customType: string, data: FermentV2JournalEntry) => {
 		branch.push(customEntry(customType, data))
 	})
 	const sendMessage = vi.fn()
@@ -2450,7 +2458,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 		},
 	} as unknown as ExtensionCommandContext
 
-	goalExtension(pi)
+	fermentV2Extension(pi)
 
 	return {
 		commands,
@@ -2497,46 +2505,46 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 			return result
 		},
 		async command(args: string): Promise<void> {
-			const goal = commands.get("goal")
-			if (!goal) throw new Error("goal command not registered")
-			await goal.handler(args, ctx)
+			const fermentV2 = commands.get("ferment-v2")
+			if (!fermentV2) throw new Error("Ferment V2 command not registered")
+			await fermentV2.handler(args, ctx)
 		},
 		async tool(name: string, params: Record<string, unknown>) {
 			const tool = tools.get(name)
 			if (!tool) throw new Error(`${name} tool not registered`)
 			return tool.execute("call-1", params, new AbortController().signal, () => undefined, ctx)
 		},
-		currentGoal(): SessionGoal | undefined {
+		currentFermentV2(): SessionFermentV2 | undefined {
 			for (let index = branch.length - 1; index >= 0; index--) {
 				const entry = branch[index]
-				if (entry.type !== "custom" || entry.customType !== GOAL_CUSTOM_ENTRY_TYPE) continue
-				const journal = entry.data as GoalJournalEntry
+				if (entry.type !== "custom" || entry.customType !== FERMENT_V2_CUSTOM_ENTRY_TYPE) continue
+				const journal = entry.data as FermentV2JournalEntry
 				if (journal.op === "clear") return undefined
-				if (journal.op === "put") return journal.goal
+				if (journal.op === "put") return journal.fermentV2
 			}
 			return undefined
 		},
-		latestJournal(): GoalJournalEntry | undefined {
+		latestJournal(): FermentV2JournalEntry | undefined {
 			const entry = branch.findLast(
-				(candidate) => candidate.type === "custom" && candidate.customType === GOAL_CUSTOM_ENTRY_TYPE,
+				(candidate) => candidate.type === "custom" && candidate.customType === FERMENT_V2_CUSTOM_ENTRY_TYPE,
 			)
-			return entry?.type === "custom" ? (entry.data as GoalJournalEntry) : undefined
+			return entry?.type === "custom" ? (entry.data as FermentV2JournalEntry) : undefined
 		},
 	}
 }
 
-/** Hidden control messages that drive the next goal turn. */
+/** Hidden control messages that drive the next Ferment V2 turn. */
 function continuations(harness: ReturnType<typeof createHarness>): Array<{ content: string }> {
 	return harness.sendMessage.mock.calls
 		.map((call) => call[0])
-		.filter((message) => message?.customType === GOAL_CONTROL_MESSAGE_TYPE)
+		.filter((message) => message?.customType === FERMENT_V2_CONTROL_MESSAGE_TYPE)
 }
 
-async function settleGoal(
+async function settleFermentV2(
 	harness: ReturnType<typeof createHarness>,
 	verdict: "continue" | "met" | "impossible" | "unavailable" = "continue",
 ): Promise<void> {
-	evaluateGoalMock.mockResolvedValueOnce(
+	evaluateFermentV2Mock.mockResolvedValueOnce(
 		verdict === "unavailable"
 			? { verdict, reason: "No evaluator model is available." }
 			: {
@@ -2556,12 +2564,12 @@ async function settleGoal(
  * window, then releases a result and awaits `settled`.
  */
 async function holdEvaluation(harness: ReturnType<typeof createHarness>): Promise<{
-	release: (value: Awaited<ReturnType<typeof evaluateGoal>>) => void
+	release: (value: Awaited<ReturnType<typeof evaluateFermentV2>>) => void
 	settled: Promise<unknown>
 	signal: AbortSignal | undefined
 }> {
-	let release: (value: Awaited<ReturnType<typeof evaluateGoal>>) => void = () => undefined
-	evaluateGoalMock.mockImplementationOnce(
+	let release: (value: Awaited<ReturnType<typeof evaluateFermentV2>>) => void = () => undefined
+	evaluateFermentV2Mock.mockImplementationOnce(
 		() =>
 			new Promise((resolve) => {
 				release = resolve
@@ -2569,8 +2577,8 @@ async function holdEvaluation(harness: ReturnType<typeof createHarness>): Promis
 	)
 	await harness.fire("agent_end", { type: "agent_end", messages: [] })
 	const settled = harness.fire("agent_settled", { type: "agent_settled" })
-	await vi.waitFor(() => expect(evaluateGoalMock).toHaveBeenCalled())
-	const signal = evaluateGoalMock.mock.calls.at(-1)?.[0].signal
+	await vi.waitFor(() => expect(evaluateFermentV2Mock).toHaveBeenCalled())
+	const signal = evaluateFermentV2Mock.mock.calls.at(-1)?.[0].signal
 
 	return { release, settled, signal }
 }
@@ -2584,7 +2592,7 @@ async function completeVisibleTodo(harness: ReturnType<typeof createHarness>): P
 			details: {
 				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
 				scope: { kind: "global" },
-				todos: [{ id: 1, content: "Finish the goal", status: "completed" }],
+				todos: [{ id: 1, content: "Finish the Ferment V2", status: "completed" }],
 				updatedAt: "2026-08-03T00:00:02.000Z",
 			},
 		},
@@ -2632,7 +2640,7 @@ function compactionEntry(summary: string): SessionEntry {
 	}
 }
 
-function requireGoal(goal: SessionGoal | undefined): SessionGoal {
-	if (!goal) throw new Error("expected current goal")
-	return goal
+function requireFermentV2(fermentV2: SessionFermentV2 | undefined): SessionFermentV2 {
+	if (!fermentV2) throw new Error("expected current Ferment V2")
+	return fermentV2
 }

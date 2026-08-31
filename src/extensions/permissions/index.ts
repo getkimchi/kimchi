@@ -34,7 +34,7 @@ import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "..
 import { createApplyAndPersist, formatNextActionHint, formatNoReplanningGuidance } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
-import { GOAL_TOOL_NAMES } from "../goal/constants.js"
+import { FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -161,7 +161,7 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	"agent",
 	"get_subagent_result",
 	"steer_subagent",
-	...GOAL_TOOL_NAMES,
+	...FERMENT_V2_TOOL_NAMES,
 	...TODO_TOOL_NAMES,
 ]
 

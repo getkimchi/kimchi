@@ -85,11 +85,11 @@ describe("resource definitions", () => {
 		expect(resource?.restartRequired).toBeFalsy()
 	})
 
-	it("registers goal mode as an opt-in experimental feature", () => {
-		expect(getResourceDefinitions().find((resource) => resource.id === "extensions.goal")).toMatchObject({
+	it("registers Ferment V2 as an opt-in experimental feature", () => {
+		expect(getResourceDefinitions().find((resource) => resource.id === "extensions.ferment-v2")).toMatchObject({
 			kind: "extensions",
 			experimental: true,
-			label: "Goal mode",
+			label: "Ferment V2",
 			defaultEnabled: false,
 			restartRequired: true,
 		})

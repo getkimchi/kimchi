@@ -38,10 +38,10 @@ function writeKimchiConfig(homeDir: string, fakeBaseUrl: string): void {
 		join(harnessDir, "settings.json"),
 		JSON.stringify({
 			multiModel: false,
-			// No extensions enabled: this is a plain --print run, not a Goal run.
+			// No extensions enabled: this is a plain --print run, not a Ferment V2 run.
 			// The exit-code path under test (applyPostMainInfrastructureExitPolicy
 			// in src/cli-infrastructure-exit.ts) applies to every --print invocation,
-			// not just Goal continuations.
+			// not just Ferment V2 continuations.
 			resources: {},
 			// Keep the real retry path but reduce its backoff for this smoke test.
 			retry: { maxRetries: 1, baseDelayMs: 10 },

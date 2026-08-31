@@ -95,7 +95,7 @@ describe("prompt summary Agent token accounting", () => {
 	it("keeps queued metrics scoped to their session", async () => {
 		const harness = createPiHarness()
 		promptSummaryExtension(harness.pi)
-		addPromptSummaryMetric("session-a", "goal time", "1.2s")
+		addPromptSummaryMetric("session-a", "fermenting time", "1.2s")
 
 		await harness.emit("agent_start", {})
 		await harness.emit("agent_end", {}, { sessionManager: { getSessionId: () => "session-b" } })
@@ -105,7 +105,7 @@ describe("prompt summary Agent token accounting", () => {
 		await harness.emit("agent_end", {}, { sessionManager: { getSessionId: () => "session-a" } })
 		await new Promise((resolve) => setTimeout(resolve, 0))
 		expect((harness.sent[0] as { details: Record<string, unknown> }).details.metrics).toEqual([
-			{ label: "goal time", value: "1.2s" },
+			{ label: "fermenting time", value: "1.2s" },
 		])
 	})
 

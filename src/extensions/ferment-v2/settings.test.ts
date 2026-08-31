@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 // orchestration/model-roles.test.ts.
 // ---------------------------------------------------------------------------
 
-const testDir = join(tmpdir(), `kimchi-goal-settings-test-${process.pid}`)
+const testDir = join(tmpdir(), `kimchi-ferment-v2-settings-test-${process.pid}`)
 const testPath = join(testDir, "settings.json")
 
 vi.mock("../../config/json.js", async (importOriginal) => {
@@ -23,7 +23,7 @@ vi.mock("../../config/json.js", async (importOriginal) => {
 })
 
 import { writeJson } from "../../config/json.js"
-import { DEFAULT_GOAL_SETTINGS, getGoalSettings, parseGoalSettings } from "./settings.js"
+import { DEFAULT_FERMENT_V2_SETTINGS, getFermentV2Settings, parseFermentV2Settings } from "./settings.js"
 
 function seed(data: Record<string, unknown>): void {
 	writeJson(testPath, data)
@@ -37,28 +37,28 @@ afterEach(() => {
 	vi.restoreAllMocks()
 })
 
-describe("parseGoalSettings", () => {
+describe("parseFermentV2Settings", () => {
 	it("returns all defaults when raw is undefined", () => {
-		expect(parseGoalSettings(undefined)).toEqual(DEFAULT_GOAL_SETTINGS)
+		expect(parseFermentV2Settings(undefined)).toEqual(DEFAULT_FERMENT_V2_SETTINGS)
 	})
 
 	it("returns all defaults when raw is an empty object", () => {
-		expect(parseGoalSettings({})).toEqual(DEFAULT_GOAL_SETTINGS)
+		expect(parseFermentV2Settings({})).toEqual(DEFAULT_FERMENT_V2_SETTINGS)
 	})
 
 	it.each([
 		null,
-		"goal",
+		"fermentV2",
 		42,
 		true,
 		["not", "an", "object"],
-	])("returns all defaults when the goal value itself is not a plain object (%p)", (value) => {
-		expect(parseGoalSettings(value)).toEqual(DEFAULT_GOAL_SETTINGS)
+	])("returns all defaults when the Ferment V2 value itself is not a plain object (%p)", (value) => {
+		expect(parseFermentV2Settings(value)).toEqual(DEFAULT_FERMENT_V2_SETTINGS)
 	})
 
 	it("honours every field when all are valid", () => {
 		expect(
-			parseGoalSettings({
+			parseFermentV2Settings({
 				autoResume: false,
 				maxUnchangedContinuations: 5,
 				maxConsecutiveErrors: 7,
@@ -76,49 +76,49 @@ describe("parseGoalSettings", () => {
 
 	describe("autoResume", () => {
 		it.each([0, "true", null, undefined, {}])("falls back to the default for invalid value %p", (value) => {
-			expect(parseGoalSettings({ autoResume: value }).autoResume).toBe(DEFAULT_GOAL_SETTINGS.autoResume)
+			expect(parseFermentV2Settings({ autoResume: value }).autoResume).toBe(DEFAULT_FERMENT_V2_SETTINGS.autoResume)
 		})
 
 		it("accepts false explicitly", () => {
-			expect(parseGoalSettings({ autoResume: false }).autoResume).toBe(false)
+			expect(parseFermentV2Settings({ autoResume: false }).autoResume).toBe(false)
 		})
 	})
 
 	describe("maxUnchangedContinuations", () => {
 		it.each([0, -1, 1.5, "3", null, undefined])("falls back to the default for invalid value %p", (value) => {
-			expect(parseGoalSettings({ maxUnchangedContinuations: value }).maxUnchangedContinuations).toBe(
-				DEFAULT_GOAL_SETTINGS.maxUnchangedContinuations,
+			expect(parseFermentV2Settings({ maxUnchangedContinuations: value }).maxUnchangedContinuations).toBe(
+				DEFAULT_FERMENT_V2_SETTINGS.maxUnchangedContinuations,
 			)
 		})
 
 		it("accepts a positive integer", () => {
-			expect(parseGoalSettings({ maxUnchangedContinuations: 10 }).maxUnchangedContinuations).toBe(10)
+			expect(parseFermentV2Settings({ maxUnchangedContinuations: 10 }).maxUnchangedContinuations).toBe(10)
 		})
 	})
 
 	describe("maxConsecutiveErrors", () => {
 		it.each([0, -3, 2.2, "5", null, undefined])("falls back to the default for invalid value %p", (value) => {
-			expect(parseGoalSettings({ maxConsecutiveErrors: value }).maxConsecutiveErrors).toBe(
-				DEFAULT_GOAL_SETTINGS.maxConsecutiveErrors,
+			expect(parseFermentV2Settings({ maxConsecutiveErrors: value }).maxConsecutiveErrors).toBe(
+				DEFAULT_FERMENT_V2_SETTINGS.maxConsecutiveErrors,
 			)
 		})
 
 		it("accepts a positive integer", () => {
-			expect(parseGoalSettings({ maxConsecutiveErrors: 8 }).maxConsecutiveErrors).toBe(8)
+			expect(parseFermentV2Settings({ maxConsecutiveErrors: 8 }).maxConsecutiveErrors).toBe(8)
 		})
 	})
 
 	describe("defaultTokenBudget", () => {
 		it.each([0, -100, 1000.5, "100000", null])("falls back to unset for invalid value %p", (value) => {
-			expect(parseGoalSettings({ defaultTokenBudget: value }).defaultTokenBudget).toBeUndefined()
+			expect(parseFermentV2Settings({ defaultTokenBudget: value }).defaultTokenBudget).toBeUndefined()
 		})
 
 		it("stays unset when absent", () => {
-			expect(parseGoalSettings({}).defaultTokenBudget).toBeUndefined()
+			expect(parseFermentV2Settings({}).defaultTokenBudget).toBeUndefined()
 		})
 
 		it("accepts a positive integer", () => {
-			expect(parseGoalSettings({ defaultTokenBudget: 200_000 }).defaultTokenBudget).toBe(200_000)
+			expect(parseFermentV2Settings({ defaultTokenBudget: 200_000 }).defaultTokenBudget).toBe(200_000)
 		})
 	})
 
@@ -131,18 +131,18 @@ describe("parseGoalSettings", () => {
 			null,
 			undefined,
 		])("falls back to the default for invalid value %p", (value) => {
-			expect(parseGoalSettings({ evaluationTimeoutMs: value }).evaluationTimeoutMs).toBe(
-				DEFAULT_GOAL_SETTINGS.evaluationTimeoutMs,
+			expect(parseFermentV2Settings({ evaluationTimeoutMs: value }).evaluationTimeoutMs).toBe(
+				DEFAULT_FERMENT_V2_SETTINGS.evaluationTimeoutMs,
 			)
 		})
 
 		it("accepts a positive integer", () => {
-			expect(parseGoalSettings({ evaluationTimeoutMs: 60_000 }).evaluationTimeoutMs).toBe(60_000)
+			expect(parseFermentV2Settings({ evaluationTimeoutMs: 60_000 }).evaluationTimeoutMs).toBe(60_000)
 		})
 	})
 
 	it("does not let one bad field poison the others", () => {
-		const result = parseGoalSettings({
+		const result = parseFermentV2Settings({
 			autoResume: "not a boolean",
 			maxUnchangedContinuations: 6,
 			maxConsecutiveErrors: -1,
@@ -150,48 +150,48 @@ describe("parseGoalSettings", () => {
 			evaluationTimeoutMs: "not a number",
 		})
 		expect(result).toEqual({
-			autoResume: DEFAULT_GOAL_SETTINGS.autoResume,
+			autoResume: DEFAULT_FERMENT_V2_SETTINGS.autoResume,
 			maxUnchangedContinuations: 6,
-			maxConsecutiveErrors: DEFAULT_GOAL_SETTINGS.maxConsecutiveErrors,
+			maxConsecutiveErrors: DEFAULT_FERMENT_V2_SETTINGS.maxConsecutiveErrors,
 			defaultTokenBudget: 500_000,
-			evaluationTimeoutMs: DEFAULT_GOAL_SETTINGS.evaluationTimeoutMs,
+			evaluationTimeoutMs: DEFAULT_FERMENT_V2_SETTINGS.evaluationTimeoutMs,
 		})
 	})
 })
 
-describe("getGoalSettings", () => {
-	it("returns defaults when the goal key is absent from settings.json", () => {
+describe("getFermentV2Settings", () => {
+	it("returns defaults when the Ferment V2 key is absent from settings.json", () => {
 		seed({})
-		expect(getGoalSettings()).toEqual(DEFAULT_GOAL_SETTINGS)
+		expect(getFermentV2Settings()).toEqual(DEFAULT_FERMENT_V2_SETTINGS)
 	})
 
-	it("reads the goal key from settings.json", () => {
-		seed({ goal: { maxConsecutiveErrors: 9, autoResume: false } })
-		expect(getGoalSettings()).toEqual({
-			...DEFAULT_GOAL_SETTINGS,
+	it("reads the Ferment V2 key from settings.json", () => {
+		seed({ fermentV2: { maxConsecutiveErrors: 9, autoResume: false } })
+		expect(getFermentV2Settings()).toEqual({
+			...DEFAULT_FERMENT_V2_SETTINGS,
 			maxConsecutiveErrors: 9,
 			autoResume: false,
 		})
 	})
 
-	it("falls back to defaults when goal is not an object", () => {
-		seed({ goal: "nonsense" })
-		expect(getGoalSettings()).toEqual(DEFAULT_GOAL_SETTINGS)
+	it("falls back to defaults when Ferment V2 is not an object", () => {
+		seed({ fermentV2: "nonsense" })
+		expect(getFermentV2Settings()).toEqual(DEFAULT_FERMENT_V2_SETTINGS)
 	})
 
 	it("reads fresh on every call instead of caching a stale value", () => {
-		seed({ goal: { maxUnchangedContinuations: 4 } })
-		expect(getGoalSettings().maxUnchangedContinuations).toBe(4)
+		seed({ fermentV2: { maxUnchangedContinuations: 4 } })
+		expect(getFermentV2Settings().maxUnchangedContinuations).toBe(4)
 
-		seed({ goal: { maxUnchangedContinuations: 12 } })
-		expect(getGoalSettings().maxUnchangedContinuations).toBe(12)
+		seed({ fermentV2: { maxUnchangedContinuations: 12 } })
+		expect(getFermentV2Settings().maxUnchangedContinuations).toBe(12)
 	})
 
 	it("never throws even when settings.json is malformed", () => {
 		writeJson(testPath, {}) // reset to valid JSON first
 		const { writeFileSync } = require("node:fs")
 		writeFileSync(testPath, "{ not valid json", "utf-8")
-		expect(() => getGoalSettings()).not.toThrow()
-		expect(getGoalSettings()).toEqual(DEFAULT_GOAL_SETTINGS)
+		expect(() => getFermentV2Settings()).not.toThrow()
+		expect(getFermentV2Settings()).toEqual(DEFAULT_FERMENT_V2_SETTINGS)
 	})
 })

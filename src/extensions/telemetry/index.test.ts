@@ -425,19 +425,19 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		return Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
 	}
 
-	it("maps Goal lifecycle events to privacy-safe OTLP records", async () => {
+	it("maps Ferment V2 lifecycle events to privacy-safe OTLP records", async () => {
 		const { handlers, events } = await setup()
-		const { GOAL_EVENTS } = await import("../goal/domain-events.js")
+		const { FERMENT_V2_EVENTS } = await import("../ferment-v2/domain-events.js")
 		const lifecycleEvents = [
-			{ event: GOAL_EVENTS.STARTED, telemetry: "goal.started", status: "active" },
-			{ event: GOAL_EVENTS.REPLACED, telemetry: "goal.replaced", status: "active" },
-			{ event: GOAL_EVENTS.EDITED, telemetry: "goal.edited", status: "active" },
-			{ event: GOAL_EVENTS.COMPLETED, telemetry: "goal.completed", status: "complete" },
-			{ event: GOAL_EVENTS.BLOCKED, telemetry: "goal.blocked", status: "blocked" },
-			{ event: GOAL_EVENTS.PAUSED, telemetry: "goal.paused", status: "paused", reason: "user" },
+			{ event: FERMENT_V2_EVENTS.STARTED, telemetry: "ferment_v2.started", status: "active" },
+			{ event: FERMENT_V2_EVENTS.REPLACED, telemetry: "ferment_v2.replaced", status: "active" },
+			{ event: FERMENT_V2_EVENTS.EDITED, telemetry: "ferment_v2.edited", status: "active" },
+			{ event: FERMENT_V2_EVENTS.COMPLETED, telemetry: "ferment_v2.completed", status: "complete" },
+			{ event: FERMENT_V2_EVENTS.BLOCKED, telemetry: "ferment_v2.blocked", status: "blocked" },
+			{ event: FERMENT_V2_EVENTS.PAUSED, telemetry: "ferment_v2.paused", status: "paused", reason: "user" },
 			{
-				event: GOAL_EVENTS.STALLED,
-				telemetry: "goal.stalled",
+				event: FERMENT_V2_EVENTS.STALLED,
+				telemetry: "ferment_v2.stalled",
 				status: "paused",
 				reason: "no_progress",
 				continuationCount: 2,
@@ -446,7 +446,7 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 
 		for (const lifecycle of lifecycleEvents) {
 			events.emit(lifecycle.event, {
-				goalId: "g-001",
+				fermentV2Id: "fv2-001",
 				revision: 2,
 				status: lifecycle.status,
 				tokensUsed: 1200,
@@ -465,7 +465,7 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 			expect(rec).toBeDefined()
 			const attrs = attrsOf(rec as NonNullable<typeof rec>)
 			expect(attrs).toMatchObject({
-				goal_id: "g-001",
+				ferment_v2_id: "fv2-001",
 				revision: "2",
 				tokens_used: "1200",
 				time_used_ms: "3000",
@@ -478,11 +478,11 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		}
 	})
 
-	it("emits privacy-safe Goal evaluator totals without the reason", async () => {
+	it("emits privacy-safe Ferment V2 evaluator totals without the reason", async () => {
 		const { handlers, events } = await setup()
-		const { GOAL_EVENTS } = await import("../goal/domain-events.js")
-		events.emit(GOAL_EVENTS.EVALUATED, {
-			goalId: "g-001",
+		const { FERMENT_V2_EVENTS } = await import("../ferment-v2/domain-events.js")
+		events.emit(FERMENT_V2_EVENTS.EVALUATED, {
+			fermentV2Id: "fv2-001",
 			verdict: "continue",
 			count: 2,
 			model: "test/judge",
@@ -498,9 +498,9 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		})
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
 
-		const rec = extractRecords().find((candidate) => candidate.eventName === "goal.evaluated")
+		const rec = extractRecords().find((candidate) => candidate.eventName === "ferment_v2.evaluated")
 		expect(attrsOf(rec as NonNullable<typeof rec>)).toMatchObject({
-			goal_id: "g-001",
+			ferment_v2_id: "fv2-001",
 			verdict: "continue",
 			count: "2",
 			evaluator_model: "test/judge",

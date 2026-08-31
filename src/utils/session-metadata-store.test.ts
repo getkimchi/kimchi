@@ -38,7 +38,7 @@ function makeConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 const EXPECTED_OS_KEYS = ["telemetry.arch", "telemetry.host_os", "telemetry.is_wsl", "telemetry.os"]
 const EXPECTED_CONFIG_KEYS = [
 	"config.agents_enabled",
-	"config.goal_enabled",
+	"config.ferment_v2_enabled",
 	"config.mcp_server_count",
 	"config.model",
 	"config.model_roles.builder",

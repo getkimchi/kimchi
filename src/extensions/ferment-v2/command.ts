@@ -1,7 +1,7 @@
 import { formatCount } from "../format.js"
-import type { SessionGoal } from "./types.js"
+import type { SessionFermentV2 } from "./types.js"
 
-export type GoalCommand =
+export type FermentV2Command =
 	| { action: "show" }
 	| { action: "set"; objective: string; tokenBudget?: number }
 	| { action: "edit"; objective?: string }
@@ -9,9 +9,9 @@ export type GoalCommand =
 	| { action: "resume" }
 	| { action: "clear" }
 
-export const GOAL_COMMAND_COMPLETIONS = ["edit", "pause", "resume", "clear"] as const
+export const FERMENT_V2_COMMAND_COMPLETIONS = ["edit", "pause", "resume", "clear"] as const
 
-export function parseGoalCommand(args: string): GoalCommand {
+export function parseFermentV2Command(args: string): FermentV2Command {
 	const trimmed = args.trim()
 	if (!trimmed) return { action: "show" }
 	const [first, ...rest] = trimmed.split(/\s+/)
@@ -29,28 +29,30 @@ export function parseGoalCommand(args: string): GoalCommand {
 		: { action: "set", objective: parsed.objective, tokenBudget: parsed.tokenBudget }
 }
 
-export function formatGoalSummary(goal: SessionGoal | undefined, liveElapsedMs = 0): string {
-	if (!goal) return "No goal is currently set.\nUse /goal <objective> to create one."
-	const evaluation = goal.lastEvaluation
+export function formatFermentV2Summary(fermentV2: SessionFermentV2 | undefined, liveElapsedMs = 0): string {
+	if (!fermentV2) return "No Ferment V2 is currently set.\nUse /ferment-v2 <objective> to create one."
+	const evaluation = fermentV2.lastEvaluation
 	return [
-		"Goal",
-		`Status: ${goal.status}`,
-		...(goal.status === "blocked" && goal.blockedReason ? [`Blocked reason: ${goal.blockedReason}`] : []),
-		`Revision: ${goal.revision}`,
-		`Objective: ${goal.objective}`,
-		`Usage: ${formatGoalAccounting(goal, liveElapsedMs)}`,
-		...(goal.evaluationCount === undefined ? [] : [`Evaluations: ${goal.evaluationCount}`]),
+		"Ferment V2",
+		`Status: ${fermentV2.status}`,
+		...(fermentV2.status === "blocked" && fermentV2.blockedReason
+			? [`Blocked reason: ${fermentV2.blockedReason}`]
+			: []),
+		`Revision: ${fermentV2.revision}`,
+		`Objective: ${fermentV2.objective}`,
+		`Fermenting time: ${formatFermentV2Accounting(fermentV2, liveElapsedMs)}`,
+		...(fermentV2.evaluationCount === undefined ? [] : [`Evaluations: ${fermentV2.evaluationCount}`]),
 		...(evaluation ? [`Last evaluation: ${evaluation.verdict} — ${evaluation.reason}`] : []),
 		"",
-		`Commands: ${goalCommands(goal)}`,
+		`Commands: ${fermentV2Commands(fermentV2)}`,
 	].join("\n")
 }
 
-export function formatGoalAccounting(goal: SessionGoal, liveElapsedMs = 0): string {
-	return `${formatGoalDuration(goal.timeUsedMs + liveElapsedMs)} · ${formatGoalTokens(goal)}`
+export function formatFermentV2Accounting(fermentV2: SessionFermentV2, liveElapsedMs = 0): string {
+	return `${formatFermentV2Duration(fermentV2.timeUsedMs + liveElapsedMs)} · ${formatFermentV2Tokens(fermentV2)}`
 }
 
-export function formatGoalDuration(timeUsedMs: number): string {
+export function formatFermentV2Duration(timeUsedMs: number): string {
 	const totalMinutes = Math.floor(timeUsedMs / 60_000)
 	if (totalMinutes < 1) return "<1m"
 	if (totalMinutes < 60) return `${totalMinutes}m`
@@ -59,12 +61,12 @@ export function formatGoalDuration(timeUsedMs: number): string {
 	return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`
 }
 
-function goalCommands(goal: SessionGoal): string {
-	if (goal.status === "active") return "/goal edit, /goal pause, /goal clear"
-	if (goal.status === "paused" || goal.status === "blocked") {
-		return "/goal edit, /goal resume, /goal clear"
+function fermentV2Commands(fermentV2: SessionFermentV2): string {
+	if (fermentV2.status === "active") return "/ferment-v2 edit, /ferment-v2 pause, /ferment-v2 clear"
+	if (fermentV2.status === "paused" || fermentV2.status === "blocked") {
+		return "/ferment-v2 edit, /ferment-v2 resume, /ferment-v2 clear"
 	}
-	return "/goal <objective>, /goal clear"
+	return "/ferment-v2 <objective>, /ferment-v2 clear"
 }
 
 function parseTokenBudget(input: string): { objective: string; tokenBudget?: number } {
@@ -92,7 +94,7 @@ function parseTokenBudget(input: string): { objective: string; tokenBudget?: num
 	}
 }
 
-function formatGoalTokens(goal: SessionGoal): string {
-	const used = formatCount(goal.tokensUsed)
-	return goal.tokenBudget === undefined ? `${used} tokens` : `${used}/${formatCount(goal.tokenBudget)} tokens`
+function formatFermentV2Tokens(fermentV2: SessionFermentV2): string {
+	const used = formatCount(fermentV2.tokensUsed)
+	return fermentV2.tokenBudget === undefined ? `${used} tokens` : `${used}/${formatCount(fermentV2.tokenBudget)} tokens`
 }

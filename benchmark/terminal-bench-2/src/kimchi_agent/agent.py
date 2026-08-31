@@ -14,7 +14,7 @@ from harbor.models.trial.result import AgentInfo, ModelInfo
 from pydantic import ValidationError
 
 from kimchi_agent.config import KimchiAgentConfig
-from kimchi_agent.messages import GoalEvaluatorUsage, SessionEntry
+from kimchi_agent.messages import FermentV2EvaluatorUsage, SessionEntry
 from kimchi_agent.release import BINARY_RELPATH, SHARE_RELPATH, GitHubClient
 
 if TYPE_CHECKING:
@@ -62,14 +62,14 @@ class RetryableApiError(RuntimeError):
         super().__init__(f"Retryable provider error{code}{suffix}")
 
 
-def _parse_goal_evaluator_usage(value: object) -> GoalEvaluatorUsage | None:
+def _parse_ferment_v2_evaluator_usage(value: object) -> FermentV2EvaluatorUsage | None:
     if not isinstance(value, dict):
         return None
     try:
-        usage = GoalEvaluatorUsage.model_validate(value)
+        usage = FermentV2EvaluatorUsage.model_validate(value)
     except ValidationError:
         return None
-    if not GoalEvaluatorUsage.model_fields.keys() <= usage.model_fields_set:
+    if not FermentV2EvaluatorUsage.model_fields.keys() <= usage.model_fields_set:
         return None
     return usage
 
@@ -225,6 +225,9 @@ class Kimchi(BaseInstalledAgent):
         disable_compaction = _coerce_bool_kwarg(
             kwargs.pop("disable-compaction", False), "disable-compaction"
         )
+        ferment_v2_enabled = _coerce_bool_kwarg(
+            kwargs.pop("ferment-v2", False), "ferment-v2"
+        )
 
         super().__init__(*args, **kwargs)
         selected_multi_model = self.model_name == MULTI_MODEL
@@ -241,6 +244,7 @@ class Kimchi(BaseInstalledAgent):
             )
         self._multi_model_enabled = selected_multi_model
         self._disable_compaction = disable_compaction
+        self._ferment_v2_enabled = ferment_v2_enabled
         config_kwargs = {}
         api_key = self._get_env(KIMCHI_API_KEY_ENV)
         if api_key is not None:
@@ -425,7 +429,7 @@ class Kimchi(BaseInstalledAgent):
             "set -m && { "
             # Feed the task prompt through stdin and background the pipeline so
             # this wrapper shell can record the process-group id before waiting.
-            f"(printf '%s' {shlex.quote(instruction)} | {runner}) & "
+            f"(printf '%s' {shlex.quote(self._stdin_payload(instruction))} | {runner}) & "
             # $! is the pid of the most recent background job, here the kimchi
             # pipeline leader as seen by the shell.
             "agent_pid=$!; "
@@ -447,6 +451,9 @@ class Kimchi(BaseInstalledAgent):
         )
         return " && ".join(parts)
 
+    def _stdin_payload(self, instruction: str) -> str:
+        return f"/ferment-v2 {instruction}" if self._ferment_v2_enabled else instruction
+
     def _harness_settings_command(self) -> str:
         # Compose the global harness settings (~/.config/kimchi/harness/
         # settings.json) as one JSON object — the file is written wholesale, so
@@ -459,6 +466,8 @@ class Kimchi(BaseInstalledAgent):
             # Read by kimchi through pi's SettingsManager: disables upstream
             # threshold auto-compaction and both ferment compaction paths.
             settings["compaction"] = {"enabled": False}
+        if self._ferment_v2_enabled:
+            settings["resources"] = {"extensions.ferment-v2": True}
         if not settings:
             return ""
 
@@ -601,24 +610,24 @@ class Kimchi(BaseInstalledAgent):
                     entry = SessionEntry.model_validate_json(line)
                 except ValidationError:
                     continue
-                if entry.type == "custom" and entry.custom_type == "kimchi_goal_state":
+                if entry.type == "custom" and entry.custom_type == "kimchi_ferment_v2_state":
                     data = entry.data or {}
                     if data.get("op") != "evaluator_usage":
                         continue
                     session_id = data.get("sessionId")
-                    goal_id = data.get("goalId")
+                    ferment_v2_id = data.get("fermentV2Id")
                     revision = data.get("revision")
                     if (
                         not isinstance(session_id, str)
                         or not session_id.strip()
-                        or not isinstance(goal_id, str)
-                        or not goal_id.strip()
+                        or not isinstance(ferment_v2_id, str)
+                        or not ferment_v2_id.strip()
                         or not isinstance(revision, int)
                         or isinstance(revision, bool)
                         or revision < 1
                     ):
                         continue
-                    usage = _parse_goal_evaluator_usage(data.get("usage"))
+                    usage = _parse_ferment_v2_evaluator_usage(data.get("usage"))
                     if usage is None:
                         continue
                     total_input_tokens += usage.input

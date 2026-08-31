@@ -60,8 +60,8 @@ import dapExtension from "./extensions/dap.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
-import { GOAL_RESOURCE_ID } from "./extensions/goal/constants.js"
-import goalExtension from "./extensions/goal/index.js"
+import { FERMENT_V2_RESOURCE_ID } from "./extensions/ferment-v2/constants.js"
+import fermentV2Extension from "./extensions/ferment-v2/index.js"
 import helpExtension from "./extensions/help.js"
 import hiddenToolGuidanceExtension from "./extensions/hidden-tool-guidance.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
@@ -640,7 +640,7 @@ try {
 				{ id: "extensions.agents", factory: agentsExtension },
 			] satisfies ManagedExtensionFactory[]),
 			...enabledExtensionFactories([
-				{ id: GOAL_RESOURCE_ID, factory: goalExtension },
+				{ id: FERMENT_V2_RESOURCE_ID, factory: fermentV2Extension },
 			] satisfies ManagedExtensionFactory[]),
 			helpExtension,
 			themeSelectorExtension,
@@ -690,7 +690,7 @@ try {
 			const { main } = await import("@earendil-works/pi-coding-agent")
 			await main(rawArgsWithoutMultiModel, { extensionFactories })
 		}
-		// Goal continuations can end on an infrastructure error without Pi setting
+		// Ferment V2 continuations can end on an infrastructure error without Pi setting
 		// exitCode. In print mode, a trailing tracked failure still failed the run.
 		applyPostMainInfrastructureExitPolicy(
 			infrastructureErrorTracker.getFailure(),

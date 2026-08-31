@@ -24,8 +24,8 @@ class Message(BaseMessage):
     usage: Usage = Field(default_factory=Usage)
 
 
-class GoalEvaluatorUsage(BaseMessage):
-    """Matches kimchi's narrowed GoalEvaluatorUsage (src/extensions/goal/types.ts),
+class FermentV2EvaluatorUsage(BaseMessage):
+    """Matches kimchi's narrowed FermentV2EvaluatorUsage (src/extensions/ferment-v2/types.ts),
     not the full assistant-message Usage shape above: no nested cost object, no
     reasoning/cacheWrite1h breakdown."""
 

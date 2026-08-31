@@ -32,7 +32,7 @@ function makeConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 
 const EXPECTED_KEYS = [
 	"config.agents_enabled",
-	"config.goal_enabled",
+	"config.ferment_v2_enabled",
 	"config.mcp_server_count",
 	"config.model",
 	"config.model_roles.builder",
@@ -128,9 +128,9 @@ describe("buildConfigSnapshot", () => {
 			expect(snapshot["config.search_provider"]).toBe("regex")
 		})
 
-		it("reports whether Goal is enabled", () => {
+		it("reports whether Ferment V2 is enabled", () => {
 			vi.mocked(resourceStore.isResourceEnabled).mockReturnValue(true)
-			expect(buildConfigSnapshot(makeConfig(), true)["config.goal_enabled"]).toBe(true)
+			expect(buildConfigSnapshot(makeConfig(), true)["config.ferment_v2_enabled"]).toBe(true)
 		})
 
 		it("mcp_server_count equals total mocked server count across agent definitions", () => {
@@ -247,7 +247,7 @@ describe("buildConfigSnapshot", () => {
 			expect(snapshot["config.telemetry_enabled"]).toBe(true)
 			expect(snapshot["config.permission_mode"]).toBe("default")
 			expect(snapshot["config.agents_enabled"]).toBe(false)
-			expect(snapshot["config.goal_enabled"]).toBe(false)
+			expect(snapshot["config.ferment_v2_enabled"]).toBe(false)
 			expect(snapshot["config.mcp_server_count"]).toBe(0)
 			// Multimodel fallback defaults.
 			expect(snapshot["config.multi_model_enabled"]).toBe(false)

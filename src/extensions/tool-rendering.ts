@@ -43,7 +43,7 @@ import * as Diff from "diff"
 import type { BundledLanguage, BundledTheme } from "shiki"
 import type { TSchema } from "typebox"
 import { formatDuration } from "../extensions/format.js"
-import { GOAL_TOOL_NAMES } from "./goal/constants.js"
+import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
 import { getBashCommandForDisplay } from "./rtk-rewrite.js"
 import { TODO_TOOL_NAMES } from "./todos/tool.js"
 
@@ -62,7 +62,7 @@ const TOOL_RENDER_CACHE = Symbol.for("pi-claude-style-tools:tool-render-cache")
 const TOOL_CACHE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-cache-invalidation")
 const TOOL_IMAGE_EXPAND_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-read-image-expansion")
 const USER_MESSAGE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-user-message-render")
-const HIDDEN_TOOL_BLOCK_NAMES = new Set<string>([...TODO_TOOL_NAMES, ...GOAL_TOOL_NAMES])
+const HIDDEN_TOOL_BLOCK_NAMES = new Set<string>([...TODO_TOOL_NAMES, ...FERMENT_V2_TOOL_NAMES])
 const WRAP_MARK = "\uE000"
 const KITTY_IMAGE_PREFIX = "\x1b_G"
 const ITERM2_IMAGE_PREFIX = "\x1b]1337;File="

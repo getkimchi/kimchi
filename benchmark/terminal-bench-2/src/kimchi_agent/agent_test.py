@@ -17,7 +17,7 @@ from kimchi_agent.agent import (
     Kimchi,
     KimchiExitError,
     RetryableApiError,
-    _parse_goal_evaluator_usage,
+    _parse_ferment_v2_evaluator_usage,
     _retryable_api_error_from_session_stream,
 )
 
@@ -167,6 +167,36 @@ async def test_disable_compaction_writes_harness_setting(tmp_path: Path) -> None
     command = agent.agent_commands[0]
     assert "~/.config/kimchi/harness/settings.json" in command
     assert '{"compaction":{"enabled":false}}' in command
+
+
+async def test_ferment_v2_kwarg_enables_resource_and_prepends_command(tmp_path: Path) -> None:
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        **{"ferment-v2": True},
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("implement the task", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert "printf '%s' '/ferment-v2 implement the task'" in command
+    assert "--ferment-v2" not in command
+    assert '{"resources":{"extensions.ferment-v2":true}}' in command
+
+
+async def test_ferment_v2_kwarg_shares_harness_settings_write(tmp_path: Path) -> None:
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        **{"disable-compaction": "true", "ferment-v2": "true"},
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("implement the task", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert '{"compaction":{"enabled":false},"resources":{"extensions.ferment-v2":true}}' in command
 
 
 async def test_multi_model_run_omits_model_and_enables_harness_setting(tmp_path: Path) -> None:
@@ -441,7 +471,7 @@ def test_malformed_or_non_infra_classification_fails_closed(entry: str) -> None:
     assert _retryable_api_error_from_session_stream(stream) is None
 
 
-def test_goal_evaluator_usage_model_rejects_invalid_numbers() -> None:
+def test_ferment_v2_evaluator_usage_model_rejects_invalid_numbers() -> None:
     valid_usage = {
         "input": 1,
         "output": 2,
@@ -451,12 +481,12 @@ def test_goal_evaluator_usage_model_rejects_invalid_numbers() -> None:
         "costUsd": 0.25,
     }
 
-    assert _parse_goal_evaluator_usage(valid_usage) is not None
-    assert _parse_goal_evaluator_usage({**valid_usage, "input": -1}) is None
-    assert _parse_goal_evaluator_usage({**valid_usage, "costUsd": float("inf")}) is None
+    assert _parse_ferment_v2_evaluator_usage(valid_usage) is not None
+    assert _parse_ferment_v2_evaluator_usage({**valid_usage, "input": -1}) is None
+    assert _parse_ferment_v2_evaluator_usage({**valid_usage, "costUsd": float("inf")}) is None
 
 
-def test_populate_context_bills_goal_evaluator_usage(tmp_path: Path) -> None:
+def test_populate_context_bills_ferment_v2_evaluator_usage(tmp_path: Path) -> None:
     logs_dir = tmp_path / "jobs" / "run-1" / "task__trial" / "agent"
     sessions_dir = logs_dir / "sessions"
     sessions_dir.mkdir(parents=True)
@@ -477,7 +507,7 @@ def test_populate_context_bills_goal_evaluator_usage(tmp_path: Path) -> None:
     assert context.cost_usd == 1.3
 
 
-def test_populate_context_sums_evaluator_calls_across_sessions_and_goals(tmp_path: Path) -> None:
+def test_populate_context_sums_evaluator_calls_across_sessions_and_ferment_v2_runs(tmp_path: Path) -> None:
     logs_dir = tmp_path / "jobs" / "run-1" / "task__trial" / "agent"
     sessions_dir = logs_dir / "sessions"
     sessions_dir.mkdir(parents=True)
@@ -499,7 +529,7 @@ def test_populate_context_sums_evaluator_calls_across_sessions_and_goals(tmp_pat
     context = AgentContext()
     agent.populate_context_post_run(context)
 
-    # Every call is billable, including a replaced Goal and a child session.
+    # Every call is billable, including a replaced Ferment V2 run and a child session.
     assert context.n_input_tokens == 42
     assert context.n_output_tokens == 0
     assert context.n_cache_tokens == 0
@@ -513,11 +543,11 @@ def test_populate_context_ignores_malformed_evaluator_entries(tmp_path: Path) ->
     valid = json.loads(evaluator_usage_entry("g1", 4))
     usage = valid["data"]["usage"]
     malformed = [
-        {"op": "evaluator_usage", "goalId": "g1", "revision": 1, "usage": usage},
-        {"op": "evaluator_usage", "sessionId": "session-a", "goalId": "g1", "revision": 1, "usage": {"input": 99}},
-        {"op": "evaluator_usage", "sessionId": "session-a", "goalId": "g1", "revision": True, "usage": usage},
+        {"op": "evaluator_usage", "fermentV2Id": "f1", "revision": 1, "usage": usage},
+        {"op": "evaluator_usage", "sessionId": "session-a", "fermentV2Id": "f1", "revision": 1, "usage": {"input": 99}},
+        {"op": "evaluator_usage", "sessionId": "session-a", "fermentV2Id": "f1", "revision": True, "usage": usage},
     ]
-    entries = [{"type": "custom", "customType": "kimchi_goal_state", "data": data} for data in malformed]
+    entries = [{"type": "custom", "customType": "kimchi_ferment_v2_state", "data": data} for data in malformed]
     entries.append(valid)
     (sessions_dir / "main.jsonl").write_text("".join(json.dumps(entry) + "\n" for entry in entries))
 
@@ -529,7 +559,7 @@ def test_populate_context_ignores_malformed_evaluator_entries(tmp_path: Path) ->
     assert context.cost_usd == 0.4
 
 
-def evaluator_usage_entry(goal_id: str, input_tokens: int) -> str:
+def evaluator_usage_entry(ferment_v2_id: str, input_tokens: int) -> str:
     usage = {
         "input": input_tokens,
         "output": 0,
@@ -541,11 +571,11 @@ def evaluator_usage_entry(goal_id: str, input_tokens: int) -> str:
     return json.dumps(
         {
             "type": "custom",
-            "customType": "kimchi_goal_state",
+            "customType": "kimchi_ferment_v2_state",
             "data": {
                 "op": "evaluator_usage",
                 "sessionId": "session-a",
-                "goalId": goal_id,
+                "fermentV2Id": ferment_v2_id,
                 "revision": 1,
                 "usage": usage,
             },

@@ -22,7 +22,7 @@ function mockMetadata(): SessionStartMetadata {
 			"config.telemetry_enabled": false,
 			"config.permission_mode": "default",
 			"config.agents_enabled": true,
-			"config.goal_enabled": false,
+			"config.ferment_v2_enabled": false,
 			"config.mcp_server_count": 2,
 			"config.multi_model_enabled": true,
 			"config.model_roles.orchestrator": "test/orch",
@@ -217,7 +217,7 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		expect(header["config.model_roles.explorer"]).toBe("test/explore")
 		expect(header["config.model_roles.researcher"]).toBe("test/research")
 		expect(header["config.model_roles.judge"]).toBe("test/judge")
-		expect(header["config.goal_enabled"]).toBe(false)
+		expect(header["config.ferment_v2_enabled"]).toBe(false)
 		const configKeys = Object.keys(header).filter((k) => k.startsWith("config."))
 		expect(configKeys.length).toBe(16)
 	})

@@ -15,11 +15,13 @@ const BINARY_PATH = resolve("dist/bin/kimchi")
 const PACKAGE_DIR = resolve("dist/share/kimchi")
 const PROCESS_EXIT_TIMEOUT_MS = 12_000
 
-it("keeps --print alive across continue and exits only after Goal evaluates met", { timeout: 25_000 }, async () => {
-	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-goal-print-exit-"))
+it("keeps --print alive across continue and exits only after Ferment V2 evaluates met", {
+	timeout: 25_000,
+}, async () => {
+	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
 	let fake: FakeOpenAiServer | undefined
 	try {
-		fake = await startFakeOpenAiServer({ responses: goalResponses() })
+		fake = await startFakeOpenAiServer({ responses: fermentV2Responses() })
 		const homeDir = join(tempRoot, "home")
 		const workDir = join(tempRoot, "work")
 		const sessionPath = join(tempRoot, "main.jsonl")
@@ -27,17 +29,17 @@ it("keeps --print alive across continue and exits only after Goal evaluates met"
 		mkdirSync(workDir, { recursive: true })
 		writeKimchiConfig(homeDir, fake.baseUrl)
 
-		const result = await runGoalPrint(homeDir, workDir, sessionPath)
-		const goals = readGoalJournal(sessionPath)
+		const result = await runFermentV2Print(homeDir, workDir, sessionPath)
+		const fermentV2Runs = readFermentV2Journal(sessionPath)
 		const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
 		expect(result.timedOut, failure).toBe(false)
 		expect(result.code, failure).toBe(0)
 		expect(
-			goals.some((goal) => goal.lastEvaluation?.verdict === "continue"),
+			fermentV2Runs.some((fermentV2) => fermentV2.lastEvaluation?.verdict === "continue"),
 			failure,
 		).toBe(true)
-		expect(goals.at(-1)?.status, failure).toBe("complete")
+		expect(fermentV2Runs.at(-1)?.status, failure).toBe("complete")
 		expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(6)
 	} finally {
 		await fake?.stop().catch(() => {})
@@ -48,7 +50,7 @@ it("keeps --print alive across continue and exits only after Goal evaluates met"
 it("exits --print with code 0 when the evaluator returns no parseable verdict, instead of hanging", {
 	timeout: 25_000,
 }, async () => {
-	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-goal-print-exit-"))
+	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
 	let fake: FakeOpenAiServer | undefined
 	try {
 		fake = await startFakeOpenAiServer({ responses: unparseableEvaluatorResponses() })
@@ -59,8 +61,8 @@ it("exits --print with code 0 when the evaluator returns no parseable verdict, i
 		mkdirSync(workDir, { recursive: true })
 		writeKimchiConfig(homeDir, fake.baseUrl)
 
-		const result = await runGoalPrint(homeDir, workDir, sessionPath)
-		const goals = readGoalJournal(sessionPath)
+		const result = await runFermentV2Print(homeDir, workDir, sessionPath)
+		const fermentV2Runs = readFermentV2Journal(sessionPath)
 		const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
 		// This is the assertion the whole test exists for: a run that lands on
@@ -68,8 +70,8 @@ it("exits --print with code 0 when the evaluator returns no parseable verdict, i
 		// release the headless waiter, not hang until PROCESS_EXIT_TIMEOUT_MS.
 		expect(result.timedOut, failure).toBe(false)
 		expect(result.code, failure).toBe(0)
-		expect(goals.at(-1)?.status, failure).toBe("paused")
-		expect(goals.at(-1)?.lastEvaluation?.verdict, failure).toBe("unavailable")
+		expect(fermentV2Runs.at(-1)?.status, failure).toBe("paused")
+		expect(fermentV2Runs.at(-1)?.lastEvaluation?.verdict, failure).toBe("unavailable")
 		// Two agent completions plus one evaluator call precede the unavailable verdict.
 		expect(
 			fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")),
@@ -84,10 +86,10 @@ it("exits --print with code 0 when the evaluator returns no parseable verdict, i
 it("answers a resumed --print prompt instead of crashing on the session_start resume kick", {
 	timeout: 25_000,
 }, async () => {
-	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-goal-print-exit-"))
+	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
 	let fake: FakeOpenAiServer | undefined
 	try {
-		fake = await startFakeOpenAiServer({ responses: resumedActiveGoalResponses() })
+		fake = await startFakeOpenAiServer({ responses: resumedActiveFermentV2Responses() })
 		const homeDir = join(tempRoot, "home")
 		const workDir = join(tempRoot, "work")
 		const sessionPath = join(tempRoot, "main.jsonl")
@@ -96,11 +98,11 @@ it("answers a resumed --print prompt instead of crashing on the session_start re
 		writeKimchiConfig(homeDir, fake.baseUrl)
 
 		// Seed a valid ACTIVE journal entry directly; killing a real run risks a torn write.
-		writeSeededActiveGoalSession(sessionPath, workDir)
+		writeSeededActiveFermentV2Session(sessionPath, workDir)
 
 		const prompt = "Check on progress please."
-		const result = await runGoalPrint(homeDir, workDir, sessionPath, prompt)
-		const goals = readGoalJournal(sessionPath)
+		const result = await runFermentV2Print(homeDir, workDir, sessionPath, prompt)
+		const fermentV2Runs = readFermentV2Journal(sessionPath)
 		const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
 		expect(result.timedOut, failure).toBe(false)
@@ -122,18 +124,18 @@ it("answers a resumed --print prompt instead of crashing on the session_start re
 			fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")),
 			failure,
 		).toHaveLength(2)
-		expect(goals.at(-1)?.status, failure).toBe("blocked")
+		expect(fermentV2Runs.at(-1)?.status, failure).toBe("blocked")
 	} finally {
 		await fake?.stop().catch(() => {})
 		rmSync(tempRoot, { recursive: true, force: true })
 	}
 })
 
-it("exits --print after update_goal blocked persists final turn usage", { timeout: 25_000 }, async () => {
-	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-goal-print-exit-"))
+it("exits --print after update_ferment_v2 blocked persists final turn usage", { timeout: 25_000 }, async () => {
+	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-print-exit-"))
 	let fake: FakeOpenAiServer | undefined
 	try {
-		fake = await startFakeOpenAiServer({ responses: blockedGoalResponses() })
+		fake = await startFakeOpenAiServer({ responses: blockedFermentV2Responses() })
 		const homeDir = join(tempRoot, "home")
 		const workDir = join(tempRoot, "work")
 		const sessionPath = join(tempRoot, "main.jsonl")
@@ -141,14 +143,14 @@ it("exits --print after update_goal blocked persists final turn usage", { timeou
 		mkdirSync(workDir, { recursive: true })
 		writeKimchiConfig(homeDir, fake.baseUrl)
 
-		const result = await runGoalPrint(homeDir, workDir, sessionPath)
-		const goals = readGoalJournal(sessionPath)
+		const result = await runFermentV2Print(homeDir, workDir, sessionPath)
+		const fermentV2Runs = readFermentV2Journal(sessionPath)
 		const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
 		expect(result.timedOut, failure).toBe(false)
 		expect(result.code, failure).toBe(0)
-		expect(goals.at(-1)?.status, failure).toBe("blocked")
-		expect(goals.at(-1)?.tokensUsed, failure).toBe(10)
+		expect(fermentV2Runs.at(-1)?.status, failure).toBe("blocked")
+		expect(fermentV2Runs.at(-1)?.tokensUsed, failure).toBe(10)
 		expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(1)
 	} finally {
 		await fake?.stop().catch(() => {})
@@ -156,21 +158,21 @@ it("exits --print after update_goal blocked persists final turn usage", { timeou
 	}
 })
 
-function resumedActiveGoalResponses() {
+function resumedActiveFermentV2Responses() {
 	return [
 		{ stream: ["Still working on it."] },
 		{ stream: ['{"verdict":"impossible","reason":"Blocked on missing external approval."}'] },
 	]
 }
 
-function blockedGoalResponses() {
+function blockedFermentV2Responses() {
 	return [
 		{
 			toolCalls: [
 				{
-					id: "block-goal",
+					id: "block-ferment-v2",
 					function: {
-						name: "update_goal",
+						name: "update_ferment_v2",
 						arguments: JSON.stringify({ status: "blocked", reason: "needs user input" }),
 					},
 				},
@@ -180,19 +182,19 @@ function blockedGoalResponses() {
 	]
 }
 
-/** Write a valid session header plus an ACTIVE `kimchi_goal_state` entry for resume. */
-function writeSeededActiveGoalSession(sessionPath: string, workDir: string): void {
+/** Write a valid session header plus an ACTIVE `kimchi_ferment_v2_state` entry for resume. */
+function writeSeededActiveFermentV2Session(sessionPath: string, workDir: string): void {
 	const now = new Date().toISOString()
 	const header = { type: "session", version: 3, id: "resume-race-session", timestamp: now, cwd: workDir }
-	const goalEntry = {
+	const fermentV2Entry = {
 		type: "custom",
-		customType: "kimchi_goal_state",
+		customType: "kimchi_ferment_v2_state",
 		data: {
 			schemaVersion: 1,
 			op: "put",
-			goal: {
+			fermentV2: {
 				schemaVersion: 1,
-				id: "resume-race-goal",
+				id: "resume-race-ferment-v2",
 				revision: 1,
 				objective: "Implement feature A",
 				status: "active",
@@ -202,37 +204,37 @@ function writeSeededActiveGoalSession(sessionPath: string, workDir: string): voi
 				updatedAt: now,
 			},
 		},
-		id: "seed-goal-entry",
+		id: "seed-ferment-v2-entry",
 		parentId: null,
 		timestamp: now,
 	}
-	writeFileSync(sessionPath, `${JSON.stringify(header)}\n${JSON.stringify(goalEntry)}\n`)
+	writeFileSync(sessionPath, `${JSON.stringify(header)}\n${JSON.stringify(fermentV2Entry)}\n`)
 }
 
-interface GoalJournalGoal {
+interface FermentV2JournalState {
 	status?: string
 	tokensUsed?: number
 	lastEvaluation?: { verdict?: string }
 }
 
-function readGoalJournal(sessionPath: string): GoalJournalGoal[] {
+function readFermentV2Journal(sessionPath: string): FermentV2JournalState[] {
 	const entries = (existsSync(sessionPath) ? readFileSync(sessionPath, "utf-8") : "")
 		.split("\n")
 		.filter(Boolean)
 		.map((line) => JSON.parse(line) as Record<string, unknown>)
 	return entries
-		.filter((entry) => entry.type === "custom" && entry.customType === "kimchi_goal_state")
-		.map((entry) => (entry.data as { goal?: GoalJournalGoal }).goal)
-		.filter((goal): goal is GoalJournalGoal => goal !== undefined)
+		.filter((entry) => entry.type === "custom" && entry.customType === "kimchi_ferment_v2_state")
+		.map((entry) => (entry.data as { fermentV2?: FermentV2JournalState }).fermentV2)
+		.filter((fermentV2): fermentV2 is FermentV2JournalState => fermentV2 !== undefined)
 }
 
-function goalResponses() {
+function fermentV2Responses() {
 	return [
 		{
 			stream: ["Creating the Todo."],
 			toolCalls: [
 				{
-					id: "create-goal-todo",
+					id: "create-ferment-v2-todo",
 					function: {
 						name: "create_todos",
 						arguments: JSON.stringify({ todos: [{ content: "Finish feature A", status: "in_progress" }] }),
@@ -242,14 +244,14 @@ function goalResponses() {
 		},
 		{ stream: ["Planning ended before implementation."] },
 		{
-			match: isGoalEvaluatorRequest,
+			match: isFermentV2EvaluatorRequest,
 			stream: ['{"verdict":"continue","reason":"Implementation is not evidenced yet."}'],
 		},
 		{
 			stream: ["Implementing and verifying."],
 			toolCalls: [
 				{
-					id: "finish-goal-todo",
+					id: "finish-ferment-v2-todo",
 					function: {
 						name: "mark_todo",
 						arguments: JSON.stringify({
@@ -264,16 +266,16 @@ function goalResponses() {
 		{
 			toolCalls: [
 				{
-					id: "claim-goal-complete",
+					id: "claim-ferment-v2-complete",
 					function: {
-						name: "update_goal",
+						name: "update_ferment_v2",
 						arguments: JSON.stringify({ status: "complete", completion_confidence: "proven" }),
 					},
 				},
 			],
 		},
 		{
-			match: isGoalEvaluatorRequest,
+			match: isFermentV2EvaluatorRequest,
 			stream: [
 				'{"verdict":"met","checks":[{"requirement":"feature A is complete","met":true,"evidence":["l1"],"todoIds":[1]}],"reason":"The completed Todo and retained evidence record verification."}',
 			],
@@ -281,8 +283,8 @@ function goalResponses() {
 	]
 }
 
-function isGoalEvaluatorRequest(request: FakeResponseRequest): boolean {
-	return JSON.stringify(request.body).includes("<goal_evaluator>")
+function isFermentV2EvaluatorRequest(request: FakeResponseRequest): boolean {
+	return JSON.stringify(request.body).includes("<ferment_v2_evaluator>")
 }
 
 function unparseableEvaluatorResponses() {
@@ -291,7 +293,7 @@ function unparseableEvaluatorResponses() {
 			stream: ["Creating the Todo."],
 			toolCalls: [
 				{
-					id: "create-goal-todo",
+					id: "create-ferment-v2-todo",
 					function: {
 						name: "create_todos",
 						arguments: JSON.stringify({ todos: [{ content: "Finish feature A", status: "in_progress" }] }),
@@ -302,7 +304,7 @@ function unparseableEvaluatorResponses() {
 		{ stream: ["Planning ended before implementation."] },
 		{
 			// Plain prose with no JSON object anywhere in it — no `{`...`}` run at
-			// all — so parseGoalEvaluatorOutput finds nothing and the evaluator
+			// all — so parseFermentV2EvaluatorOutput finds nothing and the evaluator
 			// call resolves as an "unavailable" verdict rather than a parsed one.
 			stream: [
 				"Looking over the todo list and the recent changes, the work looks finished and every planning step appears satisfied to me.",
@@ -321,7 +323,7 @@ function writeKimchiConfig(homeDir: string, fakeBaseUrl: string): void {
 	)
 	writeFileSync(
 		join(harnessDir, "settings.json"),
-		JSON.stringify({ multiModel: false, resources: { "extensions.goal": true } }),
+		JSON.stringify({ multiModel: false, resources: { "extensions.ferment-v2": true } }),
 	)
 	writeFileSync(
 		join(harnessDir, "models.json"),
@@ -347,7 +349,12 @@ function writeKimchiConfig(homeDir: string, fakeBaseUrl: string): void {
 	)
 }
 
-function runGoalPrint(homeDir: string, workDir: string, sessionPath: string, prompt = "/goal implement feature A") {
+function runFermentV2Print(
+	homeDir: string,
+	workDir: string,
+	sessionPath: string,
+	prompt = "/ferment-v2 implement feature A",
+) {
 	return new Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }>((resolvePromise) => {
 		const child = spawn(
 			BINARY_PATH,

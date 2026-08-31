@@ -175,41 +175,41 @@ Two tags are added automatically to every request and do not count toward the 10
 
 User-defined tags (added via `/tags add`) are persisted to `~/.config/kimchi/tags.json` and survive across sessions. Static tags from `KIMCHI_TAGS` must be set each session.
 
-## Goal mode
+## Ferment V2
 
-Goal mode keeps one objective active across turns in the current session branch and automatically continues work until an independent, tool-free model check finds the objective met or impossible. It uses the normal todo tools for tactical steps; it does not create Ferment phases, workers, or worktrees.
+Ferment V2 keeps one objective active across turns in the current session branch and automatically continues work until an independent, tool-free model check finds the objective met or impossible. It uses the normal todo tools for tactical steps; it does not create Ferment phases, workers, or worktrees.
 
-Enable **Goal mode** under `/resources` → **Experimental**, then restart Kimchi. It is disabled by default and can change or be removed.
+Enable **Ferment V2** under `/resources` → **Experimental**, then restart Kimchi. It is disabled by default and can change or be removed.
 
 | Command | Description |
 |---------|-------------|
-| `/goal <objective>` | Create a goal, or confirm replacement of an unfinished goal |
-| `/goal --tokens <n\|k\|m> <objective>` | Create a goal with a token budget, such as `--tokens 50k` |
-| `/goal` | Show the current objective, status, revision, and latest completion evaluation |
-| `/goal edit [objective]` | Edit in place and redirect work to the new revision |
-| `/goal pause` | Stop automatic continuation without aborting a running tool |
-| `/goal resume` | Reactivate the current goal |
-| `/goal clear` | Clear the goal from the current session branch |
+| `/ferment-v2 <objective>` | Create an objective, or confirm replacement of an unfinished Ferment V2 run |
+| `/ferment-v2 --tokens <n\|k\|m> <objective>` | Create an objective with a token budget, such as `--tokens 50k` |
+| `/ferment-v2` | Show the current objective, status, revision, and latest completion evaluation |
+| `/ferment-v2 edit [objective]` | Edit in place and redirect work to the new revision |
+| `/ferment-v2 pause` | Stop automatic continuation without aborting a running tool |
+| `/ferment-v2 resume` | Reactivate the current run |
+| `/ferment-v2 clear` | Clear the run from the current session branch |
 
-Goal state is stored in the session journal, so resume, rewind, and fork follow the selected branch. An old turn cannot complete an edited or replaced goal because model updates must match both its ID and revision.
+Ferment V2 state is stored in the session journal, so resume, rewind, and fork follow the selected branch. An old turn cannot complete an edited or replaced run because model updates must match both its ID and revision.
 
-While an agent turn is working on a goal, the status line shows `Goal running` with elapsed time rounded down to minutes (`<1m`, `12m`, or `1h 5m`) and tokens. Goals with a token budget show used and budgeted tokens; reaching the budget stops automatic continuation. After Pi finishes retries, compaction, and queued messages, Goal evaluates the final conversation once: `met` completes, `impossible` blocks, and `continue` queues another hidden turn. If the evaluator is unavailable or returns invalid output, Goal pauses so it can be resumed. Time counts only active agent turns; cancelling a turn pauses the goal immediately, while three consecutive failed or unchanged continuation turns pause it after bounded retries by default. Token usage counts this session's goal turns in full, including cache reads and writes, excluding agent-worker child sessions; evaluator usage is tracked separately in the Goal journal.
+While an agent turn is working on an objective, the status line shows `Fermenting` with elapsed time rounded down to minutes (`<1m`, `12m`, or `1h 5m`) and tokens. Ferment V2 runs with a token budget show used and budgeted tokens; reaching the budget stops automatic continuation. After Pi finishes retries, compaction, and queued messages, Ferment V2 evaluates the final conversation once: `met` completes, `impossible` blocks, and `continue` queues another hidden turn. If the evaluator is unavailable or returns invalid output, Ferment V2 pauses so it can be resumed. The `fermenting time` counter counts only active agent turns; cancelling a turn pauses the run immediately, while three consecutive failed or unchanged continuation turns pause it after bounded retries by default. Token usage counts this session's Ferment V2 turns in full, including cache reads and writes, excluding agent-worker child sessions; evaluator usage is tracked separately in the Ferment V2 journal.
 
-Goal mode directs the agent to track tactical progress in the normal Todos widget without creating a second goal-specific checklist. The agent may add a todo mid-goal for work the objective requires, even after the list looked settled, since that is progress rather than a reason to leave the work unrecorded. `update_goal complete` records a runtime completion claim and ends the working turn, but only the independent evaluation can complete the Goal. A `met` verdict still requires a visible, fully completed list for the current Goal revision. `update_goal blocked` remains immediate. Regular work tools remain available while the list is created or reconciled.
+Ferment V2 directs the agent to track tactical progress in the normal Todos widget without creating a second feature-specific checklist. The agent may add a todo mid-run for work the objective requires, even after the list looked settled, since that is progress rather than a reason to leave the work unrecorded. `update_ferment_v2 complete` records a runtime completion claim and ends the working turn, but only the independent evaluation can complete the Ferment V2 run. A `met` verdict still requires a visible, fully completed list for the current Ferment V2 revision. `update_ferment_v2 blocked` remains immediate. Regular work tools remain available while the list is created or reconciled.
 
-Evaluation details stay out of the transcript and status line. `/goal` shows the evaluation count and the latest verdict and reason.
+Evaluation details stay out of the transcript and status line. `/ferment-v2` shows the evaluation count and the latest verdict and reason.
 
-The evaluator runs on the session model, or on the configured `judge` role when multi-model is enabled. It is given a reasoning-aware token budget, because reasoning and the answer share that budget and a verdict-sized one returns no answer at all on a thinking model. A missing, truncated, unparseable, timed-out, or failed response pauses Goal after that single call.
+The evaluator runs on the session model, or on the configured `judge` role when multi-model is enabled. It is given a reasoning-aware token budget, because reasoning and the answer share that budget and a verdict-sized one returns no answer at all on a thinking model. A missing, truncated, unparseable, timed-out, or failed response pauses Ferment V2 after that single call.
 
-Goal mode validates Todo tool results only for the current session, goal ID, and revision. Todo state observed in another session cannot unlock work or completion.
+Ferment V2 validates Todo tool results only for the current session, Ferment V2 ID, and revision. Todo state observed in another session cannot unlock work or completion.
 
 ### Settings
 
-Goal mode's policy numbers are adjustable. Edit `~/.config/kimchi/harness/settings.json` directly, under a single `goal` key:
+Ferment V2's policy numbers are adjustable. Edit `~/.config/kimchi/harness/settings.json` directly, under a single `fermentV2` key:
 
 ```json
 {
-  "goal": {
+  "fermentV2": {
     "autoResume": true,
     "maxUnchangedContinuations": 3,
     "maxConsecutiveErrors": 3,
@@ -221,10 +221,10 @@ Goal mode's policy numbers are adjustable. Edit `~/.config/kimchi/harness/settin
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `autoResume` | `true` | Whether to automatically queue a continuation turn for a resumed active goal on session start. |
-| `maxUnchangedContinuations` | `3` | Consecutive continuation turns without recorded progress before the goal pauses itself. |
-| `maxConsecutiveErrors` | `3` | Consecutive agent-error turns before the goal pauses itself. |
-| `defaultTokenBudget` | unset | Token budget applied to `/goal <objective>` when `--tokens` isn't given. An explicit `--tokens` always overrides this. |
+| `autoResume` | `true` | Whether to automatically queue a continuation turn for a resumed active Ferment V2 run on session start. |
+| `maxUnchangedContinuations` | `3` | Consecutive continuation turns without recorded progress before the Ferment V2 run pauses itself. |
+| `maxConsecutiveErrors` | `3` | Consecutive agent-error turns before the Ferment V2 run pauses itself. |
+| `defaultTokenBudget` | unset | Token budget applied to `/ferment-v2 <objective>` when `--tokens` isn't given. An explicit `--tokens` always overrides this. |
 | `evaluationTimeoutMs` | `30000` | How long the independent completion check is allowed to run before it's treated as unavailable. |
 
 Only non-default values need to be specified; missing or invalid keys fall back to their default rather than failing the extension. There is no separate evaluator-model setting -- it uses the `judge` model role from [Model roles](#model-roles).

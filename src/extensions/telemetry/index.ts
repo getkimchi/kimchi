@@ -25,7 +25,11 @@ import {
 	type FermentStepStartedPayload,
 	type UserUnblockedPayload,
 } from "../ferment/domain-events.js"
-import { GOAL_EVENTS, type GoalEvaluatedPayload, type GoalLifecyclePayload } from "../goal/domain-events.js"
+import {
+	FERMENT_V2_EVENTS,
+	type FermentV2EvaluatedPayload,
+	type FermentV2LifecyclePayload,
+} from "../ferment-v2/domain-events.js"
 import {
 	LOOP_GUARD_EVENTS,
 	type LoopGuardSubagentAbortPayload,
@@ -291,14 +295,14 @@ function onFermentStarted(raw: unknown): void {
 	})
 }
 
-function goalTelemetryHandler(eventName: string): (raw: unknown) => void {
+function fermentV2TelemetryHandler(eventName: string): (raw: unknown) => void {
 	return (raw) => {
 		if (!isEnabled()) return
 		const ctx = _telemetryCtx
 		if (!ctx) return
-		const payload = raw as GoalLifecyclePayload
+		const payload = raw as FermentV2LifecyclePayload
 		const attrs: TelemetryAttributes = {
-			goal_id: payload.goalId,
+			ferment_v2_id: payload.fermentV2Id,
 			revision: payload.revision,
 			status: payload.status,
 			tokens_used: payload.tokensUsed,
@@ -313,15 +317,15 @@ function goalTelemetryHandler(eventName: string): (raw: unknown) => void {
 	}
 }
 
-function goalEvaluatedTelemetryHandler(raw: unknown): void {
+function fermentV2EvaluatedTelemetryHandler(raw: unknown): void {
 	if (!isEnabled()) return
 	const ctx = _telemetryCtx
 	if (!ctx) return
-	const payload = raw as Partial<GoalEvaluatedPayload> | undefined
-	if (!payload?.goalId || !payload.verdict) return
+	const payload = raw as Partial<FermentV2EvaluatedPayload> | undefined
+	if (!payload?.fermentV2Id || !payload.verdict) return
 	const usage = payload.usage
-	ctx.emit("goal.evaluated", {
-		goal_id: payload.goalId,
+	ctx.emit("ferment_v2.evaluated", {
+		ferment_v2_id: payload.fermentV2Id,
 		verdict: payload.verdict,
 		count: payload.count ?? 1,
 		evaluator_model: payload.model ?? "unknown",
@@ -720,14 +724,14 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(FERMENT_EVENTS.STEP_COMPLETED, onStepCompleted)
 		pi.events.on(FERMENT_EVENTS.STEP_FAILED, onStepFailed)
 		pi.events.on(FERMENT_EVENTS.STEERING, onFermentSteering)
-		pi.events.on(GOAL_EVENTS.STARTED, goalTelemetryHandler("goal.started"))
-		pi.events.on(GOAL_EVENTS.REPLACED, goalTelemetryHandler("goal.replaced"))
-		pi.events.on(GOAL_EVENTS.EDITED, goalTelemetryHandler("goal.edited"))
-		pi.events.on(GOAL_EVENTS.COMPLETED, goalTelemetryHandler("goal.completed"))
-		pi.events.on(GOAL_EVENTS.BLOCKED, goalTelemetryHandler("goal.blocked"))
-		pi.events.on(GOAL_EVENTS.PAUSED, goalTelemetryHandler("goal.paused"))
-		pi.events.on(GOAL_EVENTS.STALLED, goalTelemetryHandler("goal.stalled"))
-		pi.events.on(GOAL_EVENTS.EVALUATED, goalEvaluatedTelemetryHandler)
+		pi.events.on(FERMENT_V2_EVENTS.STARTED, fermentV2TelemetryHandler("ferment_v2.started"))
+		pi.events.on(FERMENT_V2_EVENTS.REPLACED, fermentV2TelemetryHandler("ferment_v2.replaced"))
+		pi.events.on(FERMENT_V2_EVENTS.EDITED, fermentV2TelemetryHandler("ferment_v2.edited"))
+		pi.events.on(FERMENT_V2_EVENTS.COMPLETED, fermentV2TelemetryHandler("ferment_v2.completed"))
+		pi.events.on(FERMENT_V2_EVENTS.BLOCKED, fermentV2TelemetryHandler("ferment_v2.blocked"))
+		pi.events.on(FERMENT_V2_EVENTS.PAUSED, fermentV2TelemetryHandler("ferment_v2.paused"))
+		pi.events.on(FERMENT_V2_EVENTS.STALLED, fermentV2TelemetryHandler("ferment_v2.stalled"))
+		pi.events.on(FERMENT_V2_EVENTS.EVALUATED, fermentV2EvaluatedTelemetryHandler)
 		pi.events.on(FERMENT_EVENTS.SCOPING_RESUMED, onFermentScopingResumed)
 		pi.events.on(FERMENT_EVENTS.SCOPING_COMPLETE, onScopingComplete)
 		pi.events.on(FERMENT_EVENTS.USER_UNBLOCKED, onUserUnblocked)

@@ -1,13 +1,13 @@
-export const GOAL_STATUSES = ["active", "paused", "blocked", "budget_limited", "complete"] as const
-export const GOAL_COMPLETION_CONFIDENCES = ["guess", "partial", "tested", "proven"] as const
-export const GOAL_EVALUATION_VERDICTS = ["continue", "met", "impossible", "unavailable"] as const
+export const FERMENT_V2_STATUSES = ["active", "paused", "blocked", "budget_limited", "complete"] as const
+export const FERMENT_V2_COMPLETION_CONFIDENCES = ["guess", "partial", "tested", "proven"] as const
+export const FERMENT_V2_EVALUATION_VERDICTS = ["continue", "met", "impossible", "unavailable"] as const
 
-export type GoalStatus = (typeof GOAL_STATUSES)[number]
-export type GoalCompletionConfidence = (typeof GOAL_COMPLETION_CONFIDENCES)[number]
-export type GoalEvaluationVerdict = (typeof GOAL_EVALUATION_VERDICTS)[number]
+export type FermentV2Status = (typeof FERMENT_V2_STATUSES)[number]
+export type FermentV2CompletionConfidence = (typeof FERMENT_V2_COMPLETION_CONFIDENCES)[number]
+export type FermentV2EvaluationVerdict = (typeof FERMENT_V2_EVALUATION_VERDICTS)[number]
 
-export interface GoalEvaluation {
-	verdict: GoalEvaluationVerdict
+export interface FermentV2Evaluation {
+	verdict: FermentV2EvaluationVerdict
 	reason: string
 	model?: string
 	evaluatedAt: string
@@ -20,7 +20,7 @@ export interface GoalEvaluation {
  * only the total is kept). Decoupled from `Usage` so an unrelated field pi-ai
  * adds later can't change what this journal schema accepts.
  */
-export interface GoalEvaluatorUsage {
+export interface FermentV2EvaluatorUsage {
 	input: number
 	output: number
 	cacheRead: number
@@ -29,20 +29,20 @@ export interface GoalEvaluatorUsage {
 	costUsd: number
 }
 
-export interface SessionGoal {
+export interface SessionFermentV2 {
 	schemaVersion: 1
 	id: string
 	revision: number
 	objective: string
-	status: GoalStatus
+	status: FermentV2Status
 	blockedReason?: string
-	completionConfidence?: GoalCompletionConfidence
+	completionConfidence?: FermentV2CompletionConfidence
 	evaluationCount?: number
-	lastEvaluation?: GoalEvaluation
-	evaluatorUsage?: GoalEvaluatorUsage
+	lastEvaluation?: FermentV2Evaluation
+	evaluatorUsage?: FermentV2EvaluatorUsage
 	/**
 	 * Runaway-loop guard counters; the limits that trip them are
-	 * getGoalSettings().maxConsecutiveErrors / maxUnchangedContinuations
+	 * getFermentV2Settings().maxConsecutiveErrors / maxUnchangedContinuations
 	 * (settings.ts), user-configurable and 3 by default. Persisted so a
 	 * session restart mid-stall reseeds the in-memory guard instead of
 	 * silently zeroing it — omitted (treated as 0) whenever there's no
@@ -57,32 +57,32 @@ export interface SessionGoal {
 	updatedAt: string
 }
 
-export interface GoalEvaluatorUsageJournalEntry {
+export interface FermentV2EvaluatorUsageJournalEntry {
 	schemaVersion: 1
 	op: "evaluator_usage"
 	sessionId: string
-	goalId: string
+	fermentV2Id: string
 	revision: number
-	usage: GoalEvaluatorUsage
+	usage: FermentV2EvaluatorUsage
 }
 
-export type GoalJournalEntry =
+export type FermentV2JournalEntry =
 	| {
 			schemaVersion: 1
 			op: "put"
-			goal: SessionGoal
+			fermentV2: SessionFermentV2
 	  }
 	| {
 			schemaVersion: 1
 			op: "clear"
-			goalId: string
+			fermentV2Id: string
 			revision: number
 			clearedAt: string
 	  }
-	| GoalEvaluatorUsageJournalEntry
+	| FermentV2EvaluatorUsageJournalEntry
 
-export interface PendingGoalContinuation {
+export interface PendingFermentV2Continuation {
 	sessionId: string
-	goalId: string
+	fermentV2Id: string
 	revision: number
 }

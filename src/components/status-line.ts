@@ -12,15 +12,15 @@ import { getBillingStatusLine } from "../extensions/billing/status.js"
 import { formatBudgetStatusLine, formatCreditsStatusLine } from "../extensions/billing/status-line-format.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-line.js"
+import { FERMENT_V2_STATUS_KEY } from "../extensions/ferment-v2/constants.js"
 import { formatCount } from "../extensions/format.js"
-import { GOAL_STATUS_KEY } from "../extensions/goal/constants.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
 export type SegmentId =
-	| "goal"
+	| "ferment-v2"
 	| "permissions"
 	| "model"
 	| "thinking"
@@ -541,11 +541,11 @@ function buildPermissionsSegment(
 	return { id: "permissions", text: mode, width: visibleWidth(mode) }
 }
 
-function buildGoalSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
-	const status = statusLineData.getExtensionStatuses().get(GOAL_STATUS_KEY)
+function buildFermentV2Segment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
+	const status = statusLineData.getExtensionStatuses().get(FERMENT_V2_STATUS_KEY)
 	if (!status) return null
 	const text = accentText(theme, status)
-	return { id: "goal", text, width: visibleWidth(text) }
+	return { id: "ferment-v2", text, width: visibleWidth(text) }
 }
 
 function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
@@ -652,7 +652,7 @@ export function buildStatusLineSegments(
 		buildPermissionsSegment(theme, statusLineData, pinned.has("permissions")),
 		buildModelSegment(ctx, theme),
 		buildThinkingSegment(ctx, theme, pinned.has("thinking")),
-		buildGoalSegment(theme, statusLineData),
+		buildFermentV2Segment(theme, statusLineData),
 		buildFermentSegment(theme, pinned.has("ferment")),
 		buildCreditsSegment(theme, pinned.has("credits")),
 		buildBudgetSegment(theme, pinned.has("budget")),
