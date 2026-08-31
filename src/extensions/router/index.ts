@@ -132,7 +132,6 @@ export function createAutoModelExtension(options: AutoModelExtensionOptions = {}
 				const state = { status: "resolved", model: resolution.model } satisfies AutoRoutingState
 				setAutoRoutingState(sessionId, state)
 				pi.appendEntry(AUTO_RESOLUTION_ENTRY, resolvedEntry(resolution.model))
-				ctx.ui.notify("Auto is ready for this session", "info")
 				return state
 			})
 		})
