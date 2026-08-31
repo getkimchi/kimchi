@@ -377,6 +377,38 @@ describe("telemetryExtension integration", () => {
 		expect(event.headers.Traceparent).toBe(existingTraceparent)
 		expect(event.headers.traceparent).toBeUndefined()
 	})
+
+	it("before_provider_headers injects X-Conversation-Id as a UUID", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		const convId = event.headers["X-Conversation-Id"]
+		expect(typeof convId).toBe("string")
+		expect(convId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+	})
+
+	it("session_start regenerates X-Conversation-Id", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event1 = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event1)
+		const beforeId = event1.headers["X-Conversation-Id"]
+
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event2 = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event2)
+		const afterId = event2.headers["X-Conversation-Id"]
+
+		expect(afterId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+		expect(afterId).not.toBe(beforeId)
+	})
 })
 
 // ---------------------------------------------------------------------------

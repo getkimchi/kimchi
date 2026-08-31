@@ -59,6 +59,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import { getParsedCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
 import { defaultFermentRuntime } from "../../extensions/ferment/runtime.js"
@@ -96,6 +97,7 @@ import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from
 import { AVAILABLE_COMMANDS } from "./commands.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
+import { handleSteering } from "./ext-methods/steering.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker, type ActivePlan } from "./plans.js"
 import {
@@ -114,6 +116,15 @@ import { asString, truncate } from "./utils.js"
 /** Auth method ID for Agent Auth (browser-based OAuth). Used in both
  * initialize() declaration and authenticate() validation to avoid typo drift. */
 const KIMCHI_AGENT_AUTH_METHOD_ID = "kimchi-agent"
+
+/** Resolve --plan/--auto/--yolo CLI flags into a PermissionMode. */
+function resolveCliPermissionMode(): PermissionMode | undefined {
+	const { options } = getParsedCliArgs()
+	if (options.plan) return "plan"
+	if (options.auto) return "auto"
+	if (options.yolo) return "yolo"
+	return undefined
+}
 
 /**
  * Produces an unbound AgentSession for a newSession request. The ACP agent owns
@@ -350,7 +361,12 @@ export class KimchiAcpAgent implements Agent {
 	private getInitialPermissionMode(session: AgentSession): PermissionModeState {
 		const cwd = session.sessionManager.getCwd()
 		const { loaded } = loadConfig({ cwd })
-		return resolveInitialPermissionMode(session.sessionManager, this.permissionsEnvFlag, undefined, loaded)
+		return resolveInitialPermissionMode(
+			session.sessionManager,
+			this.permissionsEnvFlag,
+			resolveCliPermissionMode(),
+			loaded,
+		)
 	}
 
 	constructor(
@@ -970,6 +986,9 @@ export class KimchiAcpAgent implements Agent {
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
 		await entry.session.abort()
+		// Drain the steer/follow-up queue so queued text doesn't leak into the
+		// next prompt. Mirrors the TUI's Escape → clearAllQueues() behaviour.
+		entry.session.clearQueue()
 	}
 
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -980,6 +999,16 @@ export class KimchiAcpAgent implements Agent {
 			}
 			case AVAILABLE_EXT_METHODS.set_session_title:
 				return handleSetSessionTitle((sessionId) => this.sessions.get(sessionId)?.session, params)
+			case AVAILABLE_EXT_METHODS.steering:
+				return handleSteering((sessionId) => {
+					const entry = this.sessions.get(sessionId)
+					if (!entry) return undefined
+					// A cancelled turn stays defined until the prompt settles, but
+					// cancel() has already drained its queue — a steer landing in this
+					// window must not re-queue text that would leak into the next prompt.
+					const turnActive = entry.turn !== undefined && !entry.turn.cancelled
+					return { session: entry.session, turnActive }
+				}, params)
 			default:
 				throw RequestError.methodNotFound(method)
 		}

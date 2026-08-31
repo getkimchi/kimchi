@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Copy non-TypeScript resources that tsc doesn't handle.
 //
 // --dev   (used by `build`):        theme files from node_modules → src/modes/interactive/theme/

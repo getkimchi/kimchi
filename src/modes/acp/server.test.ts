@@ -47,6 +47,7 @@ vi.mock("../../models.js", () => ({
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
+import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
@@ -85,6 +86,9 @@ function cleanPermissionEnv(): void {
 			Reflect.deleteProperty(process.env, key)
 		}
 	}
+	// Reset the CLI args cache so permission mode flags (--plan/--auto/--yolo)
+	// set by one test don't leak into another via the module-level cache.
+	populateCliArgs([])
 }
 
 beforeEach(cleanPermissionEnv)
@@ -144,6 +148,8 @@ class FakeAgentSession {
 	private listeners = new Set<AgentSessionEventListener>()
 	disposed = false
 	aborted = false
+	clearQueueCalls = 0
+	clearQueueReturn = { steering: [] as string[], followUp: [] as string[] }
 	model: FakeModel | undefined = {
 		provider: "test",
 		id: "test-model",
@@ -260,6 +266,11 @@ class FakeAgentSession {
 	async abort(): Promise<void> {
 		this.aborted = true
 		await this.abortImpl()
+	}
+
+	clearQueue(): { steering: string[]; followUp: string[] } {
+		this.clearQueueCalls++
+		return this.clearQueueReturn
 	}
 
 	async bindExtensions(bindings: unknown): Promise<void> {
@@ -880,6 +891,31 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const result = await promptP
 		expect(result.stopReason).toBe("cancelled")
 		expect(fake.aborted).toBe(true)
+	})
+
+	// cancel() must drain the steer/follow-up queue so queued text doesn't
+	// leak into the next prompt — mirrors the TUI's Escape → clearAllQueues().
+	it("drains the steer queue when cancel arrives mid-turn", async () => {
+		let cancelSeen = false
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			while (!cancelSeen) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
+		}
+
+		const promptP = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run forever" }],
+		})
+		await delay(10)
+		await agent.cancel({ sessionId })
+
+		await promptP
+		expect(fake.aborted).toBe(true)
+		expect(fake.clearQueueCalls).toBe(1)
 	})
 
 	// If session.prompt throws (pre-turn validation, config error, etc.), the
@@ -5280,6 +5316,52 @@ describe("session mode controller lifecycle", () => {
 
 		expect(process.env[key1]).toBeUndefined()
 		expect(process.env[key2]).toBeUndefined()
+	})
+})
+
+describe("ACP newSession CLI permission mode flags", () => {
+	it("--yolo flag sets initial permission mode to yolo", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		populateCliArgs(["--yolo"])
+
+		const fake = new FakeAgentSession("cli-yolo-1")
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		expect(res.configOptions?.[0].currentValue).toBe("yolo")
+
+		const controller = getSessionPermissionFlagController(res.sessionId)
+		expect(controller?.getMode()).toEqual({ mode: "yolo", source: "flag", initiatedBy: "user" })
+	})
+
+	it("CLI flag takes precedence over config defaultMode", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "acp-cli-flag-precedence-"))
+		const kimchiDir = join(tmpDir, ".kimchi")
+		mkdirSync(kimchiDir, { recursive: true })
+		writeFileSync(join(kimchiDir, "permissions.json"), JSON.stringify({ defaultMode: "plan" }))
+
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		populateCliArgs(["--yolo"])
+
+		try {
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async (params) => asSession(new FakeAgentSession("cli-precedence-1", params.cwd)),
+			})
+
+			const res = await agent.newSession({ cwd: tmpDir, mcpServers: [] })
+			// --yolo flag should win over config defaultMode "plan"
+			expect(res.configOptions?.[0].currentValue).toBe("yolo")
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
 	})
 })
 

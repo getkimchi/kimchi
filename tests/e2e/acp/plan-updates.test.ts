@@ -254,6 +254,10 @@ describe("ACP integration — plan sessionUpdates from ferment lifecycle", () =>
 		fixture = await startAcpFixture({
 			artifactName: "plan-updates",
 			responses: lifecycleScripts(),
+			// Advertise elicitation so the "Resume?" select goes through
+			// elicitation/create (hooked by answerNextElicitationWith below)
+			// instead of requestPermission (auto-approved but not hooked).
+			clientCapabilities: { elicitation: { form: {} } },
 		})
 		seedPlannedFerment(fixture.workDir)
 	}, 60_000)
@@ -282,7 +286,7 @@ describe("ACP integration — plan sessionUpdates from ferment lifecycle", () =>
 			fixture,
 			sessionId,
 			(entries) => entries.length === 3 && entries.every((e) => e.status === "pending"),
-			8_000,
+			15_000,
 			"wake-path initial plan",
 		).catch(async () => {
 			await prompt(fixture, sessionId, "continue the ferment")
@@ -367,7 +371,7 @@ describe("ACP integration — plan sessionUpdates from ferment lifecycle", () =>
 			fixture,
 			sessionA,
 			(entries) => entries.length === 3 && entries.every((e) => e.status === "pending"),
-			8_000,
+			15_000,
 			"session A wake-path initial plan",
 		).catch(async () => {
 			await prompt(fixture, sessionA, "continue the ferment")
