@@ -15,8 +15,9 @@ export type SteeringResponse = {
 /**
  * Lookup result for the session targeted by a steering request.
  * `turnActive` mirrors the ACP agent's turn bookkeeping
- * (SessionRecord.turn !== undefined) so this handler doesn't need to reach
- * into the agent's private turn state.
+ * (SessionRecord.turn defined AND not cancelled — a cancelled turn's queue
+ * has already been drained and must not accept new steers) so this handler
+ * doesn't need to reach into the agent's private turn state.
  */
 export type SteeringTarget = {
 	session: AgentSession

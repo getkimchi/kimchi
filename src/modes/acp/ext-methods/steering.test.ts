@@ -23,6 +23,7 @@ class FakeAgentSession {
 	}
 	setSessionName = vi.fn()
 	steer = vi.fn(async (_text: string) => {})
+	clearQueue = vi.fn(() => ({ steering: [] as string[], followUp: [] as string[] }))
 	extensionRunner = { emit: async () => {} }
 	getToolDefinition = vi.fn((_name: string) => undefined)
 	getContextUsage = () => undefined
@@ -58,9 +59,10 @@ class FakeAgentSession {
 	finishTurn(): void {
 		this.promptResolve?.()
 	}
-	async abort(): Promise<void> {
-		this.finishTurn()
-	}
+	// abort() deliberately does NOT finish the turn: real pi-mono has a window
+	// between cancel and turn teardown where entry.turn is still defined but
+	// already cancelled — tests use finishTurn() to end it explicitly.
+	async abort(): Promise<void> {}
 	dispose(): void {
 		this.finishTurn()
 		this.disposed = true
@@ -132,6 +134,34 @@ describe("KimchiAcpAgent extMethod steering", () => {
 
 		expect(result).toEqual({ status: "promptRequired" })
 		expect(session.steer).not.toHaveBeenCalled()
+	})
+
+	// cancel() marks the turn cancelled and drains the queue, but entry.turn
+	// stays defined until the prompt settles. A steer landing in that window
+	// must not re-queue text that would leak into the next prompt().
+	it("returns promptRequired when steering arrives after cancel but before the turn settles", async () => {
+		const session = new FakeAgentSession("sess-1")
+		const agent = makeAgent(session)
+		await agent.initialize({ protocolVersion: 1 })
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const promptPromise = agent.prompt({
+			sessionId: "sess-1",
+			prompt: [{ type: "text", text: "do work" }],
+		})
+		await Promise.resolve()
+
+		await agent.cancel({ sessionId: "sess-1" })
+
+		const result = await agent.extMethod(AVAILABLE_EXT_METHODS.steering, {
+			sessionId: "sess-1",
+			prompt: "too late",
+		})
+		expect(result).toEqual({ status: "promptRequired" })
+		expect(session.steer).not.toHaveBeenCalled()
+
+		session.finishTurn()
+		expect(await promptPromise).toEqual({ stopReason: "cancelled" })
 	})
 
 	it("maps pi's extension-command steer() error to invalidParams instead of swallowing it", async () => {

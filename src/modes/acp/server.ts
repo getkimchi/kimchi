@@ -986,6 +986,9 @@ export class KimchiAcpAgent implements Agent {
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
 		await entry.session.abort()
+		// Drain the steer/follow-up queue so queued text doesn't leak into the
+		// next prompt. Mirrors the TUI's Escape → clearAllQueues() behaviour.
+		entry.session.clearQueue()
 	}
 
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -1000,7 +1003,11 @@ export class KimchiAcpAgent implements Agent {
 				return handleSteering((sessionId) => {
 					const entry = this.sessions.get(sessionId)
 					if (!entry) return undefined
-					return { session: entry.session, turnActive: entry.turn !== undefined }
+					// A cancelled turn stays defined until the prompt settles, but
+					// cancel() has already drained its queue — a steer landing in this
+					// window must not re-queue text that would leak into the next prompt.
+					const turnActive = entry.turn !== undefined && !entry.turn.cancelled
+					return { session: entry.session, turnActive }
 				}, params)
 			default:
 				throw RequestError.methodNotFound(method)

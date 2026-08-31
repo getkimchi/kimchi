@@ -148,6 +148,8 @@ class FakeAgentSession {
 	private listeners = new Set<AgentSessionEventListener>()
 	disposed = false
 	aborted = false
+	clearQueueCalls = 0
+	clearQueueReturn = { steering: [] as string[], followUp: [] as string[] }
 	model: FakeModel | undefined = {
 		provider: "test",
 		id: "test-model",
@@ -264,6 +266,11 @@ class FakeAgentSession {
 	async abort(): Promise<void> {
 		this.aborted = true
 		await this.abortImpl()
+	}
+
+	clearQueue(): { steering: string[]; followUp: string[] } {
+		this.clearQueueCalls++
+		return this.clearQueueReturn
 	}
 
 	async bindExtensions(bindings: unknown): Promise<void> {
@@ -884,6 +891,31 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const result = await promptP
 		expect(result.stopReason).toBe("cancelled")
 		expect(fake.aborted).toBe(true)
+	})
+
+	// cancel() must drain the steer/follow-up queue so queued text doesn't
+	// leak into the next prompt — mirrors the TUI's Escape → clearAllQueues().
+	it("drains the steer queue when cancel arrives mid-turn", async () => {
+		let cancelSeen = false
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			while (!cancelSeen) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
+		}
+
+		const promptP = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run forever" }],
+		})
+		await delay(10)
+		await agent.cancel({ sessionId })
+
+		await promptP
+		expect(fake.aborted).toBe(true)
+		expect(fake.clearQueueCalls).toBe(1)
 	})
 
 	// If session.prompt throws (pre-turn validation, config error, etc.), the
