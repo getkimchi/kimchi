@@ -109,11 +109,6 @@ describe("Ferment V2 extension", () => {
 		expect(result.details.fermentV2).toBeNull()
 	})
 
-	it("publishes no status when no Ferment V2 exists", async () => {
-		expect(harness.ui.setStatus).toHaveBeenCalledWith("ferment-v2", undefined)
-		expect(harness.ui.setStatus).not.toHaveBeenCalledWith("ferment-v2", expect.any(String))
-	})
-
 	it("creates a Ferment V2, persists it, and confirms unfinished replacement", async () => {
 		await harness.command("ship feature A")
 		const first = harness.currentFermentV2()
@@ -233,9 +228,6 @@ describe("Ferment V2 extension", () => {
 		await vi.waitFor(() => expect(headless.sendMessage).toHaveBeenCalledOnce())
 		expect(resolved).toBe(false)
 
-		// The pre-evaluator canEvaluateFermentV2 check passes here (tools are still
-		// available), so the evaluator call proceeds and only the post-evaluator
-		// twin ever sees the tools go away.
 		const { release, settled } = await holdEvaluation(headless)
 		expect(resolved).toBe(false)
 
@@ -251,9 +243,6 @@ describe("Ferment V2 extension", () => {
 		const winner = await Promise.race([command, timeout])
 		if (timer) clearTimeout(timer)
 
-		// If this regresses, the post-evaluator canEvaluateFermentV2 failure never
-		// resolves the waiter (unlike its pre-evaluator twin), and the headless
-		// command hangs forever instead of the race above timing out.
 		expect(winner).not.toBe(TIMED_OUT)
 		expect(resolved).toBe(true)
 	})
@@ -266,7 +255,6 @@ describe("Ferment V2 extension", () => {
 		dateNow.mockReturnValue(61_000)
 		await harness.command("second")
 		expect(harness.currentFermentV2()).toMatchObject({ objective: "second", timeUsedMs: 0 })
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "Ferment V2 active · <1m · 0 tokens")
 
 		dateNow.mockReturnValue(121_000)
 		await harness.fire("turn_end", terminalTurn())
@@ -295,14 +283,12 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).toMatchObject({ objective: "second", revision: 1, status: "active" })
 	})
 
-	it("shows running feedback and reports final elapsed time and tokens", async () => {
+	it("reports final elapsed time and tokens", async () => {
 		const dateNow = vi.spyOn(Date, "now").mockReturnValue(1_000)
 		await harness.command("ship it")
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "Ferment V2 active · <1m · 0 tokens")
 		expect(harness.ui.setWidget).not.toHaveBeenCalled()
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1_000 })
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "Fermenting · <1m · 0 tokens")
 		dateNow.mockReturnValue(3_500)
 		await harness.fire("turn_end", terminalTurn("stop", { input: 1_200, output: 300 }))
 		expect(harness.currentFermentV2()).toMatchObject({ tokensUsed: 1_500, timeUsedMs: 2_500 })
@@ -327,7 +313,6 @@ describe("Ferment V2 extension", () => {
 			timeUsedMs: 3_500,
 		})
 		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 complete.", "info")
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", undefined)
 	})
 
 	it("treats missing usage fields as zero", async () => {
@@ -646,7 +631,6 @@ describe("Ferment V2 extension", () => {
 			expect.objectContaining({ deliverAs: "steer", triggerTurn: true }),
 		)
 		expect(harness.latestJournal()).toMatchObject({ op: "clear" })
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", undefined)
 
 		await harness.fire("session_start", { type: "session_start", reason: "resume" })
 		expect(harness.currentFermentV2()).toBeUndefined()
@@ -655,9 +639,6 @@ describe("Ferment V2 extension", () => {
 
 	it("schedules a continuation turn when resuming a session with an active Ferment V2", async () => {
 		await harness.command("ship it")
-		// Simulate a hard kill: no session_shutdown fired, journal branch untouched.
-		// A fresh harness stands in for the new process re-attaching to the same
-		// journal: only the persisted branch survives, not in-memory scheduling state.
 		const capturedBranch = [...harness.branch]
 
 		const resumed = createHarness()
@@ -725,8 +706,6 @@ describe("Ferment V2 extension", () => {
 		expect(resumed.sendMessage).not.toHaveBeenCalled()
 	})
 
-	// session_start resumes via a deferred timer so an embedder's prompt can set
-	// isStreaming first; fermentV2IsBusy then skips the competing kick.
 	it("does not schedule a continuation turn on resume when the session is already busy", async () => {
 		await harness.command("ship it")
 		const capturedBranch = [...harness.branch]
@@ -740,7 +719,6 @@ describe("Ferment V2 extension", () => {
 		expect(resumed.sendMessage).not.toHaveBeenCalled()
 	})
 
-	// Regression guard: session_start must not send the resume kick synchronously.
 	it("does not send the resume kick synchronously during session_start dispatch", async () => {
 		await harness.command("ship it")
 		const capturedBranch = [...harness.branch]
@@ -1047,7 +1025,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.appendEntry).toHaveBeenCalledTimes(1)
 	})
 
-	it("keeps evaluation details out of the transcript and status line", async () => {
+	it("keeps evaluation details out of the transcript", async () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		harness.sendMessage.mockClear()
@@ -1056,13 +1034,11 @@ describe("Ferment V2 extension", () => {
 		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
 		expect(continuations(harness)).toHaveLength(1)
 		expect(continuations(harness)[0]?.content).toContain("Independent completion check: More work is required.")
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "Fermenting · <1m · 0 tokens")
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
 		harness.sendMessage.mockClear()
 		await settleFermentV2(harness, "impossible")
 		expect(harness.sendMessage).not.toHaveBeenCalled()
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "Ferment V2 blocked · <1m · 0 tokens")
 	})
 
 	it("counts substantive tool use only while the Ferment V2 is active", async () => {
@@ -1085,7 +1061,6 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
 		await settleFermentV2(harness, "continue")
 
-		// Work done while paused must not count as progress after the resume.
 		expect(harness.currentFermentV2()?.status).toBe("paused")
 		expect(harness.events.emit).toHaveBeenLastCalledWith(
 			FERMENT_V2_EVENTS.STALLED,
@@ -1104,7 +1079,6 @@ describe("Ferment V2 extension", () => {
 			await settleFermentV2(harness, "continue")
 		}
 
-		// A repeated claim is not progress: the stall guard must still fire.
 		expect(harness.currentFermentV2()?.status).toBe("paused")
 		expect(harness.events.emit).toHaveBeenLastCalledWith(
 			FERMENT_V2_EVENTS.STALLED,
@@ -1135,7 +1109,6 @@ describe("Ferment V2 extension", () => {
 
 		const evaluated = harness.events.emit.mock.calls.filter(([name]) => name === FERMENT_V2_EVENTS.EVALUATED)
 		expect(evaluated).toHaveLength(2)
-		// Summing the events must equal the Ferment V2's cumulative evaluator spend.
 		for (const [, payload] of evaluated) expect(payload).toMatchObject({ usage: EVALUATOR_USAGE })
 		expect(harness.currentFermentV2()?.evaluatorUsage?.totalTokens).toBe(EVALUATOR_USAGE.totalTokens * 2)
 	})
@@ -1175,8 +1148,6 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		harness.sendMessage.mockClear()
-		// The run is already marked inactive when agent_settled fires, so only the
-		// in-flight evaluation is still working.
 		harness.setIdle(true)
 
 		const { release, settled } = await holdEvaluation(harness)
@@ -1186,7 +1157,6 @@ describe("Ferment V2 extension", () => {
 
 		release({ verdict: "continue", reason: "More work is required.", model: "test/evaluator", usage: EVALUATOR_USAGE })
 		await settled
-		// The aborted evaluation must not resurrect the paused Ferment V2.
 		expect(harness.currentFermentV2()?.status).toBe("paused")
 	})
 
@@ -1296,9 +1266,6 @@ describe("Ferment V2 extension", () => {
 	it("aborts an evaluation held across a session_tree rewind that lands on the same Ferment V2 revision", async () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		// Journaled like the other replay tests: restoreFermentV2Runtime rebuilds
-		// todoStateFor from branch entries, so the settled Todo has to actually be
-		// there for the post-rewind "met" path to be reachable at all.
 		harness.setBranch([
 			...harness.branch,
 			customEntry(TODO_CUSTOM_ENTRY_TYPE, {
@@ -1311,8 +1278,6 @@ describe("Ferment V2 extension", () => {
 
 		const { release, settled, signal } = await holdEvaluation(harness)
 
-		// A rewind landing back on the same Ferment V2 id/revision: the post-await
-		// identity check alone can't tell this apart from a live evaluation.
 		await harness.fire("session_tree", { type: "session_tree", oldLeafId: "before", newLeafId: "after" })
 
 		expect(signal?.aborted).toBe(true)
@@ -1325,8 +1290,6 @@ describe("Ferment V2 extension", () => {
 		})
 		await settled
 
-		// The stale "met" verdict must not resurrect and complete a Ferment V2 whose
-		// conversation was just rewound away from.
 		expect(harness.currentFermentV2()?.status).not.toBe("complete")
 	})
 
@@ -1419,7 +1382,6 @@ describe("Ferment V2 extension", () => {
 
 		expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
 
-		// Reattach to the same journal after a restart; persisted guard counters must survive replay.
 		const capturedBranch = [...harness.branch]
 		const resumed = createHarness()
 		resumed.setSession("session-a", capturedBranch)
@@ -1437,10 +1399,6 @@ describe("Ferment V2 extension", () => {
 	})
 
 	it("pauses when every turn only appends a fresh not-yet-started todo", async () => {
-		// The `<kimchi_session_ferment_v2>` prompt now explicitly invites adding a todo
-		// for newly discovered work. Mere list growth must not reset the
-		// no-progress guard, or an agent stuck "add a todo, plan, add a todo,
-		// plan" would never trip it.
 		await harness.command("keep going")
 		harness.sendMessage.mockClear()
 
@@ -1517,8 +1475,6 @@ describe("Ferment V2 extension", () => {
 
 		expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
 
-		// Starting the first item -- pending to in_progress -- is a real state
-		// transition, not mere growth, so it must reset the counter.
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
 		await harness.fire("tool_execution_end", {
 			type: "tool_execution_end",
@@ -1568,8 +1524,6 @@ describe("Ferment V2 extension", () => {
 
 		expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
 
-		// Settling the item -- in_progress to completed -- is a real state
-		// transition, so it must reset the counter even though the list didn't grow.
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
 		await harness.fire("tool_execution_end", {
 			type: "tool_execution_end",
@@ -1727,7 +1681,6 @@ describe("Ferment V2 extension", () => {
 			FERMENT_V2_EVENTS.PAUSED,
 			expect.objectContaining({ reason: "agent_aborted", status: "paused" }),
 		)
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "Ferment V2 paused · 1m · 0 tokens")
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 		dateNow.mockReturnValue(121_000)
 		expect((await harness.tool(GET_FERMENT_V2_TOOL_NAME, {})).details.fermentV2).toMatchObject({ timeUsedMs: 60_000 })
@@ -1822,7 +1775,6 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).toMatchObject({ status: "active", consecutiveErrorTurns: 2 })
 		expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
 
-		// Reattach to the same journal after a restart; persisted error streaks must survive replay.
 		const capturedBranch = [...harness.branch]
 		const resumed = createHarness()
 		resumed.setSession("session-a", capturedBranch)
@@ -1854,19 +1806,16 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
 		await harness.fire("turn_end", terminalTurn("stop"))
 		await settleFermentV2(harness, "continue")
-		// A non-error turn already resets the error streak on its own.
 		expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 1 })
 		expect(harness.currentFermentV2()?.consecutiveErrorTurns).toBeUndefined()
 
 		await harness.command("pause")
 		await harness.command("resume")
 
-		// Explicit resume resets the no-progress counter; session replay must not.
 		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
 		expect(harness.currentFermentV2()?.consecutiveErrorTurns).toBeUndefined()
 		expect(harness.currentFermentV2()?.unchangedContinuationTurns).toBeUndefined()
 
-		// Confirm the reset was journaled: two more turns reach 2, not the pause threshold.
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
 		await settleFermentV2(harness, "continue")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 4, timestamp: Date.now() })
@@ -1894,9 +1843,6 @@ describe("Ferment V2 extension", () => {
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 		resumed.sendMessage.mockClear()
 
-		// If the reset above hadn't really been journaled, a stale streak of 1
-		// plus these two errors would already reach the pause threshold. It
-		// must take all three post-restart errors, proving the reset was real.
 		await resumed.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: Date.now() })
 		await resumed.fire("turn_end", terminalTurn("error"))
 		await resumed.fire("agent_end", { type: "agent_end", messages: [] })
@@ -1929,10 +1875,6 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("agent_settled", { type: "agent_settled" })
 
 		expect(harness.currentFermentV2()).toMatchObject({ status: "budget_limited", tokenBudget: 100, tokensUsed: 100 })
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith(
-			"ferment-v2",
-			"Ferment V2 budget reached · <1m · 100/100 tokens",
-		)
 		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 stopped after reaching its 100 token budget.", "warning")
 		expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
 		expect(harness.appendEntry).not.toHaveBeenCalled()
@@ -1940,9 +1882,6 @@ describe("Ferment V2 extension", () => {
 	})
 
 	it("refuses to resume a Ferment V2 that is paused but still over its token budget", async () => {
-		// An aborted turn can both push tokensUsed past the budget and force a
-		// pause in the same turn_end (budget_limited is overwritten by paused),
-		// leaving a Ferment V2 that is paused yet already over budget.
 		await harness.command("--tokens 100 keep going")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await harness.fire("turn_end", terminalTurn("aborted", { input: 80, output: 20 }))
@@ -1986,9 +1925,6 @@ describe("Ferment V2 extension", () => {
 		const winner = await Promise.race([command, timeout])
 		if (timer) clearTimeout(timer)
 
-		// If this regresses, the resume command hangs forever (an unresolvable
-		// waiter is created after the Ferment V2 is already terminal) and the race
-		// above times out instead of the command winning.
 		expect(winner).not.toBe(TIMED_OUT)
 		expect(resolved).toBe(true)
 		expect(headless.currentFermentV2()).toMatchObject({ status: "budget_limited", tokenBudget: 100, tokensUsed: 100 })
@@ -2243,9 +2179,6 @@ describe("Ferment V2 extension", () => {
 		it("treats a stale ctx from the busy check as not busy, skipping the pause stop-steer", async () => {
 			await harness.command("ship it")
 			harness.sendMessage.mockClear()
-			// Idle is false (the agent looks busy), but the stale ctx thrown from
-			// isIdle() must still win: fermentV2IsBusy catches it and reports "not busy",
-			// so pause must not attempt to steer a run that no longer exists.
 			harness.setIdle(false)
 			harness.setIdleError(new Error("This extension ctx is stale: session torn down"))
 
@@ -2262,9 +2195,6 @@ describe("Ferment V2 extension", () => {
 
 			const resumed = createHarness()
 			resumed.setSession("session-a", capturedBranch)
-			// Idle stays at its default true, so fermentV2IsBusy returns normally (not
-			// busy) and fermentV2ResumeBlocked reaches hasPendingMessages(), which is the
-			// call this error targets.
 			resumed.setPendingMessagesError(new Error("This extension ctx is stale: session torn down"))
 
 			await resumed.fire("session_start", { type: "session_start", reason: "resume" })
@@ -2498,7 +2428,6 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 			for (const handler of handlers.get(event) ?? []) {
 				result = await handler(payload as never, ctx)
 			}
-			// Flush the deferred session_start kick so the test observes the settled outcome.
 			if (event === "session_start") {
 				await new Promise((resolve) => setTimeout(resolve, 0))
 			}
@@ -2533,7 +2462,6 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 	}
 }
 
-/** Hidden control messages that drive the next Ferment V2 turn. */
 function continuations(harness: ReturnType<typeof createHarness>): Array<{ content: string }> {
 	return harness.sendMessage.mock.calls
 		.map((call) => call[0])
@@ -2558,11 +2486,6 @@ async function settleFermentV2(
 	await harness.fire("agent_settled", { type: "agent_settled" })
 }
 
-/**
- * Starts an evaluation and leaves it pending, without awaiting `agent_settled`: the handler
- * blocks on the evaluator while it runs, so the caller drives whatever it's testing in that
- * window, then releases a result and awaits `settled`.
- */
 async function holdEvaluation(harness: ReturnType<typeof createHarness>): Promise<{
 	release: (value: Awaited<ReturnType<typeof evaluateFermentV2>>) => void
 	settled: Promise<unknown>

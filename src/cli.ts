@@ -690,8 +690,6 @@ try {
 			const { main } = await import("@earendil-works/pi-coding-agent")
 			await main(rawArgsWithoutMultiModel, { extensionFactories })
 		}
-		// Ferment V2 continuations can end on an infrastructure error without Pi setting
-		// exitCode. In print mode, a trailing tracked failure still failed the run.
 		applyPostMainInfrastructureExitPolicy(
 			infrastructureErrorTracker.getFailure(),
 			process.exit,

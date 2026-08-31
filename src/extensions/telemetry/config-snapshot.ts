@@ -2,8 +2,6 @@ import { resolve } from "node:path"
 import { AGENT_DEFINITIONS, discoverAgent } from "../../agent-discovery/index.js"
 import { readJson } from "../../config/json.js"
 import type { KimchiConfig } from "../../config.js"
-import { isResourceEnabled } from "../../resources/store.js"
-import { FERMENT_V2_RESOURCE_ID } from "../ferment-v2/constants.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import type { RoleModelAssignment } from "../orchestration/model-roles.js"
 import { getModelRoles, normalizeRoleModels } from "../orchestration/model-roles.js"
@@ -25,7 +23,6 @@ export interface ConfigSnapshot {
 	"config.telemetry_enabled": boolean
 	"config.permission_mode": string
 	"config.agents_enabled": boolean
-	"config.ferment_v2_enabled": boolean
 	"config.mcp_server_count": number
 	"config.multi_model_enabled": boolean
 	"config.model_roles.orchestrator": string
@@ -125,7 +122,6 @@ function fallbackSnapshot(telemetryEnabled: boolean): ConfigSnapshot {
 		"config.telemetry_enabled": telemetryEnabled,
 		"config.permission_mode": "default",
 		"config.agents_enabled": false,
-		"config.ferment_v2_enabled": false,
 		"config.mcp_server_count": 0,
 		"config.multi_model_enabled": false,
 		"config.model_roles.orchestrator": "unknown",
@@ -159,7 +155,6 @@ export function buildConfigSnapshot(config: KimchiConfig, telemetryEnabled: bool
 			"config.telemetry_enabled": telemetryEnabled,
 			"config.permission_mode": getDefaultPermissionMode(),
 			"config.agents_enabled": getMultiModelEnabled(null),
-			"config.ferment_v2_enabled": isResourceEnabled(FERMENT_V2_RESOURCE_ID),
 			"config.mcp_server_count": countMcpServers(),
 			"config.multi_model_enabled": getMultiModelEnabled(null),
 			"config.model_roles.orchestrator": serializeRole(roles.orchestrator),

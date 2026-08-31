@@ -1,7 +1,6 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
-import { errorMessage } from "../error-message.js"
 import { parseThinkingMode } from "./parse.js"
 import type { PersistedThinkingStepsPreferenceScope, ThinkingStepsMode } from "./types.js"
 
@@ -17,6 +16,10 @@ function getPreferencePath(scope: PersistedThinkingStepsPreferenceScope, cwd: st
 	}
 
 	return join(cwd, ".kimchi", PREFERENCE_FILE_NAME)
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error)
 }
 
 async function readModeFromFile(path: string): Promise<ThinkingStepsMode | undefined> {

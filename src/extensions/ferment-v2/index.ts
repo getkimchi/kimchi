@@ -9,25 +9,17 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { errorMessage } from "../error-message.js"
 import { formatCount } from "../format.js"
-import { addPromptSummaryMetric } from "../prompt-summary.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { getTodoScopeKey, normalizeTodoScope } from "../todos/scope.js"
 import { getWriteTodosDetails, isWriteTodosDetails } from "../todos/session.js"
 import { resolveTodoScope } from "../todos/store.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import type { TodoItem } from "../todos/types.js"
-import {
-	FERMENT_V2_COMMAND_COMPLETIONS,
-	formatFermentV2Accounting,
-	formatFermentV2Summary,
-	parseFermentV2Command,
-} from "./command.js"
+import { FERMENT_V2_COMMAND_COMPLETIONS, formatFermentV2Summary, parseFermentV2Command } from "./command.js"
 import {
 	FERMENT_V2_CONTROL_MESSAGE_TYPE,
 	FERMENT_V2_CUSTOM_ENTRY_TYPE,
-	FERMENT_V2_STATUS_KEY,
 	FERMENT_V2_TOOL_NAMES,
 	GET_FERMENT_V2_TOOL_NAME,
 	UPDATE_FERMENT_V2_TOOL_NAME,
@@ -105,6 +97,10 @@ type FermentV2TodoState = PendingFermentV2Continuation & {
 const TODO_TOOL_NAME_SET = new Set<string>(TODO_TOOL_NAMES)
 const FERMENT_V2_TOOL_NAME_SET = new Set<string>(FERMENT_V2_TOOL_NAMES)
 
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error)
+}
+
 export default function fermentV2Extension(pi: ExtensionAPI): void {
 	if (isAgentWorker()) return
 
@@ -128,8 +124,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	// reports idle for the whole evaluator call. Commands that steer a running agent
 	// must treat an in-flight evaluation as busy.
 	let evaluationAbort: AbortController | undefined
-	let statusCtx: ExtensionContext | undefined
-	let statusRefreshTimer: ReturnType<typeof setTimeout> | undefined
 	const fermentV2Waiters = new Map<string, { promise: Promise<void>; resolve: () => void }>()
 
 	function emitFermentV2Lifecycle(
@@ -201,52 +195,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		return activeSinceMs === undefined ? 0 : Math.max(0, Date.now() - activeSinceMs)
 	}
 
-	function cancelFermentV2StatusRefresh(): void {
-		if (statusRefreshTimer !== undefined) clearTimeout(statusRefreshTimer)
-		statusRefreshTimer = undefined
-	}
-
-	function clearFermentV2Status(): void {
-		cancelFermentV2StatusRefresh()
-		statusCtx?.ui.setStatus(FERMENT_V2_STATUS_KEY, undefined)
-		statusCtx = undefined
-	}
-
-	function fermentV2StatusText(): string | undefined {
-		const fermentV2 = currentFermentV2
-		if (!fermentV2) return undefined
-		if (fermentV2.status === "complete") return undefined
-		const label =
-			fermentV2.status === "active"
-				? activeSinceMs === undefined
-					? "Ferment V2 active"
-					: "Fermenting"
-				: fermentV2.status === "budget_limited"
-					? "Ferment V2 budget reached"
-					: `Ferment V2 ${fermentV2.status}`
-		return `${label} · ${formatFermentV2Accounting(fermentV2, liveElapsedMs())}`
-	}
-
-	function syncFermentV2Status(ctx: ExtensionContext): void {
-		statusCtx = ctx
-		cancelFermentV2StatusRefresh()
-		if (!ctx.hasUI) return
-		const text = fermentV2StatusText()
-		ctx.ui.setStatus(FERMENT_V2_STATUS_KEY, text)
-		const fermentV2 = currentFermentV2
-		if (!text || fermentV2?.status !== "active" || activeSinceMs === undefined) return
-		const totalMs = fermentV2.timeUsedMs + liveElapsedMs()
-		const remainderMs = totalMs % 60_000
-		statusRefreshTimer = setTimeout(
-			() => {
-				statusRefreshTimer = undefined
-				if (ctx.sessionManager.getSessionId() === currentSessionId) syncFermentV2Status(ctx)
-			},
-			remainderMs === 0 ? 60_000 : 60_000 - remainderMs,
-		)
-		statusRefreshTimer.unref()
-	}
-
 	function checkpointFermentV2(fermentV2: SessionFermentV2, tokensUsed: number, nowMs: number): SessionFermentV2 {
 		const startedAt = activeSinceMs
 		const elapsed = startedAt === undefined ? 0 : Math.max(0, nowMs - startedAt)
@@ -255,7 +203,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	}
 
 	function resetFermentV2Runtime(): void {
-		cancelFermentV2StatusRefresh()
 		pendingContinuation = undefined
 		pendingTerminalFeedback = undefined
 		completionClaim = undefined
@@ -278,7 +225,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	}
 
 	function replaySession(ctx: ExtensionContext): void {
-		clearFermentV2Status()
 		// Abort before replay rebuilds state: a rewind can reuse the same Ferment V2 id/revision.
 		abortEvaluation()
 		const previousSessionId = currentSessionId
@@ -304,7 +250,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		// Explicit /ferment-v2 resume resets them in its own commit.
 		consecutiveErrorTurns = currentFermentV2?.consecutiveErrorTurns ?? 0
 		unchangedContinuationTurns = currentFermentV2?.unchangedContinuationTurns ?? 0
-		syncFermentV2Status(ctx)
 	}
 
 	function assertCurrentSession(ctx: ExtensionContext, expectedSessionId: string): void {
@@ -421,7 +366,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		pendingContinuation = undefined
 	}
 
-	/** True only while the coding agent itself is running. */
 	function agentTurnIsBusy(ctx: ExtensionContext): boolean {
 		try {
 			return !ctx.isIdle()
@@ -431,7 +375,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		}
 	}
 
-	/** True while the Ferment V2 is running or an evaluation is still deciding. */
 	function fermentV2IsBusy(ctx: ExtensionContext): boolean {
 		return Boolean(evaluationAbort) || agentTurnIsBusy(ctx)
 	}
@@ -461,7 +404,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		evaluationAbort = undefined
 	}
 
-	/** Evaluate only the current active Ferment V2 with no pending input and available tools. */
 	function canEvaluateFermentV2(
 		expected: PendingFermentV2Continuation,
 		fermentV2: SessionFermentV2 | undefined,
@@ -476,7 +418,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		)
 	}
 
-	/** Drop stale evaluation state and release headless waiters only when tools cannot resume Ferment V2. */
 	function abandonFermentV2Evaluation(sessionId: string, conversation: CapturedFermentV2Conversation): void {
 		if (capturedConversation === conversation) capturedConversation = undefined
 		// Nothing downstream will drive this Ferment V2 to a terminal state, so a
@@ -528,8 +469,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			assertUnchanged(captured)
 			const nowMs = Date.now()
 			const now = timestamp(nowMs)
-			// An explicit --tokens always wins; the configured default only fills
-			// in when the user didn't pass one.
 			const effectiveTokenBudget = tokenBudget ?? getFermentV2Settings().defaultTokenBudget
 			const next = captured
 				? replaceFermentV2(objective, randomUUID(), now, effectiveTokenBudget)
@@ -538,7 +477,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			emitFermentV2Lifecycle(captured ? FERMENT_V2_EVENTS.REPLACED : FERMENT_V2_EVENTS.STARTED, next)
 			resetFermentV2Runtime()
 			abortEvaluation()
-			syncFermentV2Status(ctx)
 			// Only block a headless command when a turn is actually running, or
 			// nothing would ever resolve the waiter.
 			if (
@@ -602,7 +540,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				todoStateFor = retainedTodoState
 				consecutiveErrorTurns = 0
 				abortEvaluation()
-				syncFermentV2Status(ctx)
 				if (
 					next.status === "active" &&
 					queueFermentV2Turn(ctx, next, buildFermentV2EditSteer(next, current.revision), "edit") &&
@@ -650,7 +587,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			invalidateContinuation()
 			const wasBusy = agentTurnIsBusy(ctx)
 			abortEvaluation()
-			syncFermentV2Status(ctx)
 			if (wasBusy) {
 				safeSendControl(ctx, buildFermentV2StopSteer("paused"), {
 					source: "pause",
@@ -686,10 +622,8 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			const nowMs = Date.now()
 			const now = timestamp(nowMs)
 			const activated = setFermentV2Status(current, current.id, current.revision, "active", now)
-			// Persist a budget-limited correction without queueing a non-active Ferment V2.
 			if (activated.status !== "active") {
 				commitFermentV2(activated)
-				syncFermentV2Status(ctx)
 				ctx.ui.notify(
 					"Ferment V2 token budget is exhausted. Start a replacement Ferment V2 with a new budget.",
 					"warning",
@@ -707,7 +641,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			commitFermentV2(next)
 			invalidateContinuation()
 			consecutiveErrorTurns = 0
-			syncFermentV2Status(ctx)
 			if (queueFermentV2Turn(ctx, next, buildFermentV2StartSteer("resumed"), "resume") && !ctx.hasUI) {
 				terminalWaiter = ensureFermentV2Waiter(sessionId, next.id)
 			}
@@ -731,7 +664,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			activeSinceMs = undefined
 			const wasBusy = agentTurnIsBusy(ctx)
 			abortEvaluation()
-			syncFermentV2Status(ctx)
 			if (wasBusy) {
 				safeSendControl(ctx, buildFermentV2StopSteer("cleared"), {
 					source: "clear",
@@ -797,15 +729,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 							revision: current.revision,
 							...(completionConfidence ? { completionConfidence } : {}),
 						}
-						// The claim is what the agent self-reported, so it belongs to this
-						// run's summary. Prompt-summary drains its queue on agent_end,
-						// which is before the evaluator has ruled on the claim.
-						if (completionConfidence) {
-							addPromptSummaryMetric(sessionId, "Ferment V2 reported verification", completionConfidence)
-						}
-						// Deliberately not invalidateContinuation(): a claim is not progress,
-						// and resetting the fingerprint here would let an agent that keeps
-						// claiming completion loop past the no-progress guard forever.
+						// A completion claim is not progress.
 						clearPendingContinuation()
 						return current
 					}
@@ -829,7 +753,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 						fermentV2Id: next.id,
 						revision: next.revision,
 					}
-					syncFermentV2Status(ctx)
 					return next
 				})
 				return {
@@ -984,7 +907,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			activeTurn = undefined
 			turnStartFingerprint = undefined
 		}
-		syncFermentV2Status(ctx)
 	})
 
 	pi.on("turn_end", async (event, ctx) => {
@@ -1032,7 +954,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 						"warning",
 					)
 				}
-				syncFermentV2Status(ctx)
 			}
 
 			if (pendingFeedback && matchesFermentV2(pendingFeedback, currentFermentV2, sessionId)) {
@@ -1086,7 +1007,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				emitFermentV2Lifecycle(FERMENT_V2_EVENTS.PAUSED, paused, { reason: "agent_errors" })
 				invalidateContinuation()
 				ctx.ui.notify(`Ferment V2 paused after ${maxConsecutiveErrors} consecutive agent errors.`, "warning")
-				syncFermentV2Status(ctx)
 				return
 			}
 			commitFermentV2(withErrorTurns)
@@ -1157,7 +1077,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					verdict: result.verdict,
 					count: recorded.evaluationCount ?? 1,
 					model: result.model,
-					// Emit this evaluation's usage; consumers sum per-evaluation events.
 					usage: result.usage,
 				})
 			}
@@ -1179,7 +1098,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				if (!options.keepCompletionClaim) completionClaim = undefined
 				activeSinceMs = undefined
 				invalidateContinuation()
-				syncFermentV2Status(ctx)
 				ctx.ui.notify(notify.message, notify.level)
 			}
 
@@ -1275,7 +1193,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				// any headless command still waiting on a terminal state.
 				resolveFermentV2Waiter(sessionId, withContinuationCount.id)
 			}
-			syncFermentV2Status(ctx)
 		})
 	})
 
@@ -1283,7 +1200,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		if (ctx.sessionManager.getSessionId() !== currentSessionId) return
 		abortEvaluation()
 		resolveSessionWaiters(currentSessionId)
-		clearFermentV2Status()
 		currentSessionId = undefined
 		resetFermentV2Runtime()
 		currentFermentV2 = undefined

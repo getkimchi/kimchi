@@ -1,7 +1,6 @@
 import type { Api, Model, Usage } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
 import type { AgentEndEvent, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { errorMessage } from "../error-message.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles, normalizeRoleModels, splitModelRef } from "../orchestration/model-roles.js"
 import type { TodoItem } from "../todos/types.js"
@@ -13,6 +12,10 @@ import type { FermentV2EvaluatorUsage } from "./types.js"
 export const MAX_TRANSCRIPT_CHARS = 16_000
 export const MAX_TODO_STATE_CHARS = 8_000
 const MAX_REASON_CHARS = 1_000
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error)
+}
 /**
  * Reasoning models spend this budget on thinking before they emit an answer, so
  * a budget sized for the verdict alone returns nothing at all on those models.
@@ -68,7 +71,6 @@ interface ParsedFermentV2EvaluatorOutput {
 	checks?: FermentV2EvaluatorCheck[]
 }
 
-/** Pi-ai's `Usage` never leaves this module; everything downstream sees the narrowed shape. */
 function toFermentV2EvaluatorUsage(usage: Usage): FermentV2EvaluatorUsage {
 	return {
 		input: usage.input,
@@ -84,9 +86,7 @@ export interface FermentV2EvaluationInput {
 	objective: string
 	messages: ReadonlyArray<AgentEndEvent["messages"][number]>
 	todos: readonly TodoItem[]
-	/** Bounded durable evidence restored from the Ferment V2 journal/context. */
 	lessons?: readonly FermentV2Lesson[]
-	/** Aborted when the Ferment V2 is paused, cleared, or the session shuts down. */
 	signal?: AbortSignal
 }
 
@@ -160,9 +160,7 @@ function* jsonObjects(raw: string): Generator<unknown> {
 			if (start === undefined) continue
 			try {
 				yield JSON.parse(raw.slice(start, i + 1))
-			} catch {
-				// Not valid JSON; keep scanning for the next closing brace.
-			}
+			} catch {}
 		}
 	}
 }
@@ -255,7 +253,6 @@ export async function evaluateFermentV2(
 	}
 }
 
-/** Bounded, privacy-safe parse diagnostics; never include evaluator reply text. */
 function describeUnparseable(response: { content: unknown; stopReason?: unknown }): string {
 	const parts = Array.isArray(response.content)
 		? response.content.map((part) => (isRecord(part) && typeof part.type === "string" ? part.type : "unknown"))

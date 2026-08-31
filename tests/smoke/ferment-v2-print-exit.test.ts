@@ -65,14 +65,10 @@ it("exits --print with code 0 when the evaluator returns no parseable verdict, i
 		const fermentV2Runs = readFermentV2Journal(sessionPath)
 		const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
-		// This is the assertion the whole test exists for: a run that lands on
-		// an unparseable evaluator reply must still reach a terminal status and
-		// release the headless waiter, not hang until PROCESS_EXIT_TIMEOUT_MS.
 		expect(result.timedOut, failure).toBe(false)
 		expect(result.code, failure).toBe(0)
 		expect(fermentV2Runs.at(-1)?.status, failure).toBe("paused")
 		expect(fermentV2Runs.at(-1)?.lastEvaluation?.verdict, failure).toBe("unavailable")
-		// Two agent completions plus one evaluator call precede the unavailable verdict.
 		expect(
 			fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")),
 			failure,
@@ -97,7 +93,6 @@ it("answers a resumed --print prompt instead of crashing on the session_start re
 		mkdirSync(workDir, { recursive: true })
 		writeKimchiConfig(homeDir, fake.baseUrl)
 
-		// Seed a valid ACTIVE journal entry directly; killing a real run risks a torn write.
 		writeSeededActiveFermentV2Session(sessionPath, workDir)
 
 		const prompt = "Check on progress please."
@@ -108,9 +103,6 @@ it("answers a resumed --print prompt instead of crashing on the session_start re
 		expect(result.timedOut, failure).toBe(false)
 		expect(result.code, failure).toBe(0)
 		expect(result.stderr, failure).not.toMatch(/Agent is already processing/)
-		// The resumed session's own turn actually ran: the fake server saw the
-		// user's prompt on the first request, and the reply that request
-		// scripted reached stdout.
 		expect(
 			fake.requests.some(
 				(request) =>
@@ -119,7 +111,6 @@ it("answers a resumed --print prompt instead of crashing on the session_start re
 			failure,
 		).toBe(true)
 		expect(result.stdout, failure).toContain("Still working on it.")
-		// One turn plus one evaluator confirms the deferred resume kick stood down.
 		expect(
 			fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")),
 			failure,
@@ -182,7 +173,6 @@ function blockedFermentV2Responses() {
 	]
 }
 
-/** Write a valid session header plus an ACTIVE `kimchi_ferment_v2_state` entry for resume. */
 function writeSeededActiveFermentV2Session(sessionPath: string, workDir: string): void {
 	const now = new Date().toISOString()
 	const header = { type: "session", version: 3, id: "resume-race-session", timestamp: now, cwd: workDir }
@@ -303,9 +293,6 @@ function unparseableEvaluatorResponses() {
 		},
 		{ stream: ["Planning ended before implementation."] },
 		{
-			// Plain prose with no JSON object anywhere in it — no `{`...`}` run at
-			// all — so parseFermentV2EvaluatorOutput finds nothing and the evaluator
-			// call resolves as an "unavailable" verdict rather than a parsed one.
 			stream: [
 				"Looking over the todo list and the recent changes, the work looks finished and every planning step appears satisfied to me.",
 			],

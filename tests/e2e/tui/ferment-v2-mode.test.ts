@@ -88,7 +88,6 @@ test("experimental Ferment V2 evaluates continue, resumes work, then completes",
 
 			terminal.submit("/ferment-v2 --tokens 2k implement feature A")
 			await waitForText(terminal, "Ferment V2 created.", { timeoutMs: 5_000 })
-			await waitForText(terminal, "Fermenting · <1m · 0/2.0k tokens", { timeoutMs: 5_000 })
 
 			const fermentV2 = fermentV2Snapshot(await waitForChatRequest(fixture.fake.requests, 1))
 			expect(fermentV2).toMatchObject({
@@ -102,7 +101,6 @@ test("experimental Ferment V2 evaluates continue, resumes work, then completes",
 			await waitForText(terminal, "Working toward the session objective.", { timeoutMs: 5_000 })
 
 			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
-			await waitForText(terminal, /Ferment V2 reported verification\s+proven/, { timeoutMs: 5_000 })
 			terminal.submit("/ferment-v2")
 			await waitForText(terminal, "Evaluations: 2", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Last evaluation: met", { timeoutMs: 5_000 })

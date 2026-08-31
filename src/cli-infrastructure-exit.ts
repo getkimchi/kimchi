@@ -7,11 +7,9 @@ import {
 type ExitProcess = (code?: typeof process.exitCode) => void
 
 /**
- * Applies the post-main infrastructure exit policy based on whether the run is
- * marked as failed. Callers decide whether a run failed: by default using the
- * process exit code, but print-mode execution also counts a tracked trailing
- * infrastructure failure. Infrastructure failures force an immediate exit because
- * failed provider streams can leave handles alive after pi's main() returns.
+ * CLI post-main exit handling for failed runs. Infrastructure failures force an
+ * immediate exit because failed provider streams can leave handles alive after
+ * pi's main() returns.
  */
 export function applyPostMainInfrastructureExitPolicy(
 	failure: InfrastructureFailure | undefined,

@@ -13,13 +13,6 @@ export interface FermentV2Evaluation {
 	evaluatedAt: string
 }
 
-/**
- * A narrowed, self-contained projection of pi-ai's `Usage` — only the fields
- * this feature persists and sums (benchmark cost aggregation reads the
- * input/output/cache breakdown; nothing reads a per-category cost split, so
- * only the total is kept). Decoupled from `Usage` so an unrelated field pi-ai
- * adds later can't change what this journal schema accepts.
- */
 export interface FermentV2EvaluatorUsage {
 	input: number
 	output: number
@@ -40,14 +33,6 @@ export interface SessionFermentV2 {
 	evaluationCount?: number
 	lastEvaluation?: FermentV2Evaluation
 	evaluatorUsage?: FermentV2EvaluatorUsage
-	/**
-	 * Runaway-loop guard counters; the limits that trip them are
-	 * getFermentV2Settings().maxConsecutiveErrors / maxUnchangedContinuations
-	 * (settings.ts), user-configurable and 3 by default. Persisted so a
-	 * session restart mid-stall reseeds the in-memory guard instead of
-	 * silently zeroing it — omitted (treated as 0) whenever there's no
-	 * streak to record.
-	 */
 	consecutiveErrorTurns?: number
 	unchangedContinuationTurns?: number
 	tokensUsed: number

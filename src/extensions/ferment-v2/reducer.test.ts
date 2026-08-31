@@ -37,12 +37,11 @@ describe("Ferment V2 reducer", () => {
 
 	it("rejects empty and overlong newly entered objectives", () => {
 		expect(() => createFermentV2(undefined, " \n ", "ferment-v2-a", T1)).toThrow("Ferment V2 objective cannot be empty")
-		expect(createFermentV2(undefined, "x".repeat(4_346), "ferment-v2-a", T1).objective).toHaveLength(4_346)
-		expect(createFermentV2(undefined, "x".repeat(8_000), "ferment-v2-a", T1).objective).toHaveLength(8_000)
-		expect(() => createFermentV2(undefined, "x".repeat(8_001), "ferment-v2-a", T1)).toThrow("cannot exceed 8,000")
+		expect(createFermentV2(undefined, "x".repeat(4_000), "ferment-v2-a", T1).objective).toHaveLength(4_000)
+		expect(() => createFermentV2(undefined, "x".repeat(4_001), "ferment-v2-a", T1)).toThrow("cannot exceed 4,000")
 		expect(() =>
-			editFermentV2(createFermentV2(undefined, "old", "ferment-v2-a", T1), "ferment-v2-a", 1, "x".repeat(8_001), T2),
-		).toThrow("cannot exceed 8,000")
+			editFermentV2(createFermentV2(undefined, "old", "ferment-v2-a", T1), "ferment-v2-a", 1, "x".repeat(4_001), T2),
+		).toThrow("cannot exceed 4,000")
 	})
 
 	it("edits in place by incrementing revision and preserving status", () => {
@@ -166,11 +165,8 @@ describe("Ferment V2 reducer", () => {
 		).toBeUndefined()
 	})
 
-	it("restores objectives through 4,346 characters and rejects the new limit", () => {
-		const accepted = { ...createFermentV2(undefined, "old", "ferment-v2-a", T1), objective: "x".repeat(4_346) }
-		expect(restoreFermentV2([putFermentV2Entry(accepted)])).toEqual(accepted)
-
-		const persisted = { ...createFermentV2(undefined, "old", "ferment-v2-a", T1), objective: "x".repeat(8_001) }
+	it("rejects persisted objectives above the entry limit", () => {
+		const persisted = { ...createFermentV2(undefined, "old", "ferment-v2-a", T1), objective: "x".repeat(4_001) }
 		expect(restoreFermentV2([putFermentV2Entry(persisted)])).toBeUndefined()
 	})
 
@@ -301,11 +297,6 @@ describe("Ferment V2 reducer", () => {
 		expect(restored).not.toHaveProperty("unchangedContinuationTurns")
 	})
 
-	// Unlike evaluationCount/evaluatorUsage (observability only), these counters
-	// gate a safety pause: silently dropping a malformed value back to zero
-	// would defeat the stall guard the same way the bug they fix does, so a
-	// malformed counter rejects the whole restored Ferment V2 (falling back to the
-	// last validly-persisted entry) instead of being dropped in isolation.
 	it("rejects the whole restored Ferment V2 when a stall-guard counter is malformed", () => {
 		const fermentV2 = createFermentV2(undefined, "ship", "ferment-v2-a", T1)
 		const negativeEntry = { ...putFermentV2Entry(fermentV2), fermentV2: { ...fermentV2, consecutiveErrorTurns: -1 } }
@@ -317,8 +308,6 @@ describe("Ferment V2 reducer", () => {
 		}
 		expect(restoreFermentV2([fractionalEntry])).toBeUndefined()
 
-		// A malformed put entry doesn't roll the Ferment V2 back either: it's dropped
-		// entirely and the prior valid entry still wins.
 		const withUnchanged = setFermentV2UnchangedContinuationTurns(fermentV2, "ferment-v2-a", 1, 1, T2)
 		expect(
 			restoreFermentV2([

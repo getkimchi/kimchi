@@ -46,6 +46,10 @@ function normalizeOptionalText(value: unknown): string | undefined {
 	return text && text.length > 0 ? text : undefined
 }
 
+function orderTodosForStorage(todos: readonly TodoItem[]): TodoItem[] {
+	return [...todos].sort((a, b) => a.id - b.id)
+}
+
 function normalizeIncomingTodos(scopeTodos: unknown, nextId: number): { todos: TodoItem[]; nextTodoId: number } {
 	if (!Array.isArray(scopeTodos)) {
 		throw new Error("Todo list must be an array")
@@ -95,7 +99,7 @@ function normalizeIncomingTodos(scopeTodos: unknown, nextId: number): { todos: T
 		})
 	}
 
-	return { todos: result, nextTodoId: currentNextId }
+	return { todos: orderTodosForStorage(result), nextTodoId: currentNextId }
 }
 
 export function createEmptyTodosSliceState(): TodosSliceState {

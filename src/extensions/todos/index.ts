@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { registerTodosCommand } from "./command.js"
@@ -6,7 +6,7 @@ import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { registerTodoContextState } from "./context-state.js"
 import { registerFermentTodoPromptBlock } from "./ferment-prompt-block.js"
 import { registerTodoPromptBlock } from "./prompt-block.js"
-import { isTodoWriteToolName, restoreTodoStoreFromSessionEntries } from "./session.js"
+import { getWriteTodosDetails, isTodoWriteToolName } from "./session.js"
 import {
 	bumpToolCallsSinceTodoWrite,
 	bumpWorkToolCalls,
@@ -17,6 +17,7 @@ import {
 	markTodoNudgeFired,
 	resetToolCallsSinceTodoWrite,
 	resolveTodoScope,
+	restoreTodoStoreFromDetails,
 	subscribeTodoStore,
 } from "./store.js"
 import { registerTodosTool } from "./tool.js"
@@ -41,6 +42,17 @@ export * from "./widget.js"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object"
+}
+
+function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager, "getBranch" | "getSessionId">): void {
+	const sessionId = sessionManager.getSessionId()
+	restoreTodoStoreFromDetails(
+		sessionManager
+			.getBranch()
+			.map(getWriteTodosDetails)
+			.filter((details) => details !== undefined),
+		sessionId,
+	)
 }
 
 export const TODO_EARLY_NUDGE_THRESHOLD = 5

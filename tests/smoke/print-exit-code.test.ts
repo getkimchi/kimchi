@@ -15,13 +15,8 @@ const BINARY_PATH = resolve("dist/bin/kimchi")
 const PACKAGE_DIR = resolve("dist/share/kimchi")
 const PROCESS_EXIT_TIMEOUT_MS = 12_000
 
-// pi-coding-agent's own exit-code constant (LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE in
-// src/llm-gateway-error.ts). Hardcoded rather than imported so this test exercises
-// only the compiled binary, matching every other tests/smoke/*.test.ts file.
 const KIMCHI_INFRA_ERROR_EXIT_CODE = 74
 
-/** Use a real HTTP 503: streamError is normalized to a generic finish-reason
- * message and would not exercise provider_5xx classification. */
 function infraErrorResponse(): FakeResponseScript {
 	return { status: 503, body: { error: "Service Unavailable" } }
 }
@@ -38,12 +33,7 @@ function writeKimchiConfig(homeDir: string, fakeBaseUrl: string): void {
 		join(harnessDir, "settings.json"),
 		JSON.stringify({
 			multiModel: false,
-			// No extensions enabled: this is a plain --print run, not a Ferment V2 run.
-			// The exit-code path under test (applyPostMainInfrastructureExitPolicy
-			// in src/cli-infrastructure-exit.ts) applies to every --print invocation,
-			// not just Ferment V2 continuations.
 			resources: {},
-			// Keep the real retry path but reduce its backoff for this smoke test.
 			retry: { maxRetries: 1, baseDelayMs: 10 },
 		}),
 	)
@@ -108,7 +98,6 @@ function runPrint(homeDir: string, workDir: string, sessionPath: string, prompt:
 it("exits 0 when a --print run hits a transient infrastructure error and the retry succeeds", {
 	timeout: 25_000,
 }, async () => {
-	// Regression for print-mode exit policy after an infrastructure retry recovers.
 	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-print-exit-"))
 	let fake: FakeOpenAiServer | undefined
 	try {
@@ -129,9 +118,6 @@ it("exits 0 when a --print run hits a transient infrastructure error and the ret
 		expect(result.timedOut, failure).toBe(false)
 		expect(result.code, failure).toBe(0)
 		expect(result.stdout, failure).toContain("The retry succeeded.")
-		// Proves the fake server's scripted infra error actually fired and a
-		// genuine retry happened, rather than the first response being skipped
-		// or the success reply answering on the first request.
 		expect(chatRequests.length, failure).toBeGreaterThan(1)
 	} finally {
 		await fake?.stop().catch(() => {})
@@ -140,12 +126,10 @@ it("exits 0 when a --print run hits a transient infrastructure error and the ret
 })
 
 it("exits non-zero when every attempt of a --print run hits an infrastructure error", { timeout: 25_000 }, async () => {
-	// Confirm the 503 remains classified as infrastructure, not merely any failure.
 	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-print-exit-"))
 	let fake: FakeOpenAiServer | undefined
 	try {
 		fake = await startFakeOpenAiServer({
-			// maxRetries: 1 means exactly 2 attempts before giving up.
 			responses: [infraErrorResponse(), infraErrorResponse()],
 		})
 		const homeDir = join(tempRoot, "home")

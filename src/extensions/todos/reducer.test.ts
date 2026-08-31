@@ -35,7 +35,7 @@ describe("reduceReplaceList", () => {
 		).toThrowError(/Invalid todo status/)
 	})
 
-	it("replaces list, preserves supplied IDs, and honors submitted order", () => {
+	it("replaces list and preserves supplied IDs while assigning missing IDs deterministically", () => {
 		let state = createEmptyTodosSliceState()
 		state = reduceReplaceList(state, {
 			action: "replace-list",
@@ -57,15 +57,11 @@ describe("reduceReplaceList", () => {
 			action: "replace-list",
 			scope: GLOBAL_SCOPE,
 			todos: [
-				{ id: 4, content: "charlie", status: "pending" },
-				{ id: 1, content: "alpha", status: "pending" },
 				{ id: 3, content: "bravo updated", status: "completed" },
 				{ content: "delta", status: "pending" },
 			],
 		}).state
 		expect(secondState.byScope[scopeKey].todos).toEqual([
-			{ id: 4, content: "charlie", status: "pending" },
-			{ id: 1, content: "alpha", status: "pending" },
 			{ id: 3, content: "bravo updated", status: "completed" },
 			{ id: 5, content: "delta", status: "pending" },
 		])

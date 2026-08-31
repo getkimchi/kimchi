@@ -457,59 +457,6 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		return Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
 	}
 
-	it("maps Ferment V2 lifecycle events to privacy-safe OTLP records", async () => {
-		const { handlers, events } = await setup()
-		const { FERMENT_V2_EVENTS } = await import("../ferment-v2/domain-events.js")
-		const lifecycleEvents = [
-			{ event: FERMENT_V2_EVENTS.STARTED, telemetry: "ferment_v2.started", status: "active" },
-			{ event: FERMENT_V2_EVENTS.REPLACED, telemetry: "ferment_v2.replaced", status: "active" },
-			{ event: FERMENT_V2_EVENTS.EDITED, telemetry: "ferment_v2.edited", status: "active" },
-			{ event: FERMENT_V2_EVENTS.COMPLETED, telemetry: "ferment_v2.completed", status: "complete" },
-			{ event: FERMENT_V2_EVENTS.BLOCKED, telemetry: "ferment_v2.blocked", status: "blocked" },
-			{ event: FERMENT_V2_EVENTS.PAUSED, telemetry: "ferment_v2.paused", status: "paused", reason: "user" },
-			{
-				event: FERMENT_V2_EVENTS.STALLED,
-				telemetry: "ferment_v2.stalled",
-				status: "paused",
-				reason: "no_progress",
-				continuationCount: 2,
-			},
-		] as const
-
-		for (const lifecycle of lifecycleEvents) {
-			events.emit(lifecycle.event, {
-				fermentV2Id: "fv2-001",
-				revision: 2,
-				status: lifecycle.status,
-				tokensUsed: 1200,
-				timeUsedMs: 3000,
-				tokenBudget: 5000,
-				completionConfidence: "tested",
-				...("reason" in lifecycle ? { reason: lifecycle.reason } : {}),
-				...("continuationCount" in lifecycle ? { continuationCount: lifecycle.continuationCount } : {}),
-			})
-		}
-		await getHandler(handlers, "session_shutdown")({ reason: "test" })
-
-		const records = extractRecords()
-		for (const lifecycle of lifecycleEvents) {
-			const rec = records.find((candidate) => candidate.eventName === lifecycle.telemetry)
-			expect(rec).toBeDefined()
-			const attrs = attrsOf(rec as NonNullable<typeof rec>)
-			expect(attrs).toMatchObject({
-				ferment_v2_id: "fv2-001",
-				revision: "2",
-				tokens_used: "1200",
-				time_used_ms: "3000",
-				token_budget: "5000",
-				completion_confidence: "tested",
-			})
-			if ("reason" in lifecycle) expect(attrs.reason).toBe(lifecycle.reason)
-			if ("continuationCount" in lifecycle) expect(attrs.continuation_count).toBe("2")
-			expect(attrs.objective).toBeUndefined()
-		}
-	})
-
 	it("emits privacy-safe Ferment V2 evaluator totals without the reason", async () => {
 		const { handlers, events } = await setup()
 		const { FERMENT_V2_EVENTS } = await import("../ferment-v2/domain-events.js")

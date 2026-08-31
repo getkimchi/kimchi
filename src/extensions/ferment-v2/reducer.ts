@@ -10,7 +10,7 @@ import {
 	type SessionFermentV2,
 } from "./types.js"
 
-const MAX_FERMENT_V2_OBJECTIVE_LENGTH = 8_000
+const MAX_FERMENT_V2_OBJECTIVE_LENGTH = 4_000
 const MAX_BLOCKED_REASON_LENGTH = 1_000
 
 export type FermentV2State = SessionFermentV2 | undefined
@@ -19,7 +19,7 @@ function normalizeObjective(value: unknown): string {
 	const objective = typeof value === "string" ? value.trim() : ""
 	if (!objective) throw new Error("Ferment V2 objective cannot be empty.")
 	if (objective.length > MAX_FERMENT_V2_OBJECTIVE_LENGTH) {
-		throw new Error("Ferment V2 objective cannot exceed 8,000 characters.")
+		throw new Error("Ferment V2 objective cannot exceed 4,000 characters.")
 	}
 	return objective
 }
@@ -119,14 +119,6 @@ export function recordFermentV2Evaluation(
 	}
 }
 
-/**
- * Sets the persisted consecutive-agent-error-turn streak that backs
- * getFermentV2Settings().maxConsecutiveErrors (settings.ts), omitting the field
- * once the streak is back to zero. Returns the same object when the count
- * already matches, mirroring addFermentV2Accounting's no-op-on-no-change shape so
- * callers can tell whether a commit is actually needed by reference
- * equality.
- */
 export function setFermentV2ConsecutiveErrorTurns(
 	state: FermentV2State,
 	expectedId: string,
@@ -138,11 +130,6 @@ export function setFermentV2ConsecutiveErrorTurns(
 	return withCounterField(current, "consecutiveErrorTurns", count, now)
 }
 
-/**
- * Sets the persisted no-progress continuation streak that backs
- * getFermentV2Settings().maxUnchangedContinuations (settings.ts). Same shape as
- * setFermentV2ConsecutiveErrorTurns.
- */
 export function setFermentV2UnchangedContinuationTurns(
 	state: FermentV2State,
 	expectedId: string,
@@ -312,16 +299,7 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		status === undefined ||
 		(value.blockedReason !== undefined && !isNonEmptyString(value.blockedReason)) ||
 		(value.completionConfidence !== undefined && completionConfidence === undefined) ||
-		// Evaluation fields are observability only: a malformed one is dropped
-		// rather than rejecting the whole entry, which would silently roll the
-		// restored Ferment V2 back to an older revision.
 		(value.evaluationCount !== undefined && !isNonNegativeInteger(value.evaluationCount)) ||
-		// Unlike evaluationCount, these two gate a safety pause (limits are
-		// getFermentV2Settings().maxConsecutiveErrors / maxUnchangedContinuations,
-		// settings.ts): silently dropping a malformed value back to zero would
-		// defeat the stall guard the same way the bug they exist to fix does,
-		// so a malformed counter rejects the whole entry instead, falling back
-		// to the last validly-persisted Ferment V2.
 		(value.consecutiveErrorTurns !== undefined && !isNonNegativeInteger(value.consecutiveErrorTurns)) ||
 		(value.unchangedContinuationTurns !== undefined && !isNonNegativeInteger(value.unchangedContinuationTurns)) ||
 		(value.tokensUsed !== undefined && !isNonNegativeInteger(value.tokensUsed)) ||

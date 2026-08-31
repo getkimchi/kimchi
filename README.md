@@ -179,7 +179,7 @@ User-defined tags (added via `/tags add`) are persisted to `~/.config/kimchi/tag
 
 Ferment V2 keeps one objective active across turns in the current session branch and automatically continues work until an independent, tool-free model check finds the objective met or impossible. It uses the normal todo tools for tactical steps; it does not create Ferment phases, workers, or worktrees.
 
-Enable **Ferment V2** under `/resources` → **Experimental**, then restart Kimchi. It is disabled by default and can change or be removed.
+Enable **Ferment V2** under `/resources` → **Experimental**, then restart Kimchi. It is disabled by default.
 
 | Command | Description |
 |---------|-------------|
@@ -193,11 +193,11 @@ Enable **Ferment V2** under `/resources` → **Experimental**, then restart Kimc
 
 Ferment V2 state is stored in the session journal, so resume, rewind, and fork follow the selected branch. An old turn cannot complete an edited or replaced run because model updates must match both its ID and revision.
 
-While an agent turn is working on an objective, the status line shows `Fermenting` with elapsed time rounded down to minutes (`<1m`, `12m`, or `1h 5m`) and tokens. Ferment V2 runs with a token budget show used and budgeted tokens; reaching the budget stops automatic continuation. After Pi finishes retries, compaction, and queued messages, Ferment V2 evaluates the final conversation once: `met` completes, `impossible` blocks, and `continue` queues another hidden turn. If the evaluator is unavailable or returns invalid output, Ferment V2 pauses so it can be resumed. The `fermenting time` counter counts only active agent turns; cancelling a turn pauses the run immediately, while three consecutive failed or unchanged continuation turns pause it after bounded retries by default. Token usage counts this session's Ferment V2 turns in full, including cache reads and writes, excluding agent-worker child sessions; evaluator usage is tracked separately in the Ferment V2 journal.
+Reaching a Ferment V2 token budget stops automatic continuation. After Pi finishes retries, compaction, and queued messages, Ferment V2 evaluates the final conversation once: `met` completes, `impossible` blocks, and `continue` queues another hidden turn. If the evaluator is unavailable or returns invalid output, Ferment V2 pauses so it can be resumed. The `fermenting time` counter counts only active agent turns; cancelling a turn pauses the run immediately, while three consecutive failed or unchanged continuation turns pause it after bounded retries by default. Token usage counts this session's Ferment V2 turns in full, including cache reads and writes, excluding agent-worker child sessions; evaluator usage is tracked separately in the Ferment V2 journal.
 
 Ferment V2 directs the agent to track tactical progress in the normal Todos widget without creating a second feature-specific checklist. The agent may add a todo mid-run for work the objective requires, even after the list looked settled, since that is progress rather than a reason to leave the work unrecorded. `update_ferment_v2 complete` records a runtime completion claim and ends the working turn, but only the independent evaluation can complete the Ferment V2 run. A `met` verdict still requires a visible, fully completed list for the current Ferment V2 revision. `update_ferment_v2 blocked` remains immediate. Regular work tools remain available while the list is created or reconciled.
 
-Evaluation details stay out of the transcript and status line. `/ferment-v2` shows the evaluation count and the latest verdict and reason.
+Evaluation details stay out of the transcript. `/ferment-v2` shows the evaluation count and the latest verdict and reason.
 
 The evaluator runs on the session model, or on the configured `judge` role when multi-model is enabled. It is given a reasoning-aware token budget, because reasoning and the answer share that budget and a verdict-sized one returns no answer at all on a thinking model. A missing, truncated, unparseable, timed-out, or failed response pauses Ferment V2 after that single call.
 

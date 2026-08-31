@@ -89,14 +89,12 @@ function createMockContext(opts?: MockContextOpts): ExtensionContext {
 }
 
 function createMockStatusLineData(opts?: {
-	fermentV2?: string
 	permissionsMode?: string
 	permissionsWarning?: string
 	updateAvailable?: string
 	lsp?: string
 }): ReadonlyFooterDataProvider {
 	const statuses = new Map<string, string>()
-	if (opts?.fermentV2) statuses.set("ferment-v2", opts.fermentV2)
 	if (opts?.permissionsMode) statuses.set("permissions-mode", opts.permissionsMode)
 	if (opts?.permissionsWarning) statuses.set("permissions-warning", opts.permissionsWarning)
 	if (opts?.updateAvailable) statuses.set("update-available", opts.updateAvailable)
@@ -395,14 +393,6 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 		expect(visible.endsWith("/ for commands")).toBe(true)
 	})
 
-	it("shows Ferment V2 feedback in the status line without an emoji", () => {
-		statusLineData = createMockStatusLineData({ fermentV2: "Fermenting · 1h 5m · 1.5k tokens" })
-		const { visible } = renderAt(160)
-
-		expect(visible).toContain("Fermenting · 1h 5m · 1.5k tokens")
-		expect(visible).not.toContain("🎯")
-	})
-
 	it("width 160: pinned elements present, hint still at far right", () => {
 		withPinned(["context", "phase"], () => {
 			const { raw, visible } = renderAt(160, { percent: 50 })
@@ -472,20 +462,6 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 			const { raw } = renderAt(w)
 			expect(visibleWidth(raw), `width=${w}`).toBeLessThanOrEqual(w)
 		}
-	})
-
-	it("permissions indicator survives truncation with active Ferment V2 (regression)", () => {
-		// Permissions are safety-relevant and must survive truncation when Ferment V2 is active.
-		statusLineData = createMockStatusLineData({
-			permissionsMode: "● default \x1b[2m→ shift+tab\x1b[0m",
-			fermentV2: "Fermenting · 1h 5m · 1.5k tokens",
-		})
-		const { raw, visible } = renderAt(50)
-
-		expect(visibleWidth(raw)).toBeLessThanOrEqual(50)
-		expect(visible).toContain("Fermenting")
-		expect(visible).toContain("●")
-		expect(visible).toContain("default")
 	})
 
 	it("with an active ferment, shows ferment when pinned", () => {

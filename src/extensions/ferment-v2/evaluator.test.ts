@@ -21,11 +21,6 @@ vi.mock("../orchestration/model-roles.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../orchestration/model-roles.js")>()
 	return { ...actual, getModelRoles: vi.fn() }
 })
-// evaluationTimeoutMs is now user-configurable (see settings.ts); evaluator.ts
-// reads it via getFermentV2Settings() on every call instead of a fixed exported
-// constant, so FERMENT_V2_EVALUATION_TIMEOUT_MS no longer exists. Tests below mock
-// this module and assert against DEFAULT_FERMENT_V2_SETTINGS.evaluationTimeoutMs
-// (or an overridden value) instead.
 vi.mock("./settings.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./settings.js")>()
 	return { ...actual, getFermentV2Settings: vi.fn() }
@@ -37,7 +32,6 @@ const modelRolesMock = vi.mocked(getModelRoles)
 const fermentV2SettingsMock = vi.mocked(getFermentV2Settings)
 const sessionModel = model("session", "main")
 const judgeModel = model("judge", "independent")
-// Raw pi-ai Usage, as completeSimple returns it.
 const rawUsage = {
 	input: 10,
 	output: 5,
@@ -46,7 +40,6 @@ const rawUsage = {
 	totalTokens: 18,
 	cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0.02, total: 0.33 },
 }
-// What evaluateFermentV2 resolves with: the narrowed FermentV2EvaluatorUsage shape.
 const usage = {
 	input: 10,
 	output: 5,
@@ -449,7 +442,6 @@ describe("Ferment V2 evaluator", () => {
 	})
 
 	it("fails closed without retrying when the call times out", async () => {
-		// A fired deadline is what distinguishes a timeout from any other abort.
 		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(AbortSignal.abort())
 		completeMock.mockRejectedValue(new DOMException("timed out", "TimeoutError"))
 
@@ -514,7 +506,6 @@ describe("Ferment V2 evaluator", () => {
 		const transcript = sentTranscript()
 		expect(transcript).not.toContain("MSG_0-")
 		expect(transcript).toContain("MSG_39-")
-		// Chronological, not reversed: an older surviving message still comes before a newer one.
 		expect(transcript.indexOf("MSG_38-")).toBeLessThan(transcript.indexOf("MSG_39-"))
 	})
 
@@ -593,7 +584,6 @@ function assistant(text: string, options: { stopReason?: "stop" | "length"; kind
 	}
 }
 
-/** The `Recent transcript:` section evaluateFermentV2 actually sent, read off the mocked completeSimple call. */
 function sentTranscript(): string {
 	const context = completeMock.mock.calls[0]?.[1] as unknown as {
 		messages: Array<{ content: Array<{ text: string }> }>
@@ -610,7 +600,6 @@ function sentFermentV2Prompt(): string {
 	return context.messages[0].content[0].text
 }
 
-/** Minimal transcript entry: renderMessage/contentText only read role, content, and — for tool results — toolName. */
 function transcriptMessage(
 	role: string,
 	content: unknown,
@@ -631,7 +620,6 @@ function linkedToolMessages(
 	]
 }
 
-/** `count` messages of `size` characters each, comfortably larger than the budget so only the tail survives. */
 function longTranscript(count: number, size = 3_000): AgentEndEvent["messages"][number][] {
 	return Array.from({ length: count }, (_, i) => transcriptMessage("user", `MSG_${i}-${"x".repeat(size)}`))
 }

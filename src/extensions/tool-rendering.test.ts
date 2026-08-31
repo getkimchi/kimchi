@@ -153,6 +153,21 @@ describe("hidden tool block rendering", () => {
 		toolRenderingExtension(createExtensionApi().api)
 	})
 
+	it("hides legacy write_todos tool results", () => {
+		const component = new ToolExecutionComponent(
+			"write_todos",
+			"tc-legacy",
+			{ todos: [{ content: "legacy", status: "pending" }] },
+			{},
+			undefined,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+
+		expect(component.render(80)).toEqual([])
+	})
+
 	it.each(FERMENT_V2_TOOL_NAMES)("hides %s tool calls and results", (toolName) => {
 		const component = new ToolExecutionComponent(
 			toolName,

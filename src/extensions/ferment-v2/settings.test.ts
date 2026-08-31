@@ -2,14 +2,6 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-// ---------------------------------------------------------------------------
-// Monkey-patch the json layer so readJson/writeJson -- called by the real
-// readConfigSetting -- redirect to a per-test temp file instead of the real
-// ~/.config/kimchi/harness/settings.json. settings.ts's own logic runs
-// unmodified. Same pattern as config/settings.test.ts and
-// orchestration/model-roles.test.ts.
-// ---------------------------------------------------------------------------
-
 const testDir = join(tmpdir(), `kimchi-ferment-v2-settings-test-${process.pid}`)
 const testPath = join(testDir, "settings.json")
 

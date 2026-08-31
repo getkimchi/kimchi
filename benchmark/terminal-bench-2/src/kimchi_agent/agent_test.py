@@ -66,7 +66,6 @@ def _classification_entry(
     entry_id: str = "classification-1",
     retryable: bool = True,
     is_infrastructure: bool = True,
-    # Mirrors src/llm-gateway-error.ts::LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE.
     exit_code: int | None = 74,
     http_status_code: int | None = None,
 ) -> str:
@@ -74,7 +73,6 @@ def _classification_entry(
         {
             "type": "custom",
             "id": entry_id,
-            # Mirrors src/infrastructure-error.ts::GATEWAY_CLASSIFICATION_AUDIT_TYPE.
             "customType": "kimchi_error_classification",
             "data": {
                 "rawMessage": raw_message,
@@ -577,14 +575,12 @@ def test_populate_context_sums_evaluator_calls_across_sessions_and_ferment_v2_ru
         )
         + "\n"
     )
-    # A child session contributes its own evaluator calls.
     (sessions_dir / "child.jsonl").write_text(evaluator_usage_entry("g1", 7) + "\n")
 
     agent = Kimchi(logs_dir=logs_dir, model_name="kimchi-dev/kimi-k2.6")
     context = AgentContext()
     agent.populate_context_post_run(context)
 
-    # Every call is billable, including a replaced Ferment V2 run and a child session.
     assert context.n_input_tokens == 42
     assert context.n_output_tokens == 0
     assert context.n_cache_tokens == 0

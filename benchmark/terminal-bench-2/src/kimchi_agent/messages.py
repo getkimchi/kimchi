@@ -25,10 +25,6 @@ class Message(BaseMessage):
 
 
 class FermentV2EvaluatorUsage(BaseMessage):
-    """Matches kimchi's narrowed FermentV2EvaluatorUsage (src/extensions/ferment-v2/types.ts),
-    not the full assistant-message Usage shape above: no nested cost object, no
-    reasoning/cacheWrite1h breakdown."""
-
     input: NonNegativeInt = 0
     output: NonNegativeInt = 0
     cache_read: NonNegativeInt = Field(0, alias="cacheRead")
@@ -42,6 +38,5 @@ class SessionEntry(BaseMessage):
     id: str | None = None
     parent_id: str | None = Field(None, alias="parentId")
     custom_type: str = Field("", alias="customType")
-    # Left untyped: `data` carries a different shape per custom entry type.
     data: dict[str, Any] | None = None
     message: Message = Field(default_factory=Message)

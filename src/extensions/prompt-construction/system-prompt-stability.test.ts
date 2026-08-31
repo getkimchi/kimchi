@@ -20,7 +20,6 @@ import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
 import { FERMENT_TODO_GUIDANCE } from "../todos/ferment-prompt-block.js"
 import todosExtension, { TODO_EARLY_NUDGE_THRESHOLD } from "../todos/index.js"
 import { __resetTodoStore, applyWriteTodos } from "../todos/store.js"
-import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { createSystemPromptBlocks } from "./index.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "./system-prompt.js"
 import { renderSystemPromptBlocks } from "./system-prompt-blocks.js"
@@ -651,7 +650,7 @@ describe("system prompt stability contract", () => {
 
 		it("does not count todo tool calls toward the threshold", async () => {
 			for (let i = 0; i < TODO_EARLY_NUDGE_THRESHOLD - 2; i++) await fireToolExecutionEnd("bash")
-			for (let i = 0; i < 3; i++) await fireToolExecutionEnd(TODO_TOOL_NAMES[0])
+			for (let i = 0; i < 3; i++) await fireToolExecutionEnd("write_todos")
 			expect(earlyNudgeCalls()).toHaveLength(0)
 
 			await fireToolExecutionEnd("read")

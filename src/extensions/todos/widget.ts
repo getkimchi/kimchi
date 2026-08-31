@@ -179,7 +179,7 @@ function collectWidgetScopes(sessionId: string): WidgetScopeGroup[] {
 		const scopeState = state.byScope[scopeKey]
 		if (!scopeState || scopeState.todos.length === 0) continue
 
-		const todos = [...scopeState.todos]
+		const todos = [...scopeState.todos].sort((a, b) => a.id - b.id)
 
 		if (scope.kind === "global") {
 			globalGroup = { scope, todos }

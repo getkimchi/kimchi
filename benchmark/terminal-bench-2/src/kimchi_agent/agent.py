@@ -80,16 +80,12 @@ MULTI_MODEL = "multi-model"
 KIMCHI_INFRA_BREAKER_THRESHOLD_ENV = "KIMCHI_INFRA_BREAKER_THRESHOLD"
 KIMCHI_BENCHMARK_INFRA_BREAKER_DEFAULT_ATTEMPTS = "3"
 KIMCHI_EXIT_OUTPUT_TAIL_LINES = 20
-# Mirrors src/infrastructure-error.ts::GATEWAY_CLASSIFICATION_AUDIT_TYPE.
 KIMCHI_ERROR_CLASSIFICATION_TYPE = "kimchi_error_classification"
-# Mirrors src/llm-gateway-error.ts::LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE.
 KIMCHI_INFRA_ERROR_EXIT_CODE = 74
 RETRYABLE_API_ERROR_MESSAGE_LIMIT = 2_000
 
 
 class RetryableApiError(RuntimeError):
-    """Raised when Kimchi recorded a transient provider failure."""
-
     def __init__(self, status: int | None, detail: str) -> None:
         self.status = status
         detail = detail.strip()
@@ -1057,7 +1053,6 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         total_cache_read_tokens = 0
         total_cache_write_tokens = 0
         total_cost = 0.0
-        # Evaluator calls are journaled independently from assistant messages.
         # rglob, not glob: an extension may nest per-step sessions under
         # sessions/<subdir>/, and a flat glob silently under-reports those
         # as zero tokens for work that really happened.
