@@ -5,8 +5,8 @@
  * 1. Launch with --ferment-oneshot flag (no --plan).
  * 2. User types a request.
  * 3. The dropdown (Execute / Rework / Start as ferment) does NOT appear.
- * 4. Ferment lifecycle proceeds without showing the dropdown (the flag guard at
- *    permissions/index.ts:506-508 returns early from the dropdown handler).
+ * 4. Ferment lifecycle proceeds without showing the dropdown (the flag guard
+ *    in submit_plan's execute returns early with terminate:true and no emit).
  */
 
 import { expect, Key, test } from "@microsoft/tui-test"
@@ -22,9 +22,9 @@ test("--ferment-oneshot bypasses the plan-complete dropdown and enters ferment l
 			artifactName: "oneshot-bypasses-dropdown",
 			gitInit: true,
 			responses: [
-				// In oneshot mode the model can emit a plan with PLAN_COMPLETE — but the
-				// flag guard at permissions/index.ts:506-508 returns early, so the dropdown
-				// handler is skipped entirely and no dropdown appears in the TUI.
+				// In oneshot mode the model calls submit_plan — but the flag guard
+				// in submit_plan's execute returns early with terminate:true and no
+				// review emit, so no dropdown appears in the TUI.
 				{
 					stream: [
 						"# Plan\n",
@@ -36,7 +36,21 @@ test("--ferment-oneshot bypasses the plan-complete dropdown and enters ferment l
 						"1. Create the route handler.\n",
 						"2. Add tests.\n",
 						"\n",
-						"<!-- PLAN_COMPLETE -->\n",
+					],
+					toolCalls: [
+						{
+							id: "call_submit_plan",
+							type: "function",
+							function: {
+								name: "submit_plan",
+								arguments: JSON.stringify({
+									plan:
+										"# Plan\n\n" +
+										"## Goal\nAdd a new API endpoint.\n\n" +
+										"## Steps\n1. Create the route handler.\n2. Add tests.\n",
+								}),
+							},
+						},
 					],
 				},
 				// Follow-up response so the session stays alive after the first response.
@@ -56,11 +70,12 @@ test("--ferment-oneshot bypasses the plan-complete dropdown and enters ferment l
 			)
 			trace.step("ready prompt visible (or oneshot bootstrapped)")
 
-			// Stage 2: submit request → model emits plan with PLAN_COMPLETE marker.
+			// Stage 2: submit request → model streams the plan, then calls
+			// submit_plan. In oneshot mode the dropdown must NOT appear.
 			terminal.submit("Add a new API endpoint")
 			trace.step("submitted request")
-			await waitForText(terminal, "<!-- PLAN_COMPLETE -->", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("plan complete marker seen — but dropdown must NOT appear in oneshot mode")
+			await waitForText(terminal, "Plan submitted", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("submit_plan tool called — dropdown must NOT appear in oneshot mode")
 
 			// Stage 3: wait briefly to give the dropdown handler a chance to (incorrectly)
 			// render, then sample the terminal text and assert the dropdown labels are absent.
