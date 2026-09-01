@@ -12,7 +12,7 @@
 
 import { homedir } from "node:os"
 import { resolve } from "node:path"
-import type { Api, Model } from "@earendil-works/pi-ai"
+import type { Model } from "@earendil-works/pi-ai"
 import type {
 	CustomEntry,
 	ExtensionAPI,
@@ -27,6 +27,7 @@ import { Type } from "typebox"
 import { readJson } from "../config/json.js"
 import { readConfigSetting } from "../config/settings.js"
 import type { ThinkingLevel } from "./agents/personas/types.js"
+import { getEffectiveModel } from "./router/state.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -623,9 +624,9 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		// Tags are a Cast AI-specific API field; skip for other providers.
 		// If a request from a torn-down session reaches us after `/new` (etc.),
 		// any ctx getter throws via assertActive — bail silently in that case.
-		let model: Model<Api> | undefined
+		let model: Model<string> | undefined
 		try {
-			model = ctx.model ?? undefined
+			model = getEffectiveModel(ctx)
 		} catch (err) {
 			if (isStaleCtxError(err)) return
 			throw err

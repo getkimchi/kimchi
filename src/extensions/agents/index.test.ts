@@ -149,6 +149,7 @@ vi.mock("../orchestration/model-roles.js", () => ({
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { createContext } from "../__mocks__/context.js"
+import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getAllowedMultiModelRefs, getModelRoles } from "../orchestration/model-roles.js"
 import agentsExtension from "./index.js"
@@ -340,14 +341,14 @@ function makeMockModelRegistry(entries: MockModelEntry[]): unknown {
  * spinner/await-promise machinery which the AgentManager mock does not
  * fully satisfy.
  */
-function makeMockCtx(modelRegistry: unknown, parentModel?: unknown): unknown {
+function makeMockCtx(modelRegistry: unknown, parentModel?: unknown, branch: unknown[] = []): unknown {
 	return {
 		ui: undefined,
 		mode: "json",
 		hasUI: false,
 		cwd: "/tmp",
 		sessionManager: {
-			getBranch: () => [],
+			getBranch: () => branch,
 			getSessionDir: () => "/tmp",
 			getSessionFile: () => "/tmp/session.json",
 			getSessionId: () => "test-session",
@@ -418,6 +419,7 @@ describe("Agent tool multi-mode model guard", () => {
 		vi.useRealTimers()
 		vi.clearAllMocks()
 		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		vi.mocked(sessionHasImages).mockReturnValue(false)
 		vi.mocked(getAllowedMultiModelRefs).mockReturnValue([
 			"kimchi-dev/kimi-k2.7",
 			"kimchi-dev/minimax-m3",
@@ -557,6 +559,60 @@ describe("Agent tool multi-mode model guard", () => {
 		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
 		const text = result.content[0]?.text ?? ""
 		expect(text).not.toContain("not allowed in multi-model mode")
+	})
+
+	it("marks an Auto child as requiring vision when forwarding parent image paths", async () => {
+		vi.mocked(sessionHasImages).mockReturnValue(true)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+
+		const registry = makeMockModelRegistry([
+			{ id: "auto", name: "Auto (Kimchi Router)", provider: "kimchi-dev", input: ["text", "image"] },
+		])
+		const branch = [
+			{
+				type: "message",
+				message: {
+					role: "assistant",
+					content: [{ type: "toolCall", id: "read-image", name: "read", arguments: { path: "/tmp/reference.png" } }],
+				},
+			},
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolCallId: "read-image",
+					content: [{ type: "image", data: "abc", mimeType: "image/png" }],
+				},
+			},
+		]
+		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }, branch)
+		const tool = getRegisteredAgentTool(pi)
+
+		await tool.execute(
+			"call-with-image",
+			{
+				prompt: "inspect the reference",
+				description: "test",
+				subagent_type: "general-purpose",
+				model: "kimchi-dev/auto",
+				run_in_background: true,
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledWith(
+			pi,
+			ctx,
+			"General-Purpose",
+			expect.stringContaining("Context images from parent session: /tmp/reference.png"),
+			expect.objectContaining({ requiresVision: true }),
+		)
 	})
 })
 

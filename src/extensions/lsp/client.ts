@@ -1,4 +1,5 @@
 // extensions/lsp/client.ts
+import { resolveTsserverPath } from "./servers.js"
 import type {
 	BunProcess,
 	DiagnosticWaiter,
@@ -52,7 +53,12 @@ function findHeaderEnd(buf: Buffer): number {
 	return -1
 }
 
-function parseMessage(buf: Buffer): { message: LspJsonRpcResponse | LspJsonRpcNotification; remaining: Buffer } | null {
+function parseMessage(
+	buf: Buffer,
+):
+	| { message: LspJsonRpcResponse | LspJsonRpcNotification; remaining: Buffer }
+	| { skipped: true; remaining: Buffer }
+	| null {
 	const headerEnd = findHeaderEnd(buf)
 	if (headerEnd === -1) return null
 
@@ -65,8 +71,27 @@ function parseMessage(buf: Buffer): { message: LspJsonRpcResponse | LspJsonRpcNo
 	const end = start + contentLen
 	if (buf.length < end) return null
 
+	const content = buf.slice(start, end).toString()
+	let message: unknown
+	try {
+		message = JSON.parse(content)
+	} catch {
+		// Corrupted JSON body — skip the frame entirely rather than crashing
+		// the reader (which would reject all pending requests and leave a
+		// zombie client). Log the raw content for production debugging.
+		console.error(`LSP: skipping unparseable frame (${contentLen} bytes):`, content.slice(0, 200))
+		return { skipped: true, remaining: buf.subarray(end) }
+	}
+
+	if (typeof message !== "object" || message === null) {
+		// Valid JSON but not an object (e.g. bare `null`, a number, a string).
+		// The `in` operator used below throws on primitives, so skip these.
+		console.error(`LSP: skipping non-object frame (${contentLen} bytes):`, content.slice(0, 200))
+		return { skipped: true, remaining: buf.subarray(end) }
+	}
+
 	return {
-		message: JSON.parse(buf.slice(start, end).toString()),
+		message: message as LspJsonRpcResponse | LspJsonRpcNotification,
 		remaining: buf.subarray(end),
 	}
 }
@@ -98,6 +123,11 @@ async function startMessageReader(client: LspClient): Promise<void> {
 			client.messageBuffer = Buffer.concat([client.messageBuffer, value])
 			let parsed = parseMessage(client.messageBuffer)
 			while (parsed) {
+				if ("skipped" in parsed) {
+					client.messageBuffer = parsed.remaining
+					parsed = parseMessage(client.messageBuffer)
+					continue
+				}
 				const { message, remaining } = parsed
 				client.messageBuffer = remaining
 
@@ -151,10 +181,17 @@ async function startMessageReader(client: LspClient): Promise<void> {
 			}
 		}
 	} catch (err) {
+		const closed = new Error(`LSP connection closed: ${err}`)
 		for (const pending of client.pendingRequests.values()) {
-			pending.reject(new Error(`LSP connection closed: ${err}`))
+			pending.reject(closed)
 		}
 		client.pendingRequests.clear()
+		// Remove the zombie client so the next getOrCreateClient spawns a
+		// fresh server instead of returning a dead client whose reader has
+		// stopped. Kill the process in case it's still alive.
+		clients.delete(client.name)
+		clientLocks.delete(client.name)
+		client.proc.kill()
 	} finally {
 		reader.releaseLock()
 		client.isReading = false
@@ -248,12 +285,20 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 		})()
 
 		try {
+			const initOpts = { ...(config.initOptions ?? {}) }
+			if (config.command === "typescript-language-server") {
+				const tsserverPath = resolveTsserverPath(cwd)
+				if (tsserverPath) {
+					const existing = typeof initOpts.tsserver === "object" && initOpts.tsserver !== null ? initOpts.tsserver : {}
+					initOpts.tsserver = { ...existing, path: tsserverPath }
+				}
+			}
 			await sendRequest(client, "initialize", {
 				processId: process.pid,
 				rootUri: fileToUri(cwd),
 				rootPath: cwd,
 				capabilities: CLIENT_CAPABILITIES,
-				initializationOptions: config.initOptions ?? {},
+				initializationOptions: initOpts,
 				workspaceFolders: [{ uri: fileToUri(cwd), name: cwd.split("/").pop() ?? "workspace" }],
 			})
 			await sendNotification(client, "initialized", {})

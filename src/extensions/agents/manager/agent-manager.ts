@@ -56,6 +56,7 @@ interface SpawnOptions {
 	description: string
 	visibility?: AgentVisibility
 	model?: Model<Api>
+	requiresVision?: boolean
 	maxTurns?: number
 	isolated?: boolean
 	inheritContext?: boolean
@@ -245,6 +246,7 @@ export class AgentManager {
 				: runAgent(ctx, type, prompt, {
 						pi,
 						model: options.model,
+						requiresVision: options.requiresVision,
 						maxTurns: options.maxTurns,
 						tokenBudget: options.tokenBudget,
 						inactivityTimeout: options.inactivityTimeout,

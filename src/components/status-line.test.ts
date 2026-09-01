@@ -1,3 +1,4 @@
+import type { Model } from "@earendil-works/pi-ai"
 import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -6,6 +7,7 @@ import * as AGENTS from "../extensions/agents/index.js"
 import { setBillingStatusForTest } from "../extensions/billing/status.js"
 import * as FERMENT from "../extensions/ferment/index.js"
 import * as MULTI_MODEL from "../extensions/multi-model.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "../extensions/router/state.js"
 import * as TAGS from "../extensions/tags.js"
 import type { Ferment } from "../ferment/types.js"
 import {
@@ -61,6 +63,7 @@ function createMockTheme(): Theme {
 interface MockContextOpts {
 	percent?: number
 	modelId?: string
+	modelProvider?: string
 	thinkingLevel?: ExtensionContext["thinkingLevel"]
 	/** Assistant messages to include in the session, for usage-segment tests. */
 	assistantMessages?: Array<{ input: number; output: number }>
@@ -74,7 +77,7 @@ function createMockContext(opts?: MockContextOpts): ExtensionContext {
 		message: { role: "assistant", usage: { input: u.input, output: u.output } },
 	}))
 	return {
-		model: { id: modelId, name: modelId },
+		model: { id: modelId, name: modelId, provider: opts?.modelProvider ?? "kimchi-dev" },
 		thinkingLevel: opts?.thinkingLevel,
 		cwd: "/test",
 		getContextUsage: vi.fn(() => ({ tokens: 0, percent, contextWindow: 100000 })),
@@ -86,6 +89,21 @@ function createMockContext(opts?: MockContextOpts): ExtensionContext {
 			getSessionFile: vi.fn(() => "/test/session.md"),
 		},
 	} as unknown as ExtensionContext
+}
+
+function concreteModel(id: string): Model<string> {
+	return {
+		id,
+		name: id,
+		api: "openai-completions",
+		provider: "kimchi-dev",
+		baseUrl: "https://example.test",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128_000,
+		maxTokens: 16_000,
+	}
 }
 
 function createMockStatusLineData(opts?: {
@@ -830,6 +848,7 @@ describe("status line pinning", () => {
 	})
 
 	afterEach(() => {
+		clearAutoRoutingState("test-session")
 		vi.restoreAllMocks()
 		restorePlatform()
 		pinnedElements = []
@@ -838,6 +857,20 @@ describe("status line pinning", () => {
 	function makeStatusLine(opts?: MockContextOpts): StatusLine {
 		return new StatusLine(createMockContext(opts), theme, createMockStatusLineData())
 	}
+
+	it("shows Auto without a suffix after routing", () => {
+		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
+
+		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
+
+		expect(visible).toContain("auto → ctrl+p")
+	})
+
+	it("shows only Auto before routing resolves", () => {
+		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
+
+		expect(visible).toContain("auto → ctrl+p")
+	})
 
 	it("pinned usage shows '↑0 ↓0' when no tokens are present", () => {
 		withPinned(["usage"], () => {

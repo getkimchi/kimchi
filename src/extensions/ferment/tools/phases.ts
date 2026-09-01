@@ -14,6 +14,7 @@ import type { Ferment, Grade, Phase } from "../../../ferment/types.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { withBlocked } from "../../herdr-events.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
+import { getEffectiveModel } from "../../router/state.js"
 import { withWorkingHidden } from "../../ui.js"
 import { askUserForm, createJudgeDecisionRecorder } from "../ask-user.js"
 import { gradeColor } from "../colors.js"
@@ -283,7 +284,11 @@ export async function completePhase(
 	services: PhaseHandlerServices = defaultPhaseHandlerServices,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
-	runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry, getMultiModelEnabled(ctx?.sessionManager ?? null))
+	runtime.captureJudgeContext(
+		ctx ? getEffectiveModel(ctx) : undefined,
+		ctx?.modelRegistry,
+		getMultiModelEnabled(ctx?.sessionManager ?? null),
+	)
 
 	// Step 1: resolve the phase (host concern — fuzzy lookup).
 	const f = runtime.getStorage().get(params.ferment_id)

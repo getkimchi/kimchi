@@ -12,6 +12,7 @@ import {
 	getAgentDir,
 	type InlineExtension,
 	type ModelRuntime,
+	type ModelRegistry as PiModelRegistry,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
@@ -33,6 +34,9 @@ import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import { isAutoModel } from "../../router/constants.js"
+import { createAutoModelExtension } from "../../router/index.js"
+import { getEffectiveModel } from "../../router/state.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
@@ -167,7 +171,7 @@ export function setGraceTurns(n: number): void {
  */
 function resolveDefaultModel(
 	parentModel: Model<Api> | undefined,
-	registry: { find(provider: string, modelId: string): Model<Api> | undefined; getAvailable?(): Model<Api>[] },
+	registry: Pick<PiModelRegistry, "find" | "getAvailable">,
 	configModel?: string,
 ): Model<Api> | undefined {
 	if (configModel) {
@@ -176,16 +180,8 @@ function resolveDefaultModel(
 			const provider = configModel.slice(0, slashIdx)
 			const modelId = configModel.slice(slashIdx + 1)
 
-			const available = registry.getAvailable?.()
-			const availableKeys = available
-				? new Set(
-						available.map(
-							(m: unknown) =>
-								`${(m as { provider: string; id: string }).provider}/${(m as { provider: string; id: string }).id}`,
-						),
-					)
-				: undefined
-			const isAvailable = (p: string, id: string) => !availableKeys || availableKeys.has(`${p}/${id}`)
+			const availableKeys = new Set(registry.getAvailable().map((model) => `${model.provider}/${model.id}`))
+			const isAvailable = (p: string, id: string) => availableKeys.has(`${p}/${id}`)
 
 			const found = registry.find(provider, modelId)
 			if (found && isAvailable(provider, modelId)) return found
@@ -212,6 +208,8 @@ export interface RunOptions {
 	/** ExtensionAPI instance — used for pi.exec() instead of execSync. */
 	pi: ExtensionAPI
 	model?: Model<Api>
+	/** The parent is forwarding image context as file paths to this child. */
+	requiresVision?: boolean
 	maxTurns?: number
 	signal?: AbortSignal
 	isolated?: boolean
@@ -421,10 +419,7 @@ ${skillLines}`
 
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
 
-	const modelId = (options.model as { id?: string } | undefined)?.id
 	const guidelinePhase = agentConfig?.roles?.[0] as Phase | undefined
-	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, guidelinePhase, getGuidelinesRegistry())
-	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
 
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
 	const MIN_TOKEN_BUDGET = 1024
@@ -434,8 +429,12 @@ ${skillLines}`
 		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
 	}
 
-	const buildSystemPrompt = (activeToolNames: string[]) => {
+	const model = options.model ?? resolveDefaultModel(ctx.model, ctx.modelRegistry, agentConfig?.models?.[0])
+
+	const buildSystemPrompt = (activeToolNames: string[], promptModelId = model?.id) => {
 		extras.activeToolNames = activeToolNames
+		const guidelinesBlock = buildPhaseGuidelinesSection(promptModelId, guidelinePhase, getGuidelinesRegistry())
+		extras.guidelinesBlock = guidelinesBlock
 		if (agentConfig) return buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
 		const fallback = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE)
 		if (!fallback) throw new Error(`No fallback config available for unknown type "${type}"`)
@@ -477,8 +476,22 @@ ${skillLines}`
 			: bashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
 	// successes must close the shared infrastructure breaker just like the parent's.
+	const autoExtensionFactories: InlineExtension[] = isAutoModel(model)
+		? [
+				createAutoModelExtension({ requiresVision: options.requiresVision }),
+				(pi) => {
+					pi.on("before_agent_start", (_event, childCtx) => {
+						const effectiveModel = getEffectiveModel(childCtx)
+						const rebuilt = buildSystemPrompt(pi.getActiveTools(), effectiveModel?.id)
+						options.onSystemPrompt?.(rebuilt)
+						return { systemPrompt: rebuilt }
+					})
+				},
+			]
+		: []
 	const extensionFactories: InlineExtension[] = [
 		telemetryExtension(readTelemetryConfig()),
+		...autoExtensionFactories,
 		bashExtension,
 		infrastructureBreakerExtension,
 		omitKimchiMaxTokensExtension,
@@ -507,17 +520,6 @@ ${skillLines}`
 		extensionFactories,
 	})
 	await loader.reload()
-
-	const model =
-		options.model ??
-		resolveDefaultModel(
-			ctx.model as Model<Api> | undefined,
-			ctx.modelRegistry as {
-				find(provider: string, modelId: string): Model<Api> | undefined
-				getAvailable?(): Model<Api>[]
-			},
-			agentConfig?.models?.[0],
-		)
 
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 

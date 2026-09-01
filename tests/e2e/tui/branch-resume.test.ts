@@ -11,12 +11,13 @@ import {
 test.use(TUI_TEST_CONFIG)
 
 test("branch creates a named resumable session for -r", async ({ terminal }) => {
+	const exitMarker = "__KIMCHI_BRANCH_FIRST_SESSION_EXITED__"
 	const fixture = await createKimchiFixture({
 		responses: [{ stream: ["Hello", " from", " fake", " Kimchi."] }],
 	})
 
 	try {
-		launchKimchi(terminal, fixture)
+		launchKimchi(terminal, fixture, [], {}, { exitMarker })
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
 
 		terminal.submit("hello")
@@ -38,7 +39,7 @@ test("branch creates a named resumable session for -r", async ({ terminal }) => 
 		})
 
 		terminal.submit("/quit")
-		await new Promise((resolve) => setTimeout(resolve, 500))
+		await waitForText(terminal, exitMarker, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
 
 		launchKimchi(terminal, fixture, ["-r", sessionId])
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS, full: false })

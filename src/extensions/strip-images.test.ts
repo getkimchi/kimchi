@@ -19,6 +19,7 @@ const createMockCtx = (overrides: Record<string, unknown> = {}) => ({
 		getAvailable: () => [{ provider: "kimchi-dev", id: "vision-model", input: ["text", "image"] }],
 		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: {} }),
 	},
+	sessionManager: overrides.sessionManager ?? { getSessionId: () => "strip-images-session" },
 	ui: { notify: mockNotify },
 })
 
@@ -119,6 +120,32 @@ describe("strip-images extension", () => {
 			await handler([], ctx)
 
 			expect(mockNotify).toHaveBeenCalledWith(expect.stringContaining("no API key available"), "error")
+		})
+
+		it("uses a concrete vision model instead of dispatching image analysis through Auto", async () => {
+			vi.mocked(getLatestMessages).mockReturnValue([
+				{ role: "user", content: [{ type: "image", data: "image-data", mimeType: "image/png" }] },
+			] as never)
+			completeMock.mockReturnValue({
+				content: [{ type: "text", text: "description" }],
+				stopReason: "stop",
+			})
+			const ctx = createMockCtx({
+				model: { provider: "kimchi-dev", id: "auto", input: ["text", "image"] },
+				modelRegistry: {
+					getAvailable: () => [
+						{ provider: "kimchi-dev", id: "auto", input: ["text", "image"] },
+						{ provider: "kimchi-dev", id: "vision-model", input: ["text", "image"] },
+					],
+					getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "key", headers: {} }),
+				},
+			})
+			stripImagesExtension(mockPi as never)
+
+			const handler = mockPi.getHandler("strip-images") as (args: string[], ctx: unknown) => Promise<void>
+			await handler([], ctx)
+
+			expect(completeMock.mock.calls[0]?.[0]).toMatchObject({ id: "vision-model" })
 		})
 
 		it("preserves the explicit image-analysis token limit", async () => {
