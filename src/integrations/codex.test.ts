@@ -289,11 +289,10 @@ describe("buildModelCatalog", () => {
 		}
 	})
 
-	it("produces correct catalog for Slack-thread models (m3, k2.7, glm, deepseek, nemotron)", () => {
-		// The exact model set captured in the original Slack thread. Each entry
-		// carries the specific context window and reasoning capability that the
-		// catalog must reproduce verbatim.
-		const SLACK_THREAD_MODELS: readonly import("../models.js").ModelMetadata[] = [
+	it("produces correct catalog for mixed reasoning and non-reasoning models", () => {
+		// Covers both reasoning and non-reasoning models with varied context
+		// windows to verify catalog entries are mapped correctly in each case.
+		const MIXED_MODELS: readonly import("../models.js").ModelMetadata[] = [
 			{
 				slug: "minimax-m3",
 				display_name: "MiniMax M3",
@@ -341,7 +340,7 @@ describe("buildModelCatalog", () => {
 			},
 		]
 
-		const catalog = buildModelCatalog(SLACK_THREAD_MODELS)
+		const catalog = buildModelCatalog(MIXED_MODELS)
 		expect(catalog.models).toHaveLength(5)
 
 		// Reasoning models — minimax-m3, kimi-k2.7, glm-5.2-fp8
