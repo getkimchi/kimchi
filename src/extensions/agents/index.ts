@@ -34,6 +34,7 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
+import { isAutoModel } from "../router/constants.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
@@ -1480,18 +1481,13 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 				// Image forwarding: when session has images and subagent model supports vision,
 				// extract image paths from read tool calls and prepend them to the prompt.
-				const effectivePrompt = (() => {
-					const base = params.prompt as string
-					if (!sessionHasImages()) return base
-					const modelInput = (model as { input?: string[] } | undefined)?.input
-					if (!modelInput?.includes("image")) return base
-
-					const imagePaths = extractImagePathsFromSession(ctx)
-					if (imagePaths.length === 0) return base
-
-					const pathList = imagePaths.join(", ")
-					return `Context images from parent session: ${pathList}. Read them if needed for your task.\n\n${base}`
-				})()
+				const modelInput = (model as { input?: string[] } | undefined)?.input
+				const imagePaths = sessionHasImages() && modelInput?.includes("image") ? extractImagePathsFromSession(ctx) : []
+				const requiresVision = imagePaths.length > 0 && isAutoModel(model)
+				const effectivePrompt =
+					imagePaths.length > 0
+						? `Context images from parent session: ${imagePaths.join(", ")}. Read them if needed for your task.\n\n${params.prompt as string}`
+						: (params.prompt as string)
 
 				const parentModelId = ctx.model?.id
 				const effectiveModelId = (model as { id?: string } | undefined)?.id
@@ -1550,6 +1546,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 							description: params.description as string,
 							visibility,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
+							requiresVision,
 							maxTurns: effectiveMaxTurns,
 							tokenBudget: resolvedConfig.tokenBudget,
 							taskRef,
@@ -1696,6 +1693,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 						description: params.description as string,
 						visibility,
 						model: model as Parameters<typeof manager.spawn>[4]["model"],
+						requiresVision,
 						maxTurns: effectiveMaxTurns,
 						tokenBudget: resolvedConfig.tokenBudget,
 						taskRef,

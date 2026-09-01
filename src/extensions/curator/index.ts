@@ -4,6 +4,7 @@ import { join } from "node:path"
 import type { ExtensionAPI, MessageRenderer } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
+import { getEffectiveModel } from "../router/state.js"
 import { SkillManager } from "../skills-manager/skill-manager.js"
 import { UsageTracker } from "../skills-manager/usage.js"
 import { isStaleCtxError } from "../stale-ctx.js"
@@ -63,8 +64,9 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 	pi.on("before_provider_request", (_event, ctx) => {
 		if (providerModel) return
 		try {
-			if (ctx.model?.provider && ctx.model?.id) {
-				providerModel = { provider: ctx.model.provider, model: ctx.model.id }
+			const model = getEffectiveModel(ctx)
+			if (model?.provider && model.id) {
+				providerModel = { provider: model.provider, model: model.id }
 			}
 		} catch (err) {
 			if (isStaleCtxError(err)) return

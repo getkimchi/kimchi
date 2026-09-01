@@ -426,10 +426,11 @@ function fitWithBudgetStep(segments: Segment[], width: number, theme: Theme): Se
 
 function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
 	const multiModel = getMultiModelEnabled(ctx.sessionManager)
-	const rawModelId = ctx.model?.id ?? "n/a"
-	const label = multiModel ? `multi-model (${rawModelId})` : rawModelId
+	const selectedModelId = ctx.model?.id ?? "n/a"
+	const modelId = selectedModelId
+	const label = multiModel ? `multi-model (${modelId})` : modelId
 	const text = `${accentText(theme, label)} ${dimText(theme, "→ ctrl+p")}`
-	return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId: rawModelId } }
+	return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId } }
 }
 
 function buildThinkingSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {

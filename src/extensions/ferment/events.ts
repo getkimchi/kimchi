@@ -6,6 +6,7 @@ import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { getEffectiveModel } from "../router/state.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
@@ -520,13 +521,13 @@ export function registerFermentEvents(
 		return {}
 	})
 
-	pi.on("model_select", (event, ctx) => {
-		runtime.captureJudgeContext(event.model, ctx?.modelRegistry)
+	pi.on("model_select", (_event, ctx) => {
+		runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry)
 	})
 
 	pi.on("turn_end", async (event, ctx) => {
 		if (isAgentWorker()) return
-		runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry)
+		runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry)
 		if (event.message.role !== "assistant") return
 		const content = getAssistantContentParts(event.message.content)
 		const activeId = runtime.getActiveId()

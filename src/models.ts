@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import type { ThinkingLevel } from "./extensions/agents/personas/types.js"
+import { AUTO_MODEL_API, AUTO_MODEL_ID, AUTO_MODEL_NAME } from "./extensions/router/constants.js"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_API = "https://llm.kimchi.dev"
@@ -186,6 +187,27 @@ export interface PiModelConfig {
 	headers?: Record<string, string>
 }
 
+function autoModelConfig(models: ModelMetadata[]): PiModelConfig {
+	const rootModels = models.filter((model) => model.provider === "ai-enabler")
+	const contextWindow = Math.min(...rootModels.map((model) => model.limits.context_window), 128_000)
+	const maxTokens = Math.min(...rootModels.map((model) => model.limits.max_output_tokens), 16_384)
+	return {
+		id: AUTO_MODEL_ID,
+		name: AUTO_MODEL_NAME,
+		api: AUTO_MODEL_API,
+		provider: "ai-enabler",
+		// Auto is virtual, but Pi reads this capability to expose the session's
+		// reasoning control. The Auto provider applies that preference only when
+		// the resolved concrete model supports it.
+		reasoning: true,
+		thinkingLevelMap: { off: "none", max: "max" },
+		input: ["text", "image"],
+		contextWindow,
+		maxTokens,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	}
+}
+
 function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// TODO: our LiteLLM gateway does not support `thinking.type.enabled` for Anthropic >Opus 4.6 models
 	// Therefore, we disable it for now. Revisit, once we upgrade our LiteLLM version.
@@ -299,7 +321,7 @@ function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined
 			if (!name.startsWith("kimchi-dev")) continue
 			const models = (provider as { models?: PiModelConfig[] }).models
 			if (!Array.isArray(models) || models.length === 0) continue
-			result.push(...models.map(modelToMetadata))
+			result.push(...models.filter((model) => model.id !== AUTO_MODEL_ID).map(modelToMetadata))
 		}
 		if (result.length === 0) return undefined
 		return result
@@ -366,6 +388,29 @@ export function injectExperimentalProvider(modelsJsonPath: string, apiKey: strin
 		apiKey,
 	}
 	config.providers = { ...config.providers, "kimchi-experimental": experimental }
+	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
+}
+
+/**
+ * Upsert the virtual kimchi-dev/auto model after the managed provider refresh.
+ * It is always present so saved sessions/defaults remain restorable; the
+ * experimental flag only controls whether Pi exposes it in discovery lists.
+ */
+export function injectAutoModel(modelsJsonPath: string): void {
+	if (!existsSync(modelsJsonPath)) return
+	let config: { providers?: Record<string, { models?: PiModelConfig[] }> }
+	try {
+		config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+	} catch {
+		return
+	}
+	const kimchiDev = config.providers?.["kimchi-dev"]
+	if (!kimchiDev || !Array.isArray(kimchiDev.models)) return
+	const concreteMetadata = kimchiDev.models.filter((model) => model.id !== AUTO_MODEL_ID).map(modelToMetadata)
+	kimchiDev.models = [
+		...kimchiDev.models.filter((model) => model.id !== AUTO_MODEL_ID),
+		autoModelConfig(concreteMetadata),
+	]
 	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
 }
 

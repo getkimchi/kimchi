@@ -6,9 +6,11 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import {
+	getParsedCliArgs,
 	hasPrintFlag,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
+	isExplicitAutoModelSelection,
 	isHelpOrVersionArgs,
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
@@ -101,6 +103,8 @@ import remoteRunExtension from "./extensions/remote-run/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
+import { installAutoModelAdapters } from "./extensions/router/adapters.js"
+import autoModelExtension from "./extensions/router/index.js"
 import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
@@ -137,6 +141,7 @@ import {
 	KIMCHI_INFRA_ERROR_EXIT_CODE,
 } from "./infrastructure-error.js"
 import {
+	injectAutoModel,
 	injectExperimentalProvider,
 	isTransientModelsError,
 	readExperimentalModels,
@@ -277,6 +282,7 @@ try {
 		// steering text) can gate on it — the CLI arg is stripped from the
 		// args that reach main(), so pi.getFlag can't discover it.
 		setExperimentalFeaturesEnabled(experimentalFeatures)
+		installAutoModelAdapters()
 		let config = loadConfig()
 
 		const envKey = process.env.KIMCHI_API_KEY || undefined
@@ -346,6 +352,7 @@ try {
 				injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
 				models = [...models, ...readExperimentalModels(modelsJsonPath)]
 			}
+			injectAutoModel(modelsJsonPath)
 			// Auto-discover a local Ollama server and merge its models into the
 			// registry. Probe is silent on failure — startup is never blocked.
 			await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
@@ -370,6 +377,7 @@ try {
 					injectExperimentalProvider(modelsJsonPath, currentApiKey)
 					models = [...models, ...readExperimentalModels(modelsJsonPath)]
 				}
+				injectAutoModel(modelsJsonPath)
 				await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
 				models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
 			} else if (isTransientModelsError(err)) {
@@ -479,6 +487,9 @@ try {
 		// before upstream pi-mono sees them (it does not recognize "multi-model"
 		// as a model id).
 		populateCliArgs(rawArgs)
+		if (!experimentalFeatures && isExplicitAutoModelSelection(getParsedCliArgs())) {
+			throw new Error("kimchi-dev/auto is experimental. Re-run with --enable-experimental-features to select it.")
+		}
 		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
 
 		const terminalIo = {
@@ -609,6 +620,8 @@ try {
 				{ id: "extensions.ferment", factory: fermentExtension },
 			] satisfies ManagedExtensionFactory[]),
 			questionnaireExtension,
+			// Resolve kimchi-dev/auto before prompt construction needs concrete model behavior.
+			autoModelExtension,
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, effectiveSkillPaths) },
 			] satisfies ManagedExtensionFactory[]),

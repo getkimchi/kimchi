@@ -95,6 +95,10 @@ export interface FakeOpenAiServer {
 interface StartFakeOpenAiServerOptions {
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
+	/** JSON bodies returned by successive `/v1/route` calls. An empty queue returns 503. */
+	routerResponses?: unknown[]
+	/** Keep this one-based router request open until the client disconnects. Used to verify cancellation. */
+	stallRouterRequestNumber?: number
 	creditsResponses?: unknown[]
 	budgetResponses?: unknown[]
 }
@@ -142,6 +146,8 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 	}
 	const creditsQueue = [...(options.creditsResponses ?? [])]
 	const budgetQueue = [...(options.budgetResponses ?? [])]
+	const routerQueue = [...(options.routerResponses ?? [])]
+	let routerRequestCount = 0
 	let lastCreditsResponse: unknown
 	let lastBudgetResponse: unknown
 
@@ -160,9 +166,23 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 		req.on("aborted", () => {
 			recorded.aborted = true
 		})
+		res.on("close", () => {
+			if (!res.writableEnded) recorded.aborted = true
+		})
 		requests.push(recorded)
 
 		try {
+			if (req.method === "POST" && req.url?.startsWith("/v1/route")) {
+				routerRequestCount += 1
+				const response = routerQueue.shift()
+				if (options.stallRouterRequestNumber === routerRequestCount) {
+					await new Promise<void>((resolve) => res.once("close", resolve))
+					return
+				}
+				writeJson(res, response === undefined ? 503 : 200, response ?? { error: "No scripted router response" })
+				return
+			}
+
 			if (req.method === "GET" && req.url?.startsWith("/v1/models/metadata")) {
 				writeJson(res, 200, {
 					models: models.map((model) => ({
