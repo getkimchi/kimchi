@@ -63,7 +63,7 @@ test("experimental Ferment V2 evaluates continue, resumes work, then completes",
 	const metEvaluationResponse: FakeResponseScript = {
 		match: isFermentV2EvaluatorRequest,
 		stream: [
-			'{"verdict":"met","checks":[{"requirement":"Implement feature A","met":true,"evidence":["l1"],"todoIds":[1]}],"reason":"The Todo is completed and the retained evidence records verification."}',
+			'{"verdict":"met","checks":[{"requirement":"Implement feature A","met":true,"failureMode":"the feature could be unverified; l1 records verification","evidence":["l1"],"todoIds":[1]}],"reason":"The Todo is completed and the retained evidence records verification."}',
 		],
 	}
 

@@ -28,7 +28,7 @@ You independently decide whether a persistent coding Ferment V2 should continue.
 
 <output_contract>
 - Return exactly one JSON object and no markdown:
-{"verdict":"continue|met|impossible","checks":[{"requirement":"one objective requirement","met":true,"evidence":["m12"],"todoIds":[1]}],"reason":"concise evidence-based reason"}
+{"verdict":"continue|met|impossible","checks":[{"requirement":"one objective requirement","met":true,"failureMode":"plausible way this could still be wrong, and why the cited evidence rules it out","evidence":["m12"],"todoIds":[1]}],"reason":"concise evidence-based reason"}
 </output_contract>
 
 <evidence_policy>
@@ -40,6 +40,7 @@ You independently decide whether a persistent coding Ferment V2 should continue.
 <completion_checks>
 - Check each requirement separately.
 - Include every settled Todo ID covered by the checks.
+- Every met check needs a concrete failureMode that the cited evidence challenges.
 - Every met check needs retained evidence. Partial, missing, or ambiguous evidence means continue.
 </completion_checks>
 
@@ -61,6 +62,7 @@ export type FermentV2EvaluationResult =
 interface FermentV2EvaluatorCheck {
 	requirement: string
 	met: boolean
+	failureMode?: string
 	evidence: string[]
 	todoIds: number[]
 }
@@ -129,6 +131,9 @@ function parseChecks(value: unknown): FermentV2EvaluatorCheck[] | undefined {
 		checks.push({
 			requirement: candidate.requirement.trim(),
 			met: candidate.met,
+			...(typeof candidate.failureMode === "string" && candidate.failureMode.trim()
+				? { failureMode: candidate.failureMode.trim() }
+				: {}),
 			evidence: candidate.evidence.map((evidence) => evidence.trim()),
 			todoIds: candidate.todoIds,
 		})
@@ -279,6 +284,8 @@ function unsupportedMetReason(
 	for (const check of checks) {
 		const requirement = JSON.stringify(check.requirement.slice(0, 200))
 		if (!check.met) return `Requirement ${requirement} is not met; continue work and verify it.`
+		if (!check.failureMode)
+			return `Requirement ${requirement} does not name the plausible failure mode ruled out by its evidence; inspect the risk and verify it.`
 		if (check.evidence.length === 0)
 			return `Requirement ${requirement} has no retained evidence; run a relevant check and surface its result.`
 		if (check.evidence.some((evidenceId) => !evidenceIds.has(evidenceId)))
@@ -342,47 +349,126 @@ function renderRecentTranscript(messages: ReadonlyArray<AgentEndEvent["messages"
 	text: string
 	evidenceIds: ReadonlySet<string>
 } {
-	const kept: Array<{ id: string; text: string; evidence: boolean }> = []
+	const { units, linkedToolResultIndexes, callLabelsById } = buildTranscriptUnits(messages)
+	const keptIndexes = new Set<number>()
+	const kept: Array<{ index: number; id: string; text: string; evidence: boolean }> = []
 	let length = 0
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const message = messages[i]
-		const rendered = renderMessage(message)
-		if (!rendered) continue
-		const id = `m${i + 1}`
-		const text = `[${id}] ${rendered}`
+	for (let unitIndex = units.length - 1; unitIndex >= 0; unitIndex--) {
+		const entries = units[unitIndex]
+			.map((index) => renderTranscriptEntry(messages[index], index, linkedToolResultIndexes, callLabelsById))
+			.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+		if (entries.length === 0) continue
+		const unitText = entries.map((entry) => entry.text).join("\n\n")
 		const separatorLength = kept.length > 0 ? 2 : 0
-		if (length + separatorLength + text.length <= MAX_TRANSCRIPT_CHARS) {
-			kept.push({ id, text, evidence: isToolResult(message) })
-			length += separatorLength + text.length
+		if (length + separatorLength + unitText.length <= MAX_TRANSCRIPT_CHARS) {
+			for (const entry of entries) {
+				if (keptIndexes.has(entry.index)) continue
+				keptIndexes.add(entry.index)
+				kept.push(entry)
+			}
+			length += separatorLength + unitText.length
 			continue
 		}
-		if (kept.length === 0) {
+		if (kept.length === 0 && entries.length === 1) {
+			const [{ id, index, evidence }] = entries
+			const rendered = renderMessage(messages[index], callLabelsById)
 			const prefix = `[${id}] `
 			const available = Math.max(0, MAX_TRANSCRIPT_CHARS - prefix.length)
-			kept.push({ id, text: `${prefix}${rendered.slice(-available)}`, evidence: isToolResult(message) })
+			kept.push({ index, id, text: `${prefix}${rendered.slice(-available)}`, evidence })
 		}
 		break
 	}
-	const ordered = kept.reverse()
+	const ordered = kept.sort((a, b) => a.index - b.index)
 	return {
 		text: ordered.map((entry) => entry.text).join("\n\n"),
 		evidenceIds: new Set(ordered.filter((entry) => entry.evidence).map((entry) => entry.id)),
 	}
 }
 
-function isToolResult(message: AgentEndEvent["messages"][number]): boolean {
-	return (message as unknown as Record<string, unknown>).role === "toolResult"
+function buildTranscriptUnits(messages: ReadonlyArray<AgentEndEvent["messages"][number]>): {
+	units: number[][]
+	linkedToolResultIndexes: ReadonlySet<number>
+	callLabelsById: ReadonlyMap<string, string>
+} {
+	const resultsByCallId = new Map<string, number[]>()
+	messages.forEach((message, index) => {
+		const toolCallId = toolResultCallId(message)
+		if (!toolCallId) return
+		const indexes = resultsByCallId.get(toolCallId) ?? []
+		indexes.push(index)
+		resultsByCallId.set(toolCallId, indexes)
+	})
+
+	const assigned = new Set<number>()
+	const linkedToolResultIndexes = new Set<number>()
+	const callLabelsById = new Map<string, string>()
+	const units: number[][] = []
+	for (let index = 0; index < messages.length; index++) {
+		if (assigned.has(index)) continue
+		const callIds = toolCallIds(messages[index])
+		callIds.forEach((callId, callIndex) => {
+			callLabelsById.set(callId, `c${index + 1}.${callIndex + 1}`)
+		})
+		const unit = new Set([index])
+		for (const callId of callIds) {
+			for (const resultIndex of resultsByCallId.get(callId) ?? []) {
+				unit.add(resultIndex)
+				linkedToolResultIndexes.add(resultIndex)
+			}
+		}
+		const indexes = [...unit].sort((a, b) => a - b)
+		for (const assignedIndex of indexes) assigned.add(assignedIndex)
+		units.push(indexes)
+	}
+	return {
+		units: units.sort((a, b) => (a.at(-1) ?? 0) - (b.at(-1) ?? 0)),
+		linkedToolResultIndexes,
+		callLabelsById,
+	}
 }
 
-function renderMessage(message: AgentEndEvent["messages"][number]): string {
+function renderTranscriptEntry(
+	message: AgentEndEvent["messages"][number],
+	index: number,
+	linkedToolResultIndexes: ReadonlySet<number>,
+	callLabelsById: ReadonlyMap<string, string>,
+): { index: number; id: string; text: string; evidence: boolean } | undefined {
+	const rendered = renderMessage(message, callLabelsById)
+	if (!rendered) return undefined
+	const id = `m${index + 1}`
+	return { index, id, text: `[${id}] ${rendered}`, evidence: linkedToolResultIndexes.has(index) }
+}
+
+function toolResultCallId(message: AgentEndEvent["messages"][number]): string | undefined {
+	const record = message as unknown as Record<string, unknown>
+	if (record.role !== "toolResult" || typeof record.toolCallId !== "string" || !record.toolCallId.trim()) {
+		return undefined
+	}
+	return record.toolCallId
+}
+
+function toolCallIds(message: AgentEndEvent["messages"][number]): string[] {
+	const content = (message as unknown as Record<string, unknown>).content
+	if (!Array.isArray(content)) return []
+	return content.flatMap((part) =>
+		isRecord(part) && part.type === "toolCall" && typeof part.id === "string" && part.id.trim() ? [part.id] : [],
+	)
+}
+
+function renderMessage(
+	message: AgentEndEvent["messages"][number],
+	callLabelsById: ReadonlyMap<string, string> = new Map(),
+): string {
 	const record = message as unknown as Record<string, unknown>
 	const role = typeof record.role === "string" ? record.role : "message"
 	const toolName = typeof record.toolName === "string" ? ` ${record.toolName}` : ""
-	const content = contentText(record.content)
-	return content ? `[${role}${toolName}] ${content}`.trim() : ""
+	const callLabel = callLabelsById.get(toolResultCallId(message) ?? "")
+	const resultLink = role === "toolResult" && callLabel ? ` for ${callLabel}` : ""
+	const content = contentText(record.content, callLabelsById)
+	return content ? `[${role}${toolName}${resultLink}] ${content}`.trim() : ""
 }
 
-function contentText(content: unknown): string {
+function contentText(content: unknown, callLabelsById: ReadonlyMap<string, string>): string {
 	if (typeof content === "string") return content
 	if (!Array.isArray(content)) return ""
 	return content
@@ -391,7 +477,8 @@ function contentText(content: unknown): string {
 			if (part.type === "thinking") return ""
 			if (typeof part.text === "string") return part.text
 			if (part.type === "toolCall" && typeof part.name === "string") {
-				return `tool ${part.name} ${JSON.stringify(part.arguments ?? {})}`
+				const callLabel = typeof part.id === "string" ? callLabelsById.get(part.id) : undefined
+				return `tool ${callLabel ? `${callLabel} ` : ""}${part.name} ${JSON.stringify(part.arguments ?? {})}`
 			}
 			return ""
 		})

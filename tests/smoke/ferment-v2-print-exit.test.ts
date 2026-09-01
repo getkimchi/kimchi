@@ -267,7 +267,7 @@ function fermentV2Responses() {
 		{
 			match: isFermentV2EvaluatorRequest,
 			stream: [
-				'{"verdict":"met","checks":[{"requirement":"feature A is complete","met":true,"evidence":["l1"],"todoIds":[1]}],"reason":"The completed Todo and retained evidence record verification."}',
+				'{"verdict":"met","checks":[{"requirement":"feature A is complete","met":true,"failureMode":"the feature could be unverified; l1 records verification","evidence":["l1"],"todoIds":[1]}],"reason":"The completed Todo and retained evidence record verification."}',
 			],
 		},
 	]

@@ -7,7 +7,7 @@ const EXECUTION_GUIDANCE = `Working rules:
 - Keep Todos aligned with required work you discover.
 - If the Ferment V2 asks for an artifact, create a usable version early.
 - Timebox uncertain exploration; preserve what you learn and change approach when stalled.
-`
+- End the turn after a meaningful completed Todo or timeboxed failed approach so the next checkpoint can reassess.`
 
 export function replaceFermentV2ContextMessages(
 	messages: ContextEvent["messages"],
@@ -85,6 +85,7 @@ Objective:
 - Treat the canonical session-Ferment V2 context in this request as authoritative.
 
 Execution:
+- First inventory supplied files, executables, tests, and constraints; create short action Todos for concrete work and verification.
 - Track the work with the tactical todo tools, keep one item in progress, and leave the settled list visible until update_ferment_v2 succeeds.
 ${EXECUTION_GUIDANCE}
 - Redirect current and future work toward this Ferment V2.
@@ -119,7 +120,7 @@ function renderFermentV2Context(fermentV2: SessionFermentV2, lessons: readonly F
 <todo_policy>
 - Use the separately supplied Todo state as the authoritative tactical plan. Do not clear it while this Ferment V2 is active.
 - Add a Todo when you discover work the objective requires. A list that grows from real discoveries is progress, even though it defers completion.
-- Keep activeForm as the exact current action.
+- Name each Todo as a short concrete action, and keep activeForm as the exact current action.
 - Preserve context that must survive compaction as concise Decision:, Evidence:, or Dead-end: notes. Terminal notes may remain after their Todos leave the list.
 - Do not repeat dead ends without new evidence.
 </todo_policy>

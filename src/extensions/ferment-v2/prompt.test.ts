@@ -43,7 +43,7 @@ Autonomous Ferment V2 continuation is enabled.
 <todo_policy>
 - Use the separately supplied Todo state as the authoritative tactical plan. Do not clear it while this Ferment V2 is active.
 - Add a Todo when you discover work the objective requires. A list that grows from real discoveries is progress, even though it defers completion.
-- Keep activeForm as the exact current action.
+- Name each Todo as a short concrete action, and keep activeForm as the exact current action.
 - Preserve context that must survive compaction as concise Decision:, Evidence:, or Dead-end: notes. Terminal notes may remain after their Todos leave the list.
 - Do not repeat dead ends without new evidence.
 </todo_policy>
@@ -69,11 +69,20 @@ Autonomous Ferment V2 continuation is enabled.
 		expect(contextText("ship the parser")).toContain(
 			"Add a Todo when you discover work the objective requires. A list that grows from real discoveries is progress, even though it defers completion.",
 		)
+		expect(contextText("ship the parser")).toContain("Name each Todo as a short concrete action")
 	})
 
 	it("lets normal continuation revise tactical todos without weakening the Ferment V2 objective", () => {
 		expect(buildFermentV2Continuation()).toContain("Keep Todos aligned with required work you discover.")
 		expect(buildFermentV2Continuation()).toContain("without dropping any objective requirement")
+	})
+
+	it("orients once when Ferment V2 starts", () => {
+		expect(buildFermentV2StartSteer("created")).toContain(
+			"First inventory supplied files, executables, tests, and constraints; create short action Todos for concrete work and verification.",
+		)
+		expect(buildFermentV2Continuation()).not.toContain("First inventory")
+		expect(buildFermentV2ErrorContinuation()).not.toContain("First inventory")
 	})
 
 	it.each([
@@ -83,6 +92,7 @@ Autonomous Ferment V2 continuation is enabled.
 	])("keeps a useful checkpoint shape during %s", (_case, prompt) => {
 		expect(prompt).toContain("Ferment V2 asks for an artifact")
 		expect(prompt).toContain("Timebox uncertain exploration")
+		expect(prompt).toContain("End the turn after a meaningful completed Todo or timeboxed failed approach")
 	})
 
 	it("drops that permission, along with the rest of the continuation guidance, once the Ferment V2 is not active", () => {
