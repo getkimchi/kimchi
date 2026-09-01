@@ -129,14 +129,6 @@ const KIMCHI_PROVIDER_SECTION = `model_providers.${PROVIDER_NAME}`
  * Blank-line runs are collapsed to a single blank line so the rewritten
  * file stays readable.
  *
- * @limitations This function uses line-by-line regex parsing rather than a
- *   full TOML parser. Multi-line basic strings (triple-quoted `"""..."""`)
- *   or multi-line arrays whose interior lines happen to match the section-header
- *   regex (`/^\s*\[([^\[\]]+)\]\s*$/`) will be misidentified as section
- *   headers, potentially corrupting user content during the merge. In practice,
- *   typical Codex config files do not contain such patterns, but the limitation
- *   is known. Switching to a TOML library (e.g. smol-toml) would resolve this.
- *
  * @param existingText - Raw contents of an existing `~/.codex/config.toml` (empty string if absent).
  * @param freshToml    - Newly-generated TOML to take precedence.
  */
