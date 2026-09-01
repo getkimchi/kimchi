@@ -216,6 +216,9 @@ export interface AgentRecord {
 	remoteOrigin?: string
 	/** Set when this remote background agent should trigger handleRemoteCompletion on completion. */
 	triggersRemoteCompletion?: boolean
+	/** Ferment ID when the cloud agent is executing a ferment plan. Used to
+	 *  pause the ferment during cloud execution and complete/resume it on completion. */
+	fermentId?: string
 	/** Resolver to call when this foreground agent is detached to background via Ctrl+B. */
 	detachResolver?: () => void
 	/** Removes the parent abort signal listener so the agent survives after detach. */

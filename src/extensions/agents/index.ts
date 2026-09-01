@@ -280,7 +280,7 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 	}
 
 	const callbacks = {
-		onToolActivity: (activity: { toolName: string; status: "pending" | "in_progress" | "completed" | "failed" }) => {
+		onToolActivity: (activity: { toolName: string; status?: "pending" | "in_progress" | "completed" | "failed" }) => {
 			if (activity.status === "in_progress") {
 				state.activeTools.set(`${activity.toolName}_${Date.now()}`, activity.toolName)
 			} else {
@@ -526,6 +526,10 @@ export interface SpawnRemoteAgentOptions {
 	background?: boolean
 	/** Origin label for the remote completion steer message (e.g. "plan", "ferment plan"). Default: "plan". */
 	origin?: string
+	/** Ferment ID when the cloud agent is executing a ferment plan. Used to
+	 *  pause the ferment during cloud execution and complete/resume it on
+	 *  completion. */
+	fermentId?: string
 }
 
 /** Spawn function type — set during agents extension init. */
@@ -987,6 +991,7 @@ export default function (pi: ExtensionAPI) {
 						transcriptPath: record.outputFile,
 						agentId: record.id,
 						remoteSession: record.remoteSession,
+						fermentId: record.fermentId,
 					})
 				} else {
 					currentUi?.notify("Remote agent completed but result could not be surfaced (no active context).", "warning")
@@ -1075,6 +1080,7 @@ export default function (pi: ExtensionAPI) {
 		if (record) {
 			record.spawnCtx = ctx
 			record.remoteOrigin = opts?.origin ?? "plan"
+			record.fermentId = opts?.fermentId
 			record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
 			writeInitialEntry(record.outputFile, id, promptText, ctx.cwd)
 			setOutputPath(record.outputFile, id)

@@ -15,13 +15,15 @@ import { loadConfig } from "../../config.js"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
 import type { RemoteSessionMeta } from "../agents/manager/remote-agent-runner.js"
 import { withWorkingHidden } from "../ferment/prompt-ui.js"
+import { defaultFermentRuntime } from "../ferment/runtime.js"
+import { createApplyAndPersist } from "../ferment/tool-helpers.js"
 import { withBlocked } from "../herdr-events.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { SANDBOX_USER } from "../teleport/provisioning/constants.js"
 import { runRsync } from "../teleport/provisioning/rsync-runner.js"
 import { DIFF_RSYNC_EXCLUDES } from "../teleport/provisioning/sync-local-changes.js"
 
-const REVIEW = "Review the result and continue locally"
+const REVIEW = "Read the result and continue locally"
 const SYNC = "Sync remote changes"
 const CUSTOM = "Type your own action"
 const DONE = "Done"
@@ -32,6 +34,10 @@ export interface HandleRemoteCompletionOpts {
 	agentId?: string
 	/** Remote session metadata — when present, sync reuses the connection directly. */
 	remoteSession?: RemoteSessionMeta
+	/** Ferment ID when the cloud agent executed a ferment plan. The ferment is
+	 *  paused during cloud execution; on completion it is completed (sync) or
+	 *  resumed (review/custom/done) so the user can continue locally. */
+	fermentId?: string
 }
 
 /**
@@ -70,10 +76,12 @@ export async function handleRemoteCompletion(
 
 	switch (choice) {
 		case DONE: {
+			completeFerment(opts?.fermentId)
 			return
 		}
 		case SYNC: {
 			await syncRemoteChanges(ctx, opts?.remoteSession)
+			completeFerment(opts?.fermentId)
 			injectRemoteResult(pi, result, promptPrefix, opts, {
 				actionSuffix:
 					"\n\n---\n\nThe user synced the remote changes to their local working tree. Review the synced files if needed.",
@@ -83,6 +91,7 @@ export async function handleRemoteCompletion(
 		case CUSTOM: {
 			const actionText = await promptForCustomAction(ctx)
 			if (!actionText) return // user cancelled input
+			await confirmResumeFerment(ctx, opts?.fermentId)
 			injectRemoteResult(pi, result, promptPrefix, opts, {
 				actionSuffix: `\n\n---\n\nThe user wants you to: ${actionText}`,
 			})
@@ -90,6 +99,7 @@ export async function handleRemoteCompletion(
 		}
 		case REVIEW: {
 			injectRemoteResult(pi, result, promptPrefix, opts)
+			await confirmResumeFerment(ctx, opts?.fermentId)
 			return
 		}
 	}
@@ -187,6 +197,50 @@ async function syncRemoteChanges(ctx: ExtensionContext, remoteSession?: RemoteSe
 		ctx.ui.notify(`Sync complete: ${rsyncResult.fileCount} file(s), ${kb} KB in ${sec}s.`, "info")
 	} catch (err) {
 		ctx.ui.notify(`Sync failed: ${err instanceof Error ? err.message : String(err)}`, "error")
+	}
+}
+
+/**
+ * Completes the ferment after a successful cloud execution + sync.
+ * The ferment was paused when the cloud agent was spawned; syncing means
+ * the user accepted the remote work, so we mark the ferment as complete.
+ */
+function completeFerment(fermentId?: string): void {
+	if (!fermentId) return
+	const applyAndPersist = createApplyAndPersist(defaultFermentRuntime)
+	const outcome = applyAndPersist(fermentId, { type: "complete_ferment", finalSummary: "Executed in cloud sandbox" })
+	if (outcome.ok) {
+		defaultFermentRuntime.setActive(outcome.ferment)
+	}
+}
+
+/**
+ * Resumes the ferment so the user can continue locally after the cloud agent
+ * finishes. Called for Review, Custom, and Done choices — the cloud agent's
+ * work is available in the transcript, but the ferment stays open for local
+ * follow-up.
+ */
+function resumeFerment(fermentId?: string): void {
+	if (!fermentId) return
+	const applyAndPersist = createApplyAndPersist(defaultFermentRuntime)
+	const outcome = applyAndPersist(fermentId, { type: "resume" })
+	if (outcome.ok) {
+		defaultFermentRuntime.setActive(outcome.ferment)
+	}
+}
+
+/**
+ * Asks the user whether to resume the paused ferment. Only resumes if the user
+ * confirms — the ferment stays paused otherwise so the user can resume later
+ * via /ferment resume.
+ */
+async function confirmResumeFerment(ctx: ExtensionContext, fermentId?: string): Promise<void> {
+	if (!fermentId) return
+	const confirmed = await withWorkingHidden(ctx.ui, () =>
+		ctx.ui.confirm("Resume ferment?", "The ferment is paused. Resume it now to continue locally?"),
+	)
+	if (confirmed) {
+		resumeFerment(fermentId)
 	}
 }
 

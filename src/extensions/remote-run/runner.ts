@@ -39,10 +39,20 @@ export async function runCloudAgent(
 
 	if (backgrounded) {
 		ctx.ui.notify("Cloud agent started in background. You'll be notified when it completes.", "info")
+		if (opts?.fermentId) {
+			ctx.ui.notify(
+				"Ferment paused while the cloud agent executes the plan. It will resume or complete when the cloud agent finishes.",
+				"info",
+			)
+		}
 		pi.sendMessage(
 			{
 				customType: "cloud_agent_started",
-				content: `A cloud agent has been started in the background to execute the plan. It is running on a remote sandbox. You will be notified when it completes — do not re-plan or re-execute. The agent ID is ${id}.`,
+				content: `A cloud agent has been started in the background to execute the plan. It is running on a remote sandbox. You will be notified when it completes —${
+					opts?.fermentId
+						? " do not re-plan, re-execute, create todos, or call activate_ferment_phase. The ferment is paused while the cloud agent works."
+						: " do not re-plan or re-execute."
+				} Wait for the completion notification. The agent ID is ${id}.`,
 				display: false,
 			},
 			{ triggerTurn: true },

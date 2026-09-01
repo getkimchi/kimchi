@@ -42,6 +42,7 @@ import { getActive, getActiveId, getContinuationPolicy } from "./state.js"
 import { canToggleFermentStopPolicy, FERMENT_STOP_POLICY_SHORTCUT } from "./status-line.js"
 import { createFermentTipProvider } from "./tips.js"
 import { registerFermentTodoSync } from "./todo-sync.js"
+import { createApplyAndPersist } from "./tool-helpers.js"
 import { applyFermentRuntimeToolProfile } from "./tool-scope.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { buildFreeformScopingFeedbackMessage, registerLifecycleTools } from "./tools/lifecycle.js"
@@ -222,10 +223,22 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				}
 				runtime.clearPendingPlanReview(review.fermentId)
 				applyFermentRuntimeToolProfile(pi, runtime)
+				// Pause the ferment before spawning the cloud agent so the scheduler
+				// can't nudge the agent to activate_ferment_phase between confirm
+				// and spawn. The ferment is completed (on sync) or resumed (on
+				// review/custom/done) when the cloud agent finishes.
+				const pauseOutcome = createApplyAndPersist(runtime)(review.fermentId, { type: "pause" })
+				if (pauseOutcome.ok) {
+					runtime.setActive(pauseOutcome.ferment)
+				}
 				const cloudPrompt = buildRemotePlanPrompt(review.planMarkdown, { origin: "ferment" })
 				const cloudDescription = `cloud: ${review.planMarkdown.slice(0, 60)}${review.planMarkdown.length > 60 ? "..." : ""}`
 				try {
-					await runCloudAgent(pi, ctx, cloudPrompt, cloudDescription, { background: true, origin: "ferment plan" })
+					await runCloudAgent(pi, ctx, cloudPrompt, cloudDescription, {
+						background: true,
+						origin: "ferment plan",
+						fermentId: review.fermentId,
+					})
 				} catch {
 					// Error notification already handled inside runCloudAgent.
 				}

@@ -18,6 +18,18 @@ vi.mock("../teleport/provisioning/sync-local-changes.js", () => ({
 	DIFF_RSYNC_EXCLUDES: [".git/", ".env", ".env.*", ".envrc", ".kimchi/"],
 }))
 
+// Mock the ferment runtime + applyAndPersist so we can assert pause/complete/resume calls
+const { mockApplyAndPersist, mockSetActive } = vi.hoisted(() => ({
+	mockApplyAndPersist: vi.fn(),
+	mockSetActive: vi.fn(),
+}))
+vi.mock("../ferment/tool-helpers.js", () => ({
+	createApplyAndPersist: vi.fn(() => mockApplyAndPersist),
+}))
+vi.mock("../ferment/runtime.js", () => ({
+	defaultFermentRuntime: { setActive: mockSetActive },
+}))
+
 function makeCtx(hasUI = true): ExtensionContext {
 	return {
 		cwd: "/repo/kimchi",
@@ -26,6 +38,7 @@ function makeCtx(hasUI = true): ExtensionContext {
 			select: vi.fn(),
 			notify: vi.fn(),
 			input: vi.fn(),
+			confirm: vi.fn(),
 		},
 	} as unknown as ExtensionContext
 }
@@ -44,6 +57,7 @@ function makePi(): ExtensionAPI & { _sentMessages: { content: string }[] } {
 describe("handleRemoteCompletion", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+		mockApplyAndPersist.mockReturnValue({ ok: false })
 	})
 
 	it("always injects transcript path into steer message when user picks Review", async () => {
@@ -252,6 +266,92 @@ describe("handleRemoteCompletion", () => {
 			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("rsync connection refused"), "error")
 			// Result is still injected even after sync failure
 			expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		})
+	})
+
+	describe("ferment lifecycle", () => {
+		const fermentId = "ferment-cloud-1"
+
+		beforeEach(() => {
+			mockApplyAndPersist.mockReturnValue({
+				ok: true,
+				ferment: { id: fermentId, name: "Cloud Ferment", status: "paused" },
+			})
+		})
+
+		it("completes the ferment when user picks Sync", async () => {
+			const pi = makePi()
+			const ctx = makeCtx()
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync remote changes")
+
+			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", {
+				fermentId,
+				remoteSession: { workspaceId: "ws-1", sessionName: "s1", wsUrl: "wss://w", host: "w", cwd: "/home/sandbox/s1" },
+			})
+
+			expect(mockApplyAndPersist).toHaveBeenCalledWith(fermentId, {
+				type: "complete_ferment",
+				finalSummary: "Executed in cloud sandbox",
+			})
+			expect(mockSetActive).toHaveBeenCalled()
+		})
+
+		it("resumes the ferment when user picks Review and confirms", async () => {
+			const pi = makePi()
+			const ctx = makeCtx()
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Review the result and continue locally")
+			;(ctx.ui.confirm as ReturnType<typeof vi.fn>).mockResolvedValue(true)
+
+			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", { fermentId })
+
+			expect(mockApplyAndPersist).toHaveBeenCalledWith(fermentId, { type: "resume" })
+			expect(mockSetActive).toHaveBeenCalled()
+		})
+
+		it("does not resume the ferment when user picks Review but declines confirm", async () => {
+			const pi = makePi()
+			const ctx = makeCtx()
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Review the result and continue locally")
+			;(ctx.ui.confirm as ReturnType<typeof vi.fn>).mockResolvedValue(false)
+
+			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", { fermentId })
+
+			expect(mockApplyAndPersist).not.toHaveBeenCalledWith(fermentId, { type: "resume" })
+		})
+
+		it("completes the ferment when user picks Done", async () => {
+			const pi = makePi()
+			const ctx = makeCtx()
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Done")
+
+			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", { fermentId })
+
+			expect(mockApplyAndPersist).toHaveBeenCalledWith(fermentId, {
+				type: "complete_ferment",
+				finalSummary: "Executed in cloud sandbox",
+			})
+		})
+
+		it("resumes the ferment when user picks Custom and confirms", async () => {
+			const pi = makePi()
+			const ctx = makeCtx()
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Type your own action")
+			;(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValue("write tests")
+			;(ctx.ui.confirm as ReturnType<typeof vi.fn>).mockResolvedValue(true)
+
+			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", { fermentId })
+
+			expect(mockApplyAndPersist).toHaveBeenCalledWith(fermentId, { type: "resume" })
+		})
+
+		it("does not call applyAndPersist when no fermentId is provided", async () => {
+			const pi = makePi()
+			const ctx = makeCtx()
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Review the result and continue locally")
+
+			await handleRemoteCompletion(pi, ctx, "remote result", "plan")
+
+			expect(mockApplyAndPersist).not.toHaveBeenCalled()
 		})
 	})
 })
