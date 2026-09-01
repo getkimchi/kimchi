@@ -1144,10 +1144,13 @@ describe("judgeApiCall", () => {
 		captureJudgeContext(undefined, undefined, false)
 	})
 
-	it("omits Pi defaults but preserves an explicit Kimchi judge token limit", async () => {
+	it.each([
+		["kimi-k3", true],
+		["judge-x", false],
+	])("preserves an explicit Kimchi judge token limit (strips Pi defaults only for kimi-k3; model=%s)", async (modelId, shouldOmit) => {
 		const model = {
 			provider: "kimchi-dev",
-			id: "judge-x",
+			id: modelId,
 			api: "openai-completions",
 		} as unknown as Model<Api>
 		const registry = {
@@ -1163,9 +1166,9 @@ describe("judgeApiCall", () => {
 		await judgeApiCall("system", "user")
 		await judgeApiCall("system", "user", 100)
 
-		expect(requests[0].onPayload?.({ max_completion_tokens: 100, max_tokens: 100, messages: [] })).toEqual({
-			messages: [],
-		})
+		expect(requests[0].onPayload?.({ max_completion_tokens: 100, max_tokens: 100, messages: [] })).toEqual(
+			shouldOmit ? { messages: [] } : { max_completion_tokens: 100, max_tokens: 100, messages: [] },
+		)
 		expect(requests[1]).toMatchObject({ maxTokens: 100 })
 		expect(requests[1].onPayload).toBeUndefined()
 	})

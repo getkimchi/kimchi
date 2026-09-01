@@ -68,7 +68,10 @@ describe("classifyToolCall", () => {
 		expect(completeMock).toHaveBeenCalledTimes(1)
 	})
 
-	it("keeps classifier tags while omitting Pi token limits for Kimchi", async () => {
+	it.each([
+		["kimi-k3", true],
+		[CLASSIFIER_PRIMARY_MODEL_ID, false],
+	])("keeps classifier tags and applies the kimi-k3 token-limit rule for %s", async (modelId, shouldOmit) => {
 		let sentPayload: unknown
 		completeMock.mockImplementation((_model: unknown, _context: unknown, options: unknown) => {
 			const { onPayload } = options as { onPayload: (payload: unknown) => unknown }
@@ -77,12 +80,16 @@ describe("classifyToolCall", () => {
 		})
 
 		await classifyToolCall(
-			fakeRegistry([fakeModel(CLASSIFIER_PRIMARY_MODEL_ID, "kimchi-dev")]),
+			fakeRegistry([fakeModel(String(modelId), "kimchi-dev")]),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
 		)
 
-		expect(sentPayload).toEqual({ tags: ["source:classifier", "existing"] })
+		expect(sentPayload).toEqual(
+			shouldOmit
+				? { tags: ["source:classifier", "existing"] }
+				: { max_completion_tokens: 100, max_tokens: 100, tags: ["source:classifier", "existing"] },
+		)
 	})
 
 	it("retries up to 3 times on abort before giving up", async () => {
