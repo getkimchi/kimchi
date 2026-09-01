@@ -157,7 +157,7 @@ export class InitialSurveyComponent extends Container {
 
 	render(width: number): string[] {
 		this.onFirstRender?.()
-		const safeWidth = Math.max(24, width)
+		const safeWidth = Math.max(1, width)
 		const title: string = INITIAL_SURVEY.question.text
 		const titlePrefix = "─── "
 		const titleText = `${titlePrefix}${title} `

@@ -1,5 +1,5 @@
 import type { Component } from "@earendil-works/pi-tui"
-import { matchesKey } from "@earendil-works/pi-tui"
+import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
 import { fg } from "../../../ansi.js"
 import type { WorkspaceStatus } from "../../../sandbox/cloud/types.js"
 import type { TeleportContext } from "../types.js"
@@ -168,7 +168,7 @@ export class WorkspacesPanel implements Component {
 	render(width: number): string[] {
 		const { rows, hideSessions } = this
 		const b = (s: string) => fg("2", s)
-		const innerW = Math.max(20, width - 2)
+		const innerW = Math.max(1, width - 2)
 		const contentW = innerW - 2
 
 		const nameLabel = (r: WorkspaceRow) => r.name || "-"
@@ -336,7 +336,7 @@ export class WorkspacesPanel implements Component {
 		lines.push(ansiRow(dim(`  ${hint}`), hint.length + 2))
 		lines.push(b(`╰${"─".repeat(innerW)}╯`))
 
-		return lines
+		return lines.map((line) => truncateToWidth(line, width))
 	}
 
 	invalidate(): void {}

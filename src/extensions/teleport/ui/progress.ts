@@ -183,7 +183,7 @@ class TeleportProgressPanel implements Component {
 		const { theme } = this
 		const b = (s: string) => theme.fg("border", s)
 		const dim = (s: string) => theme.fg("dim", s)
-		const innerW = Math.max(20, width - 2)
+		const innerW = Math.max(1, width - 2)
 		const contentW = innerW - 2
 
 		const lines: string[] = []
@@ -227,7 +227,7 @@ class TeleportProgressPanel implements Component {
 		lines.push(emptyRow())
 		lines.push(b(`╰${"─".repeat(innerW)}╯`))
 
-		return lines
+		return lines.map((line) => truncateToWidth(line, width))
 	}
 
 	private renderProgressLines(theme: Theme): string[] {

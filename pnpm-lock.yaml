@@ -12,7 +12,7 @@ patchedDependencies:
     hash: d3074927a86746b8c663af0b071a0ec301579ca4016b50bb1f162a8ec99fa36d
     path: patches/@earendil-works__pi-coding-agent@0.84.1.patch
   '@earendil-works/pi-tui@0.84.1':
-    hash: 311ed17d2e9bd3f47057a281306fb7466c18b26940fcc5b534e0a4d252171ce5
+    hash: 994f8b20d3f066d88c967e3bcdc4c86cbd603b33c556843cc9445bdce98ee602
     path: patches/@earendil-works__pi-tui@0.84.1.patch
   playwright-core@1.59.1:
     hash: 1f27acbc8250451c9eea2efa9b19956afcb881a2b7a69ad4550cf8e59f15e102
@@ -36,10 +36,10 @@ importers:
         version: 0.84.1(patch_hash=d3074927a86746b8c663af0b071a0ec301579ca4016b50bb1f162a8ec99fa36d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-tui':
         specifier: 0.84.1
-        version: 0.84.1(patch_hash=311ed17d2e9bd3f47057a281306fb7466c18b26940fcc5b534e0a4d252171ce5)
+        version: 0.84.1(patch_hash=994f8b20d3f066d88c967e3bcdc4c86cbd603b33c556843cc9445bdce98ee602)
       '@kimchi-dev/kimchi-workflows':
         specifier: 0.0.8
-        version: 0.0.8(@earendil-works/pi-coding-agent@0.84.1(patch_hash=d3074927a86746b8c663af0b071a0ec301579ca4016b50bb1f162a8ec99fa36d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.84.1(patch_hash=311ed17d2e9bd3f47057a281306fb7466c18b26940fcc5b534e0a4d252171ce5))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))
+        version: 0.0.8(@earendil-works/pi-coding-agent@0.84.1(patch_hash=d3074927a86746b8c663af0b071a0ec301579ca4016b50bb1f162a8ec99fa36d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.84.1(patch_hash=994f8b20d3f066d88c967e3bcdc4c86cbd603b33c556843cc9445bdce98ee602))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))
       '@modelcontextprotocol/ext-apps':
         specifier: ^1.7.1
         version: 1.7.1(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(zod@4.4.3)
@@ -338,28 +338,24 @@ packages:
     engines: {node: '>=14.21.3'}
     cpu: [arm64]
     os: [linux]
-    libc: [musl]
 
   '@biomejs/cli-linux-arm64@2.5.3':
     resolution: {integrity: sha512-ksx1KWeyYW18ILL04msF/J4ZBtBDN33znYK8Z/aNv/vlBVxL9/g3mGP+omgHJKy4+KWbK87vcmmpmurfNjSgiA==}
     engines: {node: '>=14.21.3'}
     cpu: [arm64]
     os: [linux]
-    libc: [glibc]
 
   '@biomejs/cli-linux-x64-musl@2.5.3':
     resolution: {integrity: sha512-O/yU9YKRUiHhmcjF2f38PSjseVk3G4VLWYc0G2HWpzdBVREV6G8IGWIVEFf7MFPfWIzNUIvPsEjeAZQIOgnLcQ==}
     engines: {node: '>=14.21.3'}
     cpu: [x64]
     os: [linux]
-    libc: [musl]
 
   '@biomejs/cli-linux-x64@2.5.3':
     resolution: {integrity: sha512-yMkJtilsgvILDcVkh187aVLTb64xYsrxYajx5kym+r1ULkO5HUOfu9AYKLGQbOVLwJtT2utNw7hhFNg+17mUYA==}
     engines: {node: '>=14.21.3'}
     cpu: [x64]
     os: [linux]
-    libc: [glibc]
 
   '@biomejs/cli-win32-arm64@2.5.3':
     resolution: {integrity: sha512-cX5z+GYwRcqEok0AH3KSfQGgqYd0Nomfp6Fbe1uiTtELE38hdH2k842wQ9wLNaF/JJ7r4rjJQ4VR+ce+fRmQbw==}
@@ -3092,7 +3088,7 @@ snapshots:
       '@earendil-works/pi-ai': 0.84.1(patch_hash=833908f0ccb469da56b0e90c4b49c47df1048cfa0e3fdfd07fa312d2e7b2765f)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-client': 0.84.1
       '@earendil-works/pi-protocol': 0.84.1
-      '@earendil-works/pi-tui': 0.84.1(patch_hash=311ed17d2e9bd3f47057a281306fb7466c18b26940fcc5b534e0a4d252171ce5)
+      '@earendil-works/pi-tui': 0.84.1(patch_hash=994f8b20d3f066d88c967e3bcdc4c86cbd603b33c556843cc9445bdce98ee602)
       '@silvia-odwyer/photon-node': 0.3.4
       chalk: 5.6.2
       cross-spawn: 7.0.6
@@ -3125,7 +3121,7 @@ snapshots:
 
   '@earendil-works/pi-telemetry@0.84.1': {}
 
-  '@earendil-works/pi-tui@0.84.1(patch_hash=311ed17d2e9bd3f47057a281306fb7466c18b26940fcc5b534e0a4d252171ce5)':
+  '@earendil-works/pi-tui@0.84.1(patch_hash=994f8b20d3f066d88c967e3bcdc4c86cbd603b33c556843cc9445bdce98ee602)':
     dependencies:
       get-east-asian-width: 1.6.0
       marked: 18.0.5
@@ -3257,10 +3253,10 @@ snapshots:
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
-  '@kimchi-dev/kimchi-workflows@0.0.8(@earendil-works/pi-coding-agent@0.84.1(patch_hash=d3074927a86746b8c663af0b071a0ec301579ca4016b50bb1f162a8ec99fa36d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.84.1(patch_hash=311ed17d2e9bd3f47057a281306fb7466c18b26940fcc5b534e0a4d252171ce5))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))':
+  '@kimchi-dev/kimchi-workflows@0.0.8(@earendil-works/pi-coding-agent@0.84.1(patch_hash=d3074927a86746b8c663af0b071a0ec301579ca4016b50bb1f162a8ec99fa36d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3))(@earendil-works/pi-tui@0.84.1(patch_hash=994f8b20d3f066d88c967e3bcdc4c86cbd603b33c556843cc9445bdce98ee602))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.3(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))':
     dependencies:
       '@earendil-works/pi-coding-agent': 0.84.1(patch_hash=d3074927a86746b8c663af0b071a0ec301579ca4016b50bb1f162a8ec99fa36d)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
-      '@earendil-works/pi-tui': 0.84.1(patch_hash=311ed17d2e9bd3f47057a281306fb7466c18b26940fcc5b534e0a4d252171ce5)
+      '@earendil-works/pi-tui': 0.84.1(patch_hash=994f8b20d3f066d88c967e3bcdc4c86cbd603b33c556843cc9445bdce98ee602)
       '@types/node': 22.19.18
       jiti: 2.7.0
       typebox: 1.3.7

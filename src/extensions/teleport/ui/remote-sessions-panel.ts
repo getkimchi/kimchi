@@ -1,5 +1,5 @@
 import type { Component } from "@earendil-works/pi-tui"
-import { matchesKey } from "@earendil-works/pi-tui"
+import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
 import { fg } from "../../../ansi.js"
 import type { TeleportContext } from "../types.js"
 import type { CombinedStatus, SessionRow } from "./sessions-table.js"
@@ -236,7 +236,7 @@ export class RemoteSessionsPanel implements Component {
 	render(width: number): string[] {
 		const { entries } = this
 		const b = (s: string) => fg("2", s)
-		const innerW = Math.max(20, width - 2)
+		const innerW = Math.max(1, width - 2)
 		const contentW = innerW - 2
 
 		const lastLabel = (entry: Entry) => {
@@ -360,7 +360,7 @@ export class RemoteSessionsPanel implements Component {
 		lines.push(ansiRow(dim(`  ${hint}`), hint.length + 2))
 		lines.push(b(`╰${"─".repeat(innerW)}╯`))
 
-		return lines
+		return lines.map((line) => truncateToWidth(line, width))
 	}
 
 	invalidate(): void {}

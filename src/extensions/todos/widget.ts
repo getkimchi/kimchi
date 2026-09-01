@@ -363,7 +363,7 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 			render(width: number): string[] {
 				if (!state.visible) return []
 				return buildTodoWidgetLines(theme, state.expanded, sessionId).map((line) =>
-					truncateToWidth(line, Math.max(20, width - 4)),
+					truncateToWidth(line, Math.max(1, width - 4)),
 				)
 			},
 			invalidate: unregister,
@@ -452,6 +452,7 @@ export function registerTodoShortcut(pi: ExtensionAPI): void {
 
 export {
 	buildTodoLines as __test_buildTodoLines,
+	buildTodoWidgetLines as __test_buildTodoWidgetLines,
 	resetTodoWidgetState as __test_resetTodoWidgetState,
 	summarizeTodos as __test_summarizeTodos,
 }

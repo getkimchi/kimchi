@@ -1,5 +1,12 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
-import { decodeKittyPrintable, Key, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import {
+	decodeKittyPrintable,
+	Key,
+	matchesKey,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@earendil-works/pi-tui"
 import { formatTipMessage } from "./tip-row.js"
 import type { TipCandidate } from "./types.js"
 
@@ -130,7 +137,7 @@ export function createTipsPanel(
 
 	return {
 		render(width: number): string[] {
-			const innerW = Math.max(20, width - 2)
+			const innerW = Math.max(1, width - 2)
 			const contentW = innerW - 2 // 1 space padding on each side
 			lastContentW = contentW
 
@@ -210,7 +217,7 @@ export function createTipsPanel(
 			// Bottom border
 			out.push(border(`╰${"─".repeat(innerW)}╯`))
 
-			return out
+			return out.map((line) => truncateToWidth(line, width))
 		},
 
 		handleInput(data: string): void {
