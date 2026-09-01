@@ -24,8 +24,8 @@ import { runRsync } from "../teleport/provisioning/rsync-runner.js"
 import { DIFF_RSYNC_EXCLUDES } from "../teleport/provisioning/sync-local-changes.js"
 
 const REVIEW = "Continue locally with the result"
-const SYNC = "Sync remote changes"
-const CUSTOM = "Type your own action"
+const SYNC = "Sync changes and finish"
+const CUSTOM = "Give a custom instruction"
 const DONE = "Done"
 
 /** Options for handleRemoteCompletion. */

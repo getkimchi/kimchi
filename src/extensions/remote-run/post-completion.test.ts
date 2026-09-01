@@ -94,7 +94,7 @@ describe("handleRemoteCompletion", () => {
 	it("injects transcript path even when user picks Sync", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
-		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync remote changes")
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync changes and finish")
 
 		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
 			transcriptPath: "/tmp/transcripts/agent-sync.jsonl",
@@ -155,7 +155,7 @@ describe("handleRemoteCompletion", () => {
 	it("injects custom action text when user picks Custom", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
-		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Type your own action")
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Give a custom instruction")
 		;(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValue("write a summary")
 
 		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
@@ -173,7 +173,7 @@ describe("handleRemoteCompletion", () => {
 	it("does not inject when user picks Custom but cancels input", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
-		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Type your own action")
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Give a custom instruction")
 		;(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValue("")
 
 		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
@@ -209,7 +209,7 @@ describe("handleRemoteCompletion", () => {
 		it("uses remoteSession metadata directly — authenticates with known workspaceId", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync remote changes")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync changes and finish")
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan", { remoteSession })
 
@@ -225,7 +225,7 @@ describe("handleRemoteCompletion", () => {
 		it("rsyncs from the unique remoteSession.cwd with .git and secrets excluded", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync remote changes")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync changes and finish")
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan", { remoteSession })
 
@@ -244,7 +244,7 @@ describe("handleRemoteCompletion", () => {
 		it("notifies error and does not sync when remoteSession is absent", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync remote changes")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync changes and finish")
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan")
 
@@ -258,7 +258,7 @@ describe("handleRemoteCompletion", () => {
 		it("notifies error when sync fails", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync remote changes")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync changes and finish")
 			vi.mocked(runRsync).mockRejectedValue(new Error("rsync connection refused"))
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan", { remoteSession })
@@ -287,7 +287,7 @@ describe("handleRemoteCompletion", () => {
 		it("completes the ferment when user picks Sync", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync remote changes")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Sync changes and finish")
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", {
 				fermentId,
@@ -348,7 +348,7 @@ describe("handleRemoteCompletion", () => {
 		it("resumes the ferment when user picks Custom and confirms", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Type your own action")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Give a custom instruction")
 			;(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValue("write tests")
 			;(ctx.ui.confirm as ReturnType<typeof vi.fn>).mockResolvedValue(true)
 
