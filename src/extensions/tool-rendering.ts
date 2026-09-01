@@ -4260,9 +4260,13 @@ export default function (pi: ExtensionAPI) {
 			}
 			clearBlinkTimer(ctx)
 			const details = result.details as GrepToolDetails | undefined
+			// Pi's grep tool emits the literal "No matches found" sentinel as a single text line when
+			// ripgrep finds nothing. Filter it out so it isn't miscounted as one match. Real match lines
+			// always carry a `path:line:` prefix, so this can't swallow genuine results.
 			const matches = (result.content[0]?.type === "text" ? result.content[0].text : "")
 				.split("\n")
-				.filter((line) => line.trim().length > 0)
+				.map((line) => line.trim())
+				.filter((line) => line.length > 0 && line !== "No matches found")
 			if (matches.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no matches"), theme))
 			let text = theme.fg("muted", `${matches.length} matches`)
 			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)")

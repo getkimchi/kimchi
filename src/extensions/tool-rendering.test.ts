@@ -204,6 +204,41 @@ describe("hidden tool block rendering", () => {
 	})
 })
 
+describe("grep result rendering", () => {
+	let mockApi: ReturnType<typeof createExtensionApi>
+	beforeAll(() => {
+		mockApi = createExtensionApi()
+		toolRenderingExtension(mockApi.api)
+	})
+
+	function grepRenderResult(result: unknown, options: { expanded?: boolean } = {}) {
+		// biome-ignore lint/suspicious/noExplicitAny: registerTool is a vi mock in the shared double
+		const grepDef = ((mockApi.api as any).registerTool as any).mock.calls
+			.map((call: unknown[]) => call[0])
+			.find((def: { name?: string }) => def?.name === "grep")
+		expect(grepDef, "grep tool definition registered").toBeDefined()
+		const invoke = (expanded: boolean) =>
+			grepDef.renderResult(result, { expanded, isPartial: false }, plainTheme, createToolRenderContext())
+		// renderResult returns a Text component; render it and strip SGR + branch glyphs for a plain string.
+		const rendered = invoke(options.expanded ?? false).render(120)
+		return rendered.map((line: string) => stripSgr(line)).join("\n")
+	}
+
+	it("reports no matches when ripgrep returns the empty sentinel", () => {
+		const text = grepRenderResult({ content: [{ type: "text", text: "No matches found" }], details: undefined })
+		expect(text).toContain("no matches")
+		expect(text).not.toContain("1 matches")
+	})
+
+	it("still counts real match lines", () => {
+		const text = grepRenderResult({
+			content: [{ type: "text", text: "src/a.ts:12: const x = 1\nsrc/b.ts:3: const y = 2" }],
+			details: undefined,
+		})
+		expect(text).toContain("2 matches")
+	})
+})
+
 describe("elapsed time helpers", () => {
 	it("returns 0 when no timestamps exist", () => {
 		expect(getToolElapsedMs({ state: {} } as ToolRenderContext)).toBe(0)
