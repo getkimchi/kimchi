@@ -638,6 +638,48 @@ describe("Ferment V2 evaluator", () => {
 		expect(transcript).not.toContain("tests passed")
 	})
 
+	it("keeps a bounded linked call and result when the newest result is oversized", async () => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"requirement":"tests pass","met":true,"failureMode":"tests could fail; m2 shows the passing summary","evidence":["m2"],"todoIds":[]}],"reason":"tests pass"}',
+			),
+		)
+		const messages = linkedToolMessages(
+			"call-test",
+			"bash",
+			{ cmd: "pnpm test" },
+			`${"x".repeat(MAX_TRANSCRIPT_CHARS)}\ntests passed`,
+		)
+
+		await expect(
+			evaluateFermentV2({ objective: "ship it", messages, todos: [] }, evaluatorContext()),
+		).resolves.toMatchObject({ verdict: "met", reason: "tests pass" })
+
+		const transcript = sentTranscript()
+		expect(transcript).toContain('[m1] [assistant] tool c1.1 bash {"cmd":"pnpm test"}')
+		expect(transcript).toContain("[m2] [toolResult bash for c1.1]")
+		expect(transcript).toContain("tests passed")
+		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
+	})
+
+	it("retains full call and result labels when clipping an oversized linked result", async () => {
+		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"keep working"}'))
+		const messages = linkedToolMessages(
+			"call-test",
+			"bash] alias",
+			{ cmd: "pnpm test" },
+			`${"x".repeat(MAX_TRANSCRIPT_CHARS)}\ntests passed`,
+		)
+
+		await evaluateFermentV2({ objective: "ship it", messages, todos: [] }, evaluatorContext())
+
+		const transcript = sentTranscript()
+		expect(transcript).toContain('[m1] [assistant] tool c1.1 bash] alias {"cmd":"pnpm test"}')
+		expect(transcript).toContain("[m2] [toolResult bash] alias for c1.1]")
+		expect(transcript).toContain("tests passed")
+		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
+	})
+
 	it("does not accept an unlinked tool result as completion evidence", async () => {
 		completeMock.mockResolvedValue(
 			assistant(

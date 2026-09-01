@@ -1225,7 +1225,6 @@ function restoreFermentV2Runtime(
 	sessionId: string,
 	expectedScopeKey: string,
 ): { fermentV2: FermentV2State; todoState: FermentV2TodoState | undefined; lessons: FermentV2Lesson[] } {
-	const fermentV2Entries: unknown[] = []
 	let fermentV2: FermentV2State
 	let todoState: FermentV2TodoState | undefined
 	let lessons: FermentV2Lesson[] = []
@@ -1233,8 +1232,7 @@ function restoreFermentV2Runtime(
 	for (const entry of entries) {
 		if (entry.type === "custom" && entry.customType === FERMENT_V2_CUSTOM_ENTRY_TYPE) {
 			const previous = fermentV2
-			fermentV2Entries.push(entry.data)
-			fermentV2 = restoreFermentV2(fermentV2Entries)
+			fermentV2 = restoreFermentV2([entry.data], fermentV2)
 			if (!sameFermentV2Revision(previous, fermentV2)) {
 				if (previous && fermentV2 && previous.id === fermentV2.id) {
 					if (todoState) todoState = rebindTodoState(todoState, fermentV2)

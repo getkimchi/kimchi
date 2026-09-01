@@ -161,8 +161,8 @@ export function clearFermentV2(state: FermentV2State, expectedId: string, expect
 	return undefined
 }
 
-export function restoreFermentV2(entries: readonly unknown[]): FermentV2State {
-	let state: FermentV2State
+export function restoreFermentV2(entries: readonly unknown[], initialState?: FermentV2State): FermentV2State {
+	let state = initialState
 	for (const value of entries) {
 		const entry = parseFermentV2JournalEntry(value)
 		if (!entry) continue

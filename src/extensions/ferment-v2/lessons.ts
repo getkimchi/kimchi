@@ -30,7 +30,7 @@ function lessonFromTodo(todo: TodoItem): FermentV2Lesson | undefined {
 
 	const note = todo.note.trim()
 	const prefix = note.match(NOTE_KIND_PREFIX)
-	const kind = prefix ? normalizeKind(prefix[1]) : todo.status === "blocked" ? "dead-end" : "evidence"
+	const kind = prefix ? normalizeKind(prefix[1]) : todo.status === "blocked" ? "dead-end" : "decision"
 	const text = prefix ? note.slice(prefix[0].length).trim() : note
 	return text ? { todoId: todo.id, kind, text } : undefined
 }

@@ -163,6 +163,8 @@ describe("Ferment V2 reducer", () => {
 				clearFermentV2Entry(revision2, T2),
 			]),
 		).toBeUndefined()
+		expect(restoreFermentV2([putFermentV2Entry(revision2)], revision1)).toEqual(revision2)
+		expect(restoreFermentV2([clearFermentV2Entry(revision2, T2)], revision2)).toBeUndefined()
 	})
 
 	it("rejects persisted objectives above the entry limit", () => {

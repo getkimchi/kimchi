@@ -92,6 +92,14 @@ export interface FermentV2EvaluationInput {
 	signal?: AbortSignal
 }
 
+type RenderedTranscriptEntry = {
+	index: number
+	id: string
+	prefix: string
+	content: string
+	evidence: boolean
+}
+
 export function resolveFermentV2EvaluatorModel(ctx: ExtensionContext): Model<Api> | undefined {
 	const sessionModel = ctx.model
 	if (!getMultiModelEnabled(ctx.sessionManager)) return sessionModel
@@ -351,14 +359,14 @@ function renderRecentTranscript(messages: ReadonlyArray<AgentEndEvent["messages"
 } {
 	const { units, linkedToolResultIndexes, callLabelsById } = buildTranscriptUnits(messages)
 	const keptIndexes = new Set<number>()
-	const kept: Array<{ index: number; id: string; text: string; evidence: boolean }> = []
+	const kept: RenderedTranscriptEntry[] = []
 	let length = 0
 	for (let unitIndex = units.length - 1; unitIndex >= 0; unitIndex--) {
 		const entries = units[unitIndex]
 			.map((index) => renderTranscriptEntry(messages[index], index, linkedToolResultIndexes, callLabelsById))
 			.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
 		if (entries.length === 0) continue
-		const unitText = entries.map((entry) => entry.text).join("\n\n")
+		const unitText = entries.map(({ prefix, content }) => prefix + content).join("\n\n")
 		const separatorLength = kept.length > 0 ? 2 : 0
 		if (length + separatorLength + unitText.length <= MAX_TRANSCRIPT_CHARS) {
 			for (const entry of entries) {
@@ -369,20 +377,29 @@ function renderRecentTranscript(messages: ReadonlyArray<AgentEndEvent["messages"
 			length += separatorLength + unitText.length
 			continue
 		}
-		if (kept.length === 0 && entries.length === 1) {
-			const [{ id, index, evidence }] = entries
-			const rendered = renderMessage(messages[index], callLabelsById)
-			const prefix = `[${id}] `
-			const available = Math.max(0, MAX_TRANSCRIPT_CHARS - prefix.length)
-			kept.push({ index, id, text: `${prefix}${rendered.slice(-available)}`, evidence })
-		}
+		if (kept.length === 0) kept.push(...clipTranscriptUnit(entries, MAX_TRANSCRIPT_CHARS))
 		break
 	}
 	const ordered = kept.sort((a, b) => a.index - b.index)
 	return {
-		text: ordered.map((entry) => entry.text).join("\n\n"),
+		text: ordered.map(({ prefix, content }) => prefix + content).join("\n\n"),
 		evidenceIds: new Set(ordered.filter((entry) => entry.evidence).map((entry) => entry.id)),
 	}
+}
+
+function clipTranscriptUnit(entries: readonly RenderedTranscriptEntry[], limit: number): RenderedTranscriptEntry[] {
+	const separatorChars = Math.max(0, entries.length - 1) * 2
+	let remainingChars = limit - separatorChars
+	const clipped: RenderedTranscriptEntry[] = []
+	for (const [index, entry] of entries.entries()) {
+		const entriesLeft = entries.length - index
+		const maxChars = Math.floor(remainingChars / entriesLeft)
+		const contentChars = Math.max(0, maxChars - entry.prefix.length)
+		const content = contentChars > 0 ? entry.content.slice(-contentChars) : ""
+		remainingChars -= entry.prefix.length + content.length
+		clipped.push({ ...entry, content })
+	}
+	return clipped
 }
 
 function buildTranscriptUnits(messages: ReadonlyArray<AgentEndEvent["messages"][number]>): {
@@ -432,11 +449,17 @@ function renderTranscriptEntry(
 	index: number,
 	linkedToolResultIndexes: ReadonlySet<number>,
 	callLabelsById: ReadonlyMap<string, string>,
-): { index: number; id: string; text: string; evidence: boolean } | undefined {
+): RenderedTranscriptEntry | undefined {
 	const rendered = renderMessage(message, callLabelsById)
 	if (!rendered) return undefined
 	const id = `m${index + 1}`
-	return { index, id, text: `[${id}] ${rendered}`, evidence: linkedToolResultIndexes.has(index) }
+	return {
+		index,
+		id,
+		prefix: `[${id}] ${rendered.prefix}`,
+		content: rendered.content,
+		evidence: linkedToolResultIndexes.has(index),
+	}
 }
 
 function toolResultCallId(message: AgentEndEvent["messages"][number]): string | undefined {
@@ -458,14 +481,17 @@ function toolCallIds(message: AgentEndEvent["messages"][number]): string[] {
 function renderMessage(
 	message: AgentEndEvent["messages"][number],
 	callLabelsById: ReadonlyMap<string, string> = new Map(),
-): string {
+): { prefix: string; content: string } | undefined {
 	const record = message as unknown as Record<string, unknown>
 	const role = typeof record.role === "string" ? record.role : "message"
 	const toolName = typeof record.toolName === "string" ? ` ${record.toolName}` : ""
 	const callLabel = callLabelsById.get(toolResultCallId(message) ?? "")
 	const resultLink = role === "toolResult" && callLabel ? ` for ${callLabel}` : ""
 	const content = contentText(record.content, callLabelsById)
-	return content ? `[${role}${toolName}${resultLink}] ${content}`.trim() : ""
+	if (!content) return undefined
+	const normalizedContent = content.trimEnd()
+	if (!normalizedContent.trim()) return { prefix: `[${role}${toolName}${resultLink}]`, content: "" }
+	return { prefix: `[${role}${toolName}${resultLink}] `, content: normalizedContent }
 }
 
 function contentText(content: unknown, callLabelsById: ReadonlyMap<string, string>): string {

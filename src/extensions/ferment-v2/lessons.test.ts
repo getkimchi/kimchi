@@ -14,14 +14,14 @@ describe("Ferment V2 lessons", () => {
 		expect(updateFermentV2Lessons(lessons, [])).toEqual(lessons)
 	})
 
-	it("labels unprefixed completed and blocked notes distinctly", () => {
+	it("does not treat unprefixed completed notes as evidence", () => {
 		expect(
 			updateFermentV2Lessons(
 				[],
 				[todo(1, "completed", "Focused tests passed"), todo(2, "blocked", "Provider credentials are unavailable")],
 			),
 		).toEqual([
-			{ todoId: 1, kind: "evidence", text: "Focused tests passed" },
+			{ todoId: 1, kind: "decision", text: "Focused tests passed" },
 			{ todoId: 2, kind: "dead-end", text: "Provider credentials are unavailable" },
 		])
 	})
