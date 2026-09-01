@@ -108,9 +108,7 @@ test("plan review: model stops after propose, review dialog appears, user confir
 						},
 					],
 				},
-				// Turn 2: tools suppressed → model produces text-only response (no tool calls).
-				{ stream: ["I've submitted the plan for your review."] },
-				// Turn 3: post-confirmation, keeps session alive.
+				// Turn 2: post-confirmation, keeps session alive.
 				{ stream: ["Starting execution now."] },
 			],
 		},
@@ -197,9 +195,7 @@ test("plan review: cancel restores planning tools, model can re-propose, ferment
 						},
 					],
 				},
-				// Turn 2: tools suppressed → text-only response.
-				{ stream: ["Plan is ready for review."] },
-				// Turn 3: after cancel, tools restored → model calls propose_ferment_scoping again.
+				// Turn 2: after cancel, tools restored → model calls propose_ferment_scoping again.
 				{
 					toolCalls: [
 						{
