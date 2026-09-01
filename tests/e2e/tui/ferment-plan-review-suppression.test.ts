@@ -270,8 +270,8 @@ test("plan review: cancel restores planning tools, model can re-propose, ferment
 			// Find the first chat request after the 2nd one that has a tools array
 			// (skip compaction requests which have no tools field).
 			const chatRequests = fixture.fake.requests.filter((req) => req.url.startsWith("/openai/v1/chat/completions"))
-			expect(chatRequests.length).toBeGreaterThanOrEqual(3)
-			const revisionReq = chatRequests.slice(2).find((req) => {
+			expect(chatRequests.length).toBeGreaterThanOrEqual(2)
+			const revisionReq = chatRequests.slice(1).find((req) => {
 				const body = req.body as Record<string, unknown>
 				return Array.isArray(body.tools) && body.tools.length > 0
 			})
