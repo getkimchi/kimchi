@@ -1,8 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
+import type { RemoteSessionMeta } from "../agents/manager/remote-agent-runner.js"
 import { runRsync } from "../teleport/provisioning/rsync-runner.js"
-import { handleRemoteCompletion, type RemoteSessionMeta } from "./post-completion.js"
+import { handleRemoteCompletion } from "./post-completion.js"
 
 // Mock all external dependencies — we only care about the steer message
 // that gets injected into the local session via pi.sendMessage.

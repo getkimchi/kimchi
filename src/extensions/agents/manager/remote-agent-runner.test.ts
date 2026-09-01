@@ -338,8 +338,8 @@ describe("runRemoteAgent", () => {
 		expect(typeof captured.onRawNotification).toBe("function")
 
 		// Verify forwarding
-		captured.onToolActivity({ type: "end", toolName: "Read" })
-		expect(callbacks.onToolActivity).toHaveBeenCalledWith({ type: "end", toolName: "Read" })
+		captured.onToolActivity({ status: "completed", toolName: "Read" })
+		expect(callbacks.onToolActivity).toHaveBeenCalledWith({ status: "completed", toolName: "Read" })
 
 		captured.onTurnEnd(1)
 		expect(callbacks.onTurnEnd).toHaveBeenCalledWith(1)

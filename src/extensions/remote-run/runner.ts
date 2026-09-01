@@ -9,6 +9,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getActiveManager, type SpawnRemoteAgentOptions, spawnRemoteAgent } from "../agents/index.js"
 
+/** Max characters for the result preview in the completion notification. */
+const PREVIEW_MAX = 500
+
 /** Returns true when KIMCHI_REMOTE_RUN env var is set. */
 export function isRemoteRunEnabled(): boolean {
 	return !!process.env.KIMCHI_REMOTE_RUN
@@ -47,7 +50,7 @@ export async function runCloudAgent(
 		return { id, result, backgrounded: true }
 	}
 
-	const preview = result.length > 500 ? `${result.slice(0, 500)}...` : result
+	const preview = result.length > PREVIEW_MAX ? `${result.slice(0, PREVIEW_MAX)}...` : result
 	const record = getActiveManager()?.getRecord(id)
 	const transcriptPath = record?.outputFile
 	const transcriptNote = transcriptPath ? `\nFull transcript: ${transcriptPath}` : ""

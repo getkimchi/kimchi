@@ -272,7 +272,7 @@ export class AgentManager {
 						sessionDir: options.sessionDir,
 						signal: record.abortController?.signal,
 						onToolActivity: (activity) => {
-							if (activity.type === "end") record.toolUses++
+							if (activity.status !== "in_progress") record.toolUses++
 							options.onToolActivity?.(activity)
 						},
 						onTurnEnd: (turnCount) => {
@@ -424,10 +424,11 @@ export class AgentManager {
 					options.onTextDelta?.(delta, fullText)
 				},
 				onToolActivity: (activity) => {
-					if (activity.type === "start") {
-						remoteSession.recordToolCallStart(activity.toolName)
+					if (activity.status === "in_progress") {
+						remoteSession.recordToolCallStart(activity.toolName, activity.toolCallId)
 					} else {
-						remoteSession.recordToolCallEnd(activity.toolName)
+						const isError = activity.status === "failed"
+						remoteSession.recordToolCallEnd(activity.toolName, activity.toolCallId, isError)
 						record.toolUses++
 					}
 					options.onToolActivity?.(activity)
@@ -581,7 +582,7 @@ export class AgentManager {
 				: withAgentReportProtocol(prompt ?? "", record.taskRef)
 		const resumePromise = resumeAgent(record.session, attemptPrompt, {
 			onToolActivity: (activity) => {
-				if (activity.type === "end") record.toolUses++
+				if (activity.status !== "in_progress") record.toolUses++
 			},
 			onTurnEnd: (turnCount) => {
 				record.lastTurnCount = turnCount

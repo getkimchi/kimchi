@@ -12,9 +12,9 @@
  * | ACP `sessionUpdate`             | Callback                          |
  * | ------------------------------- | --------------------------------- |
  * | `agent_message_chunk`           | `onTextDelta(delta, fullText)`    |
- * | `tool_call` (in_progress)       | `onToolActivity({ type: "start"})`|
- * | `tool_call` (completed/failed)  | `onToolActivity({ type: "end" })` |
- * | `tool_call_update` (→completed) | `onToolActivity({ type: "end" })` |
+ * | `tool_call` (in_progress)       | `onToolActivity({ status: "in_progress" })`|
+ * | `tool_call` (completed/failed)  | `onToolActivity({ status: "completed"/"failed" })` |
+ * | `tool_call_update` (→completed) | `onToolActivity({ status: "completed"/"failed" })` |
  * | `prompt()` resolves             | `onTurnEnd(++turnCount)`          |
  * | `PromptResponse.usage`          | `onAssistantUsage({...})`         |
  *
@@ -50,8 +50,8 @@ const textDecoder = new TextDecoder()
 export interface AcpSessionCallbacks {
 	/** Streaming text delta from the assistant. Receives the delta and the accumulated full text. */
 	onTextDelta?: (delta: string, fullText: string) => void
-	/** Tool activity start/end with the tool's display title. */
-	onToolActivity?: (activity: { type: "start" | "end"; toolName: string }) => void
+	/** Tool activity start/end with the tool's display title and ACP status. */
+	onToolActivity?: (activity: { toolName: string; toolCallId?: string; status: ToolCallStatus }) => void
 	/** Called at the end of each ACP turn with the cumulative turn count. */
 	onTurnEnd?: (turnCount: number) => void
 	/** Called with per-turn token usage when a `prompt()` resolves. */
@@ -299,7 +299,7 @@ export class AcpSessionClient {
 				ws.on("message", (data: unknown) => {
 					const text = typeof data === "string" ? data : textDecoder.decode(data as ArrayBuffer)
 					const trimmed = text.trim()
-					if (!trimmed || !trimmed.startsWith("{")) return
+					if (!trimmed?.startsWith("{")) return
 					controller.enqueue(textEncoder.encode(`${text}\n`))
 				})
 
@@ -452,9 +452,9 @@ export class AcpSessionClient {
 		title: string | undefined,
 	): void {
 		if (status === "in_progress") {
-			cb.onToolActivity?.({ type: "start", toolName: title ?? toolCallId })
+			cb.onToolActivity?.({ toolName: title ?? toolCallId, toolCallId, status })
 		} else if (status === "completed" || status === "failed") {
-			cb.onToolActivity?.({ type: "end", toolName: title ?? toolCallId })
+			cb.onToolActivity?.({ toolName: title ?? toolCallId, toolCallId, status })
 			this._toolCallTitles.delete(toolCallId)
 		}
 	}

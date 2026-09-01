@@ -13,6 +13,7 @@ import { basename } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
+import type { RemoteSessionMeta } from "../agents/manager/remote-agent-runner.js"
 import { withWorkingHidden } from "../ferment/prompt-ui.js"
 import { withBlocked } from "../herdr-events.js"
 import { markHarnessSteer } from "../steer-marker.js"
@@ -24,15 +25,6 @@ const REVIEW = "Review the result and continue locally"
 const SYNC = "Sync remote changes"
 const CUSTOM = "Type your own action"
 const DONE = "Done"
-
-/** Remote session metadata passed from _runRemote for connection reuse in sync. */
-export interface RemoteSessionMeta {
-	workspaceId: string
-	sessionName: string
-	wsUrl: string
-	host: string
-	cwd: string
-}
 
 /** Options for handleRemoteCompletion. */
 export interface HandleRemoteCompletionOpts {

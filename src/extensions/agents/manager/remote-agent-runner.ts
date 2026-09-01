@@ -18,6 +18,16 @@ import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { createSession, deleteSession } from "../../../sandbox/worker/sessions.js"
 import { syncLocalChangesAfterClone } from "../../teleport/provisioning/sync-local-changes.js"
 
+/** Remote session metadata for reconnection/steer/resume/sync. */
+export interface RemoteSessionMeta {
+	workspaceId: string
+	sessionName: string
+	wsUrl: string
+	host: string
+	/** The unique remote working directory (e.g. /home/sandbox/acp-a1b2c3d4). */
+	cwd: string
+}
+
 export interface RemoteRunOptions {
 	/** Cloud API key for workspace authentication. */
 	apiKey: string
@@ -25,9 +35,6 @@ export interface RemoteRunOptions {
 	endpoint?: string
 	/** Abort signal — aborts the remote session. */
 	signal?: AbortSignal
-	/** Working directory for the remote session (sandbox path). When omitted,
-	 *  the worker assigns a unique /home/sandbox/<sessionName> directory. */
-	cwd?: string
 	/** Event callbacks — same shape as RunOptions callbacks from agent-runner.ts. */
 	callbacks?: AcpSessionCallbacks
 	/** Git clone details for provisioning the sandbox with a repo (like /teleport --fast). */
@@ -41,10 +48,7 @@ export interface RemoteRunOptions {
 	 * giving the caller access to the live AcpSessionClient so it can be
 	 * wrapped in a RemoteAgentSession adapter.
 	 */
-	onReady?: (
-		acpClient: AcpSessionClient,
-		meta: { workspaceId: string; sessionName: string; wsUrl: string; host: string; cwd: string },
-	) => void
+	onReady?: (acpClient: AcpSessionClient, meta: RemoteSessionMeta) => void
 }
 
 export interface RemoteRunResult {
@@ -55,14 +59,7 @@ export interface RemoteRunResult {
 	/** Token usage for the turn (if reported by the agent). */
 	usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	/** Remote session metadata for reconnection/steer/resume/sync. */
-	remoteSession: {
-		workspaceId: string
-		sessionName: string
-		wsUrl: string
-		host: string
-		/** The unique remote working directory (e.g. /home/sandbox/kimchi-acp-a1b2c3d4). */
-		cwd: string
-	}
+	remoteSession: RemoteSessionMeta
 }
 
 /** Per-call timeout for createSession: 5min — large repos take a while to clone. */

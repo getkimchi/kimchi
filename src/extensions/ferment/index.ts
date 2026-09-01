@@ -225,7 +225,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				const cloudPrompt = buildRemotePlanPrompt(review.planMarkdown, { origin: "ferment" })
 				const cloudDescription = `cloud: ${review.planMarkdown.slice(0, 60)}${review.planMarkdown.length > 60 ? "..." : ""}`
 				try {
-					await runCloudAgent(pi, ctx, cloudPrompt, cloudDescription, { background: true })
+					await runCloudAgent(pi, ctx, cloudPrompt, cloudDescription, { background: true, origin: "ferment plan" })
 				} catch {
 					// Error notification already handled inside runCloudAgent.
 				}

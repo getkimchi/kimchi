@@ -16,6 +16,7 @@ const META = {
 	sessionName: "acp-test1234",
 	wsUrl: "wss://worker.example.com",
 	host: "worker.example.com",
+	cwd: "/home/sandbox/acp-test1234",
 }
 
 describe("RemoteAgentSession", () => {
@@ -313,7 +314,7 @@ describe("RemoteAgentSession", () => {
 		it("marks error results", () => {
 			const session = new RemoteAgentSession()
 			session.recordToolCallStart("bash")
-			session.recordToolCallEnd("bash", true)
+			session.recordToolCallEnd("bash", undefined, true)
 
 			const msg = session.messages[1]
 			expect(msg.isError).toBe(true)

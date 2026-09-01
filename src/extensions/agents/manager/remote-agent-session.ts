@@ -26,6 +26,7 @@
 
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent"
 import type { AcpSessionClient } from "../../../sandbox/worker/acp-client.js"
+import type { RemoteSessionMeta } from "./remote-agent-runner.js"
 import type { LifetimeUsage, SessionStatsLike } from "./usage.js"
 
 /**
@@ -37,13 +38,6 @@ import type { LifetimeUsage, SessionStatsLike } from "./usage.js"
  * that ACP doesn't provide, so we cast through this minimal shape.
  */
 type RemoteSessionEvent = { type: string; [k: string]: unknown }
-
-export interface RemoteSessionMeta {
-	workspaceId: string
-	sessionName: string
-	wsUrl: string
-	host: string
-}
 
 export class RemoteAgentSession {
 	private acpClient: AcpSessionClient | undefined
@@ -57,6 +51,10 @@ export class RemoteAgentSession {
 	private _toolCallSeq = 0
 	/** Tracks toolCallId → toolName so recordToolCallEnd can set toolName on the result. */
 	private _pendingToolCalls = new Map<string, string>()
+	/** Pending ACP toolCallIds for dedup — prevents duplicate in_progress dispatches. */
+	private _pendingToolCallIds = new Set<string>()
+	/** Maps ACP toolCallId → local toolCallId (tc-N) for end-event matching. */
+	private _acpToLocalId = new Map<string, string>()
 	/** Length of the full accumulated text at the time of the last appendAssistantText call.
 	 *  Used by recordToolCallEnd to set _textOffset. */
 	private _lastFullTextLength = 0
@@ -184,34 +182,41 @@ export class RemoteAgentSession {
 
 	/** Track the tool name we're currently waiting on so we can deduplicate
 	 *  repeated in_progress notifications — ACP sends multiple tool_call /
-	 *  tool_call_update events with status "in_progress" before "completed". */
+	 *  tool_call_update events with status "in_progress" before "completed".
+	 *  Fallback used only when toolCallId is unavailable. */
 	private _pendingToolName: string | undefined
 
 	/** Record a tool call start in the transcript.
 	 *  Appends a toolCall content part to the last assistant message (creating
 	 *  one if needed) — matching how local agents structure AssistantMessage.
 	 *  Uses a unique toolCallId so the same tool can run multiple times.
-	 *  Deduplicates repeated in_progress notifications for the same tool. */
-	recordToolCallStart(toolName: string): void {
-		if (this._pendingToolName === toolName) return
-		this._pendingToolName = toolName
+	 *  Deduplicates repeated in_progress notifications for the same toolCallId. */
+	recordToolCallStart(toolName: string, toolCallId?: string): void {
+		if (toolCallId) {
+			if (this._pendingToolCallIds.has(toolCallId)) return
+			this._pendingToolCallIds.add(toolCallId)
+		} else {
+			if (this._pendingToolName === toolName) return
+			this._pendingToolName = toolName
+		}
 
-		const toolCallId = `tc-${++this._toolCallSeq}`
-		this._pendingToolCalls.set(toolCallId, toolName)
+		const localId = `tc-${++this._toolCallSeq}`
+		this._pendingToolCalls.set(localId, toolName)
+		if (toolCallId) this._acpToLocalId.set(toolCallId, localId)
 
 		const last = this._messages[this._messages.length - 1]
 		if (last?.role === "assistant") {
 			const parts = last.content as Array<{ type: string; [k: string]: unknown }>
-			parts.push({ type: "toolCall", id: toolCallId, name: toolName, arguments: {} })
+			parts.push({ type: "toolCall", id: localId, name: toolName, arguments: {} })
 		} else {
 			this._messages.push({
 				role: "assistant",
-				content: [{ type: "toolCall", id: toolCallId, name: toolName, arguments: {} }],
+				content: [{ type: "toolCall", id: localId, name: toolName, arguments: {} }],
 			})
 		}
 		this.emit({
 			type: "tool_execution_start",
-			toolCallId,
+			toolCallId: localId,
 			toolName,
 			args: {},
 		})
@@ -223,21 +228,26 @@ export class RemoteAgentSession {
 	 *  Clears the pending-tool dedup so the same tool name can start again.
 	 *  Saves the current accumulated text length so the next assistant message
 	 *  only includes text that came after this tool call. */
-	recordToolCallEnd(toolName: string, isError = false): void {
-		this._pendingToolName = undefined
+	recordToolCallEnd(toolName: string, toolCallId?: string, isError = false): void {
 		this._textOffset = this._lastFullTextLength
-		// Find the toolCallId for this tool name from pending calls
-		let toolCallId: string | undefined
-		for (const [id, name] of this._pendingToolCalls) {
-			if (name === toolName) {
-				toolCallId = id
-				this._pendingToolCalls.delete(id)
-				break
+		let localId: string | undefined
+		if (toolCallId) {
+			localId = this._acpToLocalId.get(toolCallId)
+			this._pendingToolCallIds.delete(toolCallId)
+			this._acpToLocalId.delete(toolCallId)
+		} else {
+			this._pendingToolName = undefined
+			for (const [id, name] of this._pendingToolCalls) {
+				if (name === toolName) {
+					localId = id
+					break
+				}
 			}
 		}
+		if (localId) this._pendingToolCalls.delete(localId)
 		this._messages.push({
 			role: "toolResult",
-			toolCallId: toolCallId ?? toolName,
+			toolCallId: localId ?? toolName,
 			toolName,
 			content: [{ type: "text", text: isError ? "(tool failed)" : "(completed)" }],
 			isError,
@@ -245,7 +255,7 @@ export class RemoteAgentSession {
 		})
 		this.emit({
 			type: "tool_execution_end",
-			toolCallId: toolCallId ?? toolName,
+			toolCallId: localId ?? toolName,
 			toolName,
 			result: isError ? "(tool failed)" : "(completed)",
 			isError,
