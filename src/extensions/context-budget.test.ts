@@ -64,12 +64,15 @@ const CHARS_PER_TOKEN = 4
 
 /** Budget slices (estimated tokens). Headroom over the recorded baseline below. */
 const BUDGET = {
-	/** buildSystemPrompt with the canonical single-mode options below. */
-	systemPrompt: 4800,
+	/** buildSystemPrompt with the canonical single-mode options below
+	 *  (recorded 2026-09-01 post-Phase-2: 1909 est after P2-1..P2-4 — tool
+	 *  descriptions removed from the prompt, phase payload gated on set_phase,
+	 *  Consent/Output/Environment sections dieted; ~7% headroom). */
+	systemPrompt: 2050,
 	/** Sum of name + description chars across resources/skills frontmatter. */
 	skillsCatalog: 80,
 	/** Total canonical system-prompt + skills surface. */
-	total: 4900,
+	total: 2150,
 	/** Total canonical tool surface (recorded 2026-08-28 post-Chunk-6: 6764 est across
 	 *  26 tools after the DAP session-tool + bash_control deferrals, the mcp
 	 *  zero-server registration gate, and the lsp no-server detection gate;
@@ -167,6 +170,13 @@ describe("context budget", () => {
 			0,
 		)
 		const total = systemPromptTokens + skillsTokens
+
+		// P2-1 guard: tool descriptions belong to the API payload only. If this
+		// marker reappears, a section builder is re-embedding them in the prompt.
+		expect(
+			systemPrompt,
+			"canonical prompt must not embed <tool name=...> description blocks (P2-1 regression guard)",
+		).not.toContain('<tool name="')
 
 		const breakdown = [
 			`system prompt: ${systemPromptTokens} est tokens (budget ${BUDGET.systemPrompt})`,
