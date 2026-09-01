@@ -46,13 +46,12 @@ describe("formatEnvironmentSection", () => {
 				"## Environment",
 				"",
 				"- OS: Linux",
-				"- OS release: 6.1.0-test",
 				"- OS version: #1 SMP PREEMPT_DYNAMIC Test",
 				"- Raw platform: linux",
 				"- CPU architecture: x64",
 				"- Shell: /bin/bash",
 				"- Shell family: posix",
-				"- Command guidance: Use commands compatible with the shell family. Do not use PowerShell/cmd syntax in POSIX shells, and do not use POSIX-only syntax in PowerShell/cmd unless the shell is Git Bash or WSL. If shell/platform conflict or are unclear, check with a read-only command before running write/destructive commands.",
+				"- Command guidance: use commands compatible with the shell family (POSIX vs PowerShell/cmd syntax); if shell/platform conflict or are unclear, check with a read-only command before write/destructive ones.",
 				"- Username: testuser",
 				'- Home directory: "/home/testuser"',
 				'- Working directory: "/home/testuser/projects/myapp"',
@@ -155,10 +154,8 @@ describe("buildSystemPrompt", () => {
 			mode: "single",
 		})
 
-		expect(result).toContain("`glab mr diff` on big MRs")
-		expect(result).toContain("merge_requests/<iid>/diffs")
+		expect(result).toContain("Big PR/MR diffs: list changed paths first, then targeted reads")
 		expect(result).toContain("--paginate")
-		expect(result).toContain("'.[].new_path'")
 		expect(result).not.toContain("merge_requests/123/changes")
 	})
 
@@ -281,7 +278,7 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			expect(result).toContain(`OS: ${testEnv.os}`)
-			expect(result).toContain(`OS release: ${testEnv.osRelease}`)
+			expect(result).not.toContain(`OS release: ${testEnv.osRelease}`)
 			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
 			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
 			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
@@ -549,7 +546,7 @@ describe("buildSystemPrompt", () => {
 				mode: "subagent",
 			})
 			expect(result).toContain(`OS: ${testEnv.os}`)
-			expect(result).toContain(`OS release: ${testEnv.osRelease}`)
+			expect(result).not.toContain(`OS release: ${testEnv.osRelease}`)
 			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
 			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
 			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)

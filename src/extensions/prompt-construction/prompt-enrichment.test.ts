@@ -265,7 +265,7 @@ describe("prompt enrichment environment context", () => {
 
 			const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
-			expect(result.systemPrompt).toContain(`- OS release: ${release()}`)
+			expect(result.systemPrompt).not.toContain(`- OS release: ${release()}`)
 			expect(result.systemPrompt).toContain(`- OS version: ${osVersion()}`)
 			expect(result.systemPrompt).toContain(`- Raw platform: ${platform()}`)
 			expect(result.systemPrompt).toContain(`- CPU architecture: ${arch()}`)
