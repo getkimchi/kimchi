@@ -164,7 +164,11 @@ class DeepSeekAgent(KimchiGatewayMixin, HarborCompatMixin, BaseInstalledAgent):
             environment,
             command=(
                 "set -euo pipefail; "
+                "node_major=0; "
                 "if command -v node &>/dev/null && command -v npm &>/dev/null; then"
+                "  node_major=$(node -v | sed -E 's/v([0-9]+).*/\\1/');"
+                " fi; "
+                "if [ \"$node_major\" -ge 22 ] 2>/dev/null; then"
                 "  npm -v;"
                 " else"
                 "  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash &&"
