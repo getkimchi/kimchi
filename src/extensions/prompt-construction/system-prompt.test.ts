@@ -616,9 +616,13 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain('<tool name="Agent">')
 		})
 
+		// Interactive single-model sessions expose set_phase — phase payloads are
+		// paid only when the tool is reachable (token-optimization P2-2 gate).
+		const phaseTools = [...tools, { name: "set_phase", description: "Tag the current work phase" }]
+
 		it("includes Phase Management section when phase and model are provided", () => {
 			const result = buildSystemPrompt({
-				tools,
+				tools: phaseTools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
 				registry,
@@ -629,9 +633,37 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("Prefer `edit` over `write` for files >30 lines")
 		})
 
-		it("includes default research nudges for a non-OSS model in research phase", () => {
+		it("drops the entire phase payload in single-model sessions without set_phase (P2-2)", () => {
 			const result = buildSystemPrompt({
 				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				registry,
+				mode: "single",
+			})
+			expect(result).not.toContain("## Phase Management")
+			expect(result).not.toContain("During **build** phase")
+			expect(result).not.toContain("During **research** phase")
+			expect(result).not.toContain("Call `set_phase`")
+		})
+
+		it("keeps phase guidelines in subagent mode even without set_phase", () => {
+			// Subagent personas derive their phase from the persona, so the payload
+			// stays useful without the interactive tool.
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				registry,
+				mode: "subagent",
+			})
+			expect(result).toContain("## Phase Management")
+			expect(result).toContain("During **build** phase")
+		})
+
+		it("includes default research nudges for a non-OSS model in research phase", () => {
+			const result = buildSystemPrompt({
+				tools: phaseTools,
 				env: testEnv,
 				currentModelId: "claude-opus-4-6-20250514",
 				registry,
@@ -648,7 +680,7 @@ describe("buildSystemPrompt", () => {
 
 		it("includes default research guidelines for an OSS model in research phase", () => {
 			const result = buildSystemPrompt({
-				tools,
+				tools: phaseTools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
 				registry,
@@ -666,7 +698,7 @@ describe("buildSystemPrompt", () => {
 
 		it("includes build-phase default nudge for an OSS model in build phase", () => {
 			const result = buildSystemPrompt({
-				tools,
+				tools: phaseTools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
 				registry,

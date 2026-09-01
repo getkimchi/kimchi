@@ -361,6 +361,14 @@ export function buildPhaseManagementSection(
 	mode: PromptMode = "single",
 	roles?: ModelRoles,
 ): string {
+	// Token-optimization Phase 2 (P2-2): in single-model mode the phase payload
+	// is only useful when the agent can actually tag phases. When set_phase is
+	// unreachable (e.g. --print sessions, where Chunk 7 gates it out), the
+	// ~2,100-est guideline block is dead weight — skip the section entirely.
+	// Interactive single-model sessions keep set_phase, hence the full payload.
+	// Orchestrator/subagent modes are unaffected (their persona/role models
+	// rely on phase behaviour regardless of tool reachability).
+	if (mode === "single" && !includeToolInstructions) return ""
 	const applicablePhases =
 		mode === "orchestrator"
 			? PHASE_ORDER.filter((phase) => orchestratorShouldReceivePhaseGuidelines(phase, modelId, roles))
