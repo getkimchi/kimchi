@@ -38,6 +38,38 @@ Every in-session payload includes:
 
 Pre-session payloads use the **device ID** (from PostHog) as `session.id`.
 
+### Subagent identification
+
+`session.parent_id` is the marker for events raised inside a subagent run. It
+is emitted only when the process is inside an Agent-subagent execution
+(`isAgentWorker()` — the Agent-worker async context, or `KIMCHI_SUBAGENT=1`)
+*and* the runner has recorded the spawning session (`KIMCHI_PARENT_SESSION_ID`,
+set for the whole subagent run by `withParentSessionEnv` in
+`extensions/agents/manager/agent-runner.ts`). Its value is the **parent**
+session's pi session id; the emitting session's own id is `pi_session_id`.
+Combine the two to reconstruct the spawn tree:
+
+| Attribute | Main agent event | In-process subagent event |
+|-----------|------------------|---------------------------|
+| `session.id` | process telemetryId `T` | `T` (shared — same process) |
+| `pi_session_id` | parent session id `P` | subagent session id `S` |
+| `session.parent_id` | *(absent)* | `P` |
+
+An event with `session.parent_id != ""` whose `session.id` equals the
+parent's is from an **in-process** subagent (same process — the main agent and
+its in-process subagents share the module-level telemetryId). Two caveats:
+
+- The **curator session-review subprocess** also sets `KIMCHI_SUBAGENT=1` and
+  `KIMCHI_PARENT_SESSION_ID`, so its events carry `session.parent_id` too. It
+  is a separate process, so it is distinguished by its own `session.id`
+  (different from the parent's telemetryId).
+- **Remote sandbox agents** never receive the env var, so their events carry
+  no `session.parent_id`.
+
+`subagent.spawned` (raised by the *parent*) additionally declares the
+subagent's `agent_type` and `reason`, so spawning events can be paired with
+the subagent's own events via `session.parent_id`.
+
 ## Pre-Session Events
 
 Fired from `pre-session.ts` via `sendPreSessionEvent()`. Sent to the **logs endpoint**.
