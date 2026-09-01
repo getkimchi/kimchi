@@ -201,7 +201,8 @@ describe("mcp adapter system prompt block", () => {
 			// Consolidated core section must still cover the MCP guidance.
 			expect(result).toContain("## Tool Selection")
 			expect(result).toContain("mcp({ search")
-			expect(result).toContain('<tool name="mcp">')
+			const namesLine = result.split("## Available Tools\n\n")[1]?.split("\n")[0] ?? ""
+			expect(namesLine).toContain("mcp")
 		} finally {
 			await pi.fireShutdown()
 		}

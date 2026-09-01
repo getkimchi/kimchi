@@ -455,8 +455,13 @@ function buildPrompt(parts: PromptParts): string {
 
 function formatToolsSection(tools: readonly ToolInfo[]): string {
 	if (tools.length === 0) return "## Available Tools\n\n(No tools available)"
-	const entries = tools.map((t) => `<tool name="${t.name}">\n${t.description}\n</tool>`).join("\n")
-	return `## Available Tools\n\n<available_tools>\n${entries}\n</available_tools>`
+	// Token-optimization Phase 2 (P2-1): the API request already carries each
+	// tool's description in the function-calling payload, so embedding a second
+	// copy here pays ~3,000 est per call for duplicated text. Keep the prompt
+	// section to the discovery surface (names) — the model learns what each
+	// tool does from the API-side description.
+	const names = tools.map((t) => t.name).join(", ")
+	return `## Available Tools\n\n${names}`
 }
 
 export function formatEnvironmentSection(env: EnvironmentInfo): string {

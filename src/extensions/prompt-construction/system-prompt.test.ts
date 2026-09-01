@@ -179,14 +179,17 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("token_budget")
 		})
 
-		it("includes all tool names and descriptions", () => {
+		it("includes all tool names (descriptions live in the API payload — P2-1)", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				mode: "orchestrator",
 			})
-			expect(result).toContain('<tool name="read">')
-			expect(result).toContain('<tool name="Agent">')
+			expect(result).toContain("## Available Tools\n\nread, bash, Agent, get_subagent_result, steer_subagent")
+			// Descriptions are intentionally not duplicated in the prompt: the API
+			// tools parameter already carries them (token-optimization Phase 2).
+			expect(result).not.toContain("<available_tools>")
+			expect(result).not.toContain("Launch a specialized agent")
 		})
 
 		it("keeps phase behaviour but omits phase tool instructions without set_phase", () => {
@@ -453,9 +456,10 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "subagent",
 			})
-			expect(result).not.toContain('<tool name="Agent">')
-			expect(result).not.toContain('<tool name="get_subagent_result">')
-			expect(result).not.toContain('<tool name="steer_subagent">')
+			expect(result).toContain("## Available Tools\n\nread, bash")
+			expect(result).not.toContain("Agent, ")
+			expect(result).not.toContain("get_subagent_result")
+			expect(result).not.toContain("steer_subagent")
 		})
 
 		it("includes all other tools", () => {
@@ -464,8 +468,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "subagent",
 			})
-			expect(result).toContain('<tool name="read">')
-			expect(result).toContain('<tool name="bash">')
+			expect(result).toContain("## Available Tools\n\nread, bash")
 		})
 
 		it("contains subagent instructions", () => {
@@ -611,9 +614,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "single",
 			})
-			expect(result).toContain('<tool name="read">')
-			expect(result).toContain('<tool name="bash">')
-			expect(result).toContain('<tool name="Agent">')
+			expect(result).toContain("## Available Tools\n\nread, bash, Agent, get_subagent_result, steer_subagent")
 		})
 
 		// Interactive single-model sessions expose set_phase — phase payloads are

@@ -210,8 +210,9 @@ describe("prompt enrichment tool visibility", () => {
 		try {
 			const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
-			expect(result.systemPrompt).toContain('<tool name="read">')
-			expect(result.systemPrompt).not.toContain('<tool name="bash">')
+			const namesLine = result.systemPrompt.split("## Available Tools\n\n")[1]?.split("\n")[0] ?? ""
+			expect(namesLine).toContain("read")
+			expect(namesLine).not.toContain("bash")
 		} finally {
 			visibility.enable(["bash"])
 		}
@@ -242,8 +243,9 @@ describe("prompt enrichment tool visibility", () => {
 
 		const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
-		expect(result.systemPrompt).toContain('<tool name="read">')
-		expect(result.systemPrompt).not.toContain('<tool name="bash">')
+		const namesLine = result.systemPrompt.split("## Available Tools\n\n")[1]?.split("\n")[0] ?? ""
+		expect(namesLine).toContain("read")
+		expect(namesLine).not.toContain("bash")
 	})
 })
 
