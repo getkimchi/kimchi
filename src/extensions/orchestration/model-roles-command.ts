@@ -10,10 +10,12 @@ import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-wor
 import type { Component } from "@earendil-works/pi-tui"
 import { Key, matchesKey, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { getAvailableModels } from "../../startup-context.js"
+import { isExperimentalFeaturesEnabled } from "../experimental.js"
 import { setProcessOrchestratorRef } from "../kimchi-process.js"
 import { withSuppressedModelSelectGuard } from "../model-switch.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createQuestionForm, type Question, type QuestionFormResult, YES_NO_OPTIONS } from "../questionnaire/index.js"
+import { AUTO_MODEL_REF } from "../router/constants.js"
 import {
 	deleteModelMetadata,
 	getModelMetadata,
@@ -323,7 +325,10 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 			const roles = { ...getModelRoles() }
 
 			const apiModels = getAvailableModels()
-			const availableModelRefs = apiModels.map((m) => `kimchi-dev/${m.slug}`)
+			const availableModelRefs = [...new Set(apiModels.map((m) => `kimchi-dev/${m.slug}`))]
+			if (isExperimentalFeaturesEnabled() && !availableModelRefs.includes(AUTO_MODEL_REF)) {
+				availableModelRefs.push(AUTO_MODEL_REF)
+			}
 
 			for (const key of ROLE_KEYS) {
 				for (const ref of normalizeRoleModels(roles[key])) {
@@ -332,6 +337,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					}
 				}
 			}
+			availableModelRefs.sort()
 
 			const showMainMenu = async (): Promise<void> => {
 				const roleOptions = ROLE_KEYS.map((key) => formatRoleSummaryBlock(key, roles[key]))
