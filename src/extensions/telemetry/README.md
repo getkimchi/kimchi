@@ -31,6 +31,7 @@ Every in-session payload includes:
 | Attribute | Value |
 |-----------|-------|
 | `session.id` | Shared root UUID across all agents in the process |
+| `session.parent_id` | Spawning (parent) session's pi session id — present only on events emitted from inside a subagent run |
 | `client` | `"pi"` |
 | `source` | Where the event originated (e.g. `"cli"`) |
 | `mode` | `"coding"` or `"ferment"` |

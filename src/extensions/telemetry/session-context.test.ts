@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
 import * as osMetadata from "../../utils/os-metadata.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { _resetSharedAccumulators, TelemetryContext } from "./session-context.js"
 
 vi.mock("../../api/me.js", () => ({
@@ -38,6 +39,10 @@ describe("SessionContext", () => {
 		globalThis.fetch = originalFetch
 		_resetSharedAccumulators()
 		vi.restoreAllMocks()
+		// session.parent_id simulation env — never leak the subagent worker flag
+		// or the parent session id into sibling tests.
+		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
+		Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
 	})
 
 	it("emit appends source and session_type to every event", async () => {
@@ -429,5 +434,77 @@ describe("SessionContext", () => {
 			),
 		)
 		expect(attrMap["user.account_uuid"]).toBe("user-uuid-123")
+	})
+
+	it("emit adds session.parent_id when running inside a subagent", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue(undefined)
+		process.env.KIMCHI_SUBAGENT = "1"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = "parent-session-1"
+
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.emit("test.event", { custom: "value" })
+		ctx.flushLogBuffer()
+
+		await Promise.allSettled([...ctx.inFlight])
+
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrMap = Object.fromEntries(
+			body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.map(
+				(a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue],
+			),
+		)
+
+		expect(attrMap["session.parent_id"]).toBe("parent-session-1")
+	})
+
+	it("emit omits session.parent_id for non-subagent events even when the env var is set", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue(undefined)
+		// KIMCHI_PARENT_SESSION_ID is process-global and set during a subagent run.
+		// Events emitted OUTSIDE a subagent run must not be tagged with it — the
+		// parent session is not a parent of itself.
+		process.env[PARENT_SESSION_ID_ENV_KEY] = "parent-session-1"
+
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.emit("test.event", { custom: "value" })
+		ctx.flushLogBuffer()
+
+		await Promise.allSettled([...ctx.inFlight])
+
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrMap = Object.fromEntries(
+			body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.map(
+				(a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue],
+			),
+		)
+
+		expect(attrMap["session.parent_id"]).toBeUndefined()
+	})
+
+	it("emitWithIds adds session.parent_id when running inside a subagent", async () => {
+		process.env.KIMCHI_SUBAGENT = "1"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = "parent-session-2"
+
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.emitWithIds("ferment.started", { ferment_id: "ferment-1" })
+		ctx.flushLogBuffer()
+
+		await Promise.allSettled([...ctx.inFlight])
+
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrMap = Object.fromEntries(
+			body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.map(
+				(a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue],
+			),
+		)
+
+		expect(attrMap["session.parent_id"]).toBe("parent-session-2")
 	})
 })
