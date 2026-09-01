@@ -507,4 +507,14 @@ describe("SessionContext", () => {
 
 		expect(attrMap["session.parent_id"]).toBe("parent-session-2")
 	})
+
+	it("getParentSessionId returns the env value only inside a subagent run", () => {
+		const ctx = new TelemetryContext(makeConfig())
+		process.env.KIMCHI_SUBAGENT = "1"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = "parent-session-1"
+		expect(ctx.getParentSessionId()).toBe("parent-session-1")
+
+		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
+		expect(ctx.getParentSessionId()).toBeUndefined()
+	})
 })

@@ -750,6 +750,14 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			// 0 means "before first turn" (sentinel); backend should treat it accordingly.
 			event.headers["X-Turn-Index"] = String(telemetryCtx.turnIndex)
 
+			// Requests issued from inside a subagent run carry the parent session's
+			// pi session id so the proxy can record it on chat_completions rows
+			// (same gating/value as the session.parent_id telemetry attribute).
+			const parentSessionId = telemetryCtx.getParentSessionId()
+			if (parentSessionId) {
+				event.headers["X-Parent-Session-Id"] = parentSessionId
+			}
+
 			// Inject W3C Trace Context (if not already present) derived from
 			// the session id so that downstream distributed tracing spans
 			// join the same trace. Header names are case-insensitive, so

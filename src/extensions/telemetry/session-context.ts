@@ -203,17 +203,22 @@ export class TelemetryContext {
 	}
 
 	/**
-	 * Sessions spawned by this process set KIMCHI_PARENT_SESSION_ID (see the
-	 * Agent runner in extensions/agents) to the spawning session's pi session id
-	 * for the whole subagent run. Events emitted from inside that run — detected
-	 * via the Agent-worker async context — carry it as `session.parent_id` so the
-	 * backend can join subagent events back to their parent session. Events
-	 * emitted outside a subagent run never carry the attribute, even when the env
-	 * var happens to be set (the parent session is not a parent of itself).
+	 * Returns the spawning (parent) session's pi session id when this process is
+	 * inside an Agent-subagent run, undefined otherwise. The Agent runner sets
+	 * KIMCHI_PARENT_SESSION_ID for the whole subagent run; the Agent-worker async
+	 * context (or KIMCHI_SUBAGENT=1) gates the check so parent-session events are
+	 * never attributed a parent.
+	 *
+	 * Used for both the `session.parent_id` telemetry attribute and the
+	 * X-Parent-Session-Id provider header (chat_completions pipeline).
 	 */
-	private getParentSessionAttribute(): TelemetryAttributes | undefined {
+	getParentSessionId(): string | undefined {
 		if (!isAgentWorker()) return undefined
-		const parentSessionId = process.env[PARENT_SESSION_ID_ENV_KEY]
+		return process.env[PARENT_SESSION_ID_ENV_KEY]
+	}
+
+	private getParentSessionAttribute(): TelemetryAttributes | undefined {
+		const parentSessionId = this.getParentSessionId()
 		return parentSessionId ? { "session.parent_id": parentSessionId } : undefined
 	}
 

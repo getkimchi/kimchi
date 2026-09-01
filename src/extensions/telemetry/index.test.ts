@@ -98,6 +98,8 @@ describe("telemetryExtension integration", () => {
 		globalThis.fetch = originalFetch
 		_resetSharedAccumulators()
 		resetAcpClientInfo()
+		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
+		Reflect.deleteProperty(process.env, "KIMCHI_PARENT_SESSION_ID")
 	})
 
 	it("registers all expected event handlers when enabled", () => {
@@ -317,6 +319,35 @@ describe("telemetryExtension integration", () => {
 		expect(typeof headers["X-Session-Id"]).toBe("string")
 		expect(headers["X-Session-Id"]).toBeTruthy()
 		expect(headers["X-Turn-Index"]).toBe("4")
+	})
+
+	it("before_provider_headers injects X-Parent-Session-Id inside a subagent run", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		process.env.KIMCHI_SUBAGENT = "1"
+		process.env.KIMCHI_PARENT_SESSION_ID = "parent-session-1"
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers["X-Parent-Session-Id"]).toBe("parent-session-1")
+	})
+
+	it("before_provider_headers omits X-Parent-Session-Id for main-session requests", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		// KIMCHI_PARENT_SESSION_ID is process-global and set during a subagent
+		// run; main-session requests must not be tagged with it.
+		process.env.KIMCHI_PARENT_SESSION_ID = "parent-session-1"
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers["X-Parent-Session-Id"]).toBeUndefined()
 	})
 
 	it("before_provider_headers injects W3C traceparent derived from session id", async () => {

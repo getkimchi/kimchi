@@ -70,6 +70,11 @@ its in-process subagents share the module-level telemetryId). Two caveats:
 subagent's `agent_type` and `reason`, so spawning events can be paired with
 the subagent's own events via `session.parent_id`.
 
+Provider requests issued inside a subagent run also carry an
+`X-Parent-Session-Id` header (same value and gating as `session.parent_id`) so
+the proxy can record the parent session on `chat_completions` rows, mirroring
+how it already records `X-Session-Id` / `X-Turn-Index`.
+
 ## Pre-Session Events
 
 Fired from `pre-session.ts` via `sendPreSessionEvent()`. Sent to the **logs endpoint**.
