@@ -1,6 +1,9 @@
+import { mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
-import type { AgentEndEvent } from "@earendil-works/pi-coding-agent"
+import { type AgentEndEvent, SessionManager } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -165,6 +168,42 @@ describe("Ferment V2 evaluator", () => {
 		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({
 			systemPrompt: expect.stringContaining("<evidence_policy>"),
 		})
+	})
+
+	it("records the evaluator call in a child session", async () => {
+		const sessionDir = mkdtempSync(join(tmpdir(), "kimchi-ferment-v2-evaluator-"))
+		try {
+			const parent = SessionManager.create("/workspace", sessionDir)
+			parent.appendMessage({ role: "user", content: "ship it", timestamp: Date.now() })
+			const parentFile = parent.getSessionFile()
+			if (!parentFile) throw new Error("expected a persisted parent session")
+			completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"missing smoke test"}'))
+
+			await evaluateFermentV2(
+				{ objective: "ship it", messages: [], todos: [] },
+				evaluatorContext(undefined, false, sessionModel, parent),
+			)
+
+			const childFile = readdirSync(sessionDir)
+				.map((name) => join(sessionDir, name))
+				.find((path) => path !== parentFile)
+			if (!childFile) throw new Error("expected an evaluator child session")
+			const child = SessionManager.open(childFile, sessionDir)
+			expect(child.getHeader()?.parentSession).toBe(parentFile)
+			expect(child.getSessionName()).toBe("Ferment V2 evaluator")
+			expect(child.getEntries()).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ type: "model_change", provider: "session", modelId: "main" }),
+					expect.objectContaining({ type: "message", message: expect.objectContaining({ role: "user" }) }),
+					expect.objectContaining({
+						type: "message",
+						message: expect.objectContaining({ role: "assistant", usage: rawUsage }),
+					}),
+				]),
+			)
+		} finally {
+			rmSync(sessionDir, { recursive: true, force: true })
+		}
 	})
 
 	it("returns met only when every check cites current observable evidence", async () => {
@@ -707,8 +746,23 @@ describe("Ferment V2 evaluator", () => {
 	})
 })
 
-function evaluatorContext(resolvedJudge?: Model<Api>, reasoning = false, activeModel = sessionModel) {
+function evaluatorContext(
+	resolvedJudge?: Model<Api>,
+	reasoning = false,
+	activeModel = sessionModel,
+	sessionManager?: SessionManager,
+) {
 	return createContext({
+		...(sessionManager
+			? {
+					cwd: sessionManager.getCwd(),
+					sessionManager: {
+						getSessionId: () => sessionManager.getSessionId(),
+						getSessionDir: () => sessionManager.getSessionDir(),
+						getSessionFile: () => sessionManager.getSessionFile(),
+					},
+				}
+			: {}),
 		model: reasoning ? { ...activeModel, reasoning: true } : activeModel,
 		modelRegistry: {
 			find: vi.fn(() => resolvedJudge),

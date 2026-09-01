@@ -1,11 +1,8 @@
-import { FERMENT_V2_EVALUATOR_USAGE_OP } from "./constants.js"
 import {
 	FERMENT_V2_COMPLETION_CONFIDENCES,
 	FERMENT_V2_EVALUATION_VERDICTS,
 	FERMENT_V2_STATUSES,
 	type FermentV2Evaluation,
-	type FermentV2EvaluatorUsage,
-	type FermentV2EvaluatorUsageJournalEntry,
 	type FermentV2JournalEntry,
 	type FermentV2Status,
 	type SessionFermentV2,
@@ -107,7 +104,6 @@ export function recordFermentV2Evaluation(
 	expectedId: string,
 	expectedRevision: number,
 	evaluation: FermentV2Evaluation,
-	usage: SessionFermentV2["evaluatorUsage"],
 	now: string,
 ): SessionFermentV2 {
 	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
@@ -115,7 +111,6 @@ export function recordFermentV2Evaluation(
 		...current,
 		evaluationCount: (current.evaluationCount ?? 0) + 1,
 		lastEvaluation: evaluation,
-		...(usage ? { evaluatorUsage: addUsage(current.evaluatorUsage, usage) } : {}),
 		updatedAt: now,
 	}
 }
@@ -178,22 +173,6 @@ export function restoreFermentV2(entries: readonly unknown[], initialState?: Fer
 
 export function putFermentV2Entry(fermentV2: SessionFermentV2): FermentV2JournalEntry {
 	return { schemaVersion: 1, op: "put", fermentV2 }
-}
-
-export function putFermentV2EvaluatorUsageEntry(
-	sessionId: string,
-	fermentV2Id: string,
-	revision: number,
-	usage: FermentV2EvaluatorUsage,
-): FermentV2EvaluatorUsageJournalEntry {
-	return {
-		schemaVersion: 1,
-		op: FERMENT_V2_EVALUATOR_USAGE_OP,
-		sessionId,
-		fermentV2Id,
-		revision,
-		usage,
-	}
 }
 
 export function clearFermentV2Entry(fermentV2: SessionFermentV2, clearedAt: string): FermentV2JournalEntry {
@@ -263,23 +242,6 @@ function parseFermentV2JournalEntry(value: unknown): FermentV2JournalEntry | und
 			clearedAt: value.clearedAt,
 		}
 	}
-	if (
-		value.op === FERMENT_V2_EVALUATOR_USAGE_OP &&
-		isNonEmptyString(value.sessionId) &&
-		isNonEmptyString(value.fermentV2Id) &&
-		isPositiveInteger(value.revision)
-	) {
-		const usage = parseUsage(value.usage)
-		if (!usage) return undefined
-		return {
-			schemaVersion: 1,
-			op: FERMENT_V2_EVALUATOR_USAGE_OP,
-			sessionId: value.sessionId,
-			fermentV2Id: value.fermentV2Id,
-			revision: value.revision,
-			usage,
-		}
-	}
 	return undefined
 }
 
@@ -290,7 +252,6 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		(candidate) => candidate === value.completionConfidence,
 	)
 	const lastEvaluation = parseFermentV2Evaluation(value.lastEvaluation)
-	const evaluatorUsage = parseUsage(value.evaluatorUsage)
 	if (
 		value.schemaVersion !== 1 ||
 		!isNonEmptyString(value.id) ||
@@ -323,7 +284,6 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		...(completionConfidence && status === "complete" ? { completionConfidence } : {}),
 		...(value.evaluationCount === undefined ? {} : { evaluationCount: value.evaluationCount }),
 		...(lastEvaluation ? { lastEvaluation } : {}),
-		...(evaluatorUsage ? { evaluatorUsage } : {}),
 		...(value.consecutiveErrorTurns === undefined ? {} : { consecutiveErrorTurns: value.consecutiveErrorTurns }),
 		...(value.unchangedContinuationTurns === undefined
 			? {}
@@ -354,46 +314,6 @@ function parseFermentV2Evaluation(value: unknown): FermentV2Evaluation | undefin
 	}
 }
 
-function nonNegativeNumberField(value: unknown): number | undefined {
-	return isNonNegativeNumber(value) ? value : undefined
-}
-
-function parseUsage(value: unknown): SessionFermentV2["evaluatorUsage"] {
-	if (!isRecord(value)) return undefined
-	const input = nonNegativeNumberField(value.input)
-	const output = nonNegativeNumberField(value.output)
-	const cacheRead = nonNegativeNumberField(value.cacheRead)
-	const cacheWrite = nonNegativeNumberField(value.cacheWrite)
-	const totalTokens = nonNegativeNumberField(value.totalTokens)
-	const costUsd = nonNegativeNumberField(value.costUsd)
-	if (
-		input === undefined ||
-		output === undefined ||
-		cacheRead === undefined ||
-		cacheWrite === undefined ||
-		totalTokens === undefined ||
-		costUsd === undefined
-	) {
-		return undefined
-	}
-	return { input, output, cacheRead, cacheWrite, totalTokens, costUsd }
-}
-
-export function addUsage(
-	left: SessionFermentV2["evaluatorUsage"],
-	right: NonNullable<SessionFermentV2["evaluatorUsage"]>,
-): NonNullable<SessionFermentV2["evaluatorUsage"]> {
-	if (!left) return right
-	return {
-		input: left.input + right.input,
-		output: left.output + right.output,
-		cacheRead: left.cacheRead + right.cacheRead,
-		cacheWrite: left.cacheWrite + right.cacheWrite,
-		totalTokens: left.totalTokens + right.totalTokens,
-		costUsd: left.costUsd + right.costUsd,
-	}
-}
-
 export function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object"
 }
@@ -408,10 +328,6 @@ function isPositiveInteger(value: unknown): value is number {
 
 function isNonNegativeInteger(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value >= 0
-}
-
-function isNonNegativeNumber(value: unknown): value is number {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0
 }
 
 function nonNegativeInteger(value: number, label: string): number {

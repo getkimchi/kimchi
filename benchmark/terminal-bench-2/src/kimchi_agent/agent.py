@@ -25,7 +25,7 @@ from kimchi_agent.git_install import (
     git_config_command,
     git_init_and_commit_baseline_command,
 )
-from kimchi_agent.messages import FermentV2EvaluatorUsage, SessionEntry
+from kimchi_agent.messages import SessionEntry
 from kimchi_agent.moonshot import (
     MOONSHOT_API_KEY_ENV,
     is_moonshot_model,
@@ -81,8 +81,6 @@ KIMCHI_INFRA_BREAKER_THRESHOLD_ENV = "KIMCHI_INFRA_BREAKER_THRESHOLD"
 KIMCHI_BENCHMARK_INFRA_BREAKER_DEFAULT_ATTEMPTS = "3"
 KIMCHI_EXIT_OUTPUT_TAIL_LINES = 20
 FERMENT_V2_RESOURCE_ID = "extensions.ferment-v2"
-FERMENT_V2_CUSTOM_ENTRY_TYPE = "kimchi_ferment_v2_state"
-FERMENT_V2_EVALUATOR_USAGE_OP = "evaluator_usage"
 FERMENT_V2_SLASH_COMMAND = "/ferment-v2"
 KIMCHI_ERROR_CLASSIFICATION_TYPE = "kimchi_error_classification"
 KIMCHI_INFRA_ERROR_EXIT_CODE = 74
@@ -96,18 +94,6 @@ class RetryableApiError(RuntimeError):
         suffix = f": {detail}" if detail else ""
         code = f" {status}" if status is not None else ""
         super().__init__(f"Retryable provider error{code}{suffix}")
-
-
-def _parse_ferment_v2_evaluator_usage(value: object) -> FermentV2EvaluatorUsage | None:
-    if not isinstance(value, dict):
-        return None
-    try:
-        usage = FermentV2EvaluatorUsage.model_validate(value)
-    except ValidationError:
-        return None
-    if not FermentV2EvaluatorUsage.model_fields.keys() <= usage.model_fields_set:
-        return None
-    return usage
 
 
 def _retryable_api_error_from_classification(data: object) -> RetryableApiError | None:
@@ -1076,32 +1062,6 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
                 try:
                     entry = SessionEntry.model_validate_json(line)
                 except ValidationError:
-                    continue
-                if entry.type == "custom" and entry.custom_type == FERMENT_V2_CUSTOM_ENTRY_TYPE:
-                    data = entry.data or {}
-                    if data.get("op") != FERMENT_V2_EVALUATOR_USAGE_OP:
-                        continue
-                    session_id = data.get("sessionId")
-                    ferment_v2_id = data.get("fermentV2Id")
-                    revision = data.get("revision")
-                    if (
-                        not isinstance(session_id, str)
-                        or not session_id.strip()
-                        or not isinstance(ferment_v2_id, str)
-                        or not ferment_v2_id.strip()
-                        or not isinstance(revision, int)
-                        or isinstance(revision, bool)
-                        or revision < 1
-                    ):
-                        continue
-                    usage = _parse_ferment_v2_evaluator_usage(data.get("usage"))
-                    if usage is None:
-                        continue
-                    total_input_tokens += usage.input
-                    total_output_tokens += usage.output
-                    total_cache_read_tokens += usage.cache_read
-                    total_cache_write_tokens += usage.cache_write
-                    total_cost += usage.cost_usd
                     continue
                 if entry.type != "message" or entry.message.role != "assistant":
                     continue

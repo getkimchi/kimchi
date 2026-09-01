@@ -1,4 +1,4 @@
-import type { SessionFermentV2 } from "./types.js"
+import type { FermentV2EvaluatorUsage, SessionFermentV2 } from "./types.js"
 
 export const FERMENT_V2_EVENTS = {
 	STARTED: "ferment-v2:started",
@@ -30,5 +30,5 @@ export interface FermentV2EvaluatedPayload {
 	verdict: "continue" | "met" | "impossible"
 	count: number
 	model: string
-	usage: NonNullable<SessionFermentV2["evaluatorUsage"]>
+	usage: FermentV2EvaluatorUsage
 }

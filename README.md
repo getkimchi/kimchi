@@ -197,7 +197,7 @@ At `turn_end`, Ferment V2 checkpoints the current session's assistant usage and 
 
 Ferment V2 directs the agent to track tactical progress in the normal Todos widget without creating a second feature-specific checklist. `update_ferment_v2 complete` records an optional runtime completion claim and ends the working turn; it never completes the run by itself. A `met` verdict still requires a visible, fully completed Todo list for the current revision. `update_ferment_v2 blocked` remains immediate. Regular work tools remain available while the list is created or reconciled.
 
-Evaluation details stay out of the visible transcript. `/ferment-v2` shows the evaluation count and latest verdict/reason; the evaluator uses the session model, or the configured `judge` role when multi-model is enabled. Todo observations are valid only for the current session, Ferment V2 ID, and revision.
+Evaluation details stay out of the visible transcript. `/ferment-v2` shows the evaluation count and latest verdict/reason; the evaluator uses the session model, or the configured `judge` role when multi-model is enabled, and records each check in a child session. Todo observations are valid only for the current session, Ferment V2 ID, and revision. User objective and Todo mutations wait for active work to settle before changing that state.
 
 ### Settings
 

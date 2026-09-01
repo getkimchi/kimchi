@@ -7,7 +7,9 @@ import type {
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { registerTodosCommand } from "../todos/command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
+import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "../todos/store.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION } from "../todos/types.js"
 import {
@@ -66,6 +68,7 @@ describe("Ferment V2 extension", () => {
 	let harness: ReturnType<typeof createHarness>
 
 	beforeEach(async () => {
+		__resetTodoStore()
 		evaluateFermentV2Mock.mockResolvedValue({
 			verdict: "continue",
 			reason: "More work is required.",
@@ -79,6 +82,7 @@ describe("Ferment V2 extension", () => {
 
 	afterEach(async () => {
 		await harness.fire("session_shutdown", { type: "session_shutdown" })
+		__resetTodoStore()
 		vi.restoreAllMocks()
 	})
 
@@ -493,6 +497,89 @@ describe("Ferment V2 extension", () => {
 			"The Ferment V2 changed while the editor was open. Reopen /ferment-v2 edit to edit the current revision.",
 			"warning",
 		)
+	})
+
+	it("waits for the active turn to settle before editing the objective", async () => {
+		await harness.command("original")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		harness.setIdle(false)
+		let releaseIdle: () => void = () => undefined
+		harness.waitForIdle.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					releaseIdle = resolve
+				}),
+		)
+
+		const edit = harness.command("edit revised")
+		await vi.waitFor(() => expect(harness.waitForIdle).toHaveBeenCalledOnce())
+		expect(harness.currentFermentV2()).toMatchObject({ objective: "original", revision: 1 })
+
+		const details = {
+			schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+			scope: { kind: "global" as const },
+			todos: [{ id: 1, content: "Old turn work", status: "completed" as const }],
+			updatedAt: "2026-08-03T00:00:01.000Z",
+		}
+		harness.appendEntry(TODO_CUSTOM_ENTRY_TYPE, details)
+		await harness.fire("tool_execution_end", {
+			type: "tool_execution_end",
+			toolName: "mark_todo",
+			isError: false,
+			result: { details },
+		})
+		harness.setIdle(true)
+		releaseIdle()
+		await edit
+
+		expect(harness.currentFermentV2()).toMatchObject({ objective: "revised", revision: 2 })
+		const writes = harness.branch.filter((entry) => entry.type === "custom")
+		expect(writes.at(-2)?.customType).toBe(TODO_CUSTOM_ENTRY_TYPE)
+		expect(writes.at(-1)?.customType).toBe(FERMENT_V2_CUSTOM_ENTRY_TYPE)
+	})
+
+	it("waits before a user Todo mutation and resumes from the updated list", async () => {
+		registerTodosCommand(harness.pi)
+		await harness.command("ship it")
+		const details = applyWriteTodos(
+			{ todos: [{ content: "Keep until the user clears it", status: "in_progress" }] },
+			"session-a",
+		)
+		harness.appendEntry(TODO_CUSTOM_ENTRY_TYPE, details)
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		harness.setIdle(false)
+		harness.sendMessage.mockClear()
+		await harness.runCommand("todos", "collapse")
+		expect(harness.waitForIdle).not.toHaveBeenCalled()
+		let releaseIdle: () => void = () => undefined
+		harness.waitForIdle.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					releaseIdle = resolve
+				}),
+		)
+
+		const clear = harness.runCommand("todos", "clear")
+		await vi.waitFor(() => expect(harness.waitForIdle).toHaveBeenCalledOnce())
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-a")).toHaveLength(1)
+		harness.setIdle(true)
+		releaseIdle()
+		await clear
+
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-a")).toEqual([])
+		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
+		expect(harness.sendMessage.mock.calls.map((call) => call[0].details?.source)).toEqual([
+			"todo_command",
+			"todo_command",
+		])
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
+		expect(
+			await harness.fire("tool_call", {
+				type: "tool_call",
+				toolName: UPDATE_FERMENT_V2_TOOL_NAME,
+				input: { status: "complete" },
+			}),
+		).toMatchObject({ block: true, reason: expect.stringContaining("visible tactical todo list") })
 	})
 
 	it("preserves active time when an edit cannot be persisted", async () => {
@@ -1082,13 +1169,7 @@ describe("Ferment V2 extension", () => {
 		await settled
 
 		expect(harness.sendMessage).not.toHaveBeenCalled()
-		expect(harness.appendEntry).toHaveBeenCalledTimes(1)
-		expect(harness.appendEntry.mock.calls[0]?.[1]).toMatchObject({
-			op: "evaluator_usage",
-			usage: EVALUATOR_USAGE,
-		})
-		expect(harness.appendEntry.mock.calls[0]?.[1]).not.toHaveProperty("reason")
-		expect(harness.appendEntry.mock.calls[0]?.[1]).not.toHaveProperty("objective")
+		expect(harness.appendEntry).not.toHaveBeenCalled()
 		expect(harness.currentFermentV2()?.evaluationCount).toBeUndefined()
 	})
 
@@ -1110,7 +1191,7 @@ describe("Ferment V2 extension", () => {
 		harness.appendEntry.mockClear()
 		await settleFermentV2(harness, "met")
 		expect(harness.currentFermentV2()).toMatchObject({ status: "complete", evaluationCount: 2 })
-		expect(harness.appendEntry).toHaveBeenCalledTimes(2)
+		expect(harness.appendEntry).toHaveBeenCalledOnce()
 	})
 
 	it("blocks on impossible and preserves the evaluator reason without telemetering it", async () => {
@@ -1135,7 +1216,7 @@ describe("Ferment V2 extension", () => {
 			FERMENT_V2_EVENTS.EVALUATED,
 			expect.not.objectContaining({ reason: expect.anything() }),
 		)
-		expect(harness.appendEntry).toHaveBeenCalledTimes(2)
+		expect(harness.appendEntry).toHaveBeenCalledOnce()
 
 		await harness.command("resume")
 		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
@@ -1232,7 +1313,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).toMatchObject({ status: "complete", completionConfidence: "proven" })
 	})
 
-	it("reports each evaluation's own usage rather than the running total", async () => {
+	it("reports each evaluation's own usage", async () => {
 		await harness.command("ship it")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		await settleFermentV2(harness, "continue")
@@ -1242,7 +1323,6 @@ describe("Ferment V2 extension", () => {
 		const evaluated = harness.events.emit.mock.calls.filter(([name]) => name === FERMENT_V2_EVENTS.EVALUATED)
 		expect(evaluated).toHaveLength(2)
 		for (const [, payload] of evaluated) expect(payload).toMatchObject({ usage: EVALUATOR_USAGE })
-		expect(harness.currentFermentV2()?.evaluatorUsage?.totalTokens).toBe(EVALUATOR_USAGE.totalTokens * 2)
 	})
 
 	it("does not label an agent error as an evaluator verdict", async () => {
@@ -1282,13 +1362,14 @@ describe("Ferment V2 extension", () => {
 		harness.sendMessage.mockClear()
 		harness.setIdle(true)
 
-		const { release, settled } = await holdEvaluation(harness)
+		const { release, settled, signal } = await holdEvaluation(harness)
 
-		await harness.command("pause")
+		const pause = harness.command("pause")
+		await vi.waitFor(() => expect(signal?.aborted).toBe(true))
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 
 		release({ verdict: "continue", reason: "More work is required.", model: "test/evaluator", usage: EVALUATOR_USAGE })
-		await settled
+		await Promise.all([pause, settled])
 		expect(harness.currentFermentV2()?.status).toBe("paused")
 	})
 
@@ -1298,13 +1379,14 @@ describe("Ferment V2 extension", () => {
 		harness.sendMessage.mockClear()
 		harness.setIdle(true)
 
-		const { release, settled } = await holdEvaluation(harness)
+		const { release, settled, signal } = await holdEvaluation(harness)
 
-		await harness.command("clear")
+		const clear = harness.command("clear")
+		await vi.waitFor(() => expect(signal?.aborted).toBe(true))
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 
 		release({ verdict: "continue", reason: "More work is required.", model: "test/evaluator", usage: EVALUATOR_USAGE })
-		await settled
+		await Promise.all([clear, settled])
 		expect(harness.currentFermentV2()).toBeUndefined()
 	})
 
@@ -1314,13 +1396,12 @@ describe("Ferment V2 extension", () => {
 		harness.setIdle(true)
 		const { release, settled, signal } = await holdEvaluation(harness)
 
-		await harness.command("pause")
+		const pause = harness.command("pause")
+		await vi.waitFor(() => expect(signal?.aborted).toBe(true))
+		release({ verdict: "continue", reason: "late result", model: "test/evaluator", usage: EVALUATOR_USAGE })
+		await Promise.all([pause, settled])
 		expect(signal?.aborted).toBe(true)
 		await harness.command("resume")
-		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
-
-		release({ verdict: "continue", reason: "late result", model: "test/evaluator", usage: EVALUATOR_USAGE })
-		await settled
 		expect(harness.currentFermentV2()).toMatchObject({ status: "active" })
 		expect(harness.currentFermentV2()?.evaluationCount).toBeUndefined()
 	})
@@ -1345,16 +1426,17 @@ describe("Ferment V2 extension", () => {
 	it("discards an evaluator result for a stale Ferment V2 revision", async () => {
 		await harness.command("old objective")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
-		const { release, settled } = await holdEvaluation(harness)
+		const { release, settled, signal } = await holdEvaluation(harness)
 
-		await harness.command("edit new objective")
+		const edit = harness.command("edit new objective")
+		await vi.waitFor(() => expect(signal?.aborted).toBe(true))
 		release({
 			verdict: "continue",
 			reason: "old result",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
 		})
-		await settled
+		await Promise.all([edit, settled])
 
 		expect(harness.currentFermentV2()).toMatchObject({ revision: 2, objective: "new objective" })
 		expect(harness.currentFermentV2()?.evaluationCount).toBeUndefined()
@@ -1366,16 +1448,15 @@ describe("Ferment V2 extension", () => {
 		const { release, settled, signal } = await holdEvaluation(harness)
 
 		harness.ui.confirm.mockResolvedValueOnce(true)
-		await harness.command("new objective")
-
-		expect(signal?.aborted).toBe(true)
+		const replacement = harness.command("new objective")
+		await vi.waitFor(() => expect(signal?.aborted).toBe(true))
 		release({
 			verdict: "continue",
 			reason: "old result",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
 		})
-		await settled
+		await Promise.all([replacement, settled])
 	})
 
 	it("cancels an in-flight evaluation when the Ferment V2 is edited", async () => {
@@ -1383,16 +1464,15 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
 		const { release, settled, signal } = await holdEvaluation(harness)
 
-		await harness.command("edit new objective")
-
-		expect(signal?.aborted).toBe(true)
+		const edit = harness.command("edit new objective")
+		await vi.waitFor(() => expect(signal?.aborted).toBe(true))
 		release({
 			verdict: "continue",
 			reason: "old result",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
 		})
-		await settled
+		await Promise.all([edit, settled])
 	})
 
 	it("aborts an evaluation held across a session_tree rewind that lands on the same Ferment V2 revision", async () => {
@@ -1488,7 +1568,7 @@ describe("Ferment V2 extension", () => {
 			harness.appendEntry.mockClear()
 			await harness.fire("agent_end", { type: "agent_end", messages: [] })
 			await harness.fire("agent_settled", { type: "agent_settled" })
-			expect(harness.appendEntry).toHaveBeenCalledTimes(2)
+			expect(harness.appendEntry).toHaveBeenCalledOnce()
 		}
 
 		const continued = continuations(harness)
@@ -2476,7 +2556,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 		setStatus: vi.fn(),
 		setWidget: vi.fn(),
 	}
-	const appendEntry = vi.fn((customType: string, data: FermentV2JournalEntry) => {
+	const appendEntry = vi.fn((customType: string, data: unknown) => {
 		branch.push(customEntry(customType, data))
 	})
 	const sendMessage = vi.fn()
@@ -2527,6 +2607,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 	fermentV2Extension(pi)
 
 	return {
+		pi,
 		commands,
 		tools,
 		ui,
@@ -2570,9 +2651,12 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 			return result
 		},
 		async command(args: string): Promise<void> {
-			const fermentV2 = commands.get("ferment-v2")
-			if (!fermentV2) throw new Error("Ferment V2 command not registered")
-			await fermentV2.handler(args, ctx)
+			await this.runCommand("ferment-v2", args)
+		},
+		async runCommand(name: string, args: string): Promise<void> {
+			const command = commands.get(name)
+			if (!command) throw new Error(`${name} command not registered`)
+			await command.handler(args, ctx)
 		},
 		async tool(name: string, params: Record<string, unknown>) {
 			const tool = tools.get(name)

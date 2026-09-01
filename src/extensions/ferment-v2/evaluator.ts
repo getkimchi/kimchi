@@ -1,6 +1,6 @@
 import type { Api, Model, Usage } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
-import type { AgentEndEvent, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { type AgentEndEvent, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles, normalizeRoleModels, splitModelRef } from "../orchestration/model-roles.js"
 import type { TodoItem } from "../todos/types.js"
@@ -219,6 +219,10 @@ export async function evaluateFermentV2(
 				},
 			],
 		}
+		const evaluatorSession = createEvaluatorSession(ctx)
+		evaluatorSession.appendSessionInfo("Ferment V2 evaluator")
+		evaluatorSession.appendModelChange(model.provider, model.id)
+		evaluatorSession.appendMessage(context.messages[0])
 
 		// Keep the deadline separate so a timeout is distinguishable from caller cancellation.
 		evaluationTimeoutMs = getFermentV2Settings().evaluationTimeoutMs
@@ -232,6 +236,7 @@ export async function evaluateFermentV2(
 			samplingParams: model.provider === "moonshotai" ? { response_format: { type: "json_object" } } : undefined,
 			signal,
 		})
+		evaluatorSession.appendMessage(response)
 		const usage = toFermentV2EvaluatorUsage(response.usage)
 		const parsed = parseFermentV2EvaluatorOutput(contentParts(response.content))
 		if (parsed) {
@@ -264,6 +269,13 @@ export async function evaluateFermentV2(
 			...(modelRef ? { model: modelRef } : {}),
 		}
 	}
+}
+
+function createEvaluatorSession(ctx: ExtensionContext): SessionManager {
+	const parentSession = ctx.sessionManager.getSessionFile()
+	return parentSession
+		? SessionManager.create(ctx.cwd, ctx.sessionManager.getSessionDir(), { parentSession })
+		: SessionManager.inMemory(ctx.cwd)
 }
 
 function describeUnparseable(response: { content: unknown; stopReason?: unknown }): string {

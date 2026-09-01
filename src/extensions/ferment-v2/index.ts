@@ -12,9 +12,10 @@ import { type Static, Type } from "typebox"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { formatCount } from "../format.js"
 import { isStaleCtxError } from "../stale-ctx.js"
+import { registerTodoCommandMutationHandler } from "../todos/command-mutation.js"
 import { getTodoScopeKey, normalizeTodoScope } from "../todos/scope.js"
 import { getWriteTodosDetails, isWriteTodosDetails } from "../todos/session.js"
-import { resolveTodoScope } from "../todos/store.js"
+import { GLOBAL_TODO_SCOPE, getTodosForScope, resolveTodoScope } from "../todos/store.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import type { TodoItem } from "../todos/types.js"
 import { FERMENT_V2_COMMAND_COMPLETIONS, formatFermentV2Summary, parseFermentV2Command } from "./command.js"
@@ -34,7 +35,6 @@ import {
 	buildFermentV2EditSteer,
 	buildFermentV2ErrorContinuation,
 	buildFermentV2StartSteer,
-	buildFermentV2StopSteer,
 	replaceFermentV2ContextMessages,
 } from "./prompt.js"
 import {
@@ -46,7 +46,6 @@ import {
 	type FermentV2State,
 	isRecord,
 	putFermentV2Entry,
-	putFermentV2EvaluatorUsageEntry,
 	recordFermentV2Evaluation,
 	replaceFermentV2,
 	restoreFermentV2,
@@ -114,6 +113,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	let completionClaim: FermentV2CompletionClaim | undefined
 	let capturedConversation: CapturedFermentV2Conversation | undefined
 	let activeTurn: PendingFermentV2Continuation | undefined
+	let pendingUserMutation: PendingFermentV2Continuation | undefined
 	let failedTurn: PendingFermentV2Continuation | undefined
 	let todoStateFor: FermentV2TodoState | undefined
 	let fermentV2Lessons: FermentV2Lesson[] = []
@@ -126,6 +126,8 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	// reports idle for the whole evaluator call. Commands that steer a running agent
 	// must treat an in-flight evaluation as busy.
 	let evaluationAbort: AbortController | undefined
+	let evaluationSettled: Promise<void> | undefined
+	let unregisterTodoCommandMutationHandler: (() => void) | undefined
 	const fermentV2Waiters = new Map<string, { promise: Promise<void>; resolve: () => void }>()
 
 	function emitFermentV2Lifecycle(
@@ -210,6 +212,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		completionClaim = undefined
 		capturedConversation = undefined
 		activeTurn = undefined
+		pendingUserMutation = undefined
 		failedTurn = undefined
 		todoStateFor = undefined
 		fermentV2Lessons = []
@@ -228,7 +231,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 
 	function replaySession(ctx: ExtensionContext): void {
 		// Abort before replay rebuilds state: a rewind can reuse the same Ferment V2 id/revision.
-		abortEvaluation()
+		void abortEvaluation()
 		const previousSessionId = currentSessionId
 		// Preserve a pending continuation only for the same session, then revalidate it
 		// against the replayed Ferment V2 below.
@@ -236,6 +239,11 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			previousSessionId === ctx.sessionManager.getSessionId() ? pendingContinuation : undefined
 		currentSessionId = ctx.sessionManager.getSessionId()
 		if (previousSessionId !== currentSessionId) resolveSessionWaiters(previousSessionId)
+		unregisterTodoCommandMutationHandler?.()
+		unregisterTodoCommandMutationHandler = registerTodoCommandMutationHandler(
+			currentSessionId,
+			handleTodoCommandMutation,
+		)
 		const restored = restoreFermentV2Runtime(
 			ctx.sessionManager.getBranch(),
 			currentSessionId,
@@ -433,9 +441,9 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		}
 	}
 
-	function abortEvaluation(): void {
+	function abortEvaluation(): Promise<void> {
 		evaluationAbort?.abort()
-		evaluationAbort = undefined
+		return evaluationSettled ?? Promise.resolve()
 	}
 
 	function canEvaluateFermentV2(
@@ -447,9 +455,81 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		return (
 			fermentV2?.status === "active" &&
 			matchesFermentV2(expected, fermentV2, sessionId) &&
+			!matchesFermentV2(pendingUserMutation, fermentV2, sessionId) &&
 			!fermentV2HasPendingMessages(ctx) &&
 			fermentV2ToolsAvailable()
 		)
+	}
+
+	async function serializeUserMutation<T>(
+		sessionId: string,
+		captured: SessionFermentV2 | undefined,
+		ctx: ExtensionCommandContext,
+		source: string,
+		operation: () => Promise<T> | T,
+	): Promise<T> {
+		const current = currentFermentV2
+		const marker =
+			captured?.status === "active" &&
+			current?.id === captured.id &&
+			current.revision === captured.revision &&
+			fermentV2IsBusy(ctx)
+				? { sessionId, fermentV2Id: captured.id, revision: captured.revision }
+				: undefined
+		if (marker) {
+			pendingUserMutation = marker
+			const settled = abortEvaluation()
+			if (agentTurnIsBusy(ctx)) {
+				safeSendControl(
+					ctx,
+					"The user is changing the active Ferment V2 or its Todo list. Finish the operation already running, then stop before starting more work.",
+					{ source, fermentV2Id: marker.fermentV2Id, revision: marker.revision },
+				)
+				await ctx.waitForIdle()
+			}
+			await settled
+		}
+		try {
+			return await serializeFermentV2Mutation(sessionId, operation)
+		} finally {
+			if (pendingUserMutation === marker) pendingUserMutation = undefined
+		}
+	}
+
+	async function handleTodoCommandMutation<T>(ctx: ExtensionCommandContext, mutation: () => T): Promise<T> {
+		const sessionId = bindSession(ctx)
+		const captured = currentFermentV2
+		return serializeUserMutation(sessionId, captured, ctx, "todo_command", () => {
+			assertCurrentSession(ctx, sessionId)
+			const result = mutation()
+			const current = currentFermentV2
+			if (!current) return result
+			const todos = getTodosForScope(GLOBAL_TODO_SCOPE, sessionId)
+			const previous = matchesFermentV2(todoStateFor, current, sessionId) ? todoStateFor : undefined
+			const counts = todoCounts(todos)
+			fermentV2Lessons = updateFermentV2Lessons(fermentV2Lessons, todos)
+			todoStateFor = {
+				sessionId,
+				fermentV2Id: current.id,
+				revision: current.revision,
+				todos,
+				...counts,
+				settledStatus: deriveSettledStatus(counts, previous?.settledStatus),
+			}
+			if (current.status === "active") {
+				queueFermentV2Turn(
+					ctx,
+					current,
+					buildFermentV2Continuation(
+						false,
+						"The user changed the Todo list. Reconcile it with the objective before continuing.",
+					),
+					"todo_command",
+					"followUp",
+				)
+			}
+			return result
+		})
 	}
 
 	function abandonFermentV2Evaluation(sessionId: string, conversation: CapturedFermentV2Conversation): void {
@@ -498,7 +578,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			}
 		}
 
-		await serializeFermentV2Mutation(sessionId, () => {
+		await serializeUserMutation(sessionId, captured, ctx, "command", () => {
 			assertCurrentSession(ctx, sessionId)
 			assertUnchanged(captured)
 			const nowMs = Date.now()
@@ -510,7 +590,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			commitFermentV2(next)
 			emitFermentV2Lifecycle(captured ? FERMENT_V2_EVENTS.REPLACED : FERMENT_V2_EVENTS.STARTED, next)
 			resetFermentV2Runtime()
-			abortEvaluation()
 			// Only block a headless command when a turn is actually running, or
 			// nothing would ever resolve the waiter.
 			if (
@@ -544,7 +623,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		}
 
 		try {
-			await serializeFermentV2Mutation(sessionId, () => {
+			await serializeUserMutation(sessionId, captured, ctx, "edit", () => {
 				assertCurrentSession(ctx, sessionId)
 				const current = assertUnchanged(captured)
 				if (!current) throw new Error("No Ferment V2 is currently set.")
@@ -573,7 +652,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				invalidateContinuation()
 				todoStateFor = retainedTodoState
 				consecutiveErrorTurns = 0
-				abortEvaluation()
 				if (
 					next.status === "active" &&
 					queueFermentV2Turn(ctx, next, buildFermentV2EditSteer(next, current.revision), "edit") &&
@@ -600,7 +678,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const sessionId = bindSession(ctx)
 		const captured = currentFermentV2
 		if (!captured) return ctx.ui.notify("No Ferment V2 is currently set.", "warning")
-		await serializeFermentV2Mutation(sessionId, () => {
+		await serializeUserMutation(sessionId, captured, ctx, "pause", () => {
 			assertCurrentSession(ctx, sessionId)
 			const current = assertUnchanged(captured)
 			if (!current) throw new Error("No Ferment V2 is currently set.")
@@ -619,15 +697,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			emitFermentV2Lifecycle(FERMENT_V2_EVENTS.PAUSED, next, { reason: "user" })
 			activeSinceMs = undefined
 			invalidateContinuation()
-			const wasBusy = agentTurnIsBusy(ctx)
-			abortEvaluation()
-			if (wasBusy) {
-				safeSendControl(ctx, buildFermentV2StopSteer("paused"), {
-					source: "pause",
-					fermentV2Id: next.id,
-					revision: next.revision,
-				})
-			}
 			ctx.ui.notify("Ferment V2 paused.", "info")
 		})
 	}
@@ -687,7 +756,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const sessionId = bindSession(ctx)
 		const captured = currentFermentV2
 		if (!captured) return ctx.ui.notify("No Ferment V2 is currently set.", "info")
-		await serializeFermentV2Mutation(sessionId, () => {
+		await serializeUserMutation(sessionId, captured, ctx, "clear", () => {
 			assertCurrentSession(ctx, sessionId)
 			const current = assertUnchanged(captured)
 			if (!current) throw new Error("No Ferment V2 is currently set.")
@@ -696,15 +765,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			todoStateFor = undefined
 			fermentV2Lessons = []
 			activeSinceMs = undefined
-			const wasBusy = agentTurnIsBusy(ctx)
-			abortEvaluation()
-			if (wasBusy) {
-				safeSendControl(ctx, buildFermentV2StopSteer("cleared"), {
-					source: "clear",
-					fermentV2Id: current.id,
-					revision: current.revision,
-				})
-			}
 			ctx.ui.notify("Ferment V2 cleared.", "info")
 		})
 	}
@@ -1057,31 +1117,32 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const startFingerprint = turnStartFingerprint
 		evaluationAbort = new AbortController()
 		const abort = evaluationAbort
+		const evaluation = evaluateFermentV2(
+			{
+				objective: capturedFermentV2.objective,
+				messages: conversation.messages,
+				todos: capturedTodoState?.todos ?? [],
+				lessons: fermentV2Lessons,
+				signal: abort.signal,
+			},
+			ctx,
+		)
+		const settled = evaluation.then(
+			() => undefined,
+			() => undefined,
+		)
+		evaluationSettled = settled
 		let result: FermentV2EvaluationResult
 		try {
-			result = await evaluateFermentV2(
-				{
-					objective: capturedFermentV2.objective,
-					messages: conversation.messages,
-					todos: capturedTodoState?.todos ?? [],
-					lessons: fermentV2Lessons,
-					signal: abort.signal,
-				},
-				ctx,
-			)
+			result = await evaluation
 		} finally {
 			if (evaluationAbort === abort) evaluationAbort = undefined
+			if (evaluationSettled === settled) evaluationSettled = undefined
 		}
 		if (currentSessionId !== sessionId || ctx.sessionManager.getSessionId() !== sessionId) return
 		await serializeFermentV2Mutation(sessionId, () => {
 			assertCurrentSession(ctx, sessionId)
-			if (result.usage) {
-				pi.appendEntry(
-					FERMENT_V2_CUSTOM_ENTRY_TYPE,
-					putFermentV2EvaluatorUsageEntry(sessionId, conversation.fermentV2Id, conversation.revision, result.usage),
-				)
-			}
-			// Input/tool availability or cancellation can invalidate the verdict, but not its billable usage.
+			// Input/tool availability or cancellation can invalidate the verdict.
 			if (abort.signal.aborted) return
 			const fermentV2 = currentFermentV2
 			if (!canEvaluateFermentV2(conversation, fermentV2, sessionId, ctx)) {
@@ -1095,14 +1156,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				...(result.model ? { model: result.model } : {}),
 				evaluatedAt: now,
 			}
-			const evaluated = recordFermentV2Evaluation(
-				fermentV2,
-				fermentV2.id,
-				fermentV2.revision,
-				evaluation,
-				result.usage,
-				now,
-			)
+			const evaluated = recordFermentV2Evaluation(fermentV2, fermentV2.id, fermentV2.revision, evaluation, now)
 			capturedConversation = undefined
 			substantiveToolUseSinceEvaluation = false
 
@@ -1227,7 +1281,9 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (ctx.sessionManager.getSessionId() !== currentSessionId) return
-		abortEvaluation()
+		void abortEvaluation()
+		unregisterTodoCommandMutationHandler?.()
+		unregisterTodoCommandMutationHandler = undefined
 		resolveSessionWaiters(currentSessionId)
 		currentSessionId = undefined
 		resetFermentV2Runtime()

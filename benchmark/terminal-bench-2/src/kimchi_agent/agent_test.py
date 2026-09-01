@@ -19,7 +19,6 @@ from kimchi_agent.agent import (
     Kimchi,
     KimchiExitError,
     RetryableApiError,
-    _parse_ferment_v2_evaluator_usage,
     _retryable_api_error_from_session_stream,
 )
 
@@ -524,30 +523,17 @@ def test_malformed_or_non_infra_classification_fails_closed(entry: str) -> None:
     assert _retryable_api_error_from_session_stream(stream) is None
 
 
-def test_ferment_v2_evaluator_usage_model_rejects_invalid_numbers() -> None:
-    valid_usage = {
-        "input": 1,
-        "output": 2,
-        "cacheRead": 3,
-        "cacheWrite": 4,
-        "totalTokens": 10,
-        "costUsd": 0.25,
-    }
-
-    assert _parse_ferment_v2_evaluator_usage(valid_usage) is not None
-    assert _parse_ferment_v2_evaluator_usage({**valid_usage, "input": -1}) is None
-    assert _parse_ferment_v2_evaluator_usage({**valid_usage, "costUsd": float("inf")}) is None
-
-
-def test_populate_context_bills_ferment_v2_evaluator_usage(tmp_path: Path) -> None:
+def test_populate_context_bills_evaluator_child_session(tmp_path: Path) -> None:
     logs_dir = tmp_path / "jobs" / "run-1" / "task__trial" / "agent"
     sessions_dir = logs_dir / "sessions"
     sessions_dir.mkdir(parents=True)
     (sessions_dir / "main.jsonl").write_text(
         '{"type":"message","message":{"role":"assistant","usage":'
         '{"input":10,"output":3,"cacheRead":2,"cacheWrite":1,"cost":{"total":0.5}}}}\n'
-        + evaluator_usage_entry("g1", 8)
-        + "\n"
+    )
+    (sessions_dir / "evaluator.jsonl").write_text(
+        '{"type":"message","message":{"role":"assistant","usage":'
+        '{"input":8,"output":1,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.8}}}}\n'
     )
 
     agent = Kimchi(logs_dir=logs_dir, model_name="kimchi-dev/kimi-k2.6")
@@ -555,83 +541,9 @@ def test_populate_context_bills_ferment_v2_evaluator_usage(tmp_path: Path) -> No
     agent.populate_context_post_run(context)
 
     assert context.n_input_tokens == 21  # 10 + 2 + 1 assistant, plus 8 evaluator
-    assert context.n_output_tokens == 3
+    assert context.n_output_tokens == 4
     assert context.n_cache_tokens == 2
     assert context.cost_usd == 1.3
-
-
-def test_populate_context_sums_evaluator_calls_across_sessions_and_ferment_v2_runs(tmp_path: Path) -> None:
-    logs_dir = tmp_path / "jobs" / "run-1" / "task__trial" / "agent"
-    sessions_dir = logs_dir / "sessions"
-    sessions_dir.mkdir(parents=True)
-    (sessions_dir / "main.jsonl").write_text(
-        "\n".join(
-            [
-                evaluator_usage_entry("g1", 10),
-                evaluator_usage_entry("g1", 10),
-                evaluator_usage_entry("g1", 10),
-                evaluator_usage_entry("g2", 5),
-            ]
-        )
-        + "\n"
-    )
-    (sessions_dir / "child.jsonl").write_text(evaluator_usage_entry("g1", 7) + "\n")
-
-    agent = Kimchi(logs_dir=logs_dir, model_name="kimchi-dev/kimi-k2.6")
-    context = AgentContext()
-    agent.populate_context_post_run(context)
-
-    assert context.n_input_tokens == 42
-    assert context.n_output_tokens == 0
-    assert context.n_cache_tokens == 0
-    assert context.cost_usd == 4.2
-
-
-def test_populate_context_ignores_malformed_evaluator_entries(tmp_path: Path) -> None:
-    logs_dir = tmp_path / "jobs" / "run-1" / "task__trial" / "agent"
-    sessions_dir = logs_dir / "sessions"
-    sessions_dir.mkdir(parents=True)
-    valid = json.loads(evaluator_usage_entry("g1", 4))
-    usage = valid["data"]["usage"]
-    malformed = [
-        {"op": "evaluator_usage", "fermentV2Id": "f1", "revision": 1, "usage": usage},
-        {"op": "evaluator_usage", "sessionId": "session-a", "fermentV2Id": "f1", "revision": 1, "usage": {"input": 99}},
-        {"op": "evaluator_usage", "sessionId": "session-a", "fermentV2Id": "f1", "revision": True, "usage": usage},
-    ]
-    entries = [{"type": "custom", "customType": "kimchi_ferment_v2_state", "data": data} for data in malformed]
-    entries.append(valid)
-    (sessions_dir / "main.jsonl").write_text("".join(json.dumps(entry) + "\n" for entry in entries))
-
-    agent = Kimchi(logs_dir=logs_dir, model_name="kimchi-dev/kimi-k2.6")
-    context = AgentContext()
-    agent.populate_context_post_run(context)
-
-    assert context.n_input_tokens == 4
-    assert context.cost_usd == 0.4
-
-
-def evaluator_usage_entry(ferment_v2_id: str, input_tokens: int) -> str:
-    usage = {
-        "input": input_tokens,
-        "output": 0,
-        "cacheRead": 0,
-        "cacheWrite": 0,
-        "totalTokens": input_tokens,
-        "costUsd": input_tokens / 10,
-    }
-    return json.dumps(
-        {
-            "type": "custom",
-            "customType": "kimchi_ferment_v2_state",
-            "data": {
-                "op": "evaluator_usage",
-                "sessionId": "session-a",
-                "fermentV2Id": ferment_v2_id,
-                "revision": 1,
-                "usage": usage,
-            },
-        }
-    )
 
 
 def test_populate_context_skips_unreadable_session_files(tmp_path: Path) -> None:

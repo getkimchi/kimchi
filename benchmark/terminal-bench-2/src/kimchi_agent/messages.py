@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, NonNegativeInt
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class BaseMessage(BaseModel):
@@ -22,15 +22,6 @@ class Usage(BaseMessage):
 class Message(BaseMessage):
     role: str = ""
     usage: Usage = Field(default_factory=Usage)
-
-
-class FermentV2EvaluatorUsage(BaseMessage):
-    input: NonNegativeInt = 0
-    output: NonNegativeInt = 0
-    cache_read: NonNegativeInt = Field(0, alias="cacheRead")
-    cache_write: NonNegativeInt = Field(0, alias="cacheWrite")
-    total_tokens: NonNegativeInt = Field(0, alias="totalTokens")
-    cost_usd: FiniteFloat = Field(0.0, alias="costUsd", ge=0)
 
 
 class SessionEntry(BaseMessage):

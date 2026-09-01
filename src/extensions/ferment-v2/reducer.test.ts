@@ -6,7 +6,6 @@ import {
 	createFermentV2,
 	editFermentV2,
 	putFermentV2Entry,
-	putFermentV2EvaluatorUsageEntry,
 	recordFermentV2Evaluation,
 	replaceFermentV2,
 	restoreFermentV2,
@@ -172,22 +171,13 @@ describe("Ferment V2 reducer", () => {
 		expect(restoreFermentV2([putFermentV2Entry(persisted)])).toBeUndefined()
 	})
 
-	it("records guarded evaluations and round-trips cumulative usage", () => {
+	it("records guarded evaluations and round-trips them", () => {
 		const fermentV2 = createFermentV2(undefined, "ship", "ferment-v2-a", T1)
-		const usage = {
-			input: 10,
-			output: 5,
-			cacheRead: 2,
-			cacheWrite: 1,
-			totalTokens: 18,
-			costUsd: 0.33,
-		}
 		const first = recordFermentV2Evaluation(
 			fermentV2,
 			"ferment-v2-a",
 			1,
 			{ verdict: "continue", reason: "missing smoke", model: "test/judge", evaluatedAt: T2 },
-			usage,
 			T2,
 		)
 		const second = recordFermentV2Evaluation(
@@ -195,7 +185,6 @@ describe("Ferment V2 reducer", () => {
 			"ferment-v2-a",
 			1,
 			{ verdict: "met", reason: "all checks pass", model: "test/judge", evaluatedAt: T2 },
-			usage,
 			T2,
 		)
 
@@ -203,7 +192,6 @@ describe("Ferment V2 reducer", () => {
 		expect(second).toMatchObject({
 			evaluationCount: 2,
 			lastEvaluation: { verdict: "met", reason: "all checks pass" },
-			evaluatorUsage: { input: 20, output: 10, cacheRead: 4, cacheWrite: 2, totalTokens: 36 },
 		})
 		expect(() =>
 			recordFermentV2Evaluation(
@@ -211,43 +199,9 @@ describe("Ferment V2 reducer", () => {
 				"ferment-v2-a",
 				2,
 				{ verdict: "met", reason: "all checks pass", evaluatedAt: T2 },
-				usage,
 				T2,
 			),
 		).toThrow(/current Ferment V2 is ferment-v2-a revision 1/)
-	})
-
-	it("round-trips privacy-safe immutable evaluator usage without changing Ferment V2 state", () => {
-		const fermentV2 = createFermentV2(undefined, "ship", "ferment-v2-a", T1)
-		const usage = { input: 10, output: 5, cacheRead: 2, cacheWrite: 1, totalTokens: 18, costUsd: 0.33 }
-		const entry = putFermentV2EvaluatorUsageEntry("session-a", fermentV2.id, fermentV2.revision, usage)
-
-		expect(entry).toEqual({
-			schemaVersion: 1,
-			op: "evaluator_usage",
-			sessionId: "session-a",
-			fermentV2Id: "ferment-v2-a",
-			revision: 1,
-			usage,
-		})
-		expect(entry).not.toHaveProperty("reason")
-		expect(entry).not.toHaveProperty("objective")
-		expect(restoreFermentV2([putFermentV2Entry(fermentV2), entry])).toEqual(fermentV2)
-	})
-
-	it("drops the whole restored usage when any single field is invalid", () => {
-		const fermentV2 = createFermentV2(undefined, "ship", "ferment-v2-a", T1)
-		const entry = {
-			...putFermentV2Entry(fermentV2),
-			fermentV2: {
-				...fermentV2,
-				evaluatorUsage: { input: 10, output: 5, cacheRead: 2, cacheWrite: 1, totalTokens: 18, costUsd: -1 },
-			},
-		}
-
-		const restored = restoreFermentV2([entry])
-
-		expect(restored).not.toHaveProperty("evaluatorUsage")
 	})
 
 	it("sets and clears the consecutive-error-turn counter, omitting it at zero", () => {

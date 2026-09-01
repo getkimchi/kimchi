@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
+import { runTodoCommandMutation } from "./command-mutation.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "./store.js"
 import type { TodoStatus, WriteTodosDetails, WriteTodosParams } from "./types.js"
@@ -244,10 +245,12 @@ async function handleTodosCommand(args: string, ctx: ExtensionCommandContext, pi
 	}
 
 	const sessionId = ctx.sessionManager.getSessionId()
-	const outcome = applyTodoAction(parsed, {
-		sessionId,
-		onWrite: (details) => pi.appendEntry(TODO_CUSTOM_ENTRY_TYPE, details),
-	})
+	const outcome = await runTodoCommandMutation(ctx, () =>
+		applyTodoAction(parsed, {
+			sessionId,
+			onWrite: (details) => pi.appendEntry(TODO_CUSTOM_ENTRY_TYPE, details),
+		}),
+	)
 	if (outcome) {
 		if (ctx.hasUI) {
 			ctx.ui.notify(outcome.message, outcome.level)

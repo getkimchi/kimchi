@@ -1,5 +1,3 @@
-import type { FERMENT_V2_EVALUATOR_USAGE_OP } from "./constants.js"
-
 export const FERMENT_V2_STATUSES = ["active", "paused", "blocked", "budget_limited", "complete"] as const
 export const FERMENT_V2_COMPLETION_CONFIDENCES = ["guess", "partial", "tested", "proven"] as const
 export const FERMENT_V2_EVALUATION_VERDICTS = ["continue", "met", "impossible", "unavailable"] as const
@@ -34,7 +32,6 @@ export interface SessionFermentV2 {
 	completionConfidence?: FermentV2CompletionConfidence
 	evaluationCount?: number
 	lastEvaluation?: FermentV2Evaluation
-	evaluatorUsage?: FermentV2EvaluatorUsage
 	consecutiveErrorTurns?: number
 	unchangedContinuationTurns?: number
 	tokensUsed: number
@@ -42,15 +39,6 @@ export interface SessionFermentV2 {
 	timeUsedMs: number
 	createdAt: string
 	updatedAt: string
-}
-
-export interface FermentV2EvaluatorUsageJournalEntry {
-	schemaVersion: 1
-	op: typeof FERMENT_V2_EVALUATOR_USAGE_OP
-	sessionId: string
-	fermentV2Id: string
-	revision: number
-	usage: FermentV2EvaluatorUsage
 }
 
 export type FermentV2JournalEntry =
@@ -66,7 +54,6 @@ export type FermentV2JournalEntry =
 			revision: number
 			clearedAt: string
 	  }
-	| FermentV2EvaluatorUsageJournalEntry
 
 export interface PendingFermentV2Continuation {
 	sessionId: string
