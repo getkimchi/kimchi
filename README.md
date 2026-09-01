@@ -177,7 +177,7 @@ User-defined tags (added via `/tags add`) are persisted to `~/.config/kimchi/tag
 
 ## Ferment V2
 
-Ferment V2 keeps one objective active across turns in the current session branch and automatically continues work until an independent, tool-free model check finds the objective met or impossible. It uses the normal todo tools for tactical steps; it does not create Ferment phases, workers, or worktrees.
+Ferment V2 is an experimental, branch-scoped objective controller. It keeps one objective active across turns, uses the normal Todo tools for tactical work, and does not create Ferment phases, workers, or worktrees. See the [Ferment V2 runtime guide](docs/ferment-v2.md) for the lifecycle and persistence contract.
 
 Enable **Ferment V2** under `/resources` → **Experimental**, then restart Kimchi. It is disabled by default.
 
@@ -191,17 +191,13 @@ Enable **Ferment V2** under `/resources` → **Experimental**, then restart Kimc
 | `/ferment-v2 resume` | Reactivate the current run |
 | `/ferment-v2 clear` | Clear the run from the current session branch |
 
-Ferment V2 state is stored in the session journal, so resume, rewind, and fork follow the selected branch. An old turn cannot complete an edited or replaced run because model updates must match both its ID and revision.
+Ferment V2 state is stored in the native session journal, so restart, resume, rewind, and fork follow the selected branch. An old turn cannot update an edited or replaced run because model updates must match both its ID and revision.
 
-Reaching a Ferment V2 token budget stops automatic continuation. After Pi finishes retries, compaction, and queued messages, Ferment V2 evaluates the final conversation once: `met` completes, `impossible` blocks, and `continue` queues another hidden turn. If the evaluator is unavailable or returns invalid output, Ferment V2 pauses so it can be resumed. The `fermenting time` counter counts only active agent turns; cancelling a turn pauses the run immediately, while three consecutive failed or unchanged continuation turns pause it after bounded retries by default. Token usage counts this session's Ferment V2 turns in full, including cache reads and writes, excluding agent-worker child sessions; evaluator usage is tracked separately in the Ferment V2 journal.
+At `turn_end`, Ferment V2 checkpoints the current session's assistant usage and active time. Reaching a token budget stops continuation before evaluation and changes the run to `budget_limited`. At the later settled checkpoint, an independent tool-free evaluator returns `met`, `impossible`, or `continue` only while the pending-input, tool-availability, identity, and stop-condition gates permit. The `fermenting time` counter counts active agent turns; cancellation, repeated errors, unchanged continuation, or evaluator unavailability pause the run. Runtime accounting is for the current session; the Terminal-Bench adapter separately aggregates valid usage from all discovered session files, including nested or child files.
 
-Ferment V2 directs the agent to track tactical progress in the normal Todos widget without creating a second feature-specific checklist. The agent may add a todo mid-run for work the objective requires, even after the list looked settled, since that is progress rather than a reason to leave the work unrecorded. `update_ferment_v2 complete` records a runtime completion claim and ends the working turn, but only the independent evaluation can complete the Ferment V2 run. A `met` verdict still requires a visible, fully completed list for the current Ferment V2 revision. `update_ferment_v2 blocked` remains immediate. Regular work tools remain available while the list is created or reconciled.
+Ferment V2 directs the agent to track tactical progress in the normal Todos widget without creating a second feature-specific checklist. `update_ferment_v2 complete` records an optional runtime completion claim and ends the working turn; it never completes the run by itself. A `met` verdict still requires a visible, fully completed Todo list for the current revision. `update_ferment_v2 blocked` remains immediate. Regular work tools remain available while the list is created or reconciled.
 
-Evaluation details stay out of the transcript. `/ferment-v2` shows the evaluation count and the latest verdict and reason.
-
-The evaluator runs on the session model, or on the configured `judge` role when multi-model is enabled. It is given a reasoning-aware token budget, because reasoning and the answer share that budget and a verdict-sized one returns no answer at all on a thinking model. A missing, truncated, unparseable, timed-out, or failed response pauses Ferment V2 after that single call.
-
-Ferment V2 validates Todo tool results only for the current session, Ferment V2 ID, and revision. Todo state observed in another session cannot unlock work or completion.
+Evaluation details stay out of the visible transcript. `/ferment-v2` shows the evaluation count and latest verdict/reason; the evaluator uses the session model, or the configured `judge` role when multi-model is enabled. Todo observations are valid only for the current session, Ferment V2 ID, and revision.
 
 ### Settings
 
@@ -227,7 +223,7 @@ Ferment V2's policy numbers are adjustable. Edit `~/.config/kimchi/harness/setti
 | `defaultTokenBudget` | unset | Token budget applied to `/ferment-v2 <objective>` when `--tokens` isn't given. An explicit `--tokens` always overrides this. |
 | `evaluationTimeoutMs` | `30000` | How long the independent completion check is allowed to run before it's treated as unavailable. |
 
-Only non-default values need to be specified; missing or invalid keys fall back to their default rather than failing the extension. There is no separate evaluator-model setting -- it uses the `judge` model role from [Model roles](#model-roles).
+Only non-default values need to be specified; missing or invalid keys fall back to their default rather than failing the extension. There is no separate evaluator-model setting -- it uses the `judge` model role from [Model roles](#model-roles). The full evaluator evidence and failure-handling rules are in the [runtime guide](docs/ferment-v2.md).
 
 ## Ferment -- cross-session project management
 

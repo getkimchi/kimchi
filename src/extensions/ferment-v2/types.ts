@@ -1,3 +1,5 @@
+import type { FERMENT_V2_EVALUATOR_USAGE_OP } from "./constants.js"
+
 export const FERMENT_V2_STATUSES = ["active", "paused", "blocked", "budget_limited", "complete"] as const
 export const FERMENT_V2_COMPLETION_CONFIDENCES = ["guess", "partial", "tested", "proven"] as const
 export const FERMENT_V2_EVALUATION_VERDICTS = ["continue", "met", "impossible", "unavailable"] as const
@@ -44,7 +46,7 @@ export interface SessionFermentV2 {
 
 export interface FermentV2EvaluatorUsageJournalEntry {
 	schemaVersion: 1
-	op: "evaluator_usage"
+	op: typeof FERMENT_V2_EVALUATOR_USAGE_OP
 	sessionId: string
 	fermentV2Id: string
 	revision: number

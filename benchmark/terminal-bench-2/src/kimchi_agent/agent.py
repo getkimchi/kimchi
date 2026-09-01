@@ -80,6 +80,10 @@ MULTI_MODEL = "multi-model"
 KIMCHI_INFRA_BREAKER_THRESHOLD_ENV = "KIMCHI_INFRA_BREAKER_THRESHOLD"
 KIMCHI_BENCHMARK_INFRA_BREAKER_DEFAULT_ATTEMPTS = "3"
 KIMCHI_EXIT_OUTPUT_TAIL_LINES = 20
+FERMENT_V2_RESOURCE_ID = "extensions.ferment-v2"
+FERMENT_V2_CUSTOM_ENTRY_TYPE = "kimchi_ferment_v2_state"
+FERMENT_V2_EVALUATOR_USAGE_OP = "evaluator_usage"
+FERMENT_V2_SLASH_COMMAND = "/ferment-v2"
 KIMCHI_ERROR_CLASSIFICATION_TYPE = "kimchi_error_classification"
 KIMCHI_INFRA_ERROR_EXIT_CODE = 74
 RETRYABLE_API_ERROR_MESSAGE_LIMIT = 2_000
@@ -740,7 +744,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
 
     def _stdin_payload(self, instruction: str) -> str:
         """What to pipe to kimchi, when it is not the instruction verbatim."""
-        return f"/ferment-v2 {instruction}" if self._ferment_v2_enabled else instruction
+        return f"{FERMENT_V2_SLASH_COMMAND} {instruction}" if self._ferment_v2_enabled else instruction
 
     def _pre_launch_commands(self, instruction: str) -> list[str]:
         """Shell commands to run in the launch pipeline, before kimchi starts."""
@@ -849,7 +853,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
             # threshold auto-compaction and both ferment compaction paths.
             settings["compaction"] = {"enabled": False}
         if self._ferment_v2_enabled:
-            settings["resources"] = {"extensions.ferment-v2": True}
+            settings["resources"] = {FERMENT_V2_RESOURCE_ID: True}
 
         settings_json = json.dumps(settings, separators=(",", ":"))
         return (
@@ -1073,9 +1077,9 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
                     entry = SessionEntry.model_validate_json(line)
                 except ValidationError:
                     continue
-                if entry.type == "custom" and entry.custom_type == "kimchi_ferment_v2_state":
+                if entry.type == "custom" and entry.custom_type == FERMENT_V2_CUSTOM_ENTRY_TYPE:
                     data = entry.data or {}
-                    if data.get("op") != "evaluator_usage":
+                    if data.get("op") != FERMENT_V2_EVALUATOR_USAGE_OP:
                         continue
                     session_id = data.get("sessionId")
                     ferment_v2_id = data.get("fermentV2Id")

@@ -12,7 +12,7 @@ import {
 	parseFermentV2EvaluatorOutput,
 	resolveFermentV2EvaluatorModel,
 } from "./evaluator.js"
-import { MAX_FERMENT_V2_LESSONS } from "./lessons.js"
+import { MAX_FERMENT_V2_LESSON_CHARS, MAX_FERMENT_V2_LESSONS } from "./lessons.js"
 import { DEFAULT_FERMENT_V2_SETTINGS, getFermentV2Settings } from "./settings.js"
 
 vi.mock("@earendil-works/pi-ai/compat", () => ({ completeSimple: vi.fn() }))
@@ -295,7 +295,10 @@ describe("Ferment V2 evaluator", () => {
 		const lessons = Array.from({ length: MAX_FERMENT_V2_LESSONS + 2 }, (_, index) => ({
 			todoId: index + 1,
 			kind: "evidence" as const,
-			text: index === MAX_FERMENT_V2_LESSONS + 1 ? `${"x".repeat(1_000)}${clippedTail}` : `lesson ${index + 1}`,
+			text:
+				index === MAX_FERMENT_V2_LESSONS + 1
+					? `${"x".repeat(MAX_FERMENT_V2_LESSON_CHARS)}${clippedTail}`
+					: `lesson ${index + 1}`,
 		}))
 
 		await evaluateFermentV2({ objective: "ship it", messages: [], todos: [], lessons }, evaluatorContext())

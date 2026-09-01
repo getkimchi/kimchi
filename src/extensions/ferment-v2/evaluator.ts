@@ -4,7 +4,7 @@ import type { AgentEndEvent, ExtensionContext } from "@earendil-works/pi-coding-
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles, normalizeRoleModels, splitModelRef } from "../orchestration/model-roles.js"
 import type { TodoItem } from "../todos/types.js"
-import { type FermentV2Lesson, MAX_FERMENT_V2_LESSONS } from "./lessons.js"
+import { type FermentV2Lesson, MAX_FERMENT_V2_LESSON_CHARS, MAX_FERMENT_V2_LESSONS } from "./lessons.js"
 import { isRecord } from "./reducer.js"
 import { getFermentV2Settings } from "./settings.js"
 import type { FermentV2EvaluatorUsage } from "./types.js"
@@ -339,7 +339,7 @@ function renderFermentV2Lessons(lessons: readonly FermentV2Lesson[] | undefined)
 		return {
 			id,
 			kind: lesson.kind,
-			text: `[${id}] [lesson todo ${lesson.todoId} ${lesson.kind}] ${lesson.text.slice(0, MAX_REASON_CHARS)}`,
+			text: `[${id}] [lesson todo ${lesson.todoId} ${lesson.kind}] ${lesson.text.slice(0, MAX_FERMENT_V2_LESSON_CHARS)}`,
 		}
 	})
 	return {

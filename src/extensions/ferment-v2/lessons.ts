@@ -1,6 +1,7 @@
 import type { TodoItem } from "../todos/types.js"
 
 export const MAX_FERMENT_V2_LESSONS = 5
+export const MAX_FERMENT_V2_LESSON_CHARS = 1_000
 
 export type FermentV2LessonKind = "decision" | "evidence" | "dead-end"
 
@@ -31,7 +32,7 @@ function lessonFromTodo(todo: TodoItem): FermentV2Lesson | undefined {
 	const note = todo.note.trim()
 	const prefix = note.match(NOTE_KIND_PREFIX)
 	const kind = prefix ? normalizeKind(prefix[1]) : todo.status === "blocked" ? "dead-end" : "decision"
-	const text = prefix ? note.slice(prefix[0].length).trim() : note
+	const text = (prefix ? note.slice(prefix[0].length).trim() : note).slice(0, MAX_FERMENT_V2_LESSON_CHARS)
 	return text ? { todoId: todo.id, kind, text } : undefined
 }
 

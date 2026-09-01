@@ -1,4 +1,5 @@
 import { formatCount } from "../format.js"
+import { FERMENT_V2_COMMAND_NAME } from "./constants.js"
 import type { SessionFermentV2 } from "./types.js"
 
 export type FermentV2Command =
@@ -30,7 +31,7 @@ export function parseFermentV2Command(args: string): FermentV2Command {
 }
 
 export function formatFermentV2Summary(fermentV2: SessionFermentV2 | undefined, liveElapsedMs = 0): string {
-	if (!fermentV2) return "No Ferment V2 is currently set.\nUse /ferment-v2 <objective> to create one."
+	if (!fermentV2) return `No Ferment V2 is currently set.\nUse /${FERMENT_V2_COMMAND_NAME} <objective> to create one.`
 	const evaluation = fermentV2.lastEvaluation
 	return [
 		"Ferment V2",
@@ -62,11 +63,13 @@ export function formatFermentV2Duration(timeUsedMs: number): string {
 }
 
 function fermentV2Commands(fermentV2: SessionFermentV2): string {
-	if (fermentV2.status === "active") return "/ferment-v2 edit, /ferment-v2 pause, /ferment-v2 clear"
-	if (fermentV2.status === "paused" || fermentV2.status === "blocked") {
-		return "/ferment-v2 edit, /ferment-v2 resume, /ferment-v2 clear"
+	if (fermentV2.status === "active") {
+		return `/${FERMENT_V2_COMMAND_NAME} edit, /${FERMENT_V2_COMMAND_NAME} pause, /${FERMENT_V2_COMMAND_NAME} clear`
 	}
-	return "/ferment-v2 <objective>, /ferment-v2 clear"
+	if (fermentV2.status === "paused" || fermentV2.status === "blocked") {
+		return `/${FERMENT_V2_COMMAND_NAME} edit, /${FERMENT_V2_COMMAND_NAME} resume, /${FERMENT_V2_COMMAND_NAME} clear`
+	}
+	return `/${FERMENT_V2_COMMAND_NAME} <objective>, /${FERMENT_V2_COMMAND_NAME} clear`
 }
 
 function parseTokenBudget(input: string): { objective: string; tokenBudget?: number } {

@@ -7,6 +7,7 @@ import type {
 	SessionEntry,
 	TurnEndEvent,
 } from "@earendil-works/pi-coding-agent"
+import { buildSessionContext } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { formatCount } from "../format.js"
@@ -18,6 +19,7 @@ import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import type { TodoItem } from "../todos/types.js"
 import { FERMENT_V2_COMMAND_COMPLETIONS, formatFermentV2Summary, parseFermentV2Command } from "./command.js"
 import {
+	FERMENT_V2_COMMAND_NAME,
 	FERMENT_V2_CONTROL_MESSAGE_TYPE,
 	FERMENT_V2_CUSTOM_ENTRY_TYPE,
 	FERMENT_V2_TOOL_NAMES,
@@ -351,6 +353,38 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		return sent
 	}
 
+	function queueFermentV2TurnAfterSettled(
+		ctx: ExtensionContext,
+		fermentV2: SessionFermentV2,
+		content: string,
+		source: string,
+		deliverAs: "steer" | "followUp" = "followUp",
+	): void {
+		const sessionId = currentSessionId
+		if (!sessionId) return
+		const expected: PendingFermentV2Continuation = {
+			sessionId,
+			fermentV2Id: fermentV2.id,
+			revision: fermentV2.revision,
+		}
+		setTimeout(() => {
+			const current = currentFermentV2
+			if (
+				currentSessionId !== sessionId ||
+				current?.status !== "active" ||
+				current.id !== expected.fermentV2Id ||
+				current.revision !== expected.revision ||
+				agentTurnIsBusy(ctx) ||
+				fermentV2HasPendingMessages(ctx)
+			)
+				return
+			if (pendingContinuation && matchesFermentV2(pendingContinuation, current, sessionId)) return
+			if (!queueFermentV2Turn(ctx, current, content, source, deliverAs)) {
+				resolveFermentV2Waiter(sessionId, current.id)
+			}
+		}, 0)
+	}
+
 	function invalidateContinuation(): void {
 		pendingContinuation = undefined
 		turnStartFingerprint = undefined
@@ -502,7 +536,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		let editedObjective = objective
 		if (editedObjective === undefined) {
 			if (!ctx.hasUI) {
-				ctx.ui.notify("Use /ferment-v2 edit <objective> outside the interactive TUI.", "warning")
+				ctx.ui.notify(`Use /${FERMENT_V2_COMMAND_NAME} edit <objective> outside the interactive TUI.`, "warning")
 				return
 			}
 			editedObjective = await ctx.ui.editor("Edit Ferment V2", captured.objective)
@@ -552,7 +586,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		} catch (error) {
 			if (error instanceof StaleFermentV2CommandError) {
 				ctx.ui.notify(
-					"The Ferment V2 changed while the editor was open. Reopen /ferment-v2 edit to edit the current revision.",
+					`The Ferment V2 changed while the editor was open. Reopen /${FERMENT_V2_COMMAND_NAME} edit to edit the current revision.`,
 					"warning",
 				)
 				return
@@ -704,7 +738,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			"A complete claim is reviewed by a separate check that sees only what this conversation shows. If it disagrees you get its reason and keep working, so surface the evidence in the transcript rather than asserting success.",
 			"Repeating an unchanged claim is not progress and will stall Ferment V2. Do new work or gather new evidence before claiming again.",
 			"completion_confidence is your reported verification basis for UX and telemetry, not independent proof of correctness.",
-			"After the final todo mutation returns its settled result, call update_ferment_v2 as the only tool call in a later response.",
+			`After the final todo mutation returns its settled result, call ${UPDATE_FERMENT_V2_TOOL_NAME} as the only tool call in a later response.`,
 		],
 		parameters: UPDATE_FERMENT_V2_PARAMETERS,
 		async execute(_toolCallId, params: UpdateFermentV2Params, _signal, _onUpdate, ctx) {
@@ -778,13 +812,13 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		},
 	})
 
-	pi.registerCommand("ferment-v2", {
+	pi.registerCommand(FERMENT_V2_COMMAND_NAME, {
 		description: "Set or manage a persistent session Ferment V2",
 		getArgumentCompletions: (prefix) =>
 			FERMENT_V2_COMMAND_COMPLETIONS.filter((entry) => entry.startsWith(prefix.toLowerCase())).map((value) => ({
 				value: value === "edit" ? "edit " : value,
 				label: value,
-				description: `/ferment-v2 ${value}`,
+				description: `/${FERMENT_V2_COMMAND_NAME} ${value}`,
 			})),
 		handler: async (args, ctx) => {
 			try {
@@ -845,8 +879,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		if (!matchesFermentV2(activeTurn, fermentV2, currentSessionId)) {
 			return {
 				block: true,
-				reason:
-					"The Ferment V2 changed or stopped during this turn. Continue against the current active Ferment V2 before calling update_ferment_v2.",
+				reason: `The Ferment V2 changed or stopped during this turn. Continue against the current active Ferment V2 before calling ${UPDATE_FERMENT_V2_TOOL_NAME}.`,
 			}
 		}
 		if (event.input.status === "blocked") return
@@ -854,17 +887,18 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		if (currentTodoState?.total && event.input.status === currentTodoState.settledStatus) return
 		return {
 			block: true,
-			reason:
-				"Before ending the Ferment V2, keep a visible tactical todo list for this Ferment V2 revision and settle every item as completed or genuinely blocked. Then call update_ferment_v2 with the matching status without clearing the list.",
+			reason: `Before ending the Ferment V2, keep a visible tactical todo list for this Ferment V2 revision and settle every item as completed or genuinely blocked. Then call ${UPDATE_FERMENT_V2_TOOL_NAME} with the matching status without clearing the list.`,
 		}
 	})
 
 	pi.on("tool_execution_end", (event, ctx) => {
 		bindSession(ctx)
+		const fermentV2 = currentFermentV2
+		const currentTurn = matchesFermentV2(activeTurn, fermentV2, currentSessionId) ? fermentV2 : undefined
 		// Only work done under an active Ferment V2 counts, or tool calls made while the
 		// Ferment V2 is paused make the first turn after /ferment-v2 resume look productive.
 		if (
-			currentFermentV2?.status === "active" &&
+			currentTurn?.status === "active" &&
 			!event.isError &&
 			!TODO_TOOL_NAME_SET.has(event.toolName) &&
 			!FERMENT_V2_TOOL_NAME_SET.has(event.toolName)
@@ -872,16 +906,15 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			substantiveToolUseSinceEvaluation = true
 		}
 		if (event.isError || !TODO_TOOL_NAME_SET.has(event.toolName)) return
-		const fermentV2 = currentFermentV2
 		const expectedScopeKey = getTodoScopeKey(resolveTodoScope())
 		const todoState = todoResultState(event.result, expectedScopeKey)
-		if (fermentV2?.status !== "active" || !todoState) return
-		const previous = matchesFermentV2(todoStateFor, fermentV2, currentSessionId) ? todoStateFor : undefined
+		if (currentTurn?.status !== "active" || !todoState) return
+		const previous = matchesFermentV2(todoStateFor, currentTurn, currentSessionId) ? todoStateFor : undefined
 		fermentV2Lessons = updateFermentV2Lessons(fermentV2Lessons, todoState.todos)
 		todoStateFor = {
 			sessionId: currentSessionId ?? ctx.sessionManager.getSessionId(),
-			fermentV2Id: fermentV2.id,
-			revision: fermentV2.revision,
+			fermentV2Id: currentTurn.id,
+			revision: currentTurn.revision,
 			...todoState,
 			settledStatus: deriveSettledStatus(todoState, previous?.settledStatus),
 		}
@@ -918,7 +951,11 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			const current = currentFermentV2
 			const pendingFeedback = pendingTerminalFeedback
 			const deferTerminalWaiter = pendingFeedback !== undefined && matchesFermentV2(pendingFeedback, current, sessionId)
-			if (attribution?.sessionId === sessionId && current?.id === attribution.fermentV2Id) {
+			if (
+				attribution?.sessionId === sessionId &&
+				current?.id === attribution.fermentV2Id &&
+				current.revision === attribution.revision
+			) {
 				const nowMs = Date.now()
 				const now = timestamp(nowMs)
 				const accounted = checkpointFermentV2(current, assistantTurnTokens(event), nowMs)
@@ -964,16 +1001,17 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		})
 	})
 
-	pi.on("agent_end", (event, ctx) => {
+	pi.on("agent_end", (_event, ctx) => {
 		const sessionId = bindSession(ctx)
 		const fermentV2 = currentFermentV2
+		const messages = buildSessionContext(ctx.sessionManager.getBranch()).messages
 		capturedConversation =
 			fermentV2?.status === "active"
 				? {
 						sessionId,
 						fermentV2Id: fermentV2.id,
 						revision: fermentV2.revision,
-						messages: event.messages,
+						messages,
 						failed: matchesFermentV2(failedTurn, fermentV2, sessionId),
 					}
 				: undefined
@@ -1011,9 +1049,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			}
 			commitFermentV2(withErrorTurns)
 			consecutiveErrorTurns = settledErrors
-			if (!queueFermentV2Turn(ctx, withErrorTurns, buildFermentV2ErrorContinuation(), "agent_error", "followUp")) {
-				resolveFermentV2Waiter(sessionId, withErrorTurns.id)
-			}
+			queueFermentV2TurnAfterSettled(ctx, withErrorTurns, buildFermentV2ErrorContinuation(), "agent_error", "followUp")
 			return
 		}
 		const capturedTodoState = matchesFermentV2(todoStateFor, capturedFermentV2, sessionId) ? todoStateFor : undefined
@@ -1178,21 +1214,14 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 
 			commitFermentV2(withContinuationCount)
 			emitEvaluation(withContinuationCount)
-			if (
-				queueFermentV2Turn(
-					ctx,
-					withContinuationCount,
-					buildFermentV2Continuation(unchanged > 0, continuationReason),
-					"evaluation",
-					"followUp",
-				)
-			) {
-				unchangedContinuationTurns = unchanged
-			} else {
-				// No turn was queued, so nothing will drive this Ferment V2 further; release
-				// any headless command still waiting on a terminal state.
-				resolveFermentV2Waiter(sessionId, withContinuationCount.id)
-			}
+			unchangedContinuationTurns = unchanged
+			queueFermentV2TurnAfterSettled(
+				ctx,
+				withContinuationCount,
+				buildFermentV2Continuation(unchanged > 0, continuationReason),
+				"evaluation",
+				"followUp",
+			)
 		})
 	})
 

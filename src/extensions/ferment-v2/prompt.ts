@@ -1,5 +1,5 @@
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
-import { FERMENT_V2_CONTEXT_MESSAGE_TYPE } from "./constants.js"
+import { FERMENT_V2_CONTEXT_MESSAGE_TYPE, GET_FERMENT_V2_TOOL_NAME, UPDATE_FERMENT_V2_TOOL_NAME } from "./constants.js"
 import type { FermentV2Lesson } from "./lessons.js"
 import type { SessionFermentV2 } from "./types.js"
 
@@ -73,7 +73,7 @@ Objective: ${JSON.stringify(fermentV2.objective)}
 
 Required:
 - Redirect current and future work toward revision ${fermentV2.revision}.
-- Reconcile the tactical todo list with the new objective, keep one item in progress, and leave the settled list visible until update_ferment_v2 succeeds.
+- Reconcile the tactical todo list with the new objective, keep one item in progress, and leave the settled list visible until ${UPDATE_FERMENT_V2_TOOL_NAME} succeeds.
 - Stop work useful only to revision ${supersededRevision}.
 - Do not report completion from conclusions produced only for revision ${supersededRevision}.`
 }
@@ -86,7 +86,7 @@ Objective:
 
 Execution:
 - First inventory supplied files, executables, tests, and constraints; create short action Todos for concrete work and verification.
-- Track the work with the tactical todo tools, keep one item in progress, and leave the settled list visible until update_ferment_v2 succeeds.
+- Track the work with the tactical todo tools, keep one item in progress, and leave the settled list visible until ${UPDATE_FERMENT_V2_TOOL_NAME} succeeds.
 ${EXECUTION_GUIDANCE}
 - Redirect current and future work toward this Ferment V2.
 - Continue until the Ferment V2 is complete or genuinely blocked.`
@@ -114,7 +114,7 @@ function renderFermentV2Context(fermentV2: SessionFermentV2, lessons: readonly F
 
 <objective_policy>
 - Treat the Ferment V2 JSON above as authoritative.
-- Do not call get_ferment_v2 while this context is present.
+- Do not call ${GET_FERMENT_V2_TOOL_NAME} while this context is present.
 </objective_policy>
 
 <todo_policy>
@@ -128,7 +128,7 @@ function renderFermentV2Context(fermentV2: SessionFermentV2, lessons: readonly F
 <completion_policy>
 - Settle every Todo.
 - Before completion, map every explicit Ferment V2 requirement to concrete current evidence. Missing or uncertain evidence means incomplete.
-- Call update_ferment_v2 only after receiving the final todo result that settles the list, as the only tool call in that response.
+- Call ${UPDATE_FERMENT_V2_TOOL_NAME} only after receiving the final todo result that settles the list, as the only tool call in that response.
 </completion_policy>`
 			: `Autonomous Ferment V2 continuation is disabled while status is ${fermentV2.status}.`
 	return `<kimchi_session_ferment_v2>\n${snapshot}\n${continuation}\n</kimchi_session_ferment_v2>`

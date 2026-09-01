@@ -1,3 +1,4 @@
+import { FERMENT_V2_EVALUATOR_USAGE_OP } from "./constants.js"
 import {
 	FERMENT_V2_COMPLETION_CONFIDENCES,
 	FERMENT_V2_EVALUATION_VERDICTS,
@@ -187,7 +188,7 @@ export function putFermentV2EvaluatorUsageEntry(
 ): FermentV2EvaluatorUsageJournalEntry {
 	return {
 		schemaVersion: 1,
-		op: "evaluator_usage",
+		op: FERMENT_V2_EVALUATOR_USAGE_OP,
 		sessionId,
 		fermentV2Id,
 		revision,
@@ -263,7 +264,7 @@ function parseFermentV2JournalEntry(value: unknown): FermentV2JournalEntry | und
 		}
 	}
 	if (
-		value.op === "evaluator_usage" &&
+		value.op === FERMENT_V2_EVALUATOR_USAGE_OP &&
 		isNonEmptyString(value.sessionId) &&
 		isNonEmptyString(value.fermentV2Id) &&
 		isPositiveInteger(value.revision)
@@ -272,7 +273,7 @@ function parseFermentV2JournalEntry(value: unknown): FermentV2JournalEntry | und
 		if (!usage) return undefined
 		return {
 			schemaVersion: 1,
-			op: "evaluator_usage",
+			op: FERMENT_V2_EVALUATOR_USAGE_OP,
 			sessionId: value.sessionId,
 			fermentV2Id: value.fermentV2Id,
 			revision: value.revision,

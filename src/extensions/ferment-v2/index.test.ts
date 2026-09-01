@@ -436,6 +436,7 @@ describe("Ferment V2 extension", () => {
 
 	it("ignores todo results from a non-visible scope", async () => {
 		await harness.command("ship it")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await harness.fire("tool_execution_end", {
 			type: "tool_execution_end",
 			toolName: "create_todos",
@@ -528,6 +529,7 @@ describe("Ferment V2 extension", () => {
 
 	it("preserves the todo checkpoint but requires reconciliation after an edit", async () => {
 		await harness.command("original")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await harness.fire("tool_execution_end", {
 			type: "tool_execution_end",
 			toolName: "mark_todo",
@@ -587,6 +589,72 @@ describe("Ferment V2 extension", () => {
 				input: { status: "complete", completion_confidence: "tested" },
 			}),
 		).toBeUndefined()
+	})
+
+	it("ignores a Todo result from the superseded turn after an edit", async () => {
+		await harness.command("original objective")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await harness.command("edit edited objective")
+
+		await harness.fire("tool_execution_end", {
+			type: "tool_execution_end",
+			toolName: "mark_todo",
+			isError: false,
+			result: {
+				details: {
+					schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+					scope: { kind: "global" },
+					todos: [{ id: 1, content: "Stale work", status: "completed", note: "Evidence: stale" }],
+					updatedAt: "2026-08-03T00:00:01.000Z",
+				},
+			},
+		})
+
+		await harness.fire("tool_execution_end", {
+			type: "tool_execution_end",
+			toolName: "bash",
+			isError: false,
+			result: {},
+		})
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
+		evaluateFermentV2Mock.mockClear()
+		await settleFermentV2(harness, "continue")
+
+		expect(evaluateFermentV2Mock).toHaveBeenCalledWith(
+			expect.objectContaining({ todos: [], lessons: [] }),
+			expect.anything(),
+		)
+		expect(harness.currentFermentV2()).toMatchObject({ revision: 2, unchangedContinuationTurns: 1 })
+	})
+
+	it("ignores a stale turn_end from an edited revision for accounting and interruption", async () => {
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(1_000)
+		await harness.command("original objective")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1_000 })
+
+		dateNow.mockReturnValue(2_000)
+		await harness.command("edit edited objective")
+		expect(harness.currentFermentV2()).toMatchObject({
+			revision: 2,
+			status: "active",
+			tokensUsed: 0,
+			timeUsedMs: 1_000,
+		})
+
+		dateNow.mockReturnValue(5_000)
+		await harness.fire("turn_end", terminalTurn("aborted", { input: 80, output: 20 }))
+		expect(harness.currentFermentV2()).toMatchObject({
+			revision: 2,
+			status: "active",
+			tokensUsed: 0,
+			timeUsedMs: 1_000,
+		})
+
+		evaluateFermentV2Mock.mockClear()
+		await settleFermentV2(harness, "continue")
+		expect(evaluateFermentV2Mock).toHaveBeenCalledOnce()
+		expect(harness.currentFermentV2()).toMatchObject({ revision: 2, status: "active" })
+		expect(harness.currentFermentV2()?.consecutiveErrorTurns).toBeUndefined()
 	})
 
 	it("pauses, resumes, clears, and restores the clear tombstone", async () => {
@@ -931,6 +999,70 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("agent_settled", { type: "agent_settled" })
 		expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
 		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("defers a settled continuation until an interactive prompt can claim the gap", async () => {
+		await harness.command("keep going")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		harness.sendMessage.mockClear()
+
+		const { release, settled } = await holdEvaluation(harness)
+		queueMicrotask(() => harness.setIdle(false))
+		release({
+			verdict: "continue",
+			reason: "More work is required.",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+		})
+		await settled
+		await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("evaluates the selected session branch instead of only the latest AgentEnd messages", async () => {
+		await harness.command("prove the objective")
+		const root = harness.branch.at(-1)
+		if (!root) throw new Error("expected Ferment V2 journal root")
+		const priorEvidence = messageEntry(
+			{
+				role: "toolResult",
+				toolCallId: "old-tool",
+				toolName: "bash",
+				content: [{ type: "text", text: "retained evidence from an earlier turn" }],
+				isError: false,
+				timestamp: Date.now(),
+			},
+			root.id,
+		)
+		const latestMessage = messageEntry(
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "latest turn" }],
+				stopReason: "stop",
+				usage: { input: 1, output: 1 },
+				timestamp: Date.now(),
+			},
+			priorEvidence.id,
+		)
+		harness.setBranch([...harness.branch, priorEvidence, latestMessage])
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		evaluateFermentV2Mock.mockClear()
+
+		await harness.fire("agent_end", { type: "agent_end", messages: [] })
+		await harness.fire("agent_settled", { type: "agent_settled" })
+
+		expect(evaluateFermentV2Mock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				messages: expect.arrayContaining([
+					expect.objectContaining({
+						role: "toolResult",
+						content: [{ type: "text", text: "retained evidence from an earlier turn" }],
+					}),
+				]),
+			}),
+			expect.anything(),
+		)
 	})
 
 	it("does not continue when user input arrives during evaluation", async () => {
@@ -1313,6 +1445,7 @@ describe("Ferment V2 extension", () => {
 
 	it("pauses after three continuation turns without recorded todo progress", async () => {
 		await harness.command("keep going")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await harness.fire("tool_execution_end", {
 			type: "tool_execution_end",
 			toolName: "create_todos",
@@ -1501,6 +1634,7 @@ describe("Ferment V2 extension", () => {
 
 	it("counts settling a todo as progress and resets the no-progress counter", async () => {
 		await harness.command("keep going")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await harness.fire("tool_execution_end", {
 			type: "tool_execution_end",
 			toolName: "create_todos",
@@ -1551,6 +1685,7 @@ describe("Ferment V2 extension", () => {
 		{ field: "note", value: "revised" },
 	] as const)("counts active Todo $field revisions as progress", async ({ field, value }) => {
 		await harness.command("keep going")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await harness.fire("tool_execution_end", {
 			type: "tool_execution_end",
 			toolName: "create_todos",
@@ -1595,6 +1730,7 @@ describe("Ferment V2 extension", () => {
 
 	it("does not count reordering unchanged Todos or lessons as progress", async () => {
 		await harness.command("keep going")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() })
 		await harness.fire("tool_execution_end", {
 			type: "tool_execution_end",
 			toolName: "create_todos",
@@ -1868,8 +2004,8 @@ describe("Ferment V2 extension", () => {
 		harness.sendMessage.mockClear()
 
 		const budgetTurn = terminalTurn("stop", { input: 80, output: 20 })
-		await harness.fire("agent_end", { type: "agent_end", messages: [budgetTurn.message] })
 		await harness.fire("turn_end", budgetTurn)
+		await harness.fire("agent_end", { type: "agent_end", messages: [budgetTurn.message] })
 		harness.appendEntry.mockClear()
 		evaluateFermentV2Mock.mockClear()
 		await harness.fire("agent_settled", { type: "agent_settled" })
@@ -2428,7 +2564,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 			for (const handler of handlers.get(event) ?? []) {
 				result = await handler(payload as never, ctx)
 			}
-			if (event === "session_start") {
+			if (event === "session_start" || event === "agent_settled") {
 				await new Promise((resolve) => setTimeout(resolve, 0))
 			}
 			return result
@@ -2549,6 +2685,16 @@ function customEntry(customType: string, data: unknown): SessionEntry {
 		customType,
 		data,
 	} as SessionEntry
+}
+
+function messageEntry(message: Record<string, unknown>, parentId: string | null): SessionEntry {
+	return {
+		type: "message",
+		id: randomUUID(),
+		parentId,
+		timestamp: new Date().toISOString(),
+		message,
+	} as unknown as SessionEntry
 }
 
 function compactionEntry(summary: string): SessionEntry {

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
 import type { TodoItem } from "../todos/types.js"
-import { type FermentV2Lesson, MAX_FERMENT_V2_LESSONS, updateFermentV2Lessons } from "./lessons.js"
+import {
+	type FermentV2Lesson,
+	MAX_FERMENT_V2_LESSON_CHARS,
+	MAX_FERMENT_V2_LESSONS,
+	updateFermentV2Lessons,
+} from "./lessons.js"
 
 function todo(id: number, status: TodoItem["status"], note?: string): TodoItem {
 	return { id, content: `Todo ${id}`, status, ...(note ? { note } : {}) }
@@ -23,6 +28,14 @@ describe("Ferment V2 lessons", () => {
 		).toEqual([
 			{ todoId: 1, kind: "decision", text: "Focused tests passed" },
 			{ todoId: 2, kind: "dead-end", text: "Provider credentials are unavailable" },
+		])
+	})
+
+	it("caps oversized terminal notes while preserving their kind", () => {
+		const note = `Evidence: ${"x".repeat(MAX_FERMENT_V2_LESSON_CHARS + 1)}TAIL`
+
+		expect(updateFermentV2Lessons([], [todo(1, "completed", note)])).toEqual([
+			{ todoId: 1, kind: "evidence", text: "x".repeat(MAX_FERMENT_V2_LESSON_CHARS) },
 		])
 	})
 
