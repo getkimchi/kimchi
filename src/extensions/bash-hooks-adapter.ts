@@ -15,8 +15,8 @@ export default function bashHooksAdapterExtension(pi: ExtensionAPI): void {
 		if (event.toolName !== "bash") return
 		const command = event.input.command
 		if (typeof command !== "string") return
-		const cwd =
-			typeof (event.input as { cwd?: unknown }).cwd === "string" ? (event.input as { cwd: string }).cwd : process.cwd()
+		const inputCwd = (event.input as { cwd?: unknown }).cwd
+		const cwd = typeof inputCwd === "string" ? inputCwd : process.cwd()
 		const hooked = applyEnabledBashHooks(command, cwd)
 		if (hooked.block) return { block: true, reason: hooked.reason }
 		if (hooked.command !== command) event.input.command = hooked.command
@@ -35,10 +35,21 @@ export default function bashHooksAdapterExtension(pi: ExtensionAPI): void {
 			}
 		}
 		if (hooked.command === event.command) return
-		// Provide custom operations that substitute the rewritten command
+		// Provide custom operations that substitute the rewritten command.
+		// Preserve any shellCommandPrefix prepended by the upstream (e.g. alias
+		// setup) — the prepared command may be `<prefix>\n<original>`, so we
+		// swap only the original portion and leave the prefix intact.
 		const local = createLocalBashOperations()
 		const operations: BashOperations = {
-			exec: (_cmd, cwd, options) => local.exec(hooked.command, cwd, options),
+			exec: (cmd, cwd, options) => {
+				const prepared =
+					cmd === event.command
+						? hooked.command
+						: cmd.endsWith(`\n${event.command}`)
+							? `${cmd.slice(0, -event.command.length)}${hooked.command}`
+							: hooked.command
+				return local.exec(prepared, cwd, options)
+			},
 		}
 		return { operations }
 	})

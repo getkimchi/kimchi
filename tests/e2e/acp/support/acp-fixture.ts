@@ -355,7 +355,6 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				// session boots without background HTTP or synchronous tar/exec
 				// work. Keeps the ACP e2e hermetic and deterministic.
 				KIMCHI_NO_UPDATE_CHECK: "1",
-				KIMCHI_RTK_AUTO_INSTALL: "0",
 				KIMCHI_ROUTER_ENDPOINT: fake.baseUrl,
 			},
 			cwd: workDir,
