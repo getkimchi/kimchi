@@ -30,7 +30,7 @@ Every in-session payload includes:
 
 | Attribute | Value |
 |-----------|-------|
-| `session.id` | Shared root UUID across all agents in the process |
+| `session.id` | Per-process telemetry session id — shared by the main agent and in-process subagents, so events roll up under one backend session; not a per-agent id, and out-of-process agents (remote, session-review subprocesses) have their own |
 | `session.parent_id` | Spawning (parent) session's pi session id — present only on events emitted from inside a subagent run |
 | `client` | `"pi"` |
 | `source` | Where the event originated (e.g. `"cli"`) |
