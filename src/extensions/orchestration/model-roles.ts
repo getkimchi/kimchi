@@ -50,6 +50,7 @@ export { modelIdFromRef, splitModelRef } from "./model-ref-utils.js"
 
 import { readConfigSetting, writeConfigSetting } from "../../config/settings.js"
 import { getProcessOrchestratorRef } from "../kimchi-process.js"
+import { AUTO_MODEL_REF } from "../router/constants.js"
 import { modelIdFromRef, splitModelRef } from "./model-ref-utils.js"
 
 /** Task-type affinity tag used to match an agent persona to a model role. */
@@ -92,14 +93,14 @@ const ROLE_KEYS: readonly (keyof Omit<ModelRoles, "compactor">)[] = ["orchestrat
 
 /** Hardcoded default model-to-role assignment. Users override via /multi-model. */
 export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
-	orchestrator: "kimchi-dev/kimi-k2.7",
-	planner: "kimchi-dev/kimi-k2.7",
-	builder: ["kimchi-dev/minimax-m3"],
-	reviewer: ["kimchi-dev/kimi-k2.7"],
-	explorer: "kimchi-dev/deepseek-v4-flash",
-	researcher: "kimchi-dev/minimax-m3",
-	judge: ["kimchi-dev/kimi-k2.7"],
-	compactor: "kimchi-dev/minimax-m3",
+	orchestrator: AUTO_MODEL_REF,
+	planner: AUTO_MODEL_REF,
+	builder: [AUTO_MODEL_REF],
+	reviewer: [AUTO_MODEL_REF],
+	explorer: AUTO_MODEL_REF,
+	researcher: AUTO_MODEL_REF,
+	judge: [AUTO_MODEL_REF],
+	compactor: AUTO_MODEL_REF,
 }
 
 export interface ModelRolesWarning {

@@ -8,31 +8,38 @@ import {
 } from "./orchestrator-roles.js"
 
 describe("resolveModelRoleNames", () => {
-	it("returns orchestrator and planner for default kimi-k2.7 orchestrator", () => {
-		expect(resolveModelRoleNames("kimi-k2.7", DEFAULT_MODEL_ROLES)).toEqual(["orchestrator", "planner", "reviewer"])
+	it("returns every default orchestration role for auto", () => {
+		expect(resolveModelRoleNames("auto", DEFAULT_MODEL_ROLES)).toEqual([
+			"orchestrator",
+			"planner",
+			"builder",
+			"reviewer",
+			"explorer",
+			"researcher",
+		])
 	})
 })
 
 describe("orchestratorShouldReceivePhaseGuidelines", () => {
 	it("never includes build worker guidelines", () => {
-		expect(orchestratorShouldReceivePhaseGuidelines("build", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
+		expect(orchestratorShouldReceivePhaseGuidelines("build", "auto", DEFAULT_MODEL_ROLES)).toBe(false)
 	})
 
 	it("includes review guidelines when orchestrator owns reviewer", () => {
-		expect(orchestratorShouldReceivePhaseGuidelines("review", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(true)
+		expect(orchestratorShouldReceivePhaseGuidelines("review", "auto", DEFAULT_MODEL_ROLES)).toBe(true)
 	})
 
 	it("omits review guidelines when orchestrator lacks reviewer", () => {
 		const roles = { ...DEFAULT_MODEL_ROLES, reviewer: "anthropic/claude-opus-4-7" }
-		expect(orchestratorShouldReceivePhaseGuidelines("review", "kimi-k2.7", roles)).toBe(false)
+		expect(orchestratorShouldReceivePhaseGuidelines("review", "auto", roles)).toBe(false)
 	})
 
 	it("includes plan guidelines when orchestrator owns planner", () => {
-		expect(orchestratorShouldReceivePhaseGuidelines("plan", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(true)
+		expect(orchestratorShouldReceivePhaseGuidelines("plan", "auto", DEFAULT_MODEL_ROLES)).toBe(true)
 	})
 
-	it("omits explore guidelines when orchestrator lacks explorer", () => {
-		expect(orchestratorShouldReceivePhaseGuidelines("explore", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
+	it("includes explore guidelines when orchestrator owns explorer", () => {
+		expect(orchestratorShouldReceivePhaseGuidelines("explore", "auto", DEFAULT_MODEL_ROLES)).toBe(true)
 	})
 
 	it("omits guidelines when roles are missing", () => {
@@ -42,7 +49,7 @@ describe("orchestratorShouldReceivePhaseGuidelines", () => {
 
 describe("shouldDelegatePlanning", () => {
 	it("returns false when orchestrator is the planner model", () => {
-		expect(shouldDelegatePlanning("kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
+		expect(shouldDelegatePlanning("auto", DEFAULT_MODEL_ROLES)).toBe(false)
 	})
 
 	it("returns true when orchestrator is not the planner model", () => {
@@ -71,7 +78,7 @@ describe("shouldDelegatePlanning", () => {
 
 describe("shouldDelegateReview", () => {
 	it("returns false when orchestrator is the reviewer model", () => {
-		expect(shouldDelegateReview("kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
+		expect(shouldDelegateReview("auto", DEFAULT_MODEL_ROLES)).toBe(false)
 	})
 
 	it("returns true when orchestrator is not the reviewer model", () => {

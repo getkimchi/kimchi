@@ -701,7 +701,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		})
 		ctx.modelRegistry = {
 			find: vi.fn((provider: string, modelId: string) =>
-				provider === "kimchi-dev" && modelId === "minimax-m3" ? { provider, id: modelId } : undefined,
+				provider === "kimchi-dev" && modelId === "auto" ? { provider, id: modelId } : undefined,
 			),
 		} as unknown as ExtensionContext["modelRegistry"]
 
@@ -715,7 +715,7 @@ describe("maybeTriggerFermentCompaction", () => {
 				force: true,
 				// 5% of the 100k window is 5k — clamped up to the 20k floor.
 				keepRecentTokens: 20_000,
-				model: { provider: "kimchi-dev", id: "minimax-m3" },
+				model: { provider: "kimchi-dev", id: "auto" },
 				thinkingLevel: "off",
 			}),
 		)

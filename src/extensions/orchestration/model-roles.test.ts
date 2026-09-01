@@ -43,7 +43,7 @@ afterEach(() => {
 	resetModelMetadataCache()
 })
 
-const DEFAULT_COMPACTOR_MODEL = "kimchi-dev/minimax-m3"
+const DEFAULT_COMPACTOR_MODEL = "kimchi-dev/auto"
 const CUSTOM_COMPACTOR_MODEL = "kimchi-dev/nemotron-3-ultra-fp4"
 
 describe("parseModelRoles", () => {
@@ -244,35 +244,20 @@ describe("modelIdFromRef", () => {
 })
 
 describe("DEFAULT_MODEL_ROLES", () => {
-	it("orchestrator is kimi-k2.7", () => {
-		expect(DEFAULT_MODEL_ROLES.orchestrator).toBe("kimchi-dev/kimi-k2.7")
-	})
-
-	it("builder pool contains the build role but not nemotron", () => {
-		const builders = normalizeRoleModels(DEFAULT_MODEL_ROLES.builder)
-		expect(builders).toContain("kimchi-dev/minimax-m3")
-		expect(builders).not.toContain("kimchi-dev/nemotron-3-ultra-fp4")
-	})
-
-	it("reviewer pool contains kimi-k2.7 only", () => {
-		const reviewers = normalizeRoleModels(DEFAULT_MODEL_ROLES.reviewer)
-		expect(reviewers).toContain("kimchi-dev/kimi-k2.7")
-		expect(reviewers).not.toContain("kimchi-dev/minimax-m3")
-	})
-
-	it("explorer pool contains deepseek-v4-flash", () => {
-		const explorers = normalizeRoleModels(DEFAULT_MODEL_ROLES.explorer)
-		expect(explorers).toContain("kimchi-dev/deepseek-v4-flash")
-	})
-
-	it("planner pool contains kimi-k2.7", () => {
-		const planners = normalizeRoleModels(DEFAULT_MODEL_ROLES.planner)
-		expect(planners).toContain("kimchi-dev/kimi-k2.7")
-	})
-
-	it("judge defaults to orchestrator model", () => {
-		const judges = normalizeRoleModels(DEFAULT_MODEL_ROLES.judge)
-		expect(judges).toContain(DEFAULT_MODEL_ROLES.orchestrator)
+	it("routes every role through kimchi-dev/auto", () => {
+		expect(Object.keys(DEFAULT_MODEL_ROLES)).toEqual([
+			"orchestrator",
+			"planner",
+			"builder",
+			"reviewer",
+			"explorer",
+			"researcher",
+			"judge",
+			"compactor",
+		])
+		for (const value of Object.values(DEFAULT_MODEL_ROLES)) {
+			expect(normalizeRoleModels(value)).toEqual(["kimchi-dev/auto"])
+		}
 	})
 
 	it("all defaults contain a provider prefix", () => {
@@ -370,7 +355,7 @@ describe("saveModelRoles", () => {
 })
 
 describe("validateModelRoles", () => {
-	const available = new Set(["kimi-k2.6", "kimi-k2.7", "minimax-m2.7", "minimax-m3", "deepseek-v4-flash"])
+	const available = new Set(["auto", "kimi-k2.6", "kimi-k2.7", "minimax-m2.7", "minimax-m3", "deepseek-v4-flash"])
 
 	it("returns no unavailable roles when all defaults are available", () => {
 		const result = validateModelRoles(DEFAULT_MODEL_ROLES, available)
@@ -491,11 +476,7 @@ describe("saveModelRoles", () => {
 describe("getAllowedMultiModelRefs", () => {
 	it("returns sorted unique refs for default roles", () => {
 		applyRoleAugmentation(() => ({ ...DEFAULT_MODEL_ROLES }))
-		expect(getAllowedMultiModelRefs()).toEqual([
-			"kimchi-dev/deepseek-v4-flash",
-			"kimchi-dev/kimi-k2.7",
-			"kimchi-dev/minimax-m3",
-		])
+		expect(getAllowedMultiModelRefs()).toEqual(["kimchi-dev/auto"])
 	})
 
 	it("de-duplicates refs shared across multiple roles", () => {
@@ -559,7 +540,7 @@ describe("getAllowedMultiModelRefs", () => {
 })
 
 describe("compactor role", () => {
-	it("defaults to nemotron", () => {
+	it("defaults to auto", () => {
 		expect(DEFAULT_MODEL_ROLES.compactor).toBe(DEFAULT_COMPACTOR_MODEL)
 	})
 
@@ -583,7 +564,7 @@ describe("compactor role", () => {
 	})
 
 	it("validateModelRoles does not flag the default compactor when available", () => {
-		const result = validateModelRoles(DEFAULT_MODEL_ROLES, new Set(["minimax-m3"]))
+		const result = validateModelRoles(DEFAULT_MODEL_ROLES, new Set(["auto"]))
 		expect(result.unavailable.some((u) => u.role === "compactor")).toBe(false)
 	})
 

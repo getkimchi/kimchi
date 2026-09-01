@@ -55,7 +55,7 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("shows Your roles subsection with orchestrator roles", () => {
 		const result = resolveAsString({
-			currentModelId: "kimi-k2.7",
+			currentModelId: "auto",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
@@ -131,7 +131,7 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("instructs orchestrator to write plans itself when orchestrator is planner", () => {
 		const result = resolveAsString({
-			currentModelId: "kimi-k2.7",
+			currentModelId: "auto",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
@@ -160,9 +160,13 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("renders tier and description for models in Your Team", () => {
 		const result = resolveAsString({
-			currentModelId: "minimax-m3",
+			currentModelId: "auto",
 			registry,
-			roles: DEFAULT_MODEL_ROLES,
+			roles: {
+				...DEFAULT_MODEL_ROLES,
+				builder: "kimchi-dev/minimax-m3",
+				explorer: "kimchi-dev/deepseek-v4-flash",
+			},
 		})
 		expect(result).toContain("Tier: heavy")
 		expect(result).toContain("Tier: light")
@@ -254,7 +258,7 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("allows self-review when orchestrator has reviewer role", () => {
 		const result = resolveAsString({
-			currentModelId: "kimi-k2.7",
+			currentModelId: "auto",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
@@ -342,7 +346,7 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("replaces 'self-validate' with 'validate it by re-reading'", () => {
 		const result = resolveAsString({
-			currentModelId: "kimi-k2.7",
+			currentModelId: "auto",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})

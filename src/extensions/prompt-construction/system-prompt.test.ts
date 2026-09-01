@@ -193,7 +193,7 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "kimi-k2.7",
+				currentModelId: "auto",
 				roles: DEFAULT_MODEL_ROLES,
 				mode: "orchestrator",
 			})
@@ -349,15 +349,15 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "kimi-k2.7",
+				currentModelId: "auto",
 				registry,
 				roles: DEFAULT_MODEL_ROLES,
 				mode: "orchestrator",
 			})
 			expect(result).toContain("## Phase Management")
 			expect(result).toContain("During **plan** phase")
-			expect(result).not.toContain("During **explore** phase")
-			expect(result).not.toContain("During **research** phase")
+			expect(result).toContain("During **explore** phase")
+			expect(result).toContain("During **research** phase")
 			expect(result).not.toContain("During **build** phase")
 			expect(result).toContain("During **review** phase")
 		})
