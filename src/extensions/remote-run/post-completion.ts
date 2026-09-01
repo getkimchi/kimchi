@@ -23,7 +23,7 @@ import { SANDBOX_USER } from "../teleport/provisioning/constants.js"
 import { runRsync } from "../teleport/provisioning/rsync-runner.js"
 import { DIFF_RSYNC_EXCLUDES } from "../teleport/provisioning/sync-local-changes.js"
 
-const REVIEW = "Read the result and continue locally"
+const REVIEW = "Review the result and continue locally"
 const SYNC = "Sync remote changes"
 const CUSTOM = "Type your own action"
 const DONE = "Done"
@@ -204,13 +204,39 @@ async function syncRemoteChanges(ctx: ExtensionContext, remoteSession?: RemoteSe
  * Completes the ferment after a successful cloud execution + sync.
  * The ferment was paused when the cloud agent was spawned; syncing means
  * the user accepted the remote work, so we mark the ferment as complete.
+ *
+ * The ferment was never locally activated (no phase ran locally) — the cloud
+ * agent handled everything. So we resume (un-pause), skip all non-terminal
+ * phases (they were executed in the cloud), then complete the ferment.
  */
 function completeFerment(fermentId?: string): void {
 	if (!fermentId) return
 	const applyAndPersist = createApplyAndPersist(defaultFermentRuntime)
-	const outcome = applyAndPersist(fermentId, { type: "complete_ferment", finalSummary: "Executed in cloud sandbox" })
-	if (outcome.ok) {
-		defaultFermentRuntime.setActive(outcome.ferment)
+	// Resume first — complete_ferment is blocked while paused.
+	const resumeOutcome = applyAndPersist(fermentId, { type: "resume" })
+	if (!resumeOutcome.ok) return
+	let ferment = resumeOutcome.ferment
+	// Skip all non-terminal phases — they were executed in the cloud.
+	for (const phase of ferment.phases) {
+		if (!["completed", "skipped", "failed"].includes(phase.status)) {
+			const skipOutcome = applyAndPersist(fermentId, {
+				type: "skip_phase",
+				phaseId: phase.id,
+				reason: "Executed in cloud sandbox",
+			})
+			if (skipOutcome.ok) ferment = skipOutcome.ferment
+		}
+	}
+	// Now complete the ferment — all phases are terminal.
+	const completeOutcome = applyAndPersist(fermentId, {
+		type: "complete_ferment",
+		finalSummary: "Executed in cloud sandbox",
+	})
+	if (completeOutcome.ok) {
+		defaultFermentRuntime.setActive(completeOutcome.ferment)
+	} else {
+		// Fall back to the resumed/skipped state if complete failed.
+		defaultFermentRuntime.setActive(ferment)
 	}
 }
 

@@ -275,7 +275,12 @@ describe("handleRemoteCompletion", () => {
 		beforeEach(() => {
 			mockApplyAndPersist.mockReturnValue({
 				ok: true,
-				ferment: { id: fermentId, name: "Cloud Ferment", status: "paused" },
+				ferment: {
+					id: fermentId,
+					name: "Cloud Ferment",
+					status: "paused",
+					phases: [{ id: "phase-1", name: "Phase 1", status: "planned", steps: [] }],
+				},
 			})
 		})
 
@@ -289,6 +294,13 @@ describe("handleRemoteCompletion", () => {
 				remoteSession: { workspaceId: "ws-1", sessionName: "s1", wsUrl: "wss://w", host: "w", cwd: "/home/sandbox/s1" },
 			})
 
+			// completeFerment resumes, skips non-terminal phases, then completes
+			expect(mockApplyAndPersist).toHaveBeenCalledWith(fermentId, { type: "resume" })
+			expect(mockApplyAndPersist).toHaveBeenCalledWith(fermentId, {
+				type: "skip_phase",
+				phaseId: "phase-1",
+				reason: "Executed in cloud sandbox",
+			})
 			expect(mockApplyAndPersist).toHaveBeenCalledWith(fermentId, {
 				type: "complete_ferment",
 				finalSummary: "Executed in cloud sandbox",
@@ -326,6 +338,7 @@ describe("handleRemoteCompletion", () => {
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", { fermentId })
 
+			expect(mockApplyAndPersist).toHaveBeenCalledWith(fermentId, { type: "resume" })
 			expect(mockApplyAndPersist).toHaveBeenCalledWith(fermentId, {
 				type: "complete_ferment",
 				finalSummary: "Executed in cloud sandbox",
