@@ -23,7 +23,7 @@ import { SANDBOX_USER } from "../teleport/provisioning/constants.js"
 import { runRsync } from "../teleport/provisioning/rsync-runner.js"
 import { DIFF_RSYNC_EXCLUDES } from "../teleport/provisioning/sync-local-changes.js"
 
-const REVIEW = "Review the result and continue locally"
+const REVIEW = "Continue locally with the result"
 const SYNC = "Sync remote changes"
 const CUSTOM = "Type your own action"
 const DONE = "Done"

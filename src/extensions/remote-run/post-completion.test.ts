@@ -63,7 +63,7 @@ describe("handleRemoteCompletion", () => {
 	it("always injects transcript path into steer message when user picks Review", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
-		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Review the result and continue locally")
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Continue locally with the result")
 
 		await handleRemoteCompletion(pi, ctx, "remote result text", "plan", {
 			transcriptPath: "/tmp/transcripts/agent-1.jsonl",
@@ -124,7 +124,7 @@ describe("handleRemoteCompletion", () => {
 	it("injects result even when transcriptPath is undefined", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
-		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Review the result and continue locally")
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Continue locally with the result")
 
 		await handleRemoteCompletion(pi, ctx, "remote result", "plan")
 
@@ -311,7 +311,7 @@ describe("handleRemoteCompletion", () => {
 		it("resumes the ferment when user picks Review and confirms", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Review the result and continue locally")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Continue locally with the result")
 			;(ctx.ui.confirm as ReturnType<typeof vi.fn>).mockResolvedValue(true)
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", { fermentId })
@@ -323,7 +323,7 @@ describe("handleRemoteCompletion", () => {
 		it("does not resume the ferment when user picks Review but declines confirm", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Review the result and continue locally")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Continue locally with the result")
 			;(ctx.ui.confirm as ReturnType<typeof vi.fn>).mockResolvedValue(false)
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", { fermentId })
@@ -360,7 +360,7 @@ describe("handleRemoteCompletion", () => {
 		it("does not call applyAndPersist when no fermentId is provided", async () => {
 			const pi = makePi()
 			const ctx = makeCtx()
-			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Review the result and continue locally")
+			;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Continue locally with the result")
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "plan")
 
