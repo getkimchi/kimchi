@@ -129,7 +129,15 @@ describe("context-assembly", () => {
 	})
 
 	it("sectionSizes attributes prompt size by ## section with exact arithmetic", () => {
-		const prompt = ["HEADER TEXT", "## Rules", "no rules files", "## Available Tools", "read, bash", "## Debugger (DAP)", "debugger guidance"].join("\n")
+		const prompt = [
+			"HEADER TEXT",
+			"## Rules",
+			"no rules files",
+			"## Available Tools",
+			"read, bash",
+			"## Debugger (DAP)",
+			"debugger guidance",
+		].join("\n")
 		const sections = sectionSizes(prompt)
 		expect(sections.reduce((sum, s) => sum + s.chars, 0)).toBe(prompt.length)
 		expect(sections.map((s) => s.name)).toEqual(["(intro)", "## Rules", "## Available Tools", "## Debugger (DAP)"])
@@ -139,7 +147,9 @@ describe("context-assembly", () => {
 
 	it("sectionSizes collapses a headerless prompt into the intro bucket", () => {
 		const sections = sectionSizes("HEADER TEXT")
-		expect(sections).toEqual([{ name: "(intro)", chars: "HEADER TEXT".length, tokensEstimated: Math.ceil("HEADER TEXT".length / 4) }])
+		expect(sections).toEqual([
+			{ name: "(intro)", chars: "HEADER TEXT".length, tokensEstimated: Math.ceil("HEADER TEXT".length / 4) },
+		])
 	})
 
 	it("includes the section size table on composition entries", () => {
