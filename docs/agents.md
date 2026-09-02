@@ -104,7 +104,8 @@ You are a senior X engineer who...
   tools. `false` disables them. A comma-list whitelists specific names.
 - **`skills`** — `true` (default) inherits all parent skills. A comma-list
   preloads named skills from the project's skill paths into the system prompt
-  (useful when the agent needs reference material).
+  (useful when the agent needs reference material). Project skills in the nearest
+  `.kimchi/skills` directory are available automatically.
 - **`memory`** — Enables a persistent directory keyed by agent name and scope:
   - `user` → `~/.config/kimchi/harness/agent-memory/<name>/`
   - `project` → `<cwd>/.kimchi/agent-memory/<name>/`

@@ -2,12 +2,12 @@ import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import {
 	Container,
 	Key,
+	matchesKey,
 	type SelectItem,
 	SelectList,
 	type SelectListLayoutOptions,
 	Spacer,
 	Text,
-	matchesKey,
 	truncateToWidth,
 } from "@earendil-works/pi-tui"
 import { readSurveySeenAt, writeSurveySeenAt } from "../../config.js"
@@ -63,7 +63,7 @@ export function markInitialSurveySeen(options?: { configPath?: string; now?: () 
 }
 
 export async function showInitialSurvey(ctx: ExtensionContext, options: ShowInitialSurveyOptions): Promise<boolean> {
-	if (!ctx.hasUI) return false
+	if (ctx.mode !== "tui") return false
 	if (hasInitialSurveyBeenSeen(options.configPath)) return false
 	shownInProcess.add(INITIAL_SURVEY.id)
 	let markedRendered = false
@@ -106,7 +106,7 @@ const SURVEY_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 export class InitialSurveyComponent extends Container {
 	private readonly titleText: Text
 	private readonly helpText: Text
-	private readonly footerText: Text
+	private readonly hintText: Text
 	private readonly bottomRule: Text
 	private readonly selectList: SelectList
 
@@ -119,7 +119,7 @@ export class InitialSurveyComponent extends Container {
 		super()
 		this.titleText = new Text("", 0, 0)
 		this.helpText = new Text("", 0, 0)
-		this.footerText = new Text(this.formatFooter(), 0, 0)
+		this.hintText = new Text(this.formatHint(), 0, 0)
 		this.bottomRule = new Text("", 0, 0)
 		this.selectList = new SelectList(
 			this.items(),
@@ -136,7 +136,7 @@ export class InitialSurveyComponent extends Container {
 		this.addChild(new Spacer(1))
 		this.addChild(this.selectList)
 		this.addChild(new Spacer(1))
-		this.addChild(this.footerText)
+		this.addChild(this.hintText)
 		this.addChild(this.bottomRule)
 	}
 
@@ -190,7 +190,7 @@ export class InitialSurveyComponent extends Container {
 		}
 	}
 
-	private formatFooter(): string {
+	private formatHint(): string {
 		const dim = (text: string) => this.theme.fg("dim", text)
 		const muted = (text: string) => this.theme.fg("muted", text)
 		return `${dim("[↑]")}${dim("[↓]")} ${muted("move")}  ${dim("·")}  ${dim("[↵]")} ${muted("select")}`

@@ -3,11 +3,11 @@ import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works
 import { getActiveFerment } from "../ferment/index.js"
 import { trackSurveyAnswered, trackSurveyDismissed, trackSurveyShown } from "../telemetry/index.js"
 import {
+	hasInitialSurveyBeenSeen,
 	INITIAL_SURVEY,
 	type InitialSurveyAnswerId,
 	type InitialSurveyDismissReason,
 	type InitialSurveyTrigger,
-	hasInitialSurveyBeenSeen,
 	showInitialSurvey,
 } from "./survey.js"
 
@@ -37,7 +37,7 @@ export default function surveysExtension(options: SurveysExtensionOptions = {}) 
 				pendingSurveyTrigger = undefined
 				return
 			}
-			if (!ctx.hasUI) return
+			if (ctx.mode !== "tui") return
 			const trigger = pendingSurveyTrigger
 			surveyShowing = true
 			const submissionId = randomUUID()

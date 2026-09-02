@@ -1,13 +1,18 @@
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
+import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
+import mcpAdapter from "./index.js"
 import { executeCall, executeDescribe, executeSearch } from "./proxy-modes.js"
 import type { McpExtensionState } from "./state.js"
 import type { DirectToolSpec, ToolMetadata } from "./types.js"
-import mcpAdapter from "./index.js"
 
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
+	rawPlatform: "linux",
+	cpuArchitecture: "x64",
+	shell: "/bin/bash",
+	osRelease: "6.1.0-test",
+	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
 	username: "testuser",
 	homeDir: "/home/testuser",
 	cwd: "/home/testuser/project",
@@ -63,11 +68,7 @@ afterEach(() => {
 // Helpers for inject-path tests
 // ---------------------------------------------------------------------------
 
-function makeMetadata(
-	rawName: string,
-	serverName: string,
-	prefix: "server" | "none" | "short",
-): ToolMetadata {
+function makeMetadata(rawName: string, serverName: string, prefix: "server" | "none" | "short"): ToolMetadata {
 	// Mirrors what buildToolMetadata in tool-metadata.ts produces
 	const p =
 		prefix === "none"
@@ -101,7 +102,7 @@ function makeState(meta: ToolMetadata, serverName: string): McpExtensionState {
 }
 
 describe("mcp adapter system prompt block", () => {
-	it("registers tool and MCP discovery instructions with the extension that owns mcp", async () => {
+	it("does not inject a dedicated MCP discovery block (consolidated into core ## Tool Selection)", async () => {
 		vi.stubEnv("MCP_DIRECT_TOOLS", "__none__")
 		const pi = makePi()
 		mcpAdapter(pi)
@@ -114,30 +115,14 @@ describe("mcp adapter system prompt block", () => {
 				sessionId: TEST_SESSION_ID,
 			})
 
-			expect(result).toContain("## Tool and MCP Discovery")
-			expect(result).toContain('use mcp({ search: "query" })')
-			expect(result.indexOf("## Tool and MCP Discovery")).toBeLessThan(result.indexOf("## Available Tools"))
+			// The MCP discovery guidance is now part of the consolidated
+			// `## Tool Selection` core section, not injected by the
+			// adapter. The adapter must not duplicate it.
+			expect(result).not.toContain("## Tool and MCP Discovery")
+			// Consolidated core section must still cover the MCP guidance.
+			expect(result).toContain("## Tool Selection")
+			expect(result).toContain("mcp({ search")
 			expect(result).toContain('<tool name="mcp">')
-		} finally {
-			await pi.fireShutdown()
-		}
-	})
-
-	it("inherits tool and MCP discovery instructions to append-mode subagents", async () => {
-		vi.stubEnv("MCP_DIRECT_TOOLS", "__none__")
-		const pi = makePi()
-		mcpAdapter(pi)
-
-		try {
-			const result = buildSystemPrompt({
-				tools: pi.getAllTools(),
-				env: testEnv,
-				mode: "subagent",
-				sessionId: TEST_SESSION_ID,
-			})
-
-			expect(result).toContain("## Tool and MCP Discovery")
-			expect(result).toContain('use mcp({ search: "query" })')
 		} finally {
 			await pi.fireShutdown()
 		}
@@ -230,20 +215,10 @@ describe.each(["none", "server", "short"] as const)("inject-path (toolPrefix=%s)
 		const state = makeState(meta, SERVER)
 		const capturedSpecs: DirectToolSpec[] = []
 
-		executeSearch(
-			state,
-			"chat",
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			5,
-			undefined,
-			(specs) => {
-				capturedSpecs.push(...specs)
-				return specs.map((s) => s.prefixedName)
-			},
-		)
+		executeSearch(state, "chat", undefined, undefined, undefined, undefined, 5, undefined, (specs) => {
+			capturedSpecs.push(...specs)
+			return specs.map((s) => s.prefixedName)
+		})
 
 		expect(capturedSpecs).toHaveLength(1)
 		expect(capturedSpecs[0].originalName).toBe(RAW_NAME)
@@ -255,27 +230,17 @@ describe.each(["none", "server", "short"] as const)("inject-path (toolPrefix=%s)
 		const state = makeState(meta, SERVER)
 		let injectedNames: string[] = []
 
-		const result = executeSearch(
-			state,
-			"chat",
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			5,
-			undefined,
-			(specs) => {
-				injectedNames = specs.map((s) => s.prefixedName)
-				return injectedNames
-			},
-		)
+		const result = executeSearch(state, "chat", undefined, undefined, undefined, undefined, 5, undefined, (specs) => {
+			injectedNames = specs.map((s) => s.prefixedName)
+			return injectedNames
+		})
 
 		const block = result.content[0]
 		const text = block.type === "text" ? block.text : ""
 		expect(injectedNames).toHaveLength(1)
 		// The displayed name (metadata.name) appears in the output body
 		expect(text).toContain(meta.name)
-		// The injected name footer references the exact same name
+		// The injected name suffix references the exact same name
 		expect(text).toContain(injectedNames[0])
 		expect(injectedNames[0]).toBe(meta.name)
 	})

@@ -5,11 +5,13 @@
  * and PKCE state for MCP servers. Maintains backward compatibility with
  * per-server directory structure.
  *
- * Token storage location: ~/.pi/agent/mcp-oauth/<server>/tokens.json
+ * Token storage location: <agent-dir>/mcp-oauth/<server>/tokens.json
+ * (where <agent-dir> is determined by getAgentDir(), typically
+ * ~/.config/kimchi/harness/ when run via the CLI entry point)
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
-import { join } from "path"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
 import { getAgentDir } from "./utils.js"
 
 /** OAuth token storage format */
@@ -185,6 +187,7 @@ export function updateCodeVerifier(serverName: string, codeVerifier: string): vo
 export function clearCodeVerifier(serverName: string): void {
 	const entry = getAuthEntry(serverName)
 	if (entry) {
+		// biome-ignore lint/performance/noDelete: -
 		delete entry.codeVerifier
 		saveAuthEntry(serverName, entry)
 	}
@@ -213,6 +216,7 @@ export function getOAuthState(serverName: string): string | undefined {
 export function clearOAuthState(serverName: string): void {
 	const entry = getAuthEntry(serverName)
 	if (entry) {
+		// biome-ignore lint/performance/noDelete: -
 		delete entry.oauthState
 		saveAuthEntry(serverName, entry)
 	}
@@ -250,6 +254,7 @@ export function clearAllCredentials(serverName: string): void {
 export function clearClientInfo(serverName: string): void {
 	const entry = getAuthEntry(serverName)
 	if (entry) {
+		// biome-ignore lint/performance/noDelete: -
 		delete entry.clientInfo
 		saveAuthEntry(serverName, entry)
 	}
@@ -261,6 +266,7 @@ export function clearClientInfo(serverName: string): void {
 export function clearTokens(serverName: string): void {
 	const entry = getAuthEntry(serverName)
 	if (entry) {
+		// biome-ignore lint/performance/noDelete: -
 		delete entry.tokens
 		saveAuthEntry(serverName, entry)
 	}

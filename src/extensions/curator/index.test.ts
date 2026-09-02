@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { computeIdleSeconds, getStateFilePath } from "./index.js"
-import { DEFAULT_CURATOR_STATE } from "./state.js"
 import type { CuratorState } from "./state.js"
+import { DEFAULT_CURATOR_STATE } from "./state.js"
 
 describe("getStateFilePath", () => {
 	it("returns .curator_state.json inside skillsDir", () => {

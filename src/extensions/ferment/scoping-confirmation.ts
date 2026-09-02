@@ -1,7 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import { normalizeFermentTitle } from "../../ferment/title.js"
+import { deletePendingProposal } from "./pending-proposal-store.js"
 import type { FermentRuntime } from "./runtime.js"
+import { safeSendMessage } from "./safe-send.js"
 import { type ApplyOutcome, createApplyAndPersist } from "./tool-helpers.js"
 
 export type ConfirmPendingScopeSource = "propose_ferment_scoping" | "turn_end"
@@ -58,16 +60,22 @@ export function confirmPendingScope(
 		successCriteria: pending.successCriteria,
 		constraints: pending.constraints,
 		assumptions: pending.assumptions,
+		charter: pending.charter,
 		phases: scopedPhases,
+		proposeIterations: pending.proposeIterations,
 	})
 	if (!outcome.ok) return { ok: false, error: outcome.error }
 	runtime.clearPendingScope(fermentId)
+	// The user confirmed the plan; remove the persisted pending proposal so a
+	// later session restart cannot re-arm a stale review.
+	deletePendingProposal(fermentId)
 
 	if (pi) {
 		runtime.setActive(outcome.ferment)
 		if (previous && previous.name !== outcome.ferment.name) {
 			const text = `Named ferment "${outcome.ferment.name}" (was "${previous.name}").`
-			void pi.sendMessage(
+			safeSendMessage(
+				pi,
 				{
 					customType: "ferment_ack",
 					content: [{ type: "text", text }],

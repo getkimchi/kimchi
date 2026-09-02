@@ -82,7 +82,7 @@ export class UiResourceHandler {
 		const connection = this.manager.getConnection(serverName)
 		if (!connection?.resources?.length) return undefined
 		const resource = connection.resources.find((entry) => entry.uri === uri)
-		if (!resource || !resource._meta || typeof resource._meta !== "object") return undefined
+		if (!resource?._meta || typeof resource._meta !== "object") return undefined
 		return resource._meta
 	}
 }

@@ -4,7 +4,7 @@ import { TipPresenter } from "../tips/presenter.js"
 import { TipRegistry } from "../tips/registry.js"
 import { renderTipRow } from "../tips/tip-row.js"
 import type { TipCandidate } from "../tips/types.js"
-import { FERMENT_TIPS, createFermentTipProvider, getFermentTips } from "./tips.js"
+import { createFermentTipProvider, FERMENT_TIPS, getFermentTips } from "./tips.js"
 
 const plainTheme = {
 	fg: (_color: string, text: string) => text,

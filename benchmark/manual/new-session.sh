@@ -96,7 +96,11 @@ DIR=$(mktemp -d /private/tmp/kimchi-{slug}-XXXXXX)
 echo "Working directory: $DIR"
 echo "Session file: $SESSION_FILE"
 cd "$DIR"
-{setup_block}{binary} \\
+git init -q
+git config user.name "Benchmark"
+git config user.email "benchmark@local"
+{setup_block}git add -A && git commit -q -m 'baseline' --allow-empty
+{binary} \\
   --yolo \\
 {flags_block}  --session "$SESSION_FILE" \\
   "{task_prompt}"
@@ -121,6 +125,10 @@ DIR=$(mktemp -d /private/tmp/kimchi-{slug}-XXXXXX)
 echo "Working directory: $DIR"
 echo "Session file: $SESSION_FILE"
 cd "$DIR"
+git init -q
+git config user.name "Benchmark"
+git config user.email "benchmark@local"
+git add -A && git commit -q -m 'baseline' --allow-empty
 {binary} \\
   --yolo \\
   --model kimchi-dev/{model} \\

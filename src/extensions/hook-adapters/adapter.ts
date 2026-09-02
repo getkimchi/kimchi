@@ -17,6 +17,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { isResourceEnabled } from "../../resources/store.js"
 import { deferExtensionAction } from "../deferred-action.js"
+import { markHarnessSteer } from "../steer-marker.js"
 import {
 	type CommandHookAdapterDefinition,
 	type CommandHookEventName,
@@ -57,7 +58,11 @@ type HookToolResultEventResult = {
 export function createCommandHookAdapter(definition: CommandHookAdapterDefinition): (pi: ExtensionAPI) => void {
 	return (pi) => {
 		let stopHookFollowUpPending = false
-		let batchedToolResults: Array<{ tool_name: string; tool_use_id: string; is_error: boolean }> = []
+		let batchedToolResults: Array<{
+			tool_name: string
+			tool_use_id: string
+			is_error: boolean
+		}> = []
 		const pendingSystemPrompt: { context?: string } = {}
 		// Custom bus events (pi.events.on) carry no ExtensionContext, so keep the
 		// most recent one from core events for the subagent lifecycle hooks.
@@ -89,7 +94,9 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 		pi.on("turn_start", async (event, ctx) => {
 			latestCtx = ctx
 			batchedToolResults = []
-			await runObserver(definition, "TurnStart", ctx, { turn_id: String(event.turnIndex) })
+			await runObserver(definition, "TurnStart", ctx, {
+				turn_id: String(event.turnIndex),
+			})
 		})
 		pi.on("tool_execution_end", (event) => {
 			batchedToolResults.push({
@@ -119,7 +126,18 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 			if (stopHookActive) stopHookFollowUpPending = false
 			if (result?.block && result.reason && !stopHookActive) {
 				stopHookFollowUpPending = true
-				pi.sendUserMessage(result.reason, { deliverAs: "followUp" })
+				// Deliver hook-authored continuation reasons as a branded custom
+				// message, not via sendUserMessage — hook text is neither the user's
+				// words nor harness-core prose, and user-role delivery makes it
+				// indistinguishable from genuine user input.
+				pi.sendMessage(
+					{
+						customType: "hook_stop_reason",
+						content: [{ type: "text", text: markHarnessSteer(result.reason) }],
+						display: false,
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				)
 			}
 		})
 		pi.on("message_start", async (event, ctx) => {
@@ -156,6 +174,14 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 			if (!latestCtx) return
 			await runObserver(definition, "SubagentStop", latestCtx, subagentStopPayload(data, true))
 		})
+		pi.events.on("notification", async (data) => {
+			if (!latestCtx) return
+			try {
+				await runObserver(definition, "Notification", latestCtx, notificationPayload(data))
+			} catch (err) {
+				console.error(`Notification hook failed: ${err instanceof Error ? err.message : String(err)}`)
+			}
+		})
 	}
 }
 
@@ -185,6 +211,10 @@ export async function runCommandHook(
 			timeout.unref?.()
 			child.once("exit", clearKillTimer)
 			child.once("close", clearKillTimer)
+			// A hook that ignores its stdin and exits makes the write fail with a
+			// broken pipe (EPIPE). That is benign here, so swallow it rather than
+			// letting it surface as an unhandled stream error that crashes the process.
+			child.stdin.on("error", () => {})
 			child.stdin.end(input)
 			child.unref()
 		} catch {
@@ -247,6 +277,10 @@ function runBlockingCommandHook(
 				child.kill()
 				settle({})
 			}, hook.timeoutMs)
+			// A hook that ignores its stdin and exits makes the write fail with a
+			// broken pipe (EPIPE). That is benign here, so swallow it rather than
+			// letting it surface as an unhandled stream error that crashes the process.
+			child.stdin.on("error", () => {})
 			child.stdin.end(input)
 		} catch {
 			settle({})
@@ -328,7 +362,7 @@ async function runPostToolUse(
 	if (event.isError) {
 		result = mergeOptionalResults(
 			result,
-			await runMatchingHooks(definition, "PostToolUseFail", ctx, matcherCandidates(event.toolName), basePayload),
+			await runMatchingHooks(definition, "PostToolUseFailure", ctx, matcherCandidates(event.toolName), basePayload),
 		)
 	}
 	const skillName = skillNameFromReadPath(event)
@@ -353,7 +387,12 @@ async function runPostToolUse(
 	if (result.additionalContext) sendAdditionalContext(definition, pi, result.additionalContext, "steer")
 	if (result.block) {
 		return {
-			content: [{ type: "text", text: result.reason ?? "Hook blocked normal tool result processing." }],
+			content: [
+				{
+					type: "text",
+					text: result.reason ?? "Hook blocked normal tool result processing.",
+				},
+			],
 			isError: true,
 		}
 	}
@@ -592,7 +631,7 @@ function sendAdditionalContext(
 	pi.sendMessage(
 		{
 			customType: definition.customType,
-			content,
+			content: deliverAs === "steer" ? markHarnessSteer(content) : content,
 			display: false,
 			details: { source: definition.id },
 		},
@@ -634,7 +673,7 @@ function kimchiToolInput(
 function skillNameFromReadPath(event: ToolResultEvent): string | undefined {
 	if (event.toolName !== "read" || event.isError) return undefined
 	const path = stringValue(event.input.path)
-	if (!path || !path.endsWith("/SKILL.md")) return undefined
+	if (!path?.endsWith("/SKILL.md")) return undefined
 	const parts = path.split("/")
 	return parts.at(-2) || undefined
 }
@@ -652,11 +691,17 @@ function lastAssistantTextFromMessages(messages: AgentEndEvent["messages"]): str
 	return null
 }
 
-function lastAssistantStop(messages: AgentEndEvent["messages"]): { stopReason?: string; errorMessage?: string } {
+function lastAssistantStop(messages: AgentEndEvent["messages"]): {
+	stopReason?: string
+	errorMessage?: string
+} {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i]
 		if (isRecord(message) && message.role === "assistant") {
-			return { stopReason: stringValue(message.stopReason), errorMessage: stringValue(message.errorMessage) }
+			return {
+				stopReason: stringValue(message.stopReason),
+				errorMessage: stringValue(message.errorMessage),
+			}
 		}
 	}
 	return {}
@@ -691,6 +736,15 @@ function messagePayload(message: TurnEndEvent["message"]): Record<string, unknow
 	return {
 		message_role: isRecord(message) ? (stringValue(message.role) ?? null) : null,
 		message_text: lastAssistantText(message),
+	}
+}
+
+function notificationPayload(data: unknown): Record<string, unknown> {
+	const event = asRecord(data) ?? {}
+	return {
+		notification_type: stringValue(event.notification_type) ?? null,
+		tool_name: stringValue(event.tool_name) ?? null,
+		tool_use_id: stringValue(event.tool_use_id) ?? null,
 	}
 }
 

@@ -6,7 +6,6 @@ import {
 	addImage,
 	clearAllImages,
 	getAllImages,
-	getImageCacheDir,
 	getImagesByIds,
 	parseImageReferences,
 	setImageCacheDir,

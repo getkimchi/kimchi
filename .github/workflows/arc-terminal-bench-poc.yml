@@ -54,10 +54,13 @@ jobs:
       MODEL: ${{ inputs.model }}
       KIMCHI_BINARY_TARGET: linux-x64-baseline
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      TASK_ID: ${{ inputs.task_id }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Install system build dependencies
         run: |
@@ -86,6 +89,8 @@ jobs:
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -138,7 +143,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "MODEL=${MODEL}"
-          benchmark/terminal-bench-2/scripts/run-local.sh -i "${{ inputs.task_id }}" -k 1 -n 1
+          benchmark/terminal-bench-2/scripts/run-local.sh -i "${TASK_ID}" -k 1 -n 1
 
       - name: Show Terminal-Bench result summary
         if: always()

@@ -19,10 +19,8 @@ describe("update state cache", () => {
 	})
 
 	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		if (prevHome === undefined) delete process.env.HOME
 		else process.env.HOME = prevHome
-		// biome-ignore lint/performance/noDelete: same as above.
 		if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME
 		else process.env.XDG_CACHE_HOME = prevXdg
 		rmSync(tmp, { recursive: true, force: true })
@@ -190,11 +188,9 @@ describe("isUpdateCheckDisabled", () => {
 	let prev: string | undefined
 	beforeEach(() => {
 		prev = process.env.KIMCHI_NO_UPDATE_CHECK
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete.
 		delete process.env.KIMCHI_NO_UPDATE_CHECK
 	})
 	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: same as above.
 		if (prev === undefined) delete process.env.KIMCHI_NO_UPDATE_CHECK
 		else process.env.KIMCHI_NO_UPDATE_CHECK = prev
 	})

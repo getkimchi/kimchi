@@ -4,12 +4,13 @@ import type { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import {
-	type PendingPlanReview,
 	clearAllPendingPlanReviews,
 	clearPendingPlanReview,
 	getPendingPlanReview,
+	type PendingPlanReview,
 	setPendingPlanReview,
 } from "./plan-review.js"
+import type { PersistedPhaseRefusal } from "./runtime-state-store.js"
 import type { AttachPendingProposalPartial, PendingScope } from "./scoping.js"
 import {
 	attachPendingProposal,
@@ -18,6 +19,7 @@ import {
 	getPendingScope,
 	setPendingScope,
 } from "./scoping.js"
+import type { ContinuationPolicy, PendingCompaction } from "./state.js"
 import {
 	bumpBlockRetry,
 	bumpStepCompleteAttempt,
@@ -28,6 +30,10 @@ import {
 	clearAllStepStarts,
 	clearBlockRetry,
 	clearCompactionInFlight,
+	clearLastMidTurnFireTokens,
+	clearLifecycleGuardRetryState,
+	clearMidTurnCompactionTracking,
+	clearMidTurnOneshotWarnings,
 	clearPendingCompaction,
 	clearFermentState as clearStateForFerment,
 	clearStepCompleteAttempt,
@@ -39,28 +45,34 @@ import {
 	getBlockRetry,
 	getContinuationPolicy,
 	getLastHumanInputAt,
+	getLastMidTurnFireTokens,
+	getLastPhaseRefusal,
 	getPendingCompaction,
 	getPhaseStartRef,
 	getStepStartRef,
 	getStorage,
+	hasMidTurnOneshotWarning,
 	isAutomatedContinuationEnabled,
 	isCompactionInFlight,
+	isMidTurnInlineSuppressed,
 	isScopingConfirmed,
 	isScopingInteractive,
 	markCompactionInFlight,
 	markHumanInput,
+	markMidTurnInlineSuppressed,
+	markMidTurnOneshotWarning,
 	markScopingConfirmed,
 	markScopingInteractive,
 	recordBlockHashAndCheckRepeat,
 	setActive,
 	setAutomatedContinuationEnabled,
 	setContinuationPolicy,
+	setLastMidTurnFireTokens,
+	setLastPhaseRefusal,
 	setPendingCompaction,
 	setPhaseStartRef,
 	setStepStartRef,
 } from "./state.js"
-import type { ContinuationPolicy } from "./state.js"
-import type { PendingCompaction } from "./state.js"
 
 export interface FermentRuntime {
 	/** pi.events bus — set by the ferment extension factory so all mutations
@@ -75,11 +87,14 @@ export interface FermentRuntime {
 	setContinuationPolicy(policy: ContinuationPolicy): void
 	isAutomatedContinuationEnabled(): boolean
 	setAutomatedContinuationEnabled(enabled: boolean): void
+	/** Coordinate session-local recovery state after a state-machine command
+	 *  has been successfully persisted. */
+	onLifecycleTransitionApplied(fermentId: string): void
 	now(): Date
 	nowIso(): string
 	markHumanInput(): void
 	getLastHumanInputAt(): Date | undefined
-	captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry): void
+	captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry, multiModelEnabled?: boolean): void
 	bumpStepStart(fermentId: string, phaseId: string, stepId: string): number
 	clearStepStart(fermentId: string, phaseId: string, stepId: string): void
 	clearAllStepStarts(): void
@@ -107,6 +122,9 @@ export interface FermentRuntime {
 	getBlockRetry(fermentId: string, phaseId: string): number
 	clearBlockRetry(fermentId: string, phaseId: string): void
 	recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string, hash: string): boolean
+	/** Delta-grading memory: the latest LLM-grader refusal of this phase. */
+	setLastPhaseRefusal(fermentId: string, phaseId: string, refusal: PersistedPhaseRefusal): void
+	getLastPhaseRefusal(fermentId: string, phaseId: string): PersistedPhaseRefusal | undefined
 	bumpStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): number
 	clearStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): void
 	clearFermentState(fermentId: string): void
@@ -119,6 +137,17 @@ export interface FermentRuntime {
 	clearCompactionInFlight(fermentId: string): void
 	isCompactionInFlight(fermentId: string): boolean
 	clearAllPendingCompactions(): void
+	markMidTurnOneshotWarning(fermentId: string): void
+	hasMidTurnOneshotWarning(fermentId: string): boolean
+	clearMidTurnOneshotWarnings(): void
+	/** Record totalTokens at the last mid-turn inline-compaction fire. */
+	setLastMidTurnFireTokens(fermentId: string, tokens: number): void
+	getLastMidTurnFireTokens(fermentId: string): number | undefined
+	clearLastMidTurnFireTokens(fermentId: string): void
+	/** Proven no-op inline path — use the aborting fallback from now on. */
+	markMidTurnInlineSuppressed(fermentId: string): void
+	isMidTurnInlineSuppressed(fermentId: string): boolean
+	clearMidTurnCompactionTracking(): void
 }
 
 function getCurrentPendingPlanReview(): PendingPlanReview | undefined {
@@ -143,6 +172,7 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		setContinuationPolicy,
 		isAutomatedContinuationEnabled,
 		setAutomatedContinuationEnabled,
+		onLifecycleTransitionApplied: clearLifecycleGuardRetryState,
 		now: () => new Date(),
 		nowIso: () => new Date().toISOString(),
 		markHumanInput: () => {
@@ -181,6 +211,8 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		getBlockRetry,
 		clearBlockRetry,
 		recordBlockHashAndCheckRepeat,
+		setLastPhaseRefusal,
+		getLastPhaseRefusal,
 		bumpStepCompleteAttempt,
 		clearStepCompleteAttempt,
 		clearFermentState,
@@ -192,6 +224,15 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		clearCompactionInFlight,
 		isCompactionInFlight,
 		clearAllPendingCompactions,
+		markMidTurnOneshotWarning,
+		hasMidTurnOneshotWarning,
+		clearMidTurnOneshotWarnings,
+		setLastMidTurnFireTokens,
+		getLastMidTurnFireTokens,
+		clearLastMidTurnFireTokens,
+		markMidTurnInlineSuppressed,
+		isMidTurnInlineSuppressed,
+		clearMidTurnCompactionTracking,
 	}
 	return runtime
 }

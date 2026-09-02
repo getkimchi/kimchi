@@ -10,13 +10,14 @@
  * functionality using the harness's native clipboard addon loader.
  */
 
-import { execFileSync, spawnSync } from "node:child_process"
+import { spawnSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { readFileSync, unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { getNativeClipboard } from "./clipboard-native-harness.js"
+import { isWSL } from "./os-metadata.js"
 
 export type ClipboardImage = {
 	bytes: Uint8Array
@@ -130,19 +131,6 @@ function readClipboardImageViaWlPaste(): ClipboardImage | null {
 	}
 
 	return { bytes: data.stdout, mimeType: baseMimeType(selectedType) }
-}
-
-function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
-	if (env.WSL_DISTRO_NAME || env.WSLENV) {
-		return true
-	}
-
-	try {
-		const release = readFileSync("/proc/version", "utf-8")
-		return /microsoft|wsl/i.test(release)
-	} catch {
-		return false
-	}
 }
 
 /**

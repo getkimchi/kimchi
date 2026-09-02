@@ -1,9 +1,8 @@
 import type { AssistantMessage, ThinkingContent } from "@earendil-works/pi-ai"
 import { AssistantMessageComponent as _AssistantMessageComponent } from "@earendil-works/pi-coding-agent"
-import { Markdown, Spacer, Text } from "@earendil-works/pi-tui"
 import type { Component, MarkdownTheme } from "@earendil-works/pi-tui"
-import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
-import { ThinkingStepsComponent } from "./render.js"
+import { Markdown, Spacer, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { ThinkingStepsComponent, tailRawLinesFromBlocks } from "./render.js"
 import {
 	decrementPatchRefCount,
 	getActiveThinkingState,
@@ -59,26 +58,6 @@ export function assertPatchableAssistantMessageComponent(value: unknown): {
 	return value as { prototype: AssistantMessageComponentPrototype }
 }
 
-export function assertThinkingStepsTheme(value: unknown): ThinkingThemeLike {
-	if (!value || typeof value !== "object") {
-		throw new Error("Thinking Steps patch failed: interactive theme export is missing or invalid.")
-	}
-
-	try {
-		const candidate = value as Record<string, unknown>
-		if (typeof candidate.fg !== "function" || typeof candidate.bold !== "function") {
-			throw new Error("Thinking Steps patch failed: interactive theme export is incompatible.")
-		}
-	} catch (error) {
-		if (error instanceof Error && /Theme not initialized/.test(error.message)) {
-			return value as ThinkingThemeLike
-		}
-		throw error
-	}
-
-	return value as ThinkingThemeLike
-}
-
 function hasPatchableContentContainer(value: AssistantMessageComponentPrototype): boolean {
 	return Boolean(
 		value.contentContainer &&
@@ -90,6 +69,18 @@ function hasPatchableContentContainer(value: AssistantMessageComponentPrototype)
 const LIVE_PREVIEW_LINES = 5
 
 class LiveThinkingPreview implements Component {
+	// The working animation requests a render every 40-200ms while a request is
+	// in flight, so
+	// the preview body must never process the full accumulated thinking text
+	// per frame — that freezes the terminal on large messages. The body only
+	// depends on (blocks, width, theme styling); blocks are an immutable
+	// snapshot per component instance, so cache the body and recompute the
+	// pulse header only. The style key catches a theme switch mid-stall, when
+	// no new chunk arrives to replace this instance.
+	private cachedBodyWidth?: number
+	private cachedBodyStyleKey?: string
+	private cachedBody?: string[]
+
 	constructor(
 		private readonly theme: ThinkingThemeLike,
 		private readonly blocks: ThinkingSourceBlock[],
@@ -104,23 +95,30 @@ class LiveThinkingPreview implements Component {
 			this.theme.fg("accent", "•"),
 			this.theme.fg("muted", "•"),
 		]
-		const pulse = pulseFrames[Math.floor(nowMs / 180) % pulseFrames.length] ?? pulseFrames[0]!
+		const pulse = pulseFrames[Math.floor(nowMs / 180) % pulseFrames.length] ?? pulseFrames[0]
 		const header = ` ${truncateToWidth(
 			`${this.theme.fg("muted", "▍")} ${this.theme.fg("dim", "Thinking")} ${pulse}`,
 			innerWidth,
 			"",
 		)}`
 
+		const styleKey = `${this.theme.fg("dim", "x")}\u0000${this.theme.fg("muted", "x")}`
+		if (this.cachedBodyWidth !== width || this.cachedBodyStyleKey !== styleKey || !this.cachedBody) {
+			this.cachedBody = this.renderBody(innerWidth)
+			this.cachedBodyWidth = width
+			this.cachedBodyStyleKey = styleKey
+		}
+		return [header, ...this.cachedBody]
+	}
+
+	private renderBody(innerWidth: number): string[] {
 		const prefix = `${this.theme.fg("muted", "▍")} `
 		const bodyInnerWidth = Math.max(1, innerWidth - 2)
-		const fullText = this.blocks
-			.map((b) => b.text)
-			.join("\n")
-			.trim()
 		const separator = ` ${truncateToWidth(prefix, innerWidth, "")}`
-		if (!fullText) return [header, separator]
+		const textTail = tailRawLinesFromBlocks(this.blocks, LIVE_PREVIEW_LINES)
+		if (!textTail) return [separator]
 		const allLines: string[] = []
-		for (const rawLine of fullText.replace(/\t/g, "    ").split("\n")) {
+		for (const rawLine of textTail.replace(/\t/g, "    ").split("\n")) {
 			if (rawLine.trim().length === 0) {
 				allLines.push(` ${truncateToWidth(prefix, innerWidth, "")}`)
 				continue
@@ -129,10 +127,14 @@ class LiveThinkingPreview implements Component {
 				allLines.push(` ${truncateToWidth(`${prefix}${wrapped}`, innerWidth, "")}`)
 			}
 		}
-		return [header, separator, ...allLines.slice(-LIVE_PREVIEW_LINES)]
+		return [separator, ...allLines.slice(-LIVE_PREVIEW_LINES)]
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.cachedBodyWidth = undefined
+		this.cachedBodyStyleKey = undefined
+		this.cachedBody = undefined
+	}
 }
 
 function hasVisibleThinking(content: ThinkingContent): boolean {
@@ -179,9 +181,9 @@ function installPatch(theme: ThinkingThemeLike): () => void {
 	}
 
 	const withOriginalInstanceMethods = <T>(instance: AssistantMessageComponentPrototype, callback: () => T): T => {
-		const ownUpdateContent = Object.prototype.hasOwnProperty.call(instance, "updateContent")
-		const ownSetHideThinkingBlock = Object.prototype.hasOwnProperty.call(instance, "setHideThinkingBlock")
-		const ownSetHiddenThinkingLabel = Object.prototype.hasOwnProperty.call(instance, "setHiddenThinkingLabel")
+		const ownUpdateContent = Object.hasOwn(instance, "updateContent")
+		const ownSetHideThinkingBlock = Object.hasOwn(instance, "setHideThinkingBlock")
+		const ownSetHiddenThinkingLabel = Object.hasOwn(instance, "setHiddenThinkingLabel")
 		const previousUpdateContent = instance.updateContent
 		const previousSetHideThinkingBlock = instance.setHideThinkingBlock
 		const previousSetHiddenThinkingLabel = instance.setHiddenThinkingLabel
@@ -342,6 +344,7 @@ function installPatch(theme: ThinkingThemeLike): () => void {
 								message.timestamp,
 								thinkingBlocks,
 								resolveThinkingMessageScope(message),
+								this,
 							),
 						)
 					}

@@ -1,0 +1,48 @@
+# Harbor retry configuration for Claude Code + Kimchi gateway runs.
+#
+# This file is a partial JobConfig: only `retry.*` is meaningful — every
+# other JobConfig field is inherited from CLI flags / defaults.
+#
+# Why this exists
+# ---------------
+# Cloudflare returns HTTP 524 ("A timeout occurred") when the Kimchi gateway
+# origin does not produce a response (or a streaming chunk) within Cloudflare's
+# ~100s window. These are transient — the same request typically succeeds on
+# the next attempt — so we retry with an exponential backoff curve that gives
+# the upstream time to recover.
+#
+# Harbor's CLI exposes --max-retries / --retry-include / --retry-exclude but
+# NOT the backoff timing parameters (wait_multiplier, min_wait_sec,
+# max_wait_sec). Those can only be set via this config file, loaded with
+# `--config`. `include_exceptions` is owned here (the shell script does NOT
+# pass --retry-include, which would replace this value at runtime).
+#
+# The CLI's --max-retries flag overrides retry.max_retries below at runtime,
+# so the env-var override (CLAUDE_CODE_API_MAX_RETRIES) still works when the
+# run script passes --max-retries. The backoff curve below is always applied.
+retry:
+  max_retries: 5
+  include_exceptions:
+    - RetryableApiError
+  # `max_retries: 5` means 1 initial attempt + up to 5 retries = 6 total
+  # trial executions per trial, with 5 sleeps between them.
+  #
+  # Formula (harbor/trial/queue.py):
+  #   delay_sec = min(min_wait_sec * wait_multiplier ** attempt, max_wait_sec)
+  # where `attempt` starts at 0 for the first retry.
+  #
+  #   attempt 0 -> 1:  10s
+  #   attempt 1 -> 2:  20s
+  #   attempt 2 -> 3:  40s
+  #   attempt 3 -> 4:  80s
+  #   attempt 4 -> 5: 120s   (capped from 160s)
+  # Total sleep across all retries: ~270s (~4.5 min).
+  #
+  # Wall-clock cost note: each retry re-runs the FULL trial from scratch
+  # (fresh container, Claude Code reinstall, agent restarts from turn 0).
+  # The worst-case wall-clock per trial is therefore:
+  #   ~270s of backoff + 6 * trial_timeout
+  # Keep this in mind when tuning max_retries upward.
+  wait_multiplier: 2.0
+  min_wait_sec: 10.0
+  max_wait_sec: 120.0

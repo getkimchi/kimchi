@@ -5,20 +5,38 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
 	type AgentSessionEvent,
+	type CreateAgentSessionOptions,
+	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionAPI,
+	getAgentDir,
+	type InlineExtension,
+	type ModelRuntime,
+	type ModelRegistry as PiModelRegistry,
 	SessionManager,
 	SettingsManager,
-	createAgentSession,
-	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
-import { loadConfig, readTelemetryConfig } from "../../../config.js"
+import { readTelemetryConfig } from "../../../config.js"
+import {
+	derivePlanTitle,
+	savePlanMarkdown,
+	slugifyPlanName,
+	stripPlanCompletionMarkers,
+} from "../../../shared/planning/plan-markdown.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
+import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
+import dapExtension from "../../dap.js"
+import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
+import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
+import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import { isAutoModel } from "../../router/constants.js"
+import { createAutoModelExtension } from "../../router/index.js"
+import { getEffectiveModel } from "../../router/state.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
@@ -39,24 +57,58 @@ import {
 	type ThinkingLevel,
 } from "../personas/types.js"
 import { buildParentContext, extractText } from "../prompt/context.js"
-import { type PromptExtras, buildAgentPrompt, formatTokenBudget } from "../prompt/prompts.js"
-import { preloadSkills } from "../prompt/skill-loader.js"
+import { buildAgentPrompt, formatTokenBudget, type PromptExtras } from "../prompt/prompts.js"
+import { listAvailableSkillNames, preloadSkills } from "../prompt/skill-loader.js"
+import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
-import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage } from "./usage.js"
+import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type LifetimeUsage } from "./usage.js"
 
-/** Names of tools registered by this extension that subagents must NOT inherit. */
-const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"]
+/**
+ * Names of tools that subagents must NOT inherit from the parent session.
+ *
+ * - Agent / get_subagent_result / steer_subagent: subagents must not spawn
+ *   further nested subagents (the orchestrator owns delegation).
+ * - All ferment lifecycle and planning tools: subagents must not mutate
+ *   ferment state. The discovery tool (list_ferments)
+ *   are also excluded — they are only meaningful to the top-level planner.
+ */
+const EXCLUDED_TOOL_NAMES = ["Agent", "resume_subagent", "get_subagent_result", "steer_subagent", ...FERMENT_TOOL_NAMES]
 
-/** Prefix applied to automated steering messages so the LLM does not attribute them to the user. */
-const ORCHESTRATOR_PREFIX = "[Orchestrator — automated system instruction, not a user message]\n\n"
+function isExcludedSubagentToolName(name: string, disallowedSet?: Set<string>): boolean {
+	return EXCLUDED_TOOL_NAMES.includes(name) || disallowedSet?.has(name) === true
+}
+
+function getPromptToolNames(toolNames: string[], disallowedSet?: Set<string>): string[] {
+	return toolNames.filter((name) => !isExcludedSubagentToolName(name, disallowedSet))
+}
+
+function getActiveSubagentToolNames(
+	requestedToolNames: string[],
+	currentActiveToolNames: string[],
+	extensions: true | string[],
+	isRegisteredToolName: (name: string) => boolean,
+	disallowedSet?: Set<string>,
+): string[] {
+	const requestedToolNameSet = new Set(requestedToolNames)
+	const allBuiltinToolNames = new Set(BUILTIN_TOOL_NAMES)
+	const candidates = new Set([...requestedToolNames, ...currentActiveToolNames])
+
+	return [...candidates].filter((name) => {
+		if (isExcludedSubagentToolName(name, disallowedSet)) return false
+		if (!isRegisteredToolName(name)) return false
+		if (requestedToolNameSet.has(name)) return true
+		if (allBuiltinToolNames.has(name)) return false
+		if (Array.isArray(extensions)) return extensions.some((ext) => name.startsWith(ext) || name.includes(ext))
+		return true
+	})
+}
+
+import { markOrchestratorSteer } from "../../steer-marker.js"
 
 /** Send a steering message that is clearly marked as coming from the orchestrator, not the user. */
 function steerAsOrchestrator(session: AgentSession, message: string): Promise<void> {
-	return session.steer(ORCHESTRATOR_PREFIX + message)
+	return session.steer(markOrchestratorSteer(message))
 }
-
-/** Cached kimchi config — loaded once per process to avoid repeated disk reads per agent spawn. */
-const kimchiConfig = loadConfig()
 
 /** Default max turns. undefined = unlimited (no turn limit). */
 let defaultMaxTurns: number | undefined = 30
@@ -83,6 +135,26 @@ const INACTIVITY_CHECK_INTERVAL = 10_000
 const DEFAULT_INACTIVITY_TIMEOUT = 120_000
 /** Default wall-clock timeout for subagents (seconds). Prevents hangs on blocking operations. */
 const DEFAULT_MAX_DURATION = 900
+/**
+ * Floor enforced on any non-null per-attempt token budget. Prevents a caller
+ * from passing a sub-thousand budget that the runner would silently raise to
+ * this value, masking a cumulative-budget overshoot. Shared with the manager,
+ * which refuses to resume a Ferment worker whose remaining cumulative budget
+ * falls below this floor.
+ */
+export const MIN_TOKEN_BUDGET = 1024
+
+/**
+ * Lower floor for report-finalization resumes. `finalize_report` is a bounded
+ * operation (maxTurns: 2, maxDuration: 30) that only emits a structured
+ * `submit_agent_report` payload — it needs a few hundred tokens, not a full
+ * thousand. Using the continuation floor here would block workers that are
+ * near-exhaustion but still capable of producing their report, leaving the
+ * orchestrator unable to complete the step (no structured report →
+ * `complete_ferment_step` hard-rejects). The overshoot is bounded to ≤ this
+ * value against the cumulative budget.
+ */
+export const MIN_FINALIZE_TOKEN_BUDGET = 256
 
 /** Get the grace turns value. */
 export function getGraceTurns(): number {
@@ -99,7 +171,7 @@ export function setGraceTurns(n: number): void {
  */
 function resolveDefaultModel(
 	parentModel: Model<Api> | undefined,
-	registry: { find(provider: string, modelId: string): Model<Api> | undefined; getAvailable?(): Model<Api>[] },
+	registry: Pick<PiModelRegistry, "find" | "getAvailable">,
 	configModel?: string,
 ): Model<Api> | undefined {
 	if (configModel) {
@@ -108,16 +180,8 @@ function resolveDefaultModel(
 			const provider = configModel.slice(0, slashIdx)
 			const modelId = configModel.slice(slashIdx + 1)
 
-			const available = registry.getAvailable?.()
-			const availableKeys = available
-				? new Set(
-						available.map(
-							(m: unknown) =>
-								`${(m as { provider: string; id: string }).provider}/${(m as { provider: string; id: string }).id}`,
-						),
-					)
-				: undefined
-			const isAvailable = (p: string, id: string) => !availableKeys || availableKeys.has(`${p}/${id}`)
+			const availableKeys = new Set(registry.getAvailable().map((model) => `${model.provider}/${model.id}`))
+			const isAvailable = (p: string, id: string) => availableKeys.has(`${p}/${id}`)
 
 			const found = registry.find(provider, modelId)
 			if (found && isAvailable(provider, modelId)) return found
@@ -144,6 +208,8 @@ export interface RunOptions {
 	/** ExtensionAPI instance — used for pi.exec() instead of execSync. */
 	pi: ExtensionAPI
 	model?: Model<Api>
+	/** The parent is forwarding image context as file paths to this child. */
+	requiresVision?: boolean
 	maxTurns?: number
 	signal?: AbortSignal
 	isolated?: boolean
@@ -172,6 +238,14 @@ export interface RunOptions {
 	inactivityTimeout?: number
 	/** Maximum wall-clock duration in seconds. The agent is aborted when this limit is exceeded. */
 	maxDuration?: number
+	/** Host-bound report capability. Present only for Ferment-linked workers. */
+	workerReport?: WorkerReportCapability
+	/** Enforce maxTurns as a hard cap instead of allowing ordinary-agent grace turns. */
+	hardTurnLimit?: boolean
+	/** Registers a hard-fallback cleanup for runner-owned resources. */
+	onRuntimeCleanupRegistered?: (cleanup: () => void) => void
+	/** Called with the built system prompt before the session starts. */
+	onSystemPrompt?: (prompt: string) => void
 }
 
 export interface RunResult {
@@ -182,6 +256,14 @@ export interface RunResult {
 	abortReason?: AgentAbortReason
 	/** True if the agent was steered to wrap up (hit soft turn limit) but finished in time. */
 	steered: boolean
+	turnsUsed?: number
+	maxTurns?: number
+	/** Absolute path to the saved plan file, if the agent produced a plan. */
+	planPath?: string
+}
+
+type ModelRegistryWithRuntime = {
+	runtime?: ModelRuntime
 }
 
 function collectResponseText(session: AgentSession) {
@@ -225,9 +307,20 @@ function resetUsage(usage: LifetimeUsage): void {
 	usage.cacheWrite = 0
 }
 
+/**
+ * Hard-abort the session: kill any in-flight bash process tree, then abort the agent loop.
+ * session.abort() alone does NOT kill in-flight bash (upstream gap), so we call abortBash()
+ * to trigger killProcessTree on the bash subprocess. Uses optional chaining so test mocks
+ * without abortBash don't break.
+ */
+function hardAbort(session: AgentSession): void {
+	session.abortBash?.()
+	session.abort()
+}
+
 function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => void {
 	if (!signal) return () => {}
-	const onAbort = () => session.abort()
+	const onAbort = () => hardAbort(session)
 	signal.addEventListener("abort", onAbort, { once: true })
 	return () => signal.removeEventListener("abort", onAbort)
 }
@@ -272,6 +365,7 @@ async function runAgentInner(
 	const parentSystemPrompt = ctx.getSystemPrompt()
 
 	const extensions = options.isolated ? false : config.extensions
+	const effectiveExtensions = options.workerReport && extensions === false ? [] : extensions
 	const skills = options.isolated ? false : config.skills
 
 	const extras: PromptExtras = {
@@ -279,14 +373,32 @@ async function runAgentInner(
 			agentConfig?.includeContextFiles && !options.isolated ? loadProjectContextFiles(effectiveCwd) : undefined,
 	}
 
+	let toolNames = getToolNamesForType(type)
+
 	if (Array.isArray(skills)) {
 		const loaded = preloadSkills(skills, effectiveCwd)
 		if (loaded.length > 0) {
 			extras.skillBlocks = loaded
 		}
-	}
+	} else if (skills === true) {
+		// skills === true (the default for Builder, Fixer, Explore, Plan, GP):
+		// inject a compact skill name+description list and add the Skill tool
+		// so sub-agents can discover and load skills on demand.
+		const availableSkills = listAvailableSkillNames(effectiveCwd)
+		if (availableSkills.length > 0) {
+			const skillLines = availableSkills.map((s) => `- **${s.name}**: ${s.description}`).join("\n")
+			extras.skillListBlock = `## Available Skills
 
-	let toolNames = getToolNamesForType(type)
+Use the Skill tool to load a skill's full instructions when its description matches your task.
+
+${skillLines}`
+			// Add the Skill tool to the available tools (unless disallowed by persona config)
+			const disallowed = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
+			if (!toolNames.includes("Skill") && !disallowed?.has("Skill")) {
+				toolNames = [...toolNames, "Skill"]
+			}
+		}
+	}
 
 	if (agentConfig?.memory) {
 		const existingNames = new Set(toolNames)
@@ -305,10 +417,9 @@ async function runAgentInner(
 		}
 	}
 
-	const modelId = (options.model as { id?: string } | undefined)?.id
+	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
+
 	const guidelinePhase = agentConfig?.roles?.[0] as Phase | undefined
-	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, guidelinePhase, getGuidelinesRegistry())
-	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
 
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
 	const MIN_TOKEN_BUDGET = 1024
@@ -318,14 +429,20 @@ async function runAgentInner(
 		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
 	}
 
-	let systemPrompt: string
-	if (agentConfig) {
-		systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
-	} else {
+	const model = options.model ?? resolveDefaultModel(ctx.model, ctx.modelRegistry, agentConfig?.models?.[0])
+
+	const buildSystemPrompt = (activeToolNames: string[], promptModelId = model?.id) => {
+		extras.activeToolNames = activeToolNames
+		const guidelinesBlock = buildPhaseGuidelinesSection(promptModelId, guidelinePhase, getGuidelinesRegistry())
+		extras.guidelinesBlock = guidelinesBlock
+		if (agentConfig) return buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
 		const fallback = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE)
 		if (!fallback) throw new Error(`No fallback config available for unknown type "${type}"`)
-		systemPrompt = buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras)
+		return buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras)
 	}
+
+	let systemPrompt = buildSystemPrompt(getPromptToolNames(toolNames, disallowedSet))
+	options.onSystemPrompt?.(systemPrompt)
 
 	const debugSession = process.env.KIMCHI_DEBUG_SESSION
 	if (debugSession) {
@@ -343,48 +460,85 @@ async function runAgentInner(
 
 	const agentDir = getAgentDir()
 
+	// The subagent budget clamp must be wired with the deadline computed
+	// at run time (startTimeMs + maxDuration). Resolve the effective
+	// max_duration here so the bash clamp extension sees it at registration.
+	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
+
+	// Repo-native extensions registered directly by the Kimchi CLI are not
+	// discovered by a child session's DefaultResourceLoader. Register this
+	// safety hook explicitly so worker bash calls get the same default timeout.
+	// When max_duration is 0 (unlimited), skip the clamp and use the plain
+	// default-timeout extension so bash calls keep their unlimited semantics.
+	const bashExtension =
+		effectiveMaxDuration > 0
+			? createSubagentBashClampExtension(effectiveMaxDuration, Date.now())
+			: bashDefaultTimeoutExtension
+	// Subagents share this process and its patched retry classifier, so their
+	// successes must close the shared infrastructure breaker just like the parent's.
+	const autoExtensionFactories: InlineExtension[] = isAutoModel(model)
+		? [
+				createAutoModelExtension({ requiresVision: options.requiresVision }),
+				(pi) => {
+					pi.on("before_agent_start", (_event, childCtx) => {
+						const effectiveModel = getEffectiveModel(childCtx)
+						const rebuilt = buildSystemPrompt(pi.getActiveTools(), effectiveModel?.id)
+						options.onSystemPrompt?.(rebuilt)
+						return { systemPrompt: rebuilt }
+					})
+				},
+			]
+		: []
+	const extensionFactories: InlineExtension[] = [
+		telemetryExtension(readTelemetryConfig()),
+		...autoExtensionFactories,
+		bashExtension,
+		infrastructureBreakerExtension,
+		omitKimchiMaxTokensExtension,
+	]
+	// Personas that request DAP debugger tools (e.g. Debugger) need the dap
+	// extension registered in the child session: repo-native extensions wired
+	// directly in cli.ts are not discovered by a child DefaultResourceLoader.
+	// The extension registers its tools on the child's session_start, and the
+	// SDK activates them because their names are in the session's tool allowlist.
+	if (toolNames.some((n) => n.startsWith("debug_") || n.startsWith("step_"))) {
+		extensionFactories.push(dapExtension)
+	}
+	if (options.workerReport) {
+		extensionFactories.push(createWorkerReportExtension(options.workerReport))
+	}
 	const loader = new DefaultResourceLoader({
 		cwd: effectiveCwd,
 		agentDir,
-		noExtensions: extensions === false,
+		noExtensions: effectiveExtensions === false,
 		noSkills,
 		noPromptTemplates: true,
 		noThemes: true,
 		noContextFiles: true,
 		systemPromptOverride: () => systemPrompt,
 		appendSystemPromptOverride: () => [],
-		extensionFactories: [telemetryExtension(readTelemetryConfig())],
+		extensionFactories,
 	})
 	await loader.reload()
-
-	const model =
-		options.model ??
-		resolveDefaultModel(
-			ctx.model as Model<Api> | undefined,
-			ctx.modelRegistry as {
-				find(provider: string, modelId: string): Model<Api> | undefined
-				getAvailable?(): Model<Api>[]
-			},
-			agentConfig?.models?.[0],
-		)
 
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
 	const settingsManager = SettingsManager.create(effectiveCwd, agentDir)
-	settingsManager.applyOverrides({ retry: { maxRetries: kimchiConfig.retry.maxRetries } })
+	const modelRuntime = (ctx.modelRegistry as unknown as ModelRegistryWithRuntime).runtime
+	if (!modelRuntime) throw new Error("Pi model registry runtime is unavailable")
 
-	const sessionOpts: Parameters<typeof createAgentSession>[0] = {
+	const sessionOpts: CreateAgentSessionOptions = {
 		cwd: effectiveCwd,
 		agentDir,
 		sessionManager: options.sessionFile
 			? SessionManager.open(options.sessionFile, options.sessionDir, effectiveCwd)
 			: SessionManager.inMemory(effectiveCwd),
 		settingsManager,
-		modelRegistry: ctx.modelRegistry,
 		model,
 		resourceLoader: loader,
+		modelRuntime,
 	}
-	if (extensions === false) {
+	if (effectiveExtensions === false) {
 		sessionOpts.tools = toolNames
 	}
 	if (thinkingLevel) {
@@ -392,8 +546,6 @@ async function runAgentInner(
 	}
 
 	const { session } = await createAgentSession(sessionOpts)
-
-	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
 
 	await session.bindExtensions({
 		onError: (err) => {
@@ -404,22 +556,21 @@ async function runAgentInner(
 		},
 	})
 
-	if (extensions !== false) {
-		const builtinToolNameSet = new Set(toolNames)
-		const allBuiltinToolNames = new Set(BUILTIN_TOOL_NAMES)
-		const activeTools = session.getActiveToolNames().filter((t) => {
-			if (EXCLUDED_TOOL_NAMES.includes(t)) return false
-			if (disallowedSet?.has(t)) return false
-			if (builtinToolNameSet.has(t)) return true
-			if (allBuiltinToolNames.has(t)) return false
-			if (Array.isArray(extensions)) {
-				return extensions.some((ext) => t.startsWith(ext) || t.includes(ext))
-			}
-			return true
-		})
+	if (effectiveExtensions !== false) {
+		const activeTools = getActiveSubagentToolNames(
+			toolNames,
+			session.getActiveToolNames(),
+			effectiveExtensions,
+			(name) => session.getToolDefinition(name) !== undefined,
+			disallowedSet,
+		)
+		systemPrompt = buildSystemPrompt(activeTools)
+		await loader.reload()
 		session.setActiveToolsByName(activeTools)
-	} else if (disallowedSet) {
-		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet.has(t))
+	} else {
+		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet?.has(t))
+		systemPrompt = buildSystemPrompt(activeTools)
+		await loader.reload()
 		session.setActiveToolsByName(activeTools)
 	}
 
@@ -433,6 +584,7 @@ async function runAgentInner(
 	let aborted = false
 	let abortReason: AgentAbortReason | undefined
 	let budgetAborted = false
+	let reportAccepted = false
 
 	const inactivity = { lastActivityAt: Date.now(), steered: false }
 	const inactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
@@ -476,8 +628,12 @@ async function runAgentInner(
 		if (event.type === "turn_end") {
 			turnCount++
 			options.onTurnEnd?.(turnCount)
-			if (effectiveMaxTurns != null) {
-				if (!softLimitReached && turnCount >= effectiveMaxTurns) {
+			if (!reportAccepted && effectiveMaxTurns != null) {
+				if (options.hardTurnLimit && turnCount >= effectiveMaxTurns) {
+					aborted = true
+					abortReason = "max_turns"
+					hardAbort(session)
+				} else if (!softLimitReached && turnCount >= effectiveMaxTurns) {
 					softLimitReached = true
 					steerAsOrchestrator(
 						session,
@@ -486,7 +642,7 @@ async function runAgentInner(
 				} else if (softLimitReached && turnCount >= effectiveMaxTurns + graceTurns) {
 					aborted = true
 					abortReason = "max_turns"
-					session.abort()
+					hardAbort(session)
 				} else if (!softLimitReached && nextProgressIdx < PROGRESS_STEER_POINTS.length) {
 					const point = PROGRESS_STEER_POINTS[nextProgressIdx]
 					if (point && turnCount >= effectiveMaxTurns * point.threshold) {
@@ -504,10 +660,20 @@ async function runAgentInner(
 			options.onTextDelta?.(event.assistantMessageEvent.delta, currentMessageText)
 		}
 		if (event.type === "tool_execution_start") {
-			options.onToolActivity?.({ type: "start", toolName: event.toolName })
+			if (budgetAborted) {
+				// R2: token_budget was exceeded on a previous message_end. Re-abort
+				// to ensure the agent loop halts and this tool call is skipped.
+				hardAbort(session)
+			} else {
+				options.onToolActivity?.({ type: "start", toolName: event.toolName })
+			}
 		}
 		if (event.type === "tool_execution_end") {
 			options.onToolActivity?.({ type: "end", toolName: event.toolName })
+			if (event.toolName === WORKER_REPORT_TOOL_NAME && options.workerReport?.isAccepted()) {
+				reportAccepted = true
+				queueMicrotask(() => hardAbort(session))
+			}
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			const u = (
@@ -525,7 +691,7 @@ async function runAgentInner(
 				addUsage(observedUsage, usage)
 				addUsage(windowObservedUsage, usage)
 				options.onAssistantUsage?.(usage)
-				if (effectiveTokenBudget != null && !budgetAborted) {
+				if (!reportAccepted && effectiveTokenBudget != null && !budgetAborted) {
 					cumulativeTokens += getOutputTotal(usage)
 					if (cumulativeTokens > effectiveTokenBudget) {
 						budgetAborted = true
@@ -533,7 +699,7 @@ async function runAgentInner(
 						console.warn(
 							`[agent-runner] token budget exceeded (cumulative=${cumulativeTokens}, budget=${effectiveTokenBudget}); aborting`,
 						)
-						session.abort()
+						hardAbort(session)
 					} else if (!tokenSoftLimitSteered && cumulativeTokens >= effectiveTokenBudget * 0.8) {
 						tokenSoftLimitSteered = true
 						steerAsOrchestrator(
@@ -550,24 +716,29 @@ async function runAgentInner(
 		}
 	})
 
-	const inactivityInterval = setInterval(() => {
+	let inactivityInterval: ReturnType<typeof setInterval> | undefined = setInterval(() => {
 		const elapsed = Date.now() - inactivity.lastActivityAt
 		if (inactivity.steered && elapsed >= inactivityTimeout) {
 			aborted = true
 			abortReason = "inactivity"
-			session.abort()
+			hardAbort(session)
 		} else if (!inactivity.steered && elapsed >= inactivityTimeout) {
 			inactivity.steered = true
 			steerAsOrchestrator(session, "You appear to be stalled. Resume work immediately or summarize your progress.")
 		}
 	}, INACTIVITY_CHECK_INTERVAL)
+	const cleanupInactivityInterval = () => {
+		if (!inactivityInterval) return
+		clearInterval(inactivityInterval)
+		inactivityInterval = undefined
+	}
+	options.onRuntimeCleanupRegistered?.(cleanupInactivityInterval)
 
-	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
 	const durationTimer = effectiveMaxDuration
 		? setTimeout(() => {
 				aborted = true
 				abortReason = "max_duration"
-				session.abort()
+				hardAbort(session)
 			}, effectiveMaxDuration * 1000)
 		: undefined
 
@@ -589,16 +760,17 @@ async function runAgentInner(
 		process.env.KIMCHI_AGENT_PERSONA = agentConfig.name
 	}
 
-	const prevPhase = getCurrentPhase()
+	const sessionId = ctx.sessionManager.getSessionId()
+	const prevPhase = getCurrentPhase(sessionId)
 	const personaPhase = agentConfig?.roles?.[0]
 	if (personaPhase) {
-		setCurrentPhase(personaPhase)
+		setCurrentPhase(sessionId, personaPhase)
 	}
 
 	try {
 		await session.prompt(effectivePrompt)
 	} finally {
-		clearInterval(inactivityInterval)
+		cleanupInactivityInterval()
 		if (durationTimer) clearTimeout(durationTimer)
 		unsubTurns()
 		collector.unsubscribe()
@@ -609,14 +781,13 @@ async function runAgentInner(
 		if (agentConfig?.name) {
 			// Restore persona env — important for sequential runs in the same process.
 			if (prevPersona === undefined) {
-				// biome-ignore lint/performance/noDelete: must remove not set to undefined
 				delete process.env.KIMCHI_AGENT_PERSONA
 			} else {
 				process.env.KIMCHI_AGENT_PERSONA = prevPersona
 			}
 		}
 		if (personaPhase) {
-			setCurrentPhase(prevPhase)
+			setCurrentPhase(sessionId, prevPhase)
 		}
 	}
 
@@ -628,13 +799,44 @@ async function runAgentInner(
 		options.onAssistantUsage?.(finalUsageDelta)
 	}
 
-	if (effectiveTokenBudget != null && !budgetAborted && getOutputTotal(observedUsage) > effectiveTokenBudget) {
+	if (
+		!reportAccepted &&
+		effectiveTokenBudget != null &&
+		!budgetAborted &&
+		getOutputTotal(observedUsage) > effectiveTokenBudget
+	) {
 		budgetAborted = true
 		abortReason = "token_budget"
 	}
 
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
-	return { responseText, session, aborted: aborted || budgetAborted, abortReason, steered: softLimitReached }
+
+	// When a Plan agent emits a completion marker, the harness saves the plan
+	// to .kimchi/plans/<slug>.md regardless of permission mode — delegated
+	// Plan agents run outside plan permission mode so the turn_end handler in
+	// permissions/index.ts does not fire for them.
+	let planPath: string | undefined
+	if (type === "Plan" && responseText.includes("<!-- PLAN_COMPLETE -->")) {
+		const planText = stripPlanCompletionMarkers(responseText)
+		const slug = slugifyPlanName(derivePlanTitle(planText))
+		try {
+			planPath = savePlanMarkdown({ cwd: effectiveCwd, name: slug, planText })
+		} catch (err) {
+			const detail = err instanceof Error ? err.message : String(err)
+			console.error(`agent-runner: failed to save plan file: ${detail}`)
+		}
+	}
+
+	return {
+		responseText,
+		session,
+		aborted: reportAccepted ? false : aborted || budgetAborted,
+		abortReason: reportAccepted ? undefined : abortReason,
+		steered: softLimitReached,
+		turnsUsed: turnCount,
+		maxTurns: effectiveMaxTurns,
+		planPath,
+	}
 }
 
 /**
@@ -645,63 +847,185 @@ export async function resumeAgent(
 	prompt: string,
 	options: {
 		onToolActivity?: (activity: ToolActivity) => void
+		onTurnEnd?: (turnCount: number) => void
 		onAssistantUsage?: (usage: LifetimeUsage) => void
 		onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void
 		signal?: AbortSignal
+		maxTurns?: number
+		tokenBudget?: number
+		minTokenBudget?: number
 		inactivityTimeout?: number
+		maxDuration?: number
+		hardTurnLimit?: boolean
+		shouldTerminateAfterTool?: (toolName: string) => boolean
+		/** Registers a hard-fallback cleanup for runner-owned resources. */
+		onRuntimeCleanupRegistered?: (cleanup: () => void) => void
 	} = {},
-): Promise<string> {
+): Promise<RunResult> {
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
 
 	const resumeInactivity = { lastActivityAt: Date.now(), steered: false }
 	const resumeInactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns)
+	const minBudget = options.minTokenBudget ?? MIN_TOKEN_BUDGET
+	const effectiveTokenBudget = options.tokenBudget != null ? Math.max(options.tokenBudget, minBudget) : undefined
+	const effectiveMaxDuration = options.maxDuration ?? DEFAULT_MAX_DURATION
+	const observedUsage: LifetimeUsage = getSessionUsage(session) ?? {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+	}
+	let turnCount = 0
+	let cumulativeTokens = 0
+	let softLimitReached = false
+	let tokenSoftLimitSteered = false
+	let aborted = false
+	let budgetAborted = false
+	let abortReason: AgentAbortReason | undefined
+	let terminationToolCompleted = false
 
 	const unsubEvents = session.subscribe((event: AgentSessionEvent) => {
 		resumeInactivity.lastActivityAt = Date.now()
 		if (resumeInactivity.steered) resumeInactivity.steered = false
 
-		if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName })
-		if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName })
+		if (event.type === "turn_end") {
+			turnCount++
+			options.onTurnEnd?.(turnCount)
+			if (!terminationToolCompleted && effectiveMaxTurns != null) {
+				if (options.hardTurnLimit && turnCount >= effectiveMaxTurns) {
+					aborted = true
+					abortReason = "max_turns"
+					hardAbort(session)
+				} else if (!softLimitReached && turnCount >= effectiveMaxTurns) {
+					softLimitReached = true
+					steerAsOrchestrator(
+						session,
+						"You have reached this resume's turn limit. Stop exploring. Complete your current edit, ensure file syntax is valid, and summarize progress plus remaining work for the orchestrator. Do not start new edits.",
+					)
+				} else if (softLimitReached && turnCount >= effectiveMaxTurns + graceTurns) {
+					aborted = true
+					abortReason = "max_turns"
+					hardAbort(session)
+				}
+			}
+		}
+		if (event.type === "tool_execution_start") {
+			if (budgetAborted) {
+				hardAbort(session)
+			} else {
+				options.onToolActivity?.({ type: "start", toolName: event.toolName })
+			}
+		}
+		if (event.type === "tool_execution_end") {
+			options.onToolActivity?.({ type: "end", toolName: event.toolName })
+			if (options.shouldTerminateAfterTool?.(event.toolName)) {
+				terminationToolCompleted = true
+				queueMicrotask(() => hardAbort(session))
+			}
+		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			const u = (
 				event.message as unknown as {
 					usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
 				}
 			).usage
-			if (u)
-				options.onAssistantUsage?.({
+			if (u) {
+				const usage = {
 					input: u.input ?? 0,
 					output: u.output ?? 0,
 					cacheRead: u.cacheRead ?? 0,
 					cacheWrite: u.cacheWrite ?? 0,
-				})
+				}
+				addUsage(observedUsage, usage)
+				cumulativeTokens += getOutputTotal(usage)
+				options.onAssistantUsage?.(usage)
+				if (!terminationToolCompleted && effectiveTokenBudget != null && !budgetAborted) {
+					if (cumulativeTokens > effectiveTokenBudget) {
+						budgetAborted = true
+						abortReason = "token_budget"
+						console.warn(
+							`[agent-runner] resume token budget exceeded (cumulative=${cumulativeTokens}, budget=${effectiveTokenBudget}); aborting`,
+						)
+						hardAbort(session)
+					} else if (!tokenSoftLimitSteered && cumulativeTokens >= effectiveTokenBudget * 0.8) {
+						tokenSoftLimitSteered = true
+						steerAsOrchestrator(
+							session,
+							"You are approaching this resume's output token limit. Wrap up current work and summarize remaining tasks.",
+						)
+					}
+				}
+			}
 		}
 		if (event.type === "compaction_end" && !event.aborted && event.result) {
 			options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore })
 		}
 	})
 
-	const resumeInactivityInterval = setInterval(() => {
+	let resumeInactivityInterval: ReturnType<typeof setInterval> | undefined = setInterval(() => {
 		const elapsed = Date.now() - resumeInactivity.lastActivityAt
 		if (resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
-			session.abort()
+			aborted = true
+			abortReason = "inactivity"
+			hardAbort(session)
 		} else if (!resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
 			resumeInactivity.steered = true
 			steerAsOrchestrator(session, "You appear to be stalled. Resume work immediately or summarize your progress.")
 		}
 	}, INACTIVITY_CHECK_INTERVAL)
+	const cleanupResumeInactivityInterval = () => {
+		if (!resumeInactivityInterval) return
+		clearInterval(resumeInactivityInterval)
+		resumeInactivityInterval = undefined
+	}
+	options.onRuntimeCleanupRegistered?.(cleanupResumeInactivityInterval)
+	const durationTimer = effectiveMaxDuration
+		? setTimeout(() => {
+				aborted = true
+				abortReason = "max_duration"
+				hardAbort(session)
+			}, effectiveMaxDuration * 1000)
+		: undefined
 
 	try {
 		await session.prompt(prompt)
 	} finally {
-		clearInterval(resumeInactivityInterval)
+		cleanupResumeInactivityInterval()
+		if (durationTimer) clearTimeout(durationTimer)
 		collector.unsubscribe()
 		unsubEvents()
 		cleanupAbort()
 	}
 
-	return collector.getText().trim() || getLastAssistantText(session)
+	const finalUsageDelta = usageDelta(getSessionUsage(session), observedUsage)
+	if (finalUsageDelta) {
+		addUsage(observedUsage, finalUsageDelta)
+		cumulativeTokens += getOutputTotal(finalUsageDelta)
+		options.onAssistantUsage?.(finalUsageDelta)
+	}
+
+	if (
+		!terminationToolCompleted &&
+		effectiveTokenBudget != null &&
+		!budgetAborted &&
+		cumulativeTokens > effectiveTokenBudget
+	) {
+		budgetAborted = true
+		abortReason = "token_budget"
+	}
+
+	const responseText = collector.getText().trim() || getLastAssistantText(session)
+	return {
+		responseText,
+		session,
+		aborted: terminationToolCompleted ? false : aborted || budgetAborted,
+		abortReason: terminationToolCompleted ? undefined : abortReason,
+		steered: softLimitReached,
+		turnsUsed: turnCount,
+		maxTurns: effectiveMaxTurns,
+	}
 }
 
 /**

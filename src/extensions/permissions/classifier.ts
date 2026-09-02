@@ -1,11 +1,15 @@
-import { complete } from "@earendil-works/pi-ai"
 import type { Api, Model } from "@earendil-works/pi-ai"
+import { complete } from "@earendil-works/pi-ai/compat"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
+import { omitKimchiMaxTokensFromPayload } from "../omit-kimchi-max-tokens.js"
 import classifierSystemPrompt from "./prompts/classifier-system-prompt.js"
-import type { ClassifierResult, ClassifierVerdict } from "./types.js"
+import type { ClassifierResult, ClassifierVerdict, RiskScore } from "./types.js"
 
 /** Tag added to every classifier LLM request for cost tracking. */
 export const CLASSIFIER_REQUEST_TAG = "source:classifier"
+
+export const CLASSIFIER_PRIMARY_MODEL_ID = "deepseek-v4-flash"
+export const CLASSIFIER_FALLBACK_MODEL_ID = "minimax-m3"
 
 export interface ClassifyInput {
 	toolName: string
@@ -21,13 +25,16 @@ export interface ClassifierOptions {
 type InternalResult = ClassifierResult & { retryable: boolean }
 
 export async function classifyToolCall(
-	primaryModel: Model<Api>,
-	fallbackModel: Model<Api> | undefined,
 	modelRegistry: ModelRegistry,
 	call: ClassifyInput,
 	options: ClassifierOptions,
 	signal?: AbortSignal,
 ): Promise<ClassifierResult> {
+	const available = modelRegistry.getAvailable()
+	const primaryModel = available.find((m) => m.id === CLASSIFIER_PRIMARY_MODEL_ID)
+	if (!primaryModel) return unavailable("no model available for classifier")
+	const fallbackModel = available.find((m) => m.id === CLASSIFIER_FALLBACK_MODEL_ID)
+
 	const auth = await modelRegistry.getApiKeyAndHeaders(primaryModel)
 	if (!auth.ok || !auth.apiKey) return unavailable("no API key for classifier")
 
@@ -101,7 +108,7 @@ async function runClassifier(
 						const existing = Array.isArray(p.tags) ? (p.tags as string[]) : []
 						p.tags = [CLASSIFIER_REQUEST_TAG, ...existing]
 					}
-					return payload
+					return omitKimchiMaxTokensFromPayload(payload, model.provider)
 				},
 			},
 		)
@@ -154,10 +161,10 @@ export function parseClassifierOutput(raw: string): ClassifierResult {
 	if (!json) return unavailable("classifier returned unparseable output")
 
 	const verdict = normalizeVerdict(json.verdict)
-	if (!verdict) return unavailable("classifier returned unknown verdict")
-
 	const reason = typeof json.reason === "string" && json.reason.trim() ? json.reason.trim() : "no reason provided"
-	return { verdict, reason, ok: true }
+	if (!verdict) return unavailable(reason)
+	const riskScore = normalizeRiskScore(json.riskScore)
+	return { verdict, reason, ok: true, riskScore }
 }
 
 /**
@@ -193,7 +200,12 @@ function retryable(reason: string): InternalResult {
 }
 
 function normalizeVerdict(v: unknown): ClassifierVerdict | undefined {
-	if (v === "safe" || v === "requires-confirmation" || v === "blocked") return v
+	if (v === "safe" || v === "requires-confirmation") return v
+	return undefined
+}
+
+function normalizeRiskScore(v: unknown): RiskScore | undefined {
+	if (v === "low" || v === "medium" || v === "high") return v
 	return undefined
 }
 

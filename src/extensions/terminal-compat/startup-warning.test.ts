@@ -41,7 +41,6 @@ describe("emitTerminalCompatWarning", () => {
 
 		try {
 			process.env.TMUX = "/tmp/tmux-1000/default,1234,0"
-			// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 			delete process.env.TERM_PROGRAM
 			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })
 
@@ -60,13 +59,11 @@ describe("emitTerminalCompatWarning", () => {
 			if (originalTmux !== undefined) {
 				process.env.TMUX = originalTmux
 			} else {
-				// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 				delete process.env.TMUX
 			}
 			if (originalTermProgram !== undefined) {
 				process.env.TERM_PROGRAM = originalTermProgram
 			} else {
-				// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 				delete process.env.TERM_PROGRAM
 			}
 			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })
@@ -77,7 +74,6 @@ describe("emitTerminalCompatWarning", () => {
 		const originalTmux = process.env.TMUX
 
 		try {
-			// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 			delete process.env.TMUX
 			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })
 
@@ -87,7 +83,6 @@ describe("emitTerminalCompatWarning", () => {
 			})
 
 			// Mock the keyboard capability getter so we appear unsupported.
-			const { getKittyKeyboardSupport } = await import("./keyboard-capability.js")
 			vi.spyOn(await import("./keyboard-capability.js"), "getKittyKeyboardSupport").mockReturnValue(false)
 
 			const { emitTerminalCompatWarning } = await import("./startup-warning.js")
@@ -99,7 +94,6 @@ describe("emitTerminalCompatWarning", () => {
 			if (originalTmux !== undefined) {
 				process.env.TMUX = originalTmux
 			} else {
-				// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 				delete process.env.TMUX
 			}
 			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })
@@ -113,7 +107,6 @@ describe("emitTerminalCompatWarning", () => {
 
 		try {
 			process.env.TMUX = "/tmp/tmux-1000/default,1234,0"
-			// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 			delete process.env.TERM_PROGRAM
 			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })
 
@@ -136,13 +129,11 @@ describe("emitTerminalCompatWarning", () => {
 			if (originalTmux !== undefined) {
 				process.env.TMUX = originalTmux
 			} else {
-				// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 				delete process.env.TMUX
 			}
 			if (originalTermProgram !== undefined) {
 				process.env.TERM_PROGRAM = originalTermProgram
 			} else {
-				// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 				delete process.env.TERM_PROGRAM
 			}
 			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })
@@ -156,7 +147,6 @@ describe("emitTerminalCompatWarning", () => {
 
 		try {
 			process.env.TMUX = "/tmp/tmux-1000/default,1234,0"
-			// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 			delete process.env.TERM_PROGRAM
 			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })
 
@@ -172,13 +162,11 @@ describe("emitTerminalCompatWarning", () => {
 			if (originalTmux !== undefined) {
 				process.env.TMUX = originalTmux
 			} else {
-				// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 				delete process.env.TMUX
 			}
 			if (originalTermProgram !== undefined) {
 				process.env.TERM_PROGRAM = originalTermProgram
 			} else {
-				// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 				delete process.env.TERM_PROGRAM
 			}
 			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })
@@ -205,8 +193,10 @@ describe("emitTerminalCompatWarning", () => {
 
 	it("does not show warning in JetBrains terminals", async () => {
 		const originalTermEmulator = process.env.TERMINAL_EMULATOR
+		const originalTmux = process.env.TMUX
 		try {
 			process.env.TERMINAL_EMULATOR = "JetBrains-JediTerm"
+			delete process.env.TMUX
 			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })
 
 			const warnings: string[] = []
@@ -222,8 +212,12 @@ describe("emitTerminalCompatWarning", () => {
 			if (originalTermEmulator !== undefined) {
 				process.env.TERMINAL_EMULATOR = originalTermEmulator
 			} else {
-				// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 				delete process.env.TERMINAL_EMULATOR
+			}
+			if (originalTmux !== undefined) {
+				process.env.TMUX = originalTmux
+			} else {
+				delete process.env.TMUX
 			}
 			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })
 		}
@@ -236,7 +230,6 @@ describe("emitTerminalCompatWarning", () => {
 
 		try {
 			process.env.TMUX = "/tmp/tmux-1000/default,1234,0"
-			// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 			delete process.env.TERM_PROGRAM
 			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })
 
@@ -258,13 +251,11 @@ describe("emitTerminalCompatWarning", () => {
 			if (originalTmux !== undefined) {
 				process.env.TMUX = originalTmux
 			} else {
-				// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 				delete process.env.TMUX
 			}
 			if (originalTermProgram !== undefined) {
 				process.env.TERM_PROGRAM = originalTermProgram
 			} else {
-				// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 				delete process.env.TERM_PROGRAM
 			}
 			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })

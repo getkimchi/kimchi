@@ -1,7 +1,7 @@
 import type EventEmitter from "node:events"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { WebSocketServer } from "ws"
-import { IdeWebSocketTransport, connectToIde } from "./mcp-client.js"
+import { connectToIde, IdeWebSocketTransport } from "./mcp-client.js"
 import type { LockfileData } from "./types.js"
 
 // Mock the MCP Client so we don't need a real MCP handshake
@@ -223,7 +223,9 @@ describe("connectToIde", () => {
 		const conn = await connectToIde(lockfile)
 		const result = await conn.callTool("saveFile", { path: "/a.txt" })
 		expect(result).toEqual({ content: [{ type: "text", text: "done" }] })
-		expect(mockCallTool).toHaveBeenCalledWith({ name: "saveFile", arguments: { path: "/a.txt" } })
+		expect(mockCallTool).toHaveBeenCalledWith({ name: "saveFile", arguments: { path: "/a.txt" } }, undefined, {
+			signal: undefined,
+		})
 	})
 
 	it("routes notifications through setNotificationHandler", async () => {

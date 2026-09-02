@@ -20,7 +20,6 @@ describe("resource definitions", () => {
 	afterEach(() => {
 		process.chdir(oldCwd)
 		if (oldHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.HOME
 		} else {
 			process.env.HOME = oldHome
@@ -78,6 +77,7 @@ describe("resource definitions", () => {
 			kind: "extensions",
 			label: "Bash-tool guard",
 			defaultEnabled: true,
+			description: expect.stringContaining("core prompt continues to prefer dedicated tools"),
 		})
 		// Toggling is dynamic — the tool_call handler consults
 		// isResourceEnabled on every bash call, so no restart is

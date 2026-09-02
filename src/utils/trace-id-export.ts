@@ -78,7 +78,28 @@ export function injectTraceIdsIntoEntries(entries: ExportEntry[]): ExportEntry[]
  */
 export function injectTraceIdsIntoExport(lines: string[]): string[] {
 	if (lines.length === 0) return lines
-	const parsed = lines.map((l) => JSON.parse(l) as ExportEntry)
+
+	const parsed: ExportEntry[] = []
+	const originalIndex = new Map<number, number>()
+
+	for (let i = 0; i < lines.length; i++) {
+		try {
+			originalIndex.set(parsed.length, i)
+			parsed.push(JSON.parse(lines[i]) as ExportEntry)
+		} catch {
+			// Preserve malformed lines as-is; trace IDs cannot be injected here.
+		}
+	}
+
 	injectTraceIdsIntoEntries(parsed)
-	return parsed.map((p) => JSON.stringify(p))
+
+	const result = [...lines]
+	for (let i = 0; i < parsed.length; i++) {
+		const idx = originalIndex.get(i)
+		if (idx !== undefined) {
+			result[idx] = JSON.stringify(parsed[i])
+		}
+	}
+
+	return result
 }

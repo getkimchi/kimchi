@@ -39,7 +39,7 @@ export default function traceIdExtension(pi: ExtensionAPI): void {
 		}
 	})
 
-	pi.on("turn_end", async (event) => {
+	pi.on("turn_end", async (_event) => {
 		if (traceIds.length === 0) return
 		pi.appendEntry("trace_ids", { traceIds })
 	})

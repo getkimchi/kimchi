@@ -3,17 +3,64 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { loadConfig } from "../config.js"
-import { deterministicFallback, extractFirstUserMessage, suggestSessionName } from "./session-name.js"
+import sessionNameExtension, {
+	deterministicFallback,
+	extractFirstUserMessage,
+	SESSION_NAME_MODEL,
+	suggestSessionName,
+} from "./session-name.js"
 
-vi.mock("../utils/http.js", () => ({
-	fetchWithRetry: (url: string, init?: RequestInit) => globalThis.fetch(url, init),
+const { mockGetRetrySettings, mockLoadConfig, retryDefaults } = vi.hoisted(() => ({
+	mockGetRetrySettings: vi.fn(),
+	mockLoadConfig: vi.fn(),
+	retryDefaults: {
+		enabled: true,
+		maxRetries: 1,
+		baseDelayMs: 2000,
+		provider: {
+			timeoutMs: 600000,
+			maxRetries: 0,
+			maxRetryDelayMs: 60000,
+		},
+	},
 }))
 
-vi.mock("../config.js")
+vi.mock("@earendil-works/pi-coding-agent", async () => {
+	const actual = await vi.importActual<typeof import("@earendil-works/pi-coding-agent")>(
+		"@earendil-works/pi-coding-agent",
+	)
+	return {
+		...actual,
+		SettingsManager: {
+			create: vi.fn(() => ({
+				getRetrySettings: mockGetRetrySettings,
+			})),
+		},
+	}
+})
+
+vi.mock("../config.js", () => ({
+	RETRY_DEFAULTS: retryDefaults,
+	loadConfig: mockLoadConfig,
+}))
+
 vi.mock("node:path", async () => {
 	const actual = await vi.importActual<typeof import("node:path")>("node:path")
 	return { ...actual, basename: () => "my-project" }
+})
+
+beforeEach(() => {
+	mockGetRetrySettings.mockReset()
+	mockGetRetrySettings.mockReturnValue({ enabled: true, maxRetries: 1, baseDelayMs: 2000 })
+	mockLoadConfig.mockReset()
+	mockLoadConfig.mockReturnValue({
+		apiKey: "",
+		llmEndpoint: "https://llm.test/openai/v1",
+	})
+})
+
+afterEach(() => {
+	vi.unstubAllGlobals()
 })
 
 const createMockCtx = (entries: unknown[]) => {
@@ -32,23 +79,27 @@ const createMockCtx = (entries: unknown[]) => {
 }
 
 describe("deterministicFallback", () => {
-	it("should return input as-is when <= 35 chars", () => {
+	it("should return input as-is when <= 50 chars", () => {
 		expect(deterministicFallback("short-name")).toBe("short-name")
-		expect(deterministicFallback("a".repeat(35))).toBe("a".repeat(35))
+		expect(deterministicFallback("a".repeat(50))).toBe("a".repeat(50))
 	})
 
-	it("should truncate at last space before 35 chars", () => {
+	it("should truncate at last space before 50 chars", () => {
 		const longName = "this is a very long session name that should be truncated"
-		expect(deterministicFallback(longName)).toBe("this is a very long session name")
+		expect(deterministicFallback(longName)).toBe("this is a very long session name that should be")
 	})
 
-	it("should handle no spaces by truncating at 35", () => {
-		const noSpaces = "a".repeat(50)
-		expect(deterministicFallback(noSpaces)).toBe("a".repeat(35))
+	it("should handle no spaces by truncating at 50", () => {
+		const noSpaces = "a".repeat(70)
+		expect(deterministicFallback(noSpaces)).toBe("a".repeat(50))
 	})
 
 	it("should trim whitespace", () => {
 		expect(deterministicFallback("  short  ")).toBe("short")
+	})
+
+	it("should collapse multiline whitespace", () => {
+		expect(deterministicFallback("review this\n\n```ts\nconst x = 1\n```")).toBe("review this ```ts const x = 1 ```")
 	})
 })
 
@@ -129,102 +180,61 @@ describe("extractFirstUserMessage", () => {
 })
 
 describe("suggestSessionName", () => {
-	const mockFetch = vi.fn()
-	const ORIGINAL_FETCH = globalThis.fetch
-
-	beforeEach(() => {
-		vi.clearAllMocks()
-		globalThis.fetch = mockFetch
-		vi.mocked(loadConfig).mockReturnValue({
-			apiKey: "test-key",
-			llmEndpoint: "https://llm.cast.ai/openai/v1",
-			maxToolResultChars: 10_000,
-			mcpSearchLimit: 5,
-			mcpSearch: { maxDepth: 2, maxResults: 10 },
-			agentConfigDir: "/tmp",
-			skillPaths: [],
-		} as never)
-	})
-
-	afterEach(() => {
-		globalThis.fetch = ORIGINAL_FETCH
-		process.env.KIMCHI_API_KEY = ""
-	})
-
 	it("should fall back to basename when no hint and no user messages", async () => {
 		const ctx = createMockCtx([])
 		const result = await suggestSessionName(ctx as never, undefined, true)
 		expect(result).toBe("my-project")
-		expect(mockFetch).not.toHaveBeenCalled()
 	})
 
-	it("should fall back to basename when no API key", async () => {
-		vi.mocked(loadConfig).mockReturnValue({
-			apiKey: "",
-			llmEndpoint: "https://llm.cast.ai/openai/v1",
-			maxToolResultChars: 10_000,
-			mcpSearchLimit: 5,
-			mcpSearch: { maxDepth: 2, maxResults: 10 },
-			agentConfigDir: "/tmp",
-			skillPaths: [],
-		} as never)
+	it("should use the user message as the normal session name source", async () => {
 		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "Hello world" } }])
 		const result = await suggestSessionName(ctx as never, undefined, true)
-		expect(result).toBe("my-project")
-		expect(mockFetch).not.toHaveBeenCalled()
+		expect(result).toBe("Hello world")
 	})
 
-	it("should fall back to basename on API error", async () => {
-		mockFetch.mockResolvedValue({
-			ok: false,
-			status: 500,
-			statusText: "Internal Server Error",
-			text: () => Promise.resolve("fail"),
+	it("should use Deepseek Flash v4 for LLM session names", async () => {
+		const fetchMock = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => {
+			return new Response(JSON.stringify({ choices: [{ message: { content: "Review Branch" } }] }), { status: 200 })
 		})
-		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "Hello world" } }])
-		const result = await suggestSessionName(ctx as never, undefined, true)
-		expect(result).toBe("my-project")
-		expect(mockFetch).toHaveBeenCalledOnce()
-	})
-
-	it("should fall back to basename on empty LLM suggestion", async () => {
-		mockFetch.mockResolvedValue({
-			ok: true,
-			json: () => Promise.resolve({ choices: [{ message: { content: "   " } }] }),
+		vi.stubGlobal("fetch", fetchMock)
+		mockLoadConfig.mockReturnValue({
+			apiKey: "test-key",
+			llmEndpoint: "https://llm.test/openai/v1",
 		})
-		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "Hello world" } }])
+		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "Please review this branch" } }])
+
 		const result = await suggestSessionName(ctx as never, undefined, true)
-		expect(result).toBe("my-project")
+
+		expect(result).toBe("Review Branch")
+		expect(fetchMock).toHaveBeenCalledWith(
+			"https://llm.test/openai/v1/chat/completions",
+			expect.objectContaining({
+				method: "POST",
+				headers: expect.objectContaining({ Authorization: "Bearer test-key" }),
+			}),
+		)
+		const init = fetchMock.mock.calls[0]?.[1]
+		expect(init).toBeDefined()
+		const body = JSON.parse(init?.body as string) as { model: string }
+		expect(body.model).toBe(SESSION_NAME_MODEL)
+		expect(body.model).toBe("deepseek-v4-flash")
 	})
 
-	it("should return LLM suggestion when available", async () => {
-		mockFetch.mockResolvedValue({
-			ok: true,
-			json: () => Promise.resolve({ choices: [{ message: { content: "Refactor CLI" } }] }),
-		})
-		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "Hello world" } }])
+	it("should truncate long user messages", async () => {
+		const ctx = createMockCtx([
+			{
+				type: "message",
+				message: { role: "user", content: "this is a very long session name that should be truncated" },
+			},
+		])
 		const result = await suggestSessionName(ctx as never, undefined, true)
-		expect(result).toBe("Refactor CLI")
-	})
-
-	it("should fall back to basename on fetch exception", async () => {
-		mockFetch.mockRejectedValue(new Error("network down"))
-		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "Hello world" } }])
-		const result = await suggestSessionName(ctx as never, undefined, true)
-		expect(result).toBe("my-project")
+		expect(result).toBe("this is a very long session name that should be")
 	})
 
 	it("should use provided hint instead of extracting from context", async () => {
-		mockFetch.mockResolvedValue({
-			ok: true,
-			json: () => Promise.resolve({ choices: [{ message: { content: "Custom Hint" } }] }),
-		})
 		const ctx = createMockCtx([])
 		const result = await suggestSessionName(ctx as never, "provided hint", true)
-		expect(result).toBe("Custom Hint")
-		// Verify the hint was used by checking the fetch body
-		const fetchBody = JSON.parse(mockFetch.mock.calls[0][1].body)
-		expect(fetchBody.messages[1].content).toContain("provided hint")
+		expect(result).toBe("provided hint")
 	})
 })
 
@@ -239,5 +249,72 @@ describe("sessionNameExtension turn_end handler", () => {
 		// All branches are covered by the suggestSessionName tests above
 		// and mocking pi.setSessionName would be trivial but low value
 		expect(true).toBe(true)
+	})
+})
+
+describe("sessionNameExtension shutdown", () => {
+	function createHarness() {
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>()
+		const setSessionName = vi.fn()
+		const pi = {
+			on: (event: string, handler: (e: unknown, c: unknown) => unknown) => {
+				handlers.set(event, handler)
+			},
+			setSessionName,
+		}
+		sessionNameExtension()(pi as never)
+		const entries = [{ type: "message", message: { role: "user", content: "Please review this branch" } }]
+		const ctx = {
+			cwd: "/home/user/my-project",
+			hasUI: false,
+			sessionManager: {
+				getSessionName: () => undefined,
+				getBranch: () => entries,
+				getEntries: () => entries,
+			},
+		}
+		return { handlers, setSessionName, ctx }
+	}
+
+	// turn_end deliberately does not await (a slow listener starves the steering queue), so
+	// shutdown is the only place left to keep a one-shot run from exiting mid-request.
+	it("waits for an in-flight suggestion before shutting down", async () => {
+		let releaseFetch: (() => void) | undefined
+		const fetchGate = new Promise<void>((resolve) => {
+			releaseFetch = resolve
+		})
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				await fetchGate
+				return new Response(JSON.stringify({ choices: [{ message: { content: "Review Branch" } }] }), {
+					status: 200,
+				})
+			}),
+		)
+		mockLoadConfig.mockReturnValue({ apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" })
+		const { handlers, setSessionName, ctx } = createHarness()
+
+		handlers.get("turn_end")?.({}, ctx)
+		expect(setSessionName).not.toHaveBeenCalled()
+
+		let shutdownSettled = false
+		const shutdown = Promise.resolve(handlers.get("session_shutdown")?.({}, ctx)).then(() => {
+			shutdownSettled = true
+		})
+		await Promise.resolve()
+		expect(shutdownSettled).toBe(false)
+
+		releaseFetch?.()
+		await shutdown
+
+		expect(shutdownSettled).toBe(true)
+		expect(setSessionName).toHaveBeenCalledWith("Review Branch")
+	})
+
+	it("shuts down immediately when no suggestion is in flight", async () => {
+		const { handlers, ctx } = createHarness()
+
+		await expect(Promise.resolve(handlers.get("session_shutdown")?.({}, ctx))).resolves.toBeUndefined()
 	})
 })

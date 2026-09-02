@@ -7,7 +7,7 @@
  *   3. Project: <cwd>/.kimchi/agents/*.md (highest — overrides everything)
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { basename, join } from "node:path"
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent"
 import { getInstalledPackageResourceDirs } from "../package-resources.js"
@@ -71,6 +71,8 @@ function loadFromDir(dir: string, agentsMap: Map<string, AgentConfig>, source: "
 			inheritContext: fm.inherit_context != null ? fm.inherit_context === true : undefined,
 			runInBackground: fm.run_in_background != null ? fm.run_in_background === true : undefined,
 			isolated: fm.isolated != null ? fm.isolated === true : undefined,
+			includeContextFiles: fm.include_context_files != null ? fm.include_context_files === true : undefined,
+			includeCoreGuidelines: fm.include_core_guidelines != null ? fm.include_core_guidelines === true : undefined,
 			memory: parseMemory(fm.memory),
 			isolation: fm.isolation === "worktree" ? "worktree" : undefined,
 			enabled: fm.enabled !== false,

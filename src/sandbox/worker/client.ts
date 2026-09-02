@@ -62,10 +62,52 @@ export class WorkerClient {
 		return (await resp.json()) as T
 	}
 
+	async put<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+		const url = this.#url(path)
+		const resp = await fetchWithTimeout(
+			url,
+			{
+				method: "PUT",
+				headers: {
+					Authorization: `Bearer ${this.#token}`,
+					Accept: "application/json",
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(body),
+			},
+			this.#fetch,
+			this.#timeoutMs,
+			signal,
+		)
+		await checkResponse(resp, url)
+		return (await resp.json()) as T
+	}
+
+	/** PUT that ignores the response body (for 204 / empty-200 endpoints). */
+	async putVoid(path: string, body: unknown, signal?: AbortSignal): Promise<void> {
+		const url = this.#url(path)
+		const resp = await fetchWithTimeout(
+			url,
+			{
+				method: "PUT",
+				headers: {
+					Authorization: `Bearer ${this.#token}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(body),
+			},
+			this.#fetch,
+			this.#timeoutMs,
+			signal,
+		)
+		await checkResponse(resp, url)
+	}
+
 	async postMultipart<T>(
 		path: string,
 		parts: { request: unknown; sessionFile?: string },
 		signal?: AbortSignal,
+		timeoutMs?: number,
 	): Promise<T> {
 		const url = this.#url(path)
 		const form = new FormData()
@@ -85,7 +127,7 @@ export class WorkerClient {
 				body: form,
 			},
 			this.#fetch,
-			this.#timeoutMs,
+			timeoutMs ?? this.#timeoutMs,
 			signal,
 		)
 		await checkResponse(resp, url)
@@ -108,6 +150,16 @@ export class WorkerClient {
 		)
 		await checkResponse(resp, url)
 	}
+
+	/**
+	 * Releases any resources held by this client.
+	 *
+	 * `WorkerClient` is stateless (each request opens its own fetch connection),
+	 * so this is currently a no-op. The method exists so callers can explicitly
+	 * clean up and so future implementations that hold persistent connections
+	 * (keep-alive agents, websockets, etc.) have a clear disposal point.
+	 */
+	async close(): Promise<void> {}
 
 	#url(path: string): string {
 		return `${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`

@@ -1,31 +1,54 @@
 import { spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
-import { join } from "node:path"
+import { delimiter, join } from "node:path"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import { readApiKeyFromConfigFile } from "./config.js"
 
-export function findProxyHelper(override?: string): string {
-	const explicit = override ?? process.env.KIMCHI_PROXY_HELPER
+interface FindProxyHelperOptions {
+	env?: NodeJS.ProcessEnv
+	home?: string
+	execPath?: string
+	platform?: NodeJS.Platform
+	pathDelimiter?: string
+	exists?: (path: string) => boolean
+}
+
+function proxyHelperNames(platform: NodeJS.Platform): string[] {
+	return platform === "win32" ? ["proxy-helper.exe", "proxy-helper"] : ["proxy-helper"]
+}
+
+export function findProxyHelper(override?: string, options: FindProxyHelperOptions = {}): string {
+	const env = options.env ?? process.env
+	const exists = options.exists ?? existsSync
+	const explicit = override ?? env.KIMCHI_PROXY_HELPER
 	if (explicit) {
 		return explicit
 	}
 
-	const shareDir = resolveAuxiliaryFilesDir(process.env, process.env.HOME ?? "", process.execPath)
-	const bundled = join(shareDir, "bin", "proxy-helper")
-	if (existsSync(bundled)) {
-		return bundled
+	const platform = options.platform ?? process.platform
+	const names = proxyHelperNames(platform)
+	const shareDir = resolveAuxiliaryFilesDir(env, options.home ?? env.HOME ?? "", options.execPath ?? process.execPath)
+	const bundledCandidates = names.map((name) => join(shareDir, "bin", name))
+	for (const bundled of bundledCandidates) {
+		if (exists(bundled)) {
+			return bundled
+		}
 	}
 
 	// Fall back to PATH (useful in dev / non-binary runs)
-	for (const dir of (process.env.PATH ?? "").split(":")) {
-		const candidate = join(dir, "proxy-helper")
-		if (existsSync(candidate)) {
-			return candidate
+	const pathDelimiter = options.pathDelimiter ?? delimiter
+	for (const dir of (env.PATH ?? "").split(pathDelimiter)) {
+		if (!dir) continue
+		for (const name of names) {
+			const candidate = join(dir, name)
+			if (exists(candidate)) {
+				return candidate
+			}
 		}
 	}
 
 	throw new Error(
-		`proxy-helper binary not found. Checked bundled path: ${bundled}\nRun 'make copy-for-dev' in tools/proxy-helper/ or ensure proxy-helper is on PATH.`,
+		`proxy-helper binary not found. Checked bundled paths: ${bundledCandidates.join(", ")}\nRun 'node scripts/build-proxy-helper.js' or ensure proxy-helper is on PATH.`,
 	)
 }
 

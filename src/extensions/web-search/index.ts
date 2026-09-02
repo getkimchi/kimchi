@@ -10,7 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { formatCount } from "../format.js"
-import { type SpinnerState, clearSpinner, spinnerFrame, tickSpinner } from "../spinner.js"
+import { clearSpinner, type SpinnerState, spinnerFrame, tickSpinner } from "../spinner.js"
 import { executeWebSearch } from "./execute-handler.js"
 
 type WebSearchState = SpinnerState
@@ -25,12 +25,12 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
 		name: "web_search",
 		label: "Web Search",
 		description:
-			"Searches the web for up-to-date information beyond the model's knowledge cutoff. " +
-			"Prefer primary sources (official docs, papers) and corroborate key claims with multiple sources. " +
+			"Search the web for current, authoritative information. Use this when: the task names a specific library, framework, build tool, or vendor kit whose version/API/install steps you will rely on; you need to verify a library/framework version assumption; you are unsure whether an API exists or what its current signature is; you encounter an error message or behaviour you do not recognise; a 'best practice' may be out of date; or you are working with a library you may not know. " +
+			"Prefer primary sources (official docs, GitHub READMEs, RFCs, changelogs) and corroborate key claims with multiple sources. " +
 			"Include links for cited sources in the final response. " +
 			"Use the recency parameter when the query is time-sensitive. " +
 			"Use search_depth='deep' only for complex queries requiring high precision — it costs more and is slower. " +
-			"Use max_content_chars to control how much content is returned per result (default: 2000).",
+			"Use max_content_chars to control how much content is returned per result (default: 2000)",
 		promptSnippet: "Search the web for current information",
 		parameters: Type.Object({
 			query: Type.String({ description: "Search query" }),

@@ -5,16 +5,25 @@ export const FILE_TOOLS = new Set(["read", "write", "edit", "ls", "grep", "find"
 
 const STATIC_CATEGORIES: Record<string, ToolCategory> = {
 	read: "readOnly",
+	skill: "readOnly",
 	grep: "readOnly",
 	find: "readOnly",
 	ls: "readOnly",
 	edit: "write",
 	write: "write",
 	bash: "execute",
+	// daemon + daemon_control spawn/manage session-surviving processes —
+	// same risk class as bash (execute), so they inherit the same
+	// permission-mode treatment. (bash_control is `unknown` upstream;
+	// daemon tools are classified explicitly rather than inheriting that.)
+	daemon: "execute",
+	daemon_control: "execute",
 	web_search: "readOnly",
 	web_fetch: "readOnly",
 	questionnaire: "readOnly",
 	set_phase: "readOnly",
+	workflow_submit_result: "readOnly",
+	workflow_submit_questions: "readOnly",
 }
 
 const READ_ONLY_NAME_HINT = /^(read|get|list|search|query|describe|find|grep|ls|loki_|view|show)/i
@@ -153,41 +162,149 @@ const FIND_EXECUTION_FLAGS = new Set([
 ])
 
 // Programs where only specific subcommands are read-only.
-const READ_ONLY_SUBCOMMANDS: Record<string, Set<string>> = {
-	git: new Set([
-		"status",
-		"log",
-		"diff",
-		"show",
-		"branch",
-		"remote",
-		"ls-files",
-		"ls-tree",
-		"ls-remote",
-		"rev-parse",
-		"describe",
-		"blame",
-		"config",
-		"tag",
-		"stash",
-		"reflog",
-		"shortlog",
-		"fsck",
-		"verify-pack",
-		"count-objects",
-		"for-each-ref",
-		"show-ref",
-		"symbolic-ref",
-		"name-rev",
-		"rev-list",
-	]),
+/** Allowed subcommands for a program in plan mode.
+ *  Two shapes are supported:
+ *  - `Set<string>` (legacy): the first subcommand must be in the set; sub-sub-
+ *    commands are NOT checked. Used by `npm`, `kubectl`, etc., whose
+ *    listed subcommands have no mutation-capable sub-sub-commands worth
+ *    distinguishing, OR where the team has accepted the trade-off.
+ *  - `Record<subcommand, string[] | "*">` (fine-grained): the first subcommand
+ *    must be a key, then `tokens[2]` is matched against the array, or the value
+ *    `"*"` allows any sub-sub-command. Absent sub-sub-command (e.g. bare
+ *    `gh pr`) is blocked. Used by CLIs whose parent commands have both safe
+ *    and unsafe children (e.g. `gh pr`, `glab mr`), or where a single
+ *    subcommand needs sub-sub-command scoping (e.g. `git worktree` →
+ *    `list`-only while all other git subcommands are wildcarded).
+ */
+const READ_ONLY_SUBCOMMANDS: Record<string, Set<string> | Record<string, string[] | "*">> = {
+	// git uses the fine-grained Record form (not the legacy Set) so that
+	// `worktree` can be scoped to read-only actions only. All other
+	// subcommands use the `"*"` wildcard, which short-circuits before the
+	// tokens[2] check — preserving the exact same behavior as the old Set
+	// (any sub-sub-command allowed, including bare `git status`).
+	//
+	// `worktree` is scoped because `git worktree add`/`remove`/`move`
+	// mutate the filesystem (create/delete/relocate directories on disk),
+	// unlike e.g. `git branch <name>` which is a local, easily-reversible
+	// ref operation already accepted as a trade-off.
+	git: {
+		status: "*",
+		log: "*",
+		diff: "*",
+		show: "*",
+		branch: "*",
+		remote: "*",
+		"ls-files": "*",
+		"ls-tree": "*",
+		"ls-remote": "*",
+		"rev-parse": "*",
+		describe: "*",
+		blame: "*",
+		config: "*",
+		tag: "*",
+		stash: "*",
+		worktree: ["list"],
+		reflog: "*",
+		shortlog: "*",
+		fsck: "*",
+		"verify-pack": "*",
+		"count-objects": "*",
+		"for-each-ref": "*",
+		"show-ref": "*",
+		"symbolic-ref": "*",
+		"name-rev": "*",
+		"rev-list": "*",
+	},
 	npm: new Set(["list", "ls", "view", "info", "search", "outdated", "audit", "--version", "-v"]),
 	yarn: new Set(["list", "info", "why", "audit", "--version", "-v"]),
 	pnpm: new Set(["list", "ls", "view", "info", "outdated", "audit", "--version", "-v"]),
 	pip: new Set(["list", "show", "search", "freeze", "--version"]),
 	cargo: new Set(["tree", "search", "--version"]),
 	docker: new Set(["ps", "images", "logs", "inspect", "version", "info"]),
-	kubectl: new Set(["get", "describe", "logs", "top", "version", "config"]),
+	kubectl: new Set([
+		"get",
+		"describe",
+		"logs",
+		"top",
+		"version",
+		"config",
+		"cluster-info",
+		"api-resources",
+		"api-versions",
+		"explain",
+	]),
+	// `gh` and `glab` use the fine-grained form (per-sub-sub-command
+	// allowlist) because both CLIs have mutation-capable sub-sub-commands
+	// under each parent (e.g. `gh pr create`, `glab mr create`, `gh repo
+	// delete`, `glab ci run`). Plan mode has no classifier gate, so anything
+	// past `isReadOnlyBashCommand` runs without a prompt — a coarse
+	// parent-level allowlist would let those mutations through.
+	//
+	// Sub-sub-commands not listed under a parent (e.g. `gh pr checkout`) are
+	// BLOCKED. To widen, add to the relevant sub-sub-command array.
+	//
+	// The matcher inspects `tokens[2]` only — sub-sub-sub-commands and flags
+	// are not considered. If a parent has both safe and unsafe sub-sub-
+	// sub-commands (e.g. `glab cluster agent list` vs `glab cluster agent
+	// uninstall`), the parent is omitted entirely to avoid over-broad
+	// allowance.
+	//
+	// Intentionally NOT included as parents at all:
+	//   - `gh api` / `glab api`: thin HTTP wrappers that can mutate.
+	//   - `gh browse` / `gh codespace`: process side effects (browser, VM).
+	//   - `glab cluster`: nested sub-sub-sub-commands include mutations
+	//      (e.g. `agent uninstall`); wildcards would be over-broad.
+	gh: {
+		pr: ["view", "list", "diff", "checks", "status"],
+		issue: ["view", "list", "status"],
+		repo: ["view", "list"],
+		run: ["view", "list", "watch"],
+		workflow: ["view", "list"],
+		release: ["view", "list"],
+		auth: ["status"],
+		config: ["list", "get"],
+		extension: ["list", "search"],
+		gist: ["list", "view"],
+		status: "*",
+		search: "*",
+	},
+	glab: {
+		mr: ["list", "view", "diff"],
+		"merge-request": ["list", "view", "diff"],
+		issue: ["list", "view"],
+		repo: ["list", "view"],
+		project: ["list", "view"],
+		ci: ["list", "view", "status", "trace", "lint"],
+		pipeline: ["list", "view", "status", "trace"],
+		release: ["list", "view"],
+		snippet: ["list", "view"],
+		variable: ["list", "get"],
+		auth: ["status"],
+		config: ["get", "list"],
+		user: "*",
+		status: "*",
+		search: "*",
+	},
+	// gcloud uses the fine-grained form because most groups have both safe
+	// and unsafe sub-sub-commands. The matcher inspects tokens[2] only, so
+	// for gcloud's three-level structure (`gcloud <group> <resource> <action>`)
+	// the safety distinction lives at tokens[3] — beyond the matcher's reach.
+	// Parents whose sub-sub-commands include mutations (e.g. `container clusters`
+	// has both `list` and `get-credentials`/`delete`) are omitted entirely,
+	// following the same rule as `glab cluster`.
+	//
+	// Intentionally NOT included:
+	//   - `artifacts`: `docker` → tokens[2] allows `images delete` etc.
+	//   - `container`: `clusters` → allows `get-credentials` (writes kubeconfig)
+	//      and `delete` (destroys clusters).
+	//   - `compute`: `instances`/`zones` → allows `delete`/`start`/`stop`.
+	//   - `auth configure-docker`: writes docker credential helper config.
+	gcloud: {
+		auth: ["list"],
+		config: ["get-value", "list"],
+		projects: ["list", "describe"],
+		services: ["list"],
+	},
 }
 
 // Programs that must never run — even when gated behind rules — because the
@@ -199,9 +316,16 @@ const HARD_BLOCK_PROGRAMS = new Set(["sudo", "su", "shutdown", "reboot", "halt",
 // Operators we never want to see in a read-only command.
 //   - `>` / `>>`: writes (except `/dev/null|stdout|stderr` targets, handled
 //      separately in isReadOnlyBashCommand)
+//   - `>&`: fd/file redirect — safe when target is a pure digit (fd-to-fd
+//      duplication like `2>&1`), handled separately in isReadOnlyBashCommand.
+//      File-target redirects (`>& /tmp/evil`) remain blocked.
 //   - `<`: input redirect — also appears twice in a row for heredocs (<<EOF)
 //   - `<(` / `(`: process substitution / subshell — can hide arbitrary code
 //   - `&`: backgrounding
+//   - `&>` (combined stdout+stderr redirect-to-file): shell-quote decomposes
+//      this into `&` + `>`, so it is blocked transitively via the `&` rule.
+//      This safety is incidental — if `&` were ever relaxed, `&>` would need
+//      explicit handling.
 const DANGEROUS_OPS = new Set<ControlOperator>([">", ">>", ">&", "<", "<(", "(", ")", "&"])
 
 // `>` / `>>` targets that are allowed because they discard or duplicate
@@ -217,7 +341,7 @@ export function isHardBlockedBash(command: string): boolean {
 
 	for (const segment of parseCommandSegments(command)) {
 		// See through RTK wrapper so `rtk rm -rf /` is still caught.
-		const tokens = segment.tokens[0] === "rtk" ? segment.tokens.slice(1) : segment.tokens
+		const tokens = stripRtk(segment.tokens)
 		const program = tokens[0]
 		if (!program) continue
 		if (HARD_BLOCK_PROGRAMS.has(program)) return true
@@ -286,11 +410,11 @@ export function splitCompoundCommand(command: string): string[] | null {
 				currentTokens.push(entry.op)
 				continue
 			}
-			if ((op === ">" || op === ">>") && typeof entries[i + 1] === "string") {
-				// Consume the redirect target.
-				// NOTE: We intentionally handle only > and >>. Other redirects (<, >&, <<)
-				// are intentionally not supported — they would not change the program
-				// classification outcome for permission evaluation.
+			if ((op === ">" || op === ">>" || op === ">&") && typeof entries[i + 1] === "string") {
+				// Consume the redirect target (also covers `>&1` fd-to-fd redirects).
+				// NOTE: Other redirects (<, <<) are intentionally not supported —
+				// they would not change the program classification outcome for
+				// permission evaluation.
 				currentTokens.push(entry.op)
 				currentTokens.push(entries[i + 1] as string)
 				i++
@@ -305,11 +429,77 @@ export function splitCompoundCommand(command: string): string[] | null {
 	return segments.filter((s) => s.length > 0)
 }
 
-export function extractBashProgram(command: string): { program: string; subcommand: string | undefined } {
-	// See through the RTK wrapper so callers get the real program/subcommand.
+// Canonical first-segment tokens with rtk wrappers removed. parseCommandSegments
+// already strips leading FOO=bar assignments, shell-tokenizes (dropping quotes), and
+// collapses whitespace; we additionally see through the rtk wrapper. Env-STRIPPING:
+// used by extractBashProgram and the hard-block / read-only / bare-rule-auto-rewrite
+// callers, where env-transparency is correct. The remembered-rule scope/match pair
+// uses rememberedScopeTokens instead, which PRESERVES env.
+export function bashCommandTokens(command: string): string[] {
 	const raw = firstSegmentTokens(command)
-	const tokens = raw[0] === "rtk" ? raw.slice(1) : raw
+	return stripRtk(raw)
+}
+
+export function stripRtk(tokens: string[]): string[] {
+	let first = 0
+	while (tokens[first] === "rtk") first++
+	return first === 0 ? tokens : tokens.slice(first)
+}
+
+export function extractBashProgram(command: string): { program: string; subcommand: string | undefined } {
+	const tokens = bashCommandTokens(command)
 	return { program: tokens[0] ?? "", subcommand: tokens[1] }
+}
+
+// One leading `KEY=value` assignment (value may be double/single-quoted or a
+// bareword) plus its trailing whitespace. Capture group 1 is the assignment.
+const LEADING_ENV_ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*))\s+/
+
+// Split a command into its leading `KEY=value` env assignments (verbatim, value
+// included) and the remainder. The shell applies these assignments at execution,
+// so for remembered-rule scope/matching they are part of what was approved and
+// are preserved (unlike parseCommandSegments, which strips them).
+export function splitLeadingEnv(command: string): { env: string[]; rest: string } {
+	let rest = command.trim()
+	const env: string[] = []
+	let match = rest.match(LEADING_ENV_ASSIGNMENT)
+	while (match) {
+		env.push(match[1])
+		rest = rest.slice(match[0].length)
+		match = rest.match(LEADING_ENV_ASSIGNMENT)
+	}
+	return { env, rest }
+}
+
+// Normalized first-segment tokens for remembered-rule scope and matching: leading
+// env assignments are PRESERVED (key and value), the rtk transparent wrapper is
+// stripped, and quotes/whitespace are normalized via parseCommandSegments. Returns
+// [] when there is no program token (empty, bare rtk, env-only, or backtick-
+// poisoned). Distinct from bashCommandTokens, which strips env for hard-block /
+// read-only / auto-rewrite callers where env-transparency is correct.
+export function rememberedScopeTokens(command: string): string[] {
+	const { env, rest } = splitLeadingEnv(command)
+	const tokens = parseCommandSegments(rest)[0]?.tokens ?? []
+	const prog = stripRtk(tokens)
+	if (prog.length === 0) return []
+	return [...env, ...prog]
+}
+
+// Canonical command form for each top-level segment that `parseCommandSegments`
+// resolves (split on `| ; && ||`), with the rtk wrapper(s) stripped, env
+// assignments dropped, and quotes/whitespace normalized. Used by DENY matching,
+// which checks every segment so a denied program behind a pipe still blocks.
+// (allow matching stays single-segment via rememberedScopeTokens — it must not
+// widen an approval to a piped tail.) NOTE: this inherits `parseCommandSegments`
+// limits — command substitution (`$(...)`, backticks) and path-qualified program
+// names are not normalized, so deny is not a complete sandbox. See isHardBlockedBash
+// / the classifier for the other layers.
+export function bashSegmentForms(command: string): string[] {
+	return parseCommandSegments(command)
+		.map((seg) => {
+			return stripRtk(seg.tokens).join(" ")
+		})
+		.filter((form) => form.length > 0)
 }
 
 export function isReadOnlyBashCommand(command: string): boolean {
@@ -322,6 +512,9 @@ export function isReadOnlyBashCommand(command: string): boolean {
 		for (const op of segment.ops) {
 			if (!DANGEROUS_OPS.has(op.op)) continue
 			if ((op.op === ">" || op.op === ">>") && op.target && READ_ONLY_REDIRECT_TARGETS.has(op.target)) continue
+			// `>&` with a pure-digit target is fd-to-fd duplication (e.g. `2>&1`), which cannot read or write files.
+			// File-target `>& /tmp/evil` stays blocked because the target is not a digit.
+			if (op.op === ">&" && op.target && /^[0-9]+$/.test(op.target)) continue
 			return false
 		}
 		if (!isSegmentReadOnly(segment.tokens)) return false
@@ -344,7 +537,23 @@ function isSegmentReadOnly(tokens: string[]): boolean {
 	const allowedSubs = READ_ONLY_SUBCOMMANDS[program]
 	if (allowedSubs) {
 		const sub = tokens[1]
-		return sub !== undefined && allowedSubs.has(sub)
+		if (sub === undefined) return false
+
+		// Legacy Set<string>: any sub-sub-command allowed once the parent
+		// subcommand is in the set. Used by git, npm, kubectl, etc.
+		if (allowedSubs instanceof Set) {
+			return allowedSubs.has(sub)
+		}
+
+		// Fine-grained: per-sub-sub-command allowlist. Absent sub-sub-command
+		// (e.g. `gh pr` with no third token) is blocked — `gh pr` alone is
+		// useless and treating it as read-only invites confusion.
+		const allowedActions = allowedSubs[sub]
+		if (allowedActions === undefined) return false
+		if (allowedActions === "*") return true
+
+		const action = tokens[2]
+		return action !== undefined && allowedActions.includes(action)
 	}
 
 	const restrictedCheck = RESTRICTED_PROGRAMS[program]
@@ -413,7 +622,7 @@ export function parseCommandSegments(command: string): Segment[] {
 				current = { tokens: [], ops: [] }
 				continue
 			}
-			if ((op === ">" || op === ">>") && typeof entries[i + 1] === "string") {
+			if ((op === ">" || op === ">>" || op === ">&") && typeof entries[i + 1] === "string") {
 				current.ops.push({ op, target: entries[i + 1] as string })
 				i++ // consume the redirect target
 				continue

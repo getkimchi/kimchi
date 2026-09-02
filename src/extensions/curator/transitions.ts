@@ -1,5 +1,5 @@
 import type { AgentCreatedSkillReport, SkillState } from "../skills-manager/usage.js"
-import { UsageTracker, agentCreatedReport } from "../skills-manager/usage.js"
+import { agentCreatedReport, UsageTracker } from "../skills-manager/usage.js"
 
 const STALE_AFTER_DAYS = 30
 const ARCHIVE_AFTER_DAYS = 90

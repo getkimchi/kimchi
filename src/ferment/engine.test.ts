@@ -245,14 +245,35 @@ describe("whatNext", () => {
 			expect(a.kind).toBe("complete_step")
 		})
 
-		it("running step + later pending step → start_step on the pending one", () => {
+		it("running step + later pending non-parallel step → complete_step on the running one", () => {
+			// Regression: the engine used to return start_step for the pending
+			// sibling, but the FSM rejects non-parallel concurrent starts. This
+			// caused a delegation deadlock — the agent-spawn-guard blocked Agent
+			// dispatch on start_step, while the FSM rejected the start call.
+			// Now the engine returns complete_step for the running step.
 			const phase = makeP({
 				status: "active",
 				steps: [makeS({ id: "s1", index: 1, status: "running" }), makeS({ id: "s2", index: 2, status: "pending" })],
 			})
 			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
-			expect(a.kind).toBe("start_step")
-			if (a.kind === "start_step") expect(a.stepId).toBe("s2")
+			expect(a.kind).toBe("complete_step")
+			if (a.kind === "complete_step") expect(a.stepId).toBe("s1")
+		})
+
+		it("running step + pending parallel-cohort sibling → start_step on the sibling", () => {
+			const phase = makeP({
+				status: "active",
+				steps: [
+					makeS({ id: "s1", index: 1, status: "running", parallel: true, groupIndex: 1 }),
+					makeS({ id: "s2", index: 2, status: "pending", parallel: true, groupIndex: 1 }),
+				],
+			})
+			const a = determineNextAction(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
+			expect(a?.kind).toBe("start_step")
+			if (a?.kind === "start_step") {
+				expect(a.stepId).toBe("s2")
+				expect(a.canParallel).toBe(true)
+			}
 		})
 	})
 })

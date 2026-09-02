@@ -1,26 +1,33 @@
 import { resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
-import { getModels } from "@earendil-works/pi-ai"
+import { getModels } from "@earendil-works/pi-ai/compat"
 import {
-	type AuthStatus,
 	type ExtensionContext,
 	ExtensionSelectorComponent,
 	LoginDialogComponent,
 	OAuthSelectorComponent,
+	type ModelRegistry as PiModelRegistry,
 } from "@earendil-works/pi-coding-agent"
 import { type Component, Container, type TUI } from "@earendil-works/pi-tui"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { loadConfig, writeApiKey } from "../../config.js"
 import {
+	isTransientModelsError,
 	ModelsFetchError,
 	type PiModelConfig,
-	isTransientModelsError,
 	syncProviderModels,
 	updateModelsConfig,
 } from "../../models.js"
+import { syncPiAuth } from "../../pi-auth.js"
+import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
 export const KIMCHI_PROVIDER_ID = "kimchi-dev"
-export const KIMCHI_DEFAULT_MODEL_ID = "kimi-k2.6"
+export const KIMCHI_DEFAULT_MODEL_ID = "minimax-m3"
+
+/** True for any kimchi-managed provider (kimchi-dev or kimchi-dev/* sub-providers). */
+export function isKimchiProvider(provider: string): boolean {
+	return provider.startsWith("kimchi-dev")
+}
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
 export const SUBSCRIPTION_LABEL = "Use a subscription"
@@ -67,11 +74,23 @@ export function formatBrowserLoginMessage(url: string): string {
 	return `If the wrong browser or profile opened, right-click this link, choose "Copy Link", and open it in the correct one:\n${formatKimchiLoginLink(url)}`
 }
 
-type AuthSelectorProvider = ConstructorParameters<typeof OAuthSelectorComponent>[2][number]
+type AuthSelectorProvider = ConstructorParameters<typeof OAuthSelectorComponent>[1][number]
+type AuthStatus = ReturnType<PiModelRegistry["getProviderAuthStatus"]>
+
 interface AuthStorageLike {
-	set(provider: string, credential: unknown): void
-	get(provider: string): unknown
-	remove?(provider: string): void
+	getOAuthProviders?(): Array<{ id: string; name: string; usesCallbackServer?: boolean }>
+	login?(
+		provider: string,
+		callbacks: {
+			onAuth(info: { url: string; instructions?: string }): void
+			onDeviceCode(info: Parameters<LoginDialogComponent["showDeviceCode"]>[0]): void
+			onPrompt(prompt: { message: string; placeholder?: string }): Promise<string>
+			onProgress?(message: string): void
+			onManualCodeInput?(): Promise<string>
+			onSelect(prompt: { message: string; options: Array<{ id: string; label: string }> }): Promise<string | undefined>
+			signal?: AbortSignal
+		},
+	): Promise<unknown>
 }
 
 interface ProviderModelLike {
@@ -80,10 +99,17 @@ interface ProviderModelLike {
 }
 
 interface ModelRegistryLike<TModel extends ProviderModelLike = ProviderModelLike> {
-	authStorage: AuthStorageLike
-	refresh(): void
+	authStorage?: AuthStorageLike
+	refresh(): Promise<unknown>
+	getAll(): TModel[]
 	getAvailable(): TModel[]
 	getProviderAuthStatus(providerId: string): AuthStatus
+	getProvider?(
+		providerId: string,
+	): { id?: string; name?: string; auth?: { oauth?: { name?: string; login?: unknown } } } | undefined
+	getRegisteredProviderIds?(): readonly string[]
+	/** Resolve the credential Pi will use for a provider. */
+	getApiKeyForProvider?(providerId: string): Promise<string | undefined>
 }
 
 export function createLoginChoiceSelector(options: {
@@ -158,25 +184,44 @@ async function refreshKimchiModels(
 	await updateModelsConfig(resolve(agentDir, "models.json"), token, { endpoint, ...options })
 }
 
-export function setKimchiAuthToken(
-	modelRegistry: ModelRegistryLike,
-	token: string,
-	credentialType: "api_key" | "oauth" = "api_key",
-): void {
-	if (credentialType === "oauth") {
-		modelRegistry.authStorage.set(KIMCHI_PROVIDER_ID, {
-			type: "oauth",
-			access: token,
-			refresh: "",
-			expires: Number.MAX_SAFE_INTEGER,
-		})
-		return
+export function getKimchiProviderIds(modelRegistry: ModelRegistryLike): Set<string> {
+	return new Set([
+		KIMCHI_PROVIDER_ID,
+		...modelRegistry
+			.getAll()
+			.map((model) => model.provider)
+			.filter((providerId) => providerId.startsWith(`${KIMCHI_PROVIDER_ID}/`)),
+	])
+}
+
+/** Persist Kimchi credentials for every provider in models.json and refresh Pi's
+ * current registry. Pi's AuthStorage notices the auth.json revision change, so the
+ * same running session resolves the new key without reaching into private runtime
+ * fields or requiring a restart. */
+export async function syncKimchiAuth(modelRegistry: ModelRegistryLike, token: string): Promise<void> {
+	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	if (!agentDir) {
+		throw new Error("KIMCHI_CODING_AGENT_DIR is missing; Kimchi credentials cannot be synchronized")
 	}
 
-	modelRegistry.authStorage.set(KIMCHI_PROVIDER_ID, {
-		type: "api_key",
-		key: token,
-	})
+	await syncPiAuth(resolve(agentDir, "auth.json"), resolve(agentDir, "models.json"), token)
+	await modelRegistry.refresh()
+
+	if (!modelRegistry.getApiKeyForProvider) return
+	const unresolvedProviders: string[] = []
+	const expectedKey = token || undefined
+	for (const providerId of getKimchiProviderIds(modelRegistry)) {
+		const resolvedKey = await modelRegistry.getApiKeyForProvider(providerId)
+		if (resolvedKey !== expectedKey) {
+			unresolvedProviders.push(providerId)
+		}
+	}
+	if (unresolvedProviders.length > 0) {
+		// This can happen when Kimchi was started with `--api-key`. That key stays in memory and takes
+		// priority over auth.json, so logging in or out updates the file while the running session keeps
+		// using the command-line key.
+		throw new Error(`Kimchi did not activate the updated credentials for: ${unresolvedProviders.join(", ")}`)
+	}
 }
 
 export interface KimchiBrowserLoginHost {
@@ -197,14 +242,6 @@ export interface KimchiBrowserLoginOptions {
 export interface KimchiApiKeyLoginOptions {
 	apiKey: string
 	endpoint: string
-}
-
-function restoreKimchiAuth(modelRegistry: ModelRegistryLike, previousCredential: unknown): void {
-	if (previousCredential !== undefined) {
-		modelRegistry.authStorage.set(KIMCHI_PROVIDER_ID, previousCredential)
-		return
-	}
-	modelRegistry.authStorage.remove?.(KIMCHI_PROVIDER_ID)
 }
 
 function formatKimchiTokenError(error: unknown, options: { saved: boolean }): string {
@@ -241,37 +278,31 @@ async function configureKimchiToken(
 		return false
 	}
 
-	const previousCredential = host.modelRegistry.authStorage.get(KIMCHI_PROVIDER_ID)
-	setKimchiAuthToken(host.modelRegistry, token)
+	// Metadata authentication succeeded (or browser login is using cached metadata),
+	// so make config.json and Pi's auth.json agree before refreshing the live registry.
+	// If the process stops between these writes, startup sync repairs auth.json from
+	// config.json on the next launch.
+	options.persistConfig?.()
+	let authSynchronized = false
 	try {
-		host.modelRegistry.refresh()
+		await syncKimchiAuth(host.modelRegistry, token)
+		authSynchronized = true
 	} catch (error) {
 		refreshError ??= error
-		if (options.strictFreshDiscovery) {
-			restoreKimchiAuth(host.modelRegistry, previousCredential)
-			host.showError?.(formatKimchiTokenError(error, { saved: false }))
-			return false
-		}
 	}
 
 	let providerModels: ProviderModelLike[] = []
 	try {
-		providerModels = host.modelRegistry.getAvailable().filter((m) => m.provider === KIMCHI_PROVIDER_ID)
+		providerModels = host.modelRegistry.getAvailable().filter((m) => isKimchiProvider(m.provider))
 	} catch (error) {
 		refreshError ??= error
 	}
-	if (providerModels.length > 0) {
-		options.persistConfig?.()
+	if (authSynchronized && providerModels.length > 0) {
+		void refreshBillingStatusFromConfig({ mode: "forced" })
 		const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
 		await host.setModel?.(selectedModel)
 		host.addFeedback?.(formatKimchiLoginSuccessMessage(selectedModel.id))
 		return true
-	}
-
-	if (options.strictFreshDiscovery) {
-		restoreKimchiAuth(host.modelRegistry, previousCredential)
-		host.showError?.("Kimchi API-key login found no available Kimchi models. No changes were saved.")
-		return false
 	}
 
 	if (refreshError) {
@@ -391,7 +422,7 @@ export async function performKimchiBrowserLoginWithDialog(
 					showError: (message) => ctx.ui.notify(message, "error"),
 					addFeedback: (message) => dialog.showProgress(message),
 					onBrowserUrl: (url) =>
-						dialog.showInfo([
+						dialog.showDetails([
 							'If the wrong browser or profile opened, right-click this link, choose "Copy Link", and open it in the correct one:',
 							"",
 							formatKimchiLoginLink(url),
@@ -432,9 +463,23 @@ export async function performKimchiApiKeyLoginViaExtensionUI(
 export function getSubscriptionProviderOptions(
 	modelRegistry: ExtensionContext["modelRegistry"],
 ): AuthSelectorProvider[] {
-	const providers = modelRegistry.authStorage.getOAuthProviders()
+	const compatRegistry = modelRegistry as ModelRegistryLike
+	const providers = compatRegistry.authStorage?.getOAuthProviders
+		? compatRegistry.authStorage.getOAuthProviders()
+		: Array.from(
+				new Set([
+					...compatRegistry.getAll().map((model) => model.provider),
+					...(compatRegistry.getRegisteredProviderIds?.() ?? []),
+				]),
+			)
+				.map((id) => {
+					const provider = compatRegistry.getProvider?.(id)
+					if (!provider?.auth?.oauth) return undefined
+					return { id, name: provider.name ?? provider.auth.oauth.name ?? id }
+				})
+				.filter((provider): provider is { id: string; name: string } => provider !== undefined)
 	return providers
-		.filter((provider) => provider.id !== KIMCHI_PROVIDER_ID)
+		.filter((provider) => !isKimchiProvider(provider.id))
 		.map((provider) => ({
 			id: provider.id,
 			name: provider.name,
@@ -484,9 +529,7 @@ export class SwappableAuthComponent extends Container {
 function showOAuthLoginSelectInHost(
 	host: SwappableAuthComponent,
 	dialog: LoginDialogComponent,
-	prompt: Parameters<
-		NonNullable<Parameters<ExtensionContext["modelRegistry"]["authStorage"]["login"]>[1]["onSelect"]>
-	>[0],
+	prompt: Parameters<NonNullable<Parameters<NonNullable<AuthStorageLike["login"]>>[1]["onSelect"]>>[0],
 ): Promise<string | undefined> {
 	return new Promise((resolve) => {
 		const labels = prompt.options.map((option) => option.label)
@@ -511,7 +554,13 @@ async function showOAuthLoginDialogWithExtensionUI(
 	providerId: string,
 	providerName: string,
 ): Promise<boolean> {
-	const providerInfo = ctx.modelRegistry.authStorage.getOAuthProviders().find((provider) => provider.id === providerId)
+	const authStorage = (ctx.modelRegistry as ModelRegistryLike).authStorage
+	if (!authStorage?.login) {
+		ctx.ui.notify(`${providerName} subscription login is unavailable in this Kimchi version. Use /login.`, "error")
+		return false
+	}
+	const login = authStorage.login.bind(authStorage)
+	const providerInfo = authStorage.getOAuthProviders?.().find((provider) => provider.id === providerId)
 	const usesCallbackServer = providerInfo?.usesCallbackServer ?? false
 
 	return ctx.ui.custom<boolean>((tui, _theme, _keybindings, done) => {
@@ -541,7 +590,7 @@ async function showOAuthLoginDialogWithExtensionUI(
 			})
 
 			try {
-				await ctx.modelRegistry.authStorage.login(providerId, {
+				await login(providerId, {
 					onAuth: (info) => {
 						dialog.showAuth(info.url, info.instructions)
 						if (usesCallbackServer) {
@@ -602,11 +651,9 @@ export async function showSubscriptionLoginWithExtensionUI(
 	const providerId = await ctx.ui.custom<string | undefined>((_tui, _theme, _keybindings, done) => {
 		const selector = new OAuthSelectorComponent(
 			"login",
-			ctx.modelRegistry.authStorage,
 			providerOptions,
 			(selectedProviderId) => done(selectedProviderId),
 			() => done(undefined),
-			(id) => ctx.modelRegistry.getProviderAuthStatus(id),
 		)
 		return selector
 	})
@@ -620,7 +667,7 @@ export async function showSubscriptionLoginWithExtensionUI(
 		const success = await showOAuthLoginDialogWithExtensionUI(ctx, providerOption.id, providerOption.name)
 		if (!success) return false
 
-		ctx.modelRegistry.refresh()
+		await ctx.modelRegistry.refresh()
 		const providerModels = ctx.modelRegistry.getAvailable().filter((model) => model.provider === providerOption.id)
 		const selectedModel = providerModels[0]
 		if (selectedModel) {

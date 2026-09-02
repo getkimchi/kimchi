@@ -1,11 +1,13 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
-	ModelsFetchError,
+	injectAutoModel,
 	injectExperimentalProvider,
 	isTransientModelsError,
+	ModelsFetchError,
 	readExperimentalModels,
 	updateModelsConfig,
 } from "./models.js"
@@ -85,6 +87,7 @@ describe("updateModelsConfig", () => {
 				maxTokens: 262144,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				provider: "ai-enabler",
+				thinkingLevelMap: { off: "none", max: "max" },
 			},
 		])
 	})
@@ -110,13 +113,33 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({
+		expect(config.providers["kimchi-dev/anthropic"]).toBeDefined()
+		expect(config.providers["kimchi-dev/anthropic"].api).toBe("openai-completions")
+		expect(config.providers["kimchi-dev/anthropic"].baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
+		expect(config.providers["kimchi-dev/anthropic"].models[0].compat).toEqual({
 			supportsReasoningEffort: false,
 			cacheControlFormat: "anthropic",
+			supportsUsageInStreaming: true,
 		})
 	})
 
-	it("omits compat for non-anthropic models", async () => {
+	it("sets X-Provider-Type header at the provider level for sub-providers only", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [SONNET_46, KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		// base kimchi-dev provider does NOT have the header
+		expect(config.providers["kimchi-dev"].headers["X-Provider-Type"]).toBeUndefined()
+
+		// anthropic sub-provider has the header
+		expect(config.providers["kimchi-dev/anthropic"].headers["X-Provider-Type"]).toBe("anthropic")
+	})
+
+	it("does not set compat for non-anthropic ai-enabler models", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI] }),
@@ -128,7 +151,50 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
 	})
 
-	it("puts AI-Enabler models first and preserves API order for others, all under kimchi-dev", async () => {
+	it("maps ai-enabler thinking levels required by the upstream selector", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const model = config.providers["kimchi-dev"].models[0]
+		expect(model.thinkingLevelMap).toEqual({
+			off: "none",
+			max: "max",
+		})
+		expect(getSupportedThinkingLevels(model)).toContain("max")
+	})
+
+	it("sets compat for claude-* models regardless of upstream provider (e.g. azure_ai)", async () => {
+		const CLAUDE_ON_AZURE: unknown = {
+			slug: "claude-sonnet-4-6",
+			display_name: "",
+			provider: "azure_ai",
+			reasoning: true,
+			input_modalities: ["text", "image"],
+			is_serverless: false,
+			limits: { context_window: 1_000_000, max_output_tokens: 128_000 },
+		}
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [CLAUDE_ON_AZURE] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev/azure_ai"]).toBeDefined()
+		expect(config.providers["kimchi-dev/azure_ai"].models[0].compat).toEqual({
+			supportsReasoningEffort: false,
+			cacheControlFormat: "anthropic",
+			supportsUsageInStreaming: true,
+		})
+	})
+
+	it("splits ai-enabler models into kimchi-dev and non-ai-enabler models into kimchi-dev/{provider}", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [OPUS_46, GLM, SONNET_46, KIMI] }),
@@ -137,9 +203,19 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		expect(Object.keys(config.providers)).toEqual(["kimchi-dev"])
-		const ids = config.providers["kimchi-dev"].models.map((m: { id: string }) => m.id)
-		expect(ids).toEqual(["glm-5-fp8", "kimi-k2.5", "claude-opus-4-6", "claude-sonnet-4-6"])
+		expect(Object.keys(config.providers)).toEqual(["kimchi-dev", "kimchi-dev/anthropic"])
+
+		// ai-enabler models stay in kimchi-dev
+		const devIds = config.providers["kimchi-dev"].models.map((m: { id: string }) => m.id)
+		expect(devIds).toEqual(["glm-5-fp8", "kimi-k2.5"])
+
+		// anthropic models go to kimchi-dev/anthropic
+		const anthropicIds = config.providers["kimchi-dev/anthropic"].models.map((m: { id: string }) => m.id)
+		expect(anthropicIds).toEqual(["claude-opus-4-6", "claude-sonnet-4-6"])
+
+		// All providers use openai-completions
+		expect(config.providers["kimchi-dev"].api).toBe("openai-completions")
+		expect(config.providers["kimchi-dev/anthropic"].api).toBe("openai-completions")
 	})
 
 	it("uses correct URL, Authorization header, and timeout", async () => {
@@ -311,6 +387,43 @@ describe("updateModelsConfig", () => {
 		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
 	})
 
+	it("retries a 200 response with an unparseable body and succeeds on a later attempt", async () => {
+		vi.mocked(fetch)
+			.mockResolvedValueOnce({
+				ok: true,
+				headers: { get: () => null },
+				json: async () => {
+					throw new SyntaxError("Unexpected token < in JSON at position 0")
+				},
+			} as unknown as Response)
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ models: [KIMI] }),
+			} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} })
+
+		expect(fetch).toHaveBeenCalledTimes(2)
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
+	})
+
+	it("classifies a persistent unparseable body as transient after exhausting retries", async () => {
+		vi.mocked(fetch).mockResolvedValue({
+			ok: true,
+			headers: { get: () => null },
+			json: async () => {
+				throw new SyntaxError("Unexpected end of JSON input")
+			},
+		} as unknown as Response)
+
+		const error = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} }).catch((e) => e)
+
+		expect(error).toBeInstanceOf(ModelsFetchError)
+		expect(isTransientModelsError(error)).toBe(true)
+		expect((error as Error).message).toContain("Failed to parse models response")
+		expect(fetch).toHaveBeenCalledTimes(3)
+	})
+
 	it("throws on non-ok response when no cached config exists", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: false,
@@ -478,6 +591,48 @@ describe("updateModelsConfig", () => {
 		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
 	})
 
+	it("does not persist an endpoint override into models.json when the refresh fails (no global pollution)", async () => {
+		// Seed the cache via a successful gateway fetch → baseUrl = gateway on disk.
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		const original = readFileSync(modelsJsonPath, "utf-8")
+
+		// A project-local override whose metadata endpoint is unreachable → fall back to cache.
+		vi.mocked(fetch).mockRejectedValue(new Error("network down"))
+		await updateModelsConfig(modelsJsonPath, "test-key", {
+			endpoint: "https://project-override.example",
+			sleep: async () => {},
+		})
+
+		// models.json is a GLOBAL file; a project-local llmEndpoint must never be written into it.
+		// The override is applied in-memory by the login extension, so the file stays byte-for-byte
+		// and keeps pointing at the gateway. Guards the disk-write regression from #814.
+		const after = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(after.providers["kimchi-dev"].baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
+	})
+
+	it("prefixes a scheme-less endpoint with https:// for the metadata URL and kimchi-dev baseUrl", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key", { endpoint: "example.com" })
+
+		// A bare "example.com" would otherwise be an invalid request URL that the HTTP layer
+		// silently drops, falling back to the gateway (the original #814 bug).
+		expect(fetch).toHaveBeenCalledWith(
+			"https://example.com/v1/models/metadata?include_in_cli=true",
+			expect.objectContaining({ headers: { Authorization: "Bearer test-key" } }),
+		)
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].baseUrl).toBe("https://example.com/openai/v1")
+	})
+
 	it("creates nested directories if they do not exist", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
@@ -507,6 +662,19 @@ describe("updateModelsConfig", () => {
 
 		expect(result.models.map((m) => m.slug)).toEqual(["gpt-4o"])
 		expect(fetch).not.toHaveBeenCalled()
+	})
+
+	it("does not advertise the virtual Auto model as cached concrete metadata", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		injectAutoModel(modelsJsonPath)
+
+		const result = await updateModelsConfig(modelsJsonPath, "")
+
+		expect(result.models.map((model) => model.slug)).toEqual(["kimi-k2.5"])
 	})
 
 	it("returns empty models without fetching when apiKey is empty and no cache exists", async () => {
@@ -657,6 +825,67 @@ describe("updateModelsConfig", () => {
 		const model = result.models.find((m) => m.slug === "old-model")
 		expect(model?.status).toBe("deprecated")
 		expect(model?.replacement).toBe("new-model")
+	})
+})
+
+describe("injectAutoModel", () => {
+	let tempDir: string
+	let modelsJsonPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-auto-model-test-"))
+		modelsJsonPath = join(tempDir, "models.json")
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"kimchi-dev": {
+						baseUrl: "https://llm.kimchi.dev/openai/v1",
+						api: "openai-completions",
+						models: [
+							{
+								id: "kimi-k2.5",
+								name: "Kimi K2.5",
+								provider: "ai-enabler",
+								reasoning: true,
+								input: ["text", "image"],
+								contextWindow: 262144,
+								maxTokens: 32768,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							},
+						],
+					},
+				},
+			}),
+		)
+	})
+
+	afterEach(() => rmSync(tempDir, { recursive: true, force: true }))
+
+	it("adds exactly kimchi-dev/auto with a model-level API", () => {
+		const providerIds = Object.keys(JSON.parse(readFileSync(modelsJsonPath, "utf-8")).providers)
+		injectAutoModel(modelsJsonPath)
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const auto = config.providers["kimchi-dev"].models.find((model: { id: string }) => model.id === "auto")
+
+		expect(auto).toMatchObject({
+			id: "auto",
+			name: "Auto (Kimchi Router)",
+			api: "kimchi-auto",
+			reasoning: true,
+			thinkingLevelMap: { off: "none", max: "max" },
+			input: ["text", "image"],
+		})
+		expect(Object.keys(config.providers)).toEqual(providerIds)
+	})
+
+	it("upserts Auto without duplicates", () => {
+		injectAutoModel(modelsJsonPath)
+		injectAutoModel(modelsJsonPath)
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const autoModels = config.providers["kimchi-dev"].models.filter((model: { id: string }) => model.id === "auto")
+
+		expect(autoModels).toHaveLength(1)
 	})
 })
 

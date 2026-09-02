@@ -88,7 +88,6 @@ describe("gsd2 tool registration", () => {
 	})
 
 	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		if (prevHome === undefined) delete process.env.HOME
 		else process.env.HOME = prevHome
 		rmSync(tmp, { recursive: true, force: true })

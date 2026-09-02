@@ -1,12 +1,12 @@
 import type { ExtensionCommandContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
-import { type Component, Container, Key, Spacer, type TUI, Text, matchesKey } from "@earendil-works/pi-tui"
+import { type Component, Container, Key, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui"
 
 const TIPS: ReadonlyArray<{ keys: string; label: string }> = [
 	{ keys: "Ctrl+B then n / p / 1-9", label: "Cycle between remote sessions (next / prev / jump)" },
 	{ keys: "Ctrl+D", label: "Leave remote sessions running and return to local kimchi" },
 	{ keys: "/sync", label: "Sync files between your machine and the remote workspace" },
 	{ keys: "/terminal", label: "SSH into the remote workspace" },
-	{ keys: "/sessions, /workspaces", label: "List remote sessions or manage workspaces" },
+	{ keys: "/remote-sessions", label: "Browse workspaces and their sessions — open, rename, or delete" },
 ]
 
 class TeleportHelpComponent extends Container {

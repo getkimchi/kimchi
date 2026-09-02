@@ -16,10 +16,14 @@ import {
 	type FermentCompletedPayload,
 	type FermentPhaseCompletedPayload,
 	type FermentPhaseStartedPayload,
+	type FermentResumedPayload,
+	type FermentScopingCompletedPayload,
+	type FermentScopingResumedPayload,
 	type FermentStartedPayload,
 	type FermentStepCompletedPayload,
 	type FermentStepFailedPayload,
 	type FermentStepStartedPayload,
+	type FermentSuspendedPayload,
 } from "./domain-events.js"
 
 /** Warn in non-production environments when a state-lookup fails, indicating
@@ -37,6 +41,15 @@ export function emitFermentCreated(events: EventBus, ferment: Ferment): void {
 		phaseCount: ferment.phases.length,
 	}
 	events.emit(FERMENT_EVENTS.STARTED, payload)
+}
+
+export function emitFermentScopingResumed(events: EventBus, ferment: Ferment): void {
+	const createdAtMs = Date.parse(ferment.createdAt)
+	const payload: FermentScopingResumedPayload = {
+		fermentId: ferment.id,
+		startedAtMs: Number.isFinite(createdAtMs) ? createdAtMs : Date.now(),
+	}
+	events.emit(FERMENT_EVENTS.SCOPING_RESUMED, payload)
 }
 
 export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Ferment): void {
@@ -138,12 +151,13 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 				phaseIndex: phase.index,
 				phaseName: phase.name,
 				grade: cmd.type === "complete_phase" ? cmd.grade?.grade : undefined,
-				// Duration and delta tokens are computed by the telemetry subscriber
-				// using its own snapshots taken at phase activation.
+				// Duration, delta tokens, and steering count are computed by the
+				// telemetry subscriber using its own snapshots taken at phase activation.
 				durationMs: 0,
 				deltaInputTokens: 0,
 				deltaOutputTokens: 0,
 				blockRetries: cmd.type === "complete_phase" ? (cmd.blockRetries ?? 0) : 0,
+				steeringCount: 0,
 			}
 			events.emit(FERMENT_EVENTS.PHASE_COMPLETED, payload)
 			return
@@ -179,10 +193,12 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 				phaseId: phase.id,
 				stepId: step.id,
 				stepIndex: step.index,
-				// Duration computed by telemetry subscriber using its own start time snapshot.
+				// Duration and steering count are computed by the telemetry subscriber
+				// using its own snapshots taken at step start.
 				durationMs: 0,
 				grade: step.grade?.grade,
 				success: step.status === "done" || step.status === "verified",
+				steeringCount: 0,
 			}
 			events.emit(FERMENT_EVENTS.STEP_COMPLETED, payload)
 			return
@@ -220,14 +236,41 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 				stepIndex: step.index,
 				durationMs: 0,
 				success: true,
+				steeringCount: 0,
 			}
 			events.emit(FERMENT_EVENTS.STEP_COMPLETED, payload)
 			return
 		}
 
+		case "pause": {
+			const payload: FermentSuspendedPayload = {
+				fermentId: post.id,
+			}
+			events.emit(FERMENT_EVENTS.SUSPENDED, payload)
+			return
+		}
+
+		case "resume": {
+			const payload: FermentResumedPayload = {
+				fermentId: post.id,
+			}
+			events.emit(FERMENT_EVENTS.RESUMED, payload)
+			return
+		}
+
+		case "scope": {
+			const payload: FermentScopingCompletedPayload = {
+				fermentId: post.id,
+				name: post.name,
+				proposeIterations: cmd.proposeIterations ?? 0,
+			}
+			events.emit(FERMENT_EVENTS.SCOPING_COMPLETE, payload)
+			return
+		}
+
 		default:
-			// Other commands (pause, resume, refine, scope, etc.) don't need
-			// telemetry events — they don't represent lifecycle transitions.
+			// Other commands (refine, etc.) don't need domain events —
+			// they don't represent lifecycle transitions.
 			return
 	}
 }

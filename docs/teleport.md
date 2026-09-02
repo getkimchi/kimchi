@@ -2,15 +2,11 @@
 
 Teleport lets you spawn cloud sandboxes (workspaces) and run interactive PTY sessions inside them. You can open multiple sessions per workspace, sync files between your local machine and a sandbox, and switch between sessions with a tabbed terminal overlay.
 
-## Enabling teleport
+## Availability
 
-Teleport is available when the `KIMCHI_EXPERIMENTAL_TELEPORT` environment variable is set:
+Teleport is available by default — its slash commands are exposed in every interactive session.
 
-```bash
-KIMCHI_EXPERIMENTAL_TELEPORT=1 kimchi
-```
-
-This exposes the teleport slash commands in your interactive session.
+It is automatically disabled when kimchi runs inside a sandbox worker (detected via the `KIMCHI_SANDBOX` environment variable), since teleport is meant to spawn and connect into sandbox workspaces from your local machine.
 
 ## Prerequisites
 
@@ -89,6 +85,7 @@ If a workspace already exists for the given `--workspace` ref, it is reused; a n
 | `--workspace <ref>` | Reuse an existing workspace instead of minting a new one. Accepts UUID, name, or host nickname. If omitted, a new workspace is minted automatically. |
 | `--git-repo <url>` | Clone from a git repository URL instead of rsyncing the local workspace. Supports HTTPS and SSH URLs. |
 | `--branch <branch>` | Branch to check out after cloning. Requires `--git-repo`. The clone uses `--single-branch` for speed. |
+| `--fast` | Clone the repo on the sandbox (datacenter bandwidth), then rsync only the local working-tree diff on top — instead of uploading the whole repo from your machine. Requires a git repo with an origin remote, or `--git-repo <url>`. |
 | `--allow-dirty` | Proceed even if the git working tree has uncommitted changes. |
 | `--force` | Proceed even if the workspace exceeds the size limit. |
 | `--no-git-token` | Skip the git token prompt entirely. The remote won't be able to access private repos. |
@@ -105,6 +102,28 @@ If a workspace already exists for the given `--workspace` ref, it is reused; a n
 ```
 
 After a successful teleport, the tabbed overlay opens and takes over the terminal.
+
+#### `/teleport --fast` — clone + diff sync
+
+`--fast` changes provisioning so the sandbox does the heavy lifting: it clones the repo server-side from its origin URL (fast datacenter bandwidth, full clone), then rsyncs only the local working-tree diff over the fresh clone.
+
+**Requirements:**
+
+- Your cwd must be a git repo. The clone URL comes from `--git-repo <url>` if given, else from `git remote get-url origin`. If both exist they must name the same repo (scheme, user, `.git` suffix, and host case are ignored when comparing) — a mismatch refuses before anything touches the sandbox. An explicit `--git-repo` with no origin remote is allowed.
+- For private repos, the sandbox needs your git token for the clone (same token flow as `--git-repo`; use `--no-git-token` to skip for public repos).
+
+**Behavior:**
+
+- The clone branch is your current local branch (resolved via `git symbolic-ref`). The sandbox worker verifies branch existence against origin at clone time; if the branch doesn't exist there, the repo's default branch is cloned and, after the diff sync lands, your local branch is force-created on the sandbox at the synced HEAD (`git checkout -B`) so the remote session sits on the same branch name. Failure here only warns (content parity already holds).
+- The diff rsync sends tracked-plus-safe-untracked files (no `.git` upload). On a fresh remote dir extra clone files missing locally are pruned (`--delete`); the clone's `.git` is always filter-protected and never touched.
+- If the remote dir already exists (e.g. re-teleporting into a reused workspace), pruning is skipped and a warning is shown.
+- Uncommitted changes are shipped by design — `--fast` skips the dirty-tree refusal; `--allow-dirty` is only relevant for plain `/teleport`.
+
+**Consequences and fallbacks:**
+
+- The remote `.git` is a fresh clone of origin — unpushed local commits land as file content only, not as history on the sandbox.
+- If the server-side clone fails (bad URL, private repo without a token, …), teleport warns and falls back to today's behavior: a session without the clone step plus a full workspace rsync.
+- If the clone succeeds but the diff rsync fails, the session is kept (the repo is there; some working-tree files may be stale) and a warning is shown.
 
 ---
 
@@ -202,17 +221,17 @@ On completion, a summary shows the number of files and bytes transferred.
 
 ---
 
-### `/sessions`
+### `/remote-sessions`
 
-List all sessions across all workspaces through an interactive TUI panel.
+Browse and manage all workspaces and their sessions through a single interactive TUI panel. This replaces the former `/sessions` and `/workspaces` commands.
 
 ```
-/sessions
+/remote-sessions
 ```
 
-This opens a full-screen panel showing every session grouped by workspace. Each row shows the workspace name, session name, status, and last activity time.
+This opens a full-screen **tree** panel: each workspace is a top-level row, with its sessions nested beneath it (drawn with `├─` / `└─` connectors). Columns are `NAME / SESSION`, `STATUS`, and `LAST ACTIVITY`.
 
-**Session status:**
+**Status:**
 
 | Status | Meaning |
 |---|---|
@@ -220,36 +239,18 @@ This opens a full-screen panel showing every session grouped by workspace. Each 
 | **disconnected** | Session is alive but no client is connected. |
 | **idle** | Session exists on the server but is not alive (e.g. process exited). |
 | **completed** | Session has finished and been cleaned up. |
-| **unreachable** | Could not reach the workspace to list its sessions. |
+| **unreachable** | Could not reach the workspace to list its sessions — shown on the workspace row, which then has no nested sessions. |
 
 **Panel keybindings:**
 
-| Key | Action |
-|---|---|
-| `↑` / `↓` or `j` / `k` | Navigate the list |
-| `Enter` | Attach to the selected session (opens the PTY overlay) |
-| `d` | Delete the selected session (with confirmation) |
-| `Esc` or `q` or `x` | Close the panel |
-
----
-
-### `/workspaces`
-
-List and manage all workspaces through an interactive TUI panel.
-
-```
-/workspaces
-```
-
-This opens a full-screen panel showing every workspace with its host, status, session count, and last activity.
-
-**Panel keybindings:**
+The action keys are context-aware — they apply to whichever kind of row (workspace or session) is selected.
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` or `j` / `k` | Navigate the list |
-| `Enter` | Open a raw SSH terminal (`/terminal`) into the selected workspace |
-| `d` | Delete the selected workspace and all its sessions (with confirmation) |
+| `↑` / `↓` or `j` / `k` | Navigate across workspaces and sessions |
+| `Enter` | On a workspace: open a raw SSH terminal (`/terminal`). On a session: attach to it (opens the PTY overlay) |
+| `d` | Delete the selected workspace (and all its sessions) or the selected session — with confirmation |
+| `r` | Rename the selected workspace (no-op on a session — session renaming isn't supported) |
 | `Esc` or `q` or `x` | Close the panel |
 
 ---
@@ -354,7 +355,7 @@ On subsequent `/terminal` calls or when reusing a workspace, kimchi automaticall
 ### Re-enter a workspace later
 
 ```
-/sessions                    # find your session, press Enter to attach
+/remote-sessions             # find your session under its workspace, press Enter to attach
 # or
 /teleport --workspace mybox  # create a new session in the existing workspace
 ```
@@ -402,8 +403,9 @@ exit                         # return to kimchi
 ### Manage sessions and workspaces
 
 ```
-/sessions        # see all sessions across workspaces, attach or delete
-/workspaces      # see all workspaces, open SSH terminal or delete
+/remote-sessions   # tree of all workspaces and their sessions:
+                   #   Enter on a workspace → SSH terminal; on a session → attach
+                   #   d → delete workspace or session; r → rename workspace
 ```
 
 ### Recover from a lost connection
@@ -412,7 +414,7 @@ exit                         # return to kimchi
 # overlay shows: "connection lost — ctrl+r retry · ctrl+d exit"
 Ctrl+R           # force reconnect with fresh token
 # or
-Ctrl+D           # exit overlay, then /sessions to reattach later
+Ctrl+D           # exit overlay, then /remote-sessions to reattach later
 ```
 
 ---
@@ -430,7 +432,7 @@ Ctrl+D           # exit overlay, then /sessions to reattach later
 
 ### Dirty working tree
 
-By default, `/teleport` refuses if `git status --porcelain` shows uncommitted changes. This prevents accidentally shipping work-in-progress. Use `--allow-dirty` to override.
+By default, `/teleport` refuses if `git status --porcelain` shows uncommitted changes. This prevents accidentally shipping work-in-progress. Use `--allow-dirty` to override. `/teleport --fast` skips this refusal — shipping your uncommitted changes on top of the sandbox clone is the point of that mode.
 
 ### rsync not found
 
@@ -438,8 +440,8 @@ If `rsync` is not on your `PATH`, `/sync` and `/teleport` (in rsync mode) will f
 
 ### Session not found
 
-If you reference a session that no longer exists, kimchi will suggest using `/sessions` to browse available sessions. Sessions that have finished and been cleaned up server-side cannot be reattached.
+If you reference a session that no longer exists, kimchi will suggest using `/remote-sessions` to browse available sessions. Sessions that have finished and been cleaned up server-side cannot be reattached.
 
 ### Workspace not found
 
-If you reference a workspace that doesn't exist (or that you don't have access to), authentication will fail. Use `/workspaces` to list your available workspaces.
+If you reference a workspace that doesn't exist (or that you don't have access to), authentication will fail. Use `/remote-sessions` to list your available workspaces.

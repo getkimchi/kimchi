@@ -1,5 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
+import type { ThinkingLevel } from "./extensions/agents/personas/types.js"
+import { AUTO_MODEL_API, AUTO_MODEL_ID, AUTO_MODEL_NAME } from "./extensions/router/constants.js"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_API = "https://llm.kimchi.dev"
@@ -7,14 +9,18 @@ const FETCH_TIMEOUT_MS = 20000
 
 function normalizeKimchiEndpoint(endpoint?: string): string {
 	const trimmed = endpoint?.trim()
-	return (trimmed && trimmed.length > 0 ? trimmed : KIMCHI_API).replace(/\/+$/, "")
+	if (!trimmed) return KIMCHI_API
+	// A scheme-less value like "example.com" produces an invalid request URL that the HTTP
+	// layer silently drops (falling back to the gateway), so default it to https://.
+	const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+	return withScheme.replace(/\/+$/, "")
 }
 
 function modelsMetadataApi(endpoint?: string): string {
 	return `${normalizeKimchiEndpoint(endpoint)}/v1/models/metadata?include_in_cli=true`
 }
 
-function chatCompletionsApi(endpoint?: string): string {
+export function chatCompletionsApi(endpoint?: string): string {
 	return `${normalizeKimchiEndpoint(endpoint)}/openai/v1`
 }
 
@@ -118,7 +124,22 @@ async function fetchAvailableModels(apiKey: string, options: FetchModelsOptions 
 		}
 
 		if (response.ok) {
-			const body = (await response.json()) as ModelsMetadataResponse
+			let body: ModelsMetadataResponse
+			try {
+				body = (await response.json()) as ModelsMetadataResponse
+			} catch (err) {
+				// A 200 with a body that fails to parse (truncated/interrupted response, an
+				// HTML error page from an intermediary, etc.) is treated as a transient
+				// failure so it flows through the retry/cache logic instead of escaping
+				// as an uncaught rejection.
+				lastError = new ModelsFetchError(
+					`Failed to parse models response: ${err instanceof Error ? err.message : String(err)}`,
+					{ transient: true },
+				)
+				if (attempt === MAX_FETCH_ATTEMPTS) throw lastError
+				await sleep(retryDelayMs(response.headers?.get?.("retry-after"), attempt))
+				continue
+			}
 			if (!Array.isArray(body?.models)) {
 				throw new ModelsFetchError("Unexpected response shape from models API", { transient: false })
 			}
@@ -151,20 +172,59 @@ export interface PiModelConfig {
 	cost: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	// Persisted so telemetry can resolve the actual upstream provider after cache round-trip.
 	provider: string
-	compat?: { supportsReasoningEffort?: boolean; cacheControlFormat?: "anthropic" }
+	compat?: {
+		supportsReasoningEffort?: boolean
+		cacheControlFormat?: "anthropic"
+		supportsUsageInStreaming?: boolean
+	}
+	/** Maps thinking levels to provider-specific values. `off: "none"` sends `reasoning_effort: "none"`. */
+	thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>
 	/** Model-level API type: upstream custom-provider parseModels falls through to this field. */
 	api?: string
 	/** Model-level base URL: upstream custom-provider parseModels falls through to this field. */
 	baseUrl?: string
+	/** Model-level headers merged into outgoing requests by pi's storeModelHeaders. */
+	headers?: Record<string, string>
+}
+
+function autoModelConfig(models: ModelMetadata[]): PiModelConfig {
+	const rootModels = models.filter((model) => model.provider === "ai-enabler")
+	const contextWindow = Math.min(...rootModels.map((model) => model.limits.context_window), 128_000)
+	const maxTokens = Math.min(...rootModels.map((model) => model.limits.max_output_tokens), 16_384)
+	return {
+		id: AUTO_MODEL_ID,
+		name: AUTO_MODEL_NAME,
+		api: AUTO_MODEL_API,
+		provider: "ai-enabler",
+		// Auto is virtual, but Pi reads this capability to expose the session's
+		// reasoning control. The Auto provider applies that preference only when
+		// the resolved concrete model supports it.
+		reasoning: true,
+		thinkingLevelMap: { off: "none", max: "max" },
+		input: ["text", "image"],
+		contextWindow,
+		maxTokens,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	}
 }
 
 function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// TODO: our LiteLLM gateway does not support `thinking.type.enabled` for Anthropic >Opus 4.6 models
 	// Therefore, we disable it for now. Revisit, once we upgrade our LiteLLM version.
+	//
+	// Claude models routed through openai-completions need:
+	// - cacheControlFormat: "anthropic" so pi injects cache_control markers
+	// - supportsUsageInStreaming: true so stream_options.include_usage is sent
+	//
+	// ai-enabler models don't support chat_template_kwargs, so we rely on the
+	// default `openai` thinkingFormat which sends `reasoning_effort`. The map
+	// disables thinking with `none` and advertises max to Pi's selector.
 	const compat =
-		m.provider === "anthropic"
-			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic" } as const)
+		m.provider === "anthropic" || m.slug.startsWith("claude-")
+			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
 			: undefined
+	const thinkingLevelMap: PiModelConfig["thinkingLevelMap"] =
+		m.provider === "ai-enabler" ? { off: "none", max: "max" } : undefined
 	return {
 		id: m.slug,
 		name: m.display_name.trim().length > 0 ? m.display_name : m.slug,
@@ -176,22 +236,51 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		// Store upstream provider for telemetry round-trip via models.json
 		provider: m.provider,
 		...(compat && { compat }),
+		...(thinkingLevelMap && { thinkingLevelMap }),
 	}
 }
 
 function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
-	return {
-		providers: {
-			"kimchi-dev": {
-				baseUrl: chatCompletionsApi(endpoint),
-				apiKey: "$KIMCHI_API_KEY",
-				api: "openai-completions",
-				authHeader: true,
-				headers: { "User-Agent": `kimchi/${getVersion()}` },
-				models: models.map(metadataToModel),
-			},
+	const aiEnablerModels = models.filter((m) => m.provider === "ai-enabler")
+	const otherModels = models.filter((m) => m.provider !== "ai-enabler")
+
+	// Group non-ai-enabler models by upstream provider
+	const byProvider = new Map<string, ModelMetadata[]>()
+	for (const m of otherModels) {
+		const group = byProvider.get(m.provider) ?? []
+		group.push(m)
+		byProvider.set(m.provider, group)
+	}
+
+	const providerHeaders = (upstreamProvider: string) => ({
+		"User-Agent": `kimchi/${getVersion()}`,
+		"X-Provider-Type": upstreamProvider,
+	})
+
+	const providers: Record<string, unknown> = {
+		"kimchi-dev": {
+			baseUrl: chatCompletionsApi(endpoint),
+			apiKey: "$KIMCHI_API_KEY",
+			api: "openai-completions",
+			authHeader: true,
+			headers: { "User-Agent": `kimchi/${getVersion()}` },
+			models: aiEnablerModels.map(metadataToModel),
 		},
 	}
+
+	for (const [upstreamProvider, group] of byProvider) {
+		const subProviderId = `kimchi-dev/${upstreamProvider}`
+		providers[subProviderId] = {
+			baseUrl: chatCompletionsApi(endpoint),
+			apiKey: "$KIMCHI_API_KEY",
+			api: "openai-completions",
+			authHeader: true,
+			headers: providerHeaders(upstreamProvider),
+			models: group.map(metadataToModel),
+		}
+	}
+
+	return { providers }
 }
 
 export interface ModelsConfigResult {
@@ -226,9 +315,16 @@ function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined
 	try {
 		const raw = readFileSync(modelsJsonPath, "utf-8")
 		const parsed = JSON.parse(raw)
-		const models = parsed?.providers?.["kimchi-dev"]?.models
-		if (!Array.isArray(models) || models.length === 0) return undefined
-		return (models as PiModelConfig[]).map(modelToMetadata)
+		const providers = parsed?.providers ?? {}
+		const result: ModelMetadata[] = []
+		for (const [name, provider] of Object.entries(providers)) {
+			if (!name.startsWith("kimchi-dev")) continue
+			const models = (provider as { models?: PiModelConfig[] }).models
+			if (!Array.isArray(models) || models.length === 0) continue
+			result.push(...models.filter((model) => model.id !== AUTO_MODEL_ID).map(modelToMetadata))
+		}
+		if (result.length === 0) return undefined
+		return result
 	} catch {
 		return undefined
 	}
@@ -240,7 +336,13 @@ function readExistingProviders(modelsJsonPath: string): Record<string, unknown> 
 		const raw = readFileSync(modelsJsonPath, "utf-8")
 		const config = JSON.parse(raw)
 		const providers = config?.providers ?? {}
-		const { "kimchi-dev": _kimchi, "kimchi-experimental": _exp, ...rest } = providers as Record<string, unknown>
+		// Strip all kimchi-managed providers (kimchi-dev and kimchi-dev/* sub-providers)
+		// plus kimchi-experimental, so they get regenerated on refresh.
+		const rest: Record<string, unknown> = {}
+		for (const [name, value] of Object.entries(providers as Record<string, unknown>)) {
+			if (name.startsWith("kimchi-dev") || name === "kimchi-experimental") continue
+			rest[name] = value
+		}
 		return rest
 	} catch {
 		return {}
@@ -286,6 +388,29 @@ export function injectExperimentalProvider(modelsJsonPath: string, apiKey: strin
 		apiKey,
 	}
 	config.providers = { ...config.providers, "kimchi-experimental": experimental }
+	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
+}
+
+/**
+ * Upsert the virtual kimchi-dev/auto model after the managed provider refresh.
+ * It is always present so saved sessions/defaults remain restorable; the
+ * experimental flag only controls whether Pi exposes it in discovery lists.
+ */
+export function injectAutoModel(modelsJsonPath: string): void {
+	if (!existsSync(modelsJsonPath)) return
+	let config: { providers?: Record<string, { models?: PiModelConfig[] }> }
+	try {
+		config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+	} catch {
+		return
+	}
+	const kimchiDev = config.providers?.["kimchi-dev"]
+	if (!kimchiDev || !Array.isArray(kimchiDev.models)) return
+	const concreteMetadata = kimchiDev.models.filter((model) => model.id !== AUTO_MODEL_ID).map(modelToMetadata)
+	kimchiDev.models = [
+		...kimchiDev.models.filter((model) => model.id !== AUTO_MODEL_ID),
+		autoModelConfig(concreteMetadata),
+	]
 	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
 }
 

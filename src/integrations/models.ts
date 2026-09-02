@@ -26,8 +26,8 @@ export interface KimchiModel {
 }
 
 export const MAIN_MODEL: KimchiModel = {
-	slug: "kimi-k2.6",
-	displayName: "Kimi K2.6",
+	slug: "minimax-m3",
+	displayName: "MiniMax M3",
 	description: "Primary model for reasoning, planning, code generation, and image processing.",
 	toolCall: true,
 	reasoning: true,
@@ -137,17 +137,11 @@ export function resolveModelRole(
 		precomputedMain ??
 		((): ModelMetadata | undefined => {
 			// 1. Preferred orchestrator slug — always try this first.
-			const preferred = serverless.find((m) => m.slug === "kimi-k2.6")
+			const preferred = serverless.find((m) => m.slug === "minimax-m3")
 			if (preferred) return preferred
-			// 2. Any vision-capable Kimi model as a fallback.
-			const vision = serverless.find(
-				(m) =>
-					m.input_modalities.includes("image") &&
-					(m.display_name.toLowerCase().includes("kimi") || m.slug.toLowerCase().includes("kimi")),
-			)
-			// 3. Any vision-capable serverless model — avoid text-only models as main.
-			const anyVision = serverless.find((m) => m.input_modalities.includes("image"))
-			return vision ?? anyVision ?? serverless[0] ?? models[0]
+			// 2. Any vision-capable serverless model — avoid text-only models as main.
+			const vision = serverless.find((m) => m.input_modalities.includes("image"))
+			return vision ?? serverless[0] ?? models[0]
 		})()
 
 	switch (role) {

@@ -55,11 +55,11 @@ func resolveTunnelCredentials(ctx context.Context, sessionIDOrSandboxURL, apiKey
 	if err != nil {
 		return nil, err
 	}
-	sessionID, sandboxURL, err := cast.ResolveSessionID(ctx, orgID, sessionIDOrSandboxURL, apiKey, endpoint)
+	sessionID, sandboxURL, err := cast.ResolveWorkspaceID(ctx, orgID, sessionIDOrSandboxURL, apiKey, endpoint)
 	if err != nil {
 		return nil, err
 	}
-	token, err := cast.ExchangeSessionToken(ctx, apiKey, sessionID, endpoint)
+	token, err := cast.ExchangeWorkspaceToken(ctx, apiKey, sessionID, endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +125,7 @@ func runBinaryBridgeIO(ctx context.Context, wsURL, token string, stdin io.Reader
 	// WebSocket → stdout
 	go func() {
 		for {
-				_, data, rerr := ws.Read(bridgeCtx)
+			_, data, rerr := ws.Read(bridgeCtx)
 			if rerr != nil {
 				if isClosedNetworkError(rerr) {
 					errCh <- nil

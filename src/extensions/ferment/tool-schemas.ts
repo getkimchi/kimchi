@@ -5,18 +5,41 @@
  * here are the LLM-visible API contract — keep them concise and accurate.
  */
 
-import { Type } from "typebox"
+import { type TSchema, Type } from "typebox"
 
 /** Structured quality-gate verdict the agent must produce on every completion
  *  tool call. The set of valid `id`s, and which set is required for which
  *  tool, is enforced by `gate-registry.ts:assertGateCoverage`. Description
  *  text rendered into each tool's description tells the agent exactly which
  *  ids to produce and what each one asks. */
-export const GateVerdictSchema = Type.Object({
-	id: Type.String({
-		description: "Gate id from the registry. See the tool description for the exact ids this tool requires.",
-	}),
-	verdict: Type.Union(
+const CanonicalVerdictSchema = Type.Union([Type.Literal("pass"), Type.Literal("flag"), Type.Literal("omitted")], {
+	description:
+		"'pass' = the gate's question is answered affirmatively with concrete evidence. 'flag' = the gate identifies a real problem. 'omitted' = the gate does not apply (requires rationale). Use only pass | flag | omitted.",
+})
+
+const gateVerdictObject = <T extends TSchema>(verdict: T) =>
+	Type.Object({
+		id: Type.String({
+			description: "Gate id from the registry. See the tool description for the exact ids this tool requires.",
+		}),
+		verdict,
+		rationale: Type.String({
+			description:
+				'One sentence justifying the verdict. Required for every verdict including "pass" and "omitted". Example: "All phases have a bash verify command" or "Single phase, no ordering concerns".',
+		}),
+		evidence: Type.String({
+			description:
+				'File:line, quoted diff line, command output, or \'n/a\' for omitted gates. Empty evidence is rejected. Example: "src/foo.ts:42" or "pnpm test output" or "n/a".',
+		}),
+	})
+
+/** Canonical gate verdict used by plan, phase, and ferment completion tools. */
+export const GateVerdictSchema = gateVerdictObject(CanonicalVerdictSchema)
+
+/** Step gates defensively accept verification-classification aliases for S2.
+ * Runtime validation still rejects these aliases on S1/S3. */
+const StepGateVerdictSchema = gateVerdictObject(
+	Type.Union(
 		[
 			Type.Literal("pass"),
 			Type.Literal("flag"),
@@ -25,24 +48,17 @@ export const GateVerdictSchema = Type.Object({
 			// Gate validation normalizes these before persistence.
 			Type.Literal("smoke"),
 			Type.Literal("test"),
+			Type.Literal("inspected"),
 			Type.Literal("syntactic"),
 			Type.Literal("proxy"),
 			Type.Literal("sentinel"),
 		],
 		{
 			description:
-				"'pass' = the gate's question is answered affirmatively with concrete evidence. 'flag' = the gate identifies a real problem (blocks advancement). 'omitted' = the gate doesn't apply to this work (requires rationale). Prefer pass | flag | omitted. If you accidentally use S2 verification labels, smoke/test/syntactic normalize to pass and proxy/sentinel normalize to flag.",
+				"Use pass | flag | omitted. For S2 only, smoke/test/inspected/syntactic normalize to pass and proxy/sentinel normalize to flag. S1 and S3 must use canonical verdicts.",
 		},
 	),
-	rationale: Type.String({
-		description:
-			"One sentence justifying the verdict. Required for every verdict including 'pass' and 'omitted'. Example: \"All phases have a bash verify command\" or \"Single phase, no ordering concerns\".",
-	}),
-	evidence: Type.String({
-		description:
-			'File:line, quoted diff line, command output, or \'n/a\' for omitted gates. Empty evidence is rejected. Example: "src/foo.ts:42" or "pnpm test output" or "n/a".',
-	}),
-})
+)
 
 export const ListParams = Type.Object({
 	filter: Type.Optional(Type.String({ description: "Optional status filter" })),
@@ -52,6 +68,83 @@ const SuccessCriteriaSchema = Type.Array(Type.String(), {
 	minItems: 1,
 	description: "Observable acceptance criteria. Each item must be one concrete, verifiable criterion.",
 })
+
+/** One constraint + the visible cost it imposes on the result versus the
+ *  literal request. Used to make substitutions explicit decisions. */
+const ConstraintCostSchema = Type.Object({
+	constraint: Type.String({ description: "The constraint text as it appears in constraints[]." }),
+	cost: Type.String({
+		description: "What this substitution or approximation visibly costs the result versus the literal request.",
+	}),
+})
+
+/** Advisory scoping quality signals shared by propose_ferment_scoping and
+ *  scope_ferment. All optional; they are RENDERED into the plan review / tool
+ *  output, not persisted on the ferment. Their purpose: make narrowings and
+ *  substitutions explicit, named decisions at the one checkpoint that exists,
+ *  and force the planner to answer the meh-test in writing. */
+const ScopingAdvisoryProps = {
+	self_critique: Type.Optional(
+		Type.String({
+			description:
+				"Meh-test: imagine the user reading just your goal/criteria/constraints as THE summary of what they will get. If 'meh — you missed the point' is a plausible reaction, the criteria miss load-bearing dimensions of the request. Name here which request dimensions are NOT covered by any success criterion and whether each gap is deliberate. When the request has qualities that can't be auto-checked (appearance, feel, tone, global coherence), you MUST name them here; 'all covered' is acceptable only when true.",
+		}),
+	),
+	scope_deltas: Type.Optional(
+		Type.Array(Type.String(), {
+			description:
+				"Each way this plan narrows or reframes the literal request and why (e.g. 'every app' → 'the 12 most-used apps'; 'full parity' → 'functional core'). Rendered in review; naming narrowings here makes them explicit decisions instead of silent ones.",
+		}),
+	),
+	constraint_costs: Type.Optional(
+		Type.Array(ConstraintCostSchema, {
+			description:
+				"For each constraint that substitutes or approximates the literal request (mock data, alternative assets, simplified behavior, deferred platforms), the visible cost of that substitution. Example: {constraint: 'weather uses bundled mock dataset', cost: 'weather does not show real conditions'}.",
+		}),
+	),
+	quality_dimensions: Type.Optional(
+		Type.Array(Type.String(), {
+			description:
+				"Aspects of 'done well' that span phases and no single step can own (global visual coherence, API consistency, doc tone, end-to-end flow). For each, name which phase/step answers to it, or note it as an owner gap the final review must cover. Omit only for plain scripts/CLIs with no cross-cutting feel.",
+		}),
+	),
+}
+
+/** Intent charter: the ferment's immutable objective anchor, drafted at scoping
+ *  time and never rewritten afterwards. Persisted with the scope event, then
+ *  re-injected into continuation nudges, compaction instructions, stage
+ *  handoffs, and grader prompts so long runs cannot drift from the original
+ *  intent toward the narrowed plan. All fields beyond intent are optional. */
+export const CharterSchema = Type.Object(
+	{
+		intent: Type.String({
+			description:
+				"The user's original request, verbatim as you received it (verbatim minus pleasantries). This is the anchor — never paraphrase it into the plan's language.",
+		}),
+		wow_factor: Type.Optional(
+			Type.String({
+				description:
+					"One line: what outcome would genuinely delight the user ('wow', not 'meh'), drafted from the intent and scoping answers — what a great result feels like, not merely a correct one.",
+			}),
+		),
+		confirmed_scope: Type.Optional(
+			Type.String({
+				description:
+					"One short paragraph: what is in scope and what is explicitly out. If the plan narrows the literal request (fewer items, phase-only scope, deferred dimensions), the narrowing must be visible here.",
+			}),
+		),
+		demo_script: Type.Optional(
+			Type.String({
+				description:
+					"2-4 beats describing what a successful final walkthrough of the FINISHED artifact would show, stated in the artifact's native medium: load the page and see X; run the CLI and get exact output Y; read the doc and find section Z.",
+			}),
+		),
+	},
+	{
+		description:
+			"Optional intent charter. Provide it when the user's request is substantive; it anchors grading and ship decisions against the original intent rather than the narrowed plan.",
+	},
+)
 
 // Shared phase schema — used by both scope_ferment (headless path) and
 // propose_ferment_scoping (interactive path). Keep them identical so a proposed plan
@@ -72,7 +165,12 @@ export const PhaseProposalSchema = Type.Object({
 		Type.Array(
 			Type.Object({
 				description: Type.String(),
-				verify: Type.Optional(Type.String({ description: "bash command that exits 0 on success" })),
+				verify: Type.Optional(
+					Type.String({
+						description:
+							"Bash command that exits 0 on success. Runtime-claim steps need BEHAVIORAL verification (run the artifact, assert its behavior — tests, smoke runs, curl the server); existence/grep checks (test -f, grep -q) only suit scaffolding steps. echo-only 'manual inspection' commands are banned. complete_ferment_phase re-runs every declared verify deterministically before grading.",
+					}),
+				),
 				parallel_group: Type.Optional(
 					Type.Number({
 						description:
@@ -106,6 +204,8 @@ export const ScopeParams = Type.Object({
 		]),
 	),
 	phases: Type.Optional(Type.Array(PhaseProposalSchema)),
+	charter: Type.Optional(CharterSchema),
+	...ScopingAdvisoryProps,
 	gates: Type.Array(GateVerdictSchema, {
 		description:
 			'Plan-scope gate verdicts. Required ids: P1, P2, P3. See tool description for each gate\'s question and what counts as \'pass\' vs \'flag\'. Example: [{"id":"P1","verdict":"pass","rationale":"Every step has a verify command","evidence":"Step 1: pnpm test passes"}, {"id":"P2","verdict":"omitted","rationale":"Single phase, no ordering concerns","evidence":"n/a"}, {"id":"P3","verdict":"pass","rationale":"C3 will check test output and file existence","evidence":"Tests run via pnpm run test"}]',
@@ -145,9 +245,12 @@ export const ScopingQuestionSchema = Type.Object({
 })
 
 export const ProposeScopingParams = Type.Object({
-	ferment_id: Type.String({
-		description: "The ferment whose scoping you're proposing.",
-	}),
+	ferment_id: Type.Optional(
+		Type.String({
+			description:
+				"The ferment whose scoping you're proposing. Omit when no ferment is active; the host will create a new draft ferment and attach the proposal to it.",
+		}),
+	),
 	title: Type.String({
 		description:
 			"Required concise 3-5 word title for this ferment. The host applies it only after the user confirms/saves this proposal.",
@@ -187,6 +290,8 @@ export const ProposeScopingParams = Type.Object({
 				"Fallback only: a valid JSON array string containing phase objects. Prefer a real JSON array. Prose, markdown lists, and malformed JSON are rejected.",
 		}),
 	]),
+	charter: Type.Optional(CharterSchema),
+	...ScopingAdvisoryProps,
 	questions: Type.Optional(
 		Type.Union([
 			Type.Array(ScopingQuestionSchema, {
@@ -224,7 +329,8 @@ export const RefineParams = Type.Object({
 			description: Type.String(),
 			verify: Type.Optional(
 				Type.String({
-					description: "Bash command that exits 0 on success. Run automatically after complete_ferment_step.",
+					description:
+						"Bash command that exits 0 on success. Run automatically after complete_ferment_step, and re-run deterministically at complete_ferment_phase before grading. Runtime-claim steps need BEHAVIORAL verification (run the artifact, assert its behavior); existence/grep checks (test -f, grep -q) only suit scaffolding steps. echo-only 'manual inspection' commands are banned.",
 				}),
 			),
 			parallel_group: Type.Optional(
@@ -244,14 +350,38 @@ export const StepActionParams = Type.Object({
 		description:
 			"Step ID in format 'step-N', e.g. 'step-1'. Use the step_id returned by refine_ferment_phase or activate_ferment_phase.",
 	}),
+	budget_tier: Type.Optional(
+		Type.Union([Type.Literal("narrow"), Type.Literal("standard"), Type.Literal("complex")], {
+			description:
+				"Worker budget selected by scoped work shape: narrow for verification or one small edit; standard for normal implementation (default); complex for multi-file builds or iterative debugging.",
+		}),
+	),
 })
 
 export const CompleteStepParams = Type.Object({
 	ferment_id: Type.String(),
 	phase_id: Type.String(),
 	step_id: Type.String(),
+	worker_agent_id: Type.Optional(
+		Type.String({
+			description:
+				"Agent ID returned by the worker spawned for this step. The linked Agent must have task_ref matching this ferment step, outcome completed, and submit_agent_report status completed. Omit when the orchestrator executed the step directly (no subagent was spawned).",
+		}),
+	),
 	summary: Type.Optional(Type.String()),
-	gates: Type.Array(GateVerdictSchema, {
+	subsumed: Type.Optional(
+		Type.Boolean({
+			description:
+				"True when this step's work was already performed by another step in the same phase (set absorbed_by). The step's verification command is re-run to confirm the claim; on failure the subsumption is refused and the step must be done normally. Avoids re-doing or mock-completing already-finished work.",
+		}),
+	),
+	absorbed_by: Type.Optional(
+		Type.String({
+			description:
+				"Step ID (same phase, must be done/verified) whose work already covered this step. Required when subsumed=true.",
+		}),
+	),
+	gates: Type.Array(StepGateVerdictSchema, {
 		description:
 			'Step-scope gate verdicts. Required ids: S1 (summary matches diff), S2 (verify command honesty), S3 (edge case awareness). A \'flag\' verdict blocks step completion. Example: [{"id":"S1","verdict":"pass","rationale":"Summary cites file paths and functions from the diff","evidence":"src/foo.ts:42"}, {"id":"S2","verdict":"pass","rationale":"Verify command is a real test, not just grep","evidence":"pnpm test -- src/foo.test.ts"}, {"id":"S3","verdict":"pass","rationale":"Handles empty input gracefully","evidence":"Tested with empty string; returns early"}]',
 	}),
@@ -272,6 +402,12 @@ export const CompletePhaseParams = Type.Object({
 	ferment_id: Type.String(),
 	phase_id: Type.String(),
 	summary: Type.String(),
+	evidence: Type.Optional(
+		Type.String({
+			description:
+				"Execution evidence for the LLM grader. Paste real command outputs and verification results that prove the phase work was done correctly — e.g. bash command + exit code + stdout, test suite output, file contents, or tool invocation transcripts. This is especially important when no git diff is available (non-repo environments). Bounded to ~4 KB; truncate long outputs to the relevant portions. Example: '$ python3 verify.py\nAll 5 tests passed\n$ cat /app/result.txt\n42'",
+		}),
+	),
 	gates: Type.Array(GateVerdictSchema, {
 		description:
 			'Phase-scope gate verdicts. Required ids: F1 (real verification vs proxies), F2 (combined output meets phase goal), F3 (what was deferred). A \'flag\' verdict refuses phase advancement and feeds the retry/escalation pipeline. Example: [{"id":"F1","verdict":"pass","rationale":"Mixed verification is acceptable; load-bearing steps use real tests","evidence":"Step 2 uses pnpm test; Step 1 is proxy but non-critical"}, {"id":"F2","verdict":"pass","rationale":"All steps together produced the expected artifact","evidence":"src/new-feature.ts created and compiled"}, {"id":"F3","verdict":"pass","rationale":"Nothing deferred; all planned work completed","evidence":"n/a"}]',
@@ -287,6 +423,12 @@ export const SkipPhaseParams = Type.Object({
 export const CompleteFermentParams = Type.Object({
 	ferment_id: Type.String(),
 	final_summary: Type.Optional(Type.String()),
+	evidence: Type.Optional(
+		Type.String({
+			description:
+				"Execution evidence for the final LLM grader. Paste real command outputs and verification results that prove the ferment goal was achieved — e.g. bash command + exit code + stdout, test suite output, file contents, or tool invocation transcripts. This is especially important when no git diff is available (non-repo environments). Bounded to ~4 KB; truncate long outputs to the relevant portions.",
+		}),
+	),
 	gates: Type.Optional(
 		Type.Array(GateVerdictSchema, {
 			description:
@@ -365,18 +507,11 @@ const AskUserQuestionSchema = Type.Object({
 				"For single/multi questions only. When true, the TUI adds an Other/free-text option and the judge may return a custom value. Must be omitted for confirm. Default: false.",
 		}),
 	),
-	otherLabel: Type.Optional(
-		Type.String({
-			description:
-				"For single/multi questions with allowOther=true, optional custom label for the free-text option. Default: 'Type your own answer'.",
-		}),
-	),
 	required: Type.Optional(Type.Boolean({ description: "Whether this question must be answered. Default: true." })),
-	placeholder: Type.Optional(Type.String({ description: "Optional placeholder hint for text/custom answers." })),
 })
 
 export const AskUserParams = Type.Object({
-	ferment_id: Type.String(),
+	ferment_id: Type.Optional(Type.String()),
 	title: Type.Optional(
 		Type.String({
 			description: "Optional title for a multi-question form. Use with questions[].",
@@ -387,30 +522,11 @@ export const AskUserParams = Type.Object({
 			description: "Optional short context shown above a multi-question form and given to the judge.",
 		}),
 	),
-	response_type: Type.Optional(
-		Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("text"), Type.Literal("confirm")], {
-			description:
-				"Compatibility shorthand for a single question. single returns choice, multi returns choices, text returns text, and confirm returns choice. confirm is strict Yes/No only and must not provide options. Use response_type='text' for one free-form question, or questions[] when multiple controls are needed. Default: single.",
-		}),
-	),
-	question: Type.Optional(
-		Type.String({
-			description:
-				"Compatibility shorthand for one question. For 1:1 TUI behavior, prefer questions[] with single/multi/text/confirm. Use response_type='text' for free-form input; confirm is Yes/No only.",
-		}),
-	),
-	options: Type.Optional(
-		Type.Array(AskUserOptionSchema, {
-			description:
-				"Compatibility shorthand options for single/multi questions. Each option needs a stable id and a human label. Omit for text and confirm questions.",
-		}),
-	),
-	questions: Type.Optional(
-		Type.Array(AskUserQuestionSchema, {
-			description:
-				"One or more form questions. Supports single, multi, text, and confirm; single/multi support allowOther. Use text questions for free-form input. Multiple questions use Tab/Shift+Tab navigation and a Submit tab.",
-		}),
-	),
+	questions: Type.Array(AskUserQuestionSchema, {
+		minItems: 1,
+		description:
+			"One or more form questions. Supports single, multi, text, and confirm; single/multi support allowOther. Use text questions for free-form input. Multiple questions use Tab/Shift+Tab navigation and a Submit tab.",
+	}),
 })
 
 export const ConfirmCompletionCriteriaParams = Type.Object({
@@ -420,7 +536,7 @@ export const ConfirmCompletionCriteriaParams = Type.Object({
 		{
 			minItems: 1,
 			description:
-				"Draft completion criteria to present for confirmation. The host asks one combined prompt with a Yes selection and an inline free-form 'No (input what is wrong)' path.",
+				"Draft completion criteria to present for confirmation. The host asks one combined prompt with a Yes selection and an inline free-form 'Type your own answer' path.",
 		},
 	),
 })

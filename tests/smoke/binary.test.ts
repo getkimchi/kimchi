@@ -1,8 +1,19 @@
-import { constants, accessSync, copyFileSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
+import {
+	accessSync,
+	constants,
+	copyFileSync,
+	existsSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { BINARY_PATH, runBinary } from "./harness.js"
+import { BINARY_PATH, getAgentDir, runBinary } from "./harness.js"
 
 describe("binary smoke tests", () => {
 	it("binary exists and is executable", () => {
@@ -42,6 +53,8 @@ describe("binary smoke tests", () => {
 		expect(result.stdout).toContain("--provider")
 		expect(result.stdout).toContain("--mode")
 		expect(result.stdout).toContain("--continue")
+		expect(result.stdout).toContain("--resume, -r [id]")
+		expect(result.stdout).toContain("--enable-experimental-features")
 		// Kimchi-only env vars
 		expect(result.stdout).toContain("KIMCHI_API_KEY")
 		// Pi-internal extension management commands and provider-specific env
@@ -74,14 +87,73 @@ describe("binary smoke tests", () => {
 		expect(result.stdout + result.stderr).not.toContain("not implemented yet on this branch")
 	})
 
-	it("prompt templates are embedded in binary (no extension errors on startup)", () => {
+	it("-r with an id is treated as a session selector", () => {
+		const missingSessionId = "019f1780-8034-7435-85aa-3e86037676ee"
+		const result = runBinary({
+			args: ["-r", missingSessionId],
+			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy" },
+			throwOnError: false,
+			timeoutMs: 5_000,
+		})
+		expect(result.status).not.toBe(0)
+		expect(result.stdout + result.stderr).toContain(`No session found matching '${missingSessionId}'`)
+	})
+
+	it("prompt templates are embedded in binary (no extension errors on startup)", { timeout: 35_000 }, () => {
 		const result = runBinary({
 			args: ["-p", "hello"],
 			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy" },
 			throwOnError: false,
+			timeoutMs: 25_000,
 		})
 		// The orchestration extension fires "input" and "before_agent_start" events, triggering template loading. If templates are missing from the compiled binary, the extension runner reports ENOENT via "Extension error" on stderr.
 		expect(result.stderr).not.toContain("Extension error")
+	})
+
+	it("auto-names persisted sessions from the first user prompt", () => {
+		const before = new Set(listSessionFiles())
+		const prompt = "Explore 3 random files"
+		runBinary({
+			args: ["--debug-prompts", "-p", prompt],
+			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy" },
+			throwOnError: false,
+			timeoutMs: 30_000,
+		})
+
+		const newEntries = listSessionFiles()
+			.filter((file) => !before.has(file))
+			.flatMap(readSessionEntries)
+
+		expect(newEntries).toContainEqual(expect.objectContaining({ type: "session_info", name: prompt }))
+	})
+
+	describe("runtime config autoloading", () => {
+		let workDir: string
+
+		beforeEach(() => {
+			workDir = mkdtempSync(join(tmpdir(), "kimchi-smoke-runtime-config-"))
+		})
+
+		afterEach(() => {
+			rmSync(workDir, { recursive: true, force: true })
+		})
+
+		it("does not load .env from the working directory", () => {
+			writeFileSync(join(workDir, ".env"), "KIMCHI_TELEMETRY_ENABLED=0\n", "utf-8")
+
+			const result = runBinary({ args: ["config", "telemetry"], cwd: workDir })
+
+			expect(result.stdout.trim()).toBe("Telemetry: enabled (from config)")
+		})
+
+		it("does not load bunfig.toml from the working directory", () => {
+			writeFileSync(join(workDir, "bunfig.toml"), 'preload = ["./disable-telemetry.js"]\n', "utf-8")
+			writeFileSync(join(workDir, "disable-telemetry.js"), 'process.env.KIMCHI_TELEMETRY_ENABLED = "0"\n', "utf-8")
+
+			const result = runBinary({ args: ["config", "telemetry"], cwd: workDir })
+
+			expect(result.stdout.trim()).toBe("Telemetry: enabled (from config)")
+		})
 	})
 
 	describe("--export", () => {
@@ -122,3 +194,25 @@ describe("binary smoke tests", () => {
 		expect(result.stdout.trim()).not.toBe("")
 	})
 })
+
+function listSessionFiles(dir = join(getAgentDir(), "sessions")): string[] {
+	if (!existsSync(dir)) return []
+
+	const files: string[] = []
+	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+		const path = join(dir, entry.name)
+		if (entry.isDirectory()) {
+			files.push(...listSessionFiles(path))
+		} else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+			files.push(path)
+		}
+	}
+	return files
+}
+
+function readSessionEntries(file: string): Array<Record<string, unknown>> {
+	return readFileSync(file, "utf-8")
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line) as Record<string, unknown>)
+}

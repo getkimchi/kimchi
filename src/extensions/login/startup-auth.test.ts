@@ -1,4 +1,4 @@
-import { LoginDialogComponent, type Theme, initTheme } from "@earendil-works/pi-coding-agent"
+import { initTheme, LoginDialogComponent, type Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -17,14 +17,19 @@ const modelsMock = vi.hoisted(() => ({
 	isTransientModelsError: vi.fn((error: unknown) => (error as { transient?: boolean })?.transient === true),
 }))
 
+const piAuthMock = vi.hoisted(() => ({
+	syncPiAuth: vi.fn(),
+}))
+
 vi.mock("../../cli-auth/index.js", () => authMock)
 vi.mock("../../config.js", () => configMock)
 vi.mock("../../models.js", () => modelsMock)
+vi.mock("../../pi-auth.js", () => piAuthMock)
 
 import {
-	type StartupAuthGateState,
 	createStartupAuthGate,
 	createStartupAuthGateState,
+	type StartupAuthGateState,
 	shouldShowStartupAuthGate,
 } from "./startup-auth.js"
 
@@ -51,7 +56,7 @@ function createHarness(
 	options: {
 		state?: StartupAuthGateState
 		availableInitially?: boolean
-		addModelOnAuthSet?: boolean
+		addModelOnAuthSync?: boolean
 		overlayActiveInitially?: boolean
 		onCancel?: ReturnType<typeof vi.fn>
 		afterSessionStart?: SessionStartHandler
@@ -69,19 +74,14 @@ function createHarness(
 	const availableModels: Array<{ id: string; provider: string }> = options.availableInitially
 		? [{ id: "kimi-k2.6", provider: "kimchi-dev" }]
 		: []
-	const authStorage = {
-		set: vi.fn((provider: string) => {
-			if (provider === "kimchi-dev" && options.addModelOnAuthSet !== false && availableModels.length === 0) {
-				availableModels.push({ id: "kimi-k2.6", provider: "kimchi-dev" })
-			}
-		}),
-		get: vi.fn(),
-		getOAuthProviders: vi.fn(() => []),
-		login: vi.fn(),
-	}
+	piAuthMock.syncPiAuth.mockImplementation(async (_authPath: string, _modelsPath: string, apiKey: string) => {
+		if (apiKey && options.addModelOnAuthSync !== false && availableModels.length === 0) {
+			availableModels.push({ id: "kimi-k2.6", provider: "kimchi-dev" })
+		}
+	})
 	const modelRegistry = {
-		authStorage,
 		refresh: vi.fn(),
+		getAll: vi.fn(() => availableModels),
 		getAvailable: vi.fn(() => availableModels),
 		getProviderAuthStatus: vi.fn(() => ({ configured: false })),
 	}
@@ -139,7 +139,7 @@ function createHarness(
 		input: (data: string) => activeComponent?.handleInput?.(data),
 		terminalInput: (data: string) => terminalInputHandler?.(data),
 		settle: async () => {
-			for (let i = 0; i < 4; i += 1) await Promise.resolve()
+			for (let i = 0; i < 10; i += 1) await Promise.resolve()
 		},
 		waitForCustomPrompts: async (count: number) => {
 			for (let i = 0; i < 50; i += 1) {
@@ -156,6 +156,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-startup-auth-test")
 	authMock.authenticateViaBrowser.mockReset()
 	authMock.authenticateViaBrowser.mockResolvedValue({ token: "kimchi-token" })
 	let savedConfigKey = ""
@@ -168,6 +169,8 @@ beforeEach(() => {
 	modelsMock.updateModelsConfig.mockReset()
 	modelsMock.updateModelsConfig.mockResolvedValue({ models: [] })
 	modelsMock.syncProviderModels.mockReset()
+	piAuthMock.syncPiAuth.mockReset()
+	piAuthMock.syncPiAuth.mockResolvedValue(undefined)
 })
 
 afterEach(() => {
@@ -213,10 +216,11 @@ describe("startup auth gate", () => {
 
 		expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
 		expect(configMock.writeApiKey).toHaveBeenCalledWith("kimchi-token")
-		expect(harness.modelRegistry.authStorage.set).toHaveBeenCalledWith("kimchi-dev", {
-			type: "api_key",
-			key: "kimchi-token",
-		})
+		expect(piAuthMock.syncPiAuth).toHaveBeenCalledWith(
+			"/tmp/kimchi-startup-auth-test/auth.json",
+			"/tmp/kimchi-startup-auth-test/models.json",
+			"kimchi-token",
+		)
 		expect(harness.api.setModel).toHaveBeenCalledWith({ id: "kimi-k2.6", provider: "kimchi-dev" })
 		expect(harness.state.authenticated).toBe(true)
 	})
@@ -227,8 +231,8 @@ describe("startup auth gate", () => {
 			options?.onBrowserUrl?.(loginUrl)
 			return { token: "kimchi-token" }
 		})
-		// The URL is shown via the reused LoginDialogComponent's showInfo, not notify.
-		const showInfoSpy = vi.spyOn(LoginDialogComponent.prototype, "showInfo")
+		// The URL is shown via the reused LoginDialogComponent's details area, not notify.
+		const showDetailsSpy = vi.spyOn(LoginDialogComponent.prototype, "showDetails")
 
 		try {
 			const harness = createHarness()
@@ -239,7 +243,7 @@ describe("startup auth gate", () => {
 			await started
 
 			expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
-			const lines = showInfoSpy.mock.calls.flatMap((call) => call[0] as string[])
+			const lines = showDetailsSpy.mock.calls.flatMap((call) => call[0])
 			// Intact BEL-terminated OSC 8 hyperlink target so "Copy Link" yields the full
 			// URL even when the visible text wraps (a raw wrapped URL would get a newline
 			// injected at the wrap point, corrupting the state param on paste). The `id=`
@@ -247,7 +251,7 @@ describe("startup auth gate", () => {
 			expect(lines.some((line) => line.includes(`;${loginUrl}\x07`))).toBe(true)
 			expect(lines.some((line) => line.includes("\x1b]8;id=kimchi-login-"))).toBe(true)
 		} finally {
-			showInfoSpy.mockRestore()
+			showDetailsSpy.mockRestore()
 		}
 	})
 
@@ -295,7 +299,7 @@ describe("startup auth gate", () => {
 			savedConfigKey = key
 		})
 		const onCancel = vi.fn()
-		const harness = createHarness({ addModelOnAuthSet: false, onCancel })
+		const harness = createHarness({ addModelOnAuthSync: false, onCancel })
 
 		try {
 			const started = harness.start()
@@ -317,7 +321,6 @@ describe("startup auth gate", () => {
 			expect(harness.state.cancelled).toBe(true)
 		} finally {
 			if (previousAgentDir === undefined) {
-				// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset rather than stringified to "undefined"
 				delete process.env.KIMCHI_CODING_AGENT_DIR
 			} else {
 				process.env.KIMCHI_CODING_AGENT_DIR = previousAgentDir
@@ -338,7 +341,7 @@ describe("startup auth gate", () => {
 		})
 		modelsMock.updateModelsConfig.mockRejectedValue(transientError)
 		const onCancel = vi.fn()
-		const harness = createHarness({ addModelOnAuthSet: false, onCancel })
+		const harness = createHarness({ addModelOnAuthSync: false, onCancel })
 
 		try {
 			const started = harness.start()
@@ -357,7 +360,6 @@ describe("startup auth gate", () => {
 			expect(harness.state.cancelled).toBe(true)
 		} finally {
 			if (previousAgentDir === undefined) {
-				// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset rather than stringified to "undefined"
 				delete process.env.KIMCHI_CODING_AGENT_DIR
 			} else {
 				process.env.KIMCHI_CODING_AGENT_DIR = previousAgentDir
@@ -388,7 +390,7 @@ describe("startup auth gate", () => {
 		await harness.settle()
 
 		expect(harness.ctx.ui.custom).not.toHaveBeenCalled()
-		expect(harness.modelRegistry.authStorage.set).not.toHaveBeenCalled()
+		expect(piAuthMock.syncPiAuth).not.toHaveBeenCalled()
 
 		harness.setOverlay(false)
 		harness.terminalInput("x")
@@ -427,18 +429,17 @@ describe("startup auth gate", () => {
 		expect(onCancel).toHaveBeenCalledWith(harness.ctx)
 	})
 
-	it("preserves master behavior by seeding saved config keys as oauth credentials", async () => {
+	it("synchronizes a saved config key into Pi auth before checking available models", async () => {
 		configMock.loadConfig.mockReturnValue({ apiKey: "saved-config-token" })
 		const harness = createHarness()
 
 		await harness.start()
 
-		expect(harness.modelRegistry.authStorage.set).toHaveBeenCalledWith("kimchi-dev", {
-			type: "oauth",
-			access: "saved-config-token",
-			refresh: "",
-			expires: Number.MAX_SAFE_INTEGER,
-		})
+		expect(piAuthMock.syncPiAuth).toHaveBeenCalledWith(
+			"/tmp/kimchi-startup-auth-test/auth.json",
+			"/tmp/kimchi-startup-auth-test/models.json",
+			"saved-config-token",
+		)
 		expect(harness.ctx.ui.custom).not.toHaveBeenCalled()
 	})
 

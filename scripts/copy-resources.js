@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Copy non-TypeScript resources that tsc doesn't handle.
 //
 // --dev   (used by `build`):        theme files from node_modules → src/modes/interactive/theme/
@@ -10,7 +11,8 @@
 //                                   plus package.json → dist/share/kimchi/
 //                                   so the compiled binary resolves assets from the shared data directory
 
-import { cpSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { platform } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -79,23 +81,29 @@ for (const file of kimchiThemeFiles) {
 if (!isDev) {
 	cpSync(join(projectRoot, "package.json"), join(projectRoot, "dist", "share", "kimchi", "package.json"))
 
+	// Stage bundled skills (resources/skills) so the central skill-root
+	// resolver finds them via resolveAuxiliaryFilesDir in the compiled binary.
+	const bundledSkillsSrc = join(projectRoot, "resources", "skills")
+	const bundledSkillsDest = join(projectRoot, "dist", "share", "kimchi", "skills")
+	if (existsSync(bundledSkillsSrc)) {
+		mkdirSync(bundledSkillsDest, { recursive: true })
+		cpSync(bundledSkillsSrc, bundledSkillsDest, { recursive: true })
+	}
+
 	// Copy custom OAuth page templates
 	const oauthSrc = join(projectRoot, "resources", "oauth")
 	const oauthDest = join(projectRoot, "dist", "share", "kimchi", "oauth")
 	mkdirSync(oauthDest, { recursive: true })
 	cpSync(oauthSrc, oauthDest, { recursive: true })
 
-	// Copy proxy-helper binary built by tools/proxy-helper/Makefile
-	const proxyHelperSrc = join(projectRoot, "tools", "proxy-helper", "bin", "proxy-helper")
+	// Copy proxy-helper binary built by scripts/build-proxy-helper.js.
+	const buildTargetOS = process.env.KIMCHI_BUILD_TARGET_OS || platform()
+	const proxyHelperName = buildTargetOS === "win32" || buildTargetOS === "windows" ? "proxy-helper.exe" : "proxy-helper"
+	const proxyHelperSrc = join(projectRoot, "tools", "proxy-helper", "bin", proxyHelperName)
 	const proxyHelperBinDest = join(projectRoot, "dist", "share", "kimchi", "bin")
+	if (!existsSync(proxyHelperSrc)) {
+		throw new Error(`proxy-helper binary not found: ${proxyHelperSrc}`)
+	}
 	mkdirSync(proxyHelperBinDest, { recursive: true })
-	cpSync(proxyHelperSrc, join(proxyHelperBinDest, "proxy-helper"))
-
-	// teleport-proxy.js is invoked by `node` (spawned via ssh ProxyCommand), so it
-	// has to live on the real filesystem next to the binary's share assets — it
-	// can't be served from bun's compiled-binary virtual fs.
-	// cpSync(
-	// 	join(projectRoot, "src", "modes", "teleport", "teleport-proxy.js"),
-	// 	join(projectRoot, "dist", "share", "kimchi", "teleport-proxy.js"),
-	// )
+	cpSync(proxyHelperSrc, join(proxyHelperBinDest, proxyHelperName))
 }

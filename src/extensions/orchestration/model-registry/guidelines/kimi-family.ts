@@ -14,10 +14,17 @@
 
 // ── Family-level (shared across all Kimi models) ──────────────────────
 // Sources: §3.2 item 3 (mixed-goal hesitation), §3.2 item 4 (plan-first groove)
+//          Kimi K2.6 release notes (kimi-k2.org), in-pool observations
+//          (version-assumption staleness across libraries, runtimes, and build tools)
 
-/** Reserved: no family-level explore/research overrides identified yet. */
+/** Reserved: no family-level explore override identified yet. */
 export const KIMI_FAMILY_EXPLORE = ""
-export const KIMI_FAMILY_RESEARCH = ""
+
+/** Kimi family research: assume training knowledge is older than current ecosystem defaults. */
+export const KIMI_FAMILY_RESEARCH = `During **research** phase (Kimi family):
+- Your training knowledge predates current library, runtime, framework, and build-tool defaults. Treat any version assumption as suspect until verified with \`web_search\`/\`web_fetch\`.
+- When an API feels familiar but you cannot quote the exact current signature from the version in use, search the official docs before using it.
+- Do not treat a library or kit as "known" just because you have used it before. If the task names a version or vendor, verify the current install/API/protocol details before relying on memory.`
 
 /** Kimi family plan: chunk-based specs for delegation.
  * When the orchestrator lacks build strength, the plan must be delegation-ready. */

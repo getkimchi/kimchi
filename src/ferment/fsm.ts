@@ -26,7 +26,7 @@
  *       ABANDONED   PAUSED       PAUSED
  */
 
-import { type FermentStatus, type PhaseStatus, type StepStatus, inSameParallelCohort } from "./types.js"
+import { type FermentStatus, inSameParallelCohort, type PhaseStatus, type StepStatus } from "./types.js"
 
 // ─── FSM States ───────────────────────────────────────────────────────────────
 

@@ -20,8 +20,8 @@ import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { commandToEvents } from "./event-mapper.js"
 import { FermentEventStore, stateHash } from "./event-store.js"
-import { type Command, applyCommand } from "./state-machine.js"
-import { FermentStorage, clearFermentCache } from "./store.js"
+import { applyCommand, type Command } from "./state-machine.js"
+import { clearFermentCache, FermentStorage } from "./store.js"
 import type { Ferment } from "./types.js"
 
 function tempDir() {

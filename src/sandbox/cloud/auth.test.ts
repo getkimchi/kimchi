@@ -74,10 +74,10 @@ describe("authenticateWorkspace", () => {
 			`${BASE}/ai-optimizer/v1beta/organizations/org-516442fe-054a-49e2-ac2d-9dc9b104c3d2/workspaces/ws-123`,
 		)
 		expect(mockFetch.mock.calls[1][1]).toMatchObject({ method: "PUT" })
-		expect(mockFetch.mock.calls[2][0]).toBe(`${BASE}/ai-optimizer/v1beta/session-tokens:exchange`)
+		expect(mockFetch.mock.calls[2][0]).toBe(`${BASE}/ai-optimizer/v1beta/workspace-tokens:exchange`)
 		expect(mockFetch.mock.calls[2][1]).toMatchObject({
 			method: "POST",
-			body: JSON.stringify({ sessionId: "ws-123" }),
+			body: JSON.stringify({ workspaceId: "ws-123" }),
 		})
 	})
 

@@ -1,12 +1,12 @@
 import {
 	type ExtensionContext,
 	ExtensionEditorComponent,
+	getMarkdownTheme,
 	type KeybindingsManager,
 	type Theme,
-	getMarkdownTheme,
 } from "@earendil-works/pi-coding-agent"
-import { type Component, Container, Key, Markdown, Spacer, type TUI, Text, matchesKey } from "@earendil-works/pi-tui"
-import { getPromptUi, withWorkingHidden } from "./prompt-ui.js"
+import { type Component, Container, Key, Markdown, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui"
+import { withWorkingHidden } from "./prompt-ui.js"
 
 export interface PendingPlanReview {
 	fermentId: string
@@ -34,9 +34,9 @@ export function getPendingPlanReview(fermentId: string): PendingPlanReview | und
 	return pendingPlanReviews.get(fermentId)
 }
 
-export function getCurrentPendingPlanReview(runtime: { getActiveId(): string | undefined }):
-	| PendingPlanReview
-	| undefined {
+export function getCurrentPendingPlanReview(runtime: {
+	getActiveId(): string | undefined
+}): PendingPlanReview | undefined {
 	const activeId = runtime.getActiveId()
 	return activeId ? pendingPlanReviews.get(activeId) : undefined
 }
@@ -50,11 +50,11 @@ export function clearAllPendingPlanReviews(): void {
 }
 
 export async function promptPlanReview(
-	ctx: Pick<ExtensionContext, "ui"> | undefined,
+	ctx: ExtensionContext,
 	opts: { planMarkdown: string },
 ): Promise<PlanReviewOutcome | undefined> {
-	const ui = getPromptUi(ctx)
-	if (!ui?.custom) return undefined
+	if (ctx.mode !== "tui") return undefined
+	const ui = ctx.ui
 	return withWorkingHidden(
 		ui,
 		() =>

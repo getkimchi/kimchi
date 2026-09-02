@@ -1,5 +1,9 @@
+import type { ToolCall } from "@earendil-works/pi-ai"
+import { validateToolArguments } from "@earendil-works/pi-ai"
+import { Type } from "typebox"
 import { describe, expect, it } from "vitest"
 import { assertGateFieldsPresent, validateGatesOrErr } from "./gate-validation.js"
+import { CompleteStepParams } from "./tool-schemas.js"
 
 const validPhaseGates = () => [
 	{ id: "F1", verdict: "pass", rationale: "ok", evidence: "n/a" },
@@ -48,6 +52,24 @@ describe("validateGatesOrErr", () => {
 		const gates = [
 			{ id: "S1", verdict: "pass", rationale: "summary matches diff", evidence: "file.ts:1" },
 			{ id: "S2", verdict: "smoke", rationale: "ran the artifact end-to-end", evidence: "browser smoke" },
+			{ id: "S3", verdict: "pass", rationale: "edge case covered", evidence: "empty input" },
+		]
+
+		const result = validateGatesOrErr(gates, { turn: "complete_ferment_step", flagPolicy: "block-on-flag" })
+
+		expect(result).toBeNull()
+		expect(gates[1].verdict).toBe("pass")
+	})
+
+	it("normalizes inspected S2 label to pass so native-medium observation counts as verification", () => {
+		const gates = [
+			{ id: "S1", verdict: "pass", rationale: "summary matches diff", evidence: "file.ts:1" },
+			{
+				id: "S2",
+				verdict: "inspected",
+				rationale: "opened the rendered page and recorded what rendered",
+				evidence: "browser screenshot notes",
+			},
 			{ id: "S3", verdict: "pass", rationale: "edge case covered", evidence: "empty input" },
 		]
 
@@ -255,5 +277,80 @@ describe("assertGateFieldsPresent", () => {
 		expect(() => assertGateFieldsPresent(args)).toThrow(
 			/Every gate object requires \{id, verdict, rationale, evidence\}/,
 		)
+	})
+})
+
+describe("pi-ai validation patch regressions", () => {
+	it("coerces JSON-encoded string to array", () => {
+		const tool = {
+			name: "test-array",
+			description: "test array coercion",
+			parameters: Type.Object({ items: Type.Array(Type.String()) }),
+			execute: () => {},
+		}
+		const args = validateToolArguments(tool, {
+			type: "toolCall",
+			id: "test-array-call",
+			name: "test-array",
+			arguments: { items: '["a","b"]' },
+		} as ToolCall)
+		expect(args.items).toEqual(["a", "b"])
+	})
+
+	it("coerces JSON-encoded string to object", () => {
+		const tool = {
+			name: "test-object",
+			description: "test object coercion",
+			parameters: Type.Object({ config: Type.Object({ enabled: Type.Boolean() }) }),
+			execute: () => {},
+		}
+		const args = validateToolArguments(tool, {
+			type: "toolCall",
+			id: "test-object-call",
+			name: "test-object",
+			arguments: { config: '{"enabled":true}' },
+		} as ToolCall)
+		expect(args.config).toEqual({ enabled: true })
+	})
+
+	it("does not throw SyntaxError for already-parsed ferment args", () => {
+		const tool = {
+			name: "complete_ferment_step",
+			description: "test ferment args",
+			parameters: CompleteStepParams,
+			execute: () => {},
+		}
+		expect(() =>
+			validateToolArguments(tool, {
+				type: "toolCall",
+				id: "complete-step-call",
+				name: "complete_ferment_step",
+				arguments: {
+					ferment_id: "ferment-1",
+					phase_id: "phase-1",
+					step_id: "step-1",
+					gates: [{ id: "S1", verdict: "pass", rationale: "ok", evidence: "test" }],
+				},
+			} as ToolCall),
+		).not.toThrow(SyntaxError)
+	})
+
+	it("coerces empty object {} to empty array [] for array fields", () => {
+		// Regression: LLMs (especially minimax-m3) frequently send {} instead of []
+		// for empty arrays. Without the coercion fix, Value.Convert wraps {} into
+		// [{}], which fails validation with "items[0]: must be string".
+		const tool = {
+			name: "test-empty-object-to-array",
+			description: "test empty object to array coercion",
+			parameters: Type.Object({ remaining_steps: Type.Array(Type.String(), { minItems: 0 }) }),
+			execute: () => {},
+		}
+		const args = validateToolArguments(tool, {
+			type: "toolCall",
+			id: "test-empty-object-call",
+			name: "test-empty-object-to-array",
+			arguments: { remaining_steps: {} },
+		} as ToolCall)
+		expect(args.remaining_steps).toEqual([])
 	})
 })

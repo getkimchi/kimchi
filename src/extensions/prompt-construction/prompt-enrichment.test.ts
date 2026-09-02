@@ -1,19 +1,20 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
-import { setResourceOverride } from "../../resources/store.js"
+import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import * as startupContext from "../../startup-context.js"
+import { createContext } from "../__mocks__/context.js"
 import * as agentWorkerContext from "../agent-worker-context.js"
-import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../claude-code-skills/definition.js"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
+import { isHarnessSteer } from "../steer-marker.js"
 import promptEnrichmentExtension, {
-	stripEmptyToolCalls,
 	_resetDeprecatedNotificationTracking,
+	stripEmptyToolCalls,
 } from "./prompt-enrichment.js"
 import { createToolVisibility } from "./tool-visibility.js"
 
@@ -185,6 +186,7 @@ describe("prompt enrichment tool visibility", () => {
 		] as ToolInfo[]
 		let activeTools = tools.map((tool) => tool.name)
 		const pi = {
+			appendEntry: vi.fn(),
 			registerFlag: () => {},
 			registerCommand: () => {},
 			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
@@ -206,14 +208,7 @@ describe("prompt enrichment tool visibility", () => {
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
 		try {
-			const result = (await beforeAgentStart(
-				{},
-				{
-					cwd: "/tmp",
-					model: undefined,
-					hasUI: false,
-				},
-			)) as { systemPrompt: string }
+			const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
 			expect(result.systemPrompt).toContain('<tool name="read">')
 			expect(result.systemPrompt).not.toContain('<tool name="bash">')
@@ -229,6 +224,7 @@ describe("prompt enrichment tool visibility", () => {
 			{ name: "bash", description: "Execute shell commands" },
 		] as ToolInfo[]
 		const pi = {
+			appendEntry: vi.fn(),
 			registerFlag: () => {},
 			registerCommand: () => {},
 			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
@@ -244,21 +240,45 @@ describe("prompt enrichment tool visibility", () => {
 		const beforeAgentStart = handlers.get("before_agent_start")
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-		const result = (await beforeAgentStart(
-			{},
-			{
-				cwd: "/tmp",
-				model: undefined,
-				hasUI: false,
-			},
-		)) as { systemPrompt: string }
+		const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain('<tool name="read">')
 		expect(result.systemPrompt).not.toContain('<tool name="bash">')
 	})
 })
 
-describe("prompt enrichment Claude Code skills", () => {
+describe("prompt enrichment environment context", () => {
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+	})
+
+	it("injects cheap platform and shell context into the system prompt", async () => {
+		const oldShell = process.env.SHELL
+		process.env.SHELL = "/bin/test-shell"
+		try {
+			const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+			if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+			const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
+
+			expect(result.systemPrompt).toContain(`- OS release: ${release()}`)
+			expect(result.systemPrompt).toContain(`- OS version: ${osVersion()}`)
+			expect(result.systemPrompt).toContain(`- Raw platform: ${platform()}`)
+			expect(result.systemPrompt).toContain(`- CPU architecture: ${arch()}`)
+			expect(result.systemPrompt).toContain("- Shell: /bin/test-shell")
+		} finally {
+			if (oldShell === undefined) {
+				delete process.env.SHELL
+			} else {
+				process.env.SHELL = oldShell
+			}
+		}
+	})
+})
+
+describe("prompt enrichment skills", () => {
 	let dir: string
 	let oldAgentDir: string | undefined
 	let oldHome: string | undefined
@@ -266,7 +286,7 @@ describe("prompt enrichment Claude Code skills", () => {
 
 	beforeEach(() => {
 		vi.restoreAllMocks()
-		dir = mkdtempSync(join(tmpdir(), "kimchi-prompt-claude-skills-"))
+		dir = mkdtempSync(join(tmpdir(), "kimchi-prompt-skills-"))
 		oldAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
 		oldHome = process.env.HOME
 		oldXdgCacheHome = process.env.XDG_CACHE_HOME
@@ -279,19 +299,16 @@ describe("prompt enrichment Claude Code skills", () => {
 
 	afterEach(() => {
 		if (oldAgentDir === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.KIMCHI_CODING_AGENT_DIR
 		} else {
 			process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir
 		}
 		if (oldHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.HOME
 		} else {
 			process.env.HOME = oldHome
 		}
 		if (oldXdgCacheHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.XDG_CACHE_HOME
 		} else {
 			process.env.XDG_CACHE_HOME = oldXdgCacheHome
@@ -299,93 +316,140 @@ describe("prompt enrichment Claude Code skills", () => {
 		rmSync(dir, { recursive: true, force: true })
 	})
 
-	it("injects current-project Claude Code skills when the extension is enabled", async () => {
+	it("renders skills from pi's resolved inventory in the rebuilt prompt", async () => {
 		const cwd = join(dir, "project")
-		writeSkill(join(dir, "project", ".claude", "skills", "typescript-safety", "SKILL.md"), {
-			description: "Use safe TypeScript patterns before editing TypeScript files.",
-		})
-		setResourceOverride(CLAUDE_CODE_SKILLS_RESOURCE_ID, true)
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([])
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
 		const result = (await beforeAgentStart(
-			{},
-			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+			{
+				systemPromptOptions: {
+					skills: [
+						{
+							name: "typescript-safety",
+							description: "Use safe TypeScript patterns before editing TypeScript files.",
+							filePath: join(cwd, "SKILL.md"),
+						},
+					],
+				},
+			},
+			createContext({ cwd, hasUI: false }),
 		)) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain("<available_skills>")
 		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
-		expect(result.systemPrompt).toContain("Use safe TypeScript patterns")
+		expect(result.systemPrompt).toContain("Use safe TypeScript patterns before editing TypeScript files.")
 	})
 
-	it("does not inject ancestor Claude Code skills without cwd .claude", async () => {
+	it("no longer discovers skills itself when systemPromptOptions.skills is absent", async () => {
+		const cwd = join(dir, "project")
+		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), {
+			description: "Use safe TypeScript patterns before editing TypeScript files.",
+		})
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([])
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
+
+		expect(result.systemPrompt).not.toContain("<name>typescript-safety</name>")
+	})
+
+	it("contributes ancestor .kimchi/skills through resources_discover", async () => {
+		const cwd = join(dir, "project", "src")
+		const projectSkillPath = join(dir, "project", ".kimchi", "skills")
+		writeSkill(join(projectSkillPath, "typescript-safety", "SKILL.md"), {
+			description: "Use Kimchi project TypeScript patterns.",
+		})
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
+
+		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined)
+
+		expect(result).toEqual(expect.objectContaining({ skillPaths: expect.arrayContaining([projectSkillPath]) }))
+	})
+
+	it("contributes new bundled skills through resources_discover", async () => {
+		const cwd = join(dir, "project")
+		mkdirSync(cwd, { recursive: true })
+		const bundledDir = resolveBundledSkillsDir()
+		if (!bundledDir) {
+			throw new Error("expected bundled skills dir to be resolvable in this test environment")
+		}
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
+
+		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined) as
+			| { skillPaths?: string[] }
+			| undefined
+
+		// Bundled skills not already in the harness dir are contributed via a
+		// filtered temp copy (e.g. dap-debugging). Skills already in the harness
+		// dir (e.g. improve if previously deployed) are silently skipped.
+		const paths = result?.skillPaths ?? []
+		expect(paths.length).toBeGreaterThan(0)
+		// At least one contributed path should contain a bundled skill dir.
+		expect(paths.some((p) => existsSync(join(p, "dap-debugging")) || existsSync(join(p, "improve")))).toBe(true)
+	})
+
+	it("contributes configured native skill paths through resources_discover", async () => {
+		const cwd = join(dir, "project")
+		const configuredSkills = join(dir, "configured", "skills")
+		mkdirSync(configuredSkills, { recursive: true })
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([configuredSkills])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
+
+		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined)
+
+		expect(result).toEqual(expect.objectContaining({ skillPaths: expect.arrayContaining([configuredSkills]) }))
+	})
+
+	it("does not contribute the harness dir (pi loads it via includeDefaults)", async () => {
+		const cwd = join(dir, "project")
+		const configuredSkills = ".config/kimchi/harness/skills"
+		const expanded = join(dir, "home", configuredSkills)
+		mkdirSync(expanded, { recursive: true })
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([configuredSkills])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
+
+		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined) as
+			| { skillPaths?: string[] }
+			| undefined
+
+		const paths = result?.skillPaths ?? []
+		expect(paths).not.toContain(expanded)
+	})
+
+	it("sanitizes configured Claude Code skill paths through resources_discover", async () => {
+		const cwd = join(dir, "project")
+		writeRawSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([".claude/skills"])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
+
+		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined) as
+			| { skillPaths?: string[] }
+			| undefined
+
+		const paths = result?.skillPaths ?? []
+		expect(paths.length).toBeGreaterThan(0)
+		expect(paths.some((p) => p.includes(".claude"))).toBe(false)
+		expect(paths.some((p) => existsSync(join(p, "SKILL.md")))).toBe(true)
+	})
+
+	it("does not contribute ancestor Claude Code skills through resources_discover", async () => {
 		const project = join(dir, "project")
 		const cwd = join(project, "src")
 		writeSkill(join(project, ".claude", "skills", "typescript-safety", "SKILL.md"), {
 			description: "Use safe TypeScript patterns before editing TypeScript files.",
 		})
-		setResourceOverride(CLAUDE_CODE_SKILLS_RESOURCE_ID, true)
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
-		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
 
-		const result = (await beforeAgentStart(
-			{},
-			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
-		)) as { systemPrompt: string }
+		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined) as
+			| { skillPaths?: string[] }
+			| undefined
 
-		expect(result.systemPrompt).not.toContain("<available_skills>")
-		expect(result.systemPrompt).not.toContain("typescript-safety")
-	})
-
-	it("injects sanitized Claude Code skills when .claude/skills is configured", async () => {
-		const cwd = join(dir, "project")
-		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), {
-			description: "Use: generated API types",
-		})
-		setResourceOverride(CLAUDE_CODE_SKILLS_RESOURCE_ID, true)
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers([".claude/skills"])
-		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
-
-		const result = (await beforeAgentStart(
-			{},
-			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
-		)) as { systemPrompt: string }
-
-		expect(result.systemPrompt).toContain("<available_skills>")
-		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
-		expect(result.systemPrompt).toContain("Use: generated API types")
-	})
-
-	it("injects configured Claude Code skills without descriptions through the sanitized cache", async () => {
-		const cwd = join(dir, "project")
-		writeRawSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers([".claude/skills"])
-		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
-
-		const result = (await beforeAgentStart(
-			{},
-			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
-		)) as { systemPrompt: string }
-
-		expect(result.systemPrompt).toContain("<available_skills>")
-		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
-		expect(result.systemPrompt).toContain("<description>Claude Code skill: typescript-safety.</description>")
-	})
-
-	it("does not inject Claude Code skills when the extension is disabled", async () => {
-		const cwd = join(dir, "project")
-		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), {
-			description: "Use safe TypeScript patterns before editing TypeScript files.",
-		})
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
-		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
-
-		const result = (await beforeAgentStart(
-			{},
-			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
-		)) as { systemPrompt: string }
-
-		expect(result.systemPrompt).not.toContain("<name>typescript-safety</name>")
+		const paths = result?.skillPaths ?? []
+		expect(paths.some((p) => p.includes(".claude"))).toBe(false)
 	})
 })
 
@@ -402,12 +466,7 @@ describe("append system prompt", () => {
 
 		const result = (await beforeAgentStart(
 			{ systemPromptOptions: { appendSystemPrompt: "Custom appended instructions" } },
-			{
-				cwd: "/tmp",
-				model: undefined,
-				hasUI: false,
-				sessionManager: { getSessionId: () => "session-1" },
-			},
+			createContext({ hasUI: false }),
 		)) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain("Custom appended instructions")
@@ -421,22 +480,12 @@ describe("append system prompt", () => {
 
 		const resultWithout = (await beforeAgentStart(
 			{ systemPromptOptions: {} },
-			{
-				cwd: "/tmp",
-				model: undefined,
-				hasUI: false,
-				sessionManager: { getSessionId: () => "session-1" },
-			},
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "session-1" } }),
 		)) as { systemPrompt: string }
 
 		const resultWithEmpty = (await beforeAgentStart(
 			{ systemPromptOptions: { appendSystemPrompt: undefined } },
-			{
-				cwd: "/tmp",
-				model: undefined,
-				hasUI: false,
-				sessionManager: { getSessionId: () => "session-2" },
-			},
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "session-2" } }),
 		)) as { systemPrompt: string }
 
 		// Both should produce the same prompt (no trailing append)
@@ -449,22 +498,12 @@ describe("append system prompt", () => {
 
 		const resultBaseline = (await beforeAgentStart(
 			{ systemPromptOptions: {} },
-			{
-				cwd: "/tmp",
-				model: undefined,
-				hasUI: false,
-				sessionManager: { getSessionId: () => "session-1" },
-			},
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "session-1" } }),
 		)) as { systemPrompt: string }
 
 		const resultWhitespace = (await beforeAgentStart(
 			{ systemPromptOptions: { appendSystemPrompt: "   \n  " } },
-			{
-				cwd: "/tmp",
-				model: undefined,
-				hasUI: false,
-				sessionManager: { getSessionId: () => "session-2" },
-			},
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "session-2" } }),
 		)) as { systemPrompt: string }
 
 		// Whitespace-only should be skipped — prompt unchanged
@@ -546,6 +585,7 @@ describe("model role startup warnings", () => {
 function buildPromptExtensionWithHandlers(skillPaths: string[] = []) {
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
 	const pi = {
+		appendEntry: vi.fn(),
 		registerFlag: () => {},
 		registerCommand: () => {},
 		on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
@@ -558,6 +598,7 @@ function buildPromptExtensionWithHandlers(skillPaths: string[] = []) {
 	promptEnrichmentExtension(skillPaths)(pi)
 	return {
 		handlers,
+		resourcesDiscover: handlers.get("resources_discover"),
 		beforeAgentStart: handlers.get("before_agent_start"),
 	}
 }
@@ -581,20 +622,6 @@ describe("deprecated model notification", () => {
 	const deprecatedModelId = "kimi-k2.6-old"
 	const replacementModelId = "kimi-k2.7"
 
-	function makeMockContext(modelId: string | undefined, sessionId = "test-session-1") {
-		return {
-			cwd: "/tmp",
-			model: modelId ? { id: modelId, provider: "kimchi-dev" } : undefined,
-			hasUI: true,
-			sessionManager: {
-				getSessionId: () => sessionId,
-			},
-			ui: {
-				notify: vi.fn(),
-			},
-		}
-	}
-
 	function setupAvailableModels(models: readonly ModelMetadata[]) {
 		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue(models)
 	}
@@ -602,6 +629,7 @@ describe("deprecated model notification", () => {
 	function buildExtensionWithHandlers() {
 		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
 		const pi = {
+			appendEntry: () => {},
 			registerFlag: () => {},
 			registerCommand: () => {},
 			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
@@ -644,10 +672,10 @@ describe("deprecated model notification", () => {
 		const { sessionStart } = buildExtensionWithHandlers()
 		if (!sessionStart) throw new Error("session_start handler not registered")
 
-		const ctx = makeMockContext(deprecatedModelId)
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 		await sessionStart({}, ctx)
 
-		const notifyMock = (ctx as { ui: { notify: ReturnType<typeof vi.fn> } }).ui.notify
+		const notifyMock = ctx.ui.notify as Mock
 		expect(notifyMock.mock.calls.length).toBe(1)
 		expect(notifyMock).toHaveBeenCalledWith(
 			`Model "${deprecatedModelId}" is deprecated. Switch to "${replacementModelId}" for better performance.`,
@@ -672,10 +700,10 @@ describe("deprecated model notification", () => {
 		const { sessionStart } = buildExtensionWithHandlers()
 		if (!sessionStart) throw new Error("session_start handler not registered")
 
-		const ctx = makeMockContext(deprecatedModelId)
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 		await sessionStart({}, ctx)
 
-		const notifyMock = (ctx as { ui: { notify: ReturnType<typeof vi.fn> } }).ui.notify
+		const notifyMock = ctx.ui.notify as Mock
 		expect(notifyMock.mock.calls.length).toBe(1)
 		expect(notifyMock).toHaveBeenCalledWith(
 			`Model "${deprecatedModelId}" is deprecated. It may be removed in a future update.`,
@@ -699,10 +727,10 @@ describe("deprecated model notification", () => {
 		const { sessionStart } = buildExtensionWithHandlers()
 		if (!sessionStart) throw new Error("session_start handler not registered")
 
-		const ctx = makeMockContext("active-model")
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: "active-model" } })
 		await sessionStart({}, ctx)
 
-		const notifyMock = (ctx as { ui: { notify: ReturnType<typeof vi.fn> } }).ui.notify
+		const notifyMock = ctx.ui.notify as Mock
 		expect(notifyMock.mock.calls.length).toBe(0)
 	})
 
@@ -730,13 +758,14 @@ describe("deprecated model notification", () => {
 		if (!sessionStart) throw new Error("session_start handler not registered")
 
 		// First session
-		const ctx1 = makeMockContext(deprecatedModelId, "session-1")
-		await sessionStart({}, ctx1)
+
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
+		await sessionStart({}, ctx)
 
 		// Second session_start for same session should not fire again
-		await sessionStart({}, ctx1)
+		await sessionStart({}, ctx)
 
-		const notifyMock = (ctx1 as { ui: { notify: ReturnType<typeof vi.fn> } }).ui.notify
+		const notifyMock = ctx.ui.notify as Mock
 		expect(notifyMock.mock.calls.length).toBe(1)
 	})
 
@@ -764,7 +793,7 @@ describe("deprecated model notification", () => {
 		if (!sessionStart) throw new Error("session_start handler not registered")
 		if (!sessionShutdown) throw new Error("session_shutdown handler not registered")
 
-		const ctx = makeMockContext(deprecatedModelId, "session-1")
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 
 		// Fire session_start
 		await sessionStart({}, ctx)
@@ -773,7 +802,7 @@ describe("deprecated model notification", () => {
 		// Fire session_start again with same session ID — should notify again
 		await sessionStart({}, ctx)
 
-		const notifyMock = (ctx as { ui: { notify: ReturnType<typeof vi.fn> } }).ui.notify
+		const notifyMock = ctx.ui.notify as Mock
 		// Should have fired twice — once at each session_start
 		expect(notifyMock.mock.calls.length).toBe(2)
 	})
@@ -801,10 +830,10 @@ describe("deprecated model notification", () => {
 		const { sessionStart } = buildExtensionWithHandlers()
 		if (!sessionStart) throw new Error("session_start handler not registered")
 
-		const ctx = makeMockContext(deprecatedModelId)
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 		await sessionStart({}, ctx)
 
-		const notifyMock = (ctx as { ui: { notify: ReturnType<typeof vi.fn> } }).ui.notify
+		const notifyMock = ctx.ui.notify as Mock
 		expect(notifyMock.mock.calls.length).toBe(1)
 		expect(notifyMock).toHaveBeenCalledWith(
 			`Model "${deprecatedModelId}" is deprecated. It may be removed in a future update.`,
@@ -837,7 +866,6 @@ describe("continuation nudge turn_end handler", () => {
 				bm25B: 0.75,
 				fieldWeights: { name: 6, description: 2, schemaKey: 1 },
 			},
-			retry: { maxRetries: 10 },
 			onboarding: {},
 			deviceId: "test",
 		})
@@ -863,7 +891,10 @@ describe("continuation nudge turn_end handler", () => {
 
 		const fire = async (event: string, payload: unknown) => {
 			const handlers = handlerMap.get(event) ?? []
-			for (const h of handlers) await h(payload)
+			const ctx = createContext({ model: { provider: "test", id: "test-model" } })
+			let result: unknown
+			for (const h of handlers) result = await h(payload, ctx)
+			return result
 		}
 
 		return { fire, sendMessageCalls }
@@ -879,7 +910,9 @@ describe("continuation nudge turn_end handler", () => {
 	it("sends a continuation nudge on a text-only turn with no tools called", async () => {
 		const { fire, sendMessageCalls } = buildNudgeHandlers()
 
-		// Simulate user input to reset the nudge state.
+		// Simulate a tool having been called earlier in the session so the
+		// fresh-session suppression does not apply. Then a new user-input cycle.
+		await fire("tool_execution_start", {})
 		await fire("input", { source: "user" })
 
 		// Model responds with text-only, stopReason "stop".
@@ -895,7 +928,8 @@ describe("continuation nudge turn_end handler", () => {
 	it("does not send a second nudge when model responds to nudge with stopReason 'stop'", async () => {
 		const { fire, sendMessageCalls } = buildNudgeHandlers()
 
-		// Simulate user input.
+		// Tool called earlier in the session so the fresh-session guard is past.
+		await fire("tool_execution_start", {})
 		await fire("input", { source: "user" })
 
 		// First text-only turn triggers the continuation nudge.
@@ -915,6 +949,7 @@ describe("continuation nudge turn_end handler", () => {
 	it("falls through to second nudge when model responds with non-stop stopReason", async () => {
 		const { fire, sendMessageCalls } = buildNudgeHandlers()
 
+		await fire("tool_execution_start", {})
 		await fire("input", { source: "user" })
 
 		// First text-only turn triggers the continuation nudge.
@@ -972,5 +1007,186 @@ describe("continuation nudge turn_end handler", () => {
 		// might be stuck.
 		expect(sendMessageCalls.length).toBe(1)
 		expect((sendMessageCalls[0].message as { content?: string }).content).toContain("If you have finished")
+	})
+
+	it("does not nudge after a model switch when the previous model called tools", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Previous model called a tool during the session.
+		await fire("tool_execution_start", {})
+
+		// User switches models (e.g. via the UI model picker).
+		await fire("model_select", {
+			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
+			previousModel: undefined,
+			source: "set",
+		})
+
+		// New user input after the switch.
+		await fire("input", { source: "user" })
+
+		// New model responds with orientation text only, no tool calls.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
+		})
+
+		// No nudge should fire — the model switch reset the session-level
+		// tool latch, so the new model's orientation turn is treated like a
+		// fresh session.
+		expect(sendMessageCalls.length).toBe(0)
+	})
+
+	it("does not nudge after a model cycle when the previous model called tools", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Previous model called a tool during the session.
+		await fire("tool_execution_start", {})
+
+		// User cycles models (e.g. via the keyboard shortcut).
+		await fire("model_select", {
+			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
+			previousModel: undefined,
+			source: "cycle",
+		})
+
+		// New user input after the cycle.
+		await fire("input", { source: "user" })
+
+		// New model responds with orientation text only, no tool calls.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
+		})
+
+		// Cycling is a user-initiated switch and must also reset the latch.
+		expect(sendMessageCalls.length).toBe(0)
+	})
+
+	it("still nudges after a model restore when the previous model called tools", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Previous model called a tool during the session.
+		await fire("tool_execution_start", {})
+
+		// Session restore is not a user-initiated switch; the conversation
+		// continues and the session-level tool latch must stay true.
+		await fire("model_select", {
+			model: { id: "kimi-k2.7", provider: "kimchi-dev" },
+			previousModel: undefined,
+			source: "restore",
+		})
+
+		// New user input after restore.
+		await fire("input", { source: "user" })
+
+		// Model responds with text only, no tool calls.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I'll review the branch in detail." }]),
+		})
+
+		// Nudge should fire because restore must not reset the latch.
+		expect(sendMessageCalls.length).toBe(1)
+		expect((sendMessageCalls[0].message as { customType?: string }).customType).toBe("nudge")
+	})
+
+	it("brands unbranded custom messages in the context handler", async () => {
+		const { fire } = buildNudgeHandlers()
+
+		const unbranded = {
+			role: "custom",
+			customType: "exploration-guard-steer",
+			content: "Act on your hypothesis now.",
+			display: false,
+			timestamp: 1,
+		}
+
+		const result = (await fire("context", { messages: [unbranded] })) as
+			| { messages: Array<{ content: string }> }
+			| undefined
+
+		expect(result).toBeDefined()
+		expect(isHarnessSteer(result?.messages[0]?.content ?? "")).toBe(true)
+		expect(result?.messages[0]?.content).toContain("Act on your hypothesis now.")
+	})
+
+	it("leaves already-branded custom messages byte-identical in the context handler", async () => {
+		const { fire } = buildNudgeHandlers()
+
+		const branded = {
+			role: "custom",
+			customType: "nudge",
+			content: "<system-reminder>\nYou ended your turn without calling a tool.\n</system-reminder>",
+			display: false,
+			timestamp: 1,
+		}
+
+		// No transform applies: the handler returns undefined, leaving the
+		// runtime's message array untouched.
+		const result = await fire("context", { messages: [branded] })
+		expect(result).toBeUndefined()
+	})
+})
+
+describe("debug prompts cleanup", () => {
+	beforeEach(() => {
+		delete process.env.KIMCHI_DEBUG_PROMPTS
+		delete process.env.KIMCHI_DEBUG_SESSION
+	})
+
+	afterEach(() => {
+		delete process.env.KIMCHI_DEBUG_PROMPTS
+		delete process.env.KIMCHI_DEBUG_SESSION
+	})
+
+	function buildExtensionWithDebugFlag(debugPrompts: boolean) {
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
+		const pi = {
+			appendEntry: vi.fn(),
+			registerFlag: () => {},
+			registerCommand: () => {},
+			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
+				handlers.set(event, handler)
+			},
+			getAllTools: () => [],
+			getActiveTools: () => [],
+			getFlag: (name: string) => (name === "debug-prompts" ? debugPrompts : undefined),
+		} as unknown as ExtensionAPI
+		promptEnrichmentExtension([])(pi)
+		return {
+			beforeAgentStart: handlers.get("before_agent_start"),
+		}
+	}
+
+	it("does not re-enable debug mode on a second turn when the flag is off", async () => {
+		const { beforeAgentStart } = buildExtensionWithDebugFlag(false)
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const ctx = createContext({ hasUI: false })
+
+		// First turn: flag is off, env vars are unset.
+		await beforeAgentStart({}, ctx)
+
+		// Second turn: flag is still off. With the buggy cleanup, the first
+		// turn would have left KIMCHI_DEBUG_SESSION as the string "undefined",
+		// which is truthy and would re-enable debug mode here.
+		await beforeAgentStart({}, ctx)
+
+		expect(process.env.KIMCHI_DEBUG_PROMPTS).toBeUndefined()
+		expect(process.env.KIMCHI_DEBUG_SESSION).toBeUndefined()
+	})
+
+	it("writes debug files and sets env vars when the flag is on", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-debug-prompts-"))
+		try {
+			const { beforeAgentStart } = buildExtensionWithDebugFlag(true)
+			if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+			const ctx = createContext({ cwd: dir, hasUI: false })
+			await beforeAgentStart({}, ctx)
+
+			expect(process.env.KIMCHI_DEBUG_PROMPTS).toBe("1")
+			expect(process.env.KIMCHI_DEBUG_SESSION).toBeDefined()
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
 	})
 })

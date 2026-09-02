@@ -6,12 +6,12 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import {
-	KIMCHI_PROVIDER_ID,
 	createLoginChoiceSelector,
+	isKimchiProvider,
 	performKimchiApiKeyLoginViaExtensionUI,
 	performKimchiBrowserLoginWithDialog,
-	setKimchiAuthToken,
 	showSubscriptionLoginWithExtensionUI,
+	syncKimchiAuth,
 } from "./flow.js"
 
 const STARTUP_AUTH_OVERLAY_WAIT_KEY = "kimchi-startup-auth-overlay-wait"
@@ -55,22 +55,16 @@ export function shouldShowStartupAuthGate(input: {
 	return true
 }
 
-export function seedKimchiAuthFromConfig(ctx: ExtensionContext): void {
-	seedKimchiAuthFromConfigAndReturnKey(ctx)
-}
-
-function seedKimchiAuthFromConfigAndReturnKey(ctx: ExtensionContext): string {
+export async function hasUsableAuth(ctx: ExtensionContext): Promise<boolean> {
 	const configKey = loadConfig().apiKey
-	if (configKey) {
-		setKimchiAuthToken(ctx.modelRegistry, configKey, "oauth")
-	}
-	return configKey
-}
-
-export function hasUsableAuth(ctx: ExtensionContext): boolean {
-	const configKey = seedKimchiAuthFromConfigAndReturnKey(ctx)
+	let kimchiAuthSynchronized = configKey.length === 0
 	try {
-		ctx.modelRegistry.refresh()
+		if (configKey) {
+			await syncKimchiAuth(ctx.modelRegistry, configKey)
+			kimchiAuthSynchronized = true
+		} else {
+			await ctx.modelRegistry.refresh()
+		}
 	} catch {
 		// Broken models.json is reported by upstream startup warnings. Treat it
 		// as unauthenticated here so the user gets a login path instead of Ferment.
@@ -78,8 +72,8 @@ export function hasUsableAuth(ctx: ExtensionContext): boolean {
 	try {
 		const availableModels = ctx.modelRegistry.getAvailable()
 		if (availableModels.length === 0) return false
-		if (availableModels.some((model) => model.provider !== KIMCHI_PROVIDER_ID)) return true
-		return configKey.length > 0
+		if (availableModels.some((model) => !isKimchiProvider(model.provider))) return true
+		return configKey.length > 0 && kimchiAuthSynchronized
 	} catch {
 		return false
 	}
@@ -172,7 +166,7 @@ async function runStartupAuthGate(
 
 		if (result === "cancelled") continue
 
-		if (result === "success" && hasUsableAuth(ctx)) {
+		if (result === "success" && (await hasUsableAuth(ctx))) {
 			state.authenticated = true
 			return
 		}
@@ -186,6 +180,7 @@ export function createStartupAuthGate(options: StartupAuthGateOptions): Extensio
 
 	return (pi: ExtensionAPI) => {
 		pi.on("session_start", async (event, ctx) => {
+			const usableAuth = await hasUsableAuth(ctx)
 			if (
 				!shouldShowStartupAuthGate({
 					hasUI: ctx.hasUI,
@@ -193,7 +188,7 @@ export function createStartupAuthGate(options: StartupAuthGateOptions): Extensio
 					stdoutIsTTY: options.stdoutIsTTY,
 					nonInteractiveMode: options.nonInteractiveMode,
 					sessionStartReason: event.reason,
-					hasUsableAuth: hasUsableAuth(ctx),
+					hasUsableAuth: usableAuth,
 				})
 			) {
 				return

@@ -41,10 +41,7 @@ function transformCursorServer(raw: unknown): ServerEntry | undefined {
 	return entry
 }
 
-export function makeCursorDefinition(overrides?: {
-	configPaths?: string[]
-	skillsDirs?: string[]
-}): AgentDefinition {
+export function makeCursorDefinition(overrides?: { configPaths?: string[]; skillsDirs?: string[] }): AgentDefinition {
 	const configPaths = overrides?.configPaths ?? DEFAULT_CURSOR_CONFIG_PATHS
 	const skillsDirs = overrides?.skillsDirs ?? DEFAULT_CURSOR_SKILLS_DIRS
 

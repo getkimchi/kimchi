@@ -5,8 +5,8 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { setResourceOverride } from "../../resources/store.js"
 import claudeCodeHooksAdapter from "../claude-code-hook-adapter/index.js"
-import { createCommandHookAdapter } from "./adapter.js"
-import { parseCommandHookOutput, runCommandHook } from "./adapter.js"
+import { markHarnessSteer } from "../steer-marker.js"
+import { createCommandHookAdapter, parseCommandHookOutput, runCommandHook } from "./adapter.js"
 
 vi.mock("node:child_process", () => ({
 	spawn: vi.fn(),
@@ -33,13 +33,11 @@ describe("hook adapter command execution", () => {
 	afterEach(() => {
 		vi.useRealTimers()
 		if (oldHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.HOME
 		} else {
 			process.env.HOME = oldHome
 		}
 		if (oldAgentDir === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.KIMCHI_CODING_AGENT_DIR
 		} else {
 			process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir
@@ -150,7 +148,7 @@ describe("hook adapter command execution", () => {
 		expect(result).toBeUndefined()
 		expect(event.input.command).toBe("rtk git status")
 		expect(pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ content: "context from hook", display: false }),
+			expect.objectContaining({ content: markHarnessSteer("context from hook"), display: false }),
 			{ deliverAs: "steer", triggerTurn: false },
 		)
 	})
@@ -333,7 +331,19 @@ describe("hook adapter command execution", () => {
 
 		await pi.handlers.agent_end[0](agentEndEvent(), fakeCtx())
 
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("Run tests before stopping.", { deliverAs: "followUp" })
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "hook_stop_reason",
+				display: false,
+				content: [
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringMatching(/^<system-reminder>\nRun tests before stopping\.\n<\/system-reminder>$/),
+					}),
+				],
+			}),
+			{ deliverAs: "followUp", triggerTurn: true },
+		)
 		expect(hookPayload(child).last_assistant_message).toBe("done")
 	})
 
@@ -352,7 +362,11 @@ describe("hook adapter command execution", () => {
 		await pi.handlers.input[0]({ type: "input", text: "follow-up", source: "user" }, fakeCtx())
 		await pi.handlers.agent_end[0](agentEndEvent(), fakeCtx())
 
-		expect(pi.sendUserMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "hook_stop_reason" }), {
+			deliverAs: "followUp",
+			triggerTurn: true,
+		})
 		expect(hookPayload(firstHook).stop_hook_active).toBe(false)
 		const secondPayload = hookPayload(secondHook)
 		expect(secondPayload.stop_hook_active).toBe(true)
@@ -375,7 +389,11 @@ describe("hook adapter command execution", () => {
 		await pi.handlers.agent_end[0](agentEndEvent(), fakeCtx())
 
 		expect(mockSpawn).toHaveBeenCalledTimes(2)
-		expect(pi.sendUserMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "hook_stop_reason" }), {
+			deliverAs: "followUp",
+			triggerTurn: true,
+		})
 	})
 
 	it("runs StopFail hooks in addition to Stop when the run ends with an error", async () => {
@@ -453,7 +471,19 @@ describe("hook adapter command execution", () => {
 
 		await pi.handlers.agent_end[0](agentEndEvent({ stopReason: "error" }), fakeCtx())
 
-		expect(pi.sendUserMessage).toHaveBeenCalledWith("Retry the failed run.", { deliverAs: "followUp" })
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "hook_stop_reason",
+				display: false,
+				content: [
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringMatching(/^<system-reminder>\nRetry the failed run\.\n<\/system-reminder>$/),
+					}),
+				],
+			}),
+			{ deliverAs: "followUp", triggerTurn: true },
+		)
 	})
 
 	it("runs TaskCompleted hooks per turn without follow-up continuation", async () => {
@@ -483,11 +513,11 @@ describe("hook adapter command execution", () => {
 		expect(pi.sendUserMessage).not.toHaveBeenCalled()
 	})
 
-	it("runs PostToolUseFail hooks only for failed tool results", async () => {
+	it("runs PostToolUseFailure hooks only for failed tool results", async () => {
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {
 				PostToolUse: [{ hooks: [{ type: "command", command: "post-tool" }] }],
-				PostToolUseFail: [{ hooks: [{ type: "command", command: "post-tool-fail" }] }],
+				PostToolUseFailure: [{ hooks: [{ type: "command", command: "post-tool-fail" }] }],
 			},
 		})
 		const postHook = mockBlockingHook()
@@ -510,7 +540,7 @@ describe("hook adapter command execution", () => {
 		expect(mockSpawn).toHaveBeenCalledTimes(2)
 		expect(hookPayload(postHook).hook_event_name).toBe("PostToolUse")
 		const failPayload = hookPayload(failHook)
-		expect(failPayload.hook_event_name).toBe("PostToolUseFail")
+		expect(failPayload.hook_event_name).toBe("PostToolUseFailure")
 		expect(failPayload.is_error).toBe(true)
 
 		mockSpawn.mockClear()
@@ -700,6 +730,40 @@ describe("hook adapter command execution", () => {
 		claudeCodeHooksAdapter(pi as never)
 
 		await pi.eventHandlers["subagents:started"][0]({ id: "agent-4", type: "explore" })
+
+		expect(mockSpawn).not.toHaveBeenCalled()
+	})
+
+	it("runs Notification hooks from notification bus events", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				Notification: [{ hooks: [{ type: "command", command: "notification-observer" }] }],
+			},
+		})
+		const child = mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.turn_start[0]({ type: "turn_start", turnIndex: 1 }, fakeCtx())
+		await pi.eventHandlers.notification[0]({ notification_type: "permission_prompt" })
+
+		expect(mockSpawn).toHaveBeenCalledTimes(1)
+		expect(hookPayload(child)).toMatchObject({
+			hook_event_name: "Notification",
+			notification_type: "permission_prompt",
+		})
+	})
+
+	it("skips Notification hooks before any extension context is captured", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				Notification: [{ hooks: [{ type: "command", command: "notification-observer" }] }],
+			},
+		})
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.eventHandlers.notification[0]({ notification_type: "permission_prompt" })
 
 		expect(mockSpawn).not.toHaveBeenCalled()
 	})
@@ -988,7 +1052,7 @@ function fakeChild() {
 	const stdoutHandlers: Array<(chunk: string) => void> = []
 	const stderrHandlers: Array<(chunk: string) => void> = []
 	const child = {
-		stdin: { end: vi.fn() },
+		stdin: { end: vi.fn(), on: vi.fn(() => child.stdin) },
 		stdout: {
 			setEncoding: vi.fn(),
 			on: vi.fn((event: string, handler: (chunk: string) => void) => {
@@ -1032,7 +1096,11 @@ function mockBlockingHook({
 	stdout = "",
 	stderr = "",
 	code = 0,
-}: { stdout?: string; stderr?: string; code?: number } = {}): ReturnType<typeof fakeChild> {
+}: {
+	stdout?: string
+	stderr?: string
+	code?: number
+} = {}): ReturnType<typeof fakeChild> {
 	const child = fakeChild()
 	mockSpawn.mockReturnValueOnce(child)
 	child.stdin.end.mockImplementationOnce(() => {

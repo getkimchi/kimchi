@@ -85,7 +85,18 @@ function normalizeIncomingTodos(scopeTodos: unknown, nextId: number): { todos: T
 
 		const activeForm = normalizeOptionalText(todo.activeForm)
 		const note = normalizeOptionalText(todo.note)
-		result.push({ id, content, status, ...(activeForm ? { activeForm } : {}), ...(note ? { note } : {}) })
+		// Preserve the internal _syncKey (set by the auto-sync bridge) so it
+		// survives the round-trip from draft → stored item. The widget ignores
+		// it during rendering; the bridge uses it for deterministic correlation.
+		const syncKey = normalizeOptionalText(todo._syncKey)
+		result.push({
+			id,
+			content,
+			status,
+			...(activeForm ? { activeForm } : {}),
+			...(note ? { note } : {}),
+			...(syncKey ? { _syncKey: syncKey } : {}),
+		})
 	}
 
 	return { todos: orderTodosForStorage(result), nextTodoId: currentNextId }

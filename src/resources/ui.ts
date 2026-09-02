@@ -1,6 +1,6 @@
-import { type Theme, getSettingsListTheme } from "@earendil-works/pi-coding-agent"
-import { Key, type SettingItem, SettingsList, type TUI, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
-import { RESOURCE_KINDS, getResourceDefinitions, getResourcesByKind } from "./definitions.js"
+import { getSettingsListTheme, type Theme } from "@earendil-works/pi-coding-agent"
+import { Key, matchesKey, type SettingItem, SettingsList, type TUI, truncateToWidth } from "@earendil-works/pi-tui"
+import { getResourceDefinitions, getResourcesByKind, RESOURCE_KINDS } from "./definitions.js"
 import { isResourceEnabled, setResourceOverride } from "./store.js"
 import type { ResourceDefinition, ResourceKind } from "./types.js"
 

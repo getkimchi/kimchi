@@ -3,8 +3,8 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { resolveAuxiliaryFilesDir } from "../auxiliary-files/resolver.js"
 import { compareSemverGte } from "../integrations/opencode.js"
-import { extractTarGz, verifyChecksum } from "./extract.js"
-import { GitHubClient, KIMCHI_REPO, type Repo } from "./github.js"
+import { extractArchive, verifyChecksum } from "./extract.js"
+import { assetName, GitHubClient, KIMCHI_REPO, type Repo } from "./github.js"
 import { atomicInstall, copySupportingFiles, macosCodesignReSign, smokeTestBinary } from "./install.js"
 import { resolveExecutablePath } from "./paths.js"
 import { isStale, isUpdateCheckDisabled, loadRepoState, saveRepoState } from "./state.js"
@@ -33,6 +33,8 @@ export interface CheckOptions {
 	client?: GitHubClient
 	/** Resolve the floating `canary` release instead of latest stable. */
 	canary?: boolean
+	/** Resolve an exact release tag (e.g. `v0.0.23-rc.1`) instead of latest or canary. */
+	tag?: string
 }
 
 /** Strip the "Canary " title prefix to recover the embedded version string. */
@@ -44,6 +46,10 @@ function canaryVersionFromName(name: string): string {
 const SHA7_LEN = 7
 const SHA7_RE = /^[0-9a-f]{7}$/
 const CANARY_VERSION_RE = new RegExp(`^0\\.0\\.0-canary\\.\\d{8}\\.([0-9a-f]{${SHA7_LEN}})$`)
+
+function binaryFileName(repo: Repo): string {
+	return process.platform === "win32" ? `${repo.binary}.exe` : repo.binary
+}
 
 /**
  * Extract the SHA7 from a canary version string. Returns null for any input
@@ -77,6 +83,25 @@ export async function checkForUpdate(opts: CheckOptions): Promise<CheckResult> {
 			tag: "",
 			releaseUrl: "",
 			hasUpdate: false,
+			cached: false,
+		}
+	}
+
+	if (opts.tag) {
+		// Explicit tag requests always bypass the cache: the caller wants the
+		// resolved metadata for this specific release, not whatever happened
+		// to be checked most recently.
+		const info = await client.releaseByTag(repo, opts.tag)
+		// Release tags carry a leading "v" while getVersion() reports bare
+		// semver from package.json; normalize both sides so requesting the
+		// already-installed version is a no-op instead of a reinstall.
+		const hasUpdate = info.tagName.replace(/^v/, "") !== opts.currentVersion.replace(/^v/, "")
+		return {
+			currentVersion: opts.currentVersion,
+			latestVersion: info.tagName,
+			tag: info.tagName,
+			releaseUrl: info.htmlUrl,
+			hasUpdate,
 			cached: false,
 		}
 	}
@@ -157,7 +182,7 @@ export interface UpdateOptions {
  * Download → verify checksum → extract → smoke-test → atomic install.
  * Throws on any step's failure with the original error wrapped in context.
  *
- * Cleans up the temp tarball + extract dir even on failure (try/finally).
+ * Cleans up the temp archive + extract dir even on failure (try/finally).
  *
  * macOS Gatekeeper requires the new binary to be ad-hoc signed before the
  * swap; the binary's signature gets baked into the inode, so we sign at
@@ -174,16 +199,16 @@ export async function applyUpdate(opts: UpdateOptions): Promise<UpdateResult> {
 
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-update-"))
 	try {
-		const archiveName = `${repo.binary}.archive`
+		const archiveName = assetName(repo)
 		const archivePath = join(workDir, archiveName)
 
 		const expectedChecksum = await client.fetchChecksum(repo, opts.tag)
 		await client.downloadArchive(repo, opts.tag, archivePath)
 		await verifyChecksum(archivePath, expectedChecksum)
 
-		const extractedRoot = await extractTarGz(archivePath)
+		const extractedRoot = await extractArchive(archivePath)
 		try {
-			const binaryPath = join("bin", repo.binary)
+			const binaryPath = join("bin", binaryFileName(repo))
 			const newBinaryPath = join(extractedRoot, binaryPath)
 			macosCodesignReSign(newBinaryPath)
 			smokeTestBinary(newBinaryPath)
@@ -199,6 +224,8 @@ export async function applyUpdate(opts: UpdateOptions): Promise<UpdateResult> {
 			// share (/usr/local/share) still had the stale metadata.
 			const shareSrc = join(extractedRoot, "share", "kimchi")
 			const shareDst = resolveAuxiliaryFilesDir(process.env, homedir(), targetPath)
+			// Always cleanup vendored directory to fully override it.
+			rmSync(join(shareDst, "vendor"), { recursive: true, force: true })
 			copySupportingFiles(shareSrc, shareDst, repo.binary)
 
 			return { from: opts.tag, to: opts.tag, backupPath }

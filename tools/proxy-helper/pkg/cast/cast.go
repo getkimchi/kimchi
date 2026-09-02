@@ -69,12 +69,12 @@ func checkResponse(resp *http.Response, endpoint string) error {
 		}
 	case 403:
 		return &RemoteAuthError{
-			Msg:    fmt.Sprintf("Forbidden - your API key does not have permission to use remote sessions. %s", endpoint),
+			Msg:    fmt.Sprintf("Forbidden - your API key does not have permission to use remote workspaces. %s", endpoint),
 			Status: 403,
 		}
 	case 404:
 		return &RemoteAuthError{
-			Msg:    fmt.Sprintf("Session not found or endpoint not available. %s", endpoint),
+			Msg:    fmt.Sprintf("Workspace not found or endpoint not available. %s", endpoint),
 			Status: 404,
 		}
 	default:
@@ -88,27 +88,27 @@ func checkResponse(resp *http.Response, endpoint string) error {
 	}
 }
 
-// ─── Session helpers ──────────────────────────────────────────────────────────
+// ─── Workspace helpers ──────────────────────────────────────────────────────────
 
-type sessionItem struct {
+type workspaceItem struct {
 	ID  string `json:"id"`
 	URI string `json:"uri"`
 }
 
-type listSessionsPage struct {
-	Items          []sessionItem `json:"items"`
-	NextPageCursor string        `json:"nextPageCursor"`
+type listWorkspacesPage struct {
+	Items          []workspaceItem `json:"items"`
+	NextPageCursor string          `json:"nextPageCursor"`
 }
 
-func findSessionIDByURI(ctx context.Context, orgID, sandboxURL, apiKey, endpoint string) (string, error) {
-	// fetchPage fetches one page of sessions and returns the items and next cursor.
+func findWorkspaceIDByURI(ctx context.Context, orgID, sandboxURL, apiKey, endpoint string) (string, error) {
+	// fetchPage fetches one page of workspace and returns the items and next cursor.
 	// Returns (nil, "", err) on failure.
-	fetchPage := func(cursor string) ([]sessionItem, string, error) {
+	fetchPage := func(cursor string) ([]workspaceItem, string, error) {
 		qs := ""
 		if cursor != "" {
 			qs = "?page.cursor=" + url.QueryEscape(cursor)
 		}
-		u := fmt.Sprintf("%s/ai-optimizer/v1beta/organizations/%s/sessions%s",
+		u := fmt.Sprintf("%s/ai-optimizer/v1beta/organizations/%s/workspaces%s",
 			endpoint, url.PathEscape(orgID), qs)
 
 		reqCtx, cancel := context.WithTimeout(ctx, httpTimeout)
@@ -131,7 +131,7 @@ func findSessionIDByURI(ctx context.Context, orgID, sandboxURL, apiKey, endpoint
 				}
 			case 403:
 				return nil, "", &RemoteAuthError{
-					Msg:    fmt.Sprintf("Forbidden - your API key does not have permission to list sessions. %s", endpoint),
+					Msg:    fmt.Sprintf("Forbidden - your API key does not have permission to list workspaces. %s", endpoint),
 					Status: 403,
 				}
 			default:
@@ -144,7 +144,7 @@ func findSessionIDByURI(ctx context.Context, orgID, sandboxURL, apiKey, endpoint
 				}
 			}
 		}
-		var page listSessionsPage
+		var page listWorkspacesPage
 		if err := json.Unmarshal(body, &page); err != nil {
 			return nil, "", &RemoteNetworkError{Msg: fmt.Sprintf("Unexpected non-JSON response from %s", u)}
 		}
@@ -168,14 +168,14 @@ func findSessionIDByURI(ctx context.Context, orgID, sandboxURL, apiKey, endpoint
 		}
 	}
 	return "", &RemoteAuthError{
-		Msg:    fmt.Sprintf("No session found with URI '%s'.", sandboxURL),
+		Msg:    fmt.Sprintf("No workspace found with URI '%s'.", sandboxURL),
 		Status: 404,
 	}
 }
 
-func fetchSessionByID(ctx context.Context, orgID, sessionID, apiKey, endpoint string) (string, error) {
-	u := fmt.Sprintf("%s/ai-optimizer/v1beta/organizations/%s/sessions/%s",
-		endpoint, url.PathEscape(orgID), url.PathEscape(sessionID))
+func fetchWorkspaceByID(ctx context.Context, orgID, workspaceID, apiKey, endpoint string) (string, error) {
+	u := fmt.Sprintf("%s/ai-optimizer/v1beta/organizations/%s/workspaces/%s",
+		endpoint, url.PathEscape(orgID), url.PathEscape(workspaceID))
 	reqCtx, cancel := context.WithTimeout(ctx, httpTimeout)
 	defer cancel()
 	resp, err := doRequest(reqCtx, http.MethodGet, u, apiKey, nil)
@@ -193,7 +193,7 @@ func fetchSessionByID(ctx context.Context, orgID, sessionID, apiKey, endpoint st
 		return "", &RemoteNetworkError{Msg: fmt.Sprintf("Unexpected non-JSON response from %s", u)}
 	}
 	if data.URI == "" {
-		return "", &RemoteNetworkError{Msg: fmt.Sprintf("Missing uri in session response from %s", u)}
+		return "", &RemoteNetworkError{Msg: fmt.Sprintf("Missing uri in workspace response from %s", u)}
 	}
 	return data.URI, nil
 }
@@ -236,7 +236,7 @@ func VerifyAPIKey(ctx context.Context, apiKey, endpoint string) (string, error) 
 	}
 	var data struct {
 		OrganizationID string `json:"organizationId"`
-		UserID string `json:"userID"`
+		UserID         string `json:"userID"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return "", &RemoteNetworkError{Msg: fmt.Sprintf("Unexpected non-JSON response from %s", endpoint)}
@@ -247,23 +247,23 @@ func VerifyAPIKey(ctx context.Context, apiKey, endpoint string) (string, error) 
 	return data.OrganizationID, nil
 }
 
-// ResolveSessionID returns the session ID and sandbox URI for the given arg.
-// If arg contains a '.', it is treated as a sandbox URL and the session list
+// ResolveWorkspaceID returns the workspace ID and sandbox URI for the given arg.
+// If arg contains a '.', it is treated as a sandbox URL and the workspace list
 // is searched to find the matching ID. Otherwise arg is treated directly as a
-// session ID and the session is fetched by ID to obtain its URI.
-func ResolveSessionID(ctx context.Context, orgID, sessionIDOrSandboxURL, apiKey, endpoint string) (sessionID, sandboxURL string, err error) {
-	if strings.Contains(sessionIDOrSandboxURL, ".") {
-		id, err := findSessionIDByURI(ctx, orgID, sessionIDOrSandboxURL, apiKey, endpoint)
-		return id, sessionIDOrSandboxURL, err
+// workspace ID and the workspace is fetched by ID to obtain its URI.
+func ResolveWorkspaceID(ctx context.Context, orgID, workspaceIDOrSandboxURL, apiKey, endpoint string) (workspaceID, sandboxURL string, err error) {
+	if strings.Contains(workspaceIDOrSandboxURL, ".") {
+		id, err := findWorkspaceIDByURI(ctx, orgID, workspaceIDOrSandboxURL, apiKey, endpoint)
+		return id, workspaceIDOrSandboxURL, err
 	}
-	uri, err := fetchSessionByID(ctx, orgID, sessionIDOrSandboxURL, apiKey, endpoint)
-	return sessionIDOrSandboxURL, uri, err
+	uri, err := fetchWorkspaceByID(ctx, orgID, workspaceIDOrSandboxURL, apiKey, endpoint)
+	return workspaceIDOrSandboxURL, uri, err
 }
 
-// ExchangeSessionToken exchanges a session ID for a short-lived bearer token.
-func ExchangeSessionToken(ctx context.Context, apiKey, sessionID, endpoint string) (string, error) {
-	u := endpoint + "/ai-optimizer/v1beta/session-tokens:exchange"
-	bodyBytes, _ := json.Marshal(map[string]string{"sessionId": sessionID})
+// ExchangeWorkspaceToken exchanges a workspace ID for a short-lived bearer token.
+func ExchangeWorkspaceToken(ctx context.Context, apiKey, workspaceID, endpoint string) (string, error) {
+	u := endpoint + "/ai-optimizer/v1beta/workspace-tokens:exchange"
+	bodyBytes, _ := json.Marshal(map[string]string{"workspaceId": workspaceID})
 	reqCtx, cancel := context.WithTimeout(ctx, httpTimeout)
 	defer cancel()
 	resp, err := doRequest(reqCtx, http.MethodPost, u, apiKey, bytes.NewReader(bodyBytes))

@@ -13,8 +13,10 @@
  *
  * Subagent mode:
  * - "input": passes through unchanged.
- * - "before_agent_start": injects the pure worker system prompt. Filters out
- *   delegation tools to prevent infinite delegation chains.
+ * - "before_agent_start": delegates to buildSystemPrompt in system-prompt.ts,
+ *   which produces the worker system prompt and filters out delegation tools
+ *   (to prevent infinite delegation chains). This file only strips phantom
+ *   empty-name tool calls from the subagent context.
  *
  * Steering messages are excluded — when the agent is streaming, the handler
  * returns "continue" so the message passes through unchanged.
@@ -22,29 +24,22 @@
 
 import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { homedir, platform, userInfo } from "node:os"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { arch, homedir, version as osVersion, platform, release, userInfo } from "node:os"
 import { join } from "node:path"
-import type { AssistantMessage } from "@earendil-works/pi-ai"
-import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
+import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
-import { isResourceEnabled } from "../../resources/store.js"
+import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
+import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
+import { bumpStallCounter } from "../ferment/todo-sync.js"
+import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
+import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
-	CLAUDE_CODE_SKILLS_RESOURCE_ID,
-	getClaudeCodeSkillResourcePaths,
-	getConfiguredSkillResourcePaths,
-} from "../claude-code-skills/definition.js"
-import {
-	getProcessMultiModelEnabled,
-	setProcessMultiModelEnabled,
-	setProcessOrchestratorRef,
-} from "../kimchi-process.js"
-import {
-	CONTINUATION_NUDGE_TEXT,
+	brandUnmarkedSteers,
 	ContinuationNudge,
 	EMPTY_TURN_NUDGE_TEXT,
 	EmptyTurnNudge,
@@ -52,13 +47,29 @@ import {
 	type OrchestratorMessages,
 	stripStaleNudges,
 	stripUiOnlyMessages,
+	tagSelfEchoes,
 } from "../orchestration/continuation-nudge.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
+import {
+	extractCustomConfigs,
+	getModelRoles,
+	getOrchestratorModelId,
+	getOrchestratorModelRef,
+	modelIdFromRef,
+	splitModelRef,
+	validateModelRoles,
+} from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
-import { getModelRoles, modelIdFromRef, splitModelRef, validateModelRoles } from "../orchestration/model-roles.js"
-import { getCurrentPhase } from "../tags.js"
+import { getEffectiveModel } from "../router/state.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
-import { type EnvironmentInfo, type PromptMode, type ToolInfo, buildSystemPrompt } from "./system-prompt.js"
+import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
+import {
+	buildSystemPrompt,
+	DELEGATION_TOOL_NAMES,
+	type EnvironmentInfo,
+	type PromptMode,
+	type ToolInfo,
+} from "./system-prompt.js"
 
 function safeUsername(): string {
 	try {
@@ -79,66 +90,6 @@ function readGitRemote(cwd: string): string | undefined {
 	}
 }
 
-const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
-
-function readMultiModelSetting(): boolean {
-	try {
-		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
-		const parsed = JSON.parse(raw)
-		if (typeof parsed.multiModel === "boolean") return parsed.multiModel
-	} catch {
-		// absent or unreadable
-	}
-	return true
-}
-
-function writeMultiModelSetting(enabled: boolean): void {
-	try {
-		let current: Record<string, unknown> = {}
-		try {
-			current = JSON.parse(readFileSync(HARNESS_SETTINGS_PATH, "utf-8"))
-		} catch {
-			// absent or malformed — start fresh
-		}
-		current.multiModel = enabled
-		const dir = join(homedir(), ".config", "kimchi", "harness")
-		if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-		writeFileSync(HARNESS_SETTINGS_PATH, `${JSON.stringify(current, null, 2)}\n`)
-	} catch {
-		// best-effort
-	}
-}
-
-function hasExplicitModelFlag(): boolean {
-	const args = process.argv
-	for (let i = 0; i < args.length; i++) {
-		if (args[i] === "--model" || args[i]?.startsWith("--model=")) return true
-	}
-	return false
-}
-
-const initialMultiModel = hasExplicitModelFlag() ? false : readMultiModelSetting()
-let multiModelEnabled = initialMultiModel
-setProcessMultiModelEnabled(initialMultiModel)
-setProcessOrchestratorRef(getOrchestratorModelRef())
-
-/**
- * Orchestrator model ID (without provider prefix).
- * Reads from the live model-roles config — updates when `/multi-model` changes roles.
- */
-export function getOrchestratorModelId(): string {
-	return modelIdFromRef(getModelRoles().orchestrator)
-}
-
-/**
- * Orchestrator model reference (provider/model-id).
- * Reads from the live model-roles config — updates when `/multi-model` changes roles.
- */
-export function getOrchestratorModelRef(): string {
-	return getModelRoles().orchestrator
-}
-const DELEGATION_TOOL_NAMES = new Set(["Agent", "subagent"])
-
 // Tracks sessions that have already received a deprecation notification to avoid duplicate alerts.
 const deprecatedNotificationFired = new Set<string>()
 
@@ -146,29 +97,48 @@ export function _resetDeprecatedNotificationTracking(): void {
 	deprecatedNotificationFired.clear()
 }
 
+/**
+ * Sync multi-model and orchestrator state to the process side-channel
+ * and reconcile persistence. Called from both session_start and
+ * before_agent_start for consistency.
+ *
+ * Returns the effective boolean and orchestrator ref. The boolean
+ * comes from resolution.value — setAndPersistMultiModelEnabled returns
+ * a MultiModelResolution internally, but callers of this helper
+ * only need the boolean.
+ */
+function syncSessionModelState(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+): { multiModelEnabled: boolean; orchestratorModelRef: string } {
+	const sessionId = ctx.sessionManager.getSessionId()
+
+	const resolution = setAndPersistMultiModelEnabled(sessionId, ctx.sessionManager, pi)
+
+	const orchestratorModelRef = getOrchestratorModelRef(sessionId)
+	if (getProcessOrchestratorRef(sessionId) !== orchestratorModelRef) {
+		setProcessOrchestratorRef(sessionId, orchestratorModelRef)
+	}
+
+	return { multiModelEnabled: resolution.value, orchestratorModelRef }
+}
+
 function isDelegationToolCallName(name: string | undefined): boolean {
 	return name != null && DELEGATION_TOOL_NAMES.has(name)
 }
 
-/**
- * Shape of a tool-call content block as emitted in assistant messages.
- * Defined narrowly here because the upstream `OrchestratorMessages` type does
- * not export the per-block discriminated-union members we need to narrow on.
- */
-type ToolCallBlock = { type: "toolCall"; name: string; id?: string }
-
-function isToolCallBlock(block: unknown): block is ToolCallBlock {
+function isToolCallBlock(block: AssistantMessage["content"][number]): block is ToolCall {
 	return (
 		typeof block === "object" &&
 		block !== null &&
 		"type" in block &&
-		(block as { type: unknown }).type === "toolCall" &&
+		block.type === "toolCall" &&
 		"name" in block &&
-		typeof (block as { name: unknown }).name === "string"
+		typeof block.name === "string"
 	)
 }
 
-function isEmptyToolCallBlock(block: unknown): block is ToolCallBlock {
+function isEmptyToolCallBlock(block: AssistantMessage["content"][number]): block is ToolCall {
 	return isToolCallBlock(block) && block.name.trim() === ""
 }
 
@@ -227,28 +197,11 @@ export function stripEmptyToolCalls(messages: OrchestratorMessages): Orchestrato
 	return changed ? filtered : messages
 }
 
-export function getMultiModelEnabled(): boolean {
-	const processFlag = getProcessMultiModelEnabled()
-	if (processFlag !== undefined && processFlag !== multiModelEnabled) {
-		multiModelEnabled = processFlag
-		writeMultiModelSetting(processFlag)
-	}
-	return multiModelEnabled
-}
-
-export function setMultiModelEnabled(enabled: boolean): void {
-	multiModelEnabled = enabled
-	// Only update the enabled flag — the orchestrator ref is managed separately
-	// via setProcessOrchestratorRef() when roles actually change, not here.
-	setProcessMultiModelEnabled(enabled)
-	writeMultiModelSetting(enabled)
-}
-
 export function isSubagent(): boolean {
 	return isAgentWorker()
 }
 
-export default function (skillPaths: string[]) {
+export default function (skillPathsFromConfig: string[]) {
 	return (pi: ExtensionAPI) => {
 		const subagentMode = isSubagent()
 
@@ -287,12 +240,8 @@ export default function (skillPaths: string[]) {
 					)
 				}
 			}
-			function notifyIfDeprecated(ctx: {
-				sessionManager?: { getSessionId: () => string | undefined }
-				model?: { id: string }
-				ui?: { notify: (msg: string, kind?: "warning" | "error" | "info") => void }
-			}) {
-				const sessionId = ctx.sessionManager?.getSessionId() ?? "unknown"
+			function notifyIfDeprecated(ctx: ExtensionContext) {
+				const sessionId = ctx.sessionManager.getSessionId() ?? "unknown"
 				if (ctx.model && deprecatedWarnings.has(ctx.model.id) && !deprecatedNotificationFired.has(sessionId)) {
 					deprecatedNotificationFired.add(sessionId)
 					const replacement = deprecatedWarnings.get(ctx.model.id)
@@ -306,18 +255,21 @@ export default function (skillPaths: string[]) {
 			}
 
 			pi.on("session_shutdown", async (_event, ctx) => {
-				const sessionId = ctx.sessionManager?.getSessionId()
-				if (sessionId) deprecatedNotificationFired.delete(sessionId)
+				const sessionId = ctx.sessionManager.getSessionId()
+				deprecatedNotificationFired.delete(sessionId)
 			})
 
 			pi.on("session_start", async (_event, ctx) => {
+				const { multiModelEnabled, orchestratorModelRef } = syncSessionModelState(pi, ctx)
+				const orchestratorModelId = modelIdFromRef(orchestratorModelRef)
+
 				notifyIfDeprecated(ctx)
 
 				// In multi-model mode the orchestrator must always be the configured
 				// orchestrator model. Force-switch if the user has a different model
 				// selected via /models.
-				if (multiModelEnabled && ctx.model?.id !== getOrchestratorModelId()) {
-					const ref = splitModelRef(getOrchestratorModelRef())
+				if (multiModelEnabled && ctx.model?.id !== orchestratorModelId) {
+					const ref = splitModelRef(orchestratorModelRef)
 					const orchestratorModel = ref ? ctx.modelRegistry?.find(ref.provider, ref.modelId) : undefined
 					if (orchestratorModel) {
 						try {
@@ -329,8 +281,23 @@ export default function (skillPaths: string[]) {
 				}
 			})
 
-			pi.on("model_select", async (_event, ctx) => {
+			pi.on("model_select", async (event, ctx) => {
 				notifyIfDeprecated(ctx)
+
+				// A user-initiated model switch (UI picker, /model, or cycling)
+				// is a fresh start for tool-calling behaviour from the new model's
+				// perspective. Reset the session-level latch so the first text-only
+				// turn after the switch is treated like the first turn of a new
+				// session (nudge suppressed until the new model calls a tool).
+				// Session restore is deliberately excluded: a restored session is
+				// continuing an existing conversation, not starting fresh.
+				if (event.source === "set" || event.source === "cycle") {
+					const sessionId = ctx.sessionManager.getSessionId()
+					const continuationNudge = getContinuationNudge(sessionId)
+					const emptyTurnNudge = getEmptyTurnNudge(sessionId)
+					continuationNudge.resetForModelSwitch()
+					emptyTurnNudge.resetForModelSwitch()
+				}
 			})
 
 			// Detect the inverse of the context-event nudge below: the orchestrator reasons
@@ -343,12 +310,38 @@ export default function (skillPaths: string[]) {
 			// The reset handler is registered BEFORE the enrichment handler below because
 			// that one returns `{action: "handled"}` in interactive mode, which short-
 			// circuits the input-handler chain.
-			const continuationNudge = new ContinuationNudge()
-			const emptyTurnNudge = new EmptyTurnNudge()
-			pi.on("agent_start", async () => {
+			const continuationNudgeMap = new Map<string, ContinuationNudge>()
+			const emptyTurnNudgeMap = new Map<string, EmptyTurnNudge>()
+
+			function getContinuationNudge(sessionId: string): ContinuationNudge {
+				let nudge = continuationNudgeMap.get(sessionId)
+				if (!nudge) {
+					nudge = new ContinuationNudge()
+					continuationNudgeMap.set(sessionId, nudge)
+				}
+				return nudge
+			}
+
+			function getEmptyTurnNudge(sessionId: string): EmptyTurnNudge {
+				let nudge = emptyTurnNudgeMap.get(sessionId)
+				if (!nudge) {
+					nudge = new EmptyTurnNudge()
+					emptyTurnNudgeMap.set(sessionId, nudge)
+				}
+				return nudge
+			}
+
+			pi.on("agent_start", async (_event, ctx) => {
+				const sessionId = ctx.sessionManager.getSessionId()
+				const continuationNudge = getContinuationNudge(sessionId)
 				continuationNudge.resetForNewAgentRun()
 			})
-			pi.on("input", async (event) => {
+
+			pi.on("input", async (event, ctx) => {
+				const sessionId = ctx.sessionManager.getSessionId()
+				const continuationNudge = getContinuationNudge(sessionId)
+				const emptyTurnNudge = getEmptyTurnNudge(sessionId)
+
 				if (event.source === "extension") {
 					// Agent result arriving. Clear the delegation-pending flag so the
 					// continuation nudge can fire normally once the model has processed
@@ -360,11 +353,16 @@ export default function (skillPaths: string[]) {
 				emptyTurnNudge.resetForNewUserInput()
 			})
 
-			pi.on("tool_execution_start", async () => {
+			pi.on("tool_execution_start", async (_event, ctx) => {
+				const sessionId = ctx.sessionManager.getSessionId()
+				const continuationNudge = getContinuationNudge(sessionId)
 				continuationNudge.recordToolCall()
 			})
 
-			pi.on("message_update", (event) => {
+			pi.on("message_update", (event, ctx) => {
+				const sessionId = ctx.sessionManager.getSessionId()
+				const continuationNudge = getContinuationNudge(sessionId)
+
 				if (!continuationNudge.isNudgeResponsePending()) return
 				const ame = event.assistantMessageEvent
 				if (ame.type !== "text_delta") return
@@ -376,10 +374,19 @@ export default function (skillPaths: string[]) {
 				}
 			})
 
-			pi.on("turn_end", async (event) => {
+			pi.on("turn_end", async (event, ctx) => {
 				if (event.message.role !== "assistant") return
 				// Safe after the role guard: AgentMessage with role "assistant" is AssistantMessage.
 				const assistantMsg = event.message as AssistantMessage
+
+				const sessionId = ctx.sessionManager.getSessionId()
+				const continuationNudge = getContinuationNudge(sessionId)
+				const emptyTurnNudge = getEmptyTurnNudge(sessionId)
+
+				// Track stall: increment counter each turn so the headless prompt
+				// block can detect when the orchestrator hasn't updated step todos.
+				// Scoped to this session so concurrent sessions do not share a counter.
+				bumpStallCounter(sessionId)
 
 				// Mark each delegation tool call so the continuation nudge stays
 				// suppressed until all delegated-agent results have been received.
@@ -429,10 +436,19 @@ export default function (skillPaths: string[]) {
 				)
 			})
 
-			pi.on("context", async (event) => {
+			pi.on("context", async (event, ctx) => {
+				const effectiveModel = getEffectiveModel(ctx)
 				let messages = stripStaleNudges(event.messages)
 				messages = stripEmptyToolCalls(messages)
 				messages = stripUiOnlyMessages(messages)
+				// kimi-k2.x stalls on historical tool calls whose IDs are not in
+				// Moonshot's canonical format (issue #1063) — normalize for those
+				// targets only.
+				if (isKimiK2Model(effectiveModel?.id)) {
+					messages = normalizeKimiToolCallIds(messages)
+				}
+				messages = tagSelfEchoes(messages)
+				messages = brandUnmarkedSteers(messages)
 				if (messages !== event.messages) return { messages }
 			})
 		}
@@ -443,42 +459,57 @@ export default function (skillPaths: string[]) {
 			// and MiniMax M2.7) emit empty tool calls after a real write/edit call,
 			// which the runtime rejects with a "Tool  not found" result that would
 			// otherwise accumulate in the subagent's context across turns.
-			pi.on("context", async (event) => {
-				const messages = stripEmptyToolCalls(event.messages)
+			pi.on("context", async (event, ctx) => {
+				const effectiveModel = getEffectiveModel(ctx)
+				let messages = stripEmptyToolCalls(event.messages)
+				if (isKimiK2Model(effectiveModel?.id)) {
+					messages = normalizeKimiToolCallIds(messages)
+				}
+				messages = brandUnmarkedSteers(messages)
 				if (messages !== event.messages) return { messages }
 			})
 		}
 
 		const platformNames: Record<string, string> = { darwin: "macOS", win32: "Windows" }
-		const cachedOs = platformNames[platform()] ?? platform()
+		const cachedRawPlatform = platform()
+		const cachedOs = platformNames[cachedRawPlatform] ?? cachedRawPlatform
+		const cachedCpuArchitecture = arch()
+		const cachedShell = process.env.SHELL ?? process.env.ComSpec ?? "unknown"
+		const cachedOsRelease = release()
+		const cachedOsVersion = osVersion()
 		const cachedUsername = safeUsername()
 		const cachedHomeDir = homedir()
 
 		let cachedContextFiles: ContextFile[] | undefined
-		let cachedSkills: Skill[] | undefined
 		let cachedGitRemote: string | undefined | null = null
 
+		pi.on("resources_discover", (event) => {
+			// Contribute Kimchi-only skill sources to pi's resource inventory so
+			// every downstream surface (base prompt skills section, /skill:<name>,
+			// autocomplete, /resources) sees them. All discovery, filtering, and
+			// collision-avoidance logic lives in resolveSkillPathsForDiscovery.
+			const extraPaths = getConfiguredSkillResourcePaths(event.cwd, skillPathsFromConfig)
+			const skillPaths = resolveSkillPathsForDiscovery(event.cwd, { extraPaths })
+			if (skillPaths.length === 0) return undefined
+			return { skillPaths }
+		})
+
 		pi.on("before_agent_start", async (event, ctx) => {
+			syncSessionModelState(pi, ctx)
+
+			const sessionId = ctx.sessionManager.getSessionId()
+			const effectiveModel = getEffectiveModel(ctx)
+
 			const activeToolNames = new Set(pi.getActiveTools())
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
 			cachedContextFiles ??= [...loadGlobalContextFiles(), ...loadProjectContextFiles(ctx.cwd)]
-			if (cachedSkills === undefined) {
-				const allSkillPaths = Array.from(
-					new Set([
-						...getConfiguredSkillResourcePaths(ctx.cwd, skillPaths),
-						...(isResourceEnabled(CLAUDE_CODE_SKILLS_RESOURCE_ID)
-							? getClaudeCodeSkillResourcePaths(ctx.cwd, { excludeSkillPaths: skillPaths })
-							: []),
-						...getInstalledPackageResourceDirs(ctx.cwd, "skills"),
-					]),
-				)
-				cachedSkills = loadSkills({
-					cwd: ctx.cwd,
-					agentDir: getAgentDir(),
-					skillPaths: allSkillPaths,
-					includeDefaults: false,
-				}).skills
-			}
+			// Read skills from pi's resolved resource inventory (system prompt
+			// options) so the rebuilt prompt advertises exactly what pi
+			// loaded — honoring settings.json, --skill/--no-skills, trust,
+			// packages, precedence and collision rules — rather than a second,
+			// divergent view composed here. Kimchi-specific sources reach pi
+			// through resources_discover above.
+			const skills = event.systemPromptOptions?.skills ?? []
 
 			const now = new Date()
 			const isGitRepo = existsSync(join(ctx.cwd, ".git", "HEAD"))
@@ -487,6 +518,11 @@ export default function (skillPaths: string[]) {
 			}
 			const env: EnvironmentInfo = {
 				os: cachedOs,
+				rawPlatform: cachedRawPlatform,
+				cpuArchitecture: cachedCpuArchitecture,
+				shell: cachedShell,
+				osRelease: cachedOsRelease,
+				osVersion: cachedOsVersion,
 				username: cachedUsername,
 				homeDir: cachedHomeDir,
 				cwd: ctx.cwd,
@@ -497,20 +533,25 @@ export default function (skillPaths: string[]) {
 				gitRemote: isGitRepo ? (cachedGitRemote ?? undefined) : undefined,
 			}
 
-			const mode: PromptMode = subagentMode ? "subagent" : multiModelEnabled ? "orchestrator" : "single"
+			const mode: PromptMode = subagentMode
+				? "subagent"
+				: getMultiModelEnabled(ctx.sessionManager)
+					? "orchestrator"
+					: "single"
 			const roles = mode === "orchestrator" ? getModelRoles() : undefined
+			const customConfigs = mode === "orchestrator" && roles ? extractCustomConfigs(roles) : undefined
 
 			let systemPrompt = buildSystemPrompt({
 				tools: tools as readonly ToolInfo[],
 				env,
 				contextFiles: cachedContextFiles,
-				skills: cachedSkills,
-				currentModelId: mode === "orchestrator" ? getOrchestratorModelId() : ctx.model?.id,
-				currentPhase: getCurrentPhase(),
+				skills: skills,
+				currentModelId: mode === "orchestrator" ? getOrchestratorModelId(sessionId) : effectiveModel?.id,
 				registry: registry,
 				mode,
 				roles,
-				sessionId: ctx.sessionManager?.getSessionId(),
+				customConfigs,
+				sessionId,
 			})
 
 			// The rebuilt prompt replaces pi's base prompt entirely, which would
@@ -541,8 +582,8 @@ export default function (skillPaths: string[]) {
 					ctx.ui.notify(`[debug-prompts] ${filePath}`, "info")
 				}
 			} else {
-				process.env.KIMCHI_DEBUG_PROMPTS = undefined
-				process.env.KIMCHI_DEBUG_SESSION = undefined
+				delete process.env.KIMCHI_DEBUG_PROMPTS
+				delete process.env.KIMCHI_DEBUG_SESSION
 			}
 
 			return { systemPrompt }

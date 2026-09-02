@@ -18,6 +18,8 @@ import {
 import {
 	MINIMAX_FAMILY_BUILD,
 	MINIMAX_FAMILY_ORCHESTRATION,
+	MINIMAX_FAMILY_PLAN,
+	MINIMAX_FAMILY_RESEARCH,
 	MINIMAX_FAMILY_REVIEW,
 	MINIMAX_M27_BUILD,
 	MINIMAX_M27_ORCHESTRATION,
@@ -46,7 +48,7 @@ import type { ModelCapabilities, Phase } from "./types.js"
  */
 
 const KIMI_K26_DESCRIPTION = `\
-Flagship Kimi model with vision support — the key model for complex planning decisions, \
+High-capacity Kimi model with vision support — the key model for complex planning decisions, \
 deep research, and correctness-critical tasks. Handles images, screenshots, and visual input. \
 Best for: orchestration, architectural planning, plan verification involving concurrency \
 or algorithmic design. \
@@ -55,6 +57,18 @@ As a build subagent it frequently times out before completing, even with 1.5x du
 scaling. Prefer minimax-m2.7 for build subagents — it is faster and completes reliably \
 within standard budgets. Use kimi-k2.6 as a build subagent ONLY as a retry after \
 minimax has already failed on the same chunk.`
+
+const KIMI_K27_DESCRIPTION = `\
+Flagship Kimi model with vision support — the default for orchestration, deep research, \
+complex planning, and correctness-critical tasks. Handles images, screenshots, and visual input. \
+Best for: orchestration, architectural planning, plan verification involving concurrency or \
+algorithmic design, multi-step coding tasks, and any work requiring image understanding.`
+
+const MINIMAX_M3_DESCRIPTION = `\
+Primary MiniMax model with vision support — heavy-tier builder and researcher. \
+Handles images, screenshots, and visual input. \
+Best for: multi-file implementation, concurrency-heavy code, deep research with citations, \
+and plan verification involving complex logic.`
 
 const MINIMAX_M27_DESCRIPTION = `\
 The strongest coding model in the pool. \
@@ -71,11 +85,11 @@ Best for: codebase exploration, research, and trivial re-verification (confirmin
 after a fix). \
 Not suitable for: code review, building code, or any task requiring correctness judgment.`
 
-const CLAUDE_OPUS_46_DESCRIPTION = `\
-Anthropic's flagship Claude model. Dominates at architectural planning and complex task \
-decomposition — when a hard problem needs a superior plan, this is the model to delegate to. \
-Also excels at deep reasoning, research, and exploration across large codebases. Best for \
-complex multi-step tasks requiring careful analysis and methodical planning.`
+const DEEPSEEK_V4_FLASH_DESCRIPTION = `\
+Fast and cost-effective model for codebase exploration and lightweight tasks. \
+Best for: codebase exploration, reading code, tracing architecture, and trivial re-verification \
+(confirming tests pass after a fix). \
+Not suitable for: code review, building code, or any task requiring correctness judgment.`
 
 /** Filter out empty layers and join with double newlines. */
 function concatGuidelines(...layers: string[]): string {
@@ -116,7 +130,7 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"kimi-k2.6",
 		{
 			vision: true,
-			roles: ["research", "plan", "build", "review"],
+			reasoning: true,
 			tier: "heavy",
 			description: KIMI_K26_DESCRIPTION,
 			guidelines: guidelinesMap({
@@ -132,12 +146,44 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			),
 		},
 	],
+	[
+		"kimi-k2.7",
+		{
+			vision: true,
+			reasoning: true,
+			tier: "heavy",
+			description: KIMI_K27_DESCRIPTION,
+			guidelines: guidelinesMap({
+				research: [DEFAULT_RESEARCH_GUIDELINES, KIMI_FAMILY_RESEARCH],
+				plan: [DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN],
+				build: [DEFAULT_BUILD_GUIDELINES, KIMI_FAMILY_BUILD],
+				review: [DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW],
+			}),
+			orchestrationGuidelines: optionalGuidelines(DEFAULT_ORCHESTRATION_GUIDELINES, KIMI_FAMILY_ORCHESTRATION),
+		},
+	],
 	["kimi-k2.5", "ignored"],
+	[
+		"minimax-m3",
+		{
+			vision: true,
+			reasoning: true,
+			tier: "heavy",
+			description: MINIMAX_M3_DESCRIPTION,
+			guidelines: guidelinesMap({
+				research: [DEFAULT_RESEARCH_GUIDELINES, MINIMAX_FAMILY_RESEARCH],
+				plan: [DEFAULT_PLAN_GUIDELINES, MINIMAX_FAMILY_PLAN],
+				build: [DEFAULT_BUILD_GUIDELINES, MINIMAX_FAMILY_BUILD],
+				review: [DEFAULT_REVIEW_GUIDELINES, MINIMAX_FAMILY_REVIEW],
+			}),
+			orchestrationGuidelines: optionalGuidelines(DEFAULT_ORCHESTRATION_GUIDELINES, MINIMAX_FAMILY_ORCHESTRATION),
+		},
+	],
 	[
 		"minimax-m2.7",
 		{
 			vision: false,
-			roles: ["build", "review"],
+			reasoning: true,
 			tier: "standard",
 			description: MINIMAX_M27_DESCRIPTION,
 			guidelines: guidelinesMap({
@@ -155,7 +201,7 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"nemotron-3-ultra-fp4",
 		{
 			vision: false,
-			roles: ["explore", "research"],
+			reasoning: false,
 			tier: "light",
 			description: NEMOTRON_3_ULTRA_DESCRIPTION,
 			guidelines: guidelinesMap({
@@ -168,6 +214,21 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				NEMOTRON_FAMILY_ORCHESTRATION,
 				NEMOTRON_3_ULTRA_ORCHESTRATION,
 			),
+		},
+	],
+	[
+		"deepseek-v4-flash",
+		{
+			vision: false,
+			reasoning: false,
+			tier: "light",
+			description: DEEPSEEK_V4_FLASH_DESCRIPTION,
+			guidelines: guidelinesMap({
+				explore: [DEFAULT_EXPLORE_GUIDELINES],
+				research: [DEFAULT_RESEARCH_GUIDELINES],
+			}),
+			orchestrationGuidelines:
+				"When orchestrating (deepseek-v4-flash): No model-specific orchestration overrides — follow the default delegation rules.",
 		},
 	],
 	// Proprietary (Anthropic) models — excluded from OSS subagent routing.

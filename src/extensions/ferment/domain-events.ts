@@ -13,6 +13,8 @@ export const FERMENT_EVENTS = {
 	STARTED: "ferment:started",
 	COMPLETED: "ferment:completed",
 	ABANDONED: "ferment:abandoned",
+	SUSPENDED: "ferment:suspended",
+	RESUMED: "ferment:resumed",
 	STALLED: "ferment:stalled",
 	PHASE_STARTED: "ferment:phase_started",
 	PHASE_COMPLETED: "ferment:phase_completed",
@@ -20,6 +22,9 @@ export const FERMENT_EVENTS = {
 	STEP_COMPLETED: "ferment:step_completed",
 	STEP_FAILED: "ferment:step_failed",
 	STEERING: "ferment:steering",
+	SCOPING_RESUMED: "ferment:scoping_resumed",
+	SCOPING_COMPLETE: "ferment:scoping_complete",
+	USER_UNBLOCKED: "ferment:user_unblocked",
 } as const
 
 export type FermentEventChannel = (typeof FERMENT_EVENTS)[keyof typeof FERMENT_EVENTS]
@@ -70,6 +75,14 @@ export interface FermentAbandonedPayload {
 	durationMs: number
 }
 
+export interface FermentSuspendedPayload {
+	fermentId: string
+}
+
+export interface FermentResumedPayload {
+	fermentId: string
+}
+
 export interface FermentPhaseStartedPayload {
 	fermentId: string
 	phaseId: string
@@ -87,6 +100,7 @@ export interface FermentPhaseCompletedPayload {
 	deltaInputTokens: number
 	deltaOutputTokens: number
 	blockRetries: number
+	steeringCount: number
 }
 
 export interface FermentStepStartedPayload {
@@ -104,6 +118,7 @@ export interface FermentStepCompletedPayload {
 	durationMs: number
 	grade?: string
 	success: boolean
+	steeringCount: number
 }
 
 export interface FermentStepFailedPayload {
@@ -131,4 +146,23 @@ export interface FermentStalledPayload {
 	totalPhases: number
 	/** Ratio of completed phases to total phases (0–1). 0 when totalPhases is 0. */
 	phaseCompletionRatio: number
+}
+
+export interface FermentScopingCompletedPayload {
+	fermentId: string
+	name: string
+	/** Number of scoping proposal iterations before confirmation (proxy for block_retries). */
+	proposeIterations: number
+}
+
+export interface FermentScopingResumedPayload {
+	fermentId: string
+	/** Persisted ferment creation time, used to preserve wall-clock scoping duration across sessions. */
+	startedAtMs: number
+}
+
+export interface UserUnblockedPayload {
+	fermentId: string
+	/** Wall-clock duration from prompt to first user input, in ms. */
+	durationMs: number
 }

@@ -4,7 +4,7 @@ import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import type { TeleportContext } from "../types.js"
 import { pickWorkspace } from "../ui/workspaces-panel.js"
 import type { WorkspaceRow } from "../ui/workspaces-table.js"
-import { TeleportRefusal, refuse } from "./errors.js"
+import { refuse, TeleportRefusal } from "./errors.js"
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -70,7 +70,7 @@ export async function resolveWorkspaceRef(
 		)
 		if (matches.length === 1) return { id: matches[0].id, name: matches[0].name }
 		if (matches.length === 0) {
-			refuse(ctx, `No workspace matching "${ref}". Try /workspaces to see the available ones.`)
+			refuse(ctx, `No workspace matching "${ref}". Try /remote-sessions to see the available ones.`)
 		}
 		const rows = matches
 			.map((w) => `  • ${w.id}  ${w.name || "(no name)"}  [${leftmostLabel(w.host) ?? "no-host"}]`)

@@ -1,11 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import * as clack from "@clack/prompts"
 import { AGENT_DEFINITIONS, type AgentDiscovery, discoverAgent } from "./agent-discovery/index.js"
 import { buildSkillPathOptions, getAgentConfigDir } from "./config.js"
 import type { ServerEntry } from "./extensions/mcp-adapter/types.js"
-import { ensureSuperpowersInstalled } from "./extensions/superpowers/installer.js"
 
 export type MigrationState = "done" | "skip-forever"
 
@@ -399,15 +398,6 @@ export async function runSetupWizard(options: {
 
 	if (migrationRan) {
 		migrationState = "done"
-	}
-
-	const sp = clack.spinner()
-	sp.start("Installing superpowers skills…")
-	try {
-		await ensureSuperpowersInstalled()
-		sp.stop("Superpowers skills installed.")
-	} catch {
-		sp.stop("Could not install superpowers skills (offline?). Run kimchi update to retry.")
 	}
 
 	clack.outro("Setup complete.")

@@ -1,12 +1,15 @@
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai"
 import { describe, expect, it } from "vitest"
+import { isHarnessSteer } from "../steer-marker.js"
 import {
+	brandUnmarkedSteers,
 	ContinuationNudge,
 	DONE_SIGNAL,
 	EmptyTurnNudge,
 	type OrchestratorMessages,
 	stripStaleNudges,
 	stripUiOnlyMessages,
+	tagSelfEchoes,
 } from "./continuation-nudge.js"
 
 function makeAssistant(content: AssistantMessage["content"]): AssistantMessage {
@@ -53,10 +56,23 @@ const textAndToolCallMessage = makeAssistant([
 const emptyTextMessage = makeAssistant([{ type: "text", text: "" }])
 const whitespaceTextMessage = makeAssistant([{ type: "text", text: "   \n  " }])
 
+// The nudge is suppressed in a fresh session until at least one tool has been
+// called. Tests that exercise the nudge-firing path use this helper to simulate
+// "a tool was called at some earlier point in the session, and we are now in a
+// fresh user-input cycle". Tests that exercise the fresh-session suppression
+// itself live in the session-level describe block below and do not use this.
+function simulateSessionWithPriorToolCall(guard: ContinuationNudge): void {
+	guard.recordToolCall()
+	guard.resetForNewUserInput()
+}
+
 describe("ContinuationNudge.evaluateTurn", () => {
+	// Tests in this block exercise nudge firing on text-only turns and share the
+	// `simulateSessionWithPriorToolCall` helper above.
+
 	it("nudges a text-only first turn after user input", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
 	})
 
@@ -92,7 +108,7 @@ describe("ContinuationNudge.evaluateTurn", () => {
 
 	it("nudges at most twice per user-input cycle", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
@@ -107,7 +123,7 @@ describe("ContinuationNudge.evaluateTurn", () => {
 
 	it("re-arms after a new user input", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
 		guard.resetForNewUserInput()
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
@@ -124,7 +140,7 @@ describe("ContinuationNudge.evaluateTurn", () => {
 
 	it("sets nudge response pending after nudging", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		expect(guard.isNudgeResponsePending()).toBe(false)
 		guard.evaluateTurn(textOnlyMessage)
 		expect(guard.isNudgeResponsePending()).toBe(true)
@@ -132,7 +148,7 @@ describe("ContinuationNudge.evaluateTurn", () => {
 
 	it("clears nudge response pending when a tool call is recorded", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		guard.evaluateTurn(textOnlyMessage)
 		expect(guard.isNudgeResponsePending()).toBe(true)
 		guard.recordToolCall()
@@ -141,7 +157,7 @@ describe("ContinuationNudge.evaluateTurn", () => {
 
 	it("clears nudge response pending on reset", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		guard.evaluateTurn(textOnlyMessage)
 		expect(guard.isNudgeResponsePending()).toBe(true)
 		guard.resetForNewUserInput()
@@ -153,6 +169,156 @@ describe("ContinuationNudge.evaluateTurn", () => {
 		guard.resetForNewUserInput()
 		const thinkingOnly = makeAssistant([{ type: "thinking", thinking: "Let me reason..." }])
 		expect(guard.evaluateTurn(thinkingOnly)).toBe(false)
+	})
+
+	it("does not nudge when the user aborted the turn (stopReason: aborted)", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const aborted = { ...textOnlyMessage, stopReason: "aborted" as const }
+		expect(guard.evaluateTurn(aborted)).toBe(false)
+	})
+
+	it("does not nudge when the turn ended with a provider error (stopReason: error)", () => {
+		// Provider errors (e.g. content_filter, budget exhausted) must not
+		// trigger nudges — the nudge would re-queue a followUp message and
+		// cause the agent loop to retry indefinitely until budget is exhausted.
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const error = { ...textOnlyMessage, stopReason: "error" as const }
+		expect(guard.evaluateTurn(error)).toBe(false)
+	})
+
+	it("does not consume a nudge slot when the turn was a provider error", () => {
+		// An error turn must not decrement the per-cycle budget — a subsequent
+		// legitimate text-only turn in the same cycle should still get its nudge.
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const error = { ...textOnlyMessage, stopReason: "error" as const }
+		expect(guard.evaluateTurn(error)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
+	it("does not consume a nudge slot when the turn was aborted", () => {
+		// An aborted turn must not decrement the per-cycle budget — a subsequent
+		// legitimate text-only turn in the same cycle should still get its nudge.
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const aborted = { ...textOnlyMessage, stopReason: "aborted" as const }
+		expect(guard.evaluateTurn(aborted)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
+	it("still nudges on a normal stopReason: stop turn", () => {
+		// Regression guard — the abort check must not regress the normal path.
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+	})
+})
+
+describe("ContinuationNudge session-level tool tracking", () => {
+	it("starts with no tools called in this session", () => {
+		const guard = new ContinuationNudge()
+		expect(guard.hasToolBeenCalledThisSession()).toBe(false)
+	})
+
+	it("does not nudge in a fresh session before any tool has been called", () => {
+		// User opens with a conversational prompt ("hey", "ask me some
+		// questions"); the orchestrator legitimately responds with text-only
+		// clarifying questions. Nudging it would be wrong.
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
+	it("starts nudging once a tool has been called at least once in the session", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		guard.recordToolCall() // first tool call of session
+		guard.resetForNewUserInput() // new cycle begins after the tool call
+		expect(guard.hasToolBeenCalledThisSession()).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+	})
+
+	it("session-level latch persists across user-input cycles", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		guard.recordToolCall()
+		guard.resetForNewUserInput() // new user input arrives later
+		expect(guard.hasToolBeenCalledThisSession()).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+	})
+
+	it("session-level latch persists across agent runs", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		guard.recordToolCall()
+		guard.resetForNewAgentRun() // simulate a /agent run boundary
+		expect(guard.hasToolBeenCalledThisSession()).toBe(true)
+	})
+
+	it("resetForModelSwitch clears the session-level tool latch", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		guard.recordToolCall()
+		guard.resetForNewUserInput()
+		expect(guard.hasToolBeenCalledThisSession()).toBe(true)
+
+		guard.resetForModelSwitch()
+
+		expect(guard.hasToolBeenCalledThisSession()).toBe(false)
+		expect(guard.hasToolBeenCalledThisCycle()).toBe(false)
+		expect(guard.hasToolBeenCalledThisRun()).toBe(false)
+		// A text-only turn after the model switch is treated like a fresh
+		// session and is not nudged.
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
+	it("resetForModelSwitch clears pending nudge response state", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		guard.evaluateTurn(textOnlyMessage)
+		expect(guard.isNudgeResponsePending()).toBe(true)
+
+		guard.resetForModelSwitch()
+
+		expect(guard.isNudgeResponsePending()).toBe(false)
+		expect(guard.isDoneSignalReceived()).toBe(false)
+	})
+
+	it("does not consume a nudge slot while no tools have been called this session", () => {
+		// Fresh session, no tools yet — repeated text-only turns must not burn
+		// the per-cycle budget, so when a tool is eventually called the full
+		// budget remains available.
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		// Simulate: a tool fires (e.g. a read), then a new user-input cycle begins.
+		guard.recordToolCall()
+		guard.resetForNewUserInput()
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
+	it("aborted turns in a fresh session still do not nudge and do not consume budget", () => {
+		// Both guards compose: a user-aborted turn in a fresh session is doubly
+		// suppressed, with no budget burned.
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		const aborted = { ...textOnlyMessage, stopReason: "aborted" as const }
+		expect(guard.evaluateTurn(aborted)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		// After a tool fires, the full budget becomes available.
+		guard.recordToolCall()
+		guard.resetForNewUserInput()
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
 	})
 })
 
@@ -200,7 +366,7 @@ describe("ContinuationNudge.isDoneSignalReceived", () => {
 describe("ContinuationNudge nudge-response-pending state", () => {
 	it("marks nudge response pending after evaluateTurn fires", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		expect(guard.isNudgeResponsePending()).toBe(false)
 		guard.evaluateTurn(textOnlyMessage)
 		expect(guard.isNudgeResponsePending()).toBe(true)
@@ -212,7 +378,7 @@ describe("ContinuationNudge nudge-response-pending state", () => {
 		// called. The turn_end handler in prompt-enrichment.ts checks stopReason
 		// to decide whether to honour the stop or send another nudge.
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		guard.evaluateTurn(textOnlyMessage) // first nudge fires
 		expect(guard.isNudgeResponsePending()).toBe(true)
 		// Model responds with text but not <done>; no tool calls recorded.
@@ -225,7 +391,7 @@ describe("ContinuationNudge nudge-response-pending state", () => {
 
 	it("clears pending state when model calls a tool after nudge", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		guard.evaluateTurn(textOnlyMessage) // nudge fires
 		expect(guard.isNudgeResponsePending()).toBe(true)
 		guard.recordToolCall() // model obeyed the nudge
@@ -236,7 +402,7 @@ describe("ContinuationNudge nudge-response-pending state", () => {
 describe("ContinuationNudge Agent-pending suppression", () => {
 	it("suppresses the nudge when an Agent call is pending", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		guard.markDelegationCall()
 		// Even though this is a text-only turn, the nudge must not fire
 		// because an Agent result is still pending.
@@ -245,7 +411,7 @@ describe("ContinuationNudge Agent-pending suppression", () => {
 
 	it("allows the nudge after clearDelegationPending is called", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		guard.markDelegationCall()
 		guard.clearDelegationPending()
 		// Now the nudge can fire normally.
@@ -254,7 +420,7 @@ describe("ContinuationNudge Agent-pending suppression", () => {
 
 	it("resetForNewUserInput does NOT clear pending delegation count", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		guard.markDelegationCall()
 		// Simulate an unrelated user input arriving while an Agent is running.
 		guard.resetForNewUserInput()
@@ -262,9 +428,20 @@ describe("ContinuationNudge Agent-pending suppression", () => {
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
 	})
 
+	it("resetForModelSwitch does NOT clear pending delegation count", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		guard.markDelegationCall()
+		// User switches models while an Agent result is still in flight.
+		guard.resetForModelSwitch()
+		// Delegated agents are independent of the orchestrator model, so the
+		// pending count must survive the switch to keep the nudge suppressed.
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
 	it("a regular tool call does NOT clear pending delegation count", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		guard.markDelegationCall()
 		// Model makes a regular non-Agent tool call — delegation is still pending.
 		guard.recordToolCall()
@@ -273,7 +450,7 @@ describe("ContinuationNudge Agent-pending suppression", () => {
 
 	it("multiple markDelegationCall requires matching clearDelegationPending calls", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		guard.markDelegationCall()
 		guard.markDelegationCall() // two concurrent Agents
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
@@ -287,7 +464,7 @@ describe("ContinuationNudge Agent-pending suppression", () => {
 
 	it("clearDelegationPending without markDelegationCall has no effect", () => {
 		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
+		simulateSessionWithPriorToolCall(guard)
 		guard.clearDelegationPending()
 		// Normal behavior: nudge fires on text-only turn.
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
@@ -412,6 +589,47 @@ describe("EmptyTurnNudge", () => {
 		guard.resetForNewUserInput()
 		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
 	})
+
+	it("re-arms after resetForModelSwitch", () => {
+		const guard = new EmptyTurnNudge()
+		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+		expect(guard.evaluateTurn(emptyMessage)).toBe(false)
+		// A new model gets a fresh empty-turn budget even within the same cycle.
+		guard.resetForModelSwitch()
+		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+		expect(guard.evaluateTurn(emptyMessage)).toBe(false)
+	})
+
+	it("does not nudge when the user aborted the turn (stopReason: aborted)", () => {
+		const guard = new EmptyTurnNudge()
+		const aborted = { ...emptyMessage, stopReason: "aborted" as const }
+		expect(guard.evaluateTurn(aborted)).toBe(false)
+	})
+
+	describe("provider error suppression", () => {
+		// Provider errors (e.g. content_filter, budget exhausted) produce empty
+		// responses. Without this guard the nudge re-queues a followUp message,
+		// causing the agent loop to retry indefinitely until budget is exhausted.
+		it("does not nudge on an empty turn with stopReason: error", () => {
+			const guard = new EmptyTurnNudge()
+			const error = { ...emptyMessage, stopReason: "error" as const }
+			expect(guard.evaluateTurn(error)).toBe(false)
+		})
+
+		it("does not consume a nudge slot on error turns", () => {
+			const guard = new EmptyTurnNudge()
+			const error = { ...emptyMessage, stopReason: "error" as const }
+			expect(guard.evaluateTurn(error)).toBe(false)
+			expect(guard.evaluateTurn(error)).toBe(false)
+			expect(guard.evaluateTurn(error)).toBe(false)
+			// Full budget still available for a genuine empty turn.
+			expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+			expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+			expect(guard.evaluateTurn(emptyMessage)).toBe(false)
+		})
+	})
 })
 
 describe("stripUiOnlyMessages", () => {
@@ -473,5 +691,171 @@ describe("stripUiOnlyMessages", () => {
 		const messages: OrchestratorMessages = [makeUser("q"), other, textOnlyMessage]
 		const result = stripUiOnlyMessages(messages)
 		expect(result).toBe(messages)
+	})
+})
+
+describe("ContinuationNudge question suppression", () => {
+	it("does not nudge when the assistant's text ends with a question", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const asking = makeAssistant([{ type: "text", text: "Go ahead and commit this small ADR update?" }])
+		expect(guard.evaluateTurn(asking)).toBe(false)
+	})
+
+	it("does not nudge when the question is followed by a quote mark", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const asking = makeAssistant([{ type: "text", text: 'Are you sure you want to proceed?"' }])
+		expect(guard.evaluateTurn(asking)).toBe(false)
+	})
+
+	it("still nudges when the text contains a question but ends with a statement", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const mixed = makeAssistant([{ type: "text", text: "You asked about the ADR. I will delegate this to Nemotron." }])
+		expect(guard.evaluateTurn(mixed)).toBe(true)
+	})
+})
+
+describe("tagSelfEchoes", () => {
+	function makeUser(text: string): OrchestratorMessages[number] {
+		return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() }
+	}
+
+	function makeCustom(text: string): OrchestratorMessages[number] {
+		return {
+			role: "custom",
+			customType: "nudge",
+			content: [{ type: "text", text }],
+			display: false,
+			timestamp: Date.now(),
+		}
+	}
+
+	it("returns the same reference when no echo is present", () => {
+		const messages: OrchestratorMessages = [
+			makeUser("hello"),
+			makeAssistant([{ type: "text", text: "assistant reply" }]),
+			makeUser("follow-up"),
+		]
+		expect(tagSelfEchoes(messages)).toBe(messages)
+	})
+
+	it("annotates a user message that verbatim-echoes the previous assistant text", () => {
+		const echoText = "Want me to jot this as the recommendation into the report's follow-ups?"
+		const messages: OrchestratorMessages = [makeAssistant([{ type: "text", text: echoText }]), makeUser(echoText)]
+		const result = tagSelfEchoes(messages)
+		expect(result).not.toBe(messages)
+		const lastText = (result[1] as { content: { text: string }[] }).content[0].text
+		expect(isHarnessSteer(lastText)).toBe(true)
+		expect(lastText).toContain("verbatim echo")
+		expect(lastText).toContain(echoText)
+	})
+
+	it("annotates a custom message that verbatim-echoes the previous assistant text", () => {
+		const echoText = "Please confirm before I push."
+		const messages: OrchestratorMessages = [makeAssistant([{ type: "text", text: echoText }]), makeCustom(echoText)]
+		const result = tagSelfEchoes(messages)
+		expect(result).not.toBe(messages)
+		const lastText = (result[1] as { content: { text: string }[] }).content[0].text
+		expect(isHarnessSteer(lastText)).toBe(true)
+	})
+
+	it("ignores partial matches", () => {
+		const messages: OrchestratorMessages = [
+			makeAssistant([{ type: "text", text: "Want me to commit this?" }]),
+			makeUser("commit this"),
+		]
+		expect(tagSelfEchoes(messages)).toBe(messages)
+	})
+})
+
+describe("brandUnmarkedSteers", () => {
+	function makeCustomSteer(text: string, customType = "exploration-guard-steer"): OrchestratorMessages[number] {
+		return {
+			role: "custom",
+			customType,
+			content: text,
+			display: false,
+			timestamp: Date.now(),
+		} as OrchestratorMessages[number]
+	}
+
+	function makeBlockSteer(text: string, customType = "exploration-guard-steer"): OrchestratorMessages[number] {
+		return {
+			role: "custom",
+			customType,
+			content: [{ type: "text", text }],
+			display: false,
+			timestamp: Date.now(),
+		} as OrchestratorMessages[number]
+	}
+
+	it("wraps an unbranded custom message with string content", () => {
+		const messages: OrchestratorMessages = [makeCustomSteer("Act now.")]
+		const result = brandUnmarkedSteers(messages)
+		expect(result).not.toBe(messages)
+		const content = (result[0] as { content: string }).content
+		expect(isHarnessSteer(content)).toBe(true)
+		expect(content).toContain("Act now.")
+	})
+
+	it("wraps an unbranded custom message with array content into a single branded block", () => {
+		const messages: OrchestratorMessages = [makeBlockSteer("Act now.")]
+		const result = brandUnmarkedSteers(messages)
+		expect(result).not.toBe(messages)
+		const content = (result[0] as { content: { type: string; text: string }[] }).content
+		expect(content).toHaveLength(1)
+		expect(content[0].type).toBe("text")
+		expect(isHarnessSteer(content[0].text)).toBe(true)
+	})
+
+	it("leaves already-branded messages untouched (no double wrap)", () => {
+		const branded = makeCustomSteer("<system-reminder>\nAct now.\n</system-reminder>")
+		const messages: OrchestratorMessages = [branded]
+		const result = brandUnmarkedSteers(messages)
+		expect(result).toBe(messages)
+	})
+
+	it("skips UI-only custom types", () => {
+		const messages: OrchestratorMessages = [makeCustomSteer("summary text", "prompt-summary")]
+		expect(brandUnmarkedSteers(messages)).toBe(messages)
+	})
+
+	it("wraps an unbranded todo-state-shaped message", () => {
+		const messages: OrchestratorMessages = [makeCustomSteer("## Current Todos\n- a task", "todo-state")]
+		const result = brandUnmarkedSteers(messages)
+		expect(result).not.toBe(messages)
+		expect(isHarnessSteer((result[0] as { content: string }).content)).toBe(true)
+	})
+
+	it("skips empty-content custom messages (kimchi-session-branch shape)", () => {
+		const messages: OrchestratorMessages = [makeCustomSteer("   ", "kimchi-session-branch")]
+		expect(brandUnmarkedSteers(messages)).toBe(messages)
+	})
+
+	it("leaves user, assistant, and toolResult messages untouched", () => {
+		const user = {
+			role: "user",
+			content: [{ type: "text", text: "hi" }],
+			timestamp: Date.now(),
+		} as OrchestratorMessages[number]
+		const messages: OrchestratorMessages = [user, textOnlyMessage]
+		expect(brandUnmarkedSteers(messages)).toBe(messages)
+	})
+
+	it("returns the same array reference when nothing changes", () => {
+		const messages: OrchestratorMessages = [
+			makeCustomSteer("<system-reminder>\nbranded\n</system-reminder>"),
+			makeCustomSteer("", "kimchi-session-branch"),
+		]
+		expect(brandUnmarkedSteers(messages)).toBe(messages)
+	})
+
+	it("is idempotent", () => {
+		const messages: OrchestratorMessages = [makeCustomSteer("Act now."), makeBlockSteer("More.")]
+		const once = brandUnmarkedSteers(messages)
+		const twice = brandUnmarkedSteers(once)
+		expect(twice).toBe(once)
 	})
 })

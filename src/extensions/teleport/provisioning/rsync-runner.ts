@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join, dirname as nodePathDirname, posix } from "node:path"
 
 const posixDirname = posix.dirname
+
 import { estimateUploadBytes } from "./estimate-bytes.js"
 import { buildProxyCommand } from "./proxy-command.js"
 
@@ -71,6 +72,11 @@ export interface RsyncOptions {
 	 *  Mutually exclusive with `gitignoredPaths` / `excludeGlobs` /
 	 *  `includeIgnored`: when `filesFrom` is set, those are ignored. */
 	filesFrom?: string[]
+	/** Additional rsync filter globs. Each entry becomes a single
+	 *  `-f "- <glob>"` arg pair applied in BOTH list modes (unlike
+	 *  `--exclude`, `-f` filter rules still match under `--files-from`).
+	 *  Unset = no filter rules, identical to before. */
+	excludeFilters?: string[]
 	/** Optional progress callback. Fires for each rsync progress tick. Values
 	 *  are per-file (rsync's `--progress` shows current-file bytes/%), not
 	 *  cumulative — use `onCumulativeProgress` (with `precomputeTotal`) for
@@ -142,6 +148,15 @@ export class RsyncError extends Error {
 	}
 }
 
+/** Build a user-facing message for a failed rsync, including a head of its stderr. */
+export function formatRsyncFailure(err: unknown): string {
+	if (err instanceof RsyncError) {
+		const stderrHead = err.stderr?.trim().slice(0, 1500) ?? ""
+		return stderrHead ? `${err.message}\nstderr:\n${stderrHead}` : err.message
+	}
+	return err instanceof Error ? err.message : String(err)
+}
+
 interface BuildSshOptionInput {
 	proxyCommand: string
 	knownHostsFile: string
@@ -191,6 +206,9 @@ interface BuildRsyncArgvInput {
 	 *  include list. The runner chooses based on whether the caller supplied
 	 *  an explicit `filesFrom` list. */
 	listMode: RsyncListMode
+	/** Each entry becomes a `-f "- <glob>"` filter-rule pair, placed after
+	 *  the list-mode args and before `-e`. Works in both list modes. */
+	excludeFilters?: string[]
 	deleteExtraneous?: boolean
 	/** Transfer direction: "up" = local→remote (default), "down" = remote→local. */
 	direction?: "up" | "down"
@@ -223,6 +241,9 @@ export function buildRsyncArgv(input: BuildRsyncArgvInput): string[] {
 		args.push("--files-from", input.listMode.file)
 	} else {
 		args.push("--exclude-from", input.listMode.file)
+	}
+	for (const glob of input.excludeFilters ?? []) {
+		args.push("-f", `- ${glob}`)
 	}
 	args.push("-e", sshOption)
 	if (input.deleteExtraneous !== false) args.push("--delete")
@@ -274,10 +295,7 @@ export function buildMkdirArgv(input: BuildMkdirArgvInput): string[] {
  * Order matters for human auditability (e.g. tail -f the file) but rsync
  * itself treats the file as a set.
  */
-export function buildExcludeList(opts: {
-	extras?: readonly string[]
-	gitignored?: readonly string[]
-}): string[] {
+export function buildExcludeList(opts: { extras?: readonly string[]; gitignored?: readonly string[] }): string[] {
 	return [...BASE_EXCLUDE_GLOBS, ...(opts.gitignored ?? []), ...(opts.extras ?? [])]
 }
 
@@ -391,6 +409,7 @@ export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 			proxyCommand,
 			knownHostsFile,
 			listMode,
+			excludeFilters: opts.excludeFilters,
 			deleteExtraneous: opts.deleteExtraneous,
 			direction: dir,
 			dryRun: opts.dryRun,

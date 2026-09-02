@@ -1,8 +1,8 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import type { TelemetryConfig } from "../../config.js"
-import { getVersion } from "../../utils.js"
 import { fetchWithRetry } from "../../utils/http.js"
+import { getVersion } from "../../utils.js"
 import { nowNano, strAttr } from "./helpers.js"
 
 // ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ export interface MetricData {
 	name: string
 	type: "Sum" | "Gauge"
 	value: number
-	attrs: Record<string, string | number>
+	attrs: Record<string, string | number | boolean>
 }
 
 // ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ export async function sendLog(
 	config: TelemetryConfig,
 	sessionId: string,
 	eventName: string,
-	attrs: Record<string, string | number>,
+	attrs: Record<string, string | number | boolean>,
 	userEmail?: string,
 ): Promise<void> {
 	const record = buildLogRecord(sessionId, eventName, attrs)
@@ -72,7 +72,7 @@ export async function sendLog(
 export function buildLogRecord(
 	sessionId: string,
 	eventName: string,
-	attrs: Record<string, string | number>,
+	attrs: Record<string, string | number | boolean>,
 ): LogRecord {
 	const now = nowNano()
 	return {
@@ -148,7 +148,7 @@ export async function sendLogBatch(config: TelemetryConfig, records: LogRecord[]
 
 export async function sendMetrics(
 	config: TelemetryConfig,
-	sessionId: string,
+	telemetryId: string,
 	metrics: MetricData[],
 	sessionStartNano: string,
 	userEmail?: string,
@@ -171,7 +171,7 @@ export async function sendMetrics(
 										startTimeUnixNano: sessionStartNano,
 										...(Number.isInteger(m.value) ? { asInt: String(m.value) } : { asDouble: m.value }),
 										attributes: [
-											strAttr("session.id", sessionId),
+											strAttr("session.id", telemetryId),
 											strAttr("client", "pi"),
 											...Object.entries(m.attrs).map(([k, v]) => strAttr(k, String(v))),
 										],

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest"
 import {
+	assertGateCoverage,
+	flaggedVerdicts,
 	GATE_REGISTRY,
 	GateCoverageError,
 	type GateVerdict,
-	assertGateCoverage,
-	flaggedVerdicts,
 	getGateDefinition,
 	getGateIdsForTurn,
 	getGatesForTurn,

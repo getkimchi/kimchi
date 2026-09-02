@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { createReadStream, mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -20,18 +21,26 @@ export async function verifyChecksum(path: string, expected: Uint8Array): Promis
 }
 
 /**
- * Extract a tar.gz into a fresh temp dir preserving full directory structure.
+ * Extract the platform archive into a fresh temp dir preserving full directory structure.
  * Returns the root extraction directory; the caller is responsible for cleaning
  * it up. Archive structure is expected to be:
  *   extractedRoot/
  *   ├── bin/
- *   │   └── kimchi
+ *   │   └── kimchi(.exe)
  *   └── share/
  *       └── kimchi/
  *           └── ... (supporting files)
  *
- * Path traversal is blocked (entries starting with "..") as a security measure.
+ * POSIX tar extraction blocks path traversal explicitly. Windows zip extraction
+ * is only used after checksum verification against the release manifest.
  */
+export async function extractArchive(archivePath: string): Promise<string> {
+	if (process.platform === "win32") {
+		return extractZip(archivePath)
+	}
+	return extractTarGz(archivePath)
+}
+
 export async function extractTarGz(archivePath: string): Promise<string> {
 	const root = mkdtempSync(join(tmpdir(), "kimchi-update-"))
 	await tarExtract({
@@ -42,6 +51,22 @@ export async function extractTarGz(archivePath: string): Promise<string> {
 		// minor format quirks. Block path traversal explicitly.
 		filter: (path) => !path.startsWith(".."),
 	})
+	return root
+}
+
+function extractZip(archivePath: string): string {
+	const root = mkdtempSync(join(tmpdir(), "kimchi-update-"))
+	execFileSync("powershell.exe", [
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		"Expand-Archive",
+		"-LiteralPath",
+		archivePath,
+		"-DestinationPath",
+		root,
+		"-Force",
+	])
 	return root
 }
 

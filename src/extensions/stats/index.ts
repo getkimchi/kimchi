@@ -11,7 +11,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { loadConfig } from "../../config.js"
 import { CastAiStatsApi, getTimeRange } from "./api.js"
 import { formatError, formatHelp } from "./display.js"
-import { type SortBy, formatAnalyticsVisual, formatProductivityVisual } from "./visual.js"
+import { formatAnalyticsVisual, formatProductivityVisual, type SortBy } from "./visual.js"
 
 function createApiClient(): CastAiStatsApi {
 	const apiKey = loadConfig().apiKey || process.env.CASTAI_API_KEY

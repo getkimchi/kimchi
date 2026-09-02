@@ -1,11 +1,12 @@
 /**
  * Integration tests for the bashToolGuardExtension wiring.
- * Tests the event handler registration (session_start, input, tool_call)
+ * Tests the event handler registration (session_start, input, turn_start, tool_call)
  * using a mock ExtensionAPI.
  */
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import bashToolGuardExtension, { bashToolDescription, STEER_MESSAGE_TYPE } from "./bash-tool-guard.js"
 import { BASH_TOOL_GUARD_EVENTS } from "./bash-tool-guard-events.js"
-import bashToolGuardExtension, { STEER_MESSAGE_TYPE } from "./bash-tool-guard.js"
+import { setExperimentalFeaturesEnabled } from "./experimental.js"
 
 let mockMode: string | undefined = "default"
 let mockResourceEnabled = true
@@ -18,14 +19,53 @@ vi.mock("../resources/store.js", () => ({
 	isResourceEnabled: (id: string) => (id === "extensions.bash-tool-guard" ? mockResourceEnabled : true),
 }))
 
+beforeEach(() => {
+	// Description assertions compare against bashToolDescription(); that
+	// text (with the daemon steer) is only served when the flag is on.
+	setExperimentalFeaturesEnabled(true)
+})
+
 afterEach(() => {
 	mockMode = "default"
 	mockResourceEnabled = true
+	setExperimentalFeaturesEnabled(false)
+})
+
+// Capture what session_start actually passes to createBashToolDefinition
+// (and the real definition it gets back) so tests can assert the
+// description override preserves upstream's execute/renderCall/
+// renderResult/parameters, and that cwd comes from the session_start ctx
+// rather than being hardcoded.
+let capturedCwd: string | undefined
+let capturedBase: Record<string, unknown> | undefined
+
+vi.mock("@earendil-works/pi-coding-agent", async () => {
+	const actual = await vi.importActual<typeof import("@earendil-works/pi-coding-agent")>(
+		"@earendil-works/pi-coding-agent",
+	)
+	return {
+		...actual,
+		createBashToolDefinition: (cwd: string) => {
+			capturedCwd = cwd
+			const real = actual.createBashToolDefinition(cwd)
+			capturedBase = { ...real }
+			return real
+		},
+	}
 })
 
 interface BlockResult {
 	block: true
 	reason: string
+}
+
+interface RegisteredTool {
+	name: string
+	description: string
+	execute: unknown
+	renderCall: unknown
+	renderResult: unknown
+	parameters: unknown
 }
 
 interface MockExtensionAPI {
@@ -35,11 +75,14 @@ interface MockExtensionAPI {
 	events: { emit: ReturnType<typeof vi.fn> }
 	_blockResult?: BlockResult
 	_emittedEvents: Array<{ channel: string; payload: unknown }>
+	registeredTools: Map<string, RegisteredTool>
+	registerTool: (tool: RegisteredTool) => void
 }
 
 function createMockPI(): MockExtensionAPI {
 	const handlers: MockExtensionAPI["handlers"] = {}
 	const _emittedEvents: MockExtensionAPI["_emittedEvents"] = []
+	const registeredTools = new Map<string, RegisteredTool>()
 	return {
 		handlers,
 		on(event: string, handler) {
@@ -53,6 +96,10 @@ function createMockPI(): MockExtensionAPI {
 			}),
 		},
 		_emittedEvents,
+		registeredTools,
+		registerTool(tool) {
+			registeredTools.set(tool.name, tool)
+		},
 	}
 }
 
@@ -72,21 +119,25 @@ function emit(pi: MockExtensionAPI, event: string, payload: Record<string, unkno
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PI = import("@earendil-works/pi-coding-agent").ExtensionAPI
 
-function fakeCtx(sessionId = "test-session"): { sessionManager: { getSessionId: () => string } } {
-	return { sessionManager: { getSessionId: () => sessionId } }
+function fakeCtx(
+	sessionId = "test-session",
+	cwd = "/repo",
+): { sessionManager: { getSessionId: () => string }; cwd: string } {
+	return { sessionManager: { getSessionId: () => sessionId }, cwd }
 }
 
-function fireSessionStart(pi: MockExtensionAPI): void {
+function fireSessionStart(pi: MockExtensionAPI, ctx: ReturnType<typeof fakeCtx> = fakeCtx()): void {
 	const handlers = pi.handlers.session_start ?? []
-	for (const h of handlers) h({}, fakeCtx())
+	for (const h of handlers) h({}, ctx)
 }
 
 describe("bashToolGuardExtension wiring", () => {
-	it("registers session_start, input, and tool_call handlers", () => {
+	it("registers session_start, input, turn_start, and tool_call handlers", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		expect(pi.handlers.session_start?.length).toBeGreaterThan(0)
 		expect(pi.handlers.input?.length).toBeGreaterThan(0)
+		expect(pi.handlers.turn_start?.length).toBeGreaterThan(0)
 		expect(pi.handlers.tool_call?.length).toBeGreaterThan(0)
 	})
 
@@ -105,6 +156,23 @@ describe("bashToolGuardExtension wiring", () => {
 		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: STEER_MESSAGE_TYPE }), {
 			deliverAs: "steer",
 		})
+	})
+
+	it("coalesces warn-only steers within a turn and rearms on the next turn", () => {
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI)
+		fireSessionStart(pi)
+
+		emit(pi, "turn_start")
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sed -i 's/a/b/' a.ts" } })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi._emittedEvents.filter(({ channel }) => channel === BASH_TOOL_GUARD_EVENTS.WARN)).toHaveLength(3)
+
+		emit(pi, "turn_start")
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat c.ts" } })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
 	})
 
 	it("second matching bash call blocks", () => {
@@ -753,5 +821,50 @@ describe("bashToolGuardExtension — per-category thresholds", () => {
 			input: { command: "sed -i 's/a/b/' a.ts" },
 		})
 		expect(rEdit?.block).toBe(true)
+	})
+})
+
+describe("bashToolGuardExtension - description override", () => {
+	it("registers the bash tool with the overridden description on session_start", () => {
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI)
+
+		fireSessionStart(pi)
+
+		expect(pi.registeredTools.size).toBe(1)
+		expect(pi.registeredTools.get("bash")?.description).toBe(bashToolDescription())
+	})
+
+	it("preserves the upstream execute/renderCall/renderResult/parameters", () => {
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI)
+
+		fireSessionStart(pi)
+
+		const tool = pi.registeredTools.get("bash")
+		expect(capturedBase).toBeDefined()
+		expect(tool?.execute).toBe(capturedBase?.execute)
+		expect(tool?.renderCall).toBe(capturedBase?.renderCall)
+		expect(tool?.renderResult).toBe(capturedBase?.renderResult)
+		expect(tool?.parameters).toBe(capturedBase?.parameters)
+	})
+
+	it("resolves cwd from the session_start ctx and re-registers on every session_start", () => {
+		// Resumed/forked sessions can start in a different directory than
+		// the one the extension factory originally loaded in. Re-running
+		// registerTool() on every session_start (instead of once at
+		// factory-load time) keeps the bash tool's cwd correct.
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI)
+
+		fireSessionStart(pi, fakeCtx("test-session", "/repo-a"))
+		expect(capturedCwd).toBe("/repo-a")
+		const first = pi.registeredTools.get("bash")
+
+		fireSessionStart(pi, fakeCtx("test-session", "/repo-b"))
+		expect(capturedCwd).toBe("/repo-b")
+		const second = pi.registeredTools.get("bash")
+		expect(second).not.toBe(first)
+		expect(second?.description).toBe(bashToolDescription())
 	})
 })

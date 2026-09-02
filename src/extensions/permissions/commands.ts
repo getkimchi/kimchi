@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { type LoadedConfig, appendToConfig, projectConfigPath, userConfigPath } from "./config.js"
+import { appendToConfig, type LoadedConfig, projectConfigPath, userConfigPath } from "./config.js"
 import { parseModeString } from "./mode.js"
 import { parseRule, stringifyRule } from "./rules.js"
 import { numberedChoices, stripChoiceNumber } from "./select-utils.js"
@@ -69,9 +69,9 @@ export function registerCommands(pi: ExtensionAPI, deps: CommandDeps): void {
 	})
 }
 
-async function openSelector(ctx: ExtensionContext, deps: CommandDeps): Promise<void> {
+async function openSelector(ctx: ExtensionCommandContext, deps: CommandDeps): Promise<void> {
 	if (!ctx.hasUI) {
-		return showStatus(ctx as ExtensionCommandContext, deps)
+		return showStatus(ctx, deps)
 	}
 
 	const mode = deps.getPermissionMode(ctx)

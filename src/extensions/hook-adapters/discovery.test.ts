@@ -17,7 +17,6 @@ describe("hook adapter discovery", () => {
 
 	afterEach(() => {
 		if (oldHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.HOME
 		} else {
 			process.env.HOME = oldHome
@@ -57,6 +56,18 @@ describe("hook adapter discovery", () => {
 		const hooks = discoverClaudeCodeHookResources(join(dir, "project", ".claude"))
 
 		expect(hooks).toEqual([])
+	})
+
+	it("discovers user-level Claude Code hooks even when project cwd has no .claude directory", () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				PreToolUse: [{ hooks: [{ type: "command", command: "user-guard" }] }],
+			},
+		})
+
+		const hooks = discoverClaudeCodeHookResources(join(dir, "project"))
+
+		expect(hooks.map((hook) => hook.id)).toEqual(["hooks.claude-code.user.pre-tool-use.0"])
 	})
 
 	it("honors disableAllHooks in JSON hook configs", () => {

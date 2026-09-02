@@ -29,7 +29,7 @@ function glyphFor(variant: BreadcrumbDetails["variant"]): string {
 
 export const fermentBreadcrumbRenderer: MessageRenderer<BreadcrumbDetails> = (message, _options, _theme) => {
 	const d = message.details
-	if (!d || !d.text) return undefined
+	if (!d?.text) return undefined
 
 	const container = new Container()
 	const lines = d.text.split("\n")

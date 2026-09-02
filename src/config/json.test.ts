@@ -49,6 +49,18 @@ describe("readJson / writeJson", () => {
 		expect(readJson(path)).toEqual({})
 	})
 
+	it("returns {} for an empty file (existing but 0 bytes)", () => {
+		const path = join(dir, "empty.json")
+		writeFileSync(path, "", "utf-8")
+		expect(readJson(path)).toEqual({})
+	})
+
+	it("returns {} for a whitespace- and comment-only file", () => {
+		const path = join(dir, "comments-only.jsonc")
+		writeFileSync(path, "// just a comment\n/* and a block */\n   \n", "utf-8")
+		expect(readJson(path)).toEqual({})
+	})
+
 	it("throws on malformed JSON instead of silently swallowing", () => {
 		const path = join(dir, "bad.json")
 		writeFileSync(path, '{"a": ', "utf-8")

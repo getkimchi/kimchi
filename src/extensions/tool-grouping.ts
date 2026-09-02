@@ -243,7 +243,7 @@ export function buildGroupView(run: object[], theme: any): ToolBlockView {
 		const icon = theme?.fg?.("success", "✓") ?? "✓"
 		view.setHeader(`${icon} ${summaryText}`, right)
 		view.hideDivider()
-		view.setFooter("", "")
+		view.setBottomRow("", "")
 		view.setExtra([])
 	}
 

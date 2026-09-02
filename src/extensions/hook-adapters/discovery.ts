@@ -6,7 +6,7 @@ export type HookAdapterScope = "user" | "project" | "local"
 export type CommandHookEventName =
 	| "PreToolUse"
 	| "PostToolUse"
-	| "PostToolUseFail"
+	| "PostToolUseFailure"
 	| "PostToolBatch"
 	| "SessionStart"
 	| "PreCompact"
@@ -22,13 +22,14 @@ export type CommandHookEventName =
 	| "UserBash"
 	| "SubagentStart"
 	| "SubagentStop"
+	| "Notification"
 	| "SessionEnd"
 
 /** Every hook event the command-hook adapter machinery can drive. */
 export const FULL_COMMAND_HOOK_EVENTS: readonly CommandHookEventName[] = [
 	"PreToolUse",
 	"PostToolUse",
-	"PostToolUseFail",
+	"PostToolUseFailure",
 	"PostToolBatch",
 	"SessionStart",
 	"PreCompact",
@@ -44,6 +45,7 @@ export const FULL_COMMAND_HOOK_EVENTS: readonly CommandHookEventName[] = [
 	"UserBash",
 	"SubagentStart",
 	"SubagentStop",
+	"Notification",
 	"SessionEnd",
 ]
 

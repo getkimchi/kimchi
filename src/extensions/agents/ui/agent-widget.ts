@@ -5,9 +5,9 @@
 import { truncateToWidth } from "@earendil-works/pi-tui"
 import { remountTipWidget } from "../../tips/index.js"
 import type { AgentManager } from "../manager/agent-manager.js"
-import { type LifetimeUsage, type SessionLike, getLifetimeTotal, getSessionContextPercent } from "../manager/usage.js"
+import { getLifetimeTotal, getSessionContextPercent, type LifetimeUsage, type SessionLike } from "../manager/usage.js"
 import { getConfig } from "../personas/agent-types.js"
-import type { AgentAbortReason, SubagentType } from "../personas/types.js"
+import type { AgentAbortReason, AgentOutcome, SubagentType } from "../personas/types.js"
 
 const MAX_WIDGET_LINES = 12
 
@@ -69,6 +69,7 @@ export interface AgentDetails {
 	sessionFile?: string
 	error?: string
 	abortReason?: AgentAbortReason
+	agentOutcome?: AgentOutcome
 }
 
 export function formatTokens(count: number): string {
@@ -269,6 +270,8 @@ export class AgentWidget {
 		}
 
 		const runningLines: string[][] = []
+		let hintShown = false
+		const killTargetId = running.find((a) => a.isBackground)?.id
 		for (const a of running) {
 			const name = getDisplayName(a.type)
 			const elapsed = formatMs(Date.now() - a.startedAt)
@@ -289,11 +292,15 @@ export class AgentWidget {
 			const activity = bg ? describeActivity(bg.activeTools, bg.responseText) : "thinking…"
 
 			const modelTag = a.modelId ? ` ${theme.fg("dim", `[${a.modelId}]`)}` : ""
+			const bgTag = a.isBackground ? ` ${theme.fg("muted", "[background]")}` : ""
+			const bgHint = !hintShown && !a.isBackground ? `  ${theme.fg("muted", "(ctrl+b to run in background)")}` : ""
+			if (bgHint) hintShown = true
+			const killHint = a.id === killTargetId ? `  ${theme.fg("muted", "(ctrl+x to kill)")}` : ""
 			runningLines.push([
 				truncate(
-					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modelTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
+					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modelTag}${bgTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
 				),
-				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`)),
+				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`) + bgHint + killHint),
 			])
 		}
 

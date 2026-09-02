@@ -4,13 +4,15 @@ import { Readable } from "node:stream"
 import { describe, expect, it } from "vitest"
 import {
 	BASE_EXCLUDE_GLOBS,
-	type CumulativeState,
-	type RsyncStats,
 	buildExcludeList,
 	buildMkdirArgv,
 	buildRsyncArgv,
 	buildSshOption,
+	type CumulativeState,
+	formatRsyncFailure,
 	handleLine,
+	RsyncError,
+	type RsyncStats,
 	resolveGitIgnored,
 	runRsync,
 	trackCumulative,
@@ -206,6 +208,67 @@ describe("buildRsyncArgv", () => {
 			dryRun: true,
 		})
 		expect(argv).toContain("--dry-run")
+	})
+
+	it("appends -f filter rules after the list-mode args and before -e (files-from mode)", () => {
+		const argv = buildRsyncArgv({
+			localPath: "/src",
+			remotePath: "/dest",
+			remoteHost: "h",
+			remoteUser: "u",
+			proxyCommand: "node /p %h %p",
+			knownHostsFile: "/k",
+			listMode: { kind: "files-from", file: "/tmp/files-from" },
+			excludeFilters: [".git/"],
+		})
+		expect(argv).toEqual([
+			"-az",
+			"--progress",
+			"--stats",
+			"--partial",
+			"--files-from",
+			"/tmp/files-from",
+			"-f",
+			"- .git/",
+			"-e",
+			"ssh -o ProxyCommand='node /p %h %p' -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile='/k' -o BatchMode=yes -o ServerAliveInterval=15",
+			"--delete",
+			"/src",
+			"u@h:/dest",
+		])
+	})
+
+	it("appends one -f pair per excludeFilters entry in exclude-from mode too", () => {
+		const argv = buildRsyncArgv({
+			localPath: "/a",
+			remotePath: "/b",
+			remoteHost: "h",
+			remoteUser: "u",
+			proxyCommand: "node /p %h %p",
+			knownHostsFile: "/k",
+			listMode: { kind: "exclude-from", file: "/e" },
+			excludeFilters: [".git/", "*.wip"],
+		})
+		const excludeFromIdx = argv.indexOf("--exclude-from")
+		const firstFIdx = argv.indexOf("-f")
+		const sshIdx = argv.indexOf("-e")
+		expect(excludeFromIdx).toBeGreaterThan(-1)
+		expect(firstFIdx).toBeGreaterThan(excludeFromIdx)
+		expect(sshIdx).toBeGreaterThan(firstFIdx)
+		expect(argv.slice(firstFIdx, sshIdx)).toEqual(["-f", "- .git/", "-f", "- *.wip"])
+	})
+
+	it("omits -f entirely when excludeFilters is unset", () => {
+		const argv = buildRsyncArgv({
+			localPath: "/a",
+			remotePath: "/b",
+			remoteHost: "h",
+			remoteUser: "u",
+			proxyCommand: "node /p %h %p",
+			knownHostsFile: "/k",
+			listMode: { kind: "files-from", file: "/f" },
+		})
+		expect(argv).not.toContain("-f")
 	})
 
 	it("uses --files-from when the caller passes that list mode", () => {
@@ -511,5 +574,32 @@ describe("trackCumulative", () => {
 		trackCumulative("Number of regular files transferred: 1", s)
 		trackCumulative("Total transferred file size: 500 bytes", s)
 		expect(s).toEqual({ completedBytes: 500, currentFileBytes: 0 })
+	})
+})
+
+describe("formatRsyncFailure", () => {
+	it("appends the trimmed stderr head for an RsyncError", () => {
+		const err = new RsyncError(23, '\n  rsync: link_stat "x" failed: No such file or directory (2)\n')
+		const msg = formatRsyncFailure(err)
+		expect(msg).toBe('rsync exited with code 23\nstderr:\nrsync: link_stat "x" failed: No such file or directory (2)')
+	})
+
+	it("returns just the message when stderr is empty/whitespace", () => {
+		expect(formatRsyncFailure(new RsyncError(23, "   \n  "))).toBe("rsync exited with code 23")
+		expect(formatRsyncFailure(new RsyncError(23, ""))).toBe("rsync exited with code 23")
+	})
+
+	it("truncates the stderr head to 1500 chars", () => {
+		const long = "e".repeat(5000)
+		const msg = formatRsyncFailure(new RsyncError(23, long))
+		expect(msg).toBe(`rsync exited with code 23\nstderr:\n${"e".repeat(1500)}`)
+	})
+
+	it("falls back to the message for a generic Error", () => {
+		expect(formatRsyncFailure(new Error("boom"))).toBe("boom")
+	})
+
+	it("stringifies a non-Error value", () => {
+		expect(formatRsyncFailure("nope")).toBe("nope")
 	})
 })

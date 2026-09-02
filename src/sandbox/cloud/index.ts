@@ -4,9 +4,6 @@ export { authenticateWorkspace, createOrUpdateWorkspace, exchangeWorkspaceToken 
 export { resolveEndpoint } from "./http.js"
 export { verifyApiKey } from "./keys.js"
 export { waitForWorkspaceReady } from "./readiness.js"
-export { normalizeWsUri } from "./uri.js"
-export { deleteWorkspace, listWorkspaces } from "./workspaces.js"
-
 export type {
 	AuthenticateOptions,
 	ListWorkspacesOptions,
@@ -16,3 +13,5 @@ export type {
 	WorkspaceStatus,
 } from "./types.js"
 export { RemoteAuthError, RemoteNetworkError } from "./types.js"
+export { normalizeWsUri } from "./uri.js"
+export { deleteWorkspace, listWorkspaces } from "./workspaces.js"

@@ -82,10 +82,7 @@ const SUPABASE_DEF: ServerEntry = {
 	directTools: true,
 }
 
-function cacheEntry(opts: {
-	configHash: string
-	tools?: Array<{ name: string; description?: string }>
-}) {
+function cacheEntry(opts: { configHash: string; tools?: Array<{ name: string; description?: string }> }) {
 	return {
 		configHash: opts.configHash,
 		tools: opts.tools ?? [],

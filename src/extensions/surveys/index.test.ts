@@ -65,6 +65,7 @@ function createSurveyCtx(input = "\r", hasUI = true) {
 	})
 	return {
 		hasUI,
+		mode: hasUI ? "tui" : "rpc",
 		ui: {
 			custom,
 			notify: vi.fn(),

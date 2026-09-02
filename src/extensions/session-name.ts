@@ -7,17 +7,29 @@
  */
 
 import { basename } from "node:path"
-import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent"
-import { loadConfig } from "../config.js"
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	SettingsManager,
+	type TurnEndEvent,
+} from "@earendil-works/pi-coding-agent"
+import { loadConfig, RETRY_DEFAULTS } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
 
-// System prompt for session name generation - keep it simple; cheap models choke
-// on negative constraints, formatting demands, and multi-step instructions.
-const SESSION_NAME_SYSTEM_PROMPT =
-	"You are a title generator. Respond with ONLY a short title. 1-5 words, no quotes, no explanation, no markdown."
+export const SESSION_NAME_MODEL = "deepseek-v4-flash"
+const SESSION_NAME_TIMEOUT_MS = 10_000
 
-/** Max chars to feed from the user message so we don't bloat the prompt. */
+const SESSION_NAME_MAX_LEN = 50
+const SESSION_NAME_SYSTEM_PROMPT = `You are a title generator. Respond ONLY with a short, descriptive title (3-6 words, max ${SESSION_NAME_MAX_LEN} chars, easy to scan). No quotes, no explanation, no markdown.`
 const HINT_MAX_LEN = 500
+
+function getSessionNameMaxRetries(cwd: string): number {
+	try {
+		return Math.min(SettingsManager.create(cwd).getRetrySettings().maxRetries, 2)
+	} catch {
+		return Math.min(RETRY_DEFAULTS.maxRetries, 2)
+	}
+}
 
 function capHint(hint: string): string {
 	if (hint.length <= HINT_MAX_LEN) return hint
@@ -82,26 +94,25 @@ function extractEarlyUserText(entries: SessionEntries): string | null {
 }
 
 /**
- * Deterministic fallback: truncate name at 35 chars at last space.
+ * Deterministic title: truncate name at SESSION_NAME_MAX_LEN chars at last space.
  */
 export function deterministicFallback(input: string): string {
-	const max = 35
-	if (input.length <= max) return input.trim()
-	const truncated = input.slice(0, max)
+	const max = SESSION_NAME_MAX_LEN
+	const normalized = input.trim().replace(/\s+/g, " ")
+	if (normalized.length <= max) return normalized
+	const truncated = normalized.slice(0, max)
 	const lastSpace = truncated.lastIndexOf(" ")
 	return (lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated).trim()
 }
 
 /**
- * Suggest a session name using the cheap Cast AI LLM.
- * Falls back to deterministic truncation on any error, with diagnostics.
- * When quiet is true, suppresses all user-facing error output (for background auto-naming).
+ * Suggest a session name from the first user text.
+ * When quiet is true, suppresses all user-facing error output.
  */
 export async function suggestSessionName(ctx: ExtensionContext, hint?: string, quiet = false): Promise<string> {
 	const base = basename(ctx.cwd)
 	const resolvedHint = hint ?? extractFirstUserMessage(ctx)
 
-	// If there's no user message to work with, skip the LLM entirely.
 	if (!resolvedHint) {
 		if (!quiet) {
 			if (ctx.hasUI) {
@@ -113,120 +124,104 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 		return deterministicFallback(base)
 	}
 
-	const config = loadConfig()
+	const fallback = deterministicFallback(resolvedHint)
+	const config = loadConfig({ cwd: ctx.cwd })
 	const apiKey = config.apiKey || process.env.KIMCHI_API_KEY || ""
 
-	if (!apiKey) {
-		if (!quiet) {
-			if (ctx.hasUI) {
-				ctx.ui.notify("Auto-naming: no API key configured.", "error")
-			} else {
-				console.error("[kimchi] auto-naming failed: no API key")
-			}
-		}
-		return deterministicFallback(base)
-	}
+	if (!apiKey) return fallback
 
 	try {
-		const payload = {
-			model: "nemotron-3-ultra-fp4",
-			messages: [
-				{ role: "system", content: SESSION_NAME_SYSTEM_PROMPT },
-				// Frame the message exactly like shortenTitle does - cheap models need
-				// an explicit task, not raw text.
-				{ role: "user", content: `Short title for this conversation:\n\n${capHint(resolvedHint)}` },
-			],
-			// Cheap think-models spend tokens on reasoning before outputting.
-			// Give enough room for both reasoning and the final title.
-			max_tokens: 100,
-			temperature: 0,
-			reasoning_effort: "none",
-		}
-		const body = JSON.stringify(payload)
-
+		const maxRetries = getSessionNameMaxRetries(ctx.cwd)
 		const response = await fetchWithRetry(
-			`${config.llmEndpoint}/chat/completions`,
+			`${config.llmEndpoint.replace(/\/+$/, "")}/chat/completions`,
 			{
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
 					Authorization: `Bearer ${apiKey}`,
 				},
-				body,
+				body: JSON.stringify({
+					model: SESSION_NAME_MODEL,
+					messages: [
+						{ role: "system", content: SESSION_NAME_SYSTEM_PROMPT },
+						{
+							role: "user",
+							content: `Generate a concise, descriptive title for this conversation:\n\n${capHint(resolvedHint)}`,
+						},
+					],
+					max_tokens: 40,
+					temperature: 0,
+				}),
 			},
-			{ timeoutMs: 10_000, retry: { maxRetries: 3 } },
+			{ timeoutMs: SESSION_NAME_TIMEOUT_MS, retry: { maxRetries } },
 		)
 
 		if (!response.ok) {
-			const errorBody = await response.text().catch(() => "")
 			if (!quiet) {
-				if (ctx.hasUI) {
-					ctx.ui.notify(
-						`Auto-naming: API error ${response.status} ${response.statusText}${errorBody ? ` — ${errorBody.slice(0, 200)}` : ""}`,
-						"error",
-					)
-				} else {
-					console.error(`[kimchi] auto-naming API error: ${response.status} ${response.statusText} ${errorBody}`)
-				}
+				const errorBody = await response.text().catch(() => "")
+				const message = `Auto-naming: API error ${response.status} ${response.statusText}${errorBody ? ` - ${errorBody.slice(0, 200)}` : ""}`
+				if (ctx.hasUI) ctx.ui.notify(message, "error")
+				else console.error(`[kimchi] ${message}`)
 			}
-			return deterministicFallback(base)
+			return fallback
 		}
 
-		const data = (await response.json()) as unknown
-
-		const cast = data as {
-			choices?: Array<{ message?: { content?: string } }>
-		}
-		const suggestion = cast.choices?.[0]?.message?.content?.trim() ?? ""
-		if (suggestion.length > 0) {
-			return suggestion
-		}
-		if (!quiet) {
-			if (ctx.hasUI) {
-				ctx.ui.notify("Auto-naming: LLM returned empty suggestion.", "error")
-			} else {
-				console.error("[kimchi] auto-naming: LLM returned empty suggestion")
-			}
-		}
-		return deterministicFallback(base)
+		const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }
+		const suggestion = data.choices?.[0]?.message?.content?.trim()
+		return suggestion ? deterministicFallback(suggestion) : fallback
 	} catch (err) {
 		if (!quiet) {
-			if (ctx.hasUI) {
-				ctx.ui.notify(`Auto-naming: ${err instanceof Error ? err.message : String(err)}`, "error")
-			} else {
-				console.error(`[kimchi] auto-naming exception: ${err}`)
-			}
+			const message = `Auto-naming: ${err instanceof Error ? err.message : String(err)}`
+			if (ctx.hasUI) ctx.ui.notify(message, "error")
+			else console.error(`[kimchi] ${message}`)
 		}
-		return deterministicFallback(base)
+		return fallback
 	}
 }
 
 export default function sessionNameExtension() {
 	return (pi: ExtensionAPI) => {
 		let hasAutoNamed = false
+		let pendingAutoName: Promise<void> | undefined
 
 		// Auto-name sessions after the first turn when no name was set.
+		//
+		// Never await here. `isStreaming` clears only after every turn_end listener settles, but the
+		// model loop — the only thing that drains the steering queue — has already stopped by then.
+		// Anything typed while a slow listener holds the run open is queued as steering and never sent.
 		pi.on("turn_end", (_event: TurnEndEvent, ctx: ExtensionContext) => {
-			if (hasAutoNamed) return
-			if (ctx.sessionManager.getSessionName()) {
+			try {
+				if (hasAutoNamed) return
+				if (ctx.sessionManager.getSessionName()) {
+					hasAutoNamed = true
+					return
+				}
+				const hint = extractFirstUserMessage(ctx)
+				if (!hint) {
+					hasAutoNamed = true
+					return
+				}
 				hasAutoNamed = true
-				return
-			}
-			const hint = extractFirstUserMessage(ctx)
-			if (!hint) {
+				pendingAutoName = suggestSessionName(ctx, hint, true)
+					// ctx may be stale once this resolves; a throw here would surface as a model error.
+					.then((suggestion) => {
+						if (suggestion && !ctx.sessionManager.getSessionName()) {
+							pi.setSessionName(suggestion)
+						}
+					})
+					.catch(() => {})
+					.finally(() => {
+						pendingAutoName = undefined
+					})
+			} catch {
 				hasAutoNamed = true
-				return
 			}
-			hasAutoNamed = true
-			suggestSessionName(ctx, hint, true)
-				.then((suggestion) => {
-					if (suggestion && !ctx.sessionManager.getSessionName()) {
-						pi.setSessionName(suggestion)
-					}
-				})
-				.catch(() => {
-					// Silently ignore background auto-naming failures
-				})
+		})
+
+		// One-shot runs exit as soon as the turn ends, which would drop the in-flight request.
+		// Safe to await: suggestSessionName is bounded by SESSION_NAME_TIMEOUT_MS.
+		pi.on("session_shutdown", async () => {
+			await pendingAutoName
 		})
 	}
 }

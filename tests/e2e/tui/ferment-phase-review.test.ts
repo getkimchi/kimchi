@@ -1,6 +1,6 @@
 import { test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -15,6 +15,7 @@ test.fail("ferment phase-review separator is not selectable", async ({ terminal 
 			responses: [
 				// Scoping nudge -> model proposes scoping.
 				{
+					stream: ["I'll outline the scope."],
 					toolCalls: [
 						{
 							id: "call_scope",

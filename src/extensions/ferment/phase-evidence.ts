@@ -12,11 +12,18 @@
  * the judge prompt as a single static block.
  */
 
-import { execSync } from "node:child_process"
+import { execSync, spawnSync } from "node:child_process"
+
+import type { Step } from "../../ferment/types.js"
 
 const MAX_FILES_LISTED = 20
 const MAX_DIFF_BYTES = 4000
 const GIT_TIMEOUT_MS = 5000
+
+/** Bounds for gatherStepVerifyEvidence output (grader prompt budget). */
+const MAX_STEP_VERIFY_BLOCK_CHARS = 6000
+const PER_STEP_STDOUT_TAIL = 800
+const PER_STEP_STDERR_TAIL = 300
 
 export interface PhaseEvidence {
 	/** Files touched between the phase start and now, with insertion/deletion counts. */
@@ -35,22 +42,101 @@ export interface PhaseEvidence {
 export function gatherPhaseEvidence(sinceRef = "HEAD~10", cwd = process.cwd()): PhaseEvidence {
 	try {
 		const stat = run(`git diff --stat ${sinceRef}`, cwd)
-		if (!stat.trim()) {
+		const untracked = gatherUntrackedFiles(cwd)
+
+		// No tracked changes AND no untracked files
+		if (!stat.trim() && untracked.length === 0) {
 			return { filesChanged: "(no changes)", diffSnippet: "", available: true }
 		}
 
-		const filesChanged = limitFileList(stat)
+		// Build combined file list: tracked diff stat + untracked entries.
+		// Untracked entries use the `?? path` prefix that mirrors
+		// `git status --porcelain` so the judge LLM can recognise them as
+		// "new untracked file". Tracked files are capped first, then untracked
+		// entries get a separate budget so they cannot crowd out the tracked
+		// changes the judge is meant to grade.
+		let filesChanged = limitFileList(stat)
+		if (untracked.length > 0) {
+			const untrackedLines = untracked.map((f) => `?? ${f}`)
+			const untrackedSection = limitUntrackedList(untrackedLines)
+			filesChanged = filesChanged ? `${filesChanged}\n${untrackedSection}` : untrackedSection
+		}
 
-		// Bound the diff. We include a head + tail of the unified diff so the
-		// judge sees both the first and the last changes in case the diff is
-		// long. Plain `git diff` without context limits could explode in size.
-		const fullDiff = run(`git diff --unified=2 ${sinceRef}`, cwd)
+		// Build combined diff: tracked diff + synthetic diffs for untracked files.
+		// Untracked diffs are bounded by MAX_DIFF_BYTES to prevent an explosion if
+		// there are many large untracked files; the final truncateDiff then bounds
+		// the combined total.
+		let fullDiff = run(`git diff --unified=2 ${sinceRef}`, cwd)
+		if (untracked.length > 0) {
+			const untrackedDiffs: string[] = []
+			let untrackedBytes = 0
+			for (const f of untracked) {
+				if (untrackedBytes >= MAX_DIFF_BYTES) break
+				const d = diffUntrackedFile(cwd, f)
+				if (d) {
+					untrackedDiffs.push(d)
+					untrackedBytes += d.length
+				}
+			}
+			if (untrackedDiffs.length > 0) {
+				fullDiff = fullDiff ? `${fullDiff}\n${untrackedDiffs.join("\n")}` : untrackedDiffs.join("\n")
+			}
+		}
+
 		const diffSnippet = truncateDiff(fullDiff)
 
 		return { filesChanged, diffSnippet, available: true }
 	} catch {
 		return { filesChanged: "(git unavailable)", diffSnippet: "", available: false }
 	}
+}
+
+/**
+ * List untracked files on disk using `git ls-files --others --exclude-standard`.
+ * This respects .gitignore (unlike `--others` alone), so gitignored files are
+ * excluded. Returns relative paths, one per line. Empty array on git error —
+ * intentionally swallows errors to match the best-effort pattern of the rest
+ * of this module (the outer gatherPhaseEvidence try/catch is the safety net).
+ */
+function gatherUntrackedFiles(cwd: string): string[] {
+	try {
+		const output = run("git ls-files --others --exclude-standard", cwd)
+		return output
+			.split("\n")
+			.map((l) => l.trim())
+			.filter(Boolean)
+	} catch {
+		return []
+	}
+}
+
+/**
+ * Produce a synthetic unified diff for an untracked file by diffing it against
+ * /dev/null. Git treats /dev/null as an empty file across all platforms, so
+ * the entire file content appears as `+`-prefixed added lines.
+ *
+ * Uses spawnSync with an argument array (shell: false) to avoid command
+ * injection via file names containing shell metacharacters.
+ *
+ * `git diff --no-index` exits with code 1 when differences are found (which
+ * is the expected case here) and code 0 when files are identical. We read
+ * result.stdout regardless of exit code. Returns "" on any other error
+ * (e.g. file deleted between listing and diffing).
+ */
+function diffUntrackedFile(cwd: string, filePath: string): string {
+	const result = spawnSync("git", ["diff", "--no-index", "--unified=2", "/dev/null", filePath], {
+		cwd,
+		encoding: "utf-8",
+		timeout: GIT_TIMEOUT_MS,
+		shell: false,
+		stdio: ["ignore", "pipe", "ignore"],
+	})
+	// Exit code 1 = differences found (expected). Exit code 0 = identical.
+	// Any other code or signal failure = error, return empty.
+	if (result.status !== null && result.status <= 1) {
+		return result.stdout ?? ""
+	}
+	return ""
 }
 
 /** Capture git HEAD as a SHA. Best-effort; returns undefined on non-git or git failure. */
@@ -80,10 +166,72 @@ function limitFileList(stat: string): string {
 	return `${head}\n[... ${remaining} more files ...]\n${tail}`
 }
 
+/**
+ * Cap untracked file entries independently so they never evict tracked
+ * changes from the evidence. Allows up to MAX_FILES_LISTED untracked entries
+ * before summarising the remainder.
+ */
+function limitUntrackedList(lines: string[]): string {
+	if (lines.length <= MAX_FILES_LISTED) return lines.join("\n")
+	const head = lines.slice(0, MAX_FILES_LISTED).join("\n")
+	return `${head}\n[... ${lines.length - MAX_FILES_LISTED} more untracked files ...]`
+}
+
 function truncateDiff(diff: string): string {
 	if (diff.length <= MAX_DIFF_BYTES) return diff
 	const half = Math.floor(MAX_DIFF_BYTES / 2)
 	const head = diff.slice(0, half)
 	const tail = diff.slice(-half)
 	return `${head}\n\n[... diff truncated, ${diff.length - MAX_DIFF_BYTES} bytes elided ...]\n\n${tail}`
+}
+
+/** Render each step's declared verification run — the command, exit code, and
+ *  the tails of stdout/stderr the harness captured when it executed the
+ *  verify. This block is deterministic: it is generated from executed runs,
+ *  not from agent-written claims, so the grader gets "what actually ran" for
+ *  free instead of having to demand pasted terminal output.
+ *
+ *  Absence is recorded too — a step with no verify command, or a command
+ *  declared but never executed, is called out explicitly (a no-test
+ *  situation is itself evidence).
+ *
+ *  Steps are rendered in plan order (step.index). Returns undefined when the
+ *  phase has no steps at all. */
+export function gatherStepVerifyEvidence(steps: ReadonlyArray<Step>): string | undefined {
+	if (steps.length === 0) return undefined
+	const ordered = [...steps].sort((a, b) => a.index - b.index)
+	const lines: string[] = []
+	for (const step of ordered) {
+		const label = `${step.id} "${step.description}"`
+		if (!step.verification) {
+			lines.push(`- ${label}: (no verify command declared)`)
+			continue
+		}
+		if (!step.result) {
+			lines.push(`- ${label}: \`${step.verification.command}\` — declared, never executed`)
+			continue
+		}
+		const exit =
+			step.result.exitCode !== undefined ? `exit ${step.result.exitCode}` : step.result.success ? "exit 0" : "failed"
+		lines.push(`- ${label}: \`${step.verification.command}\` → ${exit}${step.result.success ? " ✓" : " ✗"}`)
+		const stdoutTail = (step.result.stdout ?? "").trim()
+		if (stdoutTail) lines.push(`  stdout (tail):\n${indentBlock(tailChars(stdoutTail, PER_STEP_STDOUT_TAIL))}`)
+		const stderrTail = (step.result.stderr ?? "").trim()
+		if (stderrTail) lines.push(`  stderr (tail):\n${indentBlock(tailChars(stderrTail, PER_STEP_STDERR_TAIL))}`)
+	}
+	const block = lines.join("\n")
+	if (block.length <= MAX_STEP_VERIFY_BLOCK_CHARS) return block
+	return `${block.slice(0, MAX_STEP_VERIFY_BLOCK_CHARS)}\n…(truncated — later steps omitted)`
+}
+
+/** Keep the *tail* of long command output — the failure signal lives at the end. */
+function tailChars(s: string, max: number): string {
+	return s.length <= max ? s : `…${s.slice(s.length - max)}`
+}
+
+function indentBlock(s: string): string {
+	return s
+		.split("\n")
+		.map((line) => `    ${line}`)
+		.join("\n")
 }

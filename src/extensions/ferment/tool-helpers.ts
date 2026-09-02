@@ -12,9 +12,37 @@ import { commandToEvents } from "../../ferment/event-mapper.js"
 import type { Command, TransitionError } from "../../ferment/state-machine.js"
 import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
+import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { publicToolNameForActionKind } from "./action-tool-names.js"
 import { emitFermentDomainEvent } from "./domain-events-emitter.js"
-import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
+
+// ─── Shared guidance strings ────────────────────────────────────────────────
+// The "do not re-plan" instructions appear in two model-facing surfaces: the
+// plan-mode → ferment handoff message (permissions/index.ts) and the planner
+// prompt block's Current lifecycle state section (prompt-block.ts). Keep the
+// forbidden tool list in ONE place so a rename or policy change can't drift.
+
+/** Discovery/scoping tools the model must not revisit after scoping is complete. */
+const REPLANNING_FORBIDDEN_TOOLS = [
+	"list_ferments",
+	"scope_ferment",
+	"propose_ferment_scoping",
+	"confirm_ferment_completion_criteria",
+] as const
+
+/**
+ * Renders the no-replanning guidance shared by the handoff message and prompt
+ * block. It explicitly keeps ask_user available for real execution blockers
+ * and recovery. Pass `backticks: true` for markdown system-prompt surfaces.
+ */
+export function formatNoReplanningGuidance(opts: { backticks?: boolean } = {}): string {
+	const renderName = (name: string) => (opts.backticks ? `\`${name}\`` : name)
+	const names = REPLANNING_FORBIDDEN_TOOLS.map(renderName)
+	const list = `${names.slice(0, -1).join(", ")}, or ${names[names.length - 1]}`
+	const askUser = renderName("ask_user")
+	return `Do NOT restart discovery or scoping by calling ${list}. Do not use ${askUser} to repeat the scoping interview; ${askUser} remains available for genuine execution blockers or recovery.`
+}
 
 // ─── Tool result builders ─────────────────────────────────────────────────────
 // Every tool execute returns the same { details, content, isError? } shape;
@@ -28,44 +56,86 @@ export function toolErr(text: string) {
 	return { details: undefined, content: [{ type: "text" as const, text }], isError: true }
 }
 
-export function formatNextActionHint(ferment: Ferment): string | undefined {
+export function formatNextActionHint(ferment: Ferment, multiModelEnabled: boolean): string | undefined {
 	const action = determineNextAction(ferment)
 	if (!action) return undefined
 	const toolName = publicToolNameForActionKind(action.kind)
 
+	// Look up phase/step context so the hint names the actual work, not just IDs.
+	const actionPhase = "phaseId" in action ? ferment.phases.find((p) => p.id === action.phaseId) : undefined
+	const phaseName = actionPhase ? `"${actionPhase.name}"` : undefined
+	const phaseLabel = actionPhase ? `phase ${actionPhase.index}/${ferment.phases.length} ${phaseName}` : undefined
+
+	const actionStep =
+		"stepId" in action && actionPhase ? actionPhase.steps.find((s) => s.id === action.stepId) : undefined
+	const stepLabel = actionStep
+		? `step ${actionStep.index}/${actionPhase?.steps.length} \u2014 "${actionStep.description}"`
+		: undefined
+	const verifyHint = actionStep?.verification?.command ? ` (verify: \`${actionStep.verification.command}\`)` : ""
+
 	switch (action.kind) {
 		case "scope":
-			return `Next action: call \`${toolName}\` with ferment_id "${ferment.id}" after the goal, criteria, constraints, phases, and plan gates are ready.`
-		case "activate_phase":
-			return `Next action: call \`${toolName}\` with ferment_id "${ferment.id}" and phase_id "${action.phaseId}".`
-		case "refine":
-			return `Next action: call \`${toolName}\` with ferment_id "${ferment.id}" and phase_id "${action.phaseId}" to add concrete steps.`
-		case "start_step":
-			return `Next action: call \`${toolName}\` with ferment_id "${ferment.id}", phase_id "${action.phaseId}", and step_id "${action.stepId}".`
-		case "complete_step":
-			return `Next action: when the delegated work is done, call \`${toolName}\` with ferment_id "${ferment.id}", phase_id "${action.phaseId}", and step_id "${action.stepId}".`
-		case "verify_step":
-			return `Next action: call \`${toolName}\` with ferment_id "${ferment.id}", phase_id "${action.phaseId}", and step_id "${action.stepId}".`
-		case "complete_phase":
-			return `Next action: call \`${toolName}\` with ferment_id "${ferment.id}" and phase_id "${action.phaseId}" after phase gates are ready.`
+			return `Next action: call \`${toolName}\` with ferment_id "${ferment.id}" \u2014 include goal, success_criteria, constraints, phases (each step needs a description), and the full P1/P2/P3 gates array.`
+		case "activate_phase": {
+			const label = phaseLabel ?? `phase "${action.phaseId}"`
+			return `Next action: call \`${toolName}\` now \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}" (${label}).`
+		}
+		case "refine": {
+			const label = phaseLabel ?? `phase "${action.phaseId}"`
+			return `Next action: call \`${toolName}\` to add concrete steps to ${label} \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}".`
+		}
+		case "start_step": {
+			const label = stepLabel ?? `step "${action.stepId}"`
+			const relaxed = !multiModelEnabled
+			const startStepSuffix = relaxed
+				? ". Then execute the step directly — delegate to a linked Agent worker only for residue-heavy steps (long builds, big suites, many large reads, parallelizable work)."
+				: ", then immediately spawn an Agent worker for the implementation."
+			return `Next action: call \`${toolName}\` to begin ${label} \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}${startStepSuffix}`
+		}
+		case "complete_step": {
+			const label = stepLabel ?? `step "${action.stepId}"`
+			const relaxed = !multiModelEnabled
+			const completeStepSuffix = relaxed
+				? " If you executed the step directly (no subagent), omit worker_agent_id and include just the summary and gates."
+				: ""
+			return `Next action: call \`${toolName}\` with worker_agent_id after the linked worker for ${label} has a completed outcome and completed report \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}.${completeStepSuffix}`
+		}
+		case "verify_step": {
+			const label = stepLabel ?? `step "${action.stepId}"`
+			return `Next action: call \`${toolName}\` to verify ${label} \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}.`
+		}
+		case "complete_phase": {
+			const label = phaseLabel ?? `phase "${action.phaseId}"`
+			const doneCount = actionPhase?.steps.filter(
+				(s) => s.status === "done" || s.status === "verified" || s.status === "skipped",
+			).length
+			const totalCount = actionPhase?.steps.length
+			const progress =
+				doneCount !== undefined && totalCount !== undefined ? ` (${doneCount}/${totalCount} steps done)` : ""
+			return `Next action: call \`${toolName}\` now \u2014 all steps in ${label} are terminal${progress} \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}".`
+		}
 		case "complete_ferment":
-			return `Next action: call \`${toolName}\` with ferment_id "${ferment.id}" after final gates are ready.`
-		case "recover_step":
-			return `Next action: resolve failed step "${action.stepId}" in phase "${action.phaseId}", then call \`start_ferment_step\`, \`skip_ferment_step\`, or \`fail_ferment_step\` with explicit evidence.`
-		case "recover_phase":
-			return `Next action: resolve failed phase "${action.phaseId}", then call \`activate_ferment_phase\` to retry, \`skip_ferment_phase\` to bypass, or ask the user whether to abandon.`
+			return `Next action: call \`${toolName}\` now \u2014 all phases are terminal \u2014 ferment_id "${ferment.id}".`
+		case "recover_step": {
+			const label = stepLabel ?? `step "${action.stepId}"`
+			return `Next action: ${label} failed \u2014 diagnose the failure, then call \`start_ferment_step\`, \`skip_ferment_step\`, or \`fail_ferment_step\` with ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}".`
+		}
+		case "recover_phase": {
+			const label = phaseLabel ?? `phase "${action.phaseId}"`
+			return `Next action: ${label} failed \u2014 diagnose the failure, then call \`activate_ferment_phase\` to retry, \`skip_ferment_phase\` to bypass, or ask the user whether to abandon \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}".`
+		}
 		case "pause":
-			return "Next action: wait for the user to run /ferment resume; do not call ferment lifecycle tools while paused."
+			return "Next action: wait for the user to run /ferment resume \u2014 do not call ferment lifecycle tools while paused."
 	}
 }
 
-export function withNextActionHint(text: string, ferment: Ferment | undefined): string {
-	const hint = ferment ? formatNextActionHint(ferment) : undefined
+export function withNextActionHint(text: string, ferment: Ferment | undefined, multiModelEnabled: boolean): string {
+	const hint = ferment ? formatNextActionHint(ferment, multiModelEnabled) : undefined
 	return hint ? `${text}\n\n${hint}` : text
 }
 
-export function toolErrWithNextAction(text: string, ferment: Ferment | undefined) {
-	return toolErr(withNextActionHint(text, ferment))
+export function toolErrWithNextAction(text: string, ferment: Ferment | undefined, multiModelEnabled: boolean) {
+	return toolErr(withNextActionHint(text, ferment, multiModelEnabled))
 }
 
 // ─── Resolvers ────────────────────────────────────────────────────────────────
@@ -156,7 +226,16 @@ export function createApplyAndPersist(runtime: FermentRuntime) {
 			},
 		)
 		if (outcome.ok) {
+			// A persisted lifecycle transition ends the previous guard episode,
+			// even when no text-only stop observes the intermediate obligation.
+			runtime.onLifecycleTransitionApplied(fermentId)
 			runtime.setActive(outcome.ferment)
+			// The status line's ferment segment reads getActive() at render time,
+			// but tool-call mutations happen mid-agent-run with no natural render
+			// trigger. Request a re-render so the status line reflects the
+			// new phase/step/state immediately instead of going stale until the
+			// next user keypress or message render.
+			requestSharedStatusLineRender()
 			if (runtime.events) {
 				try {
 					emitFermentDomainEvent(runtime.events, cmd, outcome.ferment)
@@ -178,6 +257,6 @@ export function applyAndPersist(fermentId: string, cmd: Command): ApplyOutcome {
  * Convert any error with a `message` field into a tool-error result.
  * Centralized so error wording stays consistent across all tool handlers.
  */
-export function failedToolResult(error: { message: string }, ferment?: Ferment) {
-	return toolErr(withNextActionHint(error.message, ferment))
+export function failedToolResult(error: { message: string }, ferment: Ferment | undefined, multiModelEnabled: boolean) {
+	return toolErr(withNextActionHint(error.message, ferment, multiModelEnabled))
 }

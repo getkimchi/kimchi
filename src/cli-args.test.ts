@@ -1,13 +1,23 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
 	getCliModeArg,
+	getParsedCliArgs,
+	isCliAtFileArg,
 	isExperimentalFeaturesArg,
+	isExplicitAutoModelSelection,
 	isHelpOrVersionArgs,
 	isPreDispatchValueFlag,
 	isProtocolOrPrintMode,
 	isTerminalUiMode,
+	normalizeResumeIdArgs,
+	populateCliArgs,
 	stripExperimentalFeaturesArg,
+	stripMultiModelArgs,
 } from "./cli-args.js"
+import { normalizeAtFileArgs } from "./fs-paths.js"
 
 describe("getCliModeArg", () => {
 	it("reads --mode value", () => {
@@ -63,12 +73,15 @@ describe("isTerminalUiMode", () => {
 		expect(isTerminalUiMode([], tty)).toBe(true)
 	})
 
-	it.each([["--mode", "acp"], ["--mode", "rpc"], ["--mode=json"], ["--print"], ["-p"]])(
-		"returns false for protocol or print args %j",
-		(...args) => {
-			expect(isTerminalUiMode(args, tty)).toBe(false)
-		},
-	)
+	it.each([
+		["--mode", "acp"],
+		["--mode", "rpc"],
+		["--mode=json"],
+		["--print"],
+		["-p"],
+	])("returns false for protocol or print args %j", (...args) => {
+		expect(isTerminalUiMode(args, tty)).toBe(false)
+	})
 
 	it("returns false when stdin or stdout is not a TTY", () => {
 		expect(isTerminalUiMode([], { stdinIsTTY: false, stdoutIsTTY: true })).toBe(false)
@@ -100,12 +113,93 @@ describe("isPreDispatchValueFlag", () => {
 		expect(isPreDispatchValueFlag(arg)).toBe(true)
 	})
 
-	it.each([["--continue"], ["--resume"], ["--no-tools"], ["--no-themes"], ["fix tests"]])(
-		"does not treat %s as a value flag",
-		(arg) => {
-			expect(isPreDispatchValueFlag(arg)).toBe(false)
-		},
-	)
+	it.each([
+		["--continue"],
+		["--resume"],
+		["--no-tools"],
+		["--no-themes"],
+		["fix tests"],
+	])("does not treat %s as a value flag", (arg) => {
+		expect(isPreDispatchValueFlag(arg)).toBe(false)
+	})
+})
+
+describe("normalizeResumeIdArgs", () => {
+	it.each([
+		[
+			["-r", "019f1780-8034-7435-85aa-3e86037676ee"],
+			["--session", "019f1780-8034-7435-85aa-3e86037676ee"],
+		],
+		[
+			["--resume", "019f1780-8034-7435-85aa-3e86037676ee"],
+			["--session", "019f1780-8034-7435-85aa-3e86037676ee"],
+		],
+		[
+			["--provider", "fake", "-r", "./session.jsonl"],
+			["--provider", "fake", "--session", "./session.jsonl"],
+		],
+		[["--resume=abc123"], ["--session", "abc123"]],
+		[["-rabc123"], ["--session", "abc123"]],
+	])("rewrites %j to %j", (input, expected) => {
+		expect(normalizeResumeIdArgs(input)).toEqual(expected)
+	})
+
+	it.each([
+		[["-r"]],
+		[["--resume"]],
+		[["-r", "--model", "fake"]],
+		[["-r", "continue the review"]],
+	])("leaves bare resume picker args unchanged", (input) => {
+		expect(normalizeResumeIdArgs(input)).toEqual(input)
+	})
+})
+
+describe("isCliAtFileArg", () => {
+	it("does not treat known option values as @file attachments", () => {
+		expect(isCliAtFileArg("@literal", 1, ["--system-prompt", "@literal"])).toBe(false)
+		expect(isCliAtFileArg("@scope/pkg", 1, ["--extension", "@scope/pkg"])).toBe(false)
+		expect(isCliAtFileArg("@release", 1, ["--name", "@release"])).toBe(false)
+	})
+
+	it("uses parser position instead of matching @ values by text", () => {
+		const args = ["--name", "@same", "@same"]
+
+		expect(isCliAtFileArg("@same", 1, args)).toBe(false)
+		expect(isCliAtFileArg("@same", 2, args)).toBe(true)
+	})
+
+	it("still treats standalone @file args as attachments", () => {
+		expect(isCliAtFileArg("@prompt.md", 0, ["@prompt.md"])).toBe(true)
+		expect(isCliAtFileArg("@prompt.md", 1, ["--print", "@prompt.md"])).toBe(true)
+	})
+})
+
+describe("normalizeAtFileArgs with CLI parsing", () => {
+	it("leaves @-prefixed option values unchanged", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "cli-at-file-args-"))
+		try {
+			mkdirSync(join(tmp, "literal"))
+			mkdirSync(join(tmp, "scope", "pkg"), { recursive: true })
+			writeFileSync(join(tmp, "prompt.md"), "hi")
+
+			const result = normalizeAtFileArgs(
+				["--system-prompt", "@literal", "--extension", "@scope/pkg", "@prompt.md"],
+				tmp,
+				isCliAtFileArg,
+			)
+
+			expect(result.args).toEqual([
+				"--system-prompt",
+				"@literal",
+				"--extension",
+				"@scope/pkg",
+				`@${join(tmp, "prompt.md")}`,
+			])
+			expect(result.directoryArgs).toEqual([])
+		} finally {
+			rmSync(tmp, { recursive: true, force: true })
+		}
+	})
 })
 
 describe("isExperimentalFeaturesArg", () => {
@@ -146,5 +240,97 @@ describe("stripExperimentalFeaturesArg", () => {
 
 	it("returns empty array for empty input", () => {
 		expect(stripExperimentalFeaturesArg([])).toEqual([])
+	})
+})
+
+describe("stripMultiModelArgs", () => {
+	it("strips --multi-model", () => {
+		expect(stripMultiModelArgs(["--multi-model"])).toEqual([])
+	})
+
+	it("strips --model multi-model", () => {
+		expect(stripMultiModelArgs(["--model", "multi-model"])).toEqual([])
+	})
+
+	it("strips --model=multi-model", () => {
+		expect(stripMultiModelArgs(["--model=multi-model"])).toEqual([])
+	})
+
+	it("preserves real --model values", () => {
+		expect(stripMultiModelArgs(["--model", "kimchi-dev/kimi-k2.7"])).toEqual(["--model", "kimchi-dev/kimi-k2.7"])
+		expect(stripMultiModelArgs(["--model=kimchi-dev/kimi-k2.7"])).toEqual(["--model=kimchi-dev/kimi-k2.7"])
+	})
+
+	it("preserves surrounding args", () => {
+		expect(stripMultiModelArgs(["--provider", "kimchi-dev", "--model", "multi-model", "fix tests"])).toEqual([
+			"--provider",
+			"kimchi-dev",
+			"fix tests",
+		])
+	})
+
+	it("returns the array unchanged when no multi-model flags are present", () => {
+		expect(stripMultiModelArgs(["--provider", "kimchi-dev", "--model", "kimi-k2.7", "fix tests"])).toEqual([
+			"--provider",
+			"kimchi-dev",
+			"--model",
+			"kimi-k2.7",
+			"fix tests",
+		])
+	})
+
+	it("strips --multi-model when combined with a real --model value", () => {
+		expect(stripMultiModelArgs(["--model", "real-model", "--multi-model"])).toEqual(["--model", "real-model"])
+		expect(stripMultiModelArgs(["--multi-model", "--model", "real-model"])).toEqual(["--model", "real-model"])
+	})
+})
+
+describe("populateCliArgs / getParsedCliArgs", () => {
+	it("parses --model multi-model", () => {
+		populateCliArgs(["--provider", "kimchi-dev", "--model", "multi-model", "fix tests"])
+		expect(getParsedCliArgs()).toEqual({
+			options: { provider: "kimchi-dev", model: "multi-model" },
+			positionals: ["fix tests"],
+		})
+	})
+
+	it("parses --multi-model", () => {
+		populateCliArgs(["--multi-model", "fix tests"])
+		expect(getParsedCliArgs()).toEqual({
+			options: { "multi-model": true },
+			positionals: ["fix tests"],
+		})
+	})
+
+	it("parses real --model values", () => {
+		populateCliArgs(["--model", "kimchi-dev/kimi-k2.7", "fix tests"])
+		expect(getParsedCliArgs()).toEqual({ options: { model: "kimchi-dev/kimi-k2.7" }, positionals: ["fix tests"] })
+	})
+
+	it("reports no model option when --model is absent", () => {
+		populateCliArgs(["--provider", "kimchi-dev", "fix tests"])
+		expect(getParsedCliArgs()).toEqual({ options: { provider: "kimchi-dev" }, positionals: ["fix tests"] })
+	})
+
+	it("reuses the cached parse across calls", () => {
+		populateCliArgs(["--multi-model"])
+		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
+		// Subsequent calls return the same cached result without re-parsing.
+		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
+	})
+
+	it.each([
+		["canonical", ["--model", "kimchi-dev/auto"]],
+		["provider and id", ["--provider", "kimchi-dev", "--model", "auto"]],
+		["bare id", ["--model", "auto"]],
+		["thinking suffix", ["--model", "kimchi-dev/auto:high"]],
+	] as const)("recognizes an explicit Auto selection in %s form", (_label, args) => {
+		populateCliArgs([...args])
+		expect(isExplicitAutoModelSelection(getParsedCliArgs())).toBe(true)
+	})
+
+	it("does not mistake another provider's auto model for kimchi-dev/auto", () => {
+		populateCliArgs(["--provider", "custom", "--model", "auto"])
+		expect(isExplicitAutoModelSelection(getParsedCliArgs())).toBe(false)
 	})
 })

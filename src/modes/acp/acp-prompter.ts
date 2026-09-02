@@ -1,22 +1,17 @@
-import type {
-	AgentSideConnection,
-	PermissionOption,
-	RequestPermissionResponse,
-	ToolCallUpdate,
-} from "@agentclientprotocol/sdk"
+import type { AgentSideConnection, PermissionOption, ToolCall } from "@agentclientprotocol/sdk"
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import type { PermissionChoice, ToolPermissionPrompter } from "../../extensions/permissions/prompter.js"
 import type { ApprovalOutcome } from "../../extensions/permissions/prompts.js"
+import { buildToolCallShape } from "./tool-calls/utils.js"
+import { requestWithAbort } from "./utils.js"
 
-export type ToolCallUpdateBuilder = (
-	toolCallId: string,
-	toolName: string,
-	input: Record<string, unknown>,
-) => ToolCallUpdate
+export type AcpToolCallIdResolver = (piToolCallId: string, toolName: string) => string
 
 export function createAcpPermissionPrompter(
 	conn: AgentSideConnection,
 	sessionId: string,
-	buildToolCallUpdate: ToolCallUpdateBuilder,
+	uiContext: ExtensionUIContext,
+	resolveAcpToolCallId: AcpToolCallIdResolver,
 ): ToolPermissionPrompter {
 	return {
 		async request(req): Promise<ApprovalOutcome> {
@@ -33,14 +28,15 @@ export function createAcpPermissionPrompter(
 				}
 			})
 
-			const response = await requestWithAbort(
-				conn.requestPermission({
-					sessionId,
-					toolCall: buildToolCallUpdate(req.toolCallId, req.toolName, req.input),
-					options,
-				}),
-				req.signal,
-			)
+			const acpToolCallId = resolveAcpToolCallId(req.toolCallId, req.toolName)
+			const toolCall: ToolCall = buildToolCallShape({
+				toolCallId: acpToolCallId,
+				piToolCallId: req.toolCallId,
+				toolName: req.toolName,
+				rawInput: req.input,
+				status: "pending",
+			})
+			const response = await requestWithAbort(conn.requestPermission({ sessionId, toolCall, options }), req.signal)
 
 			if (response === "aborted" || response.outcome.outcome === "cancelled") return { kind: "aborted" }
 
@@ -54,23 +50,13 @@ export function createAcpPermissionPrompter(
 					return { kind: "allow-remember", rule: selected.rule }
 				case "allow-remember-wildcard":
 					return { kind: "allow-remember-wildcard", rule: selected.rule }
-				case "deny":
+				case "deny": {
+					const feedback = await uiContext.input("Tell the assistant what to do differently:")
+					const text = feedback?.trim()
+					if (text) return { kind: "deny-with-feedback", feedback: text }
 					return { kind: "deny" }
+				}
 			}
 		},
 	}
-}
-
-function requestWithAbort(
-	request: Promise<RequestPermissionResponse>,
-	signal: AbortSignal | undefined,
-): Promise<RequestPermissionResponse | "aborted"> {
-	if (!signal) return request
-	if (signal.aborted) return Promise.resolve("aborted")
-
-	return new Promise((resolve, reject) => {
-		const onAbort = () => resolve("aborted")
-		signal.addEventListener("abort", onAbort, { once: true })
-		request.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort))
-	})
 }

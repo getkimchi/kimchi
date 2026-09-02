@@ -107,3 +107,15 @@ const toolsByPi = new WeakMap<ExtensionAPI, Map<string, ToolVisibility>>()
 export function createToolVisibility(pi: ExtensionAPI): ToolVisibilityAPI {
 	return new Handle(pi)
 }
+
+/**
+ * Returns the set of tool names that currently have at least one disable vote.
+ * Callers that write the active-tool list directly (e.g. FermentToolScope)
+ * must filter these out so their setActiveTools call does not re-surface tools
+ * that another extension has hidden via the visibility layer.
+ */
+export function getDisabledToolNames(pi: ExtensionAPI): ReadonlySet<string> {
+	const m = toolsByPi.get(pi)
+	if (!m) return new Set()
+	return new Set(m.keys())
+}

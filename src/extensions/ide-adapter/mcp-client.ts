@@ -2,11 +2,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js"
 import WebSocket from "ws"
-import type { IdeConnection, IdeTool, LockfileData } from "./types.js"
+import type { IdeConnection, LockfileData } from "./types.js"
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10000
 
-/** Minimal custom WebSocket transport that sends an auth header on handshake. */
+/** Minimal custom WebSocket transport that authenticates via a `?token=`
+ * query parameter on the WebSocket URL during the upgrade handshake. */
 class IdeWebSocketTransport implements Transport {
 	private ws: WebSocket | null = null
 	onclose?: () => void
@@ -118,7 +119,7 @@ class IdeWebSocketTransport implements Transport {
 			this.ws.once("close", () => resolve())
 			try {
 				this.ws.close()
-			} catch (_err) {
+			} catch {
 				resolve()
 			}
 		})
@@ -181,8 +182,10 @@ export async function connectToIde(lockfile: LockfileData): Promise<IdeConnectio
 				inputSchema: t.inputSchema,
 			}))
 		},
-		callTool: async (name, args) => {
-			const res = await client.callTool({ name, arguments: args as Record<string, unknown> | undefined })
+		callTool: async (name, args, signal) => {
+			const res = await client.callTool({ name, arguments: args as Record<string, unknown> | undefined }, undefined, {
+				signal,
+			})
 			return res
 		},
 		setNotificationHandler: (handler: (msg: unknown) => void) => {

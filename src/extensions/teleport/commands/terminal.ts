@@ -3,8 +3,9 @@ import { readGitToken } from "../../../config.js"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { RemoteAuthError, type WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
 import { getGitRemoteHost } from "../../../sandbox/git-credentials.js"
+import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { SANDBOX_USER } from "../provisioning/constants.js"
-import { propagateGitCredentialToSandbox } from "../provisioning/git-propagate.js"
+import { provisionGitCredential } from "../provisioning/git-provision.js"
 import { buildProxyCommand } from "../provisioning/proxy-command.js"
 import type { TeleportContext } from "../types.js"
 import { runChildWithTTYHandoff as runChildWithTTYHandoffImpl } from "../ui/tty-handoff.js"
@@ -60,14 +61,7 @@ export async function runTerminal(
 		const gitToken = readGitToken(gitHost, ctx.configPath)
 		if (gitToken) {
 			try {
-				await propagateGitCredentialToSandbox({
-					remoteHost: creds.host,
-					remoteUser: SANDBOX_USER,
-					authToken: creds.connectToken,
-					gitHost,
-					gitToken,
-					signal: ctx.signal,
-				})
+				await provisionGitCredential(new WorkerClient(creds), { gitHost, gitToken }, ctx.signal)
 			} catch (err) {
 				warn(ctx, `Could not configure git credentials on sandbox: ${err instanceof Error ? err.message : String(err)}`)
 			}
@@ -95,7 +89,9 @@ export async function runTerminal(
 	} catch (err) {
 		refuse(ctx, `Failed to launch ssh: ${err instanceof Error ? err.message : String(err)}`)
 	}
-	if (code !== 0) {
+	// 130 (SIGINT) and 143 (SIGTERM) are the normal ways to leave an interactive
+	// shell (Ctrl-C / Ctrl-D), so don't warn on them — only on genuine failures.
+	if (code !== 0 && code !== 130 && code !== 143) {
 		warn(ctx, `ssh exited with code ${code}.`)
 	}
 }

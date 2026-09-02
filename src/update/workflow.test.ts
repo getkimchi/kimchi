@@ -1,12 +1,12 @@
-import { mkdtempSync, rmSync } from "node:fs"
-import { mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { CanaryReleaseInfo, GitHubClient, ReleaseInfo, Repo } from "./github.js"
+import { saveRepoState } from "./state.js"
 
 const mocks = vi.hoisted(() => ({
-	extractTarGz: vi.fn(),
+	extractArchive: vi.fn(),
 	verifyChecksum: vi.fn(),
 	fetchChecksum: vi.fn(),
 	downloadArchive: vi.fn(),
@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock("./extract.js", () => ({
-	extractTarGz: mocks.extractTarGz,
+	extractArchive: mocks.extractArchive,
 	verifyChecksum: mocks.verifyChecksum,
 }))
 
@@ -35,6 +35,7 @@ const REPO: Repo = { owner: "castai", name: "kimchi-dev", binary: "kimchi" }
 function fakeClient(release: ReleaseInfo): GitHubClient {
 	return {
 		latestRelease: async () => release,
+		releaseByTag: async () => release,
 	} as unknown as GitHubClient
 }
 
@@ -57,10 +58,8 @@ describe("checkForUpdate version comparison", () => {
 	})
 
 	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		if (prevHome === undefined) delete process.env.HOME
 		else process.env.HOME = prevHome
-		// biome-ignore lint/performance/noDelete: same as above.
 		if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME
 		else process.env.XDG_CACHE_HOME = prevXdg
 		rmSync(tmp, { recursive: true, force: true })
@@ -94,6 +93,105 @@ describe("checkForUpdate version comparison", () => {
 	})
 })
 
+describe("checkForUpdate explicit tag", () => {
+	let tmp: string
+	let prevHome: string | undefined
+	let prevXdg: string | undefined
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "kimchi-workflow-tag-test-"))
+		prevHome = process.env.HOME
+		prevXdg = process.env.XDG_CACHE_HOME
+		process.env.XDG_CACHE_HOME = tmp
+	})
+
+	afterEach(() => {
+		if (prevHome === undefined) delete process.env.HOME
+		else process.env.HOME = prevHome
+		if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME
+		else process.env.XDG_CACHE_HOME = prevXdg
+		rmSync(tmp, { recursive: true, force: true })
+	})
+
+	it("returns an update when the requested tag differs from currentVersion", async () => {
+		const release = { tagName: "v0.0.24-rc.1", htmlUrl: "https://example/rc" }
+		const releaseByTag = vi.fn().mockResolvedValue(release)
+		const client = { releaseByTag } as unknown as GitHubClient
+		const result = await checkForUpdate({
+			repo: REPO,
+			currentVersion: "0.0.23",
+			tag: "v0.0.24-rc.1",
+			client,
+		})
+		expect(releaseByTag).toHaveBeenCalledWith(REPO, "v0.0.24-rc.1")
+		expect(result.hasUpdate).toBe(true)
+		expect(result.latestVersion).toBe("v0.0.24-rc.1")
+		expect(result.tag).toBe("v0.0.24-rc.1")
+		expect(result.releaseUrl).toBe("https://example/rc")
+		expect(result.cached).toBe(false)
+	})
+
+	it("returns no update when the requested tag matches currentVersion", async () => {
+		const release = { tagName: "v0.0.24-rc.1", htmlUrl: "https://example/rc" }
+		const releaseByTag = vi.fn().mockResolvedValue(release)
+		const client = { releaseByTag } as unknown as GitHubClient
+		const result = await checkForUpdate({
+			repo: REPO,
+			currentVersion: "v0.0.24-rc.1",
+			tag: "v0.0.24-rc.1",
+			client,
+		})
+		expect(result.hasUpdate).toBe(false)
+		expect(result.latestVersion).toBe("v0.0.24-rc.1")
+	})
+
+	it("returns no update when the tag matches a bare (un-prefixed) currentVersion", async () => {
+		// getVersion() reports "0.0.24" from package.json while the release
+		// tag is "v0.0.24" — that mismatch must not trigger a reinstall.
+		const release = { tagName: "v0.0.24", htmlUrl: "https://example/release" }
+		const releaseByTag = vi.fn().mockResolvedValue(release)
+		const client = { releaseByTag } as unknown as GitHubClient
+		const result = await checkForUpdate({
+			repo: REPO,
+			currentVersion: "0.0.24",
+			tag: "v0.0.24",
+			client,
+		})
+		expect(result.hasUpdate).toBe(false)
+		expect(result.latestVersion).toBe("v0.0.24")
+	})
+
+	it("propagates errors for a missing or unknown tag", async () => {
+		const releaseByTag = vi.fn().mockRejectedValue(new Error("github API returned 404"))
+		const client = { releaseByTag } as unknown as GitHubClient
+		await expect(checkForUpdate({ repo: REPO, currentVersion: "0.0.23", tag: "v0.0.99", client })).rejects.toThrow(
+			"github API returned 404",
+		)
+	})
+
+	it("bypasses the cache when a tag is provided", async () => {
+		// Seed the cache with a version that would otherwise be returned.
+		saveRepoState(REPO.owner, REPO.name, {
+			checked_at: new Date().toISOString(),
+			latest_version: "v9.9.9",
+			release_url: "https://example/cached",
+		})
+		const release = { tagName: "v0.0.24-rc.1", htmlUrl: "https://example/rc" }
+		const releaseByTag = vi.fn().mockResolvedValue(release)
+		const client = { releaseByTag } as unknown as GitHubClient
+		const result = await checkForUpdate({
+			repo: REPO,
+			currentVersion: "0.0.23",
+			tag: "v0.0.24-rc.1",
+			client,
+		})
+		expect(releaseByTag).toHaveBeenCalledTimes(1)
+		expect(result.latestVersion).toBe("v0.0.24-rc.1")
+		expect(result.hasUpdate).toBe(true)
+		expect(result.cached).toBe(false)
+	})
+})
+
 describe("checkForUpdate canary path", () => {
 	let tmp: string
 	let prevHome: string | undefined
@@ -107,10 +205,8 @@ describe("checkForUpdate canary path", () => {
 	})
 
 	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		if (prevHome === undefined) delete process.env.HOME
 		else process.env.HOME = prevHome
-		// biome-ignore lint/performance/noDelete: same as above.
 		if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME
 		else process.env.XDG_CACHE_HOME = prevXdg
 		rmSync(tmp, { recursive: true, force: true })
@@ -272,7 +368,7 @@ describe("applyUpdate share destination", () => {
 	let prevPiPackageDir: string | undefined
 
 	beforeEach(() => {
-		mocks.extractTarGz.mockReset()
+		mocks.extractArchive.mockReset()
 		mocks.verifyChecksum.mockReset()
 		mocks.fetchChecksum.mockReset()
 		mocks.downloadArchive.mockReset()
@@ -294,7 +390,7 @@ describe("applyUpdate share destination", () => {
 		writeFileSync(join(extractRoot, "bin", "kimchi"), "")
 		writeFileSync(join(extractRoot, "share", "kimchi", "package.json"), "{}")
 
-		mocks.extractTarGz.mockResolvedValue(extractRoot)
+		mocks.extractArchive.mockResolvedValue(extractRoot)
 		mocks.verifyChecksum.mockResolvedValue(undefined)
 		mocks.fetchChecksum.mockResolvedValue("sha256:fff")
 		mocks.downloadArchive.mockResolvedValue(undefined)
@@ -305,18 +401,14 @@ describe("applyUpdate share destination", () => {
 
 		// Isolate from host env so resolution is deterministic.
 		prevXdgData = process.env.XDG_DATA_HOME
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		delete process.env.XDG_DATA_HOME
 		prevPiPackageDir = process.env.PI_PACKAGE_DIR
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		delete process.env.PI_PACKAGE_DIR
 	})
 
 	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		if (prevXdgData === undefined) delete process.env.XDG_DATA_HOME
 		else process.env.XDG_DATA_HOME = prevXdgData
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		if (prevPiPackageDir === undefined) delete process.env.PI_PACKAGE_DIR
 		else process.env.PI_PACKAGE_DIR = prevPiPackageDir
 		rmSync(extractRoot, { recursive: true, force: true })
@@ -361,5 +453,42 @@ describe("applyUpdate share destination", () => {
 			expect.stringContaining(".local/share/kimchi"),
 			"kimchi",
 		)
+	})
+
+	it("uses kimchi.exe from Windows archives", async () => {
+		const origPlatform = process.platform
+		const origArch = process.arch
+		Object.defineProperty(process, "platform", { value: "win32" })
+		// Pin the arch too: the assertion below hard-codes amd64, which
+		// otherwise fails on arm64 development machines.
+		Object.defineProperty(process, "arch", { value: "x64" })
+		try {
+			const winBinPath = join(fakePrefix, "bin", "kimchi.exe")
+			writeFileSync(join(extractRoot, "bin", "kimchi.exe"), "")
+			const client = {
+				fetchChecksum: mocks.fetchChecksum,
+				downloadArchive: mocks.downloadArchive,
+			} as unknown as GitHubClient
+
+			await applyUpdate({
+				repo: REPO,
+				tag: "v0.0.24",
+				executablePath: winBinPath,
+				client,
+			})
+
+			const newBinaryPath = join(extractRoot, "bin", "kimchi.exe")
+			expect(mocks.downloadArchive).toHaveBeenCalledWith(
+				REPO,
+				"v0.0.24",
+				expect.stringMatching(/kimchi_windows_amd64\.zip$/),
+			)
+			expect(mocks.macosCodesignReSign).toHaveBeenCalledWith(newBinaryPath)
+			expect(mocks.smokeTestBinary).toHaveBeenCalledWith(newBinaryPath)
+			expect(mocks.atomicInstall).toHaveBeenCalledWith(newBinaryPath, winBinPath)
+		} finally {
+			Object.defineProperty(process, "platform", { value: origPlatform })
+			Object.defineProperty(process, "arch", { value: origArch })
+		}
 	})
 })

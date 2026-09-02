@@ -12,24 +12,23 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { deferExtensionAction } from "../deferred-action.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
+import { markHarnessSteer } from "../steer-marker.js"
 import { TriggerEngine } from "./engine.js"
 import { EvalEngine } from "./eval-engine.js"
+import { registerRulesBlock } from "./rules-block.js"
 import { type ResolverIO, resolveSessionContext } from "./session-context.js"
 import {
 	BEHAVIOUR_EVAL_TYPE,
 	BEHAVIOUR_LOADED_TYPE,
-	BEHAVIOUR_REQUEUED_TYPE,
 	BEHAVIOUR_SESSION_SUMMARY_TYPE,
 	type BehaviourEvalData,
 	type BehaviourLoadedData,
-	type BehaviourRequeuedData,
 	type BehaviourSessionSummaryData,
 	type BehaviourSummaryEntry,
 } from "./stats.js"
 import type { ProbeSpec } from "./triggers.js"
 import type { Behaviour, TriggeredBehaviour } from "./types.js"
 
-const RULES_HEADER = "## Rules"
 export const BEHAVIOUR_BODY_TYPE = "behaviour"
 
 interface BehaviourBodyDetails {
@@ -39,12 +38,6 @@ interface BehaviourBodyDetails {
 export interface WireOptions {
 	/** Inject a stub IO for tests; falls back to the live filesystem/git probes. */
 	resolverIO?: ResolverIO
-}
-
-function buildRulesBlock(all: readonly Behaviour[]): string {
-	const baseline = all.filter((b) => b.kind === "baseline").map((b) => b.body.trim())
-	if (baseline.length === 0) return ""
-	return `${RULES_HEADER}\n\n${baseline.join("\n\n")}`
 }
 
 function collectSessionSpecs(triggered: readonly TriggeredBehaviour[]): ProbeSpec[] {
@@ -61,7 +54,6 @@ function isTriggered(b: Behaviour): b is TriggeredBehaviour {
 }
 
 export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[], options: WireOptions = {}): void {
-	const rulesBlock = buildRulesBlock(behaviours)
 	const triggered = behaviours.filter(isTriggered)
 	const sessionSpecs = collectSessionSpecs(triggered)
 	const engine = new TriggerEngine(behaviours)
@@ -124,11 +116,11 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 
 	// Drain tool-triggered bodies as steer messages right after the tool result
 	// so the model sees them before its next inference within the same turn.
-	// `before_agent_start` only fires per user prompt, so without this hook a
-	// behaviour that loads on a tool_call mid-turn would never reach the model
-	// in that session. Session-triggered bodies stay on the normal
-	// before_agent_start path; injecting them here can wake custom-message
-	// workflows after a host handoff, such as Ferment plan review.
+	// The system prompt is rebuilt only per user prompt, so without this hook
+	// a behaviour that loads on a tool_call mid-turn would only reach the model
+	// on the next user turn. The pending queue ensures each tool-triggered body
+	// is steered exactly once. Session-triggered bodies never go through this
+	// path — they appear in the system prompt via the registered block below.
 	pi.on("tool_result", async () => {
 		for (const b of triggered) {
 			if (engine.loadRecord(b.name)?.trigger !== "tool") continue
@@ -136,25 +128,12 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 			pi.sendMessage(
 				{
 					customType: BEHAVIOUR_BODY_TYPE,
-					content: b.body,
+					content: markHarnessSteer(b.body),
 					display: false,
 					details: { name: b.name } satisfies BehaviourBodyDetails,
 				},
 				{ deliverAs: "steer" },
 			)
-		}
-	})
-
-	// After compaction, the summarisation step replaces the conversation window
-	// (including any prior behaviour bodies) with a synthesised summary. Re-queue
-	// every loaded behaviour for re-injection on the next agent turn. The loaded
-	// set is preserved — triggers do not re-fire, no duplicate `behaviour_loaded`
-	// entries are emitted; instead a `behaviour_requeued` row signals the
-	// re-injection so offline analysis can distinguish first load from re-deliver.
-	pi.on("session_compact", async () => {
-		const requeued = engine.requeueLoaded()
-		for (const name of requeued) {
-			pi.appendEntry<BehaviourRequeuedData>(BEHAVIOUR_REQUEUED_TYPE, { name, turnIndex: currentTurnIndex })
 		}
 	})
 
@@ -187,29 +166,21 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 		pi.appendEntry<BehaviourSessionSummaryData>(BEHAVIOUR_SESSION_SUMMARY_TYPE, { behaviours: entries })
 	})
 
-	if (rulesBlock) {
-		const blocks = createSystemPromptBlocks(pi, "behaviours")
-		blocks.register({
-			id: "rules",
-			render: () => rulesBlock.trim(),
-		})
-	}
-
-	// One injector handler per triggered behaviour. The runner aggregates
-	// messages across all `before_agent_start` handlers, so multiple pending
-	// bodies are delivered together on the next turn. Each handler closes over
-	// its behaviour and emits the body iff the engine still has it pending.
+	// Register system-prompt blocks for baseline rules (constant) and each
+	// loaded triggered behaviour (dynamic). Dynamic block render returns the
+	// body iff the engine has the behaviour loaded; otherwise undefined makes
+	// the block skip silently. This is what makes triggered bodies appear in
+	// the developer role (system prompt) instead of as user-role messages — the
+	// model treats them as standing guidance rather than fresh input to
+	// acknowledge. Persistence across turns is automatic: the loaded set
+	// survives reset only on a new session_start, and the same set survives
+	// compaction by definition.
+	registerRulesBlock(pi, behaviours)
+	const blocks = createSystemPromptBlocks(pi, "behaviours")
 	for (const b of triggered) {
-		pi.on("before_agent_start", async () => {
-			if (!engine.takePending(b.name)) return
-			return {
-				message: {
-					customType: BEHAVIOUR_BODY_TYPE,
-					content: b.body,
-					display: false,
-					details: { name: b.name } satisfies BehaviourBodyDetails,
-				},
-			}
+		blocks.register({
+			id: `triggered:${b.name}`,
+			render: () => (engine.isLoaded(b.name) ? b.body : undefined),
 		})
 	}
 }

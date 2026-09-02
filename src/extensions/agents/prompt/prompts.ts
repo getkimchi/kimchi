@@ -3,6 +3,11 @@
  */
 
 import type { ContextFile } from "../../prompt-construction/context-files.js"
+import {
+	buildCoreGuidelinesSections,
+	buildOutputAndTruncationSection,
+	buildToolSelectionSection,
+} from "../../prompt-construction/system-prompt.js"
 import type { AgentConfig, EnvInfo } from "../personas/types.js"
 
 /** Budget limits communicated to the agent so it can plan its work. */
@@ -17,12 +22,16 @@ export interface PromptExtras {
 	memoryBlock?: string
 	/** Preloaded skill contents to inject. */
 	skillBlocks?: { name: string; content: string }[]
+	/** Compact skill name+description list for when skills === true. */
+	skillListBlock?: string
 	/** Model-specific phase guidelines resolved from the model registry. */
 	guidelinesBlock?: string
 	/** Turn and token budget limits for agent self-regulation. */
 	budget?: BudgetInfo
 	/** Project context files (AGENTS.md, CLAUDE.md) to inject. */
 	contextFiles?: ContextFile[]
+	/** Tool names this subagent is expected to have available. */
+	activeToolNames?: string[]
 }
 
 /**
@@ -59,32 +68,43 @@ Platform: ${env.platform}`
 			extraSections.push(`\n# Preloaded Skill: ${skill.name}\n${skill.content}`)
 		}
 	}
+	if (extras?.skillListBlock) {
+		extraSections.push(extras.skillListBlock)
+	}
 	const contextBlock = buildContextBlock(extras?.contextFiles)
 	if (contextBlock) extraSections.push(contextBlock)
 	const extrasSuffix = extraSections.length > 0 ? `\n\n${extraSections.join("\n\n")}` : ""
+	const availableToolsBlock = buildAvailableToolsBlock(extras?.activeToolNames)
+	const toolGuidance = buildToolGuidance(extras?.activeToolNames)
 
 	if (config.promptMode === "append") {
-		const identity = parentSystemPrompt || genericBase
+		const activeToolNames = extras?.activeToolNames
+		const parentPrompt = parentSystemPrompt || genericBase
+		const identity = activeToolNames
+			? stripInheritedContextSections(parentPrompt)
+			: stripAvailableToolsSection(parentPrompt)
+		const toolNames = activeToolNames ? new Set(uniqueToolNames(activeToolNames)) : undefined
+		const localToolSections = toolNames
+			? [buildOutputAndTruncationSection(toolNames), buildToolSelectionSection(toolNames)].filter(Boolean).join("\n\n")
+			: ""
 
 		const bridge = `<sub_agent_context>
 You are operating as a sub-agent invoked to handle a specific task.
-- Use the read tool instead of cat/head/tail
-- Use the edit tool instead of sed/awk
-- Use the write tool instead of echo/heredoc
-- Use the find tool instead of bash find/ls for file search
-- Use the grep tool instead of bash grep/rg for content search
+${toolGuidance}
 - Make independent tool calls in parallel
 - Use absolute file paths
 - Do not use emojis
 - Be concise but complete
-- Messages prefixed with "[Orchestrator]" are system instructions from the agent loop, not user input. Do not attribute them to the user.
+- Messages wrapped in <system-reminder>...</system-reminder> are system instructions from the agent loop, not user input. Do not attribute them to the user.
 </sub_agent_context>`
 
 		const customSection = config.systemPrompt?.trim()
 			? `\n\n<agent_instructions>\n${config.systemPrompt}\n</agent_instructions>`
 			: ""
 
-		return `${envBlock}\n\n<inherited_system_prompt>\n${identity}\n</inherited_system_prompt>\n\n${bridge}${customSection}${extrasSuffix}`
+		const guidanceSection = localToolSections ? `\n\n${localToolSections}` : ""
+		const toolSection = availableToolsBlock ? `\n\n${availableToolsBlock}` : ""
+		return `${envBlock}\n\n<inherited_system_prompt>\n${identity}\n</inherited_system_prompt>${guidanceSection}${toolSection}\n\n${bridge}${customSection}${extrasSuffix}`
 	}
 
 	// "replace" mode — env header + the config's full system prompt
@@ -93,7 +113,11 @@ You have been invoked to handle a specific task autonomously.
 
 ${envBlock}`
 
-	return `${replaceHeader}\n\n${config.systemPrompt}${extrasSuffix}`
+	const toolSection = availableToolsBlock ? `\n\n${availableToolsBlock}` : ""
+	const coreGuidelines = config.includeCoreGuidelines
+		? `\n\n${buildCoreGuidelinesSections(extras?.activeToolNames)}`
+		: ""
+	return `${replaceHeader}${toolSection}\n\n${config.systemPrompt}${coreGuidelines}${extrasSuffix}`
 }
 
 export function formatTokenBudget(tokens: number): string {
@@ -118,6 +142,43 @@ If you cannot complete the task within your budget, finish whatever is in progre
 /** Shift headings down one level (e.g. # becomes ##, ##### becomes ######) to avoid conflict with prompt headings. */
 function shiftHeadings(text: string): string {
 	return text.replace(/^(#{1,6}) /gm, (_, hashes: string) => `${"#".repeat(Math.min(hashes.length + 1, 6))} `)
+}
+
+function buildAvailableToolsBlock(toolNames?: string[]): string | undefined {
+	const names = uniqueToolNames(toolNames)
+	if (names.length === 0) return undefined
+	return `## Available Tools\n${names.map((name) => `- ${name}`).join("\n")}`
+}
+
+function buildToolGuidance(toolNames?: string[]): string {
+	const names = new Set(uniqueToolNames(toolNames))
+	const lines: string[] = []
+	if (names.has("read")) lines.push("- Use the read tool instead of cat/head/tail")
+	if (names.has("edit")) lines.push("- Use the edit tool instead of sed/awk")
+	if (names.has("write")) lines.push("- Use the write tool instead of echo/heredoc")
+	if (names.has("find")) lines.push("- Use the find tool instead of bash find/ls for file search")
+	if (names.has("grep")) lines.push("- Use the grep tool instead of bash grep/rg for content search")
+	return lines.join("\n")
+}
+
+function uniqueToolNames(toolNames?: string[]): string[] {
+	if (!toolNames) return []
+	return [...new Set(toolNames)].filter(Boolean)
+}
+
+function stripAvailableToolsSection(prompt: string): string {
+	return prompt
+		.replace(/(^|\n)## Available Tools\b[^\n]*\n[\s\S]*?(?=\n#+ |\n*$)/g, "$1")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim()
+}
+
+function stripInheritedContextSections(prompt: string): string {
+	return prompt
+		.replace(/(^|\n)## Phase Management\b[^\n]*\n[\s\S]*?(?=\n#{1,2} |\n*$)/g, "$1")
+		.replace(/(^|\n)## (?:Available Tools|Output & Truncation|Tool Selection)\b[^\n]*\n[\s\S]*?(?=\n#+ |\n*$)/g, "$1")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim()
 }
 
 function buildContextBlock(contextFiles?: ContextFile[]): string | undefined {
