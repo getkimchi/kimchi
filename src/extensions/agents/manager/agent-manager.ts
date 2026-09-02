@@ -272,7 +272,9 @@ export class AgentManager {
 						sessionDir: options.sessionDir,
 						signal: record.abortController?.signal,
 						onToolActivity: (activity) => {
-							if (activity.status !== "in_progress") record.toolUses++
+							// Count only terminal statuses — a "pending" notification is
+							// not a completed tool use.
+							if (activity.status === "completed" || activity.status === "failed") record.toolUses++
 							options.onToolActivity?.(activity)
 						},
 						onTurnEnd: (turnCount) => {
@@ -582,7 +584,7 @@ export class AgentManager {
 				: withAgentReportProtocol(prompt ?? "", record.taskRef)
 		const resumePromise = resumeAgent(record.session, attemptPrompt, {
 			onToolActivity: (activity) => {
-				if (activity.status !== "in_progress") record.toolUses++
+				if (activity.status === "completed" || activity.status === "failed") record.toolUses++
 			},
 			onTurnEnd: (turnCount) => {
 				record.lastTurnCount = turnCount

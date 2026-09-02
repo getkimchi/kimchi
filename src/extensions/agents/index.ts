@@ -985,13 +985,20 @@ export default function (pi: ExtensionAPI) {
 			// (Review / Sync / Done) instead of the normal nudge path.
 			if (record.triggersRemoteCompletion) {
 				record.triggersRemoteCompletion = false
-				const completionCtx = record.spawnCtx ?? currentCtx
+				// spawnCtx is captured at spawn time and is always valid for this
+				// agent — don't fall back to a stale global context.
+				const completionCtx = record.spawnCtx
 				if (completionCtx) {
 					void handleRemoteCompletion(pi, completionCtx, record.result ?? "", record.remoteOrigin ?? "plan", {
 						transcriptPath: record.outputFile,
 						agentId: record.id,
 						remoteSession: record.remoteSession,
 						fermentId: record.fermentId,
+					}).catch((err) => {
+						currentUi?.notify(
+							`Remote completion failed: ${err instanceof Error ? err.message : String(err)}`,
+							"warning",
+						)
 					})
 				} else {
 					currentUi?.notify("Remote agent completed but result could not be surfaced (no active context).", "warning")
@@ -1049,7 +1056,6 @@ export default function (pi: ExtensionAPI) {
 	let unsubCtrlB: (() => void) | undefined
 	let unsubKill: (() => void) | undefined
 	let currentUi: ExtensionUIContext | undefined
-	let currentCtx: ExtensionContext | undefined
 
 	const widget = new AgentWidget(manager, agentActivity)
 	activeWidget = widget
@@ -1159,7 +1165,6 @@ export default function (pi: ExtensionAPI) {
 		unsubKill?.()
 		unsubKill = undefined
 		currentUi = undefined
-		currentCtx = undefined
 		manager.abortAll()
 		budgetRetryCandidates.clear()
 		if (batchFinalizeTimer) {
@@ -1183,7 +1188,6 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_execution_start", async (_event, ctx) => {
 		widget.setUICtx(ctx.ui as UICtx)
 		widget.onTurnStart()
-		currentCtx = ctx
 
 		if (ctx.hasUI) {
 			const newUi = ctx.ui as ExtensionUIContext

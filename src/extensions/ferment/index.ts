@@ -239,8 +239,16 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 						origin: "ferment plan",
 						fermentId: review.fermentId,
 					})
-				} catch {
-					// Error notification already handled inside runCloudAgent.
+				} catch (err) {
+					// Spawn failed after the ferment was paused — resume it so the
+					// user isn't left with a stuck ferment and no recovery path,
+					// and surface the error.
+					const message = err instanceof Error ? err.message : String(err)
+					ctx.ui.notify(`Could not start the cloud agent: ${message}`, "error")
+					const resumeOutcome = createApplyAndPersist(runtime)(review.fermentId, { type: "resume" })
+					if (resumeOutcome.ok) {
+						runtime.setActive(resumeOutcome.ferment)
+					}
 				}
 				return
 			}

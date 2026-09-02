@@ -806,6 +806,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// agent completes (or is killed via Ctrl+X). The result is injected
 			// into the local session as a steer message so the local agent has
 			// context for follow-up work.
+			const approvedSlug = activePlanSlug
 			activePlanSlug = undefined
 			pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
 			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
@@ -813,8 +814,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			const cloudDescription = `cloud: ${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
 			try {
 				await runCloudAgent(pi, ctx, cloudPrompt, cloudDescription, { background: true })
-			} catch {
-				// Error notification already handled inside runCloudAgent.
+			} catch (err) {
+				// Spawn failed — otherwise the user is stranded in auto mode with
+				// no active plan and no visible error. Surface the error and
+				// restore plan mode so they can retry.
+				const message = err instanceof Error ? err.message : String(err)
+				ctx.ui?.notify?.(`Could not start the cloud agent: ${message}`, "error")
+				activePlanSlug = approvedSlug
+				changeMode(ctx, "auto", { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
 			}
 		}
 		// Decline or escape: stay in plan mode.
