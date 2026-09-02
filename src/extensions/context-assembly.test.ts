@@ -176,6 +176,12 @@ describe("context-assembly", () => {
 		expect(anthropic.systemText).toBe("A\nB")
 		expect(anthropic.tools[0].name).toBe("read")
 
+		const anthropicString = extractPayloadSurface({
+			system: "SYS",
+			tools: [{ name: "ls", description: "List", input_schema: {} }],
+		})
+		expect(anthropicString.systemText).toBe("SYS")
+
 		const openai = extractPayloadSurface({
 			messages: [
 				{ role: "system", content: "SYS" },

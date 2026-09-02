@@ -239,6 +239,10 @@ describe("hasFermentOneshotArg (Chunk 7 gate composition)", () => {
 		expect(hasFermentOneshotArg(["--print"])).toBe(false)
 		expect(hasFermentOneshotArg([])).toBe(false)
 	})
+
+	it("returns false when the suffix appears inside an unrelated flag", () => {
+		expect(hasFermentOneshotArg(["--foo-ferment-oneshot=true"])).toBe(false)
+	})
 })
 
 describe("stripExperimentalFeaturesArg", () => {
