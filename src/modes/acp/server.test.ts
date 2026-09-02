@@ -50,6 +50,7 @@ const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
+import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
@@ -4748,26 +4749,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 			registerTool: () => {},
 			sendMessage: () => {},
 			appendEntry: () => {},
-			events: (() => {
-				// Real mini event-bus: the plan-review decision channels route
-				// through events.emit → events.on; a stubbed emit-only object
-				// crashes the decision-handlers' on() registration.
-				const eventHandlers = new Map<string, ((data: unknown) => unknown)[]>()
-				return {
-					emit: (channel: string, data: unknown) => {
-						for (const handler of eventHandlers.get(channel) ?? []) handler(data)
-					},
-					on: (channel: string, handler: (data: unknown) => unknown) => {
-						const list = eventHandlers.get(channel) ?? []
-						list.push(handler)
-						eventHandlers.set(channel, list)
-						return () => {
-							const idx = list.indexOf(handler)
-							if (idx !== -1) list.splice(idx, 1)
-						}
-					},
-				}
-			})(),
+			events: createMiniEventBus().events,
 			getEnvironment: () => ({
 				environmentInfo: {
 					permittedTools: new Set(tools),

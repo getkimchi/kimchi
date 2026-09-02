@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
@@ -171,9 +172,7 @@ function createPermissionsHarness(
 	const handlers = new Map<string, ExtensionHandler[]>()
 	const commands = new Map<string, RegisteredCommand>()
 	const registeredTools = new Map<string, { name: string; execute: unknown }>()
-	// Real mini event-bus: emit must deliver to handlers registered via events.on
-	// because the plan-review decision flow routes through these channels.
-	const eventHandlers = new Map<string, ((data: unknown) => unknown)[]>()
+	const { events } = createMiniEventBus()
 	const tools = toolNames.map((name) => ({ name, description: `${name} tool` }) as ToolInfo)
 	let activeTools = [...initialActiveTools]
 
@@ -199,20 +198,7 @@ function createPermissionsHarness(
 		}),
 		sendMessage: vi.fn(),
 		appendEntry: vi.fn(),
-		events: {
-			emit: vi.fn((channel: string, data: unknown) => {
-				for (const handler of eventHandlers.get(channel) ?? []) handler(data)
-			}),
-			on: vi.fn((channel: string, handler: (data: unknown) => unknown) => {
-				const list = eventHandlers.get(channel) ?? []
-				list.push(handler)
-				eventHandlers.set(channel, list)
-				return () => {
-					const idx = list.indexOf(handler)
-					if (idx !== -1) list.splice(idx, 1)
-				}
-			}),
-		},
+		events,
 	} as unknown as ExtensionAPI
 
 	permissionsExtension(pi)

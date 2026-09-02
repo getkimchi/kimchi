@@ -76,7 +76,7 @@ describe("plannotator adapter", () => {
 
 			// The adapter's onPlanReviewRequest handler should have been called
 			expect(captures.requestHandler).toBeDefined()
-			captures.requestHandler!({
+			captures.requestHandler?.({
 				planContent: "# My Plan",
 				planFilePath: "/plans/my-plan.md",
 				source: "adhoc",
@@ -84,7 +84,7 @@ describe("plannotator adapter", () => {
 
 			const plannotatorEmit = captures.emitCalls.find((c) => c.channel === "plannotator:request")
 			expect(plannotatorEmit).toBeDefined()
-			expect(plannotatorEmit!.data).toMatchObject({
+			expect(plannotatorEmit?.data).toMatchObject({
 				action: "plan-review",
 				payload: {
 					planContent: "# My Plan",
@@ -92,7 +92,7 @@ describe("plannotator adapter", () => {
 					origin: "adhoc",
 				},
 			})
-			expect((plannotatorEmit!.data as { requestId: string }).requestId).toBeTypeOf("string")
+			expect((plannotatorEmit?.data as { requestId: string }).requestId).toBeTypeOf("string")
 		})
 
 		it("passes ferment source as origin", () => {
@@ -108,14 +108,14 @@ describe("plannotator adapter", () => {
 				{ ctx: {} as never, planText: "ferment plan", fermentId: "f-1" },
 			)
 
-			captures.requestHandler!({
+			captures.requestHandler?.({
 				planContent: "ferment plan",
 				source: "ferment",
 				fermentId: "f-1",
 			})
 
 			const plannotatorEmit = captures.emitCalls.find((c) => c.channel === "plannotator:request")
-			expect(plannotatorEmit!.data).toMatchObject({
+			expect(plannotatorEmit?.data).toMatchObject({
 				payload: { origin: "ferment" },
 			})
 		})
@@ -152,14 +152,14 @@ describe("plannotator adapter", () => {
 
 			// First, emit a request to set the active review source
 			emitPlanReviewRequest(pi, { planContent: "plan", source: "adhoc" }, { ctx: {} as never, planText: "plan" })
-			captures.requestHandler!({ planContent: "plan", source: "adhoc" })
+			captures.requestHandler?.({ planContent: "plan", source: "adhoc" })
 
 			// Simulate plannotator review-result: approved
-			captures.resultHandler!({ approved: true })
+			captures.resultHandler?.({ approved: true })
 
 			const decisionEmit = captures.emitCalls.find((c) => c.channel === "kimchi:plan-review-decision")
 			expect(decisionEmit).toBeDefined()
-			expect(decisionEmit!.data).toMatchObject({
+			expect(decisionEmit?.data).toMatchObject({
 				decision: "execute",
 				source: "plannotator",
 				planReviewSource: "adhoc",
@@ -170,15 +170,15 @@ describe("plannotator adapter", () => {
 			const { pi, captures } = setupExtension()
 
 			emitPlanReviewRequest(pi, { planContent: "plan", source: "adhoc" }, { ctx: {} as never, planText: "plan" })
-			captures.requestHandler!({ planContent: "plan", source: "adhoc" })
+			captures.requestHandler?.({ planContent: "plan", source: "adhoc" })
 
-			captures.resultHandler!({
+			captures.resultHandler?.({
 				approved: false,
 				feedback: "Add more detail to chunk 2",
 			})
 
 			const decisionEmit = captures.emitCalls.find((c) => c.channel === "kimchi:plan-review-decision")
-			expect(decisionEmit!.data).toMatchObject({
+			expect(decisionEmit?.data).toMatchObject({
 				decision: "feedback",
 				feedback: "Add more detail to chunk 2",
 				source: "plannotator",
@@ -190,13 +190,13 @@ describe("plannotator adapter", () => {
 			const { pi, captures } = setupExtension()
 
 			emitPlanReviewRequest(pi, { planContent: "plan", source: "adhoc" }, { ctx: {} as never, planText: "plan" })
-			captures.requestHandler!({ planContent: "plan", source: "adhoc" })
+			captures.requestHandler?.({ planContent: "plan", source: "adhoc" })
 
 			// Deny with blank feedback — must not become an empty feedback turn
-			captures.resultHandler!({ approved: false, feedback: "  " })
+			captures.resultHandler?.({ approved: false, feedback: "  " })
 
 			const decisionEmit = captures.emitCalls.find((c) => c.channel === "kimchi:plan-review-decision")
-			expect(decisionEmit!.data).toMatchObject({
+			expect(decisionEmit?.data).toMatchObject({
 				decision: "rework",
 				source: "plannotator",
 				planReviewSource: "adhoc",
@@ -206,7 +206,7 @@ describe("plannotator adapter", () => {
 		it("ignores review-result when no review is active", () => {
 			const { captures } = setupExtension()
 
-			captures.resultHandler!({ approved: true })
+			captures.resultHandler?.({ approved: true })
 
 			const decisionEmit = captures.emitCalls.find((c) => c.channel === "kimchi:plan-review-decision")
 			expect(decisionEmit).toBeUndefined()
@@ -216,9 +216,9 @@ describe("plannotator adapter", () => {
 			const { pi, captures } = setupExtension()
 
 			emitPlanReviewRequest(pi, { planContent: "plan", source: "adhoc" }, { ctx: {} as never, planText: "plan" })
-			captures.requestHandler!({ planContent: "plan", source: "adhoc" })
+			captures.requestHandler?.({ planContent: "plan", source: "adhoc" })
 
-			captures.resultHandler!({ feedback: "some text" })
+			captures.resultHandler?.({ feedback: "some text" })
 
 			const decisionEmit = captures.emitCalls.find((c) => c.channel === "kimchi:plan-review-decision")
 			expect(decisionEmit).toBeUndefined()
@@ -232,12 +232,12 @@ describe("plannotator adapter", () => {
 				{ planContent: "plan", source: "ferment", fermentId: "f-1" },
 				{ ctx: {} as never, planText: "plan", fermentId: "f-1" },
 			)
-			captures.requestHandler!({ planContent: "plan", source: "ferment", fermentId: "f-1" })
+			captures.requestHandler?.({ planContent: "plan", source: "ferment", fermentId: "f-1" })
 
-			captures.resultHandler!({ approved: true })
+			captures.resultHandler?.({ approved: true })
 
 			const decisionEmit = captures.emitCalls.find((c) => c.channel === "kimchi:plan-review-decision")
-			expect(decisionEmit!.data).toMatchObject({
+			expect(decisionEmit?.data).toMatchObject({
 				planReviewSource: "ferment",
 			})
 		})
@@ -248,16 +248,16 @@ describe("plannotator adapter", () => {
 			const { pi, captures } = setupExtension()
 
 			emitPlanReviewRequest(pi, { planContent: "plan", source: "adhoc" }, { ctx: {} as never, planText: "plan" })
-			captures.requestHandler!({ planContent: "plan", source: "adhoc" })
+			captures.requestHandler?.({ planContent: "plan", source: "adhoc" })
 
 			// First decision
-			captures.resultHandler!({ approved: true })
+			captures.resultHandler?.({ approved: true })
 
 			// Consume the context (simulating the decision handler acting)
 			consumePlanReviewContext()
 
 			// Second decision — should be ignored
-			captures.resultHandler!({ approved: false, feedback: "too late" })
+			captures.resultHandler?.({ approved: false, feedback: "too late" })
 
 			const decisionEmits = captures.emitCalls.filter((c) => c.channel === "kimchi:plan-review-decision")
 			expect(decisionEmits).toHaveLength(1)
