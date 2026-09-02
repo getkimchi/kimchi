@@ -228,17 +228,36 @@ export async function evaluateFermentV2(
 		evaluationTimeoutMs = getFermentV2Settings().evaluationTimeoutMs
 		deadline = AbortSignal.timeout(evaluationTimeoutMs)
 		const signal = input.signal ? AbortSignal.any([deadline, input.signal]) : deadline
-		const response = await completeSimple(model, context, {
-			apiKey: auth.apiKey,
-			headers: auth.headers,
-			reasoning: "minimal",
-			maxTokens: model.reasoning ? REASONING_MAX_TOKENS : PLAIN_MAX_TOKENS,
-			samplingParams: model.provider === "moonshotai" ? { response_format: { type: "json_object" } } : undefined,
-			signal,
-		})
+		const request = () =>
+			completeSimple(model, context, {
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+				reasoning: "minimal",
+				maxTokens: model.reasoning ? REASONING_MAX_TOKENS : PLAIN_MAX_TOKENS,
+				samplingParams: model.provider === "moonshotai" ? { response_format: { type: "json_object" } } : undefined,
+				signal,
+			})
+		let response = await request()
 		evaluatorSession.appendMessage(response)
+		let usage = toFermentV2EvaluatorUsage(response.usage)
+		if (
+			response.stopReason === "aborted" &&
+			!signal.aborted &&
+			!parseFermentV2EvaluatorOutput(contentParts(response.content))
+		) {
+			response = await request()
+			evaluatorSession.appendMessage(response)
+			const retriedUsage = toFermentV2EvaluatorUsage(response.usage)
+			usage = {
+				input: usage.input + retriedUsage.input,
+				output: usage.output + retriedUsage.output,
+				cacheRead: usage.cacheRead + retriedUsage.cacheRead,
+				cacheWrite: usage.cacheWrite + retriedUsage.cacheWrite,
+				totalTokens: usage.totalTokens + retriedUsage.totalTokens,
+				costUsd: usage.costUsd + retriedUsage.costUsd,
+			}
+		}
 		if (signal.aborted) throw signal.reason
-		const usage = toFermentV2EvaluatorUsage(response.usage)
 		const parsed = parseFermentV2EvaluatorOutput(contentParts(response.content))
 		if (parsed) {
 			const decision = { verdict: parsed.verdict, reason: parsed.reason }

@@ -1106,6 +1106,29 @@ describe("Ferment V2 extension", () => {
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 
+	it("continues after automatic compaction between agent_end and agent_settled", async () => {
+		await harness.command("keep going")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		harness.sendMessage.mockClear()
+
+		await harness.fire("agent_end", { type: "agent_end", messages: [] })
+		const compaction = compactionEntry("compacted work")
+		harness.setBranch([...harness.branch, compaction])
+		await harness.fire("session_compact", {
+			type: "session_compact",
+			compactionEntry: compaction,
+			fromExtension: false,
+			reason: "threshold",
+			willRetry: false,
+		})
+		await harness.fire("agent_settled", { type: "agent_settled" })
+
+		expect(harness.currentFermentV2()).toMatchObject({ status: "active", evaluationCount: 1 })
+		expect(harness.sendMessage.mock.lastCall?.[0]).toMatchObject({
+			details: expect.objectContaining({ source: "evaluation", revision: 1 }),
+		})
+	})
+
 	it("defers a settled continuation until an interactive prompt can claim the gap", async () => {
 		await harness.command("keep going")
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })

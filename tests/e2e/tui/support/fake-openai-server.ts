@@ -473,20 +473,8 @@ function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : {}
 }
 
-/**
- * A chat-completion request is treated as a subagent turn when any system
- * message carries the inherited-prompt marker the host injects for spawned
- * subagents. This lets the fake server route scripted responses to the
- * correct queue even when subagent and orchestrator turns interleave.
- */
-function isSubagentRequest(body: unknown): boolean {
-	const messages = asRecord(body).messages
-	if (!Array.isArray(messages)) return false
-	return messages.some((message) => {
-		const record = asRecord(message)
-		if (record.role !== "system") return false
-		return readMessageContent(record.content).includes("<inherited_system_prompt>")
-	})
+function isSubagentRequest(request: FakeResponseRequest): boolean {
+	return request.headers["x-parent-session-id"] !== undefined
 }
 
 /**
@@ -501,7 +489,7 @@ function pickResponseScript(
 	mainQueue: FakeResponseScript[],
 	subagentQueue: FakeResponseScript[],
 ): FakeResponseScript {
-	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(request.body)
+	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(request)
 	const primary = useSubagent ? subagentQueue : mainQueue
 	const fallback = useSubagent ? mainQueue : subagentQueue
 	return takeResponseScript(primary, request) ?? takeResponseScript(fallback, request) ?? { stream: ["fake response"] }

@@ -551,6 +551,41 @@ describe("Ferment V2 evaluator", () => {
 		timeout.mockRestore()
 	})
 
+	it("retries one unsolicited provider abort before returning a verdict", async () => {
+		completeMock
+			.mockResolvedValueOnce(assistant("partial response", { stopReason: "aborted" }))
+			.mockResolvedValueOnce(assistant('{"verdict":"continue","reason":"keep working"}'))
+
+		await expect(
+			evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext()),
+		).resolves.toEqual({
+			verdict: "continue",
+			reason: "keep working",
+			model: "session/main",
+			usage: {
+				input: 20,
+				output: 10,
+				cacheRead: 4,
+				cacheWrite: 2,
+				totalTokens: 36,
+				costUsd: 0.66,
+			},
+		})
+		expect(completeMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("fails closed after a second unsolicited provider abort", async () => {
+		completeMock.mockResolvedValue(assistant("partial response", { stopReason: "aborted" }))
+
+		await expect(
+			evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext()),
+		).resolves.toMatchObject({
+			verdict: "unavailable",
+			reason: "Evaluator session/main returned no parseable verdict (stop=aborted, parts=[text], text=16 chars).",
+		})
+		expect(completeMock).toHaveBeenCalledTimes(2)
+	})
+
 	it("uses the configured evaluation timeout instead of the default", async () => {
 		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, evaluationTimeoutMs: 5_000 })
 		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(AbortSignal.abort())
