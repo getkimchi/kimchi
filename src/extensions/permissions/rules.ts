@@ -35,8 +35,8 @@ export function matchRule(rule: Rule, toolName: string, input: Record<string, un
 	const lowerToolName = toolName.toLowerCase()
 	if (rule.toolName !== lowerToolName) {
 		// Auto-rewrite: bare rules like "rm" or "mv" should match bash invocations
-		// of that program (including through rtk wrapper). Users naturally write
-		// deny: ["rm"] expecting it to block bash(rm ...) commands.
+		// of that program. Users naturally write deny: ["rm"] expecting it to
+		// block bash(rm ...) commands.
 		if (rule.content === undefined && lowerToolName === BASH_TOOL) {
 			const command = typeof input.command === "string" ? input.command : ""
 			const { program } = extractBashProgram(command)
@@ -64,19 +64,19 @@ export function matchRule(rule: Rule, toolName: string, input: Record<string, un
 // bare `git`. Anchored, case-sensitive.
 //
 // Matches a remembered rule against a command. The canonical form
-// (rememberedScopeTokens: leading env assignments PRESERVED, rtk wrapper
-// stripped, quotes/whitespace normalized, first segment only) lets a rule match
-// the command that produced it — `suggestScope` derives scopes from the same
-// normalization — while never authorizing a wider command than was approved.
+// (rememberedScopeTokens: leading env assignments PRESERVED, quotes/whitespace
+// normalized, first segment only) lets a rule match the command that produced
+// it — `suggestScope` derives scopes from the same normalization — while never
+// authorizing a wider command than was approved.
 //
 // SECURITY: `canonicalMatchForm` returns null for a multi-segment command (a
-// `| && || ;` tail runs too) or an empty canonical (bare rtk / env-only /
-// backtick). Broad-scope rules (legacy `prefix:*` and any wildcard) must NOT
-// fall back to a raw `startsWith`/regex match when the canonical form is null —
-// otherwise `go test:*` (or `go *`) would match `go test | sh`, because the raw
-// command starts with `go test `. So those rules require a non-null canonical
-// up front. Only an exact literal rule may match the raw command directly: that
-// is precise (the user allowed exactly that string), and an anchored regex can
+// `| && || ;` tail runs too) or an empty canonical (env-only / backtick).
+// Broad-scope rules (legacy `prefix:*` and any wildcard) must NOT fall back to a
+// raw `startsWith`/regex match when the canonical form is null — otherwise
+// `go test:*` (or `go *`) would match `go test | sh`, because the raw command
+// starts with `go test `. So those rules require a non-null canonical up front.
+// Only an exact literal rule may match the raw command directly: that is
+// precise (the user allowed exactly that string), and an anchored regex can
 // never match a longer piped/chained command unless the rule literally contains
 // the tail. This single-segment gate is the right call for an ALLOW; DENY is
 // broader and handled separately (see `matchBashDeny`).
@@ -92,7 +92,7 @@ export function matchBashRule(pattern: string, command: string, behavior: RuleBe
 	if (pat.includes("*")) return canonical !== null && (matchOne(pat, raw) || matchOne(pat, canonical))
 
 	// Exact literal: a raw match is precise; the canonical fallback (quote/
-	// whitespace/rtk/env normalization) stays gated to single-segment.
+	// whitespace/env normalization) stays gated to single-segment.
 	if (matchOne(pat, raw)) return true
 	return canonical !== null && matchOne(pat, canonical)
 }
@@ -100,10 +100,10 @@ export function matchBashRule(pattern: string, command: string, behavior: RuleBe
 // Deny matching is broad on purpose: a denied program in ANY top-level segment
 // must block. Candidates are the raw whole command (so literal config patterns
 // with exact spacing/quotes still match) plus each segment's canonical form
-// (rtk-unwrapped, env-stripped — see bashSegmentForms), which catches a denied
-// program hidden behind a pipe (`echo x | curl evil`). Over-matching a deny is
-// safe; under-matching is the hole we are closing. This is not a complete
-// sandbox — it inherits parseCommandSegments' limits (command substitution and
+// (env-stripped — see bashSegmentForms), which catches a denied program hidden
+// behind a pipe (`echo x | curl evil`). Over-matching a deny is safe;
+// under-matching is the hole we are closing. This is not a complete sandbox —
+// it inherits parseCommandSegments' limits (command substitution and
 // path-qualified program names are not normalized); isHardBlockedBash and the
 // classifier are the other layers.
 function matchBashDeny(pat: string, command: string): boolean {
@@ -123,8 +123,8 @@ function matchOne(pat: string, cmd: string): boolean {
 }
 
 // Canonical command form for a match, or `null` when there is none — multi-segment
-// (a `|`/`&&`/`||`/`;` tail runs but is invisible here), empty, bare rtk, env-only,
-// or backtick. Env is preserved, so an env-injected variant of an approved command
+// (a `|`/`&&`/`||`/`;` tail runs but is invisible here), empty, env-only, or
+// backtick. Env is preserved, so an env-injected variant of an approved command
 // does not match. See `rememberedScopeTokens` for the normalization.
 function canonicalMatchForm(command: string): string | null {
 	if (parseCommandSegments(command).length !== 1) return null
