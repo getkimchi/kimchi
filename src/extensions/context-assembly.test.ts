@@ -158,6 +158,7 @@ describe("context-assembly", () => {
 		const handler = getHandler<BeforeAgentStartEvent>("before_agent_start")
 		const prompt = "intro text\n## Rules\nbody"
 		handler(beforeAgentStartEvent(prompt), {} as never)
+		getHandler<MessageEndEvent>("message_end")(messageEndEvent(), {} as never)
 		const entries = getAppendedEntries<ContextAssemblyEntry>(CONTEXT_ASSEMBLY_ENTRY_TYPE)
 		expect(entries).toHaveLength(1)
 		expect(entries[0].sections?.map((s) => s.name)).toEqual(["(intro)", "## Rules"])
