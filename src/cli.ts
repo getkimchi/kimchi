@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
+import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import {
 	getParsedCliArgs,
 	hasPrintFlag,
@@ -654,6 +655,7 @@ try {
 			tipsExtension(),
 			...enabledExtensionFactories([
 				{ id: "extensions.agents", factory: agentsExtension },
+				{ id: "extensions.workflows", factory: piWorkflowsExtension },
 			] satisfies ManagedExtensionFactory[]),
 			...enabledExtensionFactories([
 				{ id: FERMENT_V2_RESOURCE_ID, factory: fermentV2Extension },

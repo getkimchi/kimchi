@@ -911,6 +911,29 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		replaySession(ctx)
 	})
 
+	pi.on("session_compact", async (event, ctx) => {
+		if (event.reason !== "manual") return
+		const sessionId = bindSession(ctx)
+		await serializeFermentV2Mutation(sessionId, () => {
+			assertCurrentSession(ctx, sessionId)
+			const current = currentFermentV2
+			if (current?.status !== "paused" || !matchesFermentV2(failedTurn, current, sessionId)) return
+
+			failedTurn = undefined
+			const resumed = setFermentV2Status(current, current.id, current.revision, "active", timestamp())
+			commitFermentV2(resumed)
+			if (resumed.status !== "active") {
+				invalidateContinuation()
+				ctx.ui.notify(
+					`Ferment V2 stopped after reaching its ${formatCount(resumed.tokenBudget ?? 0)} token budget.`,
+					"warning",
+				)
+				return
+			}
+			queueFermentV2TurnAfterSettled(ctx, resumed, buildFermentV2StartSteer("resumed"), "manual_compaction")
+		})
+	})
+
 	pi.on("context", (event, ctx) => {
 		bindSession(ctx)
 		const messages = replaceFermentV2ContextMessages(event.messages, currentFermentV2, fermentV2Lessons)

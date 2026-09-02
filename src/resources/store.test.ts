@@ -41,6 +41,7 @@ describe("resource store", () => {
 		const path = tempSettingsPath()
 
 		expect(isResourceEnabled("hooks.bash", path)).toBe(true)
+		expect(isResourceEnabled("extensions.workflows", path)).toBe(false)
 		expect(isResourceEnabled("extensions.pi-package-lookup", path)).toBe(false)
 		expect(getResourceOverride("hooks.bash", path)).toBeUndefined()
 	})

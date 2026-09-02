@@ -7,9 +7,12 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
-test("experimental Ferment V2 evaluates continue, resumes work, then completes", async ({ terminal }) => {
+const COMPACTION_SUMMARY_MARKER = "FERMENT_V2_COMPACTION_SUMMARY"
+
+test("experimental Ferment V2 continues after automatic compaction and then completes", async ({ terminal }) => {
 	const planningResponse: FakeResponseScript = {
 		stream: ["Creating a tactical plan."],
+		textDelayMs: 500,
 		toolCalls: [
 			{
 				id: "create-ferment-v2-todos",
@@ -24,6 +27,10 @@ test("experimental Ferment V2 evaluates continue, resumes work, then completes",
 	}
 	const planningStopResponse: FakeResponseScript = {
 		stream: ["The plan is ready; implementation still remains."],
+		usage: { prompt_tokens: 7_500, completion_tokens: 0 },
+	}
+	const compactionResponse: FakeResponseScript = {
+		stream: [`${COMPACTION_SUMMARY_MARKER}: the Ferment V2 plan is ready and implementation remains.`],
 	}
 	const continueEvaluationResponse: FakeResponseScript = {
 		match: isFermentV2EvaluatorRequest,
@@ -71,12 +78,13 @@ test("experimental Ferment V2 evaluates continue, resumes work, then completes",
 		terminal,
 		{
 			artifactName: "ferment-v2-mode",
-			seedHome: (homeDir) => enableFermentV2Mode(homeDir),
+			seedHome: (homeDir) => enableFermentV2Mode(homeDir, { reserveTokens: 1_000, keepRecentTokens: 1 }),
 			responses: [
 				continueEvaluationResponse,
 				metEvaluationResponse,
 				planningResponse,
 				planningStopResponse,
+				compactionResponse,
 				finishTodosResponse,
 				completionResponse,
 			],
@@ -86,18 +94,19 @@ test("experimental Ferment V2 evaluates continue, resumes work, then completes",
 			expect(viewText(terminal)).not.toContain("Ferment V2")
 			trace.step("no Ferment V2 segment before a run exists, with the experimental resource enabled")
 
-			terminal.submit("/ferment-v2 --tokens 2k implement feature A")
+			terminal.submit("/ferment-v2 --tokens 20k implement feature A")
 			await waitForText(terminal, "Ferment V2 created.", { timeoutMs: 5_000 })
 
 			const fermentV2 = fermentV2Snapshot(await waitForChatRequest(fixture.fake.requests, 1))
 			expect(fermentV2).toMatchObject({
 				objective: "implement feature A",
 				status: "active",
-				tokenBudget: 2_000,
+				tokenBudget: 20_000,
 			})
 			trace.step("model received canonical Ferment V2 context")
 			await waitForText(terminal, "Implement feature A", { timeoutMs: 5_000 })
 			await waitForText(terminal, "The plan is ready; implementation still remains.", { timeoutMs: 5_000 })
+			await waitForText(terminal, "Compacted from", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Working toward the session objective.", { timeoutMs: 5_000 })
 
 			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
@@ -111,8 +120,96 @@ test("experimental Ferment V2 evaluates continue, resumes work, then completes",
 			expect(finalView).not.toContain("Get Ferment V2")
 			expect(finalView).not.toContain("Update Ferment V2")
 			await new Promise((resolve) => setTimeout(resolve, 2_000))
-			expect(chatRequests(fixture.fake.requests)).toHaveLength(6)
-			trace.step("continue then met evaluation completed without duplicate Ferment V2 UI")
+			const requests = chatRequests(fixture.fake.requests)
+			expect(requests).toHaveLength(7)
+			expect(JSON.stringify(requests[2]?.body)).toContain("You are a context summarization assistant")
+			expect(JSON.stringify(requests[4]?.body)).toContain(COMPACTION_SUMMARY_MARKER)
+			trace.step("Ferment V2 compacted, continued from the summary, then completed")
+		},
+	)
+})
+
+test("experimental Ferment V2 continues after manual compaction interrupts a turn", async ({ terminal }) => {
+	const manualCompactionSummaryMarker = "FERMENT_V2_MANUAL_COMPACTION_SUMMARY"
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "ferment-v2-mode-manual-compaction",
+			seedHome: (homeDir) => enableFermentV2Mode(homeDir, { reserveTokens: 1_000, keepRecentTokens: 1 }),
+			responses: [
+				{
+					match: isFermentV2EvaluatorRequest,
+					stream: [
+						'{"verdict":"met","checks":[{"requirement":"Finish after manual compaction","met":true,"failureMode":"the resumed work could be incomplete; l1 records verification","evidence":["l1"],"todoIds":[1]}],"reason":"The resumed turn completed the Todo with retained evidence."}',
+					],
+				},
+				{
+					stream: ["Creating the manual-compaction Todo."],
+					toolCalls: [
+						{
+							id: "create-manual-compaction-todo",
+							function: {
+								name: "create_todos",
+								arguments: JSON.stringify({
+									todos: [{ content: "Finish after manual compaction", status: "in_progress" }],
+								}),
+							},
+						},
+					],
+				},
+				{
+					stream: ["Work is underway before manual compaction.", " This interrupted response must not finish."],
+					textDelayMs: 1_500,
+				},
+				{ stream: [`${manualCompactionSummaryMarker}: resume the active Ferment V2.`] },
+				{
+					stream: ["Resumed after manual compaction."],
+					toolCalls: [
+						{
+							id: "finish-manual-compaction-todo",
+							function: {
+								name: "mark_todo",
+								arguments: JSON.stringify({
+									id: 1,
+									status: "completed",
+									note: "Evidence: resumed work completed after manual compaction",
+								}),
+							},
+						},
+					],
+				},
+				{
+					stream: ["Claiming completion after the resumed turn."],
+					toolCalls: [
+						{
+							id: "complete-after-manual-compaction",
+							function: {
+								name: "update_ferment_v2",
+								arguments: JSON.stringify({ status: "complete", completion_confidence: "proven" }),
+							},
+						},
+					],
+				},
+			],
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
+
+			terminal.submit("/ferment-v2 --tokens 20k finish after manual compaction")
+			await waitForText(terminal, "Work is underway before manual compaction.", { timeoutMs: 5_000 })
+			terminal.submit("/compact")
+			await waitForText(terminal, "Compacted from", { timeoutMs: 5_000 })
+			await waitForText(terminal, "Resumed after manual compaction.", { timeoutMs: 5_000 })
+			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
+
+			terminal.submit("/ferment-v2")
+			await waitForText(terminal, "Status: complete", { timeoutMs: 5_000 })
+			await waitForText(terminal, "Last evaluation: met", { timeoutMs: 5_000 })
+			const requests = chatRequests(fixture.fake.requests)
+			expect(requests).toHaveLength(6)
+			expect(JSON.stringify(requests[2]?.body)).toContain("You are a context summarization assistant")
+			expect(JSON.stringify(requests[3]?.body)).toContain(manualCompactionSummaryMarker)
+			trace.step("manual compaction interrupted a turn, retained context, and Ferment V2 resumed to completion")
 		},
 	)
 })
@@ -154,10 +251,11 @@ test("experimental Ferment V2 shows the reason when work is blocked", async ({ t
 	)
 })
 
-function enableFermentV2Mode(homeDir: string): void {
+function enableFermentV2Mode(homeDir: string, compaction?: { reserveTokens: number; keepRecentTokens: number }): void {
 	const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
 	const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
 	settings.resources = { "extensions.ferment-v2": true }
+	if (compaction) settings.compaction = { enabled: true, ...compaction }
 	writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`, "utf-8")
 }
 
