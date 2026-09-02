@@ -6,6 +6,7 @@ import { createToolRenderContext } from "./__mocks__/tool-render-context.js"
 import toolRenderingExtension, {
 	createErrorTruncatingResultRenderer,
 	formatToolTimer,
+	GREP_NO_MATCHES_SENTINEL,
 	getToolElapsedMs,
 	isMcpToolName,
 	mcpCallLabelAndSummary,
@@ -225,7 +226,7 @@ describe("grep result rendering", () => {
 	}
 
 	it("reports no matches when ripgrep returns the empty sentinel", () => {
-		const text = grepRenderResult({ content: [{ type: "text", text: "No matches found" }], details: undefined })
+		const text = grepRenderResult({ content: [{ type: "text", text: GREP_NO_MATCHES_SENTINEL }], details: undefined })
 		expect(text).toContain("no matches")
 		expect(text).not.toContain("1 matches")
 	})
@@ -236,6 +237,17 @@ describe("grep result rendering", () => {
 			details: undefined,
 		})
 		expect(text).toContain("2 matches")
+	})
+
+	it("counts a real match whose text equals the sentinel string", () => {
+		// A genuine match line always carries a `path:line:` prefix, so even if its text is
+		// "No matches found" it must be counted — not treated as the zero-match sentinel.
+		const text = grepRenderResult({
+			content: [{ type: "text", text: `src/a.ts:7: ${GREP_NO_MATCHES_SENTINEL}` }],
+			details: undefined,
+		})
+		expect(text).toContain("1 matches")
+		expect(text).not.toContain("no matches")
 	})
 })
 
