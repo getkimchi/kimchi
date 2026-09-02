@@ -34,8 +34,8 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
-import { handleRemoteCompletion } from "../remote-run/post-completion.js"
 import { isAutoModel } from "../router/constants.js"
+import { handleRemoteCompletion } from "../remote-run/post-completion.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
