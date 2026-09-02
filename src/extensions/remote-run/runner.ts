@@ -7,7 +7,13 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { getActiveManager, type SpawnRemoteAgentOptions, spawnRemoteAgent } from "../agents/index.js"
+import {
+	buildRemoteExecutionStats,
+	getActiveManager,
+	type SpawnRemoteAgentOptions,
+	spawnRemoteAgent,
+} from "../agents/index.js"
+import { trackRemoteExecution } from "../telemetry/index.js"
 
 /** Max characters for the result preview in the completion notification. */
 const PREVIEW_MAX = 500
@@ -36,6 +42,7 @@ export async function runCloudAgent(
 	opts?: SpawnRemoteAgentOptions,
 ): Promise<{ id: string; result: string; transcriptPath?: string; backgrounded?: boolean }> {
 	const { id, result, backgrounded } = await spawnRemoteAgent(pi, ctx, prompt, description, opts)
+	trackRemoteExecution("started", opts?.origin ?? "plan")
 
 	if (backgrounded) {
 		ctx.ui.notify("Cloud agent started in background. You'll be notified when it completes.", "info")
@@ -60,8 +67,15 @@ export async function runCloudAgent(
 		return { id, result, backgrounded: true }
 	}
 
+	// Foreground (non-detached) completion — background agents emit
+	// completed/failed from the manager's onComplete callback instead.
 	const preview = result.length > PREVIEW_MAX ? `${result.slice(0, PREVIEW_MAX)}...` : result
 	const record = getActiveManager()?.getRecord(id)
+	trackRemoteExecution(
+		record?.status === "error" ? "failed" : "completed",
+		opts?.origin ?? "plan",
+		record ? buildRemoteExecutionStats(record) : undefined,
+	)
 	const transcriptPath = record?.outputFile
 	const transcriptNote = transcriptPath ? `\nFull transcript: ${transcriptPath}` : ""
 	ctx.ui.notify(`${preview || "Remote agent completed with no output."}${transcriptNote}`, "info")

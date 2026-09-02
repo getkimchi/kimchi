@@ -38,7 +38,7 @@ import { handleRemoteCompletion } from "../remote-run/post-completion.js"
 import { isAutoModel } from "../router/constants.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
-import { trackSubagentSpawned } from "../telemetry/index.js"
+import { type RemoteExecutionStats, trackRemoteExecution, trackSubagentSpawned } from "../telemetry/index.js"
 import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
 import {
 	getAgentConversation,
@@ -544,6 +544,17 @@ let spawnRemoteAgentFn:
 	  ) => Promise<{ id: string; result: string; backgrounded?: boolean }>)
 	| undefined
 
+/** Build numeric stats for remote_execution.completed/failed telemetry from a finished record. */
+export function buildRemoteExecutionStats(record: AgentRecord): RemoteExecutionStats {
+	return {
+		duration_ms: record.completedAt != null ? record.completedAt - record.startedAt : 0,
+		tool_calls: record.toolUses,
+		turns: record.lastTurnCount,
+		input_tokens: record.lifetimeUsage.input,
+		output_tokens: record.lifetimeUsage.output,
+	}
+}
+
 /** Spawns a foreground remote agent with full UI streaming support.
  *  Returns the agent id (for targeted abort) and the result text.
  */
@@ -986,6 +997,11 @@ export default function (pi: ExtensionAPI) {
 			// (Review / Sync / Done) instead of the normal nudge path.
 			if (record.triggersRemoteCompletion) {
 				record.triggersRemoteCompletion = false
+				trackRemoteExecution(
+					isError ? "failed" : "completed",
+					record.remoteOrigin ?? "plan",
+					buildRemoteExecutionStats(record),
+				)
 				// spawnCtx is captured at spawn time and is always valid for this
 				// agent — don't fall back to a stale global context.
 				const completionCtx = record.spawnCtx

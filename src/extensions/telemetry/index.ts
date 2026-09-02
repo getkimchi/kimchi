@@ -244,6 +244,45 @@ export function trackSurveyDismissed(args: SurveyDismissedTelemetry): void {
 }
 
 // ---------------------------------------------------------------------------
+// Remote (cloud sandbox) execution tracking
+// ---------------------------------------------------------------------------
+
+/**
+ * Lifecycle stages of a remote cloud-agent execution.
+ */
+export type RemoteExecutionStage =
+	| "started"
+	| "completed"
+	| "failed"
+	| "sync.started"
+	| "sync.completed"
+	| "sync.failed"
+	| "viewed"
+	| "custom_action"
+	| "done"
+
+/** Execution stats for `completed`/`failed` lifecycle events. All numeric
+ *  aggregates — no plan text, prompts, results, or file paths (privacy). */
+export interface RemoteExecutionStats {
+	duration_ms: number
+	tool_calls: number
+	turns?: number
+	input_tokens: number
+	output_tokens: number
+}
+
+/**
+ * @param origin where the remote run originated, e.g. "plan", "plan-mode", "ferment plan"
+ * @param stats numeric run stats — only meaningful for "completed"/"failed"
+ */
+export function trackRemoteExecution(stage: RemoteExecutionStage, origin: string, stats?: RemoteExecutionStats): void {
+	if (!isEnabled()) return
+	const ctx = _telemetryCtx
+	if (!ctx) return
+	ctx.emit(`remote_execution.${stage}`, { origin, ...stats })
+}
+
+// ---------------------------------------------------------------------------
 // Ferment domain event handlers (subscribed via pi.events)
 // ---------------------------------------------------------------------------
 

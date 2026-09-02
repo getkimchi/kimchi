@@ -19,6 +19,7 @@ import { defaultFermentRuntime } from "../ferment/runtime.js"
 import { createApplyAndPersist } from "../ferment/tool-helpers.js"
 import { withBlocked } from "../herdr-events.js"
 import { markHarnessSteer } from "../steer-marker.js"
+import { trackRemoteExecution } from "../telemetry/index.js"
 import { SANDBOX_USER } from "../teleport/provisioning/constants.js"
 import { runRsync } from "../teleport/provisioning/rsync-runner.js"
 import { DIFF_RSYNC_EXCLUDES } from "../teleport/provisioning/sync-local-changes.js"
@@ -76,11 +77,14 @@ export async function handleRemoteCompletion(
 
 	switch (choice) {
 		case DONE: {
+			trackRemoteExecution("done", promptPrefix)
 			completeFerment(opts?.fermentId)
 			return
 		}
 		case SYNC: {
-			await syncRemoteChanges(ctx, opts?.remoteSession)
+			trackRemoteExecution("sync.started", promptPrefix)
+			const synced = await syncRemoteChanges(ctx, opts?.remoteSession)
+			trackRemoteExecution(synced ? "sync.completed" : "sync.failed", promptPrefix)
 			completeFerment(opts?.fermentId)
 			injectRemoteResult(pi, result, promptPrefix, opts, {
 				actionSuffix:
@@ -91,6 +95,7 @@ export async function handleRemoteCompletion(
 		case CUSTOM: {
 			const actionText = await promptForCustomAction(ctx)
 			if (!actionText) return // user cancelled input
+			trackRemoteExecution("custom_action", promptPrefix)
 			await confirmResumeFerment(ctx, opts?.fermentId)
 			injectRemoteResult(pi, result, promptPrefix, opts, {
 				actionSuffix: `\n\n---\n\nThe user wants you to: ${actionText}`,
@@ -98,6 +103,7 @@ export async function handleRemoteCompletion(
 			return
 		}
 		case REVIEW: {
+			trackRemoteExecution("viewed", promptPrefix)
 			injectRemoteResult(pi, result, promptPrefix, opts)
 			await confirmResumeFerment(ctx, opts?.fermentId)
 			return
@@ -149,20 +155,23 @@ function injectRemoteResult(
  * (`DIFF_RSYNC_EXCLUDES`) so the local repository is never corrupted or
  * polluted with internal files.
  */
-async function syncRemoteChanges(ctx: ExtensionContext, remoteSession?: RemoteSessionMeta): Promise<void> {
+/**
+ * @returns true when the sync completed successfully, false otherwise.
+ */
+async function syncRemoteChanges(ctx: ExtensionContext, remoteSession?: RemoteSessionMeta): Promise<boolean> {
 	try {
 		if (!remoteSession) {
 			ctx.ui.notify(
 				"Cannot sync: remote session metadata is missing. The remote run may have failed before recording connection details.",
 				"error",
 			)
-			return
+			return false
 		}
 
 		const apiKey = loadConfig().apiKey
 		if (!apiKey) {
 			ctx.ui.notify("No API key configured. Run `kimchi login`.", "error")
-			return
+			return false
 		}
 
 		// The session was deleted after the run, but the workspace is still
@@ -195,8 +204,10 @@ async function syncRemoteChanges(ctx: ExtensionContext, remoteSession?: RemoteSe
 		const kb = (rsyncResult.totalBytes / 1024).toFixed(0)
 		const sec = (rsyncResult.durationMs / 1000).toFixed(1)
 		ctx.ui.notify(`Sync complete: ${rsyncResult.fileCount} file(s), ${kb} KB in ${sec}s.`, "info")
+		return true
 	} catch (err) {
 		ctx.ui.notify(`Sync failed: ${err instanceof Error ? err.message : String(err)}`, "error")
+		return false
 	}
 }
 

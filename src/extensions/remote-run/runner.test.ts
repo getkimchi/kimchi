@@ -5,6 +5,12 @@ import { isRemoteRunEnabled, runCloudAgent } from "./runner.js"
 // Mock the agents module — we only care that spawnRemoteAgent is called
 // with the right args, not the real spawn machinery.
 vi.mock("../agents/index.js", () => ({
+	buildRemoteExecutionStats: vi.fn(() => ({
+		duration_ms: 0,
+		tool_calls: 0,
+		input_tokens: 0,
+		output_tokens: 0,
+	})),
 	getActiveManager: vi.fn(),
 	spawnRemoteAgent: vi.fn(),
 }))

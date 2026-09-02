@@ -106,6 +106,20 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 | `command_executed` | `bash` tool runs | `model`, `command_type`, `exit_code`, `duration_ms` |
 | `error` | Agent, tool, or transport error | `model`, `error_type` (`agent_error` / `tool_failure` / `transport_error`), `error_message` *(truncated to 300 chars)* |
 | `subagent.spawned` | Sub-agent created | `model`, `agent_type`, `reason` |
+| `remote_execution.started` | Remote cloud agent successfully spawned | `origin` |
+| `remote_execution.completed` | Remote cloud agent finished successfully | `origin`, `duration_ms`, `tool_calls`, `turns`, `input_tokens`, `output_tokens` |
+| `remote_execution.failed` | Remote cloud agent errored / was stopped | `origin`, `duration_ms`, `tool_calls`, `turns`, `input_tokens`, `output_tokens` |
+| `remote_execution.sync.started` | User chose "Sync" in the post-completion dropdown; rsync begins | `origin` |
+| `remote_execution.sync.completed` | Sync rsync succeeded | `origin` |
+| `remote_execution.sync.failed` | Sync failed (missing session metadata, no API key, or rsync error) | `origin` |
+| `remote_execution.viewed` | User chose "Review/continue locally" in the post-completion dropdown | `origin` |
+| `remote_execution.custom_action` | User chose "Give a custom instruction" and confirmed a non-empty action | `origin` |
+| `remote_execution.done` | User chose "Done" in the post-completion dropdown | `origin` |
+
+> **Privacy:** `remote_execution.*` events carry only the `origin` enum
+> (`"plan"` / `"plan-mode"` / `"ferment plan"`) plus numeric aggregates
+> (durations, counts, token totals). Plan text, prompts, results,
+> and file paths are never emitted.
 | `loop_guard.warn` | Loop-guard issues a steer | `model`, `detector`, `count`, `is_subagent` |
 | `loop_guard.subagent_abort` | Subagent terminated after a loop-guard steer | `model`, `detector`, `count`, `is_subagent` |
 
