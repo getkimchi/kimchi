@@ -246,7 +246,7 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 
 	function awaitInitialHandoff(handle: string, signal?: AbortSignal): Promise<HandoffResult> {
 		const entry = registry.getEntry(handle)
-		if (!entry || entry.state !== "running") return Promise.resolve("exited")
+		if (entry?.state !== "running") return Promise.resolve("exited")
 
 		const waiter: HandoffWaiter = {
 			resolve: () => {},

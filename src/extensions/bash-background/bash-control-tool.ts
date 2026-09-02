@@ -242,7 +242,7 @@ export function createBashControlToolDefinition(
 		const pendingMarks: Array<[string, number]> = []
 		for (const handle of cohortHandles(state)) {
 			const entry = registry.getEntry(handle)
-			if (!entry || entry.state !== "running") continue
+			if (entry?.state !== "running") continue
 			runningHandles.push(handle)
 			const incremental = registry.snapshotSince(handle)
 			pendingMarks.push([handle, incremental.nextCursor])
