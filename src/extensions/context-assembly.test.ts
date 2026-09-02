@@ -1,4 +1,8 @@
-import type { BeforeAgentStartEvent, BeforeProviderRequestEvent } from "@earendil-works/pi-coding-agent"
+import type {
+	BeforeAgentStartEvent,
+	BeforeProviderRequestEvent,
+	MessageEndEvent,
+} from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import contextAssemblyExtension, {
@@ -26,6 +30,14 @@ function beforeProviderRequestEvent(payload: unknown) {
 	return { type: "before_provider_request", payload } as BeforeProviderRequestEvent
 }
 
+/** Clean assistant message_end — the flush trigger for journaled entries. */
+function messageEndEvent(role: "assistant" | "user" = "assistant", stopReason = "stop") {
+	return {
+		type: "message_end",
+		message: { role, content: [], stopReason },
+	} as unknown as MessageEndEvent
+}
+
 describe("context-assembly", () => {
 	it("emits one composition entry on before_agent_start and dedups identical compositions", () => {
 		const { api, getHandler, getAppendedEntries } = createExtensionApi()
@@ -35,6 +47,7 @@ describe("context-assembly", () => {
 		const event = beforeAgentStartEvent("BASE PROMPT")
 		const result = handler(event, {} as never)
 		expect(result).toBeUndefined()
+		getHandler<MessageEndEvent>("message_end")(messageEndEvent(), {} as never)
 
 		const entries = getAppendedEntries<ContextAssemblyEntry>(CONTEXT_ASSEMBLY_ENTRY_TYPE)
 		expect(entries).toHaveLength(1)
@@ -57,6 +70,7 @@ describe("context-assembly", () => {
 
 		handler(beforeAgentStartEvent("PROMPT A"), {} as never)
 		handler(beforeAgentStartEvent("PROMPT B"), {} as never)
+		getHandler<MessageEndEvent>("message_end")(messageEndEvent(), {} as never)
 		const entries = getAppendedEntries<ContextAssemblyEntry>(CONTEXT_ASSEMBLY_ENTRY_TYPE)
 		expect(entries).toHaveLength(2)
 		expect(entries[0].promptHash).not.toBe(entries[1].promptHash)
@@ -84,6 +98,7 @@ describe("context-assembly", () => {
 			}),
 			{} as never,
 		)
+		getHandler<MessageEndEvent>("message_end")(messageEndEvent(), {} as never)
 
 		const entries = getAppendedEntries<ContextAssemblyEntry>(CONTEXT_ASSEMBLY_ENTRY_TYPE)
 		const components = entries[0].components ?? []
@@ -133,6 +148,7 @@ describe("context-assembly", () => {
 		}
 		const result = handler(beforeProviderRequestEvent(payload), {} as never)
 		expect(result).toBeUndefined()
+		getHandler<MessageEndEvent>("message_end")(messageEndEvent(), {} as never)
 
 		const entries = getAppendedEntries<ContextAssemblyEntry>(CONTEXT_ASSEMBLY_ENTRY_TYPE)
 		expect(entries).toHaveLength(1)
@@ -145,6 +161,7 @@ describe("context-assembly", () => {
 
 		// Same payload → stable prefix → no new entry
 		handler(beforeProviderRequestEvent(payload), {} as never)
+		getHandler<MessageEndEvent>("message_end")(messageEndEvent(), {} as never)
 		expect(getAppendedEntries<ContextAssemblyEntry>(CONTEXT_ASSEMBLY_ENTRY_TYPE)).toHaveLength(1)
 	})
 
@@ -159,6 +176,7 @@ describe("context-assembly", () => {
 		})
 		handler(beforeProviderRequestEvent(mk("first")), {} as never)
 		handler(beforeProviderRequestEvent(mk("second")), {} as never)
+		getHandler<MessageEndEvent>("message_end")(messageEndEvent(), {} as never)
 
 		const entries = getAppendedEntries<ContextAssemblyEntry>(CONTEXT_ASSEMBLY_ENTRY_TYPE)
 		expect(entries).toHaveLength(2)
@@ -213,5 +231,36 @@ describe("context-assembly", () => {
 		const requestSnapshot = JSON.stringify(requestEvent)
 		getHandler<BeforeProviderRequestEvent>("before_provider_request")(requestEvent, {} as never)
 		expect(JSON.stringify(requestEvent)).toBe(requestSnapshot)
+	})
+
+	it("buffers entries until a clean assistant message_end, ignoring user and errored messages", () => {
+		const { api, getHandler, getAppendedEntries } = createExtensionApi()
+		contextAssemblyExtension(api)
+		const onMessageEnd = getHandler<MessageEndEvent>("message_end")
+
+		// Observed but not journaled yet — the before_* junction must stay clean.
+		getHandler<BeforeAgentStartEvent>("before_agent_start")(beforeAgentStartEvent("PROMPT"), {} as never)
+		expect(getAppendedEntries<ContextAssemblyEntry>(CONTEXT_ASSEMBLY_ENTRY_TYPE)).toHaveLength(0)
+
+		onMessageEnd(messageEndEvent("user"), {} as never)
+		expect(getAppendedEntries<ContextAssemblyEntry>(CONTEXT_ASSEMBLY_ENTRY_TYPE)).toHaveLength(0)
+		onMessageEnd(messageEndEvent("assistant", "error"), {} as never)
+		expect(getAppendedEntries<ContextAssemblyEntry>(CONTEXT_ASSEMBLY_ENTRY_TYPE)).toHaveLength(0)
+
+		onMessageEnd(messageEndEvent(), {} as never)
+		const entries = getAppendedEntries<ContextAssemblyEntry>(CONTEXT_ASSEMBLY_ENTRY_TYPE)
+		expect(entries).toHaveLength(1)
+		expect(entries[0].reason).toBe("composition")
+	})
+
+	it("skips toolless provider requests (summarization side-calls are not the session prefix)", () => {
+		const { api, getHandler, getAppendedEntries } = createExtensionApi()
+		contextAssemblyExtension(api)
+		getHandler<BeforeProviderRequestEvent>("before_provider_request")(
+			beforeProviderRequestEvent({ system: "You are a context summarization assistant.", messages: [] }),
+			{} as never,
+		)
+		getHandler<MessageEndEvent>("message_end")(messageEndEvent(), {} as never)
+		expect(getAppendedEntries<ContextAssemblyEntry>(CONTEXT_ASSEMBLY_ENTRY_TYPE)).toHaveLength(0)
 	})
 })

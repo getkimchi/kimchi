@@ -9,6 +9,14 @@ import type { BeforeAgentStartEvent, BeforeProviderRequestEvent, ExtensionAPI } 
  * session without any UI dependency. Instrumentation only — never mutates the event,
  * the system prompt, or the request payload.
  *
+ * Entries are buffered when observed and flushed on the next clean assistant
+ * `message_end`. Appending a custom entry between a user entry and its assistant
+ * response (the before_provider_request junction) shifts upstream compaction's
+ * cut-point arithmetic — during 400-overflow recovery that turns a clean turn
+ * boundary into a mid-turn split, which issues an extra turn-prefix summarization
+ * call. The message_end junction is where cache-summary also appends and where
+ * upstream's backward scan never slides the cut onto a custom entry.
+ *
  * Two entry shapes, one entry type:
  * - reason "composition": emitted on `before_agent_start` when the assembled system
  *   prompt composition changes. Attribution is component-category based
@@ -154,6 +162,7 @@ export function extractPayloadSurface(payload: unknown): { systemText: string; t
 export default function contextAssemblyExtension(pi: ExtensionAPI): void {
 	let lastCompositionHash: string | undefined
 	let lastPrefixHash: string | undefined
+	const pendingFlush: ContextAssemblyEntry[] = []
 
 	pi.on("before_agent_start", (event) => {
 		const promptHash = sha1(event.systemPrompt)
@@ -173,12 +182,17 @@ export default function contextAssemblyExtension(pi: ExtensionAPI): void {
 			systemPrompt: { chars: event.systemPrompt.length, tokensEstimated: tokensEstimated(event.systemPrompt.length) },
 			components,
 		}
-		pi.appendEntry(CONTEXT_ASSEMBLY_ENTRY_TYPE, entry)
+		pendingFlush.push(entry)
 		return undefined
 	})
 
 	pi.on("before_provider_request", (event: BeforeProviderRequestEvent) => {
 		const { systemText, tools } = extractPayloadSurface(event.payload)
+		// Toolless requests are non-agentic side-calls (compaction/branch summaries pass
+		// no tool definitions). They are not the session's provider-facing prefix, and
+		// recording them would append entries right at compaction boundaries — exactly
+		// where upstream's recovery cut is most position-sensitive.
+		if (tools.length === 0) return
 		const toolsJson = JSON.stringify(tools.map((t) => [t.name, t.description, t.schema]))
 		const prefixHash = sha1(JSON.stringify([systemText, toolsJson]))
 		if (prefixHash === lastPrefixHash) return
@@ -208,7 +222,21 @@ export default function contextAssemblyExtension(pi: ExtensionAPI): void {
 			tools: toolSurfaces,
 			toolSurface: { chars: toolSurfaceChars, tokensEstimated: tokensEstimated(toolSurfaceChars) },
 		}
-		pi.appendEntry(CONTEXT_ASSEMBLY_ENTRY_TYPE, entry)
+		pendingFlush.push(entry)
 		return undefined
+	})
+
+	pi.on("message_end", (event) => {
+		// Flush only after a cleanly completed assistant message. An errored assistant
+		// message is where the 400-overflow recovery starts; appending there puts a
+		// custom entry adjacent to the compaction boundary, which is the poisonous
+		// position this buffering exists to avoid.
+		if (event.message.role !== "assistant") return
+		if (event.message.stopReason === "error") return
+		if (pendingFlush.length === 0) return
+		for (const entry of pendingFlush) {
+			pi.appendEntry(CONTEXT_ASSEMBLY_ENTRY_TYPE, entry)
+		}
+		pendingFlush.length = 0
 	})
 }
