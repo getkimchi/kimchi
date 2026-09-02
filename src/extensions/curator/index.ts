@@ -1,7 +1,7 @@
 import { watch } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionAPI, MessageRenderer } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, MessageRenderer } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
 import { getEffectiveModel } from "../router/state.js"
@@ -78,7 +78,7 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 
 	debugLog(`curator registered: threshold=${SESSION_REVIEW_THRESHOLD} skillsDir=${skillsDir}`)
 
-	pi.on("agent_end", (event) => {
+	pi.on("agent_end", (event, ctx) => {
 		const turnCount = event.messages.filter((m) => (m as { role: string }).role === "assistant").length
 		debugLog(
 			`agent_end fired: turnCount=${turnCount} threshold=${SESSION_REVIEW_THRESHOLD} providerModel=${JSON.stringify(providerModel)}`,
@@ -97,6 +97,7 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 			model: providerModel.model,
 			skillsDir,
 			messages: event.messages,
+			parentSessionId: ctx.sessionManager.getSessionId(),
 		})
 
 		// Watch skillsDir for .usage.json changes and notify when new agent_created skills appear.
@@ -148,7 +149,7 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 		cleanup.unref()
 	})
 
-	pi.on("session_start", async () => {
+	pi.on("session_start", async (_event, ctx) => {
 		const now = new Date()
 
 		try {
@@ -188,6 +189,7 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 						skillsDir,
 						manager,
 						background: true,
+						parentSessionId: ctx.sessionManager.getSessionId(),
 					})
 				} catch {
 					// Swallow — never block session startup
@@ -221,7 +223,13 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 		} as never,
 
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		execute: (async (_toolCallId: string, params: { action: "run" | "status" }) => {
+		execute: (async (
+			_toolCallId: string,
+			params: { action: "run" | "status" },
+			_signal: AbortSignal | undefined,
+			_onUpdate: unknown,
+			ctx: ExtensionContext,
+		) => {
 			if (params.action === "status") {
 				const state = await loadState(statePath)
 				return {
@@ -267,6 +275,7 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 					skillsDir,
 					manager,
 					background: false,
+					parentSessionId: ctx.sessionManager.getSessionId(),
 				})
 
 				const text = summary

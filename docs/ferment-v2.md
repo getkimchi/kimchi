@@ -38,7 +38,7 @@ Management mutations are serialized per session. Before an active run or evaluat
 
 ## Settings
 
-Under the `fermentV2` key in `~/.config/kimchi/harness/settings.json`, the defaults are `autoResume: true`, `maxUnchangedContinuations: 3`, `maxConsecutiveErrors: 3`, `defaultTokenBudget: unset`, and `evaluationTimeoutMs: 30000`. `autoResume` affects only the interactive session-start kick; invalid or missing values fall back to these defaults. An explicit command-line `--tokens` value overrides `defaultTokenBudget`.
+Under the `fermentV2` key in `~/.config/kimchi/harness/settings.json`, the defaults are `autoResume: true`, `maxUnchangedContinuations: 3`, `maxConsecutiveErrors: 3`, `defaultTokenBudget: unset`, and `evaluationTimeoutMs: 180000`. `autoResume` affects only the interactive session-start kick; invalid or missing values fall back to these defaults. An explicit command-line `--tokens` value overrides `defaultTokenBudget`.
 
 ## Runtime flow
 
@@ -87,7 +87,7 @@ Terminal Todo notes become at most five bounded durable lessons. Only lessons pr
 
 ## Settled evaluation
 
-The evaluator uses the session model in single-model mode. With multi-model enabled, it resolves the first configured `judge` role and falls back to the session model if that lookup fails. It makes one tool-free `completeSimple` call with a 30-second default timeout (`fermentV2.evaluationTimeoutMs` is configurable), a reasoning-aware token limit, and provider JSON mode for Moonshot. Each call is recorded as a child Pi session linked to the working session, so its prompt, response, model, activity, and usage stay out of the working journal.
+The evaluator uses the session model in single-model mode. With multi-model enabled, it resolves the first configured `judge` role and falls back to the session model if that lookup fails. It makes one tool-free `completeSimple` call with a 180-second default timeout (`fermentV2.evaluationTimeoutMs` is configurable), a reasoning-aware token limit, and provider JSON mode for Moonshot. Each call is recorded as a child Pi session linked to the working session, so its prompt, response, model, activity, and usage stay out of the working journal.
 
 Its input is the objective, bounded Todo state (8,000 characters), at most five lessons, and the newest transcript units (16,000 characters). Tool calls stay paired with linked results where possible; thinking is removed. A `met` verdict is accepted only when every check is met, names a plausible failure mode, cites retained evidence, uses known Todo IDs, and covers every settled Todo. Only linked tool results and `Evidence:` lessons count as authoritative evidence. Claims, plans, tool calls, file edits, decisions, dead ends, and exit status alone do not.
 

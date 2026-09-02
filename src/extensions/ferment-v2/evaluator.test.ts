@@ -1,7 +1,7 @@
 import { mkdtempSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { Api, Model } from "@earendil-works/pi-ai"
+import type { Api, Model, StopReason } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, SessionManager } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -529,11 +529,25 @@ describe("Ferment V2 evaluator", () => {
 			evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext()),
 		).resolves.toEqual({
 			verdict: "unavailable",
-			reason: "Evaluator session/main timed out after 30 seconds.",
+			reason: "Evaluator session/main timed out after 180 seconds.",
 			model: "session/main",
 		})
 		expect(timeout).toHaveBeenCalledWith(DEFAULT_FERMENT_V2_SETTINGS.evaluationTimeoutMs)
 		expect(completeMock).toHaveBeenCalledOnce()
+		timeout.mockRestore()
+	})
+
+	it("reports a timeout when the provider resolves with an aborted response", async () => {
+		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(AbortSignal.abort())
+		completeMock.mockResolvedValue(assistant("", { stopReason: "aborted" }))
+
+		await expect(
+			evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext()),
+		).resolves.toEqual({
+			verdict: "unavailable",
+			reason: "Evaluator session/main timed out after 180 seconds.",
+			model: "session/main",
+		})
 		timeout.mockRestore()
 	})
 
@@ -801,7 +815,7 @@ function model(provider: string, id: string): Model<Api> {
 	return { provider, id, name: id, api: "openai-completions" } as Model<Api>
 }
 
-function assistant(text: string, options: { stopReason?: "stop" | "length"; kind?: "text" | "thinking" } = {}) {
+function assistant(text: string, options: { stopReason?: StopReason; kind?: "text" | "thinking" } = {}) {
 	return {
 		role: "assistant" as const,
 		content: [

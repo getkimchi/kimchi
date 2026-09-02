@@ -13,7 +13,7 @@ export const DEFAULT_FERMENT_V2_SETTINGS: Readonly<FermentV2Settings> = {
 	maxUnchangedContinuations: 3,
 	maxConsecutiveErrors: 3,
 	defaultTokenBudget: undefined,
-	evaluationTimeoutMs: 30_000,
+	evaluationTimeoutMs: 180_000,
 }
 
 function isBoolean(value: unknown): value is boolean {

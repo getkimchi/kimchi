@@ -237,6 +237,7 @@ export async function evaluateFermentV2(
 			signal,
 		})
 		evaluatorSession.appendMessage(response)
+		if (signal.aborted) throw signal.reason
 		const usage = toFermentV2EvaluatorUsage(response.usage)
 		const parsed = parseFermentV2EvaluatorOutput(contentParts(response.content))
 		if (parsed) {

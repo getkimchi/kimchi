@@ -115,6 +115,10 @@ describe("parseFermentV2Settings", () => {
 	})
 
 	describe("evaluationTimeoutMs", () => {
+		it("defaults to 180 seconds", () => {
+			expect(parseFermentV2Settings(undefined).evaluationTimeoutMs).toBe(180_000)
+		})
+
 		it.each([
 			0,
 			-30_000,

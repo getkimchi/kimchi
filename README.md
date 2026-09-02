@@ -210,7 +210,7 @@ Ferment V2's policy numbers are adjustable. Edit `~/.config/kimchi/harness/setti
     "maxUnchangedContinuations": 3,
     "maxConsecutiveErrors": 3,
     "defaultTokenBudget": 200000,
-    "evaluationTimeoutMs": 30000
+    "evaluationTimeoutMs": 180000
   }
 }
 ```
@@ -221,7 +221,7 @@ Ferment V2's policy numbers are adjustable. Edit `~/.config/kimchi/harness/setti
 | `maxUnchangedContinuations` | `3` | Consecutive continuation turns without recorded progress before the Ferment V2 run pauses itself. |
 | `maxConsecutiveErrors` | `3` | Consecutive agent-error turns before the Ferment V2 run pauses itself. |
 | `defaultTokenBudget` | unset | Token budget applied to `/ferment-v2 <objective>` when `--tokens` isn't given. An explicit `--tokens` always overrides this. |
-| `evaluationTimeoutMs` | `30000` | How long the independent completion check is allowed to run before it's treated as unavailable. |
+| `evaluationTimeoutMs` | `180000` | How long the independent completion check is allowed to run before it's treated as unavailable. |
 
 Only non-default values need to be specified; missing or invalid keys fall back to their default rather than failing the extension. There is no separate evaluator-model setting -- it uses the `judge` model role from [Model roles](#model-roles). The full evaluator evidence and failure-handling rules are in the [runtime guide](docs/ferment-v2.md).
 
