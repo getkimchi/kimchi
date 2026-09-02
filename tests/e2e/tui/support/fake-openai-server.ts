@@ -475,17 +475,25 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 /**
  * A chat-completion request is treated as a subagent turn when any system
- * message carries the inherited-prompt marker the host injects for spawned
- * subagents. This lets the fake server route scripted responses to the
- * correct queue even when subagent and orchestrator turns interleave.
+ * message carries a spawned-subagent marker. Two shapes exist in the
+ * product: append-mode personas wrap the parent prompt in
+ * `<inherited_system_prompt>`, while replace-mode personas (all default
+ * agents) open with the canonical sub-agent header. Matching only one makes
+ * queue routing depend on streaming-poll timing — the parent's next turn
+ * then deterministically consumes the subagent script. This lets the fake
+ * server route scripted responses to the correct queue even when subagent
+ * and orchestrator turns interleave.
  */
+const REPLACE_MODE_SUBAGENT_HEADER = "You are a kimchi coding agent sub-agent."
+
 function isSubagentRequest(body: unknown): boolean {
 	const messages = asRecord(body).messages
 	if (!Array.isArray(messages)) return false
 	return messages.some((message) => {
 		const record = asRecord(message)
 		if (record.role !== "system") return false
-		return readMessageContent(record.content).includes("<inherited_system_prompt>")
+		const content = readMessageContent(record.content)
+		return content.includes("<inherited_system_prompt>") || content.includes(REPLACE_MODE_SUBAGENT_HEADER)
 	})
 }
 
