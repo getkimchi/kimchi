@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 // All mock functions must be vi.hoisted — vi.mock is hoisted and its factory
@@ -212,6 +215,105 @@ describe("clipboard-image extension", () => {
 
 			const calls = mockSetPendingImageIndicator.mock.calls
 			expect(calls[calls.length - 1][0]).toBeNull()
+		})
+	})
+
+	describe("typed image paths", () => {
+		const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+		let tmpDir: string
+		let imgPath: string
+
+		beforeEach(() => {
+			tmpDir = mkdtempSync(join(tmpdir(), "typed-img-ext-"))
+			imgPath = join(tmpDir, "a.png")
+			writeFileSync(imgPath, PNG_BYTES)
+		})
+
+		afterEach(() => {
+			rmSync(tmpDir, { recursive: true, force: true })
+		})
+
+		function startVisionSession() {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+			return pi
+		}
+
+		it("attaches a typed absolute image path with [Image #1] and keeps the text", () => {
+			const pi = startVisionSession()
+			const result = callInputHandler(pi, { text: `${imgPath} what's this?`, images: [] })
+
+			expect(result).toMatchObject({ action: "transform" })
+			const { text, images } = result as { text: string; images: ImageContent[] }
+			expect(text).toBe(`[Image #1] ${imgPath} what's this?`)
+			expect(images).toHaveLength(1)
+			expect(images[0].mimeType).toBe("image/png")
+			expect(Buffer.from(images[0].data, "base64")).toEqual(PNG_BYTES)
+			expect(mockAddImage).toHaveBeenCalledWith(1, images[0])
+		})
+
+		it("appends path images after existing attachments and numbers them sequentially", () => {
+			const pi = startVisionSession()
+			const attached: ImageContent = { type: "image", mimeType: "image/jpeg", data: "ZmFrZQ==" }
+			const result = callInputHandler(pi, { text: `look ${imgPath}`, images: [attached] })
+
+			const { text, images } = result as { text: string; images: ImageContent[] }
+			expect(text).toBe(`[Image #1] [Image #2] look ${imgPath}`)
+			expect(images[0]).toEqual(attached)
+			expect(Buffer.from(images[1].data, "base64")).toEqual(PNG_BYTES)
+			expect(mockAddImage).toHaveBeenNthCalledWith(1, 1, attached)
+			expect(mockAddImage).toHaveBeenNthCalledWith(2, 2, expect.objectContaining({ mimeType: "image/png" }))
+		})
+
+		it("keeps the marker counter advancing across path-attach and paste turns", () => {
+			const pi = startVisionSession()
+			callInputHandler(pi, { text: String(imgPath), images: [] })
+			const result = callInputHandler(pi, {
+				text: "and this",
+				images: [{ type: "image", mimeType: "image/png", data: "aaa" }],
+			})
+			expect((result as { text: string }).text).toContain("[Image #2]")
+		})
+
+		it("attaches a path-only message with the marker as prefix", () => {
+			const pi = startVisionSession()
+			const result = callInputHandler(pi, { text: String(imgPath), images: [] })
+			expect((result as { text: string }).text).toBe(`[Image #1] ${imgPath}`)
+		})
+
+		it("attaches a duplicated path only once", () => {
+			const pi = startVisionSession()
+			const result = callInputHandler(pi, { text: `${imgPath} and ${imgPath}`, images: [] })
+			expect((result as { images: ImageContent[] }).images).toHaveLength(1)
+		})
+
+		it("leaves text untouched when the model cannot read images", () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(
+				void 0,
+				makeMockCtx({
+					model: {
+						id: "text-only",
+						slug: "text-only",
+						input_modalities: ["text"],
+					} as unknown as ExtensionContext["model"],
+				}),
+			)
+			mockGetAvailableModels.mockReturnValue([{ slug: "text-only", input_modalities: ["text"] }])
+
+			const result = callInputHandler(pi, { text: `look at ${imgPath}`, images: [] })
+			expect(result).toBeUndefined()
+			expect(mockAddImage).not.toHaveBeenCalled()
+		})
+
+		it("leaves text untouched when the path does not resolve to an image", () => {
+			const pi = startVisionSession()
+			const missing = join(tmpDir, "missing.png")
+			const result = callInputHandler(pi, { text: `open ${missing}`, images: [] })
+			expect(result).toBeUndefined()
+			expect(mockAddImage).not.toHaveBeenCalled()
 		})
 	})
 

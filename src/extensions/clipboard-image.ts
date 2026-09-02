@@ -7,6 +7,7 @@ import { getNativeClipboard } from "../utils/clipboard-native-harness.js"
 import { readClipboardImage } from "../utils/clipboard-read.js"
 import { addImage, clearAllImages, setImageCacheDir } from "../utils/image-registry.js"
 import { IMAGE_EXT_TO_MIME } from "../utils/image-utils.js"
+import { extractTypedImagePaths } from "../utils/typed-image-paths.js"
 import { isAutoModel } from "./router/constants.js"
 import { setPasteImageHandler, setPendingImageIndicator } from "./ui.js"
 
@@ -247,11 +248,23 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 
 	pi.on("input", (event) => {
 		const incoming = event.images ?? []
-		const totalImages = incoming.length + pendingImages.length
+		// Typed image paths get paste parity: attach them the same way so the model
+		// receives the image inline instead of depending on the read tool's image
+		// pipeline. Vision-less models keep the text untouched so the read tool
+		// remains the fallback (and errors loudly there). Path images are appended
+		// after pasted/attached ones so existing marker numbering is unchanged.
+		const fromPaths: ImageContent[] = modelSupportsImages(currentCtx?.model)
+			? extractTypedImagePaths(event.text, currentCtx?.cwd ?? process.cwd()).map((match) => ({
+					type: "image" as const,
+					data: Buffer.from(match.image.bytes).toString("base64"),
+					mimeType: match.image.mimeType,
+				}))
+			: []
+		const totalImages = incoming.length + pendingImages.length + fromPaths.length
 
 		if (totalImages === 0) return
 
-		const images = [...incoming, ...pendingImages]
+		const images = [...incoming, ...pendingImages, ...fromPaths]
 		pendingImages = []
 		updateIndicator()
 
