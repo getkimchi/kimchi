@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { STARTUP_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
+import { fullText, STARTUP_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import type { FakeResponseRequest, FakeResponseScript } from "./support/fake-openai-server.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
@@ -73,6 +73,7 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 			'{"verdict":"met","checks":[{"requirement":"Implement feature A","met":true,"failureMode":"the feature could be unverified; l1 records verification","evidence":["l1"],"todoIds":[1]}],"reason":"The Todo is completed and the retained evidence records verification."}',
 		],
 	}
+	const finalAnswerResponse: FakeResponseScript = { stream: ["Feature A is complete."] }
 
 	await runKimchiSession(
 		terminal,
@@ -87,6 +88,7 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 				compactionResponse,
 				finishTodosResponse,
 				completionResponse,
+				finalAnswerResponse,
 			],
 		},
 		async (fixture, trace) => {
@@ -121,7 +123,7 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 			expect(finalView).not.toContain("Update Ferment V2")
 			await new Promise((resolve) => setTimeout(resolve, 2_000))
 			const requests = chatRequests(fixture.fake.requests)
-			expect(requests).toHaveLength(7)
+			expect(requests).toHaveLength(8)
 			expect(JSON.stringify(requests[2]?.body)).toContain("You are a context summarization assistant")
 			expect(JSON.stringify(requests[4]?.body)).toContain(COMPACTION_SUMMARY_MARKER)
 			trace.step("Ferment V2 compacted, continued from the summary, then completed")
@@ -190,6 +192,7 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 						},
 					],
 				},
+				{ stream: ["Manual-compaction work is complete."] },
 			],
 		},
 		async (fixture, trace) => {
@@ -206,10 +209,88 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 			await waitForText(terminal, "Status: complete", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Last evaluation: met", { timeoutMs: 5_000 })
 			const requests = chatRequests(fixture.fake.requests)
-			expect(requests).toHaveLength(6)
+			expect(requests).toHaveLength(7)
 			expect(JSON.stringify(requests[2]?.body)).toContain("You are a context summarization assistant")
 			expect(JSON.stringify(requests[3]?.body)).toContain(manualCompactionSummaryMarker)
 			trace.step("manual compaction interrupted a turn, retained context, and Ferment V2 resumed to completion")
+		},
+	)
+})
+
+test("experimental Ferment V2 reveals the final answer only after evaluation accepts it", async ({ terminal }) => {
+	const hiddenCandidate = "UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN"
+	const acceptedFinal = "VERIFIED_FINAL_AFTER_EVALUATION"
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "ferment-v2-mode-evaluation-gate",
+			seedHome: enableFermentV2Mode,
+			responses: [
+				{
+					match: isFermentV2EvaluatorRequest,
+					stream: [
+						'{"verdict":"met","checks":[{"requirement":"Finish behind the evaluator gate","met":true,"failureMode":"the result could be unverified; l1 records verification","evidence":["l1"],"todoIds":[1]}],"reason":"The completed Todo has retained verification evidence."}',
+					],
+					textDelayMs: 1_500,
+				},
+				{
+					stream: ["Creating the gated completion Todo."],
+					toolCalls: [
+						{
+							id: "create-gated-completion-todo",
+							function: {
+								name: "create_todos",
+								arguments: JSON.stringify({
+									todos: [{ content: "Finish behind the evaluator gate", status: "in_progress" }],
+								}),
+							},
+						},
+					],
+				},
+				{
+					stream: ["Verified the requested result."],
+					toolCalls: [
+						{
+							id: "finish-gated-completion-todo",
+							function: {
+								name: "mark_todo",
+								arguments: JSON.stringify({
+									id: 1,
+									status: "completed",
+									note: "Evidence: scripted verification completed",
+								}),
+							},
+						},
+					],
+				},
+				{
+					stream: [hiddenCandidate],
+					toolCalls: [
+						{
+							id: "claim-gated-completion",
+							function: {
+								name: "update_ferment_v2",
+								arguments: JSON.stringify({ status: "complete", completion_confidence: "proven" }),
+							},
+						},
+					],
+				},
+				{ stream: [acceptedFinal] },
+			],
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
+
+			terminal.submit("/ferment-v2 finish behind the evaluator gate")
+			const evaluatorRequest = await waitForChatRequest(fixture.fake.requests, 4)
+			expect(isFermentV2EvaluatorRequest(evaluatorRequest)).toBe(true)
+			expect(fullText(terminal)).not.toContain(hiddenCandidate)
+			trace.step("completion candidate stayed hidden while evaluation was pending")
+
+			await waitForText(terminal, acceptedFinal, { timeoutMs: 5_000 })
+			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
+			expect(fullText(terminal)).not.toContain(hiddenCandidate)
+			trace.step("accepted final answer appeared only after the evaluator returned met")
 		},
 	)
 })

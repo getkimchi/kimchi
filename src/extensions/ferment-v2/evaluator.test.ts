@@ -708,6 +708,31 @@ describe("Ferment V2 evaluator", () => {
 		expect(transcript).not.toContain("call-test")
 	})
 
+	it("skips an oversized middle unit to retain older evidence", async () => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"requirement":"inspect diff","met":true,"failureMode":"the diff could be missing; m2 shows it","evidence":["m2"],"todoIds":[]}],"reason":"diff inspected"}',
+			),
+		)
+		const messages = [
+			...linkedToolMessages("call-diff", "bash", { cmd: "git diff --stat" }, "50 files changed"),
+			...linkedToolMessages("call-read", "read", { path: "docs/ferment-v2.md" }, "x".repeat(MAX_TRANSCRIPT_CHARS)),
+			transcriptMessage("assistant", "summary complete"),
+		]
+
+		await expect(
+			evaluateFermentV2({ objective: "inspect diff", messages, todos: [] }, evaluatorContext()),
+		).resolves.toMatchObject({ verdict: "met", reason: "diff inspected" })
+
+		const transcript = sentTranscript()
+		expect(transcript).toContain('[m1] [assistant] tool c1.1 bash {"cmd":"git diff --stat"}')
+		expect(transcript).toContain("[m2] [toolResult bash for c1.1] 50 files changed")
+		expect(transcript).not.toContain("[m3]")
+		expect(transcript).not.toContain("[m4]")
+		expect(transcript).toContain("[m5] [assistant] summary complete")
+		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
+	})
+
 	it("drops an older tool call and result together at the transcript boundary", async () => {
 		completeMock.mockResolvedValue(
 			assistant(

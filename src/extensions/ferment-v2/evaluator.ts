@@ -381,9 +381,9 @@ function renderFermentV2Lessons(lessons: readonly FermentV2Lesson[] | undefined)
 }
 
 /**
- * Walks back from the newest message and stops once the budget is filled, so a
- * session holding megabytes of tool output is never materialized in full just to
- * keep its tail.
+ * Walks back from the newest message and keeps whole units that fit, so a session
+ * holding megabytes of tool output is never materialized in full just to keep its
+ * recent evidence.
  */
 function renderRecentTranscript(messages: ReadonlyArray<AgentEndEvent["messages"][number]>): {
 	text: string
@@ -393,6 +393,7 @@ function renderRecentTranscript(messages: ReadonlyArray<AgentEndEvent["messages"
 	const keptIndexes = new Set<number>()
 	const kept: RenderedTranscriptEntry[] = []
 	let length = 0
+	let skippedUnit = false
 	for (let unitIndex = units.length - 1; unitIndex >= 0; unitIndex--) {
 		const entries = units[unitIndex]
 			.map((index) => renderTranscriptEntry(messages[index], index, linkedToolResultIndexes, callLabelsById))
@@ -401,6 +402,7 @@ function renderRecentTranscript(messages: ReadonlyArray<AgentEndEvent["messages"
 		const unitText = entries.map(({ prefix, content }) => prefix + content).join("\n\n")
 		const separatorLength = kept.length > 0 ? 2 : 0
 		if (length + separatorLength + unitText.length <= MAX_TRANSCRIPT_CHARS) {
+			if (skippedUnit && !entries.some((entry) => entry.evidence)) continue
 			for (const entry of entries) {
 				if (keptIndexes.has(entry.index)) continue
 				keptIndexes.add(entry.index)
@@ -409,8 +411,11 @@ function renderRecentTranscript(messages: ReadonlyArray<AgentEndEvent["messages"
 			length += separatorLength + unitText.length
 			continue
 		}
-		if (kept.length === 0) kept.push(...clipTranscriptUnit(entries, MAX_TRANSCRIPT_CHARS))
-		break
+		if (kept.length === 0) {
+			kept.push(...clipTranscriptUnit(entries, MAX_TRANSCRIPT_CHARS))
+			break
+		}
+		skippedUnit = true
 	}
 	const ordered = kept.sort((a, b) => a.index - b.index)
 	return {

@@ -60,7 +60,7 @@ turn_start → work and Todo writes → turn_end
              ▼              ▼              ▼              ▼
          continue          met       impossible      unavailable
        hidden follow-up  + complete    blocked          paused
-                         Todo → complete
+                         Todo → final answer
 ```
 
 The core agent marks a run inactive before dispatching `agent_settled`. V2 therefore treats an in-flight evaluator as busy even though the core context reports idle.
@@ -77,13 +77,13 @@ The active context tells the agent to:
 - add Todos when objective-required work is discovered;
 - preserve compact `Decision:`, `Evidence:`, or `Dead-end:` notes for compaction;
 - settle every Todo before attempting completion; and
-- call `update_ferment_v2` only after the final Todo result, as the only tool call in that response.
+- call `update_ferment_v2` only after the final Todo result, as the only tool call in that response, without a final answer.
 
 Todo writes use normal scope resolution. Omitted scope is auto-routed; agent workers use global scope. V2 accepts observations only from the currently resolved scope and binds them to the current session, V2 ID, and revision. A visible list is required for completion, and every item must be completed for the `complete` gate. An explicit `blocked` update is immediate.
 
 Terminal Todo notes become at most five bounded durable lessons. Only lessons prefixed `Evidence:` are evaluator evidence; unprefixed completed notes are decisions, and blocked notes are dead ends.
 
-`update_ferment_v2 complete` records a runtime-only completion claim and terminates the working turn. The claim is not proof and is not required for a `met` evaluator result to complete a run; if present, its self-reported confidence is copied to the completed state. `update_ferment_v2 blocked` persists immediately and records its reason.
+`update_ferment_v2 complete` records a runtime-only completion claim and terminates the working turn. Once the Todo list is complete, assistant prose is suppressed until evaluation finishes, so an unaccepted candidate cannot reach TUI, print, JSON, or ACP consumers. The claim is not proof and is not required for a `met` evaluator result to complete a run; if present, its self-reported confidence is copied to the completed state. A `met` verdict queues one visible, tool-free final-answer turn and headless mode waits for that turn to settle. `update_ferment_v2 blocked` persists immediately and records its reason.
 
 ## Settled evaluation
 

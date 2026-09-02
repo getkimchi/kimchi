@@ -40,7 +40,9 @@ it("keeps --print alive across continue and exits only after Ferment V2 evaluate
 			failure,
 		).toBe(true)
 		expect(fermentV2Runs.at(-1)?.status, failure).toBe("complete")
-		expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(6)
+		expect(result.stdout, failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
+		expect(result.stdout, failure).toContain("VERIFIED_FINAL_AFTER_EVALUATION")
+		expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(7)
 	} finally {
 		await fake?.stop().catch(() => {})
 		rmSync(tempRoot, { recursive: true, force: true })
@@ -254,6 +256,7 @@ function fermentV2Responses() {
 			],
 		},
 		{
+			stream: ["UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN"],
 			toolCalls: [
 				{
 					id: "claim-ferment-v2-complete",
@@ -270,6 +273,7 @@ function fermentV2Responses() {
 				'{"verdict":"met","checks":[{"requirement":"feature A is complete","met":true,"failureMode":"the feature could be unverified; l1 records verification","evidence":["l1"],"todoIds":[1]}],"reason":"The completed Todo and retained evidence record verification."}',
 			],
 		},
+		{ stream: ["VERIFIED_FINAL_AFTER_EVALUATION"] },
 	]
 }
 

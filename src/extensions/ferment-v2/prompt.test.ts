@@ -52,6 +52,7 @@ Autonomous Ferment V2 continuation is enabled.
 - Settle every Todo.
 - Before completion, map every explicit Ferment V2 requirement to concrete current evidence. Missing or uncertain evidence means incomplete.
 - Call update_ferment_v2 only after receiving the final todo result that settles the list, as the only tool call in that response.
+- Do not include a final answer in the completion-claim response. The runtime requests it only after the evaluator accepts the work.
 </completion_policy>
 </kimchi_session_ferment_v2>`,
 		)

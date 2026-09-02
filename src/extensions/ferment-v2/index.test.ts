@@ -316,6 +316,12 @@ describe("Ferment V2 extension", () => {
 			tokensUsed: 1_750,
 			timeUsedMs: 3_500,
 		})
+		expect(harness.ui.notify).not.toHaveBeenCalledWith("Ferment V2 complete.", "info")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 3, timestamp: 4_500 })
+		await harness.fire("turn_end", terminalTurn())
+		expect(harness.ui.notify).not.toHaveBeenCalledWith("Ferment V2 complete.", "info")
+		await harness.fire("agent_end", { type: "agent_end", messages: [] })
+		await harness.fire("agent_settled", { type: "agent_settled" })
 		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 complete.", "info")
 	})
 

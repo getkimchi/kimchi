@@ -97,9 +97,20 @@ type FermentV2TodoState = PendingFermentV2Continuation & {
 }
 const TODO_TOOL_NAME_SET = new Set<string>(TODO_TOOL_NAMES)
 const FERMENT_V2_TOOL_NAME_SET = new Set<string>(FERMENT_V2_TOOL_NAMES)
+const FINAL_ANSWER_PROMPT = `The independent completion evaluator accepted the Ferment V2.
+
+Give the user the final answer now. Do not call tools or mention this control message.`
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
+}
+
+function clearAssistantOutput(message: AgentEndEvent["messages"][number]): void {
+	if (message.role !== "assistant") return
+	for (const block of message.content) {
+		if (block.type === "text") block.text = ""
+		if (block.type === "thinking") block.thinking = ""
+	}
 }
 
 export default function fermentV2Extension(pi: ExtensionAPI): void {
@@ -110,7 +121,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	let currentSessionId: string | undefined
 	let pendingContinuation: PendingFermentV2Continuation | undefined
 	let pendingTerminalFeedback: PendingFermentV2Continuation | undefined
+	let pendingFinalAnswer: PendingFermentV2Continuation | undefined
+	let activeFinalAnswer: PendingFermentV2Continuation | undefined
 	let completionClaim: FermentV2CompletionClaim | undefined
+	let hideCompletionCandidate = false
 	let capturedConversation: CapturedFermentV2Conversation | undefined
 	let activeTurn: PendingFermentV2Continuation | undefined
 	let pendingUserMutation: PendingFermentV2Continuation | undefined
@@ -207,7 +221,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	function resetFermentV2Runtime(): void {
 		pendingContinuation = undefined
 		pendingTerminalFeedback = undefined
+		pendingFinalAnswer = undefined
+		activeFinalAnswer = undefined
 		completionClaim = undefined
+		hideCompletionCandidate = false
 		capturedConversation = undefined
 		activeTurn = undefined
 		pendingUserMutation = undefined
@@ -381,6 +398,28 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			if (!queueFermentV2Turn(ctx, current, content, source, "followUp")) {
 				resolveFermentV2Waiter(sessionId, current.id)
 			}
+		}, 0)
+	}
+
+	function queueFinalAnswerAfterSettled(ctx: ExtensionContext, fermentV2: SessionFermentV2): void {
+		const sessionId = currentSessionId
+		if (!sessionId) return
+		pendingFinalAnswer = { sessionId, fermentV2Id: fermentV2.id, revision: fermentV2.revision }
+		setTimeout(() => {
+			const current = currentFermentV2
+			if (!matchesFermentV2(pendingFinalAnswer, current, sessionId) || current.status !== "complete") return
+			if (
+				safeSendControl(
+					ctx,
+					FINAL_ANSWER_PROMPT,
+					{ source: "evaluation_accepted", fermentV2Id: current.id, revision: current.revision },
+					"followUp",
+				)
+			)
+				return
+			pendingFinalAnswer = undefined
+			ctx.ui.notify("Ferment V2 complete.", "info")
+			resolveFermentV2Waiter(sessionId, current.id)
 		}, 0)
 	}
 
@@ -940,6 +979,34 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		return messages ? { messages } : undefined
 	})
 
+	pi.on("message_start", (event, ctx) => {
+		bindSession(ctx)
+		if (event.message.role !== "assistant") return
+		const fermentV2 = currentFermentV2
+		const todoState = matchesFermentV2(todoStateFor, fermentV2, currentSessionId) ? todoStateFor : undefined
+		hideCompletionCandidate = fermentV2?.status === "active" && todoState?.settledStatus === "complete"
+		if (hideCompletionCandidate) clearAssistantOutput(event.message)
+	})
+
+	pi.on("message_update", (event) => {
+		if (!hideCompletionCandidate || event.message.role !== "assistant") return
+		clearAssistantOutput(event.message)
+		const update = event.assistantMessageEvent
+		if (update.type === "text_delta" || update.type === "thinking_delta") update.delta = ""
+		if (update.type === "text_end" || update.type === "thinking_end") update.content = ""
+	})
+
+	pi.on("message_end", (event) => {
+		if (!hideCompletionCandidate || event.message.role !== "assistant") return
+		hideCompletionCandidate = false
+		return {
+			message: {
+				...event.message,
+				content: event.message.content.filter((block) => block.type === "toolCall"),
+			},
+		}
+	})
+
 	pi.on("tool_call", (event, ctx) => {
 		bindSession(ctx)
 		const fermentV2 = currentFermentV2
@@ -991,12 +1058,14 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 
 	pi.on("turn_start", (_event, ctx) => {
 		bindSession(ctx)
+		hideCompletionCandidate = false
 		failedTurn = undefined
 		if (pendingContinuation?.sessionId === ctx.sessionManager.getSessionId()) {
 			pendingContinuation = undefined
 		}
 		const fermentV2 = currentFermentV2
 		if (fermentV2?.status === "active") {
+			activeFinalAnswer = undefined
 			activeSinceMs ??= Date.now()
 			activeTurn = {
 				sessionId: ctx.sessionManager.getSessionId(),
@@ -1008,6 +1077,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		} else {
 			activeTurn = undefined
 			turnStartFingerprint = undefined
+			activeFinalAnswer = matchesFermentV2(pendingFinalAnswer, fermentV2, currentSessionId)
+				? pendingFinalAnswer
+				: undefined
+			if (activeFinalAnswer) pendingFinalAnswer = undefined
 		}
 	})
 
@@ -1089,6 +1162,13 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	pi.on("agent_settled", async (_event, ctx) => {
 		const sessionId = bindSession(ctx)
 		const capturedFermentV2 = currentFermentV2
+		const finalAnswer = activeFinalAnswer
+		if (finalAnswer && matchesFermentV2(finalAnswer, capturedFermentV2, sessionId)) {
+			activeFinalAnswer = undefined
+			ctx.ui.notify("Ferment V2 complete.", "info")
+			resolveFermentV2Waiter(sessionId, finalAnswer.fermentV2Id)
+			return
+		}
 		const conversation = capturedConversation
 		if (!conversation) return
 		if (!canEvaluateFermentV2(conversation, capturedFermentV2, sessionId, ctx)) {
@@ -1225,10 +1305,13 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					...setFermentV2Status(evaluated, evaluated.id, evaluated.revision, "complete", now),
 					...(claim?.completionConfidence ? { completionConfidence: claim.completionConfidence } : {}),
 				}
-				recordTerminalOutcome(completed, FERMENT_V2_EVENTS.COMPLETED, {
-					message: "Ferment V2 complete.",
-					level: "info",
-				})
+				commitFermentV2(completed, false)
+				emitEvaluation(completed)
+				emitFermentV2Lifecycle(FERMENT_V2_EVENTS.COMPLETED, completed)
+				completionClaim = undefined
+				activeSinceMs = undefined
+				invalidateContinuation()
+				queueFinalAnswerAfterSettled(ctx, completed)
 				return
 			}
 

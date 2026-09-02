@@ -126,6 +126,7 @@ function renderFermentV2Context(fermentV2: SessionFermentV2, lessons: readonly F
 - Settle every Todo.
 - Before completion, map every explicit Ferment V2 requirement to concrete current evidence. Missing or uncertain evidence means incomplete.
 - Call ${UPDATE_FERMENT_V2_TOOL_NAME} only after receiving the final todo result that settles the list, as the only tool call in that response.
+- Do not include a final answer in the completion-claim response. The runtime requests it only after the evaluator accepts the work.
 </completion_policy>`
 			: `Autonomous Ferment V2 continuation is disabled while status is ${fermentV2.status}.`
 	return `<kimchi_session_ferment_v2>\n${snapshot}\n${continuation}\n</kimchi_session_ferment_v2>`
