@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest"
-import { buildCuratorPrompt, parseCuratorOutput } from "./review.js"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { spawnKimchiSubprocess } from "../../utils/spawn-kimchi-subprocess.js"
+import { buildCuratorPrompt, parseCuratorOutput, spawnSessionReview } from "./review.js"
+
+vi.mock("../../utils/spawn-kimchi-subprocess.js", () => ({
+	spawnKimchiSubprocess: vi.fn(() => ({ unref: () => {}, on: () => {} })),
+}))
 
 describe("buildCuratorPrompt", () => {
 	it("includes candidate skill names in prompt", () => {
@@ -78,5 +83,45 @@ prunings: []
 		const result = parseCuratorOutput(text)
 		expect(result?.consolidations).toHaveLength(0)
 		expect(result?.prunings).toHaveLength(0)
+	})
+
+	describe("spawnSessionReview", () => {
+		beforeEach(() => {
+			vi.mocked(spawnKimchiSubprocess).mockClear()
+		})
+
+		const minimalMessages = [{ role: "user", content: "hello" }]
+
+		it("forwards parentSessionId into the review subprocess env", () => {
+			spawnSessionReview({
+				provider: "openai",
+				model: "gpt-4o",
+				skillsDir: "/tmp/skills",
+				messages: minimalMessages,
+				parentSessionId: "parent-session-1",
+			})
+
+			expect(spawnKimchiSubprocess).toHaveBeenCalledTimes(1)
+			const { env } = vi.mocked(spawnKimchiSubprocess).mock.calls[0][0]
+			expect(env).toMatchObject({
+				KIMCHI_SUBAGENT: "1",
+				KIMCHI_SESSION_REVIEW: "1",
+				KIMCHI_PARENT_SESSION_ID: "parent-session-1",
+			})
+		})
+
+		it("omits KIMCHI_PARENT_SESSION_ID from the env when no parent session is available", () => {
+			spawnSessionReview({
+				provider: "openai",
+				model: "gpt-4o",
+				skillsDir: "/tmp/skills",
+				messages: minimalMessages,
+			})
+
+			expect(spawnKimchiSubprocess).toHaveBeenCalledTimes(1)
+			const { env } = vi.mocked(spawnKimchiSubprocess).mock.calls[0][0]
+			expect(Object.hasOwn(env ?? {}, "KIMCHI_PARENT_SESSION_ID")).toBe(false)
+			expect(env?.KIMCHI_SUBAGENT).toBe("1")
+		})
 	})
 })

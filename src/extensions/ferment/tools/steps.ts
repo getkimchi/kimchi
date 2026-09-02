@@ -14,6 +14,7 @@ import { getAgentRecordForTaskValidation } from "../../agents/index.js"
 import { FERMENT_WORKER_BUDGETS, type FermentWorkerBudgetTier } from "../../agents/worker-budget-policy.js"
 import { withBlocked } from "../../herdr-events.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
+import { getEffectiveModel } from "../../router/state.js"
 import { withWorkingHidden } from "../../ui.js"
 import { askUserForm, createJudgeDecisionRecorder } from "../ask-user.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
@@ -511,7 +512,7 @@ export async function completeStep(
 	services: StepHandlerServices = defaultStepHandlerServices,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
-	runtime.captureJudgeContext(ctx.model, ctx.modelRegistry, getMultiModelEnabled(ctx.sessionManager))
+	runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry, getMultiModelEnabled(ctx.sessionManager))
 
 	const f = runtime.getStorage().get(params.ferment_id)
 	if (!f) return toolErr("Ferment not found.")

@@ -33,4 +33,11 @@ describe("printMergedHelp", () => {
 		expect(output).toContain("--resume, -r [id]")
 		expect(output).toContain("--list-models [search]")
 	})
+
+	it("includes the Codex example with setup-tools guidance", async () => {
+		await printMergedHelp()
+		const output = logSpy.mock.calls.map((call) => String(call[0])).join("\n")
+		expect(output).toContain("kimchi codex")
+		expect(output).toContain("setup-tools first")
+	})
 })

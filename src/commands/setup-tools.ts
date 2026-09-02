@@ -5,6 +5,7 @@ import "../integrations/cursor.js"
 import "../integrations/gsd2.js"
 import "../integrations/openclaw.js"
 import "../integrations/opencode.js"
+import "../integrations/codex.js"
 
 import { resolve } from "node:path"
 import { intro, log, note, outro, spinner } from "@clack/prompts"

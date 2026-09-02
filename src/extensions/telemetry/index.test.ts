@@ -98,6 +98,8 @@ describe("telemetryExtension integration", () => {
 		globalThis.fetch = originalFetch
 		_resetSharedAccumulators()
 		resetAcpClientInfo()
+		Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
+		Reflect.deleteProperty(process.env, "KIMCHI_PARENT_SESSION_ID")
 	})
 
 	it("registers all expected event handlers when enabled", () => {
@@ -319,6 +321,35 @@ describe("telemetryExtension integration", () => {
 		expect(headers["X-Turn-Index"]).toBe("4")
 	})
 
+	it("before_provider_headers injects X-Parent-Session-Id inside a subagent run", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		process.env.KIMCHI_SUBAGENT = "1"
+		process.env.KIMCHI_PARENT_SESSION_ID = "parent-session-1"
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers["X-Parent-Session-Id"]).toBe("parent-session-1")
+	})
+
+	it("before_provider_headers omits X-Parent-Session-Id for main-session requests", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		// KIMCHI_PARENT_SESSION_ID is process-global and set during a subagent
+		// run; main-session requests must not be tagged with it.
+		process.env.KIMCHI_PARENT_SESSION_ID = "parent-session-1"
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers["X-Parent-Session-Id"]).toBeUndefined()
+	})
+
 	it("before_provider_headers injects W3C traceparent derived from session id", async () => {
 		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)
@@ -376,6 +407,38 @@ describe("telemetryExtension integration", () => {
 
 		expect(event.headers.Traceparent).toBe(existingTraceparent)
 		expect(event.headers.traceparent).toBeUndefined()
+	})
+
+	it("before_provider_headers injects X-Conversation-Id as a UUID", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		const convId = event.headers["X-Conversation-Id"]
+		expect(typeof convId).toBe("string")
+		expect(convId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+	})
+
+	it("session_start regenerates X-Conversation-Id", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event1 = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event1)
+		const beforeId = event1.headers["X-Conversation-Id"]
+
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		const event2 = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event2)
+		const afterId = event2.headers["X-Conversation-Id"]
+
+		expect(afterId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+		expect(afterId).not.toBe(beforeId)
 	})
 })
 

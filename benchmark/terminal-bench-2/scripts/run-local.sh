@@ -5,16 +5,17 @@
 #
 # Usage examples:
 #   ./scripts/run-local.sh -i terminal-bench/fix-git
-#   MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-local.sh -i terminal-bench/fix-git -k 3
+#   MODEL=kimchi-dev/kimi-k2.7 ./scripts/run-local.sh -i terminal-bench/fix-git -k 3
 #   MODEL=multi-model ./scripts/run-local.sh -i terminal-bench/fix-git -k 3
 set -euo pipefail
 
-DATASET="terminal-bench/terminal-bench-2"
-
-: "${KIMCHI_API_KEY:?set KIMCHI_API_KEY in env}"
+DATASET="${DATASET:-terminal-bench/terminal-bench-2-1}"
+MODEL="${MODEL:-kimchi-dev/kimi-k2.7}"
 
 BENCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(git -C "$BENCH_DIR" rev-parse --show-toplevel)"
+source "$BENCH_DIR/scripts/model_api_key.sh"
+require_model_api_key "$MODEL" kimchi-dev openrouter anthropic moonshotai zai multi-model
 
 echo "==> Cross-building kimchi (target=linux-x64)"
 (cd "$REPO_ROOT" && pnpm run build:binary-linux-x64)
@@ -24,9 +25,10 @@ export KIMCHI_CODE_BINARY="$REPO_ROOT/dist/bin/kimchi"
 
 cd "$BENCH_DIR"
 exec uv run --python 3.14 harbor run \
-    --agent-import-path kimchi_agent:Kimchi \
+    --agent kimchi_agent:Kimchi \
     --env docker \
-    --model "${MODEL:-kimchi-dev/kimi-k2.5}" \
-    --ae "KIMCHI_API_KEY=$KIMCHI_API_KEY" \
+    --model "$MODEL" \
+    --ae "$MODEL_API_KEY_ENV=${!MODEL_API_KEY_ENV}" \
     -d "$DATASET" \
+    --jobs-dir "${JOBS_DIR:-benchmark/${DATASET#terminal-bench/}/jobs}" \
     "$@"

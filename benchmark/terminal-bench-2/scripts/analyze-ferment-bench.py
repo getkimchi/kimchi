@@ -15,7 +15,6 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 BENCH_DIR = SCRIPT_DIR.parent
 JOBS_DIR = BENCH_DIR / "jobs"
@@ -31,15 +30,37 @@ INCOMPLETE_STATUSES = EARLY_STOP_STATUSES | {"running"}
 
 SIGNAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("agent-timeout", re.compile(r"AgentTimeoutError|timed out after|TimeoutError", re.IGNORECASE)),
+    (
+        "infrastructure-error",
+        re.compile(
+            r"RetryableApiError|origin_response_timeout|API Error: 5\d\d"
+            r"|HTTP 5\d\d|ECONNRESET|socket hang up|ETIMEDOUT"
+            r"|fetch failed|upstream.*error",
+            re.IGNORECASE,
+        ),
+    ),
     ("nonzero-exit", re.compile(r"NonZeroAgentExitCodeError|Command exited with code [1-9]", re.IGNORECASE)),
     ("python-traceback", re.compile(r"Traceback \(most recent call last\)|\bTraceback\b")),
     ("assertion-failure", re.compile(r"AssertionError|assert .*==|FAILED .*::", re.IGNORECASE)),
     ("missing-dependency", re.compile(r"ModuleNotFoundError|No module named|ImportError", re.IGNORECASE)),
     ("missing-file", re.compile(r"No such file|does not exist|FileNotFoundError|not found at", re.IGNORECASE)),
     ("image-unavailable", re.compile(r"Image omitted|does not support images|could not be resized", re.IGNORECASE)),
-    ("exact-output-mismatch", re.compile(r"does not start with|is not correct|OUTPUT MISMATCH|Expected .* got|expected .* actual", re.IGNORECASE)),
-    ("protocol-mismatch", re.compile(r"not a real gRPC|Protocol message|RpcError|connection refused|handshake", re.IGNORECASE)),
-    ("side-effect-structure", re.compile(r"protected files|Expected only|extra file|file hash|checksum|not in the correct state", re.IGNORECASE)),
+    (
+        "exact-output-mismatch",
+        re.compile(
+            r"does not start with|is not correct|OUTPUT MISMATCH|Expected .* got|expected .* actual", re.IGNORECASE
+        ),
+    ),
+    (
+        "protocol-mismatch",
+        re.compile(r"not a real gRPC|Protocol message|RpcError|connection refused|handshake", re.IGNORECASE),
+    ),
+    (
+        "side-effect-structure",
+        re.compile(
+            r"protected files|Expected only|extra file|file hash|checksum|not in the correct state", re.IGNORECASE
+        ),
+    ),
     ("response-length", re.compile(r'"stopReason":"length"|stopReason.*length', re.IGNORECASE)),
 )
 
@@ -70,6 +91,9 @@ class TrialSummary:
     models: Counter[str]
     failed_tests: list[str]
     signals: Counter[str]
+    last_round_output_tokens: int
+    trace_ids: list[str]
+    turn_patterns: list[str]
     phase_seconds: dict[str, int | None]
 
 
@@ -79,6 +103,32 @@ def is_pass(summary: TrialSummary) -> bool:
 
 def is_zero_reward(summary: TrialSummary) -> bool:
     return summary.reward in ZERO_REWARDS
+
+
+@dataclass(frozen=True)
+class TurnRecord:
+    """One LLM round: an assistant message plus its associated diagnostics."""
+    index: int
+    timestamp: str | None
+    duration_ms: int | None
+    input_tokens: int
+    output_tokens: int
+    cache_tokens: int
+    thinking_chars: int
+    tool_calls: list[str]
+    stop_reason: str | None
+    http_status: int | None
+    error: str | None
+    is_retry: bool
+    trace_id: str | None
+    text_preview: str
+
+
+# Thresholds for per-turn pattern detection.
+TURN_LONG_GAP_MS = 60_000
+TURN_EXTENDED_THINKING_CHARS = 2_000
+TURN_HIGH_TOKEN_FRACTION = 0.25
+LOOP_MIN_REPEATS = 3
 
 
 @dataclass
@@ -99,11 +149,15 @@ class SessionSummary:
     output_tokens: int = 0
     cache_tokens: int = 0
     llm_rounds: int = 0
+    last_round_output_tokens: int = 0
     last_assistant_stop: str | None = None
     last_assistant_text: str = ""
     last_assistant_tools: list[str] = field(default_factory=list)
     signals: Counter[str] = field(default_factory=Counter)
     notables: list[tuple[str, str]] = field(default_factory=list)
+    trace_ids: list[str] = field(default_factory=list)
+    turns: list[TurnRecord] = field(default_factory=list)
+    turn_patterns: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -116,6 +170,9 @@ class SessionAggregate:
     cache_tokens: int
     models: Counter[str]
     signals: Counter[str]
+    last_round_output_tokens: int
+    trace_ids: list[str]
+    turn_patterns: list[str]
 
 
 @dataclass(frozen=True)
@@ -263,7 +320,8 @@ def text_from_content(content: Any, include_thinking: bool = False) -> str:
         elif include_thinking and item_type == "thinking":
             parts.append(display(item.get("thinking"), ""))
         elif item_type == "toolCall":
-            parts.append(f"[toolCall {display(item.get('name'))}] {json.dumps(item.get('arguments', {}), ensure_ascii=False)[:500]}")
+            arguments = json.dumps(item.get("arguments", {}), ensure_ascii=False)[:500]
+            parts.append(f"[toolCall {display(item.get('name'))}] {arguments}")
     return "\n".join(part for part in parts if part)
 
 
@@ -392,7 +450,9 @@ def summarize_events(events: list[dict[str, Any]]) -> tuple[int, str, int | None
     )
 
 
-def phase_step_maps(ferment: dict[str, Any]) -> tuple[dict[str, str], dict[tuple[str, str], str], dict[str, str], dict[tuple[str, str], str]]:
+def phase_step_maps(
+    ferment: dict[str, Any],
+) -> tuple[dict[str, str], dict[tuple[str, str], str], dict[str, str], dict[tuple[str, str], str]]:
     phase_names: dict[str, str] = {}
     phase_statuses: dict[str, str] = {}
     step_names: dict[tuple[str, str], str] = {}
@@ -452,7 +512,9 @@ def timing_rows(ferment: dict[str, Any], events: list[dict[str, Any]]) -> list[T
         if start and not end and final_ts:
             end = final_ts
             note = "open at final event"
-        rows.append(TimingRow("phase", name, phase_statuses.get(phase_id, ""), start, end, seconds_between(start, end), note))
+        rows.append(
+            TimingRow("phase", name, phase_statuses.get(phase_id, ""), start, end, seconds_between(start, end), note)
+        )
     for key, name in step_names.items():
         start = step_start.get(key)
         end = step_end.get(key)
@@ -487,9 +549,198 @@ def failed_tests(ctrf_path: Path) -> list[dict[str, str]]:
     return failures
 
 
+def extract_turns(entries: list[dict[str, Any]]) -> list[TurnRecord]:
+    """Walk session entries and build one TurnRecord per assistant message with usage.
+
+    Each assistant message that carries a ``usage`` object is an LLM round.
+    We pair it with the closest preceding ``request_diagnostics`` custom entry
+    (which carries wall-clock duration, HTTP status, and trace ID) and collect
+    thinking length and tool calls from the message content.
+    """
+    turns: list[TurnRecord] = []
+    pending_diag: dict[str, Any] | None = None
+    pending_trace_ids: list[str] = []
+    turn_index = 0
+
+    for entry in entries:
+        entry_type = display(entry.get("type"), "unknown")
+
+        if entry_type == "custom" and entry.get("customType") == "request_diagnostics":
+            data = entry.get("data")
+            if isinstance(data, dict):
+                pending_diag = data
+            continue
+
+        if entry_type == "custom" and entry.get("customType") == "trace_ids":
+            data = entry.get("data")
+            if isinstance(data, dict):
+                raw_ids = data.get("traceIds")
+                if isinstance(raw_ids, list):
+                    for tid in raw_ids:
+                        if isinstance(tid, str) and tid:
+                            pending_trace_ids.append(tid)
+            continue
+
+        message = entry.get("message")
+        if not isinstance(message, dict):
+            continue
+        role = display(message.get("role"), "unknown")
+        if role != "assistant":
+            continue
+        usage = message.get("usage")
+        if not isinstance(usage, dict):
+            continue
+
+        turn_index += 1
+        content = message.get("content")
+        thinking_chars = 0
+        tool_calls: list[str] = []
+        text_parts: list[str] = []
+        if isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type")
+                if item_type == "thinking":
+                    thinking_text = item.get("thinking")
+                    if isinstance(thinking_text, str):
+                        thinking_chars += len(thinking_text)
+                elif item_type == "text":
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        text_parts.append(text)
+                elif item_type == "toolCall":
+                    name = display(item.get("name"), "unknown")
+                    tool_calls.append(name)
+
+        duration_ms: int | None = None
+        http_status: int | None = None
+        error: str | None = None
+        is_retry = False
+        trace_id: str | None = None
+        if pending_diag is not None:
+            raw_duration = pending_diag.get("durationMs")
+            if isinstance(raw_duration, (int, float)):
+                duration_ms = int(raw_duration)
+            raw_status = pending_diag.get("status")
+            if isinstance(raw_status, int):
+                http_status = raw_status
+            elif isinstance(raw_status, str) and raw_status.isdigit():
+                http_status = int(raw_status)
+            raw_error = pending_diag.get("error")
+            if isinstance(raw_error, str) and raw_error:
+                error = raw_error
+            is_retry = bool(pending_diag.get("isRetry"))
+            raw_trace = pending_diag.get("traceId")
+            if isinstance(raw_trace, str) and raw_trace:
+                trace_id = raw_trace
+        if trace_id is None and pending_trace_ids:
+            trace_id = pending_trace_ids[-1]
+
+        text_preview = truncate(" ".join(text_parts), 120) if text_parts else ""
+
+        turns.append(TurnRecord(
+            index=turn_index,
+            timestamp=entry.get("timestamp") if isinstance(entry.get("timestamp"), str) else None,
+            duration_ms=duration_ms,
+            input_tokens=int(usage.get("input") or 0),
+            output_tokens=int(usage.get("output") or 0),
+            cache_tokens=int(usage.get("cacheRead") or 0) + int(usage.get("cacheWrite") or 0),
+            thinking_chars=thinking_chars,
+            tool_calls=tool_calls,
+            stop_reason=message.get("stopReason") if isinstance(message.get("stopReason"), str) else None,
+            http_status=http_status,
+            error=error,
+            is_retry=is_retry,
+            trace_id=trace_id,
+            text_preview=text_preview,
+        ))
+        pending_diag = None
+        pending_trace_ids = []
+
+    return turns
+
+
+def detect_turn_patterns(turns: list[TurnRecord]) -> list[str]:
+    """Inspect the per-turn timeline for looping, extended thinking, long gaps, and token concentration."""
+    patterns: list[str] = []
+    if not turns:
+        return patterns
+
+    # Long gaps — turns where the API took unusually long.
+    long_gap_turns = [t for t in turns if t.duration_ms is not None and t.duration_ms >= TURN_LONG_GAP_MS]
+    if long_gap_turns:
+        worst = max(long_gap_turns, key=lambda t: t.duration_ms or 0)
+        patterns.append(
+            f"long-gap: {len(long_gap_turns)} turn(s) exceeded {TURN_LONG_GAP_MS // 1000}s API time; "
+            f"worst was turn {worst.index} at {worst.duration_ms // 1000}s"
+        )
+
+    # Extended thinking — turns with very long thinking blocks.
+    extended_thinking_turns = [t for t in turns if t.thinking_chars >= TURN_EXTENDED_THINKING_CHARS]
+    if extended_thinking_turns:
+        worst = max(extended_thinking_turns, key=lambda t: t.thinking_chars)
+        patterns.append(
+            f"extended-thinking: {len(extended_thinking_turns)} turn(s) had "
+            f"thinking blocks \u2265 {TURN_EXTENDED_THINKING_CHARS} chars; "
+            f"largest was turn {worst.index} at {worst.thinking_chars} chars"
+            )
+
+    # Token concentration — a single turn consuming a disproportionate share of total output tokens.
+    total_output = sum(t.output_tokens for t in turns)
+    if total_output > 0:
+        for t in turns:
+            if t.output_tokens / total_output >= TURN_HIGH_TOKEN_FRACTION:
+                patterns.append(
+                    f"token-concentration: turn {t.index} consumed {t.output_tokens}/{total_output} output tokens "
+                    f"({t.output_tokens * 100 // total_output}% of total)"
+                )
+                break
+
+    # Looping — the same tool-call sequence repeated across consecutive turns.
+    if len(turns) >= LOOP_MIN_REPEATS:
+        signatures: list[tuple[str, ...]] = []
+        for t in turns:
+            sig = tuple(t.tool_calls) if t.tool_calls else ("_text_only_",)
+            signatures.append(sig)
+        best_run_start = 0
+        best_run_len = 1
+        current_start = 0
+        current_len = 1
+        for i in range(1, len(signatures)):
+            if signatures[i] == signatures[i - 1] and signatures[i] != ("_text_only_",):
+                current_len += 1
+                if current_len > best_run_len:
+                    best_run_len = current_len
+                    best_run_start = current_start
+            else:
+                current_start = i
+                current_len = 1
+        if best_run_len >= LOOP_MIN_REPEATS:
+            sig = signatures[best_run_start]
+            patterns.append(
+                f"tool-loop: turns {best_run_start + 1}\u2013{best_run_start + best_run_len} "
+                f"repeated the same tool sequence "
+                f"({', '.join(sig)}) {best_run_len} times"
+                f"({', '.join(sig)}) {best_run_len} times"
+            )
+
+    # API errors mid-session — turns with non-2xx HTTP status or an error field.
+    error_turns = [t for t in turns if t.error is not None or (t.http_status is not None and t.http_status >= 400)]
+    if error_turns:
+        worst = error_turns[-1]
+        patterns.append(
+            f"api-error: {len(error_turns)} turn(s) had API errors; last was turn {worst.index} "
+            f"(status={worst.http_status}, error={truncate(worst.error or '', 100)})"
+        )
+
+    return patterns
+
+
 def summarize_session_file(path: Path, max_notables: int) -> SessionSummary:
     summary = SessionSummary(path=path)
-    for entry in iter_jsonl(path):
+    all_entries = list(iter_jsonl(path))
+    for entry in all_entries:
         summary.entries += 1
         timestamp = entry.get("timestamp")
         if isinstance(timestamp, str):
@@ -502,10 +753,20 @@ def summarize_session_file(path: Path, max_notables: int) -> SessionSummary:
             if isinstance(parent, str):
                 summary.parent_session = parent
         elif entry_type == "model_change":
-            summary.current_model = f"{display(entry.get('provider'), 'unknown')}/{display(entry.get('modelId'), 'unknown')}"
+            summary.current_model = (
+                f"{display(entry.get('provider'), 'unknown')}/{display(entry.get('modelId'), 'unknown')}"
+            )
         elif entry_type in {"custom", "custom_message"}:
             summary.custom_types[display(entry.get("customType"), "unknown")] += 1
             record_signal_text(summary, json.dumps(entry, ensure_ascii=False), max_notables)
+            if entry.get("customType") == "trace_ids":
+                trace_data = entry.get("data")
+                if isinstance(trace_data, dict):
+                    raw_ids = trace_data.get("traceIds")
+                    if isinstance(raw_ids, list):
+                        for trace_id in raw_ids:
+                            if isinstance(trace_id, str) and trace_id and trace_id not in summary.trace_ids:
+                                summary.trace_ids.append(trace_id)
         message = entry.get("message")
         if not isinstance(message, dict):
             continue
@@ -519,6 +780,7 @@ def summarize_session_file(path: Path, max_notables: int) -> SessionSummary:
             summary.output_tokens += int(usage.get("output") or 0)
             summary.cache_tokens += int(usage.get("cacheRead") or 0) + int(usage.get("cacheWrite") or 0)
             summary.llm_rounds += 1
+            summary.last_round_output_tokens = int(usage.get("output") or 0)
             if isinstance(provider, str) and isinstance(model, str):
                 summary.models[f"{provider}/{model}"] += 1
             elif summary.current_model:
@@ -543,6 +805,8 @@ def summarize_session_file(path: Path, max_notables: int) -> SessionSummary:
         elif role == "toolResult":
             summary.roles[f"toolResult:{display(message.get('toolName'), 'unknown')}"] += 1
         record_signal_text(summary, text_from_content(content, include_thinking=True), max_notables)
+    summary.turns = extract_turns(all_entries)
+    summary.turn_patterns = detect_turn_patterns(summary.turns)
     return summary
 
 
@@ -566,7 +830,9 @@ def load_trial_evidence(trial_dir: Path, max_notables: int = 5, include_workers:
         events=load_jsonl(event_path),
         failures=failed_tests(trial_dir / "verifier" / "ctrf.json"),
         sessions=[summarize_session_file(path, max_notables) for path in session_files(trial_dir)],
-        workers=[summarize_session_file(path, max_notables) for path in worker_output_files(trial_dir)] if include_workers else [],
+        workers=[summarize_session_file(path, max_notables) for path in worker_output_files(trial_dir)]
+        if include_workers
+        else [],
     )
 
 
@@ -575,9 +841,20 @@ def aggregate_session_summaries(summaries: list[SessionSummary]) -> SessionAggre
     ends = [s.end for s in summaries if s.end]
     models: Counter[str] = Counter()
     signals: Counter[str] = Counter()
+    trace_ids: list[str] = []
+    turn_patterns: list[str] = []
+    last_round_output_tokens = 0
     for summary in summaries:
         models.update(summary.models)
         signals.update(summary.signals)
+        for trace_id in summary.trace_ids:
+            if trace_id not in trace_ids:
+                trace_ids.append(trace_id)
+        for pattern in summary.turn_patterns:
+            if pattern not in turn_patterns:
+                turn_patterns.append(pattern)
+        if summary.last_round_output_tokens > last_round_output_tokens:
+            last_round_output_tokens = summary.last_round_output_tokens
     span = seconds_between(min(starts) if starts else None, max(ends) if ends else None)
     summed = sum(seconds_between(s.start, s.end) or 0 for s in summaries)
     return SessionAggregate(
@@ -589,6 +866,9 @@ def aggregate_session_summaries(summaries: list[SessionSummary]) -> SessionAggre
         cache_tokens=sum(s.cache_tokens for s in summaries),
         models=models,
         signals=signals,
+        last_round_output_tokens=last_round_output_tokens,
+        trace_ids=trace_ids,
+        turn_patterns=turn_patterns,
     )
 
 
@@ -597,8 +877,12 @@ def summarize_trial(evidence: TrialEvidence) -> TrialSummary:
     result = evidence.result
     reward = display(get_path(result, "verifier_result", "rewards", "reward"), "missing")
     exception = display(get_path(result, "exception_info", "exception_type"), "none")
-    agent_seconds = seconds_between(get_path(result, "agent_execution", "started_at"), get_path(result, "agent_execution", "finished_at"))
-    verifier_seconds = seconds_between(get_path(result, "verifier", "started_at"), get_path(result, "verifier", "finished_at"))
+    agent_seconds = seconds_between(
+        get_path(result, "agent_execution", "started_at"), get_path(result, "agent_execution", "finished_at")
+    )
+    verifier_seconds = seconds_between(
+        get_path(result, "verifier", "started_at"), get_path(result, "verifier", "finished_at")
+    )
     ferment = evidence.ferment
     events = evidence.events
     event_count, last_event, planning_seconds, activation_seconds, execution_seconds = summarize_events(events)
@@ -608,6 +892,22 @@ def summarize_trial(evidence: TrialEvidence) -> TrialSummary:
         signals[exception] += 1
     for failure in evidence.failures:
         add_signals(signals, f"{failure['name']}\n{failure['message']}\n{failure['trace']}")
+    # Refine the catch-all agent-timeout signal into hung vs. terminated-active.
+    # A hung call produced no output tokens on its last LLM round (the API never
+    # returned a usable response). A terminated-active call was streaming tokens
+    # when the wall-clock agent timeout killed it. The timeout may be detected
+    # either via the agent-timeout signal (regex on session/verifier text) or via
+    # the exception type from result.json (e.g. AgentTimeoutError).
+    timeout_pattern = dict(SIGNAL_PATTERNS)["agent-timeout"]
+    timeout_exception = exception != "none" and bool(timeout_pattern.search(exception))
+    if "agent-timeout" in signals or timeout_exception:
+        del signals["agent-timeout"]
+        if timeout_exception:
+            signals.pop(exception, None)
+        if aggregate.last_round_output_tokens > 0:
+            signals["agent-timeout-terminated"] += 1
+        else:
+            signals["agent-timeout-hung"] += 1
     return TrialSummary(
         trial_dir=trial_dir,
         run=trial_dir.parent.name,
@@ -633,6 +933,9 @@ def summarize_trial(evidence: TrialEvidence) -> TrialSummary:
         models=aggregate.models,
         failed_tests=[failure["name"] for failure in evidence.failures],
         signals=signals,
+        last_round_output_tokens=aggregate.last_round_output_tokens,
+        trace_ids=aggregate.trace_ids,
+        turn_patterns=aggregate.turn_patterns,
         phase_seconds=phase_seconds_map(ferment, events),
     )
 
@@ -739,9 +1042,17 @@ def print_timing_averages(trials: list[TrialSummary]) -> None:
     print_kv("planned to first phase", seconds_mean([t.activation_seconds for t in trials]))
     print_kv("first phase to complete", seconds_mean([t.execution_seconds for t in trials]))
     print_kv("session wall span", seconds_mean([t.session_span_seconds for t in trials]))
-    print_kv("llm rounds avg", f"{mean([t.llm_rounds for t in trials]):.1f} across {len(trials)} trials" if trials else "n/a")
-    print_kv("input tokens avg", f"{mean([t.input_tokens for t in trials]):.1f} across {len(trials)} trials" if trials else "n/a")
-    print_kv("output tokens avg", f"{mean([t.output_tokens for t in trials]):.1f} across {len(trials)} trials" if trials else "n/a")
+    print_kv(
+        "llm rounds avg", f"{mean([t.llm_rounds for t in trials]):.1f} across {len(trials)} trials" if trials else "n/a"
+    )
+    print_kv(
+        "input tokens avg",
+        f"{mean([t.input_tokens for t in trials]):.1f} across {len(trials)} trials" if trials else "n/a",
+    )
+    print_kv(
+        "output tokens avg",
+        f"{mean([t.output_tokens for t in trials]):.1f} across {len(trials)} trials" if trials else "n/a",
+    )
 
 
 def print_task_consistency(trials: list[TrialSummary]) -> None:
@@ -749,19 +1060,26 @@ def print_task_consistency(trials: list[TrialSummary]) -> None:
     for trial in trials:
         by_task[trial.task].append(trial)
     distribution = Counter(sum(1 for trial in rows if is_pass(trial)) for rows in by_task.values())
-    print_counter("Task Pass Count Distribution", Counter({f"{passes} pass attempts": count for passes, count in distribution.items()}))
+    print_counter(
+        "Task Pass Count Distribution",
+        Counter({f"{passes} pass attempts": count for passes, count in distribution.items()}),
+    )
     all_failed = sorted(task for task, rows in by_task.items() if rows and not any(is_pass(t) for t in rows))
     print_attention_list("Tasks With All Attempts Failed", all_failed, DEFAULT_MAX_LIST)
 
 
 def print_run_summary(run_dir: Path, max_list: int) -> None:
-    trials = [summarize_trial(load_trial_evidence(p)) for p in sorted(run_dir.iterdir()) if "__" in p.name and is_trial_dir(p)]
+    trials = [
+        summarize_trial(load_trial_evidence(p)) for p in sorted(run_dir.iterdir()) if "__" in p.name and is_trial_dir(p)
+    ]
     print_run_section(run_dir, trials)
     print_artifact_counts(run_dir)
     print_counter("Reward / Exception Breakdown", Counter(f"{t.reward}\t{t.exception}" for t in trials))
     print_counter("Ferment Status Counts", Counter(t.ferment_status for t in trials))
     print_counter("Ferment Grade Counts", Counter(t.grade for t in trials))
-    print_counter("Ferment Status / Reward / Exception", Counter(f"{t.ferment_status}\t{t.reward}\t{t.exception}" for t in trials))
+    print_counter(
+        "Ferment Status / Reward / Exception", Counter(f"{t.ferment_status}\t{t.reward}\t{t.exception}" for t in trials)
+    )
     print_counter("Final Ferment Event Counts", Counter(t.last_event for t in trials))
     print_counter("Failure Signal Counts", Counter(signal for t in trials if not is_pass(t) for signal in t.signals))
     model_counts: Counter[str] = Counter()
@@ -772,29 +1090,63 @@ def print_run_summary(run_dir: Path, max_list: int) -> None:
     print_task_consistency(trials)
     print_attention_list(
         "Complete Ferment But Reward 0",
-        [f"{t.trial}\tgrade={t.grade}\texception={t.exception}\trounds={t.llm_rounds}\ttokens={tokens_text(t)}" for t in trials if t.ferment_status == "complete" and is_zero_reward(t)],
+        [
+            f"{t.trial}\tgrade={t.grade}\texception={t.exception}\trounds={t.llm_rounds}\ttokens={tokens_text(t)}"
+            for t in trials
+            if t.ferment_status == "complete" and is_zero_reward(t)
+        ],
         max_list,
     )
     print_attention_list(
         "Non-Complete Ferment But Reward 1",
-        [f"{t.trial}\tstatus={t.ferment_status}\texception={t.exception}\tlast_event={t.last_event}" for t in trials if t.ferment_status != "complete" and is_pass(t)],
+        [
+            f"{t.trial}\tstatus={t.ferment_status}\texception={t.exception}\tlast_event={t.last_event}"
+            for t in trials
+            if t.ferment_status != "complete" and is_pass(t)
+        ],
         max_list,
     )
     print_attention_list(
         "Missing Verifier Reward",
-        [f"{t.trial}\tstatus={t.ferment_status}\texception={t.exception}\tlast_event={t.last_event}" for t in trials if t.reward == "missing"],
+        [
+            f"{t.trial}\tstatus={t.ferment_status}\texception={t.exception}\tlast_event={t.last_event}"
+            for t in trials
+            if t.reward == "missing"
+        ],
         max_list,
     )
     print_attention_list(
         "Draft / Planned / Paused Ferments",
-        [f"{t.trial}\tstatus={t.ferment_status}\treward={t.reward}\texception={t.exception}\tlast_event={t.last_event}" for t in trials if t.ferment_status in EARLY_STOP_STATUSES],
+        [
+            f"{t.trial}\tstatus={t.ferment_status}"
+            f"\treward={t.reward}\texception={t.exception}"
+            f"\tlast_event={t.last_event}"
+            for t in trials
+            if t.ferment_status in EARLY_STOP_STATUSES
+        ],
         max_list,
     )
     print_attention_list(
         "Running Ferments With Exceptions",
-        [f"{t.trial}\treward={t.reward}\texception={t.exception}\tlast_event={t.last_event}" for t in trials if t.ferment_status == "running" and t.exception != "none"],
+        [
+            f"{t.trial}\treward={t.reward}\texception={t.exception}\tlast_event={t.last_event}"
+            for t in trials
+            if t.ferment_status == "running" and t.exception != "none"
+        ],
         max_list,
     )
+    # Surface trials where the turn timeline detected patterns that may have
+    # contributed to a timeout or failure, even if the exception wasn't a
+    # timeout itself.
+    pattern_trials = [t for t in trials if t.turn_patterns]
+    if pattern_trials:
+        print("\n== Turn Timeline Patterns ==")
+        for t in pattern_trials[:max_list]:
+            print(f"  {t.trial}")
+            for pattern in t.turn_patterns:
+                print(f"    {pattern}")
+        if len(pattern_trials) > max_list:
+            print(f"  ... {len(pattern_trials) - max_list} more (raise --max-list to print more)")
 
 
 def render_kv(rows: list[tuple[str, Any]]) -> list[str]:
@@ -829,25 +1181,21 @@ def event_payload_summary(event: dict[str, Any]) -> str:
 
 
 def render_top_level_section(evidence: TrialEvidence, summary: TrialSummary) -> list[str]:
-    return [
-        "## Top-Level Signals",
-        "",
-        *render_kv(
-            [
-                ("trial dir", evidence.trial_dir),
-                ("run", summary.run),
-                ("task", get_path(evidence.result, "task_name") or summary.task),
-                ("reward", summary.reward),
-                ("exception", summary.exception),
-                ("ferment status", summary.ferment_status),
-                ("ferment grade", summary.grade),
-                ("final event", summary.last_event),
-                ("failed tests", ", ".join(summary.failed_tests) or "none"),
-                ("signals", counter_text(summary.signals) or "none"),
-            ]
-        ),
-        "",
+    rows: list[tuple[str, Any]] = [
+        ("trial dir", evidence.trial_dir),
+        ("run", summary.run),
+        ("task", get_path(evidence.result, "task_name") or summary.task),
+        ("reward", summary.reward),
+        ("exception", summary.exception),
+        ("ferment status", summary.ferment_status),
+        ("ferment grade", summary.grade),
+        ("final event", summary.last_event),
+        ("failed tests", ", ".join(summary.failed_tests) or "none"),
+        ("signals", counter_text(summary.signals) or "none"),
+        ("last round output tokens", summary.last_round_output_tokens),
+        ("trace ids", ", ".join(summary.trace_ids) or "none"),
     ]
+    return ["## Top-Level Signals", "", *render_kv(rows), ""]
 
 
 def render_execution_section(summary: TrialSummary) -> list[str]:
@@ -895,7 +1243,9 @@ def render_ferment_scope_section(evidence: TrialEvidence) -> list[str]:
         lines += ["### Success Criteria", "", display(criteria), ""]
     if constraints:
         lines += ["### Constraints", ""]
-        lines += [f"- {display(item)}" for item in constraints] if isinstance(constraints, list) else [display(constraints)]
+        lines += (
+            [f"- {display(item)}" for item in constraints] if isinstance(constraints, list) else [display(constraints)]
+        )
         lines.append("")
     if get_path(ferment, "grade", "rationale"):
         lines += ["### Grade Rationale", "", display(get_path(ferment, "grade", "rationale")), ""]
@@ -910,7 +1260,19 @@ def render_timing_section(evidence: TrialEvidence) -> list[str]:
         "| --- | --- | --- | ---: | --- | --- | --- |",
     ]
     for row in timing_rows(evidence.ferment, evidence.events):
-        lines.append(md_row([row.kind, truncate(row.name, 120), row.status, seconds_display(row.seconds), row.start, row.end, row.note]))
+        lines.append(
+            md_row(
+                [
+                    row.kind,
+                    truncate(row.name, 120),
+                    row.status,
+                    seconds_display(row.seconds),
+                    row.start,
+                    row.end,
+                    row.note,
+                ]
+            )
+        )
     lines.append("")
     return lines
 
@@ -934,13 +1296,65 @@ def render_event_timeline_section(evidence: TrialEvidence) -> list[str]:
     return lines
 
 
-def render_trial_report(trial_dir: Path, max_trace_lines: int, max_notables: int, max_sessions: int) -> str:
+def render_turn_timeline_section(evidence: TrialEvidence, max_turns: int = 40) -> list[str]:
+    lines = ["## Turn Timeline", ""]
+    all_turns: list[tuple[str, TurnRecord]] = []
+    for session in evidence.sessions:
+        for turn in session.turns:
+            all_turns.append((artifact_rel(session.path, evidence.trial_dir), turn))
+    if not all_turns:
+        lines += ["No LLM rounds found in session JSONL files.", ""]
+        return lines
+    trial_patterns = detect_turn_patterns([t for _, t in all_turns])
+    if trial_patterns:
+        lines += ["### Detected Patterns", ""]
+        lines += [f"- {p}" for p in trial_patterns]
+        lines.append("")
+    lines += [
+        "### Per-Turn Breakdown",
+        "",
+        "| # | Session | Timestamp | Duration | In/Out | Cache | Thinking | Tools | Stop | HTTP | Trace | Preview |",
+        "| ---: | --- | --- | ---: | --- | ---: | ---: | --- | --- | ---: | --- | --- |",
+    ]
+    for source, turn in all_turns[:max_turns]:
+        duration = f"{turn.duration_ms // 1000}s" if turn.duration_ms is not None else "n/a"
+        tools = ", ".join(turn.tool_calls[:4]) if turn.tool_calls else ""
+        http = str(turn.http_status) if turn.http_status is not None else ("err" if turn.error else "")
+        trace = truncate(turn.trace_id or "", 16) if turn.trace_id else ""
+        lines.append(md_row([
+            turn.index,
+            truncate(source, 40),
+            turn.timestamp,
+            duration,
+            f"{turn.input_tokens}/{turn.output_tokens}",
+            turn.cache_tokens,
+            turn.thinking_chars,
+            tools,
+            turn.stop_reason or "",
+            http,
+            trace,
+            turn.text_preview,
+        ]))
+    if len(all_turns) > max_turns:
+        lines.append(f"| ... | {len(all_turns) - max_turns} more turns omitted |  |  |  |  |  |  |  |  |  |  |")
+    lines.append("")
+    return lines
+
+
+def render_trial_report(
+    trial_dir: Path,
+    max_trace_lines: int,
+    max_notables: int,
+    max_sessions: int,
+    max_turns: int = 40,
+) -> str:
     evidence = load_trial_evidence(trial_dir, max_notables=max_notables, include_workers=True)
     summary = summarize_trial(evidence)
     lines: list[str] = [
         f"# Terminal-Bench Trial Analysis: {trial_dir.name}",
         "",
-        "This report is generated from local artifacts so repeated investigation can start from a stable evidence summary instead of rereading raw JSONL/session files.",
+        "This report is generated from local artifacts so repeated investigation can start from a stable evidence "
+        "summary instead of rereading raw JSONL/session files.",
         "",
     ]
     lines += render_top_level_section(evidence, summary)
@@ -948,6 +1362,7 @@ def render_trial_report(trial_dir: Path, max_trace_lines: int, max_notables: int
     lines += render_ferment_scope_section(evidence)
     lines += render_timing_section(evidence)
     lines += render_event_timeline_section(evidence)
+    lines += render_turn_timeline_section(evidence, max_turns)
     lines += render_verifier_section(evidence, max_trace_lines)
     lines += render_sessions_section(evidence, max_notables, max_sessions)
     lines += render_investigation_hints(summary)
@@ -958,7 +1373,11 @@ def render_verifier_section(evidence: TrialEvidence, max_trace_lines: int) -> li
     trial_dir = evidence.trial_dir
     lines = ["## Verifier", ""]
     reward_path = trial_dir / "verifier" / "reward.txt"
-    lines.append(f"- reward.txt: `{reward_path.read_text(encoding='utf-8', errors='replace').strip()}`" if reward_path.is_file() else "- reward.txt: missing")
+    lines.append(
+        f"- reward.txt: `{reward_path.read_text(encoding='utf-8', errors='replace').strip()}`"
+        if reward_path.is_file()
+        else "- reward.txt: missing"
+    )
     lines.append(f"- ctrf.json: {'present' if (trial_dir / 'verifier' / 'ctrf.json').is_file() else 'missing'}")
     lines.append(f"- failed tests: {len(evidence.failures)}")
     lines.append("")
@@ -979,11 +1398,18 @@ def render_sessions_section(evidence: TrialEvidence, max_notables: int, max_sess
         "",
         f"- session jsonl files: {len(sessions)}",
         f"- worker output files: {len(workers)}",
-        "- execution totals use session JSONL files; worker output files are listed as cross-check evidence and are not added again.",
+        "- execution totals use session JSONL files; worker output files are listed as cross-check evidence and are "
+        "not added again.",
         "",
     ]
     if sessions:
-        lines += ["### Session Files", "", "| File | Entries | Seconds | LLM Rounds | Tokens In/Out | Models | Tool Calls | Stop Reasons | Last Assistant |", "| --- | ---: | ---: | ---: | --- | --- | --- | --- | --- |"]
+        lines += [
+            "### Session Files",
+            "",
+            "| File | Entries | Seconds | LLM Rounds | Tokens In/Out | Models | Tool Calls | Stop Reasons | "
+            "Last Assistant | Trace IDs |",
+            "| --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- |",
+        ]
         for summary in sessions[:max_sessions]:
             duration = seconds_between(summary.start, summary.end)
             last = summary.last_assistant_stop or ""
@@ -1003,11 +1429,15 @@ def render_sessions_section(evidence: TrialEvidence, max_notables: int, max_sess
                         counter_text(summary.tool_calls, 6),
                         counter_text(summary.stop_reasons),
                         truncate(last, 220),
+                        truncate(", ".join(summary.trace_ids), 120) or "none",
                     ]
                 )
             )
         if len(sessions) > max_sessions:
-            lines.append(f"| ... | {len(sessions) - max_sessions} more omitted; raise `--max-sessions` |  |  |  |  |  |  |  |")
+            lines.append(
+                f"| ... | {len(sessions) - max_sessions} more omitted; "
+                f"raise `--max-sessions` |  |  |  |  |  |  |  |  |  |  |"
+            )
         lines.append("")
         lines += ["### Notable Session Signals", ""]
         any_notables = False
@@ -1021,7 +1451,13 @@ def render_sessions_section(evidence: TrialEvidence, max_notables: int, max_sess
         if not any_notables:
             lines += ["No notable session signals matched the built-in patterns.", ""]
     if workers:
-        lines += ["### Worker Outputs", "", "| File | Entries | Seconds | LLM Rounds | Tokens In/Out | Models | Tool Calls | Stop Reasons | Signals |", "| --- | ---: | ---: | ---: | --- | --- | --- | --- | --- |"]
+        lines += [
+            "### Worker Outputs",
+            "",
+            "| File | Entries | Seconds | LLM Rounds | Tokens In/Out | "
+            "Models | Tool Calls | Stop Reasons | Signals | Trace IDs |",
+            "| --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- |",
+        ]
         for summary in workers[:max_sessions]:
             duration = seconds_between(summary.start, summary.end)
             signal_text = "; ".join(f"{label}: {text}" for label, text in summary.notables[:3])
@@ -1037,11 +1473,15 @@ def render_sessions_section(evidence: TrialEvidence, max_notables: int, max_sess
                         counter_text(summary.tool_calls, 6),
                         counter_text(summary.stop_reasons),
                         truncate(signal_text, 260),
+                        truncate(", ".join(summary.trace_ids), 120) or "none",
                     ]
                 )
             )
         if len(workers) > max_sessions:
-            lines.append(f"| ... | {len(workers) - max_sessions} more omitted; raise `--max-sessions` |  |  |  |  |  |  |  |")
+            lines.append(
+                f"| ... | {len(workers) - max_sessions} more omitted; "
+                f"raise `--max-sessions` |  |  |  |  |  |  |  |  |  |  |"
+            )
         lines.append("")
     return lines
 
@@ -1049,15 +1489,80 @@ def render_sessions_section(evidence: TrialEvidence, max_notables: int, max_sess
 def render_investigation_hints(summary: TrialSummary) -> list[str]:
     hints: list[str] = []
     if summary.exception != "none":
-        hints.append(f"Exception path is active: `{summary.exception}`. Start from `exception.txt`, then inspect final ferment event `{summary.last_event}` and the last assistant/tool call in `agent/sessions/main.jsonl`.")
+        hints.append(
+            f"Exception path is active: `{summary.exception}`. Start from `exception.txt`, then inspect final "
+            f"ferment event `{summary.last_event}` and the last assistant/tool call in `agent/sessions/main.jsonl`."
+        )
     if summary.ferment_status == "complete" and is_zero_reward(summary):
-        hints.append("Ferment completed but verifier rejected the result. Compare failed CTRF tests against lifecycle verification commands; this usually indicates weak gates, exact-output mismatch, side effects, protocol mismatch, or dependency leakage.")
+        hints.append(
+            "Ferment completed but verifier rejected the result. Compare failed CTRF tests against lifecycle "
+            "verification commands; this usually indicates weak gates, exact-output mismatch, side effects, "
+            "protocol mismatch, or dependency leakage."
+        )
     if summary.ferment_status in INCOMPLETE_STATUSES and not is_pass(summary):
-        hints.append(f"Ferment did not reach completion (`{summary.ferment_status}` with final event `{summary.last_event}`). Inspect phase/step timing and session stop reasons for timeout, response-length, or worker-stall evidence.")
+        hints.append(
+            f"Ferment did not reach completion (`{summary.ferment_status}` with final event "
+            f"`{summary.last_event}`). Inspect phase/step timing and session stop reasons for timeout, "
+            "response-length, or worker-stall evidence."
+        )
+    if "agent-timeout-hung" in summary.signals:
+        hints.append(
+            f"Hung API call: the last LLM round produced 0 output tokens before the wall-clock timeout fired. "
+            f"The gateway never returned a usable response. Trace IDs: {', '.join(summary.trace_ids) or 'none'}. "
+            "Correlate these against gateway logs to confirm the request was received."
+        )
+    if "agent-timeout-terminated" in summary.signals:
+        hints.append(
+            f"Terminated-active call: the last LLM round produced {summary.last_round_output_tokens} output tokens "
+            "before the wall-clock timeout killed the process. The gateway was streaming; this is a budget limit, "
+            f"not a hung API. Trace IDs: {', '.join(summary.trace_ids) or 'none'}."
+        )
+    if "infrastructure-error" in summary.signals:
+        hints.append(
+            f"Infrastructure error detected (retryable API status, connection reset, or gateway failure). "
+            f"Trace IDs: {', '.join(summary.trace_ids) or 'none'}. Use these to locate the exact request in "
+            "gateway/Cloudflare logs."
+        )
+    for pattern in summary.turn_patterns:
+        if pattern.startswith("long-gap"):
+            hints.append(
+                f"Turn timeline shows {pattern}. A long API gap may indicate gateway latency or a stalled "
+                "request — check the Turn Timeline table for the exact turn and its trace ID."
+            )
+        elif pattern.startswith("extended-thinking"):
+            hints.append(
+                f"Turn timeline shows {pattern}. Extended thinking consumed significant time/tokens before the "
+                "timeout; inspect the thinking blocks in `agent/sessions/main.jsonl` for circular reasoning or "
+                "indecision."
+            )
+        elif pattern.startswith("token-concentration"):
+            hints.append(
+                f"Turn timeline shows {pattern}. A single turn consumed a disproportionate share of the token "
+                "budget — inspect that turn's content in `agent/sessions/main.jsonl` to see if it was productive "
+                "work or wasted output."
+            )
+        elif pattern.startswith("tool-loop"):
+            hints.append(
+                f"Turn timeline shows {pattern}. The agent repeated the same tool calls without making progress "
+                "— inspect the tool call arguments in `agent/sessions/main.jsonl` to see what it was stuck on."
+            )
+        elif pattern.startswith("api-error"):
+            hints.append(
+                f"Turn timeline shows {pattern}. Mid-session API errors may have triggered retries that consumed "
+                "time before the timeout — check the Turn Timeline table for the HTTP status and trace ID."
+            )
+        else:
+            hints.append(f"Turn timeline pattern: {pattern}.")
     for signal in summary.signals:
-        hints.append(f"Detected `{signal}` signal. Use the verifier/session excerpt for that signal as primary evidence before opening long raw logs.")
+        hints.append(
+            f"Detected `{signal}` signal. Use the verifier/session excerpt for that signal as primary evidence "
+            "before opening long raw logs."
+        )
     if not hints:
-        hints.append("No automated hint matched; inspect verifier failures first, then compare against ferment gates and the final main-session assistant message.")
+        hints.append(
+            "No automated hint matched; inspect verifier failures first, then compare against ferment gates and the "
+            "final main-session assistant message."
+        )
     return ["## Investigation Hints", "", *[f"- {hint}" for hint in dict.fromkeys(hints)], ""]
 
 
@@ -1068,14 +1573,18 @@ def cache_path_for_trial(trial_dir: Path, cache_dir: Path) -> Path:
 def phase_summary_cell(summary: TrialSummary) -> str:
     if not summary.phase_seconds:
         return ""
-    return "; ".join(f"{truncate(name, 32)}={seconds_display(seconds)}" for name, seconds in summary.phase_seconds.items())
+    return "; ".join(
+        f"{truncate(name, 32)}={seconds_display(seconds)}" for name, seconds in summary.phase_seconds.items()
+    )
 
 
 def compare_trials(trials: list[Path]) -> str:
     summaries = [summarize_trial(load_trial_evidence(trial)) for trial in sorted(trials)]
     lines = [
-        "| Run | Trial | Reward | Exception | Status | Grade | Agent | Verifier | Span | Rounds | Tokens In/Out | Models | Final Event | Failed Tests | Signals | Phase Seconds |",
-        "| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- |",
+        "| Run | Trial | Reward | Exception | Status | Grade | Agent | Verifier | Span | Rounds | Tokens In/Out | "
+        "Models | Final Event | Failed Tests | Signals | Last Round Out | Trace IDs | Phase Seconds |",
+        "| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | "
+        "--- | --- | --- | --- | ---: | --- | --- |",
     ]
     for summary in summaries:
         lines.append(
@@ -1096,6 +1605,8 @@ def compare_trials(trials: list[Path]) -> str:
                     summary.last_event,
                     ", ".join(summary.failed_tests[:3]),
                     counter_text(summary.signals, 5),
+                    summary.last_round_output_tokens,
+                    truncate(", ".join(summary.trace_ids), 120) or "none",
                     phase_summary_cell(summary),
                 ]
             )
@@ -1112,12 +1623,17 @@ def command_trial(args: argparse.Namespace) -> int:
     trials = resolve_trials(args.targets, args.run, args.runs)
     if not trials:
         raise SystemExit("error: no trial directories matched")
-    reports = [(trial, render_trial_report(trial, args.max_trace_lines, args.max_notables, args.max_sessions)) for trial in trials]
+    reports = [
+        (trial, render_trial_report(trial, args.max_trace_lines, args.max_notables, args.max_sessions, args.max_turns))
+        for trial in trials
+    ]
     output_paths: list[Path] = []
     if args.cache or args.output_dir:
         base = args.output_dir.resolve() if args.output_dir else DEFAULT_CACHE_DIR
         for trial, report in reports:
-            path = cache_path_for_trial(trial, base) if args.cache and not args.output_dir else base / f"{trial.name}.md"
+            path = (
+                cache_path_for_trial(trial, base) if args.cache and not args.output_dir else base / f"{trial.name}.md"
+            )
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(report, encoding="utf-8")
             output_paths.append(path)
@@ -1147,29 +1663,48 @@ def command_compare(args: argparse.Namespace) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Analyze terminal-bench ferment runs, trials, sessions, subagents, verifier failures, timings, and tokens.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Analyze terminal-bench ferment runs, trials, sessions, subagents, verifier failures, timings, and "
+            "tokens."
+        )
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     run_parser = subparsers.add_parser("run", help="Summarize one full run.")
-    run_parser.add_argument("run", nargs="?", help="Run directory or run name under jobs/. Defaults to latest jobs/ run.")
+    run_parser.add_argument(
+        "run", nargs="?", help="Run directory or run name under jobs/. Defaults to latest jobs/ run."
+    )
     run_parser.add_argument("--max-list", type=int, default=int(os.environ.get("MAX_LIST", str(DEFAULT_MAX_LIST))))
     run_parser.set_defaults(func=command_run)
 
     trial_parser = subparsers.add_parser("trial", help="Write or print detailed per-trial evidence reports.")
-    trial_parser.add_argument("targets", nargs="*", help="Trial path/name, task name under --run/--runs, or glob under --run/--runs.")
+    trial_parser.add_argument(
+        "targets", nargs="*", help="Trial path/name, task name under --run/--runs, or glob under --run/--runs."
+    )
     trial_parser.add_argument("--run", help="Single run directory or run name.")
-    trial_parser.add_argument("--runs", nargs="+", help="Multiple run directories or run names. Targets are matched in each run.")
+    trial_parser.add_argument(
+        "--runs", nargs="+", help="Multiple run directories or run names. Targets are matched in each run."
+    )
     trial_parser.add_argument("--cache", action="store_true", help=f"Write reports under {DEFAULT_CACHE_DIR}.")
     trial_parser.add_argument("--output-dir", type=Path, help="Write one Markdown report per trial to this directory.")
     trial_parser.add_argument("--max-trace-lines", type=int, default=80)
     trial_parser.add_argument("--max-notables", type=int, default=10)
     trial_parser.add_argument("--max-sessions", type=int, default=24)
+    trial_parser.add_argument(
+        "--max-turns", type=int, default=40,
+        help="Maximum turns to show in the Turn Timeline table.",
+    )
     trial_parser.set_defaults(func=command_trial)
 
     compare_parser = subparsers.add_parser("compare", help="Compare trials or task attempts within or across runs.")
-    compare_parser.add_argument("targets", nargs="*", help="Trial path/name, task name under --run/--runs, or glob under --run/--runs.")
+    compare_parser.add_argument(
+        "targets", nargs="*", help="Trial path/name, task name under --run/--runs, or glob under --run/--runs."
+    )
     compare_parser.add_argument("--run", help="Single run directory or run name.")
-    compare_parser.add_argument("--runs", nargs="+", help="Multiple run directories or run names. Targets are matched in each run.")
+    compare_parser.add_argument(
+        "--runs", nargs="+", help="Multiple run directories or run names. Targets are matched in each run."
+    )
     compare_parser.add_argument("--output", type=Path, help="Write comparison Markdown table to this file.")
     compare_parser.set_defaults(func=command_compare)
 

@@ -5,6 +5,8 @@ import type { TelemetryConfig } from "../../config.js"
 import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import { getOsMetadata } from "../../utils/os-metadata.js"
 import { getVersion } from "../../utils.js"
+import { isAgentWorker } from "../agent-worker-context.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { getActiveFerment } from "../ferment/index.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
 import { getAcpAttributes, getPiSessionAttributes } from "./handlers/utils.js"
@@ -155,6 +157,7 @@ export class TelemetryContext {
 		ctx?: ExtensionContext,
 	): void {
 		const { session_type, source, ...commonAttrs } = this.getCommonAttributes(ctx)
+		const parentAttr = this.getParentSessionAttribute()
 		const merged: TelemetryAttributes = {
 			source,
 			session_type,
@@ -162,6 +165,7 @@ export class TelemetryContext {
 			...attrs,
 			"user.account_uuid": this.userId ?? "",
 			...commonAttrs,
+			...(parentAttr ?? {}),
 		}
 		this.enqueueLogRecord(buildLogRecord(this.telemetryId, eventName, toAttrs(merged)))
 	}
@@ -169,6 +173,7 @@ export class TelemetryContext {
 	emit(eventName: string, attrs?: TelemetryAttributes, ctx?: ExtensionContext): void {
 		const ferment = getActiveFerment()
 		const { session_type, source, ...commonAttrs } = this.getCommonAttributes(ctx)
+		const parentAttr = this.getParentSessionAttribute()
 
 		// Detect and emit session.type_changed when the type transitions
 		if (this.lastSessionType !== undefined && session_type !== this.lastSessionType) {
@@ -178,6 +183,7 @@ export class TelemetryContext {
 				source,
 				ferment_id: ferment?.id ?? "",
 				"telemetry.cli_version": getVersion(),
+				...(parentAttr ?? {}),
 			})
 			this.logBuffer.push(buildLogRecord(this.telemetryId, "session.type_changed", changeAttrs))
 		}
@@ -191,8 +197,29 @@ export class TelemetryContext {
 			ferment_id: ferment?.id ?? "",
 			"user.account_uuid": this.userId ?? "",
 			...commonAttrs,
+			...(parentAttr ?? {}),
 		}
 		this.enqueueLogRecord(buildLogRecord(this.telemetryId, eventName, toAttrs(merged)))
+	}
+
+	/**
+	 * Returns the spawning (parent) session's pi session id when this process is
+	 * inside an Agent-subagent run, undefined otherwise. The Agent runner sets
+	 * KIMCHI_PARENT_SESSION_ID for the whole subagent run; the Agent-worker async
+	 * context (or KIMCHI_SUBAGENT=1) gates the check so parent-session events are
+	 * never attributed a parent.
+	 *
+	 * Used for both the `session.parent_id` telemetry attribute and the
+	 * X-Parent-Session-Id provider header (chat_completions pipeline).
+	 */
+	getParentSessionId(): string | undefined {
+		if (!isAgentWorker()) return undefined
+		return process.env[PARENT_SESSION_ID_ENV_KEY]
+	}
+
+	private getParentSessionAttribute(): TelemetryAttributes | undefined {
+		const parentSessionId = this.getParentSessionId()
+		return parentSessionId ? { "session.parent_id": parentSessionId } : undefined
 	}
 
 	private getCommonAttributes(

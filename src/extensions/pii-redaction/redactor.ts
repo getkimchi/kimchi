@@ -158,11 +158,15 @@ function applyCustomPatterns(text: string): string {
  * returned unchanged — redaction must never break the prompt pipeline.
  * The error is logged per the code-review-lessons rule: no empty catch blocks.
  */
+export async function redactTextOrThrow(text: string): Promise<string> {
+	const result = await getEngine().scan(text)
+	const afterEngine = result.redactedText ?? text
+	return applyCustomPatterns(afterEngine)
+}
+
 export async function redactText(text: string): Promise<string> {
 	try {
-		const result = await getEngine().scan(text)
-		const afterEngine = result.redactedText ?? text
-		return applyCustomPatterns(afterEngine)
+		return await redactTextOrThrow(text)
 	} catch (err) {
 		console.error("PII redaction scan failed, returning original text:", err)
 		return text
