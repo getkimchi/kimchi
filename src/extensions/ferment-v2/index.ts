@@ -279,10 +279,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		resolveFermentV2Waiter(currentSessionId, fermentV2.id)
 	}
 
-	function fermentV2ToolsAvailable(): boolean {
+	function fermentV2ToolsAvailable(fermentV2ToolNames: readonly string[] = FERMENT_V2_TOOL_NAMES): boolean {
 		try {
 			const active = new Set(pi.getActiveTools())
-			return [...FERMENT_V2_TOOL_NAMES, ...TODO_TOOL_NAMES].every((name) => active.has(name))
+			return [...fermentV2ToolNames, ...TODO_TOOL_NAMES].every((name) => active.has(name))
 		} catch {
 			return false
 		}
@@ -323,7 +323,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		source: string,
 		deliverAs: "steer" | "followUp" = "steer",
 	): boolean {
-		if (!fermentV2ToolsAvailable()) return false
+		if (!fermentV2ToolsAvailable([UPDATE_FERMENT_V2_TOOL_NAME])) return false
 		const pending = pendingContinuation
 		if (
 			pending &&
@@ -447,7 +447,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			matchesFermentV2(expected, fermentV2, sessionId) &&
 			!matchesFermentV2(pendingUserMutation, fermentV2, sessionId) &&
 			!fermentV2HasPendingMessages(ctx) &&
-			fermentV2ToolsAvailable()
+			fermentV2ToolsAvailable([UPDATE_FERMENT_V2_TOOL_NAME])
 		)
 	}
 

@@ -1912,6 +1912,28 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()?.evaluationCount).toBeUndefined()
 	})
 
+	it("continues and completes when only the recovery tool is hidden", async () => {
+		await harness.command("finish")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		await completeVisibleTodo(harness)
+		await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, {
+			status: "complete",
+			completion_confidence: "tested",
+		})
+
+		harness.setActiveTools([UPDATE_FERMENT_V2_TOOL_NAME, ...TODO_TOOL_NAMES])
+		evaluateFermentV2Mock.mockClear()
+		harness.sendMessage.mockClear()
+		await settleFermentV2(harness, "continue")
+		await vi.waitFor(() => expect(continuations(harness)).toHaveLength(1))
+
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() })
+		await settleFermentV2(harness, "met")
+
+		expect(evaluateFermentV2Mock).toHaveBeenCalledTimes(2)
+		expect(harness.currentFermentV2()?.status).toBe("complete")
+	})
+
 	it("does not start when only part of the Todo toolset is visible", async () => {
 		harness.setActiveTools([...FERMENT_V2_TOOL_NAMES, TODO_TOOL_NAMES[0]])
 		await harness.command("keep going")
