@@ -18,8 +18,8 @@ def format_tokens(n):
     return str(n)
 
 
-def wilson_lower_bound(wins, total, z=1.96):
-    """One-sided-ish 95% Wilson lower bound on a win rate (stdlib only).
+def wilson_lower_bound(wins, total, z=1.645):
+    """One-sided 95% Wilson lower bound on a win rate (stdlib only).
 
     Used to keep single-task token flukes from reading as regressions: treat
     'candidate improved on this task' as a Bernoulli trial and ship the lower

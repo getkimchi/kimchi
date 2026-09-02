@@ -364,7 +364,7 @@ export function isExperimentalFeaturesArg(args: string[]): boolean {
  *  bare kwarg form. Used by the Chunk 7 print-mode gate: a headless one-shot
  *  planner still needs the ferment suite, so suppression must compose. */
 export function hasFermentOneshotArg(args: readonly string[]): boolean {
-	return args.some((a) => a === "--ferment-oneshot" || a.endsWith("ferment-oneshot=true"))
+	return args.some((a) => a === "--ferment-oneshot" || a === "--ferment-oneshot=true" || a === "ferment-oneshot=true")
 }
 
 export function stripExperimentalFeaturesArg(args: string[]): string[] {

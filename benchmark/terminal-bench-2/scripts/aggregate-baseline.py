@@ -43,13 +43,16 @@ latest_cache_summary = _module.latest_cache_summary
 def load_json(path: Path):
     try:
         return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as e:
+        import sys
+        print(f"WARN: could not load {path}: {e}", file=sys.stderr, flush=True)
         return None
 
 
 def read_session_events(trial_dir: Path):
     """Custom journal events (context_assembly / cache_summary / trace_ids)."""
     events = []
+    import sys
     for jsonl in trial_dir.glob("agent/sessions/*.jsonl"):
         try:
             for raw in jsonl.read_text().splitlines():
@@ -58,7 +61,8 @@ def read_session_events(trial_dir: Path):
                     continue
                 try:
                     event = json.loads(raw)
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
+                    print(f"WARN: unreadable line in {jsonl}: {e}", file=sys.stderr, flush=True)
                     continue
                 if event.get("type") == "custom" and event.get("customType") in (
                     "context_assembly",
@@ -66,8 +70,10 @@ def read_session_events(trial_dir: Path):
                     "trace_ids",
                 ):
                     events.append(event)
-        except OSError:
+        except OSError as e:
+            print(f"WARN: could not read {jsonl}: {e}", file=sys.stderr, flush=True)
             continue
+    events.sort(key=lambda e: e.get("timestamp") or "")
     return events
 
 

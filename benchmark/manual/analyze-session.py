@@ -86,10 +86,12 @@ def latest_context_assembly(events):
             continue
         data = event.get("data") or {}
         if data.get("reason") == "composition":
-            composition = data.get("systemPrompt") or {}
+            if "systemPrompt" in data:
+                composition = data["systemPrompt"]
         elif data.get("reason") == "prefix-change":
             prefix_changes += 1
-            tool_surface = data.get("toolSurface") or {}
+            if "toolSurface" in data:
+                tool_surface = data["toolSurface"]
     if composition is None and tool_surface is None:
         return None
     return {
