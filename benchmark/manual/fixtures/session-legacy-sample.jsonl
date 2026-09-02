@@ -1,5 +1,0 @@
-{"type":"session_start","timestamp":"2026-08-25T08:00:00.000Z","id":"bbbb0001","parentId":null}
-{"type":"message","message":{"role":"user","content":[{"type":"text","text":"do the thing"}]},"timestamp":"2026-08-25T08:00:01.000Z","id":"bbbb0002","parentId":"bbbb0001"}
-{"type":"custom","customType":"trace_ids","data":{"traceIds":["abc123"]},"timestamp":"2026-08-25T08:00:02.000Z","id":"bbbb0003","parentId":"bbbb0002"}
-{"type":"message","message":{"role":"assistant","content":[],"usage":{"input":5000,"output":100,"totalTokens":5100,"cost":{"input":0.005,"output":0.001,"total":0.006}}},"timestamp":"2026-08-25T08:00:05.000Z","id":"bbbb0004","parentId":"bbbb0003"}
-{"type":"message","message":{"role":"assistant","content":[],"usage":{"input":5500,"output":150,"totalTokens":5650,"cost":{"input":0.005,"output":0.001,"total":0.006}}},"timestamp":"2026-08-25T08:00:07.000Z","id":"bbbb0005","parentId":"bbbb0004"}

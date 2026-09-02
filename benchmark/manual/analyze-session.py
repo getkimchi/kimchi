@@ -71,48 +71,6 @@ def parse_elapsed_to_seconds(elapsed_str):
     return 0.0
 
 
-def latest_context_assembly(events):
-    """Summarize context_assembly custom entries (token-optimization Phase 0).
-
-    Returns None when the session predates the instrumentation so callers stay
-    backward compatible. Entry shape: {"type": "custom", "customType":
-    "context_assembly", "data": {...}}.
-    """
-    composition = None
-    prefix_changes = 0
-    tool_surface = None
-    for event in events:
-        if event.get("customType") != "context_assembly":
-            continue
-        data = event.get("data") or {}
-        if data.get("reason") == "composition":
-            if "systemPrompt" in data:
-                composition = data["systemPrompt"]
-        elif data.get("reason") == "prefix-change":
-            prefix_changes += 1
-            if "toolSurface" in data:
-                tool_surface = data["toolSurface"]
-    if composition is None and tool_surface is None:
-        return None
-    return {
-        "system_prompt_tokens_est": (composition or {}).get("tokensEstimated"),
-        "tool_surface_tokens_est": (tool_surface or {}).get("tokensEstimated"),
-        "prefix_changes": prefix_changes,
-    }
-
-
-def latest_cache_summary(events):
-    """Last cumulative cache_summary entry (token-optimization Phase 0), if any."""
-    latest = None
-    for event in events:
-        if event.get("customType") == "cache_summary":
-            data = event.get("data") or {}
-            cumulative = data.get("cumulative")
-            if isinstance(cumulative, dict):
-                latest = cumulative
-    return latest
-
-
 def analyze_jsonl(path):
     summary_details = None
     subagent_count = 0
@@ -121,7 +79,6 @@ def analyze_jsonl(path):
     start_ts = end_ts = None
     orch_input = orch_output = 0
     sub_input = sub_output = 0
-    custom_events = []
 
     with open(path) as f:
         for raw in f:
@@ -138,13 +95,6 @@ def analyze_jsonl(path):
                 if start_ts is None:
                     start_ts = ts
                 end_ts = ts
-
-            if event.get("type") == "custom" and event.get("customType") in (
-                "context_assembly",
-                "cache_summary",
-            ):
-                custom_events.append(event)
-                continue
 
             if event.get("customType") == "prompt-summary":
                 summary_details = event.get("details", {})
@@ -168,11 +118,6 @@ def analyze_jsonl(path):
                         if item.get("type") == "toolCall" and item.get("name") != "Agent":
                             orch_tool_calls.append(item.get("name"))
 
-    extra = {
-        "cache": latest_cache_summary(custom_events),
-        "context": latest_context_assembly(custom_events),
-    }
-
     if summary_details:
         total = summary_details.get("total") or {}
         orch = summary_details.get("orchestrator") or {}
@@ -188,7 +133,6 @@ def analyze_jsonl(path):
             "subagent_count": subagent_count,
             "orch_tool_calls": orch_tool_calls,
             "terminated": terminated,
-            **extra,
         }
 
     if not start_ts or not end_ts or (orch_input + orch_output) == 0:
@@ -209,7 +153,6 @@ def analyze_jsonl(path):
         "subagent_count": subagent_count,
         "orch_tool_calls": orch_tool_calls,
         "terminated": terminated,
-        **extra,
     }
 
 
@@ -298,30 +241,6 @@ def print_report(session_name, results):
         print(f"  Tokens:    {format_tokens(metrics['total_tokens'])} total"
               f"  (orch: {format_tokens(metrics['orch_tokens'])}, sub: {format_tokens(metrics['sub_tokens'])})")
         print(f"  Subagents: {metrics['subagent_count']}")
-
-        cache = metrics.get("cache")
-        if cache:
-            billable_input = cache.get("inputTokens", 0) - cache.get("cacheReadTokens", 0)
-            read_ratio = (
-                cache.get("cacheReadTokens", 0) / cache["inputTokens"] if cache.get("inputTokens") else 0.0
-            )
-            print(
-                f"  Cache:     read {format_tokens(cache.get('cacheReadTokens', 0))} "
-                f"({read_ratio:.0%} of input), write {format_tokens(cache.get('cacheWriteTokens', 0))}, "
-                f"uncached input {format_tokens(billable_input)}, ${cache.get('costDollars', 0):.4f}"
-            )
-
-        context = metrics.get("context")
-        if context:
-            sysp = context.get("system_prompt_tokens_est")
-            tools = context.get("tool_surface_tokens_est")
-            parts = []
-            if sysp is not None:
-                parts.append(f"system prompt ~{format_tokens(sysp)} est")
-            if tools is not None:
-                parts.append(f"tool schemas ~{format_tokens(tools)} est")
-            parts.append(f"prefix changes: {context.get('prefix_changes', 0)}")
-            print(f"  Context:   {'; '.join(parts)}")
 
         if metrics["orch_tool_calls"]:
             counts = Counter(metrics["orch_tool_calls"])

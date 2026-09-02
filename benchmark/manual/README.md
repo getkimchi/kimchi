@@ -128,23 +128,6 @@ sessions/session-01/
 - `[!]` WARN — outside expected range but not a hard failure
 - `[x]` FAIL — exceeded token budget, wrong subagent count for task type, or exceeded time budget
 
-### Instrumentation metrics (Phase 0, token optimization)
-
-Sessions started with instrumentation builds also emit these per-run fields (absent in
-older session files — the report simply skips them):
-
-- **Cache** (from `cache_summary` journal entries): cumulative cache-read tokens (with
-  percent of input), cache-write tokens, uncached input, and cost in USD. Watch the
-  cache-read ratio for prefix-stability regressions.
-- **Context** (from `context_assembly` journal entries): estimated system-prompt size
-  and tool-surface size at composition, plus the number of mid-session prefix changes
-  (each one breaks the provider prompt cache — cache-break signal).
-
-`compare-sessions.py` includes both metrics when present and ends with a token win-rate
-summary (Wilson lower bound across paired runs), a cheap guard against reading
-single-task fluctuation as a regression. Parser tests + fixtures:
-`fixtures/session-*.jsonl`, run with `python3 test_analyze_session.py`.
-
 `compare-sessions.py` calls `analyze-session.py` automatically if `analysis.json` is missing for either session.
 
 ## Self-Improvement Loop
