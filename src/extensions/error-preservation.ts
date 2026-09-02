@@ -48,7 +48,7 @@ export function getRawErrorMessage(message: ErrorMessageHolder): string | undefi
 /**
  * True when a raw error was preserved on the message (in-process symbol),
  * as opposed to `getRawErrorMessage` falling back to the current display
- * `errorMessage`. Callers that must distinguish "unity preserved raw"
+ * `errorMessage`. Callers that must distinguish "a preserved raw"
  * from "fallback" (e.g. compaction recovery, where a fallback must not win
  * over a stale audit entry) gate on this.
  */

@@ -269,7 +269,7 @@ export function installCompactionRecoveryPatch(
 		// Restore the raw provider error for the classification, leaving the
 		// display text untouched. A shared copy (not the session message) is
 		// passed through so nothing downstream observes the swap.
-		if (typeof message?.errorMessage === "string") {
+		if (typeof message.errorMessage === "string") {
 			const raw = rawErrorForCompactionRecovery(message, this)
 			if (raw && raw !== message.errorMessage) {
 				return original.call(this, { ...message, errorMessage: raw }, skipAbortedCheck)
