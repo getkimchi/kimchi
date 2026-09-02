@@ -220,4 +220,22 @@ describe("createTipsPanel", () => {
 			expect(text).not.toContain("General")
 		})
 	})
+
+	describe("narrow terminals", () => {
+		// Regression: border title math produced a negative "─".repeat count
+		// below the title width, crashing with RangeError.
+		const tips = [makeTip("a", "First tip.", "kimchi.general"), makeTip("b", "Ferment tip.", "kimchi.ferment")]
+		for (const width of [1, 2, 3, 4, 5, 8, 10, 16, 24]) {
+			it(`renders without crashing or overflowing at width ${width}`, () => {
+				const panel = createTipsPanel(tips, plainTheme(), makeTui(), vi.fn())
+				let lines: string[] = []
+				expect(() => {
+					lines = panel.render(width)
+				}).not.toThrow()
+				for (const line of lines) {
+					expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+				}
+			})
+		}
+	})
 })

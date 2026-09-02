@@ -452,7 +452,6 @@ export function registerTodoShortcut(pi: ExtensionAPI): void {
 
 export {
 	buildTodoLines as __test_buildTodoLines,
-	buildTodoWidgetLines as __test_buildTodoWidgetLines,
 	resetTodoWidgetState as __test_resetTodoWidgetState,
 	summarizeTodos as __test_summarizeTodos,
 }

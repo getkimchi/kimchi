@@ -1,12 +1,11 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { visibleWidth } from "@earendil-works/pi-tui"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { __resetTodoStore, applyWriteTodos, registerActiveTodoScopeProvider } from "./store.js"
 import type { TodoScope } from "./types.js"
 import {
 	__test_buildTodoLines,
-	__test_buildTodoWidgetLines,
 	__test_summarizeTodos,
 	expandTodoWidget,
 	openTodoWidget,
@@ -17,8 +16,15 @@ import {
 describe("todo widget — narrow terminals", () => {
 	// Regression: Math.max(20, width - 4) clamped truncation to 20 cols
 	// regardless of terminal width, crashing pi-tui at widths < 24.
+	beforeEach(() => {
+		__resetTodoStore()
+		resetTodoWidgetState(createContext({ sessionManager: { getSessionId: () => TEST_SESSION_ID } }))
+	})
+
 	for (const width of [1, 2, 3, 4, 5, 8, 10, 16, 20, 24, 40]) {
-		it(`widget lines never exceed width ${width}`, () => {
+		it(`rendered widget lines never exceed width ${width}`, () => {
+			const setWidget = vi.fn()
+			const ctx = createUiContext(TEST_SESSION_ID, setWidget)
 			applyWriteTodos(
 				{
 					todos: [
@@ -29,10 +35,18 @@ describe("todo widget — narrow terminals", () => {
 				},
 				TEST_SESSION_ID,
 			)
-			const lines = __test_buildTodoWidgetLines(theme, false, TEST_SESSION_ID)
-			const truncated = lines.map((line) => truncateToWidth(line, Math.max(1, width - 4)))
-			for (const line of truncated) {
-				expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+			syncTodoWidget(ctx)
+
+			// Render through the actual component so the suite fails if the
+			// production clamp in widget.ts regresses.
+			const component = setWidget.mock.calls[0][1]
+			const instance = component({ requestRender: vi.fn() }, theme)
+			let lines: string[] = []
+			expect(() => {
+				lines = instance.render(width)
+			}).not.toThrow()
+			for (const line of lines) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(Math.max(1, width - 4))
 			}
 		})
 	}

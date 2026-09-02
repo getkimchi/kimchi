@@ -11,6 +11,7 @@ import {
 	truncateToWidth,
 } from "@earendil-works/pi-tui"
 import { readSurveySeenAt, writeSurveySeenAt } from "../../config.js"
+import { truncateLinesToWidth } from "../../truncate-lines.js"
 import { setTipWidgetLocation } from "../tips/index.js"
 
 export const INITIAL_SURVEY = {
@@ -166,7 +167,7 @@ export class InitialSurveyComponent extends Container {
 		const help: string | undefined = INITIAL_SURVEY.question.help
 		this.helpText.setText(help && help !== title ? this.theme.fg("text", truncateToWidth(help, safeWidth)) : "")
 		this.bottomRule.setText(this.theme.fg("accent", "─".repeat(safeWidth)))
-		return super.render(width)
+		return truncateLinesToWidth(super.render(width), width)
 	}
 
 	private items(): SelectItem[] {

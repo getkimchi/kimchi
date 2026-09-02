@@ -1,12 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
-import {
-	decodeKittyPrintable,
-	Key,
-	matchesKey,
-	truncateToWidth,
-	visibleWidth,
-	wrapTextWithAnsi,
-} from "@earendil-works/pi-tui"
+import { decodeKittyPrintable, Key, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { truncateLinesToWidth } from "../../truncate-lines.js"
 import { formatTipMessage } from "./tip-row.js"
 import type { TipCandidate } from "./types.js"
 
@@ -164,7 +158,7 @@ export function createTipsPanel(
 
 			// Top border with title
 			const titleText = " Tips "
-			const borderLen = innerW - titleText.length
+			const borderLen = Math.max(0, innerW - titleText.length)
 			const leftB = Math.floor(borderLen / 2)
 			const rightB = borderLen - leftB
 			const out: string[] = []
@@ -217,7 +211,7 @@ export function createTipsPanel(
 			// Bottom border
 			out.push(border(`╰${"─".repeat(innerW)}╯`))
 
-			return out.map((line) => truncateToWidth(line, width))
+			return truncateLinesToWidth(out, width)
 		},
 
 		handleInput(data: string): void {

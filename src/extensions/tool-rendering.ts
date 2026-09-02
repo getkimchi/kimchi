@@ -2107,7 +2107,7 @@ async function renderUnified(
 	const tw = width
 	const nw = Math.max(2, String(Math.max(...vis.map((l) => l.oldNum ?? l.newNum ?? 0), 0)).length)
 	const gw = nw + 5
-	const cw = Math.max(20, tw - gw)
+	const cw = Math.max(1, tw - gw)
 	const canHL = diff.chars <= MAX_HL_CHARS && vis.length <= MAX_RENDER_LINES
 
 	const oldSrc: string[] = []

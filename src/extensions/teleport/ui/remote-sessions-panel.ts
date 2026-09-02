@@ -1,6 +1,7 @@
 import type { Component } from "@earendil-works/pi-tui"
-import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
+import { matchesKey } from "@earendil-works/pi-tui"
 import { fg } from "../../../ansi.js"
+import { truncateLinesToWidth } from "../../../truncate-lines.js"
 import type { TeleportContext } from "../types.js"
 import type { CombinedStatus, SessionRow } from "./sessions-table.js"
 import { formatRelativeTime } from "./sessions-table.js"
@@ -279,7 +280,7 @@ export class RemoteSessionsPanel implements Component {
 		const lines: string[] = []
 
 		const titleText = " Remote Sessions "
-		const borderLen = innerW - titleText.length
+		const borderLen = Math.max(0, innerW - titleText.length)
 		const leftB = Math.floor(borderLen / 2)
 		const rightB = borderLen - leftB
 		lines.push(`${b(`╭${"─".repeat(leftB)}`)}${dim(titleText)}${b(`${"─".repeat(rightB)}╮`)}`)
@@ -360,7 +361,7 @@ export class RemoteSessionsPanel implements Component {
 		lines.push(ansiRow(dim(`  ${hint}`), hint.length + 2))
 		lines.push(b(`╰${"─".repeat(innerW)}╯`))
 
-		return lines.map((line) => truncateToWidth(line, width))
+		return truncateLinesToWidth(lines, width)
 	}
 
 	invalidate(): void {}
