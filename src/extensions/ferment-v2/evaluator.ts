@@ -401,14 +401,16 @@ function renderRecentTranscript(messages: ReadonlyArray<AgentEndEvent["messages"
 
 function clipTranscriptUnit(entries: readonly RenderedTranscriptEntry[], limit: number): RenderedTranscriptEntry[] {
 	const separatorChars = Math.max(0, entries.length - 1) * 2
-	let remainingChars = limit - separatorChars
+	const prefixChars = entries.reduce((total, entry) => total + entry.prefix.length, 0)
+	let remainingChars = limit - separatorChars - prefixChars
+	if (remainingChars < entries.length) return []
+
 	const clipped: RenderedTranscriptEntry[] = []
 	for (const [index, entry] of entries.entries()) {
 		const entriesLeft = entries.length - index
-		const maxChars = Math.floor(remainingChars / entriesLeft)
-		const contentChars = Math.max(0, maxChars - entry.prefix.length)
-		const content = contentChars > 0 ? entry.content.slice(-contentChars) : ""
-		remainingChars -= entry.prefix.length + content.length
+		const contentChars = Math.floor(remainingChars / entriesLeft)
+		const content = entry.content.slice(-contentChars)
+		remainingChars -= content.length
 		clipped.push({ ...entry, content })
 	}
 	return clipped

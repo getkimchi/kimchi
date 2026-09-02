@@ -59,15 +59,22 @@ const targetStream = vi.fn((target: Model<Api>) => {
 	return stream
 })
 
+// Distinct mocks per entry point so a swapped delegate in registerAutoApiProvider
+// is caught here rather than only in e2e.
+const targetFullStream = vi.fn((...args: Parameters<typeof targetStream>) => targetStream(...args))
+const targetSimpleStream = vi.fn((...args: Parameters<typeof targetStream>) => targetStream(...args))
+
 beforeAll(() => {
 	registerAutoApiProvider()
-	registerApiProvider({ api: TARGET_API, stream: targetStream, streamSimple: targetStream }, TARGET_SOURCE)
+	registerApiProvider({ api: TARGET_API, stream: targetFullStream, streamSimple: targetSimpleStream }, TARGET_SOURCE)
 })
 
 afterEach(() => {
 	clearAutoRoutingAttempt(SESSION_ID)
 	clearAutoRoutingState(SESSION_ID)
 	targetStream.mockClear()
+	targetFullStream.mockClear()
+	targetSimpleStream.mockClear()
 	vi.restoreAllMocks()
 })
 
@@ -91,6 +98,22 @@ describe("Auto model API provider", () => {
 			{ messages: [] },
 			expect.objectContaining({ sessionId: SESSION_ID, maxTokens: 3000, reasoning: "high" }),
 		)
+	})
+
+	it("routes each entry point through its own delegate", async () => {
+		const auto = model("auto", AUTO_MODEL_API)
+		const target = model("concrete", TARGET_API)
+		setAutoRoutingState(SESSION_ID, { status: "resolved", model: target })
+		const provider = getApiProvider(AUTO_MODEL_API)
+		if (!provider) throw new Error("Auto API provider was not registered")
+
+		await provider.stream(auto, { messages: [] }, { sessionId: SESSION_ID }).result()
+		expect(targetFullStream).toHaveBeenCalledTimes(1)
+		expect(targetSimpleStream).not.toHaveBeenCalled()
+
+		await provider.streamSimple(auto, { messages: [] }, { sessionId: SESSION_ID }).result()
+		expect(targetSimpleStream).toHaveBeenCalledTimes(1)
+		expect(targetFullStream).toHaveBeenCalledTimes(1)
 	})
 
 	it("does not forward the UI-selected reasoning option to a model that cannot use it", async () => {

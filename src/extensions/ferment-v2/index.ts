@@ -117,9 +117,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	let failedTurn: PendingFermentV2Continuation | undefined
 	let todoStateFor: FermentV2TodoState | undefined
 	let fermentV2Lessons: FermentV2Lesson[] = []
-	let consecutiveErrorTurns = 0
 	let turnStartFingerprint: string | undefined
-	let unchangedContinuationTurns = 0
 	let substantiveToolUseSinceEvaluation = false
 	let activeSinceMs: number | undefined
 	// `agent_settled` fires after the run is already marked inactive, so ctx.isIdle()
@@ -216,9 +214,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		failedTurn = undefined
 		todoStateFor = undefined
 		fermentV2Lessons = []
-		consecutiveErrorTurns = 0
 		turnStartFingerprint = undefined
-		unchangedContinuationTurns = 0
 		substantiveToolUseSinceEvaluation = false
 		activeSinceMs = undefined
 	}
@@ -256,10 +252,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			: undefined
 		todoStateFor = restored.todoState
 		fermentV2Lessons = restored.lessons
-		// Restore persisted guard counters; session replay must not reset them.
-		// Explicit /ferment-v2 resume resets them in its own commit.
-		consecutiveErrorTurns = currentFermentV2?.consecutiveErrorTurns ?? 0
-		unchangedContinuationTurns = currentFermentV2?.unchangedContinuationTurns ?? 0
 	}
 
 	function assertCurrentSession(ctx: ExtensionContext, expectedSessionId: string): void {
@@ -366,7 +358,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		fermentV2: SessionFermentV2,
 		content: string,
 		source: string,
-		deliverAs: "steer" | "followUp" = "followUp",
 	): void {
 		const sessionId = currentSessionId
 		if (!sessionId) return
@@ -387,7 +378,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			)
 				return
 			if (pendingContinuation && matchesFermentV2(pendingContinuation, current, sessionId)) return
-			if (!queueFermentV2Turn(ctx, current, content, source, deliverAs)) {
+			if (!queueFermentV2Turn(ctx, current, content, source, "followUp")) {
 				resolveFermentV2Waiter(sessionId, current.id)
 			}
 		}, 0)
@@ -396,7 +387,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	function invalidateContinuation(): void {
 		pendingContinuation = undefined
 		turnStartFingerprint = undefined
-		unchangedContinuationTurns = 0
 	}
 
 	/**
@@ -631,10 +621,8 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				const now = timestamp(nowMs)
 				const accounted = checkpointFermentV2(current, 0, nowMs)
 				const edited = editFermentV2(accounted, current.id, current.revision, editedObjective, now)
-				// An edit already resets both guard counters in-memory below (via
-				// invalidateContinuation() and consecutiveErrorTurns = 0); fold that
-				// same reset into the committed revision so a later restart doesn't
-				// restore a streak that belonged to a superseded objective.
+				// Reset both guard counters in the committed revision so a later restart
+				// doesn't restore a streak that belonged to a superseded objective.
 				const next = setFermentV2UnchangedContinuationTurns(
 					setFermentV2ConsecutiveErrorTurns(edited, edited.id, edited.revision, 0, now),
 					edited.id,
@@ -651,7 +639,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				activeSinceMs = current.status === "active" && activeSinceMs !== undefined ? nowMs : undefined
 				invalidateContinuation()
 				todoStateFor = retainedTodoState
-				consecutiveErrorTurns = 0
 				if (
 					next.status === "active" &&
 					queueFermentV2Turn(ctx, next, buildFermentV2EditSteer(next, current.revision), "edit") &&
@@ -706,7 +693,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const captured = currentFermentV2
 		let terminalWaiter: Promise<void> | undefined
 		if (!captured) return ctx.ui.notify("No Ferment V2 is currently set.", "warning")
-		await serializeFermentV2Mutation(sessionId, () => {
+		await serializeUserMutation(sessionId, captured, ctx, "resume", () => {
 			assertCurrentSession(ctx, sessionId)
 			const current = assertUnchanged(captured)
 			if (!current) throw new Error("No Ferment V2 is currently set.")
@@ -743,7 +730,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			)
 			commitFermentV2(next)
 			invalidateContinuation()
-			consecutiveErrorTurns = 0
 			if (queueFermentV2Turn(ctx, next, buildFermentV2StartSteer("resumed"), "resume") && !ctx.hasUI) {
 				terminalWaiter = ensureFermentV2Waiter(sessionId, next.id)
 			}
@@ -1029,19 +1015,19 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					accounted,
 					current.id,
 					current.revision,
-					interruption === "error" ? consecutiveErrorTurns : 0,
+					interruption === "error" ? (current.consecutiveErrorTurns ?? 0) : 0,
 					now,
 				)
-				const terminalInterruption = interruption === "aborted" ? interruption : undefined
-				const next = terminalInterruption
+				// Only an abort pauses at turn_end; an "error" interruption accumulates a
+				// streak that `agent_settled` acts on once the run settles.
+				const aborted = interruption === "aborted"
+				const next = aborted
 					? setFermentV2Status(withErrorTurns, current.id, current.revision, "paused", now)
 					: withErrorTurns
 				if (next !== current) commitFermentV2(next, !deferTerminalWaiter)
 				activeSinceMs = undefined
-				if (terminalInterruption) {
-					emitFermentV2Lifecycle(FERMENT_V2_EVENTS.PAUSED, next, {
-						reason: terminalInterruption === "aborted" ? "agent_aborted" : "agent_errors",
-					})
+				if (aborted) {
+					emitFermentV2Lifecycle(FERMENT_V2_EVENTS.PAUSED, next, { reason: "agent_aborted" })
 					invalidateContinuation()
 					ctx.ui.notify("Ferment V2 paused because the agent turn was cancelled.", "warning")
 				} else if (reachedBudget) {
@@ -1088,7 +1074,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		}
 		if (conversation.failed) {
 			const now = timestamp()
-			const settledErrors = consecutiveErrorTurns + 1
+			const settledErrors = (capturedFermentV2.consecutiveErrorTurns ?? 0) + 1
 			const withErrorTurns = setFermentV2ConsecutiveErrorTurns(
 				capturedFermentV2,
 				capturedFermentV2.id,
@@ -1101,15 +1087,13 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			if (settledErrors >= maxConsecutiveErrors) {
 				const paused = setFermentV2Status(withErrorTurns, withErrorTurns.id, withErrorTurns.revision, "paused", now)
 				commitFermentV2(paused)
-				consecutiveErrorTurns = settledErrors
 				emitFermentV2Lifecycle(FERMENT_V2_EVENTS.PAUSED, paused, { reason: "agent_errors" })
 				invalidateContinuation()
 				ctx.ui.notify(`Ferment V2 paused after ${maxConsecutiveErrors} consecutive agent errors.`, "warning")
 				return
 			}
 			commitFermentV2(withErrorTurns)
-			consecutiveErrorTurns = settledErrors
-			queueFermentV2TurnAfterSettled(ctx, withErrorTurns, buildFermentV2ErrorContinuation(), "agent_error", "followUp")
+			queueFermentV2TurnAfterSettled(ctx, withErrorTurns, buildFermentV2ErrorContinuation(), "agent_error")
 			return
 		}
 		const capturedTodoState = matchesFermentV2(todoStateFor, capturedFermentV2, sessionId) ? todoStateFor : undefined
@@ -1232,7 +1216,8 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					: result.reason
 			const fingerprint = fermentV2ProgressFingerprint(evaluated, todoState, fermentV2Lessons)
 			const { maxUnchangedContinuations } = getFermentV2Settings()
-			const unchanged = !hadSubstantiveToolUse && fingerprint === startFingerprint ? unchangedContinuationTurns + 1 : 0
+			const unchanged =
+				!hadSubstantiveToolUse && fingerprint === startFingerprint ? (evaluated.unchangedContinuationTurns ?? 0) + 1 : 0
 			// Folded into the single commit below (a no-op if unchanged) rather than committed
 			// separately after queueFermentV2Turn: that would mean two commits per turn, and by then
 			// queueFermentV2Turn's pi.sendMessage(triggerTurn) may already have raced a synchronously-started next turn.
@@ -1268,22 +1253,20 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 
 			commitFermentV2(withContinuationCount)
 			emitEvaluation(withContinuationCount)
-			unchangedContinuationTurns = unchanged
 			queueFermentV2TurnAfterSettled(
 				ctx,
 				withContinuationCount,
 				buildFermentV2Continuation(unchanged > 0, continuationReason),
 				"evaluation",
-				"followUp",
 			)
 		})
 	})
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (ctx.sessionManager.getSessionId() !== currentSessionId) return
-		void abortEvaluation()
 		unregisterTodoCommandMutationHandler?.()
 		unregisterTodoCommandMutationHandler = undefined
+		void abortEvaluation()
 		resolveSessionWaiters(currentSessionId)
 		currentSessionId = undefined
 		resetFermentV2Runtime()

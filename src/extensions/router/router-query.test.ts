@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { resetRedactionConfigCache } from "../pii-redaction/config.js"
+import * as redactor from "../pii-redaction/redactor.js"
 import { prepareRouterQuery, ROUTER_IMAGE_METADATA } from "./router-query.js"
 
 afterEach(() => {
 	delete process.env.KIMCHI_REDACTION_ENABLED
 	resetRedactionConfigCache()
+	vi.restoreAllMocks()
 })
 
 describe("prepareRouterQuery", () => {
@@ -23,6 +25,18 @@ describe("prepareRouterQuery", () => {
 		await expect(prepareRouterQuery("", { containsImages: true })).resolves.toEqual({
 			ok: true,
 			query: ROUTER_IMAGE_METADATA,
+		})
+	})
+
+	it("refuses to route when the router copy cannot be redacted", async () => {
+		process.env.KIMCHI_REDACTION_ENABLED = "1"
+		resetRedactionConfigCache()
+		vi.spyOn(redactor, "redactTextOrThrow").mockRejectedValue(new Error("redaction engine unavailable"))
+
+		// Routing must stop rather than fall back to the unredacted prompt.
+		await expect(prepareRouterQuery("Contact john.doe@example.com", { containsImages: true })).resolves.toEqual({
+			ok: false,
+			reason: "redaction_failed",
 		})
 	})
 

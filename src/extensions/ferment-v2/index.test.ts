@@ -582,6 +582,24 @@ describe("Ferment V2 extension", () => {
 		).toMatchObject({ block: true, reason: expect.stringContaining("visible tactical todo list") })
 	})
 
+	it("keeps the current Todo mutation handler when a previous session shuts down late", async () => {
+		registerTodosCommand(harness.pi)
+		harness.setSession("session-b", [])
+		await harness.fire("session_start", { type: "session_start", reason: "new" })
+		await harness.command("ship it")
+		const details = applyWriteTodos({ todos: [{ content: "Keep it", status: "in_progress" }] }, "session-b")
+		harness.appendEntry(TODO_CUSTOM_ENTRY_TYPE, details)
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		harness.setIdle(false)
+
+		await harness.fire("session_shutdown", { type: "session_shutdown" }, "session-a")
+		const clear = harness.runCommand("todos", "clear")
+
+		expect(harness.waitForIdle).toHaveBeenCalledOnce()
+		harness.setIdle(true)
+		await clear
+	})
+
 	it("preserves active time when an edit cannot be persisted", async () => {
 		const dateNow = vi.spyOn(Date, "now").mockReturnValue(1_000)
 		await harness.command("original")
@@ -2392,7 +2410,7 @@ describe("Ferment V2 extension", () => {
 	})
 
 	describe("stale ctx handling", () => {
-		it("treats a stale ctx from the busy check as not busy, skipping the pause stop-steer", async () => {
+		it("treats a stale ctx from the busy check as not busy, skipping the pause steer", async () => {
 			await harness.command("ship it")
 			harness.sendMessage.mockClear()
 			harness.setIdle(false)
@@ -2640,10 +2658,17 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 		setActiveTools(value: string[]) {
 			activeTools = value
 		},
-		async fire(event: string, payload: unknown): Promise<unknown> {
+		async fire(event: string, payload: unknown, eventSessionId = sessionId): Promise<unknown> {
+			const eventContext =
+				eventSessionId === sessionId
+					? ctx
+					: ({
+							...ctx,
+							sessionManager: { ...ctx.sessionManager, getSessionId: () => eventSessionId },
+						} as ExtensionCommandContext)
 			let result: unknown
 			for (const handler of handlers.get(event) ?? []) {
-				result = await handler(payload as never, ctx)
+				result = await handler(payload as never, eventContext)
 			}
 			if (event === "session_start" || event === "agent_settled") {
 				await new Promise((resolve) => setTimeout(resolve, 0))

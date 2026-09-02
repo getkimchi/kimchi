@@ -722,6 +722,32 @@ describe("Ferment V2 evaluator", () => {
 		expect(transcript.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS)
 	})
 
+	it("stays within budget when clipping a unit whose prefixes alone exceed the limit", async () => {
+		completeMock.mockResolvedValue(
+			assistant(
+				'{"verdict":"met","checks":[{"requirement":"tests pass","met":true,"failureMode":"tests could fail","evidence":["m401"],"todoIds":[]}],"reason":"tests pass"}',
+			),
+		)
+		const calls = Array.from({ length: 400 }, (_, i) => ({
+			type: "toolCall",
+			id: `call-${i}`,
+			name: `bash-with-a-long-tool-name-${i}`,
+			arguments: { cmd: "pnpm test" },
+		}))
+		const messages = [
+			transcriptMessage("assistant", calls),
+			...calls.map((call) =>
+				transcriptMessage("toolResult", "x".repeat(200), { toolName: call.name, toolCallId: call.id }),
+			),
+		]
+
+		await expect(
+			evaluateFermentV2({ objective: "ship it", messages, todos: [] }, evaluatorContext()),
+		).resolves.toMatchObject({ verdict: "continue" })
+
+		expect(sentTranscript()).toBe("")
+	})
+
 	it("does not accept an unlinked tool result as completion evidence", async () => {
 		completeMock.mockResolvedValue(
 			assistant(

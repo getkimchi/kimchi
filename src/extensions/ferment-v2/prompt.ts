@@ -87,13 +87,10 @@ Objective:
 Execution:
 - First inventory supplied files, executables, tests, and constraints; create short action Todos for concrete work and verification.
 - Track the work with the tactical todo tools, keep one item in progress, and leave the settled list visible until ${UPDATE_FERMENT_V2_TOOL_NAME} succeeds.
-${EXECUTION_GUIDANCE}
 - Redirect current and future work toward this Ferment V2.
-- Continue until the Ferment V2 is complete or genuinely blocked.`
-}
+- Continue until the Ferment V2 is complete or genuinely blocked.
 
-export function buildFermentV2StopSteer(action: "paused" | "cleared"): string {
-	return `The user ${action} the Kimchi session Ferment V2. Do not begin additional Ferment V2-specific work. Allow any operation already running to finish, then leave the current work in a safe state.`
+${EXECUTION_GUIDANCE}`
 }
 
 function renderFermentV2Context(fermentV2: SessionFermentV2, lessons: readonly FermentV2Lesson[]): string {
