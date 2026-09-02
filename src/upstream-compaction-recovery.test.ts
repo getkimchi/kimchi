@@ -275,6 +275,45 @@ describe("resume path: raw error recovered from session audit entries", () => {
 		expect(captured[0].errorMessage).toBe(RAW_OVERFLOW)
 	})
 
+	it("prefers the preserved raw over a stale audit entry even when raw === display text", async () => {
+		const captured: Record<string, unknown>[] = []
+		const original = vi.fn<CheckCompaction>(async (message) => {
+			captured.push(message)
+			return true
+		})
+		const cls = createPatchedClass(original)
+
+		// A stale audit entry from an EARLIER error is on the branch. It belongs
+		// to a different message and must never be substituted here.
+		const staleOverflow =
+			'{"error":{"type":"invalid_request_error","message":"The input (999999 tokens) is longer than the model\'s context length (262144 tokens).","retryable":false,"code":"400"}}'
+		const branch = [
+			{
+				type: "custom",
+				customType: "kimchi_error_classification",
+				data: { rawMessage: staleOverflow, reason: "context_window_exceeded", retryable: false },
+			},
+		]
+		const session = { sessionManager: { getBranch: () => branch } }
+
+		// Raw was preserved, then sanitization turned out to be a no-op, so
+		// display text === preserved raw. The in-process raw must win.
+		const nonOverflow = "429 Too Many Requests"
+		const msg: Record<string, unknown> = {
+			role: "assistant",
+			stopReason: "error",
+			errorMessage: nonOverflow,
+		}
+		preserveRawErrorMessage(msg)
+
+		await patchedCheckCompaction(cls).call(session as never, msg)
+
+		// Identity pass-through: NOT a copy carrying the stale overflow raw.
+		expect(captured).toHaveLength(1)
+		expect(captured[0]).toBe(msg)
+		expect(captured[0].errorMessage).toBe(nonOverflow)
+	})
+
 	it("passes the raw, sanitized message through unchanged when no raw is recoverable anywhere", async () => {
 		const original = vi.fn<CheckCompaction>(async () => false)
 		const cls = createPatchedClass(original)

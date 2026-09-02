@@ -1,6 +1,6 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
-import { getRawErrorMessage } from "./extensions/error-preservation.js"
+import { getRawErrorMessage, hasPreservedRawErrorMessage } from "./extensions/error-preservation.js"
 import { GATEWAY_CLASSIFICATION_AUDIT_TYPE } from "./infrastructure-error.js"
 import { classifyLLMGatewayError, parseRateLimitRetryAt } from "./llm-gateway-error.js"
 
@@ -226,8 +226,11 @@ function rawErrorForCompactionRecovery(
 	message: CompactionCheckMessage,
 	session: BranchBackedSession,
 ): string | undefined {
-	const preserved = getRawErrorMessage(message)
-	if (preserved && preserved !== message.errorMessage) return preserved
+	// Prefer the in-process preserved raw unconditionally: even when it equals
+	// the display text (sanitization no-op), a branch audit entry belongs to an
+	// EARLIER message and would inject a stale raw error here. The caller
+	// already passes the message through unchanged when raw === errorMessage.
+	if (hasPreservedRawErrorMessage(message)) return getRawErrorMessage(message)
 
 	const branch = session.sessionManager?.getBranch?.() ?? []
 	for (let i = branch.length - 1; i >= 0; i--) {
