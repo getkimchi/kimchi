@@ -5,6 +5,7 @@ import {
 	type Context,
 	createAssistantMessageEventStream,
 	type Model,
+	type ProviderHeaders,
 	type ProviderStreamOptions,
 	registerApiProvider,
 	type SimpleStreamOptions,
@@ -18,14 +19,16 @@ import { type AutoFailureReason, type AutoRoutingState, getAutoRoutingState, set
 const SOURCE_ID = "kimchi-auto-model"
 
 type AutoRoutingAttemptResult = Extract<AutoRoutingState, { status: "resolved" | "failed" }>
-type AutoRoutingAttempt = (signal: AbortSignal | undefined) => Promise<AutoRoutingAttemptResult>
+type AutoRoutingRequestOptions = Pick<StreamOptions, "signal" | "headers">
+type AutoRoutingAttempt = (options: AutoRoutingRequestOptions) => Promise<AutoRoutingAttemptResult>
 
 /**
  * One pending router attempt per Pi session ID. Keying attempts by session ID
  * keeps main-agent and subagent routing isolated. The extension stages the
  * attempt before Pi starts the provider request; the Auto provider then consumes
- * it once with that request's cancellation signal. Attempts remain in memory and
- * are never written to the session log—only successful model selections persist.
+ * it once with that request's cancellation signal and assembled headers. Attempts
+ * remain in memory and are never written to the session log—only successful model
+ * selections persist.
  */
 const routingAttempts = new Map<string, AutoRoutingAttempt>()
 
@@ -42,12 +45,12 @@ export function clearAutoRoutingAttempt(sessionId: string): void {
 /** Claim a staged attempt before running it so concurrent provider calls cannot route twice. */
 export async function consumeAutoRoutingAttempt(
 	sessionId: string,
-	signal?: AbortSignal,
+	options: AutoRoutingRequestOptions = {},
 ): Promise<AutoRoutingAttemptResult | undefined> {
 	const attempt = routingAttempts.get(sessionId)
 	if (!attempt) return undefined
 	routingAttempts.delete(sessionId)
-	return attempt(signal)
+	return attempt(options)
 }
 
 function contextHasImages(context: Context): boolean {
@@ -123,11 +126,12 @@ async function resolvedTarget(
 	context: Context,
 	sessionId: string | undefined,
 	signal: AbortSignal | undefined,
+	headers: ProviderHeaders | undefined,
 ): Promise<Model<Api> | AutoFailureReason> {
 	let state = getAutoRoutingState(sessionId)
 	if (state.status === "attempting" && sessionId) {
 		try {
-			const result = await consumeAutoRoutingAttempt(sessionId, signal)
+			const result = await consumeAutoRoutingAttempt(sessionId, { signal, headers })
 			if (!result) {
 				setAutoRoutingState(sessionId, { status: "unresolved" })
 				return "interrupted"
@@ -163,7 +167,7 @@ function routeAndStream<T extends StreamOptions>(
 	void (async () => {
 		let source: AssistantMessageEventStream
 		try {
-			const target = await resolvedTarget(context, options?.sessionId, options?.signal)
+			const target = await resolvedTarget(context, options?.sessionId, options?.signal, options?.headers)
 			source =
 				typeof target === "string"
 					? errorStream(model, target)

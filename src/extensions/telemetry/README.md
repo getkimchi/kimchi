@@ -73,7 +73,9 @@ the subagent's own events via `session.parent_id`.
 Provider requests issued inside a subagent run also carry an
 `X-Parent-Session-Id` header (same value and gating as `session.parent_id`) so
 the proxy can record the parent session on `chat_completions` rows, mirroring
-how it already records `X-Session-Id` / `X-Turn-Index`.
+how it already records `X-Session-Id` / `X-Turn-Index`. When Auto routing is
+active, its `/v1/route` request receives the same telemetry correlation headers
+as the concrete model request; unrelated provider headers are not forwarded.
 
 ## Pre-Session Events
 

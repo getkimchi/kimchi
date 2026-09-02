@@ -12,7 +12,7 @@ import {
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { clearAutoRoutingAttempt, registerAutoApiProvider, stageAutoRoutingAttempt } from "./api-provider.js"
 import { AUTO_MODEL_API } from "./constants.js"
-import { clearAutoRoutingState, getAutoRoutingState, setAutoRoutingState } from "./state.js"
+import { type AutoRoutingState, clearAutoRoutingState, getAutoRoutingState, setAutoRoutingState } from "./state.js"
 
 const SESSION_ID = "provider-test-session"
 const TARGET_API = "kimchi-auto-test-target"
@@ -93,6 +93,25 @@ describe("Auto model API provider", () => {
 		)
 	})
 
+	it("passes assembled provider headers to the staged routing attempt", async () => {
+		const auto = model("auto", AUTO_MODEL_API)
+		const target = model("concrete", TARGET_API)
+		const headers = {
+			"X-Session-Id": "process-session",
+			"X-Conversation-Id": "agent-session",
+			"X-Parent-Session-Id": "parent-session",
+		}
+		const attempt = vi.fn(async () => ({ status: "resolved", model: target }) satisfies AutoRoutingState)
+		setAutoRoutingState(SESSION_ID, { status: "attempting" })
+		stageAutoRoutingAttempt(SESSION_ID, attempt)
+
+		const provider = getApiProvider(AUTO_MODEL_API)
+		if (!provider) throw new Error("Auto API provider was not registered")
+		await provider.streamSimple(auto, { messages: [] }, { sessionId: SESSION_ID, headers }).result()
+
+		expect(attempt).toHaveBeenCalledWith({ signal: undefined, headers })
+	})
+
 	it("does not forward the UI-selected reasoning option to a model that cannot use it", async () => {
 		const auto = model("auto", AUTO_MODEL_API)
 		const target = model("concrete", TARGET_API, false)
@@ -155,7 +174,7 @@ describe("Auto model API provider", () => {
 		const auto = model("auto", AUTO_MODEL_API)
 		const controller = new AbortController()
 		const attempt = vi.fn(
-			(signal: AbortSignal | undefined) =>
+			({ signal }: { signal?: AbortSignal }) =>
 				new Promise<{ status: "failed"; reason: "cancelled" }>((resolve) => {
 					expect(signal).toBe(controller.signal)
 					signal?.addEventListener("abort", () => resolve({ status: "failed", reason: "cancelled" }), {

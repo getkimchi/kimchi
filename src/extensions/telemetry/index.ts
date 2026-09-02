@@ -40,6 +40,7 @@ import {
 } from "./handlers/session.js"
 import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/tools.js"
 import { handleWorkflowEvent } from "./handlers/workflows.js"
+import { TELEMETRY_PROVIDER_HEADER_NAMES } from "./provider-headers.js"
 import { type TelemetryAttributes, TelemetryContext } from "./session-context.js"
 import { startSettingsChangeWatcher } from "./settings-change-emitter.js"
 import {
@@ -745,17 +746,17 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			}
 		})
 		pi.on("before_provider_headers", (event) => {
-			event.headers["X-Session-Id"] = telemetryCtx.telemetryId
-			event.headers["X-Conversation-Id"] = conversationId
+			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.sessionId] = telemetryCtx.telemetryId
+			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.conversationId] = conversationId
 			// 0 means "before first turn" (sentinel); backend should treat it accordingly.
-			event.headers["X-Turn-Index"] = String(telemetryCtx.turnIndex)
+			event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.turnIndex] = String(telemetryCtx.turnIndex)
 
 			// Requests issued from inside a subagent run carry the parent session's
 			// pi session id so the proxy can record it on chat_completions rows
 			// (same gating/value as the session.parent_id telemetry attribute).
 			const parentSessionId = telemetryCtx.getParentSessionId()
 			if (parentSessionId) {
-				event.headers["X-Parent-Session-Id"] = parentSessionId
+				event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.parentSessionId] = parentSessionId
 			}
 
 			// Inject W3C Trace Context (if not already present) derived from
@@ -766,12 +767,14 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			//   session id: 85a2d4f5-9f9f-49fb-890e-522a10e4a1e8
 			//   trace id:   85a2d4f59f9f49fb890e522a10e4a1e8
 			//   span id:    <new random 16-hex value per request>
-			const hasTraceparent = Object.keys(event.headers).some((name) => name.toLowerCase() === "traceparent")
+			const hasTraceparent = Object.keys(event.headers).some(
+				(name) => name.toLowerCase() === TELEMETRY_PROVIDER_HEADER_NAMES.traceparent,
+			)
 			if (!hasTraceparent) {
 				const traceId = telemetryCtx.telemetryId.replace(/-/g, "").toLowerCase()
 				if (traceId.length === 32) {
 					const spanId = randomBytes(8).toString("hex")
-					event.headers.traceparent = `00-${traceId}-${spanId}-01`
+					event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.traceparent] = `00-${traceId}-${spanId}-01`
 				}
 			}
 		})

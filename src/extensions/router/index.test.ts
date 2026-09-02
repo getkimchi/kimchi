@@ -379,7 +379,7 @@ describe("Auto model extension", () => {
 		const routePrompt = getHandler<BeforeAgentStartEvent>("before_agent_start")
 		await routePrompt(beforeEvent(), ctx)
 		const controller = new AbortController()
-		const attempt = consumeAutoRoutingAttempt(SESSION_ID, controller.signal)
+		const attempt = consumeAutoRoutingAttempt(SESSION_ID, { signal: controller.signal })
 		controller.abort()
 		await expect(attempt).resolves.toEqual({ status: "failed", reason: "cancelled" })
 		expect(getAutoRoutingState(SESSION_ID)).toEqual({ status: "unresolved" })

@@ -181,10 +181,16 @@ test("Auto routes once and keeps the selected concrete model for the session", a
 			await waitForText(terminal, "Second routed reply.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 
-			expect(requestsTo(fixture, "/v1/route")).toHaveLength(1)
+			const routerRequests = requestsTo(fixture, "/v1/route")
+			expect(routerRequests).toHaveLength(1)
 			const chatRequests = requestsTo(fixture, "/openai/v1/chat/completions")
 			expect(chatRequests).toHaveLength(2)
 			expect(chatRequests.map((request) => requestModel(request.body))).toEqual(["routed", "routed"])
+			expect(routerRequests[0]?.headers["x-session-id"]).toBe(chatRequests[0]?.headers["x-session-id"])
+			expect(routerRequests[0]?.headers["x-conversation-id"]).toBe(chatRequests[0]?.headers["x-conversation-id"])
+			expect(routerRequests[0]?.headers["x-turn-index"]).toBe(chatRequests[0]?.headers["x-turn-index"])
+			expect(routerRequests[0]?.headers.traceparent).toBe(chatRequests[0]?.headers.traceparent)
+			expect(routerRequests[0]?.headers["x-parent-session-id"]).toBeUndefined()
 
 			const settings = JSON.parse(readFileSync(join(fixture.agentDir, "settings.json"), "utf-8"))
 			expect(settings.defaultProvider).toBe("kimchi-dev")
@@ -502,10 +508,22 @@ test("a child that inherits Auto makes one independent routing decision", async 
 			await waitForText(terminal, "Parent finished.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForTurnToSettle(fixture.fake.requests)
 
-			expect(requestsTo(fixture, "/v1/route")).toHaveLength(2)
+			const routerRequests = requestsTo(fixture, "/v1/route")
+			expect(routerRequests).toHaveLength(2)
 			const chatRequests = requestsTo(fixture, "/openai/v1/chat/completions")
 			expect(chatRequests).toHaveLength(3)
 			expect(chatRequests.map((request) => requestModel(request.body))).toEqual(["routed", "routed", "routed"])
+
+			const parentRouterRequest = routerRequests.find((request) => !request.headers["x-parent-session-id"])
+			const childRouterRequest = routerRequests.find((request) => request.headers["x-parent-session-id"])
+			const childChatRequest = chatRequests.find((request) => request.headers["x-parent-session-id"])
+			expect(childRouterRequest?.headers["x-session-id"]).toBe(parentRouterRequest?.headers["x-session-id"])
+			expect(childRouterRequest?.headers["x-conversation-id"]).not.toBe(
+				parentRouterRequest?.headers["x-conversation-id"],
+			)
+			expect(childRouterRequest?.headers["x-session-id"]).toBe(childChatRequest?.headers["x-session-id"])
+			expect(childRouterRequest?.headers["x-conversation-id"]).toBe(childChatRequest?.headers["x-conversation-id"])
+			expect(childRouterRequest?.headers["x-parent-session-id"]).toBe(childChatRequest?.headers["x-parent-session-id"])
 		},
 	)
 })

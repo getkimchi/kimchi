@@ -34,6 +34,40 @@ describe("routeQuery", () => {
 		)
 	})
 
+	it("forwards only telemetry correlation headers", async () => {
+		const fetchImpl = vi.fn<typeof fetch>(async () =>
+			response({ best_model: "kimi-k2.5", probabilities: { "kimi-k2.5": 1 } }),
+		)
+
+		await routeQuery("explain this", config, {
+			fetchImpl,
+			headers: {
+				"x-session-id": "process-session",
+				"X-Conversation-Id": "agent-session",
+				"X-Turn-Index": "3",
+				"X-Parent-Session-Id": "parent-session",
+				traceparent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+				Authorization: "Bearer provider-secret",
+				"X-API-Key": "provider-override",
+			},
+		})
+
+		expect(fetchImpl).toHaveBeenCalledWith(
+			new URL("https://llm.kimchi.dev/v1/route"),
+			expect.objectContaining({
+				headers: {
+					"X-Session-Id": "process-session",
+					"X-Conversation-Id": "agent-session",
+					"X-Turn-Index": "3",
+					"X-Parent-Session-Id": "parent-session",
+					traceparent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+					"Content-Type": "application/json",
+					"X-API-Key": "same-gateway-key",
+				},
+			}),
+		)
+	})
+
 	it.each([
 		["HTTP failure", response({}, false), "http"],
 		["missing recommendation", response({ probabilities: {} }), "malformed"],
