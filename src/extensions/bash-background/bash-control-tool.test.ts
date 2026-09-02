@@ -1,284 +1,275 @@
 /**
- * Unit tests for the `bash_control` companion tool.
+ * Unit tests for the `bash_control` companion tool (consolidated cohort
+ * control: stop_handles + wait).
  *
- * Uses a real `ProcessRegistry` backed by a fake `BashOperations` so the
- * tool's interaction with the registry (spawn/extend/kill/snapshot) is
- * exercised end-to-end without a real shell.
+ * Uses a real registry/coordinator backed by a fake BashOperations so the
+ * tool's interaction with the cohort is exercised end-to-end without a
+ * real shell and with deterministic timing.
  */
 
-import type { BashOperations } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import { createBashControlToolDefinition } from "./bash-control-tool.js"
-import { createProcessRegistry } from "./process-registry.js"
-
-// ─── Fake BashOperations ─────────────────────────────────────────────────────
-
-interface FakeOps extends BashOperations {
-	lastTimeout: number | undefined
-	lastSignal: AbortSignal | undefined
-	exit(code: number | null): Promise<void>
-	emit(data: Buffer | string): void
-}
-
-function createFakeOps(): FakeOps {
-	let onData: (data: Buffer) => void = () => {}
-	let settle: (r: { exitCode: number | null }) => void
-	let rejectExec: (err: Error) => void
-	const promise = new Promise<{ exitCode: number | null }>((resolve, reject) => {
-		settle = resolve
-		rejectExec = reject
-	})
-	const ops: FakeOps = {
-		lastTimeout: undefined,
-		lastSignal: undefined,
-		async exit(code) {
-			settle({ exitCode: code })
-			await promise
-		},
-		emit(data) {
-			onData(typeof data === "string" ? Buffer.from(data) : data)
-		},
-		exec: async (_command, _cwd, opts) => {
-			ops.lastTimeout = opts.timeout
-			ops.lastSignal = opts.signal
-			onData = opts.onData
-			if (opts.signal) {
-				opts.signal.addEventListener("abort", () => rejectExec(new Error("aborted")), { once: true })
-			}
-			return promise
-		},
-	}
-	return ops
-}
+import { createProcessRegistry, type ProcessRegistry } from "./process-registry.js"
+import { createReviewCoordinator, type ReviewCoordinator } from "./review-coordinator.js"
+import type { BashSessionState } from "./session-registry.js"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+let ops: FakeOps
+let registry: ProcessRegistry
+let coordinator: ReviewCoordinator
+let state: BashSessionState
+
+beforeEach(() => {
+	vi.useFakeTimers()
+	ops = createFakeOps()
+	registry = createProcessRegistry()
+	coordinator = createReviewCoordinator({ registry, handoffSeconds: 1, reviewIntervalSeconds: 60 })
+	state = { registry, coordinator, limitSeconds: 600 }
+})
+
+afterEach(async () => {
+	vi.useRealTimers()
+	await registry.shutdown()
+})
+
 function setup() {
-	const ops = createFakeOps()
-	const registry = createProcessRegistry()
-	const tool = createBashControlToolDefinition(() => registry)
-	// Spawn a background process that stays running until the test drives it.
-	const handle = registry.spawn(ops, "long-running", "/test/cwd", undefined, {
-		intervalSeconds: 1,
-		deadlineMs: Date.now() + 120_000,
-	})
-	return { ops, registry, tool, handle }
+	const tool = createBashControlToolDefinition(() => state)
+	return { tool }
+}
+
+function spawnRunning(command = "long-running"): string {
+	const handle = registry.spawn(ops, command, "/test/cwd", undefined, { limitSeconds: 600 })
+	coordinator.handleSpawned(handle)
+	return handle
 }
 
 async function callExecute(
 	tool: ReturnType<typeof createBashControlToolDefinition>,
-	params: { handle: string; action: "continue" | "stop"; extend_seconds?: number; checkin_interval?: number },
+	params: Record<string, unknown>,
+	signal?: AbortSignal,
 ) {
-	const result = await tool.execute("call-1", params as never, undefined, undefined, undefined as never)
-	return result
+	return tool.execute("call-1", params as never, signal, undefined, undefined as never)
 }
 
-afterEach(() => {
-	vi.useRealTimers()
-})
+function textOf(result: { content: { type: string; text?: string }[] }): string {
+	return result.content.map((b) => b.text ?? "").join("\n")
+}
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("createBashControlToolDefinition — shape", () => {
-	it("is named 'bash_control'", () => {
-		const tool = createBashControlToolDefinition(() => undefined)
+	it("schema exposes stop_handles + wait; legacy timing fields are deprecated", () => {
+		const { tool } = setup()
 		expect(tool.name).toBe("bash_control")
+		const schema = tool.parameters as unknown as { properties: Record<string, { description?: string }> }
+		expect(schema.properties).toHaveProperty("stop_handles")
+		expect(schema.properties).toHaveProperty("wait")
+		expect(schema.properties.extend_seconds?.description).toBeUndefined()
+		expect(schema.properties.checkin_interval?.description).toBeUndefined()
 	})
 
-	it("schema has handle, action (continue|stop), optional extend_seconds and checkin_interval", () => {
-		const tool = createBashControlToolDefinition(() => undefined)
-		const schema = tool.parameters as unknown as { properties: Record<string, unknown> }
-		expect(schema.properties).toHaveProperty("handle")
-		expect(schema.properties).toHaveProperty("action")
-		expect(schema.properties).toHaveProperty("extend_seconds")
-		expect(schema.properties).toHaveProperty("checkin_interval")
-	})
-
-	it("description distinguishes checkin_interval (cadence) from extend_seconds (deadline)", () => {
-		const tool = createBashControlToolDefinition(() => undefined)
-		expect(tool.description).toContain("checkin_interval")
-		expect(tool.description).toContain("extend_seconds")
-	})
-
-	it("description mentions continue/stop", () => {
-		const tool = createBashControlToolDefinition(() => undefined)
-		expect(tool.description).toContain("continue")
-		expect(tool.description).toContain("stop")
+	it("description documents continuation-by-default and batch wait", () => {
+		const { tool } = setup()
+		expect(tool.description).toContain("stop_handles")
+		expect(tool.description).toContain("wait: true")
+		expect(tool.description).toContain("no-op")
 	})
 })
 
-it("checkin_interval changes the cadence for the re-armed wait", async () => {
-	vi.useFakeTimers()
-	const { ops, registry, tool, handle } = setup()
-	// Continue with cadence 5s: the next checkin must NOT resolve at the spawn-time 1s.
-	const execPromise = callExecute(tool, { handle, action: "continue", checkin_interval: 5 })
-	await Promise.resolve()
-	expect(registry.getEntry(handle)?.intervalSeconds).toBe(5)
-	let resolved = false
-	void execPromise.then(() => {
-		resolved = true
+describe("bash_control — stop_handles", () => {
+	it("rejects an empty no-op call", async () => {
+		const { tool } = setup()
+		const result = await callExecute(tool, { wait: false })
+		expect(textOf(result)).toContain("Nothing to do")
+		expect(result.details.reason).toBe("no-op")
 	})
-	await vi.advanceTimersByTimeAsync(1000)
-	expect(resolved).toBe(false)
-	ops.emit("slow cadence\n")
-	await vi.advanceTimersByTimeAsync(4000)
-	await execPromise
-	expect(resolved).toBe(true)
-	await ops.exit(0).catch(() => {})
+
+	it("stops one handle and returns its final result; unlisted handles keep running", async () => {
+		const { tool } = setup()
+		const victim = spawnRunning("victim")
+		const survivor = spawnRunning("survivor")
+		ops.emitMatching("victim", "victim output\n")
+
+		const result = await callExecute(tool, { stop_handles: [victim] })
+		const text = textOf(result)
+		expect(text).toContain(` handle: ${victim}`)
+		expect(text).toContain("stopped on request")
+		expect(text).toContain("victim output")
+		expect(result.details.exitedHandles).toEqual([victim])
+
+		expect(registry.getEntry(victim)).toBeUndefined()
+		expect(registry.getEntry(survivor)?.state).toBe("running")
+		expect(coordinator.handles()).toEqual([survivor])
+	})
+
+	it("stops several handles in one call with per-process results", async () => {
+		const { tool } = setup()
+		const a = spawnRunning("a")
+		const b = spawnRunning("b")
+		const c = spawnRunning("c")
+		const result = await callExecute(tool, { stop_handles: [a, c] })
+		const text = textOf(result)
+		expect(text).toContain(` handle: ${a}`)
+		expect(text).toContain(` handle: ${c}`)
+		expect(text).not.toContain(` handle: ${b}`)
+		expect(result.details.exitedHandles?.sort()).toEqual([a, c].sort())
+		expect(registry.getEntry(b)?.state).toBe("running")
+	})
+
+	it("reports unknown handles individually without losing valid actions", async () => {
+		const { tool } = setup()
+		const real = spawnRunning("real")
+		const result = await callExecute(tool, { stop_handles: ["bogus", real] })
+		const text = textOf(result)
+		expect(text).toContain("Unknown handle 'bogus'")
+		expect(text).toContain(` handle: ${real}`)
+		expect(registry.getEntry(real)).toBeUndefined()
+	})
+
+	it("legacy timing fields are accepted but ignored (no translation)", async () => {
+		const { tool } = setup()
+		const handle = spawnRunning("legacy")
+		// extend_seconds / checkin_interval are deprecated compatibility
+		// inputs: accepted by the schema, never acted on.
+		const result = await callExecute(tool, {
+			stop_handles: [handle],
+			wait: false,
+			extend_seconds: 30,
+			checkin_interval: 5,
+		})
+		expect(textOf(result)).toContain(` handle: ${handle}`)
+		expect(result.details.exitedHandles).toEqual([handle])
+	})
+
+	it("legacy handle/action payloads are NOT translated", async () => {
+		const { tool } = setup()
+		spawnRunning("legacy")
+		// An old-client payload names the process via `handle` with no
+		// stop_handles: it is an inert no-op, not an implicit stop.
+		const result = await callExecute(tool, { handle: "legacy", action: "stop" })
+		expect(textOf(result)).toContain("Nothing to do")
+		expect(result.details.reason).toBe("no-op")
+	})
 })
 
-it("continue without checkin_interval keeps the spawn-time cadence", async () => {
-	vi.useFakeTimers()
-	const { ops, registry, tool, handle } = setup()
-	const execPromise = callExecute(tool, { handle, action: "continue" })
-	await Promise.resolve()
-	expect(registry.getEntry(handle)?.intervalSeconds).toBe(1)
-	await vi.advanceTimersByTimeAsync(1000)
-	await execPromise
-	await ops.exit(0).catch(() => {})
-})
-
-it("checkin_interval combined with extend_seconds applies both", async () => {
-	vi.useFakeTimers()
-	const { ops, registry, tool, handle } = setup()
-	const before = registry.getEntry(handle)?.deadlineMs
-	const execPromise = callExecute(tool, { handle, action: "continue", extend_seconds: 30, checkin_interval: 2 })
-	await Promise.resolve()
-	expect(registry.getEntry(handle)?.deadlineMs).toBe(before !== undefined ? before + 30_000 : undefined)
-	expect(registry.getEntry(handle)?.intervalSeconds).toBe(2)
-	await vi.advanceTimersByTimeAsync(2000)
-	await execPromise
-	await ops.exit(0).catch(() => {})
-})
-
-describe("bash_control — action 'continue'", () => {
-	it("re-arms the next checkin and returns tail output + handle", async () => {
-		vi.useFakeTimers()
-		const { ops, tool, handle } = setup()
-		ops.emit("first output\n")
-		// Continue blocks until the next checkin (1s interval).
-		const execPromise = callExecute(tool, { handle, action: "continue" })
-		ops.emit("second output\n")
+describe("bash_control — wait", () => {
+	it("resolves on the first cohort exit with the terminal result and other statuses", async () => {
+		const { tool } = setup()
+		const exiting = spawnRunning("exiting")
+		const staying = spawnRunning("staying")
+		// Drain the pending shared first-handoff so the clock is in review phase.
 		await vi.advanceTimersByTimeAsync(1000)
+
+		const execPromise = callExecute(tool, { wait: true })
+		await Promise.resolve()
+		ops.emitMatching("exiting", "final words\n")
+		await ops.exitMatching("exiting", 0)
 		const result = await execPromise
 
-		expect(result.details.handle).toBe(handle)
-		expect(result.details.exited).toBe(false)
-		expect(result.details.action).toBe("continue")
-		expect(result.details.elapsedSeconds).toBe(1)
-		expect((result.content[0] as { text: string }).text).toContain("second output")
-		expect((result.content[0] as { text: string }).text).toContain("bash_control")
-		// Cleanup
-		await ops.exit(0).catch(() => {})
+		const text = textOf(result)
+		expect(text).toContain(` handle: ${exiting}`)
+		expect(text).toContain("exited (exit code 0)")
+		expect(text).toContain("final words")
+		expect(text).toContain(` handle: ${staying}`)
+		expect(result.details.exitedHandles).toEqual([exiting])
+		expect(result.details.runningHandles).toContain(staying)
+		expect(registry.getEntry(exiting)).toBeUndefined()
 	})
 
-	it("extend_seconds pushes the deadline out before re-arming", async () => {
-		vi.useFakeTimers()
-		const { ops, registry, tool, handle } = setup()
-		const before = registry.getEntry(handle)?.deadlineMs
-		const execPromise = callExecute(tool, { handle, action: "continue", extend_seconds: 30 })
+	it("resolves at the scheduled cohort review with a consolidated snapshot", async () => {
+		const { tool } = setup()
+		const a = spawnRunning("a")
+		const b = spawnRunning("b")
+		await vi.advanceTimersByTimeAsync(1000) // shared first handoff (review phase, +60s)
+		ops.emitMatching("a", "progress-a\n")
+		// Mark a's prior output delivered to prove incremental behavior.
+		const markA = registry.snapshotSince(a)
+		registry.markDelivered(a, markA.nextCursor)
+
+		const execPromise = callExecute(tool, { wait: true })
 		await Promise.resolve()
-		const after = registry.getEntry(handle)?.deadlineMs
-		expect(after).toBe(before !== undefined ? before + 30_000 : undefined)
-		ops.emit("extended\n")
-		await vi.advanceTimersByTimeAsync(1000)
+		ops.emitMatching("a", "new-a\n")
+		await vi.advanceTimersByTimeAsync(60_000)
 		const result = await execPromise
-		expect(result.details.exited).toBe(false)
-		expect((result.content[0] as { text: string }).text).toContain("extended")
-		await ops.exit(0).catch(() => {})
+
+		const text = textOf(result)
+		expect(text).toContain("cohort review")
+		// a: only the new output is re-sent (incremental).
+		expect(text).toContain("new-a")
+		expect(text).not.toContain("progress-a")
+		// b: silent process reported factually, never as "no progress".
+		expect(text).toContain(` handle: ${b}`)
+		expect(text).toContain("no new output observed")
+		expect(text).not.toContain("no progress")
 	})
 
-	it("returns final output when the process exits before the next checkin", async () => {
-		vi.useFakeTimers()
-		const { ops, registry, tool, handle } = setup()
-		ops.emit("done output\n")
-		// Exit the process before calling continue.
-		await ops.exit(0)
-		await registry.whenExited(handle)
-		const result = await callExecute(tool, { handle, action: "continue" })
-		expect(result.details.exited).toBe(true)
-		expect(result.details.exitCode).toBe(0)
-		expect(result.details.elapsedSeconds).toBe(0)
-		expect((result.content[0] as { text: string }).text).toContain("done output")
-		expect((result.content[0] as { text: string }).text).toContain("ran for 0s")
-	})
-
-	it("extend_seconds of 0 or omitted keeps the existing deadline", async () => {
-		vi.useFakeTimers()
-		const { ops, registry, tool, handle } = setup()
-		const before = registry.getEntry(handle)?.deadlineMs
-		const execPromise = callExecute(tool, { handle, action: "continue", extend_seconds: 0 })
+	it("rejects a second concurrent wait", async () => {
+		const { tool } = setup()
+		spawnRunning("a")
+		const first = tool.execute("call-1", { wait: true } as never, undefined, undefined, undefined as never)
 		await Promise.resolve()
-		const after = registry.getEntry(handle)?.deadlineMs
-		expect(after).toBe(before)
-		await vi.advanceTimersByTimeAsync(1000)
-		await execPromise
-		await ops.exit(0).catch(() => {})
-	})
-})
-
-describe("bash_control — action 'stop'", () => {
-	it("kills the process and returns final tail output + exitCode", async () => {
-		const { ops, tool, handle } = setup()
-		ops.emit("final output\n")
-		const result = await callExecute(tool, { handle, action: "stop" })
-		expect(result.details.action).toBe("stop")
-		expect(result.details.exited).toBe(true)
-		expect(result.details.reason).toBe("stop")
-		expect(result.details.elapsedSeconds).toBe(0)
-		expect((result.content[0] as { text: string }).text).toContain("final output")
-		expect((result.content[0] as { text: string }).text).toContain("Process stopped")
-		expect((result.content[0] as { text: string }).text).toContain("ran for 0s")
+		const second = await tool.execute("call-2", { wait: true } as never, undefined, undefined, undefined as never)
+		expect(textOf(second)).toContain("already active")
+		expect(second.details.reason).toBe("wait-conflict")
+		// The first wait still owns the slot and resolves on exit.
+		const assertion = expect(first).resolves.toMatchObject({
+			details: expect.objectContaining({ exitedHandles: expect.any(Array) }),
+		})
+		await ops.exitMatching("a", 0)
+		await assertion
 	})
 
-	it("stop on an already-exited process returns final output", async () => {
-		const { ops, registry, tool, handle } = setup()
-		ops.emit("exited output\n")
-		await ops.exit(0)
-		await registry.whenExited(handle)
-		const result = await callExecute(tool, { handle, action: "stop" })
-		expect(result.details.exited).toBe(true)
-		expect(result.details.exitCode).toBe(0)
-		expect((result.content[0] as { text: string }).text).toContain("exited output")
-	})
-})
+	it("abort cancels the wait without killing the cohort", async () => {
+		const { tool } = setup()
+		const handle = spawnRunning("keep-alive")
+		const controller = new AbortController()
+		const execPromise = callExecute(tool, { wait: true }, controller.signal)
+		await Promise.resolve()
+		controller.abort()
+		const result = await execPromise
 
-describe("bash_control — error cases", () => {
-	it("returns an error when no registry is available", async () => {
-		const tool = createBashControlToolDefinition(() => undefined)
-		const result = await callExecute(tool, { handle: "h", action: "continue" })
-		expect(result.details.exited).toBe(true)
-		expect(result.details.reason).toBe("no-registry")
-		expect((result.content[0] as { text: string }).text).toContain("no active bash session registry")
-	})
-
-	it("returns an error when checkin_interval is passed with action 'stop'", async () => {
-		const { registry, tool, handle } = setup()
-		const result = await callExecute(tool, { handle, action: "stop", checkin_interval: 5 })
-		expect((result.content[0] as { text: string }).text).toContain(
-			"checkin_interval is only valid with action 'continue'",
-		)
-		expect(result.details.reason).toBe("invalid-params")
-		// Process must NOT have been killed by the rejected call.
+		expect(textOf(result)).toContain("Wait cancelled")
+		expect(result.details.aborted).toBe(true)
 		expect(registry.getEntry(handle)?.state).toBe("running")
+		expect(ops.aborted).toBe(false)
 	})
 
-	it("returns an error for checkin_interval <= 0 or non-finite and leaves cadence unchanged", async () => {
-		const { registry, tool, handle } = setup()
-		for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
-			const result = await callExecute(tool, { handle, action: "continue", checkin_interval: bad })
-			expect((result.content[0] as { text: string }).text).toContain("checkin_interval must be a positive number")
-			expect(result.details.reason).toBe("invalid-params")
+	it("wait: true is required in the schema (no silent omission)", () => {
+		const { tool } = setup()
+		const schema = tool.parameters as unknown as { required?: string[] }
+		expect(schema.required).toContain("wait")
+	})
+
+	it("wait with an empty cohort returns immediately", async () => {
+		const { tool } = setup()
+		spawnRunning("gone")
+		await ops.exitMatching("gone", 0)
+		await registry.whenExited(coordinator.handles()[0] ?? "")
+		for (const h of [...coordinator.handles()]) {
+			coordinator.handleRemoved(h)
+			await registry.remove(h)
 		}
-		expect(registry.getEntry(handle)?.intervalSeconds).toBe(1)
+		const result = await callExecute(tool, { wait: true })
+		expect(textOf(result)).toContain("nothing to wait for")
 	})
 
-	it("returns an error for an unknown handle", async () => {
-		const { registry } = setup()
-		const tool = createBashControlToolDefinition(() => registry)
-		const result = await callExecute(tool, { handle: "nonexistent", action: "continue" })
-		expect(result.details.exited).toBe(true)
-		expect(result.details.reason).toBe("unknown-handle")
-		expect((result.content[0] as { text: string }).text).toContain("unknown handle")
+	it("stops are applied before the wait begins", async () => {
+		const { tool } = setup()
+		const victim = spawnRunning("victim")
+		const staying = spawnRunning("staying")
+		const execPromise = callExecute(tool, { stop_handles: [victim], wait: true })
+		await ops.exitMatching("staying", 0)
+		const result = await execPromise
+		expect(registry.getEntry(victim)).toBeUndefined()
+		expect(result.details.exitedHandles).toEqual(expect.arrayContaining([victim]))
+		const text = textOf(result)
+		expect(text).toContain(` handle: ${victim}`)
+		expect(text).toContain(` handle: ${staying}`)
+		// The victim's terminal result appears exactly once (not double-counted
+		// by the wait's terminal sweep).
+		const occurrences = text.split(` handle: ${victim}`).length - 1
+		expect(occurrences).toBe(1)
 	})
 })

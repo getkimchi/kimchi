@@ -24,7 +24,6 @@ import {
 } from "../../../shared/planning/plan-markdown.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
-import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
 import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
@@ -55,6 +54,7 @@ import {
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { buildAgentPrompt, formatTokenBudget, type PromptExtras } from "../prompt/prompts.js"
 import { listAvailableSkillNames, preloadSkills } from "../prompt/skill-loader.js"
+import { createSubagentBashClampExtension, subagentBashDefaultTimeoutExtension } from "../subagent-bash-clamp.js"
 import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type LifetimeUsage } from "./usage.js"
@@ -468,13 +468,13 @@ ${skillLines}`
 
 	// Repo-native extensions registered directly by the Kimchi CLI are not
 	// discovered by a child session's DefaultResourceLoader. Register this
-	// safety hook explicitly so worker bash calls get the same default timeout.
-	// When max_duration is 0 (unlimited), skip the clamp and use the plain
-	// default-timeout extension so bash calls keep their unlimited semantics.
+	// safety hook explicitly so worker bash calls get a deterministic upper
+	// bound. When max_duration is 0 (unlimited), skip the wall-clock clamp
+	// and use the plain default-timeout extension instead.
 	const bashExtension =
 		effectiveMaxDuration > 0
 			? createSubagentBashClampExtension(effectiveMaxDuration, Date.now())
-			: bashDefaultTimeoutExtension
+			: subagentBashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
 	// successes must close the shared infrastructure breaker just like the parent's.
 	const extensionFactories: InlineExtension[] = [

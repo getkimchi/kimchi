@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionHandler } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, ExtensionHandler } from "@earendil-works/pi-coding-agent"
 import { vi } from "vitest"
 
 type RegisteredHandler = ExtensionHandler<unknown, unknown>
@@ -7,7 +7,11 @@ export function createExtensionApi(): {
 	api: ExtensionAPI
 	getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R>
 	getHandlers<E, R = undefined>(event: string): ExtensionHandler<E, R>[]
+	/** Invoke every handler registered for `event`, awaiting each in turn; returns their results. */
+	emit(event: string, payload: unknown, ctx?: ExtensionContext): Promise<unknown[]>
 	sendMessage: ReturnType<typeof vi.fn<ExtensionAPI["sendMessage"]>>
+	registerTool: ReturnType<typeof vi.fn<ExtensionAPI["registerTool"]>>
+	registerCommand: ReturnType<typeof vi.fn<ExtensionAPI["registerCommand"]>>
 	emitEvent: ReturnType<typeof vi.fn>
 } {
 	const handlers = new Map<string, RegisteredHandler[]>()
@@ -31,7 +35,16 @@ export function createExtensionApi(): {
 		getHandlers<E, R = undefined>(event: string): ExtensionHandler<E, R>[] {
 			return (handlers.get(event) ?? []) as ExtensionHandler<E, R>[]
 		},
+		async emit(event: string, payload: unknown, ctx?: ExtensionContext): Promise<unknown[]> {
+			const results: unknown[] = []
+			for (const handler of handlers.get(event) ?? []) {
+				results.push(await handler(payload, ctx as ExtensionContext))
+			}
+			return results
+		},
 		sendMessage,
+		registerTool,
+		registerCommand,
 		emitEvent,
 	}
 }

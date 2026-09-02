@@ -5,9 +5,9 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 test.use(TUI_TEST_CONFIG)
 
 // Deterministic long-running command: prints a line, then sleeps longer than
-// the checkin interval (1s) so the first result is a mid-run check-in with a
-// handle rather than a completed result.
-const LONG_COMMAND = "echo started && sleep 30"
+// the 15s initial handoff so the first result yields a background handle
+// rather than a completed result.
+const LONG_COMMAND = "echo started && sleep 60"
 
 test("background bash: read-only tools work while a process runs, then stop retrieves output", async ({ terminal }) => {
 	await runKimchiSession(
@@ -23,11 +23,7 @@ test("background bash: read-only tools work while a process runs, then stop retr
 							id: "call_bash",
 							function: {
 								name: "bash",
-								arguments: JSON.stringify({
-									command: LONG_COMMAND,
-									timeout: 60,
-									checkin_interval: 1,
-								}),
+								arguments: JSON.stringify({ command: LONG_COMMAND }),
 							},
 						},
 					],
@@ -55,8 +51,7 @@ test("background bash: read-only tools work while a process runs, then stop retr
 							function: {
 								name: "bash_control",
 								arguments: JSON.stringify({
-									handle: "__BASH_HANDLE__",
-									action: "stop",
+									stop_handles: ["__BASH_HANDLE__"],
 								}),
 							},
 						},
@@ -69,9 +64,11 @@ test("background bash: read-only tools work while a process runs, then stop retr
 		async (fixture, trace) => {
 			terminal.submit("Run a long command, read a file while it runs, then stop it")
 
-			// The first check-in arrives: the process is still running.
-			await waitForText(terminal, "Background process running", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("first background check-in visible")
+			// The initial handoff arrives: the process is still running. (The
+			// facts block is collapsed in the TUI; the guidance line is the
+			// visible signal that backgrounding engaged.)
+			await waitForText(terminal, "continues by default", { timeoutMs: STREAM_TIMEOUT_MS * 2 })
+			trace.step("initial background handoff visible")
 
 			// The read tool call runs while the process is still tracked — it
 			// must not be hard-blocked. Wait for the model's streaming text to
@@ -107,11 +104,7 @@ test("background bash: a normal completion while a process runs triggers a follo
 							id: "call_bash",
 							function: {
 								name: "bash",
-								arguments: JSON.stringify({
-									command: LONG_COMMAND,
-									timeout: 60,
-									checkin_interval: 1,
-								}),
+								arguments: JSON.stringify({ command: LONG_COMMAND }),
 							},
 						},
 					],
@@ -128,8 +121,7 @@ test("background bash: a normal completion while a process runs triggers a follo
 							function: {
 								name: "bash_control",
 								arguments: JSON.stringify({
-									handle: "__BASH_HANDLE__",
-									action: "stop",
+									stop_handles: ["__BASH_HANDLE__"],
 								}),
 							},
 						},
@@ -142,9 +134,9 @@ test("background bash: a normal completion while a process runs triggers a follo
 		async (fixture, trace) => {
 			terminal.submit("Run a long command then finish without stopping it")
 
-			// The first check-in arrives.
-			await waitForText(terminal, "Background process running", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("first background check-in visible")
+			// The initial handoff arrives.
+			await waitForText(terminal, "continues by default", { timeoutMs: STREAM_TIMEOUT_MS * 2 })
+			trace.step("initial background handoff visible")
 
 			// The model says "All done!" — but the process is still running.
 			await waitForText(terminal, "All done!", { timeoutMs: STREAM_TIMEOUT_MS })
@@ -163,3 +155,6 @@ test("background bash: a normal completion while a process runs triggers a follo
 		},
 	)
 })
+
+// Cohort workflows (multi-command staggering, streaming-safe exit delivery,
+// review-vs-wait resolution) live in ./bash-background-cohort.test.ts.

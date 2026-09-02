@@ -402,9 +402,9 @@ function extractBashHandle(body: unknown): string | undefined {
 		const record = asRecord(message)
 		if (record.role !== "tool") continue
 		const text = readMessageContent(record.content)
-		// The background bash result includes a parenthetical `(handle <uuid>)`
-		// in its status line.
-		const match = text.match(/\(handle ([0-9a-fA-F-]{8,})\)/)
+		// The background bash result carries the handle identity in its
+		// facts block (` handle: <uuid>`).
+		const match = text.match(/ handle: ([0-9a-fA-F-]{8,})/)
 		if (match) return match[1]
 	}
 	return undefined

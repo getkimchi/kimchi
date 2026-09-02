@@ -4,18 +4,19 @@
  * bashBackgroundExtension is registered before bashControlExtension in
  * src/cli.ts, and shutdown handlers run in registration order. Draining the
  * registry kills pending processes, which settles their `whenExited`
- * promises — if the registry were still published at that point, the
+ * promises — if the state were still published at that point, the
  * control extension's exit watcher could emit an "exited on its own"
  * steer into the closing session. The extension must UNPUBLISH the
- * session registry before awaiting the drain.
+ * session state before awaiting the drain.
  */
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
 import bashBackgroundExtension from "./index.js"
-import type { ProcessRegistry } from "./process-registry.js"
-import { getSessionRegistry, setSessionRegistry } from "./session-registry.js"
+import { DEFAULT_BASH_PROCESS_LIMIT_SECONDS } from "./process-registry.js"
+import { type BashSessionState, getSessionState, setSessionState } from "./session-registry.js"
 
-type AnyHandler = (event: unknown, ctx: ExtensionContext) => unknown
+const sessionCtx = { cwd: "/tmp" } as unknown as ExtensionContext
 
 interface RegisteredTool {
 	name: string
@@ -23,112 +24,113 @@ interface RegisteredTool {
 	execute: unknown
 }
 
-function makeFakePi(): ExtensionAPI & {
-	registeredTools: Map<string, RegisteredTool>
-	emit(event: string, payload: unknown, ctx?: unknown): Promise<void>
-} {
-	const handlers = new Map<string, AnyHandler[]>()
-	const registeredTools = new Map<string, RegisteredTool>()
-	const fake = {
-		handlers,
-		registeredTools,
-		on(event: string, handler: AnyHandler) {
-			const list = handlers.get(event) ?? []
-			list.push(handler)
-			handlers.set(event, list)
-		},
-		registerTool(tool: RegisteredTool) {
-			registeredTools.set(tool.name, tool)
-		},
-		async emit(event: string, payload: unknown, ctx?: unknown) {
-			for (const h of handlers.get(event) ?? []) {
-				await h(payload, ctx as ExtensionContext)
-			}
-		},
+function registeredTools(
+	registerTool: ReturnType<typeof createExtensionApi>["registerTool"],
+): Map<string, RegisteredTool> {
+	const tools = new Map<string, RegisteredTool>()
+	for (const call of registerTool.mock.calls) {
+		const tool = call[0] as unknown as RegisteredTool
+		tools.set(tool.name, tool)
 	}
-	return fake as unknown as ExtensionAPI & {
-		registeredTools: Map<string, RegisteredTool>
-		emit(event: string, payload: unknown, ctx?: unknown): Promise<void>
-	}
+	return tools
 }
 
 describe("bashBackgroundExtension — shutdown drain ordering", () => {
 	afterEach(() => {
-		// The session registry is a module singleton — never leak it.
-		setSessionRegistry(undefined)
+		// The session state is a module singleton — never leak it.
+		setSessionState(undefined)
 	})
 
-	it("unpublishes the session registry before awaiting the drain", async () => {
-		const pi = makeFakePi()
-		bashBackgroundExtension(pi)
-		await pi.emit("session_start", {}, { cwd: "/tmp" })
-		expect(getSessionRegistry()).toBeDefined()
+	it("unpublishes the session state before awaiting the drain", async () => {
+		const { api, emit } = createExtensionApi()
+		bashBackgroundExtension(api)
+		await emit("session_start", {}, sessionCtx)
+		expect(getSessionState()).toBeDefined()
 
 		// Swap in a sentinel that records what the accessor returns while the
 		// drain is in progress.
-		const observed: { publishedDuringDrain: ProcessRegistry | undefined | "unset" } = {
+		const observed: { publishedDuringDrain: unknown } = {
 			publishedDuringDrain: "unset",
 		}
 		const sentinel = {
-			async shutdown(): Promise<void> {
-				observed.publishedDuringDrain = getSessionRegistry()
+			coordinator: {
+				dispose() {
+					// sentinel: no timers to clear in this test double
+				},
 			},
-		} as unknown as ProcessRegistry
-		setSessionRegistry(sentinel)
+			registry: {
+				async shutdown(): Promise<void> {
+					observed.publishedDuringDrain = getSessionState()?.registry
+				},
+			},
+		}
+		setSessionState(sentinel as unknown as BashSessionState)
 
-		await pi.emit("session_shutdown", {})
+		await emit("session_shutdown", {})
 
 		expect(observed.publishedDuringDrain).toBeUndefined()
-		expect(getSessionRegistry()).toBeUndefined()
+		expect(getSessionState()).toBeUndefined()
 	})
 
-	it("session_start installs a fresh registry that callers can resolve", async () => {
-		const pi = makeFakePi()
-		bashBackgroundExtension(pi)
+	it("session_start installs fresh state that callers can resolve", async () => {
+		const { api, emit } = createExtensionApi()
+		bashBackgroundExtension(api)
 
-		await pi.emit("session_start", {}, { cwd: "/tmp" })
-		const first = getSessionRegistry()
+		await emit("session_start", {}, sessionCtx)
+		const first = getSessionState()
 		expect(first).toBeDefined()
+		expect(first?.limitSeconds).toBe(DEFAULT_BASH_PROCESS_LIMIT_SECONDS)
+		expect(first?.cwd).toBe("/tmp")
 
-		await pi.emit("session_shutdown", {})
-		expect(getSessionRegistry()).toBeUndefined()
+		// A resumed/forked session gets a fresh cohort: handles from the old
+		// session are not reusable (the registry is rebuilt).
+		const firstRegistry = first?.registry
+		await emit("session_start", {}, sessionCtx)
+		const second = getSessionState()
+		expect(second).toBeDefined()
+		expect(second?.registry).not.toBe(firstRegistry)
+
+		await emit("session_shutdown", {})
+		expect(getSessionState()).toBeUndefined()
 	})
 })
 
 describe("bashBackgroundExtension — production description composition", () => {
 	afterEach(() => {
-		setSessionRegistry(undefined)
+		setSessionState(undefined)
 	})
 
-	it("registers the bash tool with the non-blocking guidance from bashToolDescription", async () => {
-		const pi = makeFakePi()
-		bashBackgroundExtension(pi)
+	it("registers the bash tool with the cohort guidance from bashToolDescription", async () => {
+		const { api, emit, registerTool } = createExtensionApi()
+		bashBackgroundExtension(api)
 
-		await pi.emit("session_start", {}, { cwd: "/tmp" })
+		await emit("session_start", {}, sessionCtx)
 
-		const bash = pi.registeredTools.get("bash")
+		const bash = registeredTools(registerTool).get("bash")
 		expect(bash).toBeDefined()
-		// The production-registered description must carry the non-blocking
-		// guidance so the model knows other tools stay available while a
-		// process runs.
-		expect(bash?.description).toContain("other tools stay available")
-		expect(bash?.description).toContain("do independent work")
-		expect(bash?.description).toContain("instead of calling bash_control just to wait")
-		expect(bash?.description).toContain("avoid commands or edits that could conflict")
+		// The production-registered description must carry the cohort
+		// contract so the model knows processes continue by default and are
+		// reviewed automatically.
+		expect(bash?.description).toContain("continues by default")
+		expect(bash?.description).toContain("bash_control")
+		expect(bash?.description).toContain("stop_handles")
+		// ...and no model-facing timing knobs.
+		expect(bash?.description).not.toContain("checkin_interval")
+		expect(bash?.description).not.toContain("extend_seconds")
 
-		await pi.emit("session_shutdown", {})
+		await emit("session_shutdown", {})
 	})
 
 	it("registers the bash tool with the background-execute function", async () => {
-		const pi = makeFakePi()
-		bashBackgroundExtension(pi)
+		const { api, emit, registerTool } = createExtensionApi()
+		bashBackgroundExtension(api)
 
-		await pi.emit("session_start", {}, { cwd: "/tmp" })
+		await emit("session_start", {}, sessionCtx)
 
-		const bash = pi.registeredTools.get("bash")
+		const bash = registeredTools(registerTool).get("bash")
 		expect(bash).toBeDefined()
 		expect(typeof bash?.execute).toBe("function")
 
-		await pi.emit("session_shutdown", {})
+		await emit("session_shutdown", {})
 	})
 })

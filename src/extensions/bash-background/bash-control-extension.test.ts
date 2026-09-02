@@ -1,26 +1,43 @@
 /**
- * Integration tests for bashControlExtension: background bash processes are
+ * Integration tests for bashControlExtension: background cohorts are
  * tracked for lifecycle notices and concurrency context, but NEVER block
- * other tool calls. Write/execute tools get one once-per-turn concurrency
- * steer as reinforcement; a natural process exit steers the model without
- * claiming tools were ever blocked; a normal completion with tracked
+ * other tool calls. Unattended exits are delivered immediately exactly
+ * once (owned exits route into the active bash_control result); due
+ * cohort reviews piggyback on active turns or wake idle agents and fold
+ * in any undelivered terminal results; a normal completion with tracked
  * handles emits one bounded follow-up per stable handle set.
  *
- * Exercises the full event wiring in bashControlExtension(pi) against a
- * fake ExtensionAPI + controllable fake registry.
+ * Exercises the full event wiring against the shared fake ExtensionAPI
+ * (`__mocks__/extension-api.ts`) plus a real registry/coordinator driven
+ * by a fake BashOperations.
  */
-import type { ExtensionAPI, ExtensionContext, InputSource, ToolCallEventResult } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it } from "vitest"
+import type { ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import bashControlExtension, {
 	BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE,
 	BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE,
 	BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
+	BASH_BACKGROUND_REVIEW_MESSAGE_TYPE,
 } from "./bash-control-extension.js"
-import type { ProcessRegistry } from "./process-registry.js"
+import { createProcessRegistry, type ProcessRegistry } from "./process-registry.js"
+import { createReviewCoordinator, type ReviewCoordinator } from "./review-coordinator.js"
+import type { BashSessionState } from "./session-registry.js"
 
-// ─── Fake ExtensionAPI ────────────────────────────────────────────────────────
+// ─── Shared state ─────────────────────────────────────────────────────────────
 
-type AnyHandler = (event: unknown, ctx: ExtensionContext) => unknown
+let ops: FakeOps
+let registry: ProcessRegistry
+let coordinator: ReviewCoordinator
+let state: BashSessionState
+let currentState: BashSessionState | undefined
+
+function makePiWithState(): ReturnType<typeof createExtensionApi> {
+	const harness = createExtensionApi()
+	bashControlExtension(harness.api, { getState: () => currentState })
+	return harness
+}
 
 interface SentMessage {
 	customType: string
@@ -29,174 +46,110 @@ interface SentMessage {
 	options?: Record<string, unknown>
 }
 
-interface FakePi {
-	handlers: Map<string, AnyHandler[]>
-	registeredTools: string[]
-	messages: SentMessage[]
-	emit(event: string, payload: unknown): Promise<unknown[]>
+function messages(harness: ReturnType<typeof createExtensionApi>): SentMessage[] {
+	return harness.sendMessage.mock.calls.map(([message, options]) => ({
+		...(message as Omit<SentMessage, "options">),
+		options: options as Record<string, unknown> | undefined,
+	}))
 }
 
-function makeFakePi(): FakePi & ExtensionAPI {
-	const handlers = new Map<string, AnyHandler[]>()
-	const state: FakePi = {
-		handlers,
-		registeredTools: [],
-		messages: [],
-		async emit(event: string, payload: unknown) {
-			const list = handlers.get(event) ?? []
-			const results: unknown[] = []
-			for (const h of list) {
-				results.push(await h(payload, undefined as unknown as ExtensionContext))
-			}
-			return results
-		},
-	}
-
-	const pi = {
-		on(event: string, handler: AnyHandler) {
-			const list = handlers.get(event) ?? []
-			list.push(handler)
-			handlers.set(event, list)
-		},
-		registerTool(tool: { name: string }) {
-			state.registeredTools.push(tool.name)
-		},
-		sendMessage(message: Omit<SentMessage, "options">, options?: Record<string, unknown>) {
-			state.messages.push({ ...message, options })
-		},
-	} as unknown as ExtensionAPI
-
-	return Object.assign(state, pi) as unknown as FakePi & ExtensionAPI
+function followUps(harness: ReturnType<typeof createExtensionApi>, customType: string): SentMessage[] {
+	return messages(harness).filter((m) => m.customType === customType)
 }
 
-// ─── Fake registry ────────────────────────────────────────────────────────────
+beforeEach(() => {
+	ops = createFakeOps()
+	registry = createProcessRegistry()
+	coordinator = createReviewCoordinator({ registry, handoffSeconds: 1, reviewIntervalSeconds: 60 })
+	state = { registry, coordinator, limitSeconds: 600, cwd: "/test/cwd" }
+	currentState = state
+})
 
-interface FakeRegistry {
-	whenExited(handle: string): Promise<{ exitCode: number | null }>
-	/** Resolve the deferred exit promise for a handle (simulates process exit). */
-	resolveExit(handle: string, exitCode: number | null): void
-	/** True when a watcher promise exists for the handle. */
-	watched(handle: string): boolean
-	/** How many times whenExited was called for a handle. */
-	watchCalls(handle: string): number
-}
+afterEach(async () => {
+	await registry.shutdown()
+})
 
-function makeFakeRegistry(): FakeRegistry {
-	const deferred = new Map<
-		string,
-		{ promise: Promise<{ exitCode: number | null }>; resolve: (v: { exitCode: number | null }) => void }
-	>()
-	const calls = new Map<string, number>()
-	const registry: FakeRegistry = {
-		whenExited(handle: string) {
-			calls.set(handle, (calls.get(handle) ?? 0) + 1)
-			let d = deferred.get(handle)
-			if (!d) {
-				let resolve!: (v: { exitCode: number | null }) => void
-				const promise = new Promise<{ exitCode: number | null }>((res) => {
-					resolve = res
-				})
-				d = { promise, resolve }
-				deferred.set(handle, d)
-			}
-			return d.promise
-		},
-		resolveExit(handle: string, exitCode: number | null) {
-			deferred.get(handle)?.resolve({ exitCode })
-		},
-		watched(handle: string) {
-			return deferred.has(handle) || calls.has(handle)
-		},
-		watchCalls(handle: string) {
-			return calls.get(handle) ?? 0
-		},
-	}
-	return registry
+function spawnRunning(command = "long-running", cwd = "/test/cwd"): string {
+	const handle = registry.spawn(ops, command, cwd, undefined, { limitSeconds: 600 })
+	coordinator.handleSpawned(handle)
+	return handle
 }
 
 // ─── Event helpers ────────────────────────────────────────────────────────────
 
-async function fireSessionStart(pi: ExtensionAPI): Promise<void> {
-	const handlers = (pi as unknown as FakePi).handlers.get("session_start") ?? []
-	for (const h of handlers) await h({}, undefined as unknown as ExtensionContext)
+const ctx = {} as ExtensionContext
+
+function fireSessionStart(harness: ReturnType<typeof createExtensionApi>): Promise<unknown[]> {
+	return harness.emit("session_start", {}, ctx)
 }
 
-function checkinResult(handle: string): Record<string, unknown> {
-	return {
-		type: "tool_result",
-		toolName: "bash",
-		toolCallId: "c1",
-		input: { command: "long" },
-		content: [{ type: "text", text: "output so far" }],
-		isError: false,
-		details: { handle, checkin: true, exited: false, exitCode: null },
-	}
-}
-
-async function fireToolResult(pi: ExtensionAPI, event: Record<string, unknown>): Promise<void> {
-	await (pi as unknown as FakePi).emit("tool_result", event)
+function fireToolResult(
+	harness: ReturnType<typeof createExtensionApi>,
+	event: Record<string, unknown>,
+): Promise<unknown[]> {
+	return harness.emit("tool_result", event, ctx)
 }
 
 async function fireToolCall(
-	pi: ExtensionAPI,
+	harness: ReturnType<typeof createExtensionApi>,
 	toolName: string,
 	input: Record<string, unknown> = {},
+	toolCallId = "tc1",
 ): Promise<ToolCallEventResult | undefined> {
-	const handlers = (pi as unknown as FakePi).handlers.get("tool_call") ?? []
-	let result: ToolCallEventResult | undefined
-	for (const h of handlers) {
-		const r = (await h(
-			{ type: "tool_call", toolCallId: "tc1", toolName, input },
-			undefined as unknown as ExtensionContext,
-		)) as ToolCallEventResult | undefined
-		if (r) result = r
-	}
-	return result
+	const results = await harness.emit("tool_call", { type: "tool_call", toolCallId, toolName, input }, ctx)
+	return results.filter(Boolean).at(-1) as ToolCallEventResult | undefined
 }
 
-async function fireTurnStart(pi: ExtensionAPI): Promise<void> {
-	await (pi as unknown as FakePi).emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 })
+function fireTurnStart(harness: ReturnType<typeof createExtensionApi>): Promise<unknown[]> {
+	return harness.emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 }, ctx)
 }
 
-async function fireTurnEnd(pi: ExtensionAPI, message: { role: string; stopReason?: string }): Promise<void> {
-	await (pi as unknown as FakePi).emit("turn_end", { type: "turn_end", turnIndex: 0, message, toolResults: [] })
+function fireTurnEnd(
+	harness: ReturnType<typeof createExtensionApi>,
+	message: { role: string; stopReason?: string },
+): Promise<unknown[]> {
+	return harness.emit("turn_end", { type: "turn_end", turnIndex: 0, message, toolResults: [] }, ctx)
 }
 
-async function fireInput(pi: ExtensionAPI, source: InputSource = "interactive"): Promise<void> {
-	await (pi as unknown as FakePi).emit("input", { source, text: "hi" })
-}
-
-async function fireToolExecutionStart(
-	pi: ExtensionAPI,
+function fireToolExecutionStart(
+	harness: ReturnType<typeof createExtensionApi>,
 	toolCallId: string,
 	toolName: string,
 	args: Record<string, unknown>,
-): Promise<void> {
-	await (pi as unknown as FakePi).emit("tool_execution_start", {
-		type: "tool_execution_start",
-		toolCallId,
-		toolName,
-		args,
-	})
+): Promise<unknown[]> {
+	return harness.emit(
+		"tool_execution_start",
+		{
+			type: "tool_execution_start",
+			toolCallId,
+			toolName,
+			args,
+		},
+		ctx,
+	)
 }
 
-async function fireToolExecutionEnd(
-	pi: ExtensionAPI,
+function fireToolExecutionEnd(
+	harness: ReturnType<typeof createExtensionApi>,
 	toolCallId: string,
 	toolName: string,
 	isError = false,
-): Promise<void> {
-	await (pi as unknown as FakePi).emit("tool_execution_end", {
-		type: "tool_execution_end",
-		toolCallId,
-		toolName,
-		result: {},
-		isError,
-	})
+): Promise<unknown[]> {
+	return harness.emit(
+		"tool_execution_end",
+		{
+			type: "tool_execution_end",
+			toolCallId,
+			toolName,
+			result: {},
+			isError,
+		},
+		ctx,
+	)
 }
 
-async function fireShutdown(pi: ExtensionAPI): Promise<void> {
-	await (pi as unknown as FakePi).emit("session_shutdown", {})
+function fireShutdown(harness: ReturnType<typeof createExtensionApi>): Promise<unknown[]> {
+	return harness.emit("session_shutdown", {}, ctx)
 }
 
 /** Let watcher promise callbacks run. */
@@ -204,725 +157,437 @@ async function flush(): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
-function messages(pi: ExtensionAPI): SentMessage[] {
-	return (pi as unknown as FakePi).messages
+/** Start a session and track a handle via a bash handoff result. */
+async function startTrackedSession(harness: ReturnType<typeof createExtensionApi>, handle: string): Promise<void> {
+	await fireSessionStart(harness)
+	await fireToolResult(harness, {
+		type: "tool_result",
+		toolName: "bash",
+		toolCallId: "c1",
+		input: { command: "long" },
+		content: [{ type: "text", text: "output so far" }],
+		isError: false,
+		details: { handle, handoff: true, exited: false, exitCode: null },
+	})
 }
 
-function steerMessages(pi: ExtensionAPI): SentMessage[] {
-	return messages(pi).filter((m) => m.options?.deliverAs === "steer")
-}
-
-function followUpMessages(pi: ExtensionAPI): SentMessage[] {
-	return messages(pi).filter((m) => m.options?.deliverAs === "followUp")
-}
-
-/** Start a session and track a handle via a bash checkin. */
-async function startTrackedSession(pi: ExtensionAPI, registry: FakeRegistry, handle = "h1"): Promise<void> {
-	bashControlExtension(pi, { getRegistry: () => registry as unknown as ProcessRegistry })
-	await fireSessionStart(pi)
-	await fireToolResult(pi, checkinResult(handle))
+async function exitProcess(handle: string, code = 0): Promise<void> {
+	const command = registry.getEntry(handle)?.commandSummary ?? ""
+	ops.emitMatching(command, `output-from-${code}\n`)
+	await ops.exitMatching(command, code)
+	await registry.whenExited(handle)
+	await flush()
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-describe("bashControlExtension — non-blocking tracking", () => {
-	it("registers the bash_control tool on session_start", async () => {
-		const pi = makeFakePi()
-		bashControlExtension(pi)
-		await fireSessionStart(pi)
+describe("session_start", () => {
+	it("registers the bash_control tool and installs the review deliverer", async () => {
+		const harness = makePiWithState()
+		await fireSessionStart(harness)
+		const toolNames = harness.registerTool.mock.calls.map(([tool]) => (tool as { name: string }).name)
+		expect(toolNames).toContain("bash_control")
+		expect(state.deliverReview).toBeDefined()
+	})
+})
 
-		expect((pi as unknown as FakePi).registeredTools).toContain("bash_control")
+describe("unattended exits", () => {
+	it("delivers the terminal result immediately with triggerTurn followUp and removes the handle", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning("sleeper")
+		await startTrackedSession(harness, handle)
+
+		await exitProcess(handle, 0)
+		await flush()
+
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits).toHaveLength(1)
+		const text = exits[0]?.content[0]?.text ?? ""
+		expect(text).toContain(` handle: ${handle}`)
+		expect(text).toContain("exited (exit code 0)")
+		expect(text).toContain("output-from-0")
+		expect(exits[0]?.options?.triggerTurn).toBe(true)
+		expect(exits[0]?.options?.deliverAs).toBe("followUp")
+		expect(registry.getEntry(handle)).toBeUndefined()
+		expect(coordinator.handles()).not.toContain(handle)
 	})
 
-	it("allows all tool calls while no background process is tracked", async () => {
-		const pi = makeFakePi()
-		bashControlExtension(pi)
-		await fireSessionStart(pi)
-
-		expect((await fireToolCall(pi, "read"))?.block).toBe(false)
-		expect((await fireToolCall(pi, "bash"))?.block).toBe(false)
-		expect((await fireToolCall(pi, "bash_control"))?.block).toBe(false)
-	})
-
-	it("a short-task bash result (no handle) does not track a process", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		bashControlExtension(pi, { getRegistry: () => registry as unknown as ProcessRegistry })
-		await fireSessionStart(pi)
-
-		await fireToolResult(pi, {
+	it("includes compact statuses for remaining running handles", async () => {
+		const harness = makePiWithState()
+		const a = spawnRunning("first-proc")
+		const b = spawnRunning("second-proc")
+		await startTrackedSession(harness, a)
+		await fireToolResult(harness, {
 			type: "tool_result",
 			toolName: "bash",
-			toolCallId: "c1",
-			input: { command: "echo hi" },
-			content: [{ type: "text", text: "hi" }],
-			isError: false,
-			details: { checkin: false },
-		})
-
-		expect((await fireToolCall(pi, "bash"))?.block).toBe(false)
-		expect(registry.watched("h1")).toBe(false)
-	})
-
-	it("a background bash checkin tracks the process but does NOT block other tools", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		// read is allowed (read-only) — no steer.
-		const readResult = await fireToolCall(pi, "read")
-		expect(readResult?.block).toBe(false)
-		expect(steerMessages(pi)).toHaveLength(0)
-
-		// write/execute tools are allowed but get a concurrency steer.
-		const before = steerMessages(pi).length
-		const bashResult = await fireToolCall(pi, "bash", { command: "echo x" })
-		expect(bashResult?.block).toBe(false)
-		expect(steerMessages(pi).length).toBe(before + 1)
-		const steer = steerMessages(pi).at(-1)
-		expect(steer?.customType).toBe(BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE)
-		expect(steer?.options).toEqual({ deliverAs: "steer" })
-		expect(steer?.content[0]?.text).toContain("h1")
-		expect(steer?.content[0]?.text).toContain("conflict")
-
-		// bash_control stays allowed without a steer.
-		const controlResult = await fireToolCall(pi, "bash_control", { handle: "h1", action: "continue" })
-		expect(controlResult?.block).toBe(false)
-	})
-
-	it("a bash_control continue result with checkin=true keeps tracking without re-arming the watcher", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-		expect(registry.watchCalls("h1")).toBe(1)
-
-		await fireToolResult(pi, {
-			type: "tool_result",
-			toolName: "bash_control",
 			toolCallId: "c2",
-			input: { handle: "h1", action: "continue" },
-			content: [{ type: "text", text: "more output" }],
+			input: { command: "long" },
+			content: [],
 			isError: false,
-			details: { handle: "h1", checkin: true, exited: false, exitCode: null, action: "continue" },
+			details: { handle: b, handoff: true, exited: false },
 		})
 
-		// Still tracked — a write tool steers.
-		const r = await fireToolCall(pi, "edit")
-		expect(r?.block).toBe(false)
-		expect(registry.watchCalls("h1")).toBe(1)
-	})
-
-	it("a bash_control continue result where the process exited drops tracking", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		await fireToolResult(pi, {
-			type: "tool_result",
-			toolName: "bash_control",
-			toolCallId: "c2",
-			input: { handle: "h1", action: "continue" },
-			content: [{ type: "text", text: "done" }],
-			isError: false,
-			details: { handle: "h1", exited: true, exitCode: 0, action: "continue" },
-		})
-
-		// No longer tracked — write tools get no steer.
-		const before = steerMessages(pi).length
-		await fireToolCall(pi, "edit")
-		expect(steerMessages(pi).length).toBe(before)
-	})
-
-	it("a bash_control stop result drops tracking", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		await fireToolResult(pi, {
-			type: "tool_result",
-			toolName: "bash_control",
-			toolCallId: "c2",
-			input: { handle: "h1", action: "stop" },
-			content: [{ type: "text", text: "final output" }],
-			isError: false,
-			details: { handle: "h1", checkin: false, exited: true, exitCode: null, action: "stop" },
-		})
-
-		const before = steerMessages(pi).length
-		await fireToolCall(pi, "bash")
-		expect(steerMessages(pi).length).toBe(before)
-	})
-
-	it("natural process exit steers the model with the exit code, without availability claims", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		registry.resolveExit("h1", 0)
+		await exitProcess(a, 0)
 		await flush()
 
-		const sent = messages(pi)
-		expect(sent).toHaveLength(1)
-		expect(sent[0]?.customType).toBe(BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
-		expect(sent[0]?.display).toBe(false)
-		expect(sent[0]?.options).toEqual({ deliverAs: "steer" })
-		const text = sent[0]?.content[0]?.text ?? ""
-		expect(text).toContain("h1")
-		expect(text).toContain("(exit code 0)")
-		expect(text).toContain("bash_control")
-		// No gate-era availability language.
-		expect(text).not.toContain("only bash_control is available")
-		expect(text).not.toContain("all tools are available again")
-		expect(text).not.toContain("available again")
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits).toHaveLength(1)
+		const text = exits[0]?.content[0]?.text ?? ""
+		expect(text).toContain("Still running")
+		expect(text).toContain("second-proc")
 	})
 
-	it("exit watcher is a no-op when the handle was already resolved via bash_control", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
+	it("does NOT deliver a notification for an exit owned by an active wait (claimed silently)", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning()
+		await startTrackedSession(harness, handle)
+		await fireToolExecutionStart(harness, "call-9", "bash_control", { wait: true })
 
-		// bash_control observes the exit first.
-		await fireToolResult(pi, {
+		await exitProcess(handle, 0)
+		await flush()
+		expect(followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(0)
+
+		// The wait's consolidated result delivers the exit: tool_result releases tracking.
+		// (Simulate the tool having removed the handle and reported it.)
+		coordinator.handleRemoved(handle)
+		await registry.remove(handle)
+		await fireToolResult(harness, {
 			type: "tool_result",
 			toolName: "bash_control",
-			toolCallId: "c2",
-			input: { handle: "h1", action: "continue" },
-			content: [{ type: "text", text: "done" }],
-			isError: false,
-			details: { handle: "h1", exited: true, exitCode: 0, action: "continue" },
-		})
-
-		registry.resolveExit("h1", 0)
-		await flush()
-
-		// bash_control's own result carried the final state — no exit notice.
-		expect(messages(pi)).toHaveLength(0)
-	})
-
-	it("multiple tracked handles: tracking persists until the last one resolves", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		// A second background bash checkin (parallel spawn in the same turn).
-		await fireToolResult(pi, checkinResult("h2"))
-
-		// A write tool steers, naming both handles.
-		const r = await fireToolCall(pi, "edit")
-		expect(r?.block).toBe(false)
-		const steer = steerMessages(pi).at(-1)
-		expect(steer?.content[0]?.text).toContain("h1")
-		expect(steer?.content[0]?.text).toContain("h2")
-
-		// First process exits on its own — notice counts the remaining process.
-		registry.resolveExit("h1", 0)
-		await flush()
-		const exitMsgs = messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
-		expect(exitMsgs).toHaveLength(1)
-		expect(exitMsgs[0]?.content[0]?.text).toContain("h2")
-
-		// Second process exits — final notice, no remaining tracked.
-		registry.resolveExit("h2", 1)
-		await flush()
-		const exitMsgs2 = messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
-		expect(exitMsgs2).toHaveLength(2)
-		expect(exitMsgs2[1]?.content[0]?.text).toContain("(exit code 1)")
-	})
-
-	it("one handle resolving via bash_control while another is tracked keeps the latter", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-		await fireToolResult(pi, checkinResult("h2"))
-
-		await fireToolResult(pi, {
-			type: "tool_result",
-			toolName: "bash_control",
-			toolCallId: "c2",
-			input: { handle: "h1", action: "stop" },
+			toolCallId: "call-9",
+			input: { wait: true },
 			content: [{ type: "text", text: "final" }],
 			isError: false,
-			details: { handle: "h1", exited: true, exitCode: null, action: "stop" },
+			details: { exitedHandles: [handle] },
 		})
-
-		// h2 still tracked — a write tool steers.
-		const before = steerMessages(pi).length
-		await fireToolCall(pi, "bash")
-		expect(steerMessages(pi).length).toBe(before + 1)
-		expect(steerMessages(pi).at(-1)?.content[0]?.text).toContain("h2")
-	})
-
-	it("user input preserves tracked processes and their exit watchers", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		await fireInput(pi)
-		// The process is still tracked — a write tool steers.
-		const r = await fireToolCall(pi, "edit")
-		expect(r?.block).toBe(false)
-		expect(steerMessages(pi).at(-1)?.content[0]?.text).toContain("h1")
-
-		// The exit watcher still fires after user input.
-		registry.resolveExit("h1", 0)
+		await fireToolExecutionEnd(harness, "call-9", "bash_control")
 		await flush()
-		expect(messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(1)
+		expect(followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(0)
 	})
 
-	it("a bash_control error result for a handle that was never tracked does not corrupt state", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		bashControlExtension(pi, { getRegistry: () => registry as unknown as ProcessRegistry })
-		await fireSessionStart(pi)
+	it("backfills the notification when an owning call ends without delivering the claimed exit", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning()
+		await startTrackedSession(harness, handle)
+		await fireToolExecutionStart(harness, "call-10", "bash_control", { wait: true })
 
-		await fireToolResult(pi, {
+		await exitProcess(handle, 7)
+		await flush()
+		expect(followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(0)
+
+		// The call ends without a tool_result carrying the exit (error path):
+		// the exit must still reach the model exactly once.
+		await fireToolExecutionEnd(harness, "call-10", "bash_control", true)
+		await flush()
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits).toHaveLength(1)
+		expect(exits[0]?.content[0]?.text ?? "").toContain("exit code 7")
+	})
+
+	it("releases a wait's claims for still-running handles when the call ends", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning()
+		await startTrackedSession(harness, handle)
+		await fireToolExecutionStart(harness, "call-12", "bash_control", { wait: true })
+		// Claimed by the wait. The wait ends (e.g. aborted) with the process
+		// still running — the claim must be released so a LATER exit is
+		// delivered as a normal unattended exit notification.
+		await fireToolExecutionEnd(harness, "call-12", "bash_control")
+
+		await exitProcess(handle, 0)
+		await flush()
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits).toHaveLength(1)
+		expect(exits[0]?.content[0]?.text ?? "").toContain(` handle: ${handle}`)
+	})
+
+	it("claims exits of stop_handles owned by an active call", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning()
+		await startTrackedSession(harness, handle)
+		await fireToolExecutionStart(harness, "call-11", "bash_control", { stop_handles: [handle] })
+
+		await exitProcess(handle, 0)
+		await flush()
+		expect(followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(0)
+
+		coordinator.handleRemoved(handle)
+		await registry.remove(handle)
+		await fireToolResult(harness, {
 			type: "tool_result",
 			toolName: "bash_control",
-			toolCallId: "c1",
-			input: { handle: "ghost", action: "continue" },
-			content: [{ type: "text", text: "Error: unknown handle 'ghost'." }],
-			isError: true,
-			details: { handle: "ghost", exited: true, exitCode: null, action: "continue", reason: "unknown-handle" },
-		})
-
-		// Nothing tracked — no steer.
-		const before = steerMessages(pi).length
-		await fireToolCall(pi, "edit")
-		expect(steerMessages(pi).length).toBe(before)
-	})
-
-	it("an ambiguous bash_control result (checkin:false, exited:false) keeps tracking", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		// Transient error that never observed the process state — must NOT
-		// drop tracking while the process may still be running.
-		await fireToolResult(pi, {
-			type: "tool_result",
-			toolName: "bash_control",
-			toolCallId: "c2",
-			input: { handle: "h1", action: "continue" },
-			content: [{ type: "text", text: "transient error" }],
-			isError: true,
-			details: { handle: "h1", checkin: false, exited: false, action: "continue" },
-		})
-
-		// Still tracked — a write tool steers.
-		const before = steerMessages(pi).length
-		await fireToolCall(pi, "edit")
-		expect(steerMessages(pi).length).toBe(before + 1)
-
-		// The exit watcher resolves it.
-		registry.resolveExit("h1", 0)
-		await flush()
-		expect(messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(1)
-	})
-
-	it("tool_results from other tools do not affect tracking", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		await fireToolResult(pi, {
-			type: "tool_result",
-			toolName: "read",
-			toolCallId: "c2",
-			input: { path: "/x" },
-			content: [{ type: "text", text: "data" }],
+			toolCallId: "call-11",
+			input: { stop_handles: [handle] },
+			content: [{ type: "text", text: "stopped" }],
 			isError: false,
-			details: { handle: "h1", checkin: true, exited: false },
+			details: { exitedHandles: [handle] },
 		})
-
-		// Still tracked — a write tool steers.
-		const before = steerMessages(pi).length
-		await fireToolCall(pi, "bash")
-		expect(steerMessages(pi).length).toBe(before + 1)
+		await fireToolExecutionEnd(harness, "call-11", "bash_control")
+		await flush()
+		expect(followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(0)
 	})
 
-	it("session_shutdown disposes the watcher — a late exit sends no notice", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
+	it("delivers two same-tick exits without losing either", async () => {
+		const harness = makePiWithState()
+		const a = spawnRunning("first-proc")
+		const b = spawnRunning("second-proc")
+		await startTrackedSession(harness, a)
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c2",
+			input: { command: "long" },
+			content: [],
+			isError: false,
+			details: { handle: b, handoff: true, exited: false },
+		})
 
-		await fireShutdown(pi)
-		registry.resolveExit("h1", 0)
+		await ops.exitMatching("first-proc", 0)
+		await ops.exitMatching("second-proc", 0)
 		await flush()
 
-		expect(messages(pi)).toHaveLength(0)
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		// One delivery per exit is the (spec-permitted) no-debounce shape:
+		// what matters is that NEITHER exit is lost.
+		const texts = exits.map((m) => m.content[0]?.text ?? "")
+		expect(texts.some((t) => t.includes(` handle: ${a}`))).toBe(true)
+		expect(texts.some((t) => t.includes(` handle: ${b}`))).toBe(true)
+		expect(registry.getEntry(a)).toBeUndefined()
+		expect(registry.getEntry(b)).toBeUndefined()
 	})
 
-	it("a missing registry tracks via tool_result details but the watcher is a no-op", async () => {
-		const pi = makeFakePi()
-		bashControlExtension(pi, { getRegistry: () => undefined })
-		await fireSessionStart(pi)
-		await fireToolResult(pi, checkinResult("h1"))
+	it("suppresses notifications after session shutdown", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning()
+		await startTrackedSession(harness, handle)
+		await fireShutdown(harness)
+		await exitProcess(handle, 0)
+		await flush()
+		expect(followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(0)
+	})
 
-		// Tracked via details — write tool steers.
-		const r = await fireToolCall(pi, "edit")
-		expect(r?.block).toBe(false)
-		expect(steerMessages(pi).at(-1)?.content[0]?.text).toContain("h1")
-
-		// bash_control stop drops tracking without a registry watcher.
-		await fireToolResult(pi, {
-			type: "tool_result",
-			toolName: "bash_control",
-			toolCallId: "c2",
-			input: { handle: "h1", action: "stop" },
-			content: [{ type: "text", text: "final" }],
-			isError: false,
-			details: { handle: "h1", exited: true, exitCode: null, action: "stop" },
-		})
-		const before = steerMessages(pi).length
-		await fireToolCall(pi, "edit")
-		expect(steerMessages(pi).length).toBe(before)
+	it("suppresses notifications when the session state was replaced (stale watcher)", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning()
+		await startTrackedSession(harness, handle)
+		// A replacement session installed a new state: old watchers must go silent.
+		currentState = undefined
+		await exitProcess(handle, 0)
+		await flush()
+		expect(followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(0)
 	})
 })
 
-describe("bashControlExtension — once-per-turn concurrency coalescing", () => {
-	it("only the first write/execute call in a turn enqueues a steer", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
+describe("cohort review delivery", () => {
+	it("wakes an idle agent with triggerTurn and delivers facts + unseen output once", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning("builder")
+		await startTrackedSession(harness, handle)
+		ops.emitMatching("builder", "review-output\n")
 
-		await fireTurnStart(pi)
-		const before = steerMessages(pi).length
+		await state.deliverReview?.()
+		await flush()
 
-		await fireToolCall(pi, "bash")
-		await fireToolCall(pi, "edit")
-		await fireToolCall(pi, "write")
-		await fireToolCall(pi, "bash", { command: "x" })
-
-		expect(steerMessages(pi).length).toBe(before + 1)
+		const reviews = followUps(harness, BASH_BACKGROUND_REVIEW_MESSAGE_TYPE)
+		expect(reviews).toHaveLength(1)
+		expect(reviews[0]?.options?.triggerTurn).toBe(true)
+		expect(reviews[0]?.options?.deliverAs).toBe("followUp")
+		const text = reviews[0]?.content[0]?.text ?? ""
+		expect(text).toContain("Scheduled cohort review of 1")
+		expect(text).toContain(` handle: ${handle}`)
+		expect(text).toContain("review-output")
+		// Cursor advanced: a second review sees no new output.
+		await state.deliverReview?.()
+		await flush()
+		const text2 = followUps(harness, BASH_BACKGROUND_REVIEW_MESSAGE_TYPE)[1]?.content[0]?.text ?? ""
+		expect(text2).toContain("no new output observed")
+		expect(text2).not.toContain("review-output")
 	})
 
-	it("read-only tools do not enqueue a concurrency steer", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
+	it("piggybacks on an active turn without triggerTurn", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning()
+		await startTrackedSession(harness, handle)
+		await fireTurnStart(harness)
 
-		await fireTurnStart(pi)
-		const before = steerMessages(pi).length
+		await state.deliverReview?.()
+		await flush()
 
-		await fireToolCall(pi, "read")
-		await fireToolCall(pi, "grep")
-		await fireToolCall(pi, "find")
-		await fireToolCall(pi, "lsp_diagnostics")
-		await fireToolCall(pi, "lsp_hover")
-
-		expect(steerMessages(pi).length).toBe(before)
+		const reviews = followUps(harness, BASH_BACKGROUND_REVIEW_MESSAGE_TYPE)
+		expect(reviews).toHaveLength(1)
+		expect(reviews[0]?.options?.triggerTurn).toBeUndefined()
+		expect(reviews[0]?.options?.deliverAs).toBe("followUp")
 	})
 
-	it("turn_start rearms the once-per-turn flag", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
+	it("folds undelivered terminal results into the review and cleans them up", async () => {
+		const harness = makePiWithState()
+		const running = spawnRunning("stayer")
+		const dead = spawnRunning("goner")
+		await startTrackedSession(harness, running)
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c2",
+			input: { command: "long" },
+			content: [],
+			isError: false,
+			details: { handle: dead, handoff: true, exited: false },
+		})
+		ops.emitMatching("goner", "goner-final\n")
 
-		await fireTurnStart(pi)
-		await fireToolCall(pi, "edit")
-		expect(steerMessages(pi).length).toBe(1)
+		// Kill without delivering: killInternal flips the entry terminal
+		// synchronously, while the exit watcher's promise chain has NOT yet
+		// delivered when deliverReview runs — the review must claim the
+		// terminal result itself. (First collector wins: no double delivery.)
+		void registry.kill(dead)
+		await state.deliverReview?.()
+		await flush()
 
-		await fireTurnStart(pi)
-		await fireToolCall(pi, "edit")
-		expect(steerMessages(pi).length).toBe(2)
+		const reviews = followUps(harness, BASH_BACKGROUND_REVIEW_MESSAGE_TYPE)
+		expect(reviews).toHaveLength(1)
+		const text = reviews[0]?.content[0]?.text ?? ""
+		expect(text).toContain(` handle: ${dead}`)
+		expect(text).toContain("stopped on request")
+		expect(text).toContain("goner-final")
+		expect(text).toContain(` handle: ${running}`)
+		expect(registry.getEntry(dead)).toBeUndefined()
+		expect(coordinator.handles()).not.toContain(dead)
+		// The exit watcher, when it eventually runs, must NOT deliver a second
+		// terminal result for the same handle.
+		await flush()
+		expect(followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(0)
 	})
 
-	it("lsp_rename (write) warns; read-only LSP tools do not", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
+	it("leaves terminal results claimed by an in-flight bash_control call to that call", async () => {
+		const harness = makePiWithState()
+		const running = spawnRunning("stayer")
+		const dead = spawnRunning("goner")
+		await startTrackedSession(harness, running)
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c2",
+			input: { command: "long" },
+			content: [],
+			isError: false,
+			details: { handle: dead, handoff: true, exited: false },
+		})
+		// The wait claims the whole cohort BEFORE it awaits.
+		await fireToolExecutionStart(harness, "call-w", "bash_control", { wait: true })
+		// Terminal but undelivered at review time (same construction as the
+		// fold-in test): the claim must keep the review's hands off it.
+		void registry.kill(dead)
 
-		await fireTurnStart(pi)
-		const before = steerMessages(pi).length
+		await state.deliverReview?.()
+		await flush()
 
-		await fireToolCall(pi, "lsp_diagnostics")
-		await fireToolCall(pi, "lsp_hover")
-		await fireToolCall(pi, "lsp_definition")
-		await fireToolCall(pi, "lsp_references")
-		expect(steerMessages(pi).length).toBe(before)
+		const reviews = followUps(harness, BASH_BACKGROUND_REVIEW_MESSAGE_TYPE)
+		expect(reviews).toHaveLength(1)
+		const text = reviews[0]?.content[0]?.text ?? ""
+		expect(text).not.toContain(` handle: ${dead}`)
+		expect(text).toContain(` handle: ${running}`)
+		// The handle stays tracked for the owning call's consolidated result.
+		expect(registry.getEntry(dead)).toBeDefined()
+		expect(coordinator.handles()).toContain(dead)
 
-		await fireTurnStart(pi)
-		await fireToolCall(pi, "lsp_rename")
-		expect(steerMessages(pi).length).toBe(before + 1)
+		// Cleanup: simulate the owning call delivering it.
+		coordinator.handleRemoved(dead)
+		await registry.remove(dead)
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash_control",
+			toolCallId: "call-w",
+			input: { wait: true },
+			content: [],
+			isError: false,
+			details: { exitedHandles: [dead] },
+		})
+		await fireToolExecutionEnd(harness, "call-w", "bash_control")
+		await flush()
+		expect(followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(0)
 	})
 
-	it("unknown tools are allowed without a concurrency steer (not mislabeled)", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		await fireTurnStart(pi)
-		const before = steerMessages(pi).length
-
-		await fireToolCall(pi, "some_unknown_custom_tool")
-		expect(steerMessages(pi).length).toBe(before)
-		// The call was still allowed.
-		expect((await fireToolCall(pi, "some_unknown_custom_tool"))?.block).toBe(false)
+	it("marks the coordinator review as delivered after delivery", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning()
+		await startTrackedSession(harness, handle)
+		await state.deliverReview?.()
+		await flush()
+		expect(coordinator.hasPendingReview()).toBe(false)
 	})
 })
 
-describe("bashControlExtension — exit watcher vs bash_control ownership", () => {
-	it("no natural-exit steer when a bash_control stop settles the process before its tool_result", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
+describe("concurrency steer", () => {
+	it("sends at most one steer per turn for write/execute tools", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning()
+		await startTrackedSession(harness, handle)
+		await fireTurnStart(harness)
 
-		await fireToolExecutionStart(pi, "c2", "bash_control", { handle: "h1", action: "stop" })
-		// kill() settles the process before bash_control can emit its result;
-		// the watcher's promise reaction runs first and must defer to the
-		// in-flight control call instead of steering.
-		registry.resolveExit("h1", null)
-		await flush()
-		expect(messages(pi)).toHaveLength(0)
-
-		await fireToolResult(pi, {
-			type: "tool_result",
-			toolName: "bash_control",
-			toolCallId: "c2",
-			input: { handle: "h1", action: "stop" },
-			content: [{ type: "text", text: "final output" }],
-			isError: false,
-			details: { handle: "h1", exited: true, exitCode: null, action: "stop" },
-		})
-		await fireToolExecutionEnd(pi, "c2", "bash_control")
-
-		expect(messages(pi)).toHaveLength(0)
-		// No longer tracked.
-		const before = steerMessages(pi).length
-		await fireToolCall(pi, "edit")
-		expect(steerMessages(pi).length).toBe(before)
+		const r1 = await fireToolCall(harness, "edit", { file: "x" })
+		const r2 = await fireToolCall(harness, "bash", { command: "make" })
+		expect(r1).toEqual({ block: false })
+		expect(r2).toEqual({ block: false })
+		const steers = followUps(harness, BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE)
+		expect(steers).toHaveLength(1)
+		expect(steers[0]?.content[0]?.text ?? "").toContain(handle)
 	})
 
-	it("no natural-exit steer when bash_control continue observes the exit mid-flight", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
+	it("does not steer read tools or bash_control", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning()
+		await startTrackedSession(harness, handle)
+		await fireTurnStart(harness)
 
-		await fireToolExecutionStart(pi, "c2", "bash_control", { handle: "h1", action: "continue" })
-		registry.resolveExit("h1", 0)
-		await flush()
-		expect(messages(pi)).toHaveLength(0)
-
-		await fireToolResult(pi, {
-			type: "tool_result",
-			toolName: "bash_control",
-			toolCallId: "c2",
-			input: { handle: "h1", action: "continue" },
-			content: [{ type: "text", text: "done" }],
-			isError: false,
-			details: { handle: "h1", exited: true, exitCode: 0, action: "continue" },
-		})
-		await fireToolExecutionEnd(pi, "c2", "bash_control")
-
-		expect(messages(pi)).toHaveLength(0)
-	})
-
-	it("a claimed exit is released silently at tool_execution_end when the control call throws (throwIfTerminal)", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		await fireToolExecutionStart(pi, "c2", "bash_control", { handle: "h1", action: "continue" })
-		registry.resolveExit("h1", 1)
-		await flush()
-		expect(messages(pi)).toHaveLength(0)
-
-		// throwIfTerminal threw inside execute — no resolved tool_result with
-		// details, only an error execution end. Release the handle without
-		// steering: the thrown error result already carried the outcome.
-		await fireToolExecutionEnd(pi, "c2", "bash_control", true)
-
-		expect(messages(pi)).toHaveLength(0)
-		const before = steerMessages(pi).length
-		await fireToolCall(pi, "edit")
-		expect(steerMessages(pi).length).toBe(before)
-	})
-
-	it("an unattended exit on one handle still steers while a control call owns another", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-		await fireToolResult(pi, checkinResult("h2"))
-
-		await fireToolExecutionStart(pi, "c2", "bash_control", { handle: "h1", action: "continue" })
-		// h2 exits with no control call on it — unattended, steer expected.
-		registry.resolveExit("h2", 0)
-		await flush()
-
-		const exitMsgs = messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
-		expect(exitMsgs).toHaveLength(1)
-		expect(exitMsgs[0]?.content[0]?.text).toContain("h2")
-		// h1 still tracked under the in-flight call.
-		const before = steerMessages(pi).length
-		await fireToolCall(pi, "edit")
-		expect(steerMessages(pi).length).toBe(before + 1)
-
-		// h1 then exits mid-flight — claimed, no steer.
-		registry.resolveExit("h1", 0)
-		await flush()
-		await fireToolResult(pi, {
-			type: "tool_result",
-			toolName: "bash_control",
-			toolCallId: "c2",
-			input: { handle: "h1", action: "continue" },
-			content: [{ type: "text", text: "done" }],
-			isError: false,
-			details: { handle: "h1", exited: true, exitCode: 0, action: "continue" },
-		})
-		await fireToolExecutionEnd(pi, "c2", "bash_control")
-
-		expect(messages(pi).filter((m) => m.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(1)
-		// No longer tracked.
-		const before2 = steerMessages(pi).length
-		await fireToolCall(pi, "edit")
-		expect(steerMessages(pi).length).toBe(before2)
-	})
-
-	it("a registry unpublished before the watcher fires (shutdown drain) cannot steer", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		let activeRegistry = registry as unknown as ProcessRegistry | undefined
-		bashControlExtension(pi, { getRegistry: () => activeRegistry })
-		await fireSessionStart(pi)
-		await fireToolResult(pi, checkinResult("h1"))
-
-		// Shutdown unpublishes the session registry, THEN the drain kills
-		// pending processes and settles the watcher promise.
-		activeRegistry = undefined
-		registry.resolveExit("h1", null)
-		await flush()
-
-		expect(messages(pi)).toHaveLength(0)
-		await fireShutdown(pi)
+		await fireToolCall(harness, "read", { path: "x" })
+		await fireToolCall(harness, "bash_control", { wait: true })
+		expect(followUps(harness, BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE)).toHaveLength(0)
 	})
 })
 
-describe("bashControlExtension — completion guard", () => {
-	it("a normal completion with a tracked handle triggers one follow-up naming that handle", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
+describe("completion guard", () => {
+	it("emits one consolidated follow-up per stable handle set", async () => {
+		const harness = makePiWithState()
+		const a = spawnRunning("a")
+		const b = spawnRunning("b")
+		await startTrackedSession(harness, a)
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c2",
+			input: {},
+			content: [],
+			isError: false,
+			details: { handle: b, handoff: true, exited: false },
+		})
 
-		await fireTurnEnd(pi, { role: "assistant", stopReason: "stop" })
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		const guards = followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)
+		expect(guards).toHaveLength(1)
+		const text = guards[0]?.content[0]?.text ?? ""
+		expect(text).toContain(a)
+		expect(text).toContain(b)
+		expect(text).toContain("wait: true")
+		expect(text).toContain("stop_handles")
 
-		const followUps = followUpMessages(pi)
-		expect(followUps).toHaveLength(1)
-		expect(followUps[0]?.customType).toBe(BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)
-		expect(followUps[0]?.options).toEqual({ deliverAs: "followUp" })
-		expect(followUps[0]?.display).toBe(false)
-		const text = followUps[0]?.content[0]?.text ?? ""
-		expect(text).toContain("h1")
-		expect(text).toContain("bash_control")
-		expect(text).toContain("stop")
+		// Same stable set: no repeat.
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(1)
 	})
 
-	it("the same unchanged handle set cannot trigger a repeated follow-up", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
+	it("does not fire on tool-use turns, aborts, or with no tracked handles", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning()
+		await startTrackedSession(harness, handle)
 
-		await fireTurnEnd(pi, { role: "assistant", stopReason: "stop" })
-		expect(followUpMessages(pi)).toHaveLength(1)
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "toolUse" })
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "aborted" })
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(0)
 
-		// Same handle set — no second reminder.
-		await fireTurnEnd(pi, { role: "assistant", stopReason: "stop" })
-		expect(followUpMessages(pi)).toHaveLength(1)
-	})
-
-	it("a changed handle set can trigger one new reminder", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		await fireTurnEnd(pi, { role: "assistant", stopReason: "stop" })
-		expect(followUpMessages(pi)).toHaveLength(1)
-
-		// A new handle joins — different set, one new reminder.
-		await fireToolResult(pi, checkinResult("h2"))
-		await fireTurnEnd(pi, { role: "assistant", stopReason: "stop" })
-		expect(followUpMessages(pi)).toHaveLength(2)
-		const last = followUpMessages(pi).at(-1)
-		expect(last?.content[0]?.text).toContain("h1")
-		expect(last?.content[0]?.text).toContain("h2")
-	})
-
-	it("completion after exit does not enqueue a reminder", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		registry.resolveExit("h1", 0)
+		await exitProcess(handle, 0)
 		await flush()
-
-		await fireTurnEnd(pi, { role: "assistant", stopReason: "stop" })
-		expect(followUpMessages(pi)).toHaveLength(0)
-	})
-
-	it("tool-use turns never trigger a completion reminder", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		await fireTurnEnd(pi, { role: "assistant", stopReason: "toolUse" })
-		expect(followUpMessages(pi)).toHaveLength(0)
-	})
-
-	it("error/aborted turns never trigger a completion reminder", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		await fireTurnEnd(pi, { role: "assistant", stopReason: "error" })
-		expect(followUpMessages(pi)).toHaveLength(0)
-		await fireTurnEnd(pi, { role: "assistant", stopReason: undefined })
-		expect(followUpMessages(pi)).toHaveLength(0)
-	})
-
-	it("non-assistant messages do not trigger a reminder", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		await fireTurnEnd(pi, { role: "user" })
-		expect(followUpMessages(pi)).toHaveLength(0)
-	})
-
-	it("shutdown suppresses the completion guard", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		await fireShutdown(pi)
-		await fireTurnEnd(pi, { role: "assistant", stopReason: "stop" })
-		expect(followUpMessages(pi)).toHaveLength(0)
-	})
-
-	it("session_start resets completion reminder state", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-
-		await fireTurnEnd(pi, { role: "assistant", stopReason: "stop" })
-		expect(followUpMessages(pi)).toHaveLength(1)
-
-		// A new session resets the reminded-set — the same handle can remind once.
-		await fireSessionStart(pi)
-		await fireToolResult(pi, checkinResult("h1"))
-		await fireTurnEnd(pi, { role: "assistant", stopReason: "stop" })
-		expect(followUpMessages(pi)).toHaveLength(2)
-	})
-
-	it("multiple tracked handles are all named in the reminder", async () => {
-		const registry = makeFakeRegistry()
-		const pi = makeFakePi()
-		await startTrackedSession(pi, registry, "h1")
-		await fireToolResult(pi, checkinResult("h2"))
-
-		await fireTurnEnd(pi, { role: "assistant", stopReason: "stop" })
-		const followUps = followUpMessages(pi)
-		expect(followUps).toHaveLength(1)
-		const text = followUps[0]?.content[0]?.text ?? ""
-		expect(text).toContain("h1")
-		expect(text).toContain("h2")
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		// All exits already delivered; nothing left tracked → no guard.
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(0)
 	})
 })

@@ -2,71 +2,43 @@
  * Unit tests for the background `bash` tool definition.
  *
  * Uses a fake BashOperations injected via `createBackgroundBashToolDefinition`
- * options so no real shell is spawned. The fake emits output on demand and
- * can be driven to exit or held running so checkin behaviour is asserted
- * deterministically.
+ * options plus an explicit session state (registry + coordinator with a
+ * short handoff) so no real shell is spawned and timing is deterministic.
  *
- * Design: background mode is ENFORCED when timeout > 5 (or omitted, defaulting
- * to 120s). The agent cannot opt out — long-running commands always go through
- * the background checkin path. Only timeout <= 5 runs synchronously.
+ * Contract under test: commands always go through the registry; the tool
+ * resolves at process exit OR at the one-time initial handoff (≤15s),
+ * never on a model-controlled cadence or timeout. Legacy `timeout` /
+ * `checkin_interval` input fields are accepted and ignored.
  */
 
-import type { BashOperations } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
-
-// ─── Fake BashOperations ─────────────────────────────────────────────────────
-
-interface FakeOps extends BashOperations {
-	lastTimeout: number | undefined
-	lastSignal: AbortSignal | undefined
-	exit(code: number | null): Promise<void>
-	emit(data: Buffer | string): void
-}
-
-function createFakeOps(): FakeOps {
-	let onData: (data: Buffer) => void = () => {}
-	let settle: (r: { exitCode: number | null }) => void
-	let rejectExec: (err: Error) => void
-	const promise = new Promise<{ exitCode: number | null }>((resolve, reject) => {
-		settle = resolve
-		rejectExec = reject
-	})
-	const ops: FakeOps = {
-		lastTimeout: undefined,
-		lastSignal: undefined,
-		async exit(code) {
-			settle({ exitCode: code })
-			await promise
-		},
-		emit(data) {
-			onData(typeof data === "string" ? Buffer.from(data) : data)
-		},
-		exec: async (_command, _cwd, opts) => {
-			ops.lastTimeout = opts.timeout
-			ops.lastSignal = opts.signal
-			onData = opts.onData
-			if (opts.signal) {
-				opts.signal.addEventListener("abort", () => rejectExec(new Error("aborted")), { once: true })
-			}
-			return promise
-		},
-	}
-	return ops
-}
+import { createProcessRegistry } from "./process-registry.js"
+import { createReviewCoordinator } from "./review-coordinator.js"
+import type { BashSessionState } from "./session-registry.js"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function makeTool(ops: FakeOps) {
-	return createBackgroundBashToolDefinition("/test/cwd", { operations: ops })
+function makeState(handoffSeconds: number): BashSessionState {
+	const registry = createProcessRegistry()
+	return {
+		registry,
+		coordinator: createReviewCoordinator({ registry, handoffSeconds, reviewIntervalSeconds: 60 }),
+		limitSeconds: 600,
+	}
+}
+
+function makeTool(ops: FakeOps, state: BashSessionState) {
+	return createBackgroundBashToolDefinition("/test/cwd", { operations: ops, state })
 }
 
 async function callExecute(
 	tool: ReturnType<typeof makeTool>,
 	params: { command: string; timeout?: number; checkin_interval?: number },
+	signal?: AbortSignal,
 ) {
-	const result = await tool.execute("call-1", params as never, undefined, undefined, undefined as never)
-	return result
+	return tool.execute("call-1", params as never, signal, undefined, undefined as never)
 }
 
 afterEach(() => {
@@ -76,73 +48,117 @@ afterEach(() => {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("createBackgroundBashToolDefinition — shape", () => {
-	it("keeps the tool name as 'bash'", () => {
-		const tool = makeTool(createFakeOps())
+	it("keeps the tool name as 'bash' and advertises only the command intent", () => {
+		const state = makeState(1)
+		const tool = makeTool(createFakeOps(), state)
 		expect(tool.name).toBe("bash")
-	})
-
-	it("exposes a checkin_interval parameter", () => {
-		const tool = makeTool(createFakeOps())
-		const schema = tool.parameters as unknown as { properties: Record<string, unknown> }
+		const schema = tool.parameters as unknown as {
+			properties: Record<string, { description?: string }>
+			required?: string[]
+		}
 		expect(schema.properties).toHaveProperty("command")
-		expect(schema.properties).toHaveProperty("timeout")
-		expect(schema.properties).toHaveProperty("checkin_interval")
+		expect(schema.required).toEqual(["command"])
+		// Legacy timing inputs are retained for compatibility but carry no
+		// description that would teach the model to use them.
+		expect(schema.properties.timeout?.description).toBeUndefined()
+		expect(schema.properties.checkin_interval?.description).toBeUndefined()
 	})
 
-	it("description mentions background/checkin behaviour without leaking the threshold", () => {
-		const tool = makeTool(createFakeOps())
-		expect(tool.description).toContain("background")
-		expect(tool.description).toContain("checkin")
-		// The threshold (5s) must not appear in the description
-		expect(tool.description).not.toContain("timeout > 5")
-		expect(tool.description).not.toContain("timeout <= 5")
-		expect(tool.description).not.toContain("5 seconds")
+	it("base description stays timeout-free; the production description is composed by bashBackgroundExtension", () => {
+		const state = makeState(1)
+		const tool = makeTool(createFakeOps(), state)
+		expect(tool.description).toContain("Execute a bash command")
+		// The model no longer sets runtime or cadence knobs; the cohort
+		// contract itself is the description bashBackgroundExtension
+		// registers (see bashToolDescription / index.test.ts).
+		expect(tool.description).not.toContain("timeout")
+		expect(tool.description).not.toContain("checkin_interval")
 	})
 })
 
-describe("createBackgroundBashToolDefinition — short-task path (timeout <= 5)", () => {
-	it("delegates to upstream execute and returns full output once with no handle", async () => {
+describe("createBackgroundBashToolDefinition — exit before handoff", () => {
+	it("returns the full final output with no live handle", async () => {
+		const state = makeState(5)
 		const ops = createFakeOps()
-		const tool = makeTool(ops)
-		const execPromise = callExecute(tool, { command: "echo hi", timeout: 3 })
+		const tool = makeTool(ops, state)
+		const execPromise = callExecute(tool, { command: "echo hi" })
 		await Promise.resolve()
 		ops.emit("hi\n")
 		await ops.exit(0)
 		const result = await execPromise
 
-		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("hi") })
-		expect(result.details?.handle).toBeUndefined()
-		expect(result.details?.checkin).toBeFalsy()
+		const text = (result.content[0] as { text: string }).text
+		expect(text).toContain("hi")
+		expect(text).toContain("Process exited")
+		expect(text).not.toContain("bash_control")
+		expect(result.details?.exited).toBe(true)
+		expect(result.details?.exitCode).toBe(0)
+		expect(result.details?.handoff).toBeFalsy()
 	})
 
-	it("timeout=5 is the boundary — still synchronous", async () => {
+	it("throws on a non-zero exit (upstream error parity)", async () => {
+		const state = makeState(5)
 		const ops = createFakeOps()
-		const tool = makeTool(ops)
-		const execPromise = callExecute(tool, { command: "true", timeout: 5 })
+		const tool = makeTool(ops, state)
+		const execPromise = callExecute(tool, { command: "false" })
 		await Promise.resolve()
-		await ops.exit(0)
-		const result = await execPromise
-		expect(ops.lastTimeout).toBe(5)
-		expect(result.details?.handle).toBeUndefined()
+		ops.emit("boom\n")
+		await ops.exit(3)
+		await expect(execPromise).rejects.toThrow("Command exited with code 3")
 	})
 
-	it("passes the timeout through to upstream exec", async () => {
+	it("does not pass an upstream timeout to ops.exec", async () => {
+		const state = makeState(5)
 		const ops = createFakeOps()
-		const tool = makeTool(ops)
-		const execPromise = callExecute(tool, { command: "true", timeout: 5 })
+		const tool = makeTool(ops, state)
+		const execPromise = callExecute(tool, { command: "true" })
 		await Promise.resolve()
 		await ops.exit(0)
 		await execPromise
-		expect(ops.lastTimeout).toBe(5)
+		expect(ops.started[0]?.timeout).toBeUndefined()
+	})
+
+	it("applies the session safety limit as the absolute deadline", async () => {
+		vi.useFakeTimers()
+		const state = makeState(60)
+		state.limitSeconds = 10
+		const ops = createFakeOps()
+		const tool = makeTool(ops, state)
+		const execPromise = callExecute(tool, { command: "sleep 100" })
+		await Promise.resolve()
+		const assertion = expect(execPromise).rejects.toThrow("Process killed by the harness safety limit (10s)")
+		await vi.advanceTimersByTimeAsync(11_000) // past the 10s limit, before handoff
+		await assertion
+		expect(ops.aborted).toBe(true)
+	})
+
+	it("legacy timeout/checkin_interval fields are accepted and ignored", async () => {
+		vi.useFakeTimers()
+		const state = makeState(1)
+		const ops = createFakeOps()
+		const tool = makeTool(ops, state)
+		// A legacy payload with an unrealistically small timeout must NOT
+		// truncate the command: the harness limit governs, and the process
+		// is still alive at the 1s handoff.
+		const execPromise = callExecute(tool, { command: "sleep 100", timeout: 1, checkin_interval: 300 })
+		await Promise.resolve()
+		await vi.advanceTimersByTimeAsync(1000)
+		const result = await execPromise
+		expect(result.details?.exited).toBe(false)
+		expect(result.details?.handoff).toBe(true)
+		expect(ops.started[0]?.timeout).toBeUndefined()
+		const handle = result.details?.handle ?? ""
+		await state.registry.remove(handle)
 	})
 })
 
-describe("createBackgroundBashToolDefinition — background checkin path (timeout > 5 or omitted)", () => {
-	it("resolves at the checkin, not on process exit, with a handle and tail window", async () => {
+describe("createBackgroundBashToolDefinition — handoff", () => {
+	it("returns the handle, facts, and unseen output at the one-time handoff", async () => {
 		vi.useFakeTimers()
+		const state = makeState(1)
 		const ops = createFakeOps()
-		const tool = makeTool(ops)
-		const execPromise = callExecute(tool, { command: "long", timeout: 60, checkin_interval: 1 })
+		const tool = makeTool(ops, state)
+		const execPromise = callExecute(tool, { command: "pnpm run   test" })
 		await Promise.resolve()
 		ops.emit("first line\n")
 		ops.emit("second line\n")
@@ -152,111 +168,66 @@ describe("createBackgroundBashToolDefinition — background checkin path (timeou
 		const details = result.details
 		expect(details?.handle).toEqual(expect.any(String))
 		expect(details?.exited).toBe(false)
-		expect(details?.checkin).toBe(true)
-		expect(result.content[0]?.type).toBe("text")
-		expect((result.content[0] as { text: string }).text).toContain("second line")
-		expect((result.content[0] as { text: string }).text).toContain("bash_control")
-		expect(details?.handle).toEqual(expect.any(String))
-		expect((result.content[0] as { text: string }).text).toContain(details?.handle ?? "__no_handle__")
+		expect(details?.handoff).toBe(true)
+		expect(details?.exitCode).toBeNull()
+		const text = (result.content[0] as { text: string }).text
+		expect(text).toContain("Background bash process")
+		expect(text).toContain(` handle: ${details?.handle}`)
+		expect(text).toContain(" command: pnpm run test") // summarized whitespace
+		expect(text).toContain("first line")
+		expect(text).toContain("second line")
+		expect(text).toContain("continues by default")
 
-		await ops.exit(0).catch(() => {})
+		// The registry entry keeps running and joined the cohort clock.
+		const handle = details?.handle ?? ""
+		expect(state.registry.getEntry(handle)?.state).toBe("running")
+		expect(state.coordinator.handles()).toContain(handle)
+
+		await state.registry.remove(handle)
 	})
 
-	it("timeout=6 enters background mode (just above threshold)", async () => {
+	it("delivers the handoff output once (cursor advances)", async () => {
 		vi.useFakeTimers()
+		const state = makeState(1)
 		const ops = createFakeOps()
-		const tool = makeTool(ops)
-		const execPromise = callExecute(tool, { command: "long", timeout: 6, checkin_interval: 1 })
+		const tool = makeTool(ops, state)
+		const execPromise = callExecute(tool, { command: "seq 2" })
 		await Promise.resolve()
-		ops.emit("x\n")
+		ops.emit("one\n")
 		await vi.advanceTimersByTimeAsync(1000)
 		const result = await execPromise
-		expect(result.details?.handle).toEqual(expect.any(String))
-		expect(result.details?.checkin).toBe(true)
-		await ops.exit(0).catch(() => {})
+		const handle = result.details?.handle ?? ""
+		expect(state.registry.snapshotSince(handle).newBytes).toBe(0)
+
+		await state.registry.remove(handle)
 	})
 
-	it("omitting timeout enters background mode (defaults to 120)", async () => {
+	it("abort before the handoff kills the process and throws", async () => {
 		vi.useFakeTimers()
+		const state = makeState(60)
 		const ops = createFakeOps()
-		const tool = makeTool(ops)
-		const execPromise = callExecute(tool, { command: "long", checkin_interval: 1 })
+		const tool = makeTool(ops, state)
+		const controller = new AbortController()
+		const execPromise = callExecute(tool, { command: "sleep 100" }, controller.signal)
 		await Promise.resolve()
-		ops.emit("x\n")
-		await vi.advanceTimersByTimeAsync(1000)
-		const result = await execPromise
-		expect(result.details?.handle).toEqual(expect.any(String))
-		expect(result.details?.checkin).toBe(true)
-		await ops.exit(0).catch(() => {})
+		const assertion = expect(execPromise).rejects.toThrow("Command aborted")
+		controller.abort()
+		await assertion
+		expect(ops.aborted).toBe(true)
+		expect(state.coordinator.size).toBe(0)
+		expect(state.registry.size).toBe(0)
 	})
 
-	it("uses default 15s interval when checkin_interval is omitted", async () => {
+	it("safety-limit kill before the handoff surfaces the distinct reason", async () => {
 		vi.useFakeTimers()
+		const state = makeState(60)
+		state.limitSeconds = 5
 		const ops = createFakeOps()
-		const tool = makeTool(ops)
-		const execPromise = callExecute(tool, { command: "long", timeout: 60 })
+		const tool = makeTool(ops, state)
+		const execPromise = callExecute(tool, { command: "sleep 100" })
 		await Promise.resolve()
-		ops.emit("tick\n")
-		const peek = vi.advanceTimersByTimeAsync(5000)
-		let resolved = false
-		execPromise.then(() => {
-			resolved = true
-		})
-		await peek
-		expect(resolved).toBe(false)
-		await vi.advanceTimersByTimeAsync(11000)
-		const result = await execPromise
-		expect(result.details?.handle).toEqual(expect.any(String))
-		expect(result.details?.checkin).toBe(true)
-		await ops.exit(0).catch(() => {})
-	})
-
-	it("uses explicit checkin_interval when provided", async () => {
-		vi.useFakeTimers()
-		const ops = createFakeOps()
-		const tool = makeTool(ops)
-		const execPromise = callExecute(tool, { command: "long", timeout: 60, checkin_interval: 2 })
-		await Promise.resolve()
-		ops.emit("a\n")
-		await vi.advanceTimersByTimeAsync(2000)
-		const result = await execPromise
-		expect(result.details?.checkin).toBe(true)
-		await ops.exit(0).catch(() => {})
-	})
-
-	it("background mode does not pass an upstream timeout to ops.exec", async () => {
-		vi.useFakeTimers()
-		const ops = createFakeOps()
-		const tool = makeTool(ops)
-		const execPromise = callExecute(tool, { command: "long", timeout: 60, checkin_interval: 1 })
-		await Promise.resolve()
-		await vi.advanceTimersByTimeAsync(1000)
-		await execPromise
-		expect(ops.lastTimeout).toBeUndefined()
-		await ops.exit(0).catch(() => {})
-	})
-
-	it("resolves with final output when the process exits before the first checkin", async () => {
-		// Use a fake ops that exits immediately (before the checkin timer arms).
-		const ops = createFakeOps()
-		// Pre-settle the exec promise so the process exits immediately on spawn.
-		const tool = makeTool(ops)
-		// Start execute, then immediately drive the fake to exit.
-		const execPromise = callExecute(tool, { command: "fast-ish", timeout: 60, checkin_interval: 1 })
-		await Promise.resolve()
-		ops.emit("done output\n")
-		await ops.exit(0)
-		const result = await execPromise
-		// Success exit before first checkin: returns output plus the elapsed
-		// status line. No handle (not tracked), no checkin flag, no running
-		// status line offering bash_control.
-		expect((result.content[0] as { text: string }).text).toContain("done output")
-		expect((result.content[0] as { text: string }).text).toContain("Process exited")
-		expect((result.content[0] as { text: string }).text).toContain("ran for 0s")
-		expect((result.content[0] as { text: string }).text).not.toContain("bash_control")
-		expect(result.details?.handle).toEqual(expect.any(String))
-		expect(result.details?.checkin).toBeFalsy()
-		expect(result.details?.elapsedSeconds).toBe(0)
-		expect(result.details?.exited).toBe(true)
+		const assertion = expect(execPromise).rejects.toThrow(/Process killed by the harness safety limit \(5s\)/)
+		await vi.advanceTimersByTimeAsync(6_000)
+		await assertion
 	})
 })

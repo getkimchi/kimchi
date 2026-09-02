@@ -179,6 +179,11 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		description: "Replace the merged permissions config with this file",
 		placeholder: "<path>",
 	},
+	"bash-process-limit": {
+		type: "string",
+		description: "Absolute per-process safety limit for background bash commands, in seconds (default 3600)",
+		placeholder: "<seconds>",
+	},
 	verbose: {
 		type: "boolean",
 		description: "Force verbose startup (overrides quietStartup)",
@@ -216,6 +221,7 @@ export interface SessionCliArgs {
 		auto?: boolean
 		yolo?: boolean
 		"permissions-config"?: string
+		"bash-process-limit"?: string
 		verbose?: boolean
 	}
 	positionals: string[]
@@ -230,7 +236,30 @@ let cachedCliArgs: SessionCliArgs | undefined
  * receive.
  */
 export function populateCliArgs(args: string[]): void {
-	cachedCliArgs = parseCliArgs(args)
+	const parsed = parseCliArgs(args)
+	// Validate eagerly so an invalid operator value fails fast with a clear
+	// error instead of surfacing mid-session from the first bash call.
+	resolveBashProcessLimitSeconds(parsed)
+	cachedCliArgs = parsed
+}
+
+/**
+ * Resolve the configured background-bash process safety limit in seconds.
+ * Returns undefined when the flag is absent (callers apply their default).
+ * Throws for values that are not a finite positive integer — this flag is
+ * operator-only configuration and invalid input must be a startup error.
+ */
+export function resolveBashProcessLimitSeconds(parsed: SessionCliArgs = getParsedCliArgs()): number | undefined {
+	const raw = parsed.options["bash-process-limit"]
+	if (raw === undefined) return undefined
+	if (!/^\d+$/.test(raw.trim())) {
+		throw new Error(`Invalid --bash-process-limit value "${raw}": expected a positive integer number of seconds.`)
+	}
+	const seconds = Number.parseInt(raw.trim(), 10)
+	if (!Number.isFinite(seconds) || seconds <= 0) {
+		throw new Error(`Invalid --bash-process-limit value "${raw}": expected a positive integer number of seconds.`)
+	}
+	return seconds
 }
 
 /** Schema `node:util.parseArgs` expects, derived once from `CLI_OPTIONS`. */
@@ -259,6 +288,7 @@ const CACHEABLE_OPTION_NAMES = [
 	"auto",
 	"yolo",
 	"permissions-config",
+	"bash-process-limit",
 	"verbose",
 ] as const satisfies ReadonlyArray<keyof SessionCliArgs["options"]>
 

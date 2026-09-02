@@ -4,26 +4,29 @@
  * Spawns a command via an injected `BashOperations` (upstream
  * `createLocalBashOperations` in production) and keeps it running
  * independently of the agent loop. The bash tool's `execute` resolves at
- * each checkin with a tail-window of the buffered output plus the handle;
- * the `bash_control` tool then calls back into this registry to continue,
- * stop, or extend the deadline.
+ * the command's one-time initial handoff with an incremental output
+ * snapshot plus the handle; the process then joins the session cohort's
+ * shared review schedule (see `./review-coordinator.ts`).
  *
  * Design notes:
  *  - The registry does NOT resolve on process exit. `ops.exec` is started
- *    without an upstream `timeout` (background mode manages its own
- *    deadline), and its promise is captured per entry so callers can race
- *    a checkin timer against natural exit via `whenExited`.
+ *    without an upstream `timeout` (the registry owns one absolute
+ *    harness safety limit), and its promise is captured per entry so
+ *    callers can race a handoff/review timer against natural exit via
+ *    `whenExited`.
  *  - Killing is delegated to upstream: aborting the entry's
  *    `AbortController` triggers `killProcessTree` inside `exec` (see
  *    `createLocalBashOperations`), so detached grandchildren are reaped
  *    consistently with the synchronous bash path.
  *  - Output is held in a bounded ring buffer (last `maxBufferBytes`),
- *    so long-running commands cannot grow memory unbounded. Tail
- *    snapshots return the last `maxBytes` of that buffer.
- *  - Each entry has an absolute wall-clock `deadlineMs`. If it passes
- *    without a `continue`+`extend`, the registry auto-kills the process
- *    (reason `"deadline"`) so a stalled agent cannot leave a runaway
- *    process behind.
+ *    so long-running commands cannot grow memory unbounded. Incremental
+ *    snapshots (`snapshotSince`) return only output not yet delivered to
+ *    the model, accounting for bytes evicted from the ring.
+ *  - Each entry has an absolute wall-clock safety deadline
+ *    (`limitSeconds` after spawn). When it passes, the registry
+ *    auto-kills the process (reason `"safety-limit"`) so a forgotten
+ *    process is deterministically bounded. The limit is configured by
+ *    the human/operator (`--bash-process-limit`), never by the model.
  *
  * This module is intentionally free of any `ExtensionAPI` dependency so it
  * can be unit-tested with a fake `BashOperations`. The owning extension
@@ -41,20 +44,37 @@ import { type BashOperations, type TruncationResult, truncateTail } from "@earen
 /** Default ring-buffer capacity (bytes) kept per running process. */
 export const DEFAULT_MAX_BUFFER_BYTES = 65_536
 
-/** Default tail-window size (bytes) returned at each checkin. */
+/** Default tail-window size (bytes) returned for running snapshots. */
 export const DEFAULT_TAIL_BYTES = 8192
+
+/**
+ * Universal absolute safety limit (seconds) applied to every background
+ * process when the operator did not pass `--bash-process-limit`. This is
+ * a product policy (one hour), not a per-command runtime prediction.
+ */
+export const DEFAULT_BASH_PROCESS_LIMIT_SECONDS = 3600
+
+/** Reason recorded when the harness safety limit kills a process. */
+export const SAFETY_LIMIT_REASON = "safety-limit"
 
 export type ProcessState = "running" | "stopped" | "exited"
 
 export interface SpawnOptions {
-	/** Checkin cadence in seconds (informational; the tool arms the timer). */
-	intervalSeconds: number
-	/** Absolute wall-clock deadline in ms (Date.now() + ...). */
-	deadlineMs: number
-	/** Total seconds granted to the process (for timeout messages). Derived from deadlineMs when absent. */
-	deadlineSeconds?: number
+	/** Absolute safety limit in seconds; the process is killed when it is still running this long after spawn. */
+	limitSeconds: number
 	/** Max bytes retained in the output ring buffer. */
 	maxBufferBytes?: number
+}
+
+/**
+ * Collapse a command into a single-line, whitespace-normalized, bounded
+ * summary safe to repeat in status lines and review messages. Never
+ * re-sends an entire heredoc or environment payload to the model.
+ */
+export function summarizeCommand(command: string, maxLength = 96): string {
+	const collapsed = command.replace(/\s+/g, " ").trim()
+	if (collapsed.length <= maxLength) return collapsed
+	return `${collapsed.slice(0, Math.max(0, maxLength - 1))}…`
 }
 
 export interface TailSnapshot {
@@ -65,6 +85,32 @@ export interface TailSnapshot {
 	state: ProcessState
 	exitCode: number | null
 	/** Set when the process was killed (`"stop"` | `"deadline"` | `"aborted"`). */
+	reason: string | null
+}
+
+/**
+ * Incremental output snapshot: only bytes appended to the stream since
+ * the cursor last delivered to the model, plus eviction accounting.
+ */
+export interface IncrementalSnapshot {
+	/** UTF-8 decode of the retained unseen output (empty when nothing new). */
+	text: string
+	/** Cursor to pass to the next snapshot once this one is delivered. */
+	nextCursor: number
+	/** Total stream bytes appended since the delivered cursor (including evicted). */
+	newBytes: number
+	/**
+	 * Unseen bytes NOT included in `text` (contained in `newBytes`): bytes
+	 * the ring buffer already evicted, plus older unseen bytes skipped
+	 * because the retained unseen range exceeds the snapshot cap. The
+	 * cursor advances past them on delivery, so they only reappear via the
+	 * final truncation/spill path.
+	 */
+	omittedBytes: number
+	/** Total stream bytes appended since spawn. */
+	totalBytes: number
+	state: ProcessState
+	exitCode: number | null
 	reason: string | null
 }
 
@@ -93,6 +139,18 @@ function defaultTempFilePath(prefix: string): string {
 
 function byteLength(text: string): number {
 	return Buffer.byteLength(text, "utf-8")
+}
+
+/**
+ * Drop the first `byteCount` bytes of `text`, advancing past any split
+ * UTF-8 continuation bytes so the result never starts mid-character.
+ */
+function sliceBufferText(text: string, byteCount: number): string {
+	const buffer = Buffer.from(text, "utf-8")
+	if (byteCount >= buffer.length) return ""
+	let start = Math.max(0, byteCount)
+	while (start < buffer.length && (buffer[start] & 0xc0) === 0x80) start++
+	return buffer.subarray(start).toString("utf-8")
 }
 
 class OutputAccumulator {
@@ -263,13 +321,21 @@ export interface ProcessEntry {
 	state: ProcessState
 	exitCode: number | null
 	reason: string | null
-	intervalSeconds: number
+	/** Single-line, bounded command summary shown in status/review text. */
+	readonly commandSummary: string
+	/** Working directory the process was spawned in. */
+	readonly cwd: string
+	/** Absolute wall-clock ms when the safety limit kills the process. */
 	deadlineMs: number
+	/** Total seconds granted to the process (the configured safety limit). */
 	deadlineSeconds: number
+	/** Wall-clock ms of the most recent output byte, or undefined when silent. */
+	lastOutputAtMs: number | undefined
+	/** Absolute stream offset (bytes) last delivered to the model. */
+	deliveredCursor: number
 	readonly buffer: OutputRingBuffer
 	readonly accumulator: OutputAccumulator
 	readonly controller: AbortController
-	rawExecPromise: Promise<{ exitCode: number | null }> | undefined
 	execPromise: Promise<{ exitCode: number | null }>
 	deadlineTimer: NodeJS.Timeout | undefined
 }
@@ -289,6 +355,8 @@ export class OutputRingBuffer {
 	private chunks: Buffer[] = []
 	private totalBytes = 0
 	readonly capacity: number
+	/** Absolute count of bytes ever appended (never decreases on eviction). */
+	private appended = 0
 
 	constructor(capacity: number = DEFAULT_MAX_BUFFER_BYTES) {
 		this.capacity = Math.max(0, Math.floor(capacity))
@@ -298,7 +366,18 @@ export class OutputRingBuffer {
 		if (data.length === 0 || this.capacity === 0) return
 		this.chunks.push(data)
 		this.totalBytes += data.length
+		this.appended += data.length
 		this.evict()
+	}
+
+	/** Total bytes ever appended to the stream (absolute cursor end). */
+	get appendedBytes(): number {
+		return this.appended
+	}
+
+	/** Absolute stream offset of the first retained byte (bytes evicted). */
+	get retainedStartOffset(): number {
+		return this.appended - this.totalBytes
 	}
 
 	private evict(): void {
@@ -332,6 +411,33 @@ export class OutputRingBuffer {
 		return { text: result.toString("utf8"), bytes: limit }
 	}
 
+	/**
+	 * Snapshot up to `maxBytes` of retained output starting AT absolute
+	 * stream offset `startOffset` (clamped to the retained range). Unlike
+	 * `snapshot` — which always returns the NEWEST bytes — this walks
+	 * forward from a specific offset so incremental snapshots can begin
+	 * exactly at the unseen cursor rather than at the ring's tail.
+	 */
+	snapshotRange(startOffset: number, maxBytes: number): { text: string; bytes: number } {
+		const start = Math.max(0, Math.max(Math.floor(startOffset), this.retainedStartOffset))
+		const limit = Math.min(Math.max(0, Math.floor(maxBytes)), this.appended - start)
+		if (limit <= 0) return { text: "", bytes: 0 }
+		const result = Buffer.alloc(limit)
+		let chunkStart = this.retainedStartOffset
+		let written = 0
+		for (const chunk of this.chunks) {
+			const chunkEnd = chunkStart + chunk.length
+			const copyFrom = Math.max(chunkStart, start)
+			const copyTo = Math.min(chunkEnd, start + limit)
+			if (copyFrom < copyTo) {
+				chunk.copy(result, written, copyFrom - chunkStart, copyTo - chunkStart)
+				written += copyTo - copyFrom
+			}
+			chunkStart = chunkEnd
+		}
+		return { text: result.toString("utf8"), bytes: written }
+	}
+
 	clear(): void {
 		this.chunks = []
 		this.totalBytes = 0
@@ -353,14 +459,19 @@ export interface ProcessRegistry {
 	): string
 	/** Tail-window snapshot of accumulated output + current state. */
 	snapshotTail(handle: string, maxBytes?: number): TailSnapshot
+	/**
+	 * Incremental snapshot of unseen output since the entry's delivered
+	 * cursor, capped at `maxBytes` of retained text. Pure: does NOT advance
+	 * the cursor — call `markDelivered` once the snapshot is part of an
+	 * authoritative result or message.
+	 */
+	snapshotSince(handle: string, maxBytes?: number): IncrementalSnapshot
+	/** Advance the entry's delivered cursor after an authoritative delivery. */
+	markDelivered(handle: string, cursor: number): void
 	/** Full output snapshot (truncated + temp-file spill, like upstream). */
 	finalSnapshot(handle: string): FinalSnapshot | undefined
 	/** Kill a running process and await abort settlement. `reason` defaults to "stop". */
 	kill(handle: string, reason?: string): Promise<void>
-	/** Push the deadline out by `addSeconds` and re-arm the deadline timer. */
-	extend(handle: string, addSeconds: number): void
-	/** Change the checkin cadence for a running process (applies at the next re-arm). */
-	setIntervalSeconds(handle: string, seconds: number): void
 	/** Promise that resolves with the exit code when the process ends. */
 	whenExited(handle: string): Promise<{ exitCode: number | null }>
 	/** Read-only entry state, or undefined if unknown. */
@@ -372,6 +483,13 @@ export interface ProcessRegistry {
 	/** Number of entries currently tracked. */
 	readonly size: number
 }
+
+/**
+ * How far back (bytes) `snapshotSince` looks for the last line boundary
+ * when adding the small already-delivered overlap that keeps mid-line
+ * snapshots readable.
+ */
+const SNAPSHOT_OVERLAP_WINDOW_BYTES = 256
 
 /**
  * Elapsed whole seconds since `spawnedAtMs`, floored at zero so a clock
@@ -410,11 +528,11 @@ export function createProcessRegistry(): ProcessRegistry {
 		clearDeadlineTimer(entry)
 		const delay = entry.deadlineMs - Date.now()
 		if (delay <= 0) {
-			killInternal(entry, "deadline")
+			killInternal(entry, SAFETY_LIMIT_REASON)
 			return
 		}
 		entry.deadlineTimer = setTimeout(() => {
-			killInternal(entry, "deadline")
+			killInternal(entry, SAFETY_LIMIT_REASON)
 		}, delay)
 		// Keep the event loop responsive: an unref'd timer won't keep Node
 		// alive on its own, but a pending background process (held by the
@@ -439,34 +557,21 @@ export function createProcessRegistry(): ProcessRegistry {
 			tempFilePrefix: "pi-bash",
 		})
 
-		const entry: ProcessEntry = {
-			handle,
-			spawnedAtMs: Date.now(),
-			state: "running",
-			exitCode: null,
-			reason: null,
-			intervalSeconds: opts.intervalSeconds,
-			deadlineMs: opts.deadlineMs,
-			deadlineSeconds: opts.deadlineSeconds ?? Math.max(0, Math.round((opts.deadlineMs - Date.now()) / 1000)),
-			buffer,
-			accumulator,
-			controller,
-			rawExecPromise: undefined as unknown as Promise<{ exitCode: number | null }>,
-			execPromise: undefined as unknown as Promise<{ exitCode: number | null }>,
-			deadlineTimer: undefined,
-		}
-
+		// Declared before the exec callbacks so the onData/settlement closures
+		// can mutate entry state; assigned immediately below, before any
+		// callback can run (process data/settlement are always asynchronous).
+		let entry: ProcessEntry
 		const rawExec = ops.exec(command, cwd, {
 			onData: (data: Buffer) => {
+				entry.lastOutputAtMs = Date.now()
 				buffer.append(data)
 				accumulator.append(data)
 			},
 			signal: controller.signal,
-			// No upstream timeout: background mode manages its own deadline.
+			// No upstream timeout: the registry owns the absolute safety limit.
 			timeout: undefined,
 			env,
 		})
-		entry.rawExecPromise = rawExec
 		const execPromise = rawExec
 			.then((result) => {
 				if (entry.state === "running") {
@@ -489,7 +594,24 @@ export function createProcessRegistry(): ProcessRegistry {
 				accumulator.finish()
 			})
 
-		entry.execPromise = execPromise
+		entry = {
+			handle,
+			spawnedAtMs: Date.now(),
+			state: "running",
+			exitCode: null,
+			reason: null,
+			commandSummary: summarizeCommand(command),
+			cwd,
+			deadlineMs: Date.now() + Math.max(0, opts.limitSeconds) * 1000,
+			deadlineSeconds: Math.max(0, Math.round(opts.limitSeconds)),
+			lastOutputAtMs: undefined,
+			deliveredCursor: 0,
+			buffer,
+			accumulator,
+			controller,
+			execPromise,
+			deadlineTimer: undefined,
+		}
 		entries.set(handle, entry)
 		armDeadline(entry)
 		return handle
@@ -504,31 +626,94 @@ export function createProcessRegistry(): ProcessRegistry {
 		return { text, bytes, state: entry.state, exitCode: entry.exitCode, reason: entry.reason }
 	}
 
+	function snapshotSince(handle: string, maxBytes: number = DEFAULT_TAIL_BYTES): IncrementalSnapshot {
+		const entry = entries.get(handle)
+		if (!entry) {
+			return {
+				text: "",
+				nextCursor: 0,
+				newBytes: 0,
+				omittedBytes: 0,
+				totalBytes: 0,
+				state: "stopped",
+				exitCode: null,
+				reason: "unknown",
+			}
+		}
+		const cursor = Math.min(entry.deliveredCursor, entry.buffer.appendedBytes)
+		const appendedTotal = entry.buffer.appendedBytes
+		const retainedStart = entry.buffer.retainedStartOffset
+		const newBytes = appendedTotal - cursor
+		if (newBytes <= 0) {
+			return {
+				text: "",
+				nextCursor: appendedTotal,
+				newBytes,
+				omittedBytes: 0,
+				totalBytes: appendedTotal,
+				state: entry.state,
+				exitCode: entry.exitCode,
+				reason: entry.reason,
+			}
+		}
+		const evictedUnseen = Math.max(0, Math.min(retainedStart, appendedTotal) - cursor)
+		const unseenStart = Math.max(cursor, retainedStart)
+		const retainedUnseen = appendedTotal - unseenStart
+		const shownBytes = Math.min(Math.max(0, retainedUnseen), maxBytes)
+		// The snapshot shows the NEWEST `shownBytes` of the unseen range. When
+		// the cap skips older unseen bytes, they count as omitted so the model
+		// is told a gap exists instead of silently losing output.
+		let textStart = appendedTotal - shownBytes
+		let textByteLength = shownBytes
+		if (textByteLength > 0 && textStart === cursor && cursor > retainedStart) {
+			// The full unseen range fits and begins exactly at the delivered
+			// cursor: prepend the current line's already-delivered head (small
+			// overlap) so mid-line snapshots keep enough context to be readable.
+			const overlapFloor = Math.max(retainedStart, cursor - SNAPSHOT_OVERLAP_WINDOW_BYTES)
+			const probe = entry.buffer.snapshotRange(overlapFloor, cursor - overlapFloor)
+			const lastNewline = probe.text.lastIndexOf("\n")
+			if (lastNewline !== -1 && lastNewline < probe.text.length - 1) {
+				const overlapBytes = byteLength(probe.text.slice(lastNewline + 1))
+				textStart = cursor - overlapBytes
+				textByteLength += overlapBytes
+			}
+		} else if (textByteLength > 0 && textStart > unseenStart) {
+			// Older unseen bytes were skipped by the cap: drop a leading partial
+			// line so the shown tail starts at a line boundary.
+			const raw = entry.buffer.snapshotRange(textStart, textByteLength)
+			const firstNewline = raw.text.indexOf("\n")
+			if (firstNewline !== -1 && firstNewline < raw.text.length - 1) {
+				const dropped = byteLength(raw.text.slice(0, firstNewline + 1))
+				textStart += dropped
+				textByteLength -= dropped
+			}
+		}
+		const { text } = entry.buffer.snapshotRange(textStart, textByteLength)
+		const skippedUnseen = Math.max(0, textStart - unseenStart)
+		return {
+			text,
+			nextCursor: appendedTotal,
+			newBytes,
+			omittedBytes: evictedUnseen + skippedUnseen,
+			totalBytes: appendedTotal,
+			state: entry.state,
+			exitCode: entry.exitCode,
+			reason: entry.reason,
+		}
+	}
+
+	function markDelivered(handle: string, cursor: number): void {
+		const entry = entries.get(handle)
+		if (!entry) return
+		if (cursor > entry.deliveredCursor) entry.deliveredCursor = cursor
+	}
+
 	async function kill(handle: string, reason = "stop"): Promise<void> {
 		const entry = entries.get(handle)
 		if (!entry) return
 		killInternal(entry, reason)
 		// Await abort settlement so callers observe the final exitCode/reason.
 		await entry.execPromise.catch(() => {})
-	}
-
-	function extend(handle: string, addSeconds: number): void {
-		const entry = entries.get(handle)
-		if (!entry) return
-		if (entry.state !== "running") return
-		if (addSeconds > 0) {
-			entry.deadlineMs += addSeconds * 1000
-			entry.deadlineSeconds += addSeconds
-		}
-		armDeadline(entry)
-	}
-
-	function setIntervalSeconds(handle: string, seconds: number): void {
-		const entry = entries.get(handle)
-		if (!entry) return
-		if (entry.state !== "running") return
-		if (!Number.isFinite(seconds) || seconds <= 0) return
-		entry.intervalSeconds = seconds
 	}
 
 	function whenExited(handle: string): Promise<{ exitCode: number | null }> {
@@ -545,8 +730,14 @@ export function createProcessRegistry(): ProcessRegistry {
 		const entry = entries.get(handle)
 		if (!entry) return undefined
 		const snap = entry.accumulator.snapshot({ persistIfTruncated: true })
+		// De-duplicate output the model already received at reviews: the
+		// retained tail window may overlap the delivered stream range, so
+		// drop the already-delivered prefix instead of re-sending it.
+		const retainedStart = snap.truncation.totalBytes - byteLength(snap.content)
+		const deliveredOverlap = entry.deliveredCursor - retainedStart
+		const content = deliveredOverlap > 0 ? sliceBufferText(snap.content, deliveredOverlap) : snap.content
 		return {
-			content: snap.content,
+			content,
 			truncation: snap.truncation,
 			fullOutputPath: snap.fullOutputPath,
 			state: entry.state,
@@ -581,10 +772,10 @@ export function createProcessRegistry(): ProcessRegistry {
 	return {
 		spawn,
 		snapshotTail,
+		snapshotSince,
+		markDelivered,
 		finalSnapshot,
 		kill,
-		extend,
-		setIntervalSeconds,
 		whenExited,
 		getEntry,
 		remove,

@@ -43,7 +43,6 @@ import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
 import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
-import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
@@ -575,15 +574,11 @@ try {
 			reviewWriteGuardExtension,
 			lspExtension,
 			dapExtension,
-			// Always registered — the tool_call handler checks isResourceEnabled
-			// dynamically on every bash call, so enable/disable from /resources
-			// takes effect immediately without a process restart.
-			bashDefaultTimeoutExtension,
 			// Background bash: MUST register before bashToolGuard so its background
 			// `execute` wins the first-registration-per-name race (runner.js).
-			// Carries BASH_TOOL_DESCRIPTION so the tool-guard's steering composes.
-			// Background mode is opt-in via `checkin_interval`; without it, bash
-			// runs synchronously as before.
+			// Carries the bash-tool-guard description so the steering composes.
+			// Long-running commands hand off to the cohort (single review clock,
+			// harness-owned --bash-process-limit safety bound).
 			bashBackgroundExtension,
 			// bash_control companion tool. Tracks background bash processes for
 			// lifecycle notices and concurrency context (non-blocking): other tool

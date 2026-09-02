@@ -1,95 +1,151 @@
 /**
- * `bash_control` companion tool.
+ * `bash_control` companion tool — consolidated cohort control.
  *
- * After the background `bash` tool resolves at a checkin with a `handle`,
- * the agent drives the process to completion via this tool. Two actions:
+ * Continuation is the default: the agent names only the processes it
+ * wants to stop and whether it has nothing else to do:
  *
- *  - `continue` (optionally with `extend_seconds`): if `extend_seconds > 0`,
- *    push the registry deadline out by that many seconds (preventing the
- *    deadline auto-kill), then re-arm the next checkin by awaiting
- *    `awaitCheckin` again. Resolves with the current tail-window + process
- *    state. If the process exited between the previous checkin and this
- *    call, resolves immediately with the final output (no checkin armed).
+ *  - `stop_handles`: kill these handles (one or many) and include each
+ *    final result in the consolidated response. Unknown handles are
+ *    reported individually without discarding valid actions. All
+ *    unlisted live handles KEEP RUNNING.
+ *  - `wait: false`: apply stops and return immediately so the agent can
+ *    do independent work. An empty no-op call (no stops, no wait) is
+ *    rejected.
+ *  - `wait: true`: apply stops, then block until the first process exit
+ *    in the cohort, the next global cohort review, or abort — and return
+ *    one consolidated snapshot of every process relevant to that event.
+ *    At most one cohort wait may be active per session; a second
+ *    concurrent wait is rejected with a clear error.
  *
- *  - `stop`: kill the process via `registry.kill(handle)` (which awaits abort
- *    settlement so final output is flushed), then resolve with the final
- *    tail-window + exit code. Removes the entry so the handle can't be reused.
+ * Aborting a wait cancels only the wait — it never kills the cohort.
+ * Batch results mark each process failure explicitly instead of throwing,
+ * so one failed process cannot discard sibling statuses.
  *
- * The tool reads the session registry via `getSessionRegistry()` so it
- * shares one process table with the background `bash` tool.
+ * Legacy `{ extend_seconds, checkin_interval }` timing fields (resumed
+ * sessions, ACP replays) are accepted as deprecated, ignored compatibility
+ * inputs for one release. Legacy `handle`/`action` payloads are NOT
+ * translated — the harness owns cadence and deadlines now.
  */
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
-import { awaitCheckin } from "./checkin.js"
 import { elapsedSecondsSince } from "./process-registry.js"
-import { getSessionRegistry } from "./session-registry.js"
-import { exitedStatusText, runningStatusText, stoppedStatusText } from "./status-text.js"
-import { throwIfTerminal } from "./terminal-status.js"
+import { type BashSessionState, getSessionState } from "./session-registry.js"
+import { runningResultText, terminalResultText } from "./status-text.js"
 
 const bashControlSchema = Type.Object({
-	handle: Type.String({
-		description: "Handle of the background bash process to control (returned by the bash tool).",
-	}),
-	action: Type.Union([Type.Literal("continue"), Type.Literal("stop")], {
+	stop_handles: Type.Optional(
+		Type.Array(Type.String(), {
+			description:
+				"Handles of background bash processes to stop now. All unlisted live handles continue running. Their final results are included in this call's response.",
+		}),
+	),
+	wait: Type.Boolean({
 		description:
-			"'continue' re-arms the next checkin (optionally extend the deadline first); 'stop' kills the process and returns final output.",
+			"true: after applying any stops, block until the first cohort process exit, the next scheduled cohort review, or abort, and return one consolidated snapshot. Use only when you have no independent work to do. false: apply stops and return immediately; processes continue by default and their exits/reviews arrive automatically.",
 	}),
-	extend_seconds: Type.Optional(
-		Type.Number({
-			description:
-				"Only valid with action 'continue'. Pushes the process deadline out by this many seconds before re-arming the checkin. Omit or use 0 to keep the existing deadline.",
-		}),
-	),
-	checkin_interval: Type.Optional(
-		Type.Number({
-			description:
-				"Only valid with action 'continue'. Changes the checkin cadence (seconds) for this and subsequent waits. Raise it (e.g. 60–300) for long-running processes to avoid polling every checkin; this is NOT the deadline — use extend_seconds to move the auto-kill time. Omit to keep the current cadence.",
-		}),
-	),
+	/** @deprecated Ignored. Deadlines are harness-owned; retained one release so resumed sessions and ACP replays carrying legacy timing payloads still validate. */
+	extend_seconds: Type.Optional(Type.Number()),
+	/** @deprecated Ignored. The review cadence is harness-owned; retained for the same compatibility reason. */
+	checkin_interval: Type.Optional(Type.Number()),
 })
 
 export type BashControlInput = Static<typeof bashControlSchema>
 
-/** Details returned by bash_control. */
+/** Details returned by bash_control (read by the bash-control extension). */
 export interface BashControlDetails {
-	/** The handle that was controlled. */
-	handle: string
-	/** Whether the process has exited. */
-	exited: boolean
-	/** Process exit code (null until exit / if killed without an exit code). */
-	exitCode: number | null
-	/** The action taken: "continue" | "stop". */
-	action: "continue" | "stop"
-	/** True when this result is a mid-run checkin (process still alive). */
-	checkin?: boolean
-	/** Reason the process stopped, if any ("stop" | "deadline" | "aborted" | …). */
-	reason?: string | null
-	/** Whole seconds the process has run (from spawn). Omitted when no handle is known. */
-	elapsedSeconds?: number
+	/** Handles whose terminal results this result delivers (stop or observed exit). */
+	exitedHandles?: string[]
+	/** Handles that remain running after this result (snapshot delivered). */
+	runningHandles?: string[]
+	/** True when an explicit wait was cancelled by abort (processes unaffected). */
+	aborted?: boolean
+	/** Freeform failure marker for error results ("no-registry", "invalid-params", …). */
+	reason?: string
 }
 
 export const BASH_CONTROL_TOOL_NAME = "bash_control"
 
-export const BASH_CONTROL_TOOL_DESCRIPTION = `Control a background bash process started by the \`bash\` tool.
+export const BASH_CONTROL_TOOL_DESCRIPTION = `Control background bash processes started by the \`bash\` tool.
 
-After the \`bash\` tool spawns a long-running command in the background and returns a \`handle\` at a checkin, call this tool to decide what happens next:
+Background processes continue by default: reviews of every running process and each process's final exit result are delivered to you automatically. You do NOT need to call this tool to keep a process alive or to collect its output.
 
-- action "continue": keep the process running and receive the next tail-window of output at the next checkin. Optionally pass \`extend_seconds\` to push the deadline out first (preventing an imminent auto-kill), and/or \`checkin_interval\` to change how often you are woken with status updates — for long builds, prefer a longer interval (e.g. 60–300s) over polling every 15s. \`continue\` blocks until the next checkin or process exit — use it when another status wait is actually useful, not merely to poll.
-- action "stop": kill the process immediately and return its final tail-window of output plus exit code.
+- \`stop_handles\`: stop the named processes now and get their final results in one response. Every unlisted handle keeps running.
+- \`wait: true\`: block until the first cohort exit or the next scheduled cohort review, then receive one consolidated snapshot. Use this ONLY when you have no independent work to do — never to poll a single process. Only one wait can be active at a time.
+- \`wait: false\`: apply stops and return immediately.
 
-Other tools remain available while a background process runs, so you do not need to call this tool just to wait — do independent work and call bash_control when you need output sooner, a deadline extension, or to stop the process. Use this tool only when a \`bash\` result includes a \`handle\` in its details (i.e. the command is still running in the background). For commands that ran synchronously (timeout <= 5), there is no handle and no need to call this tool.`
+A call with neither stop_handles nor wait: true is a no-op and is rejected.`
+
+interface NormalizedParams {
+	stopHandles: string[]
+	wait: boolean
+}
+
+/** Drop empty handle values; the schema already validates the rest. */
+function normalizeParams(params: BashControlInput): NormalizedParams {
+	const stopHandles = params.stop_handles?.filter((h) => typeof h === "string" && h.length > 0) ?? []
+	// wait is required by the schema; `=== true` keeps direct (unvalidated)
+	// execute calls from resumed/ACP payloads deterministic too.
+	return { stopHandles, wait: params.wait === true }
+}
+
+function errorResult(
+	message: string,
+	reason: string,
+): {
+	content: { type: "text"; text: string }[]
+	details: BashControlDetails
+} {
+	return { content: [{ type: "text", text: `Error: ${message}` }], details: { reason } }
+}
+
+/** Format one terminal result block for `handle` and remove it everywhere. */
+async function collectTerminalResult(
+	state: BashSessionState,
+	handle: string,
+	prefix?: string,
+): Promise<{ text: string; resolved: boolean }> {
+	const { registry, coordinator } = state
+	const entry = registry.getEntry(handle)
+	if (!entry) {
+		return {
+			text: `${prefix ?? ""}Unknown handle '${handle}'. The process already exited and was removed (its result was delivered when it exited).`,
+			resolved: false,
+		}
+	}
+	const elapsed = elapsedSecondsSince(entry.spawnedAtMs)
+	await registry.kill(handle).catch(() => {})
+	const final = registry.finalSnapshot(handle)
+	coordinator.handleRemoved(handle)
+	await registry.remove(handle).catch(() => {})
+	if (!final) {
+		return { text: `${prefix ?? ""}Process ${handle} ended before its result could be captured.`, resolved: false }
+	}
+	const text = terminalResultText({
+		handle,
+		commandSummary: entry.commandSummary,
+		elapsedSeconds: elapsed,
+		state: final.state,
+		exitCode: final.exitCode,
+		reason: final.reason,
+		deadlineSeconds: entry.deadlineSeconds,
+		output: final.content,
+		truncated: final.truncation?.truncated === true,
+		fullOutputPath: final.fullOutputPath,
+	})
+	return { text: prefix ? `${prefix}\n${text}` : text, resolved: true }
+}
 
 /**
  * Build the `bash_control` ToolDefinition.
  *
- * @param getRegistry Override the registry accessor (tests inject a fake).
- *                    Defaults to the session-scoped `getSessionRegistry()`.
+ * @param getState Override the state accessor (tests inject a fake).
+ *                 Defaults to the session-scoped `getSessionState()`.
  */
 export function createBashControlToolDefinition(
-	getRegistry = getSessionRegistry,
+	getState: () => BashSessionState | undefined = getSessionState,
 ): ToolDefinition<typeof bashControlSchema, BashControlDetails> {
 	async function execute(
-		_toolCallId: string,
+		toolCallId: string,
 		params: BashControlInput,
 		signal: AbortSignal | undefined,
 		_onUpdate: Parameters<ToolDefinition["execute"]>[3] | undefined,
@@ -97,172 +153,109 @@ export function createBashControlToolDefinition(
 		content: { type: "text"; text: string }[]
 		details: BashControlDetails
 	}> {
-		const { handle, action, extend_seconds, checkin_interval } = params
-		if (action === "stop" && checkin_interval !== undefined) {
-			return {
-				content: [
-					{
-						type: "text",
-						text: "Error: checkin_interval is only valid with action 'continue'.",
-					},
-				],
-				details: { handle, exited: false, exitCode: null, action, reason: "invalid-params" },
-			}
+		const { stopHandles, wait } = normalizeParams(params)
+		if (!wait && stopHandles.length === 0) {
+			return errorResult(
+				"Nothing to do: pass stop_handles to stop processes, or wait: true to block for the next cohort event. Processes continue by default without this call.",
+				"no-op",
+			)
 		}
-		if (checkin_interval !== undefined && (!Number.isFinite(checkin_interval) || checkin_interval <= 0)) {
-			return {
-				content: [
-					{
-						type: "text",
-						text: `Error: checkin_interval must be a positive number of seconds (got ${checkin_interval}).`,
-					},
-				],
-				details: { handle, exited: false, exitCode: null, action, reason: "invalid-params" },
-			}
+
+		const state = getState()
+		if (!state) {
+			return errorResult("No active bash session state. Start a background bash command first.", "no-registry")
 		}
-		const registry = getRegistry()
-		if (!registry) {
+		const { registry, coordinator } = state
+
+		const blocks: string[] = []
+		const exitedHandles: string[] = []
+
+		// ── Apply explicit stops (continuation is the default for the rest). ──
+		for (const handle of stopHandles) {
+			const result = await collectTerminalResult(state, handle)
+			blocks.push(result.text)
+			if (result.resolved) exitedHandles.push(handle)
+		}
+
+		if (!wait) {
 			return {
-				content: [
-					{
-						type: "text",
-						text: "Error: no active bash session registry. Start a background bash command first.",
-					},
-				],
-				details: { handle, exited: true, exitCode: null, action, reason: "no-registry" },
+				content: [{ type: "text", text: blocks.join("\n\n") }],
+				details: { exitedHandles },
 			}
 		}
 
-		const entry = registry.getEntry(handle)
-		if (!entry) {
+		// ── Cohort wait. ──
+		if (coordinator.size === 0) {
+			blocks.push("No background processes remain running; nothing to wait for.")
 			return {
-				content: [
-					{
-						type: "text",
-						text: `Error: unknown handle '${handle}'. The process may have already exited and been removed.`,
-					},
-				],
-				details: { handle, exited: true, exitCode: null, action, reason: "unknown-handle" },
+				content: [{ type: "text", text: blocks.join("\n\n") }],
+				details: { exitedHandles },
 			}
 		}
 
-		// ── stop ────────────────────────────────────────────────────────
-		if (action === "stop") {
-			const elapsed = elapsedSecondsSince(entry.spawnedAtMs)
-			await registry.kill(handle)
-			const final = registry.finalSnapshot(handle)
-			const snapshot = registry.snapshotTail(handle)
-			const finalExitCode = snapshot.exitCode
-			await registry.remove(handle).catch(() => {})
-			const stoppedOutput = final?.content ?? snapshot.text
-			const truncated = final?.truncation?.truncated === true
-			const truncationSuffix =
-				truncated && final?.fullOutputPath ? `\n\n[Output truncated. Full output: ${final.fullOutputPath}]` : ""
-			return {
-				content: [
-					{
-						type: "text",
-						text: `${stoppedOutput}${truncationSuffix}\n\n${stoppedStatusText(finalExitCode, elapsed)}`,
-					},
-				],
-				details: {
-					handle,
-					exited: true,
-					exitCode: finalExitCode,
-					action: "stop",
-					reason: snapshot.reason ?? "stop",
-					elapsedSeconds: elapsed,
-					...(truncated ? { truncation: final?.truncation, fullOutputPath: final?.fullOutputPath } : {}),
-				},
-			}
+		const claim = coordinator.beginCohortWait(toolCallId)
+		if (!claim.ok) {
+			return errorResult(claim.error, "wait-conflict")
 		}
 
-		// ── continue ────────────────────────────────────────────────────
-		// If the process already exited (e.g. between the previous checkin and
-		// this call), return the final output immediately.
-		if (entry.state !== "running") {
-			const elapsed = elapsedSecondsSince(entry.spawnedAtMs)
-			const final = registry.finalSnapshot(handle)
-			const snapshot = registry.snapshotTail(handle)
-			await registry.remove(handle).catch(() => {})
-			const fullOutput = final?.content ?? snapshot.text
-			throwIfTerminal(snapshot, fullOutput, entry.deadlineSeconds)
-			return {
-				content: [{ type: "text", text: `${fullOutput}\n\n${exitedStatusText(snapshot.exitCode, elapsed)}` }],
-				details: {
-					handle,
-					exited: true,
-					exitCode: snapshot.exitCode,
-					action: "continue",
-					reason: snapshot.reason,
-					elapsedSeconds: elapsed,
-				},
-			}
-		}
-
-		// Optionally extend the deadline BEFORE re-arming, so an imminent
-		// deadline auto-kill doesn't fire before the next checkin resolves.
-		if (extend_seconds !== undefined && extend_seconds > 0) {
-			registry.extend(handle, extend_seconds)
-		}
-
-		// Optionally change the checkin cadence for this and subsequent waits.
-		// entry.intervalSeconds is read fresh at each re-arm (see below), so the
-		// new cadence applies immediately.
-		if (checkin_interval !== undefined) {
-			registry.setIntervalSeconds(handle, checkin_interval)
-		}
-
-		// Turn abort (ESC) must kill the process, same as bash-background-tool.
-		const onAbort = () => void registry.kill(handle, "aborted")
-		if (signal?.aborted) onAbort()
-		else signal?.addEventListener("abort", onAbort, { once: true })
-
-		// Re-arm the next checkin (timer vs process exit race). This blocks
-		// until the next checkin OR process exit — naturally pacing the loop
-		// without relying on the event loop staying alive. Works in -p mode.
-		const intervalSeconds = entry.intervalSeconds
-		let snapshot: ReturnType<typeof registry.snapshotTail>
+		let event: Awaited<ReturnType<typeof coordinator.awaitCohortEvent>>
 		try {
-			snapshot = await awaitCheckin(registry, handle, intervalSeconds)
+			event = await coordinator.awaitCohortEvent(toolCallId, signal)
 		} finally {
-			signal?.removeEventListener("abort", onAbort)
+			coordinator.endCohortWait(toolCallId)
 		}
-		const exited = snapshot.state !== "running"
-		if (exited) {
-			const elapsed = elapsedSecondsSince(entry.spawnedAtMs)
-			const final = registry.finalSnapshot(handle)
-			await registry.remove(handle).catch(() => {})
-			const fullOutput = final?.content ?? snapshot.text
-			throwIfTerminal(snapshot, fullOutput, entry.deadlineSeconds)
+
+		if (event.kind === "aborted") {
+			// Abort cancels only this wait — the cohort keeps running.
+			blocks.push(
+				`Wait cancelled. ${coordinator.size} background process${coordinator.size === 1 ? "" : "es"} still running; ` +
+					"their reviews and exit results will continue to arrive automatically.",
+			)
 			return {
-				content: [{ type: "text", text: `${fullOutput}\n\n${exitedStatusText(snapshot.exitCode, elapsed)}` }],
-				details: {
-					handle,
-					exited: true,
-					exitCode: snapshot.exitCode,
-					action: "continue",
-					reason: snapshot.reason,
-					elapsedSeconds: elapsed,
-				},
+				content: [{ type: "text", text: blocks.join("\n\n") }],
+				details: { exitedHandles, aborted: true },
 			}
 		}
 
-		// Process still running — return tail window + handle.
-		const elapsed = elapsedSecondsSince(entry.spawnedAtMs)
-		const statusLine = `\n\n${runningStatusText(handle, elapsed, true)}`
+		// Sweep every cohort handle that reached a terminal state — the event's
+		// own exit plus any siblings that settled in the same window (safety
+		// limit, a parallel stop, …). Terminal results are delivered exactly
+		// once: this consolidated result owns them.
+		if (event.kind === "exit") {
+			blocks.push(`Cohort event: process exited (${event.handle}).`)
+		} else {
+			blocks.push("Scheduled cohort review of all running background processes:")
+		}
+		const terminalHere: string[] = []
+		for (const handle of [...cohortHandles(state)]) {
+			const entry = registry.getEntry(handle)
+			if (!entry || entry.state === "running") continue
+			const result = await collectTerminalResult(state, handle)
+			terminalHere.push(result.text)
+			if (result.resolved) exitedHandles.push(handle)
+		}
+		blocks.push(...terminalHere)
+
+		// Snapshot every still-running handle: facts + unseen output. The
+		// delivered cursor advances only after the result text is built.
+		const runningHandles: string[] = []
+		const pendingMarks: Array<[string, number]> = []
+		for (const handle of cohortHandles(state)) {
+			const entry = registry.getEntry(handle)
+			if (!entry || entry.state !== "running") continue
+			runningHandles.push(handle)
+			const incremental = registry.snapshotSince(handle)
+			pendingMarks.push([handle, incremental.nextCursor])
+			blocks.push(runningResultText(entry, incremental, state.cwd))
+		}
+		for (const [handle, cursor] of pendingMarks) registry.markDelivered(handle, cursor)
+		if (runningHandles.length === 0) {
+			blocks.push("No background processes remain running.")
+		}
 
 		return {
-			content: [{ type: "text", text: `${snapshot.text}${statusLine}` }],
-			details: {
-				handle,
-				exited: false,
-				exitCode: null,
-				action: "continue",
-				checkin: true,
-				reason: null,
-				elapsedSeconds: elapsed,
-			},
+			content: [{ type: "text", text: blocks.join("\n\n") }],
+			details: { exitedHandles, runningHandles },
 		}
 	}
 
@@ -273,4 +266,9 @@ export function createBashControlToolDefinition(
 		parameters: bashControlSchema,
 		execute: execute as ToolDefinition<typeof bashControlSchema, BashControlDetails>["execute"],
 	}
+}
+
+/** Current cohort handles (the coordinator owns the live cohort set). */
+function cohortHandles(state: BashSessionState): string[] {
+	return state.coordinator.handles()
 }

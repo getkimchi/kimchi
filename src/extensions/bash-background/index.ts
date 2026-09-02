@@ -13,42 +13,48 @@
  * the description — same string — and its `tool_call` steering still fires
  * because the tool name stays `bash`).
  *
- * A single session-scoped `ProcessRegistry` is created per session
- * (stored in `./session-registry.ts` so consumers don't import this
- * barrel) and shared with the background tool definition so the
- * `bash_control` companion (phase 2) can address running processes by
- * handle. The registry is drained on `session_shutdown`.
+ * A single session-scoped state ({registry, coordinator, limitSeconds}) is
+ * created per session (stored in `./session-registry.ts` so consumers
+ * don't import this barrel). The registry owns process lifecycle and the
+ * harness safety limit (`--bash-process-limit`, default one hour); the
+ * coordinator owns the cohort's single review clock. Both are torn down
+ * on `session_shutdown`.
  */
 import type { ExtensionAPI, SessionShutdownEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
+import { resolveBashProcessLimitSeconds } from "../../cli-args.js"
 import { bashToolDescription } from "../bash-tool-guard.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
-import { createProcessRegistry } from "./process-registry.js"
-import { getSessionRegistry, setSessionRegistry } from "./session-registry.js"
-
-export type { BackgroundBashInput, BackgroundBashToolDetails } from "./bash-background-tool.js"
-export { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
-export type { ProcessEntry, ProcessRegistry, TailSnapshot } from "./process-registry.js"
-export { createProcessRegistry } from "./process-registry.js"
+import { createProcessRegistry, DEFAULT_BASH_PROCESS_LIMIT_SECONDS } from "./process-registry.js"
+import { createReviewCoordinator } from "./review-coordinator.js"
+import { getSessionState, setSessionState } from "./session-registry.js"
 
 /**
  * Create a background-bash extension. Registers the background `bash` tool
  * on `session_start` (carrying the bash-tool-guard steering description so
- * the two compose) and drains the process registry on `session_shutdown`.
+ * the two compose) and tears down the cohort on `session_shutdown`.
  */
 export function bashBackgroundExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event: SessionStartEvent, sessionCtx) => {
-		// Fresh registry per session so handles from a previous session
-		// can't be reused, and so a resumed/forked session gets a clean
-		// process table.
+		// Fresh state per session so handles from a previous session can't
+		// be reused, and so a resumed/forked session gets a clean process
+		// table and review clock.
 		const registry = createProcessRegistry()
-		setSessionRegistry(registry)
+		const limitSeconds = resolveBashProcessLimitSeconds() ?? DEFAULT_BASH_PROCESS_LIMIT_SECONDS
+		const coordinator = createReviewCoordinator({
+			registry,
+			// The bash-control extension installs `deliverReview` on its own
+			// session_start; deferring through the state object dodges the
+			// extension registration-order dependency.
+			onReviewDue: () => getSessionState()?.deliverReview?.(),
+		})
+		setSessionState({ registry, coordinator, limitSeconds, cwd: sessionCtx.cwd })
 
 		// Re-register `bash` with the background execution definition.
 		// The description is the bash-tool-guard steering text so the
 		// tool-selection preference still reaches the system prompt even
 		// though our registration wins the tool-name slot.
 		const tool = createBackgroundBashToolDefinition(sessionCtx.cwd, {
-			registry,
+			state: getSessionState(),
 		})
 		const toolWithSteering = {
 			...tool,
@@ -62,14 +68,15 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("session_shutdown", async (_event: SessionShutdownEvent) => {
-		const registry = getSessionRegistry()
-		if (registry) {
+		const state = getSessionState()
+		if (state) {
 			// Unpublish BEFORE draining: shutdown() kills pending processes,
 			// which settles their whenExited promises — and a still-published
 			// registry would let bashControlExtension's exit watcher emit an
-			// "exited on its own" steer into the closing session.
-			setSessionRegistry(undefined)
-			await registry.shutdown()
+			// "exited on its own" notice into the closing session.
+			setSessionState(undefined)
+			state.coordinator.dispose()
+			await state.registry.shutdown()
 		}
 	})
 }

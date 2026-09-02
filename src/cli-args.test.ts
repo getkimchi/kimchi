@@ -13,6 +13,7 @@ import {
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
 	populateCliArgs,
+	resolveBashProcessLimitSeconds,
 	stripExperimentalFeaturesArg,
 	stripMultiModelArgs,
 } from "./cli-args.js"
@@ -317,4 +318,23 @@ describe("populateCliArgs / getParsedCliArgs", () => {
 		// Subsequent calls return the same cached result without re-parsing.
 		expect(getParsedCliArgs()).toEqual({ options: { "multi-model": true }, positionals: [] })
 	})
+})
+
+describe("resolveBashProcessLimitSeconds", () => {
+	it("parses --bash-process-limit as a positive integer", () => {
+		populateCliArgs(["--bash-process-limit", "900"])
+		expect(getParsedCliArgs().options["bash-process-limit"]).toBe("900")
+		expect(resolveBashProcessLimitSeconds()).toBe(900)
+	})
+
+	it("returns undefined when the flag is absent", () => {
+		populateCliArgs([])
+		expect(resolveBashProcessLimitSeconds()).toBeUndefined()
+	})
+
+	for (const bad of ["abc", "0", "-5", "12.5", ""]) {
+		it(`rejects ${JSON.stringify(bad)} at parse time with a clear error`, () => {
+			expect(() => populateCliArgs(["--bash-process-limit", bad])).toThrow(/Invalid --bash-process-limit/)
+		})
+	}
 })
