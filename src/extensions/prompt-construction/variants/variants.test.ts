@@ -58,6 +58,10 @@ const fakeTools = [
 	{ name: "edit", description: "ORIGINAL edit description" },
 ]
 
+// A session that can actually delegate. The single-mode delegation stance is
+// only swapped when the Agent tool is available.
+const fakeToolsWithAgent = [...fakeTools, { name: "Agent", description: "ORIGINAL Agent description" }]
+
 const ALL_MODES = ["single", "orchestrator", "subagent"] as const
 
 // ---------------------------------------------------------------------------
@@ -379,8 +383,10 @@ describe("buildSystemPrompt: spicy variant", () => {
 		expect(result).toMatchSnapshot()
 	})
 
+	// Snapshotted with the Agent tool present: that is what an interactive
+	// single-model session looks like, and the delegation stance depends on it.
 	it("spicy full prompt (single mode) matches snapshot", () => {
-		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single", variantName: "spicy" })
+		const result = buildSystemPrompt({ tools: fakeToolsWithAgent, env: testEnv, mode: "single", variantName: "spicy" })
 		expect(result).toMatchSnapshot()
 	})
 
@@ -459,7 +465,7 @@ describe("spicy additive guidelines", () => {
 
 describe("single-mode delegation stance", () => {
 	const single = (variantName?: string) =>
-		buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single", variantName })
+		buildSystemPrompt({ tools: fakeToolsWithAgent, env: testEnv, mode: "single", variantName })
 
 	it("guards that the exported delegation constant is still present in the stock single-mode section", () => {
 		// If the Single-Model Mode wording drifts away from this constant, a
@@ -485,6 +491,19 @@ describe("single-mode delegation stance", () => {
 		expect(single("spicy")).toContain(
 			"When you do spawn a subagent, pass your own model ID in the `model` parameter by default",
 		)
+	})
+
+	// Without the Agent tool the session cannot delegate at all, so the stock
+	// "handle it yourself" stance is the accurate one even under spicy.
+	it("spicy single prompt keeps the stock stance when the Agent tool is absent", () => {
+		const result = buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single", variantName: "spicy" })
+		expect(result).toContain(SINGLE_MODE_DELEGATION_TEXT)
+		expect(result).not.toContain(SPICY_SINGLE_MODE_DELEGATION)
+	})
+
+	it("default single prompt keeps the stock stance whether or not the Agent tool is present", () => {
+		expect(single()).toContain(SINGLE_MODE_DELEGATION_TEXT)
+		expect(buildSystemPrompt({ tools: fakeTools, env: testEnv, mode: "single" })).toContain(SINGLE_MODE_DELEGATION_TEXT)
 	})
 
 	it("spicy orchestrator prompt has no Single-Model Mode section and no delegation stance text", () => {

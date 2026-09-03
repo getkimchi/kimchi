@@ -74,6 +74,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	const effectiveMode = variant.forceMode ?? mode
 
 	const effectiveTools = effectiveMode === "subagent" ? tools.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name)) : tools
+	const toolNames = new Set(effectiveTools.map((tool) => tool.name))
 
 	const toolsSection = formatToolsSection(effectiveTools)
 	const environmentSection = formatEnvironmentSection(env)
@@ -91,6 +92,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		registry,
 		roles,
 		customConfigs: options.customConfigs,
+		toolNames,
 		singleModeDelegation: variant.singleModeDelegation,
 	})
 
@@ -137,7 +139,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		documentsSection,
 		guidelines,
 		factualAccuracy,
-		toolNames: new Set(effectiveTools.map((tool) => tool.name)),
+		toolNames,
 		toolsSection,
 		environmentSection,
 		projectContext,
@@ -195,6 +197,8 @@ function resolveModeInstructions(args: {
 	registry?: ModelRegistry
 	roles?: ModelRoles
 	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
+	/** Tool names the session can actually call. */
+	toolNames: ReadonlySet<string>
 	/** Variant override for the single-mode delegation stance, if any. */
 	singleModeDelegation?: string
 }): string {
@@ -209,7 +213,11 @@ function resolveModeInstructions(args: {
 	if (args.mode === "subagent") {
 		return SUBAGENT_INSTRUCTIONS
 	}
-	return buildSingleModelInstructions(args.currentModelId, args.singleModeDelegation)
+	// A variant's delegation stance only makes sense when the session can spawn
+	// subagents; without the Agent tool the stock "handle it yourself" text is
+	// the accurate one.
+	const delegation = args.toolNames.has("Agent") ? args.singleModeDelegation : undefined
+	return buildSingleModelInstructions(args.currentModelId, delegation)
 }
 
 // ---------------------------------------------------------------------------
